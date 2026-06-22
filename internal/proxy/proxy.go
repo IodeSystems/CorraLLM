@@ -124,9 +124,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		pr, err := p.mgr.EnsureReady(ctx, name, backend)
+		pr, done, err := p.mgr.EnsureReady(ctx, name, served, backend)
 		if err != nil {
 			release()
+			// Doesn't fit + can't evict, or won't come up → spill to next backend.
 			slog.Warn("backend unavailable, spilling", "backend", name, "err", err)
 			continue
 		}
@@ -136,6 +137,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		r.ContentLength = int64(len(body))
 		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK}
 		newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(ctx))
+		done()
 		release()
 		p.log(served, name, key, r.URL.Path, sc.code, time.Since(start))
 		return
@@ -199,11 +201,12 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := served + "#0"
-	pr, err := p.mgr.EnsureReady(r.Context(), name, model.Backends[0])
+	pr, done, err := p.mgr.EnsureReady(r.Context(), name, served, model.Backends[0])
 	if err != nil {
 		http.Error(w, "backend unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	defer done()
 	r.URL.Path = "/" + tail
 	newReverseProxy(pr.Target).ServeHTTP(w, r)
 }

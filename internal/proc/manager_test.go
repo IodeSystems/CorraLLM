@@ -36,14 +36,14 @@ func TestSpawnHealthAndProcessGroupKill(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 	addr := ln.Addr().(*net.TCPAddr)
 
-	mgr := NewManager()
+	mgr := NewManager(&config.Config{})
 	mgr.healthTimeout = 5 * time.Second
 
 	// exec sleep so the leaf process replaces the shell — the group still
 	// contains it; killGroup(-pgid) must reach it.
 	b := backendCmd(t, "exec sleep 30", addr.Port)
 
-	p, err := mgr.EnsureReady(context.Background(), "sleeper#0", b)
+	p, _, err := mgr.EnsureReady(context.Background(), "sleeper#0", "sleeper", b)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestLoadCoalescing(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 	addr := ln.Addr().(*net.TCPAddr)
 
-	mgr := NewManager()
+	mgr := NewManager(&config.Config{})
 	mgr.healthTimeout = 5 * time.Second
 	defer mgr.Shutdown()
 
@@ -87,7 +87,7 @@ func TestLoadCoalescing(t *testing.T) {
 	pids := make(chan int, n)
 	for range n {
 		go func() {
-			p, err := mgr.EnsureReady(context.Background(), "shared#0", b)
+			p, _, err := mgr.EnsureReady(context.Background(), "shared#0", "shared", b)
 			if err != nil {
 				pids <- -1
 				return

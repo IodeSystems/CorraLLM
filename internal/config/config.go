@@ -149,6 +149,14 @@ func Load(path string) (*Config, error) {
 // run. P0 enforces only what's cheap and unambiguous; richer checks land with
 // the phases that consume each section.
 func (c *Config) Validate() error {
+	for srvName, srv := range c.Servers {
+		if _, err := ParseSizes(srv.Pools); err != nil {
+			return fmt.Errorf("server %q pools: %w", srvName, err)
+		}
+		if _, err := ParseSizes(srv.Reserve); err != nil {
+			return fmt.Errorf("server %q reserve: %w", srvName, err)
+		}
+	}
 	for name, m := range c.Models {
 		if len(m.Backends) == 0 {
 			return fmt.Errorf("model %q: no backends", name)
@@ -158,8 +166,18 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("model %q backend %d: cmd set but no server", name, i)
 			}
 			if b.Server != "" {
-				if _, ok := c.Servers[b.Server]; !ok {
+				srv, ok := c.Servers[b.Server]
+				if !ok {
 					return fmt.Errorf("model %q backend %d: unknown server %q", name, i, b.Server)
+				}
+				if _, err := ParseSizes(b.RAMUsage); err != nil {
+					return fmt.Errorf("model %q backend %d ramUsage: %w", name, i, err)
+				}
+				for pool := range b.RAMUsage {
+					if _, ok := srv.Pools[pool]; !ok {
+						return fmt.Errorf("model %q backend %d: ramUsage pool %q not declared on server %q",
+							name, i, pool, b.Server)
+					}
 				}
 			}
 		}

@@ -128,8 +128,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	mgr := proc.NewManager()
+	mgr := proc.NewManager(cfg)
 	defer mgr.Shutdown()
+	// Preload pinned (persistent) models in the background so boot isn't blocked.
+	go mgr.Preload(ctx)
 
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st}
 

@@ -63,8 +63,15 @@ in `ui/src/gql`.
   types. Per-type `onSaturated` spill/fallThrough advances to the next backend
   (a backend that won't become ready also spills); queue waits; reject is
   terminal; an exhausted list returns a terminal 429.
+- **P4 (residency)** — done: a spawn is admitted only if it fits its server's
+  per-pool memory budget (`pools` − `reserve`, vector over named pools). When a
+  cold backend doesn't fit, the eviction solver frees idle, non-pinned residents
+  on the binding pool — ordered ttl-expired → unprotected → low `evictCost` →
+  LRU — to make room (**evict-then-spill**: only if it can't free enough does the
+  request spill). In-flight backends (held ref) and `persistent` models are never
+  evicted; persistent models are preloaded at boot. `internal/proc`.
 
-Next: P4 residency (VRAM pools, eviction, swap-vs-spill). See the roadmap.
+Next: P5 preemption (cooperative cancel of interruptible groups). See the roadmap.
 
 The `model` field selects a served model from `corrallm.yaml`; the caller key
 (`X-Corrallm-Key` or the bearer token) maps to a priorityGroup that governs

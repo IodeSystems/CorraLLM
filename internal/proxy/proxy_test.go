@@ -65,7 +65,7 @@ func TestInferencePassthroughAndActivityLog(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 
-	mgr := proc.NewManager()
+	mgr := proc.NewManager(&config.Config{})
 	defer mgr.Shutdown()
 
 	cfg := mkConfig(t, "mock", upstream.URL)
@@ -117,7 +117,7 @@ func TestBackpressure429(t *testing.T) {
 
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()
-	mgr := proc.NewManager()
+	mgr := proc.NewManager(&config.Config{})
 	defer mgr.Shutdown()
 
 	r := chi.NewRouter()
@@ -212,7 +212,7 @@ func TestFallThroughSpill(t *testing.T) {
 
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()
-	mgr := proc.NewManager()
+	mgr := proc.NewManager(&config.Config{})
 	defer mgr.Shutdown()
 
 	cfg := &config.Config{
@@ -267,7 +267,7 @@ func TestExhaustedAllSpill(t *testing.T) {
 
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()
-	mgr := proc.NewManager()
+	mgr := proc.NewManager(&config.Config{})
 	defer mgr.Shutdown()
 
 	cfg := &config.Config{
@@ -303,7 +303,7 @@ func TestExhaustedAllSpill(t *testing.T) {
 func TestUnknownModel404(t *testing.T) {
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()
-	mgr := proc.NewManager()
+	mgr := proc.NewManager(&config.Config{})
 	defer mgr.Shutdown()
 
 	r := chi.NewRouter()
@@ -322,7 +322,7 @@ func TestModelsCatalog(t *testing.T) {
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()
 	r := chi.NewRouter()
-	New(mkConfig(t, "mock", "http://127.0.0.1:1"), proc.NewManager(), sched.New(), st).Mount(r)
+	New(mkConfig(t, "mock", "http://127.0.0.1:1"), proc.NewManager(&config.Config{}), sched.New(), st).Mount(r)
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
