@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,6 +20,8 @@ import (
 
 	"github.com/iodesystems/corrallm/internal/api"
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/proc"
+	"github.com/iodesystems/corrallm/internal/proxy"
 	"github.com/iodesystems/corrallm/internal/store"
 	"github.com/iodesystems/corrallm/internal/webui"
 )
@@ -123,6 +127,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 	defer func() { _ = st.Close() }()
 
+	mgr := proc.NewManager()
+	defer mgr.Shutdown()
+
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st}
 
 	router := chi.NewRouter()
@@ -134,6 +141,9 @@ func serve(ctx context.Context, o serveOpts) error {
 		return err
 	}
 
+	// OpenAI-compatible inference passthrough (raw, streaming — bypasses gat).
+	proxy.New(cfg, mgr, st).Mount(router)
+
 	// The SPA is served for everything not claimed above.
 	router.Handle("/*", webui.Handler(o.webRoot))
 
@@ -142,8 +152,28 @@ func serve(ctx context.Context, o serveOpts) error {
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	slog.Info("corrallm listening", "addr", o.addr, "version", version)
-	return srv.ListenAndServe()
+
+	// Graceful shutdown: SIGINT/SIGTERM stops the listener and (via the defers)
+	// tears down spawned backends — otherwise a kill leaves child processes
+	// orphaned (their process groups never get signalled).
+	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("corrallm listening", "addr", o.addr, "version", version)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-sigCtx.Done():
+		slog.Info("shutdown signal received")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutCtx)
+	}
 }
 
 func envOr(key, def string) string {

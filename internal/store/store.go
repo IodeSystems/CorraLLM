@@ -49,6 +49,47 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// Activity is one proxied request record.
+type Activity struct {
+	TS      int64 // unix millis
+	Served  string
+	Backend string
+	Key     string
+	Path    string
+	Status  int
+	DwellMS int64
+}
+
+// InsertActivity appends a request record to the activity log.
+func (s *Store) InsertActivity(a Activity) error {
+	_, err := s.db.Exec(
+		`INSERT INTO activity (ts, served, backend, key, path, status, dwell_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		a.TS, a.Served, a.Backend, a.Key, a.Path, a.Status, a.DwellMS,
+	)
+	return err
+}
+
+// RecentActivity returns the most recent records, newest first.
+func (s *Store) RecentActivity(limit int) ([]Activity, error) {
+	rows, err := s.db.Query(
+		`SELECT ts, served, backend, key, path, status, dwell_ms
+		 FROM activity ORDER BY ts DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Activity
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.TS, &a.Served, &a.Backend, &a.Key, &a.Path, &a.Status, &a.DwellMS); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // DB exposes the underlying handle for query layers added in later phases.
 func (s *Store) DB() *sql.DB { return s.db }
 

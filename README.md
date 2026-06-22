@@ -47,5 +47,16 @@ in `ui/src/gql`.
 
 ## Status
 
-P0 (scaffold) complete: gat gateway, SDL dump, config loading, SQLite store, SPA
-shell. Proxy core (P1) and scheduler (P2) are next — see the roadmap.
+- **P0 (scaffold)** — done: gat gateway, SDL dump, config loading, SQLite store, SPA shell.
+- **P1 (proxy core)** — done: served model → first local backend. Lazy spawn +
+  health-check + load-coalescing (`internal/proc`), OpenAI passthrough
+  (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/rerank`,
+  `/v1/models`), untracked non-inference bypass (`/upstream/<model>/…`), activity
+  log, graceful process-group shutdown.
+
+Next: P2 scheduler (priorityGroups, fairshare admission, queue + backoff), then
+P3 backend-list fall-through. See the roadmap.
+
+The `model` field in an OpenAI request selects a served model from `corrallm.yaml`;
+its first backend is spawned on demand and proxied to. Multi-backend fall-through
+and fairshare are P2/P3.
