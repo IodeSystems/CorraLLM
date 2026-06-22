@@ -4,15 +4,17 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **P0–P2 shipped; P3 next.** Engine is runnable: OpenAI proxy + spawn
-lifecycle + fairshare scheduler. Progress tracked in §6; decisions/deferred in §7.
+Status: **P0–P3 shipped; P4 next.** Engine is runnable: OpenAI proxy + spawn
+lifecycle + fairshare scheduler + ordered backend fall-through. Progress tracked
+in §6; decisions/deferred in §7.
 
 > **Progress (updated 2026-06-22)**
 > - ✅ **P0 scaffold** — `fdf90b9`
 > - ✅ **P1 proxy core** — `566b888`
 > - ✅ **P2 scheduler engine** — `13f15df`
-> - ▶ **P3 backend-list fall-through** — next
-> - ☐ P4 residency · P5 preemption · P6 cost · P7 quality-degrade · P8 UI · Later: multi-node
+> - ✅ **P3 backend-list fall-through** — `ebcff81`
+> - ▶ **P4 residency** — next (largest remaining chunk)
+> - ☐ P5 preemption · P6 cost · P7 quality-degrade · P8 UI · Later: multi-node
 >
 > All shipped phases: `go build`/`vet`/`test` green, gofmt clean (14 tests).
 > Deviation from design: UI served from `--web-root` dir (not `go:embed`), matching
@@ -229,10 +231,16 @@ the BackpressureError shape we already validated.
   Weighted-fairshare admission (request-count share) over **per-backend slots** (`maxConcurrent`),
   queue + reject stages, informative backoff (429 + `Retry-After` + `X-RateLimit-*` + JSON).
   Caller key = `X-Corrallm-Key` or bearer token. `internal/sched`.
-- ▶ **P3 — Backend list + fall-through.** *(NEXT)* Multiple backends/model, `type`+`quality`,
-  rr-within-type, spill across types, per-type `onSaturated`. *Foundation in place: backends are
-  already an ordered list (P1 uses index 0 only); `Stage.Spill`/`FallThrough`/`Then` parse but are
-  inert; proxy resolves only `#0`.* Open fork: **preempt-vs-spill default ordering** (§7).
+- ✅ **P3 — Backend list + fall-through.** `ebcff81`. Ordered walk of a model's backends:
+  rr-within-`type`, ordered across types; per-type `onSaturated` spill/fallThrough advances,
+  queue waits, reject is terminal, exhausted list → 429. `orderBackends()` + `Stage.Spill` wired.
+  Quality carried but not a sort key (list order authoritative; per-quality routing is P7).
+  *(preempt-vs-spill fork deferred to P5 — preempt has no implementation until then.)*
+- ▶ **P4 — Residency.** *(NEXT)* Server capacity (VRAM pool vectors), model states + load
+  coalescing, stickiness (`ttl`/`evictCost`/affinity), eviction solver, swap-vs-spill,
+  pinned/preload. The resource layer; currently `servers`/`ramUsage`/`sticky`/`swap`/`persistent`
+  parse but don't gate spawns/evictions. Forks at §7 (swap-vs-spill default, eviction policy,
+  stickiness weighting).
 - **P4 — Residency.** Server capacity (VRAM), model states + load coalescing, stickiness
   (`ttl`/`evictCost`/affinity), eviction solver, swap-vs-spill, pinned/preload. The resource layer.
 - **P5 — Preemption.** Cooperative cancel of interruptible groups (streaming-safe).
@@ -259,10 +267,11 @@ the BackpressureError shape we already validated.
   for the residency layer (P4).
 
 ### Still pending (blocking the noted phase)
-- **Preempt-vs-spill default ordering** when a stage allows both — needed for **P3/P5**. Per-type
-  `onSaturated` can set it explicitly; need a sane default. *(Decide at P3 start.)*
+- **Preempt-vs-spill default ordering** when a stage allows both — **P5** (was tagged P3, but
+  preempt has no implementation until P5, so there's no conflict to resolve in P3). Per-type
+  `onSaturated` can set it explicitly; need a sane default once preempt lands.
 - **Swap-vs-spill default** when target is cold + host full — **P4** (per-group? per-type?
-  cost-minimizing?).
+  cost-minimizing?). *(Decide at P4 start.)*
 - **Stickiness/affinity weighting** — how strongly a warm backend overrides ordered preference;
   per-group vs per-request latency hint — **P4**.
 - **Eviction policy** — evictCost + recency + stickiness scoring, constrained to the **binding
@@ -282,8 +291,8 @@ the BackpressureError shape we already validated.
 - **Multi-node peer awareness** — remote load introspection across corrallm peers (roadmap "Later").
 
 ### Deferred work / known gaps in shipped code
-- **P1 first-backend-only**: proxy resolves backend `#0`; `Stage.Spill`/`FallThrough`/`Then`,
-  `quality`, and rr-within-type are parsed but inert until **P3**.
+- ✅ ~~P1 first-backend-only~~ — resolved in **P3** (ordered fall-through; rr-within-type).
+  Still inert: `quality` as a routing/sort key (**P7**) and `Stage.Then` follow-up verb (**P5**).
 - **No `limits`/cost metering**: `commandCosts`, `costPerKwh`, `shareCurrency: dwell|cost`,
   per-group/per-type `limits` parse but don't affect behavior — **P6**.
 - **No residency accounting**: `servers.pools`/`reserve`, `ramUsage`, `sticky`, `swap`,
