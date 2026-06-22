@@ -27,3 +27,6 @@
 
 # Editor
 .DS_Store
+
+# Machine-specific local working dir (configs, models, scratch) — never committed
+/local/
