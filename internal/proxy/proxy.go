@@ -12,12 +12,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
@@ -32,11 +34,14 @@ type Proxy struct {
 	mgr   *proc.Manager
 	sched *sched.Scheduler
 	store *store.Store
+
+	rrMu sync.Mutex
+	rr   map[string]uint64 // per-served-model round-robin counter
 }
 
 // New constructs a Proxy.
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
-	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st}
+	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, rr: map[string]uint64{}}
 }
 
 // Mount registers the OpenAI-compatible inference routes plus the untracked
@@ -82,48 +87,105 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// P1: first backend only (fall-through across the list is P3).
-	backend := model.Backends[0]
-	name := served + "#0"
-
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), 130*time.Second)
 	defer cancel()
 
-	// Fairshare admission: resolve the caller's group, take a slot or honor the
-	// group's saturation stage (queue/reject) for this backend type.
 	key := callerKey(r)
 	groupName, group := p.cfg.ResolveGroup(key)
-	stage := group.StageFor(backend.Type)
-	release, err := p.sched.Admit(ctx, name, backend.Slots(), groupName, group.EffectiveWeight(), stage)
-	if err != nil {
-		var bp *sched.BackpressureError
-		if errors.As(err, &bp) {
-			writeBackpressure(w, bp)
-			p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start))
+	weight := group.EffectiveWeight()
+
+	// Walk the ordered backend list (rr within a cost-equivalent `type`, ordered
+	// across types). For each: take a slot or honor the group's saturation stage
+	// for that type — spill/fallThrough advances to the next backend; queue waits;
+	// reject is terminal. A backend that won't become ready also spills.
+	walk := orderBackends(model.Backends, p.nextRR(served))
+	var lastBP *sched.BackpressureError
+
+	for _, idx := range walk {
+		backend := model.Backends[idx]
+		name := fmt.Sprintf("%s#%d", served, idx)
+		stage := group.StageFor(backend.Type)
+
+		release, err := p.sched.Admit(ctx, name, backend.Slots(), groupName, weight, stage)
+		if err != nil {
+			var bp *sched.BackpressureError
+			if errors.As(err, &bp) {
+				if bp.Reason == "spill" {
+					lastBP = bp
+					continue // advance to the next backend
+				}
+				// rejected or queue-timeout → terminal backoff.
+				writeBackpressure(w, bp)
+				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start))
+				return
+			}
+			p.log(served, name, key, r.URL.Path, 499, time.Since(start)) // client canceled
 			return
 		}
-		// Context canceled by the client.
-		p.log(served, name, key, r.URL.Path, 499, time.Since(start))
+
+		pr, err := p.mgr.EnsureReady(ctx, name, backend)
+		if err != nil {
+			release()
+			slog.Warn("backend unavailable, spilling", "backend", name, "err", err)
+			continue
+		}
+
+		// Restore the buffered body for the proxy.
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK}
+		newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(ctx))
+		release()
+		p.log(served, name, key, r.URL.Path, sc.code, time.Since(start))
 		return
 	}
-	defer release()
 
-	pr, err := p.mgr.EnsureReady(ctx, name, backend)
-	if err != nil {
-		slog.Error("backend not ready", "model", served, "err", err)
-		http.Error(w, `{"error":{"message":"backend unavailable"}}`, http.StatusServiceUnavailable)
-		p.log(served, name, key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start))
+	// Exhausted the list without serving.
+	if lastBP != nil {
+		lastBP.Reason = "exhausted"
+		writeBackpressure(w, lastBP)
+		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start))
 		return
 	}
+	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
+	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start))
+}
 
-	// Restore the buffered body for the proxy.
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
+// orderBackends returns config indices in fall-through order: types in
+// first-appearance order, and within a type the backends rotated by rr (round
+// robin across cost-equivalent backends). Quality is carried metadata, not a
+// sort key here — the operator's list order across types is authoritative; per-
+// quality variant routing is P7.
+func orderBackends(backends []config.Backend, rr uint64) []int {
+	var typeOrder []string
+	byType := map[string][]int{}
+	for i, b := range backends {
+		if _, seen := byType[b.Type]; !seen {
+			typeOrder = append(typeOrder, b.Type)
+		}
+		byType[b.Type] = append(byType[b.Type], i)
+	}
+	out := make([]int, 0, len(backends))
+	for _, tp := range typeOrder {
+		idxs := byType[tp]
+		n := len(idxs)
+		start := int(rr % uint64(n))
+		for k := 0; k < n; k++ {
+			out = append(out, idxs[(start+k)%n])
+		}
+	}
+	return out
+}
 
-	sc := &statusCapture{ResponseWriter: w, code: http.StatusOK}
-	newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(ctx))
-	p.log(served, name, key, r.URL.Path, sc.code, time.Since(start))
+// nextRR returns the round-robin rotation counter for a served model, advancing
+// it once per request so same-type backends share load.
+func (p *Proxy) nextRR(served string) uint64 {
+	p.rrMu.Lock()
+	defer p.rrMu.Unlock()
+	v := p.rr[served]
+	p.rr[served] = v + 1
+	return v
 }
 
 // handleUpstream proxies /upstream/<model>/<rest> to the backend, stripping the

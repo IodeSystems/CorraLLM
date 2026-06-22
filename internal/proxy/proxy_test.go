@@ -147,6 +147,159 @@ func TestBackpressure429(t *testing.T) {
 	}
 }
 
+func backendTo(t *testing.T, urlStr, typ string) config.Backend {
+	t.Helper()
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := strconv.Atoi(u.Port())
+	var pn yaml.Node
+	if err := pn.Encode(port); err != nil {
+		t.Fatal(err)
+	}
+	return config.Backend{Proxy: pn, Type: typ}
+}
+
+func TestOrderBackends(t *testing.T) {
+	bs := []config.Backend{{Type: "local"}, {Type: "local"}, {Type: "cloud"}}
+	cases := []struct {
+		rr   uint64
+		want []int
+	}{
+		{0, []int{0, 1, 2}},
+		{1, []int{1, 0, 2}}, // rr rotates within the local type; cloud stays last
+		{2, []int{0, 1, 2}},
+	}
+	for _, c := range cases {
+		got := orderBackends(bs, c.rr)
+		if len(got) != len(c.want) {
+			t.Fatalf("rr=%d len %d", c.rr, len(got))
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("rr=%d: got %v want %v", c.rr, got, c.want)
+				break
+			}
+		}
+	}
+}
+
+// TestFallThroughSpill: the first (local) backend is saturated with a spill
+// stage, so a concurrent request advances to the second (cloud) backend.
+func TestFallThroughSpill(t *testing.T) {
+	rel := make(chan struct{})
+	started := make(chan struct{})
+	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		close(started)
+		<-rel // hold the local slot
+		_, _ = w.Write([]byte(`{"served_by":"up1"}`))
+	}))
+	defer up1.Close()
+	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		_, _ = w.Write([]byte(`{"served_by":"up2"}`))
+	}))
+	defer up2.Close()
+	// Registered last → runs first (LIFO): unblock the held request before the
+	// servers Close (which waits for in-flight connections).
+	defer close(rel)
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager()
+	defer mgr.Shutdown()
+
+	cfg := &config.Config{
+		Models: map[string]config.Model{
+			"m": {Backends: []config.Backend{backendTo(t, up1.URL, "local"), backendTo(t, up2.URL, "cloud")}},
+		},
+		PriorityGroups: map[string]config.PriorityGroup{
+			"g": {Weight: 1, OnSaturated: map[string]config.Stage{"local": {Spill: true}}},
+		},
+		Keys: map[string]string{"k": "g"},
+	}
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+		req.Header.Set("X-Corrallm-Key", "k")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	go send() // occupies the local slot, blocks in up1
+	<-started
+
+	rec := send() // local saturated → spill → served by cloud up2
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"served_by":"up2"`) {
+		t.Errorf("expected spill to up2, got: %s", rec.Body.String())
+	}
+}
+
+// TestExhaustedAllSpill: every backend spills → terminal 429 with reason
+// "exhausted".
+func TestExhaustedAllSpill(t *testing.T) {
+	rel := make(chan struct{})
+	started := make(chan struct{}, 1)
+	block := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-rel
+	}))
+	defer block.Close()
+	defer close(rel) // runs before block.Close() (LIFO) to release the held request
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager()
+	defer mgr.Shutdown()
+
+	cfg := &config.Config{
+		Models: map[string]config.Model{
+			"m": {Backends: []config.Backend{backendTo(t, block.URL, "local")}},
+		},
+		PriorityGroups: map[string]config.PriorityGroup{
+			"g": {Weight: 1, OnSaturated: map[string]config.Stage{"local": {Spill: true}}},
+		},
+		Keys: map[string]string{"k": "g"},
+	}
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+		req.Header.Set("X-Corrallm-Key", "k")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+	go send()
+	<-started
+
+	rec := send() // only backend saturated + spill, nothing else → exhausted 429
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"reason":"exhausted"`) {
+		t.Errorf("expected reason exhausted, got: %s", rec.Body.String())
+	}
+}
+
 func TestUnknownModel404(t *testing.T) {
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()

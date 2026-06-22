@@ -58,9 +58,13 @@ in `ui/src/gql`.
   group synthesized), weighted-fairshare admission over per-backend slots
   (`maxConcurrent`), queue/reject saturation stages, and informative backoff
   (429 + `Retry-After` + `X-RateLimit-*` + JSON hint). `internal/sched`.
+- **P3 (backend-list fall-through)** — done: a served model walks its ordered
+  backend list — round-robin within a cost-equivalent `type`, ordered across
+  types. Per-type `onSaturated` spill/fallThrough advances to the next backend
+  (a backend that won't become ready also spills); queue waits; reject is
+  terminal; an exhausted list returns a terminal 429.
 
-Next: P3 backend-list fall-through (ordered across types, rr within a type,
-spill), then P4 residency. See the roadmap.
+Next: P4 residency (VRAM pools, eviction, swap-vs-spill). See the roadmap.
 
 The `model` field selects a served model from `corrallm.yaml`; the caller key
 (`X-Corrallm-Key` or the bearer token) maps to a priorityGroup that governs

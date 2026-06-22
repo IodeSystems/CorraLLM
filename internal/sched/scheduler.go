@@ -83,8 +83,17 @@ func (s *Scheduler) Admit(ctx context.Context, backend string, capacity int, gro
 		return s.releaser(backend, group), nil
 	}
 
-	// Saturated. Only the queue stage waits; everything else rejects now.
-	if !stage.Queue {
+	// Saturated — the stage decides. Queue waits; spill/fallThrough advances to
+	// the next backend (the caller treats Reason "spill" as non-terminal); reject
+	// (and any undeclared stage) is terminal.
+	switch {
+	case stage.Queue:
+		// fall through to the wait path below
+	case stage.Spill || stage.FallThrough:
+		be := bs.backpressure("spill")
+		s.mu.Unlock()
+		return nil, be
+	default:
 		be := bs.backpressure("rejected")
 		s.mu.Unlock()
 		return nil, be
