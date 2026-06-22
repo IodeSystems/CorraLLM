@@ -1,0 +1,36 @@
+schema {
+  query: Query
+}
+
+directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
+
+type CorrallmQueryNamespace {
+  configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  health: corrallm_HealthOutputBody @derived(operationId: "health")
+  v1: CorrallmV1QueryNamespace!
+}
+
+type CorrallmV1QueryNamespace {
+  configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  health: corrallm_HealthOutputBody @derived(operationId: "health")
+}
+
+type Query {
+  corrallm: CorrallmQueryNamespace!
+}
+
+type corrallm_ConfigSummaryOutputBody {
+  """Served model names."""
+  models: [String!]!
+  """Configured priority group names."""
+  priorityGroups: [String!]!
+  """Declared server names."""
+  servers: [String!]!
+}
+
+type corrallm_HealthOutputBody {
+  """Always "ok" when the process is serving."""
+  status: String!
+  """Build version stamp."""
+  version: String!
+}

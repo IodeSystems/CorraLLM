@@ -1,0 +1,29 @@
+# Go build artifacts
+/bin/corrallm
+/tmp/
+
+# Air
+/tmp/
+
+# UI
+/ui/node_modules/
+/ui/dist/
+/ui/src/gql/
+# ui/src/routeTree.gen.ts is committed (tsc -b needs it before vite regenerates it)
+
+# Runtime state
+/home/var/
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets (layered .properties)
+/home/secret.properties
+/home/*.local.properties
+/home/*.secret.properties
+
+# Local config override
+/corrallm.local.yaml
+
+# Editor
+.DS_Store

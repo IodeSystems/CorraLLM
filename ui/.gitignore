@@ -1,0 +1,5 @@
+node_modules
+dist
+# graphql-codegen output (run `pnpm gen`)
+src/gql
+*.tsbuildinfo

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Single codegen entrypoint.
+#
+#   <gat schema, dumped from the Go handlers>  →  ui/gen/schema.graphql
+#   ui/gen/schema.graphql + gql`` snippets      →  graphql-codegen  →  ui/src/gql
+#
+# The GraphQL schema is synthesised by gat from the Go handlers, so we dump it to
+# a file first (corrallm dump-graphql) — no curl, no running server, no DB. The
+# UI's codegen + eslint then validate against that committed snapshot offline.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+SCHEMA_OUT="ui/gen/schema.graphql"
+
+echo "==> gat: dump GraphQL SDL → $SCHEMA_OUT (no DB, no server)"
+go run ./cmd/corrallm dump-graphql "$SCHEMA_OUT"
+
+echo "==> codegen: $SCHEMA_OUT + operations → ui/src/gql (typed client)"
+( cd ui && pnpm gen )
+
+echo "==> lint: validate query snippets against $SCHEMA_OUT"
+( cd ui && pnpm lint )
+
+echo "==> gen complete"

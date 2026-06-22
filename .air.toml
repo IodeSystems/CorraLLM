@@ -1,0 +1,24 @@
+# air (github.com/air-verse/air) live-reload config for the Go server.
+# Used by `make dev`: rebuilds + restarts ./cmd/corrallm on .go changes while
+# Vite serves the UI with HMR. Env (ADDR, etc.) is inherited from the parent
+# shell (set by the `dev` make target / bin/dev), so it's not repeated here.
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/corrallm ./cmd/corrallm"
+  entrypoint = "./tmp/corrallm"
+  args_bin = ["serve"]
+  include_ext = ["go"]
+  exclude_dir = ["tmp", "ui", "deploy", "bin", "node_modules", "home"]
+  exclude_regex = ["_test\\.go"]
+  delay = 600
+  stop_on_error = false
+  send_interrupt = true
+  kill_delay = "1s"
+
+[misc]
+  clean_on_exit = true
+
+[log]
+  time = true
