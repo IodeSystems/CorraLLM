@@ -4,7 +4,19 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **design draft for red-line.** Nothing built yet. Open items at the end.
+Status: **P0–P2 shipped; P3 next.** Engine is runnable: OpenAI proxy + spawn
+lifecycle + fairshare scheduler. Progress tracked in §6; decisions/deferred in §7.
+
+> **Progress (updated 2026-06-22)**
+> - ✅ **P0 scaffold** — `fdf90b9`
+> - ✅ **P1 proxy core** — `566b888`
+> - ✅ **P2 scheduler engine** — `13f15df`
+> - ▶ **P3 backend-list fall-through** — next
+> - ☐ P4 residency · P5 preemption · P6 cost · P7 quality-degrade · P8 UI · Later: multi-node
+>
+> All shipped phases: `go build`/`vet`/`test` green, gofmt clean (14 tests).
+> Deviation from design: UI served from `--web-root` dir (not `go:embed`), matching
+> redline2. Store is minimal (activity log); no sqlc.
 
 ---
 
@@ -206,15 +218,21 @@ the BackpressureError shape we already validated.
 
 ## 6. Delivery roadmap (sequenced; engine general from day 1)
 
-- **P0 — Scaffold.** Go module (`github.com/iodesystems/corrallm`?), Huma+gat wired, `dump-graphql`,
-  React/Vite/codegen, `bin/gen`, embedded UI, YAML config loader, SQLite store, air+vite dev.
-- **P1 — Proxy core.** Served model → single local backend: spawn `cmd`, health-check, OpenAI
-  passthrough (chat/completions, completions, embeddings, …). Non-inference passthrough that
-  bypasses scheduling. Activity log.
-- **P2 — Scheduler engine.** priorityGroups + keys + default group. Fairshare admission
-  (request-count share), per-backend concurrency capacity, queue + informative backoff.
-- **P3 — Backend list + fall-through.** Multiple backends/model, `type`+`quality`, rr-within-type,
-  spill across types, per-type `onSaturated`.
+- ✅ **P0 — Scaffold.** `fdf90b9`. Go module `github.com/iodesystems/corrallm`, Huma+gat wired,
+  `dump-graphql`, React/Vite/codegen, `bin/gen`, YAML config loader + `.properties` layering,
+  SQLite store, air+vite dev. *(UI via `--web-root`, not `go:embed`.)*
+- ✅ **P1 — Proxy core.** `566b888`. Served model → single local backend: spawn `cmd` (own process
+  group), health-check, load-coalescing, OpenAI passthrough (chat/completions, completions,
+  embeddings, rerank, models). Untracked `/upstream/<model>/…` bypass. Activity log. Graceful
+  SIGTERM shutdown reaps spawned children. `internal/proc`, `internal/proxy`.
+- ✅ **P2 — Scheduler engine.** `13f15df`. priorityGroups + keys + synthesized default group.
+  Weighted-fairshare admission (request-count share) over **per-backend slots** (`maxConcurrent`),
+  queue + reject stages, informative backoff (429 + `Retry-After` + `X-RateLimit-*` + JSON).
+  Caller key = `X-Corrallm-Key` or bearer token. `internal/sched`.
+- ▶ **P3 — Backend list + fall-through.** *(NEXT)* Multiple backends/model, `type`+`quality`,
+  rr-within-type, spill across types, per-type `onSaturated`. *Foundation in place: backends are
+  already an ordered list (P1 uses index 0 only); `Stage.Spill`/`FallThrough`/`Then` parse but are
+  inert; proxy resolves only `#0`.* Open fork: **preempt-vs-spill default ordering** (§7).
 - **P4 — Residency.** Server capacity (VRAM), model states + load coalescing, stickiness
   (`ttl`/`evictCost`/affinity), eviction solver, swap-vs-spill, pinned/preload. The resource layer.
 - **P5 — Preemption.** Cooperative cancel of interruptible groups (streaming-safe).
@@ -227,23 +245,55 @@ the BackpressureError shape we already validated.
 
 ---
 
-## 7. Open items / decisions pending
-- Module path & repo location (proposed `github.com/iodesystems/corrallm`, dir under `iodesystems/`).
-- Binary name ergonomics (`corrallm` vs short alias `corral`).
-- Preempt-vs-spill default ordering when both allowed in a stage (per-type `onSaturated` lets you
-  set it explicitly; need a sane default).
-- Share-currency override granularity (global default + per-group; per-key?).
-- `limits` window semantics (sliding vs fixed; per-group vs per-(group×type) precedence).
-- Quality-degrade across served-model boundaries (variant in same list vs separate fallback map) —
-  currently folded into the one backend list via `quality`.
-- gRPC surface: defer past v1 (gat gives it cheaply, but no consumer yet).
-- **Swap-vs-spill default** when target is cold + host full (per-group? per-type? cost-minimizing?).
-- **Stickiness/affinity weighting** — how strongly a warm backend overrides ordered preference; per-group vs per-request latency hint.
-- **Capacity declaration** — RESOLVED: declared budget canonical; optional pluggable `CapacityProbe`
-  (nvidia/drm/amd/metal/none, auto) for auto-fill + drift-guard + dashboards only. Still open:
-  per-server total concurrency vs per-backend slots.
-- **Eviction policy** — evictCost + recency + stickiness scoring, constrained to the **binding pool**;
-  vector bin-packing (small N → greedy/heuristic fine); min-residency/hysteresis to prevent thrash.
-- **Dynamic footprint** — KV scales with slots×context; v1 reserves worst-case `ramUsage`. `{base,perSlot}` later.
-- **NUMA / interconnect** — per-NUMA system pools and PCIe/NVLink cost of multi-GPU splits: deferred.
-- **Load coalescing** semantics + queue-behind-load backoff signaling.
+## 7. Open items / decisions
+
+### Resolved this session
+- ✅ **Module path & repo location** — `github.com/iodesystems/corrallm` at
+  `iodesystems/services/corrallm`, its own git repo (sibling to redline2/ragtag).
+- ✅ **Binary name** — `corrallm` (not the `corral` alias).
+- ✅ **Capacity unit** — **per-backend slots** (`maxConcurrent`, default 1), chosen over
+  per-server total concurrency. `server.maxConcurrent` layers on as a host ceiling with P4.
+  (Capacity-declaration question — declared budget canonical + optional `CapacityProbe` — stands.)
+- ✅ **Load coalescing** (P1) — concurrent requests for an unspawned backend wait behind one
+  in-flight load (`proc.Manager`, `ready` channel); queue-behind-load backoff signaling still TBD
+  for the residency layer (P4).
+
+### Still pending (blocking the noted phase)
+- **Preempt-vs-spill default ordering** when a stage allows both — needed for **P3/P5**. Per-type
+  `onSaturated` can set it explicitly; need a sane default. *(Decide at P3 start.)*
+- **Swap-vs-spill default** when target is cold + host full — **P4** (per-group? per-type?
+  cost-minimizing?).
+- **Stickiness/affinity weighting** — how strongly a warm backend overrides ordered preference;
+  per-group vs per-request latency hint — **P4**.
+- **Eviction policy** — evictCost + recency + stickiness scoring, constrained to the **binding
+  pool**; vector bin-packing (small N → greedy fine); min-residency/hysteresis vs thrash — **P4**.
+- **Share-currency override granularity** (global default + per-group; per-key?) — **P6**.
+  *(Config field `shareCurrency` parses today; only request-count is implemented.)*
+- **`limits` window semantics** (sliding vs fixed; per-group vs per-(group×type) precedence) — **P6**.
+  *(Config field `limits` parses today; no enforcement yet.)*
+- **Quality-degrade across served-model boundaries** (variant in same list vs separate fallback
+  map) — **P7**. Currently folded into the one backend list via `quality`.
+
+### Deferred (out of scope until later)
+- **gRPC surface** — gat gives it cheaply but no consumer yet; defer past v1.
+- **Dynamic footprint** — KV scales with slots×context; v1 reserves worst-case `ramUsage`;
+  `{base, perSlot}` later — **P4+**.
+- **NUMA / interconnect** — per-NUMA system pools, PCIe/NVLink cost of multi-GPU splits.
+- **Multi-node peer awareness** — remote load introspection across corrallm peers (roadmap "Later").
+
+### Deferred work / known gaps in shipped code
+- **P1 first-backend-only**: proxy resolves backend `#0`; `Stage.Spill`/`FallThrough`/`Then`,
+  `quality`, and rr-within-type are parsed but inert until **P3**.
+- **No `limits`/cost metering**: `commandCosts`, `costPerKwh`, `shareCurrency: dwell|cost`,
+  per-group/per-type `limits` parse but don't affect behavior — **P6**.
+- **No residency accounting**: `servers.pools`/`reserve`, `ramUsage`, `sticky`, `swap`,
+  `persistent` parse but don't gate spawns/evictions — **P4**.
+- **Activity log only**: store has no metric rollups/UI feed yet — **P8**.
+- **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
+  (benign warning); revisit if it becomes flaky.
+
+### Next steps
+1. **P3** — start by deciding the preempt-vs-spill default; implement ordered fall-through across
+   the backend list (rr within a `type`, spill across types), wire `Stage.Spill`/`FallThrough`,
+   honor `quality` ordering.
+2. Then **P4 residency** (the largest remaining chunk).
