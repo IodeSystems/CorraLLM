@@ -54,9 +54,15 @@ in `ui/src/gql`.
   `/v1/models`), untracked non-inference bypass (`/upstream/<model>/…`), activity
   log, graceful process-group shutdown.
 
-Next: P2 scheduler (priorityGroups, fairshare admission, queue + backoff), then
-P3 backend-list fall-through. See the roadmap.
+- **P2 (scheduler engine)** — done: priorityGroups + key resolution (default
+  group synthesized), weighted-fairshare admission over per-backend slots
+  (`maxConcurrent`), queue/reject saturation stages, and informative backoff
+  (429 + `Retry-After` + `X-RateLimit-*` + JSON hint). `internal/sched`.
 
-The `model` field in an OpenAI request selects a served model from `corrallm.yaml`;
-its first backend is spawned on demand and proxied to. Multi-backend fall-through
-and fairshare are P2/P3.
+Next: P3 backend-list fall-through (ordered across types, rr within a type,
+spill), then P4 residency. See the roadmap.
+
+The `model` field selects a served model from `corrallm.yaml`; the caller key
+(`X-Corrallm-Key` or the bearer token) maps to a priorityGroup that governs
+admission. Its first backend is spawned on demand and proxied to. Multi-backend
+fall-through is P3.

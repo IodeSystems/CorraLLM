@@ -1,25 +1,28 @@
 // Package proxy is corrallm's OpenAI-compatible passthrough. It resolves the
-// served model from a request, ensures a backend is ready (via proc.Manager),
-// and reverse-proxies to it — logging each request to the activity store.
+// served model and caller group from a request, acquires a fairshare slot
+// (sched), ensures the backend is ready (proc), reverse-proxies to it, and logs
+// the request. Saturation yields 429 + informative backoff.
 //
-// P1 routes a served model to its FIRST backend only (single local backend).
-// The ordered-list fall-through, fairshare admission, and scheduling land in
-// P2/P3 — this package is the request edge they will wrap.
+// It routes a served model to its FIRST backend only; ordered-list fall-through
+// across types is P3 — this package is the request edge those phases wrap.
 package proxy
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/proc"
+	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -27,12 +30,13 @@ import (
 type Proxy struct {
 	cfg   *config.Config
 	mgr   *proc.Manager
+	sched *sched.Scheduler
 	store *store.Store
 }
 
 // New constructs a Proxy.
-func New(cfg *config.Config, mgr *proc.Manager, st *store.Store) *Proxy {
-	return &Proxy{cfg: cfg, mgr: mgr, store: st}
+func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
+	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st}
 }
 
 // Mount registers the OpenAI-compatible inference routes plus the untracked
@@ -78,7 +82,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// P1: first backend only.
+	// P1: first backend only (fall-through across the list is P3).
 	backend := model.Backends[0]
 	name := served + "#0"
 
@@ -86,11 +90,30 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 130*time.Second)
 	defer cancel()
 
+	// Fairshare admission: resolve the caller's group, take a slot or honor the
+	// group's saturation stage (queue/reject) for this backend type.
+	key := callerKey(r)
+	groupName, group := p.cfg.ResolveGroup(key)
+	stage := group.StageFor(backend.Type)
+	release, err := p.sched.Admit(ctx, name, backend.Slots(), groupName, group.EffectiveWeight(), stage)
+	if err != nil {
+		var bp *sched.BackpressureError
+		if errors.As(err, &bp) {
+			writeBackpressure(w, bp)
+			p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start))
+			return
+		}
+		// Context canceled by the client.
+		p.log(served, name, key, r.URL.Path, 499, time.Since(start))
+		return
+	}
+	defer release()
+
 	pr, err := p.mgr.EnsureReady(ctx, name, backend)
 	if err != nil {
 		slog.Error("backend not ready", "model", served, "err", err)
 		http.Error(w, `{"error":{"message":"backend unavailable"}}`, http.StatusServiceUnavailable)
-		p.log(served, name, r.URL.Path, http.StatusServiceUnavailable, time.Since(start))
+		p.log(served, name, key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start))
 		return
 	}
 
@@ -100,7 +123,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 	sc := &statusCapture{ResponseWriter: w, code: http.StatusOK}
 	newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(ctx))
-	p.log(served, name, r.URL.Path, sc.code, time.Since(start))
+	p.log(served, name, key, r.URL.Path, sc.code, time.Since(start))
 }
 
 // handleUpstream proxies /upstream/<model>/<rest> to the backend, stripping the
@@ -141,17 +164,60 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (p *Proxy) log(served, backend, path string, status int, dwell time.Duration) {
+func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration) {
 	if err := p.store.InsertActivity(store.Activity{
 		TS:      time.Now().UnixMilli(),
 		Served:  served,
 		Backend: backend,
+		Key:     key,
 		Path:    path,
 		Status:  status,
 		DwellMS: dwell.Milliseconds(),
 	}); err != nil {
 		slog.Warn("activity log", "err", err)
 	}
+}
+
+// callerKey extracts the caller identity used for group resolution: an explicit
+// X-Corrallm-Key, else the bearer token from Authorization, else "" (→ default
+// group). The token is the OpenAI API-key slot clients already send.
+func callerKey(r *http.Request) string {
+	if k := r.Header.Get("X-Corrallm-Key"); k != "" {
+		return k
+	}
+	if a := r.Header.Get("Authorization"); a != "" {
+		if tok, ok := strings.CutPrefix(a, "Bearer "); ok {
+			return strings.TrimSpace(tok)
+		}
+	}
+	return ""
+}
+
+// writeBackpressure renders a BackpressureError as 429 + informative headers and
+// a JSON hint — always actionable (Retry-After + capacity/inflight/waiting).
+func writeBackpressure(w http.ResponseWriter, bp *sched.BackpressureError) {
+	secs := int(bp.RetryAfter.Round(time.Second) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Retry-After", strconv.Itoa(secs))
+	h.Set("X-RateLimit-Capacity", strconv.Itoa(bp.Capacity))
+	h.Set("X-RateLimit-InFlight", strconv.Itoa(bp.InFlight))
+	h.Set("X-RateLimit-Waiting", strconv.Itoa(bp.Waiting))
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message":     "backend at capacity; retry after backoff",
+			"type":        "backpressure",
+			"reason":      bp.Reason,
+			"retry_after": secs,
+			"capacity":    bp.Capacity,
+			"in_flight":   bp.InFlight,
+			"waiting":     bp.Waiting,
+		},
+	})
 }
 
 // newReverseProxy builds a single-target reverse proxy that injects the

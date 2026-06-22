@@ -15,6 +15,7 @@ import (
 
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/proc"
+	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -69,7 +70,7 @@ func TestInferencePassthroughAndActivityLog(t *testing.T) {
 
 	cfg := mkConfig(t, "mock", upstream.URL)
 	r := chi.NewRouter()
-	New(cfg, mgr, st).Mount(r)
+	New(cfg, mgr, sched.New(), st).Mount(r)
 
 	// Fire a chat completion through corrallm.
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -98,6 +99,54 @@ func TestInferencePassthroughAndActivityLog(t *testing.T) {
 	}
 }
 
+// TestBackpressure429 holds the single slot with one in-flight request and
+// asserts a concurrent second request is rejected with 429 + backoff headers.
+func TestBackpressure429(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		close(started)
+		<-release // hold the slot
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager()
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	New(mkConfig(t, "mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	// First request occupies the only slot.
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"model":"mock"}`))
+		r.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	<-started
+
+	// Second request: backend at capacity, default group → reject → 429.
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock"}`)))
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" || rec.Header().Get("X-RateLimit-Capacity") != "1" {
+		t.Errorf("missing backoff headers: %v", rec.Header())
+	}
+	if !strings.Contains(rec.Body.String(), `"reason":"rejected"`) {
+		t.Errorf("body lacks reason: %s", rec.Body.String())
+	}
+}
+
 func TestUnknownModel404(t *testing.T) {
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()
@@ -105,7 +154,7 @@ func TestUnknownModel404(t *testing.T) {
 	defer mgr.Shutdown()
 
 	r := chi.NewRouter()
-	New(&config.Config{Models: map[string]config.Model{}}, mgr, st).Mount(r)
+	New(&config.Config{Models: map[string]config.Model{}}, mgr, sched.New(), st).Mount(r)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"ghost"}`))
@@ -120,7 +169,7 @@ func TestModelsCatalog(t *testing.T) {
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()
 	r := chi.NewRouter()
-	New(mkConfig(t, "mock", "http://127.0.0.1:1"), proc.NewManager(), st).Mount(r)
+	New(mkConfig(t, "mock", "http://127.0.0.1:1"), proc.NewManager(), sched.New(), st).Mount(r)
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))

@@ -64,6 +64,17 @@ type Backend struct {
 	Proxy    yaml.Node         `yaml:"proxy,omitempty"` // number | "host:port" | {host,port,headers}
 	Type     string            `yaml:"type,omitempty"`  // cost class: local | claude | …
 	Quality  int               `yaml:"quality,omitempty"`
+	// MaxConcurrent is the backend's admission slots (the fairshare capacity
+	// unit). For a local llama-server this mirrors --parallel. Default 1.
+	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
+}
+
+// Slots returns the backend's concurrency capacity, defaulting to 1.
+func (b Backend) Slots() int {
+	if b.MaxConcurrent > 0 {
+		return b.MaxConcurrent
+	}
+	return 1
 }
 
 // Swap is the measured cost of loading a backend (residency input, P4).
@@ -73,11 +84,45 @@ type Swap struct {
 
 // PriorityGroup is the single policy unit (fairshare + saturation behavior).
 type PriorityGroup struct {
-	Weight        int                   `yaml:"weight,omitempty"`
-	ShareCurrency string                `yaml:"shareCurrency,omitempty"` // requests | dwell | cost
-	Interruptible bool                  `yaml:"interruptible,omitempty"`
-	OnSaturated   map[string]yaml.Node  `yaml:"onSaturated,omitempty"` // backend type → stage policy
-	Limits        map[string]string     `yaml:"limits,omitempty"`      // TCO caps (e.g. dwell: "600s/min")
+	Weight        int               `yaml:"weight,omitempty"`
+	ShareCurrency string            `yaml:"shareCurrency,omitempty"` // requests | dwell | cost
+	Interruptible bool              `yaml:"interruptible,omitempty"`
+	OnSaturated   map[string]Stage  `yaml:"onSaturated,omitempty"` // backend type → stage policy
+	Limits        map[string]string `yaml:"limits,omitempty"`      // group-wide TCO caps
+}
+
+// EffectiveWeight returns the group's fairshare weight, defaulting to 1.
+func (g PriorityGroup) EffectiveWeight() int {
+	if g.Weight > 0 {
+		return g.Weight
+	}
+	return 1
+}
+
+// StageFor returns the saturation stage for a backend type, falling back to the
+// group's "default" stage, then to a reject stage if neither is declared.
+func (g PriorityGroup) StageFor(backendType string) Stage {
+	if s, ok := g.OnSaturated[backendType]; ok && !s.IsZero() {
+		return s
+	}
+	if s, ok := g.OnSaturated["default"]; ok && !s.IsZero() {
+		return s
+	}
+	return Stage{Reject: true}
+}
+
+// ResolveGroup maps a caller key to its priority group. An empty/unknown key, or
+// a key whose group is absent, resolves to the "default" group (synthesized as
+// weight-1 reject-on-saturation if the config omits it).
+func (c *Config) ResolveGroup(key string) (name string, g PriorityGroup) {
+	name = c.Keys[key]
+	if name == "" {
+		name = "default"
+	}
+	if grp, ok := c.PriorityGroups[name]; ok {
+		return name, grp
+	}
+	return "default", PriorityGroup{Weight: 1}
 }
 
 // Load reads and parses the corrallm YAML config at path. A missing file yields

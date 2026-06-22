@@ -22,6 +22,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/proxy"
+	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
 	"github.com/iodesystems/corrallm/internal/webui"
 )
@@ -141,8 +142,9 @@ func serve(ctx context.Context, o serveOpts) error {
 		return err
 	}
 
-	// OpenAI-compatible inference passthrough (raw, streaming — bypasses gat).
-	proxy.New(cfg, mgr, st).Mount(router)
+	// OpenAI-compatible inference passthrough (raw, streaming — bypasses gat),
+	// gated by the fairshare admission scheduler.
+	proxy.New(cfg, mgr, sched.New(), st).Mount(router)
 
 	// The SPA is served for everything not claimed above.
 	router.Handle("/*", webui.Handler(o.webRoot))
