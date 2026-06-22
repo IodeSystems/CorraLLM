@@ -4,17 +4,18 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **P0–P3 shipped; P4 next.** Engine is runnable: OpenAI proxy + spawn
-lifecycle + fairshare scheduler + ordered backend fall-through. Progress tracked
-in §6; decisions/deferred in §7.
+Status: **P0–P4 shipped; P5 next.** Engine is runnable: OpenAI proxy + spawn
+lifecycle + fairshare scheduler + ordered fall-through + residency/eviction.
+Progress tracked in §6; decisions/deferred in §7.
 
 > **Progress (updated 2026-06-22)**
 > - ✅ **P0 scaffold** — `fdf90b9`
 > - ✅ **P1 proxy core** — `566b888`
 > - ✅ **P2 scheduler engine** — `13f15df`
 > - ✅ **P3 backend-list fall-through** — `ebcff81`
-> - ▶ **P4 residency** — next (largest remaining chunk)
-> - ☐ P5 preemption · P6 cost · P7 quality-degrade · P8 UI · Later: multi-node
+> - ✅ **P4 residency** — `ec1bcfb`
+> - ▶ **P5 preemption** — next
+> - ☐ P6 cost · P7 quality-degrade · P8 UI · Later: multi-node
 >
 > All shipped phases: `go build`/`vet`/`test` green, gofmt clean (14 tests).
 > Deviation from design: UI served from `--web-root` dir (not `go:embed`), matching
@@ -236,11 +237,15 @@ the BackpressureError shape we already validated.
   queue waits, reject is terminal, exhausted list → 429. `orderBackends()` + `Stage.Spill` wired.
   Quality carried but not a sort key (list order authoritative; per-quality routing is P7).
   *(preempt-vs-spill fork deferred to P5 — preempt has no implementation until then.)*
-- ▶ **P4 — Residency.** *(NEXT)* Server capacity (VRAM pool vectors), model states + load
-  coalescing, stickiness (`ttl`/`evictCost`/affinity), eviction solver, swap-vs-spill,
-  pinned/preload. The resource layer; currently `servers`/`ramUsage`/`sticky`/`swap`/`persistent`
-  parse but don't gate spawns/evictions. Forks at §7 (swap-vs-spill default, eviction policy,
-  stickiness weighting).
+- ✅ **P4 — Residency.** `ec1bcfb`. Per-server pool-budget ledger gates spawns (fit = ∀pool
+  want ≤ budget−used); eviction solver (evict-then-spill) frees idle non-pinned residents on the
+  binding pool, ordered ttl-expired→unprotected→low evictCost→LRU, all-or-nothing → else
+  ErrNoCapacity → spill. In-flight (ref-held) and `persistent` models exempt; persistent preloaded
+  at boot. Size parsing + pool validation. *Not yet: affinity (prefer-warm over list order),
+  `server.maxConcurrent` host cap, CapacityProbe, proactive ttl reaper, dynamic footprint — see §7.*
+- ▶ **P5 — Preemption.** *(NEXT)* Cooperative cancel of interruptible groups (streaming-safe).
+  Foundation: `interruptible` parses; `Stage.Preempt` parses; sched tracks per-group active slots.
+  Decide the preempt-vs-spill default ordering (§7) at P5 start.
 - **P4 — Residency.** Server capacity (VRAM), model states + load coalescing, stickiness
   (`ttl`/`evictCost`/affinity), eviction solver, swap-vs-spill, pinned/preload. The resource layer.
 - **P5 — Preemption.** Cooperative cancel of interruptible groups (streaming-safe).
@@ -263,19 +268,20 @@ the BackpressureError shape we already validated.
   per-server total concurrency. `server.maxConcurrent` layers on as a host ceiling with P4.
   (Capacity-declaration question — declared budget canonical + optional `CapacityProbe` — stands.)
 - ✅ **Load coalescing** (P1) — concurrent requests for an unspawned backend wait behind one
-  in-flight load (`proc.Manager`, `ready` channel); queue-behind-load backoff signaling still TBD
-  for the residency layer (P4).
+  in-flight load (`proc.Manager`, `ready` channel). Queue-behind-load *backoff signaling* still TBD.
+- ✅ **Swap-vs-spill default** (P4) — **evict-then-spill**: try eviction to make the preferred
+  backend fit; spill only if eviction can't free enough. Configurable later; cost-minimizing
+  weighing waits for P6.
+- ✅ **Eviction policy** (P4) — evictCost + recency (LRU) + ttl-expiry scoring, constrained to the
+  binding pool, all-or-nothing greedy, min-residency hysteresis. Vector bin-packing is greedy
+  (small N).
 
 ### Still pending (blocking the noted phase)
-- **Preempt-vs-spill default ordering** when a stage allows both — **P5** (was tagged P3, but
-  preempt has no implementation until P5, so there's no conflict to resolve in P3). Per-type
-  `onSaturated` can set it explicitly; need a sane default once preempt lands.
-- **Swap-vs-spill default** when target is cold + host full — **P4** (per-group? per-type?
-  cost-minimizing?). *(Decide at P4 start.)*
-- **Stickiness/affinity weighting** — how strongly a warm backend overrides ordered preference;
-  per-group vs per-request latency hint — **P4**.
-- **Eviction policy** — evictCost + recency + stickiness scoring, constrained to the **binding
-  pool**; vector bin-packing (small N → greedy fine); min-residency/hysteresis vs thrash — **P4**.
+- **Preempt-vs-spill default ordering** when a stage allows both — **P5** (decide at P5 start).
+  Per-type `onSaturated` can set it explicitly; need a sane default once preempt lands.
+- **Stickiness/affinity weighting** — how strongly a warm backend overrides *ordered list*
+  preference (P4 does ttl/evictCost for *eviction*, but the proxy still walks strict list order
+  regardless of warmth); per-group vs per-request latency hint — **P5/P6**.
 - **Share-currency override granularity** (global default + per-group; per-key?) — **P6**.
   *(Config field `shareCurrency` parses today; only request-count is implemented.)*
 - **`limits` window semantics** (sliding vs fixed; per-group vs per-(group×type) precedence) — **P6**.
@@ -285,8 +291,14 @@ the BackpressureError shape we already validated.
 
 ### Deferred (out of scope until later)
 - **gRPC surface** — gat gives it cheaply but no consumer yet; defer past v1.
+- **CapacityProbe** (nvidia/drm/amd/metal/none, auto) — declared budget is canonical and
+  implemented; the optional probe for auto-fill/drift-guard/dashboards is not built.
+- **`server.maxConcurrent` host cap** — per-backend slots enforced (P2); the host-wide concurrency
+  ceiling parses but isn't enforced yet (layer onto residency).
+- **Proactive ttl reaper** — P4 eviction is lazy (on demand); `ttl` only orders victims. A
+  background reaper that frees warm-but-expired models for power is not built.
 - **Dynamic footprint** — KV scales with slots×context; v1 reserves worst-case `ramUsage`;
-  `{base, perSlot}` later — **P4+**.
+  `{base, perSlot}` later.
 - **NUMA / interconnect** — per-NUMA system pools, PCIe/NVLink cost of multi-GPU splits.
 - **Multi-node peer awareness** — remote load introspection across corrallm peers (roadmap "Later").
 
@@ -295,14 +307,15 @@ the BackpressureError shape we already validated.
   Still inert: `quality` as a routing/sort key (**P7**) and `Stage.Then` follow-up verb (**P5**).
 - **No `limits`/cost metering**: `commandCosts`, `costPerKwh`, `shareCurrency: dwell|cost`,
   per-group/per-type `limits` parse but don't affect behavior — **P6**.
-- **No residency accounting**: `servers.pools`/`reserve`, `ramUsage`, `sticky`, `swap`,
-  `persistent` parse but don't gate spawns/evictions — **P4**.
+- ✅ ~~No residency accounting~~ — resolved in **P4** (`pools`/`reserve`/`ramUsage`/`sticky`/
+  `persistent` gate spawns + eviction). Still inert: `swap.loadSeconds` (cost/latency input — P6),
+  affinity, `server.maxConcurrent` host cap.
 - **Activity log only**: store has no metric rollups/UI feed yet — **P8**.
 - **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
   (benign warning); revisit if it becomes flaky.
 
 ### Next steps
-1. **P3** — start by deciding the preempt-vs-spill default; implement ordered fall-through across
-   the backend list (rr within a `type`, spill across types), wire `Stage.Spill`/`FallThrough`,
-   honor `quality` ordering.
-2. Then **P4 residency** (the largest remaining chunk).
+1. **P5 preemption** — decide the preempt-vs-spill default ordering; implement cooperative,
+   streaming-safe cancel of a lower interruptible group's in-flight slot when a higher group
+   preempts (`Stage.Preempt` + `interruptible`). sched already tracks per-group active slots.
+2. Then **P6 cost model** (energy→$, paid extraction, swap/load $, `limits`, dwell share-currency).
