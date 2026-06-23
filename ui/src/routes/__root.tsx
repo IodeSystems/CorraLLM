@@ -5,6 +5,7 @@ const NAV = [
   { to: '/', label: 'Overview' },
   { to: '/activity', label: 'Activity' },
   { to: '/usage', label: 'Usage' },
+  { to: '/lanes', label: 'Lanes' },
 ] as const
 
 export const Route = createRootRoute({

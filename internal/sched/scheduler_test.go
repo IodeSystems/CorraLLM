@@ -45,6 +45,47 @@ func TestAdmitUpToCapacity(t *testing.T) {
 	r3()
 }
 
+// TestSnapshot reports per-backend load with a per-group active/waiting
+// breakdown: two groups fill capacity, a third request queues.
+func TestSnapshot(t *testing.T) {
+	s := New()
+	ctx := context.Background()
+	// Capacity 2: admit one slot each for g1 and g2 → backend full.
+	r1, _, err := s.Admit(ctx, "b", "local", 2, "g1", 1, false, queueStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1()
+	r2, _, err := s.Admit(ctx, "b", "local", 2, "g2", 1, false, queueStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2()
+
+	// A third request in g1 queues (capacity reached).
+	go func() { _, _, _ = s.Admit(ctx, "b", "local", 2, "g1", 1, false, queueStage) }()
+	time.Sleep(100 * time.Millisecond) // let it enqueue
+
+	snap := s.Snapshot()
+	if len(snap.Backends) != 1 {
+		t.Fatalf("want 1 backend, got %d", len(snap.Backends))
+	}
+	b := snap.Backends[0]
+	if b.Backend != "b" || b.Capacity != 2 || b.Active != 2 || b.Waiting != 1 {
+		t.Fatalf("backend load = %+v", b)
+	}
+	got := map[string]GroupLoad{}
+	for _, g := range b.Groups {
+		got[g.Group] = g
+	}
+	if got["g1"] != (GroupLoad{Group: "g1", Active: 1, Waiting: 1}) {
+		t.Errorf("g1 load = %+v", got["g1"])
+	}
+	if got["g2"] != (GroupLoad{Group: "g2", Active: 1, Waiting: 0}) {
+		t.Errorf("g2 load = %+v", got["g2"])
+	}
+}
+
 func TestQueueWaitsThenAdmits(t *testing.T) {
 	s := New()
 	ctx := context.Background()

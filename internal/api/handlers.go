@@ -7,10 +7,12 @@ package api
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/proc"
+	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -20,7 +22,8 @@ type Handlers struct {
 	Version string
 	Cfg     *config.Config
 	Store   *store.Store
-	Mgr     *proc.Manager // residency introspection (P8)
+	Mgr     *proc.Manager    // residency introspection (P8)
+	Sched   *sched.Scheduler // live admission load (P8-beyond)
 }
 
 // --- health ---
@@ -249,6 +252,99 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		out.Body.Total.DwellMS += row.DwellMS
 		out.Body.Total.CostUSD += row.CostUSD
 	}
+	return out, nil
+}
+
+// --- lanes / live admission load (P8-beyond) ---
+
+// LanesInput has no parameters.
+type LanesInput struct{}
+
+// GroupView is a priority group's policy plus its aggregated live load.
+type GroupView struct {
+	Name          string `json:"name" doc:"Priority group name."`
+	Weight        int    `json:"weight" doc:"Fairshare weight (effective)."`
+	ShareCurrency string `json:"shareCurrency" doc:"requests|dwell|cost."`
+	Interruptible bool   `json:"interruptible" doc:"May a higher group preempt it?"`
+	Active        int    `json:"active" doc:"In-flight slots across all backends."`
+	Waiting       int    `json:"waiting" doc:"Queued requests across all backends."`
+}
+
+// GroupLoadView is one group's load on one backend.
+type GroupLoadView struct {
+	Group   string `json:"group" doc:"Priority group name."`
+	Active  int    `json:"active" doc:"In-flight slots."`
+	Waiting int    `json:"waiting" doc:"Queued requests."`
+}
+
+// BackendLoadView is a backend's live admission load with a group breakdown.
+type BackendLoadView struct {
+	Backend  string          `json:"backend" doc:"Backend id."`
+	Capacity int             `json:"capacity" doc:"Configured slots."`
+	Active   int             `json:"active" doc:"Slots in use."`
+	Waiting  int             `json:"waiting" doc:"Queued requests."`
+	Groups   []GroupLoadView `json:"groups" doc:"Per-group breakdown."`
+}
+
+// LanesOutput reports priority groups and per-backend admission load.
+type LanesOutput struct {
+	Body struct {
+		Groups   []GroupView       `json:"groups" doc:"Priority groups with aggregated load."`
+		Backends []BackendLoadView `json:"backends" doc:"Per-backend live load."`
+	}
+}
+
+// Lanes returns priority-group policy joined with live admission load — the
+// scheduler's per-backend slots/inflight/waiting, aggregated per group.
+func (h *Handlers) Lanes(_ context.Context, _ *LanesInput) (*LanesOutput, error) {
+	snap := h.Sched.Snapshot()
+
+	// Aggregate live active/waiting per group across backends.
+	type load struct{ active, waiting int }
+	agg := map[string]*load{}
+	out := &LanesOutput{}
+	out.Body.Backends = make([]BackendLoadView, 0, len(snap.Backends))
+	for _, b := range snap.Backends {
+		bv := BackendLoadView{
+			Backend: b.Backend, Capacity: b.Capacity, Active: b.Active, Waiting: b.Waiting,
+			Groups: make([]GroupLoadView, 0, len(b.Groups)),
+		}
+		for _, g := range b.Groups {
+			bv.Groups = append(bv.Groups, GroupLoadView{Group: g.Group, Active: g.Active, Waiting: g.Waiting})
+			l := agg[g.Group]
+			if l == nil {
+				l = &load{}
+				agg[g.Group] = l
+			}
+			l.active += g.Active
+			l.waiting += g.Waiting
+		}
+		out.Body.Backends = append(out.Body.Backends, bv)
+	}
+
+	// Union of configured groups and any group seen live (e.g. synthesized default).
+	names := map[string]struct{}{}
+	for name := range h.Cfg.PriorityGroups {
+		names[name] = struct{}{}
+	}
+	for name := range agg {
+		names[name] = struct{}{}
+	}
+	out.Body.Groups = make([]GroupView, 0, len(names))
+	for name := range names {
+		pg := h.Cfg.PriorityGroups[name] // zero value if unlisted (e.g. default)
+		gv := GroupView{
+			Name:          name,
+			Weight:        pg.EffectiveWeight(),
+			ShareCurrency: h.Sched.ShareCurrency(name),
+			Interruptible: pg.Interruptible,
+		}
+		if l := agg[name]; l != nil {
+			gv.Active, gv.Waiting = l.active, l.waiting
+		}
+		out.Body.Groups = append(out.Body.Groups, gv)
+	}
+	sort.Slice(out.Body.Groups, func(i, j int) bool { return out.Body.Groups[i].Name < out.Body.Groups[j].Name })
 	return out, nil
 }
 

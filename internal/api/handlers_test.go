@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -104,5 +106,49 @@ func TestUsageRollup(t *testing.T) {
 	// Costliest first.
 	if win.Body.Rows[0].Served != "b" {
 		t.Errorf("first row = %s, want b", win.Body.Rows[0].Served)
+	}
+}
+
+// TestLanes joins group policy with live admission load: an admitted request
+// shows up under its group, and configured groups carry their weight/currency.
+func TestLanes(t *testing.T) {
+	cfg := &config.Config{
+		PriorityGroups: map[string]config.PriorityGroup{
+			"interactive": {Weight: 10, Interruptible: false, ShareCurrency: "dwell"},
+			"batch":       {Weight: 1, Interruptible: true},
+		},
+	}
+	sc := sched.NewWithConfig(cfg)
+	h := &Handlers{Cfg: cfg, Sched: sc}
+
+	rel, _, err := sc.Admit(context.Background(), "m#0", "local", 2, "interactive", 10, false, config.Stage{Reject: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+
+	out, err := h.Lanes(context.Background(), &LanesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	groups := map[string]GroupView{}
+	for _, g := range out.Body.Groups {
+		groups[g.Name] = g
+	}
+	if len(groups) != 2 {
+		t.Fatalf("want 2 groups, got %d: %+v", len(groups), out.Body.Groups)
+	}
+	gi := groups["interactive"]
+	if gi.Weight != 10 || gi.ShareCurrency != "dwell" || gi.Active != 1 || gi.Interruptible {
+		t.Errorf("interactive = %+v", gi)
+	}
+	gb := groups["batch"]
+	if gb.Weight != 1 || gb.ShareCurrency != "requests" || gb.Active != 0 || !gb.Interruptible {
+		t.Errorf("batch = %+v", gb)
+	}
+
+	if len(out.Body.Backends) != 1 || out.Body.Backends[0].Backend != "m#0" || out.Body.Backends[0].Active != 1 {
+		t.Errorf("backends = %+v", out.Body.Backends)
 	}
 }

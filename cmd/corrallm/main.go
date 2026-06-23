@@ -133,7 +133,8 @@ func serve(ctx context.Context, o serveOpts) error {
 	// Preload pinned (persistent) models in the background so boot isn't blocked.
 	go mgr.Preload(ctx)
 
-	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr}
+	scheduler := sched.NewWithConfig(cfg)
+	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler}
 
 	router := chi.NewRouter()
 	router.Use(middleware.RealIP)
@@ -145,8 +146,8 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 
 	// OpenAI-compatible inference passthrough (raw, streaming — bypasses gat),
-	// gated by the fairshare admission scheduler.
-	proxy.New(cfg, mgr, sched.NewWithConfig(cfg), st).Mount(router)
+	// gated by the fairshare admission scheduler (shared with the lanes read op).
+	proxy.New(cfg, mgr, scheduler, st).Mount(router)
 
 	// The SPA is served for everything not claimed above.
 	router.Handle("/*", webui.Handler(o.webRoot))

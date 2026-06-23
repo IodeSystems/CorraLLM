@@ -7,6 +7,7 @@ directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJ
 type CorrallmQueryNamespace {
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
+  lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
   recentActivity(
     """Max records, newest first."""
     limit: Long
@@ -22,6 +23,7 @@ type CorrallmQueryNamespace {
 type CorrallmV1QueryNamespace {
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
+  lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
   recentActivity(
     """Max records, newest first."""
     limit: Long
@@ -63,6 +65,19 @@ type corrallm_ActivityRecord {
   ts: Long!
 }
 
+type corrallm_BackendLoadView {
+  """Slots in use."""
+  active: Long!
+  """Backend id."""
+  backend: String!
+  """Configured slots."""
+  capacity: Long!
+  """Per-group breakdown."""
+  groups: [corrallm_GroupLoadView!]!
+  """Queued requests."""
+  waiting: Long!
+}
+
 type corrallm_ConfigSummaryOutputBody {
   """Served model names."""
   models: [String!]!
@@ -72,11 +87,42 @@ type corrallm_ConfigSummaryOutputBody {
   servers: [String!]!
 }
 
+type corrallm_GroupLoadView {
+  """In-flight slots."""
+  active: Long!
+  """Priority group name."""
+  group: String!
+  """Queued requests."""
+  waiting: Long!
+}
+
+type corrallm_GroupView {
+  """In-flight slots across all backends."""
+  active: Long!
+  """May a higher group preempt it?"""
+  interruptible: Boolean!
+  """Priority group name."""
+  name: String!
+  """requests|dwell|cost."""
+  shareCurrency: String!
+  """Queued requests across all backends."""
+  waiting: Long!
+  """Fairshare weight (effective)."""
+  weight: Long!
+}
+
 type corrallm_HealthOutputBody {
   """Always "ok" when the process is serving."""
   status: String!
   """Build version stamp."""
   version: String!
+}
+
+type corrallm_LanesOutputBody {
+  """Per-backend live load."""
+  backends: [corrallm_BackendLoadView!]!
+  """Priority groups with aggregated load."""
+  groups: [corrallm_GroupView!]!
 }
 
 type corrallm_PoolUsageView {

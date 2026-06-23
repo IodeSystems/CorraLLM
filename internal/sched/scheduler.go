@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -245,6 +246,63 @@ func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx 
 // releaser returns a one-shot release for a held slot. The optional Done carries
 // the request's measured cost, charged against limit budgets (and the cost share
 // accumulator); dwell is measured from the slot's admit timestamp.
+// --- live-load introspection (P8) ---
+
+// GroupLoad is one group's in-flight + queued count on a backend.
+type GroupLoad struct {
+	Group   string
+	Active  int
+	Waiting int
+}
+
+// BackendLoad is a backend's live admission load with a per-group breakdown.
+type BackendLoad struct {
+	Backend  string
+	Capacity int
+	Active   int
+	Waiting  int
+	Groups   []GroupLoad
+}
+
+// SchedSnapshot is the live admission state across all touched backends.
+type SchedSnapshot struct {
+	Backends []BackendLoad
+}
+
+// Snapshot returns a stable (sorted) view of per-backend admission load and the
+// per-group active/waiting breakdown — the read surface behind the P8 lanes view.
+// Only backends that have seen traffic appear (state is created lazily on Admit).
+func (s *Scheduler) Snapshot() SchedSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var snap SchedSnapshot
+	for name, bs := range s.backends {
+		bl := BackendLoad{Backend: name, Capacity: bs.capacity, Active: bs.active, Waiting: len(bs.waiters)}
+		waitByGroup := map[string]int{}
+		for _, w := range bs.waiters {
+			waitByGroup[w.slot.group]++
+		}
+		groups := map[string]struct{}{}
+		for g := range bs.groupActive {
+			groups[g] = struct{}{}
+		}
+		for g := range waitByGroup {
+			groups[g] = struct{}{}
+		}
+		for g := range groups {
+			bl.Groups = append(bl.Groups, GroupLoad{Group: g, Active: bs.groupActive[g], Waiting: waitByGroup[g]})
+		}
+		sort.Slice(bl.Groups, func(i, j int) bool { return bl.Groups[i].Group < bl.Groups[j].Group })
+		snap.Backends = append(snap.Backends, bl)
+	}
+	sort.Slice(snap.Backends, func(i, j int) bool { return snap.Backends[i].Backend < snap.Backends[j].Backend })
+	return snap
+}
+
+// ShareCurrency reports the configured fairshare currency for a group
+// (requests|dwell|cost), defaulting to requests. Exposed for the UI.
+func (s *Scheduler) ShareCurrency(group string) string { return s.shareCurrency(group) }
+
 func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 	var once sync.Once
 	return func(d ...Done) {
