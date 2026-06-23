@@ -470,21 +470,22 @@ the BackpressureError shape we already validated.
   (1) ✅ ~~`/api` unauthenticated~~ — resolved (`3e83001`): admin token (`<home>/admin.token`) gates
   `/api/*` incl. load/unload, via Bearer or cookie; `/v1`/`/upstream`/`/health` stay open.
   *(Single shared admin token — no per-user accounts/roles/rotation yet; fine for one operator.)*
-  (2) **Cost coefficients are placeholders** — `commandCosts` Wh/token are demo values (~1000× high)
-  and shared per `type`, so dashboard $/energy magnitudes are not real until calibrated per backend
-  (split nomic-embed vs Qwen; measure W÷tok/s). Mechanism is correct; only the numbers are wrong.
+  (2) ✅ ~~Cost coefficients are placeholders~~ — calibrated (ml-kit config): split into `chat`
+  (Qwen: ~400W ÷ 83 gen, ÷2300 prompt tok/s → gen 0.0013 / proc 0.00005 Wh/tok) and `embed`
+  (nomic: single pass → proc 0.000002, gen 0). Verified live: chat ≈ $0.0000068, embed ≈ $0.00000007.
+  Re-measure if hardware/models change. *(Field name still says "WattsPerToken" but is Wh/token —
+  cosmetic rename deferred.)*
   (3) **`interactiveOrigins` not ported** — llama-swap's browser-origin auto-priority has no corrallm
   equivalent; browser callers land in `default` unless keyed (design choice — priorityGroup is first-class).
   (4) **`queued_ms` is forward-only** — rows predating the column read 0; queue *wait* populates as new
   queued-then-served requests accumulate (rejections + sampled depth are already live).
 
 ### Next steps
-- The full P0–P8 + P7 roadmap is shipped and live (§8). `/api` auth landed (`3e83001`). Open work:
-  1. **Calibrate cost coefficients** — per-backend Wh/token (split embed vs chat; measure) so $/energy
-     are real.
-  2. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
-  - Auth follow-ups if needed for OSS: per-user accounts/roles + token rotation (today is a single
-    shared admin token).
+- The full P0–P8 + P7 roadmap is shipped and live (§8). `/api` auth landed (`3e83001`) and cost
+  coefficients are calibrated (per-backend `chat`/`embed` Wh/token, verified live). Open work:
+  1. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
+  - OSS follow-ups (not blockers): auth multi-user accounts/roles + token rotation (today is a single
+    shared admin token); rename the `WattsPerToken` cost fields to `WhPerToken`.
 - Optional polish in §7 Optional extensions (affinity weighting, context-window clamp on degrade,
   gRPC, CapacityProbe, `server.maxConcurrent` host cap, proactive ttl reaper, instantaneous queue
   depth is now covered by the sampler).
@@ -500,7 +501,8 @@ the **ml-kit** ops repo (sibling), not this code repo:
   llama-server paths, fixed ports (5800/5801), fairshare groups (`aw3`→interactive=10,
   `ragtag`→batch=1, default=5), `scheduler.maxWait 60s`/`maxQueueDepth 8`. Pool budget reflects the
   real RTX 5090 (~32GB): Qwen `gpu0 29.5GB` + nomic `gpu0 1.5GB` (nomic offloads to GPU despite no
-  `-ngl`). `costPerKwh`/`commandCosts` are still placeholders (§7 gap 2).
+  `-ngl`). `commandCosts` are calibrated per type — `chat` (Qwen) vs `embed` (nomic), measured on the
+  5090 (§7 gap 2); `/api` is gated by the `home/admin.token` admin token.
 - **`ml-kit/bin/run`** — adapted from the llama-swap launcher: builds corrallm fresh from this repo
   (`go build` → repo `bin/corrallm`, gitignored), frees `:8111`, runs `serve` with
   `--health-timeout 600s` (matches llama-swap; Qwen's 220k-ctx cold load is ~66s). Supports
