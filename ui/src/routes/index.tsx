@@ -181,6 +181,7 @@ function Home() {
   const qc = useQueryClient()
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [logsFor, setLogsFor] = useState<string | null>(null)
+  const [cmdView, setCmdView] = useState<{ title: string; cmd: string } | null>(null)
 
   const q = useQuery({
     queryKey: ['overview'],
@@ -241,6 +242,32 @@ function Home() {
       )}
 
       {logsFor && <LogsDialog backend={logsFor} onClose={() => setLogsFor(null)} />}
+
+      {cmdView && (
+        <Dialog open onClose={() => setCmdView(null)} maxWidth="lg" fullWidth>
+          <DialogTitle>Command · {cmdView.title}</DialogTitle>
+          <DialogContent dividers>
+            <Box
+              component="pre"
+              sx={{
+                m: 0,
+                p: 1,
+                fontSize: 13,
+                lineHeight: 1.5,
+                maxHeight: '65vh',
+                overflow: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+                bgcolor: 'grey.900',
+                color: 'grey.100',
+                borderRadius: 1,
+              }}
+            >
+              {cmdView.cmd}
+            </Box>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* Models + lane definitions, with load/unload + open-UI for spawnable backends. */}
       <Box>
@@ -334,13 +361,15 @@ function Home() {
                             <TableCell align="right">{fmtInt(b.maxConcurrent)}</TableCell>
                             <TableCell align="right">{Number(b.maxTokens) > 0 ? fmtInt(b.maxTokens) : '—'}</TableCell>
                             <TableCell>
-                              <Typography
-                                variant="caption"
-                                component="pre"
-                                sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', m: 0 }}
-                              >
-                                {b.cmd || b.target || '—'}
-                              </Typography>
+                              {b.cmd ? (
+                                <Button size="small" onClick={() => setCmdView({ title: `${m.name} #${b.index}`, cmd: b.cmd })}>
+                                  View cmd
+                                </Button>
+                              ) : (
+                                <Typography variant="caption" sx={{ wordBreak: 'break-all' }}>
+                                  {b.target || '—'}
+                                </Typography>
+                              )}
                             </TableCell>
                           </TableRow>
                         ))}
