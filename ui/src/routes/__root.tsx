@@ -1,6 +1,8 @@
 import { createRootRoute, Outlet, Link } from '@tanstack/react-router'
 import { AppBar, Box, Toolbar, Typography } from '@mui/material'
 import { useLiveEvents } from '@/useLiveEvents'
+import { getToken } from '@/auth'
+import { Login } from '@/Login'
 
 const NAV = [
   { to: '/', label: 'Overview' },
@@ -10,7 +12,8 @@ const NAV = [
 ] as const
 
 function RootLayout() {
-  useLiveEvents() // push-based refresh for the live views
+  useLiveEvents() // push-based refresh for the live views (no-op until signed in)
+  if (!getToken()) return <Login />
   return (
     <>
       <AppBar position="static">

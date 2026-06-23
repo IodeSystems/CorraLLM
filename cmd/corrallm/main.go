@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/iodesystems/corrallm/internal/api"
+	"github.com/iodesystems/corrallm/internal/auth"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/events"
 	"github.com/iodesystems/corrallm/internal/proc"
@@ -101,6 +103,7 @@ func newServeCmd() *cobra.Command {
 				dbPath:        pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db")),
 				addr:          envOr("ADDR", ":6502"),
 				healthTimeout: pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
+				tokenPath:     filepath.Join(home, "admin.token"),
 			})
 		},
 	}
@@ -117,6 +120,7 @@ func newServeCmd() *cobra.Command {
 type serveOpts struct {
 	webRoot, configPath, dbPath, addr string
 	healthTimeout                     time.Duration
+	tokenPath                         string
 }
 
 func serve(ctx context.Context, o serveOpts) error {
@@ -145,9 +149,22 @@ func serve(ctx context.Context, o serveOpts) error {
 	scheduler := sched.NewWithConfig(cfg)
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler}
 
+	// Admin token gates the management surface (/api/*). Generated into
+	// <home>/admin.token on first run; the dashboard's login screen points there.
+	adminToken, created, err := auth.LoadOrCreateToken(o.tokenPath)
+	if err != nil {
+		return err
+	}
+	if created {
+		slog.Info("generated admin token", "path", o.tokenPath)
+	} else {
+		slog.Info("loaded admin token", "path", o.tokenPath)
+	}
+
 	router := chi.NewRouter()
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
+	router.Use(auth.Middleware(adminToken)) // gates /api/*; /v1, /upstream, /health, SPA pass through
 
 	// BuildGateway mounts REST + GraphQL (/api/graphql) + schema views onto router.
 	if _, err := api.BuildGateway(router, h); err != nil {

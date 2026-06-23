@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { getToken } from './auth'
 
 // Coalesce bursts: under heavy load the server emits an event per request, so
 // invalidating on every one is a refetch stampede (esp. the heavy `overview`
@@ -14,6 +15,7 @@ const COALESCE_MS = 300
 export function useLiveEvents() {
   const qc = useQueryClient()
   useEffect(() => {
+    if (!getToken()) return // not signed in — the cookie wouldn't authorize the stream
     const es = new EventSource(`${window.location.origin}/api/v1/events`)
     let timer: ReturnType<typeof setTimeout> | null = null
 
