@@ -21,6 +21,66 @@ import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
 
+const KEY_COLORS = ['#1976d2', '#9c27b0', '#2e7d32', '#ed6c02', '#0288d1', '#d32f2f']
+
+type ChartSeries = { key: string; color: string; values: number[] }
+
+// MetricChart draws one metric over time, one line per key (dependency-free SVG).
+function MetricChart({
+  title,
+  series,
+  fmt,
+}: {
+  title: string
+  series: ChartSeries[]
+  fmt: (n: number) => string
+}) {
+  const W = 600
+  const H = 120
+  const pad = 4
+  const n = series[0]?.values.length ?? 0
+  const max = Math.max(0, ...series.flatMap((s) => s.values))
+  const x = (i: number) => (n <= 1 ? pad : (i / (n - 1)) * (W - 2 * pad) + pad)
+  const y = (v: number) => (max <= 0 ? H - pad : H - pad - (v / max) * (H - 2 * pad))
+  return (
+    <Card sx={{ flex: '1 1 380px', minWidth: 320 }}>
+      <CardContent>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <Typography variant="subtitle2">{title}</Typography>
+          <Typography variant="caption" color="text.secondary">
+            peak {fmt(max)}
+          </Typography>
+        </Box>
+        <Box
+          component="svg"
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="none"
+          sx={{ width: '100%', height: 130, display: 'block', mt: 1 }}
+        >
+          {series.map((s) => (
+            <polyline
+              key={s.key}
+              fill="none"
+              stroke={s.color}
+              strokeWidth={1.5}
+              vectorEffect="non-scaling-stroke"
+              points={s.values.map((v, i) => `${x(i)},${y(v)}`).join(' ')}
+            />
+          ))}
+        </Box>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mt: 1 }}>
+          {series.map((s) => (
+            <Box key={s.key} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Box sx={{ width: 10, height: 10, bgcolor: s.color, borderRadius: '50%' }} />
+              <Typography variant="caption">{s.key || '(unkeyed)'}</Typography>
+            </Box>
+          ))}
+        </Box>
+      </CardContent>
+    </Card>
+  )
+}
+
 // BarCell renders a value with a proportional background bar (value / columnMax).
 function BarCell({ value, max, label }: { value: number; max: number; label: string }) {
   const pct = max > 0 ? Math.max(2, (value / max) * 100) : 0
@@ -74,6 +134,19 @@ const UsageDoc = graphql(/* GraphQL */ `
           completionTokens
           dwellMs
           costUsd
+        }
+      }
+      usageSeries(windowHours: "24", bucketMinutes: "60") {
+        bucketMinutes
+        buckets
+        keys {
+          key
+          points {
+            requests
+            costUsd
+            energyKwh
+            dwellMs
+          }
         }
       }
       usageByKey(windowHours: "24") {
@@ -174,6 +247,19 @@ function Usage() {
   const fmtKwh = (k: number) =>
     !Number.isFinite(k) || k === 0 ? '—' : k < 1 ? `${(k * 1000).toFixed(1)} Wh` : `${k.toFixed(3)} kWh`
 
+  const seriesKeys = q.data?.corrallm.usageSeries?.keys ?? []
+  const mkSeries = (sel: (p: {
+    requests: string
+    costUsd: number
+    energyKwh: number
+    dwellMs: string
+  }) => number): ChartSeries[] =>
+    seriesKeys.map((k, i) => ({
+      key: k.key,
+      color: KEY_COLORS[i % KEY_COLORS.length],
+      values: k.points.map(sel),
+    }))
+
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <Box>
@@ -220,6 +306,26 @@ function Usage() {
             </TableBody>
           </Table>
         </TableContainer>
+      </Box>
+
+      <Box>
+        <Typography variant="h6" gutterBottom>
+          By Key over time — last 24h
+        </Typography>
+        {seriesKeys.length === 0 ? (
+          <Typography color="text.secondary">No usage in window.</Typography>
+        ) : (
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+            <MetricChart title="Cost ($)" series={mkSeries((p) => p.costUsd)} fmt={fmtUSD} />
+            <MetricChart title="Requests" series={mkSeries((p) => Number(p.requests))} fmt={fmtInt} />
+            <MetricChart title="Energy" series={mkSeries((p) => p.energyKwh)} fmt={fmtKwh} />
+            <MetricChart
+              title="Time"
+              series={mkSeries((p) => Number(p.dwellMs))}
+              fmt={(n) => fmtDuration(n)}
+            />
+          </Stack>
+        )}
       </Box>
 
       <Box>

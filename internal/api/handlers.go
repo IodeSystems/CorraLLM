@@ -312,6 +312,114 @@ func (h *Handlers) UsageByKey(_ context.Context, in *UsageByKeyInput) (*UsageByK
 	return out, nil
 }
 
+// --- per-key usage time-series (P8-beyond) ---
+
+// UsageSeriesInput sets the time window and bucket granularity.
+type UsageSeriesInput struct {
+	WindowHours   int `query:"windowHours" default:"24" minimum:"1" maximum:"8760" doc:"Trailing window in hours."`
+	BucketMinutes int `query:"bucketMinutes" default:"60" minimum:"1" maximum:"1440" doc:"Bucket width in minutes."`
+}
+
+// SeriesPoint is one bucket's metrics for a key (aligned to UsageSeriesOutput.Buckets).
+type SeriesPoint struct {
+	Requests  int64   `json:"requests" doc:"Requests in this bucket."`
+	CostUSD   float64 `json:"costUsd" doc:"Cost in this bucket, USD."`
+	EnergyKwh float64 `json:"energyKwh" doc:"Energy in this bucket, kWh (cost/costPerKwh)."`
+	DwellMS   int64   `json:"dwellMs" doc:"Total dwell in this bucket, ms."`
+}
+
+// KeySeries is one caller key's dense time series.
+type KeySeries struct {
+	Key    string        `json:"key" doc:"Caller key (empty = unkeyed)."`
+	Points []SeriesPoint `json:"points" doc:"One point per bucket, aligned to Buckets."`
+}
+
+// UsageSeriesOutput is a shared time axis plus one dense series per key.
+type UsageSeriesOutput struct {
+	Body struct {
+		BucketMinutes int         `json:"bucketMinutes" doc:"Effective bucket width (may be coarsened)."`
+		Buckets       []int64     `json:"buckets" doc:"Bucket start times, unix millis, ascending."`
+		Keys          []KeySeries `json:"keys" doc:"Per-key dense series, costliest first."`
+	}
+}
+
+const maxSeriesBuckets = 600
+
+// UsageSeries returns per-key time series (requests/cost/energy/dwell) over a
+// window, bucketed for charting. Buckets are dense (0-filled) so every key's
+// Points align to the shared Buckets axis.
+func (h *Handlers) UsageSeries(_ context.Context, in *UsageSeriesInput) (*UsageSeriesOutput, error) {
+	windowHours := in.WindowHours
+	if windowHours <= 0 {
+		windowHours = 24
+	}
+	bucketMin := in.BucketMinutes
+	if bucketMin <= 0 {
+		bucketMin = 60
+	}
+	windowMS := int64(windowHours) * 3600_000
+	bucketMS := int64(bucketMin) * 60_000
+	// Coarsen so the axis never exceeds maxSeriesBuckets points.
+	for windowMS/bucketMS > maxSeriesBuckets {
+		bucketMS *= 2
+	}
+
+	now := time.Now().UnixMilli()
+	end := (now / bucketMS) * bucketMS
+	start := ((now - windowMS) / bucketMS) * bucketMS
+
+	var buckets []int64
+	index := map[int64]int{} // bucket start → position in buckets
+	for b := start; b <= end; b += bucketMS {
+		index[b] = len(buckets)
+		buckets = append(buckets, b)
+	}
+
+	rows, err := h.Store.RollupSeries(now-windowMS, bucketMS)
+	if err != nil {
+		return nil, err
+	}
+
+	rate := h.Cfg.CostPerKwh
+	// Per key: a dense slice of points + a running total cost for ordering.
+	type acc struct {
+		points    []SeriesPoint
+		totalCost float64
+	}
+	byKey := map[string]*acc{}
+	for _, r := range rows {
+		pos, ok := index[r.BucketTS]
+		if !ok {
+			continue // outside the dense axis (clock skew); skip
+		}
+		a := byKey[r.Key]
+		if a == nil {
+			a = &acc{points: make([]SeriesPoint, len(buckets))}
+			byKey[r.Key] = a
+		}
+		energy := 0.0
+		if rate > 0 {
+			energy = r.CostUSD / rate
+		}
+		a.points[pos] = SeriesPoint{
+			Requests: r.Requests, CostUSD: r.CostUSD, EnergyKwh: energy, DwellMS: r.DwellMS,
+		}
+		a.totalCost += r.CostUSD
+	}
+
+	out := &UsageSeriesOutput{}
+	out.Body.BucketMinutes = int(bucketMS / 60_000)
+	out.Body.Buckets = buckets
+	out.Body.Keys = make([]KeySeries, 0, len(byKey))
+	for k, a := range byKey {
+		out.Body.Keys = append(out.Body.Keys, KeySeries{Key: k, Points: a.points})
+	}
+	sort.Slice(out.Body.Keys, func(i, j int) bool {
+		return byKey[out.Body.Keys[i].Key].totalCost > byKey[out.Body.Keys[j].Key].totalCost
+	})
+	return out, nil
+}
+
 // --- lanes / live admission load (P8-beyond) ---
 
 // LanesInput has no parameters.

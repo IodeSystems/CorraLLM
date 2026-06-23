@@ -199,6 +199,51 @@ func (s *Store) RollupByKey(sinceMS int64) ([]KeyRollup, error) {
 	return out, rows.Err()
 }
 
+// SeriesRow is one (key, time-bucket) aggregate for time-series charts (P8).
+type SeriesRow struct {
+	BucketTS         int64 // bucket start, unix millis (ts floored to bucketMS)
+	Key              string
+	Requests         int64
+	PromptTokens     int64
+	CompletionTokens int64
+	DwellMS          int64
+	CostUSD          float64
+}
+
+// RollupSeries aggregates activity at or after sinceMS into time buckets of
+// bucketMS, grouped by (bucket, caller key), ordered by bucket then key. It is
+// the backing query for per-key time-series graphs.
+func (s *Store) RollupSeries(sinceMS, bucketMS int64) ([]SeriesRow, error) {
+	if bucketMS <= 0 {
+		bucketMS = 3600_000 // default 1h
+	}
+	rows, err := s.db.Query(
+		`SELECT (ts / ?) * ?      AS bucket,
+		        key,
+		        COUNT(*),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0),
+		        COALESCE(SUM(dwell_ms), 0),
+		        COALESCE(SUM(cost_usd), 0)
+		 FROM activity WHERE ts >= ?
+		 GROUP BY bucket, key
+		 ORDER BY bucket, key`, bucketMS, bucketMS, sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SeriesRow
+	for rows.Next() {
+		var r SeriesRow
+		if err := rows.Scan(&r.BucketTS, &r.Key, &r.Requests, &r.PromptTokens,
+			&r.CompletionTokens, &r.DwellMS, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // DB exposes the underlying handle for query layers added in later phases.
 func (s *Store) DB() *sql.DB { return s.db }
 

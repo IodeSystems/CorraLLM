@@ -139,6 +139,65 @@ func TestUsageByKey(t *testing.T) {
 	}
 }
 
+// TestUsageSeries builds a dense, ascending bucket axis and aligns each key's
+// points to it, with energy derived from cost.
+func TestUsageSeries(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UnixMilli()
+	_ = st.InsertActivity(store.Activity{TS: now, Served: "m", Key: "aw3", Status: 200, CostUSD: 0.14})
+	_ = st.InsertActivity(store.Activity{TS: now, Served: "m", Key: "aw3", Status: 200, CostUSD: 0.14})
+	_ = st.InsertActivity(store.Activity{TS: now, Served: "m", Key: "ragtag", Status: 200, CostUSD: 0.07})
+
+	h := &Handlers{Store: st, Cfg: &config.Config{CostPerKwh: 0.14}}
+	out, err := h.UsageSeries(context.Background(), &UsageSeriesInput{WindowHours: 2, BucketMinutes: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(out.Body.Buckets) == 0 {
+		t.Fatal("no buckets")
+	}
+	for i := 1; i < len(out.Body.Buckets); i++ {
+		if out.Body.Buckets[i] <= out.Body.Buckets[i-1] {
+			t.Fatalf("buckets not strictly ascending at %d", i)
+		}
+	}
+	if len(out.Body.Keys) != 2 || out.Body.Keys[0].Key != "aw3" {
+		t.Fatalf("keys = %+v, want aw3 first", out.Body.Keys)
+	}
+	// Each key's points align to the axis; sum recovers the totals.
+	for _, ks := range out.Body.Keys {
+		if len(ks.Points) != len(out.Body.Buckets) {
+			t.Fatalf("%s points len %d != buckets %d", ks.Key, len(ks.Points), len(out.Body.Buckets))
+		}
+		var cost, energy float64
+		var reqs int64
+		for _, p := range ks.Points {
+			cost += p.CostUSD
+			energy += p.EnergyKwh
+			reqs += p.Requests
+		}
+		switch ks.Key {
+		case "aw3":
+			if cost < 0.279 || cost > 0.281 || reqs != 2 {
+				t.Errorf("aw3 totals cost=%v reqs=%d", cost, reqs)
+			}
+			if energy < 1.999 || energy > 2.001 { // 0.28 / 0.14
+				t.Errorf("aw3 energy=%v, want ~2 kWh", energy)
+			}
+		case "ragtag":
+			if cost < 0.069 || cost > 0.071 {
+				t.Errorf("ragtag cost=%v", cost)
+			}
+		}
+	}
+}
+
 // TestLanes joins group policy with live admission load: an admitted request
 // shows up under its group, and configured groups carry their weight/currency.
 func TestLanes(t *testing.T) {

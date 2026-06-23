@@ -67,6 +67,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UsageRollup)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "usageSeries",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/usage/series",
+		Summary:     "Per-key usage time-series (requests/$/energy/dwell), bucketed.",
+		Tags:        []string{"observability"},
+	}, h.UsageSeries)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "usageByKey",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/usage/by-key",

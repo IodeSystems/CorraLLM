@@ -21,6 +21,12 @@ type CorrallmQueryNamespace {
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
   ): corrallm_UsageRollupOutputBody @derived(operationId: "usageRollup")
+  usageSeries(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_UsageSeriesOutputBody @derived(operationId: "usageSeries")
   v1: CorrallmV1QueryNamespace!
 }
 
@@ -41,6 +47,12 @@ type CorrallmV1QueryNamespace {
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
   ): corrallm_UsageRollupOutputBody @derived(operationId: "usageRollup")
+  usageSeries(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_UsageSeriesOutputBody @derived(operationId: "usageSeries")
 }
 
 """64-bit integer encoded as a decimal string to preserve precision past 2^53. Accepts a JSON number or a decimal string as input."""
@@ -124,6 +136,13 @@ type corrallm_HealthOutputBody {
   status: String!
   """Build version stamp."""
   version: String!
+}
+
+type corrallm_KeySeries {
+  """Caller key (empty = unkeyed)."""
+  key: String!
+  """One point per bucket, aligned to Buckets."""
+  points: [corrallm_SeriesPoint!]!
 }
 
 type corrallm_KeyUsageRow {
@@ -212,6 +231,17 @@ type corrallm_RollupRow {
   served: String!
 }
 
+type corrallm_SeriesPoint {
+  """Cost in this bucket, USD."""
+  costUsd: Float!
+  """Total dwell in this bucket, ms."""
+  dwellMs: Long!
+  """Energy in this bucket, kWh (cost/costPerKwh)."""
+  energyKwh: Float!
+  """Requests in this bucket."""
+  requests: Long!
+}
+
 type corrallm_ServerView {
   """Per-pool budget/usage."""
   pools: [corrallm_PoolView!]!
@@ -232,4 +262,13 @@ type corrallm_UsageRollupOutputBody {
   total: corrallm_RollupRow!
   """Window applied (0 = all time)."""
   windowHours: Long!
+}
+
+type corrallm_UsageSeriesOutputBody {
+  """Effective bucket width (may be coarsened)."""
+  bucketMinutes: Long!
+  """Bucket start times, unix millis, ascending."""
+  buckets: [Long!]!
+  """Per-key dense series, costliest first."""
+  keys: [corrallm_KeySeries!]!
 }
