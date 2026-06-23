@@ -1,22 +1,40 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
+// Coalesce bursts: under heavy load the server emits an event per request, so
+// invalidating on every one is a refetch stampede (esp. the heavy `overview`
+// query). Collapse all events within COALESCE_MS into a single trailing
+// invalidation — at most one refetch pass per window, while staying near-live.
+const COALESCE_MS = 300
+
 // Subscribes to the server's SSE event stream and invalidates the live query
-// caches on each event, so the observability views update on push. EventSource
+// caches (throttled) so the observability views update on push. EventSource
 // auto-reconnects, so a dropped connection self-heals; the views also keep a
 // slow fallback poll in case an event is missed. Mount once (at the root).
 export function useLiveEvents() {
   const qc = useQueryClient()
   useEffect(() => {
     const es = new EventSource(`${window.location.origin}/api/v1/events`)
-    const invalidate = () => {
-      void qc.invalidateQueries({ queryKey: ['activity'] })
-      void qc.invalidateQueries({ queryKey: ['usage'] })
-      void qc.invalidateQueries({ queryKey: ['lanes'] })
-      void qc.invalidateQueries({ queryKey: ['overview'] })
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const flush = () => {
+      timer = null
+      for (const key of ['activity', 'usage', 'lanes', 'overview']) {
+        void qc.invalidateQueries({ queryKey: [key] })
+      }
     }
-    es.addEventListener('activity', invalidate)
-    es.addEventListener('changed', invalidate)
-    return () => es.close()
+    // Trailing throttle: the first event schedules a flush; further events in the
+    // window fold into it (timer already armed). Under sustained traffic this
+    // refetches at most once per COALESCE_MS instead of once per request.
+    const schedule = () => {
+      if (timer == null) timer = setTimeout(flush, COALESCE_MS)
+    }
+
+    es.addEventListener('activity', schedule)
+    es.addEventListener('changed', schedule)
+    return () => {
+      es.close()
+      if (timer != null) clearTimeout(timer)
+    }
   }, [qc])
 }
