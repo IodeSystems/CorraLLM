@@ -117,6 +117,39 @@ func TestRollupByKey(t *testing.T) {
 	}
 }
 
+// TestRollupSeriesQueueMetrics aggregates queue wait + 429 rejections per bucket.
+func TestRollupSeriesQueueMetrics(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	rows := []Activity{
+		{TS: 1000, Served: "m", Key: "k", Status: 200, QueuedMS: 0},
+		{TS: 1500, Served: "m", Key: "k", Status: 200, QueuedMS: 500},  // queued then served
+		{TS: 1800, Served: "m", Key: "k", Status: 429, QueuedMS: 1000}, // queued then rejected
+	}
+	for _, a := range rows {
+		if err := st.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// One wide bucket covering all three.
+	got, err := st.RollupSeries(0, 3_600_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 (bucket,key) row, got %d: %+v", len(got), got)
+	}
+	r := got[0]
+	if r.Requests != 3 || r.Rejected != 1 || r.QueuedMS != 1500 {
+		t.Errorf("got requests=%d rejected=%d queuedMs=%d, want 3/1/1500", r.Requests, r.Rejected, r.QueuedMS)
+	}
+}
+
 // TestMigrationsIdempotent: Open applies the upgrade migrations and is safe to
 // call repeatedly against the same database (duplicate-column errors swallowed).
 func TestMigrationsIdempotent(t *testing.T) {

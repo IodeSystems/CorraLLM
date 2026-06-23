@@ -208,6 +208,10 @@ type corrallm_GroupSeriesPoint {
   costUsd: Float!
   """Total dwell in this bucket, ms."""
   dwellMs: Long!
+  """Total time queued before admit/reject, ms."""
+  queuedMs: Long!
+  """Requests backpressured (429) — queue-pressure signal."""
+  rejected: Long!
   """Requests in this bucket."""
   requests: Long!
 }

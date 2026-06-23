@@ -467,6 +467,8 @@ type GroupSeriesPoint struct {
 	Requests int64   `json:"requests" doc:"Requests in this bucket."`
 	CostUSD  float64 `json:"costUsd" doc:"Cost in this bucket, USD."`
 	DwellMS  int64   `json:"dwellMs" doc:"Total dwell in this bucket, ms."`
+	Rejected int64   `json:"rejected" doc:"Requests backpressured (429) — queue-pressure signal."`
+	QueuedMS int64   `json:"queuedMs" doc:"Total time queued before admit/reject, ms."`
 }
 
 // GroupSeries is one priority group's dense time series.
@@ -538,7 +540,9 @@ func (h *Handlers) UsageSeriesByGroup(_ context.Context, in *UsageSeriesInput) (
 		p.Requests += r.Requests
 		p.CostUSD += r.CostUSD
 		p.DwellMS += r.DwellMS
-		a.total += r.Requests
+		p.Rejected += r.Rejected
+		p.QueuedMS += r.QueuedMS
+		a.total += r.Requests // COUNT(*) already includes rejected attempts
 	}
 
 	out := &UsageSeriesByGroupOutput{}

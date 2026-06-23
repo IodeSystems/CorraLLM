@@ -27,7 +27,15 @@ type ChartSeries = { key: string; color: string; values: number[] }
 
 // StackedArea draws bands summed bottom-to-top — for priority-group throughput
 // over time, so a shrinking high-priority band signals starvation.
-function StackedArea({ series, fmtTotal }: { series: ChartSeries[]; fmtTotal: (n: number) => string }) {
+function StackedArea({
+  title,
+  series,
+  fmtTotal,
+}: {
+  title: string
+  series: ChartSeries[]
+  fmtTotal: (n: number) => string
+}) {
   const W = 600
   const H = 160
   const pad = 4
@@ -54,7 +62,7 @@ function StackedArea({ series, fmtTotal }: { series: ChartSeries[]; fmtTotal: (n
     <Card>
       <CardContent>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <Typography variant="subtitle2">Priority usage — requests/bucket (stacked)</Typography>
+          <Typography variant="subtitle2">{title}</Typography>
           <Typography variant="caption" color="text.secondary">
             peak {fmtTotal(max)}
           </Typography>
@@ -209,6 +217,8 @@ const UsageDoc = graphql(/* GraphQL */ `
             requests
             costUsd
             dwellMs
+            rejected
+            queuedMs
           }
         }
       }
@@ -323,11 +333,28 @@ function Usage() {
   const fmtKwh = (k: number) =>
     !Number.isFinite(k) || k === 0 ? '—' : k < 1 ? `${(k * 1000).toFixed(1)} Wh` : `${k.toFixed(3)} kWh`
 
-  const groupSeries: ChartSeries[] = (q.data?.corrallm.usageSeriesByGroup?.groups ?? []).map((g, i) => ({
+  const lanes = q.data?.corrallm.usageSeriesByGroup?.groups ?? []
+  const laneColor = (i: number) => KEY_COLORS[i % KEY_COLORS.length]
+  const groupSeries: ChartSeries[] = lanes.map((g, i) => ({
     key: g.group,
-    color: KEY_COLORS[i % KEY_COLORS.length],
+    color: laneColor(i),
     values: g.points.map((p) => Number(p.requests)),
   }))
+  const rejectSeries: ChartSeries[] = lanes.map((g, i) => ({
+    key: g.group,
+    color: laneColor(i),
+    values: g.points.map((p) => Number(p.rejected)),
+  }))
+  // Avg queue wait per request, per lane, per bucket (ms).
+  const waitSeries: ChartSeries[] = lanes.map((g, i) => ({
+    key: g.group,
+    color: laneColor(i),
+    values: g.points.map((p) => {
+      const reqs = Number(p.requests)
+      return reqs > 0 ? Number(p.queuedMs) / reqs : 0
+    }),
+  }))
+  const anyRejections = rejectSeries.some((s) => s.values.some((v) => v > 0))
 
   const seriesKeys = q.data?.corrallm.usageSeries?.keys ?? []
   const mkSeries = (sel: (p: {
@@ -397,7 +424,21 @@ function Usage() {
         {groupSeries.length === 0 ? (
           <Typography color="text.secondary">No usage in window.</Typography>
         ) : (
-          <StackedArea series={groupSeries} fmtTotal={fmtInt} />
+          <Stack spacing={2}>
+            <StackedArea title="Throughput — requests/bucket (stacked)" series={groupSeries} fmtTotal={fmtInt} />
+            {anyRejections ? (
+              <StackedArea
+                title="Queue pressure — 429s/bucket by lane"
+                series={rejectSeries}
+                fmtTotal={fmtInt}
+              />
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                No rejections in window — no lane is being starved.
+              </Typography>
+            )}
+            <MetricChart title="Avg queue wait / request" series={waitSeries} fmt={(n) => fmtDuration(n)} />
+          </Stack>
         )}
       </Box>
 

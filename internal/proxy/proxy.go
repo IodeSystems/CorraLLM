@@ -122,13 +122,16 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var lastBP *sched.BackpressureError
+	var queuedMS int64 // queue wait on the terminal backend (admit or reject)
 
 	for _, idx := range walk {
 		backend := model.Backends[idx]
 		name := fmt.Sprintf("%s#%d", served, idx)
 		stage := group.StageFor(backend.Type)
 
+		admitStart := time.Now()
 		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
+		queuedMS = time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if err == nil {
 			p.publish(events.Event{Type: "changed"}) // a slot was taken — lanes load changed
 		}
@@ -141,10 +144,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				}
 				// rejected or queue-timeout → terminal backoff.
 				writeBackpressure(w, bp)
-				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0)
+				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS)
 				return
 			}
-			p.log(served, name, key, r.URL.Path, 499, time.Since(start), 0, 0, 0) // client canceled
+			p.log(served, name, key, r.URL.Path, 499, time.Since(start), 0, 0, 0, queuedMS) // client canceled
 			return
 		}
 
@@ -180,7 +183,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			costUSD += p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
 		}
 		release(sched.Done{CostUSD: costUSD})
-		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD)
+		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD, queuedMS)
 		return
 	}
 
@@ -188,11 +191,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
 		writeBackpressure(w, lastBP)
-		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0)
+		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS)
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
-	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start), 0, 0, 0)
+	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start), 0, 0, 0, queuedMS)
 }
 
 // orderBackends returns config indices in fall-through order: highest quality
@@ -329,7 +332,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration, prompt, completion int, costUSD float64) {
+func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration, prompt, completion int, costUSD float64, queuedMS int64) {
 	a := store.Activity{
 		TS:               time.Now().UnixMilli(),
 		Served:           served,
@@ -341,6 +344,7 @@ func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Du
 		PromptTokens:     prompt,
 		CompletionTokens: completion,
 		CostUSD:          costUSD,
+		QueuedMS:         queuedMS,
 	}
 	if err := p.store.InsertActivity(a); err != nil {
 		slog.Warn("activity log", "err", err)
