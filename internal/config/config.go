@@ -32,6 +32,18 @@ type Config struct {
 
 	// Keys maps a caller identity → priorityGroup name.
 	Keys map[string]string `yaml:"keys,omitempty"`
+
+	// Scheduler holds global admission knobs (queue bounds).
+	Scheduler SchedulerConfig `yaml:"scheduler,omitempty"`
+}
+
+// SchedulerConfig bounds queueing so saturated callers get a fast, informative
+// 429 to shape against instead of a long blocking wait (the llama-swap fork's
+// maxWait / maxQueueDepth contract). Zero values keep the prior behavior:
+// MaxWait 0 → bounded only by the request context; MaxQueueDepth 0 → unbounded.
+type SchedulerConfig struct {
+	MaxWait       string `yaml:"maxWait,omitempty"`       // e.g. "60s": queue wait before a 429
+	MaxQueueDepth int    `yaml:"maxQueueDepth,omitempty"` // reject once this many already wait on a backend
 }
 
 // Server declares a host's capacity as a vector over named memory pools.

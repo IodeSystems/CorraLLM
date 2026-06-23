@@ -61,7 +61,15 @@ type Scheduler struct {
 	cfg      *config.Config         // optional: drives limits + share currency
 	budgets  map[string][]rateEvent // "scope\x00dim" → sliding-window events
 	now      func() time.Time       // injectable clock (windows, dwell, decay)
+
+	maxWait       time.Duration // queue wait before a 429 (0 = bounded only by req ctx)
+	maxQueueDepth int           // reject once this many already wait on a backend (0 = unbounded)
 }
+
+// ewmaAlpha weights the newest service-time sample in the per-backend dwell EWMA
+// that drives Retry-After. Higher = more reactive; 0.3 tracks recent load while
+// damping single-request spikes.
+const ewmaAlpha = 0.3
 
 // rateEvent is one consumption against a limit budget at a point in time.
 type rateEvent struct {
@@ -79,10 +87,19 @@ func New() *Scheduler {
 }
 
 // NewWithConfig constructs a Scheduler that also enforces the config's limit
-// budgets and honors each group's share currency.
+// budgets, honors each group's share currency, and applies the queue bounds
+// (maxWait / maxQueueDepth) from the scheduler config.
 func NewWithConfig(cfg *config.Config) *Scheduler {
 	s := New()
 	s.cfg = cfg
+	if cfg != nil {
+		if d, err := time.ParseDuration(cfg.Scheduler.MaxWait); err == nil && d > 0 {
+			s.maxWait = d
+		}
+		if cfg.Scheduler.MaxQueueDepth > 0 {
+			s.maxQueueDepth = cfg.Scheduler.MaxQueueDepth
+		}
+	}
 	return s
 }
 
@@ -96,6 +113,9 @@ type backendState struct {
 	// consumption — the fairshare numerator under a dwell|cost share currency.
 	share   map[string]float64
 	shareAt map[string]time.Time // last update, for exponential decay
+	// ewmaDwell is the EWMA of measured service time (seconds) on this backend —
+	// the basis for an honest Retry-After. 0 until the first request completes.
+	ewmaDwell float64
 }
 
 // slot is one in-flight admission. cancel reclaims the request when the slot is
@@ -215,32 +235,57 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 		}
 	}
 
+	// Bound the queue: once maxQueueDepth callers already wait, reject fast with an
+	// informative 429 so the caller can shape, rather than block (the fork's
+	// maxQueueDepth contract). Preempt waiters above bypass this — they freed a slot.
+	if s.maxQueueDepth > 0 && len(bs.waiters) >= s.maxQueueDepth {
+		be := bs.backpressure("rejected")
+		s.mu.Unlock()
+		cancel(nil)
+		return nil, nil, be
+	}
+
 	w := &waiter{slot: sl, ready: make(chan struct{})}
 	bs.waiters = append(bs.waiters, w)
 	s.mu.Unlock()
 	return s.wait(ctx, backend, w, reqCtx)
 }
 
-// wait blocks until the waiter is granted a slot or ctx ends.
+// wait blocks until the waiter is granted a slot, maxWait elapses, or ctx ends.
 func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx context.Context) (func(...Done), context.Context, error) {
+	// maxWait caps the queue wait so the caller gets a 429 to shape against rather
+	// than blocking up to the request deadline (the fork's maxWait contract).
+	var maxWaitC <-chan time.Time
+	if s.maxWait > 0 {
+		t := time.NewTimer(s.maxWait)
+		defer t.Stop()
+		maxWaitC = t.C
+	}
 	select {
 	case <-w.ready:
 		return s.releaser(backend, w.slot), reqCtx, nil
+	case <-maxWaitC:
+		return s.giveUp(backend, w, "queue-timeout")
 	case <-ctx.Done():
-		// Drop out of the queue. If we were granted concurrently with the cancel,
-		// hand the slot back so it isn't lost.
-		s.mu.Lock()
-		bs := s.backends[backend]
-		if bs != nil && bs.removeWaiter(w) {
-			be := bs.backpressure("queue-timeout")
-			s.mu.Unlock()
-			w.slot.cancel(nil)
-			return nil, nil, be
-		}
-		s.mu.Unlock()
-		s.releaser(backend, w.slot)() // already granted: release the slot we never used
-		return nil, nil, &BackpressureError{Reason: "queue-timeout", RetryAfter: time.Second}
+		return s.giveUp(backend, w, "queue-timeout")
 	}
+}
+
+// giveUp drops a waiter from the queue and returns informative backpressure. If
+// the waiter was granted a slot concurrently with the give-up, the slot is
+// handed back so it isn't lost.
+func (s *Scheduler) giveUp(backend string, w *waiter, reason string) (func(...Done), context.Context, error) {
+	s.mu.Lock()
+	bs := s.backends[backend]
+	if bs != nil && bs.removeWaiter(w) {
+		be := bs.backpressure(reason)
+		s.mu.Unlock()
+		w.slot.cancel(nil)
+		return nil, nil, be
+	}
+	s.mu.Unlock()
+	s.releaser(backend, w.slot)() // already granted: release the slot we never used
+	return nil, nil, &BackpressureError{Reason: reason, RetryAfter: time.Second}
 }
 
 // releaser returns a one-shot release for a held slot. The optional Done carries
@@ -319,6 +364,7 @@ func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 			}
 			now := s.now()
 			dwell := now.Sub(sl.admitAt).Seconds()
+			bs.observeDwell(dwell)
 			bs.active--
 			bs.groupActive[sl.group]--
 			if bs.groupActive[sl.group] <= 0 {
@@ -461,12 +507,32 @@ func (bs *backendState) removeSlot(sl *slot) {
 	}
 }
 
+// observeDwell folds a finished request's service time into the backend's dwell
+// EWMA (caller holds s.mu).
+func (bs *backendState) observeDwell(dwell float64) {
+	if dwell < 0 {
+		dwell = 0
+	}
+	if bs.ewmaDwell == 0 {
+		bs.ewmaDwell = dwell // seed with the first sample
+		return
+	}
+	bs.ewmaDwell = ewmaAlpha*dwell + (1-ewmaAlpha)*bs.ewmaDwell
+}
+
 // backpressure snapshots the current pressure into an error (caller holds s.mu).
+// Retry-After estimates the wait as the caller's queue position in "rounds"
+// (ceil((waiting+1)/capacity)) times the measured per-request service time
+// (dwell EWMA) — an honest hint. Before any request completes (no EWMA yet) it
+// falls back to ~1s per round.
 func (bs *backendState) backpressure(reason string) *BackpressureError {
 	waiting := len(bs.waiters)
-	// Heuristic Retry-After: roughly how many "rounds" ahead this caller is,
-	// floored at 1s. Refined once dwell metering lands (P6).
-	retry := time.Duration(math.Ceil(float64(waiting+1)/float64(maxInt(bs.capacity, 1)))) * time.Second
+	rounds := math.Ceil(float64(waiting+1) / float64(maxInt(bs.capacity, 1)))
+	per := bs.ewmaDwell
+	if per <= 0 {
+		per = 1 // no service-time sample yet
+	}
+	retry := time.Duration(rounds * per * float64(time.Second))
 	if retry < time.Second {
 		retry = time.Second
 	}

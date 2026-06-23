@@ -12,6 +12,84 @@ import (
 var queueStage = config.Stage{Queue: true}
 var rejectStage = config.Stage{Reject: true}
 
+// TestMaxQueueDepth: once the queue is full, a further queued request is
+// rejected fast (429) instead of enqueued.
+func TestMaxQueueDepth(t *testing.T) {
+	s := NewWithConfig(&config.Config{Scheduler: config.SchedulerConfig{MaxQueueDepth: 1}})
+	ctx := context.Background()
+
+	r1, _, err := s.Admit(ctx, "b", "local", 1, "g", 1, false, queueStage) // active
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1()
+
+	go func() { _, _, _ = s.Admit(ctx, "b", "local", 1, "g", 1, false, queueStage) }() // queues (depth 1)
+	time.Sleep(100 * time.Millisecond)
+
+	// Queue is full (depth 1) → reject.
+	_, _, err = s.Admit(ctx, "b", "local", 1, "g", 1, false, queueStage)
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "rejected" {
+		t.Fatalf("want rejected backpressure, got %v", err)
+	}
+}
+
+// TestMaxWait: a queued request gives up with a 429 after maxWait rather than
+// blocking on the (longer) request context.
+func TestMaxWait(t *testing.T) {
+	s := NewWithConfig(&config.Config{Scheduler: config.SchedulerConfig{MaxWait: "60ms"}})
+	ctx := context.Background()
+
+	r1, _, err := s.Admit(ctx, "b", "local", 1, "g", 1, false, queueStage) // holds the slot
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1()
+
+	start := time.Now()
+	_, _, err = s.Admit(ctx, "b", "local", 1, "g", 1, false, queueStage) // queues, then maxWait fires
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "queue-timeout" {
+		t.Fatalf("want queue-timeout, got %v", err)
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Errorf("maxWait not honored: waited %s", waited)
+	}
+}
+
+// TestRetryAfterFromDwell: Retry-After reflects the measured per-request service
+// time (dwell EWMA), not a flat 1s.
+func TestRetryAfterFromDwell(t *testing.T) {
+	s := New()
+	clk := time.Unix(1000, 0)
+	s.now = func() time.Time { return clk }
+	ctx := context.Background()
+
+	// One request that takes 10s of service time seeds the dwell EWMA.
+	r1, _, err := s.Admit(ctx, "b", "local", 1, "g", 1, false, rejectStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clk = clk.Add(10 * time.Second)
+	r1(Done{})
+
+	// Saturate, then a rejected request should suggest ~10s (1 round × 10s dwell).
+	r2, _, err := s.Admit(ctx, "b", "local", 1, "g", 1, false, rejectStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2()
+	_, _, err = s.Admit(ctx, "b", "local", 1, "g", 1, false, rejectStage)
+	var bp *BackpressureError
+	if !errors.As(err, &bp) {
+		t.Fatalf("want backpressure, got %v", err)
+	}
+	if bp.RetryAfter != 10*time.Second {
+		t.Errorf("Retry-After = %s, want 10s (from dwell EWMA)", bp.RetryAfter)
+	}
+}
+
 func TestAdmitUpToCapacity(t *testing.T) {
 	s := New()
 	ctx := context.Background()
