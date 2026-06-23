@@ -41,6 +41,12 @@ type CorrallmQueryNamespace {
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesOutputBody @derived(operationId: "usageSeries")
+  usageSeriesByGroup(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_UsageSeriesByGroupOutputBody @derived(operationId: "usageSeriesByGroup")
   v1: CorrallmV1QueryNamespace!
 }
 
@@ -79,6 +85,12 @@ type CorrallmV1QueryNamespace {
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesOutputBody @derived(operationId: "usageSeries")
+  usageSeriesByGroup(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_UsageSeriesByGroupOutputBody @derived(operationId: "usageSeriesByGroup")
 }
 
 """64-bit integer encoded as a decimal string to preserve precision past 2^53. Accepts a JSON number or a decimal string as input."""
@@ -182,6 +194,22 @@ type corrallm_GroupLoadView {
   group: String!
   """Queued requests."""
   waiting: Long!
+}
+
+type corrallm_GroupSeries {
+  """Priority group name."""
+  group: String!
+  """One point per bucket, aligned to Buckets."""
+  points: [corrallm_GroupSeriesPoint!]!
+}
+
+type corrallm_GroupSeriesPoint {
+  """Cost in this bucket, USD."""
+  costUsd: Float!
+  """Total dwell in this bucket, ms."""
+  dwellMs: Long!
+  """Requests in this bucket."""
+  requests: Long!
 }
 
 type corrallm_GroupView {
@@ -415,6 +443,15 @@ type corrallm_UsageRollupOutputBody {
   total: corrallm_RollupRow!
   """Window applied (0 = all time)."""
   windowHours: Long!
+}
+
+type corrallm_UsageSeriesByGroupOutputBody {
+  """Effective bucket width."""
+  bucketMinutes: Long!
+  """Bucket start times, unix millis, ascending."""
+  buckets: [Long!]!
+  """Per-group dense series, busiest first."""
+  groups: [corrallm_GroupSeries!]!
 }
 
 type corrallm_UsageSeriesOutputBody {

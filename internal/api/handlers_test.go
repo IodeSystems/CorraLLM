@@ -278,6 +278,54 @@ func TestUsageSeries(t *testing.T) {
 	}
 }
 
+// TestUsageSeriesByGroup resolves keys to groups and buckets per group.
+func TestUsageSeriesByGroup(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UnixMilli()
+	_ = st.InsertActivity(store.Activity{TS: now, Served: "m", Key: "aw3", Status: 200, CostUSD: 0.1})
+	_ = st.InsertActivity(store.Activity{TS: now, Served: "m", Key: "ragtag", Status: 200, CostUSD: 0.2})
+	_ = st.InsertActivity(store.Activity{TS: now, Served: "m", Key: "ragtag", Status: 200, CostUSD: 0.2})
+
+	cfg := &config.Config{
+		PriorityGroups: map[string]config.PriorityGroup{
+			"interactive": {Weight: 10}, "batch": {Weight: 1},
+		},
+		Keys: map[string]string{"aw3": "interactive", "ragtag": "batch"},
+	}
+	h := &Handlers{Store: st, Cfg: cfg}
+	out, err := h.UsageSeriesByGroup(context.Background(), &UsageSeriesInput{WindowHours: 2, BucketMinutes: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byGroup := map[string][]GroupSeriesPoint{}
+	for _, gs := range out.Body.Groups {
+		byGroup[gs.Group] = gs.Points
+		if len(gs.Points) != len(out.Body.Buckets) {
+			t.Fatalf("%s points misaligned", gs.Group)
+		}
+	}
+	sumReq := func(g string) int64 {
+		var s int64
+		for _, p := range byGroup[g] {
+			s += p.Requests
+		}
+		return s
+	}
+	if sumReq("interactive") != 1 || sumReq("batch") != 2 {
+		t.Errorf("group request totals: interactive=%d batch=%d, want 1/2", sumReq("interactive"), sumReq("batch"))
+	}
+	// batch busier → sorted first.
+	if out.Body.Groups[0].Group != "batch" {
+		t.Errorf("groups not busiest-first: %+v", out.Body.Groups)
+	}
+}
+
 // TestLanes joins group policy with live admission load: an admitted request
 // shows up under its group, and configured groups carry their weight/currency.
 func TestLanes(t *testing.T) {

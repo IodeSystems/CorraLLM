@@ -107,6 +107,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UsageSeries)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "usageSeriesByGroup",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/usage/series-by-group",
+		Summary:     "Per-priority-group usage time-series (for starvation watch).",
+		Tags:        []string{"observability"},
+	}, h.UsageSeriesByGroup)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "usageByKey",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/usage/by-key",

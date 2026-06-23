@@ -460,6 +460,100 @@ func (h *Handlers) ModelLogs(_ context.Context, in *ModelLogsInput) (*ModelLogsO
 	return out, nil
 }
 
+// --- per-group usage time-series (P8-beyond): spot priority starvation ---
+
+// GroupSeriesPoint is one bucket's metrics for a priority group.
+type GroupSeriesPoint struct {
+	Requests int64   `json:"requests" doc:"Requests in this bucket."`
+	CostUSD  float64 `json:"costUsd" doc:"Cost in this bucket, USD."`
+	DwellMS  int64   `json:"dwellMs" doc:"Total dwell in this bucket, ms."`
+}
+
+// GroupSeries is one priority group's dense time series.
+type GroupSeries struct {
+	Group  string             `json:"group" doc:"Priority group name."`
+	Points []GroupSeriesPoint `json:"points" doc:"One point per bucket, aligned to Buckets."`
+}
+
+// UsageSeriesByGroupOutput is a shared time axis plus one dense series per group
+// — the data behind the stacked-area priority view (interactive-starvation watch).
+type UsageSeriesByGroupOutput struct {
+	Body struct {
+		BucketMinutes int           `json:"bucketMinutes" doc:"Effective bucket width."`
+		Buckets       []int64       `json:"buckets" doc:"Bucket start times, unix millis, ascending."`
+		Groups        []GroupSeries `json:"groups" doc:"Per-group dense series, busiest first."`
+	}
+}
+
+// UsageSeriesByGroup buckets activity by (priority group, time), resolving each
+// caller key to its group. Stacked over time it reveals whether a high-priority
+// lane (e.g. interactive) is being starved under contention.
+func (h *Handlers) UsageSeriesByGroup(_ context.Context, in *UsageSeriesInput) (*UsageSeriesByGroupOutput, error) {
+	windowHours := in.WindowHours
+	if windowHours <= 0 {
+		windowHours = 24
+	}
+	bucketMin := in.BucketMinutes
+	if bucketMin <= 0 {
+		bucketMin = 60
+	}
+	windowMS := int64(windowHours) * 3600_000
+	bucketMS := int64(bucketMin) * 60_000
+	for windowMS/bucketMS > maxSeriesBuckets {
+		bucketMS *= 2
+	}
+
+	now := time.Now().UnixMilli()
+	end := (now / bucketMS) * bucketMS
+	start := ((now - windowMS) / bucketMS) * bucketMS
+	var buckets []int64
+	index := map[int64]int{}
+	for b := start; b <= end; b += bucketMS {
+		index[b] = len(buckets)
+		buckets = append(buckets, b)
+	}
+
+	rows, err := h.Store.RollupSeries(now-windowMS, bucketMS)
+	if err != nil {
+		return nil, err
+	}
+
+	type acc struct {
+		points []GroupSeriesPoint
+		total  int64
+	}
+	byGroup := map[string]*acc{}
+	for _, r := range rows {
+		pos, ok := index[r.BucketTS]
+		if !ok {
+			continue
+		}
+		grp, _ := h.Cfg.ResolveGroup(r.Key)
+		a := byGroup[grp]
+		if a == nil {
+			a = &acc{points: make([]GroupSeriesPoint, len(buckets))}
+			byGroup[grp] = a
+		}
+		p := &a.points[pos]
+		p.Requests += r.Requests
+		p.CostUSD += r.CostUSD
+		p.DwellMS += r.DwellMS
+		a.total += r.Requests
+	}
+
+	out := &UsageSeriesByGroupOutput{}
+	out.Body.BucketMinutes = int(bucketMS / 60_000)
+	out.Body.Buckets = buckets
+	out.Body.Groups = make([]GroupSeries, 0, len(byGroup))
+	for g, a := range byGroup {
+		out.Body.Groups = append(out.Body.Groups, GroupSeries{Group: g, Points: a.points})
+	}
+	sort.Slice(out.Body.Groups, func(i, j int) bool {
+		return byGroup[out.Body.Groups[i].Group].total > byGroup[out.Body.Groups[j].Group].total
+	})
+	return out, nil
+}
+
 // --- lanes / live admission load (P8-beyond) ---
 
 // LanesInput has no parameters.

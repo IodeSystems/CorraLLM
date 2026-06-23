@@ -25,6 +25,71 @@ const KEY_COLORS = ['#1976d2', '#9c27b0', '#2e7d32', '#ed6c02', '#0288d1', '#d32
 
 type ChartSeries = { key: string; color: string; values: number[] }
 
+// StackedArea draws bands summed bottom-to-top — for priority-group throughput
+// over time, so a shrinking high-priority band signals starvation.
+function StackedArea({ series, fmtTotal }: { series: ChartSeries[]; fmtTotal: (n: number) => string }) {
+  const W = 600
+  const H = 160
+  const pad = 4
+  const n = series[0]?.values.length ?? 0
+  if (n === 0) return null
+  const totals = Array.from({ length: n }, (_, i) => series.reduce((s, ser) => s + (ser.values[i] || 0), 0))
+  const max = Math.max(0, ...totals)
+  const x = (i: number) => (n <= 1 ? pad : (i / (n - 1)) * (W - 2 * pad) + pad)
+  const y = (v: number) => (max <= 0 ? H - pad : H - pad - (v / max) * (H - 2 * pad))
+
+  const cum = new Array<number>(n).fill(0)
+  const bands = series.map((ser) => {
+    const bottom = cum.slice()
+    const top = cum.map((c, i) => c + (ser.values[i] || 0))
+    for (let i = 0; i < n; i++) cum[i] = top[i]
+    const pts = [
+      ...top.map((v, i) => `${x(i)},${y(v)}`),
+      ...bottom.map((v, i) => `${x(i)},${y(v)}`).reverse(),
+    ].join(' ')
+    return { key: ser.key, color: ser.color, pts }
+  })
+
+  return (
+    <Card>
+      <CardContent>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <Typography variant="subtitle2">Priority usage — requests/bucket (stacked)</Typography>
+          <Typography variant="caption" color="text.secondary">
+            peak {fmtTotal(max)}
+          </Typography>
+        </Box>
+        <Box
+          component="svg"
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="none"
+          sx={{ width: '100%', height: 180, display: 'block', mt: 1 }}
+        >
+          {bands.map((b) => (
+            <polygon
+              key={b.key}
+              points={b.pts}
+              fill={b.color}
+              fillOpacity={0.55}
+              stroke={b.color}
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+        </Box>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mt: 1 }}>
+          {series.map((s) => (
+            <Box key={s.key} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Box sx={{ width: 10, height: 10, bgcolor: s.color, borderRadius: 0.3 }} />
+              <Typography variant="caption">{s.key}</Typography>
+            </Box>
+          ))}
+        </Box>
+      </CardContent>
+    </Card>
+  )
+}
+
 // MetricChart draws one metric over time, one line per key (dependency-free SVG).
 function MetricChart({
   title,
@@ -134,6 +199,17 @@ const UsageDoc = graphql(/* GraphQL */ `
           completionTokens
           dwellMs
           costUsd
+        }
+      }
+      usageSeriesByGroup(windowHours: "24", bucketMinutes: "60") {
+        buckets
+        groups {
+          group
+          points {
+            requests
+            costUsd
+            dwellMs
+          }
         }
       }
       usageSeries(windowHours: "24", bucketMinutes: "60") {
@@ -247,6 +323,12 @@ function Usage() {
   const fmtKwh = (k: number) =>
     !Number.isFinite(k) || k === 0 ? '—' : k < 1 ? `${(k * 1000).toFixed(1)} Wh` : `${k.toFixed(3)} kWh`
 
+  const groupSeries: ChartSeries[] = (q.data?.corrallm.usageSeriesByGroup?.groups ?? []).map((g, i) => ({
+    key: g.group,
+    color: KEY_COLORS[i % KEY_COLORS.length],
+    values: g.points.map((p) => Number(p.requests)),
+  }))
+
   const seriesKeys = q.data?.corrallm.usageSeries?.keys ?? []
   const mkSeries = (sel: (p: {
     requests: string
@@ -306,6 +388,17 @@ function Usage() {
             </TableBody>
           </Table>
         </TableContainer>
+      </Box>
+
+      <Box>
+        <Typography variant="h6" gutterBottom>
+          Priority lanes — last 24h
+        </Typography>
+        {groupSeries.length === 0 ? (
+          <Typography color="text.secondary">No usage in window.</Typography>
+        ) : (
+          <StackedArea series={groupSeries} fmtTotal={fmtInt} />
+        )}
       </Box>
 
       <Box>
