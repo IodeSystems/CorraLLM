@@ -37,6 +37,7 @@ llama-swap in production** (see §8 Deployment). Only open roadmap item: multi-n
 >   - per-key + per-lane usage analytics (bars, line + stacked-area series) — `6bf224d`/`ed80a2d`/`9579fdd`
 >   - queue pressure (429s) + per-request wait + sampled queue depth — `15bda80`/`e576065`
 >   - backend log capture + parsed `n_ctx`/`n_slots` — `5bca212`
+>   - admin-token auth on `/api/*` + login screen — `3e83001`
 >   - cutover hardening (health-timeout/`/health` 2xx/liveness route/EWMA Retry-After
 >     + maxWait/maxQueueDepth) — `ca1b5b3`/`21698f2`/`7e96bbf`/`14dd1bd`
 > - ☐ Later: multi-node peer awareness.
@@ -372,6 +373,9 @@ the BackpressureError shape we already validated.
         `ca1b5b3`; readiness waits for `/health` 2xx so a cold load doesn't 503 `21698f2`;
         plain `/health`+`/healthz` liveness route `7e96bbf`; EWMA Retry-After + `maxWait`/
         `maxQueueDepth` queue bounds (the fork's good-citizen 429 contract) `14dd1bd`.
+  - [x] **Auth** (`internal/auth`) — admin token in `<home>/admin.token` (auto-generated)
+        gates all `/api/*` (ops + load/unload) via Bearer or cookie; `/v1`, `/upstream`,
+        `/health` stay open. Dashboard login screen points to `home/admin.token`. `3e83001`
 
 > **── MVP line ──** Above: P0–P6 + the P8 MVP slice = a usable, observable control
 > plane. Below: post-MVP polish, reorderable.
@@ -463,9 +467,9 @@ the BackpressureError shape we already validated.
 - **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
   (benign warning); revisit if it becomes flaky.
 - **P8-beyond known gaps / OSS pre-reqs:**
-  (1) **`/api` is unauthenticated** — the `overview`/`lanes`/usage ops *and the `loadModel`/
-  `unloadModel` mutations* are wide open. Fine on a trusted host; **must gate before exposing the
-  control plane beyond a trusted network** (the top OSS-release blocker).
+  (1) ✅ ~~`/api` unauthenticated~~ — resolved (`3e83001`): admin token (`<home>/admin.token`) gates
+  `/api/*` incl. load/unload, via Bearer or cookie; `/v1`/`/upstream`/`/health` stay open.
+  *(Single shared admin token — no per-user accounts/roles/rotation yet; fine for one operator.)*
   (2) **Cost coefficients are placeholders** — `commandCosts` Wh/token are demo values (~1000× high)
   and shared per `type`, so dashboard $/energy magnitudes are not real until calibrated per backend
   (split nomic-embed vs Qwen; measure W÷tok/s). Mechanism is correct; only the numbers are wrong.
@@ -475,12 +479,12 @@ the BackpressureError shape we already validated.
   queued-then-served requests accumulate (rejections + sampled depth are already live).
 
 ### Next steps
-- The full P0–P8 + P7 roadmap is shipped and live (§8). Open work, by priority:
-  1. **Auth on `/api`** — gate the control plane (esp. load/unload) before any non-trusted exposure.
-     Top blocker for the planned OSS release.
-  2. **Calibrate cost coefficients** — per-backend Wh/token (split embed vs chat; measure) so $/energy
+- The full P0–P8 + P7 roadmap is shipped and live (§8). `/api` auth landed (`3e83001`). Open work:
+  1. **Calibrate cost coefficients** — per-backend Wh/token (split embed vs chat; measure) so $/energy
      are real.
-  3. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
+  2. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
+  - Auth follow-ups if needed for OSS: per-user accounts/roles + token rotation (today is a single
+    shared admin token).
 - Optional polish in §7 Optional extensions (affinity weighting, context-window clamp on degrade,
   gRPC, CapacityProbe, `server.maxConcurrent` host cap, proactive ttl reaper, instantaneous queue
   depth is now covered by the sampler).
