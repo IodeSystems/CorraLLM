@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -55,6 +56,8 @@ type Process struct {
 	persistent bool             // pinned: never evicted
 	evictRank  int              // 0 low … 2 high (resistance to eviction)
 	ttl        time.Duration    // idle keep-warm window
+
+	logs *logBuffer // captured stdout/stderr (spawned backends only; nil for pure-proxy)
 
 	mu       sync.Mutex
 	state    State
@@ -146,6 +149,10 @@ func (m *Manager) EnsureReady(ctx context.Context, name, modelName string, b con
 			m.reserveLocked(b.Server, usage)
 		}
 		model := m.cfg.Models[modelName]
+		var lb *logBuffer
+		if b.Cmd != "" {
+			lb = newLogBuffer(500) // capture spawned-backend output for the logs view
+		}
 		p = &Process{
 			Name:       name,
 			ModelName:  modelName,
@@ -155,6 +162,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name, modelName string, b con
 			persistent: model.Persistent,
 			evictRank:  evictRank(model.Sticky),
 			ttl:        stickyTTL(model.Sticky),
+			logs:       lb,
 			state:      StateAbsent,
 			ready:      make(chan struct{}),
 		}
@@ -216,7 +224,13 @@ func (m *Manager) load(name string, b config.Backend, p *Process) {
 
 	if b.Cmd != "" {
 		cmd := exec.Command("sh", "-c", b.Cmd)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		// Tee output to our stdout AND the per-backend ring buffer (for the logs
+		// view + n_ctx/n_slots parsing).
+		out := io.Writer(os.Stdout)
+		if p.logs != nil {
+			out = io.MultiWriter(os.Stdout, p.logs)
+		}
+		cmd.Stdout, cmd.Stderr = out, out
 		cmd.SysProcAttr = sysProcAttr()
 		if err := cmd.Start(); err != nil {
 			finish(StateFailed, fmt.Errorf("spawn %q: %w", b.Cmd, err))
@@ -506,7 +520,21 @@ type ResidentModel struct {
 	Refs       int  // in-flight requests holding it
 	Persistent bool // pinned: exempt from eviction
 	LastUsedMS int64
+	NCtx       int // parsed context length (spawned backends; 0 if unknown)
+	NSlots     int // parsed slot count (spawned backends; 0 if unknown)
 	Usage      []PoolUsage
+}
+
+// Logs returns the captured stdout/stderr (oldest first) of a spawned backend,
+// or nil for an unknown or pure-proxy backend.
+func (m *Manager) Logs(name string) []string {
+	m.mu.Lock()
+	p := m.procs[name]
+	m.mu.Unlock()
+	if p == nil || p.logs == nil {
+		return nil
+	}
+	return p.logs.Lines()
 }
 
 // ResidencySnapshot is a point-in-time view of the residency layer.
@@ -548,7 +576,11 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 		for pool, b := range p.usage {
 			rm.Usage = append(rm.Usage, PoolUsage{Pool: pool, Bytes: b})
 		}
+		logs := p.logs
 		p.mu.Unlock()
+		if logs != nil {
+			rm.NCtx, rm.NSlots = logs.Stats()
+		}
 		sort.Slice(rm.Usage, func(i, j int) bool { return rm.Usage[i].Pool < rm.Usage[j].Pool })
 		snap.Models = append(snap.Models, rm)
 	}

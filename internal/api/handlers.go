@@ -164,6 +164,8 @@ type ResidentModelView struct {
 	Refs       int             `json:"refs" doc:"In-flight requests holding it."`
 	Persistent bool            `json:"persistent" doc:"Pinned: exempt from eviction."`
 	LastUsedMS int64           `json:"lastUsedMs" doc:"Unix millis of last use, 0 if never."`
+	NCtx       int             `json:"nCtx" doc:"Context length parsed from the backend (0 if unknown)."`
+	NSlots     int             `json:"nSlots" doc:"Slot count parsed from the backend (0 if unknown)."`
 	Usage      []PoolUsageView `json:"usage" doc:"Per-pool reservation."`
 }
 
@@ -192,6 +194,7 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 		mv := ResidentModelView{
 			Name: m.Name, ModelName: m.ModelName, Server: m.Server, State: m.State,
 			Refs: m.Refs, Persistent: m.Persistent, LastUsedMS: m.LastUsedMS,
+			NCtx: m.NCtx, NSlots: m.NSlots,
 			Usage: make([]PoolUsageView, 0, len(m.Usage)),
 		}
 		for _, u := range m.Usage {
@@ -419,6 +422,41 @@ func (h *Handlers) UsageSeries(_ context.Context, in *UsageSeriesInput) (*UsageS
 	sort.Slice(out.Body.Keys, func(i, j int) bool {
 		return byKey[out.Body.Keys[i].Key].totalCost > byKey[out.Body.Keys[j].Key].totalCost
 	})
+	return out, nil
+}
+
+// --- model logs (P8-beyond control plane) ---
+
+// ModelLogsInput names the backend whose logs to fetch.
+type ModelLogsInput struct {
+	Backend string `query:"backend" doc:"Backend id (<servedModel>#<index>), as in residency."`
+	Tail    int    `query:"tail" default:"200" minimum:"1" maximum:"2000" doc:"Max trailing lines."`
+}
+
+// ModelLogsOutput is the captured stdout/stderr tail of a spawned backend.
+type ModelLogsOutput struct {
+	Body struct {
+		Backend string   `json:"backend" doc:"Backend id."`
+		Lines   []string `json:"lines" doc:"Captured lines, oldest first (empty for pure-proxy/absent)."`
+	}
+}
+
+// ModelLogs returns a spawned backend's recent stdout/stderr.
+func (h *Handlers) ModelLogs(_ context.Context, in *ModelLogsInput) (*ModelLogsOutput, error) {
+	lines := h.Mgr.Logs(in.Backend)
+	tail := in.Tail
+	if tail <= 0 {
+		tail = 200
+	}
+	if len(lines) > tail {
+		lines = lines[len(lines)-tail:]
+	}
+	out := &ModelLogsOutput{}
+	out.Body.Backend = in.Backend
+	out.Body.Lines = lines
+	if out.Body.Lines == nil {
+		out.Body.Lines = []string{}
+	}
 	return out, nil
 }
 

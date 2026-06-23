@@ -75,6 +75,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UnloadModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "modelLogs",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/models/logs",
+		Summary:     "Recent stdout/stderr of a spawned backend.",
+		Tags:        []string{"observability"},
+	}, h.ModelLogs)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "residency",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/residency",

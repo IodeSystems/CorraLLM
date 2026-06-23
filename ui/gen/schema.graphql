@@ -15,6 +15,12 @@ type CorrallmQueryNamespace {
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
+  modelLogs(
+    """Backend id (<servedModel>#<index>), as in residency."""
+    backend: String
+    """Max trailing lines."""
+    tail: Long
+  ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   recentActivity(
     """Max records, newest first."""
@@ -47,6 +53,12 @@ type CorrallmV1QueryNamespace {
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
+  modelLogs(
+    """Backend id (<servedModel>#<index>), as in residency."""
+    backend: String
+    """Max trailing lines."""
+    tail: Long
+  ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   recentActivity(
     """Max records, newest first."""
@@ -263,6 +275,13 @@ type corrallm_ModelDef {
   ttl: String!
 }
 
+type corrallm_ModelLogsOutputBody {
+  """Backend id."""
+  backend: String!
+  """Captured lines, oldest first (empty for pure-proxy/absent)."""
+  lines: [String!]!
+}
+
 type corrallm_OverviewOutputBody {
   """Priority-group (lane) policies."""
   groups: [corrallm_GroupDef!]!
@@ -316,6 +335,10 @@ type corrallm_ResidentModelView {
   lastUsedMs: Long!
   """Served model name."""
   modelName: String!
+  """Context length parsed from the backend (0 if unknown)."""
+  nCtx: Long!
+  """Slot count parsed from the backend (0 if unknown)."""
+  nSlots: Long!
   """Backend id (<servedModel>#<index>)."""
   name: String!
   """Pinned: exempt from eviction."""

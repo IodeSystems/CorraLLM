@@ -9,6 +9,9 @@ import {
   CardContent,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   Link as MuiLink,
   Stack,
   Table,
@@ -78,9 +81,12 @@ const OverviewDoc = graphql(/* GraphQL */ `
       }
       residency {
         models {
+          name
           modelName
           state
           refs
+          nCtx
+          nSlots
         }
       }
     }
@@ -111,6 +117,51 @@ const UnloadDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const LogsDoc = graphql(/* GraphQL */ `
+  query ModelLogs($backend: String!) {
+    corrallm {
+      modelLogs(backend: $backend) {
+        backend
+        lines
+      }
+    }
+  }
+`)
+
+function LogsDialog({ backend, onClose }: { backend: string; onClose: () => void }) {
+  const q = useQuery({
+    queryKey: ['logs', backend],
+    queryFn: () => gqlClient.request(LogsDoc, { backend }),
+    refetchInterval: 2000,
+  })
+  const lines = q.data?.corrallm.modelLogs?.lines ?? []
+  return (
+    <Dialog open onClose={onClose} maxWidth="lg" fullWidth>
+      <DialogTitle>Logs · {backend}</DialogTitle>
+      <DialogContent dividers>
+        <Box
+          component="pre"
+          sx={{
+            m: 0,
+            p: 1,
+            fontSize: 12,
+            lineHeight: 1.4,
+            maxHeight: '65vh',
+            overflow: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+            bgcolor: 'grey.900',
+            color: 'grey.100',
+            borderRadius: 1,
+          }}
+        >
+          {lines.length ? lines.join('\n') : q.isLoading ? 'loading…' : '(no output captured)'}
+        </Box>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function stateColor(state?: string): 'success' | 'info' | 'warning' | 'error' | 'default' {
   switch (state) {
     case 'ready':
@@ -129,6 +180,7 @@ function stateColor(state?: string): 'success' | 'info' | 'warning' | 'error' | 
 function Home() {
   const qc = useQueryClient()
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [logsFor, setLogsFor] = useState<string | null>(null)
 
   const q = useQuery({
     queryKey: ['overview'],
@@ -188,6 +240,8 @@ function Home() {
         </Alert>
       )}
 
+      {logsFor && <LogsDialog backend={logsFor} onClose={() => setLogsFor(null)} />}
+
       {/* Models + lane definitions, with load/unload + open-UI for spawnable backends. */}
       <Box>
         <Typography variant="subtitle1" gutterBottom>
@@ -204,6 +258,12 @@ function Home() {
                     <Chip size="small" label={st?.state ?? 'absent'} color={stateColor(st?.state)} />
                     {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
                     {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
+                    {st && Number(st.nCtx) > 0 && (
+                      <Chip size="small" variant="outlined" label={`ctx ${fmtInt(st.nCtx)}`} />
+                    )}
+                    {st && Number(st.nSlots) > 0 && (
+                      <Chip size="small" variant="outlined" label={`slots ${fmtInt(st.nSlots)}`} />
+                    )}
                     <Box sx={{ flexGrow: 1 }} />
                     {m.spawnable && (
                       <>
@@ -236,6 +296,13 @@ function Home() {
                           rel="noreferrer"
                         >
                           Open UI
+                        </Button>
+                        <Button
+                          size="small"
+                          disabled={!st}
+                          onClick={() => st && setLogsFor(st.name)}
+                        >
+                          Logs
                         </Button>
                       </>
                     )}
