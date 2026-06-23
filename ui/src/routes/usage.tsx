@@ -21,6 +21,27 @@ import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
 
+// BarCell renders a value with a proportional background bar (value / columnMax).
+function BarCell({ value, max, label }: { value: number; max: number; label: string }) {
+  const pct = max > 0 ? Math.max(2, (value / max) * 100) : 0
+  return (
+    <TableCell align="right" sx={{ position: 'relative', minWidth: 110 }}>
+      <Box
+        sx={{
+          position: 'absolute',
+          inset: 0,
+          width: `${pct}%`,
+          ml: 'auto',
+          bgcolor: 'primary.main',
+          opacity: 0.16,
+          borderRadius: 0.5,
+        }}
+      />
+      <Box sx={{ position: 'relative' }}>{label}</Box>
+    </TableCell>
+  )
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <Card sx={{ minWidth: 160, flex: '1 1 160px' }}>
@@ -53,6 +74,17 @@ const UsageDoc = graphql(/* GraphQL */ `
           completionTokens
           dwellMs
           costUsd
+        }
+      }
+      usageByKey(windowHours: "24") {
+        rows {
+          key
+          requests
+          promptTokens
+          completionTokens
+          dwellMs
+          costUsd
+          energyKwh
         }
       }
       residency {
@@ -132,6 +164,15 @@ function Usage() {
   const rollup = q.data?.corrallm.usageRollup
   const rollupRows = rollup?.rows ?? []
   const total = rollup?.total
+  const byKey = q.data?.corrallm.usageByKey?.rows ?? []
+  const kMax = {
+    cost: Math.max(0, ...byKey.map((r) => r.costUsd)),
+    req: Math.max(0, ...byKey.map((r) => Number(r.requests))),
+    energy: Math.max(0, ...byKey.map((r) => r.energyKwh)),
+    dwell: Math.max(0, ...byKey.map((r) => Number(r.dwellMs))),
+  }
+  const fmtKwh = (k: number) =>
+    !Number.isFinite(k) || k === 0 ? '—' : k < 1 ? `${(k * 1000).toFixed(1)} Wh` : `${k.toFixed(3)} kWh`
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -173,6 +214,44 @@ function Usage() {
                     <TableCell align="right">{fmtInt(r.completionTokens)}</TableCell>
                     <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>
                     <TableCell align="right">{fmtUSD(r.costUsd)}</TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Box>
+
+      <Box>
+        <Typography variant="h6" gutterBottom>
+          By Key — last 24h
+        </Typography>
+        <TableContainer component={Paper}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Key</TableCell>
+                <TableCell align="right">Cost</TableCell>
+                <TableCell align="right">Requests</TableCell>
+                <TableCell align="right">Energy</TableCell>
+                <TableCell align="right">Time</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {byKey.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5}>
+                    <Typography color="text.secondary">No keyed usage in window.</Typography>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                byKey.map((r) => (
+                  <TableRow key={r.key || '(unkeyed)'} hover>
+                    <TableCell>{r.key || '(unkeyed)'}</TableCell>
+                    <BarCell value={r.costUsd} max={kMax.cost} label={fmtUSD(r.costUsd)} />
+                    <BarCell value={Number(r.requests)} max={kMax.req} label={fmtInt(r.requests)} />
+                    <BarCell value={r.energyKwh} max={kMax.energy} label={fmtKwh(r.energyKwh)} />
+                    <BarCell value={Number(r.dwellMs)} max={kMax.dwell} label={fmtDuration(r.dwellMs)} />
                   </TableRow>
                 ))
               )}

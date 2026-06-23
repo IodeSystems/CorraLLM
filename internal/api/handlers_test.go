@@ -109,6 +109,36 @@ func TestUsageRollup(t *testing.T) {
 	}
 }
 
+// TestUsageByKey aggregates per key and derives energy from cost/costPerKwh.
+func TestUsageByKey(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now()
+	_ = st.InsertActivity(store.Activity{TS: now.UnixMilli(), Served: "m", Key: "aw3", Status: 200, CostUSD: 0.14})
+	_ = st.InsertActivity(store.Activity{TS: now.UnixMilli(), Served: "m", Key: "ragtag", Status: 200, CostUSD: 0.07})
+
+	h := &Handlers{Store: st, Cfg: &config.Config{CostPerKwh: 0.14}}
+	out, err := h.UsageByKey(context.Background(), &UsageByKeyInput{WindowHours: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Body.Rows) != 2 {
+		t.Fatalf("want 2 keys, got %d", len(out.Body.Rows))
+	}
+	top := out.Body.Rows[0]
+	if top.Key != "aw3" || top.CostUSD != 0.14 {
+		t.Errorf("top = %+v, want aw3/0.14", top)
+	}
+	// energy = cost / costPerKwh = 0.14 / 0.14 = 1 kWh.
+	if top.EnergyKwh < 0.999 || top.EnergyKwh > 1.001 {
+		t.Errorf("energyKwh = %v, want ~1", top.EnergyKwh)
+	}
+}
+
 // TestLanes joins group policy with live admission load: an admitted request
 // shows up under its group, and configured groups carry their weight/currency.
 func TestLanes(t *testing.T) {

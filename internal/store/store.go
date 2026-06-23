@@ -159,6 +159,46 @@ func (s *Store) RollupByModel(sinceMS int64) ([]Rollup, error) {
 	return out, rows.Err()
 }
 
+// KeyRollup is aggregated activity for one caller key over a window (P8).
+type KeyRollup struct {
+	Key              string
+	Requests         int64
+	PromptTokens     int64
+	CompletionTokens int64
+	DwellMS          int64
+	CostUSD          float64
+}
+
+// RollupByKey aggregates activity at or after sinceMS, grouped by caller key,
+// ordered by cost (then request count) descending. sinceMS <= 0 covers all
+// records. An empty key means an unkeyed caller.
+func (s *Store) RollupByKey(sinceMS int64) ([]KeyRollup, error) {
+	rows, err := s.db.Query(
+		`SELECT key,
+		        COUNT(*),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0),
+		        COALESCE(SUM(dwell_ms), 0),
+		        COALESCE(SUM(cost_usd), 0)
+		 FROM activity WHERE ts >= ?
+		 GROUP BY key
+		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []KeyRollup
+	for rows.Next() {
+		var r KeyRollup
+		if err := rows.Scan(&r.Key, &r.Requests, &r.PromptTokens, &r.CompletionTokens,
+			&r.DwellMS, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // DB exposes the underlying handle for query layers added in later phases.
 func (s *Store) DB() *sql.DB { return s.db }
 

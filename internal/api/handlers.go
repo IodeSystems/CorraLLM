@@ -255,6 +255,63 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 	return out, nil
 }
 
+// --- per-key usage rollup (P8-beyond) ---
+
+// UsageByKeyInput bounds the rollup window.
+type UsageByKeyInput struct {
+	WindowHours int `query:"windowHours" default:"24" minimum:"0" maximum:"8760" doc:"Trailing window in hours; 0 = all time."`
+}
+
+// KeyUsageRow is aggregated usage for one caller key, including energy derived
+// from cost (energy = cost / costPerKwh; meaningful for energy-priced local
+// types — exact for an all-local deployment).
+type KeyUsageRow struct {
+	Key              string  `json:"key" doc:"Caller key (empty = unkeyed)."`
+	Requests         int64   `json:"requests" doc:"Request count."`
+	PromptTokens     int64   `json:"promptTokens" doc:"Total prompt tokens."`
+	CompletionTokens int64   `json:"completionTokens" doc:"Total completion tokens."`
+	DwellMS          int64   `json:"dwellMs" doc:"Total time in request, milliseconds."`
+	CostUSD          float64 `json:"costUsd" doc:"Total cost, USD."`
+	EnergyKwh        float64 `json:"energyKwh" doc:"Energy in kWh (cost / costPerKwh; 0 if rate unset)."`
+}
+
+// UsageByKeyOutput is per-key usage over the window, costliest first.
+type UsageByKeyOutput struct {
+	Body struct {
+		WindowHours int           `json:"windowHours" doc:"Window applied (0 = all time)."`
+		Rows        []KeyUsageRow `json:"rows" doc:"Per-key usage, costliest first."`
+	}
+}
+
+// UsageByKey aggregates metered activity by caller key over a window — the data
+// behind the per-key cost/requests/energy/time view.
+func (h *Handlers) UsageByKey(_ context.Context, in *UsageByKeyInput) (*UsageByKeyOutput, error) {
+	var sinceMS int64
+	if in.WindowHours > 0 {
+		sinceMS = time.Now().Add(-time.Duration(in.WindowHours) * time.Hour).UnixMilli()
+	}
+	rows, err := h.Store.RollupByKey(sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	rate := h.Cfg.CostPerKwh
+	out := &UsageByKeyOutput{}
+	out.Body.WindowHours = in.WindowHours
+	out.Body.Rows = make([]KeyUsageRow, 0, len(rows))
+	for _, r := range rows {
+		row := KeyUsageRow{
+			Key: r.Key, Requests: r.Requests,
+			PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens,
+			DwellMS: r.DwellMS, CostUSD: r.CostUSD,
+		}
+		if rate > 0 {
+			row.EnergyKwh = r.CostUSD / rate
+		}
+		out.Body.Rows = append(out.Body.Rows, row)
+	}
+	return out, nil
+}
+
 // --- lanes / live admission load (P8-beyond) ---
 
 // LanesInput has no parameters.

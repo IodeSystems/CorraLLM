@@ -79,6 +79,44 @@ func TestRollupByModel(t *testing.T) {
 	}
 }
 
+// TestRollupByKey aggregates per caller key, ordered by cost desc.
+func TestRollupByKey(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	rows := []Activity{
+		{TS: 100, Served: "m", Key: "aw3", Status: 200, CostUSD: 0.5, DwellMS: 100, PromptTokens: 5},
+		{TS: 200, Served: "m", Key: "ragtag", Status: 200, CostUSD: 0.01, DwellMS: 5},
+		{TS: 300, Served: "m", Key: "ragtag", Status: 200, CostUSD: 0.01, DwellMS: 5},
+		{TS: 400, Served: "m", Key: "", Status: 200, CostUSD: 0.02}, // unkeyed
+	}
+	for _, a := range rows {
+		if err := st.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := st.RollupByKey(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 keys, got %d: %+v", len(got), got)
+	}
+	if got[0].Key != "aw3" || got[0].CostUSD != 0.5 {
+		t.Errorf("top key = %+v, want aw3/0.5", got[0])
+	}
+	// ragtag aggregates its two rows.
+	for _, r := range got {
+		if r.Key == "ragtag" && (r.Requests != 2 || r.DwellMS != 10) {
+			t.Errorf("ragtag rollup = %+v", r)
+		}
+	}
+}
+
 // TestMigrationsIdempotent: Open applies the upgrade migrations and is safe to
 // call repeatedly against the same database (duplicate-column errors swallowed).
 func TestMigrationsIdempotent(t *testing.T) {

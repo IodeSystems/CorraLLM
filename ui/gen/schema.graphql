@@ -13,6 +13,10 @@ type CorrallmQueryNamespace {
     limit: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
+  usageByKey(
+    """Trailing window in hours; 0 = all time."""
+    windowHours: Long
+  ): corrallm_UsageByKeyOutputBody @derived(operationId: "usageByKey")
   usageRollup(
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
@@ -29,6 +33,10 @@ type CorrallmV1QueryNamespace {
     limit: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
+  usageByKey(
+    """Trailing window in hours; 0 = all time."""
+    windowHours: Long
+  ): corrallm_UsageByKeyOutputBody @derived(operationId: "usageByKey")
   usageRollup(
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
@@ -118,6 +126,23 @@ type corrallm_HealthOutputBody {
   version: String!
 }
 
+type corrallm_KeyUsageRow {
+  """Total completion tokens."""
+  completionTokens: Long!
+  """Total cost, USD."""
+  costUsd: Float!
+  """Total time in request, milliseconds."""
+  dwellMs: Long!
+  """Energy in kWh (cost / costPerKwh; 0 if rate unset)."""
+  energyKwh: Float!
+  """Caller key (empty = unkeyed)."""
+  key: String!
+  """Total prompt tokens."""
+  promptTokens: Long!
+  """Request count."""
+  requests: Long!
+}
+
 type corrallm_LanesOutputBody {
   """Per-backend live load."""
   backends: [corrallm_BackendLoadView!]!
@@ -192,6 +217,13 @@ type corrallm_ServerView {
   pools: [corrallm_PoolView!]!
   """Server name."""
   server: String!
+}
+
+type corrallm_UsageByKeyOutputBody {
+  """Per-key usage, costliest first."""
+  rows: [corrallm_KeyUsageRow!]!
+  """Window applied (0 = all time)."""
+  windowHours: Long!
 }
 
 type corrallm_UsageRollupOutputBody {
