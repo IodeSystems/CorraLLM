@@ -4,13 +4,16 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **P0–P8 + P7 shipped; only "Later" (multi-node) remains.** Engine is
-runnable: OpenAI proxy + spawn lifecycle + fairshare scheduler + ordered
+Status: **P0–P8 + P7 shipped and running in production; only "Later" (multi-node)
+remains.** Engine: OpenAI proxy + spawn lifecycle + fairshare scheduler + ordered
 fall-through + residency/eviction + preemption + cost model + quality-degrade
-routing — and observable: activity log, residency/pool usage, per-model cost
-rollup, lanes/backend-health live view, all updated live over SSE. The full
-roadmap through P8 is delivered; the only open roadmap item is multi-node peer
-awareness ("Later"). How to work this plan is §0; roadmap is §6; decisions in §7.
+routing. Observability + control plane: activity log, residency/pool usage,
+per-model + per-key + per-lane cost/usage analytics (bars, line + stacked-area
+time-series), queue-pressure + sampled queue-depth (starvation watch), backend
+logs with parsed `n_ctx`/`n_slots`, and an Overview control plane (model/lane/cmd
+defs, capacity, load/unload) — all live over SSE. **corrallm has replaced
+llama-swap in production** (see §8 Deployment). Only open roadmap item: multi-node
+("Later"). How to work this plan is §0; roadmap is §6; decisions in §7; deploy in §8.
 
 > **Progress (updated 2026-06-23)**
 > - ✅ **P0 scaffold** — `fdf90b9`
@@ -25,12 +28,17 @@ awareness ("Later"). How to work this plan is §0; roadmap is §6; decisions in 
 > - ✅ **P8 MVP slice** — `dc9ffd3`/`b7d8dcc`/`b7e1b92`: recentActivity op +
 >   activity table; residency read op (`Manager.Snapshot`) + usage view (pool
 >   bars + resident models); usageRollup op + per-model 24h cost rollup. **MVP reached.**
-> - ✅ **P8-beyond** — `adf7483`/`45c93d0`: lanes op (`Scheduler.Snapshot`) — groups
->   live view + backend-health/utilization; live SSE events (`internal/events`) replace
->   polling (proxy publishes activity/changed; UI invalidates on push, 15s fallback).
 > - ✅ **P7 quality-degrade** — `26c8d69`: `quality` is a routing key (best-tier-first
 >   walk); per-group opt-in (`acceptDegrade`/`qualityFloor`) gates which tiers a group
 >   accepts; per-backend `maxTokens` clamp on degrade. Variant-in-list model chosen.
+> - ✅ **P8-beyond** (control plane + observability suite; driven by the live cutover):
+>   - lanes live view + SSE events (coalesced) — `adf7483`/`45c93d0`/`d97dcec`
+>   - Overview control plane: model/lane/cmd defs, capacity, load/unload, logs — `f5ef5da`/`424b280`/`5bca212`
+>   - per-key + per-lane usage analytics (bars, line + stacked-area series) — `6bf224d`/`ed80a2d`/`9579fdd`
+>   - queue pressure (429s) + per-request wait + sampled queue depth — `15bda80`/`e576065`
+>   - backend log capture + parsed `n_ctx`/`n_slots` — `5bca212`
+>   - cutover hardening (health-timeout/`/health` 2xx/liveness route/EWMA Retry-After
+>     + maxWait/maxQueueDepth) — `ca1b5b3`/`21698f2`/`7e96bbf`/`14dd1bd`
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
@@ -340,13 +348,30 @@ the BackpressureError shape we already validated.
         `/usage` view (per-server pool-utilization bars + resident-model table).
   - [x] `usageRollup` op (per-model requests/tokens/dwell/$ over a window) + a 24h
         summary + per-model rollup table on the Usage page.
-- ✅ **P8-beyond — observability polish.** `adf7483`/`45c93d0`.
-  - [x] Lanes/groups live view (`Scheduler.Snapshot` → `lanes` op): groups
-        (weight/currency/interruptible + live active/waiting) + backend
-        health/utilization. $ dashboard = the `usageRollup` 24h view.
-  - [x] Live events (`internal/events` broker → `/api/v1/events` SSE), replacing
-        poll: proxy publishes activity/changed; UI invalidates caches on push,
-        15s fallback. *(SSE not WebSocket — see Status deviations.)*
+- ✅ **P8-beyond — observability + control plane.** Grew well past "polish": driven
+  by the live llama-swap → corrallm cutover (§8), it's now the operator surface.
+  - [x] **Lanes live view** — `Scheduler.Snapshot` → `lanes` op: groups
+        (weight/currency/interruptible + live active/waiting) + backend health/util. `adf7483`
+  - [x] **Live SSE events** — `internal/events` broker → `/api/v1/events`; proxy
+        publishes activity/changed, UI invalidates on push (300ms coalesced throttle,
+        15s fallback). *(SSE not WebSocket — see Status deviations.)* `45c93d0`/`d97dcec`
+  - [x] **Overview control plane** — `overview` op: model + spawn-`cmd` defs (auth
+        headers redacted, cmd behind a modal), lane defs, declared capacity; per-model
+        `loadModel`/`unloadModel` mutations (`Manager.LoadModel`/`UnloadModel`; rails:
+        spawnable-only, never pinned or in-flight) + Open-UI links. `f5ef5da`/`424b280`
+  - [x] **Per-key usage** (`usageByKey`) + **time-series** (`usageSeries`): cost/
+        requests/energy/time per caller key — bars + dependency-free SVG line charts. `6bf224d`/`ed80a2d`
+  - [x] **Per-lane analytics** (`usageSeriesByGroup`, resolves key→group): stacked-area
+        throughput + 429-rejections + avg queue-wait — priority-starvation watch. `9579fdd`/`15bda80`
+  - [x] **Queue-depth sampler** — 5s background snapshot → `lane_samples` → `queueDepth`
+        op: instantaneous per-lane waiting/active over time (pre-resolution pressure;
+        48h retention, pruned). `e576065`
+  - [x] **Backend logs + introspection** — per-process stdout/stderr ring (`logBuffer`)
+        tee'd from the spawn, parsed `n_ctx`/`n_slots`, `modelLogs` op + live logs dialog. `5bca212`
+  - [x] **Cutover hardening** (llama-swap parity, §8) — configurable `--health-timeout`
+        `ca1b5b3`; readiness waits for `/health` 2xx so a cold load doesn't 503 `21698f2`;
+        plain `/health`+`/healthz` liveness route `7e96bbf`; EWMA Retry-After + `maxWait`/
+        `maxQueueDepth` queue bounds (the fork's good-citizen 429 contract) `14dd1bd`.
 
 > **── MVP line ──** Above: P0–P6 + the P8 MVP slice = a usable, observable control
 > plane. Below: post-MVP polish, reorderable.
@@ -437,8 +462,49 @@ the BackpressureError shape we already validated.
   fallback poll). Store carries dwell/tokens/$ per request + a per-model rollup query.
 - **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
   (benign warning); revisit if it becomes flaky.
+- **P8-beyond known gaps / OSS pre-reqs:**
+  (1) **`/api` is unauthenticated** — the `overview`/`lanes`/usage ops *and the `loadModel`/
+  `unloadModel` mutations* are wide open. Fine on a trusted host; **must gate before exposing the
+  control plane beyond a trusted network** (the top OSS-release blocker).
+  (2) **Cost coefficients are placeholders** — `commandCosts` Wh/token are demo values (~1000× high)
+  and shared per `type`, so dashboard $/energy magnitudes are not real until calibrated per backend
+  (split nomic-embed vs Qwen; measure W÷tok/s). Mechanism is correct; only the numbers are wrong.
+  (3) **`interactiveOrigins` not ported** — llama-swap's browser-origin auto-priority has no corrallm
+  equivalent; browser callers land in `default` unless keyed (design choice — priorityGroup is first-class).
+  (4) **`queued_ms` is forward-only** — rows predating the column read 0; queue *wait* populates as new
+  queued-then-served requests accumulate (rejections + sampled depth are already live).
 
 ### Next steps
-- The full P0–P8 + P7 roadmap is shipped. The only remaining roadmap item is **multi-node peer
-  awareness** ("Later"): remote load introspection across corrallm peers. Optional polish lives in
-  §7 Optional extensions (affinity weighting, context-window clamp, gRPC, CapacityProbe, host cap).
+- The full P0–P8 + P7 roadmap is shipped and live (§8). Open work, by priority:
+  1. **Auth on `/api`** — gate the control plane (esp. load/unload) before any non-trusted exposure.
+     Top blocker for the planned OSS release.
+  2. **Calibrate cost coefficients** — per-backend Wh/token (split embed vs chat; measure) so $/energy
+     are real.
+  3. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
+- Optional polish in §7 Optional extensions (affinity weighting, context-window clamp on degrade,
+  gRPC, CapacityProbe, `server.maxConcurrent` host cap, proactive ttl reaper, instantaneous queue
+  depth is now covered by the sampler).
+
+---
+
+## 8. Deployment (production cutover)
+
+corrallm **replaced the llama-swap fork on `:8111`** for the live workload. The deployment lives in
+the **ml-kit** ops repo (sibling), not this code repo:
+- **`ml-kit/corrallm.yaml`** — the production config, translated from `ml-kit/llama-swap.yaml`:
+  two models (`nomic-embed-text` persistent/preloaded; `Qwen3-6-27B-MPT` sticky), absolute
+  llama-server paths, fixed ports (5800/5801), fairshare groups (`aw3`→interactive=10,
+  `ragtag`→batch=1, default=5), `scheduler.maxWait 60s`/`maxQueueDepth 8`. Pool budget reflects the
+  real RTX 5090 (~32GB): Qwen `gpu0 29.5GB` + nomic `gpu0 1.5GB` (nomic offloads to GPU despite no
+  `-ngl`). `costPerKwh`/`commandCosts` are still placeholders (§7 gap 2).
+- **`ml-kit/bin/run`** — adapted from the llama-swap launcher: builds corrallm fresh from this repo
+  (`go build` → repo `bin/corrallm`, gitignored), frees `:8111`, runs `serve` with
+  `--health-timeout 600s` (matches llama-swap; Qwen's 220k-ctx cold load is ~66s). Supports
+  `--detach` (setsid + `tmp/corrallm.pid`/`tmp/corrallm.log`; stop via `kill -- -$(cat tmp/corrallm.pid)`).
+- The dashboard is fronted at **`https://llm.iodesystems.com`** (reverse proxy); SSE verified flowing
+  through it (no buffering).
+- **Build/run model:** corrallm is build-once-run (no hot-reload — `air` would thrash spawned model
+  backends). UI changes are served from `ui/dist` per-request (browser reload picks them up unless a
+  new GraphQL op needs the new binary); backend changes need a `bin/run` rebuild+restart.
+- **Restart drill:** stop (`kill -- -<pid>`), wait for `:8111`/5800/5801 to free (~10s graceful reap),
+  then `bin/run --detach`. Blip: in-flight requests drop, Qwen cold-reloads (~66s).
