@@ -108,7 +108,7 @@ function Usage() {
   const q = useQuery({
     queryKey: ['usage'],
     queryFn: () => gqlClient.request(UsageDoc),
-    refetchInterval: 2000,
+    refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
   })
 
   if (q.isLoading) {

@@ -1,5 +1,6 @@
 import { createRootRoute, Outlet, Link } from '@tanstack/react-router'
 import { AppBar, Box, Toolbar, Typography } from '@mui/material'
+import { useLiveEvents } from '@/useLiveEvents'
 
 const NAV = [
   { to: '/', label: 'Overview' },
@@ -8,8 +9,9 @@ const NAV = [
   { to: '/lanes', label: 'Lanes' },
 ] as const
 
-export const Route = createRootRoute({
-  component: () => (
+function RootLayout() {
+  useLiveEvents() // push-based refresh for the live views
+  return (
     <>
       <AppBar position="static">
         <Toolbar sx={{ gap: 3 }}>
@@ -31,5 +33,7 @@ export const Route = createRootRoute({
       </AppBar>
       <Outlet />
     </>
-  ),
-})
+  )
+}
+
+export const Route = createRootRoute({ component: RootLayout })

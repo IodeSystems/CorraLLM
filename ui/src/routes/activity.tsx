@@ -50,7 +50,7 @@ function Activity() {
   const q = useQuery({
     queryKey: ['activity'],
     queryFn: () => gqlClient.request(ActivityDoc),
-    refetchInterval: 2000,
+    refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
   })
 
   if (q.isLoading) {

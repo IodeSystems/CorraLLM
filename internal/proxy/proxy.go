@@ -24,6 +24,7 @@ import (
 
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
+	"github.com/iodesystems/corrallm/internal/events"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
@@ -31,11 +32,12 @@ import (
 
 // Proxy is the inference edge handler.
 type Proxy struct {
-	cfg   *config.Config
-	mgr   *proc.Manager
-	sched *sched.Scheduler
-	store *store.Store
-	cost  *cost.Model
+	cfg    *config.Config
+	mgr    *proc.Manager
+	sched  *sched.Scheduler
+	store  *store.Store
+	cost   *cost.Model
+	events *events.Broker // optional: live UI events (P8-beyond)
 
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
@@ -45,6 +47,10 @@ type Proxy struct {
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
 	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg), rr: map[string]uint64{}}
 }
+
+// SetBroker attaches an events broker so the request path can push live updates
+// (a new activity record, a "state changed" ping). Optional; nil disables it.
+func (p *Proxy) SetBroker(b *events.Broker) { p.events = b }
 
 // Mount registers the OpenAI-compatible inference routes plus the untracked
 // non-inference passthrough on r. The route set mirrors the OpenAI surface
@@ -111,6 +117,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		stage := group.StageFor(backend.Type)
 
 		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
+		if err == nil {
+			p.publish(events.Event{Type: "changed"}) // a slot was taken — lanes load changed
+		}
 		if err != nil {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
@@ -248,7 +257,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration, prompt, completion int, costUSD float64) {
-	if err := p.store.InsertActivity(store.Activity{
+	a := store.Activity{
 		TS:               time.Now().UnixMilli(),
 		Served:           served,
 		Backend:          backend,
@@ -259,10 +268,17 @@ func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Du
 		PromptTokens:     prompt,
 		CompletionTokens: completion,
 		CostUSD:          costUSD,
-	}); err != nil {
+	}
+	if err := p.store.InsertActivity(a); err != nil {
 		slog.Warn("activity log", "err", err)
 	}
+	// Push the new record (the request also just released a slot → lanes/usage
+	// changed). Best-effort; the UI keeps a slow fallback poll.
+	p.publish(events.Event{Type: "activity", Data: a})
 }
+
+// publish emits an event if a broker is attached (no-op otherwise).
+func (p *Proxy) publish(e events.Event) { p.events.Publish(e) }
 
 // callerKey extracts the caller identity used for group resolution: an explicit
 // X-Corrallm-Key, else the bearer token from Authorization, else "" (→ default

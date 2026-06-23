@@ -20,6 +20,7 @@ import (
 
 	"github.com/iodesystems/corrallm/internal/api"
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/events"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/proxy"
 	"github.com/iodesystems/corrallm/internal/sched"
@@ -145,9 +146,16 @@ func serve(ctx context.Context, o serveOpts) error {
 		return err
 	}
 
+	// Live UI events (SSE): the proxy publishes activity/changed events that the
+	// observability views subscribe to instead of polling.
+	broker := events.NewBroker()
+	router.Get("/api/v1/events", broker.ServeSSE)
+
 	// OpenAI-compatible inference passthrough (raw, streaming — bypasses gat),
 	// gated by the fairshare admission scheduler (shared with the lanes read op).
-	proxy.New(cfg, mgr, scheduler, st).Mount(router)
+	px := proxy.New(cfg, mgr, scheduler, st)
+	px.SetBroker(broker)
+	px.Mount(router)
 
 	// The SPA is served for everything not claimed above.
 	router.Handle("/*", webui.Handler(o.webRoot))

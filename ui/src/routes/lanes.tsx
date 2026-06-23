@@ -57,7 +57,7 @@ function Lanes() {
   const q = useQuery({
     queryKey: ['lanes'],
     queryFn: () => gqlClient.request(LanesDoc),
-    refetchInterval: 1000,
+    refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
   })
 
   if (q.isLoading) {
