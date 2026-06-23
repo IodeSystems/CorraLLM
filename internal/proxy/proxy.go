@@ -110,7 +110,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		name := fmt.Sprintf("%s#%d", served, idx)
 		stage := group.StageFor(backend.Type)
 
-		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Slots(), groupName, weight, group.Interruptible, stage)
+		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
 		if err != nil {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
@@ -143,19 +143,20 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK, streaming: streaming}
 		newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(reqCtx))
 		done()
-		release()
 		status := sc.code
 		if errors.Is(context.Cause(reqCtx), sched.ErrPreempted) {
 			status = 499 // slot reclaimed by a higher-priority group mid-request
 		}
 		// Meter the served request: extract token usage from the response and
 		// resolve it to $ via the backend's cost class. A cold load triggered by
-		// this request also bills its swap energy to it.
+		// this request also bills its swap energy to it. The cost is reported to
+		// the scheduler (limit budgets + cost share currency) at release.
 		u := extractUsage(sc.buf, streaming)
 		costUSD := p.cost.RequestUSD(backend.Type, u.PromptTokens, u.CompletionTokens)
 		if loaded && backend.Swap != nil {
 			costUSD += p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
 		}
+		release(sched.Done{CostUSD: costUSD})
 		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD)
 		return
 	}

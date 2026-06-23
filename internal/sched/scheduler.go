@@ -42,23 +42,59 @@ func (e *BackpressureError) Error() string {
 		e.Reason, e.Capacity, e.InFlight, e.Waiting, e.RetryAfter)
 }
 
-// Scheduler owns the per-backend admission state.
+// Done reports a finished request's measured cost so the scheduler can charge it
+// against the group's limit budgets (and, with a cost share-currency, its
+// fairshare accumulator). Dwell is measured internally from the admit timestamp.
+// It is passed to the release func; an unmetered release (e.g. a spill before
+// serving) passes none.
+type Done struct {
+	CostUSD float64
+}
+
+// Scheduler owns the per-backend admission state. With a config it also enforces
+// per-group / per-(group×type) limit budgets over a sliding window; without one
+// it is pure request-count fairshare (the P2 behavior).
 type Scheduler struct {
 	mu       sync.Mutex
 	backends map[string]*backendState
+	cfg      *config.Config         // optional: drives limits + share currency
+	budgets  map[string][]rateEvent // "scope\x00dim" → sliding-window events
+	now      func() time.Time       // injectable clock (windows, dwell, decay)
 }
 
-// New constructs a Scheduler.
+// rateEvent is one consumption against a limit budget at a point in time.
+type rateEvent struct {
+	at  time.Time
+	amt float64
+}
+
+// New constructs a Scheduler with no config: request-count fairshare, no limits.
 func New() *Scheduler {
-	return &Scheduler{backends: map[string]*backendState{}}
+	return &Scheduler{
+		backends: map[string]*backendState{},
+		budgets:  map[string][]rateEvent{},
+		now:      time.Now,
+	}
+}
+
+// NewWithConfig constructs a Scheduler that also enforces the config's limit
+// budgets and honors each group's share currency.
+func NewWithConfig(cfg *config.Config) *Scheduler {
+	s := New()
+	s.cfg = cfg
+	return s
 }
 
 type backendState struct {
 	capacity    int
 	active      int            // slots in use
-	groupActive map[string]int // in-flight slots per group (fairness numerator)
+	groupActive map[string]int // in-flight slots per group (request-count numerator)
 	slots       []*slot        // active slots, for victim selection
 	waiters     []*waiter      // queued, picked by preempt-priority then weighted fairshare
+	// share is a per-group decaying accumulator of the group's recent dwell/cost
+	// consumption — the fairshare numerator under a dwell|cost share currency.
+	share   map[string]float64
+	shareAt map[string]time.Time // last update, for exponential decay
 }
 
 // slot is one in-flight admission. cancel reclaims the request when the slot is
@@ -66,8 +102,11 @@ type backendState struct {
 // preemptors don't double-target it.
 type slot struct {
 	group         string
+	backendType   string
 	weight        int
 	interruptible bool
+	currency      string // fairshare currency: requests (default) | dwell | cost
+	admitAt       time.Time
 	cancel        context.CancelCauseFunc
 	preempting    bool
 }
@@ -84,16 +123,18 @@ type waiter struct {
 // finishes, plus a request context that is canceled (cause ErrPreempted) if the
 // slot is later preempted — the caller proxies under it so a preemption aborts
 // the upstream stream. On saturation it returns a *BackpressureError.
-func (s *Scheduler) Admit(ctx context.Context, backend string, capacity int, group string, weight int, interruptible bool, stage config.Stage) (release func(), reqCtx context.Context, err error) {
+func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capacity int, group string, weight int, interruptible bool, stage config.Stage) (release func(...Done), reqCtx context.Context, err error) {
 	if weight < 1 {
 		weight = 1
 	}
 	reqCtx, cancel := context.WithCancelCause(ctx)
+	now := s.now()
 
 	s.mu.Lock()
 	bs := s.backends[backend]
 	if bs == nil {
-		bs = &backendState{capacity: capacity, groupActive: map[string]int{}}
+		bs = &backendState{capacity: capacity, groupActive: map[string]int{},
+			share: map[string]float64{}, shareAt: map[string]time.Time{}}
 		s.backends[backend] = bs
 	}
 	// Capacity can only grow within a process (config reload may raise it).
@@ -101,10 +142,30 @@ func (s *Scheduler) Admit(ctx context.Context, backend string, capacity int, gro
 		bs.capacity = capacity
 	}
 
-	sl := &slot{group: group, weight: weight, interruptible: interruptible, cancel: cancel}
+	sl := &slot{group: group, backendType: backendType, weight: weight,
+		interruptible: interruptible, currency: s.shareCurrency(group), cancel: cancel}
+
+	// Over a per-group / per-(group×type) limit budget? Preemption can't free a
+	// budget, so an over-budget request advances (spill) if the stage allows,
+	// else backs off with the time until the window frees. (Capacity saturation
+	// below keeps the full preempt/queue/reject sequence.)
+	if over, retry := s.overBudgetLocked(now, group, backendType); over {
+		if spills(stage) {
+			be := bs.backpressure("spill")
+			s.mu.Unlock()
+			cancel(nil)
+			return nil, nil, be
+		}
+		be := bs.backpressure("over-budget")
+		be.RetryAfter = retry
+		s.mu.Unlock()
+		cancel(nil)
+		return nil, nil, be
+	}
 
 	if bs.active < bs.capacity {
-		bs.grant(sl)
+		bs.grant(sl, now)
+		s.recordAdmitLocked(now, group, backendType)
 		s.mu.Unlock()
 		return s.releaser(backend, sl), reqCtx, nil
 	}
@@ -160,7 +221,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend string, capacity int, gro
 }
 
 // wait blocks until the waiter is granted a slot or ctx ends.
-func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx context.Context) (func(), context.Context, error) {
+func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx context.Context) (func(...Done), context.Context, error) {
 	select {
 	case <-w.ready:
 		return s.releaser(backend, w.slot), reqCtx, nil
@@ -181,24 +242,34 @@ func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx 
 	}
 }
 
-// releaser returns a one-shot release for a held slot.
-func (s *Scheduler) releaser(backend string, sl *slot) func() {
+// releaser returns a one-shot release for a held slot. The optional Done carries
+// the request's measured cost, charged against limit budgets (and the cost share
+// accumulator); dwell is measured from the slot's admit timestamp.
+func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 	var once sync.Once
-	return func() {
+	return func(d ...Done) {
 		once.Do(func() {
+			var cost float64
+			if len(d) > 0 {
+				cost = d[0].CostUSD
+			}
 			s.mu.Lock()
 			bs := s.backends[backend]
 			if bs == nil {
 				s.mu.Unlock()
 				return
 			}
+			now := s.now()
+			dwell := now.Sub(sl.admitAt).Seconds()
 			bs.active--
 			bs.groupActive[sl.group]--
 			if bs.groupActive[sl.group] <= 0 {
 				delete(bs.groupActive, sl.group)
 			}
 			bs.removeSlot(sl)
-			bs.promote()
+			s.recordReleaseLocked(now, sl.group, sl.backendType, dwell, cost)
+			bs.addShare(now, sl, dwell, cost)
+			bs.promote(now)
 			s.mu.Unlock()
 			sl.cancel(nil) // free the request context (no-op if already canceled)
 		})
@@ -206,7 +277,8 @@ func (s *Scheduler) releaser(backend string, sl *slot) func() {
 }
 
 // grant claims a slot (caller holds s.mu).
-func (bs *backendState) grant(sl *slot) {
+func (bs *backendState) grant(sl *slot, now time.Time) {
+	sl.admitAt = now
 	bs.active++
 	bs.groupActive[sl.group]++
 	bs.slots = append(bs.slots, sl)
@@ -216,19 +288,22 @@ func (bs *backendState) grant(sl *slot) {
 // freed a slot to get here), then the most under-served group by weighted
 // fairshare (min active/weight) — a weight-10 group holds ~10× a weight-1 group's
 // slots under sustained contention.
-func (bs *backendState) promote() {
+func (bs *backendState) promote(now time.Time) {
 	for bs.active < bs.capacity && len(bs.waiters) > 0 {
-		idx := bs.pickWaiter()
+		idx := bs.pickWaiter(now)
 		w := bs.waiters[idx]
 		bs.waiters = append(bs.waiters[:idx], bs.waiters[idx+1:]...)
-		bs.grant(w.slot)
+		bs.grant(w.slot, now)
 		close(w.ready)
 	}
 }
 
 // pickWaiter chooses the next waiter to grant: preempt waiters in FIFO order
-// jump ahead of fairshare waiters. Caller holds s.mu.
-func (bs *backendState) pickWaiter() int {
+// jump ahead of fairshare waiters; otherwise the most under-served group wins by
+// min(numerator/weight), where the numerator is the waiter's share currency —
+// in-flight slot count for requests, the decaying dwell/cost accumulator
+// otherwise. Caller holds s.mu.
+func (bs *backendState) pickWaiter(now time.Time) int {
 	for i, w := range bs.waiters {
 		if w.preempt {
 			return i
@@ -236,12 +311,23 @@ func (bs *backendState) pickWaiter() int {
 	}
 	best, bestIdx := math.Inf(1), 0
 	for i, w := range bs.waiters {
-		ratio := float64(bs.groupActive[w.slot.group]) / float64(w.slot.weight)
+		ratio := bs.numerator(now, w.slot) / float64(w.slot.weight)
 		if ratio < best {
 			best, bestIdx = ratio, i
 		}
 	}
 	return bestIdx
+}
+
+// numerator is a group's fairshare load in its slot's share currency. Caller
+// holds s.mu.
+func (bs *backendState) numerator(now time.Time, sl *slot) float64 {
+	switch sl.currency {
+	case "dwell", "cost":
+		return bs.decayedShare(now, sl.group)
+	default: // requests
+		return float64(bs.groupActive[sl.group])
+	}
 }
 
 // pickVictim selects an in-flight slot to preempt for a preemptor of the given
@@ -307,6 +393,148 @@ func (bs *backendState) backpressure(reason string) *BackpressureError {
 // spills reports whether a stage's follow-up advances to the next backend.
 func spills(stage config.Stage) bool {
 	return stage.Spill || stage.FallThrough || stage.Then == "fallThrough" || stage.Then == "spill"
+}
+
+// shareHalfLife is the decay constant for the dwell/cost fairshare accumulator:
+// a group's recent consumption halves every interval, so it is forgiven over
+// time rather than penalized forever.
+const shareHalfLife = 30 * time.Second
+
+// shareCurrency returns a group's fairshare currency (requests | dwell | cost),
+// defaulting to requests.
+func (s *Scheduler) shareCurrency(group string) string {
+	if s.cfg == nil {
+		return "requests"
+	}
+	switch c := s.cfg.PriorityGroups[group].ShareCurrency; c {
+	case "dwell", "cost":
+		return c
+	default:
+		return "requests"
+	}
+}
+
+// decayedShare returns a group's share accumulator decayed to now. Caller holds s.mu.
+func (bs *backendState) decayedShare(now time.Time, group string) float64 {
+	v := bs.share[group]
+	if v == 0 {
+		return 0
+	}
+	elapsed := now.Sub(bs.shareAt[group]).Seconds()
+	return v * math.Pow(0.5, elapsed/shareHalfLife.Seconds())
+}
+
+// addShare folds a finished request's dwell/cost into its group's accumulator
+// (no-op under the requests currency). Caller holds s.mu.
+func (bs *backendState) addShare(now time.Time, sl *slot, dwell, cost float64) {
+	var amt float64
+	switch sl.currency {
+	case "dwell":
+		amt = dwell
+	case "cost":
+		amt = cost
+	default:
+		return
+	}
+	bs.share[sl.group] = bs.decayedShare(now, sl.group) + amt
+	bs.shareAt[sl.group] = now
+}
+
+// limitsFor returns the per-group and per-(group×type) limit specs. Caller holds s.mu.
+func (s *Scheduler) limitsFor(group, backendType string) (groupLimits, stageLimits map[string]string) {
+	if s.cfg == nil {
+		return nil, nil
+	}
+	g := s.cfg.PriorityGroups[group]
+	return g.Limits, g.StageFor(backendType).Limits
+}
+
+// overBudgetLocked reports whether group is over any per-group or per-(group×type)
+// limit budget, and the suggested wait until the binding window frees. Caller
+// holds s.mu.
+func (s *Scheduler) overBudgetLocked(now time.Time, group, backendType string) (bool, time.Duration) {
+	gl, sl := s.limitsFor(group, backendType)
+	if over, retry := s.overScopeLocked(now, group+"\x00", gl); over {
+		return true, retry
+	}
+	return s.overScopeLocked(now, group+"\x00"+backendType+"\x00", sl)
+}
+
+func (s *Scheduler) overScopeLocked(now time.Time, prefix string, limits map[string]string) (bool, time.Duration) {
+	for dim, spec := range limits {
+		r, err := config.ParseRate(dim, spec)
+		if err != nil {
+			continue // malformed specs are ignored, not fatal
+		}
+		sum, oldest := s.windowLocked(now, prefix+dim, r.Window)
+		if sum >= r.Amount {
+			retry := r.Window - now.Sub(oldest)
+			if retry < time.Second {
+				retry = time.Second
+			}
+			return true, retry
+		}
+	}
+	return false, 0
+}
+
+// recordAdmitLocked charges one request against any configured requests budget.
+func (s *Scheduler) recordAdmitLocked(now time.Time, group, backendType string) {
+	gl, sl := s.limitsFor(group, backendType)
+	if _, ok := gl["requests"]; ok {
+		s.chargeLocked(now, group+"\x00requests", 1)
+	}
+	if _, ok := sl["requests"]; ok {
+		s.chargeLocked(now, group+"\x00"+backendType+"\x00requests", 1)
+	}
+}
+
+// recordReleaseLocked charges a finished request's dwell + cost against any
+// configured dwell/cost budgets.
+func (s *Scheduler) recordReleaseLocked(now time.Time, group, backendType string, dwell, cost float64) {
+	gl, sl := s.limitsFor(group, backendType)
+	for _, e := range []struct {
+		dim string
+		amt float64
+	}{{"dwell", dwell}, {"cost", cost}} {
+		if _, ok := gl[e.dim]; ok {
+			s.chargeLocked(now, group+"\x00"+e.dim, e.amt)
+		}
+		if _, ok := sl[e.dim]; ok {
+			s.chargeLocked(now, group+"\x00"+backendType+"\x00"+e.dim, e.amt)
+		}
+	}
+}
+
+// chargeLocked appends a consumption event. Caller holds s.mu.
+func (s *Scheduler) chargeLocked(now time.Time, key string, amt float64) {
+	s.budgets[key] = append(s.budgets[key], rateEvent{at: now, amt: amt})
+}
+
+// windowLocked prunes events outside the trailing window and returns the
+// surviving sum and the oldest surviving timestamp. Caller holds s.mu.
+func (s *Scheduler) windowLocked(now time.Time, key string, window time.Duration) (sum float64, oldest time.Time) {
+	cutoff := now.Add(-window)
+	ev := s.budgets[key]
+	kept := ev[:0]
+	for _, e := range ev {
+		if e.at.After(cutoff) {
+			kept = append(kept, e)
+		}
+	}
+	if len(kept) == 0 {
+		delete(s.budgets, key)
+		return 0, now
+	}
+	s.budgets[key] = kept
+	oldest = kept[0].at
+	for _, e := range kept {
+		sum += e.amt
+		if e.at.Before(oldest) {
+			oldest = e.at
+		}
+	}
+	return sum, oldest
 }
 
 func maxInt(a, b int) int {

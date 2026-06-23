@@ -146,7 +146,7 @@ func serve(ctx context.Context, o serveOpts) error {
 
 	// OpenAI-compatible inference passthrough (raw, streaming — bypasses gat),
 	// gated by the fairshare admission scheduler.
-	proxy.New(cfg, mgr, sched.New(), st).Mount(router)
+	proxy.New(cfg, mgr, sched.NewWithConfig(cfg), st).Mount(router)
 
 	// The SPA is served for everything not claimed above.
 	router.Handle("/*", webui.Handler(o.webRoot))

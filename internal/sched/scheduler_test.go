@@ -15,16 +15,16 @@ var rejectStage = config.Stage{Reject: true}
 func TestAdmitUpToCapacity(t *testing.T) {
 	s := New()
 	ctx := context.Background()
-	r1, _, err := s.Admit(ctx, "b", 2, "g", 1, false, rejectStage)
+	r1, _, err := s.Admit(ctx, "b", "local", 2, "g", 1, false, rejectStage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2, _, err := s.Admit(ctx, "b", 2, "g", 1, false, rejectStage)
+	r2, _, err := s.Admit(ctx, "b", "local", 2, "g", 1, false, rejectStage)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Third over capacity with reject stage → BackpressureError now.
-	_, _, err = s.Admit(ctx, "b", 2, "g", 1, false, rejectStage)
+	_, _, err = s.Admit(ctx, "b", "local", 2, "g", 1, false, rejectStage)
 	var bp *BackpressureError
 	if !errors.As(err, &bp) {
 		t.Fatalf("want BackpressureError, got %v", err)
@@ -37,7 +37,7 @@ func TestAdmitUpToCapacity(t *testing.T) {
 	}
 	r1()
 	// A freed slot admits again.
-	r3, _, err := s.Admit(ctx, "b", 2, "g", 1, false, rejectStage)
+	r3, _, err := s.Admit(ctx, "b", "local", 2, "g", 1, false, rejectStage)
 	if err != nil {
 		t.Fatalf("after release: %v", err)
 	}
@@ -48,11 +48,11 @@ func TestAdmitUpToCapacity(t *testing.T) {
 func TestQueueWaitsThenAdmits(t *testing.T) {
 	s := New()
 	ctx := context.Background()
-	r1, _, _ := s.Admit(ctx, "b", 1, "g", 1, false, queueStage)
+	r1, _, _ := s.Admit(ctx, "b", "local", 1, "g", 1, false, queueStage)
 
 	admitted := make(chan struct{})
 	go func() {
-		r2, _, err := s.Admit(ctx, "b", 1, "g", 1, false, queueStage)
+		r2, _, err := s.Admit(ctx, "b", "local", 1, "g", 1, false, queueStage)
 		if err != nil {
 			t.Errorf("queued admit: %v", err)
 			return
@@ -77,12 +77,12 @@ func TestQueueWaitsThenAdmits(t *testing.T) {
 
 func TestQueueTimeout(t *testing.T) {
 	s := New()
-	r1, _, _ := s.Admit(context.Background(), "b", 1, "g", 1, false, queueStage)
+	r1, _, _ := s.Admit(context.Background(), "b", "local", 1, "g", 1, false, queueStage)
 	defer r1()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, _, err := s.Admit(ctx, "b", 1, "g", 1, false, queueStage)
+	_, _, err := s.Admit(ctx, "b", "local", 1, "g", 1, false, queueStage)
 	var bp *BackpressureError
 	if !errors.As(err, &bp) || bp.Reason != "queue-timeout" {
 		t.Fatalf("want queue-timeout backpressure, got %v", err)
@@ -100,7 +100,7 @@ func TestWeightedFairnessPromotion(t *testing.T) {
 	for range 10 {
 		bs.waiters = append(bs.waiters, &waiter{slot: &slot{group: "lo", weight: 1}, ready: make(chan struct{})})
 	}
-	bs.promote() // fills all 4 slots by min(active/weight)
+	bs.promote(time.Now()) // fills all 4 slots by min(active/weight)
 
 	if bs.groupActive["hi"] != 3 || bs.groupActive["lo"] != 1 {
 		t.Fatalf("weighted share: hi=%d lo=%d, want 3 and 1", bs.groupActive["hi"], bs.groupActive["lo"])
@@ -117,14 +117,14 @@ var preemptStage = config.Stage{Preempt: true}
 // takes the slot once the victim releases.
 func TestPreemptCancelsLowerInterruptible(t *testing.T) {
 	s := New()
-	relLow, lowCtx, err := s.Admit(context.Background(), "b", 1, "low", 1, true, queueStage)
+	relLow, lowCtx, err := s.Admit(context.Background(), "b", "local", 1, "low", 1, true, queueStage)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	admitted := make(chan func(), 1)
+	admitted := make(chan func(...Done), 1)
 	go func() {
-		rel, _, err := s.Admit(context.Background(), "b", 1, "high", 10, false, preemptStage)
+		rel, _, err := s.Admit(context.Background(), "b", "local", 1, "high", 10, false, preemptStage)
 		if err != nil {
 			t.Errorf("preempt admit: %v", err)
 			return
@@ -153,9 +153,9 @@ func TestPreemptCancelsLowerInterruptible(t *testing.T) {
 // TestPreemptNoVictimSpills: nothing interruptible to take → honor `then: fallThrough`.
 func TestPreemptNoVictimSpills(t *testing.T) {
 	s := New()
-	rel, _, _ := s.Admit(context.Background(), "b", 1, "low", 1, false, queueStage) // non-interruptible
+	rel, _, _ := s.Admit(context.Background(), "b", "local", 1, "low", 1, false, queueStage) // non-interruptible
 	defer rel()
-	_, _, err := s.Admit(context.Background(), "b", 1, "high", 10, false,
+	_, _, err := s.Admit(context.Background(), "b", "local", 1, "high", 10, false,
 		config.Stage{Preempt: true, Then: "fallThrough"})
 	var bp *BackpressureError
 	if !errors.As(err, &bp) || bp.Reason != "spill" {
@@ -166,12 +166,146 @@ func TestPreemptNoVictimSpills(t *testing.T) {
 // TestPreemptNoVictimRejects: no victim and no follow-up verb → terminal reject.
 func TestPreemptNoVictimRejects(t *testing.T) {
 	s := New()
-	rel, _, _ := s.Admit(context.Background(), "b", 1, "low", 1, false, queueStage)
+	rel, _, _ := s.Admit(context.Background(), "b", "local", 1, "low", 1, false, queueStage)
 	defer rel()
-	_, _, err := s.Admit(context.Background(), "b", 1, "high", 10, false, preemptStage)
+	_, _, err := s.Admit(context.Background(), "b", "local", 1, "high", 10, false, preemptStage)
 	var bp *BackpressureError
 	if !errors.As(err, &bp) || bp.Reason != "rejected" {
 		t.Fatalf("want rejected, got %v", err)
+	}
+}
+
+// fixedClock returns a scheduler whose clock the test controls.
+func fixedClock(cfg *config.Config, t *time.Time) *Scheduler {
+	s := NewWithConfig(cfg)
+	s.now = func() time.Time { return *t }
+	return s
+}
+
+// TestLimitRequestsBudget: a per-group requests budget admits up to the cap
+// within the window, then rejects "over-budget", and frees once the window rolls.
+func TestLimitRequestsBudget(t *testing.T) {
+	cfg := &config.Config{PriorityGroups: map[string]config.PriorityGroup{
+		"g": {Weight: 1, Limits: map[string]string{"requests": "2/min"},
+			OnSaturated: map[string]config.Stage{"default": {Reject: true}}},
+	}}
+	clk := time.Unix(1000, 0)
+	s := fixedClock(cfg, &clk)
+	stage := config.Stage{Reject: true}
+
+	for i := 0; i < 2; i++ {
+		r, _, err := s.Admit(context.Background(), "b", "local", 10, "g", 1, false, stage)
+		if err != nil {
+			t.Fatalf("admit %d under budget: %v", i, err)
+		}
+		r() // release; the requests budget is charged at admit regardless
+	}
+	_, _, err := s.Admit(context.Background(), "b", "local", 10, "g", 1, false, stage)
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "over-budget" {
+		t.Fatalf("3rd request: want over-budget, got %v", err)
+	}
+	if bp.RetryAfter <= 0 {
+		t.Errorf("over-budget retry-after = %s, want > 0", bp.RetryAfter)
+	}
+
+	clk = clk.Add(61 * time.Second) // window rolls
+	if r, _, err := s.Admit(context.Background(), "b", "local", 10, "g", 1, false, stage); err != nil {
+		t.Fatalf("after window: %v", err)
+	} else {
+		r()
+	}
+}
+
+// TestLimitCostBudget: a cost budget is charged at release from the reported
+// Done, and trips once cumulative $ within the window reaches the cap.
+func TestLimitCostBudget(t *testing.T) {
+	cfg := &config.Config{PriorityGroups: map[string]config.PriorityGroup{
+		"g": {Weight: 1, Limits: map[string]string{"cost": "$1/min"},
+			OnSaturated: map[string]config.Stage{"default": {Reject: true}}},
+	}}
+	clk := time.Unix(1000, 0)
+	s := fixedClock(cfg, &clk)
+	stage := config.Stage{Reject: true}
+
+	for i := 0; i < 2; i++ {
+		r, _, err := s.Admit(context.Background(), "b", "local", 10, "g", 1, false, stage)
+		if err != nil {
+			t.Fatalf("admit %d: %v", i, err)
+		}
+		r(Done{CostUSD: 0.6}) // 2 × $0.6 = $1.2 ≥ $1 budget
+	}
+	_, _, err := s.Admit(context.Background(), "b", "local", 10, "g", 1, false, stage)
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "over-budget" {
+		t.Fatalf("want over-budget after cost cap, got %v", err)
+	}
+}
+
+// TestLimitSpillsWhenStageAllows: an over-budget request whose stage spills
+// advances to the next backend rather than backing off.
+func TestLimitSpillsWhenStageAllows(t *testing.T) {
+	cfg := &config.Config{PriorityGroups: map[string]config.PriorityGroup{
+		"g": {Weight: 1, Limits: map[string]string{"requests": "1/min"}},
+	}}
+	clk := time.Unix(1000, 0)
+	s := fixedClock(cfg, &clk)
+
+	r, _, err := s.Admit(context.Background(), "b", "local", 10, "g", 1, false, config.Stage{Spill: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r()
+	_, _, err = s.Admit(context.Background(), "b", "local", 10, "g", 1, false, config.Stage{Spill: true})
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "spill" {
+		t.Fatalf("over-budget with spill stage: want spill, got %v", err)
+	}
+}
+
+// TestShareCurrencyDwellPrefersLighter: under a dwell share currency, the group
+// with less recent accumulated dwell is promoted first, even at equal weight.
+func TestShareCurrencyDwellPrefersLighter(t *testing.T) {
+	now := time.Unix(1000, 0)
+	bs := &backendState{capacity: 1, groupActive: map[string]int{},
+		share: map[string]float64{"heavy": 50}, shareAt: map[string]time.Time{"heavy": now}}
+	bs.waiters = []*waiter{
+		{slot: &slot{group: "heavy", weight: 1, currency: "dwell"}, ready: make(chan struct{})},
+		{slot: &slot{group: "light", weight: 1, currency: "dwell"}, ready: make(chan struct{})},
+	}
+	if idx := bs.pickWaiter(now); bs.waiters[idx].slot.group != "light" {
+		t.Fatalf("picked %q, want light (lower dwell share)", bs.waiters[idx].slot.group)
+	}
+}
+
+// TestShareDecay: the accumulator halves after one half-life.
+func TestShareDecay(t *testing.T) {
+	now := time.Unix(1000, 0)
+	bs := &backendState{share: map[string]float64{"g": 80}, shareAt: map[string]time.Time{"g": now}}
+	got := bs.decayedShare(now.Add(shareHalfLife), "g")
+	if got < 39.9 || got > 40.1 {
+		t.Errorf("decayed share = %v, want ~40", got)
+	}
+}
+
+// TestShareCurrencyFromConfig: a dwell-currency group's release folds measured
+// dwell into the accumulator.
+func TestShareCurrencyFromConfig(t *testing.T) {
+	cfg := &config.Config{PriorityGroups: map[string]config.PriorityGroup{
+		"g": {Weight: 1, ShareCurrency: "dwell"},
+	}}
+	clk := time.Unix(1000, 0)
+	s := fixedClock(cfg, &clk)
+
+	r, _, err := s.Admit(context.Background(), "b", "local", 1, "g", 1, false, config.Stage{Queue: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clk = clk.Add(5 * time.Second) // 5s of dwell
+	r()
+	bs := s.backends["b"]
+	if got := bs.decayedShare(clk, "g"); got < 4.9 || got > 5.1 {
+		t.Errorf("dwell share = %v, want ~5s", got)
 	}
 }
 
@@ -179,9 +313,9 @@ func TestPreemptNoVictimRejects(t *testing.T) {
 // groups, even when the holder is interruptible.
 func TestPreemptSkipsEqualWeight(t *testing.T) {
 	s := New()
-	rel, _, _ := s.Admit(context.Background(), "b", 1, "a", 5, true, queueStage)
+	rel, _, _ := s.Admit(context.Background(), "b", "local", 1, "a", 5, true, queueStage)
 	defer rel()
-	_, _, err := s.Admit(context.Background(), "b", 1, "z", 5, false, preemptStage)
+	_, _, err := s.Admit(context.Background(), "b", "local", 1, "z", 5, false, preemptStage)
 	var bp *BackpressureError
 	if !errors.As(err, &bp) || bp.Reason != "rejected" {
 		t.Fatalf("equal-weight must not be preempted; want rejected, got %v", err)
