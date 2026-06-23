@@ -12,6 +12,10 @@ type CorrallmQueryNamespace {
     limit: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
+  usageRollup(
+    """Trailing window in hours; 0 = all time."""
+    windowHours: Long
+  ): corrallm_UsageRollupOutputBody @derived(operationId: "usageRollup")
   v1: CorrallmV1QueryNamespace!
 }
 
@@ -23,6 +27,10 @@ type CorrallmV1QueryNamespace {
     limit: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
+  usageRollup(
+    """Trailing window in hours; 0 = all time."""
+    windowHours: Long
+  ): corrallm_UsageRollupOutputBody @derived(operationId: "usageRollup")
 }
 
 """64-bit integer encoded as a decimal string to preserve precision past 2^53. Accepts a JSON number or a decimal string as input."""
@@ -118,9 +126,32 @@ type corrallm_ResidentModelView {
   usage: [corrallm_PoolUsageView!]!
 }
 
+type corrallm_RollupRow {
+  """Total completion tokens."""
+  completionTokens: Long!
+  """Total cost, USD."""
+  costUsd: Float!
+  """Total dwell, milliseconds."""
+  dwellMs: Long!
+  """Total prompt tokens."""
+  promptTokens: Long!
+  """Request count."""
+  requests: Long!
+  """Served model name."""
+  served: String!
+}
+
 type corrallm_ServerView {
   """Per-pool budget/usage."""
   pools: [corrallm_PoolView!]!
   """Server name."""
   server: String!
+}
+
+type corrallm_UsageRollupOutputBody {
+  """Per-model usage, costliest first."""
+  rows: [corrallm_RollupRow!]!
+  total: corrallm_RollupRow!
+  """Window applied (0 = all time)."""
+  windowHours: Long!
 }

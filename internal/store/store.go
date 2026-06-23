@@ -119,6 +119,46 @@ func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	return out, rows.Err()
 }
 
+// Rollup is aggregated activity for one served model over a window (P8).
+type Rollup struct {
+	Served           string
+	Requests         int64
+	PromptTokens     int64
+	CompletionTokens int64
+	DwellMS          int64
+	CostUSD          float64
+}
+
+// RollupByModel aggregates activity at or after sinceMS, grouped by served
+// model, ordered by cost (then request count) descending. sinceMS <= 0 covers
+// all records.
+func (s *Store) RollupByModel(sinceMS int64) ([]Rollup, error) {
+	rows, err := s.db.Query(
+		`SELECT served,
+		        COUNT(*),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0),
+		        COALESCE(SUM(dwell_ms), 0),
+		        COALESCE(SUM(cost_usd), 0)
+		 FROM activity WHERE ts >= ?
+		 GROUP BY served
+		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Rollup
+	for rows.Next() {
+		var r Rollup
+		if err := rows.Scan(&r.Served, &r.Requests, &r.PromptTokens, &r.CompletionTokens,
+			&r.DwellMS, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // DB exposes the underlying handle for query layers added in later phases.
 func (s *Store) DB() *sql.DB { return s.db }
 

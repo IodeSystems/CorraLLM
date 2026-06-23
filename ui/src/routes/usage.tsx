@@ -19,11 +19,42 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { fmtBytes, fmtInt, fmtTime } from '@/format'
+import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <Card sx={{ minWidth: 160, flex: '1 1 160px' }}>
+      <CardContent>
+        <Typography variant="overline" color="text.secondary">
+          {label}
+        </Typography>
+        <Typography variant="h5">{value}</Typography>
+      </CardContent>
+    </Card>
+  )
+}
 
 const UsageDoc = graphql(/* GraphQL */ `
   query Usage {
     corrallm {
+      usageRollup(windowHours: "24") {
+        windowHours
+        rows {
+          served
+          requests
+          promptTokens
+          completionTokens
+          dwellMs
+          costUsd
+        }
+        total {
+          requests
+          promptTokens
+          completionTokens
+          dwellMs
+          costUsd
+        }
+      }
       residency {
         servers {
           server
@@ -98,9 +129,58 @@ function Usage() {
   const res = q.data?.corrallm.residency
   const servers = res?.servers ?? []
   const models = res?.models ?? []
+  const rollup = q.data?.corrallm.usageRollup
+  const rollupRows = rollup?.rows ?? []
+  const total = rollup?.total
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <Box>
+        <Typography variant="h6" gutterBottom>
+          Usage — last 24h
+        </Typography>
+        <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
+          <Stat label="Requests" value={fmtInt(total?.requests ?? 0)} />
+          <Stat label="Prompt tokens" value={fmtInt(total?.promptTokens ?? 0)} />
+          <Stat label="Completion tokens" value={fmtInt(total?.completionTokens ?? 0)} />
+          <Stat label="Cost" value={fmtUSD(total?.costUsd ?? 0)} />
+        </Stack>
+        <TableContainer component={Paper}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Model</TableCell>
+                <TableCell align="right">Requests</TableCell>
+                <TableCell align="right">Prompt</TableCell>
+                <TableCell align="right">Completion</TableCell>
+                <TableCell align="right">Dwell</TableCell>
+                <TableCell align="right">Cost</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rollupRows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <Typography color="text.secondary">No usage in window.</Typography>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                rollupRows.map((r) => (
+                  <TableRow key={r.served} hover>
+                    <TableCell>{r.served}</TableCell>
+                    <TableCell align="right">{fmtInt(r.requests)}</TableCell>
+                    <TableCell align="right">{fmtInt(r.promptTokens)}</TableCell>
+                    <TableCell align="right">{fmtInt(r.completionTokens)}</TableCell>
+                    <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>
+                    <TableCell align="right">{fmtUSD(r.costUsd)}</TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Box>
+
       <Box>
         <Typography variant="h6" gutterBottom>
           Server Pools

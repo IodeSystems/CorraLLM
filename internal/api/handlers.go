@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/proc"
@@ -192,6 +193,61 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 			mv.Usage = append(mv.Usage, PoolUsageView{Pool: u.Pool, Bytes: u.Bytes})
 		}
 		out.Body.Models = append(out.Body.Models, mv)
+	}
+	return out, nil
+}
+
+// --- usage rollup (P8) ---
+
+// UsageRollupInput bounds the rollup window.
+type UsageRollupInput struct {
+	WindowHours int `query:"windowHours" default:"24" minimum:"0" maximum:"8760" doc:"Trailing window in hours; 0 = all time."`
+}
+
+// RollupRow is aggregated usage for one served model.
+type RollupRow struct {
+	Served           string  `json:"served" doc:"Served model name."`
+	Requests         int64   `json:"requests" doc:"Request count."`
+	PromptTokens     int64   `json:"promptTokens" doc:"Total prompt tokens."`
+	CompletionTokens int64   `json:"completionTokens" doc:"Total completion tokens."`
+	DwellMS          int64   `json:"dwellMs" doc:"Total dwell, milliseconds."`
+	CostUSD          float64 `json:"costUsd" doc:"Total cost, USD."`
+}
+
+// UsageRollupOutput is per-model usage plus a grand total over the window.
+type UsageRollupOutput struct {
+	Body struct {
+		WindowHours int         `json:"windowHours" doc:"Window applied (0 = all time)."`
+		Rows        []RollupRow `json:"rows" doc:"Per-model usage, costliest first."`
+		Total       RollupRow   `json:"total" doc:"Grand total across all models (served=\"\")."`
+	}
+}
+
+// UsageRollup aggregates metered activity by served model over a window.
+func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageRollupOutput, error) {
+	var sinceMS int64
+	if in.WindowHours > 0 {
+		sinceMS = time.Now().Add(-time.Duration(in.WindowHours) * time.Hour).UnixMilli()
+	}
+	rows, err := h.Store.RollupByModel(sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	out := &UsageRollupOutput{}
+	out.Body.WindowHours = in.WindowHours
+	out.Body.Rows = make([]RollupRow, 0, len(rows))
+	for _, r := range rows {
+		row := RollupRow{
+			Served: r.Served, Requests: r.Requests,
+			PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens,
+			DwellMS: r.DwellMS, CostUSD: r.CostUSD,
+		}
+		out.Body.Rows = append(out.Body.Rows, row)
+		out.Body.Total.Requests += row.Requests
+		out.Body.Total.PromptTokens += row.PromptTokens
+		out.Body.Total.CompletionTokens += row.CompletionTokens
+		out.Body.Total.DwellMS += row.DwellMS
+		out.Body.Total.CostUSD += row.CostUSD
 	}
 	return out, nil
 }

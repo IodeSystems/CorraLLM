@@ -33,6 +33,52 @@ func TestActivityRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRollupByModel aggregates per served model, ordered by cost desc, and
+// honors the since cutoff.
+func TestRollupByModel(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	rows := []Activity{
+		{TS: 100, Served: "cheap", Status: 200, PromptTokens: 10, CompletionTokens: 5, DwellMS: 50, CostUSD: 0.001},
+		{TS: 200, Served: "cheap", Status: 200, PromptTokens: 10, CompletionTokens: 5, DwellMS: 50, CostUSD: 0.001},
+		{TS: 300, Served: "pricey", Status: 200, PromptTokens: 100, CompletionTokens: 50, DwellMS: 500, CostUSD: 0.5},
+		{TS: 50, Served: "old", Status: 200, CostUSD: 9.9}, // before cutoff
+	}
+	for _, a := range rows {
+		if err := st.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Cutoff at ts=100 excludes "old"; pricey outranks cheap by cost.
+	got, err := st.RollupByModel(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 groups, got %d: %+v", len(got), got)
+	}
+	if got[0].Served != "pricey" || got[0].CostUSD != 0.5 {
+		t.Errorf("first group = %+v, want pricey/0.5", got[0])
+	}
+	if got[1].Served != "cheap" || got[1].Requests != 2 || got[1].PromptTokens != 20 || got[1].DwellMS != 100 {
+		t.Errorf("cheap aggregation = %+v", got[1])
+	}
+
+	// sinceMS=0 includes everything.
+	all, err := st.RollupByModel(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("want 3 groups all-time, got %d", len(all))
+	}
+}
+
 // TestMigrationsIdempotent: Open applies the upgrade migrations and is safe to
 // call repeatedly against the same database (duplicate-column errors swallowed).
 func TestMigrationsIdempotent(t *testing.T) {
