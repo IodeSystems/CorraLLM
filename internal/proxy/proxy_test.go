@@ -474,6 +474,50 @@ func TestMeterStreaming(t *testing.T) {
 	}
 }
 
+// TestMeterSwapCost: the request that triggers a cold load is billed the load's
+// swap energy on top of its token cost.
+func TestMeterSwapCost(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":0,"completion_tokens":0}}`))
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	cfg := meteredConfig(t, "mock", upstream.URL)
+	// Attach swap energy to the (only) backend: 18s × 300W.
+	b := cfg.Models["mock"].Backends[0]
+	b.Swap = &config.Swap{LoadSeconds: 18, LoadWatts: 300}
+	cfg.Models["mock"] = config.Model{Backends: []config.Backend{b}}
+
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock"}`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 {
+		t.Fatalf("want 1 activity, got %d", len(acts))
+	}
+	// Zero token cost + swap: 18·300 = 5400 Ws = 1.5 Wh = 0.0015 kWh × $0.14.
+	if d := acts[0].CostUSD - 0.00021; d < -1e-9 || d > 1e-9 {
+		t.Errorf("cost = %v, want 0.00021 (swap energy)", acts[0].CostUSD)
+	}
+}
+
 func TestUnknownModel404(t *testing.T) {
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()

@@ -129,7 +129,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 		// Proxy under reqCtx so a later preemption (cause ErrPreempted) aborts the
 		// upstream stream and frees this slot.
-		pr, done, err := p.mgr.EnsureReady(reqCtx, name, served, backend)
+		pr, done, loaded, err := p.mgr.EnsureReady(reqCtx, name, served, backend)
 		if err != nil {
 			release()
 			// Doesn't fit + can't evict, or won't come up → spill to next backend.
@@ -149,9 +149,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			status = 499 // slot reclaimed by a higher-priority group mid-request
 		}
 		// Meter the served request: extract token usage from the response and
-		// resolve it to $ via the backend's cost class.
+		// resolve it to $ via the backend's cost class. A cold load triggered by
+		// this request also bills its swap energy to it.
 		u := extractUsage(sc.buf, streaming)
 		costUSD := p.cost.RequestUSD(backend.Type, u.PromptTokens, u.CompletionTokens)
+		if loaded && backend.Swap != nil {
+			costUSD += p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
+		}
 		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD)
 		return
 	}
@@ -214,7 +218,7 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := served + "#0"
-	pr, done, err := p.mgr.EnsureReady(r.Context(), name, served, model.Backends[0])
+	pr, done, _, err := p.mgr.EnsureReady(r.Context(), name, served, model.Backends[0])
 	if err != nil {
 		http.Error(w, "backend unavailable", http.StatusServiceUnavailable)
 		return

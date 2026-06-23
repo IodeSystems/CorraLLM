@@ -43,7 +43,7 @@ func TestSpawnHealthAndProcessGroupKill(t *testing.T) {
 	// contains it; killGroup(-pgid) must reach it.
 	b := backendCmd(t, "exec sleep 30", addr.Port)
 
-	p, _, err := mgr.EnsureReady(context.Background(), "sleeper#0", "sleeper", b)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "sleeper#0", "sleeper", b)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -67,6 +67,47 @@ func TestSpawnHealthAndProcessGroupKill(t *testing.T) {
 	}
 }
 
+// TestEnsureReadyLoadedFlag: the first EnsureReady triggers the cold load
+// (loaded=true); a later call for the warm backend coalesces (loaded=false), so
+// only the trigger is charged the swap cost.
+func TestEnsureReadyLoadedFlag(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	addr := ln.Addr().(*net.TCPAddr)
+
+	mgr := NewManager(&config.Config{})
+	mgr.healthTimeout = 5 * time.Second
+	defer mgr.Shutdown()
+
+	// Pure-proxy backend (no cmd): the listener is its health target.
+	var pn yaml.Node
+	if err := pn.Encode(addr.Port); err != nil {
+		t.Fatal(err)
+	}
+	b := config.Backend{Proxy: pn, Type: "local"}
+
+	_, done1, loaded1, err := mgr.EnsureReady(context.Background(), "warm#0", "warm", b)
+	if err != nil {
+		t.Fatalf("first EnsureReady: %v", err)
+	}
+	done1()
+	if !loaded1 {
+		t.Errorf("first call loaded = false, want true (it triggered the load)")
+	}
+
+	_, done2, loaded2, err := mgr.EnsureReady(context.Background(), "warm#0", "warm", b)
+	if err != nil {
+		t.Fatalf("second EnsureReady: %v", err)
+	}
+	done2()
+	if loaded2 {
+		t.Errorf("second call loaded = true, want false (backend already warm)")
+	}
+}
+
 // TestLoadCoalescing: concurrent EnsureReady for the same backend share one load
 // (one spawn), not N duplicate spawns.
 func TestLoadCoalescing(t *testing.T) {
@@ -87,7 +128,7 @@ func TestLoadCoalescing(t *testing.T) {
 	pids := make(chan int, n)
 	for range n {
 		go func() {
-			p, _, err := mgr.EnsureReady(context.Background(), "shared#0", "shared", b)
+			p, _, _, err := mgr.EnsureReady(context.Background(), "shared#0", "shared", b)
 			if err != nil {
 				pids <- -1
 				return

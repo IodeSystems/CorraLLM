@@ -53,14 +53,14 @@ func TestEvictIdleToFit(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	pA, doneA, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
+	pA, doneA, _, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	pidA := pA.cmd.Process.Pid
 	doneA() // A is now idle (evictable)
 
-	pB, _, err := mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0])
+	pB, _, _, err := mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0])
 	if err != nil {
 		t.Fatalf("load B should evict A and succeed, got: %v", err)
 	}
@@ -98,13 +98,13 @@ func TestNoCapacityWhenBusy(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	_, doneA, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
+	_, doneA, _, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	defer doneA() // keep A busy (ref held) across the B attempt
 
-	_, _, err = mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0])
+	_, _, _, err = mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0])
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("want ErrNoCapacity (A busy), got: %v", err)
 	}
@@ -124,13 +124,13 @@ func TestPersistentNotEvicted(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	_, doneA, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
+	_, doneA, _, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	doneA() // idle but pinned
 
-	if _, _, err := mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0]); !errors.Is(err, ErrNoCapacity) {
+	if _, _, _, err := mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0]); !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("want ErrNoCapacity (A pinned), got: %v", err)
 	}
 }
@@ -144,12 +144,12 @@ func TestFitsAlongside(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	pA, doneA, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
+	pA, doneA, _, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	defer doneA()
-	_, doneB, err := mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0])
+	_, doneB, _, err := mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0])
 	if err != nil {
 		t.Fatalf("load B alongside A: %v", err)
 	}

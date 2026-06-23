@@ -111,14 +111,19 @@ func NewManager(cfg *config.Config) *Manager {
 // called when the request finishes — it drops the residency ref so the backend
 // becomes evictable. A spawn that won't fit triggers eviction; if that can't
 // free enough, EnsureReady returns ErrNoCapacity.
-func (m *Manager) EnsureReady(ctx context.Context, name, modelName string, b config.Backend) (*Process, func(), error) {
+//
+// loaded reports whether THIS call initiated the (cold) load rather than
+// coalescing behind an in-flight or already-warm backend — the caller charges
+// the load's swap cost to the request that triggered it (P6).
+func (m *Manager) EnsureReady(ctx context.Context, name, modelName string, b config.Backend) (proc *Process, release func(), loaded bool, err error) {
 	target, err := b.ProxyTarget()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	m.mu.Lock()
 	p := m.procs[name]
+	triggered := p == nil
 	if p == nil {
 		usage, _ := config.ParseSizes(b.RAMUsage) // validated at config load
 		// Residency applies to spawned backends bound to a server pool; pure
@@ -126,7 +131,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name, modelName string, b con
 		if b.Server != "" && len(usage) > 0 {
 			if err := m.makeRoomLocked(b.Server, usage); err != nil {
 				m.mu.Unlock()
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			m.reserveLocked(b.Server, usage)
 		}
@@ -155,13 +160,13 @@ func (m *Manager) EnsureReady(ctx context.Context, name, modelName string, b con
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if p.state != StateReady {
-			return nil, nil, fmt.Errorf("backend %s not ready: %w", name, p.err)
+			return nil, nil, false, fmt.Errorf("backend %s not ready: %w", name, p.err)
 		}
 		p.refs++
 		p.lastUsed = time.Now()
-		return p, m.releaser(p), nil
+		return p, m.releaser(p), triggered, nil
 	case <-ctx.Done():
-		return nil, nil, ctx.Err()
+		return nil, nil, false, ctx.Err()
 	}
 }
 
@@ -355,7 +360,7 @@ func (m *Manager) Preload(ctx context.Context) {
 		if !model.Persistent || len(model.Backends) == 0 {
 			continue
 		}
-		_, done, err := m.EnsureReady(ctx, name+"#0", name, model.Backends[0])
+		_, done, _, err := m.EnsureReady(ctx, name+"#0", name, model.Backends[0])
 		if err != nil {
 			slog.Warn("preload failed", "model", name, "err", err)
 			continue
