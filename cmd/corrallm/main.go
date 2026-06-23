@@ -154,6 +154,17 @@ func serve(ctx context.Context, o serveOpts) error {
 		return err
 	}
 
+	// Plain liveness probe for load balancers / monitoring (and llama-swap
+	// compatibility). Untracked — bypasses the scheduler — and answered directly
+	// here so it can't fall through to the SPA catch-all (which would 200 with
+	// HTML and mask an unhealthy process). The richer op stays at /api/v1/health.
+	healthz := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","version":%q}`, version)
+	}
+	router.Get("/health", healthz)
+	router.Get("/healthz", healthz)
+
 	// Live UI events (SSE): the proxy publishes activity/changed events that the
 	// observability views subscribe to instead of polling.
 	broker := events.NewBroker()
