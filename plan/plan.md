@@ -4,11 +4,13 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **P0–P6 shipped; P7 next.** Engine is runnable: OpenAI proxy + spawn
-lifecycle + fairshare scheduler + ordered fall-through + residency/eviction +
-preemption + cost model. **MVP = through P6 + the observability UI slice** —
-the engine half of the MVP is done; the P8 UI slice remains. How to work this
-plan is §0; roadmap is §6; decisions/extensions/deferred are §7.
+Status: **MVP shipped (P0–P6 + P8 MVP slice); P8-beyond + P7 next.** Engine is
+runnable: OpenAI proxy + spawn lifecycle + fairshare scheduler + ordered
+fall-through + residency/eviction + preemption + cost model — now observable:
+activity log, residency/pool usage, and per-model cost rollup in the UI. **MVP =
+through P6 + the observability UI slice** — both halves now done. Remaining:
+P8-beyond (lanes/health/$ dashboards, WS live events) and P7 (quality degrade).
+How to work this plan is §0; roadmap is §6; decisions/extensions/deferred are §7.
 
 > **Progress (updated 2026-06-23)**
 > - ✅ **P0 scaffold** — `fdf90b9`
@@ -20,9 +22,12 @@ plan is §0; roadmap is §6; decisions/extensions/deferred are §7.
 > - ✅ **P6 cost model** — `7bfdbad`/`84f4f70`/`d1091f1`/`e93bf2f`/`1e6ee19`/`c18a698`:
 >   energy/paid/swap → $, per-request metering+persist, sliding-window limits,
 >   configurable share currency. Two adversarial-review passes; fixes folded in.
-> - ▶ **next** — P7 quality-degrade (roadmap order) or the P8 UI MVP slice
->   (what MVP actually needs); the §6 MVP line makes the post-P6 order flexible.
-> - ☐ P7 quality-degrade · P8 UI · Later: multi-node
+> - ✅ **P8 MVP slice** — `dc9ffd3`/`b7d8dcc`/`b7e1b92`: recentActivity op +
+>   activity table; residency read op (`Manager.Snapshot`) + usage view (pool
+>   bars + resident models); usageRollup op + per-model 24h cost rollup. **MVP reached.**
+> - ▶ **next** — P8-beyond (lanes/groups live view, backend health, energy/$
+>   dashboards, WS live events) then P7 quality-degrade; order flexible (§6 MVP line).
+> - ☐ P8-beyond · P7 quality-degrade · Later: multi-node
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
 > Deviation from design: UI served from `--web-root` dir (not `go:embed`), matching
@@ -318,14 +323,15 @@ the BackpressureError shape we already validated.
   - [ ] `quality` becomes a sort/routing key for degrade fall-through (today it's carried metadata).
   - [ ] Optional request transforms (clamp `max_tokens`/context) when serving a lower variant.
   - [ ] Resolve variant-in-list vs separate fallback map (§7).
-- **P8 — UI / observability.** The **MVP slice** is required for MVP; the rest is polish.
-  - MVP slice:
-    - [ ] `recentActivity` GraphQL op + an activity table (command log / history).
-    - [ ] Residency read op (pool budget/used + what's warm) + a usage view.
-    - [ ] Surface per-request dwell/tokens/$ (from P6) in the activity view + a simple rollup.
-  - Beyond:
-    - [ ] Lanes/groups live view, backend health, energy & $ dashboards.
-    - [ ] Live events over ws (subBroker-style), replacing poll.
+- ✅ **P8 (MVP slice) — UI / observability.** `dc9ffd3`/`b7d8dcc`/`b7e1b92`.
+  - [x] `recentActivity` GraphQL/REST op + `/activity` polling table (dwell/tokens/$).
+  - [x] Residency read op (`Manager.Snapshot`: pool budget/used + resident backends) +
+        `/usage` view (per-server pool-utilization bars + resident-model table).
+  - [x] `usageRollup` op (per-model requests/tokens/dwell/$ over a window) + a 24h
+        summary + per-model rollup table on the Usage page.
+- **P8-beyond — observability polish.**
+  - [ ] Lanes/groups live view, backend health, energy & $ dashboards.
+  - [ ] Live events over ws (subBroker-style), replacing poll.
 
 > **── MVP line ──** Above: P0–P6 + the P8 MVP slice = a usable, observable control
 > plane. Below: post-MVP polish, reorderable.
@@ -404,13 +410,14 @@ the BackpressureError shape we already validated.
   non-streaming reply larger than that meters as $0 (streaming keeps a rolling tail). (4) `cost`
   share-currency is retrospective (decayed past releases), so in-flight cost is invisible to
   fairshare until release.
-- **Activity log only**: store now carries dwell/tokens/$ per request, but no rollups/UI feed yet — **P8**.
+- ✅ ~~Activity log only / no rollups/UI feed~~ — resolved in **P8 MVP slice**: `recentActivity`,
+  `residency`, `usageRollup` ops + activity/usage views. UI still polls (WS is P8-beyond).
 - **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
   (benign warning); revisit if it becomes flaky.
 
 ### Next steps
-1. **P8 UI MVP slice** — `recentActivity` op + activity table; residency read op + usage view;
-   surface the P6 dwell/tokens/$ in the activity view + a simple rollup. Completes the MVP (engine
-   half done through P6). The store already persists dwell/tokens/$ per request.
+1. **P8-beyond observability** — scheduler live-state read op (per-backend slots/inflight/waiting
+   per group) → lanes/groups live view + backend health; energy/$ dashboard built on `usageRollup`;
+   then live events over WS (subBroker-style) to replace the 2s poll.
 2. **P7 quality degradation** (post-MVP) — variant routing via `quality`; request transforms when
-   degrading. Reorderable vs P8 per the §6 MVP line.
+   degrading. Reorderable vs P8-beyond.
