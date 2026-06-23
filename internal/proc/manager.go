@@ -385,6 +385,86 @@ func (m *Manager) Shutdown() {
 	}
 }
 
+// --- residency introspection (P8) ---
+
+// PoolResidency is one memory pool's budget and current reservation.
+type PoolResidency struct {
+	Pool   string
+	Budget int64 // bytes available to spawned backends (total − reserve)
+	Used   int64 // bytes currently reserved by resident backends
+}
+
+// ServerResidency is a server's per-pool budget/usage.
+type ServerResidency struct {
+	Server string
+	Pools  []PoolResidency
+}
+
+// PoolUsage is a resident backend's reservation against one pool.
+type PoolUsage struct {
+	Pool  string
+	Bytes int64
+}
+
+// ResidentModel is one loaded (or loading) backend for the UI.
+type ResidentModel struct {
+	Name       string // "<servedModel>#<backendIndex>"
+	ModelName  string
+	Server     string // "" for pure-proxy (consumes no pools)
+	State      string
+	Refs       int  // in-flight requests holding it
+	Persistent bool // pinned: exempt from eviction
+	LastUsedMS int64
+	Usage      []PoolUsage
+}
+
+// ResidencySnapshot is a point-in-time view of the residency layer.
+type ResidencySnapshot struct {
+	Servers []ServerResidency
+	Models  []ResidentModel
+}
+
+// Snapshot returns a stable (sorted) view of server pool budgets/usage and the
+// currently resident backends — the read surface behind the P8 usage view.
+func (m *Manager) Snapshot() ResidencySnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var snap ResidencySnapshot
+	for server, budget := range m.budget {
+		sr := ServerResidency{Server: server}
+		for pool, b := range budget {
+			sr.Pools = append(sr.Pools, PoolResidency{Pool: pool, Budget: b, Used: m.used[server][pool]})
+		}
+		sort.Slice(sr.Pools, func(i, j int) bool { return sr.Pools[i].Pool < sr.Pools[j].Pool })
+		snap.Servers = append(snap.Servers, sr)
+	}
+	sort.Slice(snap.Servers, func(i, j int) bool { return snap.Servers[i].Server < snap.Servers[j].Server })
+
+	for _, p := range m.procs {
+		p.mu.Lock()
+		rm := ResidentModel{
+			Name:       p.Name,
+			ModelName:  p.ModelName,
+			Server:     p.server,
+			State:      string(p.state),
+			Refs:       p.refs,
+			Persistent: p.persistent,
+		}
+		if !p.lastUsed.IsZero() {
+			rm.LastUsedMS = p.lastUsed.UnixMilli()
+		}
+		for pool, b := range p.usage {
+			rm.Usage = append(rm.Usage, PoolUsage{Pool: pool, Bytes: b})
+		}
+		p.mu.Unlock()
+		sort.Slice(rm.Usage, func(i, j int) bool { return rm.Usage[i].Pool < rm.Usage[j].Pool })
+		snap.Models = append(snap.Models, rm)
+	}
+	sort.Slice(snap.Models, func(i, j int) bool { return snap.Models[i].Name < snap.Models[j].Name })
+	return snap
+}
+
 // --- victim ordering ---
 
 // sortVictims orders eviction candidates best-first: ttl-expired before warm,

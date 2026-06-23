@@ -88,6 +88,47 @@ func TestEvictIdleToFit(t *testing.T) {
 	}
 }
 
+// TestSnapshot: an empty manager reports the configured pool budget with zero
+// usage; after loading A the snapshot reflects the reservation and resident model.
+func TestSnapshot(t *testing.T) {
+	portA, portB := listenTCP(t), listenTCP(t)
+	cfg := resConfig(t, "10", "6", portA, portB)
+	mgr := NewManager(cfg)
+	mgr.healthTimeout = 5 * time.Second
+	defer mgr.Shutdown()
+
+	// Before any load: one server, gpu budget 10, used 0, no resident models.
+	snap := mgr.Snapshot()
+	if len(snap.Servers) != 1 || snap.Servers[0].Server != "box" {
+		t.Fatalf("servers = %+v", snap.Servers)
+	}
+	if len(snap.Servers[0].Pools) != 1 || snap.Servers[0].Pools[0] != (PoolResidency{Pool: "gpu", Budget: 10, Used: 0}) {
+		t.Fatalf("pools = %+v", snap.Servers[0].Pools)
+	}
+	if len(snap.Models) != 0 {
+		t.Fatalf("want no resident models, got %+v", snap.Models)
+	}
+
+	if _, _, _, err := mgr.EnsureReady(context.Background(), "A#0", "A", cfg.Models["A"].Backends[0]); err != nil {
+		t.Fatalf("load A: %v", err)
+	}
+
+	snap = mgr.Snapshot()
+	if snap.Servers[0].Pools[0].Used != 6 {
+		t.Errorf("used = %d, want 6", snap.Servers[0].Pools[0].Used)
+	}
+	if len(snap.Models) != 1 {
+		t.Fatalf("want 1 resident model, got %d", len(snap.Models))
+	}
+	m := snap.Models[0]
+	if m.Name != "A#0" || m.ModelName != "A" || m.Server != "box" || m.State != string(StateReady) {
+		t.Errorf("model = %+v", m)
+	}
+	if len(m.Usage) != 1 || m.Usage[0] != (PoolUsage{Pool: "gpu", Bytes: 6}) {
+		t.Errorf("usage = %+v", m.Usage)
+	}
+}
+
 // TestNoCapacityWhenBusy: A holds an in-flight ref, so it can't be evicted;
 // loading B returns ErrNoCapacity (the edge would spill).
 func TestNoCapacityWhenBusy(t *testing.T) {

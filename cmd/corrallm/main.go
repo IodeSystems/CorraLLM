@@ -133,7 +133,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// Preload pinned (persistent) models in the background so boot isn't blocked.
 	go mgr.Preload(ctx)
 
-	h := &api.Handlers{Version: version, Cfg: cfg, Store: st}
+	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr}
 
 	router := chi.NewRouter()
 	router.Use(middleware.RealIP)

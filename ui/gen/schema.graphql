@@ -11,6 +11,7 @@ type CorrallmQueryNamespace {
     """Max records, newest first."""
     limit: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
+  residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
   v1: CorrallmV1QueryNamespace!
 }
 
@@ -21,6 +22,7 @@ type CorrallmV1QueryNamespace {
     """Max records, newest first."""
     limit: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
+  residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
 }
 
 """64-bit integer encoded as a decimal string to preserve precision past 2^53. Accepts a JSON number or a decimal string as input."""
@@ -69,7 +71,56 @@ type corrallm_HealthOutputBody {
   version: String!
 }
 
+type corrallm_PoolUsageView {
+  """Reserved bytes."""
+  bytes: Long!
+  """Pool name."""
+  pool: String!
+}
+
+type corrallm_PoolView {
+  """Bytes available to spawned backends (total − reserve)."""
+  budget: Long!
+  """Pool name (gpu0, system, …)."""
+  pool: String!
+  """Bytes currently reserved by resident backends."""
+  used: Long!
+}
+
 type corrallm_RecentActivityOutputBody {
   """Activity rows, newest first."""
   records: [corrallm_ActivityRecord!]!
+}
+
+type corrallm_ResidencyOutputBody {
+  """Currently resident backends."""
+  models: [corrallm_ResidentModelView!]!
+  """Per-server pool budget/usage."""
+  servers: [corrallm_ServerView!]!
+}
+
+type corrallm_ResidentModelView {
+  """Unix millis of last use, 0 if never."""
+  lastUsedMs: Long!
+  """Served model name."""
+  modelName: String!
+  """Backend id (<servedModel>#<index>)."""
+  name: String!
+  """Pinned: exempt from eviction."""
+  persistent: Boolean!
+  """In-flight requests holding it."""
+  refs: Long!
+  """Server, empty for pure-proxy."""
+  server: String!
+  """absent|loading|ready|failed|evicting."""
+  state: String!
+  """Per-pool reservation."""
+  usage: [corrallm_PoolUsageView!]!
+}
+
+type corrallm_ServerView {
+  """Per-pool budget/usage."""
+  pools: [corrallm_PoolView!]!
+  """Server name."""
+  server: String!
 }

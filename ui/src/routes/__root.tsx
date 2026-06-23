@@ -4,6 +4,7 @@ import { AppBar, Box, Toolbar, Typography } from '@mui/material'
 const NAV = [
   { to: '/', label: 'Overview' },
   { to: '/activity', label: 'Activity' },
+  { to: '/usage', label: 'Usage' },
 ] as const
 
 export const Route = createRootRoute({

@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -18,6 +19,7 @@ type Handlers struct {
 	Version string
 	Cfg     *config.Config
 	Store   *store.Store
+	Mgr     *proc.Manager // residency introspection (P8)
 }
 
 // --- health ---
@@ -119,6 +121,77 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			CompletionTokens: a.CompletionTokens,
 			CostUSD:          a.CostUSD,
 		})
+	}
+	return out, nil
+}
+
+// --- residency (P8) ---
+
+// ResidencyInput has no parameters.
+type ResidencyInput struct{}
+
+// PoolView is one memory pool's budget/usage.
+type PoolView struct {
+	Pool   string `json:"pool" doc:"Pool name (gpu0, system, …)."`
+	Budget int64  `json:"budget" doc:"Bytes available to spawned backends (total − reserve)."`
+	Used   int64  `json:"used" doc:"Bytes currently reserved by resident backends."`
+}
+
+// ServerView is a server's per-pool residency.
+type ServerView struct {
+	Server string     `json:"server" doc:"Server name."`
+	Pools  []PoolView `json:"pools" doc:"Per-pool budget/usage."`
+}
+
+// PoolUsageView is a resident backend's reservation against one pool.
+type PoolUsageView struct {
+	Pool  string `json:"pool" doc:"Pool name."`
+	Bytes int64  `json:"bytes" doc:"Reserved bytes."`
+}
+
+// ResidentModelView is one loaded/loading backend.
+type ResidentModelView struct {
+	Name       string          `json:"name" doc:"Backend id (<servedModel>#<index>)."`
+	ModelName  string          `json:"modelName" doc:"Served model name."`
+	Server     string          `json:"server" doc:"Server, empty for pure-proxy."`
+	State      string          `json:"state" doc:"absent|loading|ready|failed|evicting."`
+	Refs       int             `json:"refs" doc:"In-flight requests holding it."`
+	Persistent bool            `json:"persistent" doc:"Pinned: exempt from eviction."`
+	LastUsedMS int64           `json:"lastUsedMs" doc:"Unix millis of last use, 0 if never."`
+	Usage      []PoolUsageView `json:"usage" doc:"Per-pool reservation."`
+}
+
+// ResidencyOutput reports server pool budgets and resident backends.
+type ResidencyOutput struct {
+	Body struct {
+		Servers []ServerView        `json:"servers" doc:"Per-server pool budget/usage."`
+		Models  []ResidentModelView `json:"models" doc:"Currently resident backends."`
+	}
+}
+
+// Residency returns the live residency snapshot (pool budgets + what's warm).
+func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOutput, error) {
+	snap := h.Mgr.Snapshot()
+	out := &ResidencyOutput{}
+	out.Body.Servers = make([]ServerView, 0, len(snap.Servers))
+	for _, s := range snap.Servers {
+		sv := ServerView{Server: s.Server, Pools: make([]PoolView, 0, len(s.Pools))}
+		for _, p := range s.Pools {
+			sv.Pools = append(sv.Pools, PoolView{Pool: p.Pool, Budget: p.Budget, Used: p.Used})
+		}
+		out.Body.Servers = append(out.Body.Servers, sv)
+	}
+	out.Body.Models = make([]ResidentModelView, 0, len(snap.Models))
+	for _, m := range snap.Models {
+		mv := ResidentModelView{
+			Name: m.Name, ModelName: m.ModelName, Server: m.Server, State: m.State,
+			Refs: m.Refs, Persistent: m.Persistent, LastUsedMS: m.LastUsedMS,
+			Usage: make([]PoolUsageView, 0, len(m.Usage)),
+		}
+		for _, u := range m.Usage {
+			mv.Usage = append(mv.Usage, PoolUsageView{Pool: u.Pool, Bytes: u.Bytes})
+		}
+		out.Body.Models = append(out.Body.Models, mv)
 	}
 	return out, nil
 }
