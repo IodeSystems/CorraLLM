@@ -4,12 +4,12 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **MVP shipped (P0–P6 + P8 MVP slice); P8-beyond + P7 next.** Engine is
-runnable: OpenAI proxy + spawn lifecycle + fairshare scheduler + ordered
-fall-through + residency/eviction + preemption + cost model — now observable:
-activity log, residency/pool usage, and per-model cost rollup in the UI. **MVP =
-through P6 + the observability UI slice** — both halves now done. Remaining:
-P8-beyond (lanes/health/$ dashboards, WS live events) and P7 (quality degrade).
+Status: **MVP shipped + P8 complete; P7 next.** Engine is runnable: OpenAI proxy
++ spawn lifecycle + fairshare scheduler + ordered fall-through + residency/
+eviction + preemption + cost model — and observable: activity log, residency/
+pool usage, per-model cost rollup, lanes/backend-health live view, all updated
+live over SSE. **MVP = through P6 + the observability UI slice** — done, plus the
+P8-beyond polish. Remaining: **P7 (quality degrade)** and Later (multi-node).
 How to work this plan is §0; roadmap is §6; decisions/extensions/deferred are §7.
 
 > **Progress (updated 2026-06-23)**
@@ -25,13 +25,17 @@ How to work this plan is §0; roadmap is §6; decisions/extensions/deferred are 
 > - ✅ **P8 MVP slice** — `dc9ffd3`/`b7d8dcc`/`b7e1b92`: recentActivity op +
 >   activity table; residency read op (`Manager.Snapshot`) + usage view (pool
 >   bars + resident models); usageRollup op + per-model 24h cost rollup. **MVP reached.**
-> - ▶ **next** — P8-beyond (lanes/groups live view, backend health, energy/$
->   dashboards, WS live events) then P7 quality-degrade; order flexible (§6 MVP line).
-> - ☐ P8-beyond · P7 quality-degrade · Later: multi-node
+> - ✅ **P8-beyond** — `adf7483`/`45c93d0`: lanes op (`Scheduler.Snapshot`) — groups
+>   live view + backend-health/utilization; live SSE events (`internal/events`) replace
+>   polling (proxy publishes activity/changed; UI invalidates on push, 15s fallback).
+> - ▶ **next** — P7 quality-degrade.
+> - ☐ P7 quality-degrade · Later: multi-node
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
-> Deviation from design: UI served from `--web-root` dir (not `go:embed`), matching
-> redline2. Store is minimal (activity log); no sqlc.
+> Deviations from design: (1) UI served from `--web-root` dir (not `go:embed`),
+> matching redline2; (2) live events use **SSE**, not WebSocket (server→client
+> only, no dependency, EventSource auto-reconnects — subBroker fan-out preserved).
+> Store is minimal (activity log + rollup query); no sqlc.
 
 ---
 
@@ -329,9 +333,13 @@ the BackpressureError shape we already validated.
         `/usage` view (per-server pool-utilization bars + resident-model table).
   - [x] `usageRollup` op (per-model requests/tokens/dwell/$ over a window) + a 24h
         summary + per-model rollup table on the Usage page.
-- **P8-beyond — observability polish.**
-  - [ ] Lanes/groups live view, backend health, energy & $ dashboards.
-  - [ ] Live events over ws (subBroker-style), replacing poll.
+- ✅ **P8-beyond — observability polish.** `adf7483`/`45c93d0`.
+  - [x] Lanes/groups live view (`Scheduler.Snapshot` → `lanes` op): groups
+        (weight/currency/interruptible + live active/waiting) + backend
+        health/utilization. $ dashboard = the `usageRollup` 24h view.
+  - [x] Live events (`internal/events` broker → `/api/v1/events` SSE), replacing
+        poll: proxy publishes activity/changed; UI invalidates caches on push,
+        15s fallback. *(SSE not WebSocket — see Status deviations.)*
 
 > **── MVP line ──** Above: P0–P6 + the P8 MVP slice = a usable, observable control
 > plane. Below: post-MVP polish, reorderable.
@@ -410,14 +418,14 @@ the BackpressureError shape we already validated.
   non-streaming reply larger than that meters as $0 (streaming keeps a rolling tail). (4) `cost`
   share-currency is retrospective (decayed past releases), so in-flight cost is invisible to
   fairshare until release.
-- ✅ ~~Activity log only / no rollups/UI feed~~ — resolved in **P8 MVP slice**: `recentActivity`,
-  `residency`, `usageRollup` ops + activity/usage views. UI still polls (WS is P8-beyond).
+- ✅ ~~Activity log only / no rollups/UI feed~~ — resolved in **P8**: `recentActivity`/`residency`/
+  `usageRollup`/`lanes` ops + activity/usage/lanes views; live SSE events drive updates (15s
+  fallback poll). Store carries dwell/tokens/$ per request + a per-model rollup query.
 - **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
   (benign warning); revisit if it becomes flaky.
 
 ### Next steps
-1. **P8-beyond observability** — scheduler live-state read op (per-backend slots/inflight/waiting
-   per group) → lanes/groups live view + backend health; energy/$ dashboard built on `usageRollup`;
-   then live events over WS (subBroker-style) to replace the 2s poll.
-2. **P7 quality degradation** (post-MVP) — variant routing via `quality`; request transforms when
-   degrading. Reorderable vs P8-beyond.
+1. **P7 quality degradation** — make `quality` a sort/routing key for degrade fall-through;
+   optional request transforms (clamp `max_tokens`/context) when serving a lower variant. The
+   variant-in-list vs separate-fallback-map design question (§7 Still pending) is a USER-owned
+   call — surface it before building.
