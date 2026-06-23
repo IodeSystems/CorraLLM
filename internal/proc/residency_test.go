@@ -3,7 +3,10 @@ package proc
 import (
 	"context"
 	"errors"
-	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -12,14 +15,25 @@ import (
 	"github.com/iodesystems/corrallm/internal/config"
 )
 
+// listenTCP starts a minimal HTTP server that answers /health with 200 (the
+// llama-server readiness contract corrallm's waitHealthy now requires) and
+// returns its port. The spawned `sleep` stands in for the backend process; this
+// server stands in for its HTTP port.
 func listenTCP(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
-	return ln.Addr().(*net.TCPAddr).Port
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
 }
 
 func resBackend(t *testing.T, server string, usage map[string]string, port int) config.Backend {

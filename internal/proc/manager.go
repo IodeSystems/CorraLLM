@@ -231,12 +231,16 @@ func (m *Manager) load(name string, b config.Backend, p *Process) {
 			m.onProcExit(name, p) // free pools if it exited on its own (idempotent)
 		}()
 		slog.Info("backend spawned", "name", name, "pid", cmd.Process.Pid, "target", p.Target.URL.String())
+
+		// Wait until the spawned server can actually serve. A pure-proxy backend
+		// (no cmd) targets a remote we don't own — don't gate readiness on its
+		// /health; proxy immediately and let per-request errors surface.
+		if err := m.waitHealthy(p.Target); err != nil {
+			finish(StateFailed, err)
+			return
+		}
 	}
 
-	if err := m.waitHealthy(p.Target); err != nil {
-		finish(StateFailed, err)
-		return
-	}
 	slog.Info("backend ready", "name", name, "target", p.Target.URL.String())
 	finish(StateReady, nil)
 }
@@ -349,18 +353,34 @@ func (m *Manager) waitHealthy(t *config.ProxyTarget) error {
 			addr += ":80"
 		}
 	}
+	url := t.URL.String() + "/health"
+	var lastErr error
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, time.Second)
-		if err == nil {
-			_ = conn.Close()
-			if resp, herr := m.healthCli.Get(t.URL.String() + "/health"); herr == nil {
-				_ = resp.Body.Close()
-			}
+		if err != nil {
+			lastErr = err
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		_ = conn.Close()
+		// Listening is not enough: llama-server binds its port early and returns
+		// 503 "Loading model" until weights + KV cache are fully loaded. Only a
+		// 2xx /health means it can actually serve a request.
+		resp, herr := m.healthCli.Get(url)
+		if herr != nil {
+			lastErr = herr
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		code := resp.StatusCode
+		_ = resp.Body.Close()
+		if code >= 200 && code < 300 {
 			return nil
 		}
+		lastErr = fmt.Errorf("/health returned %d", code)
 		time.Sleep(300 * time.Millisecond)
 	}
-	return fmt.Errorf("backend not healthy within %s (%s)", m.healthTimeout, addr)
+	return fmt.Errorf("backend not healthy within %s (%s): %v", m.healthTimeout, addr, lastErr)
 }
 
 // Preload spawns models marked persistent so they are warm at boot and exempt

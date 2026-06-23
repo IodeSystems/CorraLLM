@@ -28,20 +28,15 @@ func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 // pass health-check against a real listener, then Shutdown reaps the child's
 // whole process group (no orphan leak).
 func TestSpawnHealthAndProcessGroupKill(t *testing.T) {
-	// A listener stands in for the backend's health port.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = ln.Close() }()
-	addr := ln.Addr().(*net.TCPAddr)
+	// An HTTP server serving /health stands in for the backend's health port.
+	port := listenTCP(t)
 
 	mgr := NewManager(&config.Config{})
 	mgr.healthTimeout = 5 * time.Second
 
 	// exec sleep so the leaf process replaces the shell — the group still
 	// contains it; killGroup(-pgid) must reach it.
-	b := backendCmd(t, "exec sleep 30", addr.Port)
+	b := backendCmd(t, "exec sleep 30", port)
 
 	p, _, _, err := mgr.EnsureReady(context.Background(), "sleeper#0", "sleeper", b)
 	if err != nil {
@@ -111,18 +106,13 @@ func TestEnsureReadyLoadedFlag(t *testing.T) {
 // TestLoadCoalescing: concurrent EnsureReady for the same backend share one load
 // (one spawn), not N duplicate spawns.
 func TestLoadCoalescing(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = ln.Close() }()
-	addr := ln.Addr().(*net.TCPAddr)
+	port := listenTCP(t)
 
 	mgr := NewManager(&config.Config{})
 	mgr.healthTimeout = 5 * time.Second
 	defer mgr.Shutdown()
 
-	b := backendCmd(t, "exec sleep 30", addr.Port)
+	b := backendCmd(t, "exec sleep 30", port)
 
 	const n = 8
 	pids := make(chan int, n)
