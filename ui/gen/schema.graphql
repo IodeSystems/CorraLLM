@@ -1,13 +1,21 @@
 schema {
   query: Query
+  mutation: Mutation
 }
 
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
+
+type CorrallmMutationNamespace {
+  loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
+  v1: CorrallmV1MutationNamespace!
+}
 
 type CorrallmQueryNamespace {
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
+  overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   recentActivity(
     """Max records, newest first."""
     limit: Long
@@ -30,10 +38,16 @@ type CorrallmQueryNamespace {
   v1: CorrallmV1QueryNamespace!
 }
 
+type CorrallmV1MutationNamespace {
+  loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
+}
+
 type CorrallmV1QueryNamespace {
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
+  overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   recentActivity(
     """Max records, newest first."""
     limit: Long
@@ -57,6 +71,10 @@ type CorrallmV1QueryNamespace {
 
 """64-bit integer encoded as a decimal string to preserve precision past 2^53. Accepts a JSON number or a decimal string as input."""
 scalar Long
+
+type Mutation {
+  corrallm: CorrallmMutationNamespace!
+}
 
 type Query {
   corrallm: CorrallmQueryNamespace!
@@ -85,6 +103,27 @@ type corrallm_ActivityRecord {
   ts: Long!
 }
 
+type corrallm_BackendDef {
+  """Spawn command (empty for pure-proxy)."""
+  cmd: String!
+  """Position in the model's backend list."""
+  index: Long!
+  """Admission slots."""
+  maxConcurrent: Long!
+  """Per-backend max_tokens clamp (0 = none)."""
+  maxTokens: Long!
+  """Relative quality rank."""
+  quality: Long!
+  """Server it draws capacity from (spawned only)."""
+  server: String!
+  """True if corrallm spawns it (has a cmd)."""
+  spawnable: Boolean!
+  """Forward URL (scheme://host:port; headers redacted)."""
+  target: String!
+  """Cost class (local | claude | …)."""
+  type: String!
+}
+
 type corrallm_BackendLoadView {
   """Slots in use."""
   active: Long!
@@ -105,6 +144,23 @@ type corrallm_ConfigSummaryOutputBody {
   priorityGroups: [String!]!
   """Declared server names."""
   servers: [String!]!
+}
+
+type corrallm_GroupDef {
+  """Opts into quality-degrade fall-through."""
+  acceptDegrade: Boolean!
+  """May a higher group preempt it?"""
+  interruptible: Boolean!
+  """Group name."""
+  name: String!
+  """Lowest accepted quality when degrading."""
+  qualityFloor: Long!
+  """requests | dwell | cost."""
+  shareCurrency: String!
+  """Per-type saturation policy."""
+  stages: [corrallm_StageView!]!
+  """Fairshare weight."""
+  weight: Long!
 }
 
 type corrallm_GroupLoadView {
@@ -138,6 +194,13 @@ type corrallm_HealthOutputBody {
   version: String!
 }
 
+type corrallm_KeyDef {
+  """Priority group it resolves to."""
+  group: String!
+  """Caller key."""
+  key: String!
+}
+
 type corrallm_KeySeries {
   """Caller key (empty = unkeyed)."""
   key: String!
@@ -167,6 +230,57 @@ type corrallm_LanesOutputBody {
   backends: [corrallm_BackendLoadView!]!
   """Priority groups with aggregated load."""
   groups: [corrallm_GroupView!]!
+}
+
+input corrallm_ModelActionInputBodyInput {
+  """Served model name."""
+  model: String!
+}
+
+type corrallm_ModelActionOutputBody {
+  """Backend loaded (load only)."""
+  backend: String!
+  """Backends evicted (unload only)."""
+  evicted: Long!
+  """Human-readable result or error."""
+  message: String!
+  """Whether the action succeeded."""
+  ok: Boolean!
+}
+
+type corrallm_ModelDef {
+  """Ordered backend list."""
+  backends: [corrallm_BackendDef!]!
+  """Eviction resistance (sticky)."""
+  evictCost: String!
+  """Served model name."""
+  name: String!
+  """Pinned (preloaded, never evicted)."""
+  persistent: Boolean!
+  """Has at least one spawnable backend."""
+  spawnable: Boolean!
+  """Idle keep-warm window (sticky)."""
+  ttl: String!
+}
+
+type corrallm_OverviewOutputBody {
+  """Priority-group (lane) policies."""
+  groups: [corrallm_GroupDef!]!
+  """Caller key → group mappings."""
+  keys: [corrallm_KeyDef!]!
+  """Served models + backend definitions."""
+  models: [corrallm_ModelDef!]!
+  """Declared host capacity."""
+  servers: [corrallm_ServerDef!]!
+}
+
+type corrallm_PoolDef {
+  """Pool name."""
+  pool: String!
+  """Headroom kept free."""
+  reserveBytes: Long!
+  """Declared pool size."""
+  totalBytes: Long!
 }
 
 type corrallm_PoolUsageView {
@@ -242,11 +356,27 @@ type corrallm_SeriesPoint {
   requests: Long!
 }
 
+type corrallm_ServerDef {
+  """Optional host concurrency cap (0 = none)."""
+  maxConcurrent: Long!
+  """Declared memory pools."""
+  pools: [corrallm_PoolDef!]!
+  """Server name."""
+  server: String!
+}
+
 type corrallm_ServerView {
   """Per-pool budget/usage."""
   pools: [corrallm_PoolView!]!
   """Server name."""
   server: String!
+}
+
+type corrallm_StageView {
+  """Human-readable stage summary."""
+  policy: String!
+  """Backend type (or "default")."""
+  type: String!
 }
 
 type corrallm_UsageByKeyOutputBody {

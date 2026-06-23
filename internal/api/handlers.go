@@ -7,7 +7,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
@@ -510,6 +512,226 @@ func (h *Handlers) Lanes(_ context.Context, _ *LanesInput) (*LanesOutput, error)
 		out.Body.Groups = append(out.Body.Groups, gv)
 	}
 	sort.Slice(out.Body.Groups, func(i, j int) bool { return out.Body.Groups[i].Name < out.Body.Groups[j].Name })
+	return out, nil
+}
+
+// --- overview: model/lane definitions + capacity (P8-beyond) ---
+
+// PoolDef is a server pool's declared total and reserved headroom.
+type PoolDef struct {
+	Pool         string `json:"pool" doc:"Pool name."`
+	TotalBytes   int64  `json:"totalBytes" doc:"Declared pool size."`
+	ReserveBytes int64  `json:"reserveBytes" doc:"Headroom kept free."`
+}
+
+// ServerDef is a server's declared capacity.
+type ServerDef struct {
+	Server        string    `json:"server" doc:"Server name."`
+	MaxConcurrent int       `json:"maxConcurrent" doc:"Optional host concurrency cap (0 = none)."`
+	Pools         []PoolDef `json:"pools" doc:"Declared memory pools."`
+}
+
+// BackendDef is one backend's definition. Spawnable backends carry their cmd;
+// pure-proxy backends have an empty cmd and forward to Target. Auth headers on
+// remote targets are NOT exposed.
+type BackendDef struct {
+	Index         int    `json:"index" doc:"Position in the model's backend list."`
+	Type          string `json:"type" doc:"Cost class (local | claude | …)."`
+	Quality       int    `json:"quality" doc:"Relative quality rank."`
+	Spawnable     bool   `json:"spawnable" doc:"True if corrallm spawns it (has a cmd)."`
+	Server        string `json:"server" doc:"Server it draws capacity from (spawned only)."`
+	Target        string `json:"target" doc:"Forward URL (scheme://host:port; headers redacted)."`
+	MaxConcurrent int    `json:"maxConcurrent" doc:"Admission slots."`
+	MaxTokens     int    `json:"maxTokens" doc:"Per-backend max_tokens clamp (0 = none)."`
+	Cmd           string `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
+}
+
+// ModelDef is a served model's residency policy + backend list.
+type ModelDef struct {
+	Name       string       `json:"name" doc:"Served model name."`
+	Persistent bool         `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
+	TTL        string       `json:"ttl" doc:"Idle keep-warm window (sticky)."`
+	EvictCost  string       `json:"evictCost" doc:"Eviction resistance (sticky)."`
+	Spawnable  bool         `json:"spawnable" doc:"Has at least one spawnable backend."`
+	Backends   []BackendDef `json:"backends" doc:"Ordered backend list."`
+}
+
+// StageView summarizes a group's saturation policy for one backend type.
+type StageView struct {
+	Type   string `json:"type" doc:"Backend type (or \"default\")."`
+	Policy string `json:"policy" doc:"Human-readable stage summary."`
+}
+
+// GroupDef is a priority group's (lane's) policy.
+type GroupDef struct {
+	Name          string      `json:"name" doc:"Group name."`
+	Weight        int         `json:"weight" doc:"Fairshare weight."`
+	ShareCurrency string      `json:"shareCurrency" doc:"requests | dwell | cost."`
+	Interruptible bool        `json:"interruptible" doc:"May a higher group preempt it?"`
+	AcceptDegrade bool        `json:"acceptDegrade" doc:"Opts into quality-degrade fall-through."`
+	QualityFloor  int         `json:"qualityFloor" doc:"Lowest accepted quality when degrading."`
+	Stages        []StageView `json:"stages" doc:"Per-type saturation policy."`
+}
+
+// KeyDef maps a caller key to its group.
+type KeyDef struct {
+	Key   string `json:"key" doc:"Caller key."`
+	Group string `json:"group" doc:"Priority group it resolves to."`
+}
+
+// OverviewInput has no parameters.
+type OverviewInput struct{}
+
+// OverviewOutput is the loaded config rendered for the Overview control plane.
+type OverviewOutput struct {
+	Body struct {
+		Servers []ServerDef `json:"servers" doc:"Declared host capacity."`
+		Models  []ModelDef  `json:"models" doc:"Served models + backend definitions."`
+		Groups  []GroupDef  `json:"groups" doc:"Priority-group (lane) policies."`
+		Keys    []KeyDef    `json:"keys" doc:"Caller key → group mappings."`
+	}
+}
+
+// stageSummary renders a saturation Stage as a short human-readable policy.
+func stageSummary(s config.Stage) string {
+	var parts []string
+	if s.Preempt {
+		parts = append(parts, "preempt")
+	}
+	if s.Queue {
+		parts = append(parts, "queue")
+	}
+	if s.Spill || s.FallThrough {
+		parts = append(parts, "spill")
+	}
+	if s.Reject {
+		parts = append(parts, "reject")
+	}
+	if s.Then != "" {
+		parts = append(parts, "then "+s.Then)
+	}
+	for dim, lim := range s.Limits {
+		parts = append(parts, "limit "+dim+"="+lim)
+	}
+	if len(parts) == 0 {
+		return "reject"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// Overview returns model/lane definitions and declared system capacity.
+func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutput, error) {
+	out := &OverviewOutput{}
+
+	for name, srv := range h.Cfg.Servers {
+		sd := ServerDef{Server: name, MaxConcurrent: srv.MaxConcurrent}
+		totals, _ := config.ParseSizes(srv.Pools)
+		reserve, _ := config.ParseSizes(srv.Reserve)
+		for pool, total := range totals {
+			sd.Pools = append(sd.Pools, PoolDef{Pool: pool, TotalBytes: total, ReserveBytes: reserve[pool]})
+		}
+		sort.Slice(sd.Pools, func(i, j int) bool { return sd.Pools[i].Pool < sd.Pools[j].Pool })
+		out.Body.Servers = append(out.Body.Servers, sd)
+	}
+	sort.Slice(out.Body.Servers, func(i, j int) bool { return out.Body.Servers[i].Server < out.Body.Servers[j].Server })
+
+	for name, m := range h.Cfg.Models {
+		md := ModelDef{Name: name, Persistent: m.Persistent}
+		if m.Sticky != nil {
+			md.TTL, md.EvictCost = m.Sticky.TTL, m.Sticky.EvictCost
+		}
+		for i, b := range m.Backends {
+			bd := BackendDef{
+				Index: i, Type: b.Type, Quality: b.Quality, Spawnable: b.Cmd != "",
+				Server: b.Server, MaxConcurrent: b.Slots(), MaxTokens: b.MaxTokens, Cmd: b.Cmd,
+			}
+			if t, err := b.ProxyTarget(); err == nil {
+				bd.Target = t.URL.String() // headers (auth) intentionally omitted
+			}
+			if bd.Spawnable {
+				md.Spawnable = true
+			}
+			md.Backends = append(md.Backends, bd)
+		}
+		out.Body.Models = append(out.Body.Models, md)
+	}
+	sort.Slice(out.Body.Models, func(i, j int) bool { return out.Body.Models[i].Name < out.Body.Models[j].Name })
+
+	for name, g := range h.Cfg.PriorityGroups {
+		gd := GroupDef{
+			Name: name, Weight: g.EffectiveWeight(), ShareCurrency: shareCurrencyOf(g),
+			Interruptible: g.Interruptible, AcceptDegrade: g.AcceptDegrade, QualityFloor: g.QualityFloor,
+		}
+		for typ, st := range g.OnSaturated {
+			gd.Stages = append(gd.Stages, StageView{Type: typ, Policy: stageSummary(st)})
+		}
+		sort.Slice(gd.Stages, func(i, j int) bool { return gd.Stages[i].Type < gd.Stages[j].Type })
+		out.Body.Groups = append(out.Body.Groups, gd)
+	}
+	sort.Slice(out.Body.Groups, func(i, j int) bool { return out.Body.Groups[i].Name < out.Body.Groups[j].Name })
+
+	for k, grp := range h.Cfg.Keys {
+		out.Body.Keys = append(out.Body.Keys, KeyDef{Key: k, Group: grp})
+	}
+	sort.Slice(out.Body.Keys, func(i, j int) bool { return out.Body.Keys[i].Key < out.Body.Keys[j].Key })
+
+	return out, nil
+}
+
+// shareCurrencyOf returns a group's configured share currency, defaulting to requests.
+func shareCurrencyOf(g config.PriorityGroup) string {
+	switch g.ShareCurrency {
+	case "dwell", "cost":
+		return g.ShareCurrency
+	default:
+		return "requests"
+	}
+}
+
+// --- load / unload mutations (P8-beyond control plane) ---
+
+// ModelActionInput names the served model to load/unload.
+type ModelActionInput struct {
+	Body struct {
+		Model string `json:"model" doc:"Served model name."`
+	}
+}
+
+// ModelActionOutput reports the result of a load/unload.
+type ModelActionOutput struct {
+	Body struct {
+		OK      bool   `json:"ok" doc:"Whether the action succeeded."`
+		Message string `json:"message" doc:"Human-readable result or error."`
+		Backend string `json:"backend" doc:"Backend loaded (load only)."`
+		Evicted int    `json:"evicted" doc:"Backends evicted (unload only)."`
+	}
+}
+
+// LoadModel warms a model on demand (spawns its first spawnable backend).
+func (h *Handlers) LoadModel(ctx context.Context, in *ModelActionInput) (*ModelActionOutput, error) {
+	out := &ModelActionOutput{}
+	name, err := h.Mgr.LoadModel(ctx, in.Body.Model)
+	if err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	out.Body.OK = true
+	out.Body.Backend = name
+	out.Body.Message = "loaded " + name
+	return out, nil
+}
+
+// UnloadModel evicts a model's resident backends (refuses pinned / in-flight).
+func (h *Handlers) UnloadModel(_ context.Context, in *ModelActionInput) (*ModelActionOutput, error) {
+	out := &ModelActionOutput{}
+	n, err := h.Mgr.UnloadModel(in.Body.Model)
+	if err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	out.Body.OK = true
+	out.Body.Evicted = n
+	out.Body.Message = fmt.Sprintf("evicted %d backend(s)", n)
 	return out, nil
 }
 

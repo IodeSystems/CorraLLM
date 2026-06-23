@@ -51,6 +51,30 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.RecentActivity)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "overview",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/overview",
+		Summary:     "Model/lane definitions and declared system capacity.",
+		Tags:        []string{"observability"},
+	}, h.Overview)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "loadModel",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/models/load",
+		Summary:     "Warm a model on demand (spawn its first spawnable backend).",
+		Tags:        []string{"control"},
+	}, h.LoadModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "unloadModel",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/models/unload",
+		Summary:     "Evict a model's resident backends (refuses pinned / in-flight).",
+		Tags:        []string{"control"},
+	}, h.UnloadModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "residency",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/residency",

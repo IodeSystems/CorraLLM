@@ -13,6 +13,7 @@ export function useLiveEvents() {
       void qc.invalidateQueries({ queryKey: ['activity'] })
       void qc.invalidateQueries({ queryKey: ['usage'] })
       void qc.invalidateQueries({ queryKey: ['lanes'] })
+      void qc.invalidateQueries({ queryKey: ['overview'] })
     }
     es.addEventListener('activity', invalidate)
     es.addEventListener('changed', invalidate)

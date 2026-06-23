@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
 )
@@ -137,6 +139,84 @@ func TestUsageByKey(t *testing.T) {
 	if top.EnergyKwh < 0.999 || top.EnergyKwh > 1.001 {
 		t.Errorf("energyKwh = %v, want ~1", top.EnergyKwh)
 	}
+}
+
+// TestOverview renders config into model/lane defs + capacity, flagging
+// spawnable backends and summarizing stage policy.
+func TestOverview(t *testing.T) {
+	cfg := &config.Config{
+		Servers: map[string]config.Server{
+			"box": {Pools: map[string]string{"gpu0": "24GB"}, Reserve: map[string]string{"gpu0": "1GB"}},
+		},
+		Models: map[string]config.Model{
+			"m": {Backends: []config.Backend{
+				{Cmd: "llama-server ...", Server: "box", Type: "local", Quality: 100, MaxTokens: 512},
+				{Type: "claude", Quality: 90}, // pure-proxy (no cmd)
+			}},
+		},
+		PriorityGroups: map[string]config.PriorityGroup{
+			"batch": {Weight: 1, Interruptible: true, OnSaturated: map[string]config.Stage{"local": {Queue: true}}},
+		},
+		Keys: map[string]string{"ragtag": "batch"},
+	}
+	h := &Handlers{Cfg: cfg}
+	out, err := h.Overview(context.Background(), &OverviewInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(out.Body.Servers) != 1 || out.Body.Servers[0].Pools[0].TotalBytes != 24*1000*1000*1000 {
+		t.Fatalf("servers = %+v", out.Body.Servers)
+	}
+	if len(out.Body.Models) != 1 {
+		t.Fatalf("models = %+v", out.Body.Models)
+	}
+	md := out.Body.Models[0]
+	if !md.Spawnable || len(md.Backends) != 2 {
+		t.Fatalf("model = %+v", md)
+	}
+	if !md.Backends[0].Spawnable || md.Backends[0].Cmd == "" || md.Backends[0].MaxTokens != 512 {
+		t.Errorf("backend0 = %+v", md.Backends[0])
+	}
+	if md.Backends[1].Spawnable {
+		t.Errorf("backend1 (pure-proxy) should not be spawnable: %+v", md.Backends[1])
+	}
+	if len(out.Body.Groups) != 1 || out.Body.Groups[0].Stages[0].Policy != "queue" {
+		t.Errorf("groups = %+v", out.Body.Groups)
+	}
+	if len(out.Body.Keys) != 1 || out.Body.Keys[0].Group != "batch" {
+		t.Errorf("keys = %+v", out.Body.Keys)
+	}
+}
+
+// TestModelActionHandlers covers the load/unload wrappers' result mapping
+// without spawning: unknown model fails gracefully; unloading an absent model
+// is a no-op success.
+func TestModelActionHandlers(t *testing.T) {
+	cfg := &config.Config{Models: map[string]config.Model{"m": {Backends: []config.Backend{{Type: "local"}}}}}
+	h := &Handlers{Cfg: cfg, Mgr: proc.NewManager(cfg)}
+
+	ld, err := h.LoadModel(context.Background(), actionInput("nope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ld.Body.OK || !strings.Contains(ld.Body.Message, "unknown") {
+		t.Errorf("load unknown = %+v", ld.Body)
+	}
+
+	ul, err := h.UnloadModel(context.Background(), actionInput("m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ul.Body.OK || ul.Body.Evicted != 0 {
+		t.Errorf("unload absent = %+v", ul.Body)
+	}
+}
+
+func actionInput(model string) *ModelActionInput {
+	in := &ModelActionInput{}
+	in.Body.Model = model
+	return in
 }
 
 // TestUsageSeries builds a dense, ascending bucket axis and aligns each key's

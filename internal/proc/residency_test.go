@@ -102,6 +102,65 @@ func TestEvictIdleToFit(t *testing.T) {
 	}
 }
 
+// TestLoadUnloadModel: an explicit load warms a model (resident, ref-free), and
+// unload evicts it. Persistent models refuse to unload.
+func TestLoadUnloadModel(t *testing.T) {
+	portA := listenTCP(t)
+	cfg := resConfig(t, "10", "6", portA, listenTCP(t))
+	mgr := NewManager(cfg)
+	mgr.healthTimeout = 5 * time.Second
+	defer mgr.Shutdown()
+	ctx := context.Background()
+
+	name, err := mgr.LoadModel(ctx, "A")
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	if name != "A#0" {
+		t.Errorf("loaded %q, want A#0", name)
+	}
+	// Resident and idle (ref dropped) → in the snapshot, refs 0.
+	snap := mgr.Snapshot()
+	if len(snap.Models) != 1 || snap.Models[0].Name != "A#0" || snap.Models[0].Refs != 0 {
+		t.Fatalf("after load, models = %+v", snap.Models)
+	}
+
+	n, err := mgr.UnloadModel("A")
+	if err != nil {
+		t.Fatalf("UnloadModel: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("evicted %d, want 1", n)
+	}
+	if got := mgr.Snapshot(); len(got.Models) != 0 {
+		t.Errorf("after unload, models = %+v", got.Models)
+	}
+
+	// Unloading a not-resident model is a no-op (0, nil).
+	if n, err := mgr.UnloadModel("A"); err != nil || n != 0 {
+		t.Errorf("unload of absent model = (%d, %v), want (0, nil)", n, err)
+	}
+}
+
+// TestUnloadPersistentRefused: a persistent model can't be unloaded.
+func TestUnloadPersistentRefused(t *testing.T) {
+	cfg := resConfig(t, "10", "6", listenTCP(t), listenTCP(t))
+	// Pin A.
+	m := cfg.Models["A"]
+	m.Persistent = true
+	cfg.Models["A"] = m
+	mgr := NewManager(cfg)
+	mgr.healthTimeout = 5 * time.Second
+	defer mgr.Shutdown()
+
+	if _, err := mgr.LoadModel(context.Background(), "A"); err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	if _, err := mgr.UnloadModel("A"); err == nil {
+		t.Error("expected error unloading a persistent model")
+	}
+}
+
 // TestSetHealthTimeout overrides the default and ignores non-positive values.
 func TestSetHealthTimeout(t *testing.T) {
 	mgr := NewManager(&config.Config{})

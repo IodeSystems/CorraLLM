@@ -415,6 +415,67 @@ func (m *Manager) Shutdown() {
 	}
 }
 
+// --- explicit load / unload (P8-beyond control plane) ---
+
+// LoadModel warms a served model by spawning its first spawnable (cmd-bearing)
+// backend and immediately dropping the residency ref, leaving it resident and
+// evictable (like Preload, but on demand). Pure-proxy backends have nothing to
+// load. Returns the backend name loaded, or an error if none is spawnable or the
+// load fails (e.g. ErrNoCapacity).
+func (m *Manager) LoadModel(ctx context.Context, served string) (string, error) {
+	model, ok := m.cfg.Models[served]
+	if !ok {
+		return "", fmt.Errorf("unknown model %q", served)
+	}
+	var lastErr error
+	for i, b := range model.Backends {
+		if b.Cmd == "" {
+			continue // pure-proxy: nothing to spawn
+		}
+		name := fmt.Sprintf("%s#%d", served, i)
+		_, release, _, err := m.EnsureReady(ctx, name, served, b)
+		if err != nil {
+			lastErr = err
+			continue // try the next spawnable backend
+		}
+		release() // drop the ref; the model stays warm (evictable / pinned per config)
+		return name, nil
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("model %q has no spawnable backend", served)
+}
+
+// UnloadModel evicts every resident backend of a served model, freeing its
+// pools. It refuses if a backend is persistent (pinned) or has in-flight
+// requests. Returns the number evicted (0 if the model wasn't resident).
+func (m *Manager) UnloadModel(served string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var targets []*Process
+	for _, p := range m.procs {
+		if p.ModelName != served {
+			continue
+		}
+		p.mu.Lock()
+		persistent, refs := p.persistent, p.refs
+		p.mu.Unlock()
+		if persistent {
+			return 0, fmt.Errorf("model %q is persistent (pinned); cannot unload", served)
+		}
+		if refs > 0 {
+			return 0, fmt.Errorf("model %q has %d in-flight request(s); cannot unload", served, refs)
+		}
+		targets = append(targets, p)
+	}
+	for _, p := range targets {
+		m.evictLocked(p)
+	}
+	return len(targets), nil
+}
+
 // --- residency introspection (P8) ---
 
 // PoolResidency is one memory pool's budget and current reservation.
