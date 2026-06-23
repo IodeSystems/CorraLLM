@@ -4,13 +4,13 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **MVP shipped + P8 complete; P7 next.** Engine is runnable: OpenAI proxy
-+ spawn lifecycle + fairshare scheduler + ordered fall-through + residency/
-eviction + preemption + cost model — and observable: activity log, residency/
-pool usage, per-model cost rollup, lanes/backend-health live view, all updated
-live over SSE. **MVP = through P6 + the observability UI slice** — done, plus the
-P8-beyond polish. Remaining: **P7 (quality degrade)** and Later (multi-node).
-How to work this plan is §0; roadmap is §6; decisions/extensions/deferred are §7.
+Status: **P0–P8 + P7 shipped; only "Later" (multi-node) remains.** Engine is
+runnable: OpenAI proxy + spawn lifecycle + fairshare scheduler + ordered
+fall-through + residency/eviction + preemption + cost model + quality-degrade
+routing — and observable: activity log, residency/pool usage, per-model cost
+rollup, lanes/backend-health live view, all updated live over SSE. The full
+roadmap through P8 is delivered; the only open roadmap item is multi-node peer
+awareness ("Later"). How to work this plan is §0; roadmap is §6; decisions in §7.
 
 > **Progress (updated 2026-06-23)**
 > - ✅ **P0 scaffold** — `fdf90b9`
@@ -28,8 +28,10 @@ How to work this plan is §0; roadmap is §6; decisions/extensions/deferred are 
 > - ✅ **P8-beyond** — `adf7483`/`45c93d0`: lanes op (`Scheduler.Snapshot`) — groups
 >   live view + backend-health/utilization; live SSE events (`internal/events`) replace
 >   polling (proxy publishes activity/changed; UI invalidates on push, 15s fallback).
-> - ▶ **next** — P7 quality-degrade.
-> - ☐ P7 quality-degrade · Later: multi-node
+> - ✅ **P7 quality-degrade** — `26c8d69`: `quality` is a routing key (best-tier-first
+>   walk); per-group opt-in (`acceptDegrade`/`qualityFloor`) gates which tiers a group
+>   accepts; per-backend `maxTokens` clamp on degrade. Variant-in-list model chosen.
+> - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
 > Deviations from design: (1) UI served from `--web-root` dir (not `go:embed`),
@@ -291,7 +293,7 @@ the BackpressureError shape we already validated.
 - ✅ **P3 — Backend list + fall-through.** `ebcff81`. Ordered walk of a model's backends:
   rr-within-`type`, ordered across types; per-type `onSaturated` spill/fallThrough advances,
   queue waits, reject is terminal, exhausted list → 429. `orderBackends()` + `Stage.Spill` wired.
-  Quality carried but not a sort key (list order authoritative; per-quality routing is P7).
+  Quality carried but not yet a sort key (list order authoritative); per-quality routing landed in P7.
   *(preempt-vs-spill fork deferred to P5 — preempt has no implementation until then.)*
 - ✅ **P4 — Residency.** `ec1bcfb`. Per-server pool-budget ledger gates spawns (fit = ∀pool
   want ≤ budget−used); eviction solver (evict-then-spill) frees idle non-pinned residents on the
@@ -323,10 +325,15 @@ the BackpressureError shape we already validated.
         request-count (coherent, starvation-free).
   - [x] **Meter + persist** — dwell + tokens + $ per request into the activity record (feeds P8);
         streaming + non-streaming usage capture, identity-decode for compressed upstreams.
-- **P7 — Quality degradation.** *(beyond MVP)*
-  - [ ] `quality` becomes a sort/routing key for degrade fall-through (today it's carried metadata).
-  - [ ] Optional request transforms (clamp `max_tokens`/context) when serving a lower variant.
-  - [ ] Resolve variant-in-list vs separate fallback map (§7).
+- ✅ **P7 — Quality degradation.** `26c8d69`.
+  - [x] `quality` is a sort/routing key: `orderBackends` walks best-quality-tier first
+        (type-rr preserved within a tier; uniform quality = pre-P7 ordering, no regression).
+  - [x] Per-group opt-in: `acceptDegrade` + `qualityFloor` gate accepted tiers
+        (`PriorityGroup.AcceptsQuality`); a non-degrading group sees only the top tier and
+        backs off per its stage instead of spilling onto a worse model.
+  - [x] Request transform: per-backend `maxTokens` clamp applied to the outgoing body when a
+        request degrades onto a capped backend. *(Context-window clamp needs tokenization — §7.)*
+  - [x] Resolved: **variant-in-list** (one ordered list, quality-ranked), not a separate map.
 - ✅ **P8 (MVP slice) — UI / observability.** `dc9ffd3`/`b7d8dcc`/`b7e1b92`.
   - [x] `recentActivity` GraphQL/REST op + `/activity` polling table (dwell/tokens/$).
   - [x] Residency read op (`Manager.Snapshot`: pool budget/used + resident backends) +
@@ -378,15 +385,21 @@ the BackpressureError shape we already validated.
   default. `dwell`/`cost` use a per-group accumulator decayed with a 30s half-life (cost is
   retrospective; dwell measured at release). A backend whose queued groups disagree on currency
   falls back to request-count for that comparison — coherent and starvation-free. (Per-key not done.)
+- ✅ **Quality-degrade model** (P7) — **variant-in-list** (one ordered backend list, quality-ranked),
+  not a separate fallback map. Degrade is **per-group opt-in**: `acceptDegrade` + `qualityFloor`
+  decide which quality tiers a group accepts; a non-degrading group sees only the model's top tier
+  and backs off per its stage rather than spilling onto a worse model. Degrade transform = per-backend
+  `maxTokens` clamp on the outgoing request (context-window clamp deferred — needs tokenization).
 
-### Still pending (blocking the noted phase)
-- **Stickiness/affinity weighting** — how strongly a warm backend overrides *ordered list*
-  preference (P4 does ttl/evictCost for *eviction*, but the proxy still walks strict list order
-  regardless of warmth); per-group vs per-request latency hint — **P7**.
-- **Quality-degrade across served-model boundaries** (variant in same list vs separate fallback
-  map) — **P7**. Currently folded into the one backend list via `quality`.
+### Still pending
+- (none block a roadmap phase — P0–P8 + P7 are shipped. Remaining ideas are optional/deferred below.)
 
 ### Optional extensions (improve the product; no planned phase requires them — pull in opportunistically)
+- **Stickiness/affinity weighting** — how strongly a warm backend overrides *ordered list*
+  preference (P4 does ttl/evictCost for *eviction*, but the proxy walks strict quality/list order
+  regardless of warmth); per-group vs per-request latency hint. Not built.
+- **Context-window clamp on degrade** — P7 clamps `max_tokens`; clamping the prompt to a smaller
+  backend's context window needs tokenization, so it's deferred (declared `maxTokens` only for now).
 - **gRPC surface** — gat gives it cheaply, but no consumer yet; add when one appears.
 - **CapacityProbe** (nvidia/drm/amd/metal/none, auto) — declared budget is canonical and
   implemented; the probe only auto-fills undeclared totals, drift-guards, and feeds dashboards.
@@ -404,7 +417,8 @@ the BackpressureError shape we already validated.
 ### Deferred work / known gaps in shipped code
 - ✅ ~~P1 first-backend-only~~ — resolved in **P3** (ordered fall-through; rr-within-type).
   ✅ ~~`Stage.Then` follow-up verb~~ — resolved in **P5** (preempt's no-victim fallback honors
-  `then: fallThrough|spill|queue`). Still inert: `quality` as a routing/sort key (**P7**).
+  `then: fallThrough|spill|queue`). ✅ ~~`quality` inert~~ — resolved in **P7** (routing key +
+  per-group degrade opt-in + `maxTokens` clamp).
 - ✅ ~~No `limits`/cost metering~~ — resolved in **P6** (`internal/cost`; energy/paid/swap → $;
   per-request dwell/tokens/$ metered + persisted; sliding-window limits; `requests|dwell|cost`
   share currency). Remaining P6 gaps below.
@@ -425,7 +439,6 @@ the BackpressureError shape we already validated.
   (benign warning); revisit if it becomes flaky.
 
 ### Next steps
-1. **P7 quality degradation** — make `quality` a sort/routing key for degrade fall-through;
-   optional request transforms (clamp `max_tokens`/context) when serving a lower variant. The
-   variant-in-list vs separate-fallback-map design question (§7 Still pending) is a USER-owned
-   call — surface it before building.
+- The full P0–P8 + P7 roadmap is shipped. The only remaining roadmap item is **multi-node peer
+  awareness** ("Later"): remote load introspection across corrallm peers. Optional polish lives in
+  §7 Optional extensions (affinity weighting, context-window clamp, gRPC, CapacityProbe, host cap).
