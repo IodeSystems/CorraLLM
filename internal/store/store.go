@@ -31,6 +31,17 @@ CREATE TABLE IF NOT EXISTS activity (
     queued_ms         INTEGER NOT NULL DEFAULT 0  -- time spent queued before admit/reject (P8-beyond)
 );
 CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
+
+-- Periodic snapshots of instantaneous per-lane admission load (P8-beyond), so
+-- queue depth is visible even before requests resolve. Sparse: only non-idle
+-- lanes are sampled. ("grp" — "group" is reserved.)
+CREATE TABLE IF NOT EXISTS lane_samples (
+    ts      INTEGER NOT NULL,   -- unix millis of the sample
+    grp     TEXT    NOT NULL,   -- priority group
+    active  INTEGER NOT NULL,   -- in-flight slots across backends
+    waiting INTEGER NOT NULL    -- queued requests across backends
+);
+CREATE INDEX IF NOT EXISTS idx_lane_samples_ts ON lane_samples(ts);
 `
 
 // migrations upgrade an activity table created by an earlier schema in place.
@@ -244,6 +255,79 @@ func (s *Store) RollupSeries(sinceMS, bucketMS int64) ([]SeriesRow, error) {
 		var r SeriesRow
 		if err := rows.Scan(&r.BucketTS, &r.Key, &r.Requests, &r.PromptTokens,
 			&r.CompletionTokens, &r.DwellMS, &r.CostUSD, &r.QueuedMS, &r.Rejected); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// LaneSample is one priority group's instantaneous load at a sample tick.
+type LaneSample struct {
+	Group   string
+	Active  int
+	Waiting int
+}
+
+// InsertLaneSamples records a batch of per-lane load samples at ts.
+func (s *Store) InsertLaneSamples(ts int64, samples []LaneSample) error {
+	if len(samples) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO lane_samples (ts, grp, active, waiting) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, sm := range samples {
+		if _, err := stmt.Exec(ts, sm.Group, sm.Active, sm.Waiting); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// PruneLaneSamples deletes samples older than beforeMS (retention).
+func (s *Store) PruneLaneSamples(beforeMS int64) error {
+	_, err := s.db.Exec(`DELETE FROM lane_samples WHERE ts < ?`, beforeMS)
+	return err
+}
+
+// LaneDepthRow is one (bucket, group) aggregate of sampled load.
+type LaneDepthRow struct {
+	BucketTS   int64
+	Group      string
+	AvgActive  float64
+	AvgWaiting float64
+	MaxWaiting int64
+}
+
+// LaneDepthSeries buckets the lane samples at/after sinceMS into bucketMS
+// windows, reporting mean active/waiting and peak waiting per (bucket, group).
+func (s *Store) LaneDepthSeries(sinceMS, bucketMS int64) ([]LaneDepthRow, error) {
+	if bucketMS <= 0 {
+		bucketMS = 3600_000
+	}
+	rows, err := s.db.Query(
+		`SELECT (ts / ?) * ? AS bucket, grp,
+		        AVG(active), AVG(waiting), MAX(waiting)
+		 FROM lane_samples WHERE ts >= ?
+		 GROUP BY bucket, grp
+		 ORDER BY bucket, grp`, bucketMS, bucketMS, sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []LaneDepthRow
+	for rows.Next() {
+		var r LaneDepthRow
+		if err := rows.Scan(&r.BucketTS, &r.Group, &r.AvgActive, &r.AvgWaiting, &r.MaxWaiting); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

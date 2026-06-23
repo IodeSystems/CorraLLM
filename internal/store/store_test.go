@@ -150,6 +150,44 @@ func TestRollupSeriesQueueMetrics(t *testing.T) {
 	}
 }
 
+// TestLaneSamples: samples aggregate to mean/peak per (bucket, group), and
+// pruning drops old rows.
+func TestLaneSamples(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// Two samples in the same bucket for "interactive": waiting 2 then 6.
+	if err := st.InsertLaneSamples(1000, []LaneSample{{Group: "interactive", Active: 1, Waiting: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertLaneSamples(2000, []LaneSample{{Group: "interactive", Active: 1, Waiting: 6}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.LaneDepthSeries(0, 3_600_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 (bucket,group), got %d", len(got))
+	}
+	r := got[0]
+	if r.Group != "interactive" || r.AvgWaiting != 4 || r.MaxWaiting != 6 {
+		t.Errorf("got %+v, want interactive avgWaiting=4 maxWaiting=6", r)
+	}
+
+	// Prune everything before ts 5000 → empty.
+	if err := st.PruneLaneSamples(5000); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.LaneDepthSeries(0, 3_600_000); len(got) != 0 {
+		t.Errorf("after prune want 0 rows, got %d", len(got))
+	}
+}
+
 // TestMigrationsIdempotent: Open applies the upgrade migrations and is safe to
 // call repeatedly against the same database (duplicate-column errors swallowed).
 func TestMigrationsIdempotent(t *testing.T) {

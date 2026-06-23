@@ -22,6 +22,12 @@ type CorrallmQueryNamespace {
     tail: Long
   ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
+  queueDepth(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_QueueDepthOutputBody @derived(operationId: "queueDepth")
   recentActivity(
     """Max records, newest first."""
     limit: Long
@@ -66,6 +72,12 @@ type CorrallmV1QueryNamespace {
     tail: Long
   ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
+  queueDepth(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_QueueDepthOutputBody @derived(operationId: "queueDepth")
   recentActivity(
     """Max records, newest first."""
     limit: Long
@@ -170,6 +182,15 @@ type corrallm_ConfigSummaryOutputBody {
   servers: [String!]!
 }
 
+type corrallm_DepthPoint {
+  """Mean in-flight slots in this bucket."""
+  avgActive: Float!
+  """Mean queued requests in this bucket."""
+  avgWaiting: Float!
+  """Peak queued requests in this bucket."""
+  maxWaiting: Long!
+}
+
 type corrallm_GroupDef {
   """Opts into quality-degrade fall-through."""
   acceptDegrade: Boolean!
@@ -269,6 +290,13 @@ type corrallm_KeyUsageRow {
   requests: Long!
 }
 
+type corrallm_LaneDepthSeriesView {
+  """Priority group name."""
+  group: String!
+  """One point per bucket, aligned to Buckets."""
+  points: [corrallm_DepthPoint!]!
+}
+
 type corrallm_LanesOutputBody {
   """Per-backend live load."""
   backends: [corrallm_BackendLoadView!]!
@@ -348,6 +376,15 @@ type corrallm_PoolView {
   pool: String!
   """Bytes currently reserved by resident backends."""
   used: Long!
+}
+
+type corrallm_QueueDepthOutputBody {
+  """Effective bucket width."""
+  bucketMinutes: Long!
+  """Bucket start times, unix millis, ascending."""
+  buckets: [Long!]!
+  """Per-lane sampled depth, busiest first."""
+  lanes: [corrallm_LaneDepthSeriesView!]!
 }
 
 type corrallm_RecentActivityOutputBody {

@@ -191,6 +191,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Sample instantaneous per-lane queue depth so it's visible before requests
+	// resolve (the activity log is completion-driven). Stops on shutdown.
+	go runQueueSampler(sigCtx, scheduler, st, 5*time.Second)
+
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("corrallm listening", "addr", o.addr, "version", version)
@@ -205,6 +209,49 @@ func serve(ctx context.Context, o serveOpts) error {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutCtx)
+	}
+}
+
+// runQueueSampler periodically snapshots the scheduler's per-lane load and
+// persists it (sparse — idle lanes are skipped), pruning old samples. This gives
+// a time-series of queue depth independent of when requests complete.
+func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	var sincePrune time.Duration
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			agg := map[string]*store.LaneSample{}
+			for _, b := range sc.Snapshot().Backends {
+				for _, g := range b.Groups {
+					s := agg[g.Group]
+					if s == nil {
+						s = &store.LaneSample{Group: g.Group}
+						agg[g.Group] = s
+					}
+					s.Active += g.Active
+					s.Waiting += g.Waiting
+				}
+			}
+			if len(agg) > 0 {
+				samples := make([]store.LaneSample, 0, len(agg))
+				for _, s := range agg {
+					samples = append(samples, *s)
+				}
+				if err := st.InsertLaneSamples(time.Now().UnixMilli(), samples); err != nil {
+					slog.Warn("lane sample", "err", err)
+				}
+			}
+			if sincePrune += interval; sincePrune >= 5*time.Minute {
+				sincePrune = 0
+				if err := st.PruneLaneSamples(time.Now().Add(-48 * time.Hour).UnixMilli()); err != nil {
+					slog.Warn("prune lane samples", "err", err)
+				}
+			}
+		}
 	}
 }
 

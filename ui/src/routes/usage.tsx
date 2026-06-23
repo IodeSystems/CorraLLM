@@ -209,6 +209,15 @@ const UsageDoc = graphql(/* GraphQL */ `
           costUsd
         }
       }
+      queueDepth(windowHours: "24", bucketMinutes: "60") {
+        lanes {
+          group
+          points {
+            avgWaiting
+            maxWaiting
+          }
+        }
+      }
       usageSeriesByGroup(windowHours: "24", bucketMinutes: "60") {
         buckets
         groups {
@@ -356,6 +365,14 @@ function Usage() {
   }))
   const anyRejections = rejectSeries.some((s) => s.values.some((v) => v > 0))
 
+  const depthLanes = q.data?.corrallm.queueDepth?.lanes ?? []
+  const depthSeries: ChartSeries[] = depthLanes.map((l, i) => ({
+    key: l.group,
+    color: laneColor(i),
+    values: l.points.map((p) => p.avgWaiting),
+  }))
+  const anyDepth = depthSeries.some((s) => s.values.some((v) => v > 0))
+
   const seriesKeys = q.data?.corrallm.usageSeries?.keys ?? []
   const mkSeries = (sel: (p: {
     requests: string
@@ -438,6 +455,17 @@ function Usage() {
               </Typography>
             )}
             <MetricChart title="Avg queue wait / request" series={waitSeries} fmt={(n) => fmtDuration(n)} />
+            {anyDepth ? (
+              <StackedArea
+                title="Queue depth — avg waiting by lane (sampled)"
+                series={depthSeries}
+                fmtTotal={(n) => n.toFixed(1)}
+              />
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                Queue depth: no lane has queued requests in the sampled window.
+              </Typography>
+            )}
           </Stack>
         )}
       </Box>

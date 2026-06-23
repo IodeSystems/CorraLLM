@@ -107,6 +107,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UsageSeries)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "queueDepth",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/usage/queue-depth",
+		Summary:     "Sampled per-lane queue depth (active/waiting) over time.",
+		Tags:        []string{"observability"},
+	}, h.QueueDepth)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "usageSeriesByGroup",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/usage/series-by-group",

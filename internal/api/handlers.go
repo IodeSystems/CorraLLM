@@ -558,6 +558,96 @@ func (h *Handlers) UsageSeriesByGroup(_ context.Context, in *UsageSeriesInput) (
 	return out, nil
 }
 
+// --- sampled queue depth over time (P8-beyond) ---
+
+// DepthPoint is one bucket's sampled load for a lane.
+type DepthPoint struct {
+	AvgActive  float64 `json:"avgActive" doc:"Mean in-flight slots in this bucket."`
+	AvgWaiting float64 `json:"avgWaiting" doc:"Mean queued requests in this bucket."`
+	MaxWaiting int64   `json:"maxWaiting" doc:"Peak queued requests in this bucket."`
+}
+
+// LaneDepthSeries is one priority group's dense queue-depth time series.
+type LaneDepthSeriesView struct {
+	Group  string       `json:"group" doc:"Priority group name."`
+	Points []DepthPoint `json:"points" doc:"One point per bucket, aligned to Buckets."`
+}
+
+// QueueDepthOutput is a shared time axis plus one dense depth series per lane.
+type QueueDepthOutput struct {
+	Body struct {
+		BucketMinutes int                   `json:"bucketMinutes" doc:"Effective bucket width."`
+		Buckets       []int64               `json:"buckets" doc:"Bucket start times, unix millis, ascending."`
+		Lanes         []LaneDepthSeriesView `json:"lanes" doc:"Per-lane sampled depth, busiest first."`
+	}
+}
+
+// QueueDepth returns sampled per-lane queue depth (active/waiting) over time —
+// instantaneous pressure that the completion-driven activity log can't show.
+func (h *Handlers) QueueDepth(_ context.Context, in *UsageSeriesInput) (*QueueDepthOutput, error) {
+	windowHours := in.WindowHours
+	if windowHours <= 0 {
+		windowHours = 24
+	}
+	bucketMin := in.BucketMinutes
+	if bucketMin <= 0 {
+		bucketMin = 60
+	}
+	windowMS := int64(windowHours) * 3600_000
+	bucketMS := int64(bucketMin) * 60_000
+	for windowMS/bucketMS > maxSeriesBuckets {
+		bucketMS *= 2
+	}
+
+	now := time.Now().UnixMilli()
+	end := (now / bucketMS) * bucketMS
+	start := ((now - windowMS) / bucketMS) * bucketMS
+	var buckets []int64
+	index := map[int64]int{}
+	for b := start; b <= end; b += bucketMS {
+		index[b] = len(buckets)
+		buckets = append(buckets, b)
+	}
+
+	rows, err := h.Store.LaneDepthSeries(now-windowMS, bucketMS)
+	if err != nil {
+		return nil, err
+	}
+
+	type acc struct {
+		points []DepthPoint
+		peak   int64
+	}
+	byGroup := map[string]*acc{}
+	for _, r := range rows {
+		pos, ok := index[r.BucketTS]
+		if !ok {
+			continue
+		}
+		a := byGroup[r.Group]
+		if a == nil {
+			a = &acc{points: make([]DepthPoint, len(buckets))}
+			byGroup[r.Group] = a
+		}
+		a.points[pos] = DepthPoint{AvgActive: r.AvgActive, AvgWaiting: r.AvgWaiting, MaxWaiting: r.MaxWaiting}
+		if r.MaxWaiting > a.peak {
+			a.peak = r.MaxWaiting
+		}
+	}
+
+	out := &QueueDepthOutput{}
+	out.Body.BucketMinutes = int(bucketMS / 60_000)
+	out.Body.Buckets = buckets
+	out.Body.Lanes = make([]LaneDepthSeriesView, 0, len(byGroup))
+	for g, a := range byGroup {
+		out.Body.Lanes = append(out.Body.Lanes, LaneDepthSeriesView{Group: g, Points: a.points})
+	}
+	sort.Slice(out.Body.Lanes, func(i, j int) bool {
+		return byGroup[out.Body.Lanes[i].Group].peak > byGroup[out.Body.Lanes[j].Group].peak
+	})
+	return out, nil
+}
+
 // --- lanes / live admission load (P8-beyond) ---
 
 // LanesInput has no parameters.
