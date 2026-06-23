@@ -107,7 +107,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		name := fmt.Sprintf("%s#%d", served, idx)
 		stage := group.StageFor(backend.Type)
 
-		release, err := p.sched.Admit(ctx, name, backend.Slots(), groupName, weight, stage)
+		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Slots(), groupName, weight, group.Interruptible, stage)
 		if err != nil {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
@@ -124,7 +124,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		pr, done, err := p.mgr.EnsureReady(ctx, name, served, backend)
+		// Proxy under reqCtx so a later preemption (cause ErrPreempted) aborts the
+		// upstream stream and frees this slot.
+		pr, done, err := p.mgr.EnsureReady(reqCtx, name, served, backend)
 		if err != nil {
 			release()
 			// Doesn't fit + can't evict, or won't come up → spill to next backend.
@@ -136,10 +138,14 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
 		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK}
-		newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(ctx))
+		newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(reqCtx))
 		done()
 		release()
-		p.log(served, name, key, r.URL.Path, sc.code, time.Since(start))
+		status := sc.code
+		if errors.Is(context.Cause(reqCtx), sched.ErrPreempted) {
+			status = 499 // slot reclaimed by a higher-priority group mid-request
+		}
+		p.log(served, name, key, r.URL.Path, status, time.Since(start))
 		return
 	}
 

@@ -15,16 +15,16 @@ var rejectStage = config.Stage{Reject: true}
 func TestAdmitUpToCapacity(t *testing.T) {
 	s := New()
 	ctx := context.Background()
-	r1, err := s.Admit(ctx, "b", 2, "g", 1, rejectStage)
+	r1, _, err := s.Admit(ctx, "b", 2, "g", 1, false, rejectStage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2, err := s.Admit(ctx, "b", 2, "g", 1, rejectStage)
+	r2, _, err := s.Admit(ctx, "b", 2, "g", 1, false, rejectStage)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Third over capacity with reject stage → BackpressureError now.
-	_, err = s.Admit(ctx, "b", 2, "g", 1, rejectStage)
+	_, _, err = s.Admit(ctx, "b", 2, "g", 1, false, rejectStage)
 	var bp *BackpressureError
 	if !errors.As(err, &bp) {
 		t.Fatalf("want BackpressureError, got %v", err)
@@ -37,7 +37,7 @@ func TestAdmitUpToCapacity(t *testing.T) {
 	}
 	r1()
 	// A freed slot admits again.
-	r3, err := s.Admit(ctx, "b", 2, "g", 1, rejectStage)
+	r3, _, err := s.Admit(ctx, "b", 2, "g", 1, false, rejectStage)
 	if err != nil {
 		t.Fatalf("after release: %v", err)
 	}
@@ -48,11 +48,11 @@ func TestAdmitUpToCapacity(t *testing.T) {
 func TestQueueWaitsThenAdmits(t *testing.T) {
 	s := New()
 	ctx := context.Background()
-	r1, _ := s.Admit(ctx, "b", 1, "g", 1, queueStage)
+	r1, _, _ := s.Admit(ctx, "b", 1, "g", 1, false, queueStage)
 
 	admitted := make(chan struct{})
 	go func() {
-		r2, err := s.Admit(ctx, "b", 1, "g", 1, queueStage)
+		r2, _, err := s.Admit(ctx, "b", 1, "g", 1, false, queueStage)
 		if err != nil {
 			t.Errorf("queued admit: %v", err)
 			return
@@ -77,12 +77,12 @@ func TestQueueWaitsThenAdmits(t *testing.T) {
 
 func TestQueueTimeout(t *testing.T) {
 	s := New()
-	r1, _ := s.Admit(context.Background(), "b", 1, "g", 1, queueStage)
+	r1, _, _ := s.Admit(context.Background(), "b", 1, "g", 1, false, queueStage)
 	defer r1()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := s.Admit(ctx, "b", 1, "g", 1, queueStage)
+	_, _, err := s.Admit(ctx, "b", 1, "g", 1, false, queueStage)
 	var bp *BackpressureError
 	if !errors.As(err, &bp) || bp.Reason != "queue-timeout" {
 		t.Fatalf("want queue-timeout backpressure, got %v", err)
@@ -95,10 +95,10 @@ func TestQueueTimeout(t *testing.T) {
 func TestWeightedFairnessPromotion(t *testing.T) {
 	bs := &backendState{capacity: 4, groupActive: map[string]int{}}
 	for range 10 {
-		bs.waiters = append(bs.waiters, &waiter{group: "hi", weight: 3, ready: make(chan struct{})})
+		bs.waiters = append(bs.waiters, &waiter{slot: &slot{group: "hi", weight: 3}, ready: make(chan struct{})})
 	}
 	for range 10 {
-		bs.waiters = append(bs.waiters, &waiter{group: "lo", weight: 1, ready: make(chan struct{})})
+		bs.waiters = append(bs.waiters, &waiter{slot: &slot{group: "lo", weight: 1}, ready: make(chan struct{})})
 	}
 	bs.promote() // fills all 4 slots by min(active/weight)
 
@@ -107,5 +107,83 @@ func TestWeightedFairnessPromotion(t *testing.T) {
 	}
 	if bs.active != 4 || len(bs.waiters) != 16 {
 		t.Errorf("active=%d waiters=%d, want 4 and 16", bs.active, len(bs.waiters))
+	}
+}
+
+var preemptStage = config.Stage{Preempt: true}
+
+// TestPreemptCancelsLowerInterruptible: a low, interruptible group holds the only
+// slot; a higher group with a preempt stage cancels it (cause ErrPreempted) and
+// takes the slot once the victim releases.
+func TestPreemptCancelsLowerInterruptible(t *testing.T) {
+	s := New()
+	relLow, lowCtx, err := s.Admit(context.Background(), "b", 1, "low", 1, true, queueStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	admitted := make(chan func(), 1)
+	go func() {
+		rel, _, err := s.Admit(context.Background(), "b", 1, "high", 10, false, preemptStage)
+		if err != nil {
+			t.Errorf("preempt admit: %v", err)
+			return
+		}
+		admitted <- rel
+	}()
+
+	select {
+	case <-lowCtx.Done():
+		if !errors.Is(context.Cause(lowCtx), ErrPreempted) {
+			t.Errorf("cause = %v, want ErrPreempted", context.Cause(lowCtx))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("low request was not preempted")
+	}
+
+	relLow() // victim finishes after the cooperative cancel → frees the slot
+	select {
+	case rel := <-admitted:
+		rel()
+	case <-time.After(2 * time.Second):
+		t.Fatal("high request never admitted after preemption")
+	}
+}
+
+// TestPreemptNoVictimSpills: nothing interruptible to take → honor `then: fallThrough`.
+func TestPreemptNoVictimSpills(t *testing.T) {
+	s := New()
+	rel, _, _ := s.Admit(context.Background(), "b", 1, "low", 1, false, queueStage) // non-interruptible
+	defer rel()
+	_, _, err := s.Admit(context.Background(), "b", 1, "high", 10, false,
+		config.Stage{Preempt: true, Then: "fallThrough"})
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "spill" {
+		t.Fatalf("want spill, got %v", err)
+	}
+}
+
+// TestPreemptNoVictimRejects: no victim and no follow-up verb → terminal reject.
+func TestPreemptNoVictimRejects(t *testing.T) {
+	s := New()
+	rel, _, _ := s.Admit(context.Background(), "b", 1, "low", 1, false, queueStage)
+	defer rel()
+	_, _, err := s.Admit(context.Background(), "b", 1, "high", 10, false, preemptStage)
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "rejected" {
+		t.Fatalf("want rejected, got %v", err)
+	}
+}
+
+// TestPreemptSkipsEqualWeight: preemption only targets strictly lower-weight
+// groups, even when the holder is interruptible.
+func TestPreemptSkipsEqualWeight(t *testing.T) {
+	s := New()
+	rel, _, _ := s.Admit(context.Background(), "b", 1, "a", 5, true, queueStage)
+	defer rel()
+	_, _, err := s.Admit(context.Background(), "b", 1, "z", 5, false, preemptStage)
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "rejected" {
+		t.Fatalf("equal-weight must not be preempted; want rejected, got %v", err)
 	}
 }

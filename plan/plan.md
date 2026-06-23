@@ -4,22 +4,64 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **P0–P4 shipped; P5 next.** Engine is runnable: OpenAI proxy + spawn
-lifecycle + fairshare scheduler + ordered fall-through + residency/eviction.
-Progress tracked in §6; decisions/deferred in §7.
+Status: **P0–P5 shipped; P6 next.** Engine is runnable: OpenAI proxy + spawn
+lifecycle + fairshare scheduler + ordered fall-through + residency/eviction +
+preemption. **MVP = through P6 + the observability UI slice** (§6 MVP line).
+How to work this plan is §0; roadmap is §6; decisions/extensions/deferred are §7.
 
-> **Progress (updated 2026-06-22)**
+> **Progress (updated 2026-06-23)**
 > - ✅ **P0 scaffold** — `fdf90b9`
 > - ✅ **P1 proxy core** — `566b888`
 > - ✅ **P2 scheduler engine** — `13f15df`
 > - ✅ **P3 backend-list fall-through** — `ebcff81`
 > - ✅ **P4 residency** — `ec1bcfb`
-> - ▶ **P5 preemption** — next
-> - ☐ P6 cost · P7 quality-degrade · P8 UI · Later: multi-node
+> - ✅ **P5 preemption** — cooperative streaming-safe cancel; preempt-before-spill
+> - ▶ **P6 cost model** — next
+> - ☐ P7 quality-degrade · P8 UI · Later: multi-node
 >
-> All shipped phases: `go build`/`vet`/`test` green, gofmt clean (14 tests).
+> All shipped phases: `go build`/`vet`/`test` green, gofmt clean.
 > Deviation from design: UI served from `--web-root` dir (not `go:embed`), matching
 > redline2. Store is minimal (activity log); no sqlc.
+
+---
+
+## 0. Working this plan
+
+This file is the single source of truth for status. Keep it honest and current —
+update it in the **same commit** as the code it describes.
+
+**Checkbox legend.** ☐ not started · ▶ in progress (exactly one Pn at a time) · ✅ shipped.
+A box is checked **only** when its functional unit meets the Definition of done below.
+
+**A phase is a functional unit.** Each `Pn` is an independently shippable slice: it
+compiles, its behavior is tested, and the engine still runs with it landed. Don't
+start `Pn+1` until `Pn` is ✅. A phase too big to land at once → split it into
+sub-units (still each a green, tested commit), not a half-done checkbox.
+
+**Definition of done (per functional unit) — all must hold before ✅:**
+1. `go build ./...`, `go vet ./...`, `go test ./...` green; `gofmt -l` reports nothing.
+2. New behavior has tests: a unit test for logic, an integration/e2e test for any
+   request-path change. A bug fix lands with the regression test that catches it.
+3. UI changes: `bin/gen` re-run, `tsc`/eslint clean, the SDL snapshot committed.
+4. This plan updated: phase ✅ + commit hash + one-line "what shipped"; resolved
+   decisions moved to §7 Resolved; new discoveries filed (rules below); the Status
+   line and the Progress block synced.
+
+**Committing.** Conventional commits. Scaffolding and implementation are **separate**
+commits (`chore: scaffold X` then `feat: X`). Commit each functional unit on its own —
+never batch unrelated phases. The plan-doc update rides with its phase's commit or a
+trailing `docs(plan):` commit (as the P0–P5 history shows). **Don't push unless asked.**
+
+**Filing new work as you discover it — put it in exactly one place:**
+- Needed for the *current* phase → add a sub-item to that phase's checklist and do it.
+- A follow-on the *next* phase needs → **§7 Next steps**.
+- Improves the product but no phase requires it → **§7 Optional extensions**.
+- Out of scope until much later → **§7 Deferred**.
+- A shortcut / known gap in code already shipped → **§7 Deferred work / known gaps**.
+
+**MVP boundary.** MVP = **P0–P6 + the observability UI slice** (activity, residency,
+and cost visible). The MVP line in §6 marks it; everything below the line is post-MVP
+polish and may be reordered as needs dictate.
 
 ---
 
@@ -243,17 +285,40 @@ the BackpressureError shape we already validated.
   ErrNoCapacity → spill. In-flight (ref-held) and `persistent` models exempt; persistent preloaded
   at boot. Size parsing + pool validation. *Not yet: affinity (prefer-warm over list order),
   `server.maxConcurrent` host cap, CapacityProbe, proactive ttl reaper, dynamic footprint — see §7.*
-- ▶ **P5 — Preemption.** *(NEXT)* Cooperative cancel of interruptible groups (streaming-safe).
-  Foundation: `interruptible` parses; `Stage.Preempt` parses; sched tracks per-group active slots.
-  Decide the preempt-vs-spill default ordering (§7) at P5 start.
-- **P4 — Residency.** Server capacity (VRAM), model states + load coalescing, stickiness
-  (`ttl`/`evictCost`/affinity), eviction solver, swap-vs-spill, pinned/preload. The resource layer.
-- **P5 — Preemption.** Cooperative cancel of interruptible groups (streaming-safe).
-- **P6 — Cost model.** `commandCosts` + `costPerKwh`, energy→$ + paid extraction + swap/load $,
-  TCO `limits` (per-group and per-type), dwell-time share-currency option, cost-shaping.
-- **P7 — Quality degradation.** Variant routing via `quality` on backends; optional request
-  transforms (max_tokens/context) when degrading.
-- **P8 — UI.** Activity, lanes/groups, backend health & residency, energy & $ dashboards, live events (ws).
+- ✅ **P5 — Preemption.** Cooperative, streaming-safe cancel of an in-flight slot held by a
+  lower-weight, `interruptible` group when a higher group's stage allows `preempt`. The scheduler
+  tracks per-slot cancel funcs; `Admit` returns a request context canceled (cause `ErrPreempted`)
+  on preemption, which the proxy reverse-proxies under so the cancel aborts the upstream stream and
+  frees the slot. The freed slot is handed to the preemptor first (preempt waiters jump fairshare).
+  Victim = lowest-weight interruptible slot, strictly below the preemptor (equal/higher exempt),
+  each victim targeted once. **Default ordering: preempt before spill** — with no eligible victim,
+  the stage's `then`/spill (else queue/reject) applies. `sched.pickVictim`/`pickWaiter`.
+- ▶ **P6 — Cost model.** *(NEXT)* Make the parsed-but-inert cost/limits config behave. Sub-units
+  (each its own green, tested commit):
+  - [ ] **Local energy → $** — `(gen_tokens·genW + prompt_tokens·procW) → kWh × costPerKwh`.
+  - [ ] **Paid extraction → $** — `costFactor × response usage` for remote/`type` backends.
+  - [ ] **Swap/load $** — `swap.loadSeconds` → energy → $, charged to the trigger (or amortized
+        across the coalesced load batch).
+  - [ ] **`limits` enforcement** — per-group and per-(group×type) TCO caps; over-budget feeds the
+        §4 saturation sequence (advance/queue/reject). Decide window semantics first (§7).
+  - [ ] **Share-currency option** — `dwell|cost` selectable per group; request-count stays default.
+  - [ ] **Meter + persist** — dwell + tokens + $ per request into the activity record (feeds P8).
+- **P7 — Quality degradation.** *(beyond MVP)*
+  - [ ] `quality` becomes a sort/routing key for degrade fall-through (today it's carried metadata).
+  - [ ] Optional request transforms (clamp `max_tokens`/context) when serving a lower variant.
+  - [ ] Resolve variant-in-list vs separate fallback map (§7).
+- **P8 — UI / observability.** The **MVP slice** is required for MVP; the rest is polish.
+  - MVP slice:
+    - [ ] `recentActivity` GraphQL op + an activity table (command log / history).
+    - [ ] Residency read op (pool budget/used + what's warm) + a usage view.
+    - [ ] Surface per-request dwell/tokens/$ (from P6) in the activity view + a simple rollup.
+  - Beyond:
+    - [ ] Lanes/groups live view, backend health, energy & $ dashboards.
+    - [ ] Live events over ws (subBroker-style), replacing poll.
+
+> **── MVP line ──** Above: P0–P6 + the P8 MVP slice = a usable, observable control
+> plane. Below: post-MVP polish, reorderable.
+
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
 ---
@@ -275,13 +340,15 @@ the BackpressureError shape we already validated.
 - ✅ **Eviction policy** (P4) — evictCost + recency (LRU) + ttl-expiry scoring, constrained to the
   binding pool, all-or-nothing greedy, min-residency hysteresis. Vector bin-packing is greedy
   (small N).
+- ✅ **Preempt-vs-spill default ordering** (P5) — **preempt first**: a `preempt` stage reclaims an
+  eligible victim before considering spill; only when no victim exists does the stage's `then`/spill
+  (else queue/reject) apply. Victim is the lowest-weight `interruptible` slot strictly below the
+  preemptor. Per-type `onSaturated` can still pin behavior explicitly via `then`.
 
 ### Still pending (blocking the noted phase)
-- **Preempt-vs-spill default ordering** when a stage allows both — **P5** (decide at P5 start).
-  Per-type `onSaturated` can set it explicitly; need a sane default once preempt lands.
 - **Stickiness/affinity weighting** — how strongly a warm backend overrides *ordered list*
   preference (P4 does ttl/evictCost for *eviction*, but the proxy still walks strict list order
-  regardless of warmth); per-group vs per-request latency hint — **P5/P6**.
+  regardless of warmth); per-group vs per-request latency hint — **P6**.
 - **Share-currency override granularity** (global default + per-group; per-key?) — **P6**.
   *(Config field `shareCurrency` parses today; only request-count is implemented.)*
 - **`limits` window semantics** (sliding vs fixed; per-group vs per-(group×type) precedence) — **P6**.
@@ -289,22 +356,25 @@ the BackpressureError shape we already validated.
 - **Quality-degrade across served-model boundaries** (variant in same list vs separate fallback
   map) — **P7**. Currently folded into the one backend list via `quality`.
 
-### Deferred (out of scope until later)
-- **gRPC surface** — gat gives it cheaply but no consumer yet; defer past v1.
+### Optional extensions (improve the product; no planned phase requires them — pull in opportunistically)
+- **gRPC surface** — gat gives it cheaply, but no consumer yet; add when one appears.
 - **CapacityProbe** (nvidia/drm/amd/metal/none, auto) — declared budget is canonical and
-  implemented; the optional probe for auto-fill/drift-guard/dashboards is not built.
+  implemented; the probe only auto-fills undeclared totals, drift-guards, and feeds dashboards.
 - **`server.maxConcurrent` host cap** — per-backend slots enforced (P2); the host-wide concurrency
   ceiling parses but isn't enforced yet (layer onto residency).
 - **Proactive ttl reaper** — P4 eviction is lazy (on demand); `ttl` only orders victims. A
   background reaper that frees warm-but-expired models for power is not built.
 - **Dynamic footprint** — KV scales with slots×context; v1 reserves worst-case `ramUsage`;
-  `{base, perSlot}` later.
+  refine with `{base, perSlot}` later.
+
+### Deferred (out of scope until later)
 - **NUMA / interconnect** — per-NUMA system pools, PCIe/NVLink cost of multi-GPU splits.
 - **Multi-node peer awareness** — remote load introspection across corrallm peers (roadmap "Later").
 
 ### Deferred work / known gaps in shipped code
 - ✅ ~~P1 first-backend-only~~ — resolved in **P3** (ordered fall-through; rr-within-type).
-  Still inert: `quality` as a routing/sort key (**P7**) and `Stage.Then` follow-up verb (**P5**).
+  ✅ ~~`Stage.Then` follow-up verb~~ — resolved in **P5** (preempt's no-victim fallback honors
+  `then: fallThrough|spill|queue`). Still inert: `quality` as a routing/sort key (**P7**).
 - **No `limits`/cost metering**: `commandCosts`, `costPerKwh`, `shareCurrency: dwell|cost`,
   per-group/per-type `limits` parse but don't affect behavior — **P6**.
 - ✅ ~~No residency accounting~~ — resolved in **P4** (`pools`/`reserve`/`ramUsage`/`sticky`/
@@ -315,7 +385,7 @@ the BackpressureError shape we already validated.
   (benign warning); revisit if it becomes flaky.
 
 ### Next steps
-1. **P5 preemption** — decide the preempt-vs-spill default ordering; implement cooperative,
-   streaming-safe cancel of a lower interruptible group's in-flight slot when a higher group
-   preempts (`Stage.Preempt` + `interruptible`). sched already tracks per-group active slots.
-2. Then **P6 cost model** (energy→$, paid extraction, swap/load $, `limits`, dwell share-currency).
+1. **P6 cost model** (energy→$, paid extraction, swap/load $, per-group/per-type `limits`
+   enforcement, dwell/cost share-currency option, cost-shaping). `commandCosts`/`costPerKwh`/
+   `shareCurrency`/`limits` already parse but don't affect behavior.
+2. Then **P7 quality degradation** (variant routing via `quality`; request transforms when degrading).

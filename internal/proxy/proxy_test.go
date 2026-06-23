@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -297,6 +298,79 @@ func TestExhaustedAllSpill(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"reason":"exhausted"`) {
 		t.Errorf("expected reason exhausted, got: %s", rec.Body.String())
+	}
+}
+
+// TestPreemptionServesHigherGroup: a low, interruptible group holds the only
+// slot mid-request; a higher group with a preempt stage cancels it and is served
+// once the slot frees. The preempted upstream request observes ctx cancellation.
+func TestPreemptionServesHigherGroup(t *testing.T) {
+	started := make(chan struct{})
+	rel := make(chan struct{}) // unblocks the held upstream handler for clean shutdown
+	var once sync.Once
+	first := true
+	var mu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		mu.Lock()
+		isFirst := first
+		first = false
+		mu.Unlock()
+		if isFirst {
+			once.Do(func() { close(started) })
+			// Hold the slot until preempted (proxy aborts on ctx cancel, freeing
+			// the slot) or the test ends. The slot frees independent of this
+			// handler returning, so `rel` is only for tidy server teardown.
+			select {
+			case <-r.Context().Done():
+			case <-rel:
+			}
+			return
+		}
+		_, _ = w.Write([]byte(`{"served_by":"hi"}`))
+	}))
+	defer upstream.Close()
+	defer close(rel) // runs before upstream.Close() (LIFO) so no connection lingers
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	cfg := &config.Config{
+		Models: map[string]config.Model{
+			"m": {Backends: []config.Backend{backendTo(t, upstream.URL, "local")}},
+		},
+		PriorityGroups: map[string]config.PriorityGroup{
+			"lo": {Weight: 1, Interruptible: true,
+				OnSaturated: map[string]config.Stage{"default": {Reject: true}}},
+			"hi": {Weight: 10,
+				OnSaturated: map[string]config.Stage{"local": {Preempt: true}}},
+		},
+		Keys: map[string]string{"lokey": "lo", "hikey": "hi"},
+	}
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+
+	send := func(key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+		req.Header.Set("X-Corrallm-Key", key)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	go send("lokey") // occupies the only slot, blocks in upstream
+	<-started
+
+	rec := send("hikey") // preempts the low request → served
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 for preempting request, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"served_by":"hi"`) {
+		t.Errorf("expected hi to be served after preemption, got: %s", rec.Body.String())
 	}
 }
 
