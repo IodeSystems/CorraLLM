@@ -263,6 +263,66 @@ func TestLimitSpillsWhenStageAllows(t *testing.T) {
 	}
 }
 
+// TestLimitRequestsBudgetViaQueue: a request admitted through the queue (promote
+// path) is still charged against the requests budget, so the cap holds under
+// capacity contention.
+func TestLimitRequestsBudgetViaQueue(t *testing.T) {
+	cfg := &config.Config{PriorityGroups: map[string]config.PriorityGroup{
+		"g": {Weight: 1, Limits: map[string]string{"requests": "2/min"}},
+	}}
+	clk := time.Unix(1000, 0)
+	s := fixedClock(cfg, &clk)
+	stage := config.Stage{Queue: true}
+
+	r1, _, err := s.Admit(context.Background(), "b", "local", 1, "g", 1, false, stage) // direct grant, charged → 1
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	admitted := make(chan func(...Done), 1)
+	go func() {
+		r2, _, err := s.Admit(context.Background(), "b", "local", 1, "g", 1, false, stage) // queues (cap full)
+		if err != nil {
+			t.Errorf("queued admit: %v", err)
+			return
+		}
+		admitted <- r2
+	}()
+	time.Sleep(100 * time.Millisecond) // let it enter the queue
+	r1()                               // promote grants the queued request → charged → 2
+	r2 := <-admitted
+
+	// Budget is now spent (2/2) — a 3rd request trips over-budget even though the
+	// freed slot would otherwise admit it.
+	_, _, err = s.Admit(context.Background(), "b", "local", 1, "g", 1, false, stage)
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "over-budget" {
+		t.Fatalf("queued admission not charged: want over-budget, got %v", err)
+	}
+	r2()
+}
+
+// TestShareCurrencyMixedFallsBackToRequests: when a backend's queued groups
+// disagree on currency, comparison falls back to request-count so no group is
+// starved (a requests group holding more slots is correctly deprioritized).
+func TestShareCurrencyMixedFallsBackToRequests(t *testing.T) {
+	now := time.Unix(1000, 0)
+	bs := &backendState{capacity: 1,
+		groupActive: map[string]int{"req": 3}, // requests group already holds 3 slots
+		share:       map[string]float64{"dwl": 100},
+		shareAt:     map[string]time.Time{"dwl": now}}
+	bs.waiters = []*waiter{
+		{slot: &slot{group: "req", weight: 1, currency: "requests"}, ready: make(chan struct{})},
+		{slot: &slot{group: "dwl", weight: 1, currency: "dwell"}, ready: make(chan struct{})},
+	}
+	// Mixed currencies → request-count: req=3 in-flight vs dwl=0 → pick dwl.
+	// (Under a naive cross-currency min, dwl's share of 100 would lose to req's 3.)
+	if idx := bs.pickWaiter(now); bs.waiters[idx].slot.group != "dwl" {
+		t.Fatalf("mixed currency starved the dwell group; picked %q, want dwl",
+			bs.waiters[idx].slot.group)
+	}
+}
+
 // TestShareCurrencyDwellPrefersLighter: under a dwell share currency, the group
 // with less recent accumulated dwell is promoted first, even at equal weight.
 func TestShareCurrencyDwellPrefersLighter(t *testing.T) {

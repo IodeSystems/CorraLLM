@@ -269,7 +269,11 @@ func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 			bs.removeSlot(sl)
 			s.recordReleaseLocked(now, sl.group, sl.backendType, dwell, cost)
 			bs.addShare(now, sl, dwell, cost)
-			bs.promote(now)
+			// Charge each promoted (queued) request against its requests budget —
+			// the direct-grant path charges at admit, the queue path here.
+			for _, ps := range bs.promote(now) {
+				s.recordAdmitLocked(now, ps.group, ps.backendType)
+			}
 			s.mu.Unlock()
 			sl.cancel(nil) // free the request context (no-op if already canceled)
 		})
@@ -288,30 +292,35 @@ func (bs *backendState) grant(sl *slot, now time.Time) {
 // freed a slot to get here), then the most under-served group by weighted
 // fairshare (min active/weight) — a weight-10 group holds ~10× a weight-1 group's
 // slots under sustained contention.
-func (bs *backendState) promote(now time.Time) {
+func (bs *backendState) promote(now time.Time) []*slot {
+	var granted []*slot
 	for bs.active < bs.capacity && len(bs.waiters) > 0 {
 		idx := bs.pickWaiter(now)
 		w := bs.waiters[idx]
 		bs.waiters = append(bs.waiters[:idx], bs.waiters[idx+1:]...)
 		bs.grant(w.slot, now)
+		granted = append(granted, w.slot)
 		close(w.ready)
 	}
+	return granted
 }
 
 // pickWaiter chooses the next waiter to grant: preempt waiters in FIFO order
 // jump ahead of fairshare waiters; otherwise the most under-served group wins by
-// min(numerator/weight), where the numerator is the waiter's share currency —
-// in-flight slot count for requests, the decaying dwell/cost accumulator
-// otherwise. Caller holds s.mu.
+// min(numerator/weight). The numerator must be in one comparable unit across the
+// whole queue, so dwell/cost fairshare engages only when every queued waiter
+// shares that currency (then all groups accumulate it); a mixed queue falls back
+// to request-count for all — coherent and starvation-free. Caller holds s.mu.
 func (bs *backendState) pickWaiter(now time.Time) int {
 	for i, w := range bs.waiters {
 		if w.preempt {
 			return i
 		}
 	}
+	currency := bs.queueCurrency()
 	best, bestIdx := math.Inf(1), 0
 	for i, w := range bs.waiters {
-		ratio := bs.numerator(now, w.slot) / float64(w.slot.weight)
+		ratio := bs.numerator(now, currency, w.slot.group) / float64(w.slot.weight)
 		if ratio < best {
 			best, bestIdx = ratio, i
 		}
@@ -319,14 +328,36 @@ func (bs *backendState) pickWaiter(now time.Time) int {
 	return bestIdx
 }
 
-// numerator is a group's fairshare load in its slot's share currency. Caller
-// holds s.mu.
-func (bs *backendState) numerator(now time.Time, sl *slot) float64 {
-	switch sl.currency {
+// queueCurrency is the currency to compare waiters in: the shared dwell|cost
+// currency if every waiter agrees, else requests. Caller holds s.mu.
+func (bs *backendState) queueCurrency() string {
+	c := ""
+	for _, w := range bs.waiters {
+		switch w.slot.currency {
+		case "dwell", "cost":
+			if c == "" {
+				c = w.slot.currency
+			} else if c != w.slot.currency {
+				return "requests"
+			}
+		default:
+			return "requests"
+		}
+	}
+	if c == "" {
+		return "requests"
+	}
+	return c
+}
+
+// numerator is a group's fairshare load in the given (queue-wide) currency.
+// Caller holds s.mu.
+func (bs *backendState) numerator(now time.Time, currency, group string) float64 {
+	switch currency {
 	case "dwell", "cost":
-		return bs.decayedShare(now, sl.group)
+		return bs.decayedShare(now, group)
 	default: // requests
-		return float64(bs.groupActive[sl.group])
+		return float64(bs.groupActive[group])
 	}
 }
 
@@ -461,6 +492,10 @@ func (s *Scheduler) overBudgetLocked(now time.Time, group, backendType string) (
 }
 
 func (s *Scheduler) overScopeLocked(now time.Time, prefix string, limits map[string]string) (bool, time.Duration) {
+	over := false
+	var retry time.Duration
+	// Check every dimension (map order is nondeterministic) and report the
+	// longest wait — the request can't proceed until the bindingest window frees.
 	for dim, spec := range limits {
 		r, err := config.ParseRate(dim, spec)
 		if err != nil {
@@ -468,14 +503,16 @@ func (s *Scheduler) overScopeLocked(now time.Time, prefix string, limits map[str
 		}
 		sum, oldest := s.windowLocked(now, prefix+dim, r.Window)
 		if sum >= r.Amount {
-			retry := r.Window - now.Sub(oldest)
-			if retry < time.Second {
-				retry = time.Second
+			over = true
+			if d := r.Window - now.Sub(oldest); d > retry {
+				retry = d
 			}
-			return true, retry
 		}
 	}
-	return false, 0
+	if over && retry < time.Second {
+		retry = time.Second
+	}
+	return over, retry
 }
 
 // recordAdmitLocked charges one request against any configured requests budget.
