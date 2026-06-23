@@ -111,6 +111,18 @@ func (s *Store) InsertActivity(a Activity) error {
 	return err
 }
 
+// PruneActivity deletes activity rows older than beforeMS (retention), returning
+// the number removed. SQLite reuses the freed pages, so the file plateaus at
+// steady state rather than growing unbounded (no VACUUM needed).
+func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM activity WHERE ts < ?`, beforeMS)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // RecentActivity returns the most recent records, newest first.
 func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	rows, err := s.db.Query(

@@ -188,6 +188,32 @@ func TestLaneSamples(t *testing.T) {
 	}
 }
 
+// TestPruneActivity deletes rows older than the cutoff, keeping recent ones.
+func TestPruneActivity(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	for _, ts := range []int64{100, 200, 5000, 6000} {
+		if err := st.InsertActivity(Activity{TS: ts, Served: "m", Status: 200}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := st.PruneActivity(1000) // drop ts < 1000 (the 100 and 200 rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("pruned %d, want 2", n)
+	}
+	got, _ := st.RecentActivity(10)
+	if len(got) != 2 {
+		t.Errorf("remaining %d rows, want 2", len(got))
+	}
+}
+
 // TestMigrationsIdempotent: Open applies the upgrade migrations and is safe to
 // call repeatedly against the same database (duplicate-column errors swallowed).
 func TestMigrationsIdempotent(t *testing.T) {

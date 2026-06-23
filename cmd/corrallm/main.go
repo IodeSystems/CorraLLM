@@ -86,7 +86,7 @@ func newDumpGraphQLCmd() *cobra.Command {
 func newServeCmd() *cobra.Command {
 	var (
 		home, service, webRoot, configPath, dbPath string
-		healthTimeout                              time.Duration
+		healthTimeout, activityRetention           time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -98,12 +98,13 @@ func newServeCmd() *cobra.Command {
 				slog.Info("properties loaded", "keys", n, "home", home, "service", service)
 			}
 			return serve(cmd.Context(), serveOpts{
-				webRoot:       pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
-				configPath:    pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
-				dbPath:        pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db")),
-				addr:          envOr("ADDR", ":6502"),
-				healthTimeout: pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
-				tokenPath:     filepath.Join(home, "admin.token"),
+				webRoot:           pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
+				configPath:        pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
+				dbPath:            pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db")),
+				addr:              envOr("ADDR", ":6502"),
+				healthTimeout:     pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
+				tokenPath:         filepath.Join(home, "admin.token"),
+				activityRetention: pickDuration(activityRetention, envDuration("CORRALLM_ACTIVITY_RETENTION", 30*24*time.Hour)),
 			})
 		},
 	}
@@ -114,6 +115,7 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default ./corrallm.yaml or CORRALLM_CONFIG)")
 	f.StringVar(&dbPath, "db", "", "path to the SQLite database (default ./home/var/corrallm.db or CORRALLM_DB)")
 	f.DurationVar(&healthTimeout, "health-timeout", 0, "max time a cold backend spawn may take to become healthy (default 120s or CORRALLM_HEALTH_TIMEOUT); raise for large models")
+	f.DurationVar(&activityRetention, "activity-retention", 0, "delete activity-log rows older than this (default 720h/30d or CORRALLM_ACTIVITY_RETENTION; 0 disables)")
 	return cmd
 }
 
@@ -121,6 +123,7 @@ type serveOpts struct {
 	webRoot, configPath, dbPath, addr string
 	healthTimeout                     time.Duration
 	tokenPath                         string
+	activityRetention                 time.Duration
 }
 
 func serve(ctx context.Context, o serveOpts) error {
@@ -210,7 +213,7 @@ func serve(ctx context.Context, o serveOpts) error {
 
 	// Sample instantaneous per-lane queue depth so it's visible before requests
 	// resolve (the activity log is completion-driven). Stops on shutdown.
-	go runQueueSampler(sigCtx, scheduler, st, 5*time.Second)
+	go runQueueSampler(sigCtx, scheduler, st, 5*time.Second, o.activityRetention)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -230,9 +233,9 @@ func serve(ctx context.Context, o serveOpts) error {
 }
 
 // runQueueSampler periodically snapshots the scheduler's per-lane load and
-// persists it (sparse — idle lanes are skipped), pruning old samples. This gives
-// a time-series of queue depth independent of when requests complete.
-func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, interval time.Duration) {
+// persists it (sparse — idle lanes are skipped). It also runs periodic
+// maintenance: pruning old lane samples (48h) and old activity (activityRetention).
+func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, interval, activityRetention time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	var sincePrune time.Duration
@@ -266,6 +269,13 @@ func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, 
 				sincePrune = 0
 				if err := st.PruneLaneSamples(time.Now().Add(-48 * time.Hour).UnixMilli()); err != nil {
 					slog.Warn("prune lane samples", "err", err)
+				}
+				if activityRetention > 0 {
+					if n, err := st.PruneActivity(time.Now().Add(-activityRetention).UnixMilli()); err != nil {
+						slog.Warn("prune activity", "err", err)
+					} else if n > 0 {
+						slog.Info("pruned activity", "rows", n, "retention", activityRetention)
+					}
 				}
 			}
 		}
