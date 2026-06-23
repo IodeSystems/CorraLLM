@@ -42,6 +42,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Tags:        []string{"meta"},
 	}, h.ConfigSummary)
 
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "recentActivity",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/activity",
+		Summary:     "Most recent proxied-request records (dwell/tokens/$).",
+		Tags:        []string{"observability"},
+	}, h.RecentActivity)
+
 	// Finalize: ingest the OpenAPI doc, build the GraphQL schema, mount
 	// /api/graphql + /api/schema/*.
 	if err := gat.RegisterHuma(humaAPI, g, "/api"); err != nil {

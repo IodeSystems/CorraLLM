@@ -65,6 +65,64 @@ func (h *Handlers) ConfigSummary(_ context.Context, _ *ConfigSummaryInput) (*Con
 	return out, nil
 }
 
+// --- recent activity (P8) ---
+
+// RecentActivityInput bounds how many records to return.
+type RecentActivityInput struct {
+	Limit int `query:"limit" default:"50" minimum:"1" maximum:"500" doc:"Max records, newest first."`
+}
+
+// ActivityRecord is one proxied-request row surfaced to the UI. Mirrors
+// store.Activity with the P6 metering fields (dwell/tokens/$) exposed.
+type ActivityRecord struct {
+	TS               int64   `json:"ts" doc:"Unix millis when the request was logged."`
+	Served           string  `json:"served" doc:"Served model name."`
+	Backend          string  `json:"backend" doc:"Backend that handled it."`
+	Key              string  `json:"key" doc:"Caller identity."`
+	Path             string  `json:"path" doc:"Request path."`
+	Status           int     `json:"status" doc:"HTTP status."`
+	DwellMS          int64   `json:"dwellMs" doc:"Time in request, milliseconds."`
+	PromptTokens     int     `json:"promptTokens" doc:"Metered prompt tokens."`
+	CompletionTokens int     `json:"completionTokens" doc:"Metered completion tokens."`
+	CostUSD          float64 `json:"costUsd" doc:"Resolved request cost in USD."`
+}
+
+// RecentActivityOutput is the newest-first activity list.
+type RecentActivityOutput struct {
+	Body struct {
+		Records []ActivityRecord `json:"records" doc:"Activity rows, newest first."`
+	}
+}
+
+// RecentActivity returns the most recent proxied-request records.
+func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*RecentActivityOutput, error) {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := h.Store.RecentActivity(limit)
+	if err != nil {
+		return nil, err
+	}
+	out := &RecentActivityOutput{}
+	out.Body.Records = make([]ActivityRecord, 0, len(rows))
+	for _, a := range rows {
+		out.Body.Records = append(out.Body.Records, ActivityRecord{
+			TS:               a.TS,
+			Served:           a.Served,
+			Backend:          a.Backend,
+			Key:              a.Key,
+			Path:             a.Path,
+			Status:           a.Status,
+			DwellMS:          a.DwellMS,
+			PromptTokens:     a.PromptTokens,
+			CompletionTokens: a.CompletionTokens,
+			CostUSD:          a.CostUSD,
+		})
+	}
+	return out, nil
+}
+
 // keys returns a map's keys as a slice (GraphQL needs a concrete list shape).
 func keys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))

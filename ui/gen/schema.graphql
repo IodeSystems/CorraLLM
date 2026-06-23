@@ -7,16 +7,50 @@ directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJ
 type CorrallmQueryNamespace {
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
+  recentActivity(
+    """Max records, newest first."""
+    limit: Long
+  ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
   v1: CorrallmV1QueryNamespace!
 }
 
 type CorrallmV1QueryNamespace {
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
+  recentActivity(
+    """Max records, newest first."""
+    limit: Long
+  ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
 }
+
+"""64-bit integer encoded as a decimal string to preserve precision past 2^53. Accepts a JSON number or a decimal string as input."""
+scalar Long
 
 type Query {
   corrallm: CorrallmQueryNamespace!
+}
+
+type corrallm_ActivityRecord {
+  """Backend that handled it."""
+  backend: String!
+  """Metered completion tokens."""
+  completionTokens: Long!
+  """Resolved request cost in USD."""
+  costUsd: Float!
+  """Time in request, milliseconds."""
+  dwellMs: Long!
+  """Caller identity."""
+  key: String!
+  """Request path."""
+  path: String!
+  """Metered prompt tokens."""
+  promptTokens: Long!
+  """Served model name."""
+  served: String!
+  """HTTP status."""
+  status: Long!
+  """Unix millis when the request was logged."""
+  ts: Long!
 }
 
 type corrallm_ConfigSummaryOutputBody {
@@ -33,4 +67,9 @@ type corrallm_HealthOutputBody {
   status: String!
   """Build version stamp."""
   version: String!
+}
+
+type corrallm_RecentActivityOutputBody {
+  """Activity rows, newest first."""
+  records: [corrallm_ActivityRecord!]!
 }
