@@ -313,6 +313,12 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 			req.URL.Scheme = t.URL.Scheme
 			req.URL.Host = t.URL.Host
 			req.Host = t.URL.Host
+			// Drop the client's Accept-Encoding so the transport negotiates
+			// (and transparently decodes) compression itself — the body we
+			// capture for usage metering is then identity, not gzip. Without
+			// this a compressing upstream (common for paid endpoints) yields
+			// unparseable bytes and meters as $0.
+			req.Header.Del("Accept-Encoding")
 			for k, v := range t.Headers {
 				req.Header.Set(k, v)
 			}
@@ -411,9 +417,11 @@ func (s *statusCapture) Write(b []byte) (int, error) {
 		s.wroteHeader = true
 	}
 	if s.streaming {
-		// Keep a rolling tail — the final SSE event holds usage.
+		// Keep a rolling tail — the final SSE event holds usage. Trim lazily at
+		// 2× the cap so a long stream stays amortized O(n), not O(n²): the tail
+		// we retain still covers the final event (well under one cap's worth).
 		s.buf = append(s.buf, b...)
-		if len(s.buf) > usageCaptureLimit {
+		if len(s.buf) > 2*usageCaptureLimit {
 			s.buf = append([]byte(nil), s.buf[len(s.buf)-usageCaptureLimit:]...)
 		}
 	} else if len(s.buf) < usageCaptureLimit {

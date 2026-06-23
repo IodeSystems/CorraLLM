@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
@@ -515,6 +516,91 @@ func TestMeterSwapCost(t *testing.T) {
 	// Zero token cost + swap: 18·300 = 5400 Ws = 1.5 Wh = 0.0015 kWh × $0.14.
 	if d := acts[0].CostUSD - 0.00021; d < -1e-9 || d > 1e-9 {
 		t.Errorf("cost = %v, want 0.00021 (swap energy)", acts[0].CostUSD)
+	}
+}
+
+// TestMeterStreamingLargeTail: a stream far larger than the capture cap still
+// yields the trailing usage event (exercises the lazy 2× tail trim).
+func TestMeterStreamingLargeTail(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		chunk := []byte(`data: {"choices":[{"delta":{"content":"` + strings.Repeat("x", 4096) + `"}}]}` + "\n\n")
+		// ~3 MiB of chunks, well past 2× the 1 MiB cap.
+		for i := 0; i < 800; i++ {
+			_, _ = w.Write(chunk)
+		}
+		if f != nil {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte(`data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":22}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	New(meteredConfig(t, "mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock","stream":true}`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 || acts[0].PromptTokens != 11 || acts[0].CompletionTokens != 22 {
+		t.Fatalf("large-stream usage = %+v, want 11/22", acts)
+	}
+}
+
+// TestMeterGzippedUpstream: a compressing upstream still meters real usage —
+// the proxy strips Accept-Encoding so the captured body is identity, not gzip.
+func TestMeterGzippedUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		payload := []byte(`{"usage":{"prompt_tokens":8,"completion_tokens":4}}`)
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Header().Set("Content-Type", "application/json")
+			gz := gzip.NewWriter(w)
+			_, _ = gz.Write(payload)
+			_ = gz.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(payload)
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	New(meteredConfig(t, "mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock"}`))
+	req.Header.Set("Accept-Encoding", "gzip") // client asks for gzip; proxy must still meter
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 || acts[0].PromptTokens != 8 || acts[0].CompletionTokens != 4 {
+		t.Fatalf("gzipped upstream usage = %+v, want 8/4", acts)
 	}
 }
 

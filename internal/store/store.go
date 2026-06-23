@@ -69,7 +69,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 }
 
 // Activity is one proxied request record. The token/cost fields are metered on
-// served requests (P6); non-serving paths (429/499/503) record them as zero.
+// served requests (P6); the explicit error/backpressure paths (429/503, client
+// 499) record them as zero. A request preempted mid-serve still records the cost
+// actually consumed before the abort (partial tokens + any swap energy spent).
 type Activity struct {
 	TS               int64 // unix millis
 	Served           string
