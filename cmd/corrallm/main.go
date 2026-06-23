@@ -84,6 +84,7 @@ func newDumpGraphQLCmd() *cobra.Command {
 func newServeCmd() *cobra.Command {
 	var (
 		home, service, webRoot, configPath, dbPath string
+		healthTimeout                              time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -95,10 +96,11 @@ func newServeCmd() *cobra.Command {
 				slog.Info("properties loaded", "keys", n, "home", home, "service", service)
 			}
 			return serve(cmd.Context(), serveOpts{
-				webRoot:    pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
-				configPath: pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
-				dbPath:     pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db")),
-				addr:       envOr("ADDR", ":6502"),
+				webRoot:       pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
+				configPath:    pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
+				dbPath:        pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db")),
+				addr:          envOr("ADDR", ":6502"),
+				healthTimeout: pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
 			})
 		},
 	}
@@ -108,11 +110,13 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&webRoot, "web-root", "", "directory to serve the SPA from (default ./ui/dist or WEB_ROOT)")
 	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default ./corrallm.yaml or CORRALLM_CONFIG)")
 	f.StringVar(&dbPath, "db", "", "path to the SQLite database (default ./home/var/corrallm.db or CORRALLM_DB)")
+	f.DurationVar(&healthTimeout, "health-timeout", 0, "max time a cold backend spawn may take to become healthy (default 120s or CORRALLM_HEALTH_TIMEOUT); raise for large models")
 	return cmd
 }
 
 type serveOpts struct {
 	webRoot, configPath, dbPath, addr string
+	healthTimeout                     time.Duration
 }
 
 func serve(ctx context.Context, o serveOpts) error {
@@ -130,6 +134,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	defer func() { _ = st.Close() }()
 
 	mgr := proc.NewManager(cfg)
+	if o.healthTimeout > 0 {
+		mgr.SetHealthTimeout(o.healthTimeout)
+		slog.Info("health timeout overridden", "timeout", o.healthTimeout)
+	}
 	defer mgr.Shutdown()
 	// Preload pinned (persistent) models in the background so boot isn't blocked.
 	go mgr.Preload(ctx)
@@ -199,6 +207,24 @@ func envOr(key, def string) string {
 func pick(flagVal, def string) string {
 	if flagVal != "" {
 		return flagVal
+	}
+	return def
+}
+
+// pickDuration prefers a non-zero flag value, else the env-derived default.
+func pickDuration(flagVal, def time.Duration) time.Duration {
+	if flagVal > 0 {
+		return flagVal
+	}
+	return def
+}
+
+// envDuration parses a duration env var (e.g. "600s"), falling back to def.
+func envDuration(key string, def time.Duration) time.Duration {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
 	}
 	return def
 }

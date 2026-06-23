@@ -106,6 +106,16 @@ func NewManager(cfg *config.Config) *Manager {
 	return m
 }
 
+// SetHealthTimeout overrides how long a cold spawn may take to become healthy
+// before it's marked failed (default 120s). Large models with big KV caches can
+// need longer (llama-swap's healthCheckTimeout analog). A non-positive d is
+// ignored. Set before the first EnsureReady.
+func (m *Manager) SetHealthTimeout(d time.Duration) {
+	if d > 0 {
+		m.healthTimeout = d
+	}
+}
+
 // EnsureReady returns a ready Process for backend (spawning + health-checking on
 // first use, coalescing concurrent loads) plus a release func that MUST be
 // called when the request finishes — it drops the residency ref so the backend

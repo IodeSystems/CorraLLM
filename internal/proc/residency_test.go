@@ -88,6 +88,22 @@ func TestEvictIdleToFit(t *testing.T) {
 	}
 }
 
+// TestSetHealthTimeout overrides the default and ignores non-positive values.
+func TestSetHealthTimeout(t *testing.T) {
+	mgr := NewManager(&config.Config{})
+	if mgr.healthTimeout != 120*time.Second {
+		t.Fatalf("default = %s, want 120s", mgr.healthTimeout)
+	}
+	mgr.SetHealthTimeout(600 * time.Second)
+	if mgr.healthTimeout != 600*time.Second {
+		t.Errorf("after override = %s, want 600s", mgr.healthTimeout)
+	}
+	mgr.SetHealthTimeout(0) // ignored
+	if mgr.healthTimeout != 600*time.Second {
+		t.Errorf("non-positive changed it to %s", mgr.healthTimeout)
+	}
+}
+
 // TestSnapshot: an empty manager reports the configured pool budget with zero
 // usage; after loading A the snapshot reflects the reservation and resident model.
 func TestSnapshot(t *testing.T) {
