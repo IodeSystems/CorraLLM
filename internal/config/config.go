@@ -77,9 +77,12 @@ func (b Backend) Slots() int {
 	return 1
 }
 
-// Swap is the measured cost of loading a backend (residency input, P4).
+// Swap is the measured cost of loading a backend (residency input, P4). P6 adds
+// LoadWatts so the load's energy can be priced (loadSeconds × loadWatts → $);
+// absent, only its latency feeds scheduling.
 type Swap struct {
 	LoadSeconds float64 `yaml:"loadSeconds,omitempty"`
+	LoadWatts   float64 `yaml:"loadWatts,omitempty"`
 }
 
 // PriorityGroup is the single policy unit (fairshare + saturation behavior).
