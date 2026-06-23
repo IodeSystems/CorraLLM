@@ -374,6 +374,106 @@ func TestPreemptionServesHigherGroup(t *testing.T) {
 	}
 }
 
+// meteredConfig is a one-backend (local) config with a cost model so served
+// requests resolve to $.
+func meteredConfig(t *testing.T, served, upstream string) *config.Config {
+	t.Helper()
+	c := mkConfig(t, served, upstream)
+	c.CostPerKwh = 0.14
+	c.CommandCosts = map[string]map[string]any{
+		"local": {"generateWattsPerToken": 0.9, "processWattsPerToken": 0.3},
+	}
+	return c
+}
+
+// TestMeterNonStreaming: a non-streaming reply's top-level usage is captured and
+// resolved to $ in the activity record.
+func TestMeterNonStreaming(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hi"}}],` +
+			`"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	New(meteredConfig(t, "mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock"}`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 {
+		t.Fatalf("want 1 activity, got %d", len(acts))
+	}
+	a := acts[0]
+	if a.PromptTokens != 10 || a.CompletionTokens != 5 {
+		t.Errorf("tokens = %d/%d, want 10/5", a.PromptTokens, a.CompletionTokens)
+	}
+	// (5·0.9 + 10·0.3) = 7.5 Wh = 0.0075 kWh × $0.14 = $0.00105.
+	if d := a.CostUSD - 0.00105; d < -1e-9 || d > 1e-9 {
+		t.Errorf("cost = %v, want 0.00105", a.CostUSD)
+	}
+}
+
+// TestMeterStreaming: usage in the trailing SSE event is captured even after
+// many preceding chunks, and the stream still reaches the client.
+func TestMeterStreaming(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		for i := 0; i < 3; i++ {
+			_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"x"}}]}` + "\n\n"))
+			if f != nil {
+				f.Flush()
+			}
+		}
+		_, _ = w.Write([]byte(`data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":7}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	New(meteredConfig(t, "mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock","stream":true}`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Errorf("stream did not reach client: %s", rec.Body.String())
+	}
+
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 || acts[0].PromptTokens != 3 || acts[0].CompletionTokens != 7 {
+		t.Fatalf("streaming usage = %+v, want 3/7", acts)
+	}
+}
+
 func TestUnknownModel404(t *testing.T) {
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()

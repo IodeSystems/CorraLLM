@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
@@ -34,6 +35,7 @@ type Proxy struct {
 	mgr   *proc.Manager
 	sched *sched.Scheduler
 	store *store.Store
+	cost  *cost.Model
 
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
@@ -41,7 +43,7 @@ type Proxy struct {
 
 // New constructs a Proxy.
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
-	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, rr: map[string]uint64{}}
+	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg), rr: map[string]uint64{}}
 }
 
 // Mount registers the OpenAI-compatible inference routes plus the untracked
@@ -88,6 +90,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
+	streaming := streamFromBody(body)
 	ctx, cancel := context.WithTimeout(r.Context(), 130*time.Second)
 	defer cancel()
 
@@ -117,10 +120,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				}
 				// rejected or queue-timeout → terminal backoff.
 				writeBackpressure(w, bp)
-				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start))
+				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0)
 				return
 			}
-			p.log(served, name, key, r.URL.Path, 499, time.Since(start)) // client canceled
+			p.log(served, name, key, r.URL.Path, 499, time.Since(start), 0, 0, 0) // client canceled
 			return
 		}
 
@@ -137,7 +140,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// Restore the buffered body for the proxy.
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
-		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK}
+		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK, streaming: streaming}
 		newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(reqCtx))
 		done()
 		release()
@@ -145,7 +148,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(context.Cause(reqCtx), sched.ErrPreempted) {
 			status = 499 // slot reclaimed by a higher-priority group mid-request
 		}
-		p.log(served, name, key, r.URL.Path, status, time.Since(start))
+		// Meter the served request: extract token usage from the response and
+		// resolve it to $ via the backend's cost class.
+		u := extractUsage(sc.buf, streaming)
+		costUSD := p.cost.RequestUSD(backend.Type, u.PromptTokens, u.CompletionTokens)
+		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD)
 		return
 	}
 
@@ -153,11 +160,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
 		writeBackpressure(w, lastBP)
-		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start))
+		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0)
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
-	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start))
+	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start), 0, 0, 0)
 }
 
 // orderBackends returns config indices in fall-through order: types in
@@ -235,15 +242,18 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration) {
+func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration, prompt, completion int, costUSD float64) {
 	if err := p.store.InsertActivity(store.Activity{
-		TS:      time.Now().UnixMilli(),
-		Served:  served,
-		Backend: backend,
-		Key:     key,
-		Path:    path,
-		Status:  status,
-		DwellMS: dwell.Milliseconds(),
+		TS:               time.Now().UnixMilli(),
+		Served:           served,
+		Backend:          backend,
+		Key:              key,
+		Path:             path,
+		Status:           status,
+		DwellMS:          dwell.Milliseconds(),
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		CostUSD:          costUSD,
 	}); err != nil {
 		slog.Warn("activity log", "err", err)
 	}
@@ -318,11 +328,71 @@ func modelFromBody(body []byte) string {
 	return probe.Model
 }
 
-// statusCapture records the response status for the activity log.
+// streamFromBody reports whether the request asked for an SSE stream, which
+// decides how usage is recovered from the response.
+func streamFromBody(body []byte) bool {
+	var probe struct {
+		Stream bool `json:"stream"`
+	}
+	_ = json.Unmarshal(body, &probe)
+	return probe.Stream
+}
+
+// usage is the OpenAI token accounting carried in a response.
+type usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
+// extractUsage recovers token usage from a captured response. A non-streaming
+// body carries a single top-level "usage" object; a streaming (SSE) body carries
+// it in a trailing data: event, present only when the client set
+// stream_options.include_usage. Missing usage (no include_usage, or a body past
+// the capture cap) yields zero — the request simply meters as $0.
+func extractUsage(buf []byte, streaming bool) usage {
+	if len(buf) == 0 {
+		return usage{}
+	}
+	if !streaming {
+		var r struct {
+			Usage usage `json:"usage"`
+		}
+		_ = json.Unmarshal(buf, &r)
+		return r.Usage
+	}
+	var last usage
+	for _, line := range bytes.Split(buf, []byte("\n")) {
+		data, ok := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:"))
+		if !ok {
+			continue
+		}
+		data = bytes.TrimSpace(data)
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+			continue
+		}
+		var r struct {
+			Usage *usage `json:"usage"`
+		}
+		if json.Unmarshal(data, &r) == nil && r.Usage != nil {
+			last = *r.Usage
+		}
+	}
+	return last
+}
+
+// usageCaptureLimit bounds the response bytes statusCapture retains for usage
+// extraction: the whole body for a (small) non-streaming reply, or the tail for
+// a stream (usage rides in the final event).
+const usageCaptureLimit = 1 << 20 // 1 MiB
+
+// statusCapture records the response status and a bounded slice of the body for
+// activity logging + usage metering, while preserving streaming.
 type statusCapture struct {
 	http.ResponseWriter
 	code        int
 	wroteHeader bool
+	streaming   bool
+	buf         []byte // bounded captured body for usage extraction
 }
 
 func (s *statusCapture) WriteHeader(code int) {
@@ -335,6 +405,21 @@ func (s *statusCapture) WriteHeader(code int) {
 func (s *statusCapture) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true
+	}
+	if s.streaming {
+		// Keep a rolling tail — the final SSE event holds usage.
+		s.buf = append(s.buf, b...)
+		if len(s.buf) > usageCaptureLimit {
+			s.buf = append([]byte(nil), s.buf[len(s.buf)-usageCaptureLimit:]...)
+		}
+	} else if len(s.buf) < usageCaptureLimit {
+		// Non-streaming: capture from the front up to the cap (usage is in the
+		// single JSON object; a reply larger than the cap meters as $0).
+		if n := usageCaptureLimit - len(s.buf); n < len(b) {
+			s.buf = append(s.buf, b[:n]...)
+		} else {
+			s.buf = append(s.buf, b...)
+		}
 	}
 	return s.ResponseWriter.Write(b)
 }
