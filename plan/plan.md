@@ -4,10 +4,11 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **P0–P5 shipped; P6 next.** Engine is runnable: OpenAI proxy + spawn
+Status: **P0–P6 shipped; P7 next.** Engine is runnable: OpenAI proxy + spawn
 lifecycle + fairshare scheduler + ordered fall-through + residency/eviction +
-preemption. **MVP = through P6 + the observability UI slice** (§6 MVP line).
-How to work this plan is §0; roadmap is §6; decisions/extensions/deferred are §7.
+preemption + cost model. **MVP = through P6 + the observability UI slice** —
+the engine half of the MVP is done; the P8 UI slice remains. How to work this
+plan is §0; roadmap is §6; decisions/extensions/deferred are §7.
 
 > **Progress (updated 2026-06-23)**
 > - ✅ **P0 scaffold** — `fdf90b9`
@@ -15,11 +16,15 @@ How to work this plan is §0; roadmap is §6; decisions/extensions/deferred are 
 > - ✅ **P2 scheduler engine** — `13f15df`
 > - ✅ **P3 backend-list fall-through** — `ebcff81`
 > - ✅ **P4 residency** — `ec1bcfb`
-> - ✅ **P5 preemption** — cooperative streaming-safe cancel; preempt-before-spill
-> - ▶ **P6 cost model** — next
+> - ✅ **P5 preemption** — `8b8b218` cooperative streaming-safe cancel; preempt-before-spill
+> - ✅ **P6 cost model** — `7bfdbad`/`84f4f70`/`d1091f1`/`e93bf2f`/`1e6ee19`/`c18a698`:
+>   energy/paid/swap → $, per-request metering+persist, sliding-window limits,
+>   configurable share currency. Two adversarial-review passes; fixes folded in.
+> - ▶ **next** — P7 quality-degrade (roadmap order) or the P8 UI MVP slice
+>   (what MVP actually needs); the §6 MVP line makes the post-P6 order flexible.
 > - ☐ P7 quality-degrade · P8 UI · Later: multi-node
 >
-> All shipped phases: `go build`/`vet`/`test` green, gofmt clean.
+> All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
 > Deviation from design: UI served from `--web-root` dir (not `go:embed`), matching
 > redline2. Store is minimal (activity log); no sqlc.
 
@@ -293,16 +298,22 @@ the BackpressureError shape we already validated.
   Victim = lowest-weight interruptible slot, strictly below the preemptor (equal/higher exempt),
   each victim targeted once. **Default ordering: preempt before spill** — with no eligible victim,
   the stage's `then`/spill (else queue/reject) applies. `sched.pickVictim`/`pickWaiter`.
-- ▶ **P6 — Cost model.** *(NEXT)* Make the parsed-but-inert cost/limits config behave. Sub-units
-  (each its own green, tested commit):
-  - [ ] **Local energy → $** — `(gen_tokens·genW + prompt_tokens·procW) → kWh × costPerKwh`.
-  - [ ] **Paid extraction → $** — `costFactor × response usage` for remote/`type` backends.
-  - [ ] **Swap/load $** — `swap.loadSeconds` → energy → $, charged to the trigger (or amortized
-        across the coalesced load batch).
-  - [ ] **`limits` enforcement** — per-group and per-(group×type) TCO caps; over-budget feeds the
-        §4 saturation sequence (advance/queue/reject). Decide window semantics first (§7).
-  - [ ] **Share-currency option** — `dwell|cost` selectable per group; request-count stays default.
-  - [ ] **Meter + persist** — dwell + tokens + $ per request into the activity record (feeds P8).
+- ✅ **P6 — Cost model.** `7bfdbad`/`84f4f70`/`d1091f1`/`e93bf2f`/`1e6ee19`/`c18a698`. The
+  parsed-but-inert cost/limits config now behaves. New `internal/cost` package; scheduler gains a
+  sliding-window budget ledger + configurable share currency (via `NewWithConfig`, injectable clock).
+  - [x] **Local energy → $** — `(completion·genWh + prompt·procWh)/1000 × costPerKwh`. `cost.RequestUSD`.
+  - [x] **Paid extraction → $** — `(prompt+completion) × costFactor` for `costFactor`-bearing types.
+  - [x] **Swap/load $** — `swap.loadSeconds × loadWatts → kWh × costPerKwh`, charged to the request
+        that triggered the cold load (`EnsureReady` reports `loaded`). *(Amortization across the
+        coalesced batch deferred — trigger pays full; §7.)*
+  - [x] **`limits` enforcement** — per-group + per-(group×type) TCO caps over a **sliding window**
+        (`ParseRate` reads `$20/hr`/`600s/min`/`100/min`). Over-budget → spill if the stage allows,
+        else back off (reason `over-budget`) with the time until the window frees; preemption N/A.
+  - [x] **Share-currency option** — `requests` (default, in-flight count) | `dwell` | `cost`
+        (per-group, decaying accumulator, 30s half-life). Mixed-currency queues fall back to
+        request-count (coherent, starvation-free).
+  - [x] **Meter + persist** — dwell + tokens + $ per request into the activity record (feeds P8);
+        streaming + non-streaming usage capture, identity-decode for compressed upstreams.
 - **P7 — Quality degradation.** *(beyond MVP)*
   - [ ] `quality` becomes a sort/routing key for degrade fall-through (today it's carried metadata).
   - [ ] Optional request transforms (clamp `max_tokens`/context) when serving a lower variant.
@@ -344,15 +355,20 @@ the BackpressureError shape we already validated.
   eligible victim before considering spill; only when no victim exists does the stage's `then`/spill
   (else queue/reject) apply. Victim is the lowest-weight `interruptible` slot strictly below the
   preemptor. Per-type `onSaturated` can still pin behavior explicitly via `then`.
+- ✅ **`limits` window semantics** (P6) — **sliding window** (trailing per-dimension event log,
+  pruned on access), reading `$20/hr`/`600s/min`/`100/min`. **Both** per-group and per-(group×type)
+  caps apply (a request charges against both). Over-budget → **spill if the stage allows, else back
+  off** (reason `over-budget`, Retry-After = longest binding window); queue/preempt don't apply to a
+  budget. Requests charge at admit (incl. the queue/promote path), dwell/cost at release.
+- ✅ **Share-currency granularity** (P6) — **per-group** (`requests|dwell|cost`), request-count the
+  default. `dwell`/`cost` use a per-group accumulator decayed with a 30s half-life (cost is
+  retrospective; dwell measured at release). A backend whose queued groups disagree on currency
+  falls back to request-count for that comparison — coherent and starvation-free. (Per-key not done.)
 
 ### Still pending (blocking the noted phase)
 - **Stickiness/affinity weighting** — how strongly a warm backend overrides *ordered list*
   preference (P4 does ttl/evictCost for *eviction*, but the proxy still walks strict list order
-  regardless of warmth); per-group vs per-request latency hint — **P6**.
-- **Share-currency override granularity** (global default + per-group; per-key?) — **P6**.
-  *(Config field `shareCurrency` parses today; only request-count is implemented.)*
-- **`limits` window semantics** (sliding vs fixed; per-group vs per-(group×type) precedence) — **P6**.
-  *(Config field `limits` parses today; no enforcement yet.)*
+  regardless of warmth); per-group vs per-request latency hint — **P7**.
 - **Quality-degrade across served-model boundaries** (variant in same list vs separate fallback
   map) — **P7**. Currently folded into the one backend list via `quality`.
 
@@ -375,17 +391,26 @@ the BackpressureError shape we already validated.
 - ✅ ~~P1 first-backend-only~~ — resolved in **P3** (ordered fall-through; rr-within-type).
   ✅ ~~`Stage.Then` follow-up verb~~ — resolved in **P5** (preempt's no-victim fallback honors
   `then: fallThrough|spill|queue`). Still inert: `quality` as a routing/sort key (**P7**).
-- **No `limits`/cost metering**: `commandCosts`, `costPerKwh`, `shareCurrency: dwell|cost`,
-  per-group/per-type `limits` parse but don't affect behavior — **P6**.
+- ✅ ~~No `limits`/cost metering~~ — resolved in **P6** (`internal/cost`; energy/paid/swap → $;
+  per-request dwell/tokens/$ metered + persisted; sliding-window limits; `requests|dwell|cost`
+  share currency). Remaining P6 gaps below.
 - ✅ ~~No residency accounting~~ — resolved in **P4** (`pools`/`reserve`/`ramUsage`/`sticky`/
-  `persistent` gate spawns + eviction). Still inert: `swap.loadSeconds` (cost/latency input — P6),
-  affinity, `server.maxConcurrent` host cap.
-- **Activity log only**: store has no metric rollups/UI feed yet — **P8**.
+  `persistent` gate spawns + eviction). `swap.loadSeconds`/`loadWatts` now priced (**P6**). Still
+  inert: affinity, `server.maxConcurrent` host cap.
+- **P6 known gaps:** (1) swap $ is charged to the load *trigger* only — not amortized across the
+  coalesced batch; a load whose trigger loses the ctx race goes unbilled. (2) Over-budget with a
+  `queue` stage degrades to back-off (reason `over-budget` + Retry-After), not an internal
+  budget-wait — the client retries when the window frees. (3) Usage capture caps at 1 MiB; a
+  non-streaming reply larger than that meters as $0 (streaming keeps a rolling tail). (4) `cost`
+  share-currency is retrospective (decayed past releases), so in-flight cost is invisible to
+  fairshare until release.
+- **Activity log only**: store now carries dwell/tokens/$ per request, but no rollups/UI feed yet — **P8**.
 - **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
   (benign warning); revisit if it becomes flaky.
 
 ### Next steps
-1. **P6 cost model** (energy→$, paid extraction, swap/load $, per-group/per-type `limits`
-   enforcement, dwell/cost share-currency option, cost-shaping). `commandCosts`/`costPerKwh`/
-   `shareCurrency`/`limits` already parse but don't affect behavior.
-2. Then **P7 quality degradation** (variant routing via `quality`; request transforms when degrading).
+1. **P8 UI MVP slice** — `recentActivity` op + activity table; residency read op + usage view;
+   surface the P6 dwell/tokens/$ in the activity view + a simple rollup. Completes the MVP (engine
+   half done through P6). The store already persists dwell/tokens/$ per request.
+2. **P7 quality degradation** (post-MVP) — variant routing via `quality`; request transforms when
+   degrading. Reorderable vs P8 per the §6 MVP line.
