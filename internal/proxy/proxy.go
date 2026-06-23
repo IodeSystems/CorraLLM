@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,7 +109,18 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// across types). For each: take a slot or honor the group's saturation stage
 	// for that type — spill/fallThrough advances to the next backend; queue waits;
 	// reject is terminal. A backend that won't become ready also spills.
-	walk := orderBackends(model.Backends, p.nextRR(served))
+	// Quality-degrade fall-through (P7): walk the backend list best-quality-first,
+	// keeping only the tiers this group accepts. A non-degrading group sees only
+	// the top tier, so saturation there backs off (per its stage) instead of
+	// spilling onto a worse model; a degrading group walks down to its floor.
+	topQuality := config.MaxQuality(model.Backends)
+	ordered := orderBackends(model.Backends, p.nextRR(served))
+	walk := ordered[:0:0]
+	for _, idx := range ordered {
+		if group.AcceptsQuality(model.Backends[idx].Quality, topQuality) {
+			walk = append(walk, idx)
+		}
+	}
 	var lastBP *sched.BackpressureError
 
 	for _, idx := range walk {
@@ -146,9 +158,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Restore the buffered body for the proxy.
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(len(body))
+		// Restore the buffered body for the proxy, clamping max_tokens to this
+		// backend's cap when it declares one (degrade transform, P7).
+		outBody := clampMaxTokens(body, backend)
+		r.Body = io.NopCloser(bytes.NewReader(outBody))
+		r.ContentLength = int64(len(outBody))
 		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK, streaming: streaming}
 		newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(reqCtx))
 		done()
@@ -181,30 +195,89 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start), 0, 0, 0)
 }
 
-// orderBackends returns config indices in fall-through order: types in
-// first-appearance order, and within a type the backends rotated by rr (round
-// robin across cost-equivalent backends). Quality is carried metadata, not a
-// sort key here — the operator's list order across types is authoritative; per-
-// quality variant routing is P7.
+// orderBackends returns config indices in fall-through order: highest quality
+// tier first, descending (the degrade ladder, P7). Within a tier, types appear
+// in first-appearance order and same-type backends rotate by rr (round robin
+// across cost-equivalent peers). Uniform quality → a single tier → identical to
+// the pre-P7 type-rr ordering (no regression for configs that don't use quality).
 func orderBackends(backends []config.Backend, rr uint64) []int {
+	tiers := map[int][]int{}
+	var qualities []int
+	for i, b := range backends {
+		if _, seen := tiers[b.Quality]; !seen {
+			qualities = append(qualities, b.Quality)
+		}
+		tiers[b.Quality] = append(tiers[b.Quality], i)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(qualities))) // best quality first
+	out := make([]int, 0, len(backends))
+	for _, q := range qualities {
+		out = append(out, orderByTypeRR(tiers[q], backends, rr)...)
+	}
+	return out
+}
+
+// orderByTypeRR orders a single quality tier's indices: types in first-appearance
+// order, same-type backends rotated by rr.
+func orderByTypeRR(idxs []int, backends []config.Backend, rr uint64) []int {
 	var typeOrder []string
 	byType := map[string][]int{}
-	for i, b := range backends {
-		if _, seen := byType[b.Type]; !seen {
-			typeOrder = append(typeOrder, b.Type)
+	for _, i := range idxs {
+		t := backends[i].Type
+		if _, seen := byType[t]; !seen {
+			typeOrder = append(typeOrder, t)
 		}
-		byType[b.Type] = append(byType[b.Type], i)
+		byType[t] = append(byType[t], i)
 	}
-	out := make([]int, 0, len(backends))
+	out := make([]int, 0, len(idxs))
 	for _, tp := range typeOrder {
-		idxs := byType[tp]
-		n := len(idxs)
+		s := byType[tp]
+		n := len(s)
 		start := int(rr % uint64(n))
 		for k := 0; k < n; k++ {
-			out = append(out, idxs[(start+k)%n])
+			out = append(out, s[(start+k)%n])
 		}
 	}
 	return out
+}
+
+// clampMaxTokens enforces a backend's MaxTokens cap on the outgoing request body
+// (P7): a present max_tokens/max_completion_tokens larger than the cap is reduced
+// to it, and if neither is present the cap is set as max_tokens. Returns body
+// unchanged when the backend declares no cap or the body isn't JSON.
+func clampMaxTokens(body []byte, b config.Backend) []byte {
+	if b.MaxTokens <= 0 {
+		return body
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	changed := false
+	for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+		raw, ok := m[field]
+		if !ok {
+			continue
+		}
+		var v float64
+		if json.Unmarshal(raw, &v) == nil && int(v) > b.MaxTokens {
+			m[field] = json.RawMessage(strconv.Itoa(b.MaxTokens))
+			changed = true
+		}
+	}
+	if _, ok1 := m["max_tokens"]; !ok1 {
+		if _, ok2 := m["max_completion_tokens"]; !ok2 {
+			m["max_tokens"] = json.RawMessage(strconv.Itoa(b.MaxTokens))
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	if out, err := json.Marshal(m); err == nil {
+		return out
+	}
+	return body
 }
 
 // nextRR returns the round-robin rotation counter for a served model, advancing

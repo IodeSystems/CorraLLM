@@ -3,6 +3,7 @@ package proxy
 import (
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -184,6 +185,164 @@ func TestOrderBackends(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+// TestOrderBackendsQuality: backends are walked best-quality-tier first; within
+// a tier, type-rr is preserved (P7).
+func TestOrderBackendsQuality(t *testing.T) {
+	// idx: 0 q40 cloud, 1 q100 local, 2 q100 local, 3 q60 cloud
+	bs := []config.Backend{
+		{Type: "cloud", Quality: 40},
+		{Type: "local", Quality: 100},
+		{Type: "local", Quality: 100},
+		{Type: "cloud", Quality: 60},
+	}
+	// rr=0: tier 100 → [1,2], tier 60 → [3], tier 40 → [0].
+	if got := orderBackends(bs, 0); !equalInts(got, []int{1, 2, 3, 0}) {
+		t.Errorf("rr=0 got %v want [1 2 3 0]", got)
+	}
+	// rr=1 rotates within the 2-backend top tier only.
+	if got := orderBackends(bs, 1); !equalInts(got, []int{2, 1, 3, 0}) {
+		t.Errorf("rr=1 got %v want [2 1 3 0]", got)
+	}
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestClampMaxTokens: a present max_tokens above the cap is reduced; an absent
+// one is set to the cap; no cap (or a smaller request) leaves the body intact.
+func TestClampMaxTokens(t *testing.T) {
+	capped := config.Backend{MaxTokens: 128}
+
+	// Above cap → clamped.
+	got := clampMaxTokens([]byte(`{"model":"m","max_tokens":4096}`), capped)
+	if mt := maxTokensOf(t, got); mt != 128 {
+		t.Errorf("clamp above cap: max_tokens = %d, want 128", mt)
+	}
+	// Absent → set to cap.
+	got = clampMaxTokens([]byte(`{"model":"m"}`), capped)
+	if mt := maxTokensOf(t, got); mt != 128 {
+		t.Errorf("set when absent: max_tokens = %d, want 128", mt)
+	}
+	// Below cap → unchanged.
+	got = clampMaxTokens([]byte(`{"model":"m","max_tokens":16}`), capped)
+	if mt := maxTokensOf(t, got); mt != 16 {
+		t.Errorf("below cap: max_tokens = %d, want 16", mt)
+	}
+	// No cap → byte-identical passthrough.
+	in := []byte(`{"model":"m","max_tokens":4096}`)
+	if got := clampMaxTokens(in, config.Backend{}); string(got) != string(in) {
+		t.Errorf("no cap altered body: %s", got)
+	}
+}
+
+func maxTokensOf(t *testing.T, body []byte) int {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	v, ok := m["max_tokens"].(float64)
+	if !ok {
+		t.Fatalf("no max_tokens in %s", body)
+	}
+	return int(v)
+}
+
+// TestQualityDegradeRouting: a high-quality backend (saturated, spill stage)
+// sits above a low-quality one. A non-degrading group must NOT spill onto the
+// worse model (terminal 429); a degrading group is served by it.
+func TestQualityDegradeRouting(t *testing.T) {
+	rel := make(chan struct{})
+	started := make(chan struct{})
+	big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-rel // hold the top-tier slot
+		_, _ = w.Write([]byte(`{"served_by":"big"}`))
+	}))
+	defer big.Close()
+	small := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		_, _ = w.Write([]byte(`{"served_by":"small"}`))
+	}))
+	defer small.Close()
+	defer close(rel)
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	bigB := backendTo(t, big.URL, "local")
+	bigB.Quality = 100
+	smallB := backendTo(t, small.URL, "local")
+	smallB.Quality = 50
+
+	cfg := &config.Config{
+		Models: map[string]config.Model{
+			"m": {Backends: []config.Backend{bigB, smallB}},
+		},
+		PriorityGroups: map[string]config.PriorityGroup{
+			// Both groups spill when the local tier is saturated.
+			"strict": {Weight: 1, OnSaturated: map[string]config.Stage{"local": {Spill: true}}},
+			"lax": {
+				Weight: 1, AcceptDegrade: true,
+				OnSaturated: map[string]config.Stage{"local": {Spill: true}},
+			},
+		},
+		Keys: map[string]string{"strict": "strict", "lax": "lax"},
+	}
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+
+	send := func(key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+		req.Header.Set("X-Corrallm-Key", key)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	go send("strict") // occupies the top-tier (big) slot, blocks
+	<-started
+
+	// Non-degrading group: top tier saturated, spill stage — but the only lower
+	// backend is worse quality, which it won't accept → terminal 429, never small.
+	rec := send("strict")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("strict: want 429, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "small") {
+		t.Errorf("strict was served the degraded model: %s", rec.Body.String())
+	}
+
+	// Degrading group: accepts the lower tier → served by small.
+	rec = send("lax")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("lax: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"served_by":"small"`) {
+		t.Errorf("lax expected degrade to small, got: %s", rec.Body.String())
 	}
 }
 

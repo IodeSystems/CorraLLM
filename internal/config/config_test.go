@@ -5,6 +5,42 @@ import (
 	"testing"
 )
 
+// TestMaxQuality returns the top quality (0 when none set).
+func TestMaxQuality(t *testing.T) {
+	if got := MaxQuality([]Backend{{Quality: 60}, {Quality: 100}, {Quality: 40}}); got != 100 {
+		t.Errorf("MaxQuality = %d, want 100", got)
+	}
+	if got := MaxQuality([]Backend{{}, {}}); got != 0 {
+		t.Errorf("MaxQuality (unset) = %d, want 0", got)
+	}
+}
+
+// TestAcceptsQuality: a non-degrading group accepts only the top tier; a
+// degrading group accepts down to its floor (P7).
+func TestAcceptsQuality(t *testing.T) {
+	const top = 100
+	noDegrade := PriorityGroup{}
+	if !noDegrade.AcceptsQuality(100, top) {
+		t.Error("non-degrade group must accept the top tier")
+	}
+	if noDegrade.AcceptsQuality(60, top) {
+		t.Error("non-degrade group must reject below the top tier")
+	}
+
+	floor60 := PriorityGroup{AcceptDegrade: true, QualityFloor: 60}
+	if !floor60.AcceptsQuality(60, top) {
+		t.Error("degrade group must accept at its floor")
+	}
+	if floor60.AcceptsQuality(40, top) {
+		t.Error("degrade group must reject below its floor")
+	}
+
+	anyQ := PriorityGroup{AcceptDegrade: true}
+	if !anyQ.AcceptsQuality(0, top) {
+		t.Error("degrade group with no floor must accept anything")
+	}
+}
+
 // TestLoadSampleConfig parses the committed corrallm.yaml and checks the shape
 // the scheduler will rely on — and that Validate accepts it.
 func TestLoadSampleConfig(t *testing.T) {

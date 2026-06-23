@@ -67,6 +67,10 @@ type Backend struct {
 	// MaxConcurrent is the backend's admission slots (the fairshare capacity
 	// unit). For a local llama-server this mirrors --parallel. Default 1.
 	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
+	// MaxTokens caps the completion length this (often smaller/degraded) backend
+	// will be asked for: when a request degrades onto it, its max_tokens is
+	// clamped to this value (P7). 0 = no cap.
+	MaxTokens int `yaml:"maxTokens,omitempty"`
 }
 
 // Slots returns the backend's concurrency capacity, defaulting to 1.
@@ -75,6 +79,18 @@ func (b Backend) Slots() int {
 		return b.MaxConcurrent
 	}
 	return 1
+}
+
+// MaxQuality returns the highest Quality among the backends (0 if none/unset) —
+// the top of a served model's quality ladder (P7).
+func MaxQuality(bs []Backend) int {
+	top := 0
+	for _, b := range bs {
+		if b.Quality > top {
+			top = b.Quality
+		}
+	}
+	return top
 }
 
 // Swap is the measured cost of loading a backend (residency input, P4). P6 adds
@@ -92,6 +108,26 @@ type PriorityGroup struct {
 	Interruptible bool              `yaml:"interruptible,omitempty"`
 	OnSaturated   map[string]Stage  `yaml:"onSaturated,omitempty"` // backend type → stage policy
 	Limits        map[string]string `yaml:"limits,omitempty"`      // group-wide TCO caps
+	// AcceptDegrade opts the group into quality-degrade fall-through (P7): when
+	// set, the group may be served by lower-quality backends in the model's list
+	// (down to QualityFloor). Default false → the group is served only by the
+	// model's highest-quality tier; below that it backs off (reject/queue) rather
+	// than be served a worse model.
+	AcceptDegrade bool `yaml:"acceptDegrade,omitempty"`
+	// QualityFloor is the lowest backend quality the group will accept when it
+	// does degrade (0 = no floor). Ignored unless AcceptDegrade is set.
+	QualityFloor int `yaml:"qualityFloor,omitempty"`
+}
+
+// AcceptsQuality reports whether the group may be served by a backend of quality
+// q, given the model's top-tier quality. A non-degrading group accepts only the
+// top tier; a degrading group accepts down to its QualityFloor (P7).
+func (g PriorityGroup) AcceptsQuality(q, topQuality int) bool {
+	floor := topQuality // no degrade → only the highest-quality backends
+	if g.AcceptDegrade {
+		floor = g.QualityFloor
+	}
+	return q >= floor
 }
 
 // EffectiveWeight returns the group's fairshare weight, defaulting to 1.
