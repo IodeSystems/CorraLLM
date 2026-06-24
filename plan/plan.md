@@ -38,6 +38,7 @@ llama-swap in production** (see §8 Deployment). Only open roadmap item: multi-n
 >   - queue pressure (429s) + per-request wait + sampled queue depth — `15bda80`/`e576065`
 >   - backend log capture + parsed `n_ctx`/`n_slots` — `5bca212`
 >   - admin-token auth on `/api/*` + login screen — `3e83001`
+>   - calibrated cost coefficients (chat/embed) + activity-log retention — `08ec3ad`/`7f12d48`
 >   - cutover hardening (health-timeout/`/health` 2xx/liveness route/EWMA Retry-After
 >     + maxWait/maxQueueDepth) — `ca1b5b3`/`21698f2`/`7e96bbf`/`14dd1bd`
 > - ☐ Later: multi-node peer awareness.
@@ -376,6 +377,9 @@ the BackpressureError shape we already validated.
   - [x] **Auth** (`internal/auth`) — admin token in `<home>/admin.token` (auto-generated)
         gates all `/api/*` (ops + load/unload) via Bearer or cookie; `/v1`, `/upstream`,
         `/health` stay open. Dashboard login screen points to `home/admin.token`. `3e83001`
+  - [x] **Retention / compaction** — `--activity-retention` (default 30d) prunes the activity
+        log in the 5-min maintenance tick (it grew unbounded; only `lane_samples`/48h was pruned).
+        SQLite reuses freed pages → file plateaus, no VACUUM. `7f12d48`
 
 > **── MVP line ──** Above: P0–P6 + the P8 MVP slice = a usable, observable control
 > plane. Below: post-MVP polish, reorderable.
@@ -514,3 +518,7 @@ the **ml-kit** ops repo (sibling), not this code repo:
   new GraphQL op needs the new binary); backend changes need a `bin/run` rebuild+restart.
 - **Restart drill:** stop (`kill -- -<pid>`), wait for `:8111`/5800/5801 to free (~10s graceful reap),
   then `bin/run --detach`. Blip: in-flight requests drop, Qwen cold-reloads (~66s).
+- **DB / retention:** SQLite at `ml-kit/local/corrallm.db`. Activity is pruned to 30d
+  (`--activity-retention`); `lane_samples` to 48h. After the cost calibration, historical `cost_usd`
+  was recomputed in place from stored tokens × the new `chat`/`embed` coefficients (one-time backfill,
+  stop → backup → `UPDATE` → restart) so the 24h dashboard wasn't stuck on pre-calibration totals.
