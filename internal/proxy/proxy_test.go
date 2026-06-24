@@ -789,7 +789,32 @@ func TestModelsCatalog(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"mock"`) {
-		t.Fatalf("models catalog: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("models catalog: %d", rec.Code)
+	}
+	var got struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID       string `json:"id"`
+			Object   string `json:"object"`
+			Created  int64  `json:"created"`
+			OwnedBy  string `json:"owned_by"`
+			State    string `json:"state"`
+			Backends int    `json:"backends"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Object != "list" || len(got.Data) != 1 {
+		t.Fatalf("catalog shape: %+v", got)
+	}
+	m := got.Data[0]
+	// Standard OpenAI fields + corrallm metadata (no manager residents → absent).
+	if m.ID != "mock" || m.Object != "model" || m.OwnedBy != "corrallm" || m.Created == 0 {
+		t.Errorf("standard fields: %+v", m)
+	}
+	if m.State != "absent" || m.Backends != 1 {
+		t.Errorf("metadata: state=%q backends=%d, want absent/1", m.State, m.Backends)
 	}
 }

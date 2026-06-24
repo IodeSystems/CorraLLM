@@ -40,13 +40,16 @@ type Proxy struct {
 	cost   *cost.Model
 	events *events.Broker // optional: live UI events (P8-beyond)
 
+	started int64 // unix seconds at construction — the catalog's "created"
+
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
 }
 
 // New constructs a Proxy.
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
-	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg), rr: map[string]uint64{}}
+	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
+		started: time.Now().Unix(), rr: map[string]uint64{}}
 }
 
 // SetBroker attaches an events broker so the request path can push live updates
@@ -314,19 +317,64 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	newReverseProxy(pr.Target).ServeHTTP(w, r)
 }
 
-// handleModels returns an OpenAI-style catalog of served models from config.
+// handleModels returns an OpenAI-style catalog of served models, enriched with
+// corrallm metadata (extra fields — OpenAI clients ignore unknown keys): the
+// quality/type/backend shape from config plus live state + context length from
+// the residency snapshot. Standard fields (id/object/created/owned_by) keep it
+// drop-in compatible.
 func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
+	// First resident backend per served model → live state + parsed context length.
+	resident := map[string]proc.ResidentModel{}
+	for _, m := range p.mgr.Snapshot().Models {
+		if _, ok := resident[m.ModelName]; !ok {
+			resident[m.ModelName] = m
+		}
+	}
+
 	type model struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
+		Created int64  `json:"created"`
 		OwnedBy string `json:"owned_by"`
+		// corrallm metadata
+		State         string   `json:"state"`                    // absent|loading|ready|idle|evicting
+		Quality       int      `json:"quality,omitempty"`        // top quality tier
+		Types         []string `json:"types,omitempty"`          // backend cost classes
+		Backends      int      `json:"backends"`                 // backend count
+		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
+		ContextLength int      `json:"context_length,omitempty"` // parsed n_ctx (if resident)
 	}
 	out := struct {
 		Object string  `json:"object"`
 		Data   []model `json:"data"`
 	}{Object: "list"}
+
+	names := make([]string, 0, len(p.cfg.Models))
 	for name := range p.cfg.Models {
-		out.Data = append(out.Data, model{ID: name, Object: "model", OwnedBy: "corrallm"})
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		mc := p.cfg.Models[name]
+		var types []string
+		seen := map[string]bool{}
+		for _, b := range mc.Backends {
+			if b.Type != "" && !seen[b.Type] {
+				seen[b.Type] = true
+				types = append(types, b.Type)
+			}
+		}
+		e := model{
+			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
+			State: "absent", Quality: config.MaxQuality(mc.Backends),
+			Types: types, Backends: len(mc.Backends), Persistent: mc.Persistent,
+		}
+		if r, ok := resident[name]; ok {
+			e.State = r.State
+			e.ContextLength = r.NCtx
+		}
+		out.Data = append(out.Data, e)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
