@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Box,
   Button,
@@ -52,6 +52,20 @@ const ConsoleDoc = graphql(/* GraphQL */ `
           hasUi
           nCtx
           nSlots
+        }
+      }
+    }
+  }
+`)
+
+const ReplayDoc = graphql(/* GraphQL */ `
+  query ConsoleReplay($id: Long!) {
+    corrallm {
+      activityDetail(id: $id) {
+        record {
+          served
+          path
+          reqBody
         }
       }
     }
@@ -114,9 +128,9 @@ function capabilityOf(man: Manifest | undefined, name: string): string {
 // --- console ------------------------------------------------------------
 
 function ModelConsole() {
-  const { name } = Route.useSearch()
+  const { name, replay } = Route.useSearch()
   const navigate = useNavigate()
-  const [tab, setTab] = useState(0)
+  const [tab, setTab] = useState(replay ? 1 : 0)
   const ov = useQuery({ queryKey: ['console'], queryFn: () => gqlClient.request(ConsoleDoc), refetchInterval: 15000 })
   const caps = useCapabilities()
 
@@ -168,6 +182,7 @@ function ModelConsole() {
           capability={capability}
           model={name}
           ttsModels={caps.data?.models_by_capability?.['audio.tts'] ?? []}
+          replayId={replay}
         />
       )}
       {tab === 2 && <LogsTab backend={res?.name ?? `${name}#0`} ready={!!res} />}
@@ -327,8 +342,18 @@ function UsageTab({ name }: { name: string }) {
 
 // --- Test (playgrounds) -------------------------------------------------
 
-function TestTab({ capability, model, ttsModels }: { capability: string; model: string; ttsModels: string[] }) {
-  if (capability === 'chat') return <ChatPlayground model={model} />
+function TestTab({
+  capability,
+  model,
+  ttsModels,
+  replayId,
+}: {
+  capability: string
+  model: string
+  ttsModels: string[]
+  replayId?: string
+}) {
+  if (capability === 'chat') return <ChatPlayground model={model} replayId={replayId} />
   if (capability === 'audio.stt') return <SttPlayground model={model} ttsModels={ttsModels} />
   if (capability === 'audio.tts') return <TtsPlayground model={model} />
   return (
@@ -509,21 +534,91 @@ function TtsPlayground({ model }: { model: string }) {
   )
 }
 
-type Msg = { role: 'user' | 'assistant'; content: string }
+type Msg = { role: 'user' | 'assistant'; content: string; image?: string }
 
-function ChatPlayground({ model }: { model: string }) {
+// extractText pulls the text out of a message content that may be a string or the
+// multimodal content-parts array (used when replaying a captured request).
+function extractText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((p) => (p && typeof p === 'object' && 'text' in p ? String((p as { text: unknown }).text) : ''))
+      .join(' ')
+      .trim()
+  }
+  return ''
+}
+
+// apiContent renders a message in OpenAI shape: a string, or — when an image is
+// attached — the multimodal content-parts array (vision) the model needs.
+function apiContent(m: Msg): unknown {
+  if (!m.image) return m.content
+  return [
+    { type: 'text', text: m.content },
+    { type: 'image_url', image_url: { url: m.image } },
+  ]
+}
+
+function ChatPlayground({ model, replayId }: { model: string; replayId?: string }) {
   const [key, setKey] = useState('')
   const [input, setInput] = useState('')
+  const [image, setImage] = useState<string | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [busy, setBusy] = useState(false)
   const msgsRef = useRef<Msg[]>([])
+  const fileRef = useRef<HTMLInputElement>(null)
   msgsRef.current = msgs
+
+  // Replay (P11e): load a logged request's captured payload into the chat — prior
+  // turns become history, the last user turn lands in the input to re-run/tweak.
+  useEffect(() => {
+    if (!replayId) return
+    let cancelled = false
+    void gqlClient.request(ReplayDoc, { id: replayId }).then((d) => {
+      if (cancelled) return
+      const raw = d.corrallm.activityDetail?.record?.reqBody
+      if (!raw) return
+      try {
+        const body = JSON.parse(raw)
+        const parsed: Msg[] = (body.messages ?? [])
+          .map((m: { role: string; content: unknown }) => ({
+            role: m.role === 'assistant' ? 'assistant' : 'user',
+            content: typeof m.content === 'string' ? m.content : extractText(m.content),
+          }))
+          .filter((m: Msg) => m.role === 'user' || m.role === 'assistant')
+        const lastUser = [...parsed].reverse().find((m) => m.role === 'user')
+        if (lastUser) {
+          const idx = parsed.lastIndexOf(lastUser)
+          setMsgs(parsed.slice(0, idx))
+          setInput(lastUser.content)
+        } else {
+          setMsgs(parsed)
+        }
+      } catch {
+        setInput(raw.slice(0, 4000))
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [replayId])
+
+  function attach(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    if (!f) return
+    const reader = new FileReader()
+    reader.onload = () => setImage(String(reader.result))
+    reader.readAsDataURL(f)
+    e.target.value = ''
+  }
 
   async function send() {
     const text = input.trim()
-    if (!text || busy) return
+    if ((!text && !image) || busy) return
     setInput('')
-    const base: Msg[] = [...msgsRef.current, { role: 'user', content: text }, { role: 'assistant', content: '' }]
+    const userMsg: Msg = { role: 'user', content: text, image: image ?? undefined }
+    setImage(null)
+    const base: Msg[] = [...msgsRef.current, userMsg, { role: 'assistant', content: '' }]
     setMsgs(base)
     setBusy(true)
     try {
@@ -535,7 +630,7 @@ function ChatPlayground({ model }: { model: string }) {
         body: JSON.stringify({
           model,
           stream: true,
-          messages: base.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+          messages: base.slice(0, -1).map((m) => ({ role: m.role, content: apiContent(m) })),
         }),
       })
       if (!resp.ok || !resp.body) {
@@ -589,6 +684,13 @@ function ChatPlayground({ model }: { model: string }) {
               <Typography variant="caption" color="text.secondary">
                 {m.role}
               </Typography>
+              {m.image && (
+                <Box
+                  component="img"
+                  src={m.image}
+                  sx={{ display: 'block', maxWidth: 200, maxHeight: 160, borderRadius: 1, my: 0.5 }}
+                />
+              )}
               <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
                 {m.content || (busy && i === msgs.length - 1 ? '…' : '')}
               </Typography>
@@ -596,7 +698,19 @@ function ChatPlayground({ model }: { model: string }) {
           ))}
         </Box>
       </Paper>
+      {image && (
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Box component="img" src={image} sx={{ maxHeight: 48, borderRadius: 1 }} />
+          <Button size="small" onClick={() => setImage(null)}>
+            remove image
+          </Button>
+        </Stack>
+      )}
       <Stack direction="row" spacing={1}>
+        <input ref={fileRef} type="file" accept="image/*" hidden onChange={attach} />
+        <Button variant="outlined" onClick={() => fileRef.current?.click()} title="Attach an image (vision models)">
+          🖼
+        </Button>
         <TextField
           size="small"
           fullWidth
@@ -626,9 +740,10 @@ function ChatPlayground({ model }: { model: string }) {
 }
 
 export const Route = createFileRoute('/model')({
-  validateSearch: (s: Record<string, unknown>): { name: string; tab?: string } => ({
+  validateSearch: (s: Record<string, unknown>): { name: string; tab?: string; replay?: string } => ({
     name: String(s.name ?? ''),
     tab: s.tab ? String(s.tab) : undefined,
+    replay: s.replay ? String(s.replay) : undefined,
   }),
   component: ModelConsole,
 })

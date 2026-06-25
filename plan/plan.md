@@ -594,12 +594,15 @@ the BackpressureError shape we already validated.
       (`getUserMedia`+`MediaRecorder`) → `/v1/audio/transcriptions` → transcript, then **"speak it
       back"** via a chosen TTS model → `/v1/audio/speech` → `Audio()` playback (a full browser voice
       loop). TTS: text → speak. tsc/eslint/build clean.
-    - ☐ **image/vision** — next.
-  - ☐ **P11e — Replay an activity into the console.** From the activity detail modal (P10c), a
-    "Replay in console" action opens the served model's console Test tab **pre-filled with that
-    request's captured payload** (P10b `reqBody`) so it can be re-run/tweaked to debug. Best for
-    chat/text/image (full JSON payload captured); audio STT only stores a size summary (no raw audio),
-    so those open the playground without the original bytes.
+    - ✅ **image/vision** — image attach (🖼) in the chat playground: file → base64 data URL → the
+      user turn is sent as OpenAI multimodal content-parts (`text` + `image_url`) for vision models;
+      thumbnails render inline. tsc/eslint/build clean.
+  - ✅ **P11e — Replay an activity into the console.** Done. The activity detail modal (P10c) gains a
+    **"Replay in console"** (chat paths) / "Open in console" button → navigates to
+    `/model?name=<served>&replay=<id>`. The console opens the Test tab and the chat playground fetches
+    `activityDetail(id)`, parses the captured `reqBody.messages` (incl. multimodal content-parts via
+    `extractText`), loads prior turns as history, and drops the last user turn in the input to re-run/
+    tweak. Audio rows only stored a size summary, so they just open the console. tsc/eslint/build clean.
 
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 

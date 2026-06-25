@@ -1,8 +1,9 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
   Box,
+  Button,
   Chip,
   CircularProgress,
   Dialog,
@@ -86,22 +87,32 @@ function statusColor(statusStr: string | number): 'success' | 'warning' | 'error
 }
 
 function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
+  const navigate = useNavigate()
   const q = useQuery({
     queryKey: ['activityDetail', id],
     queryFn: () => gqlClient.request(ActivityDetailDoc, { id }),
   })
   const rec = q.data?.corrallm.activityDetail?.record
+  const chatReplayable = !!rec && (rec.path.includes('chat/completions') || rec.path.endsWith('/completions'))
   return (
     <Dialog open onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle>
+      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         Request detail
+        {rec && <Chip size="small" label={rec.status} color={statusColor(rec.status)} />}
+        <Box sx={{ flexGrow: 1 }} />
         {rec && (
-          <Chip
+          <Button
             size="small"
-            sx={{ ml: 1 }}
-            label={rec.status}
-            color={statusColor(rec.status)}
-          />
+            variant="outlined"
+            onClick={() => {
+              navigate({
+                to: '/model',
+                search: { name: rec.served, replay: chatReplayable ? rec.id : undefined },
+              })
+            }}
+          >
+            {chatReplayable ? 'Replay in console' : 'Open in console'}
+          </Button>
         )}
       </DialogTitle>
       <DialogContent dividers>
