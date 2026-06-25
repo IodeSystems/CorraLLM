@@ -42,11 +42,10 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   - calibrated cost coefficients (chat/embed) + activity-log retention — `08ec3ad`/`7f12d48`
 >   - cutover hardening (health-timeout/`/health` 2xx/liveness route/EWMA Retry-After
 >     + maxWait/maxQueueDepth) — `ca1b5b3`/`21698f2`/`7e96bbf`/`14dd1bd`
-> - ◐ **P9 audio modality** (scoped this session; **P9a/c/d STT slice ✅ + P9b TTS ✅ done**) — OpenAI
->   audio surface: `/v1/audio/transcriptions`+`/translations` ✅ (parakeet STT), `/v1/audio/speech` ✅
->   (Kokoro TTS), `/v1/realtime` ws passthrough ☐. Backends decided (§7): **parakeet** STT, **Kokoro**
->   TTS, **Speaches** realtime ASR (OpenAI Realtime schema). Remaining: **P9e** (realtime ws) + **P9f**
->   (comfort-fill, unconfirmed).
+> - ◐ **P9 audio modality** — **P9a/b/c/d/e ✅ done + validated end-to-end**: `/v1/audio/transcriptions`
+>   +`/translations` (parakeet STT), `/v1/audio/speech` (Kokoro TTS), `/v1/realtime` ws passthrough
+>   (Speaches realtime STT). All three backends installed under ml-kit `local/` + wired + full-stack
+>   tested. Remaining: **P9f** (comfort-fill, unconfirmed/parked) + an idle/max-session reaper for P9e.
 > - ✅ **P10 request observability** (prod-driven) — **P10a/b/c ✅** honest error status (client/upstream
 >   cancel → 499, not a mislabeled backend 502) + `activity.error` reason + configurable
 >   `--request-timeout` (latent 130s cap removed); per-request payload + TTFB capture; click-through
@@ -455,20 +454,24 @@ the BackpressureError shape we already validated.
     carried). `go test -race ./...` green, gofmt clean.
     *Deferred to opportunistic polish: per-`audio_bytes` SUMs in the rollup/usage ops
     (`usageRollup`/`usageByKey`/`usageSeries`) — activity rows + catalog cover the P9d goal.*
-  - ◐ **P9e — Realtime WebSocket passthrough (live/conversational transcription).** **Proxy ✅ done
-    (not committed); Speaches backend install + ml-kit wiring + live validation remain.** New
-    `handleRealtime` (`/v1/realtime`): model from `?model=` query, ordered-backend admission holding
-    **one slot for the session**, then `proxyWebSocket` — a manual hijack + bidirectional `io.Copy`
-    (the request body is NOT buffered). Preemption teardown is explicit: a `<-ctx.Done()` goroutine
-    closes both conns when the slot is reclaimed (`ErrPreempted` → session logged 499) — the flagged
-    "does cancel fire on a hijacked conn" risk is **verified by test**. Metered by client→backend
-    bytes (audio in) → `AudioRequestUSD`; logged as one activity row on close (dwell = session). Tests:
+  - ✅ **P9e — Realtime WebSocket passthrough (live/conversational transcription).** **Done +
+    validated end-to-end.** New `handleRealtime` (`/v1/realtime`): model from `?model=` query,
+    ordered-backend admission holding **one slot for the session**, then `proxyWebSocket` — a manual
+    hijack + bidirectional `io.Copy` (the request body is NOT buffered). Preemption teardown is
+    explicit: a `<-ctx.Done()` goroutine closes both conns when the slot is reclaimed (`ErrPreempted`
+    → session logged 499) — the flagged "does cancel fire on a hijacked conn" risk is **verified by
+    test**. Metered by client→backend bytes (audio in) → `AudioRequestUSD`; one activity row on close
+    (dwell = session). **Metering correctness fix:** wait for *both* copy directions before reading
+    the byte count (reading after one side closed raced the counter → undercount/0). Tests:
     `TestRealtimeWebSocketPassthrough` (raw-conn 101 upgrade + bidirectional echo, no ws client dep) +
-    `TestRealtimePreemptAbortsSession` (preempt tears down the hijacked conn, frees the slot, serves
-    the preemptor, logs 499). `go test -race` green. *Remaining: install Speaches (CPU, OpenAI
-    Realtime schema) under ml-kit `local/`, add a `realtime`/Speaches model to the config, validate
-    full-stack — like parakeet/kokoro. Idle/max-session timeout reaper still TODO (sessions currently
-    live until a side closes or preemption).*
+    `TestRealtimePreemptAbortsSession`. `go test -race` green.
+    **Backend: Speaches** (speaches-ai/speaches v0.8.3, CPU faster-whisper int8) installed under
+    ml-kit `local/`, wired into the config (served name = model id; `LOOPBACK_HOST_URL` required, model
+    pulled once via `POST /v1/models/…`). **Full stack validated:** ws client → corrallm → Speaches →
+    "And so my fellow Americans." + metered `audio_bytes`=501712. *(Speaches realtime VAD over-segments
+    a blasted synthetic stream + a transient "item already exists" — app-layer, cleaner at real-time
+    mic pace.)* **Still TODO: idle/max-session timeout reaper** — a session lives until a side closes or
+    preemption; a silently-stuck session holds its slot indefinitely.
     <!-- original scope retained below -->
     A **separate request edge** from P9a's file model: live mic transcription (OpenAI Realtime,
     `wss://…/v1/realtime?model=…`) streams audio *in* continuously, so it **must not buffer the

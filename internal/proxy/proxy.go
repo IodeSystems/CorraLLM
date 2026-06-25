@@ -520,7 +520,10 @@ func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config
 	errc := make(chan error, 2)
 	go func() { n, e := io.Copy(backConn, cliRW); atomic.AddInt64(&inBytes, n); errc <- e }() // client→backend (audio)
 	go func() { _, e := io.Copy(cliConn, backRd); errc <- e }()                               // backend→client (transcripts)
-	<-errc                                                                                    // first side to close ends the session
+	<-errc                                                                                    // first side closed → end the session
+	_ = backConn.Close()                                                                      // unblock the other copy
+	_ = cliConn.Close()
+	<-errc // wait for both copies so the audio-in count is complete before we read it
 	return atomic.LoadInt64(&inBytes), nil
 }
 
