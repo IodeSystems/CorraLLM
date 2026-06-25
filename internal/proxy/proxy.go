@@ -169,6 +169,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Free the admission slot on EVERY exit path, panic included.
+		// httputil.ReverseProxy raises http.ErrAbortHandler when the
+		// client disconnects mid-response (a ragtag request hitting its
+		// timeout); net/http recovers that panic SILENTLY, which skipped
+		// the explicit release() below and leaked the slot — bs.active
+		// stuck at capacity, every later request queue-timing-out forever
+		// against an idle backend. releaser is sync.Once, so the explicit
+		// release(Done{cost}) on the success path still records cost and
+		// this deferred call is then a no-op.
+		defer release()
+
 		// Proxy under reqCtx so a later preemption (cause ErrPreempted) aborts the
 		// upstream stream and frees this slot.
 		pr, done, loaded, err := p.mgr.EnsureReady(reqCtx, name, served, backend)
