@@ -42,11 +42,11 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   - calibrated cost coefficients (chat/embed) + activity-log retention — `08ec3ad`/`7f12d48`
 >   - cutover hardening (health-timeout/`/health` 2xx/liveness route/EWMA Retry-After
 >     + maxWait/maxQueueDepth) — `ca1b5b3`/`21698f2`/`7e96bbf`/`14dd1bd`
-> - ◐ **P9 audio modality** (scoped this session; **P9a + P9c + P9d ✅ done, uncommitted** — the
->   full STT slice: routed, byte-cost metered, modality + audio-bytes surfaced in catalog/UI). OpenAI
->   audio surface (`/v1/audio/transcriptions`+`/translations` ✅, `/v1/audio/speech` stub,
->   `/v1/realtime` ws passthrough) + parakeet STT backend. Remaining: **P9b** (TTS stub),
->   **P9e** (realtime ws) — both blocked on a backend decision (§7).
+> - ◐ **P9 audio modality** (scoped this session; **P9a/c/d STT slice ✅ + P9b TTS ✅ done**) — OpenAI
+>   audio surface: `/v1/audio/transcriptions`+`/translations` ✅ (parakeet STT), `/v1/audio/speech` ✅
+>   (Kokoro TTS), `/v1/realtime` ws passthrough ☐. Backends decided (§7): **parakeet** STT, **Kokoro**
+>   TTS, **Speaches** realtime ASR (OpenAI Realtime schema). Remaining: **P9e** (realtime ws) + **P9f**
+>   (comfort-fill, unconfirmed).
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
@@ -415,15 +415,17 @@ the BackpressureError shape we already validated.
     `go build`/`vet`/`test -race` green, gofmt clean.
     *Known gap (→ P9c): metering is token-based, so audio meters $0 until the byte-basis cost path
     lands. The 130s request timeout is unchanged — fine for ≤25 MiB; revisit if long-audio jobs appear.*
-  - ☐ **P9b — TTS endpoint stub (`/v1/audio/speech`).** JSON-in (`model`/`input`/`voice`/
-    `response_format`), **binary-out** (`audio/mpeg|wav|opus`). Model resolves via the existing
-    JSON path. The metering reader must **not** parse the binary reply as JSON `usage` (today's
-    usage capture assumes a JSON/SSE body) — meter dwell + $ only, sized by request `input`
-    length and response bytes; chunked binary streams straight through. Parakeet is STT-only, so
-    this route is **wired to a configured remote/paid (or future-local) TTS backend and ships
-    optional/untested** until such a backend is chosen — the route exists so an OpenAI client's
-    TTS calls resolve instead of 404. *DoD: route mounted + binary passthrough + binary-safe
-    metering; no local TTS backend required to land.*
+  - ✅ **P9b — TTS endpoint (`/v1/audio/speech`).** Done (not yet committed). **Backend decided:
+    Kokoro** (`remsky/Kokoro-FastAPI` v0.5.0, Apache-2.0, CPU). `/v1/audio/speech` mounted through
+    the same pipeline; JSON-in (model resolves via the existing JSON path), **binary-audio-out**
+    streamed through untouched. Metering forks on a `tts` route flag: TTS is **costed by OUTPUT
+    bytes** (`statusCapture.written` — the synthesized audio; its JSON input is tiny), vs STT's
+    input bytes — the binary reply is never parsed as JSON `usage`. A `tts` type declaring audio
+    coeffs auto-flags `modality: audio` (reuses P9d). Test: `TestAudioSpeechTTS` (binary
+    passthrough byte-for-byte incl. a `0x00`, output-byte metering, 0 tokens). `go test -race`
+    green. Installed Kokoro under ml-kit `local/` (uv venv + torch CPU + 327MB weights + 67
+    voices); smoke-tested healthy on :8880, and full audio loop proven (text→Kokoro→mp3→parakeet
+    STT round-trips) + full stack (curl→corrallm→cold-spawned kokoro, metered `audio_bytes`=mp3 size).
   - ✅ **P9c — Audio cost model (file-bytes basis).** Done (not yet committed). Audio replies carry
     no token `usage`, so `cost.AudioRequestUSD(typ, bytes)` costs by **byte size**: a local type
     bills `audioWhPerMiB` (→ kWh × `costPerKwh`), a paid type bills `audioUSDPerMiB` directly; an
@@ -458,9 +460,12 @@ the BackpressureError shape we already validated.
     we skip the body read). **corrallm stays a transparent ws byte-pipe** with a clear division of
     responsibility (confirmed by the user): **device/mic capture is the CLIENT's job** (corrallm
     never manages live audio devices), and **VAD / overlap-window / commit-stitch (LocalAgreement)
-    is the BACKEND's job** (Riva / WhisperLive / a parakeet-streaming wrapper) — corrallm does
+    is the BACKEND's job** (Speaches — the chosen backend — / sherpa-onnx / etc.) — corrallm does
     **neither**; it doesn't decode audio or tokenize (§7). It only upgrades, routes, schedules,
-    meters, and tears down. What's new vs P9a:
+    meters, and tears down. **Decided (§7):** standardize the wire on the **OpenAI Realtime
+    transcription schema** and ship **Speaches** as the native-passthrough default (CPU, MIT) — true
+    byte-pipe; custom-protocol backends get a thin adapter instead. (Installed batch Parakeet-TDT
+    can't stream, so realtime is a *different* backend.) What's new vs P9a:
     - **Model resolution from the query string** (`?model=`) — a third source after JSON body
       field (chat) and multipart form field (P9a). Generalize `resolveRequest` accordingly.
     - **Long-lived slot lifecycle** — a session holds one fairshare slot for its whole duration;
@@ -477,6 +482,16 @@ the BackpressureError shape we already validated.
     - *DoD: 101 Switching-Protocols upgrade + bidirectional byte passthrough test (raw-conn echo
       upstream, no ws client dep), slot held-for-session then released on close, preempt-aborts-session
       test. `go build`/`vet`/`test -race` green.*
+  - ☐ **P9f — Conversational grace / comfort-fill on contention** (depends on P9e; optionally P9b
+    for TTS-generated fillers). When a **speech-OUT** realtime session can't be admitted immediately
+    or is preempted, mask the delay instead of stalling/cutting — keyed to corrallm's already-computed
+    expected delay (Retry-After EWMA + cold-load time): micro (<~300 ms) → nothing; short (~0.3–2 s) →
+    injected disfluency ("um", "one moment"); long (>~2 s) → spoken "hold on…" + hold music, session
+    **parked** (not killed) and resumed on free. **Explicit, scoped exception to "transparent
+    passthrough"** — corrallm *synthesizes/inserts* audio, justified because it's the only layer that
+    knows the delay. Only applies to conversational (speech-out) sessions, not transcription-only.
+    Start with **pre-recorded canned clips** (deterministic, no TTS dependency); TTS-generated fillers
+    later. *Not confirmed by the user yet — parked pending the transparency-tradeoff call.*
 
   **P9 reuse note:** scheduler/residency/preemption/fairshare/limits need **no changes** — an
   audio backend is a `cmd`+`proxy` entry with a `type`, slots, and pool `ramUsage` like any
@@ -540,17 +555,20 @@ the BackpressureError shape we already validated.
 - ✅ **Multipart buffering strategy** (P9a) — **bounded in-memory buffer** (matches the JSON path,
   which already buffers the whole body at `proxy.go:85`); bound = 64 MiB × concurrent audio slots,
   fine on the 5090 box. Revisit (temp-file spool / stream-tee) only if audio concurrency grows.
-- ❓ **Concrete TTS backend** (P9b, USER call) — which engine `/v1/audio/speech` forwards to (OpenAI/
-  paid passthrough vs a future local TTS spawn). Only needed to make P9b non-stub; the route lands
-  regardless.
-- ❓ **Realtime ASR backend** (P9e, USER call) — which ws/streaming engine `/v1/realtime` forwards to
-  (NVIDIA Riva cache-aware streaming · WhisperLive · a parakeet-streaming wrapper). Parakeet's file
-  server can't do it. The passthrough ships regardless; only needed to make P9e non-stub. The
-  VAD/overlap/commit-stitch logic is the backend's, **not** corrallm's.
-- ❓ **Realtime slot model** (P9e, USER call) — does one live session = **one fairshare slot held for
-  its duration** (recommend) with **`dwell`** share currency, or a lighter accounting? Recommend
-  one-slot + dwell + idle/max-session timeout + preemptible; revisit if many concurrent sessions
-  starve interactive lanes.
+- ✅ **Concrete TTS backend** (P9b) — **Kokoro** (`remsky/Kokoro-FastAPI`, Apache-2.0, CPU,
+  native `/v1/audio/speech`, ~35–100× realtime on CPU, <2 GB). Picked over VibeVoice (CUDA-only on a
+  full GPU, no turnkey OpenAI server, watermark/disclaimer, MS deprioritized it). **Chatterbox** (MIT,
+  cloning, 4–8 GB) is the parked "quality" option for when GPU headroom exists.
+- ✅ **Realtime ASR contract + backend** (P9e) — **standardize `/v1/realtime` on the OpenAI Realtime
+  *transcription* schema** (the de-facto standard; every OpenAI SDK speaks it). Default backend:
+  **Speaches** (ex faster-whisper-server, MIT, CPU, native `/v1/realtime?intent=transcription`) →
+  true byte-passthrough, corrallm's transparent design holds. Custom-protocol backends (sherpa-onnx,
+  WhisperLive) would need a thin adapter (base64-JSON↔binary-PCM transcode, auth, interim→`delta`/
+  stable→`completed`, synth-VAD). **The installed batch Parakeet-TDT does NOT stream** (full-attention
+  FastConformer) — realtime can't reuse it; Speaches (Whisper) or sherpa-onnx (both CPU) are the fits.
+- ✅ **Realtime slot model** (P9e) — **one fairshare slot per live session, held for its duration,
+  `dwell` currency, preemptible, and parkable in the background** (on preempt: park + resume when a
+  slot frees, don't hard-kill). Idle/max-session timeout replaces the 130s request cap.
 
 ### Optional extensions (improve the product; no planned phase requires them — pull in opportunistically)
 - **Stickiness/affinity weighting** — how strongly a warm backend overrides *ordered list*
@@ -615,11 +633,11 @@ the BackpressureError shape we already validated.
 ### Next steps
 - The full P0–P8 + P7 roadmap is shipped and live (§8). `/api` auth landed (`3e83001`) and cost
   coefficients are calibrated (per-backend `chat`/`embed` Wh/token, verified live). Open work:
-  1. **P9: audio modality** (in progress) — **P9a + P9c + P9d ✅ done** = the full **STT slice**
-     (multipart edge, parakeet routing, streaming passthrough, byte-basis cost, modality + audio-bytes
-     in catalog/UI; uncommitted). Remaining, both **blocked on a backend decision** (§7): **P9b**
-     (TTS endpoint stub — needs the TTS backend) and **P9e** (realtime ws passthrough — needs the
-     realtime backend + slot-model call). Surface each sub-unit's ❓ pending decisions when it begins.
+  1. **P9: audio modality** (in progress) — **P9a/c/d (STT) + P9b (TTS) ✅ done**: parakeet STT +
+     Kokoro TTS, both routed/metered/flagged, installed under ml-kit `local/`, validated full-stack.
+     Remaining: **P9e** (realtime ws passthrough — backend decided: Speaches on the OpenAI Realtime
+     schema; all decisions resolved, ready to build) and **P9f** (comfort-fill on contention —
+     unconfirmed, parked pending the transparency-tradeoff call).
   2. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
   - OSS follow-ups (not blockers): auth multi-user accounts/roles + token rotation (today is a single
     shared admin token); rename the `WattsPerToken` cost fields to `WhPerToken`.
