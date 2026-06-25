@@ -1101,3 +1101,77 @@ func TestAudioTranscriptionMetering(t *testing.T) {
 		t.Errorf("audio cost should be > 0, got %v", a.CostUSD)
 	}
 }
+
+// TestAudioSpeechTTS exercises P9b: /v1/audio/speech is JSON-in, binary-audio-out.
+// corrallm must pass the binary through untouched (never parse it as JSON usage)
+// and meter it by OUTPUT byte size (the synthesized audio), not the tiny request.
+func TestAudioSpeechTTS(t *testing.T) {
+	// 64 KiB of non-JSON "audio" bytes (includes a 0x00 byte to catch any text
+	// mangling). A leading "ID3" would be a real MP3; arbitrary bytes suffice here.
+	audioOut := bytes.Repeat([]byte{0x00, 0x01, 0x02, 0xff}, 16*1024)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path != "/v1/audio/speech" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// The JSON request must arrive intact (model resolves from it).
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"kokoro"`) || !strings.Contains(string(body), `"hello"`) {
+			t.Errorf("upstream did not receive the JSON body: %s", body)
+		}
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write(audioOut)
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	cfg := mkConfig(t, "kokoro", upstream.URL)
+	cfg.Models["kokoro"].Backends[0].Type = "tts"
+	cfg.CostPerKwh = 0.14
+	cfg.CommandCosts = map[string]map[string]any{"tts": {"audioWhPerMiB": 5}}
+
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech",
+		strings.NewReader(`{"model":"kokoro","input":"hello","voice":"af_sky"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	// Binary audio passed through byte-for-byte.
+	if !bytes.Equal(rec.Body.Bytes(), audioOut) {
+		t.Errorf("binary audio corrupted: got %d bytes, want %d", rec.Body.Len(), len(audioOut))
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "audio/mpeg" {
+		t.Errorf("content-type = %q, want audio/mpeg", ct)
+	}
+
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 {
+		t.Fatalf("want 1 activity, got %d", len(acts))
+	}
+	a := acts[0]
+	if a.PromptTokens != 0 || a.CompletionTokens != 0 {
+		t.Errorf("TTS metered tokens %d/%d, want 0/0", a.PromptTokens, a.CompletionTokens)
+	}
+	// Metered by OUTPUT bytes, not the small request body.
+	if a.AudioBytes != int64(len(audioOut)) {
+		t.Errorf("audio_bytes = %d, want %d (output size)", a.AudioBytes, len(audioOut))
+	}
+	want := float64(len(audioOut)) / (1 << 20) * 5 / 1000 * 0.14
+	if d := a.CostUSD - want; d < -1e-12 || d > 1e-12 {
+		t.Errorf("cost = %v, want %v", a.CostUSD, want)
+	}
+}

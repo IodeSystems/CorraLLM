@@ -73,6 +73,7 @@ func (p *Proxy) Mount(mux interface {
 		"/v1/rerank",
 		"/v1/audio/transcriptions", // STT (parakeet); multipart in, JSON/SSE out
 		"/v1/audio/translations",   // STT → English; same shape
+		"/v1/audio/speech",         // TTS (kokoro); JSON in, binary audio out
 	} {
 		mux.Handle(path, http.HandlerFunc(p.handleInference))
 	}
@@ -88,11 +89,14 @@ func (p *Proxy) Mount(mux interface {
 // handleInference resolves the served model from the JSON body's "model" field,
 // ensures its first backend is ready, and reverse-proxies the (buffered) body.
 func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
-	// Audio routes (P9a) take a multipart/form-data upload — raise the body cap to
-	// admit the audio file (parakeet caps audio at 25 MiB; allow form overhead).
+	// Audio routes (P9a/P9b). STT (transcriptions/translations) takes a multipart
+	// upload — raise the body cap for the audio file (parakeet caps it at 25 MiB).
+	// TTS (speech) is JSON-in/binary-out, so it keeps the default cap but still
+	// meters as audio (by output bytes — see below).
 	audio := strings.HasPrefix(r.URL.Path, "/v1/audio/")
+	tts := r.URL.Path == "/v1/audio/speech"
 	maxBody := int64(32 << 20)
-	if audio {
+	if audio && !tts {
 		maxBody = 64 << 20
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
@@ -203,18 +207,23 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			status = 499 // slot reclaimed by a higher-priority group mid-request
 		}
 		// Meter the served request and resolve it to $ via the backend's cost
-		// class. Text routes extract token usage from the response; audio routes
-		// carry no token usage, so they cost by request byte size (P9c, file-bytes
-		// basis — for STT that's the uploaded audio). A cold load triggered by this
+		// class. Audio routes carry no token usage, so they cost by byte size
+		// (P9c/P9b, file-bytes basis): STT bills the uploaded INPUT audio; TTS
+		// bills the synthesized OUTPUT audio (its JSON input is tiny). Text routes
+		// extract token usage from the response. A cold load triggered by this
 		// request also bills its swap energy to it. The cost is reported to the
 		// scheduler (limit budgets + cost share currency) at release.
 		var u usage
 		var costUSD float64
 		var audioBytes int64
-		if audio {
+		switch {
+		case tts:
+			audioBytes = sc.written
+			costUSD = p.cost.AudioRequestUSD(backend.Type, int(sc.written))
+		case audio:
 			audioBytes = int64(len(body))
 			costUSD = p.cost.AudioRequestUSD(backend.Type, len(body))
-		} else {
+		default:
 			u = extractUsage(sc.buf, streaming)
 			costUSD = p.cost.RequestUSD(backend.Type, u.PromptTokens, u.CompletionTokens)
 		}
@@ -627,6 +636,7 @@ type statusCapture struct {
 	wroteHeader bool
 	streaming   bool
 	buf         []byte // bounded captured body for usage extraction
+	written     int64  // total response bytes — TTS (P9b) is metered by output size
 }
 
 func (s *statusCapture) WriteHeader(code int) {
@@ -640,6 +650,7 @@ func (s *statusCapture) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true
 	}
+	s.written += int64(len(b))
 	if s.streaming {
 		// Keep a rolling tail — the final SSE event holds usage. Trim lazily at
 		// 2× the cap so a long stream stays amortized O(n), not O(n²): the tail
