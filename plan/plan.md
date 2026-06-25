@@ -597,6 +597,13 @@ the BackpressureError shape we already validated.
     - ✅ **image/vision** — image attach (🖼) in the chat playground: file → base64 data URL → the
       user turn is sent as OpenAI multimodal content-parts (`text` + `image_url`) for vision models;
       thumbnails render inline. tsc/eslint/build clean.
+    - ✅ **STT/TTS clarified + batch/realtime + dispatch fix** — `config.Capability` keeps STT vs TTS
+      DISTINCT (never lumped "audio"); fed to `/v1/models` (new `capability`), the `overview` op, and
+      UI badges (`capLabel`: stt/tts/embed). The console dispatches the playground from the model's own
+      `capability` (not the async `/v1/capabilities`), fixing a race that briefly showed a chat box for
+      parakeet (backend verified fine: webm→200). STT playground gains a **Batch (record→upload) /
+      Realtime (live ws PCM16@24k)** toggle + a secure-context (https) mic guard; the upload part is
+      named by the real MediaRecorder mime so the backend demuxes across browsers.
   - ✅ **P11e — Replay an activity into the console.** Done. The activity detail modal (P10c) gains a
     **"Replay in console"** (chat paths) / "Open in console" button → navigates to
     `/model?name=<served>&replay=<id>`. The console opens the Test tab and the chat playground fetches
