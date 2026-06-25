@@ -63,3 +63,25 @@ func TestIntCoefficientsParse(t *testing.T) {
 	// 1 token · 1000 Wh = 1 kWh × $1 = $1.
 	approx(t, m.RequestUSD("local", 0, 1), 1)
 }
+
+// TestAudioRequestUSD: audio is costed by byte size (P9c). A local type bills
+// processing energy (audioWhPerMiB → kWh × costPerKwh); a paid type bills
+// audioUSDPerMiB directly; an unpriced type is $0.
+func TestAudioRequestUSD(t *testing.T) {
+	m := NewModel(&config.Config{
+		CostPerKwh: 0.14,
+		CommandCosts: map[string]map[string]any{
+			"stt":     {"audioWhPerMiB": 10},    // local energy basis
+			"stt-api": {"audioUSDPerMiB": 0.05}, // paid $ basis
+		},
+	})
+	const mib = 1 << 20
+	// Local: 2 MiB · 10 Wh/MiB = 20 Wh = 0.02 kWh × $0.14 = $0.0028.
+	approx(t, m.AudioRequestUSD("stt", 2*mib), 0.0028)
+	// Paid: 3 MiB · $0.05 = $0.15.
+	approx(t, m.AudioRequestUSD("stt-api", 3*mib), 0.15)
+	// Unpriced type → $0.
+	approx(t, m.AudioRequestUSD("local", 5*mib), 0)
+	// Zero bytes → $0.
+	approx(t, m.AudioRequestUSD("stt", 0), 0)
+}

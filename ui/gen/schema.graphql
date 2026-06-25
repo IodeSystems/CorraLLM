@@ -117,6 +117,8 @@ type Query {
 }
 
 type corrallm_ActivityRecord {
+  """Metered audio request bytes (STT/TTS); 0 for text."""
+  audioBytes: Long!
   """Backend that handled it."""
   backend: String!
   """Metered completion tokens."""
@@ -325,6 +327,8 @@ type corrallm_ModelDef {
   backends: [corrallm_BackendDef!]!
   """Eviction resistance (sticky)."""
   evictCost: String!
+  """text|audio, inferred from backend cost class (P9d)."""
+  modality: String!
   """Served model name."""
   name: String!
   """Pinned (preloaded, never evicted)."""

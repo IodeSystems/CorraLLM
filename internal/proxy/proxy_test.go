@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -816,5 +818,286 @@ func TestModelsCatalog(t *testing.T) {
 	}
 	if m.State != "absent" || m.Backends != 1 {
 		t.Errorf("metadata: state=%q backends=%d, want absent/1", m.State, m.Backends)
+	}
+}
+
+// TestAudioTranscriptionMultipart exercises the P9a path: a multipart/form-data
+// upload to /v1/audio/transcriptions whose "model" is a form field (not JSON).
+// corrallm must extract the model to route, then replay the whole multipart body
+// — file part intact — to the STT backend, and log the request like any other.
+func TestAudioTranscriptionMultipart(t *testing.T) {
+	const audioBytes = "RIFF....fake-wav-payload....data"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path != "/v1/audio/transcriptions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// The replayed multipart body must parse and carry both fields intact.
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("upstream parse multipart: %v", err)
+		}
+		if got := r.FormValue("model"); got != "whisper-mock" {
+			t.Errorf("upstream model field = %q", got)
+		}
+		f, _, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("upstream file part: %v", err)
+		}
+		got, _ := io.ReadAll(f)
+		if string(got) != audioBytes {
+			t.Errorf("upstream file bytes = %q, want %q", got, audioBytes)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"hello world"}`))
+	}))
+	defer upstream.Close()
+
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	cfg := mkConfig(t, "whisper-mock", upstream.URL)
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+
+	// Build the multipart body the way an OpenAI audio client does.
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", "whisper-mock")
+	fw, err := mw.CreateFormFile("file", "speech.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fw.Write([]byte(audioBytes))
+	_ = mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"text":"hello world"`) {
+		t.Errorf("unexpected transcription body: %s", rec.Body.String())
+	}
+
+	acts, err := st.RecentActivity(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acts) != 1 {
+		t.Fatalf("want 1 activity row, got %d", len(acts))
+	}
+	if acts[0].Served != "whisper-mock" || acts[0].Status != http.StatusOK ||
+		acts[0].Path != "/v1/audio/transcriptions" {
+		t.Errorf("activity = %+v", acts[0])
+	}
+}
+
+// TestModelFromMultipart unit-checks field extraction, including the stream flag,
+// and that an unparseable/empty boundary yields no model (→ 400 upstream).
+func TestModelFromMultipart(t *testing.T) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", "whisper-mock")
+	_ = mw.WriteField("stream", "true")
+	fw, _ := mw.CreateFormFile("file", "a.wav")
+	_, _ = fw.Write([]byte("0123456789"))
+	_ = mw.Close()
+
+	model, streaming := modelFromMultipart(buf.Bytes(), mw.Boundary())
+	if model != "whisper-mock" || !streaming {
+		t.Errorf("model=%q streaming=%v, want whisper-mock/true", model, streaming)
+	}
+	if m, _ := modelFromMultipart(buf.Bytes(), ""); m != "" {
+		t.Errorf("empty boundary: model=%q, want empty", m)
+	}
+}
+
+// flushRecorder is an http.ResponseWriter that records the body, status, and how
+// many times Flush() propagated — enough to assert that an SSE stream is flushed
+// through chunk-by-chunk rather than buffered into one write. httptest's recorder
+// also implements Flusher, but doesn't count calls.
+type flushRecorder struct {
+	header  http.Header
+	body    bytes.Buffer
+	code    int
+	flushes int
+}
+
+func (f *flushRecorder) Header() http.Header {
+	if f.header == nil {
+		f.header = http.Header{}
+	}
+	return f.header
+}
+func (f *flushRecorder) Write(b []byte) (int, error) { return f.body.Write(b) }
+func (f *flushRecorder) WriteHeader(c int)           { f.code = c }
+func (f *flushRecorder) Flush()                      { f.flushes++ }
+
+// TestAudioTranscriptionStreaming exercises the response-streaming path (P9a,
+// stream=true on a file transcription): the STT backend emits text/event-stream
+// transcript.text.delta events; corrallm must pass them through in order, flushing
+// (not buffering), preserving arbitrary fields (e.g. per-token logprob confidence),
+// and log the request 200. This is the same SSE passthrough chat uses — previously
+// untested for any route.
+func TestAudioTranscriptionStreaming(t *testing.T) {
+	events := []string{
+		`data: {"type":"transcript.text.delta","delta":"Hello","logprobs":[{"token":"Hello","logprob":-0.12}]}`,
+		`data: {"type":"transcript.text.delta","delta":" world"}`,
+		`data: {"type":"transcript.text.done","text":"Hello world"}`,
+		`data: [DONE]`,
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path != "/v1/audio/transcriptions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fl, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("upstream ResponseWriter is not a Flusher")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, e := range events {
+			_, _ = io.WriteString(w, e+"\n\n")
+			fl.Flush() // push each event separately, like a live transcription
+		}
+	}))
+	defer upstream.Close()
+
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	New(mkConfig(t, "whisper-mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", "whisper-mock")
+	_ = mw.WriteField("stream", "true")
+	fw, _ := mw.CreateFormFile("file", "speech.wav")
+	_, _ = fw.Write([]byte("fake-wav"))
+	_ = mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := &flushRecorder{}
+	r.ServeHTTP(rec, req)
+
+	if rec.code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.code, rec.body.String())
+	}
+	body := rec.body.String()
+	// All events present, in order.
+	last := -1
+	for _, want := range []string{`"delta":"Hello"`, `"delta":" world"`, `transcript.text.done`, `[DONE]`} {
+		i := strings.Index(body, want)
+		if i < 0 {
+			t.Fatalf("missing %q in stream: %s", want, body)
+		}
+		if i < last {
+			t.Errorf("event out of order: %q at %d after %d", want, i, last)
+		}
+		last = i
+	}
+	// Confidence/logprob fields survive the transparent proxy untouched.
+	if !strings.Contains(body, `"logprob":-0.12`) {
+		t.Errorf("logprob confidence dropped: %s", body)
+	}
+	// The stream was flushed through, not buffered into one write.
+	if rec.flushes == 0 {
+		t.Errorf("no Flush propagated — SSE was buffered, not streamed")
+	}
+
+	acts, err := st.RecentActivity(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acts) != 1 || acts[0].Status != http.StatusOK || acts[0].Path != "/v1/audio/transcriptions" {
+		t.Fatalf("activity = %+v", acts)
+	}
+}
+
+// TestAudioTranscriptionMetering: an audio request carries no token usage, so it
+// is metered by request byte size and persisted to audio_bytes (P9c). Cost is
+// AudioRequestUSD(type, bytes) — verified against the recorded byte count.
+func TestAudioTranscriptionMetering(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"hi"}`)) // no usage block — like a real STT reply
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	cfg := mkConfig(t, "whisper", upstream.URL)
+	cfg.Models["whisper"].Backends[0].Type = "stt" // mutates the underlying slice
+	cfg.CostPerKwh = 0.14
+	cfg.CommandCosts = map[string]map[string]any{"stt": {"audioWhPerMiB": 10}}
+
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", "whisper")
+	fw, _ := mw.CreateFormFile("file", "speech.wav")
+	_, _ = fw.Write(bytes.Repeat([]byte("A"), 4096))
+	_ = mw.Close()
+	reqBytes := buf.Len()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 {
+		t.Fatalf("want 1 activity, got %d", len(acts))
+	}
+	a := acts[0]
+	if a.PromptTokens != 0 || a.CompletionTokens != 0 {
+		t.Errorf("audio request metered tokens %d/%d, want 0/0", a.PromptTokens, a.CompletionTokens)
+	}
+	if a.AudioBytes != int64(reqBytes) {
+		t.Errorf("audio_bytes = %d, want %d (request body)", a.AudioBytes, reqBytes)
+	}
+	// Cost is byte-based: bytes/MiB · 10 Wh/MiB → kWh × $0.14.
+	want := float64(reqBytes) / (1 << 20) * 10 / 1000 * 0.14
+	if d := a.CostUSD - want; d < -1e-12 || d > 1e-12 {
+		t.Errorf("cost = %v, want %v", a.CostUSD, want)
+	}
+	if a.CostUSD <= 0 {
+		t.Errorf("audio cost should be > 0, got %v", a.CostUSD)
 	}
 }

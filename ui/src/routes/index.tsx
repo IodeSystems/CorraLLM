@@ -50,6 +50,7 @@ const OverviewDoc = graphql(/* GraphQL */ `
           ttl
           evictCost
           spawnable
+          modality
           backends {
             index
             type
@@ -283,6 +284,9 @@ function Home() {
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                     <Typography variant="subtitle1">{m.name}</Typography>
                     <Chip size="small" label={st?.state ?? 'absent'} color={stateColor(st?.state)} />
+                    {m.modality === 'audio' && (
+                      <Chip size="small" color="info" variant="outlined" label="audio" />
+                    )}
                     {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
                     {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
                     {st && Number(st.nCtx) > 0 && (

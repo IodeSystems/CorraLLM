@@ -26,6 +26,7 @@ func TestRecentActivity(t *testing.T) {
 			TS: int64(i), Served: "m", Backend: "m#0", Key: "k",
 			Path: "/v1/chat/completions", Status: 200,
 			DwellMS: int64(i * 10), PromptTokens: i, CompletionTokens: i, CostUSD: float64(i) * 0.001,
+			AudioBytes: int64(i * 1000),
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -45,8 +46,8 @@ func TestRecentActivity(t *testing.T) {
 	if out.Body.Records[0].TS != 3 || out.Body.Records[2].TS != 1 {
 		t.Errorf("not newest-first: %d..%d", out.Body.Records[0].TS, out.Body.Records[2].TS)
 	}
-	// Metering fields carried through.
-	if out.Body.Records[0].CostUSD != 0.003 || out.Body.Records[0].DwellMS != 30 {
+	// Metering fields carried through (incl. audio bytes, P9d).
+	if out.Body.Records[0].CostUSD != 0.003 || out.Body.Records[0].DwellMS != 30 || out.Body.Records[0].AudioBytes != 3000 {
 		t.Errorf("metering not carried: %+v", out.Body.Records[0])
 	}
 
@@ -175,6 +176,9 @@ func TestOverview(t *testing.T) {
 	if !md.Spawnable || len(md.Backends) != 2 {
 		t.Fatalf("model = %+v", md)
 	}
+	if md.Modality != "text" {
+		t.Errorf("modality = %q, want text (no audio cost class)", md.Modality)
+	}
 	if !md.Backends[0].Spawnable || md.Backends[0].Cmd == "" || md.Backends[0].MaxTokens != 512 {
 		t.Errorf("backend0 = %+v", md.Backends[0])
 	}
@@ -186,6 +190,33 @@ func TestOverview(t *testing.T) {
 	}
 	if len(out.Body.Keys) != 1 || out.Body.Keys[0].Group != "batch" {
 		t.Errorf("keys = %+v", out.Body.Keys)
+	}
+}
+
+// TestOverviewAudioModality: a model with a backend whose type declares audio
+// cost coefficients is flagged modality "audio" (P9d, inferred from cost class).
+func TestOverviewAudioModality(t *testing.T) {
+	cfg := &config.Config{
+		CommandCosts: map[string]map[string]any{"stt": {"audioWhPerMiB": 10}},
+		Models: map[string]config.Model{
+			"whisper": {Backends: []config.Backend{{Cmd: "parakeet ...", Type: "stt"}}},
+			"chat":    {Backends: []config.Backend{{Type: "local"}}},
+		},
+	}
+	h := &Handlers{Cfg: cfg}
+	out, err := h.Overview(context.Background(), &OverviewInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, md := range out.Body.Models {
+		got[md.Name] = md.Modality
+	}
+	if got["whisper"] != "audio" {
+		t.Errorf("whisper modality = %q, want audio", got["whisper"])
+	}
+	if got["chat"] != "text" {
+		t.Errorf("chat modality = %q, want text", got["chat"])
 	}
 }
 

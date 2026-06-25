@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httputil"
 	"sort"
@@ -58,7 +60,9 @@ func (p *Proxy) SetBroker(b *events.Broker) { p.events = b }
 
 // Mount registers the OpenAI-compatible inference routes plus the untracked
 // non-inference passthrough on r. The route set mirrors the OpenAI surface
-// corrallm fronts (chat/completions, completions, embeddings, models).
+// corrallm fronts (chat/completions, completions, embeddings, rerank, audio,
+// models). The audio routes (P9a) carry a multipart/form-data body whose model
+// is a form field, not JSON — handleInference forks on content-type.
 func (p *Proxy) Mount(mux interface {
 	Handle(pattern string, h http.Handler)
 }) {
@@ -67,6 +71,8 @@ func (p *Proxy) Mount(mux interface {
 		"/v1/completions",
 		"/v1/embeddings",
 		"/v1/rerank",
+		"/v1/audio/transcriptions", // STT (parakeet); multipart in, JSON/SSE out
+		"/v1/audio/translations",   // STT → English; same shape
 	} {
 		mux.Handle(path, http.HandlerFunc(p.handleInference))
 	}
@@ -82,13 +88,23 @@ func (p *Proxy) Mount(mux interface {
 // handleInference resolves the served model from the JSON body's "model" field,
 // ensures its first backend is ready, and reverse-proxies the (buffered) body.
 func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
+	// Audio routes (P9a) take a multipart/form-data upload — raise the body cap to
+	// admit the audio file (parakeet caps audio at 25 MiB; allow form overhead).
+	audio := strings.HasPrefix(r.URL.Path, "/v1/audio/")
+	maxBody := int64(32 << 20)
+	if audio {
+		maxBody = 64 << 20
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	_ = r.Body.Close()
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
 		return
 	}
-	served := modelFromBody(body)
+	// Resolve the served model + stream flag. JSON bodies carry both as top-level
+	// fields; multipart audio carries them as form fields. The buffered body is
+	// replayed to the upstream intact either way.
+	served, streaming := resolveRequest(r, body)
 	if served == "" {
 		http.Error(w, `{"error":{"message":"missing \"model\""}}`, http.StatusBadRequest)
 		return
@@ -100,7 +116,6 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	streaming := streamFromBody(body)
 	ctx, cancel := context.WithTimeout(r.Context(), 130*time.Second)
 	defer cancel()
 
@@ -147,10 +162,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				}
 				// rejected or queue-timeout → terminal backoff.
 				writeBackpressure(w, bp)
-				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS)
+				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS, 0)
 				return
 			}
-			p.log(served, name, key, r.URL.Path, 499, time.Since(start), 0, 0, 0, queuedMS) // client canceled
+			p.log(served, name, key, r.URL.Path, 499, time.Since(start), 0, 0, 0, queuedMS, 0) // client canceled
 			return
 		}
 
@@ -176,17 +191,27 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(context.Cause(reqCtx), sched.ErrPreempted) {
 			status = 499 // slot reclaimed by a higher-priority group mid-request
 		}
-		// Meter the served request: extract token usage from the response and
-		// resolve it to $ via the backend's cost class. A cold load triggered by
-		// this request also bills its swap energy to it. The cost is reported to
-		// the scheduler (limit budgets + cost share currency) at release.
-		u := extractUsage(sc.buf, streaming)
-		costUSD := p.cost.RequestUSD(backend.Type, u.PromptTokens, u.CompletionTokens)
+		// Meter the served request and resolve it to $ via the backend's cost
+		// class. Text routes extract token usage from the response; audio routes
+		// carry no token usage, so they cost by request byte size (P9c, file-bytes
+		// basis — for STT that's the uploaded audio). A cold load triggered by this
+		// request also bills its swap energy to it. The cost is reported to the
+		// scheduler (limit budgets + cost share currency) at release.
+		var u usage
+		var costUSD float64
+		var audioBytes int64
+		if audio {
+			audioBytes = int64(len(body))
+			costUSD = p.cost.AudioRequestUSD(backend.Type, len(body))
+		} else {
+			u = extractUsage(sc.buf, streaming)
+			costUSD = p.cost.RequestUSD(backend.Type, u.PromptTokens, u.CompletionTokens)
+		}
 		if loaded && backend.Swap != nil {
 			costUSD += p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
 		}
 		release(sched.Done{CostUSD: costUSD})
-		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD, queuedMS)
+		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD, queuedMS, audioBytes)
 		return
 	}
 
@@ -194,11 +219,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
 		writeBackpressure(w, lastBP)
-		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS)
+		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS, 0)
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
-	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start), 0, 0, 0, queuedMS)
+	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start), 0, 0, 0, queuedMS, 0)
 }
 
 // orderBackends returns config indices in fall-through order: highest quality
@@ -343,6 +368,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Backends      int      `json:"backends"`                 // backend count
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
 		ContextLength int      `json:"context_length,omitempty"` // parsed n_ctx (if resident)
+		Modality      string   `json:"modality"`                 // text|audio (P9d, from cost class)
 	}
 	out := struct {
 		Object string  `json:"object"`
@@ -359,16 +385,21 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		mc := p.cfg.Models[name]
 		var types []string
 		seen := map[string]bool{}
+		modality := "text"
 		for _, b := range mc.Backends {
 			if b.Type != "" && !seen[b.Type] {
 				seen[b.Type] = true
 				types = append(types, b.Type)
+			}
+			if p.cost.IsAudioType(b.Type) {
+				modality = "audio"
 			}
 		}
 		e := model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: "absent", Quality: config.MaxQuality(mc.Backends),
 			Types: types, Backends: len(mc.Backends), Persistent: mc.Persistent,
+			Modality: modality,
 		}
 		if r, ok := resident[name]; ok {
 			e.State = r.State
@@ -380,7 +411,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration, prompt, completion int, costUSD float64, queuedMS int64) {
+func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration, prompt, completion int, costUSD float64, queuedMS, audioBytes int64) {
 	a := store.Activity{
 		TS:               time.Now().UnixMilli(),
 		Served:           served,
@@ -393,6 +424,7 @@ func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Du
 		CompletionTokens: completion,
 		CostUSD:          costUSD,
 		QueuedMS:         queuedMS,
+		AudioBytes:       audioBytes,
 	}
 	if err := p.store.InsertActivity(a); err != nil {
 		slog.Warn("activity log", "err", err)
@@ -468,6 +500,45 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 		FlushInterval: 100 * time.Millisecond, // stream SSE chunks promptly
 	}
 	return rp
+}
+
+// resolveRequest reads the served model and stream flag from a request. A JSON
+// body (chat/completions/embeddings/…) carries both as top-level fields; an audio
+// multipart/form-data body (P9a) carries them as form fields. It only inspects the
+// buffered bytes — the same buffer is replayed to the upstream unchanged.
+func resolveRequest(r *http.Request, body []byte) (model string, streaming bool) {
+	if mt, params, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil &&
+		strings.HasPrefix(mt, "multipart/") {
+		return modelFromMultipart(body, params["boundary"])
+	}
+	return modelFromBody(body), streamFromBody(body)
+}
+
+// modelFromMultipart extracts the "model" and "stream" form fields from a buffered
+// multipart/form-data body without reading the (large) audio file part: NextPart
+// streams past any part we don't consume. Field values are bounded — a multipart
+// form field is small. Returns "" model when the boundary or field is absent.
+func modelFromMultipart(body []byte, boundary string) (model string, streaming bool) {
+	if boundary == "" {
+		return "", false
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := mr.NextPart()
+		if err != nil {
+			break
+		}
+		switch part.FormName() {
+		case "model":
+			v, _ := io.ReadAll(io.LimitReader(part, 1<<10))
+			model = strings.TrimSpace(string(v))
+		case "stream":
+			v, _ := io.ReadAll(io.LimitReader(part, 16))
+			streaming = strings.TrimSpace(string(v)) == "true"
+		}
+		_ = part.Close()
+	}
+	return model, streaming
 }
 
 // modelFromBody extracts the "model" field from an OpenAI request body without

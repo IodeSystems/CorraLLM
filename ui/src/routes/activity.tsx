@@ -15,7 +15,7 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
+import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
 
 const ActivityDoc = graphql(/* GraphQL */ `
   query Activity {
@@ -31,6 +31,7 @@ const ActivityDoc = graphql(/* GraphQL */ `
           dwellMs
           promptTokens
           completionTokens
+          audioBytes
           costUsd
         }
       }
@@ -88,13 +89,14 @@ function Activity() {
               <TableCell align="right">Dwell</TableCell>
               <TableCell align="right">Prompt</TableCell>
               <TableCell align="right">Completion</TableCell>
+              <TableCell align="right">Audio</TableCell>
               <TableCell align="right">Cost</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {records.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={10}>
+                <TableCell colSpan={11}>
                   <Typography color="text.secondary">No activity yet.</Typography>
                 </TableCell>
               </TableRow>
@@ -110,8 +112,11 @@ function Activity() {
                     <Chip size="small" label={r.status} color={statusColor(r.status)} />
                   </TableCell>
                   <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>
-                  <TableCell align="right">{fmtInt(r.promptTokens)}</TableCell>
-                  <TableCell align="right">{fmtInt(r.completionTokens)}</TableCell>
+                  <TableCell align="right">{Number(r.audioBytes) > 0 ? '—' : fmtInt(r.promptTokens)}</TableCell>
+                  <TableCell align="right">
+                    {Number(r.audioBytes) > 0 ? '—' : fmtInt(r.completionTokens)}
+                  </TableCell>
+                  <TableCell align="right">{Number(r.audioBytes) > 0 ? fmtBytes(r.audioBytes) : '—'}</TableCell>
                   <TableCell align="right">{fmtUSD(r.costUsd)}</TableCell>
                 </TableRow>
               ))

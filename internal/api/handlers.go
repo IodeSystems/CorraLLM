@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
@@ -93,6 +94,7 @@ type ActivityRecord struct {
 	PromptTokens     int     `json:"promptTokens" doc:"Metered prompt tokens."`
 	CompletionTokens int     `json:"completionTokens" doc:"Metered completion tokens."`
 	CostUSD          float64 `json:"costUsd" doc:"Resolved request cost in USD."`
+	AudioBytes       int64   `json:"audioBytes" doc:"Metered audio request bytes (STT/TTS); 0 for text."`
 }
 
 // RecentActivityOutput is the newest-first activity list.
@@ -126,6 +128,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			PromptTokens:     a.PromptTokens,
 			CompletionTokens: a.CompletionTokens,
 			CostUSD:          a.CostUSD,
+			AudioBytes:       a.AudioBytes,
 		})
 	}
 	return out, nil
@@ -779,6 +782,7 @@ type ModelDef struct {
 	TTL        string       `json:"ttl" doc:"Idle keep-warm window (sticky)."`
 	EvictCost  string       `json:"evictCost" doc:"Eviction resistance (sticky)."`
 	Spawnable  bool         `json:"spawnable" doc:"Has at least one spawnable backend."`
+	Modality   string       `json:"modality" doc:"text|audio, inferred from backend cost class (P9d)."`
 	Backends   []BackendDef `json:"backends" doc:"Ordered backend list."`
 }
 
@@ -861,8 +865,9 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	sort.Slice(out.Body.Servers, func(i, j int) bool { return out.Body.Servers[i].Server < out.Body.Servers[j].Server })
 
+	costModel := cost.NewModel(h.Cfg) // modality inference (P9d): audio cost class ⇒ audio model
 	for name, m := range h.Cfg.Models {
-		md := ModelDef{Name: name, Persistent: m.Persistent}
+		md := ModelDef{Name: name, Persistent: m.Persistent, Modality: "text"}
 		if m.Sticky != nil {
 			md.TTL, md.EvictCost = m.Sticky.TTL, m.Sticky.EvictCost
 		}
@@ -876,6 +881,9 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 			}
 			if bd.Spawnable {
 				md.Spawnable = true
+			}
+			if costModel.IsAudioType(b.Type) {
+				md.Modality = "audio"
 			}
 			md.Backends = append(md.Backends, bd)
 		}

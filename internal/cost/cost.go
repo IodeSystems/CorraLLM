@@ -23,6 +23,12 @@ type typeCost struct {
 	genWhPerTok  float64 // completion-token generation energy (Wh/token)
 	procWhPerTok float64 // prompt-token processing energy (Wh/token)
 	costFactor   float64 // paid: $ per token of extracted usage (>0 ⇒ paid type)
+
+	// Audio coefficients (P9c). Audio replies carry no token usage, so audio
+	// requests are costed by byte size: a paid type bills audioUSDPerMiB, a local
+	// type bills audioWhPerMiB (processing energy → kWh × costPerKwh).
+	audioWhPerMiB  float64 // local: processing energy per MiB of audio (Wh/MiB)
+	audioUSDPerMiB float64 // paid: $ per MiB of audio (>0 ⇒ paid audio type)
 }
 
 // NewModel builds the cost model from config. Unknown/missing coefficients are
@@ -31,8 +37,10 @@ func NewModel(c *config.Config) *Model {
 	m := &Model{costPerKwh: c.CostPerKwh, byType: map[string]typeCost{}}
 	for typ, params := range c.CommandCosts {
 		tc := typeCost{
-			genWhPerTok:  toFloat(params["generateWattsPerToken"]),
-			procWhPerTok: toFloat(params["processWattsPerToken"]),
+			genWhPerTok:    toFloat(params["generateWattsPerToken"]),
+			procWhPerTok:   toFloat(params["processWattsPerToken"]),
+			audioWhPerMiB:  toFloat(params["audioWhPerMiB"]),
+			audioUSDPerMiB: toFloat(params["audioUSDPerMiB"]),
 		}
 		// Paid factor is nested under <type>.extract.costFactor.
 		if extract, ok := params["extract"].(map[string]any); ok {
@@ -54,6 +62,27 @@ func (m *Model) RequestUSD(typ string, promptTokens, completionTokens int) float
 	}
 	wh := float64(completionTokens)*tc.genWhPerTok + float64(promptTokens)*tc.procWhPerTok
 	return wh / 1000 * m.costPerKwh
+}
+
+// AudioRequestUSD is the dollar cost of one audio request (STT/TTS) on a backend
+// of the given type, costed by byte size (P9c, file-bytes basis — audio replies
+// carry no token usage). A paid type bills audioUSDPerMiB; a local type bills the
+// processing energy audioWhPerMiB → kWh × costPerKwh. An unpriced type costs $0.
+func (m *Model) AudioRequestUSD(typ string, bytes int) float64 {
+	tc := m.byType[typ]
+	mib := float64(bytes) / (1 << 20)
+	if tc.audioUSDPerMiB > 0 {
+		return mib * tc.audioUSDPerMiB
+	}
+	return mib * tc.audioWhPerMiB / 1000 * m.costPerKwh
+}
+
+// IsAudioType reports whether a backend type is an audio type — i.e. it declares
+// audio cost coefficients (P9d modality inference). A model is "audio" iff any of
+// its backends use such a type; the catalog/UI flag it from this.
+func (m *Model) IsAudioType(typ string) bool {
+	tc := m.byType[typ]
+	return tc.audioWhPerMiB > 0 || tc.audioUSDPerMiB > 0
 }
 
 // SwapUSD is the dollar cost of one cold load: load energy (loadSeconds ×
