@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
@@ -181,6 +181,7 @@ function stateColor(state?: string): 'success' | 'info' | 'warning' | 'error' | 
 
 function Home() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [logsFor, setLogsFor] = useState<string | null>(null)
   const [cmdView, setCmdView] = useState<{ title: string; cmd: string } | null>(null)
@@ -345,6 +346,12 @@ function Home() {
                           onClick={() => st && setLogsFor(st.name)}
                         >
                           Logs
+                        </Button>
+                        <Button
+                          size="small"
+                          onClick={() => navigate({ to: '/model', search: { name: m.name } })}
+                        >
+                          Console
                         </Button>
                       </>
                     )}

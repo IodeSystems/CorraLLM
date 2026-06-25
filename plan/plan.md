@@ -569,10 +569,13 @@ the BackpressureError shape we already validated.
     root once when ready (spawned backends only; async, never gates readiness) and caches `hasUI`
     (yes/no/unknown). Exposed on the residency `ResidentModel`/`ResidentModelView`; the Overview
     Open-UI button is disabled with a "no web UI" tooltip when `hasUi === "no"`. Test `TestProbeUI`.
-  - ☐ **P11c — Model detail / console.** Click a model in Overview → a per-model console
-    (modal or route) with modality + capability, spawn command, **per-model logs** (`modelLogs`),
-    usage (`usageRollup`), and the capability **examples** (reuse the P11a per-model slice). Makes
-    UI-less models fully inspectable. Likely the home for the P11d test playgrounds (a "Test" tab).
+  - ✅ **P11c — Model console.** Done. New `/model?name=` route (`ui/routes/model.tsx`) reached from a
+    "Console" button on each Overview model card. Tabs: **Info** (modality/capability/state chips,
+    backends table + spawn cmd, the `/v1/capabilities` examples for this model, Open-native-UI or a
+    "no web UI" chip), **Test** (the P11d playgrounds by capability), **Logs** (`modelLogs`), **Usage**
+    (`usageRollup` 24h). Makes UI-less models fully inspectable. tsc/eslint/build clean.
+    *(Deploy note: queries the new `hasUi` field, so the prod dashboard needs a `bin/run` rebuild — a
+    new-field UI change isn't binary-compatible with the old gateway.)*
   - ☐ **P11d — In-dashboard test playgrounds** (user's vision). Since not all backends ship a native
     UI, let the dashboard *drive* each model by capability, using browser Web APIs:
     - **chat** — a chat playground; **MUST use `flex-direction: column-reverse`** for the message
@@ -584,6 +587,10 @@ the BackpressureError shape we already validated.
     Decided: **consolidated model console** (tabs Info+Examples · Logs · Usage · Test); build all
     three playgrounds **chat → voice → image**; playground `/v1` calls default to the **default lane**
     with a lane picker.
+    - ✅ **chat** — streaming chat playground in the Test tab; **flex column-reverse** message list
+      (newest pins to bottom), SSE delta parsing, optional lane-key field. Built + typechecked (not
+      yet live-smoke-tested against a chat backend).
+    - ☐ **voice (STT↔TTS loop)** · ☐ **image/vision** — next.
   - ☐ **P11e — Replay an activity into the console.** From the activity detail modal (P10c), a
     "Replay in console" action opens the served model's console Test tab **pre-filled with that
     request's captured payload** (P10b `reqBody`) so it can be re-run/tweaked to debug. Best for

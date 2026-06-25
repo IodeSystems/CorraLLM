@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UsageRouteImport } from './routes/usage'
+import { Route as ModelRouteImport } from './routes/model'
 import { Route as LanesRouteImport } from './routes/lanes'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
@@ -17,6 +18,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const UsageRoute = UsageRouteImport.update({
   id: '/usage',
   path: '/usage',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ModelRoute = ModelRouteImport.update({
+  id: '/model',
+  path: '/model',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LanesRoute = LanesRouteImport.update({
@@ -39,12 +45,14 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
   '/lanes': typeof LanesRoute
+  '/model': typeof ModelRoute
   '/usage': typeof UsageRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
   '/lanes': typeof LanesRoute
+  '/model': typeof ModelRoute
   '/usage': typeof UsageRoute
 }
 export interface FileRoutesById {
@@ -52,20 +60,22 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
   '/lanes': typeof LanesRoute
+  '/model': typeof ModelRoute
   '/usage': typeof UsageRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/activity' | '/lanes' | '/usage'
+  fullPaths: '/' | '/activity' | '/lanes' | '/model' | '/usage'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/activity' | '/lanes' | '/usage'
-  id: '__root__' | '/' | '/activity' | '/lanes' | '/usage'
+  to: '/' | '/activity' | '/lanes' | '/model' | '/usage'
+  id: '__root__' | '/' | '/activity' | '/lanes' | '/model' | '/usage'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActivityRoute: typeof ActivityRoute
   LanesRoute: typeof LanesRoute
+  ModelRoute: typeof ModelRoute
   UsageRoute: typeof UsageRoute
 }
 
@@ -76,6 +86,13 @@ declare module '@tanstack/react-router' {
       path: '/usage'
       fullPath: '/usage'
       preLoaderRoute: typeof UsageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/model': {
+      id: '/model'
+      path: '/model'
+      fullPath: '/model'
+      preLoaderRoute: typeof ModelRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/lanes': {
@@ -106,6 +123,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
   LanesRoute: LanesRoute,
+  ModelRoute: ModelRoute,
   UsageRoute: UsageRoute,
 }
 export const routeTree = rootRouteImport
