@@ -47,6 +47,9 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   (Kokoro TTS), `/v1/realtime` ws passthrough ☐. Backends decided (§7): **parakeet** STT, **Kokoro**
 >   TTS, **Speaches** realtime ASR (OpenAI Realtime schema). Remaining: **P9e** (realtime ws) + **P9f**
 >   (comfort-fill, unconfirmed).
+> - ◐ **P10 request observability** (prod-driven) — **P10a ✅** honest error status (client/upstream
+>   cancel → 499, not a mislabeled backend 502) + `activity.error` reason + configurable
+>   `--request-timeout` (the latent 130s cap removed). P10b (payload capture) / P10c (detail modal) ☐.
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
@@ -498,6 +501,35 @@ the BackpressureError shape we already validated.
   other. The blast radius is `internal/proxy` (routing + multipart fork + binary metering),
   `internal/cost` (byte-basis path), `internal/store` (one metered column), and the catalog/UI.
 
+- ◐ **P10 — Request observability & honest errors.** Driven by a production incident: qwen requests
+  logging **502s**. Diagnosed (DB + proxy log): a long request (big prompt / image data on the
+  27B/220k-ctx model) outruns a **~120 s timeout *upstream of corrallm*** (the `llm.iodesystems.com`
+  front proxy and/or the client), which drops the connection — `http: proxy error: context canceled`,
+  dwell ≈120 s, 0 tokens. llama-server itself is healthy. corrallm was **mislabeling** the
+  client/upstream cancel as a backend 502, and its own fixed **130 s** request cap was a latent
+  second guillotine.
+  - ✅ **P10a — Honest status + error reason + configurable timeout.** Done (not yet committed). The
+    reverse proxy now has an `ErrorHandler` that captures the failure and maps it: connection
+    canceled (client/front-proxy gave up) → **499**, corrallm's own deadline → **504**, genuine
+    backend dial/transport error stays **502**; preemption stays 499. The reason string is captured
+    into a new `activity.error` column (schema + forward-only migration), exposed on `recentActivity`,
+    and shown as a **tooltip on the status chip** in the Activity table. The hard 130 s cap is gone —
+    new `--request-timeout` (`CORRALLM_REQUEST_TIMEOUT`, default **0 = no corrallm deadline**, defer
+    to client + backend; `SetRequestTimeout`). Tests: `TestClientCancelLogged499` (the exact 502→499
+    repro) + `TestRequestTimeout504`. `go test -race ./...` green; UI tsc/build clean.
+    *Does NOT fix the failures themselves — the real ~120 s cap is upstream (raise the front-proxy
+    `proxy_read_timeout` / client timeout). Streaming (`stream:true`) also masks it: chunks reset the
+    read timeout. corrallm's job here is honest reporting + not being a second cap.*
+  - ☐ **P10b — Per-request payload + timing capture.** New activity columns: request payload + response
+    payload (both **capped + redacted**; binary audio stored as size only) and time-to-first-byte
+    (dwell/queued already captured). Config caps + an enable toggle (prompts are user data — privacy/
+    retention note). Rides the activity row → pruned with `--activity-retention` ("discard on
+    compaction"). *Decided (user): capture request payload, response payload, error+timing — NOT the
+    raw backend-stdout ring.*
+  - ☐ **P10c — Activity detail modal (UI).** Click an activity row → modal showing error+timing,
+    request payload, response payload. New `activityDetail` op (or extend `recentActivity`); `bin/gen`
+    + UI. Reuses the P8 SSE/table surface.
+
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
 ---
@@ -638,7 +670,12 @@ the BackpressureError shape we already validated.
      Remaining: **P9e** (realtime ws passthrough — backend decided: Speaches on the OpenAI Realtime
      schema; all decisions resolved, ready to build) and **P9f** (comfort-fill on contention —
      unconfirmed, parked pending the transparency-tradeoff call).
-  2. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
+  2. **P10: request observability** (prod-driven) — **P10a ✅ done** (honest 499/504/502 + error reason
+     + configurable timeout; fixes the qwen 502 *mislabel*). Next: **P10b** (request/response payload
+     capture, capped+redacted, discard-on-compaction) then **P10c** (activity detail modal). NOTE: the
+     actual qwen failures need the **upstream** ~120 s timeout raised (front proxy / client) — outside
+     corrallm; and a production rebuild/restart (`ml-kit/bin/run`) to pick up P10a.
+  3. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
   - OSS follow-ups (not blockers): auth multi-user accounts/roles + token rotation (today is a single
     shared admin token); rename the `WattsPerToken` cost fields to `WhPerToken`.
 - Optional polish in §7 Optional extensions (affinity weighting, context-window clamp on degrade,
