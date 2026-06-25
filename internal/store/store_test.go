@@ -28,8 +28,23 @@ func TestActivityRoundTrip(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 row, got %d", len(got))
 	}
+	in.ID = 1 // RecentActivity now returns the autoincrement id (P10b)
 	if got[0] != in {
 		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", got[0], in)
+	}
+
+	// ActivityByID returns the full row including captured payloads.
+	full := Activity{TS: 2, Served: "m", Backend: "m#0", Status: 200,
+		ReqBody: `{"model":"m"}`, RespBody: "hi", TTFBMs: 12}
+	if err := st.InsertActivity(full); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := st.ActivityByID(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.ID != 2 || got2.ReqBody != `{"model":"m"}` || got2.RespBody != "hi" || got2.TTFBMs != 12 {
+		t.Errorf("ActivityByID = %+v", got2)
 	}
 }
 

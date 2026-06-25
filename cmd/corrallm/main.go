@@ -88,6 +88,7 @@ func newServeCmd() *cobra.Command {
 		home, service, webRoot, configPath, dbPath string
 		healthTimeout, activityRetention           time.Duration
 		requestTimeout                             time.Duration
+		capturePayloads                            bool
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -107,6 +108,7 @@ func newServeCmd() *cobra.Command {
 				tokenPath:         filepath.Join(home, "admin.token"),
 				activityRetention: pickDuration(activityRetention, envDuration("CORRALLM_ACTIVITY_RETENTION", 30*24*time.Hour)),
 				requestTimeout:    pickDuration(requestTimeout, envDuration("CORRALLM_REQUEST_TIMEOUT", 0)),
+				capturePayloads:   capturePayloads,
 			})
 		},
 	}
@@ -119,6 +121,7 @@ func newServeCmd() *cobra.Command {
 	f.DurationVar(&healthTimeout, "health-timeout", 0, "max time a cold backend spawn may take to become healthy (default 120s or CORRALLM_HEALTH_TIMEOUT); raise for large models")
 	f.DurationVar(&activityRetention, "activity-retention", 0, "delete activity-log rows older than this (default 720h/30d or CORRALLM_ACTIVITY_RETENTION; 0 disables)")
 	f.DurationVar(&requestTimeout, "request-timeout", 0, "max wall-clock for one proxied request before corrallm cancels it (or CORRALLM_REQUEST_TIMEOUT; 0 = no corrallm deadline, defer to client + backend)")
+	f.BoolVar(&capturePayloads, "capture-payloads", true, "capture per-request request/response payloads onto the activity log (capped; binary audio summarized; pruned with --activity-retention)")
 	return cmd
 }
 
@@ -128,6 +131,7 @@ type serveOpts struct {
 	tokenPath                         string
 	activityRetention                 time.Duration
 	requestTimeout                    time.Duration
+	capturePayloads                   bool
 }
 
 func serve(ctx context.Context, o serveOpts) error {
@@ -199,6 +203,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	px := proxy.New(cfg, mgr, scheduler, st)
 	px.SetBroker(broker)
 	px.SetRequestTimeout(o.requestTimeout)
+	px.SetCapturePayloads(o.capturePayloads)
 	px.Mount(router)
 
 	// The SPA is served for everything not claimed above.

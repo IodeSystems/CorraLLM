@@ -30,7 +30,10 @@ CREATE TABLE IF NOT EXISTS activity (
     cost_usd          REAL    NOT NULL DEFAULT 0, -- resolved request cost in $ (P6)
     queued_ms         INTEGER NOT NULL DEFAULT 0, -- time spent queued before admit/reject (P8-beyond)
     audio_bytes       INTEGER NOT NULL DEFAULT 0, -- metered audio request bytes, STT/TTS (P9c)
-    error             TEXT    NOT NULL DEFAULT '' -- proxy/backpressure error reason, if any (P10a)
+    error             TEXT    NOT NULL DEFAULT '', -- proxy/backpressure error reason, if any (P10a)
+    ttfb_ms           INTEGER NOT NULL DEFAULT 0, -- time to first response byte (P10b)
+    req_body          TEXT    NOT NULL DEFAULT '', -- captured request payload, capped (P10b)
+    resp_body         TEXT    NOT NULL DEFAULT '' -- captured response payload, capped (P10b)
 );
 CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
 
@@ -56,6 +59,9 @@ var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN queued_ms INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN audio_bytes INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN error TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE activity ADD COLUMN ttfb_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE activity ADD COLUMN req_body TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE activity ADD COLUMN resp_body TEXT NOT NULL DEFAULT ''`,
 }
 
 // Store wraps the SQLite handle.
@@ -90,6 +96,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 // 499) record them as zero. A request preempted mid-serve still records the cost
 // actually consumed before the abort (partial tokens + any swap energy spent).
 type Activity struct {
+	ID               int64 // row id (P10b; 0 until persisted, set on read)
 	TS               int64 // unix millis
 	Served           string
 	Backend          string
@@ -103,18 +110,39 @@ type Activity struct {
 	QueuedMS         int64  // time queued before admission/reject (P8-beyond)
 	AudioBytes       int64  // metered audio request bytes for STT/TTS routes (P9c); 0 for text
 	Error            string // proxy/backpressure error reason, if any (P10a); "" on success
+	TTFBMs           int64  // time to first response byte (P10b)
+	ReqBody          string // captured request payload, capped+summarized (P10b)
+	RespBody         string // captured response payload, capped+summarized (P10b)
 }
 
 // InsertActivity appends a request record to the activity log.
 func (s *Store) InsertActivity(a Activity) error {
 	_, err := s.db.Exec(
 		`INSERT INTO activity (ts, served, backend, key, path, status, dwell_ms,
-		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
+		                       ttfb_ms, req_body, resp_body)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Backend, a.Key, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
+		a.TTFBMs, a.ReqBody, a.RespBody,
 	)
 	return err
+}
+
+// ActivityByID returns one full activity record including the captured payloads
+// (P10b/P10c — the detail modal). The list query (RecentActivity) omits payloads
+// to stay lean; this fetches them on demand.
+func (s *Store) ActivityByID(id int64) (Activity, error) {
+	var a Activity
+	err := s.db.QueryRow(
+		`SELECT id, ts, served, backend, key, path, status, dwell_ms,
+		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
+		        ttfb_ms, req_body, resp_body
+		 FROM activity WHERE id = ?`, id).Scan(
+		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.Path, &a.Status, &a.DwellMS,
+		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
+		&a.TTFBMs, &a.ReqBody, &a.RespBody)
+	return a, err
 }
 
 // PruneActivity deletes activity rows older than beforeMS (retention), returning
@@ -132,8 +160,8 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 // RecentActivity returns the most recent records, newest first.
 func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	rows, err := s.db.Query(
-		`SELECT ts, served, backend, key, path, status, dwell_ms,
-		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error
+		`SELECT id, ts, served, backend, key, path, status, dwell_ms,
+		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms
 		 FROM activity ORDER BY ts DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -142,8 +170,8 @@ func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	var out []Activity
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.TS, &a.Served, &a.Backend, &a.Key, &a.Path, &a.Status, &a.DwellMS,
-			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error); err != nil {
+		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.Path, &a.Status, &a.DwellMS,
+			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

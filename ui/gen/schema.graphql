@@ -12,6 +12,10 @@ type CorrallmMutationNamespace {
 }
 
 type CorrallmQueryNamespace {
+  activityDetail(
+    """Activity row id (from recentActivity)."""
+    id: Long
+  ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
@@ -62,6 +66,10 @@ type CorrallmV1MutationNamespace {
 }
 
 type CorrallmV1QueryNamespace {
+  activityDetail(
+    """Activity row id (from recentActivity)."""
+    id: Long
+  ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
@@ -116,6 +124,47 @@ type Query {
   corrallm: CorrallmQueryNamespace!
 }
 
+type corrallm_ActivityDetailOutputBody {
+  record: corrallm_ActivityDetailRecord!
+}
+
+type corrallm_ActivityDetailRecord {
+  """Metered audio request bytes (STT/TTS); 0 for text."""
+  audioBytes: Long!
+  """Backend that handled it."""
+  backend: String!
+  """Metered completion tokens."""
+  completionTokens: Long!
+  """Resolved request cost in USD."""
+  costUsd: Float!
+  """Time in request, milliseconds."""
+  dwellMs: Long!
+  """Proxy/backpressure failure reason, if any (empty on success)."""
+  error: String!
+  """Activity row id (for the detail modal)."""
+  id: Long!
+  """Caller identity."""
+  key: String!
+  """Request path."""
+  path: String!
+  """Metered prompt tokens."""
+  promptTokens: Long!
+  """Time queued before admission/reject, milliseconds."""
+  queuedMs: Long!
+  """Captured request payload (capped; binary audio summarized)."""
+  reqBody: String!
+  """Captured response payload (capped; binary audio summarized)."""
+  respBody: String!
+  """Served model name."""
+  served: String!
+  """HTTP status."""
+  status: Long!
+  """Unix millis when the request was logged."""
+  ts: Long!
+  """Time to first response byte, milliseconds (0 if no body)."""
+  ttfbMs: Long!
+}
+
 type corrallm_ActivityRecord {
   """Metered audio request bytes (STT/TTS); 0 for text."""
   audioBytes: Long!
@@ -129,18 +178,24 @@ type corrallm_ActivityRecord {
   dwellMs: Long!
   """Proxy/backpressure failure reason, if any (empty on success)."""
   error: String!
+  """Activity row id (for the detail modal)."""
+  id: Long!
   """Caller identity."""
   key: String!
   """Request path."""
   path: String!
   """Metered prompt tokens."""
   promptTokens: Long!
+  """Time queued before admission/reject, milliseconds."""
+  queuedMs: Long!
   """Served model name."""
   served: String!
   """HTTP status."""
   status: Long!
   """Unix millis when the request was logged."""
   ts: Long!
+  """Time to first response byte, milliseconds (0 if no body)."""
+  ttfbMs: Long!
 }
 
 type corrallm_BackendDef {

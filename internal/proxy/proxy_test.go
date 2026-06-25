@@ -1260,3 +1260,102 @@ func TestRequestTimeout504(t *testing.T) {
 		t.Errorf("error reason = %q, want deadline-exceeded", acts[0].Error)
 	}
 }
+
+// TestPayloadCapture (P10b): a text request captures the request body + response
+// body (capped) + TTFB; an STT multipart upload is summarized to a size, never
+// stored raw; capture can be disabled.
+func TestPayloadCapture(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hello"}}]}`))
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	New(mkConfig(t, "mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 || acts[0].ID == 0 {
+		t.Fatalf("no row/id: %+v", acts)
+	}
+	full, err := st.ActivityByID(acts[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(full.ReqBody, `"content":"hi"`) {
+		t.Errorf("req body not captured: %q", full.ReqBody)
+	}
+	if !strings.Contains(full.RespBody, `"content":"hello"`) {
+		t.Errorf("resp body not captured: %q", full.RespBody)
+	}
+
+	// Disabled capture stores nothing.
+	st2, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st2.Close() }()
+	r2 := chi.NewRouter()
+	p2 := New(mkConfig(t, "mock", upstream.URL), mgr, sched.New(), st2)
+	p2.SetCapturePayloads(false)
+	p2.Mount(r2)
+	r2.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock"}`)))
+	a2, _ := st2.RecentActivity(1)
+	if len(a2) == 1 {
+		if d, _ := st2.ActivityByID(a2[0].ID); d.ReqBody != "" || d.RespBody != "" {
+			t.Errorf("capture disabled but stored: %q / %q", d.ReqBody, d.RespBody)
+		}
+	}
+}
+
+// TestPayloadCaptureBinaryAudio: an STT multipart upload is summarized (size +
+// content-type), not stored as raw audio bytes.
+func TestPayloadCaptureBinaryAudio(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"hi"}`))
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+	r := chi.NewRouter()
+	New(mkConfig(t, "whisper", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", "whisper")
+	fw, _ := mw.CreateFormFile("file", "a.wav")
+	_, _ = fw.Write(bytes.Repeat([]byte{0x00, 0x01}, 4096))
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	acts, _ := st.RecentActivity(1)
+	full, _ := st.ActivityByID(acts[0].ID)
+	if !strings.HasPrefix(full.ReqBody, "<multipart/form-data,") {
+		t.Errorf("STT req body should be summarized, got: %q", full.ReqBody)
+	}
+	if strings.Contains(full.ReqBody, "\x00") {
+		t.Errorf("raw audio bytes leaked into req body")
+	}
+}

@@ -1,10 +1,16 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import {
   Box,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Divider,
   Paper,
+  Stack,
   Table,
   TableBody,
   TableCell,
@@ -23,6 +29,7 @@ const ActivityDoc = graphql(/* GraphQL */ `
     corrallm {
       recentActivity(limit: "100") {
         records {
+          id
           ts
           served
           backend
@@ -30,11 +37,40 @@ const ActivityDoc = graphql(/* GraphQL */ `
           path
           status
           dwellMs
+          ttfbMs
           promptTokens
           completionTokens
           audioBytes
           costUsd
           error
+        }
+      }
+    }
+  }
+`)
+
+const ActivityDetailDoc = graphql(/* GraphQL */ `
+  query ActivityDetail($id: Long!) {
+    corrallm {
+      activityDetail(id: $id) {
+        record {
+          id
+          ts
+          served
+          backend
+          key
+          path
+          status
+          dwellMs
+          ttfbMs
+          queuedMs
+          promptTokens
+          completionTokens
+          audioBytes
+          costUsd
+          error
+          reqBody
+          respBody
         }
       }
     }
@@ -49,7 +85,84 @@ function statusColor(statusStr: string | number): 'success' | 'warning' | 'error
   return 'default'
 }
 
+function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
+  const q = useQuery({
+    queryKey: ['activityDetail', id],
+    queryFn: () => gqlClient.request(ActivityDetailDoc, { id }),
+  })
+  const rec = q.data?.corrallm.activityDetail?.record
+  return (
+    <Dialog open onClose={onClose} maxWidth="md" fullWidth>
+      <DialogTitle>
+        Request detail
+        {rec && (
+          <Chip
+            size="small"
+            sx={{ ml: 1 }}
+            label={rec.status}
+            color={statusColor(rec.status)}
+          />
+        )}
+      </DialogTitle>
+      <DialogContent dividers>
+        {q.isLoading && <CircularProgress />}
+        {rec && (
+          <Stack spacing={1.5}>
+            <Box>
+              <Typography variant="body2" color="text.secondary">
+                {rec.served} · {rec.backend} · {rec.path} · {fmtTime(rec.ts)}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                dwell {fmtDuration(rec.dwellMs)} · ttfb {fmtDuration(rec.ttfbMs)} · queued{' '}
+                {fmtDuration(rec.queuedMs)} · {fmtInt(rec.promptTokens)}→
+                {fmtInt(rec.completionTokens)} tok · {fmtUSD(rec.costUsd)}
+                {Number(rec.audioBytes) > 0 && <> · audio {fmtBytes(rec.audioBytes)}</>}
+              </Typography>
+            </Box>
+            {rec.error && (
+              <Box>
+                <Typography variant="subtitle2">Error</Typography>
+                <Typography variant="body2" color="error" sx={{ fontFamily: 'monospace' }}>
+                  {rec.error}
+                </Typography>
+              </Box>
+            )}
+            <Divider />
+            <Payload title="Request" body={rec.reqBody} />
+            <Payload title="Response" body={rec.respBody} />
+          </Stack>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function Payload({ title, body }: { title: string; body: string }) {
+  return (
+    <Box>
+      <Typography variant="subtitle2">{title}</Typography>
+      <Box
+        component="pre"
+        sx={{
+          m: 0,
+          p: 1,
+          bgcolor: 'action.hover',
+          borderRadius: 1,
+          fontSize: '0.75rem',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-all',
+          maxHeight: 240,
+          overflow: 'auto',
+        }}
+      >
+        {body || '—'}
+      </Box>
+    </Box>
+  )
+}
+
 function Activity() {
+  const [selected, setSelected] = useState<string | null>(null)
   const q = useQuery({
     queryKey: ['activity'],
     queryFn: () => gqlClient.request(ActivityDoc),
@@ -104,7 +217,12 @@ function Activity() {
               </TableRow>
             ) : (
               records.map((r, i) => (
-                <TableRow key={i} hover>
+                <TableRow
+                  key={i}
+                  hover
+                  sx={{ cursor: 'pointer' }}
+                  onClick={() => setSelected(r.id)}
+                >
                   <TableCell>{fmtTime(r.ts)}</TableCell>
                   <TableCell>{r.served}</TableCell>
                   <TableCell>{r.backend}</TableCell>
@@ -132,6 +250,7 @@ function Activity() {
           </TableBody>
         </Table>
       </TableContainer>
+      {selected && <DetailModal id={selected} onClose={() => setSelected(null)} />}
     </Box>
   )
 }

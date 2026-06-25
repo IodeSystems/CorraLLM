@@ -51,6 +51,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.RecentActivity)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "activityDetail",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/activity/detail",
+		Summary:     "One activity row with captured request/response payloads (P10c).",
+		Tags:        []string{"observability"},
+	}, h.ActivityDetail)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "overview",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/overview",

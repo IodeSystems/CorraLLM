@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/proc"
@@ -84,6 +86,7 @@ type RecentActivityInput struct {
 // ActivityRecord is one proxied-request row surfaced to the UI. Mirrors
 // store.Activity with the P6 metering fields (dwell/tokens/$) exposed.
 type ActivityRecord struct {
+	ID               int64   `json:"id" doc:"Activity row id (for the detail modal)."`
 	TS               int64   `json:"ts" doc:"Unix millis when the request was logged."`
 	Served           string  `json:"served" doc:"Served model name."`
 	Backend          string  `json:"backend" doc:"Backend that handled it."`
@@ -96,6 +99,8 @@ type ActivityRecord struct {
 	CostUSD          float64 `json:"costUsd" doc:"Resolved request cost in USD."`
 	AudioBytes       int64   `json:"audioBytes" doc:"Metered audio request bytes (STT/TTS); 0 for text."`
 	Error            string  `json:"error" doc:"Proxy/backpressure failure reason, if any (empty on success)."`
+	TTFBMs           int64   `json:"ttfbMs" doc:"Time to first response byte, milliseconds (0 if no body)."`
+	QueuedMS         int64   `json:"queuedMs" doc:"Time queued before admission/reject, milliseconds."`
 }
 
 // RecentActivityOutput is the newest-first activity list.
@@ -119,6 +124,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 	out.Body.Records = make([]ActivityRecord, 0, len(rows))
 	for _, a := range rows {
 		out.Body.Records = append(out.Body.Records, ActivityRecord{
+			ID:               a.ID,
 			TS:               a.TS,
 			Served:           a.Served,
 			Backend:          a.Backend,
@@ -131,7 +137,49 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			CostUSD:          a.CostUSD,
 			AudioBytes:       a.AudioBytes,
 			Error:            a.Error,
+			TTFBMs:           a.TTFBMs,
+			QueuedMS:         a.QueuedMS,
 		})
+	}
+	return out, nil
+}
+
+// ActivityDetailInput selects one activity row by id.
+type ActivityDetailInput struct {
+	ID int64 `query:"id" doc:"Activity row id (from recentActivity)."`
+}
+
+// ActivityDetailRecord is one activity row with the captured payloads (P10c) —
+// the detail modal. Fetched on demand so the list query stays lean.
+type ActivityDetailRecord struct {
+	ActivityRecord
+	ReqBody  string `json:"reqBody" doc:"Captured request payload (capped; binary audio summarized)."`
+	RespBody string `json:"respBody" doc:"Captured response payload (capped; binary audio summarized)."`
+}
+
+// ActivityDetailOutput wraps one detail record.
+type ActivityDetailOutput struct {
+	Body struct {
+		Record ActivityDetailRecord `json:"record"`
+	}
+}
+
+// ActivityDetail returns one activity row including its captured payloads.
+func (h *Handlers) ActivityDetail(_ context.Context, in *ActivityDetailInput) (*ActivityDetailOutput, error) {
+	a, err := h.Store.ActivityByID(in.ID)
+	if err != nil {
+		return nil, huma.Error404NotFound("no such activity row")
+	}
+	out := &ActivityDetailOutput{}
+	out.Body.Record = ActivityDetailRecord{
+		ActivityRecord: ActivityRecord{
+			ID: a.ID, TS: a.TS, Served: a.Served, Backend: a.Backend, Key: a.Key, Path: a.Path,
+			Status: a.Status, DwellMS: a.DwellMS, PromptTokens: a.PromptTokens,
+			CompletionTokens: a.CompletionTokens, CostUSD: a.CostUSD, AudioBytes: a.AudioBytes,
+			Error: a.Error, TTFBMs: a.TTFBMs, QueuedMS: a.QueuedMS,
+		},
+		ReqBody:  a.ReqBody,
+		RespBody: a.RespBody,
 	}
 	return out, nil
 }

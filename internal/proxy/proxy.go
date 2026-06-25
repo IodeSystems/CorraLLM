@@ -44,7 +44,8 @@ type Proxy struct {
 
 	started int64 // unix seconds at construction — the catalog's "created"
 
-	requestTimeout time.Duration // 0 = no corrallm-imposed deadline (defer to client + backend)
+	requestTimeout  time.Duration // 0 = no corrallm-imposed deadline (defer to client + backend)
+	capturePayloads bool          // capture req/resp payloads onto the activity row (P10b)
 
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
@@ -53,7 +54,37 @@ type Proxy struct {
 // New constructs a Proxy.
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
 	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
-		started: time.Now().Unix(), rr: map[string]uint64{}}
+		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true}
+}
+
+// payloadCap bounds how many bytes of each captured request/response payload are
+// stored on the activity row (P10b). Enough to see prompts/errors; binary audio
+// is summarized to a size, never stored raw.
+const payloadCap = 4 << 10 // 4 KiB
+
+// SetCapturePayloads toggles per-request payload capture (P10b). Payloads are
+// admin-gated and pruned with the activity log, but they are user data — disable
+// this where prompts must not be persisted.
+func (p *Proxy) SetCapturePayloads(on bool) { p.capturePayloads = on }
+
+// capturePayload renders a payload for storage: binary bodies become a
+// "<content-type, N bytes>" summary (never stored raw); text is truncated to
+// payloadCap. Returns "" when capture is disabled.
+func (p *Proxy) capturePayload(data []byte, binary bool, contentType string) string {
+	if !p.capturePayloads {
+		return ""
+	}
+	if binary {
+		ct, _, _ := strings.Cut(contentType, ";")
+		if ct = strings.TrimSpace(ct); ct == "" {
+			ct = "binary"
+		}
+		return fmt.Sprintf("<%s, %d bytes>", ct, len(data))
+	}
+	if len(data) > payloadCap {
+		return fmt.Sprintf("%s…(+%d bytes truncated)", data[:payloadCap], len(data)-payloadCap)
+	}
+	return string(data)
 }
 
 // SetBroker attaches an events broker so the request path can push live updates
@@ -130,6 +161,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
+	// Capture the request payload once (available on every exit path). STT uploads
+	// are multipart/binary → summarized to a size, not stored raw.
+	reqBody := p.capturePayload(body, audio && !tts, r.Header.Get("Content-Type"))
 	// Only impose a deadline when one is configured. A fixed cap here would turn
 	// long-but-valid requests (big prompts, image data on a 27B/220k-ctx model)
 	// into spurious timeouts — the regression that surfaced as 502s in production.
@@ -183,10 +217,14 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				}
 				// rejected or queue-timeout → terminal backoff.
 				writeBackpressure(w, bp)
-				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS, 0, bp.Reason)
+				p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+					QueuedMS: queuedMS, Error: bp.Reason, ReqBody: reqBody})
 				return
 			}
-			p.log(served, name, key, r.URL.Path, 499, time.Since(start), 0, 0, 0, queuedMS, 0, "client canceled") // queued then client gave up
+			p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
+				Error: "client canceled", ReqBody: reqBody}) // queued then client gave up
 			return
 		}
 
@@ -269,7 +307,26 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			costUSD += p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
 		}
 		release(sched.Done{CostUSD: costUSD})
-		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD, queuedMS, audioBytes, errReason)
+
+		var respBody string
+		if tts {
+			if p.capturePayloads {
+				respBody = fmt.Sprintf("<audio, %d bytes>", sc.written)
+			}
+		} else {
+			respBody = p.capturePayload(sc.buf, false, "")
+		}
+		var ttfbMS int64
+		if !sc.firstWrite.IsZero() {
+			ttfbMS = sc.firstWrite.Sub(start).Milliseconds()
+		}
+		p.log(store.Activity{
+			Served: served, Backend: name, Key: key, Path: r.URL.Path, Status: status,
+			DwellMS: time.Since(start).Milliseconds(), PromptTokens: u.PromptTokens,
+			CompletionTokens: u.CompletionTokens, CostUSD: costUSD, QueuedMS: queuedMS,
+			AudioBytes: audioBytes, Error: errReason, TTFBMs: ttfbMS,
+			ReqBody: reqBody, RespBody: respBody,
+		})
 		return
 	}
 
@@ -277,11 +334,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
 		writeBackpressure(w, lastBP)
-		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS, 0, "exhausted")
+		p.log(store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+			QueuedMS: queuedMS, Error: "exhausted", ReqBody: reqBody})
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
-	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start), 0, 0, 0, queuedMS, 0, "no backend available")
+	p.log(store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
+		QueuedMS: queuedMS, Error: "no backend available", ReqBody: reqBody})
 }
 
 // orderBackends returns config indices in fall-through order: highest quality
@@ -469,28 +530,18 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration, prompt, completion int, costUSD float64, queuedMS, audioBytes int64, errReason string) {
-	a := store.Activity{
-		TS:               time.Now().UnixMilli(),
-		Served:           served,
-		Backend:          backend,
-		Key:              key,
-		Path:             path,
-		Status:           status,
-		DwellMS:          dwell.Milliseconds(),
-		PromptTokens:     prompt,
-		CompletionTokens: completion,
-		CostUSD:          costUSD,
-		QueuedMS:         queuedMS,
-		AudioBytes:       audioBytes,
-		Error:            errReason,
-	}
+// log persists an activity record (stamping its timestamp) and pushes a lean copy
+// over the events broker. The pushed copy omits the captured payloads — those stay
+// in the DB and are fetched on demand for the detail modal (P10b/c), not streamed
+// to every SSE subscriber.
+func (p *Proxy) log(a store.Activity) {
+	a.TS = time.Now().UnixMilli()
 	if err := p.store.InsertActivity(a); err != nil {
 		slog.Warn("activity log", "err", err)
 	}
-	// Push the new record (the request also just released a slot → lanes/usage
-	// changed). Best-effort; the UI keeps a slow fallback poll.
-	p.publish(events.Event{Type: "activity", Data: a})
+	ev := a
+	ev.ReqBody, ev.RespBody = "", ""
+	p.publish(events.Event{Type: "activity", Data: ev})
 }
 
 // publish emits an event if a broker is attached (no-op otherwise).
@@ -674,8 +725,9 @@ type statusCapture struct {
 	code        int
 	wroteHeader bool
 	streaming   bool
-	buf         []byte // bounded captured body for usage extraction
-	written     int64  // total response bytes — TTS (P9b) is metered by output size
+	buf         []byte    // bounded captured body for usage extraction
+	written     int64     // total response bytes — TTS (P9b) is metered by output size
+	firstWrite  time.Time // time of the first body write — for TTFB (P10b)
 }
 
 func (s *statusCapture) WriteHeader(code int) {
@@ -688,6 +740,9 @@ func (s *statusCapture) WriteHeader(code int) {
 func (s *statusCapture) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true
+	}
+	if s.firstWrite.IsZero() && len(b) > 0 {
+		s.firstWrite = time.Now()
 	}
 	s.written += int64(len(b))
 	if s.streaming {
