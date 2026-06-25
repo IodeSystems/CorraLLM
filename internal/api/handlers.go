@@ -219,6 +219,7 @@ type ResidentModelView struct {
 	LastUsedMS int64           `json:"lastUsedMs" doc:"Unix millis of last use, 0 if never."`
 	NCtx       int             `json:"nCtx" doc:"Context length parsed from the backend (0 if unknown)."`
 	NSlots     int             `json:"nSlots" doc:"Slot count parsed from the backend (0 if unknown)."`
+	HasUI      string          `json:"hasUi" doc:"unknown|yes|no — does the backend serve a web UI at / (P11b)."`
 	Usage      []PoolUsageView `json:"usage" doc:"Per-pool reservation."`
 }
 
@@ -247,7 +248,7 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 		mv := ResidentModelView{
 			Name: m.Name, ModelName: m.ModelName, Server: m.Server, State: m.State,
 			Refs: m.Refs, Persistent: m.Persistent, LastUsedMS: m.LastUsedMS,
-			NCtx: m.NCtx, NSlots: m.NSlots,
+			NCtx: m.NCtx, NSlots: m.NSlots, HasUI: m.HasUI,
 			Usage: make([]PoolUsageView, 0, len(m.Usage)),
 		}
 		for _, u := range m.Usage {

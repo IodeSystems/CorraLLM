@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
@@ -58,6 +59,8 @@ type Process struct {
 	ttl        time.Duration    // idle keep-warm window
 
 	logs *logBuffer // captured stdout/stderr (spawned backends only; nil for pure-proxy)
+
+	hasUI atomic.Int32 // 0 unknown · 1 has a web UI · 2 none (probed once when ready, P11b)
 
 	mu       sync.Mutex
 	state    State
@@ -257,6 +260,30 @@ func (m *Manager) load(name string, b config.Backend, p *Process) {
 
 	slog.Info("backend ready", "name", name, "target", p.Target.URL.String())
 	finish(StateReady, nil)
+	// Probe whether the backend serves a web UI at its root (P11b) so the dashboard
+	// can disable a dead "Open UI" button. Spawned backends only — we don't poke a
+	// remote/paid endpoint's root. Async: never gates readiness.
+	if b.Cmd != "" {
+		go m.probeUI(p)
+	}
+}
+
+// probeUI records whether the backend answers a non-error status at its root, so
+// the UI knows if "Open UI" (/upstream/<model>/) would 404 (P11b).
+func (m *Manager) probeUI(p *Process) {
+	u := *p.Target.URL
+	u.Path, u.RawQuery = "/", ""
+	resp, err := m.healthCli.Get(u.String())
+	if err != nil {
+		p.hasUI.Store(2)
+		return
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode < 400 {
+		p.hasUI.Store(1)
+	} else {
+		p.hasUI.Store(2)
+	}
 }
 
 // onProcExit removes p from the ledger and frees its pools, but only if p is
@@ -520,8 +547,9 @@ type ResidentModel struct {
 	Refs       int  // in-flight requests holding it
 	Persistent bool // pinned: exempt from eviction
 	LastUsedMS int64
-	NCtx       int // parsed context length (spawned backends; 0 if unknown)
-	NSlots     int // parsed slot count (spawned backends; 0 if unknown)
+	NCtx       int    // parsed context length (spawned backends; 0 if unknown)
+	NSlots     int    // parsed slot count (spawned backends; 0 if unknown)
+	HasUI      string // unknown | yes | no — does the backend serve a web UI at / (P11b)
 	Usage      []PoolUsage
 }
 
@@ -578,6 +606,14 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 		}
 		logs := p.logs
 		p.mu.Unlock()
+		switch p.hasUI.Load() {
+		case 1:
+			rm.HasUI = "yes"
+		case 2:
+			rm.HasUI = "no"
+		default:
+			rm.HasUI = "unknown"
+		}
 		if logs != nil {
 			rm.NCtx, rm.NSlots = logs.Stats()
 		}

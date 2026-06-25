@@ -3,6 +3,9 @@ package proc
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"syscall"
 	"testing"
 	"time"
@@ -136,5 +139,35 @@ func TestLoadCoalescing(t *testing.T) {
 	}
 	if len(seen) != 1 {
 		t.Fatalf("expected 1 spawned pid across %d callers, got %d distinct", n, len(seen))
+	}
+}
+
+// TestProbeUI: probeUI records yes when the backend root answers <400, no when it
+// 404s or is unreachable (P11b — drives the dashboard's disabled "Open UI").
+func TestProbeUI(t *testing.T) {
+	withUI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer withUI.Close()
+	noUI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer noUI.Close()
+
+	m := NewManager(&config.Config{})
+	target := func(s string) *config.ProxyTarget {
+		u, _ := url.Parse(s)
+		return &config.ProxyTarget{URL: u}
+	}
+	p1 := &Process{Target: target(withUI.URL)}
+	m.probeUI(p1)
+	if p1.hasUI.Load() != 1 {
+		t.Errorf("withUI hasUI = %d, want 1", p1.hasUI.Load())
+	}
+	p2 := &Process{Target: target(noUI.URL)}
+	m.probeUI(p2)
+	if p2.hasUI.Load() != 2 {
+		t.Errorf("noUI hasUI = %d, want 2", p2.hasUI.Load())
+	}
+	p3 := &Process{Target: target("http://127.0.0.1:1")} // unreachable
+	m.probeUI(p3)
+	if p3.hasUI.Load() != 2 {
+		t.Errorf("unreachable hasUI = %d, want 2", p3.hasUI.Load())
 	}
 }

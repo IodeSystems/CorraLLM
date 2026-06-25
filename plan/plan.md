@@ -565,9 +565,10 @@ the BackpressureError shape we already validated.
     (inferred from cost class — `capabilityForType`: chat/embeddings/audio.stt/audio.tts/rerank), and
     the fairshare **lanes** (name/weight/currency/interruptible — policy only). Test
     `TestCapabilitiesManifest` (grouping, endpoint coverage, lanes, **key-leak assertion**).
-  - ☐ **P11b — Disabled "Open UI" for UI-less models.** The Overview Open-UI button opens
-    `/upstream/<model>/`; for models whose backend serves no UI it 404s. Detect (probe the backend root
-    when ready, cache `hasUI`) and disable the button.
+  - ✅ **P11b — Disabled "Open UI" for UI-less models.** Done. The proc manager probes the backend
+    root once when ready (spawned backends only; async, never gates readiness) and caches `hasUI`
+    (yes/no/unknown). Exposed on the residency `ResidentModel`/`ResidentModelView`; the Overview
+    Open-UI button is disabled with a "no web UI" tooltip when `hasUi === "no"`. Test `TestProbeUI`.
   - ☐ **P11c — Model detail / console.** Click a model in Overview → a per-model console
     (modal or route) with modality + capability, spawn command, **per-model logs** (`modelLogs`),
     usage (`usageRollup`), and the capability **examples** (reuse the P11a per-model slice). Makes
@@ -580,9 +581,14 @@ the BackpressureError shape we already validated.
       (or `/v1/realtime` ws) → optionally pipe the text → `/v1/audio/speech` → speaker playback. A
       full voice loop in the browser.
     - **image/vision** — image upload → chat with image content parts (for multimodal models).
-    Design choices to settle: one consolidated console page vs per-capability modals; which
-    playgrounds first; auth (the dashboard already holds the admin token, but these hit `/v1` with a
-    caller key — decide which key the playground sends).
+    Decided: **consolidated model console** (tabs Info+Examples · Logs · Usage · Test); build all
+    three playgrounds **chat → voice → image**; playground `/v1` calls default to the **default lane**
+    with a lane picker.
+  - ☐ **P11e — Replay an activity into the console.** From the activity detail modal (P10c), a
+    "Replay in console" action opens the served model's console Test tab **pre-filled with that
+    request's captured payload** (P10b `reqBody`) so it can be re-run/tweaked to debug. Best for
+    chat/text/image (full JSON payload captured); audio STT only stores a size summary (no raw audio),
+    so those open the playground without the original bytes.
 
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 

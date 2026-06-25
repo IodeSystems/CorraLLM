@@ -88,6 +88,7 @@ const OverviewDoc = graphql(/* GraphQL */ `
           refs
           nCtx
           nSlots
+          hasUi
         }
       }
     }
@@ -319,15 +320,25 @@ function Home() {
                             </Button>
                           </span>
                         </Tooltip>
-                        <Button
-                          size="small"
-                          component={MuiLink}
-                          href={`/upstream/${encodeURIComponent(m.name)}/`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open UI
-                        </Button>
+                        {st?.hasUi === 'no' ? (
+                          <Tooltip title="This backend serves no web UI">
+                            <span>
+                              <Button size="small" disabled>
+                                Open UI
+                              </Button>
+                            </span>
+                          </Tooltip>
+                        ) : (
+                          <Button
+                            size="small"
+                            component={MuiLink}
+                            href={`/upstream/${encodeURIComponent(m.name)}/`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open UI
+                          </Button>
+                        )}
                         <Button
                           size="small"
                           disabled={!st}

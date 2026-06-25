@@ -461,6 +461,8 @@ type corrallm_ResidencyOutputBody {
 }
 
 type corrallm_ResidentModelView {
+  """unknown|yes|no — does the backend serve a web UI at / (P11b)."""
+  hasUi: String!
   """Unix millis of last use, 0 if never."""
   lastUsedMs: Long!
   """Served model name."""
