@@ -47,8 +47,10 @@ type Proxy struct {
 
 	started int64 // unix seconds at construction — the catalog's "created"
 
-	requestTimeout  time.Duration // 0 = no corrallm-imposed deadline (defer to client + backend)
-	capturePayloads bool          // capture req/resp payloads onto the activity row (P10b)
+	requestTimeout     time.Duration // 0 = no corrallm-imposed deadline (defer to client + backend)
+	capturePayloads    bool          // capture req/resp payloads onto the activity row (P10b)
+	realtimeIdle       time.Duration // 0 = no idle reap of a realtime ws session (P9e)
+	realtimeMaxSession time.Duration // 0 = no max-duration reap of a realtime ws session (P9e)
 
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
@@ -101,6 +103,14 @@ func (p *Proxy) SetBroker(b *events.Broker) { p.events = b }
 // turns long-but-valid requests (big prompts, image data) into spurious failures,
 // so prefer 0 unless you specifically want a ceiling.
 func (p *Proxy) SetRequestTimeout(d time.Duration) { p.requestTimeout = d }
+
+// SetRealtimeTimeouts bounds realtime (/v1/realtime) WebSocket sessions (P9e):
+// idle reaps a session after that long with no bytes either way; maxSession caps
+// total duration. Either 0 disables that check. A reaped session frees its slot
+// and logs 408 with the reason.
+func (p *Proxy) SetRealtimeTimeouts(idle, maxSession time.Duration) {
+	p.realtimeIdle, p.realtimeMaxSession = idle, maxSession
+}
 
 // Mount registers the OpenAI-compatible inference routes plus the untracked
 // non-inference passthrough on r. The route set mirrors the OpenAI surface
@@ -419,7 +429,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 
 		// Proxy the session under reqCtx so a preemption (ErrPreempted) tears down
 		// the upgraded conn. Meter the audio streamed IN (client→backend bytes).
-		inBytes, wsErr := p.proxyWebSocket(w, r, pr.Target, reqCtx)
+		inBytes, reapReason, wsErr := p.proxyWebSocket(w, r, pr.Target, reqCtx)
 		done()
 		status, errReason := 200, ""
 		switch {
@@ -427,6 +437,8 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 			status, errReason = 499, "preempted"
 		case wsErr != nil:
 			status, errReason = http.StatusBadGateway, wsErr.Error()
+		case reapReason != "":
+			status, errReason = http.StatusRequestTimeout, reapReason // idle / max-session reaped
 		}
 		costUSD := p.cost.AudioRequestUSD(backend.Type, int(inBytes))
 		release(sched.Done{CostUSD: costUSD})
@@ -450,19 +462,33 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		QueuedMS: queuedMS, Error: "no backend available"})
 }
 
+// countingWriter tallies bytes written through it (P9e session metering + idle
+// detection). The counter is atomic so the reaper goroutine can read it live.
+type countingWriter struct {
+	w io.Writer
+	n *int64
+}
+
+func (c countingWriter) Write(b []byte) (int, error) {
+	n, err := c.w.Write(b)
+	atomic.AddInt64(c.n, int64(n))
+	return n, err
+}
+
 // proxyWebSocket completes a WebSocket upgrade against the target and copies bytes
-// both ways until either side closes or ctx is canceled (preemption/shutdown closes
-// both conns). Returns the client→backend byte count (audio in) for metering.
-func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config.ProxyTarget, ctx context.Context) (int64, error) {
+// both ways until either side closes, ctx is canceled (preemption/shutdown), or the
+// reaper trips (idle / max-session). Returns the client→backend byte count (audio
+// in) and a reap reason ("" on a clean close or remote-driven end).
+func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config.ProxyTarget, ctx context.Context) (int64, string, error) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return 0, errors.New("response writer is not a Hijacker")
+		return 0, "", errors.New("response writer is not a Hijacker")
 	}
 	backConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", t.URL.Host)
 	if err != nil {
 		http.Error(w, "backend unavailable", http.StatusBadGateway)
-		return 0, err
+		return 0, "", err
 	}
 	defer func() { _ = backConn.Close() }()
 
@@ -474,13 +500,13 @@ func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config
 	}
 	if err := out.Write(backConn); err != nil {
 		http.Error(w, "backend write", http.StatusBadGateway)
-		return 0, err
+		return 0, "", err
 	}
 	backRd := bufio.NewReader(backConn)
 	resp, err := http.ReadResponse(backRd, out)
 	if err != nil {
 		http.Error(w, "backend read", http.StatusBadGateway)
-		return 0, err
+		return 0, "", err
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		// Backend declined the upgrade — relay its response verbatim and stop.
@@ -492,21 +518,21 @@ func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 		_ = resp.Body.Close()
-		return 0, fmt.Errorf("backend refused upgrade: %s", resp.Status)
+		return 0, "", fmt.Errorf("backend refused upgrade: %s", resp.Status)
 	}
 
 	cliConn, cliRW, err := hj.Hijack()
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer func() { _ = cliConn.Close() }()
 	// Complete the handshake to the client (101 + the backend's upgrade headers).
 	if _, err := fmt.Fprint(cliConn, "HTTP/1.1 101 Switching Protocols\r\n"); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	_ = resp.Header.Write(cliConn)
 	if _, err := fmt.Fprint(cliConn, "\r\n"); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
 	// Tear down both ends when the slot is preempted or the server shuts down.
@@ -516,15 +542,72 @@ func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config
 		_ = cliConn.Close()
 	}()
 
-	var inBytes int64
+	var inBytes, outBytes int64
+	var reapCode int32 // 0 none · 1 idle · 2 max (atomic)
+	// Reaper: close a session that goes silent (no bytes either way for
+	// realtimeIdle) or runs past realtimeMaxSession, so a stuck client can't hold
+	// its slot forever. Byte counts are live (countingWriter), not end-of-copy
+	// totals, so the idle check sees real traffic.
+	if p.realtimeIdle > 0 || p.realtimeMaxSession > 0 {
+		sessionStart := time.Now()
+		tick := time.Second
+		if p.realtimeIdle > 0 && p.realtimeIdle < 4*time.Second {
+			tick = p.realtimeIdle / 4
+		}
+		if tick < 20*time.Millisecond {
+			tick = 20 * time.Millisecond
+		}
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			tk := time.NewTicker(tick)
+			defer tk.Stop()
+			var lastN int64
+			lastChange := sessionStart
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ctx.Done():
+					return
+				case now := <-tk.C:
+					if p.realtimeMaxSession > 0 && now.Sub(sessionStart) > p.realtimeMaxSession {
+						atomic.StoreInt32(&reapCode, 2)
+						_ = backConn.Close()
+						_ = cliConn.Close()
+						return
+					}
+					n := atomic.LoadInt64(&inBytes) + atomic.LoadInt64(&outBytes)
+					switch {
+					case n != lastN:
+						lastN, lastChange = n, now
+					case p.realtimeIdle > 0 && now.Sub(lastChange) > p.realtimeIdle:
+						atomic.StoreInt32(&reapCode, 1)
+						_ = backConn.Close()
+						_ = cliConn.Close()
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	errc := make(chan error, 2)
-	go func() { n, e := io.Copy(backConn, cliRW); atomic.AddInt64(&inBytes, n); errc <- e }() // client→backend (audio)
-	go func() { _, e := io.Copy(cliConn, backRd); errc <- e }()                               // backend→client (transcripts)
-	<-errc                                                                                    // first side closed → end the session
-	_ = backConn.Close()                                                                      // unblock the other copy
+	go func() { _, e := io.Copy(countingWriter{backConn, &inBytes}, cliRW); errc <- e }()  // client→backend (audio)
+	go func() { _, e := io.Copy(countingWriter{cliConn, &outBytes}, backRd); errc <- e }() // backend→client (transcripts)
+	<-errc                                                                                 // first side closed → end the session
+	_ = backConn.Close()                                                                   // unblock the other copy
 	_ = cliConn.Close()
 	<-errc // wait for both copies so the audio-in count is complete before we read it
-	return atomic.LoadInt64(&inBytes), nil
+
+	reason := ""
+	switch atomic.LoadInt32(&reapCode) {
+	case 1:
+		reason = "idle timeout"
+	case 2:
+		reason = "max session"
+	}
+	return atomic.LoadInt64(&inBytes), reason, nil
 }
 
 // orderBackends returns config indices in fall-through order: highest quality

@@ -89,6 +89,7 @@ func newServeCmd() *cobra.Command {
 		healthTimeout, activityRetention           time.Duration
 		requestTimeout                             time.Duration
 		capturePayloads                            bool
+		realtimeIdle, realtimeMaxSession           time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -100,15 +101,17 @@ func newServeCmd() *cobra.Command {
 				slog.Info("properties loaded", "keys", n, "home", home, "service", service)
 			}
 			return serve(cmd.Context(), serveOpts{
-				webRoot:           pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
-				configPath:        pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
-				dbPath:            pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db")),
-				addr:              envOr("ADDR", ":6502"),
-				healthTimeout:     pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
-				tokenPath:         filepath.Join(home, "admin.token"),
-				activityRetention: pickDuration(activityRetention, envDuration("CORRALLM_ACTIVITY_RETENTION", 30*24*time.Hour)),
-				requestTimeout:    pickDuration(requestTimeout, envDuration("CORRALLM_REQUEST_TIMEOUT", 0)),
-				capturePayloads:   capturePayloads,
+				webRoot:            pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
+				configPath:         pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
+				dbPath:             pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db")),
+				addr:               envOr("ADDR", ":6502"),
+				healthTimeout:      pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
+				tokenPath:          filepath.Join(home, "admin.token"),
+				activityRetention:  pickDuration(activityRetention, envDuration("CORRALLM_ACTIVITY_RETENTION", 30*24*time.Hour)),
+				requestTimeout:     pickDuration(requestTimeout, envDuration("CORRALLM_REQUEST_TIMEOUT", 0)),
+				capturePayloads:    capturePayloads,
+				realtimeIdle:       pickDuration(realtimeIdle, envDuration("CORRALLM_REALTIME_IDLE_TIMEOUT", 5*time.Minute)),
+				realtimeMaxSession: pickDuration(realtimeMaxSession, envDuration("CORRALLM_REALTIME_MAX_SESSION", 0)),
 			})
 		},
 	}
@@ -122,6 +125,8 @@ func newServeCmd() *cobra.Command {
 	f.DurationVar(&activityRetention, "activity-retention", 0, "delete activity-log rows older than this (default 720h/30d or CORRALLM_ACTIVITY_RETENTION; 0 disables)")
 	f.DurationVar(&requestTimeout, "request-timeout", 0, "max wall-clock for one proxied request before corrallm cancels it (or CORRALLM_REQUEST_TIMEOUT; 0 = no corrallm deadline, defer to client + backend)")
 	f.BoolVar(&capturePayloads, "capture-payloads", true, "capture per-request request/response payloads onto the activity log (capped; binary audio summarized; pruned with --activity-retention)")
+	f.DurationVar(&realtimeIdle, "realtime-idle-timeout", 0, "reap a /v1/realtime ws session after this long with no traffic (default 5m or CORRALLM_REALTIME_IDLE_TIMEOUT; 0 disables)")
+	f.DurationVar(&realtimeMaxSession, "realtime-max-session", 0, "hard cap on a /v1/realtime ws session's duration (or CORRALLM_REALTIME_MAX_SESSION; 0 disables)")
 	return cmd
 }
 
@@ -132,6 +137,7 @@ type serveOpts struct {
 	activityRetention                 time.Duration
 	requestTimeout                    time.Duration
 	capturePayloads                   bool
+	realtimeIdle, realtimeMaxSession  time.Duration
 }
 
 func serve(ctx context.Context, o serveOpts) error {
@@ -204,6 +210,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	px.SetBroker(broker)
 	px.SetRequestTimeout(o.requestTimeout)
 	px.SetCapturePayloads(o.capturePayloads)
+	px.SetRealtimeTimeouts(o.realtimeIdle, o.realtimeMaxSession)
 	px.Mount(router)
 
 	// The SPA is served for everything not claimed above.

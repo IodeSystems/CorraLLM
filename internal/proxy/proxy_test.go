@@ -1547,3 +1547,64 @@ func TestRealtimePreemptAbortsSession(t *testing.T) {
 		t.Errorf("realtime session row = %+v, want 499/preempted", rt)
 	}
 }
+
+// TestRealtimeIdleReaper (P9e): a realtime session that goes silent past the idle
+// timeout is reaped — the conn is torn down, the slot freed, the row logged 408
+// with "idle timeout".
+func TestRealtimeIdleReaper(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		_, _ = io.Copy(conn, buf) // never receives anything → idle
+	}))
+	defer backend.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	p := New(mkConfig(t, "mock", backend.URL), mgr, sched.New(), st)
+	p.SetRealtimeTimeouts(150*time.Millisecond, 0) // reap after 150ms idle
+	p.Mount(r)
+	front := httptest.NewServer(r)
+	defer front.Close()
+
+	host := strings.TrimPrefix(front.URL, "http://")
+	conn, err := net.Dial("tcp", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, _ = io.WriteString(conn, "GET /v1/realtime?model=mock HTTP/1.1\r\nHost: "+host+
+		"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil || !strings.Contains(line, "101") {
+		t.Fatalf("upgrade failed: %q (%v)", line, err)
+	}
+	// Send nothing — the reaper should close us. A blocking read returns on reap.
+	_, _ = io.Copy(io.Discard, br)
+
+	var a store.Activity
+	for i := 0; i < 100; i++ {
+		if acts, _ := st.RecentActivity(1); len(acts) == 1 && acts[0].Path == "/v1/realtime" {
+			a = acts[0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.Status != http.StatusRequestTimeout || a.Error != "idle timeout" {
+		t.Errorf("reaped row = %+v, want 408/idle timeout", a)
+	}
+}

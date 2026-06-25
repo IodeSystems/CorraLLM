@@ -45,7 +45,7 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 > - ◐ **P9 audio modality** — **P9a/b/c/d/e ✅ done + validated end-to-end**: `/v1/audio/transcriptions`
 >   +`/translations` (parakeet STT), `/v1/audio/speech` (Kokoro TTS), `/v1/realtime` ws passthrough
 >   (Speaches realtime STT). All three backends installed under ml-kit `local/` + wired + full-stack
->   tested. Remaining: **P9f** (comfort-fill, unconfirmed/parked) + an idle/max-session reaper for P9e.
+>   tested; P9e idle/max-session reaper ✅. Only remaining: **P9f** (comfort-fill, unconfirmed/parked).
 > - ✅ **P10 request observability** (prod-driven) — **P10a/b/c ✅** honest error status (client/upstream
 >   cancel → 499, not a mislabeled backend 502) + `activity.error` reason + configurable
 >   `--request-timeout` (latent 130s cap removed); per-request payload + TTFB capture; click-through
@@ -470,8 +470,11 @@ the BackpressureError shape we already validated.
     pulled once via `POST /v1/models/…`). **Full stack validated:** ws client → corrallm → Speaches →
     "And so my fellow Americans." + metered `audio_bytes`=501712. *(Speaches realtime VAD over-segments
     a blasted synthetic stream + a transient "item already exists" — app-layer, cleaner at real-time
-    mic pace.)* **Still TODO: idle/max-session timeout reaper** — a session lives until a side closes or
-    preemption; a silently-stuck session holds its slot indefinitely.
+    mic pace.)* **Idle/max-session reaper ✅** — a background ticker watches live byte counts
+    (`countingWriter`, both directions) and closes a session silent past `--realtime-idle-timeout`
+    (default **5m**, `CORRALLM_REALTIME_IDLE_TIMEOUT`) or longer than `--realtime-max-session`
+    (default off); a reaped session frees its slot and logs **408** with `idle timeout`/`max session`.
+    `SetRealtimeTimeouts`; test `TestRealtimeIdleReaper`. **P9e fully done.**
     <!-- original scope retained below -->
     A **separate request edge** from P9a's file model: live mic transcription (OpenAI Realtime,
     `wss://…/v1/realtime?model=…`) streams audio *in* continuously, so it **must not buffer the
