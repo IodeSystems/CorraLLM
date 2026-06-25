@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
@@ -1173,5 +1174,89 @@ func TestAudioSpeechTTS(t *testing.T) {
 	want := float64(len(audioOut)) / (1 << 20) * 5 / 1000 * 0.14
 	if d := a.CostUSD - want; d < -1e-12 || d > 1e-12 {
 		t.Errorf("cost = %v, want %v", a.CostUSD, want)
+	}
+}
+
+// TestClientCancelLogged499 reproduces the production "502 on qwen" mislabel:
+// when the caller (or an upstream front-proxy) drops the connection mid-request,
+// corrallm must log it as 499 with the reason captured — NOT a backend 502.
+func TestClientCancelLogged499(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		close(started)
+		<-release // hang until the client has canceled
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	New(mkConfig(t, "mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock"}`)).WithContext(ctx)
+	done := make(chan struct{})
+	go func() { r.ServeHTTP(httptest.NewRecorder(), req); close(done) }()
+
+	<-started // backend reached, request in flight
+	cancel()  // client/front-proxy drops the connection
+	<-done
+
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 {
+		t.Fatalf("want 1 activity, got %d", len(acts))
+	}
+	if acts[0].Status != 499 {
+		t.Errorf("status = %d, want 499 (client cancel, not 502)", acts[0].Status)
+	}
+	if !strings.Contains(acts[0].Error, "canceled") {
+		t.Errorf("error reason = %q, want it to mention cancellation", acts[0].Error)
+	}
+}
+
+// TestRequestTimeout504 verifies the configurable cap: a backend slower than the
+// timeout yields 504 with the deadline reason, and 0 (default) imposes no cap.
+func TestRequestTimeout504(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		<-release // slower than the configured timeout
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	p := New(mkConfig(t, "mock", upstream.URL), mgr, sched.New(), st)
+	p.SetRequestTimeout(150 * time.Millisecond)
+	p.Mount(r)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock"}`)))
+
+	acts, _ := st.RecentActivity(1)
+	if len(acts) != 1 || acts[0].Status != http.StatusGatewayTimeout {
+		t.Fatalf("status = %v, want 504", acts)
+	}
+	if !strings.Contains(acts[0].Error, "deadline") {
+		t.Errorf("error reason = %q, want deadline-exceeded", acts[0].Error)
 	}
 }

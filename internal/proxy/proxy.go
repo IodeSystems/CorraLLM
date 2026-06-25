@@ -44,6 +44,8 @@ type Proxy struct {
 
 	started int64 // unix seconds at construction — the catalog's "created"
 
+	requestTimeout time.Duration // 0 = no corrallm-imposed deadline (defer to client + backend)
+
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
 }
@@ -57,6 +59,14 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 // SetBroker attaches an events broker so the request path can push live updates
 // (a new activity record, a "state changed" ping). Optional; nil disables it.
 func (p *Proxy) SetBroker(b *events.Broker) { p.events = b }
+
+// SetRequestTimeout sets the max wall-clock corrallm allows one proxied request
+// before it cancels the upstream (logged 504). 0 (default) imposes NO corrallm
+// deadline — the request lives as long as the client holds the connection and the
+// backend keeps it open (the backend's own timeout governs). A short cap here
+// turns long-but-valid requests (big prompts, image data) into spurious failures,
+// so prefer 0 unless you specifically want a ceiling.
+func (p *Proxy) SetRequestTimeout(d time.Duration) { p.requestTimeout = d }
 
 // Mount registers the OpenAI-compatible inference routes plus the untracked
 // non-inference passthrough on r. The route set mirrors the OpenAI surface
@@ -120,7 +130,14 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(r.Context(), 130*time.Second)
+	// Only impose a deadline when one is configured. A fixed cap here would turn
+	// long-but-valid requests (big prompts, image data on a 27B/220k-ctx model)
+	// into spurious timeouts — the regression that surfaced as 502s in production.
+	ctx := r.Context()
+	cancel := func() {}
+	if p.requestTimeout > 0 {
+		ctx, cancel = context.WithTimeout(r.Context(), p.requestTimeout)
+	}
 	defer cancel()
 
 	key := callerKey(r)
@@ -166,10 +183,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				}
 				// rejected or queue-timeout → terminal backoff.
 				writeBackpressure(w, bp)
-				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS, 0)
+				p.log(served, name, key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS, 0, bp.Reason)
 				return
 			}
-			p.log(served, name, key, r.URL.Path, 499, time.Since(start), 0, 0, 0, queuedMS, 0) // client canceled
+			p.log(served, name, key, r.URL.Path, 499, time.Since(start), 0, 0, 0, queuedMS, 0, "client canceled") // queued then client gave up
 			return
 		}
 
@@ -200,11 +217,32 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
 		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK, streaming: streaming}
-		newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(reqCtx))
+		// Capture the proxy error so the activity log can say WHY a request failed
+		// (P10a) and map it to an honest status: a canceled connection (client or an
+		// upstream front-proxy giving up) is 499, not a backend 502; corrallm's own
+		// deadline is 504; a genuine backend dial/transport error stays 502.
+		rp := newReverseProxy(pr.Target)
+		var proxyErr error
+		rp.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, err error) {
+			proxyErr = err
+			code := http.StatusBadGateway
+			switch {
+			case errors.Is(err, context.Canceled):
+				code = 499
+			case errors.Is(err, context.DeadlineExceeded):
+				code = http.StatusGatewayTimeout
+			}
+			rw.WriteHeader(code)
+		}
+		rp.ServeHTTP(sc, r.WithContext(reqCtx))
 		done()
 		status := sc.code
+		errReason := ""
+		if proxyErr != nil {
+			errReason = proxyErr.Error()
+		}
 		if errors.Is(context.Cause(reqCtx), sched.ErrPreempted) {
-			status = 499 // slot reclaimed by a higher-priority group mid-request
+			status, errReason = 499, "preempted" // slot reclaimed by a higher-priority group mid-request
 		}
 		// Meter the served request and resolve it to $ via the backend's cost
 		// class. Audio routes carry no token usage, so they cost by byte size
@@ -231,7 +269,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			costUSD += p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
 		}
 		release(sched.Done{CostUSD: costUSD})
-		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD, queuedMS, audioBytes)
+		p.log(served, name, key, r.URL.Path, status, time.Since(start), u.PromptTokens, u.CompletionTokens, costUSD, queuedMS, audioBytes, errReason)
 		return
 	}
 
@@ -239,11 +277,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
 		writeBackpressure(w, lastBP)
-		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS, 0)
+		p.log(served, "-", key, r.URL.Path, http.StatusTooManyRequests, time.Since(start), 0, 0, 0, queuedMS, 0, "exhausted")
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
-	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start), 0, 0, 0, queuedMS, 0)
+	p.log(served, "-", key, r.URL.Path, http.StatusServiceUnavailable, time.Since(start), 0, 0, 0, queuedMS, 0, "no backend available")
 }
 
 // orderBackends returns config indices in fall-through order: highest quality
@@ -431,7 +469,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration, prompt, completion int, costUSD float64, queuedMS, audioBytes int64) {
+func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Duration, prompt, completion int, costUSD float64, queuedMS, audioBytes int64, errReason string) {
 	a := store.Activity{
 		TS:               time.Now().UnixMilli(),
 		Served:           served,
@@ -445,6 +483,7 @@ func (p *Proxy) log(served, backend, key, path string, status int, dwell time.Du
 		CostUSD:          costUSD,
 		QueuedMS:         queuedMS,
 		AudioBytes:       audioBytes,
+		Error:            errReason,
 	}
 	if err := p.store.InsertActivity(a); err != nil {
 		slog.Warn("activity log", "err", err)

@@ -11,6 +11,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Tooltip,
   Typography,
 } from '@mui/material'
 import { graphql } from '@/gql'
@@ -33,6 +34,7 @@ const ActivityDoc = graphql(/* GraphQL */ `
           completionTokens
           audioBytes
           costUsd
+          error
         }
       }
     }
@@ -109,7 +111,13 @@ function Activity() {
                   <TableCell>{r.key || '—'}</TableCell>
                   <TableCell>{r.path}</TableCell>
                   <TableCell align="right">
-                    <Chip size="small" label={r.status} color={statusColor(r.status)} />
+                    {r.error ? (
+                      <Tooltip title={r.error}>
+                        <Chip size="small" label={r.status} color={statusColor(r.status)} />
+                      </Tooltip>
+                    ) : (
+                      <Chip size="small" label={r.status} color={statusColor(r.status)} />
+                    )}
                   </TableCell>
                   <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>
                   <TableCell align="right">{Number(r.audioBytes) > 0 ? '—' : fmtInt(r.promptTokens)}</TableCell>

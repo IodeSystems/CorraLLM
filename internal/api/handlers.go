@@ -95,6 +95,7 @@ type ActivityRecord struct {
 	CompletionTokens int     `json:"completionTokens" doc:"Metered completion tokens."`
 	CostUSD          float64 `json:"costUsd" doc:"Resolved request cost in USD."`
 	AudioBytes       int64   `json:"audioBytes" doc:"Metered audio request bytes (STT/TTS); 0 for text."`
+	Error            string  `json:"error" doc:"Proxy/backpressure failure reason, if any (empty on success)."`
 }
 
 // RecentActivityOutput is the newest-first activity list.
@@ -129,6 +130,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			CompletionTokens: a.CompletionTokens,
 			CostUSD:          a.CostUSD,
 			AudioBytes:       a.AudioBytes,
+			Error:            a.Error,
 		})
 	}
 	return out, nil

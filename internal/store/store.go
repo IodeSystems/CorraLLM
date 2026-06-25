@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS activity (
     completion_tokens INTEGER NOT NULL DEFAULT 0, -- metered completion tokens (P6)
     cost_usd          REAL    NOT NULL DEFAULT 0, -- resolved request cost in $ (P6)
     queued_ms         INTEGER NOT NULL DEFAULT 0, -- time spent queued before admit/reject (P8-beyond)
-    audio_bytes       INTEGER NOT NULL DEFAULT 0  -- metered audio request bytes, STT/TTS (P9c)
+    audio_bytes       INTEGER NOT NULL DEFAULT 0, -- metered audio request bytes, STT/TTS (P9c)
+    error             TEXT    NOT NULL DEFAULT '' -- proxy/backpressure error reason, if any (P10a)
 );
 CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
 
@@ -54,6 +55,7 @@ var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN queued_ms INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN audio_bytes INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE activity ADD COLUMN error TEXT NOT NULL DEFAULT ''`,
 }
 
 // Store wraps the SQLite handle.
@@ -98,18 +100,19 @@ type Activity struct {
 	PromptTokens     int
 	CompletionTokens int
 	CostUSD          float64
-	QueuedMS         int64 // time queued before admission/reject (P8-beyond)
-	AudioBytes       int64 // metered audio request bytes for STT/TTS routes (P9c); 0 for text
+	QueuedMS         int64  // time queued before admission/reject (P8-beyond)
+	AudioBytes       int64  // metered audio request bytes for STT/TTS routes (P9c); 0 for text
+	Error            string // proxy/backpressure error reason, if any (P10a); "" on success
 }
 
 // InsertActivity appends a request record to the activity log.
 func (s *Store) InsertActivity(a Activity) error {
 	_, err := s.db.Exec(
 		`INSERT INTO activity (ts, served, backend, key, path, status, dwell_ms,
-		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Backend, a.Key, a.Path, a.Status, a.DwellMS,
-		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes,
+		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 	)
 	return err
 }
@@ -130,7 +133,7 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	rows, err := s.db.Query(
 		`SELECT ts, served, backend, key, path, status, dwell_ms,
-		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes
+		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error
 		 FROM activity ORDER BY ts DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -140,7 +143,7 @@ func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.TS, &a.Served, &a.Backend, &a.Key, &a.Path, &a.Status, &a.DwellMS,
-			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes); err != nil {
+			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

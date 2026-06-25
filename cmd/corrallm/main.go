@@ -87,6 +87,7 @@ func newServeCmd() *cobra.Command {
 	var (
 		home, service, webRoot, configPath, dbPath string
 		healthTimeout, activityRetention           time.Duration
+		requestTimeout                             time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -105,6 +106,7 @@ func newServeCmd() *cobra.Command {
 				healthTimeout:     pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
 				tokenPath:         filepath.Join(home, "admin.token"),
 				activityRetention: pickDuration(activityRetention, envDuration("CORRALLM_ACTIVITY_RETENTION", 30*24*time.Hour)),
+				requestTimeout:    pickDuration(requestTimeout, envDuration("CORRALLM_REQUEST_TIMEOUT", 0)),
 			})
 		},
 	}
@@ -116,6 +118,7 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&dbPath, "db", "", "path to the SQLite database (default ./home/var/corrallm.db or CORRALLM_DB)")
 	f.DurationVar(&healthTimeout, "health-timeout", 0, "max time a cold backend spawn may take to become healthy (default 120s or CORRALLM_HEALTH_TIMEOUT); raise for large models")
 	f.DurationVar(&activityRetention, "activity-retention", 0, "delete activity-log rows older than this (default 720h/30d or CORRALLM_ACTIVITY_RETENTION; 0 disables)")
+	f.DurationVar(&requestTimeout, "request-timeout", 0, "max wall-clock for one proxied request before corrallm cancels it (or CORRALLM_REQUEST_TIMEOUT; 0 = no corrallm deadline, defer to client + backend)")
 	return cmd
 }
 
@@ -124,6 +127,7 @@ type serveOpts struct {
 	healthTimeout                     time.Duration
 	tokenPath                         string
 	activityRetention                 time.Duration
+	requestTimeout                    time.Duration
 }
 
 func serve(ctx context.Context, o serveOpts) error {
@@ -194,6 +198,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// gated by the fairshare admission scheduler (shared with the lanes read op).
 	px := proxy.New(cfg, mgr, scheduler, st)
 	px.SetBroker(broker)
+	px.SetRequestTimeout(o.requestTimeout)
 	px.Mount(router)
 
 	// The SPA is served for everything not claimed above.

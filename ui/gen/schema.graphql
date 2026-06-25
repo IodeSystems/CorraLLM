@@ -127,6 +127,8 @@ type corrallm_ActivityRecord {
   costUsd: Float!
   """Time in request, milliseconds."""
   dwellMs: Long!
+  """Proxy/backpressure failure reason, if any (empty on success)."""
+  error: String!
   """Caller identity."""
   key: String!
   """Request path."""
