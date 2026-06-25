@@ -568,9 +568,21 @@ the BackpressureError shape we already validated.
   - ☐ **P11b — Disabled "Open UI" for UI-less models.** The Overview Open-UI button opens
     `/upstream/<model>/`; for models whose backend serves no UI it 404s. Detect (probe the backend root
     when ready, cache `hasUI`) and disable the button.
-  - ☐ **P11c — Model detail modal.** Click a model in Overview → modal with modality + capability,
-    spawn command, **per-model logs** (`modelLogs` op), usage (`usageRollup`), and the capability
-    **examples** (reuse the P11a per-model slice). Makes UI-less models fully inspectable.
+  - ☐ **P11c — Model detail / console.** Click a model in Overview → a per-model console
+    (modal or route) with modality + capability, spawn command, **per-model logs** (`modelLogs`),
+    usage (`usageRollup`), and the capability **examples** (reuse the P11a per-model slice). Makes
+    UI-less models fully inspectable. Likely the home for the P11d test playgrounds (a "Test" tab).
+  - ☐ **P11d — In-dashboard test playgrounds** (user's vision). Since not all backends ship a native
+    UI, let the dashboard *drive* each model by capability, using browser Web APIs:
+    - **chat** — a chat playground; **MUST use `flex-direction: column-reverse`** for the message
+      list (user preference — auto-pins newest, no scroll management). Streams via `stream:true`.
+    - **audio (STT↔TTS loop)** — mic capture (MediaRecorder / Web Audio) → `/v1/audio/transcriptions`
+      (or `/v1/realtime` ws) → optionally pipe the text → `/v1/audio/speech` → speaker playback. A
+      full voice loop in the browser.
+    - **image/vision** — image upload → chat with image content parts (for multimodal models).
+    Design choices to settle: one consolidated console page vs per-capability modals; which
+    playgrounds first; auth (the dashboard already holds the admin token, but these hit `/v1` with a
+    caller key — decide which key the playground sends).
 
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
