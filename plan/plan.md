@@ -47,9 +47,10 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   (Kokoro TTS), `/v1/realtime` ws passthrough ☐. Backends decided (§7): **parakeet** STT, **Kokoro**
 >   TTS, **Speaches** realtime ASR (OpenAI Realtime schema). Remaining: **P9e** (realtime ws) + **P9f**
 >   (comfort-fill, unconfirmed).
-> - ◐ **P10 request observability** (prod-driven) — **P10a ✅** honest error status (client/upstream
+> - ✅ **P10 request observability** (prod-driven) — **P10a/b/c ✅** honest error status (client/upstream
 >   cancel → 499, not a mislabeled backend 502) + `activity.error` reason + configurable
->   `--request-timeout` (the latent 130s cap removed). P10b (payload capture) / P10c (detail modal) ☐.
+>   `--request-timeout` (latent 130s cap removed); per-request payload + TTFB capture; click-through
+>   detail modal (error/timing + request/response payloads).
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
@@ -520,15 +521,20 @@ the BackpressureError shape we already validated.
     *Does NOT fix the failures themselves — the real ~120 s cap is upstream (raise the front-proxy
     `proxy_read_timeout` / client timeout). Streaming (`stream:true`) also masks it: chunks reset the
     read timeout. corrallm's job here is honest reporting + not being a second cap.*
-  - ☐ **P10b — Per-request payload + timing capture.** New activity columns: request payload + response
-    payload (both **capped + redacted**; binary audio stored as size only) and time-to-first-byte
-    (dwell/queued already captured). Config caps + an enable toggle (prompts are user data — privacy/
-    retention note). Rides the activity row → pruned with `--activity-retention` ("discard on
-    compaction"). *Decided (user): capture request payload, response payload, error+timing — NOT the
-    raw backend-stdout ring.*
-  - ☐ **P10c — Activity detail modal (UI).** Click an activity row → modal showing error+timing,
-    request payload, response payload. New `activityDetail` op (or extend `recentActivity`); `bin/gen`
-    + UI. Reuses the P8 SSE/table surface.
+  - ✅ **P10b — Per-request payload + timing capture.** Done (not yet committed). New activity columns
+    `req_body`/`resp_body`/`ttfb_ms` (schema + forward-only migrations). `p.log` refactored to take a
+    `store.Activity` (was 12+ positional args). Request payload captured once on every exit path;
+    **STT multipart uploads + TTS binary output are summarized to `<content-type, N bytes>`, never
+    stored raw**; text capped at 4 KiB. TTFB = first-response-byte time (`statusCapture.firstWrite`).
+    `--capture-payloads` / `SetCapturePayloads` toggle (default on; payloads are user data, admin-gated,
+    pruned with `--activity-retention` → "discard on compaction"). `id`+`ttfbMs` exposed on the lean
+    `recentActivity` list; payloads only via `ActivityByID`. Tests: `TestPayloadCapture` (capture +
+    disable) + `TestPayloadCaptureBinaryAudio` (summarized, no raw bytes) + store round-trip.
+  - ✅ **P10c — Activity detail modal (UI).** Done (not yet committed). New `activityDetail(id)` op
+    (`/api/v1/activity/detail`) returns the full row + payloads on demand (list stays lean). UI: rows
+    are clickable → MUI `Dialog` showing served/backend/path, **error + timing (dwell/ttfb/queued/$)**,
+    and **request + response payloads** (monospace, scrollable). SDL regenerated; tsc/eslint/`vite
+    build` clean.
 
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
@@ -670,11 +676,10 @@ the BackpressureError shape we already validated.
      Remaining: **P9e** (realtime ws passthrough — backend decided: Speaches on the OpenAI Realtime
      schema; all decisions resolved, ready to build) and **P9f** (comfort-fill on contention —
      unconfirmed, parked pending the transparency-tradeoff call).
-  2. **P10: request observability** (prod-driven) — **P10a ✅ done** (honest 499/504/502 + error reason
-     + configurable timeout; fixes the qwen 502 *mislabel*). Next: **P10b** (request/response payload
-     capture, capped+redacted, discard-on-compaction) then **P10c** (activity detail modal). NOTE: the
-     actual qwen failures need the **upstream** ~120 s timeout raised (front proxy / client) — outside
-     corrallm; and a production rebuild/restart (`ml-kit/bin/run`) to pick up P10a.
+  2. **P10: request observability** ✅ **done** (P10a honest errors + timeout; P10b payload+TTFB capture;
+     P10c detail modal). NOTE: the actual qwen failures still need the **upstream** ~120 s timeout raised
+     (front proxy / client) — outside corrallm; and a production rebuild/restart (`ml-kit/bin/run`) to
+     pick up P10.
   3. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
   - OSS follow-ups (not blockers): auth multi-user accounts/roles + token rotation (today is a single
     shared admin token); rename the `WattsPerToken` cost fields to `WhPerToken`.
