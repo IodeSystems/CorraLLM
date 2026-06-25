@@ -4,8 +4,8 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-Status: **P0–P8 + P7 shipped and running in production; only "Later" (multi-node)
-remains.** Engine: OpenAI proxy + spawn lifecycle + fairshare scheduler + ordered
+Status: **P0–P8 + P7 shipped and running in production; P9 (audio modality) scoped,
+not started; "Later" (multi-node) remains.** Engine: OpenAI proxy + spawn lifecycle + fairshare scheduler + ordered
 fall-through + residency/eviction + preemption + cost model + quality-degrade
 routing. Observability + control plane: activity log, residency/pool usage,
 per-model + per-key + per-lane cost/usage analytics (bars, line + stacked-area
@@ -13,7 +13,8 @@ time-series), queue-pressure + sampled queue-depth (starvation watch), backend
 logs with parsed `n_ctx`/`n_slots`, and an Overview control plane (model/lane/cmd
 defs, capacity, load/unload) — all live over SSE. **corrallm has replaced
 llama-swap in production** (see §8 Deployment). Only open roadmap item: multi-node
-("Later"). How to work this plan is §0; roadmap is §6; decisions in §7; deploy in §8.
+("Later") — plus the newly-scoped **P9 audio modality** (OpenAI audio surface +
+parakeet STT backend), not yet started. How to work this plan is §0; roadmap is §6; decisions in §7; deploy in §8.
 
 > **Progress (updated 2026-06-23)**
 > - ✅ **P0 scaffold** — `fdf90b9`
@@ -41,6 +42,11 @@ llama-swap in production** (see §8 Deployment). Only open roadmap item: multi-n
 >   - calibrated cost coefficients (chat/embed) + activity-log retention — `08ec3ad`/`7f12d48`
 >   - cutover hardening (health-timeout/`/health` 2xx/liveness route/EWMA Retry-After
 >     + maxWait/maxQueueDepth) — `ca1b5b3`/`21698f2`/`7e96bbf`/`14dd1bd`
+> - ◐ **P9 audio modality** (scoped this session; **P9a + P9c + P9d ✅ done, uncommitted** — the
+>   full STT slice: routed, byte-cost metered, modality + audio-bytes surfaced in catalog/UI). OpenAI
+>   audio surface (`/v1/audio/transcriptions`+`/translations` ✅, `/v1/audio/speech` stub,
+>   `/v1/realtime` ws passthrough) + parakeet STT backend. Remaining: **P9b** (TTS stub),
+>   **P9e** (realtime ws) — both blocked on a backend decision (§7).
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
@@ -384,6 +390,99 @@ the BackpressureError shape we already validated.
 > **── MVP line ──** Above: P0–P6 + the P8 MVP slice = a usable, observable control
 > plane. Below: post-MVP polish, reorderable.
 
+- ☐ **P9 — Audio modality (OpenAI audio surface + parakeet STT backend).** Extend the
+  request edge beyond JSON/text to OpenAI's audio API, with **parakeet**
+  (`achetronic/parakeet` — Whisper-compatible ASR, NVIDIA Parakeet-TDT 0.6B ONNX, **STT-only**,
+  a spawnable Go binary that binds a port → ordinary `cmd` backend) as the first concrete STT
+  backend. **Audio backends are ordinary backends** — they spawn, health-check, draw pool
+  budget, take fairshare slots, fall through, preempt, and meter exactly like text backends
+  (P1–P7 reused unchanged). What's new is only the **request shape** (multipart-in,
+  binary/SSE-out) and the **cost basis** (audio replies carry no token `usage`). Modality is
+  **inferred from backend `type`** (an audio cost class), not a new config field. Split into
+  shippable sub-units:
+  - ✅ **P9a — Multipart request edge + STT routing.** Done (not yet committed). `resolveRequest`
+    forks on Content-Type: JSON → existing `modelFromBody`/`streamFromBody`; `multipart/*` →
+    `modelFromMultipart` reads the `model`+`stream` form fields from the buffered body (skipping
+    the file part — `NextPart` streams past it) and the whole body replays to upstream intact.
+    `/v1/audio/transcriptions` + `/v1/audio/translations` mounted through the same scheduler →
+    residency → ordered-walk → reverse-proxy pipeline; audio routes get a 64 MiB body cap (vs
+    32 MiB; parakeet caps audio at 25 MiB). SSE transcription deltas ride the existing streaming
+    passthrough (`statusCapture`). No `audio` cost-class needed yet — an unpriced `type` already
+    meters $0 via `cost.RequestUSD` (real coeffs land in P9c). Tests: `TestAudioTranscriptionMultipart`
+    (e2e multipart extract + replay + activity log), `TestModelFromMultipart` (field/stream/empty-boundary),
+    `TestAudioTranscriptionStreaming` (SSE `transcript.text.delta` passthrough: in-order, flushed not
+    buffered, per-token `logprob` confidence preserved — the first streaming test for any route).
+    `go build`/`vet`/`test -race` green, gofmt clean.
+    *Known gap (→ P9c): metering is token-based, so audio meters $0 until the byte-basis cost path
+    lands. The 130s request timeout is unchanged — fine for ≤25 MiB; revisit if long-audio jobs appear.*
+  - ☐ **P9b — TTS endpoint stub (`/v1/audio/speech`).** JSON-in (`model`/`input`/`voice`/
+    `response_format`), **binary-out** (`audio/mpeg|wav|opus`). Model resolves via the existing
+    JSON path. The metering reader must **not** parse the binary reply as JSON `usage` (today's
+    usage capture assumes a JSON/SSE body) — meter dwell + $ only, sized by request `input`
+    length and response bytes; chunked binary streams straight through. Parakeet is STT-only, so
+    this route is **wired to a configured remote/paid (or future-local) TTS backend and ships
+    optional/untested** until such a backend is chosen — the route exists so an OpenAI client's
+    TTS calls resolve instead of 404. *DoD: route mounted + binary passthrough + binary-safe
+    metering; no local TTS backend required to land.*
+  - ✅ **P9c — Audio cost model (file-bytes basis).** Done (not yet committed). Audio replies carry
+    no token `usage`, so `cost.AudioRequestUSD(typ, bytes)` costs by **byte size**: a local type
+    bills `audioWhPerMiB` (→ kWh × `costPerKwh`), a paid type bills `audioUSDPerMiB` directly; an
+    unpriced type stays $0. New `commandCosts` audio coeffs (`audioWhPerMiB`/`audioUSDPerMiB`).
+    `handleInference` forks metering on the `audio` route flag — STT bills `len(body)` (uploaded
+    audio + small multipart overhead) instead of token usage. New `activity.audio_bytes` column
+    (schema + forward-only migration, like `queued_ms`); `Activity.AudioBytes` persisted +
+    threaded through `p.log`. Tests: `cost.TestAudioRequestUSD` (local/paid/unpriced/zero) +
+    `proxy.TestAudioTranscriptionMetering` (0 tokens, `audio_bytes` = body len, byte-based $).
+    `go build`/`vet`/`test -race` green, gofmt clean.
+    *Scope notes: TTS char/output-byte costing wires up when P9b lands (the byte path already
+    covers TTS output bytes); true-duration costing deferred (would parse `verbose_json`/SRT or add
+    ffprobe — §7 Optional extensions). Rollup/usage SUMs of `audio_bytes` are P9d's UI concern.*
+  - ✅ **P9d — Catalog + observability.** Done (not yet committed). **Modality decided this
+    session: inferred from cost class** (a backend `type` declaring audio coeffs is audio; a model
+    is audio iff any backend uses one — `cost.IsAudioType`). `/v1/models` (`handleModels`) and the
+    `overview` op (`ModelDef.Modality`) now carry `text|audio`; `recentActivity` exposes
+    `audioBytes`. UI: Overview model card shows an `audio` badge; the Activity table adds an Audio
+    (bytes) column and renders prompt/completion as `—` for audio rows (tokens N/A). `bin/gen`
+    re-run → SDL snapshot (`ui/gen/schema.graphql`) updated with `audioBytes: Long!` + `modality:
+    String!`; codegen/eslint/tsc/`vite build` clean. Tests: `cost.TestIsAudioType`-via-metering,
+    `api.TestOverviewAudioModality` + `TestOverview` (text), `TestRecentActivity` (audioBytes
+    carried). `go test -race ./...` green, gofmt clean.
+    *Deferred to opportunistic polish: per-`audio_bytes` SUMs in the rollup/usage ops
+    (`usageRollup`/`usageByKey`/`usageSeries`) — activity rows + catalog cover the P9d goal.*
+  - ☐ **P9e — Realtime WebSocket passthrough (live/conversational transcription).** A
+    **separate request edge** from P9a's file model: live mic transcription (OpenAI Realtime,
+    `wss://…/v1/realtime?model=…`) streams audio *in* continuously, so it **must not buffer the
+    request body** the way `handleInference` does (`proxy.go:97`). New `handleRealtime` that
+    **upgrades** the connection and lets the reverse proxy raw-copy bytes both ways (Go 1.26's
+    `httputil.ReverseProxy` already handles `Connection: Upgrade` — `newReverseProxy` works once
+    we skip the body read). **corrallm stays a transparent ws byte-pipe** with a clear division of
+    responsibility (confirmed by the user): **device/mic capture is the CLIENT's job** (corrallm
+    never manages live audio devices), and **VAD / overlap-window / commit-stitch (LocalAgreement)
+    is the BACKEND's job** (Riva / WhisperLive / a parakeet-streaming wrapper) — corrallm does
+    **neither**; it doesn't decode audio or tokenize (§7). It only upgrades, routes, schedules,
+    meters, and tears down. What's new vs P9a:
+    - **Model resolution from the query string** (`?model=`) — a third source after JSON body
+      field (chat) and multipart form field (P9a). Generalize `resolveRequest` accordingly.
+    - **Long-lived slot lifecycle** — a session holds one fairshare slot for its whole duration;
+      **`dwell` share currency** (P6) is the honest cost, not request-count. The 130s request
+      timeout must NOT apply — replace with an **idle/max-session timeout + reaper**. Preemption
+      reuses P5: `Admit`'s `reqCtx` cancel (cause `ErrPreempted`) tears down the upgraded conn and
+      frees the slot — streaming-safe cancel already proven for SSE; verify it fires on a hijacked
+      conn. Metering: no token usage in ws frames → meter **dwell + $** (session seconds/bytes,
+      P9c byte-basis); persist as one activity row at close.
+    - Mount `/v1/realtime` as the **scheduled** realtime path (distinct from the untracked
+      `/upstream/*` bypass, which is unscheduled).
+    - *Requires a realtime/ws ASR backend — parakeet is file-only, so like P9b's TTS this ships the
+      passthrough and the concrete backend is a separate decision (§7).*
+    - *DoD: 101 Switching-Protocols upgrade + bidirectional byte passthrough test (raw-conn echo
+      upstream, no ws client dep), slot held-for-session then released on close, preempt-aborts-session
+      test. `go build`/`vet`/`test -race` green.*
+
+  **P9 reuse note:** scheduler/residency/preemption/fairshare/limits need **no changes** — an
+  audio backend is a `cmd`+`proxy` entry with a `type`, slots, and pool `ramUsage` like any
+  other. The blast radius is `internal/proxy` (routing + multipart fork + binary metering),
+  `internal/cost` (byte-basis path), `internal/store` (one metered column), and the catalog/UI.
+
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
 ---
@@ -424,8 +523,34 @@ the BackpressureError shape we already validated.
   and backs off per its stage rather than spilling onto a worse model. Degrade transform = per-backend
   `maxTokens` clamp on the outgoing request (context-window clamp deferred — needs tokenization).
 
-### Still pending
-- (none block a roadmap phase — P0–P8 + P7 are shipped. Remaining ideas are optional/deferred below.)
+### Resolved this session (P9 scoping)
+- ✅ **Audio cost basis** — **file bytes** for v1 (deterministic, no extra dependency): STT $ by
+  uploaded-audio bytes, TTS $ by `input` chars / output bytes. True-duration costing (parse
+  `verbose_json`/SRT or add ffprobe) deferred to Optional extensions.
+- ✅ **TTS scope** — **STT now, TTS endpoint stub**: land transcriptions/translations + parakeet
+  fully (P9a/c/d); mount `/v1/audio/speech` wired to a configured remote/future TTS backend, optional
+  and untested until one is chosen (P9b). No TTS engine selection blocks the phase.
+- ✅ **Modality source** (P9d) — **inferred from cost class**: a backend `type` that declares audio
+  coeffs (`audioWhPerMiB`/`audioUSDPerMiB`) is an audio type; a model is `audio` iff any backend uses
+  one (`cost.IsAudioType`). Zero new config field. Known limitation: an audio model left **unpriced**
+  won't be flagged — pricing it (which production should) flags it. Revisit with an explicit optional
+  `modality` override only if an unpriced-audio case appears.
+
+### Still pending (P9 — surface before starting the sub-unit, don't guess)
+- ✅ **Multipart buffering strategy** (P9a) — **bounded in-memory buffer** (matches the JSON path,
+  which already buffers the whole body at `proxy.go:85`); bound = 64 MiB × concurrent audio slots,
+  fine on the 5090 box. Revisit (temp-file spool / stream-tee) only if audio concurrency grows.
+- ❓ **Concrete TTS backend** (P9b, USER call) — which engine `/v1/audio/speech` forwards to (OpenAI/
+  paid passthrough vs a future local TTS spawn). Only needed to make P9b non-stub; the route lands
+  regardless.
+- ❓ **Realtime ASR backend** (P9e, USER call) — which ws/streaming engine `/v1/realtime` forwards to
+  (NVIDIA Riva cache-aware streaming · WhisperLive · a parakeet-streaming wrapper). Parakeet's file
+  server can't do it. The passthrough ships regardless; only needed to make P9e non-stub. The
+  VAD/overlap/commit-stitch logic is the backend's, **not** corrallm's.
+- ❓ **Realtime slot model** (P9e, USER call) — does one live session = **one fairshare slot held for
+  its duration** (recommend) with **`dwell`** share currency, or a lighter accounting? Recommend
+  one-slot + dwell + idle/max-session timeout + preemptible; revisit if many concurrent sessions
+  starve interactive lanes.
 
 ### Optional extensions (improve the product; no planned phase requires them — pull in opportunistically)
 - **Stickiness/affinity weighting** — how strongly a warm backend overrides *ordered list*
@@ -442,6 +567,9 @@ the BackpressureError shape we already validated.
   background reaper that frees warm-but-expired models for power is not built.
 - **Dynamic footprint** — KV scales with slots×context; v1 reserves worst-case `ramUsage`;
   refine with `{base, perSlot}` later.
+- **Audio true-duration costing** (post-P9) — P9c costs audio by bytes; cost by actual seconds
+  needs duration: parse parakeet `verbose_json`/SRT, or add a local `ffprobe` dependency. Refine
+  the byte-basis once P9 is live and the byte→$ error matters.
 
 ### Deferred (out of scope until later)
 - **NUMA / interconnect** — per-NUMA system pools, PCIe/NVLink cost of multi-GPU splits.
@@ -487,7 +615,12 @@ the BackpressureError shape we already validated.
 ### Next steps
 - The full P0–P8 + P7 roadmap is shipped and live (§8). `/api` auth landed (`3e83001`) and cost
   coefficients are calibrated (per-backend `chat`/`embed` Wh/token, verified live). Open work:
-  1. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
+  1. **P9: audio modality** (in progress) — **P9a + P9c + P9d ✅ done** = the full **STT slice**
+     (multipart edge, parakeet routing, streaming passthrough, byte-basis cost, modality + audio-bytes
+     in catalog/UI; uncommitted). Remaining, both **blocked on a backend decision** (§7): **P9b**
+     (TTS endpoint stub — needs the TTS backend) and **P9e** (realtime ws passthrough — needs the
+     realtime backend + slot-model call). Surface each sub-unit's ❓ pending decisions when it begins.
+  2. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
   - OSS follow-ups (not blockers): auth multi-user accounts/roles + token rotation (today is a single
     shared admin token); rename the `WattsPerToken` cost fields to `WhPerToken`.
 - Optional polish in §7 Optional extensions (affinity weighting, context-window clamp on degrade,
