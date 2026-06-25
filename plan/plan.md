@@ -455,8 +455,22 @@ the BackpressureError shape we already validated.
     carried). `go test -race ./...` green, gofmt clean.
     *Deferred to opportunistic polish: per-`audio_bytes` SUMs in the rollup/usage ops
     (`usageRollup`/`usageByKey`/`usageSeries`) — activity rows + catalog cover the P9d goal.*
-  - ☐ **P9e — Realtime WebSocket passthrough (live/conversational transcription).** A
-    **separate request edge** from P9a's file model: live mic transcription (OpenAI Realtime,
+  - ◐ **P9e — Realtime WebSocket passthrough (live/conversational transcription).** **Proxy ✅ done
+    (not committed); Speaches backend install + ml-kit wiring + live validation remain.** New
+    `handleRealtime` (`/v1/realtime`): model from `?model=` query, ordered-backend admission holding
+    **one slot for the session**, then `proxyWebSocket` — a manual hijack + bidirectional `io.Copy`
+    (the request body is NOT buffered). Preemption teardown is explicit: a `<-ctx.Done()` goroutine
+    closes both conns when the slot is reclaimed (`ErrPreempted` → session logged 499) — the flagged
+    "does cancel fire on a hijacked conn" risk is **verified by test**. Metered by client→backend
+    bytes (audio in) → `AudioRequestUSD`; logged as one activity row on close (dwell = session). Tests:
+    `TestRealtimeWebSocketPassthrough` (raw-conn 101 upgrade + bidirectional echo, no ws client dep) +
+    `TestRealtimePreemptAbortsSession` (preempt tears down the hijacked conn, frees the slot, serves
+    the preemptor, logs 499). `go test -race` green. *Remaining: install Speaches (CPU, OpenAI
+    Realtime schema) under ml-kit `local/`, add a `realtime`/Speaches model to the config, validate
+    full-stack — like parakeet/kokoro. Idle/max-session timeout reaper still TODO (sessions currently
+    live until a side closes or preemption).*
+    <!-- original scope retained below -->
+    A **separate request edge** from P9a's file model: live mic transcription (OpenAI Realtime,
     `wss://…/v1/realtime?model=…`) streams audio *in* continuously, so it **must not buffer the
     request body** the way `handleInference` does (`proxy.go:97`). New `handleRealtime` that
     **upgrades** the connection and lets the reverse proxy raw-copy bytes both ways (Go 1.26's

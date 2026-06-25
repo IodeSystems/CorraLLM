@@ -1,12 +1,14 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1357,5 +1359,191 @@ func TestPayloadCaptureBinaryAudio(t *testing.T) {
 	}
 	if strings.Contains(full.ReqBody, "\x00") {
 		t.Errorf("raw audio bytes leaked into req body")
+	}
+}
+
+// TestRealtimeWebSocketPassthrough (P9e): a /v1/realtime upgrade routes through
+// corrallm to the backend, the 101 completes both ways, bytes pass bidirectionally,
+// and the session is metered (audio in = client→backend bytes) on close.
+func TestRealtimeWebSocketPassthrough(t *testing.T) {
+	// Backend: answers /health, else completes a ws upgrade and echoes bytes.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("backend not a hijacker")
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("backend hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		_, _ = io.Copy(conn, buf) // echo client→backend bytes back
+	}))
+	defer backend.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	r := chi.NewRouter()
+	New(mkConfig(t, "mock", backend.URL), mgr, sched.New(), st).Mount(r)
+	front := httptest.NewServer(r)
+	defer front.Close()
+
+	// Raw-conn WebSocket client: write the upgrade, read 101, exchange bytes.
+	host := strings.TrimPrefix(front.URL, "http://")
+	conn, err := net.Dial("tcp", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, _ = io.WriteString(conn, "GET /v1/realtime?model=mock HTTP/1.1\r\n"+
+		"Host: "+host+"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+
+	br := bufio.NewReader(conn)
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(statusLine, "101") {
+		t.Fatalf("want 101 upgrade, got %q", strings.TrimSpace(statusLine))
+	}
+	for { // drain upgrade headers to the blank line
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+
+	// Bidirectional: send, read it echoed back.
+	const msg = "audio-frame-bytes"
+	if _, err := io.WriteString(conn, msg); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(br, got); err != nil {
+		t.Fatalf("read echo: %v", err)
+	}
+	if string(got) != msg {
+		t.Errorf("echo = %q, want %q", got, msg)
+	}
+	_ = conn.Close() // ends the session → corrallm releases + logs
+
+	// The session is metered on close (poll — logging follows the copy returning).
+	var a store.Activity
+	for i := 0; i < 50; i++ {
+		if acts, _ := st.RecentActivity(1); len(acts) == 1 {
+			a = acts[0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.Served != "mock" || a.Path != "/v1/realtime" {
+		t.Fatalf("activity = %+v", a)
+	}
+	if a.AudioBytes < int64(len(msg)) {
+		t.Errorf("audio_bytes = %d, want >= %d (client→backend bytes)", a.AudioBytes, len(msg))
+	}
+}
+
+// TestRealtimePreemptAbortsSession (P9e DoD): a low, interruptible realtime
+// session holds the only slot; a higher-priority request preempts it. The
+// preemption must tear down the *hijacked* WebSocket conn (the flagged risk) —
+// freeing the slot for the preemptor and logging the session 499/preempted.
+func TestRealtimePreemptAbortsSession(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Header.Get("Upgrade") == "websocket" {
+			conn, buf, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+			_, _ = io.Copy(conn, buf) // hold until corrallm closes us on preemption
+			return
+		}
+		_, _ = w.Write([]byte(`{"served_by":"hi"}`)) // the preempting chat request
+	}))
+	defer backend.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+
+	cfg := &config.Config{
+		Models: map[string]config.Model{
+			"m": {Backends: []config.Backend{backendTo(t, backend.URL, "local")}},
+		},
+		PriorityGroups: map[string]config.PriorityGroup{
+			"lo": {Weight: 1, Interruptible: true,
+				OnSaturated: map[string]config.Stage{"default": {Reject: true}}},
+			"hi": {Weight: 10, OnSaturated: map[string]config.Stage{"local": {Preempt: true}}},
+		},
+		Keys: map[string]string{"lokey": "lo", "hikey": "hi"},
+	}
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+	front := httptest.NewServer(r)
+	defer front.Close()
+
+	// Low-priority realtime session occupies the only slot.
+	host := strings.TrimPrefix(front.URL, "http://")
+	conn, err := net.Dial("tcp", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, _ = io.WriteString(conn, "GET /v1/realtime?model=m HTTP/1.1\r\nHost: "+host+
+		"\r\nX-Corrallm-Key: lokey\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil || !strings.Contains(line, "101") {
+		t.Fatalf("lo session upgrade failed: %q (%v)", line, err)
+	}
+	// slot is now held by the lo session.
+
+	// Higher-priority chat preempts → must abort the lo ws session and be served.
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+	req.Header.Set("X-Corrallm-Key", "hikey")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"served_by":"hi"`) {
+		t.Fatalf("preemptor not served: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The aborted realtime session logs 499/preempted.
+	var rt store.Activity
+	for i := 0; i < 100; i++ {
+		acts, _ := st.RecentActivity(10)
+		for _, a := range acts {
+			if a.Path == "/v1/realtime" {
+				rt = a
+			}
+		}
+		if rt.Path != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rt.Path != "/v1/realtime" || rt.Status != 499 || rt.Error != "preempted" {
+		t.Errorf("realtime session row = %+v, want 499/preempted", rt)
 	}
 }

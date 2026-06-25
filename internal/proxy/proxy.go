@@ -8,6 +8,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -17,12 +18,14 @@ import (
 	"log/slog"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
@@ -118,6 +121,10 @@ func (p *Proxy) Mount(mux interface {
 	} {
 		mux.Handle(path, http.HandlerFunc(p.handleInference))
 	}
+	// /v1/realtime (P9e): live transcription over WebSocket. A SEPARATE edge from
+	// handleInference — it must NOT buffer the body; it upgrades the connection and
+	// proxies bytes both ways for the session's lifetime. Model comes from ?model=.
+	mux.Handle("/v1/realtime", http.HandlerFunc(p.handleRealtime))
 	// /v1/models is a catalog response synthesized from config, not proxied.
 	mux.Handle("/v1/models", http.HandlerFunc(p.handleModels))
 	// Non-inference UI/passthrough: /upstream/<model>/… serves UNTRACKED once
@@ -343,6 +350,178 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	p.log(store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
 		QueuedMS: queuedMS, Error: "no backend available", ReqBody: reqBody})
+}
+
+// handleRealtime is the live-transcription edge (P9e): a WebSocket session that
+// streams audio in and transcripts out for its whole lifetime. It resolves the
+// served model from the ?model= query (a continuous stream has no JSON body to
+// read), admits one fairshare slot held for the session, ensures the backend is
+// ready, then upgrades + byte-proxies until either side closes or the slot is
+// preempted. corrallm stays a transparent pipe — VAD/chunking live in the backend
+// (e.g. Speaches), device capture in the client.
+func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
+	served := r.URL.Query().Get("model")
+	if served == "" {
+		http.Error(w, `{"error":{"message":"missing \"model\" query param"}}`, http.StatusBadRequest)
+		return
+	}
+	model, ok := p.cfg.Models[served]
+	if !ok || len(model.Backends) == 0 {
+		http.Error(w, `{"error":{"message":"unknown model \"`+served+`\""}}`, http.StatusNotFound)
+		return
+	}
+
+	start := time.Now()
+	key := callerKey(r)
+	groupName, group := p.cfg.ResolveGroup(key)
+	weight := group.EffectiveWeight()
+	topQuality := config.MaxQuality(model.Backends)
+	ordered := orderBackends(model.Backends, p.nextRR(served))
+	var lastBP *sched.BackpressureError
+	var queuedMS int64
+
+	for _, idx := range ordered {
+		backend := model.Backends[idx]
+		if !group.AcceptsQuality(backend.Quality, topQuality) {
+			continue
+		}
+		name := fmt.Sprintf("%s#%d", served, idx)
+		stage := group.StageFor(backend.Type)
+
+		admitStart := time.Now()
+		release, reqCtx, err := p.sched.Admit(r.Context(), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
+		queuedMS = time.Since(admitStart).Milliseconds()
+		if err != nil {
+			var bp *sched.BackpressureError
+			if errors.As(err, &bp) {
+				if bp.Reason == "spill" {
+					lastBP = bp
+					continue
+				}
+				writeBackpressure(w, bp)
+				p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+					QueuedMS: queuedMS, Error: bp.Reason})
+				return
+			}
+			p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, Error: "client canceled"})
+			return
+		}
+		p.publish(events.Event{Type: "changed"})
+
+		pr, done, _, err := p.mgr.EnsureReady(reqCtx, name, served, backend)
+		if err != nil {
+			release()
+			slog.Warn("realtime backend unavailable, spilling", "backend", name, "err", err)
+			continue
+		}
+
+		// Proxy the session under reqCtx so a preemption (ErrPreempted) tears down
+		// the upgraded conn. Meter the audio streamed IN (client→backend bytes).
+		inBytes, wsErr := p.proxyWebSocket(w, r, pr.Target, reqCtx)
+		done()
+		status, errReason := 200, ""
+		switch {
+		case errors.Is(context.Cause(reqCtx), sched.ErrPreempted):
+			status, errReason = 499, "preempted"
+		case wsErr != nil:
+			status, errReason = http.StatusBadGateway, wsErr.Error()
+		}
+		costUSD := p.cost.AudioRequestUSD(backend.Type, int(inBytes))
+		release(sched.Done{CostUSD: costUSD})
+		p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+			Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
+			AudioBytes: inBytes, CostUSD: costUSD, Error: errReason})
+		return
+	}
+
+	if lastBP != nil {
+		lastBP.Reason = "exhausted"
+		writeBackpressure(w, lastBP)
+		p.log(store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+			QueuedMS: queuedMS, Error: "exhausted"})
+		return
+	}
+	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
+	p.log(store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
+		QueuedMS: queuedMS, Error: "no backend available"})
+}
+
+// proxyWebSocket completes a WebSocket upgrade against the target and copies bytes
+// both ways until either side closes or ctx is canceled (preemption/shutdown closes
+// both conns). Returns the client→backend byte count (audio in) for metering.
+func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config.ProxyTarget, ctx context.Context) (int64, error) {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return 0, errors.New("response writer is not a Hijacker")
+	}
+	backConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", t.URL.Host)
+	if err != nil {
+		http.Error(w, "backend unavailable", http.StatusBadGateway)
+		return 0, err
+	}
+	defer func() { _ = backConn.Close() }()
+
+	// Forward the upgrade request to the backend (auth headers injected for remote).
+	out := r.Clone(ctx)
+	out.URL.Scheme, out.URL.Host, out.Host = t.URL.Scheme, t.URL.Host, t.URL.Host
+	for k, v := range t.Headers {
+		out.Header.Set(k, v)
+	}
+	if err := out.Write(backConn); err != nil {
+		http.Error(w, "backend write", http.StatusBadGateway)
+		return 0, err
+	}
+	backRd := bufio.NewReader(backConn)
+	resp, err := http.ReadResponse(backRd, out)
+	if err != nil {
+		http.Error(w, "backend read", http.StatusBadGateway)
+		return 0, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		// Backend declined the upgrade — relay its response verbatim and stop.
+		for k, vs := range resp.Header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+		_ = resp.Body.Close()
+		return 0, fmt.Errorf("backend refused upgrade: %s", resp.Status)
+	}
+
+	cliConn, cliRW, err := hj.Hijack()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = cliConn.Close() }()
+	// Complete the handshake to the client (101 + the backend's upgrade headers).
+	if _, err := fmt.Fprint(cliConn, "HTTP/1.1 101 Switching Protocols\r\n"); err != nil {
+		return 0, err
+	}
+	_ = resp.Header.Write(cliConn)
+	if _, err := fmt.Fprint(cliConn, "\r\n"); err != nil {
+		return 0, err
+	}
+
+	// Tear down both ends when the slot is preempted or the server shuts down.
+	go func() {
+		<-ctx.Done()
+		_ = backConn.Close()
+		_ = cliConn.Close()
+	}()
+
+	var inBytes int64
+	errc := make(chan error, 2)
+	go func() { n, e := io.Copy(backConn, cliRW); atomic.AddInt64(&inBytes, n); errc <- e }() // client→backend (audio)
+	go func() { _, e := io.Copy(cliConn, backRd); errc <- e }()                               // backend→client (transcripts)
+	<-errc                                                                                    // first side to close ends the session
+	return atomic.LoadInt64(&inBytes), nil
 }
 
 // orderBackends returns config indices in fall-through order: highest quality
