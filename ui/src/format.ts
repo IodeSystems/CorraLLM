@@ -41,3 +41,17 @@ export function fmtInt(nStr: string | number): string {
   const n = typeof nStr === 'string' ? Number(nStr) : nStr
   return Number.isFinite(n) ? n.toLocaleString() : '—'
 }
+
+// capLabel shortens a capability for a chip, keeping STT and TTS distinct.
+export function capLabel(c?: string): string {
+  switch (c) {
+    case 'audio.stt':
+      return 'stt'
+    case 'audio.tts':
+      return 'tts'
+    case 'embeddings':
+      return 'embed'
+    default:
+      return c || 'chat'
+  }
+}

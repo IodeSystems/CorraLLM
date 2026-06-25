@@ -382,9 +382,11 @@ type corrallm_ModelActionOutputBody {
 type corrallm_ModelDef {
   """Ordered backend list."""
   backends: [corrallm_BackendDef!]!
+  """chat|embeddings|audio.stt|audio.tts|rerank (STT/TTS kept distinct)."""
+  capability: String!
   """Eviction resistance (sticky)."""
   evictCost: String!
-  """text|audio, inferred from backend cost class (P9d)."""
+  """text|audio coarse bucket (P9d)."""
   modality: String!
   """Served model name."""
   name: String!

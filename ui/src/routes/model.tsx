@@ -17,11 +17,13 @@ import {
   TableRow,
   Tabs,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { fmtDuration, fmtInt, fmtUSD } from '@/format'
+import { capLabel, fmtDuration, fmtInt, fmtUSD } from '@/format'
 
 // --- data ---------------------------------------------------------------
 
@@ -32,6 +34,7 @@ const ConsoleDoc = graphql(/* GraphQL */ `
         models {
           name
           modality
+          capability
           persistent
           ttl
           backends {
@@ -136,7 +139,10 @@ function ModelConsole() {
 
   const model = (ov.data?.corrallm.overview?.models ?? []).find((m) => m.name === name)
   const res = (ov.data?.corrallm.residency?.models ?? []).find((m) => m.modelName === name)
-  const capability = capabilityOf(caps.data, name)
+  // Capability comes from the model data itself (reliable) — NOT the async
+  // /v1/capabilities fetch, which would briefly mis-dispatch (e.g. show a chat box
+  // for an STT model) until it loaded.
+  const capability = model?.capability ?? capabilityOf(caps.data, name)
 
   if (ov.isLoading) {
     return (
@@ -164,8 +170,7 @@ function ModelConsole() {
         </Button>
         <Typography variant="h6">{name}</Typography>
         <Chip size="small" label={res?.state ?? 'absent'} />
-        <Chip size="small" color="info" variant="outlined" label={capability} />
-        {model.modality === 'audio' && <Chip size="small" color="info" variant="outlined" label="audio" />}
+        <Chip size="small" color="info" variant="outlined" label={capLabel(capability)} />
         {model.persistent && <Chip size="small" variant="outlined" label="pinned" />}
       </Stack>
 
@@ -194,7 +199,7 @@ function ModelConsole() {
 // --- Info ---------------------------------------------------------------
 
 type Backend = { index: string; type: string; quality: string; target: string; cmd: string; maxConcurrent: string }
-type OvModel = { name: string; modality: string; persistent: boolean; backends: Backend[] }
+type OvModel = { name: string; modality: string; capability: string; persistent: boolean; backends: Backend[] }
 type ResModel = { name: string; modelName: string; state: string; hasUi: string; nCtx: string; nSlots: string }
 
 function InfoTab({
@@ -363,14 +368,88 @@ function TestTab({
   )
 }
 
-// Voice: mic → STT (this model), then optionally speak the transcript back via a
-// TTS model — a full browser voice loop over the Web Audio + MediaRecorder APIs.
+// SpeakBack: synthesize given text through a chosen TTS model and play it — the
+// "→ TTS" half of the voice loop, shared by the batch + realtime STT views.
+function SpeakBack({ text, ttsModels }: { text: string; ttsModels: string[] }) {
+  const [ttsModel, setTtsModel] = useState(ttsModels[0] ?? '')
+  const [err, setErr] = useState('')
+  async function speak() {
+    if (!ttsModel || !text) return
+    setErr('')
+    try {
+      const r = await fetch('/v1/audio/speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: ttsModel, input: text, voice: 'af_heart', response_format: 'mp3' }),
+      })
+      if (!r.ok) {
+        setErr(`tts ${r.status}: ${await r.text()}`)
+        return
+      }
+      await new Audio(URL.createObjectURL(await r.blob())).play()
+    } catch (e) {
+      setErr(String(e))
+    }
+  }
+  if (!ttsModels.length) return null
+  return (
+    <Stack direction="row" spacing={1} alignItems="center">
+      <Button variant="outlined" onClick={() => void speak()} disabled={!text}>
+        🔊 Speak it back
+      </Button>
+      <TextField
+        select
+        size="small"
+        sx={{ width: 220 }}
+        label="TTS model"
+        value={ttsModel}
+        onChange={(e) => setTtsModel(e.target.value)}
+        slotProps={{ select: { native: true } }}
+      >
+        {ttsModels.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+      </TextField>
+      {err && <Typography color="error" variant="caption">{err}</Typography>}
+    </Stack>
+  )
+}
+
+// STT playground: batch (record a clip → upload) or realtime (live ws streaming),
+// either feeding the optional speak-it-back TTS loop. Mic needs a secure context.
 function SttPlayground({ model, ttsModels }: { model: string; ttsModels: string[] }) {
+  const [mode, setMode] = useState<'batch' | 'realtime'>('batch')
+  if (typeof window !== 'undefined' && !window.isSecureContext) {
+    return (
+      <Typography color="warning.main" variant="body2">
+        The microphone needs a <b>secure context</b> — open the dashboard over <b>https</b> (e.g.
+        https://llm.iodesystems.com). Plain http blocks <code>getUserMedia</code>.
+      </Typography>
+    )
+  }
+  return (
+    <Stack spacing={2}>
+      <ToggleButtonGroup size="small" exclusive value={mode} onChange={(_, v) => v && setMode(v)}>
+        <ToggleButton value="batch">Batch · record → upload</ToggleButton>
+        <ToggleButton value="realtime">Realtime · live ws</ToggleButton>
+      </ToggleButtonGroup>
+      {mode === 'batch' ? (
+        <BatchStt model={model} ttsModels={ttsModels} />
+      ) : (
+        <RealtimeStt model={model} ttsModels={ttsModels} />
+      )}
+    </Stack>
+  )
+}
+
+// Batch STT: record a clip with MediaRecorder, POST it to /v1/audio/transcriptions.
+function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) {
   const [recording, setRecording] = useState(false)
   const [busy, setBusy] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [err, setErr] = useState('')
-  const [ttsModel, setTtsModel] = useState(ttsModels[0] ?? '')
   const [key, setKey] = useState('')
   const recRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -384,7 +463,7 @@ function SttPlayground({ model, ttsModels }: { model: string; ttsModels: string[
       rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data)
       rec.onstop = () => {
         stream.getTracks().forEach((t) => t.stop())
-        void transcribe(new Blob(chunksRef.current, { type: rec.mimeType }))
+        void transcribe(new Blob(chunksRef.current, { type: rec.mimeType }), rec.mimeType)
       }
       recRef.current = rec
       rec.start()
@@ -398,13 +477,16 @@ function SttPlayground({ model, ttsModels }: { model: string; ttsModels: string[
     setRecording(false)
   }
 
-  async function transcribe(blob: Blob) {
+  async function transcribe(blob: Blob, mime: string) {
     setBusy(true)
     setErr('')
     try {
       const fd = new FormData()
       fd.append('model', model)
-      fd.append('file', blob, 'recording.webm')
+      // name the part with an extension matching the actual mime so ffmpeg/the
+      // backend demuxes it correctly across browsers (webm/ogg/mp4).
+      const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm'
+      fd.append('file', blob, `recording.${ext}`)
       const headers: Record<string, string> = {}
       if (key) headers.Authorization = `Bearer ${key}`
       const r = await fetch('/v1/audio/transcriptions', { method: 'POST', headers, body: fd })
@@ -418,27 +500,6 @@ function SttPlayground({ model, ttsModels }: { model: string; ttsModels: string[
       setErr(String(e))
     } finally {
       setBusy(false)
-    }
-  }
-
-  async function speak() {
-    if (!ttsModel || !transcript) return
-    setErr('')
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (key) headers.Authorization = `Bearer ${key}`
-      const r = await fetch('/v1/audio/speech', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ model: ttsModel, input: transcript, voice: 'af_heart', response_format: 'mp3' }),
-      })
-      if (!r.ok) {
-        setErr(`tts ${r.status}: ${await r.text()}`)
-        return
-      }
-      await new Audio(URL.createObjectURL(await r.blob())).play()
-    } catch (e) {
-      setErr(String(e))
     }
   }
 
@@ -461,28 +522,112 @@ function SttPlayground({ model, ttsModels }: { model: string; ttsModels: string[
         <Typography variant="subtitle2">Transcript</Typography>
         <Box component="pre" sx={preSx}>{transcript || (busy ? 'transcribing…' : '—')}</Box>
       </Box>
-      {ttsModels.length > 0 && (
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Button variant="outlined" onClick={() => void speak()} disabled={!transcript}>
-            🔊 Speak it back
+      <SpeakBack text={transcript} ttsModels={ttsModels} />
+      {err && <Typography color="error" variant="body2">{err}</Typography>}
+    </Stack>
+  )
+}
+
+// Realtime STT: stream mic audio (PCM16 @ 24 kHz, base64) over the OpenAI Realtime
+// transcription ws to /v1/realtime, appending each finalized transcript segment.
+// (Works only against a realtime-capable backend, e.g. Speaches — not batch-only
+// parakeet, which will refuse the upgrade.) ws can't set headers → default lane.
+function RealtimeStt({ model, ttsModels }: { model: string; ttsModels: string[] }) {
+  const [live, setLive] = useState(false)
+  const [transcript, setTranscript] = useState('')
+  const [err, setErr] = useState('')
+  const wsRef = useRef<WebSocket | null>(null)
+  const ctxRef = useRef<AudioContext | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const procRef = useRef<ScriptProcessorNode | null>(null)
+
+  function stop() {
+    procRef.current?.disconnect()
+    void ctxRef.current?.close()
+    streamRef.current?.getTracks().forEach((t) => t.stop())
+    wsRef.current?.close()
+    procRef.current = null
+    setLive(false)
+  }
+  useEffect(() => stop, [])
+
+  async function start() {
+    setErr('')
+    setTranscript('')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+      const ctx = new AudioContext({ sampleRate: 24000 })
+      ctxRef.current = ctx
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+      const ws = new WebSocket(`${proto}://${location.host}/v1/realtime?model=${encodeURIComponent(model)}&intent=transcription`)
+      wsRef.current = ws
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            type: 'session.update',
+            session: { input_audio_transcription: { model }, turn_detection: { type: 'server_vad' } },
+          }),
+        )
+        const src = ctx.createMediaStreamSource(stream)
+        const proc = ctx.createScriptProcessor(4096, 1, 1)
+        procRef.current = proc
+        proc.onaudioprocess = (e) => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          const f32 = e.inputBuffer.getChannelData(0)
+          const i16 = new Int16Array(f32.length)
+          for (let i = 0; i < f32.length; i++) {
+            const s = Math.max(-1, Math.min(1, f32[i]))
+            i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+          }
+          const bytes = new Uint8Array(i16.buffer)
+          let bin = ''
+          for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+          ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: btoa(bin) }))
+        }
+        src.connect(proc)
+        proc.connect(ctx.destination)
+      }
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data)
+          if (m.type === 'conversation.item.input_audio_transcription.completed') {
+            setTranscript((t) => (t + ' ' + (m.transcript ?? '')).trim())
+          } else if (m.type === 'error') {
+            setErr(JSON.stringify(m.error ?? m))
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      ws.onerror = () => setErr('websocket error — does this model support realtime? (parakeet is batch-only)')
+      ws.onclose = () => setLive(false)
+      setLive(true)
+    } catch (e) {
+      setErr(String(e))
+      stop()
+    }
+  }
+
+  return (
+    <Stack spacing={2}>
+      <Stack direction="row" spacing={1} alignItems="center">
+        {live ? (
+          <Button variant="contained" color="error" onClick={stop}>
+            ■ Stop
           </Button>
-          <TextField
-            select
-            size="small"
-            sx={{ width: 220 }}
-            label="TTS model"
-            value={ttsModel}
-            onChange={(e) => setTtsModel(e.target.value)}
-            slotProps={{ select: { native: true } }}
-          >
-            {ttsModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </TextField>
-        </Stack>
-      )}
+        ) : (
+          <Button variant="contained" onClick={() => void start()}>
+            ● Go live
+          </Button>
+        )}
+        {live && <CircularProgress size={20} />}
+      </Stack>
+      <Box>
+        <Typography variant="subtitle2">Live transcript</Typography>
+        <Box component="pre" sx={preSx}>{transcript || (live ? 'listening…' : '—')}</Box>
+      </Box>
+      <SpeakBack text={transcript} ttsModels={ttsModels} />
       {err && <Typography color="error" variant="body2">{err}</Typography>}
     </Stack>
   )

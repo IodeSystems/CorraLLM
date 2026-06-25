@@ -833,7 +833,8 @@ type ModelDef struct {
 	TTL        string       `json:"ttl" doc:"Idle keep-warm window (sticky)."`
 	EvictCost  string       `json:"evictCost" doc:"Eviction resistance (sticky)."`
 	Spawnable  bool         `json:"spawnable" doc:"Has at least one spawnable backend."`
-	Modality   string       `json:"modality" doc:"text|audio, inferred from backend cost class (P9d)."`
+	Modality   string       `json:"modality" doc:"text|audio coarse bucket (P9d)."`
+	Capability string       `json:"capability" doc:"chat|embeddings|audio.stt|audio.tts|rerank (STT/TTS kept distinct)."`
 	Backends   []BackendDef `json:"backends" doc:"Ordered backend list."`
 }
 
@@ -918,7 +919,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 
 	costModel := cost.NewModel(h.Cfg) // modality inference (P9d): audio cost class ⇒ audio model
 	for name, m := range h.Cfg.Models {
-		md := ModelDef{Name: name, Persistent: m.Persistent, Modality: "text"}
+		md := ModelDef{Name: name, Persistent: m.Persistent, Modality: "text", Capability: config.ModelCapability(m)}
 		if m.Sticky != nil {
 			md.TTL, md.EvictCost = m.Sticky.TTL, m.Sticky.EvictCost
 		}

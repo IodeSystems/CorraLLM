@@ -25,7 +25,7 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { fmtBytes, fmtInt } from '@/format'
+import { capLabel, fmtBytes, fmtInt } from '@/format'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -51,6 +51,7 @@ const OverviewDoc = graphql(/* GraphQL */ `
           evictCost
           spawnable
           modality
+          capability
           backends {
             index
             type
@@ -286,9 +287,7 @@ function Home() {
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                     <Typography variant="subtitle1">{m.name}</Typography>
                     <Chip size="small" label={st?.state ?? 'absent'} color={stateColor(st?.state)} />
-                    {m.modality === 'audio' && (
-                      <Chip size="small" color="info" variant="outlined" label="audio" />
-                    )}
+                    <Chip size="small" color="info" variant="outlined" label={capLabel(m.capability)} />
                     {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
                     {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
                     {st && Number(st.nCtx) > 0 && (

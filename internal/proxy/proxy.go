@@ -756,7 +756,8 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Backends      int      `json:"backends"`                 // backend count
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
 		ContextLength int      `json:"context_length,omitempty"` // parsed n_ctx (if resident)
-		Modality      string   `json:"modality"`                 // text|audio (P9d, from cost class)
+		Modality      string   `json:"modality"`                 // text|audio (P9d, coarse bucket)
+		Capability    string   `json:"capability"`               // chat|embeddings|audio.stt|audio.tts|rerank
 	}
 	out := struct {
 		Object string  `json:"object"`
@@ -787,7 +788,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: "absent", Quality: config.MaxQuality(mc.Backends),
 			Types: types, Backends: len(mc.Backends), Persistent: mc.Persistent,
-			Modality: modality,
+			Modality: modality, Capability: config.ModelCapability(mc),
 		}
 		if r, ok := resident[name]; ok {
 			e.State = r.State
@@ -797,37 +798,6 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
-}
-
-// capabilityForType classifies a served model from its (primary) backend cost
-// class — the same convention modality is inferred from (P9d). Drives the
-// /v1/capabilities grouping and the UI's per-model capability label.
-func capabilityForType(typ string) string {
-	t := strings.ToLower(typ)
-	switch {
-	case strings.Contains(t, "tts") || strings.Contains(t, "speech"):
-		return "audio.tts"
-	case strings.Contains(t, "stt") || strings.Contains(t, "asr") ||
-		strings.Contains(t, "whisper") || strings.Contains(t, "transcri") || strings.Contains(t, "parakeet"):
-		return "audio.stt"
-	case strings.Contains(t, "embed"):
-		return "embeddings"
-	case strings.Contains(t, "rerank"):
-		return "rerank"
-	default:
-		return "chat"
-	}
-}
-
-// modelCapability is a model's capability — the first backend type that resolves
-// to a non-chat capability wins (a model is rarely mixed); else "chat".
-func modelCapability(m config.Model) string {
-	for _, b := range m.Backends {
-		if c := capabilityForType(b.Type); c != "chat" {
-			return c
-		}
-	}
-	return "chat"
 }
 
 // handleCapabilities returns the public self-describing manifest: the OpenAI
@@ -850,7 +820,7 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		c := modelCapability(p.cfg.Models[name])
+		c := config.ModelCapability(p.cfg.Models[name])
 		byCap[c] = append(byCap[c], name)
 	}
 	pick := func(caps ...string) string {

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -103,6 +104,38 @@ func MaxQuality(bs []Backend) int {
 		}
 	}
 	return top
+}
+
+// Capability classifies a backend cost-class `type` into the operation it serves,
+// the same convention modality is inferred from. STT and TTS are kept DISTINCT
+// (speech-in vs speech-out) — never lumped as "audio". Drives /v1/models,
+// /v1/capabilities, and the dashboard so clients/LLMs pick the right model.
+func Capability(typ string) string {
+	t := strings.ToLower(typ)
+	switch {
+	case strings.Contains(t, "tts") || strings.Contains(t, "speech"):
+		return "audio.tts"
+	case strings.Contains(t, "stt") || strings.Contains(t, "asr") ||
+		strings.Contains(t, "whisper") || strings.Contains(t, "transcri") || strings.Contains(t, "parakeet"):
+		return "audio.stt"
+	case strings.Contains(t, "embed"):
+		return "embeddings"
+	case strings.Contains(t, "rerank"):
+		return "rerank"
+	default:
+		return "chat"
+	}
+}
+
+// ModelCapability is a served model's capability — the first backend type that
+// resolves to a non-chat capability wins; else "chat".
+func ModelCapability(m Model) string {
+	for _, b := range m.Backends {
+		if c := Capability(b.Type); c != "chat" {
+			return c
+		}
+	}
+	return "chat"
 }
 
 // Swap is the measured cost of loading a backend (residency input, P4). P6 adds
