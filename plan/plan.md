@@ -590,7 +590,11 @@ the BackpressureError shape we already validated.
     - ✅ **chat** — streaming chat playground in the Test tab; **flex column-reverse** message list
       (newest pins to bottom), SSE delta parsing, optional lane-key field. Built + typechecked (not
       yet live-smoke-tested against a chat backend).
-    - ☐ **voice (STT↔TTS loop)** · ☐ **image/vision** — next.
+    - ✅ **voice (STT↔TTS loop)** — Test tab for audio models. STT: mic capture
+      (`getUserMedia`+`MediaRecorder`) → `/v1/audio/transcriptions` → transcript, then **"speak it
+      back"** via a chosen TTS model → `/v1/audio/speech` → `Audio()` playback (a full browser voice
+      loop). TTS: text → speak. tsc/eslint/build clean.
+    - ☐ **image/vision** — next.
   - ☐ **P11e — Replay an activity into the console.** From the activity detail modal (P10c), a
     "Replay in console" action opens the served model's console Test tab **pre-filled with that
     request's captured payload** (P10b `reqBody`) so it can be re-run/tweaked to debug. Best for

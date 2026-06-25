@@ -163,7 +163,13 @@ function ModelConsole() {
       </Tabs>
 
       {tab === 0 && <InfoTab model={model} res={res} caps={caps.data} name={name} />}
-      {tab === 1 && <TestTab capability={capability} model={name} />}
+      {tab === 1 && (
+        <TestTab
+          capability={capability}
+          model={name}
+          ttsModels={caps.data?.models_by_capability?.['audio.tts'] ?? []}
+        />
+      )}
       {tab === 2 && <LogsTab backend={res?.name ?? `${name}#0`} ready={!!res} />}
       {tab === 3 && <UsageTab name={name} />}
     </Box>
@@ -321,12 +327,185 @@ function UsageTab({ name }: { name: string }) {
 
 // --- Test (playgrounds) -------------------------------------------------
 
-function TestTab({ capability, model }: { capability: string; model: string }) {
+function TestTab({ capability, model, ttsModels }: { capability: string; model: string; ttsModels: string[] }) {
   if (capability === 'chat') return <ChatPlayground model={model} />
+  if (capability === 'audio.stt') return <SttPlayground model={model} ttsModels={ttsModels} />
+  if (capability === 'audio.tts') return <TtsPlayground model={model} />
   return (
     <Typography color="text.secondary">
       A {capability} playground is coming. For now see the Info tab's example requests.
     </Typography>
+  )
+}
+
+// Voice: mic → STT (this model), then optionally speak the transcript back via a
+// TTS model — a full browser voice loop over the Web Audio + MediaRecorder APIs.
+function SttPlayground({ model, ttsModels }: { model: string; ttsModels: string[] }) {
+  const [recording, setRecording] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [transcript, setTranscript] = useState('')
+  const [err, setErr] = useState('')
+  const [ttsModel, setTtsModel] = useState(ttsModels[0] ?? '')
+  const [key, setKey] = useState('')
+  const recRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+
+  async function start() {
+    setErr('')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const rec = new MediaRecorder(stream)
+      chunksRef.current = []
+      rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data)
+      rec.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop())
+        void transcribe(new Blob(chunksRef.current, { type: rec.mimeType }))
+      }
+      recRef.current = rec
+      rec.start()
+      setRecording(true)
+    } catch (e) {
+      setErr(`mic error: ${String(e)}`)
+    }
+  }
+  function stop() {
+    recRef.current?.stop()
+    setRecording(false)
+  }
+
+  async function transcribe(blob: Blob) {
+    setBusy(true)
+    setErr('')
+    try {
+      const fd = new FormData()
+      fd.append('model', model)
+      fd.append('file', blob, 'recording.webm')
+      const headers: Record<string, string> = {}
+      if (key) headers.Authorization = `Bearer ${key}`
+      const r = await fetch('/v1/audio/transcriptions', { method: 'POST', headers, body: fd })
+      if (!r.ok) {
+        setErr(`${r.status}: ${await r.text()}`)
+        return
+      }
+      const j = await r.json()
+      setTranscript(String(j.text ?? JSON.stringify(j)))
+    } catch (e) {
+      setErr(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function speak() {
+    if (!ttsModel || !transcript) return
+    setErr('')
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (key) headers.Authorization = `Bearer ${key}`
+      const r = await fetch('/v1/audio/speech', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: ttsModel, input: transcript, voice: 'af_heart', response_format: 'mp3' }),
+      })
+      if (!r.ok) {
+        setErr(`tts ${r.status}: ${await r.text()}`)
+        return
+      }
+      await new Audio(URL.createObjectURL(await r.blob())).play()
+    } catch (e) {
+      setErr(String(e))
+    }
+  }
+
+  return (
+    <Stack spacing={2}>
+      <Stack direction="row" spacing={1} alignItems="center">
+        {recording ? (
+          <Button variant="contained" color="error" onClick={stop}>
+            ■ Stop
+          </Button>
+        ) : (
+          <Button variant="contained" onClick={() => void start()} disabled={busy}>
+            ● Record
+          </Button>
+        )}
+        {busy && <CircularProgress size={20} />}
+        <TextField size="small" sx={{ width: 160 }} placeholder="lane key (opt)" value={key} onChange={(e) => setKey(e.target.value)} />
+      </Stack>
+      <Box>
+        <Typography variant="subtitle2">Transcript</Typography>
+        <Box component="pre" sx={preSx}>{transcript || (busy ? 'transcribing…' : '—')}</Box>
+      </Box>
+      {ttsModels.length > 0 && (
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Button variant="outlined" onClick={() => void speak()} disabled={!transcript}>
+            🔊 Speak it back
+          </Button>
+          <TextField
+            select
+            size="small"
+            sx={{ width: 220 }}
+            label="TTS model"
+            value={ttsModel}
+            onChange={(e) => setTtsModel(e.target.value)}
+            slotProps={{ select: { native: true } }}
+          >
+            {ttsModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </TextField>
+        </Stack>
+      )}
+      {err && <Typography color="error" variant="body2">{err}</Typography>}
+    </Stack>
+  )
+}
+
+// Text-to-speech: type text → synthesize → play through the speaker.
+function TtsPlayground({ model }: { model: string }) {
+  const [text, setText] = useState('Hello from corrallm.')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [key, setKey] = useState('')
+
+  async function speak() {
+    if (!text.trim()) return
+    setBusy(true)
+    setErr('')
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (key) headers.Authorization = `Bearer ${key}`
+      const r = await fetch('/v1/audio/speech', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model, input: text, voice: 'af_heart', response_format: 'mp3' }),
+      })
+      if (!r.ok) {
+        setErr(`${r.status}: ${await r.text()}`)
+        return
+      }
+      await new Audio(URL.createObjectURL(await r.blob())).play()
+    } catch (e) {
+      setErr(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Stack spacing={2}>
+      <TextField multiline minRows={3} fullWidth value={text} onChange={(e) => setText(e.target.value)} placeholder="Text to speak…" />
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Button variant="contained" onClick={() => void speak()} disabled={busy}>
+          🔊 Speak
+        </Button>
+        {busy && <CircularProgress size={20} />}
+        <TextField size="small" sx={{ width: 160 }} placeholder="lane key (opt)" value={key} onChange={(e) => setKey(e.target.value)} />
+      </Stack>
+      {err && <Typography color="error" variant="body2">{err}</Typography>}
+    </Stack>
   )
 }
 
