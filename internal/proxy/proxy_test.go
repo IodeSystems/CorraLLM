@@ -1608,3 +1608,68 @@ func TestRealtimeIdleReaper(t *testing.T) {
 		t.Errorf("reaped row = %+v, want 408/idle timeout", a)
 	}
 }
+
+// TestCapabilitiesManifest: /v1/capabilities is public, groups models by
+// capability (inferred from cost class), lists endpoints with examples, and shows
+// lanes WITHOUT exposing API keys.
+func TestCapabilitiesManifest(t *testing.T) {
+	cfg := &config.Config{
+		CommandCosts: map[string]map[string]any{
+			"stt": {"audioWhPerMiB": 0.03}, "tts": {"audioWhPerMiB": 0.05},
+		},
+		Models: map[string]config.Model{
+			"qwen":     {Backends: []config.Backend{{Type: "chat"}}},
+			"nomic":    {Backends: []config.Backend{{Type: "embed"}}},
+			"parakeet": {Backends: []config.Backend{{Type: "stt"}}},
+			"kokoro":   {Backends: []config.Backend{{Type: "tts"}}},
+		},
+		PriorityGroups: map[string]config.PriorityGroup{
+			"interactive": {Weight: 10, Interruptible: false},
+		},
+		Keys: map[string]string{"secret-key-aw3": "interactive"},
+	}
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var m struct {
+		Service            string              `json:"service"`
+		ModelsByCapability map[string][]string `json:"models_by_capability"`
+		Endpoints          []struct {
+			Path       string `json:"path"`
+			Capability string `json:"capability"`
+		} `json:"endpoints"`
+		Lanes []struct {
+			Name   string `json:"name"`
+			Weight int    `json:"weight"`
+		} `json:"lanes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Service != "corrallm" {
+		t.Errorf("service = %q", m.Service)
+	}
+	if got := m.ModelsByCapability; len(got["chat"]) != 1 || len(got["embeddings"]) != 1 ||
+		len(got["audio.stt"]) != 1 || len(got["audio.tts"]) != 1 {
+		t.Errorf("capability grouping = %+v", got)
+	}
+	if len(m.Endpoints) < 8 {
+		t.Errorf("want the full endpoint surface, got %d", len(m.Endpoints))
+	}
+	if len(m.Lanes) != 1 || m.Lanes[0].Name != "interactive" || m.Lanes[0].Weight != 10 {
+		t.Errorf("lanes = %+v", m.Lanes)
+	}
+	// API keys must NEVER appear in the public manifest.
+	if strings.Contains(rec.Body.String(), "secret-key-aw3") {
+		t.Error("API key leaked into /v1/capabilities")
+	}
+}

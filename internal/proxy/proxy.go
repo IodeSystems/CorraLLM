@@ -137,6 +137,10 @@ func (p *Proxy) Mount(mux interface {
 	mux.Handle("/v1/realtime", http.HandlerFunc(p.handleRealtime))
 	// /v1/models is a catalog response synthesized from config, not proxied.
 	mux.Handle("/v1/models", http.HandlerFunc(p.handleModels))
+	// /v1/capabilities is a public, self-describing manifest (endpoints + models by
+	// capability + lanes + examples) — point an LLM/client at it to build a
+	// compatible client. Synthesized from config; never exposes API keys.
+	mux.Handle("/v1/capabilities", http.HandlerFunc(p.handleCapabilities))
 	// Non-inference UI/passthrough: /upstream/<model>/… serves UNTRACKED once
 	// the backend is up — it must not consume admission/concurrency (the
 	// gatedPaths lesson, structural here). No activity log, no scheduling.
@@ -793,6 +797,161 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// capabilityForType classifies a served model from its (primary) backend cost
+// class — the same convention modality is inferred from (P9d). Drives the
+// /v1/capabilities grouping and the UI's per-model capability label.
+func capabilityForType(typ string) string {
+	t := strings.ToLower(typ)
+	switch {
+	case strings.Contains(t, "tts") || strings.Contains(t, "speech"):
+		return "audio.tts"
+	case strings.Contains(t, "stt") || strings.Contains(t, "asr") ||
+		strings.Contains(t, "whisper") || strings.Contains(t, "transcri") || strings.Contains(t, "parakeet"):
+		return "audio.stt"
+	case strings.Contains(t, "embed"):
+		return "embeddings"
+	case strings.Contains(t, "rerank"):
+		return "rerank"
+	default:
+		return "chat"
+	}
+}
+
+// modelCapability is a model's capability — the first backend type that resolves
+// to a non-chat capability wins (a model is rarely mixed); else "chat".
+func modelCapability(m config.Model) string {
+	for _, b := range m.Backends {
+		if c := capabilityForType(b.Type); c != "chat" {
+			return c
+		}
+	}
+	return "chat"
+}
+
+// handleCapabilities returns the public self-describing manifest: the OpenAI
+// surface corrallm fronts, the served models grouped by capability, the fairshare
+// lanes (policy only — never the keys), and a runnable example per endpoint with
+// real model names substituted. Synthesized from config; safe to expose.
+func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	scheme, ws := "http", "ws"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme, ws = "https", "wss"
+	}
+	base := scheme + "://" + r.Host
+	wsBase := ws + "://" + r.Host
+
+	// Group served models by capability.
+	byCap := map[string][]string{}
+	names := make([]string, 0, len(p.cfg.Models))
+	for name := range p.cfg.Models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		c := modelCapability(p.cfg.Models[name])
+		byCap[c] = append(byCap[c], name)
+	}
+	pick := func(caps ...string) string {
+		for _, c := range caps {
+			if len(byCap[c]) > 0 {
+				return byCap[c][0]
+			}
+		}
+		return "<your-model>"
+	}
+
+	jsonExample := func(path string, body map[string]any) map[string]any {
+		b, _ := json.Marshal(body)
+		return map[string]any{
+			"curl": fmt.Sprintf("curl -sS %s%s -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '%s'", base, path, b),
+			"body": body,
+		}
+	}
+
+	chatM, embM, sttM, ttsM := pick("chat"), pick("embeddings"), pick("audio.stt"), pick("audio.tts")
+	type endpoint struct {
+		Path        string         `json:"path"`
+		Method      string         `json:"method"`
+		Capability  string         `json:"capability"`
+		Description string         `json:"description"`
+		Models      []string       `json:"models,omitempty"`
+		Streaming   bool           `json:"streaming,omitempty"`
+		Example     map[string]any `json:"example,omitempty"`
+	}
+	endpoints := []endpoint{
+		{"/v1/chat/completions", "POST", "chat", "OpenAI chat completions; set \"stream\":true for SSE token streaming.", byCap["chat"], true,
+			jsonExample("/v1/chat/completions", map[string]any{"model": chatM, "messages": []map[string]string{{"role": "user", "content": "Hello"}}})},
+		{"/v1/completions", "POST", "chat", "Legacy text completions.", byCap["chat"], true,
+			jsonExample("/v1/completions", map[string]any{"model": chatM, "prompt": "Hello"})},
+		{"/v1/embeddings", "POST", "embeddings", "Text embeddings.", byCap["embeddings"], false,
+			jsonExample("/v1/embeddings", map[string]any{"model": embM, "input": "Hello world"})},
+		{"/v1/rerank", "POST", "rerank", "Rerank documents against a query.", byCap["rerank"], false,
+			jsonExample("/v1/rerank", map[string]any{"model": pick("rerank", "chat"), "query": "what is corrallm", "documents": []string{"a proxy", "a database"}})},
+		{"/v1/audio/transcriptions", "POST", "audio.stt", "Speech-to-text (Whisper-compatible). multipart/form-data upload; supports response_format and stream.", byCap["audio.stt"], true,
+			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/audio/transcriptions -H 'Authorization: Bearer <key>' -F model=%s -F file=@speech.wav", base, sttM), "note": "multipart/form-data: model + file fields"}},
+		{"/v1/audio/translations", "POST", "audio.stt", "Speech-to-English translation; same shape as transcriptions.", byCap["audio.stt"], false,
+			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/audio/translations -H 'Authorization: Bearer <key>' -F model=%s -F file=@speech.wav", base, sttM)}},
+		{"/v1/audio/speech", "POST", "audio.tts", "Text-to-speech; returns binary audio (audio/mpeg by default).", byCap["audio.tts"], true,
+			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/audio/speech -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"input\":\"Hello from corrallm\",\"voice\":\"af_heart\"}' --output speech.mp3", base, ttsM),
+				"body": map[string]any{"model": ttsM, "input": "Hello from corrallm", "voice": "af_heart", "response_format": "mp3"}}},
+		{"/v1/realtime", "GET", "audio.stt", "Live transcription over WebSocket (OpenAI Realtime transcription schema). Holds one fairshare slot for the session.", byCap["audio.stt"], true,
+			map[string]any{
+				"ws_url":   fmt.Sprintf("%s/v1/realtime?model=%s&intent=transcription", wsBase, sttM),
+				"protocol": "OpenAI Realtime transcription schema. Send PCM16 mono @ 24kHz, base64-encoded inside JSON frames.",
+				"flow": []string{
+					"connect with header `Authorization: Bearer <key>` → receive {\"type\":\"session.created\"}",
+					"send {\"type\":\"session.update\",\"session\":{\"input_audio_transcription\":{\"model\":\"" + sttM + "\"},\"turn_detection\":{\"type\":\"server_vad\"}}}",
+					"stream repeatedly: {\"type\":\"input_audio_buffer.append\",\"audio\":\"<base64 pcm16@24k>\"}",
+					"receive {\"type\":\"conversation.item.input_audio_transcription.completed\",\"transcript\":\"...\"}",
+				},
+			}},
+		{"/v1/models", "GET", "meta", "OpenAI model catalog enriched with corrallm metadata (state, modality, types, context length).", nil, false,
+			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/models", base)}},
+		{"/v1/capabilities", "GET", "meta", "This manifest.", nil, false,
+			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/capabilities", base)}},
+	}
+
+	lanes := make([]map[string]any, 0, len(p.cfg.PriorityGroups))
+	laneNames := make([]string, 0, len(p.cfg.PriorityGroups))
+	for n := range p.cfg.PriorityGroups {
+		laneNames = append(laneNames, n)
+	}
+	sort.Strings(laneNames)
+	for _, n := range laneNames {
+		g := p.cfg.PriorityGroups[n]
+		cur := g.ShareCurrency
+		if cur == "" {
+			cur = "requests"
+		}
+		lanes = append(lanes, map[string]any{
+			"name": n, "weight": g.EffectiveWeight(), "shareCurrency": cur, "interruptible": g.Interruptible,
+		})
+	}
+
+	out := map[string]any{
+		"service":           "corrallm",
+		"description":       "OpenAI-compatible LLM reverse proxy + fairshare scheduler. Point any OpenAI client at this base URL.",
+		"base_url":          base,
+		"openai_compatible": true,
+		"auth": map[string]any{
+			"description": "Send your API key as `Authorization: Bearer <key>` (or `X-Corrallm-Key: <key>`). The key selects your fairshare lane; unkeyed callers use the default lane.",
+			"headers":     []string{"Authorization: Bearer <key>", "X-Corrallm-Key: <key>"},
+		},
+		"endpoints":            endpoints,
+		"models_by_capability": byCap,
+		"lanes":                lanes,
+		"backpressure": map[string]any{
+			"description": "Under contention you get HTTP 429 with Retry-After + X-RateLimit-Capacity/-InFlight/-Waiting headers (and a JSON hint). Honor Retry-After and back off.",
+			"headers":     []string{"Retry-After", "X-RateLimit-Capacity", "X-RateLimit-InFlight", "X-RateLimit-Waiting"},
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false) // keep <key>, &, → readable in the examples
+	_ = enc.Encode(out)
 }
 
 // log persists an activity record (stamping its timestamp) and pushes a lean copy

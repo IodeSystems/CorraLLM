@@ -556,6 +556,22 @@ the BackpressureError shape we already validated.
     and **request + response payloads** (monospace, scrollable). SDL regenerated; tsc/eslint/`vite
     build` clean.
 
+- ◐ **P11 — Capabilities/discovery + model detail.** A self-describing surface so an LLM/client can
+  build a compatible client, and so UI-less models (parakeet/kokoro/speaches have no web UI) are
+  still inspectable from the dashboard.
+  - ✅ **P11a — `/v1/capabilities` manifest.** Done. Public (unauthenticated, like `/v1/models`),
+    synthesized from config, **never exposes API keys**. Returns: the OpenAI endpoint surface with a
+    runnable example each (curl, + the realtime ws session flow), models grouped by **capability**
+    (inferred from cost class — `capabilityForType`: chat/embeddings/audio.stt/audio.tts/rerank), and
+    the fairshare **lanes** (name/weight/currency/interruptible — policy only). Test
+    `TestCapabilitiesManifest` (grouping, endpoint coverage, lanes, **key-leak assertion**).
+  - ☐ **P11b — Disabled "Open UI" for UI-less models.** The Overview Open-UI button opens
+    `/upstream/<model>/`; for models whose backend serves no UI it 404s. Detect (probe the backend root
+    when ready, cache `hasUI`) and disable the button.
+  - ☐ **P11c — Model detail modal.** Click a model in Overview → modal with modality + capability,
+    spawn command, **per-model logs** (`modelLogs` op), usage (`usageRollup`), and the capability
+    **examples** (reuse the P11a per-model slice). Makes UI-less models fully inspectable.
+
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
 ---
