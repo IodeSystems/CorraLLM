@@ -673,7 +673,15 @@ the BackpressureError shape we already validated.
   full GPU, no turnkey OpenAI server, watermark/disclaimer, MS deprioritized it). **Chatterbox** (MIT,
   cloning, 4–8 GB) is the parked "quality" option for when GPU headroom exists.
 - ✅ **Realtime ASR contract + backend** (P9e) — **standardize `/v1/realtime` on the OpenAI Realtime
-  *transcription* schema** (the de-facto standard; every OpenAI SDK speaks it). Default backend:
+  *transcription* schema** (de-facto standard; every OpenAI SDK speaks it). **Backend RESOLVED →
+  sherpa-onnx via a native adapter** (`examples/sherpa-realtime-adapter`). Speaches was the first pick
+  but its realtime *transcription* mode is **broken** (fires response-generation per utterance and 500s;
+  ignores `create_response:false` — it's a speech-to-speech server). Parakeet-TDT is **batch-only**.
+  The adapter speaks the OpenAI Realtime schema **natively** (corrallm passes through unchanged) and runs
+  **sherpa-onnx streaming zipformer** inside — TRUE streaming (live `delta`s + silence endpointing, CPU
+  int8). Validated full-stack: client → corrallm → adapter → live partials + finals, metered. Diarization
+  NOT included (sherpa diarization is offline-only). *(Original Speaches plan retained below for history.)*
+  Default backend:
   **Speaches** (ex faster-whisper-server, MIT, CPU, native `/v1/realtime?intent=transcription`) →
   true byte-passthrough, corrallm's transparent design holds. Custom-protocol backends (sherpa-onnx,
   WhisperLive) would need a thin adapter (base64-JSON↔binary-PCM transcode, auth, interim→`delta`/

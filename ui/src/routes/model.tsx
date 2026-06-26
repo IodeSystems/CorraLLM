@@ -535,25 +535,38 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
 function RealtimeStt({ model, ttsModels }: { model: string; ttsModels: string[] }) {
   const [live, setLive] = useState(false)
   const [transcript, setTranscript] = useState('')
+  const [partial, setPartial] = useState('')
   const [err, setErr] = useState('')
   const wsRef = useRef<WebSocket | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const procRef = useRef<ScriptProcessorNode | null>(null)
 
-  function stop() {
+  function teardown() {
     procRef.current?.disconnect()
+    procRef.current = null
     void ctxRef.current?.close()
     streamRef.current?.getTracks().forEach((t) => t.stop())
-    wsRef.current?.close()
-    procRef.current = null
-    setLive(false)
   }
-  useEffect(() => stop, [])
+  function stop() {
+    // Stop capturing, flush the last utterance (commit), then close the ws shortly
+    // after so the final "completed" has time to arrive.
+    teardown()
+    const ws = wsRef.current
+    try {
+      ws?.send(JSON.stringify({ type: 'input_audio_buffer.commit' }))
+    } catch {
+      /* already closed */
+    }
+    setLive(false)
+    setTimeout(() => ws?.close(), 800)
+  }
+  useEffect(() => teardown, [])
 
   async function start() {
     setErr('')
     setTranscript('')
+    setPartial('')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
@@ -591,8 +604,11 @@ function RealtimeStt({ model, ttsModels }: { model: string; ttsModels: string[] 
       ws.onmessage = (ev) => {
         try {
           const m = JSON.parse(ev.data)
-          if (m.type === 'conversation.item.input_audio_transcription.completed') {
+          if (m.type === 'conversation.item.input_audio_transcription.delta') {
+            setPartial((p) => p + (m.delta ?? '')) // live partial as it streams
+          } else if (m.type === 'conversation.item.input_audio_transcription.completed') {
             setTranscript((t) => (t + ' ' + (m.transcript ?? '')).trim())
+            setPartial('')
           } else if (m.type === 'error') {
             setErr(JSON.stringify(m.error ?? m))
           }
@@ -600,7 +616,7 @@ function RealtimeStt({ model, ttsModels }: { model: string; ttsModels: string[] 
           /* ignore */
         }
       }
-      ws.onerror = () => setErr('websocket error — does this model support realtime? (parakeet is batch-only)')
+      ws.onerror = () => setErr('websocket error — does this model support realtime? (only the realtime-stt model does)')
       ws.onclose = () => setLive(false)
       setLive(true)
     } catch (e) {
@@ -625,7 +641,10 @@ function RealtimeStt({ model, ttsModels }: { model: string; ttsModels: string[] 
       </Stack>
       <Box>
         <Typography variant="subtitle2">Live transcript</Typography>
-        <Box component="pre" sx={preSx}>{transcript || (live ? 'listening…' : '—')}</Box>
+        <Box component="pre" sx={preSx}>
+          {transcript || (live && !partial ? 'listening…' : '—')}
+          {partial && <span style={{ opacity: 0.55 }}> {partial}</span>}
+        </Box>
       </Box>
       <SpeakBack text={transcript} ttsModels={ttsModels} />
       {err && <Typography color="error" variant="body2">{err}</Typography>}
