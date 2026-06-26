@@ -43,7 +43,7 @@ a corrallm-spawned `uv run` fails with `ModuleNotFoundError`. Needs `ffmpeg` on 
 
 Env: `PORT` (5805), `MODEL_DIR` (`./models`), `ASR_DIR`, `SEG_MODEL`, `EMB_MODEL`,
 `NUM_THREADS` (4), `NUM_SPEAKERS` (-1 auto; set to a known count for far better
-results), `CLUSTER_THRESHOLD` (0.6, auto-mode only; **lower → more speakers**).
+results), `CLUSTER_THRESHOLD` (0.7, auto-mode only; **lower → more speakers**).
 
 ## Models
 ```sh
@@ -58,7 +58,8 @@ curl -fsSL https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sh
 
 ## Tuning note
 Auto speaker-count detection is threshold-sensitive. On **real** conversational
-audio it tracks the true count well (≈0.6 ⇒ correct on a 4-speaker reference clip).
+audio it tracks the true count well — the 0.7 default gets the right count on all
+three of sherpa's English 2-speaker reference clips (`{1,2,3}-two-speakers-en.wav`).
 Concatenated-TTS test clips are a **poor** diarization test — hard cuts and
 near-identical synthetic timbres make clustering unstable; validate with real
 recordings, or pass `NUM_SPEAKERS` when the count is known.

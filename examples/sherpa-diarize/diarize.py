@@ -14,7 +14,7 @@ this as an audio.stt model with `modes: [batch]`.
 
 Env: PORT (5805), MODEL_DIR (./models), ASR_DIR (defaults to the gigaspeech dir
 under MODEL_DIR), SEG_MODEL, EMB_MODEL, NUM_THREADS (4), NUM_SPEAKERS (-1 auto),
-CLUSTER_THRESHOLD (0.6, only used when NUM_SPEAKERS=-1; lower → more speakers).
+CLUSTER_THRESHOLD (0.7, only used when NUM_SPEAKERS=-1; lower → more speakers).
 
 Run (CPU), invoke the venv python DIRECTLY (not `uv run` — no pyproject, so uv
 builds an env without deps): `./.venv/bin/python diarize.py`.
@@ -35,7 +35,7 @@ SEG_MODEL = os.environ.get("SEG_MODEL", os.path.join(MODEL_DIR, "sherpa-onnx-pya
 EMB_MODEL = os.environ.get("EMB_MODEL", os.path.join(MODEL_DIR, "wespeaker_en_voxceleb_CAMpp.onnx"))
 NUM_THREADS = int(os.environ.get("NUM_THREADS", "4"))
 NUM_SPEAKERS = int(os.environ.get("NUM_SPEAKERS", "-1"))
-CLUSTER_THRESHOLD = float(os.environ.get("CLUSTER_THRESHOLD", "0.6"))
+CLUSTER_THRESHOLD = float(os.environ.get("CLUSTER_THRESHOLD", "0.7"))
 SAMPLE_RATE = 16000
 
 
