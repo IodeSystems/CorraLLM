@@ -831,34 +831,11 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 		return "<your-model>"
 	}
-	// Audio models declare a delivery `mode` (batch = /v1/audio/transcriptions,
-	// realtime = /v1/realtime ws). Empty = unrestricted. The manifest must respect
-	// it: a batch-only model (parakeet, diarize) is NOT a realtime endpoint, and a
-	// realtime-only model (realtime-stt) has no batch transcription — listing either
-	// under the wrong endpoint sends clients/LLMs to a 4xx. Mirrors the UI gating.
-	supportsMode := func(name, mode string) bool {
-		ms := p.cfg.Models[name].Modes
-		if len(ms) == 0 {
-			return true
-		}
-		for _, m := range ms {
-			if m == mode {
-				return true
-			}
-		}
-		return false
-	}
-	filterMode := func(models []string, mode string) []string {
-		out := make([]string, 0, len(models))
-		for _, n := range models {
-			if supportsMode(n, mode) {
-				out = append(out, n)
-			}
-		}
-		return out
-	}
-	sttBatch := filterMode(byCap["audio.stt"], "batch")
-	sttRealtime := filterMode(byCap["audio.stt"], "realtime")
+	// Batch STT (/v1/audio/transcriptions) and realtime STT (/v1/realtime ws) are
+	// distinct capabilities — audio.stt vs audio.realtime — so each endpoint lists
+	// only the models that serve it. No "modes" field; the cost type decides.
+	sttBatch := byCap["audio.stt"]
+	sttRealtime := byCap["audio.realtime"]
 	first := func(xs []string, fallback string) string {
 		if len(xs) > 0 {
 			return xs[0]
@@ -876,7 +853,7 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 
 	chatM, embM, ttsM := pick("chat"), pick("embeddings"), pick("audio.tts")
 	sttM := first(sttBatch, pick("audio.stt"))      // batch example (transcriptions)
-	rtM := first(sttRealtime, pick("audio.stt"))    // realtime example (ws)
+	rtM := first(sttRealtime, pick("audio.realtime")) // realtime example (ws)
 	type endpoint struct {
 		Path        string         `json:"path"`
 		Method      string         `json:"method"`

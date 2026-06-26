@@ -30,3 +30,7 @@
 
 # Machine-specific local working dir (configs, models, scratch) — never committed
 /local/
+
+# local MCP tooling
+.mcp.json
+.poly-lsp-mcp/

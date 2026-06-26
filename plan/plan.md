@@ -50,10 +50,11 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   STT + diarization + TTS + realtime. corrallm proxies it like any backend; ml-kit serves 4 audio
 >   models (`stt`/`stt-diarize`/`tts`/`realtime-stt`) from one persistent oidio process. Only remaining:
 >   **P9f** (comfort-fill, parked).
-> - ◐ **P12 audio consolidation cleanup** — collapse ✅ (5 adapters → 1 oidio, verified; Python examples
->   deleted). **Next: drop `Model.Modes`** — encode batch-vs-realtime in the capability (cost type
->   `realtime` → `audio.realtime`) so the console dispatches the right playground without a modes gate;
->   then thin `/v1/capabilities` (no mode-filter) + the UI toggle.
+> - ✅ **P12 audio consolidation cleanup** — collapse ✅ (5 adapters → 1 oidio, verified; Python examples
+>   deleted). `Model.Modes` **dropped** — batch-vs-realtime is now encoded in the capability (cost type
+>   `realtime` → `audio.realtime`); the console dispatches by capability (no modes gate/toggle),
+>   `/v1/capabilities` routes each endpoint by capability (no mode-filter), schema regenerated. Verified:
+>   realtime-stt=audio.realtime, stt/stt-diarize=audio.stt, all 4 models serve.
 > - ✅ **P11 discovery + console** — `/v1/capabilities` manifest; per-model console (Info/Test/Logs/Usage)
 >   with chat/STT/TTS/vision playgrounds; STT playground gates batch/realtime per `model.modes`; batch
 >   STT renders speaker-labeled segments when a backend returns them; replay a logged activity in-console.

@@ -47,6 +47,8 @@ export function capLabel(c?: string): string {
   switch (c) {
     case 'audio.stt':
       return 'stt'
+    case 'audio.realtime':
+      return 'realtime'
     case 'audio.tts':
       return 'tts'
     case 'embeddings':

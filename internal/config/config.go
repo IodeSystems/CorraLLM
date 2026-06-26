@@ -56,14 +56,9 @@ type Server struct {
 
 // Model is a served name: residency policy + an ordered list of backends.
 type Model struct {
-	Sticky     *Sticky `yaml:"sticky,omitempty"`
-	Persistent bool    `yaml:"persistent,omitempty"`
-	// Modes optionally restricts which audio delivery modes a model supports
-	// (`batch` = /v1/audio/transcriptions, `realtime` = /v1/realtime ws). Empty
-	// = unrestricted (UI shows all). Lets the operator hide a mode a backend
-	// can't serve (parakeet has no ws; realtime-stt has no batch endpoint).
-	Modes    []string  `yaml:"modes,omitempty"`
-	Backends []Backend `yaml:"backends,omitempty"`
+	Sticky     *Sticky   `yaml:"sticky,omitempty"`
+	Persistent bool      `yaml:"persistent,omitempty"`
+	Backends   []Backend `yaml:"backends,omitempty"`
 }
 
 // Sticky keeps a model warm after last use and resists eviction (residency, P4).
@@ -118,6 +113,11 @@ func MaxQuality(bs []Backend) int {
 func Capability(typ string) string {
 	t := strings.ToLower(typ)
 	switch {
+	case strings.Contains(t, "realtime"):
+		// Live ws transcription (/v1/realtime) — a distinct delivery from batch
+		// STT, so the catalog/console can route to the right surface without a
+		// separate "modes" field.
+		return "audio.realtime"
 	case strings.Contains(t, "tts") || strings.Contains(t, "speech"):
 		return "audio.tts"
 	case strings.Contains(t, "stt") || strings.Contains(t, "asr") ||
