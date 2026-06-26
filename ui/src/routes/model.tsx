@@ -35,6 +35,7 @@ const ConsoleDoc = graphql(/* GraphQL */ `
           name
           modality
           capability
+          modes
           persistent
           ttl
           backends {
@@ -187,6 +188,7 @@ function ModelConsole() {
           capability={capability}
           model={name}
           ttsModels={caps.data?.models_by_capability?.['audio.tts'] ?? []}
+          modes={model.modes}
           replayId={replay}
         />
       )}
@@ -351,15 +353,17 @@ function TestTab({
   capability,
   model,
   ttsModels,
+  modes,
   replayId,
 }: {
   capability: string
   model: string
   ttsModels: string[]
+  modes?: string[]
   replayId?: string
 }) {
   if (capability === 'chat') return <ChatPlayground model={model} replayId={replayId} />
-  if (capability === 'audio.stt') return <SttPlayground model={model} ttsModels={ttsModels} />
+  if (capability === 'audio.stt') return <SttPlayground model={model} ttsModels={ttsModels} modes={modes} />
   if (capability === 'audio.tts') return <TtsPlayground model={model} />
   return (
     <Typography color="text.secondary">
@@ -419,8 +423,12 @@ function SpeakBack({ text, ttsModels }: { text: string; ttsModels: string[] }) {
 
 // STT playground: batch (record a clip → upload) or realtime (live ws streaming),
 // either feeding the optional speak-it-back TTS loop. Mic needs a secure context.
-function SttPlayground({ model, ttsModels }: { model: string; ttsModels: string[] }) {
-  const [mode, setMode] = useState<'batch' | 'realtime'>('batch')
+function SttPlayground({ model, ttsModels, modes }: { model: string; ttsModels: string[]; modes?: string[] }) {
+  // The model declares which delivery modes its backend actually serves (parakeet
+  // = batch-only, realtime-stt = realtime-only). Empty = unrestricted → show both.
+  const allowed = modes && modes.length ? modes.filter((m) => m === 'batch' || m === 'realtime') : ['batch', 'realtime']
+  const [mode, setMode] = useState<'batch' | 'realtime'>(allowed[0] === 'realtime' ? 'realtime' : 'batch')
+  const effective = allowed.length > 1 ? mode : allowed[0]
   if (typeof window !== 'undefined' && !window.isSecureContext) {
     return (
       <Typography color="warning.main" variant="body2">
@@ -431,14 +439,16 @@ function SttPlayground({ model, ttsModels }: { model: string; ttsModels: string[
   }
   return (
     <Stack spacing={2}>
-      <ToggleButtonGroup size="small" exclusive value={mode} onChange={(_, v) => v && setMode(v)}>
-        <ToggleButton value="batch">Batch · record → upload</ToggleButton>
-        <ToggleButton value="realtime">Realtime · live ws</ToggleButton>
-      </ToggleButtonGroup>
-      {mode === 'batch' ? (
-        <BatchStt model={model} ttsModels={ttsModels} />
-      ) : (
+      {allowed.length > 1 && (
+        <ToggleButtonGroup size="small" exclusive value={mode} onChange={(_, v) => v && setMode(v)}>
+          <ToggleButton value="batch">Batch · record → upload</ToggleButton>
+          <ToggleButton value="realtime">Realtime · live ws</ToggleButton>
+        </ToggleButtonGroup>
+      )}
+      {effective === 'realtime' ? (
         <RealtimeStt model={model} ttsModels={ttsModels} />
+      ) : (
+        <BatchStt model={model} ttsModels={ttsModels} />
       )}
     </Stack>
   )

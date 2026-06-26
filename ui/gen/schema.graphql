@@ -388,6 +388,8 @@ type corrallm_ModelDef {
   evictCost: String!
   """text|audio coarse bucket (P9d)."""
   modality: String!
+  """Supported audio delivery modes (batch|realtime); empty = unrestricted."""
+  modes: [String!]!
   """Served model name."""
   name: String!
   """Pinned (preloaded, never evicted)."""

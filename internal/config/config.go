@@ -56,9 +56,14 @@ type Server struct {
 
 // Model is a served name: residency policy + an ordered list of backends.
 type Model struct {
-	Sticky     *Sticky   `yaml:"sticky,omitempty"`
-	Persistent bool      `yaml:"persistent,omitempty"`
-	Backends   []Backend `yaml:"backends,omitempty"`
+	Sticky     *Sticky `yaml:"sticky,omitempty"`
+	Persistent bool    `yaml:"persistent,omitempty"`
+	// Modes optionally restricts which audio delivery modes a model supports
+	// (`batch` = /v1/audio/transcriptions, `realtime` = /v1/realtime ws). Empty
+	// = unrestricted (UI shows all). Lets the operator hide a mode a backend
+	// can't serve (parakeet has no ws; realtime-stt has no batch endpoint).
+	Modes    []string  `yaml:"modes,omitempty"`
+	Backends []Backend `yaml:"backends,omitempty"`
 }
 
 // Sticky keeps a model warm after last use and resists eviction (residency, P4).
