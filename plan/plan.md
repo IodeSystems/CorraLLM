@@ -42,12 +42,18 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   - calibrated cost coefficients (chat/embed) + activity-log retention — `08ec3ad`/`7f12d48`
 >   - cutover hardening (health-timeout/`/health` 2xx/liveness route/EWMA Retry-After
 >     + maxWait/maxQueueDepth) — `ca1b5b3`/`21698f2`/`7e96bbf`/`14dd1bd`
-> - ◐ **P9 audio modality** — **P9a/b/c/d/e/g ✅ done + validated end-to-end**: `/v1/audio/transcriptions`
->   +`/translations` (parakeet STT), `/v1/audio/speech` (Kokoro TTS), `/v1/realtime` ws passthrough
->   (sherpa-onnx realtime STT adapter), and **P9g diarized batch STT** (`diarize` model: sherpa-onnx
->   offline diarization + offline ASR → speaker-labeled transcript). Backends installed under ml-kit
->   `local/` + wired + full-stack tested; P9e idle/max-session reaper ✅. Only remaining: **P9f**
->   (comfort-fill, unconfirmed/parked).
+> - ◐ **P9 audio modality** — **P9a/b/c/d/e/g ✅**: `/v1/audio/transcriptions`+`/translations` (STT),
+>   `/v1/audio/speech` (TTS), `/v1/realtime` ws passthrough, and diarized batch STT (speaker-labeled).
+>   **Backends consolidated (P12):** the five Python adapters (parakeet, kokoro, speaches,
+>   sherpa-realtime-adapter, sherpa-diarize) are retired and replaced by **one Go binary,
+>   [oidio](https://github.com/IodeSystems/oidio)** — an OpenAI-audio server on sherpa-onnx-go doing
+>   STT + diarization + TTS + realtime. corrallm proxies it like any backend; ml-kit serves 4 audio
+>   models (`stt`/`stt-diarize`/`tts`/`realtime-stt`) from one persistent oidio process. Only remaining:
+>   **P9f** (comfort-fill, parked).
+> - ◐ **P12 audio consolidation cleanup** — collapse ✅ (5 adapters → 1 oidio, verified; Python examples
+>   deleted). **Next: drop `Model.Modes`** — encode batch-vs-realtime in the capability (cost type
+>   `realtime` → `audio.realtime`) so the console dispatches the right playground without a modes gate;
+>   then thin `/v1/capabilities` (no mode-filter) + the UI toggle.
 > - ✅ **P11 discovery + console** — `/v1/capabilities` manifest; per-model console (Info/Test/Logs/Usage)
 >   with chat/STT/TTS/vision playgrounds; STT playground gates batch/realtime per `model.modes`; batch
 >   STT renders speaker-labeled segments when a backend returns them; replay a logged activity in-console.
