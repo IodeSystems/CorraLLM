@@ -297,12 +297,22 @@ const preSx = {
   overflow: 'auto',
 } as const
 
-// A diarized transcript segment (diarizing STT backends return these alongside .text).
-type DiarSegment = { speaker: number; start: number; end: number; text: string }
+// Standard OpenAI verbose_json segment, plus the additive `speaker` field a
+// diarizing backend sets (oidio: a per-request stable speaker UUID).
+type DiarSegment = { speaker?: string; start: number; end: number; text: string }
+// An entry of the additive `speakers[]` array — stateless identity: a UUID, the
+// voiceprint embedding, and cosine similarity to the other speakers.
+type Speaker = { uuid: string; similarity?: Record<string, number> }
 
-// Stable per-speaker colors (cycles for >8 speakers).
+// Stable per-speaker colors keyed on the UUID (cycles for >8 speakers).
 const SPEAKER_COLORS = ['#1565c0', '#c62828', '#2e7d32', '#6a1b9a', '#ef6c00', '#00838f', '#ad1457', '#4e342e']
-const speakerColor = (s: number) => SPEAKER_COLORS[((s % SPEAKER_COLORS.length) + SPEAKER_COLORS.length) % SPEAKER_COLORS.length]
+const hashStr = (s: string) => {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
+  return Math.abs(h)
+}
+const speakerColor = (s: string) => SPEAKER_COLORS[hashStr(s) % SPEAKER_COLORS.length]
+const shortId = (s: string) => s.slice(0, 4)
 const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 
 // --- Logs ---------------------------------------------------------------
@@ -468,6 +478,7 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
   const [busy, setBusy] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [segments, setSegments] = useState<DiarSegment[]>([])
+  const [speakers, setSpeakers] = useState<Speaker[]>([])
   const [err, setErr] = useState('')
   const [key, setKey] = useState('')
   const recRef = useRef<MediaRecorder | null>(null)
@@ -482,7 +493,9 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
       rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data)
       rec.onstop = () => {
         stream.getTracks().forEach((t) => t.stop())
-        void transcribe(new Blob(chunksRef.current, { type: rec.mimeType }), rec.mimeType)
+        const mime = rec.mimeType
+        const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm'
+        void transcribe(new Blob(chunksRef.current, { type: mime }), `recording.${ext}`)
       }
       recRef.current = rec
       rec.start()
@@ -496,16 +509,16 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
     setRecording(false)
   }
 
-  async function transcribe(blob: Blob, mime: string) {
+  async function transcribe(blob: Blob, filename: string) {
     setBusy(true)
     setErr('')
     try {
       const fd = new FormData()
       fd.append('model', model)
-      // name the part with an extension matching the actual mime so ffmpeg/the
-      // backend demuxes it correctly across browsers (webm/ogg/mp4).
-      const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm'
-      fd.append('file', blob, `recording.${ext}`)
+      fd.append('file', blob, filename)
+      // standard OpenAI: verbose_json gives segments[]; a diarizing backend adds
+      // speaker UUIDs on each segment + a speakers[] array (both additive).
+      fd.append('response_format', 'verbose_json')
       const headers: Record<string, string> = {}
       if (key) headers.Authorization = `Bearer ${key}`
       const r = await fetch('/v1/audio/transcriptions', { method: 'POST', headers, body: fd })
@@ -515,8 +528,8 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
       }
       const j = await r.json()
       setTranscript(String(j.text ?? JSON.stringify(j)))
-      // speaker-labeled segments (diarizing backends only; plain STT omits them)
       setSegments(Array.isArray(j.segments) ? (j.segments as DiarSegment[]) : [])
+      setSpeakers(Array.isArray(j.speakers) ? (j.speakers as Speaker[]) : [])
     } catch (e) {
       setErr(String(e))
     } finally {
@@ -536,21 +549,47 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
             ● Record
           </Button>
         )}
+        <Button variant="outlined" component="label" disabled={busy || recording}>
+          ⬆ Upload
+          <input
+            type="file"
+            accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) void transcribe(f, f.name)
+              e.target.value = ''
+            }}
+          />
+        </Button>
         {busy && <CircularProgress size={20} />}
         <TextField size="small" sx={{ width: 160 }} placeholder="lane key (opt)" value={key} onChange={(e) => setKey(e.target.value)} />
       </Stack>
       <Box>
         <Typography variant="subtitle2">
-          Transcript{segments.length > 0 && ` · ${new Set(segments.map((s) => s.speaker)).size} speakers`}
+          Transcript{speakers.length > 0 && ` · ${speakers.length} speakers`}
         </Typography>
-        {segments.length > 0 ? (
-          <Stack spacing={0.5} sx={{ mt: 0.5 }}>
+        {speakers.length > 0 && (
+          <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5 }}>
+            {speakers.map((sp) => (
+              <Chip
+                key={sp.uuid}
+                size="small"
+                label={shortId(sp.uuid)}
+                title={sp.uuid}
+                sx={{ bgcolor: speakerColor(sp.uuid), color: '#fff', fontFamily: 'monospace' }}
+              />
+            ))}
+          </Stack>
+        )}
+        {segments.some((s) => s.speaker) ? (
+          <Stack spacing={0.5} sx={{ mt: 1 }}>
             {segments.map((s, i) => (
               <Box key={i} sx={{ display: 'flex', gap: 1, alignItems: 'baseline' }}>
                 <Chip
                   size="small"
-                  label={`S${s.speaker}`}
-                  sx={{ bgcolor: speakerColor(s.speaker), color: '#fff', fontFamily: 'monospace', minWidth: 44 }}
+                  label={s.speaker ? shortId(s.speaker) : '—'}
+                  sx={{ bgcolor: s.speaker ? speakerColor(s.speaker) : 'grey.500', color: '#fff', fontFamily: 'monospace', minWidth: 44 }}
                 />
                 <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', minWidth: 56 }}>
                   {fmtTime(s.start)}
