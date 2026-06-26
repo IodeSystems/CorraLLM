@@ -16,7 +16,9 @@ full design, decisions, and roadmap.
 ## What it does
 
 - **OpenAI-compatible proxy** — `/v1/chat/completions`, `/v1/completions`,
-  `/v1/embeddings`, `/v1/rerank`, `/v1/models`. Streaming preserved.
+  `/v1/embeddings`, `/v1/rerank`, `/v1/models`, plus the **audio** surface
+  (STT / TTS / realtime ws, with optional diarization — see below). Streaming
+  preserved.
 - **Model lifecycle** — spawns a backend's `cmd` on demand, health-checks it
   (waits for llama-server `/health` 2xx, not just a bound port), coalesces
   concurrent cold loads, and reaps process groups on shutdown.
@@ -131,6 +133,53 @@ the `default` group.
   `residency`, `activity`, `usage/{rollup,by-key,series,series-by-group,queue-depth}`,
   `models/{load,unload,logs}`, and the `events` SSE stream.
 
+## Audio (STT / TTS / realtime)
+
+corrallm proxies the OpenAI audio surface. An audio backend is just another
+`cmd`+`proxy` model whose cost `type` is an audio class (which also flags it
+`modality: audio` in the catalog and meters it by **bytes**, not tokens). Four
+endpoints:
+
+- `POST /v1/audio/transcriptions`, `/v1/audio/translations` — **batch STT**
+  (Whisper-compatible). `multipart/form-data` with `model` + `file`.
+- `POST /v1/audio/speech` — **TTS**. JSON in, binary audio out.
+- `GET /v1/realtime` — **realtime STT** over WebSocket (OpenAI Realtime
+  transcription schema): stream PCM16 frames, receive live partial + final
+  transcripts. Holds one fairshare slot for the session (idle/max-session reaped).
+
+STT models declare a delivery **`modes`** list — `batch`, `realtime`, or both
+(empty = unrestricted). A batch-only model (e.g. parakeet) has no `/v1/realtime`;
+a realtime-only model has no batch transcription. The dashboard and the
+capabilities manifest gate each surface accordingly, so clients aren't pointed at
+an endpoint a model can't serve.
+
+**Diarization.** A diarizing STT model returns speaker-labeled output alongside
+the OpenAI `text`:
+
+```jsonc
+{ "text": "…",
+  "segments": [{ "speaker": 0, "start": 0.0, "end": 3.3, "text": "…" }],
+  "num_speakers": 2 }
+```
+
+Plain OpenAI clients ignore the extra fields and read `.text`; the console's STT
+playground renders the per-speaker segments.
+
+```sh
+# batch transcription
+curl -sS localhost:8111/v1/audio/transcriptions -H 'Authorization: Bearer <key>' \
+  -F model=parakeet -F file=@speech.wav
+# text-to-speech
+curl -sS localhost:8111/v1/audio/speech -H 'Authorization: Bearer <key>' \
+  -d '{"model":"kokoro","input":"hello","voice":"af_heart"}' --output speech.mp3
+```
+
+`GET /v1/capabilities` is the machine-readable source of truth — every endpoint,
+the mode-filtered models for each, working curl/ws examples, and the diarized
+response shape. Reference CPU backends live under [`examples/`](examples)
+(`sherpa-realtime-adapter` = realtime ws STT; `sherpa-diarize` = batch diarized
+transcripts; both sherpa-onnx).
+
 ## Stack
 
 - **Backend** — Go 1.26, [Huma](https://huma.rocks) + [gat](https://github.com/iodesystems/gwag)
@@ -171,8 +220,10 @@ in `ui/src/gql`.
 
 ## Status
 
-P0–P8 of the roadmap are shipped and running in production: proxy, lifecycle,
+P0–P11 of the roadmap are shipped and running in production: proxy, lifecycle,
 fairshare scheduler, ordered fall-through, residency/eviction, preemption, cost
 model, quality-degrade routing, the full observability/control-plane dashboard,
-and auth. Remaining roadmap item: multi-node peer awareness. See
+auth, the **audio surface** (STT / TTS / realtime ws / diarization), honest
+error/payload observability, and the discovery manifest + per-model console.
+Remaining roadmap item: multi-node peer awareness. See
 [`plan/plan.md`](plan/plan.md).
