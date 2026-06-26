@@ -297,6 +297,14 @@ const preSx = {
   overflow: 'auto',
 } as const
 
+// A diarized transcript segment (diarizing STT backends return these alongside .text).
+type DiarSegment = { speaker: number; start: number; end: number; text: string }
+
+// Stable per-speaker colors (cycles for >8 speakers).
+const SPEAKER_COLORS = ['#1565c0', '#c62828', '#2e7d32', '#6a1b9a', '#ef6c00', '#00838f', '#ad1457', '#4e342e']
+const speakerColor = (s: number) => SPEAKER_COLORS[((s % SPEAKER_COLORS.length) + SPEAKER_COLORS.length) % SPEAKER_COLORS.length]
+const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+
 // --- Logs ---------------------------------------------------------------
 
 function LogsTab({ backend, ready }: { backend: string; ready: boolean }) {
@@ -459,6 +467,7 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
   const [recording, setRecording] = useState(false)
   const [busy, setBusy] = useState(false)
   const [transcript, setTranscript] = useState('')
+  const [segments, setSegments] = useState<DiarSegment[]>([])
   const [err, setErr] = useState('')
   const [key, setKey] = useState('')
   const recRef = useRef<MediaRecorder | null>(null)
@@ -506,6 +515,8 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
       }
       const j = await r.json()
       setTranscript(String(j.text ?? JSON.stringify(j)))
+      // speaker-labeled segments (diarizing backends only; plain STT omits them)
+      setSegments(Array.isArray(j.segments) ? (j.segments as DiarSegment[]) : [])
     } catch (e) {
       setErr(String(e))
     } finally {
@@ -529,8 +540,28 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
         <TextField size="small" sx={{ width: 160 }} placeholder="lane key (opt)" value={key} onChange={(e) => setKey(e.target.value)} />
       </Stack>
       <Box>
-        <Typography variant="subtitle2">Transcript</Typography>
-        <Box component="pre" sx={preSx}>{transcript || (busy ? 'transcribing…' : '—')}</Box>
+        <Typography variant="subtitle2">
+          Transcript{segments.length > 0 && ` · ${new Set(segments.map((s) => s.speaker)).size} speakers`}
+        </Typography>
+        {segments.length > 0 ? (
+          <Stack spacing={0.5} sx={{ mt: 0.5 }}>
+            {segments.map((s, i) => (
+              <Box key={i} sx={{ display: 'flex', gap: 1, alignItems: 'baseline' }}>
+                <Chip
+                  size="small"
+                  label={`S${s.speaker}`}
+                  sx={{ bgcolor: speakerColor(s.speaker), color: '#fff', fontFamily: 'monospace', minWidth: 44 }}
+                />
+                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', minWidth: 56 }}>
+                  {fmtTime(s.start)}
+                </Typography>
+                <Typography variant="body2">{s.text}</Typography>
+              </Box>
+            ))}
+          </Stack>
+        ) : (
+          <Box component="pre" sx={preSx}>{transcript || (busy ? 'transcribing…' : '—')}</Box>
+        )}
       </Box>
       <SpeakBack text={transcript} ttsModels={ttsModels} />
       {err && <Typography color="error" variant="body2">{err}</Typography>}

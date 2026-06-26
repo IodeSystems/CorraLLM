@@ -1125,6 +1125,13 @@ type statusCapture struct {
 }
 
 func (s *statusCapture) WriteHeader(code int) {
+	// 1xx are interim (e.g. a backend's 100-continue on a large upload, forwarded
+	// by ReverseProxy before the final status). Forward them but don't latch — else
+	// the activity row records "100" instead of the real 200/4xx/5xx (P10b metering).
+	if code >= 100 && code < 200 {
+		s.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if !s.wroteHeader {
 		s.code, s.wroteHeader = code, true
 	}

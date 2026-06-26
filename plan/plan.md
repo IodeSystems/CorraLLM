@@ -42,10 +42,15 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   - calibrated cost coefficients (chat/embed) + activity-log retention — `08ec3ad`/`7f12d48`
 >   - cutover hardening (health-timeout/`/health` 2xx/liveness route/EWMA Retry-After
 >     + maxWait/maxQueueDepth) — `ca1b5b3`/`21698f2`/`7e96bbf`/`14dd1bd`
-> - ◐ **P9 audio modality** — **P9a/b/c/d/e ✅ done + validated end-to-end**: `/v1/audio/transcriptions`
+> - ◐ **P9 audio modality** — **P9a/b/c/d/e/g ✅ done + validated end-to-end**: `/v1/audio/transcriptions`
 >   +`/translations` (parakeet STT), `/v1/audio/speech` (Kokoro TTS), `/v1/realtime` ws passthrough
->   (Speaches realtime STT). All three backends installed under ml-kit `local/` + wired + full-stack
->   tested; P9e idle/max-session reaper ✅. Only remaining: **P9f** (comfort-fill, unconfirmed/parked).
+>   (sherpa-onnx realtime STT adapter), and **P9g diarized batch STT** (`diarize` model: sherpa-onnx
+>   offline diarization + offline ASR → speaker-labeled transcript). Backends installed under ml-kit
+>   `local/` + wired + full-stack tested; P9e idle/max-session reaper ✅. Only remaining: **P9f**
+>   (comfort-fill, unconfirmed/parked).
+> - ✅ **P11 discovery + console** — `/v1/capabilities` manifest; per-model console (Info/Test/Logs/Usage)
+>   with chat/STT/TTS/vision playgrounds; STT playground gates batch/realtime per `model.modes`; batch
+>   STT renders speaker-labeled segments when a backend returns them; replay a logged activity in-console.
 > - ✅ **P10 request observability** (prod-driven) — **P10a/b/c ✅** honest error status (client/upstream
 >   cancel → 499, not a mislabeled backend 502) + `activity.error` reason + configurable
 >   `--request-timeout` (latent 130s cap removed); per-request payload + TTFB capture; click-through
@@ -516,6 +521,26 @@ the BackpressureError shape we already validated.
     knows the delay. Only applies to conversational (speech-out) sessions, not transcription-only.
     Start with **pre-recorded canned clips** (deterministic, no TTS dependency); TTS-generated fillers
     later. *Not confirmed by the user yet — parked pending the transparency-tradeoff call.*
+
+  - ✅ **P9g — Diarized batch STT (speaker-labeled transcript).** Done + validated. The offline
+    half of the realtime/batch split: realtime-stt streams partials but has **no speakers** (stable
+    IDs need the whole utterance); `diarize` is batch-only and returns them. **Service**
+    (`examples/sherpa-diarize/diarize.py`, deployed to ml-kit `local/src/sherpa-diarize/`): aiohttp,
+    OpenAI-shaped `POST /v1/audio/transcriptions` — ffmpeg-decode any container → 16k mono f32 →
+    sherpa-onnx **OfflineSpeakerDiarization** (pyannote-segmentation-3-0 + wespeaker_en CAM++ +
+    FastClustering) + **offline zipformer** (gigaspeech int8) ASR → align tokens to speaker segments by
+    timestamp → `{text, segments:[{speaker,start,end,text}], num_speakers, duration}`. Plain OpenAI
+    clients read `.text`; the console's BatchStt renders the speaker-labeled segments (per-speaker color
+    chips + timestamps). Wired in ml-kit `corrallm.yaml` as model `diarize` (type `stt`, `modes:[batch]`,
+    proxy :5805, sticky 300s). **corrallm code unchanged** beyond the UI — it's just another stt backend.
+    *Validation:* full proxy path = cold spawn → diarize → metered (status 200, `audio_bytes`, byte-basis
+    cost). Diarization QUALITY: pyannote **segmentation** is accurate (clean turn boundaries on
+    silence-gapped audio); **clustering** separates **real** voices well (thr=0.6 ⇒ correct count on a
+    4-speaker reference) but **not synthetic TTS** (voxceleb embeddings don't separate kokoro timbres —
+    documented in the README; validate with real recordings or pass `NUM_SPEAKERS`). Default
+    `CLUSTER_THRESHOLD=0.6` (real-audio accurate), env-tunable. *Side fix (P10b metering):
+    `statusCapture.WriteHeader` now skips interim **1xx** — large uploads sending `Expect: 100-continue`
+    were logging status **100** instead of the final 200.*
 
   **P9 reuse note:** scheduler/residency/preemption/fairshare/limits need **no changes** — an
   audio backend is a `cmd`+`proxy` entry with a `type`, slots, and pool `ramUsage` like any
