@@ -831,6 +831,40 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 		return "<your-model>"
 	}
+	// Audio models declare a delivery `mode` (batch = /v1/audio/transcriptions,
+	// realtime = /v1/realtime ws). Empty = unrestricted. The manifest must respect
+	// it: a batch-only model (parakeet, diarize) is NOT a realtime endpoint, and a
+	// realtime-only model (realtime-stt) has no batch transcription — listing either
+	// under the wrong endpoint sends clients/LLMs to a 4xx. Mirrors the UI gating.
+	supportsMode := func(name, mode string) bool {
+		ms := p.cfg.Models[name].Modes
+		if len(ms) == 0 {
+			return true
+		}
+		for _, m := range ms {
+			if m == mode {
+				return true
+			}
+		}
+		return false
+	}
+	filterMode := func(models []string, mode string) []string {
+		out := make([]string, 0, len(models))
+		for _, n := range models {
+			if supportsMode(n, mode) {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	sttBatch := filterMode(byCap["audio.stt"], "batch")
+	sttRealtime := filterMode(byCap["audio.stt"], "realtime")
+	first := func(xs []string, fallback string) string {
+		if len(xs) > 0 {
+			return xs[0]
+		}
+		return fallback
+	}
 
 	jsonExample := func(path string, body map[string]any) map[string]any {
 		b, _ := json.Marshal(body)
@@ -840,7 +874,9 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	chatM, embM, sttM, ttsM := pick("chat"), pick("embeddings"), pick("audio.stt"), pick("audio.tts")
+	chatM, embM, ttsM := pick("chat"), pick("embeddings"), pick("audio.tts")
+	sttM := first(sttBatch, pick("audio.stt"))      // batch example (transcriptions)
+	rtM := first(sttRealtime, pick("audio.stt"))    // realtime example (ws)
 	type endpoint struct {
 		Path        string         `json:"path"`
 		Method      string         `json:"method"`
@@ -859,20 +895,24 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			jsonExample("/v1/embeddings", map[string]any{"model": embM, "input": "Hello world"})},
 		{"/v1/rerank", "POST", "rerank", "Rerank documents against a query.", byCap["rerank"], false,
 			jsonExample("/v1/rerank", map[string]any{"model": pick("rerank", "chat"), "query": "what is corrallm", "documents": []string{"a proxy", "a database"}})},
-		{"/v1/audio/transcriptions", "POST", "audio.stt", "Speech-to-text (Whisper-compatible). multipart/form-data upload; supports response_format and stream.", byCap["audio.stt"], true,
-			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/audio/transcriptions -H 'Authorization: Bearer <key>' -F model=%s -F file=@speech.wav", base, sttM), "note": "multipart/form-data: model + file fields"}},
-		{"/v1/audio/translations", "POST", "audio.stt", "Speech-to-English translation; same shape as transcriptions.", byCap["audio.stt"], false,
+		{"/v1/audio/transcriptions", "POST", "audio.stt", "Speech-to-text (Whisper-compatible). multipart/form-data upload; supports response_format and stream. Some models also return speaker-diarized output.", sttBatch, true,
+			map[string]any{
+				"curl":        fmt.Sprintf("curl -sS %s/v1/audio/transcriptions -H 'Authorization: Bearer <key>' -F model=%s -F file=@speech.wav", base, sttM),
+				"note":        "multipart/form-data: model + file fields",
+				"diarization": "A diarizing model additionally returns `segments:[{speaker,start,end,text}]` and `num_speakers` alongside the OpenAI `text`. Plain clients ignore the extra fields and read `.text`.",
+			}},
+		{"/v1/audio/translations", "POST", "audio.stt", "Speech-to-English translation; same shape as transcriptions.", sttBatch, false,
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/audio/translations -H 'Authorization: Bearer <key>' -F model=%s -F file=@speech.wav", base, sttM)}},
 		{"/v1/audio/speech", "POST", "audio.tts", "Text-to-speech; returns binary audio (audio/mpeg by default).", byCap["audio.tts"], true,
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/audio/speech -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"input\":\"Hello from corrallm\",\"voice\":\"af_heart\"}' --output speech.mp3", base, ttsM),
 				"body": map[string]any{"model": ttsM, "input": "Hello from corrallm", "voice": "af_heart", "response_format": "mp3"}}},
-		{"/v1/realtime", "GET", "audio.stt", "Live transcription over WebSocket (OpenAI Realtime transcription schema). Holds one fairshare slot for the session.", byCap["audio.stt"], true,
+		{"/v1/realtime", "GET", "audio.stt", "Live transcription over WebSocket (OpenAI Realtime transcription schema). Holds one fairshare slot for the session.", sttRealtime, true,
 			map[string]any{
-				"ws_url":   fmt.Sprintf("%s/v1/realtime?model=%s&intent=transcription", wsBase, sttM),
+				"ws_url":   fmt.Sprintf("%s/v1/realtime?model=%s&intent=transcription", wsBase, rtM),
 				"protocol": "OpenAI Realtime transcription schema. Send PCM16 mono @ 24kHz, base64-encoded inside JSON frames.",
 				"flow": []string{
 					"connect with header `Authorization: Bearer <key>` → receive {\"type\":\"session.created\"}",
-					"send {\"type\":\"session.update\",\"session\":{\"input_audio_transcription\":{\"model\":\"" + sttM + "\"},\"turn_detection\":{\"type\":\"server_vad\"}}}",
+					"send {\"type\":\"session.update\",\"session\":{\"input_audio_transcription\":{\"model\":\"" + rtM + "\"},\"turn_detection\":{\"type\":\"server_vad\"}}}",
 					"stream repeatedly: {\"type\":\"input_audio_buffer.append\",\"audio\":\"<base64 pcm16@24k>\"}",
 					"receive {\"type\":\"conversation.item.input_audio_transcription.completed\",\"transcript\":\"...\"}",
 				},
