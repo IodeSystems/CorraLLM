@@ -131,6 +131,25 @@ const LogsDoc = graphql(/* GraphQL */ `
   }
 `)
 
+// Task-oriented capability sections — "I want to chat / transcribe / synthesize /
+// embed / …". A model lands in the first section whose caps include its
+// capability; laneTypes maps the section to the backend cost type(s) whose lane
+// policy is relevant. Sections with no models are hidden; anything unmatched falls
+// into "Other" so nothing disappears.
+const CAP_SECTIONS: { title: string; blurb: string; caps: string[]; laneTypes: string[] }[] = [
+  { title: 'Chat', blurb: 'Conversational + instruct models', caps: ['chat'], laneTypes: ['chat'] },
+  { title: 'Image understanding', blurb: 'Vision / multimodal', caps: ['vision', 'image'], laneTypes: ['chat'] },
+  { title: 'Embeddings', blurb: 'Vector embeddings', caps: ['embeddings'], laneTypes: ['embed'] },
+  {
+    title: 'Speech-to-text',
+    blurb: 'Transcription — batch (upload) + realtime (ws / webrtc)',
+    caps: ['audio.stt', 'audio.realtime'],
+    laneTypes: ['stt', 'realtime'],
+  },
+  { title: 'Text-to-speech', blurb: 'Speech synthesis', caps: ['audio.tts'], laneTypes: ['tts'] },
+  { title: 'Rerank', blurb: 'Document reranking', caps: ['rerank'], laneTypes: ['rerank'] },
+]
+
 function LogsDialog({ backend, onClose }: { backend: string; onClose: () => void }) {
   const q = useQuery({
     queryKey: ['logs', backend],
@@ -230,7 +249,162 @@ function Home() {
 
   const c = q.data!.corrallm
   const ov = c.overview
+  const models = ov?.models ?? []
+  const groups = ov?.groups ?? []
+  const keys = ov?.keys ?? []
   const stateByModel = new Map((c.residency?.models ?? []).map((m) => [m.modelName, m]))
+
+  // A lane's effective policy for a capability = its onSaturated stage for that
+  // backend type, falling back to its `default` stage. Distinct values joined so
+  // e.g. "queue/reject" when batch queues but realtime has no stage.
+  const policyForTypes = (g: (typeof groups)[number], types: string[]) => {
+    const def = g.stages.find((s) => s.type === 'default')?.policy ?? 'reject'
+    const pols = types.map((t) => g.stages.find((s) => s.type === t)?.policy ?? def)
+    return Array.from(new Set(pols)).join('/')
+  }
+
+  const laneStrip = (types: string[]) =>
+    groups.length ? (
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center', mr: 0.5 }}>
+          lanes
+        </Typography>
+        {groups.map((g) => {
+          const ks = keys.filter((k) => k.group === g.name).map((k) => k.key)
+          const detail = [
+            `weight ${g.weight}`,
+            g.shareCurrency,
+            g.interruptible ? 'interruptible' : null,
+            g.acceptDegrade ? `degrade ≥ ${g.qualityFloor}` : 'top-quality only',
+            ks.length ? `keys: ${ks.join(', ')}` : 'no keys',
+          ]
+            .filter(Boolean)
+            .join(' · ')
+          return (
+            <Tooltip key={g.name} title={detail}>
+              <Chip
+                size="small"
+                variant="outlined"
+                label={`${g.name} · w${g.weight} · ${policyForTypes(g, types)}`}
+              />
+            </Tooltip>
+          )
+        })}
+      </Stack>
+    ) : null
+
+  const modelCard = (m: (typeof models)[number]) => {
+    const st = stateByModel.get(m.name)
+    return (
+      <Card key={m.name}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            <Typography variant="subtitle1">{m.name}</Typography>
+            <Chip size="small" label={st?.state ?? 'absent'} color={stateColor(st?.state)} />
+            <Chip size="small" color="info" variant="outlined" label={capLabel(m.capability)} />
+            {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
+            {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
+            {st && Number(st.nCtx) > 0 && <Chip size="small" variant="outlined" label={`ctx ${fmtInt(st.nCtx)}`} />}
+            {st && Number(st.nSlots) > 0 && <Chip size="small" variant="outlined" label={`slots ${fmtInt(st.nSlots)}`} />}
+            <Box sx={{ flexGrow: 1 }} />
+            {m.spawnable && (
+              <>
+                <Button size="small" variant="outlined" disabled={busy} onClick={() => load.mutate(m.name)}>
+                  Load
+                </Button>
+                <Tooltip title={m.persistent ? 'pinned models cannot be unloaded' : ''}>
+                  <span>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="warning"
+                      disabled={busy || m.persistent}
+                      onClick={() => unload.mutate(m.name)}
+                    >
+                      Unload
+                    </Button>
+                  </span>
+                </Tooltip>
+                {st?.hasUi === 'no' ? (
+                  <Tooltip title="This backend serves no web UI">
+                    <span>
+                      <Button size="small" disabled>
+                        Open UI
+                      </Button>
+                    </span>
+                  </Tooltip>
+                ) : (
+                  <Button
+                    size="small"
+                    component={MuiLink}
+                    href={`/upstream/${encodeURIComponent(m.name)}/`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open UI
+                  </Button>
+                )}
+                <Button size="small" disabled={!st} onClick={() => st && setLogsFor(st.name)}>
+                  Logs
+                </Button>
+                <Button size="small" onClick={() => navigate({ to: '/model', search: { name: m.name } })}>
+                  Console
+                </Button>
+              </>
+            )}
+          </Box>
+          <TableContainer sx={{ mt: 1 }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>#</TableCell>
+                  <TableCell>Type</TableCell>
+                  <TableCell align="right">Quality</TableCell>
+                  <TableCell align="right">Slots</TableCell>
+                  <TableCell align="right">Max tokens</TableCell>
+                  <TableCell>cmd / target</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {m.backends.map((b) => (
+                  <TableRow key={b.index}>
+                    <TableCell>{b.index}</TableCell>
+                    <TableCell>
+                      <Chip size="small" variant="outlined" label={b.spawnable ? b.type : `${b.type} (proxy)`} />
+                    </TableCell>
+                    <TableCell align="right">{b.quality}</TableCell>
+                    <TableCell align="right">{fmtInt(b.maxConcurrent)}</TableCell>
+                    <TableCell align="right">{Number(b.maxTokens) > 0 ? fmtInt(b.maxTokens) : '—'}</TableCell>
+                    <TableCell>
+                      {b.cmd ? (
+                        <Button size="small" onClick={() => setCmdView({ title: `${m.name} #${b.index}`, cmd: b.cmd })}>
+                          View cmd
+                        </Button>
+                      ) : (
+                        <Typography variant="caption" sx={{ wordBreak: 'break-all' }}>
+                          {b.target || '—'}
+                        </Typography>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // Assign each model to its capability section; collect leftovers into "Other".
+  const seen = new Set<string>()
+  const sections = CAP_SECTIONS.map((s) => {
+    const ms = models.filter((m) => s.caps.includes(m.capability))
+    ms.forEach((m) => seen.add(m.name))
+    return { ...s, models: ms }
+  }).filter((s) => s.models.length)
+  const other = models.filter((m) => !seen.has(m.name))
+  if (other.length) sections.push({ title: 'Other', blurb: '', caps: [], laneTypes: [], models: other })
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -273,138 +447,21 @@ function Home() {
         </Dialog>
       )}
 
-      {/* Models + lane definitions, with load/unload + open-UI for spawnable backends. */}
-      <Box>
-        <Typography variant="subtitle1" gutterBottom>
-          Models
-        </Typography>
-        <Stack spacing={2}>
-          {(ov?.models ?? []).map((m) => {
-            const st = stateByModel.get(m.name)
-            return (
-              <Card key={m.name}>
-                <CardContent>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                    <Typography variant="subtitle1">{m.name}</Typography>
-                    <Chip size="small" label={st?.state ?? 'absent'} color={stateColor(st?.state)} />
-                    <Chip size="small" color="info" variant="outlined" label={capLabel(m.capability)} />
-                    {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
-                    {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
-                    {st && Number(st.nCtx) > 0 && (
-                      <Chip size="small" variant="outlined" label={`ctx ${fmtInt(st.nCtx)}`} />
-                    )}
-                    {st && Number(st.nSlots) > 0 && (
-                      <Chip size="small" variant="outlined" label={`slots ${fmtInt(st.nSlots)}`} />
-                    )}
-                    <Box sx={{ flexGrow: 1 }} />
-                    {m.spawnable && (
-                      <>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          disabled={busy}
-                          onClick={() => load.mutate(m.name)}
-                        >
-                          Load
-                        </Button>
-                        <Tooltip title={m.persistent ? 'pinned models cannot be unloaded' : ''}>
-                          <span>
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              color="warning"
-                              disabled={busy || m.persistent}
-                              onClick={() => unload.mutate(m.name)}
-                            >
-                              Unload
-                            </Button>
-                          </span>
-                        </Tooltip>
-                        {st?.hasUi === 'no' ? (
-                          <Tooltip title="This backend serves no web UI">
-                            <span>
-                              <Button size="small" disabled>
-                                Open UI
-                              </Button>
-                            </span>
-                          </Tooltip>
-                        ) : (
-                          <Button
-                            size="small"
-                            component={MuiLink}
-                            href={`/upstream/${encodeURIComponent(m.name)}/`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Open UI
-                          </Button>
-                        )}
-                        <Button
-                          size="small"
-                          disabled={!st}
-                          onClick={() => st && setLogsFor(st.name)}
-                        >
-                          Logs
-                        </Button>
-                        <Button
-                          size="small"
-                          onClick={() => navigate({ to: '/model', search: { name: m.name } })}
-                        >
-                          Console
-                        </Button>
-                      </>
-                    )}
-                  </Box>
-                  <TableContainer sx={{ mt: 1 }}>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>#</TableCell>
-                          <TableCell>Type</TableCell>
-                          <TableCell align="right">Quality</TableCell>
-                          <TableCell align="right">Slots</TableCell>
-                          <TableCell align="right">Max tokens</TableCell>
-                          <TableCell>cmd / target</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {m.backends.map((b) => (
-                          <TableRow key={b.index}>
-                            <TableCell>{b.index}</TableCell>
-                            <TableCell>
-                              <Chip
-                                size="small"
-                                variant="outlined"
-                                label={b.spawnable ? b.type : `${b.type} (proxy)`}
-                              />
-                            </TableCell>
-                            <TableCell align="right">{b.quality}</TableCell>
-                            <TableCell align="right">{fmtInt(b.maxConcurrent)}</TableCell>
-                            <TableCell align="right">{Number(b.maxTokens) > 0 ? fmtInt(b.maxTokens) : '—'}</TableCell>
-                            <TableCell>
-                              {b.cmd ? (
-                                <Button size="small" onClick={() => setCmdView({ title: `${m.name} #${b.index}`, cmd: b.cmd })}>
-                                  View cmd
-                                </Button>
-                              ) : (
-                                <Typography variant="caption" sx={{ wordBreak: 'break-all' }}>
-                                  {b.target || '—'}
-                                </Typography>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </CardContent>
-              </Card>
-            )
-          })}
-        </Stack>
-      </Box>
+      {/* Capability sections: lanes (filtered to this capability) over its models. */}
+      {sections.map((s) => (
+        <Box key={s.title}>
+          <Typography variant="subtitle1">{s.title}</Typography>
+          {s.blurb && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+              {s.blurb}
+            </Typography>
+          )}
+          {laneStrip(s.laneTypes)}
+          <Stack spacing={2}>{s.models.map(modelCard)}</Stack>
+        </Box>
+      ))}
 
-      {/* System capacity. */}
+      {/* System capacity (orthogonal to capability). */}
       <Box>
         <Typography variant="subtitle1" gutterBottom>
           System Capacity
@@ -427,50 +484,6 @@ function Home() {
             </Card>
           ))}
         </Stack>
-      </Box>
-
-      {/* Lanes / priority groups. */}
-      <Box>
-        <Typography variant="subtitle1" gutterBottom>
-          Lanes
-        </Typography>
-        <TableContainer component={Card}>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Group</TableCell>
-                <TableCell align="right">Weight</TableCell>
-                <TableCell>Currency</TableCell>
-                <TableCell>Interruptible</TableCell>
-                <TableCell>Degrade</TableCell>
-                <TableCell>onSaturated</TableCell>
-                <TableCell>Keys</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {(ov?.groups ?? []).map((g) => (
-                <TableRow key={g.name}>
-                  <TableCell>{g.name}</TableCell>
-                  <TableCell align="right">{fmtInt(g.weight)}</TableCell>
-                  <TableCell>{g.shareCurrency}</TableCell>
-                  <TableCell>{g.interruptible ? 'yes' : '—'}</TableCell>
-                  <TableCell>
-                    {g.acceptDegrade ? `≥ ${g.qualityFloor}` : 'top only'}
-                  </TableCell>
-                  <TableCell>
-                    {g.stages.map((s) => `${s.type}: ${s.policy}`).join('; ') || '—'}
-                  </TableCell>
-                  <TableCell>
-                    {(ov?.keys ?? [])
-                      .filter((k) => k.group === g.name)
-                      .map((k) => k.key)
-                      .join(', ') || '—'}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
       </Box>
     </Box>
   )
