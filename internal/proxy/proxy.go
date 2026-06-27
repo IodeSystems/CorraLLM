@@ -385,6 +385,13 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /v1/realtime carries two transports. A WebSocket upgrade (GET + Upgrade:
+	// websocket) streams audio through corrallm (hijacked, fully metered). A POST
+	// is the WebRTC SDP offer — corrallm only brokers signaling: it reverse-proxies
+	// the handshake; the media then flows client↔backend directly (P2P), so there
+	// are no audio bytes to meter here.
+	ws := r.Method == http.MethodGet && strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+
 	start := time.Now()
 	key := callerKey(r)
 	groupName, group := p.cfg.ResolveGroup(key)
@@ -429,6 +436,23 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 			release()
 			slog.Warn("realtime backend unavailable, spilling", "backend", name, "err", err)
 			continue
+		}
+
+		if !ws {
+			// WebRTC signaling: reverse-proxy the SDP offer→answer. The slot is held
+			// only for the handshake (the P2P media session isn't tracked here); no
+			// audio traverses corrallm, so AudioBytes stays 0.
+			sc := &statusCapture{ResponseWriter: w}
+			newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(reqCtx))
+			done()
+			status := sc.code
+			if status == 0 {
+				status = http.StatusOK
+			}
+			release(sched.Done{})
+			p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+				Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS})
+			return
 		}
 
 		// Proxy the session under reqCtx so a preemption (ErrPreempted) tears down
