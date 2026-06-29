@@ -754,7 +754,7 @@ function TtsPlayground({ model }: { model: string }) {
   )
 }
 
-type Msg = { role: 'user' | 'assistant'; content: string; image?: string }
+type Msg = { role: 'user' | 'assistant'; content: string; image?: string; file?: { name: string; data: string } }
 
 // extractText pulls the text out of a message content that may be a string or the
 // multimodal content-parts array (used when replaying a captured request).
@@ -769,20 +769,22 @@ function extractText(content: unknown): string {
   return ''
 }
 
-// apiContent renders a message in OpenAI shape: a string, or — when an image is
-// attached — the multimodal content-parts array (vision) the model needs.
+// apiContent renders a message in OpenAI shape: a plain string, or — when an image
+// or a file is attached — the multimodal content-parts array. A PDF goes as a
+// `file` part; corrallm extracts its text server-side so even a text model reads it.
 function apiContent(m: Msg): unknown {
-  if (!m.image) return m.content
-  return [
-    { type: 'text', text: m.content },
-    { type: 'image_url', image_url: { url: m.image } },
-  ]
+  if (!m.image && !m.file) return m.content
+  const parts: unknown[] = [{ type: 'text', text: m.content }]
+  if (m.image) parts.push({ type: 'image_url', image_url: { url: m.image } })
+  if (m.file) parts.push({ type: 'file', file: { filename: m.file.name, file_data: m.file.data } })
+  return parts
 }
 
 function ChatPlayground({ model, replayId }: { model: string; replayId?: string }) {
   const [key, setKey] = useState('')
   const [input, setInput] = useState('')
   const [image, setImage] = useState<string | null>(null)
+  const [file, setFile] = useState<{ name: string; data: string } | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [busy, setBusy] = useState(false)
   const msgsRef = useRef<Msg[]>([])
@@ -826,18 +828,24 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
   function attach(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     if (!f) return
+    const isPdf = f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
     const reader = new FileReader()
-    reader.onload = () => setImage(String(reader.result))
+    reader.onload = () => {
+      const data = String(reader.result)
+      if (isPdf) setFile({ name: f.name, data })
+      else setImage(data)
+    }
     reader.readAsDataURL(f)
     e.target.value = ''
   }
 
   async function send() {
     const text = input.trim()
-    if ((!text && !image) || busy) return
+    if ((!text && !image && !file) || busy) return
     setInput('')
-    const userMsg: Msg = { role: 'user', content: text, image: image ?? undefined }
+    const userMsg: Msg = { role: 'user', content: text, image: image ?? undefined, file: file ?? undefined }
     setImage(null)
+    setFile(null)
     const base: Msg[] = [...msgsRef.current, userMsg, { role: 'assistant', content: '' }]
     setMsgs(base)
     setBusy(true)
@@ -911,6 +919,7 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
                   sx={{ display: 'block', maxWidth: 200, maxHeight: 160, borderRadius: 1, my: 0.5 }}
                 />
               )}
+              {m.file && <Chip size="small" label={`📄 ${m.file.name}`} sx={{ display: 'flex', width: 'fit-content', my: 0.5 }} />}
               <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
                 {m.content || (busy && i === msgs.length - 1 ? '…' : '')}
               </Typography>
@@ -926,10 +935,18 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
           </Button>
         </Stack>
       )}
+      {file && (
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Chip size="small" label={`📄 ${file.name}`} />
+          <Button size="small" onClick={() => setFile(null)}>
+            remove file
+          </Button>
+        </Stack>
+      )}
       <Stack direction="row" spacing={1}>
-        <input ref={fileRef} type="file" accept="image/*" hidden onChange={attach} />
-        <Button variant="outlined" onClick={() => fileRef.current?.click()} title="Attach an image (vision models)">
-          🖼
+        <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" hidden onChange={attach} />
+        <Button variant="outlined" onClick={() => fileRef.current?.click()} title="Attach an image (vision) or a PDF (auto-converted to text)">
+          📎
         </Button>
         <TextField
           size="small"
