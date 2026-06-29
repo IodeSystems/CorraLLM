@@ -25,6 +25,11 @@ type Config struct {
 	// Servers declares host capacity as a vector over named memory pools.
 	Servers map[string]Server `yaml:"servers,omitempty"`
 
+	// Convert is the GLOBAL default for attachment ingestion (PDFs in chat). A
+	// model's own Convert block overrides it field-by-field. Empty = built-in
+	// defaults (extract text).
+	Convert ConvertConfig `yaml:"convert,omitempty"`
+
 	// Models maps a served model name → its ordered backend list + residency.
 	Models map[string]Model `yaml:"models,omitempty"`
 
@@ -56,9 +61,71 @@ type Server struct {
 
 // Model is a served name: residency policy + an ordered list of backends.
 type Model struct {
-	Sticky     *Sticky   `yaml:"sticky,omitempty"`
-	Persistent bool      `yaml:"persistent,omitempty"`
-	Backends   []Backend `yaml:"backends,omitempty"`
+	Sticky     *Sticky `yaml:"sticky,omitempty"`
+	Persistent bool    `yaml:"persistent,omitempty"`
+	// Convert overrides the global attachment-ingestion config for this model
+	// (e.g. a vision model rasterizes PDFs to images instead of extracting text).
+	Convert  *ConvertConfig `yaml:"convert,omitempty"`
+	Backends []Backend      `yaml:"backends,omitempty"`
+}
+
+// ConvertConfig governs how attached files (currently PDFs) in a chat request are
+// ingested before reaching the model. Resolved per request as built-in defaults →
+// global `convert:` → the model's `convert:`, each field overriding the last.
+// Zero/empty fields inherit; OCR is a pointer so a model can force it false.
+type ConvertConfig struct {
+	PDF      string `yaml:"pdf,omitempty"`      // text | vision | off
+	DPI      int    `yaml:"dpi,omitempty"`      // rasterization DPI (vision/OCR)
+	Quality  int    `yaml:"quality,omitempty"`  // JPEG quality 1–100 (vision)
+	Format   string `yaml:"format,omitempty"`   // jpeg | png (vision page images)
+	MaxPages int    `yaml:"maxPages,omitempty"` // page cap (vision rasterize / OCR)
+	MaxChars int    `yaml:"maxChars,omitempty"` // injected-text cap (text)
+	OCR      *bool  `yaml:"ocr,omitempty"`      // OCR fallback for scanned PDFs (text)
+}
+
+// DefaultConvert is the built-in base every resolution starts from.
+func DefaultConvert() ConvertConfig {
+	on := true
+	return ConvertConfig{PDF: "text", DPI: 200, Quality: 85, Format: "jpeg", MaxPages: 20, MaxChars: 400000, OCR: &on}
+}
+
+// Merge returns c with the set (non-zero) fields of over applied on top.
+func (c ConvertConfig) Merge(over ConvertConfig) ConvertConfig {
+	if over.PDF != "" {
+		c.PDF = over.PDF
+	}
+	if over.DPI != 0 {
+		c.DPI = over.DPI
+	}
+	if over.Quality != 0 {
+		c.Quality = over.Quality
+	}
+	if over.Format != "" {
+		c.Format = over.Format
+	}
+	if over.MaxPages != 0 {
+		c.MaxPages = over.MaxPages
+	}
+	if over.MaxChars != 0 {
+		c.MaxChars = over.MaxChars
+	}
+	if over.OCR != nil {
+		c.OCR = over.OCR
+	}
+	return c
+}
+
+// OCREnabled reports whether the OCR fallback is on (defaults to true if unset).
+func (c ConvertConfig) OCREnabled() bool { return c.OCR == nil || *c.OCR }
+
+// ConvertFor resolves the effective ingestion config for a served model: the
+// global default overridden by the model's own block.
+func (c *Config) ConvertFor(global ConvertConfig, modelName string) ConvertConfig {
+	eff := global
+	if m, ok := c.Models[modelName]; ok && m.Convert != nil {
+		eff = eff.Merge(*m.Convert)
+	}
+	return eff
 }
 
 // Sticky keeps a model warm after last use and resists eviction (residency, P4).

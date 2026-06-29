@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/iodesystems/corrallm/internal/config"
 )
 
 func TestPdfFromDataURL(t *testing.T) {
@@ -52,12 +54,12 @@ func TestPdfFromPartShapes(t *testing.T) {
 func TestConvertChatPDFsNoOp(t *testing.T) {
 	// no "application/pdf" anywhere → byte-exact passthrough
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hello"}]}`)
-	out, n := convertChatPDFs(context.Background(), body, pdfOpts{})
+	out, n := convertChatPDFs(context.Background(), body, config.DefaultConvert())
 	if n != 0 || string(out) != string(body) {
 		t.Errorf("plain chat should be untouched: n=%d", n)
 	}
 	// non-chat-shaped json mentioning pdf → still safe no-op
-	if _, n := convertChatPDFs(context.Background(), []byte(`{"x":"application/pdf"}`), pdfOpts{}); n != 0 {
+	if _, n := convertChatPDFs(context.Background(), []byte(`{"x":"application/pdf"}`), config.DefaultConvert()); n != 0 {
 		t.Errorf("non-messages body should convert nothing: n=%d", n)
 	}
 }
@@ -80,7 +82,7 @@ func TestConvertChatPDFsExtracts(t *testing.T) {
 			}},
 		},
 	})
-	out, n := convertChatPDFs(context.Background(), body, pdfOpts{})
+	out, n := convertChatPDFs(context.Background(), body, config.DefaultConvert())
 	if n != 1 {
 		t.Fatalf("expected 1 PDF converted, got %d", n)
 	}
@@ -121,7 +123,7 @@ func TestConvertChatPDFsKeepsImageAsArray(t *testing.T) {
 			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"}},
 		}}},
 	})
-	out, n := convertChatPDFs(context.Background(), body, pdfOpts{})
+	out, n := convertChatPDFs(context.Background(), body, config.DefaultConvert())
 	if n != 1 {
 		t.Fatalf("n=%d", n)
 	}
@@ -142,7 +144,7 @@ func TestConvertChatPDFsTruncates(t *testing.T) {
 		"model":    "m",
 		"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "file", "file": map[string]any{"file_data": url}}}}},
 	})
-	out, n := convertChatPDFs(context.Background(), body, pdfOpts{maxChars: 5}) // tiny cap
+	out, n := convertChatPDFs(context.Background(), body, tinyCapCfg()) // tiny cap
 	if n != 1 {
 		t.Fatalf("n=%d", n)
 	}
@@ -175,7 +177,7 @@ func TestConvertChatPDFsOCR(t *testing.T) {
 		"model":    "m",
 		"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "file", "file": map[string]any{"file_data": url}}}}},
 	})
-	out, n := convertChatPDFs(context.Background(), body, pdfOpts{ocr: true})
+	out, n := convertChatPDFs(context.Background(), body, config.DefaultConvert())
 	if n != 1 {
 		t.Fatalf("OCR should have converted the scanned PDF, n=%d", n)
 	}
@@ -190,8 +192,70 @@ func TestConvertChatPDFsOCR(t *testing.T) {
 func TestExtractNoOCRWhenDisabled(t *testing.T) {
 	pdf, _ := os.ReadFile("testdata/scanned.pdf")
 	// ocr:false → no OCR even if tesseract exists; scanned PDF yields ~nothing.
-	txt, _ := extractPDFText(context.Background(), pdf, pdfOpts{ocr: false})
+	txt, _ := extractPDFText(context.Background(), pdf, noOCRCfg())
 	if strings.TrimSpace(txt) != "" {
 		t.Errorf("with OCR disabled, scanned PDF should yield no text, got %q", txt)
+	}
+}
+
+func tinyCapCfg() config.ConvertConfig { c := config.DefaultConvert(); c.MaxChars = 5; return c }
+func noOCRCfg() config.ConvertConfig {
+	c := config.DefaultConvert()
+	off := false
+	c.OCR = &off
+	return c
+}
+
+func TestConvertChatPDFsVision(t *testing.T) {
+	if _, err := exec.LookPath("pdftoppm"); err != nil {
+		t.Skip("pdftoppm not installed")
+	}
+	pdf, _ := os.ReadFile("testdata/sample.pdf")
+	url := "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(pdf)
+	body, _ := json.Marshal(map[string]any{
+		"model": "m",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "read it"},
+			map[string]any{"type": "file", "file": map[string]any{"file_data": url}},
+		}}},
+	})
+	cfg := config.DefaultConvert()
+	cfg.PDF = "vision"
+	out, n := convertChatPDFs(context.Background(), body, cfg)
+	if n != 1 {
+		t.Fatalf("n=%d", n)
+	}
+	var req map[string]any
+	_ = json.Unmarshal(out, &req)
+	parts, ok := req["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	if !ok {
+		t.Fatal("vision content must stay an array")
+	}
+	// must contain at least one image_url part (the rasterized page) — and a data URL.
+	img := 0
+	for _, p := range parts {
+		pm := p.(map[string]any)
+		if pm["type"] == "image_url" {
+			img++
+			u := pm["image_url"].(map[string]any)["url"].(string)
+			if !strings.HasPrefix(u, "data:image/") {
+				t.Errorf("image part should be a data URL, got %q", u[:20])
+			}
+		}
+	}
+	if img == 0 {
+		t.Error("vision strategy should emit image_url part(s)")
+	}
+}
+
+func TestConvertOffSkips(t *testing.T) {
+	pdf, _ := os.ReadFile("testdata/sample.pdf")
+	url := "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(pdf)
+	body, _ := json.Marshal(map[string]any{"model": "m",
+		"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "file", "file": map[string]any{"file_data": url}}}}}})
+	cfg := config.DefaultConvert()
+	cfg.PDF = "off"
+	if _, n := convertChatPDFs(context.Background(), body, cfg); n != 0 {
+		t.Errorf("pdf:off should convert nothing, got n=%d", n)
 	}
 }

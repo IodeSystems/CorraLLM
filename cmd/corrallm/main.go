@@ -220,7 +220,11 @@ func serve(ctx context.Context, o serveOpts) error {
 	px.SetBroker(broker)
 	px.SetRequestTimeout(o.requestTimeout)
 	px.SetCapturePayloads(o.capturePayloads)
-	px.SetConvertPDFs(o.convertPDFs, o.pdfMaxChars, o.ocrPDFs, o.ocrMaxPages)
+	// Global ingestion config: built-in defaults ← legacy flags ← config `convert:`.
+	convertGlobal := config.DefaultConvert().
+		Merge(config.ConvertConfig{MaxChars: o.pdfMaxChars, MaxPages: o.ocrMaxPages, OCR: &o.ocrPDFs}).
+		Merge(cfg.Convert)
+	px.SetConvert(o.convertPDFs, convertGlobal)
 	px.SetRealtimeTimeouts(o.realtimeIdle, o.realtimeMaxSession)
 	px.Mount(router)
 

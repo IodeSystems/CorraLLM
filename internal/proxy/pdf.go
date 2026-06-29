@@ -13,38 +13,22 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/iodesystems/corrallm/internal/config"
 )
 
-const (
-	// defaultPDFMaxChars caps the text extracted from one PDF that gets injected
-	// into the prompt. ~400k chars ≈ ~100k tokens — generous on a 220k-ctx model
-	// while guarding against a pathological document blowing the context.
-	defaultPDFMaxChars = 400_000
-	// defaultOCRMaxPages bounds OCR latency on a long scanned document.
-	defaultOCRMaxPages = 20
-	// minTextChars: below this, pdftotext effectively found nothing → treat the PDF
-	// as scanned/image-only and try OCR.
-	minTextChars = 16
-)
+// minTextChars: below this, pdftotext effectively found nothing → treat the PDF as
+// scanned/image-only and try OCR (text strategy).
+const minTextChars = 16
 
-// pdfOpts carries the per-request PDF conversion config (from Proxy flags).
-type pdfOpts struct {
-	maxChars    int
-	ocr         bool
-	ocrMaxPages int
-}
-
-// convertChatPDFs rewrites a /v1/chat/completions body, replacing every PDF
-// content part with a text part holding the PDF's extracted text. It returns the
-// new body and how many PDFs were converted; on 0 it returns the original bytes
-// untouched (byte-exact passthrough). A PDF that yields no text (even via OCR) is
-// left as-is rather than dropped.
-func convertChatPDFs(ctx context.Context, body []byte, o pdfOpts) ([]byte, int) {
-	if o.maxChars <= 0 {
-		o.maxChars = defaultPDFMaxChars
-	}
-	if !bytes.Contains(body, []byte("application/pdf")) {
-		return body, 0 // fast path: no PDF data URL anywhere
+// convertChatPDFs rewrites a /v1/chat/completions body, replacing each PDF content
+// part with its ingested form per cfg: extracted text (text strategy) or rasterized
+// page images (vision strategy). Returns the new body and how many PDFs were
+// converted; on 0 it returns the original bytes untouched. A PDF that can't be read
+// is left as-is rather than dropped.
+func convertChatPDFs(ctx context.Context, body []byte, cfg config.ConvertConfig) ([]byte, int) {
+	if cfg.PDF == "off" || !bytes.Contains(body, []byte("application/pdf")) {
+		return body, 0
 	}
 	var req map[string]any
 	if json.Unmarshal(body, &req) != nil {
@@ -65,54 +49,83 @@ func convertChatPDFs(ctx context.Context, body []byte, o pdfOpts) ([]byte, int) 
 		if !ok {
 			continue // string content (or none) → no attachments
 		}
+		out := make([]any, 0, len(parts))
 		msgConverted := false
-		for i, pi := range parts {
-			part, ok := pi.(map[string]any)
-			if !ok {
+		for _, pi := range parts {
+			part, isMap := pi.(map[string]any)
+			if !isMap {
+				out = append(out, pi)
 				continue
 			}
-			data, name, ok := pdfFromPart(part)
-			if !ok {
+			data, name, isPDF := pdfFromPart(part)
+			if !isPDF {
+				out = append(out, pi)
 				continue
 			}
-			text, err := extractPDFText(ctx, data, o)
-			if err != nil || strings.TrimSpace(text) == "" {
-				continue // unreadable even with OCR → leave the part untouched
+			repl, ok := convertOnePDF(ctx, data, name, cfg)
+			if !ok {
+				out = append(out, pi) // unreadable (even via OCR) → leave untouched
+				continue
 			}
-			if len(text) > o.maxChars {
-				text = text[:o.maxChars] + "\n[…truncated]"
-			}
-			label := name
-			if label == "" {
-				label = "document.pdf"
-			}
-			parts[i] = map[string]any{"type": "text", "text": pdfTextBlock(label, text)}
+			out = append(out, repl...)
 			converted++
 			msgConverted = true
 		}
-		// A multimodal model refuses an all-text content ARRAY (it engages the
-		// multimodal path, sees no image, and claims it "can't access the file").
-		// If we converted a PDF and every part is now text, collapse the array into
-		// a single string — which it reads normally. Mixed text+image stays an array.
 		if msgConverted {
-			if s, ok := flattenAllText(parts); ok {
+			// The text strategy yields only text parts; a multimodal model refuses an
+			// all-text content ARRAY, so flatten it to a string. The vision strategy
+			// adds image parts → stays an array (the multimodal path needs it).
+			if s, allText := flattenAllText(out); allText {
 				msg["content"] = s
+			} else {
+				msg["content"] = out
 			}
 		}
 	}
 	if converted == 0 {
 		return body, 0
 	}
-	out, err := json.Marshal(req)
+	nb, err := json.Marshal(req)
 	if err != nil {
 		return body, 0
 	}
-	return out, converted
+	return nb, converted
 }
 
-// pdfTextBlock frames extracted text so the model treats it as the file's
-// content — NOT as an attachment it "can't access" (a literal "[attached file]"
-// label makes instruction-tuned models refuse).
+// convertOnePDF produces the replacement content part(s) for one PDF: a single
+// text part (text strategy) or a caption + N image_url parts (vision strategy).
+func convertOnePDF(ctx context.Context, pdf []byte, name string, cfg config.ConvertConfig) ([]any, bool) {
+	label := name
+	if label == "" {
+		label = "document.pdf"
+	}
+	if cfg.PDF == "vision" {
+		urls, err := rasterizePDF(ctx, pdf, cfg)
+		if err != nil || len(urls) == 0 {
+			return nil, false
+		}
+		out := make([]any, 0, len(urls)+1)
+		out = append(out, map[string]any{"type": "text",
+			"text": "Attached file \"" + label + "\" rendered to " + strconv.Itoa(len(urls)) + " page image(s):"})
+		for _, u := range urls {
+			out = append(out, map[string]any{"type": "image_url", "image_url": map[string]any{"url": u}})
+		}
+		return out, true
+	}
+	// text strategy (default)
+	text, err := extractPDFText(ctx, pdf, cfg)
+	if err != nil || strings.TrimSpace(text) == "" {
+		return nil, false
+	}
+	if cfg.MaxChars > 0 && len(text) > cfg.MaxChars {
+		text = text[:cfg.MaxChars] + "\n[…truncated]"
+	}
+	return []any{map[string]any{"type": "text", "text": pdfTextBlock(label, text)}}, true
+}
+
+// pdfTextBlock frames extracted text as the file's content — NOT an "[attached
+// file]" the model claims it "can't access" (which makes instruction-tuned models
+// refuse).
 func pdfTextBlock(name, text string) string {
 	return "The attached file \"" + name + "\" was extracted to text; its contents follow:\n---\n" +
 		strings.TrimSpace(text) + "\n---"
@@ -136,15 +149,15 @@ func flattenAllText(parts []any) (string, bool) {
 }
 
 // extractPDFText pulls text from a PDF: pdftotext first (fast, exact for text
-// PDFs); if that finds ~nothing (a scanned/image PDF) and OCR is enabled +
-// available, falls back to rasterize + tesseract.
-func extractPDFText(ctx context.Context, pdf []byte, o pdfOpts) (string, error) {
+// PDFs); if that finds ~nothing (scanned) and OCR is enabled + available, falls
+// back to rasterize + tesseract.
+func extractPDFText(ctx context.Context, pdf []byte, cfg config.ConvertConfig) (string, error) {
 	text, err := pdftotext(ctx, pdf)
 	if err == nil && len(strings.TrimSpace(text)) >= minTextChars {
 		return text, nil
 	}
-	if o.ocr && haveTesseract() {
-		if ocrText, oerr := ocrPDF(ctx, pdf, o.ocrMaxPages); oerr == nil && strings.TrimSpace(ocrText) != "" {
+	if cfg.OCREnabled() && haveTesseract() {
+		if ocrText, oerr := ocrPDF(ctx, pdf, cfg); oerr == nil && strings.TrimSpace(ocrText) != "" {
 			return ocrText, nil
 		}
 	}
@@ -156,22 +169,18 @@ func extractPDFText(ctx context.Context, pdf []byte, o pdfOpts) (string, error) 
 // `image_url`/`file_data` whose data URL is application/pdf. ok=false if not a PDF.
 func pdfFromPart(part map[string]any) (data []byte, filename string, ok bool) {
 	typ, _ := part["type"].(string)
-
-	// {"type":"file","file":{"filename":..,"file_data":"data:application/pdf;base64,.."}}
 	if f, isMap := part["file"].(map[string]any); isMap {
 		filename, _ = f["filename"].(string)
 		if d, fok := pdfFromDataURL(str(f["file_data"])); fok {
 			return d, filename, true
 		}
 	}
-	// {"type":"input_file","filename":..,"file_data":".."} (data URL at the top level)
 	if typ == "input_file" || part["file_data"] != nil {
 		filename = firstNonEmpty(str(part["filename"]), filename)
 		if d, fok := pdfFromDataURL(str(part["file_data"])); fok {
 			return d, filename, true
 		}
 	}
-	// {"type":"image_url","image_url":{"url":"data:application/pdf;base64,.."}} (misuse)
 	if iu, isMap := part["image_url"].(map[string]any); isMap {
 		if d, fok := pdfFromDataURL(str(iu["url"])); fok {
 			return d, filename, true
@@ -196,8 +205,7 @@ func pdfFromDataURL(s string) ([]byte, bool) {
 	return b, true
 }
 
-// pdftotext pipes a PDF through poppler's pdftotext (layout-preserving), reading
-// stdin and writing stdout.
+// pdftotext pipes a PDF through poppler's pdftotext (layout-preserving).
 func pdftotext(ctx context.Context, pdf []byte) (string, error) {
 	cmd := exec.CommandContext(ctx, "pdftotext", "-layout", "-q", "-", "-")
 	cmd.Stdin = bytes.NewReader(pdf)
@@ -210,35 +218,82 @@ func pdftotext(ctx context.Context, pdf []byte) (string, error) {
 	return out.String(), nil
 }
 
-// ocrPDF rasterizes the first ocrMaxPages of a scanned PDF (pdftoppm @200dpi) and
-// OCRs each page with tesseract, concatenating the text. Page count is capped to
-// bound latency; the request context cancels the subprocesses.
-func ocrPDF(ctx context.Context, pdf []byte, maxPages int) (string, error) {
-	if maxPages <= 0 {
-		maxPages = defaultOCRMaxPages
+// rasterizePages renders the first cfg.MaxPages pages of a PDF to image files in a
+// temp dir and returns their paths (+ a cleanup func). Shared by the vision
+// strategy and the OCR fallback. jpeg unless cfg.Format is png.
+func rasterizePages(ctx context.Context, pdf []byte, dpi, quality int, format string, maxPages int) (paths []string, cleanup func(), err error) {
+	if dpi <= 0 {
+		dpi = 200
 	}
-	dir, err := os.MkdirTemp("", "corrallm-ocr-")
+	if maxPages <= 0 {
+		maxPages = 20
+	}
+	png := format == "png"
+	dir, err := os.MkdirTemp("", "corrallm-pdf-")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) }
+	in := filepath.Join(dir, "in.pdf")
+	if err := os.WriteFile(in, pdf, 0o600); err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	args := []string{"-r", strconv.Itoa(dpi), "-l", strconv.Itoa(maxPages)}
+	ext := "jpg"
+	if png {
+		args = append(args, "-png")
+		ext = "png"
+	} else {
+		args = append(args, "-jpeg")
+		if quality > 0 {
+			args = append(args, "-jpegopt", "quality="+strconv.Itoa(quality))
+		}
+	}
+	args = append(args, in, filepath.Join(dir, "page"))
+	if out, err := exec.CommandContext(ctx, "pdftoppm", args...).CombinedOutput(); err != nil {
+		cleanup()
+		return nil, func() {}, fmt.Errorf("pdftoppm: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	pages, _ := filepath.Glob(filepath.Join(dir, "page*."+ext))
+	sort.Strings(pages)
+	return pages, cleanup, nil
+}
+
+// rasterizePDF renders a PDF's pages to base64 image data URLs (vision strategy).
+func rasterizePDF(ctx context.Context, pdf []byte, cfg config.ConvertConfig) ([]string, error) {
+	paths, cleanup, err := rasterizePages(ctx, pdf, cfg.DPI, cfg.Quality, cfg.Format, cfg.MaxPages)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	mime := "image/jpeg"
+	if cfg.Format == "png" {
+		mime = "image/png"
+	}
+	urls := make([]string, 0, len(paths))
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		urls = append(urls, "data:"+mime+";base64,"+base64.StdEncoding.EncodeToString(b))
+	}
+	return urls, nil
+}
+
+// ocrPDF rasterizes a scanned PDF to PNG pages and OCRs each with tesseract.
+func ocrPDF(ctx context.Context, pdf []byte, cfg config.ConvertConfig) (string, error) {
+	paths, cleanup, err := rasterizePages(ctx, pdf, cfg.DPI, 0, "png", cfg.MaxPages) // PNG for OCR fidelity
 	if err != nil {
 		return "", err
 	}
-	defer os.RemoveAll(dir)
-
-	in := filepath.Join(dir, "in.pdf")
-	if err := os.WriteFile(in, pdf, 0o600); err != nil {
-		return "", err
-	}
-	rast := exec.CommandContext(ctx, "pdftoppm", "-png", "-r", "200", "-l", strconv.Itoa(maxPages), in, filepath.Join(dir, "page"))
-	if out, err := rast.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("pdftoppm: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	pages, _ := filepath.Glob(filepath.Join(dir, "page*.png"))
-	sort.Strings(pages)
-
+	defer cleanup()
 	var b strings.Builder
-	for _, pg := range pages {
-		out, err := exec.CommandContext(ctx, "tesseract", pg, "stdout", "-l", "eng").Output()
+	for _, p := range paths {
+		out, err := exec.CommandContext(ctx, "tesseract", p, "stdout", "-l", "eng").Output()
 		if err != nil {
-			continue // skip a page tesseract chokes on rather than failing the whole doc
+			continue // skip a page tesseract chokes on rather than failing the doc
 		}
 		b.Write(bytes.TrimSpace(out))
 		b.WriteByte('\n')
