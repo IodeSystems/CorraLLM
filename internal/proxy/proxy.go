@@ -51,6 +51,8 @@ type Proxy struct {
 	capturePayloads    bool          // capture req/resp payloads onto the activity row (P10b)
 	realtimeIdle       time.Duration // 0 = no idle reap of a realtime ws session (P9e)
 	realtimeMaxSession time.Duration // 0 = no max-duration reap of a realtime ws session (P9e)
+	convertPDFs        bool          // extract PDF content parts in chat → injected text (P13)
+	pdfMaxChars        int           // per-PDF extracted-text cap (0 = use default)
 
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
@@ -59,7 +61,8 @@ type Proxy struct {
 // New constructs a Proxy.
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
 	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
-		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true}
+		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true,
+		convertPDFs: true, pdfMaxChars: defaultPDFMaxChars}
 }
 
 // payloadCap bounds how many bytes of each captured request/response payload are
@@ -71,6 +74,16 @@ const payloadCap = 4 << 10 // 4 KiB
 // admin-gated and pruned with the activity log, but they are user data — disable
 // this where prompts must not be persisted.
 func (p *Proxy) SetCapturePayloads(on bool) { p.capturePayloads = on }
+
+// SetConvertPDFs toggles auto-conversion of PDF content parts in chat requests
+// into injected text (P13), and the per-PDF extracted-text cap (0 keeps the
+// default). A text model can then read attached documents.
+func (p *Proxy) SetConvertPDFs(on bool, maxChars int) {
+	p.convertPDFs = on
+	if maxChars > 0 {
+		p.pdfMaxChars = maxChars
+	}
+}
 
 // capturePayload renders a payload for storage: binary bodies become a
 // "<content-type, N bytes>" summary (never stored raw); text is truncated to
@@ -183,8 +196,19 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	// Capture the request payload once (available on every exit path). STT uploads
-	// are multipart/binary → summarized to a size, not stored raw.
+	// are multipart/binary → summarized to a size, not stored raw. Captured BEFORE
+	// PDF conversion so the activity row holds the (small) original, not the
+	// document text injected below.
 	reqBody := p.capturePayload(body, audio && !tts, r.Header.Get("Content-Type"))
+
+	// PDF auto-conversion (P13): a text model can't read an attached PDF, so replace
+	// any PDF content part in a chat request with its extracted text. Done once here
+	// (not per backend in the loop); a no-op when there are no PDFs.
+	if p.convertPDFs && r.URL.Path == "/v1/chat/completions" {
+		if nb, n := convertChatPDFs(r.Context(), body, p.pdfMaxChars); n > 0 {
+			body = nb
+		}
+	}
 	// Only impose a deadline when one is configured. A fixed cap here would turn
 	// long-but-valid requests (big prompts, image data on a 27B/220k-ctx model)
 	// into spurious timeouts — the regression that surfaced as 502s in production.

@@ -55,6 +55,12 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   `realtime` → `audio.realtime`); the console dispatches by capability (no modes gate/toggle),
 >   `/v1/capabilities` routes each endpoint by capability (no mode-filter), schema regenerated. Verified:
 >   realtime-stt=audio.realtime, stt/stt-diarize=audio.stt, all 4 models serve.
+> - ✅ **P13 chat PDF auto-conversion** — a text model can't read an attached PDF, so the proxy
+>   intercepts `/v1/chat/completions`, finds PDF content parts (OpenAI `file`/`input_file`/data-URL
+>   shapes), extracts text via `pdftotext -layout`, and injects it as a text part. On by default
+>   (`--convert-pdfs`, `--pdf-max-chars`); text-based PDFs only (scanned → OCR is a follow-up).
+>   Verified end-to-end (Qwen answered from a PDF's content); tests cover detection + extraction +
+>   truncation + no-op passthrough.
 > - ✅ **P11 discovery + console** — `/v1/capabilities` manifest; per-model console (Info/Test/Logs/Usage)
 >   with chat/STT/TTS/vision playgrounds; STT playground gates batch/realtime per `model.modes`; batch
 >   STT renders speaker-labeled segments when a backend returns them; replay a logged activity in-console.

@@ -88,7 +88,8 @@ func newServeCmd() *cobra.Command {
 		home, service, webRoot, configPath, dbPath string
 		healthTimeout, activityRetention           time.Duration
 		requestTimeout                             time.Duration
-		capturePayloads                            bool
+		capturePayloads, convertPDFs               bool
+		pdfMaxChars                                int
 		realtimeIdle, realtimeMaxSession           time.Duration
 	)
 	cmd := &cobra.Command{
@@ -110,6 +111,8 @@ func newServeCmd() *cobra.Command {
 				activityRetention:  pickDuration(activityRetention, envDuration("CORRALLM_ACTIVITY_RETENTION", 30*24*time.Hour)),
 				requestTimeout:     pickDuration(requestTimeout, envDuration("CORRALLM_REQUEST_TIMEOUT", 0)),
 				capturePayloads:    capturePayloads,
+				convertPDFs:        convertPDFs,
+				pdfMaxChars:        pdfMaxChars,
 				realtimeIdle:       pickDuration(realtimeIdle, envDuration("CORRALLM_REALTIME_IDLE_TIMEOUT", 5*time.Minute)),
 				realtimeMaxSession: pickDuration(realtimeMaxSession, envDuration("CORRALLM_REALTIME_MAX_SESSION", 0)),
 			})
@@ -125,6 +128,8 @@ func newServeCmd() *cobra.Command {
 	f.DurationVar(&activityRetention, "activity-retention", 0, "delete activity-log rows older than this (default 720h/30d or CORRALLM_ACTIVITY_RETENTION; 0 disables)")
 	f.DurationVar(&requestTimeout, "request-timeout", 0, "max wall-clock for one proxied request before corrallm cancels it (or CORRALLM_REQUEST_TIMEOUT; 0 = no corrallm deadline, defer to client + backend)")
 	f.BoolVar(&capturePayloads, "capture-payloads", true, "capture per-request request/response payloads onto the activity log (capped; binary audio summarized; pruned with --activity-retention)")
+	f.BoolVar(&convertPDFs, "convert-pdfs", true, "auto-extract PDF attachments in chat requests into injected text (via pdftotext) so text models can read them; text-based PDFs only (no OCR)")
+	f.IntVar(&pdfMaxChars, "pdf-max-chars", 400000, "cap on extracted text per PDF injected into the prompt")
 	f.DurationVar(&realtimeIdle, "realtime-idle-timeout", 0, "reap a /v1/realtime ws session after this long with no traffic (default 5m or CORRALLM_REALTIME_IDLE_TIMEOUT; 0 disables)")
 	f.DurationVar(&realtimeMaxSession, "realtime-max-session", 0, "hard cap on a /v1/realtime ws session's duration (or CORRALLM_REALTIME_MAX_SESSION; 0 disables)")
 	return cmd
@@ -136,7 +141,8 @@ type serveOpts struct {
 	tokenPath                         string
 	activityRetention                 time.Duration
 	requestTimeout                    time.Duration
-	capturePayloads                   bool
+	capturePayloads, convertPDFs      bool
+	pdfMaxChars                       int
 	realtimeIdle, realtimeMaxSession  time.Duration
 }
 
@@ -210,6 +216,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	px.SetBroker(broker)
 	px.SetRequestTimeout(o.requestTimeout)
 	px.SetCapturePayloads(o.capturePayloads)
+	px.SetConvertPDFs(o.convertPDFs, o.pdfMaxChars)
 	px.SetRealtimeTimeouts(o.realtimeIdle, o.realtimeMaxSession)
 	px.Mount(router)
 
