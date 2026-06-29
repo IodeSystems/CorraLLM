@@ -52,12 +52,12 @@ func TestPdfFromPartShapes(t *testing.T) {
 func TestConvertChatPDFsNoOp(t *testing.T) {
 	// no "application/pdf" anywhere → byte-exact passthrough
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hello"}]}`)
-	out, n := convertChatPDFs(context.Background(), body, 0)
+	out, n := convertChatPDFs(context.Background(), body, pdfOpts{})
 	if n != 0 || string(out) != string(body) {
 		t.Errorf("plain chat should be untouched: n=%d", n)
 	}
 	// non-chat-shaped json mentioning pdf → still safe no-op
-	if _, n := convertChatPDFs(context.Background(), []byte(`{"x":"application/pdf"}`), 0); n != 0 {
+	if _, n := convertChatPDFs(context.Background(), []byte(`{"x":"application/pdf"}`), pdfOpts{}); n != 0 {
 		t.Errorf("non-messages body should convert nothing: n=%d", n)
 	}
 }
@@ -80,7 +80,7 @@ func TestConvertChatPDFsExtracts(t *testing.T) {
 			}},
 		},
 	})
-	out, n := convertChatPDFs(context.Background(), body, 0)
+	out, n := convertChatPDFs(context.Background(), body, pdfOpts{})
 	if n != 1 {
 		t.Fatalf("expected 1 PDF converted, got %d", n)
 	}
@@ -120,7 +120,7 @@ func TestConvertChatPDFsTruncates(t *testing.T) {
 		"model":    "m",
 		"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "file", "file": map[string]any{"file_data": url}}}}},
 	})
-	out, n := convertChatPDFs(context.Background(), body, 5) // tiny cap
+	out, n := convertChatPDFs(context.Background(), body, pdfOpts{maxChars: 5}) // tiny cap
 	if n != 1 {
 		t.Fatalf("n=%d", n)
 	}
@@ -129,5 +129,47 @@ func TestConvertChatPDFsTruncates(t *testing.T) {
 	text := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
 	if !strings.Contains(text, "truncated") {
 		t.Errorf("tiny cap should truncate: %q", text)
+	}
+}
+
+func TestConvertChatPDFsOCR(t *testing.T) {
+	if _, err := exec.LookPath("tesseract"); err != nil {
+		t.Skip("tesseract not installed — OCR fallback path can't run")
+	}
+	if _, err := exec.LookPath("pdftoppm"); err != nil {
+		t.Skip("pdftoppm not installed")
+	}
+	// scanned.pdf is an image-only PDF (no text layer): pdftotext finds nothing, so
+	// extraction must fall through to OCR.
+	pdf, err := os.ReadFile("testdata/scanned.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if txt, _ := pdftotext(context.Background(), pdf); strings.TrimSpace(txt) != "" {
+		t.Skipf("fixture is not text-less (pdftotext got %q) — OCR wouldn't trigger", txt)
+	}
+	url := "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(pdf)
+	body, _ := json.Marshal(map[string]any{
+		"model":    "m",
+		"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "file", "file": map[string]any{"file_data": url}}}}},
+	})
+	out, n := convertChatPDFs(context.Background(), body, pdfOpts{ocr: true})
+	if n != 1 {
+		t.Fatalf("OCR should have converted the scanned PDF, n=%d", n)
+	}
+	var req map[string]any
+	_ = json.Unmarshal(out, &req)
+	text := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "marker-12345") {
+		t.Errorf("OCR text missing marker: %q", text)
+	}
+}
+
+func TestExtractNoOCRWhenDisabled(t *testing.T) {
+	pdf, _ := os.ReadFile("testdata/scanned.pdf")
+	// ocr:false → no OCR even if tesseract exists; scanned PDF yields ~nothing.
+	txt, _ := extractPDFText(context.Background(), pdf, pdfOpts{ocr: false})
+	if strings.TrimSpace(txt) != "" {
+		t.Errorf("with OCR disabled, scanned PDF should yield no text, got %q", txt)
 	}
 }

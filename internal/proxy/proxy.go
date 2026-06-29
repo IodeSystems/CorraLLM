@@ -53,6 +53,8 @@ type Proxy struct {
 	realtimeMaxSession time.Duration // 0 = no max-duration reap of a realtime ws session (P9e)
 	convertPDFs        bool          // extract PDF content parts in chat → injected text (P13)
 	pdfMaxChars        int           // per-PDF extracted-text cap (0 = use default)
+	ocrPDFs            bool          // OCR fallback for scanned PDFs (needs tesseract)
+	ocrMaxPages        int           // cap pages OCR'd per PDF (latency bound)
 
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
@@ -62,7 +64,7 @@ type Proxy struct {
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
 	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
 		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true,
-		convertPDFs: true, pdfMaxChars: defaultPDFMaxChars}
+		convertPDFs: true, pdfMaxChars: defaultPDFMaxChars, ocrPDFs: true, ocrMaxPages: defaultOCRMaxPages}
 }
 
 // payloadCap bounds how many bytes of each captured request/response payload are
@@ -78,10 +80,14 @@ func (p *Proxy) SetCapturePayloads(on bool) { p.capturePayloads = on }
 // SetConvertPDFs toggles auto-conversion of PDF content parts in chat requests
 // into injected text (P13), and the per-PDF extracted-text cap (0 keeps the
 // default). A text model can then read attached documents.
-func (p *Proxy) SetConvertPDFs(on bool, maxChars int) {
+func (p *Proxy) SetConvertPDFs(on bool, maxChars int, ocr bool, ocrMaxPages int) {
 	p.convertPDFs = on
+	p.ocrPDFs = ocr
 	if maxChars > 0 {
 		p.pdfMaxChars = maxChars
+	}
+	if ocrMaxPages > 0 {
+		p.ocrMaxPages = ocrMaxPages
 	}
 }
 
@@ -205,7 +211,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// any PDF content part in a chat request with its extracted text. Done once here
 	// (not per backend in the loop); a no-op when there are no PDFs.
 	if p.convertPDFs && r.URL.Path == "/v1/chat/completions" {
-		if nb, n := convertChatPDFs(r.Context(), body, p.pdfMaxChars); n > 0 {
+		opts := pdfOpts{maxChars: p.pdfMaxChars, ocr: p.ocrPDFs, ocrMaxPages: p.ocrMaxPages}
+		if nb, n := convertChatPDFs(r.Context(), body, opts); n > 0 {
 			body = nb
 		}
 	}
@@ -900,7 +907,7 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 
 	chatM, embM, ttsM := pick("chat"), pick("embeddings"), pick("audio.tts")
-	sttM := first(sttBatch, pick("audio.stt"))      // batch example (transcriptions)
+	sttM := first(sttBatch, pick("audio.stt"))        // batch example (transcriptions)
 	rtM := first(sttRealtime, pick("audio.realtime")) // realtime example (ws)
 	type endpoint struct {
 		Path        string         `json:"path"`
