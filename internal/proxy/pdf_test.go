@@ -84,29 +84,51 @@ func TestConvertChatPDFsExtracts(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected 1 PDF converted, got %d", n)
 	}
-	// the file part must be gone, replaced by text holding the extracted marker
 	var req map[string]any
 	if err := json.Unmarshal(out, &req); err != nil {
 		t.Fatal(err)
 	}
-	parts := req["messages"].([]any)[0].(map[string]any)["content"].([]any)
-	if len(parts) != 2 {
-		t.Fatalf("expected 2 parts, got %d", len(parts))
+	// all-text content is flattened to a single string (a multimodal model refuses
+	// an all-text content array).
+	content := req["messages"].([]any)[0].(map[string]any)["content"]
+	text, ok := content.(string)
+	if !ok {
+		t.Fatalf("converted all-text content should be a string, got %T", content)
 	}
-	last := parts[1].(map[string]any)
-	if last["type"] != "text" {
-		t.Fatalf("PDF part should become text, got %v", last["type"])
-	}
-	text := last["text"].(string)
 	if !strings.Contains(text, "marker-12345") {
 		t.Errorf("extracted text missing marker: %q", text)
 	}
 	if !strings.Contains(text, "sample.pdf") {
-		t.Errorf("injected text should name the file: %q", text)
+		t.Errorf("should name the file: %q", text)
 	}
-	// the original text part is preserved
-	if parts[0].(map[string]any)["text"] != "summarize this" {
-		t.Error("original text part should be preserved")
+	if !strings.Contains(text, "summarize this") {
+		t.Errorf("original text should be preserved: %q", text)
+	}
+}
+
+func TestConvertChatPDFsKeepsImageAsArray(t *testing.T) {
+	if _, err := exec.LookPath("pdftotext"); err != nil {
+		t.Skip("pdftotext not installed")
+	}
+	pdf, _ := os.ReadFile("testdata/sample.pdf")
+	url := "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(pdf)
+	// a message with BOTH a PDF and an image: the PDF → text, but content must stay
+	// an array because the image needs the multimodal path.
+	body, _ := json.Marshal(map[string]any{
+		"model": "m",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "file", "file": map[string]any{"file_data": url}},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"}},
+		}}},
+	})
+	out, n := convertChatPDFs(context.Background(), body, pdfOpts{})
+	if n != 1 {
+		t.Fatalf("n=%d", n)
+	}
+	var req map[string]any
+	_ = json.Unmarshal(out, &req)
+	if _, isArray := req["messages"].([]any)[0].(map[string]any)["content"].([]any); !isArray {
+		t.Error("content with an image must stay an array, not flatten")
 	}
 }
 
@@ -126,7 +148,7 @@ func TestConvertChatPDFsTruncates(t *testing.T) {
 	}
 	var req map[string]any
 	_ = json.Unmarshal(out, &req)
-	text := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	text := req["messages"].([]any)[0].(map[string]any)["content"].(string)
 	if !strings.Contains(text, "truncated") {
 		t.Errorf("tiny cap should truncate: %q", text)
 	}
@@ -159,7 +181,7 @@ func TestConvertChatPDFsOCR(t *testing.T) {
 	}
 	var req map[string]any
 	_ = json.Unmarshal(out, &req)
-	text := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	text := req["messages"].([]any)[0].(map[string]any)["content"].(string)
 	if !strings.Contains(text, "marker-12345") {
 		t.Errorf("OCR text missing marker: %q", text)
 	}

@@ -65,6 +65,7 @@ func convertChatPDFs(ctx context.Context, body []byte, o pdfOpts) ([]byte, int) 
 		if !ok {
 			continue // string content (or none) → no attachments
 		}
+		msgConverted := false
 		for i, pi := range parts {
 			part, ok := pi.(map[string]any)
 			if !ok {
@@ -85,8 +86,18 @@ func convertChatPDFs(ctx context.Context, body []byte, o pdfOpts) ([]byte, int) 
 			if label == "" {
 				label = "document.pdf"
 			}
-			parts[i] = map[string]any{"type": "text", "text": "[attached file: " + label + "]\n" + text}
+			parts[i] = map[string]any{"type": "text", "text": pdfTextBlock(label, text)}
 			converted++
+			msgConverted = true
+		}
+		// A multimodal model refuses an all-text content ARRAY (it engages the
+		// multimodal path, sees no image, and claims it "can't access the file").
+		// If we converted a PDF and every part is now text, collapse the array into
+		// a single string — which it reads normally. Mixed text+image stays an array.
+		if msgConverted {
+			if s, ok := flattenAllText(parts); ok {
+				msg["content"] = s
+			}
 		}
 	}
 	if converted == 0 {
@@ -97,6 +108,31 @@ func convertChatPDFs(ctx context.Context, body []byte, o pdfOpts) ([]byte, int) 
 		return body, 0
 	}
 	return out, converted
+}
+
+// pdfTextBlock frames extracted text so the model treats it as the file's
+// content — NOT as an attachment it "can't access" (a literal "[attached file]"
+// label makes instruction-tuned models refuse).
+func pdfTextBlock(name, text string) string {
+	return "The attached file \"" + name + "\" was extracted to text; its contents follow:\n---\n" +
+		strings.TrimSpace(text) + "\n---"
+}
+
+// flattenAllText joins a content-parts array into one string iff every part is
+// text. ok=false (leave as an array) if any part is non-text (e.g. an image).
+func flattenAllText(parts []any) (string, bool) {
+	var sb strings.Builder
+	for _, pi := range parts {
+		pm, ok := pi.(map[string]any)
+		if !ok || pm["type"] != "text" {
+			return "", false
+		}
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString(str(pm["text"]))
+	}
+	return sb.String(), true
 }
 
 // extractPDFText pulls text from a PDF: pdftotext first (fast, exact for text
