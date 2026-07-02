@@ -146,6 +146,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Tags:        []string{"observability"},
 	}, h.Lanes)
 
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "reservations",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/reservations",
+		Summary:     "Live slot reservations (interactive-headroom leases).",
+		Tags:        []string{"observability"},
+	}, h.Reservations)
+
 	// Finalize: ingest the OpenAPI doc, build the GraphQL schema, mount
 	// /api/graphql + /api/schema/*.
 	if err := gat.RegisterHuma(humaAPI, g, "/api"); err != nil {

@@ -795,6 +795,44 @@ func (h *Handlers) Lanes(_ context.Context, _ *LanesInput) (*LanesOutput, error)
 	return out, nil
 }
 
+// --- reservations: live slot leases (interactive headroom) ---
+
+type ReservationsInput struct{}
+
+// ReservationView is one live reservation: a lane's short lease on N slots of a
+// model's primary backend, held free so interactive work has headroom.
+type ReservationView struct {
+	Model     string `json:"model" doc:"Model whose primary backend is reserved."`
+	Backend   string `json:"backend" doc:"Scheduler backend id (model#0)."`
+	Lane      string `json:"lane" doc:"Priority group the slots are held for."`
+	Slots     int    `json:"slots" doc:"Slots held free."`
+	ExpiresAt string `json:"expiresAt" doc:"RFC3339 lease expiry; renewed by heartbeat re-POST."`
+}
+
+// ReservationsOutput lists live slot reservations.
+type ReservationsOutput struct {
+	Body struct {
+		Reservations []ReservationView `json:"reservations" doc:"Live reservations (expired ones pruned)."`
+	}
+}
+
+// Reservations returns the scheduler's live slot leases for the dashboard.
+func (h *Handlers) Reservations(_ context.Context, _ *ReservationsInput) (*ReservationsOutput, error) {
+	out := &ReservationsOutput{}
+	live := h.Sched.Reservations()
+	out.Body.Reservations = make([]ReservationView, 0, len(live))
+	for _, r := range live {
+		out.Body.Reservations = append(out.Body.Reservations, ReservationView{
+			Model:     strings.TrimSuffix(r.Backend, "#0"),
+			Backend:   r.Backend,
+			Lane:      r.Lane,
+			Slots:     r.Slots,
+			ExpiresAt: r.ExpiresAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return out, nil
+}
+
 // --- overview: model/lane definitions + capacity (P8-beyond) ---
 
 // PoolDef is a server pool's declared total and reserved headroom.

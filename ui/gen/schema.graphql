@@ -36,6 +36,7 @@ type CorrallmQueryNamespace {
     """Max records, newest first."""
     limit: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
+  reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
   usageByKey(
     """Trailing window in hours; 0 = all time."""
@@ -90,6 +91,7 @@ type CorrallmV1QueryNamespace {
     """Max records, newest first."""
     limit: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
+  reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
   usageByKey(
     """Trailing window in hours; 0 = all time."""
@@ -453,6 +455,24 @@ type corrallm_QueueDepthOutputBody {
 type corrallm_RecentActivityOutputBody {
   """Activity rows, newest first."""
   records: [corrallm_ActivityRecord!]!
+}
+
+type corrallm_ReservationView {
+  """Scheduler backend id (model#0)."""
+  backend: String!
+  """RFC3339 lease expiry; renewed by heartbeat re-POST."""
+  expiresAt: String!
+  """Priority group the slots are held for."""
+  lane: String!
+  """Model whose primary backend is reserved."""
+  model: String!
+  """Slots held free."""
+  slots: Long!
+}
+
+type corrallm_ReservationsOutputBody {
+  """Live reservations (expired ones pruned)."""
+  reservations: [corrallm_ReservationView!]!
 }
 
 type corrallm_ResidencyOutputBody {

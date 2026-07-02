@@ -64,6 +64,13 @@ type Scheduler struct {
 
 	maxWait       time.Duration // queue wait before a 429 (0 = bounded only by req ctx)
 	maxQueueDepth int           // reject once this many already wait on a backend (0 = unbounded)
+
+	// reservations holds short, renewable leases that keep slots free for a lane —
+	// backend → lane → lease. A request from lane G sees effective capacity
+	// capacity − Σ(slots reserved by lanes ≠ G), so batch backs off and the reserving
+	// (interactive) lane gets an already-free slot without preempting.
+	reservations map[string]map[string]*reservation
+	maxResTTL    time.Duration // cap on a reservation lease (0 = default 5m)
 }
 
 // ewmaAlpha weights the newest service-time sample in the per-backend dwell EWMA
@@ -80,9 +87,10 @@ type rateEvent struct {
 // New constructs a Scheduler with no config: request-count fairshare, no limits.
 func New() *Scheduler {
 	return &Scheduler{
-		backends: map[string]*backendState{},
-		budgets:  map[string][]rateEvent{},
-		now:      time.Now,
+		backends:     map[string]*backendState{},
+		budgets:      map[string][]rateEvent{},
+		reservations: map[string]map[string]*reservation{},
+		now:          time.Now,
 	}
 }
 
@@ -184,7 +192,10 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 		return nil, nil, be
 	}
 
-	if bs.active < bs.capacity {
+	// Effective capacity for this lane = physical slots minus what OTHER lanes have
+	// reserved. The reserving lane sees full capacity (its own reservation doesn't
+	// count against it), so it gets an already-free slot; other lanes saturate early.
+	if bs.active < s.effCapLocked(bs, backend, group, now) {
 		bs.grant(sl, now)
 		s.recordAdmitLocked(now, group, backendType)
 		s.mu.Unlock()
@@ -375,7 +386,7 @@ func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 			bs.addShare(now, sl, dwell, cost)
 			// Charge each promoted (queued) request against its requests budget —
 			// the direct-grant path charges at admit, the queue path here.
-			for _, ps := range bs.promote(now) {
+			for _, ps := range s.promote(bs, backend, now) {
 				s.recordAdmitLocked(now, ps.group, ps.backendType)
 			}
 			s.mu.Unlock()
@@ -395,11 +406,16 @@ func (bs *backendState) grant(sl *slot, now time.Time) {
 // promote fills free slots from the queue: preempt waiters first (they each
 // freed a slot to get here), then the most under-served group by weighted
 // fairshare (min active/weight) — a weight-10 group holds ~10× a weight-1 group's
-// slots under sustained contention.
-func (bs *backendState) promote(now time.Time) []*slot {
+// slots under sustained contention. Reservation-aware: a non-preempt waiter is
+// only granted a slot its lane may use (not one reserved by another lane), so
+// freed batch slots don't refill a reserved segment.
+func (s *Scheduler) promote(bs *backendState, backend string, now time.Time) []*slot {
 	var granted []*slot
-	for bs.active < bs.capacity && len(bs.waiters) > 0 {
-		idx := bs.pickWaiter(now)
+	for len(bs.waiters) > 0 {
+		idx := s.pickGrantableWaiter(bs, backend, now)
+		if idx < 0 {
+			break // remaining waiters are all reserved out of the free slots
+		}
 		w := bs.waiters[idx]
 		bs.waiters = append(bs.waiters[:idx], bs.waiters[idx+1:]...)
 		bs.grant(w.slot, now)
@@ -409,12 +425,36 @@ func (bs *backendState) promote(now time.Time) []*slot {
 	return granted
 }
 
-// pickWaiter chooses the next waiter to grant: preempt waiters in FIFO order
-// jump ahead of fairshare waiters; otherwise the most under-served group wins by
-// min(numerator/weight). The numerator must be in one comparable unit across the
-// whole queue, so dwell/cost fairshare engages only when every queued waiter
-// shares that currency (then all groups accumulate it); a mixed queue falls back
-// to request-count for all — coherent and starvation-free. Caller holds s.mu.
+// pickGrantableWaiter chooses the next waiter that can actually take a free slot,
+// or -1 if none. Preempt waiters go first in FIFO order — each already freed a
+// slot by preempting, so it REPLACES (net active unchanged) and is bounded by
+// physical capacity, not the reservation. Otherwise the most under-served group by
+// min(numerator/weight) wins, but only among lanes with room under their effective
+// capacity (a lane can't fill slots reserved by another lane). Caller holds s.mu.
+func (s *Scheduler) pickGrantableWaiter(bs *backendState, backend string, now time.Time) int {
+	for i, w := range bs.waiters {
+		if w.preempt && bs.active < bs.capacity {
+			return i
+		}
+	}
+	currency := bs.queueCurrency()
+	best, bestIdx := math.Inf(1), -1
+	for i, w := range bs.waiters {
+		if w.preempt || bs.active >= s.effCapLocked(bs, backend, w.slot.group, now) {
+			continue
+		}
+		ratio := bs.numerator(now, currency, w.slot.group) / float64(w.slot.weight)
+		if ratio < best {
+			best, bestIdx = ratio, i
+		}
+	}
+	return bestIdx
+}
+
+// pickWaiter is the reservation-agnostic fairshare pick (preempt FIFO, then min
+// numerator/weight) over ALL waiters — the pure priority logic, exercised
+// directly by tests. promote uses pickGrantableWaiter, which layers the
+// per-lane effective-capacity filter on top. Caller holds s.mu.
 func (bs *backendState) pickWaiter(now time.Time) int {
 	for i, w := range bs.waiters {
 		if w.preempt {

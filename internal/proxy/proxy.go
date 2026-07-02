@@ -152,6 +152,10 @@ func (p *Proxy) Mount(mux interface {
 	// capability + lanes + examples) — point an LLM/client at it to build a
 	// compatible client. Synthesized from config; never exposes API keys.
 	mux.Handle("/v1/capabilities", http.HandlerFunc(p.handleCapabilities))
+	// /v1/reservations lets a keyed caller lease slots on a model for its lane so
+	// interactive work has headroom against saturating batch. Short, renewable,
+	// auto-expiring. POST create/renew, DELETE release, GET list.
+	mux.Handle("/v1/reservations", http.HandlerFunc(p.handleReservations))
 	// Non-inference UI/passthrough: /upstream/<model>/… serves UNTRACKED once
 	// the backend is up — it must not consume admission/concurrency (the
 	// gatedPaths lesson, structural here). No activity log, no scheduling.
@@ -946,6 +950,11 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/models", base)}},
 		{"/v1/capabilities", "GET", "meta", "This manifest.", nil, false,
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/capabilities", base)}},
+		{"/v1/reservations", "POST", "meta", "Reserve slots on a model for your lane so interactive work has headroom against saturating batch. Short-lived (max 5m) and must be renewed by re-POSTing (heartbeat); auto-expires. DELETE ?model= to release; GET to list.", nil, false,
+			map[string]any{
+				"curl": fmt.Sprintf("curl -sS %s/v1/reservations -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"slots\":1,\"ttl\":\"5m\"}'", base, chatM),
+				"note": "Your key selects the lane the slots are held for. Re-POST every few minutes to keep the lease; stop to let batch reclaim.",
+			}},
 	}
 
 	lanes := make([]map[string]any, 0, len(p.cfg.PriorityGroups))

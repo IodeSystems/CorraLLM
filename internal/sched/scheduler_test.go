@@ -219,7 +219,7 @@ func TestWeightedFairnessPromotion(t *testing.T) {
 	for range 10 {
 		bs.waiters = append(bs.waiters, &waiter{slot: &slot{group: "lo", weight: 1}, ready: make(chan struct{})})
 	}
-	bs.promote(time.Now()) // fills all 4 slots by min(active/weight)
+	New().promote(bs, "b", time.Now()) // fills all 4 slots by min(active/weight)
 
 	if bs.groupActive["hi"] != 3 || bs.groupActive["lo"] != 1 {
 		t.Fatalf("weighted share: hi=%d lo=%d, want 3 and 1", bs.groupActive["hi"], bs.groupActive["lo"])

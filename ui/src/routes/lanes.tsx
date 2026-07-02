@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 import {
   Box,
   Chip,
@@ -21,6 +22,14 @@ import { fmtInt } from '@/format'
 const LanesDoc = graphql(/* GraphQL */ `
   query Lanes {
     corrallm {
+      reservations {
+        reservations {
+          model
+          lane
+          slots
+          expiresAt
+        }
+      }
       lanes {
         groups {
           name
@@ -53,12 +62,28 @@ function capPct(active: string, capacity: string): number {
   return Math.min(100, (a / c) * 100)
 }
 
+// fmtCountdown renders the time left on a lease as "4m 03s" / "42s" / "expired".
+function fmtCountdown(expiresAt: string, nowMs: number): string {
+  const secs = Math.round((new Date(expiresAt).getTime() - nowMs) / 1000)
+  if (secs <= 0) return 'expired'
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`
+}
+
 function Lanes() {
   const q = useQuery({
     queryKey: ['lanes'],
     queryFn: () => gqlClient.request(LanesDoc),
     refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
   })
+
+  // Tick a local clock so reservation countdowns update between refetches.
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
 
   if (q.isLoading) {
     return (
@@ -78,6 +103,7 @@ function Lanes() {
   const lanes = q.data?.corrallm.lanes
   const groups = lanes?.groups ?? []
   const backends = lanes?.backends ?? []
+  const reservations = q.data?.corrallm.reservations?.reservations ?? []
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -119,6 +145,48 @@ function Lanes() {
                         '0'
                       )}
                     </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Box>
+
+      <Box>
+        <Typography variant="h6" gutterBottom>
+          Reservations
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          Slots held free for a lane so interactive work has headroom. Short-lived;
+          renewed by heartbeat, auto-expiring.
+        </Typography>
+        <TableContainer component={Paper}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Model</TableCell>
+                <TableCell>Lane</TableCell>
+                <TableCell align="right">Slots held</TableCell>
+                <TableCell align="right">Expires in</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {reservations.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4}>
+                    <Typography color="text.secondary">No active reservations.</Typography>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                reservations.map((r) => (
+                  <TableRow key={`${r.model}/${r.lane}`} hover>
+                    <TableCell>{r.model}</TableCell>
+                    <TableCell>
+                      <Chip size="small" color="info" label={r.lane} />
+                    </TableCell>
+                    <TableCell align="right">{fmtInt(r.slots)}</TableCell>
+                    <TableCell align="right">{fmtCountdown(r.expiresAt, nowMs)}</TableCell>
                   </TableRow>
                 ))
               )}

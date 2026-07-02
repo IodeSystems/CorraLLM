@@ -91,6 +91,7 @@ func newServeCmd() *cobra.Command {
 		capturePayloads, convertPDFs, ocrPDFs      bool
 		pdfMaxChars, ocrMaxPages                   int
 		realtimeIdle, realtimeMaxSession           time.Duration
+		reservationMaxTTL                          time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -117,6 +118,7 @@ func newServeCmd() *cobra.Command {
 				ocrMaxPages:        ocrMaxPages,
 				realtimeIdle:       pickDuration(realtimeIdle, envDuration("CORRALLM_REALTIME_IDLE_TIMEOUT", 5*time.Minute)),
 				realtimeMaxSession: pickDuration(realtimeMaxSession, envDuration("CORRALLM_REALTIME_MAX_SESSION", 0)),
+				reservationMaxTTL:  pickDuration(reservationMaxTTL, envDuration("CORRALLM_RESERVATION_MAX_TTL", 5*time.Minute)),
 			})
 		},
 	}
@@ -136,6 +138,7 @@ func newServeCmd() *cobra.Command {
 	f.IntVar(&ocrMaxPages, "ocr-max-pages", 20, "max pages to OCR per scanned PDF (bounds latency)")
 	f.DurationVar(&realtimeIdle, "realtime-idle-timeout", 0, "reap a /v1/realtime ws session after this long with no traffic (default 5m or CORRALLM_REALTIME_IDLE_TIMEOUT; 0 disables)")
 	f.DurationVar(&realtimeMaxSession, "realtime-max-session", 0, "hard cap on a /v1/realtime ws session's duration (or CORRALLM_REALTIME_MAX_SESSION; 0 disables)")
+	f.DurationVar(&reservationMaxTTL, "reservation-max-ttl", 0, "cap on a /v1/reservations slot lease before it must be renewed (default 5m or CORRALLM_RESERVATION_MAX_TTL)")
 	return cmd
 }
 
@@ -148,6 +151,7 @@ type serveOpts struct {
 	capturePayloads, convertPDFs, ocrPDFs bool
 	pdfMaxChars, ocrMaxPages              int
 	realtimeIdle, realtimeMaxSession      time.Duration
+	reservationMaxTTL                     time.Duration
 }
 
 func serve(ctx context.Context, o serveOpts) error {
@@ -174,6 +178,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	go mgr.Preload(ctx)
 
 	scheduler := sched.NewWithConfig(cfg)
+	scheduler.SetMaxReservationTTL(o.reservationMaxTTL)
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler}
 
 	// Admin token gates the management surface (/api/*). Generated into
@@ -242,6 +247,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	// orphaned (their process groups never get signalled).
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Expire stale slot reservations (a keyed caller can lease headroom for its
+	// lane; the lease must be renewed or it auto-frees). Stops on shutdown.
+	scheduler.StartReaper(sigCtx)
 
 	// Sample instantaneous per-lane queue depth so it's visible before requests
 	// resolve (the activity log is completion-driven). Stops on shutdown.

@@ -688,6 +688,18 @@ the BackpressureError shape we already validated.
   decide which quality tiers a group accepts; a non-degrading group sees only the model's top tier
   and backs off per its stage rather than spilling onto a worse model. Degrade transform = per-backend
   `maxTokens` clamp on the outgoing request (context-window clamp deferred — needs tokenization).
+- ✅ **Slot reservations** (interactive headroom) — a keyed caller can lease K slots on a model's
+  primary backend (`model#0`) for **its own lane**, so saturating batch backs off and interactive
+  work finds an already-free slot. Proactive (holds capacity free), distinct from reactive preempt.
+  Gates BOTH direct-admit AND promote via `effCapLocked = capacity − Σ(slots reserved by OTHER
+  lanes)` — a freed batch slot won't refill a reserved one; preempt waiters bypass (they swap, not
+  fill). Lease ≤ **5m** (`--reservation-max-ttl`), renewed by heartbeat re-POST, auto-expired by a
+  2s reaper (`StartReaper`). API: `POST /v1/reservations {model,slots?,ttl?}` create/renew,
+  `DELETE ?model=` release, `GET` list. Keyed by (backend, lane), no id. Any keyed caller may
+  reserve for their lane. `internal/sched/reservation.go` + `internal/proxy/reservation.go`.
+  **Dashboard**: a "Reservations" panel on the Lanes page (model/lane/slots/live-countdown),
+  fed by a `reservations` gat op (`corrallm.reservations` in GraphQL). Verified live end-to-end:
+  reserved nomic → interactive got its slot in 0.02s while batch queued → release drained batch.
 
 ### Resolved this session (P9 scoping)
 - ✅ **Audio cost basis** — **file bytes** for v1 (deterministic, no extra dependency): STT $ by
@@ -805,8 +817,8 @@ the BackpressureError shape we already validated.
   - OSS follow-ups (not blockers): auth multi-user accounts/roles + token rotation (today is a single
     shared admin token); rename the `WattsPerToken` cost fields to `WhPerToken`.
 - Optional polish in §7 Optional extensions (affinity weighting, context-window clamp on degrade,
-  gRPC, CapacityProbe, `server.maxConcurrent` host cap, proactive ttl reaper, instantaneous queue
-  depth is now covered by the sampler).
+  gRPC, CapacityProbe, `server.maxConcurrent` host cap; instantaneous queue depth is now covered by
+  the sampler; the proactive ttl reaper shipped with slot reservations).
 
 ---
 
