@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS activity (
     served            TEXT    NOT NULL,          -- served model name
     backend           TEXT    NOT NULL,          -- backend that handled it
     key               TEXT    NOT NULL DEFAULT '', -- caller identity
+    source_ip         TEXT    NOT NULL DEFAULT '', -- client IP (via middleware.RealIP / X-Forwarded-For)
     path              TEXT    NOT NULL,          -- request path
     status            INTEGER NOT NULL,          -- HTTP status
     dwell_ms          INTEGER NOT NULL DEFAULT 0, -- time in request
@@ -62,6 +63,7 @@ var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN ttfb_ms INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN req_body TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE activity ADD COLUMN resp_body TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE activity ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''`,
 }
 
 // Store wraps the SQLite handle.
@@ -101,6 +103,7 @@ type Activity struct {
 	Served           string
 	Backend          string
 	Key              string
+	SourceIP         string // client IP resolved via middleware.RealIP (X-Forwarded-For), "" if unknown
 	Path             string
 	Status           int
 	DwellMS          int64
@@ -118,11 +121,11 @@ type Activity struct {
 // InsertActivity appends a request record to the activity log.
 func (s *Store) InsertActivity(a Activity) error {
 	_, err := s.db.Exec(
-		`INSERT INTO activity (ts, served, backend, key, path, status, dwell_ms,
+		`INSERT INTO activity (ts, served, backend, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, req_body, resp_body)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.TS, a.Served, a.Backend, a.Key, a.Path, a.Status, a.DwellMS,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.TS, a.Served, a.Backend, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.ReqBody, a.RespBody,
 	)
@@ -135,11 +138,11 @@ func (s *Store) InsertActivity(a Activity) error {
 func (s *Store) ActivityByID(id int64) (Activity, error) {
 	var a Activity
 	err := s.db.QueryRow(
-		`SELECT id, ts, served, backend, key, path, status, dwell_ms,
+		`SELECT id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		        ttfb_ms, req_body, resp_body
 		 FROM activity WHERE id = ?`, id).Scan(
-		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.Path, &a.Status, &a.DwellMS,
+		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
 		&a.TTFBMs, &a.ReqBody, &a.RespBody)
 	return a, err
@@ -160,7 +163,7 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 // RecentActivity returns the most recent records, newest first.
 func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	rows, err := s.db.Query(
-		`SELECT id, ts, served, backend, key, path, status, dwell_ms,
+		`SELECT id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms
 		 FROM activity ORDER BY ts DESC LIMIT ?`, limit)
 	if err != nil {
@@ -170,7 +173,7 @@ func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	var out []Activity
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.Path, &a.Status, &a.DwellMS,
+		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs); err != nil {
 			return nil, err
 		}

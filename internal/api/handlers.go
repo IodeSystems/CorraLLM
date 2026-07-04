@@ -91,6 +91,7 @@ type ActivityRecord struct {
 	Served           string  `json:"served" doc:"Served model name."`
 	Backend          string  `json:"backend" doc:"Backend that handled it."`
 	Key              string  `json:"key" doc:"Caller identity."`
+	SourceIP         string  `json:"sourceIp" doc:"Client IP (via X-Forwarded-For); empty if unknown."`
 	Path             string  `json:"path" doc:"Request path."`
 	Status           int     `json:"status" doc:"HTTP status."`
 	DwellMS          int64   `json:"dwellMs" doc:"Time in request, milliseconds."`
@@ -129,6 +130,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			Served:           a.Served,
 			Backend:          a.Backend,
 			Key:              a.Key,
+			SourceIP:         a.SourceIP,
 			Path:             a.Path,
 			Status:           a.Status,
 			DwellMS:          a.DwellMS,
@@ -173,7 +175,7 @@ func (h *Handlers) ActivityDetail(_ context.Context, in *ActivityDetailInput) (*
 	out := &ActivityDetailOutput{}
 	out.Body.Record = ActivityDetailRecord{
 		ActivityRecord: ActivityRecord{
-			ID: a.ID, TS: a.TS, Served: a.Served, Backend: a.Backend, Key: a.Key, Path: a.Path,
+			ID: a.ID, TS: a.TS, Served: a.Served, Backend: a.Backend, Key: a.Key, SourceIP: a.SourceIP, Path: a.Path,
 			Status: a.Status, DwellMS: a.DwellMS, PromptTokens: a.PromptTokens,
 			CompletionTokens: a.CompletionTokens, CostUSD: a.CostUSD, AudioBytes: a.AudioBytes,
 			Error: a.Error, TTFBMs: a.TTFBMs, QueuedMS: a.QueuedMS,

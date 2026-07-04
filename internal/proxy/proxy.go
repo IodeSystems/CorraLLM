@@ -266,12 +266,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				}
 				// rejected or queue-timeout → terminal backoff.
 				writeBackpressure(w, bp)
-				p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+				p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 					QueuedMS: queuedMS, Error: bp.Reason, ReqBody: reqBody})
 				return
 			}
-			p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
 				Error: "client canceled", ReqBody: reqBody}) // queued then client gave up
 			return
@@ -369,7 +369,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if !sc.firstWrite.IsZero() {
 			ttfbMS = sc.firstWrite.Sub(start).Milliseconds()
 		}
-		p.log(store.Activity{
+		p.logReq(r, store.Activity{
 			Served: served, Backend: name, Key: key, Path: r.URL.Path, Status: status,
 			DwellMS: time.Since(start).Milliseconds(), PromptTokens: u.PromptTokens,
 			CompletionTokens: u.CompletionTokens, CostUSD: costUSD, QueuedMS: queuedMS,
@@ -383,13 +383,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
 		writeBackpressure(w, lastBP)
-		p.log(store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			QueuedMS: queuedMS, Error: "exhausted", ReqBody: reqBody})
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
-	p.log(store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+	p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
 		QueuedMS: queuedMS, Error: "no backend available", ReqBody: reqBody})
 }
@@ -448,12 +448,12 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				writeBackpressure(w, bp)
-				p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+				p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 					QueuedMS: queuedMS, Error: bp.Reason})
 				return
 			}
-			p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, Error: "client canceled"})
 			return
 		}
@@ -478,7 +478,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusOK
 			}
 			release(sched.Done{})
-			p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 				Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS})
 			return
 		}
@@ -498,7 +498,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		}
 		costUSD := p.cost.AudioRequestUSD(backend.Type, int(inBytes))
 		release(sched.Done{CostUSD: costUSD})
-		p.log(store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+		p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 			Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
 			AudioBytes: inBytes, CostUSD: costUSD, Error: errReason})
 		return
@@ -507,13 +507,13 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
 		writeBackpressure(w, lastBP)
-		p.log(store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			QueuedMS: queuedMS, Error: "exhausted"})
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
-	p.log(store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+	p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
 		QueuedMS: queuedMS, Error: "no backend available"})
 }
@@ -1012,6 +1012,15 @@ func (p *Proxy) log(a store.Activity) {
 	p.publish(events.Event{Type: "activity", Data: ev})
 }
 
+// logReq stamps request-derived fields (the caller's source IP) onto the
+// activity row before logging it. Every activity record originates from a
+// request, so this is the single seam that resolves the client IP — callers
+// pass their *http.Request rather than repeating clientIP(r) at each site.
+func (p *Proxy) logReq(r *http.Request, a store.Activity) {
+	a.SourceIP = clientIP(r)
+	p.log(a)
+}
+
 // publish emits an event if a broker is attached (no-op otherwise).
 func (p *Proxy) publish(e events.Event) { p.events.Publish(e) }
 
@@ -1028,6 +1037,20 @@ func callerKey(r *http.Request) string {
 		}
 	}
 	return ""
+}
+
+// clientIP returns the caller's IP for the activity log. chi's middleware.RealIP
+// has already rewritten r.RemoteAddr from X-Forwarded-For / X-Real-IP (haproxy
+// sets these via `option forwardfor`), so RemoteAddr is the real origin, not the
+// proxy. The host:port is split to keep just the IP; a bare value (no port) is
+// returned as-is. Trust note: RealIP trusts the forwarded header, which is fine
+// because corrallm is only reachable via the trusted front proxy on the LAN.
+func clientIP(r *http.Request) string {
+	ra := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ra); err == nil {
+		return host
+	}
+	return ra
 }
 
 // writeBackpressure renders a BackpressureError as 429 + informative headers and

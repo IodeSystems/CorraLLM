@@ -35,6 +35,7 @@ const ActivityDoc = graphql(/* GraphQL */ `
           served
           backend
           key
+          sourceIp
           path
           status
           dwellMs
@@ -60,6 +61,7 @@ const ActivityDetailDoc = graphql(/* GraphQL */ `
           served
           backend
           key
+          sourceIp
           path
           status
           dwellMs
@@ -122,6 +124,7 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
             <Box>
               <Typography variant="body2" color="text.secondary">
                 {rec.served} · {rec.backend} · {rec.path} · {fmtTime(rec.ts)}
+                {rec.sourceIp && <> · from {rec.sourceIp}</>}
               </Typography>
               <Typography variant="body2" color="text.secondary">
                 dwell {fmtDuration(rec.dwellMs)} · ttfb {fmtDuration(rec.ttfbMs)} · queued{' '}
@@ -210,6 +213,7 @@ function Activity() {
               <TableCell>Served</TableCell>
               <TableCell>Backend</TableCell>
               <TableCell>Key</TableCell>
+              <TableCell>Source</TableCell>
               <TableCell>Path</TableCell>
               <TableCell align="right">Status</TableCell>
               <TableCell align="right">Dwell</TableCell>
@@ -222,7 +226,7 @@ function Activity() {
           <TableBody>
             {records.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11}>
+                <TableCell colSpan={12}>
                   <Typography color="text.secondary">No activity yet.</Typography>
                 </TableCell>
               </TableRow>
@@ -238,6 +242,7 @@ function Activity() {
                   <TableCell>{r.served}</TableCell>
                   <TableCell>{r.backend}</TableCell>
                   <TableCell>{r.key || '—'}</TableCell>
+                  <TableCell sx={{ fontFamily: 'monospace' }}>{r.sourceIp || '—'}</TableCell>
                   <TableCell>{r.path}</TableCell>
                   <TableCell align="right">
                     {r.error ? (

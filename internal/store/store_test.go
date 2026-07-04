@@ -15,7 +15,7 @@ func TestActivityRoundTrip(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	in := Activity{
-		TS: 1, Served: "m", Backend: "m#0", Key: "k", Path: "/v1/chat/completions",
+		TS: 1, Served: "m", Backend: "m#0", Key: "k", SourceIP: "192.168.1.160", Path: "/v1/chat/completions",
 		Status: 200, DwellMS: 42, PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.00105,
 	}
 	if err := st.InsertActivity(in); err != nil {
@@ -34,7 +34,7 @@ func TestActivityRoundTrip(t *testing.T) {
 	}
 
 	// ActivityByID returns the full row including captured payloads.
-	full := Activity{TS: 2, Served: "m", Backend: "m#0", Status: 200,
+	full := Activity{TS: 2, Served: "m", Backend: "m#0", Status: 200, SourceIP: "10.0.0.5",
 		ReqBody: `{"model":"m"}`, RespBody: "hi", TTFBMs: 12}
 	if err := st.InsertActivity(full); err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestActivityRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got2.ID != 2 || got2.ReqBody != `{"model":"m"}` || got2.RespBody != "hi" || got2.TTFBMs != 12 {
+	if got2.ID != 2 || got2.ReqBody != `{"model":"m"}` || got2.RespBody != "hi" || got2.TTFBMs != 12 || got2.SourceIP != "10.0.0.5" {
 		t.Errorf("ActivityByID = %+v", got2)
 	}
 }

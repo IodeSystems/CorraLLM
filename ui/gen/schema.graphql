@@ -159,6 +159,8 @@ type corrallm_ActivityDetailRecord {
   respBody: String!
   """Served model name."""
   served: String!
+  """Client IP (via X-Forwarded-For); empty if unknown."""
+  sourceIp: String!
   """HTTP status."""
   status: Long!
   """Unix millis when the request was logged."""
@@ -192,6 +194,8 @@ type corrallm_ActivityRecord {
   queuedMs: Long!
   """Served model name."""
   served: String!
+  """Client IP (via X-Forwarded-For); empty if unknown."""
+  sourceIp: String!
   """HTTP status."""
   status: Long!
   """Unix millis when the request was logged."""
