@@ -234,6 +234,15 @@ type PriorityGroup struct {
 	// QualityFloor is the lowest backend quality the group will accept when it
 	// does degrade (0 = no floor). Ignored unless AcceptDegrade is set.
 	QualityFloor int `yaml:"qualityFloor,omitempty"`
+	// PreferResident makes the group best-effort against what is already loaded:
+	// among the backends it accepts (quality-wise), any that are currently
+	// resident (a warm process) are tried first, in quality order, before any
+	// cold-load candidate. Only when no accepted backend is resident does it fall
+	// to the normal quality-first cold-load ladder. Keeps a latency-sensitive lane
+	// (a concierge) on whatever chat model is hot instead of cold-loading a bigger
+	// one and re-hogging the box. Independent of AcceptDegrade (though pairing them
+	// is what lets the lane ride a degraded-but-resident tier).
+	PreferResident bool `yaml:"preferResident,omitempty"`
 }
 
 // AcceptsQuality reports whether the group may be served by a backend of quality

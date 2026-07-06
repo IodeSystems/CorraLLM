@@ -34,3 +34,6 @@
 # local MCP tooling
 .mcp.json
 .poly-lsp-mcp/
+
+# runtime-generated admin token (never commit)
+home/*.token

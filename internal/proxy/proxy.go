@@ -243,6 +243,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			walk = append(walk, idx)
 		}
 	}
+	// preferResident (best-effort-for-what's-loaded): float already-warm backends
+	// to the front of the walk, keeping quality order within each partition. The
+	// loop below then serves on a resident backend (EnsureReady returns loaded)
+	// without cold-loading a bigger tier; only if none is resident does it fall to
+	// the normal quality-first cold-load ladder. Lets a latency lane ride whatever
+	// chat model is hot instead of re-hogging the box.
+	if group.PreferResident {
+		walk = partitionResident(walk, served, p.residentBackends())
+	}
 	var lastBP *sched.BackpressureError
 	var queuedMS int64 // queue wait on the terminal backend (admit or reject)
 
@@ -664,6 +673,40 @@ func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config
 		reason = "max session"
 	}
 	return atomic.LoadInt64(&inBytes), reason, nil
+}
+
+// partitionResident stably splits walk into resident-first order: backends whose
+// name ("<served>#<idx>") is in the resident set keep their relative (quality)
+// order at the front, the rest follow in their original order. len<2 is returned
+// as-is. The engine of preferResident.
+func partitionResident(walk []int, served string, resident map[string]bool) []int {
+	if len(walk) < 2 {
+		return walk
+	}
+	warm, cold := walk[:0:0], make([]int, 0, len(walk))
+	for _, idx := range walk {
+		if resident[fmt.Sprintf("%s#%d", served, idx)] {
+			warm = append(warm, idx)
+		} else {
+			cold = append(cold, idx)
+		}
+	}
+	return append(warm, cold...)
+}
+
+// residentBackends returns the set of backend names ("<served>#<idx>") that are
+// currently warm — ready or mid-load. A mid-load backend counts so a
+// preferResident lane coalesces onto an in-flight load rather than kicking off a
+// second cold load of a different tier.
+func (p *Proxy) residentBackends() map[string]bool {
+	out := map[string]bool{}
+	for _, m := range p.mgr.Snapshot().Models {
+		switch proc.State(m.State) {
+		case proc.StateReady, proc.StateLoading:
+			out[m.Name] = true
+		}
+	}
+	return out
 }
 
 // orderBackends returns config indices in fall-through order: highest quality
