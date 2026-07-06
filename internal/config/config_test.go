@@ -39,6 +39,18 @@ func TestAcceptsQuality(t *testing.T) {
 	if !anyQ.AcceptsQuality(0, top) {
 		t.Error("degrade group with no floor must accept anything")
 	}
+
+	// Regression: a group with a floor must still accept a model whose whole
+	// ladder is below that floor (audio backends default to quality 0). The
+	// model's top tier is always acceptable — the floor only gates degrading
+	// below the best when a better tier exists.
+	floored := PriorityGroup{AcceptDegrade: true, QualityFloor: 1}
+	if !floored.AcceptsQuality(0, 0) {
+		t.Error("floor must not reject a single-tier quality-0 model (audio)")
+	}
+	if !floored.AcceptsQuality(1, 1) {
+		t.Error("floor must accept a model whose top tier equals the floor")
+	}
 }
 
 // TestLoadSampleConfig parses the committed corrallm.yaml and checks the shape

@@ -249,11 +249,18 @@ type PriorityGroup struct {
 // q, given the model's top-tier quality. A non-degrading group accepts only the
 // top tier; a degrading group accepts down to its QualityFloor (P7).
 func (g PriorityGroup) AcceptsQuality(q, topQuality int) bool {
-	floor := topQuality // no degrade → only the highest-quality backends
-	if g.AcceptDegrade {
-		floor = g.QualityFloor
+	// A model's own top tier is always acceptable — the floor only gates
+	// degrading BELOW the best when a better tier exists. Without this, a group
+	// with QualityFloor>0 rejects any model whose whole ladder sits under the
+	// floor (e.g. audio backends default to quality 0), emptying the walk →
+	// "no backend available".
+	if q >= topQuality {
+		return true
 	}
-	return q >= floor
+	if !g.AcceptDegrade {
+		return false // no degrade → only the top tier
+	}
+	return q >= g.QualityFloor // degrade down to the floor
 }
 
 // EffectiveWeight returns the group's fairshare weight, defaulting to 1.
