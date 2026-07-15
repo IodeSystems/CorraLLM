@@ -36,11 +36,11 @@ var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 // ${ENV} references in header values are expanded from the process env (so
 // secrets stay out of the committed YAML). A spawned backend (cmd set) that
 // declares just a port proxies to localhost.
-func (b Backend) ProxyTarget() (*ProxyTarget, error) {
-	n := b.Proxy
+func (m Model) ProxyTarget() (*ProxyTarget, error) {
+	n := m.Proxy
 	switch n.Kind {
 	case 0:
-		return nil, fmt.Errorf("backend has no proxy target")
+		return nil, fmt.Errorf("model has no proxy target")
 	case yaml.ScalarNode:
 		s := n.Value
 		if port, err := strconv.Atoi(s); err == nil {

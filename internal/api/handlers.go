@@ -704,10 +704,10 @@ func (h *Handlers) QueueDepth(_ context.Context, in *UsageSeriesInput) (*QueueDe
 	return out, nil
 }
 
-// --- lanes / live admission load (P8-beyond) ---
+// --- groups / live admission load (P8-beyond) ---
 
-// LanesInput has no parameters.
-type LanesInput struct{}
+// GroupsInput has no parameters.
+type GroupsInput struct{}
 
 // GroupView is a priority group's policy plus its aggregated live load.
 type GroupView struct {
@@ -735,23 +735,23 @@ type BackendLoadView struct {
 	Groups   []GroupLoadView `json:"groups" doc:"Per-group breakdown."`
 }
 
-// LanesOutput reports priority groups and per-backend admission load.
-type LanesOutput struct {
+// GroupsOutput reports priority groups and per-backend admission load.
+type GroupsOutput struct {
 	Body struct {
 		Groups   []GroupView       `json:"groups" doc:"Priority groups with aggregated load."`
 		Backends []BackendLoadView `json:"backends" doc:"Per-backend live load."`
 	}
 }
 
-// Lanes returns priority-group policy joined with live admission load — the
+// Groups returns priority-group policy joined with live admission load — the
 // scheduler's per-backend slots/inflight/waiting, aggregated per group.
-func (h *Handlers) Lanes(_ context.Context, _ *LanesInput) (*LanesOutput, error) {
+func (h *Handlers) Groups(_ context.Context, _ *GroupsInput) (*GroupsOutput, error) {
 	snap := h.Sched.Snapshot()
 
 	// Aggregate live active/waiting per group across backends.
 	type load struct{ active, waiting int }
 	agg := map[string]*load{}
-	out := &LanesOutput{}
+	out := &GroupsOutput{}
 	out.Body.Backends = make([]BackendLoadView, 0, len(snap.Backends))
 	for _, b := range snap.Backends {
 		bv := BackendLoadView{
@@ -851,31 +851,38 @@ type ServerDef struct {
 	Pools         []PoolDef `json:"pools" doc:"Declared memory pools."`
 }
 
-// BackendDef is one backend's definition. Spawnable backends carry their cmd;
-// pure-proxy backends have an empty cmd and forward to Target. Auth headers on
-// remote targets are NOT exposed.
-type BackendDef struct {
-	Index         int    `json:"index" doc:"Position in the model's backend list."`
-	Type          string `json:"type" doc:"Cost class (local | claude | …)."`
-	Quality       int    `json:"quality" doc:"Relative quality rank."`
+// ModelDef is a served model's single serving path + residency policy.
+// Spawnable models carry their cmd; pure-proxy models have an empty cmd and
+// forward to Target. Auth headers on remote targets are NOT exposed.
+type ModelDef struct {
+	Name          string `json:"name" doc:"Served model name."`
+	Persistent    bool   `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
+	TTL           string `json:"ttl" doc:"Idle keep-warm window (sticky)."`
+	EvictCost     string `json:"evictCost" doc:"Eviction resistance (sticky)."`
 	Spawnable     bool   `json:"spawnable" doc:"True if corrallm spawns it (has a cmd)."`
+	Modality      string `json:"modality" doc:"text|audio coarse bucket (P9d)."`
+	Capability    string `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
+	Type          string `json:"type" doc:"Cost class (chat | embed | openrouter | …)."`
+	Quality       int    `json:"quality" doc:"Relative quality rank."`
 	Server        string `json:"server" doc:"Server it draws capacity from (spawned only)."`
 	Target        string `json:"target" doc:"Forward URL (scheme://host:port; headers redacted)."`
 	MaxConcurrent int    `json:"maxConcurrent" doc:"Admission slots."`
-	MaxTokens     int    `json:"maxTokens" doc:"Per-backend max_tokens clamp (0 = none)."`
+	MaxTokens     int    `json:"maxTokens" doc:"max_tokens clamp when degraded onto (0 = none)."`
 	Cmd           string `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
 }
 
-// ModelDef is a served model's residency policy + backend list.
-type ModelDef struct {
-	Name       string       `json:"name" doc:"Served model name."`
-	Persistent bool         `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
-	TTL        string       `json:"ttl" doc:"Idle keep-warm window (sticky)."`
-	EvictCost  string       `json:"evictCost" doc:"Eviction resistance (sticky)."`
-	Spawnable  bool         `json:"spawnable" doc:"Has at least one spawnable backend."`
-	Modality   string       `json:"modality" doc:"text|audio coarse bucket (P9d)."`
-	Capability string       `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
-	Backends   []BackendDef `json:"backends" doc:"Ordered backend list."`
+// LaneMemberDef is one lane member: a model name + optional sticky override.
+type LaneMemberDef struct {
+	Model     string `json:"model" doc:"Member model name."`
+	TTL       string `json:"ttl" doc:"Sticky override when loaded via this lane (empty = model's own)."`
+	EvictCost string `json:"evictCost" doc:"Eviction-resistance override (empty = model's own)."`
+}
+
+// LaneDef is a named ordered fallback list over models: requesting the lane
+// name allows substitution across members; requesting a model name pins it.
+type LaneDef struct {
+	Name    string          `json:"name" doc:"Lane name (requestable as a model id)."`
+	Members []LaneMemberDef `json:"members" doc:"Members in fallback order (best first)."`
 }
 
 // StageView summarizes a group's saturation policy for one backend type.
@@ -908,8 +915,9 @@ type OverviewInput struct{}
 type OverviewOutput struct {
 	Body struct {
 		Servers []ServerDef `json:"servers" doc:"Declared host capacity."`
-		Models  []ModelDef  `json:"models" doc:"Served models + backend definitions."`
-		Groups  []GroupDef  `json:"groups" doc:"Priority-group (lane) policies."`
+		Models  []ModelDef  `json:"models" doc:"Served models (one serving path each)."`
+		Lanes   []LaneDef   `json:"lanes" doc:"Named fallback lists over models."`
+		Groups  []GroupDef  `json:"groups" doc:"Priority-group policies."`
 		Keys    []KeyDef    `json:"keys" doc:"Caller key → group mappings."`
 	}
 }
@@ -959,29 +967,36 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 
 	costModel := cost.NewModel(h.Cfg) // modality inference (P9d): audio cost class ⇒ audio model
 	for name, m := range h.Cfg.Models {
-		md := ModelDef{Name: name, Persistent: m.Persistent, Modality: "text", Capability: config.ModelCapability(m)}
+		md := ModelDef{
+			Name: name, Persistent: m.Persistent, Modality: "text", Capability: config.ModelCapability(m),
+			Type: m.Type, Quality: m.Quality, Spawnable: m.Cmd != "", Server: m.Server,
+			MaxConcurrent: m.Slots(), MaxTokens: m.MaxTokens, Cmd: m.Cmd,
+		}
 		if m.Sticky != nil {
 			md.TTL, md.EvictCost = m.Sticky.TTL, m.Sticky.EvictCost
 		}
-		for i, b := range m.Backends {
-			bd := BackendDef{
-				Index: i, Type: b.Type, Quality: b.Quality, Spawnable: b.Cmd != "",
-				Server: b.Server, MaxConcurrent: b.Slots(), MaxTokens: b.MaxTokens, Cmd: b.Cmd,
-			}
-			if t, err := b.ProxyTarget(); err == nil {
-				bd.Target = t.URL.String() // headers (auth) intentionally omitted
-			}
-			if bd.Spawnable {
-				md.Spawnable = true
-			}
-			if costModel.IsAudioType(b.Type) {
-				md.Modality = "audio"
-			}
-			md.Backends = append(md.Backends, bd)
+		if t, err := m.ProxyTarget(); err == nil {
+			md.Target = t.URL.String() // headers (auth) intentionally omitted
+		}
+		if costModel.IsAudioType(m.Type) {
+			md.Modality = "audio"
 		}
 		out.Body.Models = append(out.Body.Models, md)
 	}
 	sort.Slice(out.Body.Models, func(i, j int) bool { return out.Body.Models[i].Name < out.Body.Models[j].Name })
+
+	for name, lane := range h.Cfg.Lanes {
+		ld := LaneDef{Name: name}
+		for _, mem := range lane.Members {
+			lm := LaneMemberDef{Model: mem.Model}
+			if mem.Sticky != nil {
+				lm.TTL, lm.EvictCost = mem.Sticky.TTL, mem.Sticky.EvictCost
+			}
+			ld.Members = append(ld.Members, lm)
+		}
+		out.Body.Lanes = append(out.Body.Lanes, ld)
+	}
+	sort.Slice(out.Body.Lanes, func(i, j int) bool { return out.Body.Lanes[i].Name < out.Body.Lanes[j].Name })
 
 	for name, g := range h.Cfg.PriorityGroups {
 		gd := GroupDef{

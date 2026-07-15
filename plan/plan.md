@@ -68,6 +68,9 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   cancel → 499, not a mislabeled backend 502) + `activity.error` reason + configurable
 >   `--request-timeout` (latent 130s cap removed); per-request payload + TTFB capture; click-through
 >   detail modal (error/timing + request/response payloads).
+> - ✅ **P14 lanes + single-path models** — schema v2: one serving path per model,
+>   `lanes:` = named fallback lists (per-member sticky override); `config.Backend`
+>   removed; proc keyed by model name; catalog lists lanes; groups-op rename.
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
@@ -160,21 +163,26 @@ That handler→typed-call-site loop is the redline2 pattern we're carrying over.
 
 ## 3. Core concepts
 
-### Served model → ordered backend list
-A served name (what clients put in `"model"`) maps to an **ordered list of backends**.
-A backend optionally spawns a command and always has a proxy target:
+### Served name → model (pinned) or lane (fallback) — schema v2 (P14)
+A served name (what clients put in `"model"`) is either a **model** — exactly one
+serving path — or a **lane** — a named, ordered fallback list over model names:
 
 ```yaml
-backend:
-  cmd?:   string        # optional: spawn it; proxy points at the port it binds
+model:
+  cmd?:   string        # spawn it (local; proxy is the port it binds) — XOR standalone proxy
   proxy:  number | "host:port" | { host?, port?, headers? }   # forward target
-  type:   string        # cost class: local | claude | … (keys into commandCosts)
+  type:   string        # cost class: chat | embed | openrouter | … (keys into commandCosts)
   quality: int          # relative quality rank (higher = better)
+
+lanes:
+  <name>: { members: [modelName | {model, sticky}] }   # fallback order, best first
 ```
-- `cmd` present → spawn + health-check + proxy to local port; absent → pure proxy (remote/paid).
-- `headers` → auth for remote ($) endpoints.
-- **Fall-through** (overflow *and* degrade) = accepting a backend further down the list.
-- **Round-robin within the same `type`** (cost-equivalent); **ordered across types**.
+- `cmd` present → spawn + health-check + proxy to local port; absent → standalone proxy
+  model (remote/paid; no residency knobs). `headers` → auth for remote ($) endpoints.
+- Same weights via two paths = two named models, composed in a lane.
+- **Fall-through** (overflow *and* degrade) = requesting the LANE name; a model name pins.
+- **Round-robin within the same `type`** (cost-equivalent); **quality tiers ordered best-first**.
+- A lane member's `sticky` overrides the model's own when the lane's request loaded it.
 
 ### Cost model — everything resolves to $
 ```yaml
@@ -649,6 +657,23 @@ the BackpressureError shape we already validated.
     `extractText`), loads prior turns as history, and drops the last user turn in the input to re-run/
     tweak. Audio rows only stored a size summary, so they just open the console. tsc/eslint/build clean.
 
+- ✅ **P14 — Lanes + single-path models (schema v2).** A model is exactly ONE serving path
+  (`cmd` spawned local, or standalone `proxy` remote/surface — the same weights served two ways
+  = two named models); fallback across models is a first-class **`lanes:`** section: named,
+  ordered member lists (`members: [name | {model, sticky}]`, per-member sticky override for
+  "loaded on the lane's behalf → unload sooner"). Requesting a lane name allows substitution
+  across members (quality-tiered walk, type-rr, acceptDegrade/qualityFloor/preferResident all
+  unchanged); requesting a model name pins exactly that model. Replaces the P3/P7
+  "ordered backend list" — `config.Backend` is gone (`Model` flattened; `Slots`/`ProxyTarget`
+  moved onto it), `ResolveServed` → `[]Candidate`, proc.Manager keyed by plain model name
+  (no more `served#idx`), reservations target the first candidate, `/v1/models` lists lanes
+  (`kind: lane`, `members`) alongside models, overview gained `LaneDef`s, and the old hidden
+  degrade row (a proxy row pointing at another model's port — lifecycle-blind: it forwarded
+  to a dead port unless the target happened to be warm) is impossible by construction.
+  Priority-group API/UI surfaces renamed lanes→groups (op + dashboard) to free the term;
+  persisted `lane_samples` schema untouched. Motivating case: ml-kit's `chat` lane
+  (Qwen 27B → gemma-4-12b) replacing a misleading `Qwen3-6-27B-MPT`-serves-gemma proxy row.
+
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
 ---
@@ -656,6 +681,14 @@ the BackpressureError shape we already validated.
 ## 7. Open items / decisions
 
 ### Resolved this session
+- ✅ **Lane vocabulary** (P14) — "lane" now means the config's named fallback list over models
+  (the user's term); the priority group keeps its proper name and its API/UI surfaces were
+  renamed lanes→groups. Persisted analytics naming (`lane_samples`, `LaneDepthSeries`) and
+  sched/reservation internals keep the old word — schema stability over vocabulary purity.
+- ✅ **Model = one serving path** (P14) — `cmd` XOR standalone `proxy`; residency knobs
+  (sticky/persistent/ramUsage/swap/server) are rejected on proxy models at validation. The
+  same capability via a paid remote = its own named model composed into a lane, which keeps
+  cost accounting per path honest and makes degrade-vs-spill pure member order.
 - ✅ **Module path & repo location** — `github.com/iodesystems/corrallm` at
   `iodesystems/services/corrallm`, its own git repo (sibling to redline2/ragtag).
 - ✅ **Binary name** — `corrallm` (not the `corral` alias).

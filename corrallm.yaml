@@ -20,23 +20,35 @@ servers:
     reserve: { system: 16GB }
     maxConcurrent: 4
 
-# Served model → residency policy + ordered backend list.
+# A model is exactly ONE serving path: a spawned cmd (local, has lifecycle) or
+# a standalone proxy target (remote/paid, no lifecycle). Fallback across models
+# is a lane (below) — requesting a lane name allows substitution across its
+# members; requesting a model name pins exactly that model.
 models:
   qwen3-coder:
     sticky: { ttl: "5m", evictCost: high }
-    backends:
-      - cmd: "llama-server -m qwen3-coder.gguf -ngl 60 --parallel 2"
-        server: box1
-        ramUsage: { gpu0: 16GB, system: 8GB }
-        swap: { loadSeconds: 18 }
-        proxy: 8081
-        type: local
-        quality: 100
-        maxConcurrent: 2          # admission slots (≈ --parallel)
-      # Pure-proxy paid fallback (no cmd, remote target with auth headers).
-      - proxy: { host: api.anthropic.com, port: 443, headers: { authorization: "Bearer ${ANTHROPIC_API_KEY}" } }
-        type: claude
-        quality: 90
+    cmd: "llama-server -m qwen3-coder.gguf -ngl 60 --parallel 2"
+    server: box1
+    ramUsage: { gpu0: 16GB, system: 8GB }
+    swap: { loadSeconds: 18 }
+    proxy: 8081
+    type: local
+    quality: 100
+    maxConcurrent: 2          # admission slots (≈ --parallel)
+
+  # Standalone proxy model: the same capability via a paid remote endpoint.
+  qwen3-coder-claude:
+    proxy: { host: api.anthropic.com, port: 443, headers: { authorization: "Bearer ${ANTHROPIC_API_KEY}" } }
+    type: claude
+    quality: 90
+
+# Named ordered fallback lists over model names. A member may override the
+# model's sticky when it was loaded on the lane's behalf.
+lanes:
+  chat:
+    members:
+      - qwen3-coder
+      - qwen3-coder-claude
 
 # A key maps to exactly one priorityGroup; the group bundles all policy.
 priorityGroups:

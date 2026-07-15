@@ -35,14 +35,12 @@ const ConsoleDoc = graphql(/* GraphQL */ `
           capability
           persistent
           ttl
-          backends {
-            index
-            type
-            quality
-            target
-            cmd
-            maxConcurrent
-          }
+          type
+          quality
+          server
+          target
+          cmd
+          maxConcurrent
         }
       }
       residency {
@@ -196,8 +194,18 @@ function ModelConsole() {
 
 // --- Info ---------------------------------------------------------------
 
-type Backend = { index: string; type: string; quality: string; target: string; cmd: string; maxConcurrent: string }
-type OvModel = { name: string; modality: string; capability: string; persistent: boolean; backends: Backend[] }
+type OvModel = {
+  name: string
+  modality: string
+  capability: string
+  persistent: boolean
+  type: string
+  quality: string
+  server: string
+  target: string
+  cmd: string
+  maxConcurrent: string
+}
 type ResModel = { name: string; modelName: string; state: string; hasUi: string; nCtx: string; nSlots: string }
 
 function InfoTab({
@@ -228,32 +236,30 @@ function InfoTab({
       </Stack>
 
       <Box>
-        <Typography variant="subtitle2">Backends</Typography>
+        <Typography variant="subtitle2">Serving</Typography>
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>#</TableCell>
               <TableCell>type</TableCell>
               <TableCell>quality</TableCell>
+              <TableCell>server</TableCell>
               <TableCell>target</TableCell>
               <TableCell>slots</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {model.backends.map((b) => (
-              <TableRow key={b.index}>
-                <TableCell>{b.index}</TableCell>
-                <TableCell>{b.type}</TableCell>
-                <TableCell>{b.quality}</TableCell>
-                <TableCell>{b.target || '—'}</TableCell>
-                <TableCell>{b.maxConcurrent}</TableCell>
-              </TableRow>
-            ))}
+            <TableRow>
+              <TableCell>{model.type}</TableCell>
+              <TableCell>{model.quality}</TableCell>
+              <TableCell>{model.server || '—'}</TableCell>
+              <TableCell>{model.target || '—'}</TableCell>
+              <TableCell>{model.maxConcurrent}</TableCell>
+            </TableRow>
           </TableBody>
         </Table>
-        {model.backends.find((b) => b.cmd) && (
+        {model.cmd && (
           <Box component="pre" sx={preSx}>
-            {model.backends.filter((b) => b.cmd).map((b) => b.cmd).join('\n\n')}
+            {model.cmd}
           </Box>
         )}
       </Box>
@@ -529,7 +535,7 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
           />
         </Button>
         {busy && <CircularProgress size={20} />}
-        <TextField size="small" sx={{ width: 160 }} placeholder="lane key (opt)" value={key} onChange={(e) => setKey(e.target.value)} />
+        <TextField size="small" sx={{ width: 160 }} placeholder="group key (opt)" value={key} onChange={(e) => setKey(e.target.value)} />
       </Stack>
       <Box>
         <Typography variant="subtitle2">
@@ -577,7 +583,7 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
 // Realtime STT: stream mic audio (PCM16 @ 24 kHz, base64) over the OpenAI Realtime
 // transcription ws to /v1/realtime, appending each finalized transcript segment.
 // (Works only against a realtime-capable backend, e.g. Speaches — not batch-only
-// parakeet, which will refuse the upgrade.) ws can't set headers → default lane.
+// parakeet, which will refuse the upgrade.) ws can't set headers → default group.
 function RealtimeStt({ model, ttsModels }: { model: string; ttsModels: string[] }) {
   const [live, setLive] = useState(false)
   const [transcript, setTranscript] = useState('')
@@ -747,7 +753,7 @@ function TtsPlayground({ model }: { model: string }) {
           🔊 Speak
         </Button>
         {busy && <CircularProgress size={20} />}
-        <TextField size="small" sx={{ width: 160 }} placeholder="lane key (opt)" value={key} onChange={(e) => setKey(e.target.value)} />
+        <TextField size="small" sx={{ width: 160 }} placeholder="group key (opt)" value={key} onChange={(e) => setKey(e.target.value)} />
       </Stack>
       {err && <Typography color="error" variant="body2">{err}</Typography>}
     </Stack>
@@ -964,7 +970,7 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
         <TextField
           size="small"
           sx={{ width: 160 }}
-          placeholder="lane key (opt)"
+          placeholder="group key (opt)"
           value={key}
           onChange={(e) => setKey(e.target.value)}
         />

@@ -190,8 +190,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"missing \"model\""}}`, http.StatusBadRequest)
 		return
 	}
-	model, ok := p.cfg.Models[served]
-	if !ok || len(model.Backends) == 0 {
+	cands, ok := p.cfg.ResolveServed(served)
+	if !ok {
 		http.Error(w, `{"error":{"message":"unknown model \"`+served+`\""}}`, http.StatusNotFound)
 		return
 	}
@@ -227,19 +227,20 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	groupName, group := p.cfg.ResolveGroup(key)
 	weight := group.EffectiveWeight()
 
-	// Walk the ordered backend list (rr within a cost-equivalent `type`, ordered
-	// across types). For each: take a slot or honor the group's saturation stage
-	// for that type — spill/fallThrough advances to the next backend; queue waits;
-	// reject is terminal. A backend that won't become ready also spills.
-	// Quality-degrade fall-through (P7): walk the backend list best-quality-first,
-	// keeping only the tiers this group accepts. A non-degrading group sees only
-	// the top tier, so saturation there backs off (per its stage) instead of
-	// spilling onto a worse model; a degrading group walks down to its floor.
-	topQuality := config.MaxQuality(model.Backends)
-	ordered := orderBackends(model.Backends, p.nextRR(served))
+	// Walk the served name's candidates in order (a lane's members, or the one
+	// pinned model; rr within a cost-equivalent `type`, ordered across types).
+	// For each: take a slot or honor the group's saturation stage for that type —
+	// spill/fallThrough advances to the next candidate; queue waits; reject is
+	// terminal. A candidate that won't become ready also spills.
+	// Quality-degrade fall-through (P7): walk best-quality-first, keeping only
+	// the tiers this group accepts. A non-degrading group sees only the top tier,
+	// so saturation there backs off (per its stage) instead of spilling onto a
+	// worse model; a degrading group walks down to its floor.
+	topQuality := config.MaxQuality(cands)
+	ordered := orderCandidates(cands, p.nextRR(served))
 	walk := ordered[:0:0]
 	for _, idx := range ordered {
-		if group.AcceptsQuality(model.Backends[idx].Quality, topQuality) {
+		if group.AcceptsQuality(cands[idx].Model.Quality, topQuality) {
 			walk = append(walk, idx)
 		}
 	}
@@ -250,14 +251,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// the normal quality-first cold-load ladder. Lets a latency lane ride whatever
 	// chat model is hot instead of re-hogging the box.
 	if group.PreferResident {
-		walk = partitionResident(walk, served, p.residentBackends())
+		walk = partitionResident(walk, cands, p.residentBackends())
 	}
 	var lastBP *sched.BackpressureError
 	var queuedMS int64 // queue wait on the terminal backend (admit or reject)
 
 	for _, idx := range walk {
-		backend := model.Backends[idx]
-		name := fmt.Sprintf("%s#%d", served, idx)
+		cand := cands[idx]
+		backend := cand.Model
+		name := cand.Name
 		stage := group.StageFor(backend.Type)
 
 		admitStart := time.Now()
@@ -299,7 +301,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 		// Proxy under reqCtx so a later preemption (cause ErrPreempted) aborts the
 		// upstream stream and frees this slot.
-		pr, done, loaded, err := p.mgr.EnsureReady(reqCtx, name, served, backend)
+		pr, done, loaded, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky)
 		if err != nil {
 			release()
 			// Doesn't fit + can't evict, or won't come up → spill to next backend.
@@ -416,8 +418,8 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"missing \"model\" query param"}}`, http.StatusBadRequest)
 		return
 	}
-	model, ok := p.cfg.Models[served]
-	if !ok || len(model.Backends) == 0 {
+	cands, ok := p.cfg.ResolveServed(served)
+	if !ok {
 		http.Error(w, `{"error":{"message":"unknown model \"`+served+`\""}}`, http.StatusNotFound)
 		return
 	}
@@ -433,17 +435,18 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	key := callerKey(r)
 	groupName, group := p.cfg.ResolveGroup(key)
 	weight := group.EffectiveWeight()
-	topQuality := config.MaxQuality(model.Backends)
-	ordered := orderBackends(model.Backends, p.nextRR(served))
+	topQuality := config.MaxQuality(cands)
+	ordered := orderCandidates(cands, p.nextRR(served))
 	var lastBP *sched.BackpressureError
 	var queuedMS int64
 
 	for _, idx := range ordered {
-		backend := model.Backends[idx]
+		cand := cands[idx]
+		backend := cand.Model
 		if !group.AcceptsQuality(backend.Quality, topQuality) {
 			continue
 		}
-		name := fmt.Sprintf("%s#%d", served, idx)
+		name := cand.Name
 		stage := group.StageFor(backend.Type)
 
 		admitStart := time.Now()
@@ -468,7 +471,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		}
 		p.publish(events.Event{Type: "changed"})
 
-		pr, done, _, err := p.mgr.EnsureReady(reqCtx, name, served, backend)
+		pr, done, _, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky)
 		if err != nil {
 			release()
 			slog.Warn("realtime backend unavailable, spilling", "backend", name, "err", err)
@@ -675,17 +678,17 @@ func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config
 	return atomic.LoadInt64(&inBytes), reason, nil
 }
 
-// partitionResident stably splits walk into resident-first order: backends whose
-// name ("<served>#<idx>") is in the resident set keep their relative (quality)
-// order at the front, the rest follow in their original order. len<2 is returned
-// as-is. The engine of preferResident.
-func partitionResident(walk []int, served string, resident map[string]bool) []int {
+// partitionResident stably splits walk into resident-first order: candidates
+// whose model is in the resident set keep their relative (quality) order at the
+// front, the rest follow in their original order. len<2 is returned as-is. The
+// engine of preferResident.
+func partitionResident(walk []int, cands []config.Candidate, resident map[string]bool) []int {
 	if len(walk) < 2 {
 		return walk
 	}
 	warm, cold := walk[:0:0], make([]int, 0, len(walk))
 	for _, idx := range walk {
-		if resident[fmt.Sprintf("%s#%d", served, idx)] {
+		if resident[cands[idx].Name] {
 			warm = append(warm, idx)
 		} else {
 			cold = append(cold, idx)
@@ -694,10 +697,10 @@ func partitionResident(walk []int, served string, resident map[string]bool) []in
 	return append(warm, cold...)
 }
 
-// residentBackends returns the set of backend names ("<served>#<idx>") that are
-// currently warm — ready or mid-load. A mid-load backend counts so a
-// preferResident lane coalesces onto an in-flight load rather than kicking off a
-// second cold load of a different tier.
+// residentBackends returns the set of model names that are currently warm —
+// ready or mid-load. A mid-load model counts so a preferResident group
+// coalesces onto an in-flight load rather than kicking off a second cold load
+// of a different tier.
 func (p *Proxy) residentBackends() map[string]bool {
 	out := map[string]bool{}
 	for _, m := range p.mgr.Snapshot().Models {
@@ -709,35 +712,35 @@ func (p *Proxy) residentBackends() map[string]bool {
 	return out
 }
 
-// orderBackends returns config indices in fall-through order: highest quality
-// tier first, descending (the degrade ladder, P7). Within a tier, types appear
-// in first-appearance order and same-type backends rotate by rr (round robin
-// across cost-equivalent peers). Uniform quality → a single tier → identical to
-// the pre-P7 type-rr ordering (no regression for configs that don't use quality).
-func orderBackends(backends []config.Backend, rr uint64) []int {
+// orderCandidates returns candidate indices in fall-through order: highest
+// quality tier first, descending (the degrade ladder, P7). Within a tier, types
+// appear in first-appearance order and same-type candidates rotate by rr (round
+// robin across cost-equivalent peers). Uniform quality → a single tier →
+// list order with type-rr (no regression for lanes that don't use quality).
+func orderCandidates(cands []config.Candidate, rr uint64) []int {
 	tiers := map[int][]int{}
 	var qualities []int
-	for i, b := range backends {
-		if _, seen := tiers[b.Quality]; !seen {
-			qualities = append(qualities, b.Quality)
+	for i, c := range cands {
+		if _, seen := tiers[c.Model.Quality]; !seen {
+			qualities = append(qualities, c.Model.Quality)
 		}
-		tiers[b.Quality] = append(tiers[b.Quality], i)
+		tiers[c.Model.Quality] = append(tiers[c.Model.Quality], i)
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(qualities))) // best quality first
-	out := make([]int, 0, len(backends))
+	out := make([]int, 0, len(cands))
 	for _, q := range qualities {
-		out = append(out, orderByTypeRR(tiers[q], backends, rr)...)
+		out = append(out, orderByTypeRR(tiers[q], cands, rr)...)
 	}
 	return out
 }
 
 // orderByTypeRR orders a single quality tier's indices: types in first-appearance
-// order, same-type backends rotated by rr.
-func orderByTypeRR(idxs []int, backends []config.Backend, rr uint64) []int {
+// order, same-type candidates rotated by rr.
+func orderByTypeRR(idxs []int, cands []config.Candidate, rr uint64) []int {
 	var typeOrder []string
 	byType := map[string][]int{}
 	for _, i := range idxs {
-		t := backends[i].Type
+		t := cands[i].Model.Type
 		if _, seen := byType[t]; !seen {
 			typeOrder = append(typeOrder, t)
 		}
@@ -755,11 +758,11 @@ func orderByTypeRR(idxs []int, backends []config.Backend, rr uint64) []int {
 	return out
 }
 
-// clampMaxTokens enforces a backend's MaxTokens cap on the outgoing request body
+// clampMaxTokens enforces a model's MaxTokens cap on the outgoing request body
 // (P7): a present max_tokens/max_completion_tokens larger than the cap is reduced
 // to it, and if neither is present the cap is set as max_tokens. Returns body
-// unchanged when the backend declares no cap or the body isn't JSON.
-func clampMaxTokens(body []byte, b config.Backend) []byte {
+// unchanged when the model declares no cap or the body isn't JSON.
+func clampMaxTokens(body []byte, b config.Model) []byte {
 	if b.MaxTokens <= 0 {
 		return body
 	}
@@ -810,12 +813,11 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/upstream/")
 	served, tail, _ := strings.Cut(rest, "/")
 	model, ok := p.cfg.Models[served]
-	if !ok || len(model.Backends) == 0 {
+	if !ok {
 		http.Error(w, "unknown model", http.StatusNotFound)
 		return
 	}
-	name := served + "#0"
-	pr, done, _, err := p.mgr.EnsureReady(r.Context(), name, served, model.Backends[0])
+	pr, done, _, err := p.mgr.EnsureReady(r.Context(), served, model, nil)
 	if err != nil {
 		http.Error(w, "backend unavailable", http.StatusServiceUnavailable)
 		return
@@ -846,9 +848,10 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		OwnedBy string `json:"owned_by"`
 		// corrallm metadata
 		State         string   `json:"state"`                    // absent|loading|ready|idle|evicting
-		Quality       int      `json:"quality,omitempty"`        // top quality tier
-		Types         []string `json:"types,omitempty"`          // backend cost classes
-		Backends      int      `json:"backends"`                 // backend count
+		Quality       int      `json:"quality,omitempty"`        // quality tier (lane: top tier)
+		Type          string   `json:"type,omitempty"`           // cost class
+		Kind          string   `json:"kind"`                     // model|lane
+		Members       []string `json:"members,omitempty"`        // lane member model names, in fallback order
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
 		ContextLength int      `json:"context_length,omitempty"` // parsed n_ctx (if resident)
 		Modality      string   `json:"modality"`                 // text|audio (P9d, coarse bucket)
@@ -867,29 +870,51 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 
 	for _, name := range names {
 		mc := p.cfg.Models[name]
-		var types []string
-		seen := map[string]bool{}
 		modality := "text"
-		for _, b := range mc.Backends {
-			if b.Type != "" && !seen[b.Type] {
-				seen[b.Type] = true
-				types = append(types, b.Type)
-			}
-			if p.cost.IsAudioType(b.Type) {
-				modality = "audio"
-			}
+		if p.cost.IsAudioType(mc.Type) {
+			modality = "audio"
 		}
 		e := model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
-			State: "absent", Quality: config.MaxQuality(mc.Backends),
-			Types: types, Backends: len(mc.Backends), Persistent: mc.Persistent,
-			Modality: modality, Capability: config.ModelCapability(mc),
+			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",
+			Persistent: mc.Persistent,
+			Modality:   modality, Capability: config.ModelCapability(mc),
 		}
 		if r, ok := resident[name]; ok {
 			e.State = r.State
 			e.ContextLength = r.NCtx
 		}
 		out.Data = append(out.Data, e)
+	}
+
+	// Lanes list alongside models: requesting a lane name allows fallback across
+	// its members, so clients can target policy ("chat") instead of a model.
+	laneNames := make([]string, 0, len(p.cfg.Lanes))
+	for name := range p.cfg.Lanes {
+		laneNames = append(laneNames, name)
+	}
+	sort.Strings(laneNames)
+	for _, name := range laneNames {
+		cands, _ := p.cfg.ResolveServed(name)
+		members := make([]string, 0, len(cands))
+		modality, capability, state := "text", "chat", "absent"
+		for i, c := range cands {
+			members = append(members, c.Name)
+			if i == 0 {
+				capability = config.ModelCapability(c.Model)
+			}
+			if p.cost.IsAudioType(c.Model.Type) {
+				modality = "audio"
+			}
+			if r, ok := resident[c.Name]; ok && state == "absent" {
+				state = r.State
+			}
+		}
+		out.Data = append(out.Data, model{
+			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
+			State: state, Quality: config.MaxQuality(cands), Kind: "lane",
+			Members: members, Modality: modality, Capability: capability,
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
@@ -907,8 +932,20 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	base := scheme + "://" + r.Host
 	wsBase := ws + "://" + r.Host
 
-	// Group served models by capability.
+	// Group served names by capability — lanes first (clients should prefer the
+	// policy name; fallback is the point), then pinned models.
 	byCap := map[string][]string{}
+	cfgLanes := make([]string, 0, len(p.cfg.Lanes))
+	for name := range p.cfg.Lanes {
+		cfgLanes = append(cfgLanes, name)
+	}
+	sort.Strings(cfgLanes)
+	for _, name := range cfgLanes {
+		if cands, ok := p.cfg.ResolveServed(name); ok {
+			c := config.ModelCapability(cands[0].Model)
+			byCap[c] = append(byCap[c], name)
+		}
+	}
 	names := make([]string, 0, len(p.cfg.Models))
 	for name := range p.cfg.Models {
 		names = append(names, name)

@@ -17,8 +17,8 @@ type CorrallmQueryNamespace {
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
-  lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -72,8 +72,8 @@ type CorrallmV1QueryNamespace {
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
-  lanes: corrallm_LanesOutputBody @derived(operationId: "lanes")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -204,27 +204,6 @@ type corrallm_ActivityRecord {
   ttfbMs: Long!
 }
 
-type corrallm_BackendDef {
-  """Spawn command (empty for pure-proxy)."""
-  cmd: String!
-  """Position in the model's backend list."""
-  index: Long!
-  """Admission slots."""
-  maxConcurrent: Long!
-  """Per-backend max_tokens clamp (0 = none)."""
-  maxTokens: Long!
-  """Relative quality rank."""
-  quality: Long!
-  """Server it draws capacity from (spawned only)."""
-  server: String!
-  """True if corrallm spawns it (has a cmd)."""
-  spawnable: Boolean!
-  """Forward URL (scheme://host:port; headers redacted)."""
-  target: String!
-  """Cost class (local | claude | …)."""
-  type: String!
-}
-
 type corrallm_BackendLoadView {
   """Slots in use."""
   active: Long!
@@ -317,6 +296,13 @@ type corrallm_GroupView {
   weight: Long!
 }
 
+type corrallm_GroupsOutputBody {
+  """Per-backend live load."""
+  backends: [corrallm_BackendLoadView!]!
+  """Priority groups with aggregated load."""
+  groups: [corrallm_GroupView!]!
+}
+
 type corrallm_HealthOutputBody {
   """Always "ok" when the process is serving."""
   status: String!
@@ -355,6 +341,13 @@ type corrallm_KeyUsageRow {
   requests: Long!
 }
 
+type corrallm_LaneDef {
+  """Members in fallback order (best first)."""
+  members: [corrallm_LaneMemberDef!]!
+  """Lane name (requestable as a model id)."""
+  name: String!
+}
+
 type corrallm_LaneDepthSeriesView {
   """Priority group name."""
   group: String!
@@ -362,11 +355,13 @@ type corrallm_LaneDepthSeriesView {
   points: [corrallm_DepthPoint!]!
 }
 
-type corrallm_LanesOutputBody {
-  """Per-backend live load."""
-  backends: [corrallm_BackendLoadView!]!
-  """Priority groups with aggregated load."""
-  groups: [corrallm_GroupView!]!
+type corrallm_LaneMemberDef {
+  """Eviction-resistance override (empty = model's own)."""
+  evictCost: String!
+  """Member model name."""
+  model: String!
+  """Sticky override when loaded via this lane (empty = model's own)."""
+  ttl: String!
 }
 
 input corrallm_ModelActionInputBodyInput {
@@ -386,22 +381,34 @@ type corrallm_ModelActionOutputBody {
 }
 
 type corrallm_ModelDef {
-  """Ordered backend list."""
-  backends: [corrallm_BackendDef!]!
   """chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."""
   capability: String!
+  """Spawn command (empty for pure-proxy)."""
+  cmd: String!
   """Eviction resistance (sticky)."""
   evictCost: String!
+  """Admission slots."""
+  maxConcurrent: Long!
+  """max_tokens clamp when degraded onto (0 = none)."""
+  maxTokens: Long!
   """text|audio coarse bucket (P9d)."""
   modality: String!
   """Served model name."""
   name: String!
   """Pinned (preloaded, never evicted)."""
   persistent: Boolean!
-  """Has at least one spawnable backend."""
+  """Relative quality rank."""
+  quality: Long!
+  """Server it draws capacity from (spawned only)."""
+  server: String!
+  """True if corrallm spawns it (has a cmd)."""
   spawnable: Boolean!
+  """Forward URL (scheme://host:port; headers redacted)."""
+  target: String!
   """Idle keep-warm window (sticky)."""
   ttl: String!
+  """Cost class (chat | embed | openrouter | …)."""
+  type: String!
 }
 
 type corrallm_ModelLogsOutputBody {
@@ -412,11 +419,13 @@ type corrallm_ModelLogsOutputBody {
 }
 
 type corrallm_OverviewOutputBody {
-  """Priority-group (lane) policies."""
+  """Priority-group policies."""
   groups: [corrallm_GroupDef!]!
   """Caller key → group mappings."""
   keys: [corrallm_KeyDef!]!
-  """Served models + backend definitions."""
+  """Named fallback lists over models."""
+  lanes: [corrallm_LaneDef!]!
+  """Served models (one serving path each)."""
   models: [corrallm_ModelDef!]!
   """Declared host capacity."""
   servers: [corrallm_ServerDef!]!

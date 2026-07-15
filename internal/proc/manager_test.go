@@ -15,14 +15,14 @@ import (
 	"github.com/iodesystems/corrallm/internal/config"
 )
 
-// backendCmd builds a backend that spawns cmd and proxies to port.
-func backendCmd(t *testing.T, cmd string, port int) config.Backend {
+// modelCmd builds a model that spawns cmd and proxies to port.
+func modelCmd(t *testing.T, cmd string, port int) config.Model {
 	t.Helper()
 	var pn yaml.Node
 	if err := pn.Encode(port); err != nil {
 		t.Fatal(err)
 	}
-	return config.Backend{Cmd: cmd, Proxy: pn, Type: "local"}
+	return config.Model{Cmd: cmd, Proxy: pn, Type: "local"}
 }
 
 func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
@@ -39,9 +39,9 @@ func TestSpawnHealthAndProcessGroupKill(t *testing.T) {
 
 	// exec sleep so the leaf process replaces the shell — the group still
 	// contains it; killGroup(-pgid) must reach it.
-	b := backendCmd(t, "exec sleep 30", port)
+	mdl := modelCmd(t, "exec sleep 30", port)
 
-	p, _, _, err := mgr.EnsureReady(context.Background(), "sleeper#0", "sleeper", b)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "sleeper", mdl, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -85,9 +85,9 @@ func TestEnsureReadyLoadedFlag(t *testing.T) {
 	if err := pn.Encode(addr.Port); err != nil {
 		t.Fatal(err)
 	}
-	b := config.Backend{Proxy: pn, Type: "local"}
+	mdl := config.Model{Proxy: pn, Type: "local"}
 
-	_, done1, loaded1, err := mgr.EnsureReady(context.Background(), "warm#0", "warm", b)
+	_, done1, loaded1, err := mgr.EnsureReady(context.Background(), "warm", mdl, nil)
 	if err != nil {
 		t.Fatalf("first EnsureReady: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestEnsureReadyLoadedFlag(t *testing.T) {
 		t.Errorf("first call loaded = false, want true (it triggered the load)")
 	}
 
-	_, done2, loaded2, err := mgr.EnsureReady(context.Background(), "warm#0", "warm", b)
+	_, done2, loaded2, err := mgr.EnsureReady(context.Background(), "warm", mdl, nil)
 	if err != nil {
 		t.Fatalf("second EnsureReady: %v", err)
 	}
@@ -115,13 +115,13 @@ func TestLoadCoalescing(t *testing.T) {
 	mgr.healthTimeout = 5 * time.Second
 	defer mgr.Shutdown()
 
-	b := backendCmd(t, "exec sleep 30", port)
+	mdl := modelCmd(t, "exec sleep 30", port)
 
 	const n = 8
 	pids := make(chan int, n)
 	for range n {
 		go func() {
-			p, _, _, err := mgr.EnsureReady(context.Background(), "shared#0", "shared", b)
+			p, _, _, err := mgr.EnsureReady(context.Background(), "shared", mdl, nil)
 			if err != nil {
 				pids <- -1
 				return

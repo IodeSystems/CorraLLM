@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/events"
 )
 
@@ -31,9 +32,16 @@ func (p *Proxy) handleReservations(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// primaryBackend is the scheduler backend name a reservation targets: the model's
-// first (top-quality) backend, the one interactive requests hit first.
-func primaryBackend(model string) string { return fmt.Sprintf("%s#0", model) }
+// primaryCandidate is the scheduler backend a reservation targets: the served
+// name's first candidate (a lane's top member, or the pinned model itself) —
+// the one interactive requests hit first.
+func (p *Proxy) primaryCandidate(served string) (config.Candidate, bool) {
+	cands, ok := p.cfg.ResolveServed(served)
+	if !ok {
+		return config.Candidate{}, false
+	}
+	return cands[0], true
+}
 
 func (p *Proxy) reserveCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -45,8 +53,8 @@ func (p *Proxy) reserveCreate(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	m, ok := p.cfg.Models[body.Model]
-	if !ok || len(m.Backends) == 0 {
+	primary, ok := p.primaryCandidate(body.Model)
+	if !ok {
 		jsonErr(w, http.StatusNotFound, fmt.Sprintf("unknown model %q", body.Model))
 		return
 	}
@@ -54,7 +62,7 @@ func (p *Proxy) reserveCreate(w http.ResponseWriter, r *http.Request) {
 	if slots < 1 {
 		slots = 1
 	}
-	if capSlots := m.Backends[0].Slots(); slots > capSlots {
+	if capSlots := primary.Model.Slots(); slots > capSlots {
 		jsonErr(w, http.StatusBadRequest, fmt.Sprintf("slots=%d exceeds backend capacity %d", slots, capSlots))
 		return
 	}
@@ -65,7 +73,7 @@ func (p *Proxy) reserveCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	lane, _ := p.cfg.ResolveGroup(callerKey(r))
-	exp := p.sched.Reserve(primaryBackend(body.Model), lane, slots, ttl)
+	exp := p.sched.Reserve(primary.Name, lane, slots, ttl)
 	p.publish(events.Event{Type: "changed"})
 	jsonResp(w, http.StatusOK, map[string]any{
 		"model": body.Model, "lane": lane, "slots": slots,
@@ -79,8 +87,13 @@ func (p *Proxy) reserveRelease(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "missing ?model=")
 		return
 	}
+	primary, ok := p.primaryCandidate(model)
+	if !ok {
+		jsonErr(w, http.StatusNotFound, fmt.Sprintf("unknown model %q", model))
+		return
+	}
 	lane, _ := p.cfg.ResolveGroup(callerKey(r))
-	p.sched.Release(primaryBackend(model), lane)
+	p.sched.Release(primary.Name, lane)
 	p.publish(events.Event{Type: "changed"})
 	jsonResp(w, http.StatusOK, map[string]any{"released": true, "model": model, "lane": lane})
 }

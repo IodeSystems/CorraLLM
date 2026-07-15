@@ -19,8 +19,8 @@ import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtInt } from '@/format'
 
-const LanesDoc = graphql(/* GraphQL */ `
-  query Lanes {
+const GroupsDoc = graphql(/* GraphQL */ `
+  query Groups {
     corrallm {
       reservations {
         reservations {
@@ -30,7 +30,7 @@ const LanesDoc = graphql(/* GraphQL */ `
           expiresAt
         }
       }
-      lanes {
+      groups {
         groups {
           name
           weight
@@ -71,10 +71,10 @@ function fmtCountdown(expiresAt: string, nowMs: number): string {
   return m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`
 }
 
-function Lanes() {
+function Groups() {
   const q = useQuery({
-    queryKey: ['lanes'],
-    queryFn: () => gqlClient.request(LanesDoc),
+    queryKey: ['groups'],
+    queryFn: () => gqlClient.request(GroupsDoc),
     refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
   })
 
@@ -100,9 +100,9 @@ function Lanes() {
     )
   }
 
-  const lanes = q.data?.corrallm.lanes
-  const groups = lanes?.groups ?? []
-  const backends = lanes?.backends ?? []
+  const live = q.data?.corrallm.groups
+  const groups = live?.groups ?? []
+  const backends = live?.backends ?? []
   const reservations = q.data?.corrallm.reservations?.reservations ?? []
 
   return (
@@ -158,7 +158,7 @@ function Lanes() {
           Reservations
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-          Slots held free for a lane so interactive work has headroom. Short-lived;
+          Slots held free for a group so interactive work has headroom. Short-lived;
           renewed by heartbeat, auto-expiring.
         </Typography>
         <TableContainer component={Paper}>
@@ -166,7 +166,7 @@ function Lanes() {
             <TableHead>
               <TableRow>
                 <TableCell>Model</TableCell>
-                <TableCell>Lane</TableCell>
+                <TableCell>Group</TableCell>
                 <TableCell align="right">Slots held</TableCell>
                 <TableCell align="right">Expires in</TableCell>
               </TableRow>
@@ -255,4 +255,4 @@ function Lanes() {
   )
 }
 
-export const Route = createFileRoute('/lanes')({ component: Lanes })
+export const Route = createFileRoute('/groups')({ component: Groups })

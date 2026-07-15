@@ -27,23 +27,14 @@ import (
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
-// mkConfig builds a one-model config whose backend pure-proxies (no cmd) to the
-// given upstream base URL.
+// mkConfig builds a one-model config that pure-proxies (no cmd) to the given
+// upstream base URL.
 func mkConfig(t *testing.T, served, upstream string) *config.Config {
 	t.Helper()
-	u, err := url.Parse(upstream)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, _ := strconv.Atoi(u.Port())
-	var pn yaml.Node
-	if err := pn.Encode(port); err != nil {
-		t.Fatal(err)
-	}
+	m := modelTo(t, upstream, "local")
+	m.Quality = 100
 	return &config.Config{
-		Models: map[string]config.Model{
-			served: {Backends: []config.Backend{{Proxy: pn, Type: "local", Quality: 100}}},
-		},
+		Models: map[string]config.Model{served: m},
 	}
 }
 
@@ -155,7 +146,7 @@ func TestBackpressure429(t *testing.T) {
 	}
 }
 
-func backendTo(t *testing.T, urlStr, typ string) config.Backend {
+func modelTo(t *testing.T, urlStr, typ string) config.Model {
 	t.Helper()
 	u, err := url.Parse(urlStr)
 	if err != nil {
@@ -166,11 +157,15 @@ func backendTo(t *testing.T, urlStr, typ string) config.Backend {
 	if err := pn.Encode(port); err != nil {
 		t.Fatal(err)
 	}
-	return config.Backend{Proxy: pn, Type: typ}
+	return config.Model{Proxy: pn, Type: typ}
 }
 
-func TestOrderBackends(t *testing.T) {
-	bs := []config.Backend{{Type: "local"}, {Type: "local"}, {Type: "cloud"}}
+func TestOrderCandidates(t *testing.T) {
+	cs := []config.Candidate{
+		{Model: config.Model{Type: "local"}},
+		{Model: config.Model{Type: "local"}},
+		{Model: config.Model{Type: "cloud"}},
+	}
 	cases := []struct {
 		rr   uint64
 		want []int
@@ -180,7 +175,7 @@ func TestOrderBackends(t *testing.T) {
 		{2, []int{0, 1, 2}},
 	}
 	for _, c := range cases {
-		got := orderBackends(bs, c.rr)
+		got := orderCandidates(cs, c.rr)
 		if len(got) != len(c.want) {
 			t.Fatalf("rr=%d len %d", c.rr, len(got))
 		}
@@ -193,22 +188,22 @@ func TestOrderBackends(t *testing.T) {
 	}
 }
 
-// TestOrderBackendsQuality: backends are walked best-quality-tier first; within
-// a tier, type-rr is preserved (P7).
-func TestOrderBackendsQuality(t *testing.T) {
+// TestOrderCandidatesQuality: candidates are walked best-quality-tier first;
+// within a tier, type-rr is preserved (P7).
+func TestOrderCandidatesQuality(t *testing.T) {
 	// idx: 0 q40 cloud, 1 q100 local, 2 q100 local, 3 q60 cloud
-	bs := []config.Backend{
-		{Type: "cloud", Quality: 40},
-		{Type: "local", Quality: 100},
-		{Type: "local", Quality: 100},
-		{Type: "cloud", Quality: 60},
+	cs := []config.Candidate{
+		{Model: config.Model{Type: "cloud", Quality: 40}},
+		{Model: config.Model{Type: "local", Quality: 100}},
+		{Model: config.Model{Type: "local", Quality: 100}},
+		{Model: config.Model{Type: "cloud", Quality: 60}},
 	}
 	// rr=0: tier 100 → [1,2], tier 60 → [3], tier 40 → [0].
-	if got := orderBackends(bs, 0); !equalInts(got, []int{1, 2, 3, 0}) {
+	if got := orderCandidates(cs, 0); !equalInts(got, []int{1, 2, 3, 0}) {
 		t.Errorf("rr=0 got %v want [1 2 3 0]", got)
 	}
 	// rr=1 rotates within the 2-backend top tier only.
-	if got := orderBackends(bs, 1); !equalInts(got, []int{2, 1, 3, 0}) {
+	if got := orderCandidates(cs, 1); !equalInts(got, []int{2, 1, 3, 0}) {
 		t.Errorf("rr=1 got %v want [2 1 3 0]", got)
 	}
 }
@@ -228,7 +223,7 @@ func equalInts(a, b []int) bool {
 // TestClampMaxTokens: a present max_tokens above the cap is reduced; an absent
 // one is set to the cap; no cap (or a smaller request) leaves the body intact.
 func TestClampMaxTokens(t *testing.T) {
-	capped := config.Backend{MaxTokens: 128}
+	capped := config.Model{MaxTokens: 128}
 
 	// Above cap → clamped.
 	got := clampMaxTokens([]byte(`{"model":"m","max_tokens":4096}`), capped)
@@ -247,7 +242,7 @@ func TestClampMaxTokens(t *testing.T) {
 	}
 	// No cap → byte-identical passthrough.
 	in := []byte(`{"model":"m","max_tokens":4096}`)
-	if got := clampMaxTokens(in, config.Backend{}); string(got) != string(in) {
+	if got := clampMaxTokens(in, config.Model{}); string(got) != string(in) {
 		t.Errorf("no cap altered body: %s", got)
 	}
 }
@@ -298,14 +293,18 @@ func TestQualityDegradeRouting(t *testing.T) {
 	mgr := proc.NewManager(&config.Config{})
 	defer mgr.Shutdown()
 
-	bigB := backendTo(t, big.URL, "local")
-	bigB.Quality = 100
-	smallB := backendTo(t, small.URL, "local")
-	smallB.Quality = 50
+	bigM := modelTo(t, big.URL, "local")
+	bigM.Quality = 100
+	smallM := modelTo(t, small.URL, "local")
+	smallM.Quality = 50
 
 	cfg := &config.Config{
 		Models: map[string]config.Model{
-			"m": {Backends: []config.Backend{bigB, smallB}},
+			"m-big":   bigM,
+			"m-small": smallM,
+		},
+		Lanes: map[string]config.Lane{
+			"m": {Members: []config.LaneMember{{Model: "m-big"}, {Model: "m-small"}}},
 		},
 		PriorityGroups: map[string]config.PriorityGroup{
 			// Both groups spill when the local tier is saturated.
@@ -383,7 +382,11 @@ func TestFallThroughSpill(t *testing.T) {
 
 	cfg := &config.Config{
 		Models: map[string]config.Model{
-			"m": {Backends: []config.Backend{backendTo(t, up1.URL, "local"), backendTo(t, up2.URL, "cloud")}},
+			"m-1": modelTo(t, up1.URL, "local"),
+			"m-2": modelTo(t, up2.URL, "cloud"),
+		},
+		Lanes: map[string]config.Lane{
+			"m": {Members: []config.LaneMember{{Model: "m-1"}, {Model: "m-2"}}},
 		},
 		PriorityGroups: map[string]config.PriorityGroup{
 			"g": {Weight: 1, OnSaturated: map[string]config.Stage{"local": {Spill: true}}},
@@ -438,7 +441,7 @@ func TestExhaustedAllSpill(t *testing.T) {
 
 	cfg := &config.Config{
 		Models: map[string]config.Model{
-			"m": {Backends: []config.Backend{backendTo(t, block.URL, "local")}},
+			"m": modelTo(t, block.URL, "local"),
 		},
 		PriorityGroups: map[string]config.PriorityGroup{
 			"g": {Weight: 1, OnSaturated: map[string]config.Stage{"local": {Spill: true}}},
@@ -506,7 +509,7 @@ func TestPreemptionServesHigherGroup(t *testing.T) {
 
 	cfg := &config.Config{
 		Models: map[string]config.Model{
-			"m": {Backends: []config.Backend{backendTo(t, upstream.URL, "local")}},
+			"m": modelTo(t, upstream.URL, "local"),
 		},
 		PriorityGroups: map[string]config.PriorityGroup{
 			"lo": {Weight: 1, Interruptible: true,
@@ -657,10 +660,10 @@ func TestMeterSwapCost(t *testing.T) {
 	defer mgr.Shutdown()
 
 	cfg := meteredConfig(t, "mock", upstream.URL)
-	// Attach swap energy to the (only) backend: 18s × 300W.
-	b := cfg.Models["mock"].Backends[0]
-	b.Swap = &config.Swap{LoadSeconds: 18, LoadWatts: 300}
-	cfg.Models["mock"] = config.Model{Backends: []config.Backend{b}}
+	// Attach swap energy to the (only) model: 18s × 300W.
+	m := cfg.Models["mock"]
+	m.Swap = &config.Swap{LoadSeconds: 18, LoadWatts: 300}
+	cfg.Models["mock"] = m
 
 	r := chi.NewRouter()
 	New(cfg, mgr, sched.New(), st).Mount(r)
@@ -800,12 +803,12 @@ func TestModelsCatalog(t *testing.T) {
 	var got struct {
 		Object string `json:"object"`
 		Data   []struct {
-			ID       string `json:"id"`
-			Object   string `json:"object"`
-			Created  int64  `json:"created"`
-			OwnedBy  string `json:"owned_by"`
-			State    string `json:"state"`
-			Backends int    `json:"backends"`
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Created int64  `json:"created"`
+			OwnedBy string `json:"owned_by"`
+			State   string `json:"state"`
+			Kind    string `json:"kind"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
@@ -819,8 +822,8 @@ func TestModelsCatalog(t *testing.T) {
 	if m.ID != "mock" || m.Object != "model" || m.OwnedBy != "corrallm" || m.Created == 0 {
 		t.Errorf("standard fields: %+v", m)
 	}
-	if m.State != "absent" || m.Backends != 1 {
-		t.Errorf("metadata: state=%q backends=%d, want absent/1", m.State, m.Backends)
+	if m.State != "absent" || m.Kind != "model" {
+		t.Errorf("metadata: state=%q kind=%q, want absent/model", m.State, m.Kind)
 	}
 }
 
@@ -1061,7 +1064,9 @@ func TestAudioTranscriptionMetering(t *testing.T) {
 	defer mgr.Shutdown()
 
 	cfg := mkConfig(t, "whisper", upstream.URL)
-	cfg.Models["whisper"].Backends[0].Type = "stt" // mutates the underlying slice
+	m := cfg.Models["whisper"]
+	m.Type = "stt"
+	cfg.Models["whisper"] = m
 	cfg.CostPerKwh = 0.14
 	cfg.CommandCosts = map[string]map[string]any{"stt": {"audioWhPerMiB": 10}}
 
@@ -1137,7 +1142,9 @@ func TestAudioSpeechTTS(t *testing.T) {
 	defer mgr.Shutdown()
 
 	cfg := mkConfig(t, "kokoro", upstream.URL)
-	cfg.Models["kokoro"].Backends[0].Type = "tts"
+	m := cfg.Models["kokoro"]
+	m.Type = "tts"
+	cfg.Models["kokoro"] = m
 	cfg.CostPerKwh = 0.14
 	cfg.CommandCosts = map[string]map[string]any{"tts": {"audioWhPerMiB": 5}}
 
@@ -1489,7 +1496,7 @@ func TestRealtimePreemptAbortsSession(t *testing.T) {
 
 	cfg := &config.Config{
 		Models: map[string]config.Model{
-			"m": {Backends: []config.Backend{backendTo(t, backend.URL, "local")}},
+			"m": modelTo(t, backend.URL, "local"),
 		},
 		PriorityGroups: map[string]config.PriorityGroup{
 			"lo": {Weight: 1, Interruptible: true,
@@ -1618,10 +1625,10 @@ func TestCapabilitiesManifest(t *testing.T) {
 			"stt": {"audioWhPerMiB": 0.03}, "tts": {"audioWhPerMiB": 0.05},
 		},
 		Models: map[string]config.Model{
-			"qwen":     {Backends: []config.Backend{{Type: "chat"}}},
-			"nomic":    {Backends: []config.Backend{{Type: "embed"}}},
-			"parakeet": {Backends: []config.Backend{{Type: "stt"}}},
-			"kokoro":   {Backends: []config.Backend{{Type: "tts"}}},
+			"qwen":     {Type: "chat"},
+			"nomic":    {Type: "embed"},
+			"parakeet": {Type: "stt"},
+			"kokoro":   {Type: "tts"},
 		},
 		PriorityGroups: map[string]config.PriorityGroup{
 			"interactive": {Weight: 10, Interruptible: false},

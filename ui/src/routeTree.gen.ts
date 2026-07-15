@@ -11,7 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UsageRouteImport } from './routes/usage'
 import { Route as ModelRouteImport } from './routes/model'
-import { Route as LanesRouteImport } from './routes/lanes'
+import { Route as GroupsRouteImport } from './routes/groups'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -25,9 +25,9 @@ const ModelRoute = ModelRouteImport.update({
   path: '/model',
   getParentRoute: () => rootRouteImport,
 } as any)
-const LanesRoute = LanesRouteImport.update({
-  id: '/lanes',
-  path: '/lanes',
+const GroupsRoute = GroupsRouteImport.update({
+  id: '/groups',
+  path: '/groups',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ActivityRoute = ActivityRouteImport.update({
@@ -44,14 +44,14 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
-  '/lanes': typeof LanesRoute
+  '/groups': typeof GroupsRoute
   '/model': typeof ModelRoute
   '/usage': typeof UsageRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
-  '/lanes': typeof LanesRoute
+  '/groups': typeof GroupsRoute
   '/model': typeof ModelRoute
   '/usage': typeof UsageRoute
 }
@@ -59,22 +59,22 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
-  '/lanes': typeof LanesRoute
+  '/groups': typeof GroupsRoute
   '/model': typeof ModelRoute
   '/usage': typeof UsageRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/activity' | '/lanes' | '/model' | '/usage'
+  fullPaths: '/' | '/activity' | '/groups' | '/model' | '/usage'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/activity' | '/lanes' | '/model' | '/usage'
-  id: '__root__' | '/' | '/activity' | '/lanes' | '/model' | '/usage'
+  to: '/' | '/activity' | '/groups' | '/model' | '/usage'
+  id: '__root__' | '/' | '/activity' | '/groups' | '/model' | '/usage'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActivityRoute: typeof ActivityRoute
-  LanesRoute: typeof LanesRoute
+  GroupsRoute: typeof GroupsRoute
   ModelRoute: typeof ModelRoute
   UsageRoute: typeof UsageRoute
 }
@@ -95,11 +95,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ModelRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/lanes': {
-      id: '/lanes'
-      path: '/lanes'
-      fullPath: '/lanes'
-      preLoaderRoute: typeof LanesRouteImport
+    '/groups': {
+      id: '/groups'
+      path: '/groups'
+      fullPath: '/groups'
+      preLoaderRoute: typeof GroupsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/activity': {
@@ -122,7 +122,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
-  LanesRoute: LanesRoute,
+  GroupsRoute: GroupsRoute,
   ModelRoute: ModelRoute,
   UsageRoute: UsageRoute,
 }

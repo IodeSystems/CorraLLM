@@ -131,8 +131,10 @@ func (m *Manager) SetHealthTimeout(d time.Duration) {
 // loaded reports whether THIS call initiated the (cold) load rather than
 // coalescing behind an in-flight or already-warm backend — the caller charges
 // the load's swap cost to the request that triggered it (P6).
-func (m *Manager) EnsureReady(ctx context.Context, name, modelName string, b config.Backend) (proc *Process, release func(), loaded bool, err error) {
-	target, err := b.ProxyTarget()
+// sticky optionally overrides the model's own residency stickiness (a lane
+// member loaded on the lane's behalf may unload sooner); nil → model's own.
+func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model, sticky *config.Sticky) (proc *Process, release func(), loaded bool, err error) {
+	target, err := mdl.ProxyTarget()
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -141,37 +143,40 @@ func (m *Manager) EnsureReady(ctx context.Context, name, modelName string, b con
 	p := m.procs[name]
 	triggered := p == nil
 	if p == nil {
-		usage, _ := config.ParseSizes(b.RAMUsage) // validated at config load
-		// Residency applies to spawned backends bound to a server pool; pure
+		usage, _ := config.ParseSizes(mdl.RAMUsage) // validated at config load
+		// Residency applies to spawned models bound to a server pool; pure
 		// proxies (remote/paid) consume no local pools.
-		if b.Server != "" && len(usage) > 0 {
-			if err := m.makeRoomLocked(b.Server, usage); err != nil {
+		if mdl.Server != "" && len(usage) > 0 {
+			if err := m.makeRoomLocked(mdl.Server, usage); err != nil {
 				m.mu.Unlock()
 				return nil, nil, false, err
 			}
-			m.reserveLocked(b.Server, usage)
+			m.reserveLocked(mdl.Server, usage)
 		}
-		model := m.cfg.Models[modelName]
+		st := mdl.Sticky
+		if sticky != nil {
+			st = sticky
+		}
 		var lb *logBuffer
-		if b.Cmd != "" {
+		if mdl.Cmd != "" {
 			lb = newLogBuffer(500) // capture spawned-backend output for the logs view
 		}
 		p = &Process{
 			Name:       name,
-			ModelName:  modelName,
+			ModelName:  name,
 			Target:     target,
-			server:     b.Server,
+			server:     mdl.Server,
 			usage:      usage,
-			persistent: model.Persistent,
-			evictRank:  evictRank(model.Sticky),
-			ttl:        stickyTTL(model.Sticky),
+			persistent: mdl.Persistent,
+			evictRank:  evictRank(st),
+			ttl:        stickyTTL(st),
 			logs:       lb,
 			state:      StateAbsent,
 			ready:      make(chan struct{}),
 		}
 		m.procs[name] = p
 		m.mu.Unlock()
-		go m.load(name, b, p)
+		go m.load(name, mdl, p)
 	} else {
 		m.mu.Unlock()
 	}
@@ -204,8 +209,8 @@ func (m *Manager) releaser(p *Process) func() {
 	}
 }
 
-// load spawns the backend (if it has a cmd) and waits for health.
-func (m *Manager) load(name string, b config.Backend, p *Process) {
+// load spawns the model's process (if it has a cmd) and waits for health.
+func (m *Manager) load(name string, mdl config.Model, p *Process) {
 	p.mu.Lock()
 	p.state = StateLoading
 	p.mu.Unlock()
@@ -225,8 +230,8 @@ func (m *Manager) load(name string, b config.Backend, p *Process) {
 		close(p.ready)
 	}
 
-	if b.Cmd != "" {
-		cmd := exec.Command("sh", "-c", b.Cmd)
+	if mdl.Cmd != "" {
+		cmd := exec.Command("sh", "-c", mdl.Cmd)
 		// Tee output to our stdout AND the per-backend ring buffer (for the logs
 		// view + n_ctx/n_slots parsing).
 		out := io.Writer(os.Stdout)
@@ -236,7 +241,7 @@ func (m *Manager) load(name string, b config.Backend, p *Process) {
 		cmd.Stdout, cmd.Stderr = out, out
 		cmd.SysProcAttr = sysProcAttr()
 		if err := cmd.Start(); err != nil {
-			finish(StateFailed, fmt.Errorf("spawn %q: %w", b.Cmd, err))
+			finish(StateFailed, fmt.Errorf("spawn %q: %w", mdl.Cmd, err))
 			return
 		}
 		p.mu.Lock()
@@ -263,7 +268,7 @@ func (m *Manager) load(name string, b config.Backend, p *Process) {
 	// Probe whether the backend serves a web UI at its root (P11b) so the dashboard
 	// can disable a dead "Open UI" button. Spawned backends only — we don't poke a
 	// remote/paid endpoint's root. Async: never gates readiness.
-	if b.Cmd != "" {
+	if mdl.Cmd != "" {
 		go m.probeUI(p)
 	}
 }
@@ -428,10 +433,10 @@ func (m *Manager) waitHealthy(t *config.ProxyTarget) error {
 // from eviction. Runs in the background; failures are logged, not fatal.
 func (m *Manager) Preload(ctx context.Context) {
 	for name, model := range m.cfg.Models {
-		if !model.Persistent || len(model.Backends) == 0 {
+		if !model.Persistent {
 			continue
 		}
-		_, done, _, err := m.EnsureReady(ctx, name+"#0", name, model.Backends[0])
+		_, done, _, err := m.EnsureReady(ctx, name, model, nil)
 		if err != nil {
 			slog.Warn("preload failed", "model", name, "err", err)
 			continue
@@ -458,34 +463,25 @@ func (m *Manager) Shutdown() {
 
 // --- explicit load / unload (P8-beyond control plane) ---
 
-// LoadModel warms a served model by spawning its first spawnable (cmd-bearing)
-// backend and immediately dropping the residency ref, leaving it resident and
-// evictable (like Preload, but on demand). Pure-proxy backends have nothing to
-// load. Returns the backend name loaded, or an error if none is spawnable or the
-// load fails (e.g. ErrNoCapacity).
+// LoadModel warms a served model by spawning its process and immediately
+// dropping the residency ref, leaving it resident and evictable (like Preload,
+// but on demand). Pure-proxy models have nothing to load. Returns the process
+// name loaded, or an error if the model isn't spawnable or the load fails
+// (e.g. ErrNoCapacity).
 func (m *Manager) LoadModel(ctx context.Context, served string) (string, error) {
 	model, ok := m.cfg.Models[served]
 	if !ok {
 		return "", fmt.Errorf("unknown model %q", served)
 	}
-	var lastErr error
-	for i, b := range model.Backends {
-		if b.Cmd == "" {
-			continue // pure-proxy: nothing to spawn
-		}
-		name := fmt.Sprintf("%s#%d", served, i)
-		_, release, _, err := m.EnsureReady(ctx, name, served, b)
-		if err != nil {
-			lastErr = err
-			continue // try the next spawnable backend
-		}
-		release() // drop the ref; the model stays warm (evictable / pinned per config)
-		return name, nil
+	if model.Cmd == "" {
+		return "", fmt.Errorf("model %q has no cmd (pure proxy); nothing to load", served)
 	}
-	if lastErr != nil {
-		return "", lastErr
+	_, release, _, err := m.EnsureReady(ctx, served, model, nil)
+	if err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("model %q has no spawnable backend", served)
+	release() // drop the ref; the model stays warm (evictable / pinned per config)
+	return served, nil
 }
 
 // UnloadModel evicts every resident backend of a served model, freeing its

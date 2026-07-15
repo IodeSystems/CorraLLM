@@ -21,7 +21,7 @@ export function useLiveEvents() {
 
     const flush = () => {
       timer = null
-      for (const key of ['activity', 'usage', 'lanes', 'overview']) {
+      for (const key of ['activity', 'usage', 'groups', 'overview']) {
         void qc.invalidateQueries({ queryKey: [key] })
       }
     }

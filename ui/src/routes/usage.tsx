@@ -342,22 +342,22 @@ function Usage() {
   const fmtKwh = (k: number) =>
     !Number.isFinite(k) || k === 0 ? '—' : k < 1 ? `${(k * 1000).toFixed(1)} Wh` : `${k.toFixed(3)} kWh`
 
-  const lanes = q.data?.corrallm.usageSeriesByGroup?.groups ?? []
-  const laneColor = (i: number) => KEY_COLORS[i % KEY_COLORS.length]
-  const groupSeries: ChartSeries[] = lanes.map((g, i) => ({
+  const pgroups = q.data?.corrallm.usageSeriesByGroup?.groups ?? []
+  const groupColor = (i: number) => KEY_COLORS[i % KEY_COLORS.length]
+  const groupSeries: ChartSeries[] = pgroups.map((g, i) => ({
     key: g.group,
-    color: laneColor(i),
+    color: groupColor(i),
     values: g.points.map((p) => Number(p.requests)),
   }))
-  const rejectSeries: ChartSeries[] = lanes.map((g, i) => ({
+  const rejectSeries: ChartSeries[] = pgroups.map((g, i) => ({
     key: g.group,
-    color: laneColor(i),
+    color: groupColor(i),
     values: g.points.map((p) => Number(p.rejected)),
   }))
-  // Avg queue wait per request, per lane, per bucket (ms).
-  const waitSeries: ChartSeries[] = lanes.map((g, i) => ({
+  // Avg queue wait per request, per group, per bucket (ms).
+  const waitSeries: ChartSeries[] = pgroups.map((g, i) => ({
     key: g.group,
-    color: laneColor(i),
+    color: groupColor(i),
     values: g.points.map((p) => {
       const reqs = Number(p.requests)
       return reqs > 0 ? Number(p.queuedMs) / reqs : 0
@@ -365,10 +365,10 @@ function Usage() {
   }))
   const anyRejections = rejectSeries.some((s) => s.values.some((v) => v > 0))
 
-  const depthLanes = q.data?.corrallm.queueDepth?.lanes ?? []
-  const depthSeries: ChartSeries[] = depthLanes.map((l, i) => ({
+  const depthGroups = q.data?.corrallm.queueDepth?.lanes ?? []
+  const depthSeries: ChartSeries[] = depthGroups.map((l, i) => ({
     key: l.group,
-    color: laneColor(i),
+    color: groupColor(i),
     values: l.points.map((p) => p.avgWaiting),
   }))
   const anyDepth = depthSeries.some((s) => s.values.some((v) => v > 0))
@@ -436,7 +436,7 @@ function Usage() {
 
       <Box>
         <Typography variant="h6" gutterBottom>
-          Priority lanes — last 24h
+          Priority groups — last 24h
         </Typography>
         {groupSeries.length === 0 ? (
           <Typography color="text.secondary">No usage in window.</Typography>
@@ -445,25 +445,25 @@ function Usage() {
             <StackedArea title="Throughput — requests/bucket (stacked)" series={groupSeries} fmtTotal={fmtInt} />
             {anyRejections ? (
               <StackedArea
-                title="Queue pressure — 429s/bucket by lane"
+                title="Queue pressure — 429s/bucket by group"
                 series={rejectSeries}
                 fmtTotal={fmtInt}
               />
             ) : (
               <Typography variant="caption" color="text.secondary">
-                No rejections in window — no lane is being starved.
+                No rejections in window — no group is being starved.
               </Typography>
             )}
             <MetricChart title="Avg queue wait / request" series={waitSeries} fmt={(n) => fmtDuration(n)} />
             {anyDepth ? (
               <StackedArea
-                title="Queue depth — avg waiting by lane (sampled)"
+                title="Queue depth — avg waiting by group (sampled)"
                 series={depthSeries}
                 fmtTotal={(n) => n.toFixed(1)}
               />
             ) : (
               <Typography variant="caption" color="text.secondary">
-                Queue depth: no lane has queued requests in the sampled window.
+                Queue depth: no group has queued requests in the sampled window.
               </Typography>
             )}
           </Stack>

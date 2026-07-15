@@ -30,8 +30,15 @@ type Config struct {
 	// defaults (extract text).
 	Convert ConvertConfig `yaml:"convert,omitempty"`
 
-	// Models maps a served model name → its ordered backend list + residency.
+	// Models maps a served model name → exactly one serving path (a spawned cmd
+	// or a proxy target) + residency policy. Fallback across models is a lane.
 	Models map[string]Model `yaml:"models,omitempty"`
+
+	// Lanes are named, ordered fallback lists over model names. Requesting a
+	// lane name allows substitution across its members (walked best-quality
+	// first, gated by the caller group's acceptDegrade/qualityFloor); requesting
+	// a model name pins exactly that model.
+	Lanes map[string]Lane `yaml:"lanes,omitempty"`
 
 	// PriorityGroups bundle scheduling policy; a key maps to exactly one group.
 	PriorityGroups map[string]PriorityGroup `yaml:"priorityGroups,omitempty"`
@@ -59,14 +66,99 @@ type Server struct {
 	MaxConcurrent int               `yaml:"maxConcurrent,omitempty"`
 }
 
-// Model is a served name: residency policy + an ordered list of backends.
+// Model is a served name with exactly ONE serving path: either a spawned local
+// process (`cmd` + the port it binds in `proxy`) or a standalone proxy target
+// (remote/paid endpoint, or another process's surface). The same weights served
+// two ways = two models with distinct names; fallback across them is a lane.
 type Model struct {
 	Sticky     *Sticky `yaml:"sticky,omitempty"`
 	Persistent bool    `yaml:"persistent,omitempty"`
 	// Convert overrides the global attachment-ingestion config for this model
 	// (e.g. a vision model rasterizes PDFs to images instead of extracting text).
-	Convert  *ConvertConfig `yaml:"convert,omitempty"`
-	Backends []Backend      `yaml:"backends,omitempty"`
+	Convert *ConvertConfig `yaml:"convert,omitempty"`
+
+	Cmd      string            `yaml:"cmd,omitempty"`      // spawn it (local model); empty → pure proxy
+	Server   string            `yaml:"server,omitempty"`   // which server it draws capacity from (cmd only)
+	RAMUsage map[string]string `yaml:"ramUsage,omitempty"` // per-pool footprint vector (cmd only)
+	Swap     *Swap             `yaml:"swap,omitempty"`     // measured load cost (cmd only)
+	Proxy    yaml.Node         `yaml:"proxy,omitempty"`    // forward target: number | "host:port" | {host,port,headers}
+	Type     string            `yaml:"type,omitempty"`     // cost class: chat | embed | openrouter | …
+	Quality  int               `yaml:"quality,omitempty"`
+	// MaxConcurrent is the model's admission slots (the fairshare capacity
+	// unit). For a local llama-server this mirrors --parallel. Default 1.
+	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
+	// MaxTokens caps the completion length this (often smaller/degraded) model
+	// will be asked for: when a lane request degrades onto it, its max_tokens is
+	// clamped to this value (P7). 0 = no cap.
+	MaxTokens int `yaml:"maxTokens,omitempty"`
+}
+
+// Slots returns the model's concurrency capacity, defaulting to 1.
+func (m Model) Slots() int {
+	if m.MaxConcurrent > 0 {
+		return m.MaxConcurrent
+	}
+	return 1
+}
+
+// Lane is a named, ordered fallback list over model names.
+type Lane struct {
+	Members []LaneMember `yaml:"members,omitempty"`
+}
+
+// LaneMember references a model by name, optionally overriding its residency
+// stickiness when it was loaded on this lane's behalf (e.g. a fallback member
+// unloads sooner than when requested directly). YAML accepts a plain string
+// (`- gemma-4-12b`) or an object (`- {model: gemma-4-12b, sticky: {ttl: 120s}}`).
+type LaneMember struct {
+	Model  string  `yaml:"model"`
+	Sticky *Sticky `yaml:"sticky,omitempty"`
+}
+
+// UnmarshalYAML lets a member be a scalar model name or the object form.
+func (lm *LaneMember) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		lm.Model = n.Value
+		return nil
+	}
+	type raw LaneMember // avoid recursion
+	var r raw
+	if err := n.Decode(&r); err != nil {
+		return err
+	}
+	*lm = LaneMember(r)
+	return nil
+}
+
+// Candidate is one resolved serving option for a served name: the model, its
+// name (process identity + audit key), and an optional lane-member sticky
+// override applied when this candidate is loaded via the lane.
+type Candidate struct {
+	Name   string
+	Model  Model
+	Sticky *Sticky // nil → the model's own sticky applies
+}
+
+// ResolveServed maps a request's served name to its ordered candidates: a lane
+// name yields its members (fallback allowed), a model name yields exactly that
+// model (pinned). Unknown lane members are skipped (Validate rejects them at
+// load; skipping keeps a hand-built Config safe).
+func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
+	if lane, ok := c.Lanes[served]; ok {
+		cands := make([]Candidate, 0, len(lane.Members))
+		for _, mem := range lane.Members {
+			m, ok := c.Models[mem.Model]
+			if !ok {
+				continue
+			}
+			cands = append(cands, Candidate{Name: mem.Model, Model: m, Sticky: mem.Sticky})
+		}
+		return cands, len(cands) > 0
+	}
+	if m, ok := c.Models[served]; ok {
+		return []Candidate{{Name: served, Model: m}}, true
+	}
+	return nil, false
 }
 
 // ConvertConfig governs how attached files (currently PDFs) in a chat request are
@@ -118,11 +210,17 @@ func (c ConvertConfig) Merge(over ConvertConfig) ConvertConfig {
 // OCREnabled reports whether the OCR fallback is on (defaults to true if unset).
 func (c ConvertConfig) OCREnabled() bool { return c.OCR == nil || *c.OCR }
 
-// ConvertFor resolves the effective ingestion config for a served model: the
-// global default overridden by the model's own block.
-func (c *Config) ConvertFor(global ConvertConfig, modelName string) ConvertConfig {
+// ConvertFor resolves the effective ingestion config for a served name: the
+// global default overridden by the model's own block. A lane inherits its
+// first (top-preference) member's block — conversion happens once, before the
+// member walk, so the primary member's needs win.
+func (c *Config) ConvertFor(global ConvertConfig, served string) ConvertConfig {
 	eff := global
-	if m, ok := c.Models[modelName]; ok && m.Convert != nil {
+	name := served
+	if lane, ok := c.Lanes[served]; ok && len(lane.Members) > 0 {
+		name = lane.Members[0].Model
+	}
+	if m, ok := c.Models[name]; ok && m.Convert != nil {
 		eff = eff.Merge(*m.Convert)
 	}
 	return eff
@@ -134,40 +232,13 @@ type Sticky struct {
 	EvictCost string `yaml:"evictCost,omitempty"` // low | medium | high
 }
 
-// Backend is one route for a served model: optionally spawn a command, always
-// proxy to a target. Round-robin within a `type`, ordered across types.
-type Backend struct {
-	Cmd      string            `yaml:"cmd,omitempty"`      // optional: spawn it
-	Server   string            `yaml:"server,omitempty"`   // which server it draws capacity from
-	RAMUsage map[string]string `yaml:"ramUsage,omitempty"` // per-pool footprint vector
-	Swap     *Swap             `yaml:"swap,omitempty"`
-	Proxy    yaml.Node         `yaml:"proxy,omitempty"` // number | "host:port" | {host,port,headers}
-	Type     string            `yaml:"type,omitempty"`  // cost class: local | claude | …
-	Quality  int               `yaml:"quality,omitempty"`
-	// MaxConcurrent is the backend's admission slots (the fairshare capacity
-	// unit). For a local llama-server this mirrors --parallel. Default 1.
-	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
-	// MaxTokens caps the completion length this (often smaller/degraded) backend
-	// will be asked for: when a request degrades onto it, its max_tokens is
-	// clamped to this value (P7). 0 = no cap.
-	MaxTokens int `yaml:"maxTokens,omitempty"`
-}
-
-// Slots returns the backend's concurrency capacity, defaulting to 1.
-func (b Backend) Slots() int {
-	if b.MaxConcurrent > 0 {
-		return b.MaxConcurrent
-	}
-	return 1
-}
-
-// MaxQuality returns the highest Quality among the backends (0 if none/unset) —
-// the top of a served model's quality ladder (P7).
-func MaxQuality(bs []Backend) int {
+// MaxQuality returns the highest Quality among the candidates (0 if none/unset)
+// — the top of a served name's quality ladder (P7).
+func MaxQuality(cands []Candidate) int {
 	top := 0
-	for _, b := range bs {
-		if b.Quality > top {
-			top = b.Quality
+	for _, c := range cands {
+		if c.Model.Quality > top {
+			top = c.Model.Quality
 		}
 	}
 	return top
@@ -199,15 +270,9 @@ func Capability(typ string) string {
 	}
 }
 
-// ModelCapability is a served model's capability — the first backend type that
-// resolves to a non-chat capability wins; else "chat".
+// ModelCapability is a served model's capability, inferred from its cost type.
 func ModelCapability(m Model) string {
-	for _, b := range m.Backends {
-		if c := Capability(b.Type); c != "chat" {
-			return c
-		}
-	}
-	return "chat"
+	return Capability(m.Type)
 }
 
 // Swap is the measured cost of loading a backend (residency input, P4). P6 adds
@@ -330,27 +395,48 @@ func (c *Config) Validate() error {
 		}
 	}
 	for name, m := range c.Models {
-		if len(m.Backends) == 0 {
-			return fmt.Errorf("model %q: no backends", name)
+		if m.Cmd == "" && m.Proxy.IsZero() {
+			return fmt.Errorf("model %q: needs cmd (spawned) or proxy (standalone proxy model); legacy backends: lists are no longer supported — flatten to one path per model and compose fallbacks as a lane", name)
 		}
-		for i, b := range m.Backends {
-			if b.Cmd != "" && b.Server == "" {
-				return fmt.Errorf("model %q backend %d: cmd set but no server", name, i)
+		if m.Cmd != "" && m.Server == "" {
+			return fmt.Errorf("model %q: cmd set but no server", name)
+		}
+		if m.Cmd == "" {
+			// A pure proxy model has no local lifecycle: residency knobs are
+			// meaningless on it and almost certainly a config mistake.
+			if m.Sticky != nil || m.Persistent || len(m.RAMUsage) > 0 || m.Swap != nil || m.Server != "" {
+				return fmt.Errorf("model %q: sticky/persistent/ramUsage/swap/server only apply to cmd models", name)
 			}
-			if b.Server != "" {
-				srv, ok := c.Servers[b.Server]
-				if !ok {
-					return fmt.Errorf("model %q backend %d: unknown server %q", name, i, b.Server)
+		}
+		if m.Server != "" {
+			srv, ok := c.Servers[m.Server]
+			if !ok {
+				return fmt.Errorf("model %q: unknown server %q", name, m.Server)
+			}
+			if _, err := ParseSizes(m.RAMUsage); err != nil {
+				return fmt.Errorf("model %q ramUsage: %w", name, err)
+			}
+			for pool := range m.RAMUsage {
+				if _, ok := srv.Pools[pool]; !ok {
+					return fmt.Errorf("model %q: ramUsage pool %q not declared on server %q",
+						name, pool, m.Server)
 				}
-				if _, err := ParseSizes(b.RAMUsage); err != nil {
-					return fmt.Errorf("model %q backend %d ramUsage: %w", name, i, err)
-				}
-				for pool := range b.RAMUsage {
-					if _, ok := srv.Pools[pool]; !ok {
-						return fmt.Errorf("model %q backend %d: ramUsage pool %q not declared on server %q",
-							name, i, pool, b.Server)
-					}
-				}
+			}
+		}
+	}
+	for name, lane := range c.Lanes {
+		if _, clash := c.Models[name]; clash {
+			return fmt.Errorf("lane %q: name collides with a model", name)
+		}
+		if len(lane.Members) == 0 {
+			return fmt.Errorf("lane %q: no members", name)
+		}
+		for i, mem := range lane.Members {
+			if mem.Model == "" {
+				return fmt.Errorf("lane %q member %d: empty model name", name, i)
+			}
+			if _, ok := c.Models[mem.Model]; !ok {
+				return fmt.Errorf("lane %q member %d: unknown model %q", name, i, mem.Model)
 			}
 		}
 	}

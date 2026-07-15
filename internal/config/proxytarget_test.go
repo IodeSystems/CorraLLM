@@ -6,9 +6,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func backendWithProxy(t *testing.T, y string) Backend {
+func modelWithProxy(t *testing.T, y string) Model {
 	t.Helper()
-	var b Backend
+	var b Model
 	if err := yaml.Unmarshal([]byte("proxy: "+y), &b); err != nil {
 		t.Fatalf("unmarshal %q: %v", y, err)
 	}
@@ -27,7 +27,7 @@ func TestProxyTargetForms(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			tgt, err := backendWithProxy(t, c.yaml).ProxyTarget()
+			tgt, err := modelWithProxy(t, c.yaml).ProxyTarget()
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
@@ -40,7 +40,7 @@ func TestProxyTargetForms(t *testing.T) {
 
 func TestProxyTargetHeaderEnvExpansion(t *testing.T) {
 	t.Setenv("TEST_API_KEY", "sekret")
-	b := backendWithProxy(t, `{ host: api.example.com, port: 443, headers: { authorization: "Bearer ${TEST_API_KEY}" } }`)
+	b := modelWithProxy(t, `{ host: api.example.com, port: 443, headers: { authorization: "Bearer ${TEST_API_KEY}" } }`)
 	tgt, err := b.ProxyTarget()
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -51,7 +51,7 @@ func TestProxyTargetHeaderEnvExpansion(t *testing.T) {
 }
 
 func TestProxyTargetMissing(t *testing.T) {
-	var b Backend
+	var b Model
 	if _, err := b.ProxyTarget(); err == nil {
 		t.Fatal("expected error for missing proxy target")
 	}

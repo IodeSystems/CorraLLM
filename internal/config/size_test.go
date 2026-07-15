@@ -42,7 +42,7 @@ func TestValidateRejectsUndeclaredPool(t *testing.T) {
 	c := &Config{
 		Servers: map[string]Server{"box": {Pools: map[string]string{"gpu0": "24GB"}}},
 		Models: map[string]Model{
-			"m": {Backends: []Backend{{Cmd: "x", Server: "box", RAMUsage: map[string]string{"gpu9": "8GB"}}}},
+			"m": {Cmd: "x", Server: "box", RAMUsage: map[string]string{"gpu9": "8GB"}},
 		},
 	}
 	if err := c.Validate(); err == nil {

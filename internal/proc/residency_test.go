@@ -36,13 +36,13 @@ func listenTCP(t *testing.T) int {
 	return port
 }
 
-func resBackend(t *testing.T, server string, usage map[string]string, port int) config.Backend {
+func resModel(t *testing.T, server string, usage map[string]string, port int) config.Model {
 	t.Helper()
 	var pn yaml.Node
 	if err := pn.Encode(port); err != nil {
 		t.Fatal(err)
 	}
-	return config.Backend{Cmd: "exec sleep 30", Server: server, RAMUsage: usage, Proxy: pn, Type: "local"}
+	return config.Model{Cmd: "exec sleep 30", Server: server, RAMUsage: usage, Proxy: pn, Type: "local"}
 }
 
 // resConfig: a server "box" with a `gpu` pool budget, and two models A/B each
@@ -51,8 +51,8 @@ func resConfig(t *testing.T, budget string, each string, portA, portB int) *conf
 	return &config.Config{
 		Servers: map[string]config.Server{"box": {Pools: map[string]string{"gpu": budget}}},
 		Models: map[string]config.Model{
-			"A": {Backends: []config.Backend{resBackend(t, "box", map[string]string{"gpu": each}, portA)}},
-			"B": {Backends: []config.Backend{resBackend(t, "box", map[string]string{"gpu": each}, portB)}},
+			"A": resModel(t, "box", map[string]string{"gpu": each}, portA),
+			"B": resModel(t, "box", map[string]string{"gpu": each}, portB),
 		},
 	}
 }
@@ -67,14 +67,14 @@ func TestEvictIdleToFit(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	pA, doneA, _, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
+	pA, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	pidA := pA.cmd.Process.Pid
 	doneA() // A is now idle (evictable)
 
-	pB, _, _, err := mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0])
+	pB, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil)
 	if err != nil {
 		t.Fatalf("load B should evict A and succeed, got: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestEvictIdleToFit(t *testing.T) {
 	}
 	mgr.mu.Lock()
 	used := mgr.used["box"]["gpu"]
-	_, aResident := mgr.procs["A#0"]
+	_, aResident := mgr.procs["A"]
 	mgr.mu.Unlock()
 	if used != 6 {
 		t.Errorf("gpu used = %d, want 6 (only B)", used)
@@ -116,12 +116,12 @@ func TestLoadUnloadModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
-	if name != "A#0" {
-		t.Errorf("loaded %q, want A#0", name)
+	if name != "A" {
+		t.Errorf("loaded %q, want A", name)
 	}
 	// Resident and idle (ref dropped) → in the snapshot, refs 0.
 	snap := mgr.Snapshot()
-	if len(snap.Models) != 1 || snap.Models[0].Name != "A#0" || snap.Models[0].Refs != 0 {
+	if len(snap.Models) != 1 || snap.Models[0].Name != "A" || snap.Models[0].Refs != 0 {
 		t.Fatalf("after load, models = %+v", snap.Models)
 	}
 
@@ -198,7 +198,7 @@ func TestSnapshot(t *testing.T) {
 		t.Fatalf("want no resident models, got %+v", snap.Models)
 	}
 
-	if _, _, _, err := mgr.EnsureReady(context.Background(), "A#0", "A", cfg.Models["A"].Backends[0]); err != nil {
+	if _, _, _, err := mgr.EnsureReady(context.Background(), "A", cfg.Models["A"], nil); err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 
@@ -210,7 +210,7 @@ func TestSnapshot(t *testing.T) {
 		t.Fatalf("want 1 resident model, got %d", len(snap.Models))
 	}
 	m := snap.Models[0]
-	if m.Name != "A#0" || m.ModelName != "A" || m.Server != "box" || m.State != string(StateReady) {
+	if m.Name != "A" || m.ModelName != "A" || m.Server != "box" || m.State != string(StateReady) {
 		t.Errorf("model = %+v", m)
 	}
 	if len(m.Usage) != 1 || m.Usage[0] != (PoolUsage{Pool: "gpu", Bytes: 6}) {
@@ -228,13 +228,13 @@ func TestNoCapacityWhenBusy(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	_, doneA, _, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
+	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	defer doneA() // keep A busy (ref held) across the B attempt
 
-	_, _, _, err = mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0])
+	_, _, _, err = mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil)
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("want ErrNoCapacity (A busy), got: %v", err)
 	}
@@ -254,13 +254,13 @@ func TestPersistentNotEvicted(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	_, doneA, _, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
+	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	doneA() // idle but pinned
 
-	if _, _, _, err := mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0]); !errors.Is(err, ErrNoCapacity) {
+	if _, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil); !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("want ErrNoCapacity (A pinned), got: %v", err)
 	}
 }
@@ -274,12 +274,12 @@ func TestFitsAlongside(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	pA, doneA, _, err := mgr.EnsureReady(ctx, "A#0", "A", cfg.Models["A"].Backends[0])
+	pA, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	defer doneA()
-	_, doneB, _, err := mgr.EnsureReady(ctx, "B#0", "B", cfg.Models["B"].Backends[0])
+	_, doneB, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil)
 	if err != nil {
 		t.Fatalf("load B alongside A: %v", err)
 	}

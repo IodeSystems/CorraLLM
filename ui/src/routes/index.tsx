@@ -52,16 +52,20 @@ const OverviewDoc = graphql(/* GraphQL */ `
           spawnable
           modality
           capability
-          backends {
-            index
-            type
-            quality
-            spawnable
-            server
-            target
-            maxConcurrent
-            maxTokens
-            cmd
+          type
+          quality
+          server
+          target
+          maxConcurrent
+          maxTokens
+          cmd
+        }
+        lanes {
+          name
+          members {
+            model
+            ttl
+            evictCost
           }
         }
         groups {
@@ -133,21 +137,21 @@ const LogsDoc = graphql(/* GraphQL */ `
 
 // Task-oriented capability sections — "I want to chat / transcribe / synthesize /
 // embed / …". A model lands in the first section whose caps include its
-// capability; laneTypes maps the section to the backend cost type(s) whose lane
+// capability; groupTypes maps the section to the model cost type(s) whose group
 // policy is relevant. Sections with no models are hidden; anything unmatched falls
 // into "Other" so nothing disappears.
-const CAP_SECTIONS: { title: string; blurb: string; caps: string[]; laneTypes: string[] }[] = [
-  { title: 'Chat', blurb: 'Conversational + instruct models', caps: ['chat'], laneTypes: ['chat'] },
-  { title: 'Image understanding', blurb: 'Vision / multimodal', caps: ['vision', 'image'], laneTypes: ['chat'] },
-  { title: 'Embeddings', blurb: 'Vector embeddings', caps: ['embeddings'], laneTypes: ['embed'] },
+const CAP_SECTIONS: { title: string; blurb: string; caps: string[]; groupTypes: string[] }[] = [
+  { title: 'Chat', blurb: 'Conversational + instruct models', caps: ['chat'], groupTypes: ['chat'] },
+  { title: 'Image understanding', blurb: 'Vision / multimodal', caps: ['vision', 'image'], groupTypes: ['chat'] },
+  { title: 'Embeddings', blurb: 'Vector embeddings', caps: ['embeddings'], groupTypes: ['embed'] },
   {
     title: 'Speech-to-text',
     blurb: 'Transcription — batch (upload) + realtime (ws / webrtc)',
     caps: ['audio.stt', 'audio.realtime'],
-    laneTypes: ['stt', 'realtime'],
+    groupTypes: ['stt', 'realtime'],
   },
-  { title: 'Text-to-speech', blurb: 'Speech synthesis', caps: ['audio.tts'], laneTypes: ['tts'] },
-  { title: 'Rerank', blurb: 'Document reranking', caps: ['rerank'], laneTypes: ['rerank'] },
+  { title: 'Text-to-speech', blurb: 'Speech synthesis', caps: ['audio.tts'], groupTypes: ['tts'] },
+  { title: 'Rerank', blurb: 'Document reranking', caps: ['rerank'], groupTypes: ['rerank'] },
 ]
 
 function LogsDialog({ backend, onClose }: { backend: string; onClose: () => void }) {
@@ -250,12 +254,13 @@ function Home() {
   const c = q.data!.corrallm
   const ov = c.overview
   const models = ov?.models ?? []
+  const lanes = ov?.lanes ?? []
   const groups = ov?.groups ?? []
   const keys = ov?.keys ?? []
   const stateByModel = new Map((c.residency?.models ?? []).map((m) => [m.modelName, m]))
 
-  // A lane's effective policy for a capability = its onSaturated stage for that
-  // backend type, falling back to its `default` stage. Distinct values joined so
+  // A group's effective policy for a capability = its onSaturated stage for that
+  // model type, falling back to its `default` stage. Distinct values joined so
   // e.g. "queue/reject" when batch queues but realtime has no stage.
   const policyForTypes = (g: (typeof groups)[number], types: string[]) => {
     const def = g.stages.find((s) => s.type === 'default')?.policy ?? 'reject'
@@ -263,11 +268,11 @@ function Home() {
     return Array.from(new Set(pols)).join('/')
   }
 
-  const laneStrip = (types: string[]) =>
+  const groupStrip = (types: string[]) =>
     groups.length ? (
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
         <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center', mr: 0.5 }}>
-          lanes
+          groups
         </Typography>
         {groups.map((g) => {
           const ks = keys.filter((k) => k.group === g.name).map((k) => k.key)
@@ -357,7 +362,6 @@ function Home() {
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell>#</TableCell>
                   <TableCell>Type</TableCell>
                   <TableCell align="right">Quality</TableCell>
                   <TableCell align="right">Slots</TableCell>
@@ -366,28 +370,25 @@ function Home() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {m.backends.map((b) => (
-                  <TableRow key={b.index}>
-                    <TableCell>{b.index}</TableCell>
-                    <TableCell>
-                      <Chip size="small" variant="outlined" label={b.spawnable ? b.type : `${b.type} (proxy)`} />
-                    </TableCell>
-                    <TableCell align="right">{b.quality}</TableCell>
-                    <TableCell align="right">{fmtInt(b.maxConcurrent)}</TableCell>
-                    <TableCell align="right">{Number(b.maxTokens) > 0 ? fmtInt(b.maxTokens) : '—'}</TableCell>
-                    <TableCell>
-                      {b.cmd ? (
-                        <Button size="small" onClick={() => setCmdView({ title: `${m.name} #${b.index}`, cmd: b.cmd })}>
-                          View cmd
-                        </Button>
-                      ) : (
-                        <Typography variant="caption" sx={{ wordBreak: 'break-all' }}>
-                          {b.target || '—'}
-                        </Typography>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                <TableRow>
+                  <TableCell>
+                    <Chip size="small" variant="outlined" label={m.spawnable ? m.type : `${m.type} (proxy)`} />
+                  </TableCell>
+                  <TableCell align="right">{m.quality}</TableCell>
+                  <TableCell align="right">{fmtInt(m.maxConcurrent)}</TableCell>
+                  <TableCell align="right">{Number(m.maxTokens) > 0 ? fmtInt(m.maxTokens) : '—'}</TableCell>
+                  <TableCell>
+                    {m.cmd ? (
+                      <Button size="small" onClick={() => setCmdView({ title: m.name, cmd: m.cmd })}>
+                        View cmd
+                      </Button>
+                    ) : (
+                      <Typography variant="caption" sx={{ wordBreak: 'break-all' }}>
+                        {m.target || '—'}
+                      </Typography>
+                    )}
+                  </TableCell>
+                </TableRow>
               </TableBody>
             </Table>
           </TableContainer>
@@ -404,7 +405,7 @@ function Home() {
     return { ...s, models: ms }
   }).filter((s) => s.models.length)
   const other = models.filter((m) => !seen.has(m.name))
-  if (other.length) sections.push({ title: 'Other', blurb: '', caps: [], laneTypes: [], models: other })
+  if (other.length) sections.push({ title: 'Other', blurb: '', caps: [], groupTypes: [], models: other })
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -447,7 +448,7 @@ function Home() {
         </Dialog>
       )}
 
-      {/* Capability sections: lanes (filtered to this capability) over its models. */}
+      {/* Capability sections: groups (filtered to this capability) over its models. */}
       {sections.map((s) => (
         <Box key={s.title}>
           <Typography variant="subtitle1">{s.title}</Typography>
@@ -456,10 +457,49 @@ function Home() {
               {s.blurb}
             </Typography>
           )}
-          {laneStrip(s.laneTypes)}
+          {groupStrip(s.groupTypes)}
           <Stack spacing={2}>{s.models.map(modelCard)}</Stack>
         </Box>
       ))}
+
+      {/* Lanes: named ordered fallback lists over models. */}
+      {lanes.length > 0 && (
+        <Box>
+          <Typography variant="subtitle1" gutterBottom>
+            Lanes
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+            Requestable as a model id; falls back across members in order.
+          </Typography>
+          <Stack spacing={1}>
+            {lanes.map((l) => (
+              <Card key={l.name}>
+                <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', '&:last-child': { pb: 2 } }}>
+                  <Typography variant="subtitle2" sx={{ mr: 1 }}>
+                    {l.name}
+                  </Typography>
+                  {l.members.map((mem, i) => (
+                    <Box key={mem.model} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      {i > 0 && (
+                        <Typography variant="body2" color="text.secondary">
+                          →
+                        </Typography>
+                      )}
+                      <Tooltip
+                        title={[mem.ttl ? `ttl ${mem.ttl}` : null, mem.evictCost ? `evict ${mem.evictCost}` : null]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      >
+                        <Chip size="small" variant="outlined" label={mem.model} />
+                      </Tooltip>
+                    </Box>
+                  ))}
+                </CardContent>
+              </Card>
+            ))}
+          </Stack>
+        </Box>
+      )}
 
       {/* System capacity (orthogonal to capability). */}
       <Box>

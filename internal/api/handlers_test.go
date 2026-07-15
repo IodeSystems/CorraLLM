@@ -23,7 +23,7 @@ func TestRecentActivity(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		if err := st.InsertActivity(store.Activity{
-			TS: int64(i), Served: "m", Backend: "m#0", Key: "k",
+			TS: int64(i), Served: "m", Backend: "m", Key: "k",
 			Path: "/v1/chat/completions", Status: 200,
 			DwellMS: int64(i * 10), PromptTokens: i, CompletionTokens: i, CostUSD: float64(i) * 0.001,
 			AudioBytes: int64(i * 1000),
@@ -150,10 +150,11 @@ func TestOverview(t *testing.T) {
 			"box": {Pools: map[string]string{"gpu0": "24GB"}, Reserve: map[string]string{"gpu0": "1GB"}},
 		},
 		Models: map[string]config.Model{
-			"m": {Backends: []config.Backend{
-				{Cmd: "llama-server ...", Server: "box", Type: "local", Quality: 100, MaxTokens: 512},
-				{Type: "claude", Quality: 90}, // pure-proxy (no cmd)
-			}},
+			"m-local":  {Cmd: "llama-server ...", Server: "box", Type: "local", Quality: 100, MaxTokens: 512},
+			"m-claude": {Type: "claude", Quality: 90}, // pure-proxy (no cmd)
+		},
+		Lanes: map[string]config.Lane{
+			"m": {Members: []config.LaneMember{{Model: "m-local"}, {Model: "m-claude"}}},
 		},
 		PriorityGroups: map[string]config.PriorityGroup{
 			"batch": {Weight: 1, Interruptible: true, OnSaturated: map[string]config.Stage{"local": {Queue: true}}},
@@ -169,21 +170,26 @@ func TestOverview(t *testing.T) {
 	if len(out.Body.Servers) != 1 || out.Body.Servers[0].Pools[0].TotalBytes != 24*1000*1000*1000 {
 		t.Fatalf("servers = %+v", out.Body.Servers)
 	}
-	if len(out.Body.Models) != 1 {
+	if len(out.Body.Models) != 2 {
 		t.Fatalf("models = %+v", out.Body.Models)
 	}
-	md := out.Body.Models[0]
-	if !md.Spawnable || len(md.Backends) != 2 {
-		t.Fatalf("model = %+v", md)
+	byName := map[string]ModelDef{}
+	for _, md := range out.Body.Models {
+		byName[md.Name] = md
 	}
-	if md.Modality != "text" {
-		t.Errorf("modality = %q, want text (no audio cost class)", md.Modality)
+	local := byName["m-local"]
+	if !local.Spawnable || local.Cmd == "" || local.MaxTokens != 512 {
+		t.Errorf("m-local = %+v", local)
 	}
-	if !md.Backends[0].Spawnable || md.Backends[0].Cmd == "" || md.Backends[0].MaxTokens != 512 {
-		t.Errorf("backend0 = %+v", md.Backends[0])
+	if local.Modality != "text" {
+		t.Errorf("modality = %q, want text (no audio cost class)", local.Modality)
 	}
-	if md.Backends[1].Spawnable {
-		t.Errorf("backend1 (pure-proxy) should not be spawnable: %+v", md.Backends[1])
+	claude := byName["m-claude"]
+	if claude.Spawnable {
+		t.Errorf("m-claude (pure-proxy) should not be spawnable: %+v", claude)
+	}
+	if len(out.Body.Lanes) != 1 || out.Body.Lanes[0].Name != "m" || len(out.Body.Lanes[0].Members) != 2 {
+		t.Errorf("lanes = %+v", out.Body.Lanes)
 	}
 	if len(out.Body.Groups) != 1 || out.Body.Groups[0].Stages[0].Policy != "queue" {
 		t.Errorf("groups = %+v", out.Body.Groups)
@@ -199,8 +205,8 @@ func TestOverviewAudioModality(t *testing.T) {
 	cfg := &config.Config{
 		CommandCosts: map[string]map[string]any{"stt": {"audioWhPerMiB": 10}},
 		Models: map[string]config.Model{
-			"whisper": {Backends: []config.Backend{{Cmd: "parakeet ...", Type: "stt"}}},
-			"chat":    {Backends: []config.Backend{{Type: "local"}}},
+			"whisper": {Cmd: "parakeet ...", Type: "stt"},
+			"chat":    {Type: "local"},
 		},
 	}
 	h := &Handlers{Cfg: cfg}
@@ -224,7 +230,7 @@ func TestOverviewAudioModality(t *testing.T) {
 // without spawning: unknown model fails gracefully; unloading an absent model
 // is a no-op success.
 func TestModelActionHandlers(t *testing.T) {
-	cfg := &config.Config{Models: map[string]config.Model{"m": {Backends: []config.Backend{{Type: "local"}}}}}
+	cfg := &config.Config{Models: map[string]config.Model{"m": {Type: "local"}}}
 	h := &Handlers{Cfg: cfg, Mgr: proc.NewManager(cfg)}
 
 	ld, err := h.LoadModel(context.Background(), actionInput("nope"))
@@ -357,9 +363,9 @@ func TestUsageSeriesByGroup(t *testing.T) {
 	}
 }
 
-// TestLanes joins group policy with live admission load: an admitted request
+// TestGroups joins group policy with live admission load: an admitted request
 // shows up under its group, and configured groups carry their weight/currency.
-func TestLanes(t *testing.T) {
+func TestGroups(t *testing.T) {
 	cfg := &config.Config{
 		PriorityGroups: map[string]config.PriorityGroup{
 			"interactive": {Weight: 10, Interruptible: false, ShareCurrency: "dwell"},
@@ -369,13 +375,13 @@ func TestLanes(t *testing.T) {
 	sc := sched.NewWithConfig(cfg)
 	h := &Handlers{Cfg: cfg, Sched: sc}
 
-	rel, _, err := sc.Admit(context.Background(), "m#0", "local", 2, "interactive", 10, false, config.Stage{Reject: true})
+	rel, _, err := sc.Admit(context.Background(), "m", "local", 2, "interactive", 10, false, config.Stage{Reject: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rel()
 
-	out, err := h.Lanes(context.Background(), &LanesInput{})
+	out, err := h.Groups(context.Background(), &GroupsInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +402,7 @@ func TestLanes(t *testing.T) {
 		t.Errorf("batch = %+v", gb)
 	}
 
-	if len(out.Body.Backends) != 1 || out.Body.Backends[0].Backend != "m#0" || out.Body.Backends[0].Active != 1 {
+	if len(out.Body.Backends) != 1 || out.Body.Backends[0].Backend != "m" || out.Body.Backends[0].Active != 1 {
 		t.Errorf("backends = %+v", out.Body.Backends)
 	}
 }

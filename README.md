@@ -30,6 +30,10 @@ It runs in production today, fronting a mixed embeddings and chat workload.
   backend is full a request queues, is rejected, spills to another backend, or
   preempts a lower-priority one. Preemption is cooperative and safe for in-flight
   streams.
+- **Reservations** — a caller can lease a few slots on a model for its own lane so
+  interactive work keeps headroom against saturating batch. The slots are held
+  *free* (batch drains into the rest and backs off), the lease is short and
+  renewed by a heartbeat, and it auto-expires so a dead client can't starve batch.
 - **Ordered fall-through and quality degrade** — a served model lists its backends
   in order (round-robin within a cost-equivalent `type`, ordered across types).
   `quality` ranks the tiers. A group can opt into being served by a lower tier
@@ -66,7 +70,8 @@ curl localhost:8111/v1/chat/completions -H 'content-type: application/json' \
 
 Useful `serve` flags (all have env equivalents): `--config`, `--db`, `--web-root`,
 `--health-timeout` (raise for big models with large KV), `--activity-retention`
-(default 30d), `--home`. The listen address is `ADDR` (default `:6502`).
+(default 30d), `--reservation-max-ttl` (default 5m), `--home`. The listen address
+is `ADDR` (default `:6502`).
 
 ## Configure
 
@@ -124,13 +129,49 @@ callers fall into the `default` group.
 
 ## API surface
 
-- **Inference** (open): the OpenAI endpoints above, plus `/upstream/<model>/…`, an
+- **Inference** (open): the OpenAI endpoints above, plus `/v1/reservations` (lease
+  interactive headroom, keyed by caller — see below) and `/upstream/<model>/…`, an
   untracked passthrough to a backend's own web UI that bypasses the scheduler.
 - **Liveness** (open): `GET /health`, `/healthz`.
 - **Management** (admin token via `Authorization: Bearer` or the `corrallm_token`
   cookie): `POST /api/graphql` and REST at `/api/v1/*` — `overview`, `lanes`,
-  `residency`, `activity`, `usage/{rollup,by-key,series,series-by-group,queue-depth}`,
+  `reservations`, `residency`, `activity`,
+  `usage/{rollup,by-key,series,series-by-group,queue-depth}`,
   `models/{load,unload,logs}`, and the `events` SSE stream.
+
+## Reservations
+
+Batch work can fill every slot and leave no room for interactive requests.
+A reservation fixes that by *proactively* holding capacity free for a lane — the
+inverse of preemption, which reactively reclaims a slot after the fact.
+
+Any keyed caller can reserve slots on a model for **its own lane** (the lane its
+key maps to). While the lease is live, the effective capacity other lanes see on
+that backend is `capacity − slots reserved by other lanes`, so batch is admitted
+only up to the unreserved slots and an interactive request finds a free one
+immediately. The reserved slots are never force-taken from running batch — batch
+just isn't admitted into them, and drains naturally.
+
+The lease is short (default max **5m**, `--reservation-max-ttl`) and must be
+renewed by re-POSTing (a heartbeat); it auto-expires, and a reaper frees stale
+leases so a crashed client can't hold capacity forever.
+
+```sh
+# reserve 1 slot on my-chat for your lane; renew every few minutes
+curl -X POST localhost:8111/v1/reservations \
+  -H 'Authorization: Bearer my-coder' -H 'content-type: application/json' \
+  -d '{"model":"my-chat","slots":1,"ttl":"5m"}'
+# → {"model":"my-chat","lane":"interactive","slots":1,"expires_at":"…","renew_within_seconds":300}
+
+curl localhost:8111/v1/reservations                       # list live reservations
+curl -X DELETE 'localhost:8111/v1/reservations?model=my-chat' \
+  -H 'Authorization: Bearer my-coder'                     # release early
+```
+
+`slots` defaults to 1 and may not exceed the backend's `maxConcurrent`; `ttl`
+defaults to (and is capped at) the max. Reservations target a model's primary
+(top-quality) backend. The dashboard's Lanes page shows live reservations with a
+countdown, and `GET /api/v1/reservations` returns the same data.
 
 ## Audio (STT / TTS / realtime)
 
