@@ -2,6 +2,9 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Box,
   Button,
   Chip,
@@ -19,6 +22,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { capLabel, fmtDuration, fmtInt, fmtUSD } from '@/format'
@@ -760,7 +764,19 @@ function TtsPlayground({ model }: { model: string }) {
   )
 }
 
-type Msg = { role: 'user' | 'assistant'; content: string; image?: string; file?: { name: string; data: string } }
+type ToolCall = { id: string; name: string; args: string }
+// ReplayTool: an OpenAI function-tool def captured on the replayed request, kept so
+// continuations can re-offer the same tools to the model.
+type ReplayTool = { name: string; description: string; parameters: unknown }
+type Msg = {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+  image?: string
+  file?: { name: string; data: string }
+  toolCalls?: ToolCall[] // on assistant turns
+  toolCallId?: string // on tool turns
+  toolName?: string // on tool turns, matched back from the assistant tool_call
+}
 
 // extractText pulls the text out of a message content that may be a string or the
 // multimodal content-parts array (used when replaying a captured request).
@@ -775,6 +791,48 @@ function extractText(content: unknown): string {
   return ''
 }
 
+// parseUserContent splits an OpenAI user `content` (string or content-parts array)
+// into the text + any attached image / file — WITHOUT flattening media away.
+function parseUserContent(content: unknown): Pick<Msg, 'content' | 'image' | 'file'> {
+  if (typeof content === 'string') return { content }
+  if (!Array.isArray(content)) return { content: extractText(content) }
+  let text = ''
+  let image: string | undefined
+  let file: Msg['file']
+  for (const p of content) {
+    if (!p || typeof p !== 'object') continue
+    const part = p as Record<string, any>
+    if (part.type === 'text') text += (text ? ' ' : '') + String(part.text ?? '')
+    else if (part.type === 'image_url') image = String(part.image_url?.url ?? '')
+    else if (part.type === 'file') file = { name: String(part.file?.filename ?? 'file'), data: String(part.file?.file_data ?? '') }
+  }
+  return { content: text, image, file }
+}
+
+// prettyArgs pretty-prints a tool_call arguments JSON string; falls back to raw.
+function prettyArgs(args: string): string {
+  try {
+    return JSON.stringify(JSON.parse(args), null, 2)
+  } catch {
+    return args
+  }
+}
+
+// toApiMsg renders a Msg back into OpenAI wire shape, preserving assistant
+// tool_calls and tool-role results so a replayed exchange carries into follow-ups.
+function toApiMsg(m: Msg): Record<string, unknown> {
+  if (m.role === 'assistant') {
+    const msg: Record<string, unknown> = { role: 'assistant', content: m.content || '' }
+    if (m.toolCalls?.length) {
+      msg.tool_calls = m.toolCalls.map((tc) => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.args } }))
+    }
+    return msg
+  }
+  if (m.role === 'tool') return { role: 'tool', tool_call_id: m.toolCallId, content: m.content }
+  if (m.role === 'system') return { role: 'system', content: m.content }
+  return { role: 'user', content: apiContent(m) }
+}
+
 // apiContent renders a message in OpenAI shape: a plain string, or — when an image
 // or a file is attached — the multimodal content-parts array. A PDF goes as a
 // `file` part; corrallm extracts its text server-side so even a text model reads it.
@@ -786,6 +844,12 @@ function apiContent(m: Msg): unknown {
   return parts
 }
 
+// toApiTool renders a captured ReplayTool back into an OpenAI function-tool def so a
+// continuation re-offers it to the model.
+function toApiTool(t: ReplayTool): Record<string, unknown> {
+  return { type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }
+}
+
 function ChatPlayground({ model, replayId }: { model: string; replayId?: string }) {
   const [key, setKey] = useState('')
   const [input, setInput] = useState('')
@@ -793,6 +857,12 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
   const [file, setFile] = useState<{ name: string; data: string } | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [busy, setBusy] = useState(false)
+  // tools captured on the replayed request; re-offered on every continuation
+  const [replayTools, setReplayTools] = useState<ReplayTool[]>([])
+  // tool_calls the model just made that await a user-pasted result (console can't
+  // execute tools); keyed manual-entry text lives in `results`
+  const [pending, setPending] = useState<ToolCall[] | null>(null)
+  const [results, setResults] = useState<Record<string, string>>({})
   const msgsRef = useRef<Msg[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
   msgsRef.current = msgs
@@ -808,17 +878,54 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
       if (!raw) return
       try {
         const body = JSON.parse(raw)
-        const parsed: Msg[] = (body.messages ?? [])
-          .map((m: { role: string; content: unknown }) => ({
-            role: m.role === 'assistant' ? 'assistant' : 'user',
-            content: typeof m.content === 'string' ? m.content : extractText(m.content),
+        const rawMsgs: any[] = body.messages ?? []
+        // map tool_call_id → name so tool results can name the call they answer
+        const toolNames = new Map<string, string>()
+        for (const m of rawMsgs) {
+          if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
+            for (const tc of m.tool_calls) if (tc?.id) toolNames.set(String(tc.id), String(tc.function?.name ?? ''))
+          }
+        }
+        const parsed: Msg[] = rawMsgs.map((m) => {
+          if (m?.role === 'assistant') {
+            const toolCalls: ToolCall[] = Array.isArray(m.tool_calls)
+              ? m.tool_calls.map((tc: any) => ({ id: String(tc?.id ?? ''), name: String(tc?.function?.name ?? ''), args: String(tc?.function?.arguments ?? '') }))
+              : []
+            return {
+              role: 'assistant',
+              content: typeof m.content === 'string' ? m.content : extractText(m.content),
+              toolCalls: toolCalls.length ? toolCalls : undefined,
+            }
+          }
+          if (m?.role === 'tool') {
+            const id = m.tool_call_id != null ? String(m.tool_call_id) : undefined
+            return {
+              role: 'tool',
+              content: typeof m.content === 'string' ? m.content : extractText(m.content),
+              toolCallId: id,
+              toolName: id ? toolNames.get(id) : undefined,
+            }
+          }
+          if (m?.role === 'system') return { role: 'system', content: typeof m.content === 'string' ? m.content : extractText(m.content) }
+          return { role: 'user', ...parseUserContent(m?.content) }
+        })
+        // capture the function-tool defs the model had available so continuations
+        // re-offer them (purely informational in the Tools panel too).
+        const rawTools: any[] = Array.isArray(body.tools) ? body.tools : []
+        const tools: ReplayTool[] = rawTools
+          .filter((t) => t?.type === 'function' && t.function)
+          .map((t) => ({
+            name: String(t.function.name ?? ''),
+            description: String(t.function.description ?? ''),
+            parameters: t.function.parameters,
           }))
-          .filter((m: Msg) => m.role === 'user' || m.role === 'assistant')
-        const lastUser = [...parsed].reverse().find((m) => m.role === 'user')
-        if (lastUser) {
-          const idx = parsed.lastIndexOf(lastUser)
-          setMsgs(parsed.slice(0, idx))
-          setInput(lastUser.content)
+        setReplayTools(tools)
+        // pull the LAST user turn into the input to re-run/tweak; keep every other
+        // turn (incl. any trailing assistant/tool turns) in history as-is.
+        const lastUserIdx = parsed.map((m) => m.role).lastIndexOf('user')
+        if (lastUserIdx >= 0) {
+          setInput(parsed[lastUserIdx].content)
+          setMsgs([...parsed.slice(0, lastUserIdx), ...parsed.slice(lastUserIdx + 1)])
         } else {
           setMsgs(parsed)
         }
@@ -845,14 +952,13 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
     e.target.value = ''
   }
 
-  async function send() {
-    const text = input.trim()
-    if ((!text && !image && !file) || busy) return
-    setInput('')
-    const userMsg: Msg = { role: 'user', content: text, image: image ?? undefined, file: file ?? undefined }
-    setImage(null)
-    setFile(null)
-    const base: Msg[] = [...msgsRef.current, userMsg, { role: 'assistant', content: '' }]
+  // runCompletion streams one assistant turn over `history` (already includes any
+  // trailing user/tool turn). Re-offers replayTools; accumulates streamed tool_calls
+  // and, if the model calls tools, parks them for manual result entry instead of
+  // auto-continuing.
+  async function runCompletion(history: Msg[]) {
+    const base: Msg[] = [...history, { role: 'assistant', content: '' }]
+    msgsRef.current = base
     setMsgs(base)
     setBusy(true)
     try {
@@ -864,7 +970,8 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
         body: JSON.stringify({
           model,
           stream: true,
-          messages: base.slice(0, -1).map((m) => ({ role: m.role, content: apiContent(m) })),
+          messages: history.map(toApiMsg),
+          ...(replayTools.length ? { tools: replayTools.map(toApiTool) } : {}),
         }),
       })
       if (!resp.ok || !resp.body) {
@@ -874,6 +981,9 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
       const reader = resp.body.getReader()
       const dec = new TextDecoder()
       let buf = ''
+      // accumulate streamed tool_calls by their delta index; id + name arrive whole,
+      // arguments stream as fragments to be concatenated.
+      const toolAcc: ToolCall[] = []
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
@@ -886,18 +996,65 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
           const data = line.slice(5).trim()
           if (data === '[DONE]') continue
           try {
-            const delta = JSON.parse(data)?.choices?.[0]?.delta?.content
-            if (delta) appendToLast(delta)
+            const delta = JSON.parse(data)?.choices?.[0]?.delta
+            if (delta?.content) appendToLast(delta.content)
+            if (Array.isArray(delta?.tool_calls)) {
+              for (const tc of delta.tool_calls) {
+                const idx = typeof tc?.index === 'number' ? tc.index : 0
+                if (!toolAcc[idx]) toolAcc[idx] = { id: '', name: '', args: '' }
+                if (tc?.id) toolAcc[idx].id = String(tc.id)
+                if (tc?.function?.name) toolAcc[idx].name = String(tc.function.name)
+                if (tc?.function?.arguments) toolAcc[idx].args += String(tc.function.arguments)
+              }
+            }
           } catch {
             /* ignore keepalive/non-json */
           }
         }
+      }
+      const calls = toolAcc.filter(Boolean)
+      if (calls.length) {
+        // attach the calls to the assistant turn and park them for manual results —
+        // don't auto-continue (the console can't execute tools).
+        setMsgs((cur) => {
+          const next = cur.slice()
+          next[next.length - 1] = { ...next[next.length - 1], toolCalls: calls }
+          return next
+        })
+        setPending(calls)
       }
     } catch (e) {
       appendToLast(`\n[error] ${String(e)}`)
     } finally {
       setBusy(false)
     }
+  }
+
+  function send() {
+    const text = input.trim()
+    if ((!text && !image && !file) || busy) return
+    setInput('')
+    const userMsg: Msg = { role: 'user', content: text, image: image ?? undefined, file: file ?? undefined }
+    setImage(null)
+    setFile(null)
+    setPending(null)
+    setResults({})
+    void runCompletion([...msgsRef.current, userMsg])
+  }
+
+  // submitResults turns the user-pasted text for each parked tool_call into tool
+  // messages, then fires a continuation so the model resumes with the results.
+  function submitResults() {
+    if (!pending || busy) return
+    const toolMsgs: Msg[] = pending.map((tc) => ({
+      role: 'tool',
+      content: results[tc.id] ?? '',
+      toolCallId: tc.id,
+      toolName: tc.name,
+    }))
+    setPending(null)
+    setResults({})
+    void runCompletion([...msgsRef.current, ...toolMsgs])
   }
 
   function appendToLast(s: string) {
@@ -910,27 +1067,142 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
 
   return (
     <Stack spacing={1} sx={{ height: '60vh' }}>
+      {replayTools.length > 0 && (
+        <Accordion disableGutters elevation={0} variant="outlined" sx={{ '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />} sx={{ minHeight: 0, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="caption" color="text.secondary">
+              Tools ({replayTools.length})
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ py: 0.5 }}>
+            <Stack spacing={1}>
+              {replayTools.map((t, i) => (
+                <Box key={i}>
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600 }}>
+                    {t.name}
+                  </Typography>
+                  {t.description && (
+                    <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+                      {t.description}
+                    </Typography>
+                  )}
+                  {t.parameters != null && (
+                    <Accordion disableGutters elevation={0} sx={{ bgcolor: 'transparent', '&:before': { display: 'none' } }}>
+                      <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />} sx={{ minHeight: 0, px: 0, '& .MuiAccordionSummary-content': { my: 0.25 } }}>
+                        <Typography variant="caption" color="text.disabled">
+                          parameters ▸
+                        </Typography>
+                      </AccordionSummary>
+                      <AccordionDetails sx={{ px: 0, py: 0.5 }}>
+                        <Box component="pre" sx={{ m: 0, fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
+                          {JSON.stringify(t.parameters, null, 2)}
+                        </Box>
+                      </AccordionDetails>
+                    </Accordion>
+                  )}
+                </Box>
+              ))}
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
+      )}
       {/* column-reverse: newest pins to the bottom, no scroll management */}
       <Paper variant="outlined" sx={{ flex: 1, p: 1, display: 'flex', flexDirection: 'column-reverse', overflow: 'auto' }}>
         <Box>
-          {msgs.map((m, i) => (
-            <Box key={i} sx={{ mb: 1 }}>
-              <Typography variant="caption" color="text.secondary">
-                {m.role}
-              </Typography>
-              {m.image && (
-                <Box
-                  component="img"
-                  src={m.image}
-                  sx={{ display: 'block', maxWidth: 200, maxHeight: 160, borderRadius: 1, my: 0.5 }}
-                />
-              )}
-              {m.file && <Chip size="small" label={`📄 ${m.file.name}`} sx={{ display: 'flex', width: 'fit-content', my: 0.5 }} />}
-              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                {m.content || (busy && i === msgs.length - 1 ? '…' : '')}
-              </Typography>
-            </Box>
-          ))}
+          {msgs.map((m, i) => {
+            if (m.role === 'system') {
+              return (
+                <Accordion
+                  key={i}
+                  disableGutters
+                  elevation={0}
+                  sx={{ my: 0.5, bgcolor: 'transparent', '&:before': { display: 'none' } }}
+                >
+                  <AccordionSummary
+                    expandIcon={<ExpandMoreIcon fontSize="small" />}
+                    sx={{ minHeight: 0, px: 0, '& .MuiAccordionSummary-content': { my: 0.5 } }}
+                  >
+                    <Typography variant="caption" color="text.secondary">
+                      system ▸
+                    </Typography>
+                  </AccordionSummary>
+                  <AccordionDetails sx={{ px: 0, py: 0.5 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+                      {m.content}
+                    </Typography>
+                  </AccordionDetails>
+                </Accordion>
+              )
+            }
+            if (m.role === 'tool') {
+              const preview = m.content.replace(/\s+/g, ' ').trim().slice(0, 80)
+              return (
+                <Accordion key={i} disableGutters elevation={0} variant="outlined" sx={{ my: 0.5, '&:before': { display: 'none' } }}>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />} sx={{ minHeight: 0, '& .MuiAccordionSummary-content': { my: 0.5, alignItems: 'baseline' } }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                      → {m.toolName || 'tool'} result
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      color="text.disabled"
+                      sx={{ ml: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >
+                      {preview}
+                    </Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <Box
+                      component="pre"
+                      sx={{ m: 0, fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap', overflowX: 'auto' }}
+                    >
+                      {m.content}
+                    </Box>
+                  </AccordionDetails>
+                </Accordion>
+              )
+            }
+            return (
+              <Box key={i} sx={{ mb: 1 }}>
+                <Typography variant="caption" color="text.secondary">
+                  {m.role}
+                </Typography>
+                {m.image && (
+                  <Box
+                    component="img"
+                    src={m.image}
+                    sx={{ display: 'block', maxWidth: 200, maxHeight: 160, borderRadius: 1, my: 0.5 }}
+                  />
+                )}
+                {m.file && <Chip size="small" label={`📄 ${m.file.name}`} sx={{ display: 'flex', width: 'fit-content', my: 0.5 }} />}
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                  {m.content || (busy && i === msgs.length - 1 ? '…' : '')}
+                </Typography>
+                {m.toolCalls?.map((tc, j) => (
+                  <Box
+                    key={j}
+                    sx={{
+                      border: 1,
+                      borderColor: 'divider',
+                      borderRadius: 1,
+                      p: 1,
+                      my: 0.5,
+                      bgcolor: 'action.hover',
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      overflowX: 'auto',
+                    }}
+                  >
+                    <Typography variant="caption" component="div" sx={{ fontFamily: 'monospace', fontWeight: 600 }}>
+                      🔧 {tc.name}
+                    </Typography>
+                    <Box component="pre" sx={{ m: 0, mt: 0.5, whiteSpace: 'pre-wrap' }}>
+                      {prettyArgs(tc.args)}
+                    </Box>
+                  </Box>
+                ))}
+              </Box>
+            )
+          })}
         </Box>
       </Paper>
       {image && (
@@ -948,6 +1220,35 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
             remove file
           </Button>
         </Stack>
+      )}
+      {pending && pending.length > 0 && !busy && (
+        <Paper variant="outlined" sx={{ p: 1 }}>
+          <Typography variant="caption" color="text.secondary">
+            paste a result for each tool call, then submit to continue
+          </Typography>
+          <Stack spacing={1} sx={{ mt: 1 }}>
+            {pending.map((tc, i) => (
+              <TextField
+                key={tc.id || i}
+                size="small"
+                fullWidth
+                multiline
+                minRows={2}
+                label={`result for 🔧 ${tc.name}(${tc.args})`}
+                value={results[tc.id] ?? ''}
+                onChange={(e) => setResults((r) => ({ ...r, [tc.id]: e.target.value }))}
+              />
+            ))}
+            <Button variant="contained" size="small" sx={{ alignSelf: 'flex-start' }} onClick={submitResults}>
+              submit results
+            </Button>
+          </Stack>
+        </Paper>
+      )}
+      {replayTools.length > 0 && !(pending && pending.length > 0) && (
+        <Typography variant="caption" color="text.secondary">
+          tools are re-offered; when the model calls one, paste a result to continue
+        </Typography>
       )}
       <Stack direction="row" spacing={1}>
         <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" hidden onChange={attach} />
