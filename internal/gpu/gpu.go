@@ -1,8 +1,12 @@
-// Package gpu reads live NVIDIA VRAM state via nvidia-smi. It is the sole I/O
-// seam the slot auto-tuner (internal/tune) depends on: every call can fail
-// (no GPU, no driver, nvidia-smi not on PATH) and callers MUST treat that as
-// "introspection unavailable" and fall back to unmodified behavior — this
-// package never papers over an error with a zero value.
+// Package gpu reads live GPU VRAM state for the slot auto-tuner (internal/tune).
+//
+// It is deliberately NOT hard-wired to NVIDIA. A Prober abstracts the vendor
+// tool (nvidia-smi today; rocm-smi / Metal / etc. can be added as new Prober
+// implementations), and Default selects the one for this host. Every method may
+// fail (no GPU, no driver, tool not on PATH), and callers MUST treat failure as
+// "introspection unavailable" and fall back to unmodified behavior — GPU
+// introspection is never a hard requirement, and this package never papers over
+// an error with a zero value.
 package gpu
 
 import (
@@ -13,24 +17,100 @@ import (
 	"strings"
 )
 
-// runCmd is the process-execution seam: tests override it to feed canned CSV
-// without shelling out to a real nvidia-smi.
-var runCmd = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).Output()
-}
-
-// Stats is one GPU's memory snapshot (nvidia-smi --query-gpu).
+// Stats is one GPU's memory snapshot.
 type Stats struct {
 	Name                       string
 	TotalMiB, UsedMiB, FreeMiB int
 }
 
-// Probe reads the first GPU's memory stats. corrallm targets a single-GPU
-// box; multi-GPU CSV rows parse fine (see parseGPUCSV) but only the first is
-// reported. Any failure (nvidia-smi missing, non-zero exit, unparseable
-// output) is returned as an error — the fail-safe contract for every caller.
-func Probe() (Stats, error) {
-	all, err := probeAll()
+// Prober reads GPU memory state from a vendor backend. Implementations wrap a
+// tool (nvidia-smi, rocm-smi, …); any method may return an error, which callers
+// treat as "introspection unavailable".
+type Prober interface {
+	// Name identifies the backend (for logs/introspect output).
+	Name() string
+	// Probe returns the first GPU's memory snapshot.
+	Probe() (Stats, error)
+	// ProcVRAM maps each compute process's pid → VRAM MiB.
+	ProcVRAM() (map[int]int, error)
+}
+
+// Default is the prober used for this host. NVIDIA is the default because its
+// absence self-fails (nvidia-smi not on PATH → an error → fail-safe), so no
+// explicit detection is needed for the common case; swap it for another backend
+// (or add PATH-based detection) to support non-NVIDIA hardware.
+var Default Prober = NVIDIA{}
+
+// Probe / ProcVRAM delegate to Default so callers stay backend-agnostic.
+func Probe() (Stats, error)          { return Default.Probe() }
+func ProcVRAM() (map[int]int, error) { return Default.ProcVRAM() }
+
+// GroupVRAM sums the VRAM (MiB) of every compute process in process group pgid.
+// corrallm spawns each backend via `sh -c` with Setpgid, so the vendor tool
+// reports the llama-server CHILD's pid, not the shell's — but the child shares
+// the shell's PGID (== the spawned cmd's Pid). Attributing by the bare spawn pid
+// misses entirely; we must sum the whole group. Linux /proc only; a pid that
+// vanishes mid-scan is skipped, not fatal.
+func GroupVRAM(pgid int) (int, error) {
+	procs, err := Default.ProcVRAM()
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for pid, mib := range procs {
+		if g, err := PGIDFn(pid); err == nil && g == pgid {
+			total += mib
+		}
+	}
+	return total, nil
+}
+
+// PGIDFn resolves a pid's process-group id. It is a package var (like runCmd) so
+// tests in other packages — which mock the vendor tool with synthetic pids that
+// have no /proc entry — can substitute a deterministic resolver. Production reads
+// /proc/<pid>/stat.
+var PGIDFn = procPGID
+
+// procPGID returns the process-group id of pid from /proc/<pid>/stat. The comm
+// field is parenthesized and may itself contain spaces/parens, so scan past the
+// LAST ')' and take pgrp = the 3rd field after it (state, ppid, pgrp).
+func procPGID(pid int) (int, error) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 || i+1 >= len(s) {
+		return 0, fmt.Errorf("proc %d: malformed stat", pid)
+	}
+	fields := strings.Fields(s[i+1:])
+	if len(fields) < 3 {
+		return 0, fmt.Errorf("proc %d: short stat", pid)
+	}
+	return strconv.Atoi(fields[2]) // state, ppid, pgrp
+}
+
+// runCmd is the process-execution seam: tests override it to feed canned CSV
+// without shelling out to a real vendor tool.
+var runCmd = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).Output()
+}
+
+// NVIDIA is the nvidia-smi Prober. Its absence self-fails, which is the fail-safe
+// contract for every caller.
+type NVIDIA struct{}
+
+func (NVIDIA) Name() string { return "nvidia-smi" }
+
+// Probe reads the first GPU's memory stats. corrallm targets a single-GPU box;
+// multi-GPU CSV rows parse fine (see parseGPUCSV) but only the first is reported.
+func (NVIDIA) Probe() (Stats, error) {
+	out, err := runCmd("nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,memory.free", "--format=csv,noheader,nounits")
+	if err != nil {
+		return Stats{}, fmt.Errorf("nvidia-smi: %w", err)
+	}
+	all, err := parseGPUCSV(out)
 	if err != nil {
 		return Stats{}, err
 	}
@@ -40,12 +120,15 @@ func Probe() (Stats, error) {
 	return all[0], nil
 }
 
-func probeAll() ([]Stats, error) {
-	out, err := runCmd("nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,memory.free", "--format=csv,noheader,nounits")
+// ProcVRAM reads per-process VRAM usage (pid → MiB). corrallm spawns every model
+// process itself, so this gives an EXACT per-model footprint. An empty result
+// (no compute apps running) is not an error.
+func (NVIDIA) ProcVRAM() (map[int]int, error) {
+	out, err := runCmd("nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits")
 	if err != nil {
 		return nil, fmt.Errorf("nvidia-smi: %w", err)
 	}
-	return parseGPUCSV(out)
+	return parseProcCSV(out)
 }
 
 // parseGPUCSV parses `nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free
@@ -85,65 +168,6 @@ func parseGPUCSV(out []byte) ([]Stats, error) {
 		})
 	}
 	return stats, nil
-}
-
-// ProcVRAM reads per-process VRAM usage (pid → MiB) via `nvidia-smi
-// --query-compute-apps`. corrallm spawns every model process itself, so this
-// gives an EXACT per-model footprint (no guessing at "used minus everyone
-// else") — the empirical input the auto-tuner measures from. An empty result
-// (no compute apps running) is not an error.
-func ProcVRAM() (map[int]int, error) {
-	out, err := runCmd("nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits")
-	if err != nil {
-		return nil, fmt.Errorf("nvidia-smi: %w", err)
-	}
-	return parseProcCSV(out)
-}
-
-// GroupVRAM sums the VRAM (MiB) of every compute process in process group pgid.
-// corrallm spawns each backend via `sh -c` with Setpgid, so nvidia-smi reports
-// the llama-server CHILD's pid, not the shell's — but the child shares the
-// shell's PGID (== the spawned cmd's Pid). Attributing by the bare spawn pid
-// misses entirely; we must sum the whole group. Linux /proc only; a pid that
-// vanishes mid-scan is skipped, not fatal.
-func GroupVRAM(pgid int) (int, error) {
-	procs, err := ProcVRAM()
-	if err != nil {
-		return 0, err
-	}
-	total := 0
-	for pid, mib := range procs {
-		if g, err := PGIDFn(pid); err == nil && g == pgid {
-			total += mib
-		}
-	}
-	return total, nil
-}
-
-// PGIDFn resolves a pid's process-group id. It is a package var (like runCmd) so
-// tests in other packages — which mock nvidia-smi with synthetic pids that have
-// no /proc entry — can substitute a deterministic resolver. Production reads
-// /proc/<pid>/stat.
-var PGIDFn = procPGID
-
-// procPGID returns the process-group id of pid from /proc/<pid>/stat. The comm
-// field is parenthesized and may itself contain spaces/parens, so scan past the
-// LAST ')' and take pgrp = the 3rd field after it (state, ppid, pgrp).
-func procPGID(pid int) (int, error) {
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0, err
-	}
-	s := string(b)
-	i := strings.LastIndexByte(s, ')')
-	if i < 0 || i+1 >= len(s) {
-		return 0, fmt.Errorf("proc %d: malformed stat", pid)
-	}
-	fields := strings.Fields(s[i+1:])
-	if len(fields) < 3 {
-		return 0, fmt.Errorf("proc %d: short stat", pid)
-	}
-	return strconv.Atoi(fields[2]) // state, ppid, pgrp
 }
 
 // parseProcCSV parses `nvidia-smi --query-compute-apps=pid,used_memory
