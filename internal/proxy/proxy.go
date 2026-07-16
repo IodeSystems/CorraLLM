@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,10 +66,27 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 		convertEnabled: true, convertGlobal: config.DefaultConvert()}
 }
 
-// payloadCap bounds how many bytes of each captured request/response payload are
-// stored on the activity row (P10b). Enough to see prompts/errors; binary audio
-// is summarized to a size, never stored raw.
+// payloadCap bounds a captured RESPONSE payload (P10b) — enough to see a reply
+// head or an error; binary audio is summarized to a size, never stored raw.
 const payloadCap = 4 << 10 // 4 KiB
+
+// reqBodyCap bounds a captured REQUEST payload. Much larger than payloadCap so a
+// full agentic request (system + tool schemas + multi-turn history + tool
+// results) stays VALID JSON and can be replayed in the console — a 4 KiB
+// truncation left it unparseable, so replay fell back to dumping raw text. A
+// request over this cap still truncates (replay then degrades to raw), so the
+// cap is generous. Env override: CORRALLM_REQBODY_CAP (bytes).
+var reqBodyCap = envInt("CORRALLM_REQBODY_CAP", 256<<10) // 256 KiB
+
+// envInt reads a positive integer env var, else the default.
+func envInt(name string, def int) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 // SetCapturePayloads toggles per-request payload capture (P10b). Payloads are
 // admin-gated and pruned with the activity log, but they are user data — disable
@@ -85,8 +103,8 @@ func (p *Proxy) SetConvert(enabled bool, global config.ConvertConfig) {
 
 // capturePayload renders a payload for storage: binary bodies become a
 // "<content-type, N bytes>" summary (never stored raw); text is truncated to
-// payloadCap. Returns "" when capture is disabled.
-func (p *Proxy) capturePayload(data []byte, binary bool, contentType string) string {
+// `cap` bytes. Returns "" when capture is disabled.
+func (p *Proxy) capturePayload(data []byte, binary bool, contentType string, cap int) string {
 	if !p.capturePayloads {
 		return ""
 	}
@@ -97,8 +115,8 @@ func (p *Proxy) capturePayload(data []byte, binary bool, contentType string) str
 		}
 		return fmt.Sprintf("<%s, %d bytes>", ct, len(data))
 	}
-	if len(data) > payloadCap {
-		return fmt.Sprintf("%s…(+%d bytes truncated)", data[:payloadCap], len(data)-payloadCap)
+	if len(data) > cap {
+		return fmt.Sprintf("%s…(+%d bytes truncated)", data[:cap], len(data)-cap)
 	}
 	return string(data)
 }
@@ -201,7 +219,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// are multipart/binary → summarized to a size, not stored raw. Captured BEFORE
 	// PDF conversion so the activity row holds the (small) original, not the
 	// document text injected below.
-	reqBody := p.capturePayload(body, audio && !tts, r.Header.Get("Content-Type"))
+	reqBody := p.capturePayload(body, audio && !tts, r.Header.Get("Content-Type"), reqBodyCap)
 
 	// PDF auto-conversion (P13): a text model can't read an attached PDF, so replace
 	// any PDF content part in a chat request with its extracted text. Done once here
@@ -382,7 +400,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				respBody = fmt.Sprintf("<audio, %d bytes>", sc.written)
 			}
 		} else {
-			respBody = p.capturePayload(sc.buf, false, "")
+			respBody = p.capturePayload(sc.buf, false, "", payloadCap)
 		}
 		var ttfbMS int64
 		if !sc.firstWrite.IsZero() {

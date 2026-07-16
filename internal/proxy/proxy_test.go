@@ -1329,6 +1329,49 @@ func TestPayloadCapture(t *testing.T) {
 	}
 }
 
+// TestReqBodyCapAllowsLargeReplay: a request body larger than the 4 KiB response
+// cap but under reqBodyCap is stored WHOLE and stays valid JSON — the property
+// console replay depends on (a 4 KiB truncation left agentic requests
+// unparseable, so replay dumped raw text instead of rendering turns).
+func TestReqBodyCapAllowsLargeReplay(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+	r := chi.NewRouter()
+	New(mkConfig(t, "mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	// A ~12 KiB request (well over the 4 KiB payloadCap, under 256 KiB reqBodyCap).
+	big := strings.Repeat("x", 12<<10)
+	reqJSON := `{"model":"mock","messages":[{"role":"user","content":"` + big + `"}]}`
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqJSON)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	acts, _ := st.RecentActivity(1)
+	full, err := st.ActivityByID(acts[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(full.ReqBody, "truncated") {
+		t.Errorf("12 KiB req body was truncated (reqBodyCap not applied): len=%d", len(full.ReqBody))
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(full.ReqBody), &parsed); err != nil {
+		t.Errorf("stored req body is not valid JSON (replay would fail): %v", err)
+	}
+}
+
 // TestPayloadCaptureBinaryAudio: an STT multipart upload is summarized (size +
 // content-type), not stored as raw audio bytes.
 func TestPayloadCaptureBinaryAudio(t *testing.T) {
