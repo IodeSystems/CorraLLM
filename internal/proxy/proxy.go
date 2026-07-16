@@ -391,7 +391,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		p.logReq(r, store.Activity{
 			Served: served, Backend: name, Key: key, Path: r.URL.Path, Status: status,
 			DwellMS: time.Since(start).Milliseconds(), PromptTokens: u.PromptTokens,
-			CompletionTokens: u.CompletionTokens, CostUSD: costUSD, QueuedMS: queuedMS,
+			CompletionTokens: u.CompletionTokens, CachedTokens: u.CachedTokens,
+			PromptPerSec: u.PromptPerSec, PredictedPerSec: u.PredictedPerSec,
+			CostUSD: costUSD, QueuedMS: queuedMS,
 			AudioBytes: audioBytes, Error: errReason, TTFBMs: ttfbMS,
 			ReqBody: reqBody, RespBody: respBody,
 		})
@@ -1253,27 +1255,62 @@ func streamFromBody(body []byte) bool {
 	return probe.Stream
 }
 
-// usage is the OpenAI token accounting carried in a response.
+// usage is the OpenAI token accounting carried in a response, plus the
+// backend-measured (llama.cpp) telemetry extractUsage derives alongside it:
+// cached prompt tokens and prompt/generation throughput. The throughput and
+// CachedTokens values are backend-reported — corrallm does not compute them.
 type usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	// PromptTokensDetails is the OpenAI-shape cached-token report nested under
+	// "usage". extractUsage collapses it into CachedTokens.
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	// Derived by extractUsage from usage + the sibling "timings" object; not
+	// members of the OpenAI "usage" JSON, hence json:"-".
+	CachedTokens    int     `json:"-"` // cached prompt tokens (usage.prompt_tokens_details.cached_tokens, else timings.cache_n)
+	PromptPerSec    float64 `json:"-"` // tp/s — prompt processing (timings.prompt_per_second)
+	PredictedPerSec float64 `json:"-"` // tg/s — generation (timings.predicted_per_second)
+}
+
+// timings is llama.cpp's non-standard top-level throughput report, a sibling of
+// "usage" in both non-streaming replies and the final streaming event.
+type timings struct {
+	PromptPerSecond    float64 `json:"prompt_per_second"`
+	PredictedPerSecond float64 `json:"predicted_per_second"`
+	CacheN             int     `json:"cache_n"`
+}
+
+// mergeTimings folds a captured timings object into a usage value: fills the
+// throughput speeds and uses cache_n as the cached-token fallback when the
+// OpenAI-shape prompt_tokens_details.cached_tokens is absent/zero.
+func mergeTimings(u usage, t timings) usage {
+	u.CachedTokens = u.PromptTokensDetails.CachedTokens
+	if u.CachedTokens == 0 {
+		u.CachedTokens = t.CacheN
+	}
+	u.PromptPerSec = t.PromptPerSecond
+	u.PredictedPerSec = t.PredictedPerSecond
+	return u
 }
 
 // extractUsage recovers token usage from a captured response. A non-streaming
-// body carries a single top-level "usage" object; a streaming (SSE) body carries
-// it in a trailing data: event, present only when the client set
-// stream_options.include_usage. Missing usage (no include_usage, or a body past
-// the capture cap) yields zero — the request simply meters as $0.
+// body carries a single top-level "usage" object (and a sibling "timings"); a
+// streaming (SSE) body carries them in a trailing data: event, present only when
+// the client set stream_options.include_usage. Missing usage (no include_usage,
+// or a body past the capture cap) yields zero — the request simply meters as $0.
 func extractUsage(buf []byte, streaming bool) usage {
 	if len(buf) == 0 {
 		return usage{}
 	}
 	if !streaming {
 		var r struct {
-			Usage usage `json:"usage"`
+			Usage   usage   `json:"usage"`
+			Timings timings `json:"timings"`
 		}
 		_ = json.Unmarshal(buf, &r)
-		return r.Usage
+		return mergeTimings(r.Usage, r.Timings)
 	}
 	var last usage
 	for _, line := range bytes.Split(buf, []byte("\n")) {
@@ -1286,10 +1323,11 @@ func extractUsage(buf []byte, streaming bool) usage {
 			continue
 		}
 		var r struct {
-			Usage *usage `json:"usage"`
+			Usage   *usage  `json:"usage"`
+			Timings timings `json:"timings"`
 		}
 		if json.Unmarshal(data, &r) == nil && r.Usage != nil {
-			last = *r.Usage
+			last = mergeTimings(*r.Usage, r.Timings)
 		}
 	}
 	return last

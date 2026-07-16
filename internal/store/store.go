@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS activity (
     audio_bytes       INTEGER NOT NULL DEFAULT 0, -- metered audio request bytes, STT/TTS (P9c)
     error             TEXT    NOT NULL DEFAULT '', -- proxy/backpressure error reason, if any (P10a)
     ttfb_ms           INTEGER NOT NULL DEFAULT 0, -- time to first response byte (P10b)
+    cached_tokens     INTEGER NOT NULL DEFAULT 0, -- backend-reported cached prompt tokens
+    prompt_per_sec    REAL    NOT NULL DEFAULT 0, -- backend-reported prompt-processing speed (tp/s)
+    predicted_per_sec REAL    NOT NULL DEFAULT 0, -- backend-reported generation speed (tg/s)
     req_body          TEXT    NOT NULL DEFAULT '', -- captured request payload, capped (P10b)
     resp_body         TEXT    NOT NULL DEFAULT '' -- captured response payload, capped (P10b)
 );
@@ -64,6 +67,9 @@ var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN req_body TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE activity ADD COLUMN resp_body TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE activity ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE activity ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE activity ADD COLUMN prompt_per_sec REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE activity ADD COLUMN predicted_per_sec REAL NOT NULL DEFAULT 0`,
 }
 
 // Store wraps the SQLite handle.
@@ -109,6 +115,9 @@ type Activity struct {
 	DwellMS          int64
 	PromptTokens     int
 	CompletionTokens int
+	CachedTokens     int     // backend-reported cached prompt tokens
+	PromptPerSec     float64 // backend-reported prompt-processing speed (tp/s)
+	PredictedPerSec  float64 // backend-reported generation speed (tg/s)
 	CostUSD          float64
 	QueuedMS         int64  // time queued before admission/reject (P8-beyond)
 	AudioBytes       int64  // metered audio request bytes for STT/TTS routes (P9c); 0 for text
@@ -123,11 +132,11 @@ func (s *Store) InsertActivity(a Activity) error {
 	_, err := s.db.Exec(
 		`INSERT INTO activity (ts, served, backend, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
-		                       ttfb_ms, req_body, resp_body)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Backend, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
-		a.TTFBMs, a.ReqBody, a.RespBody,
+		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
 	)
 	return err
 }
@@ -140,11 +149,11 @@ func (s *Store) ActivityByID(id int64) (Activity, error) {
 	err := s.db.QueryRow(
 		`SELECT id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
-		        ttfb_ms, req_body, resp_body
+		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body
 		 FROM activity WHERE id = ?`, id).Scan(
 		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
-		&a.TTFBMs, &a.ReqBody, &a.RespBody)
+		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody)
 	return a, err
 }
 
@@ -164,7 +173,8 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	rows, err := s.db.Query(
 		`SELECT id, ts, served, backend, key, source_ip, path, status, dwell_ms,
-		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms
+		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
+		        cached_tokens, prompt_per_sec, predicted_per_sec
 		 FROM activity ORDER BY ts DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -174,7 +184,8 @@ func (s *Store) RecentActivity(limit int) ([]Activity, error) {
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
-			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs); err != nil {
+			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
+			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

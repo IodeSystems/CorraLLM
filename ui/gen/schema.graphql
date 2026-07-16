@@ -135,6 +135,8 @@ type corrallm_ActivityDetailRecord {
   audioBytes: Long!
   """Backend that handled it."""
   backend: String!
+  """Backend-reported cached prompt tokens (0 if none)."""
+  cachedTokens: Long!
   """Metered completion tokens."""
   completionTokens: Long!
   """Resolved request cost in USD."""
@@ -149,6 +151,10 @@ type corrallm_ActivityDetailRecord {
   key: String!
   """Request path."""
   path: String!
+  """Backend-reported generation speed, tokens/sec (tg/s); 0 if unavailable."""
+  predictedPerSec: Float!
+  """Backend-reported prompt-processing speed, tokens/sec (tp/s); 0 if unavailable."""
+  promptPerSec: Float!
   """Metered prompt tokens."""
   promptTokens: Long!
   """Time queued before admission/reject, milliseconds."""
@@ -174,6 +180,8 @@ type corrallm_ActivityRecord {
   audioBytes: Long!
   """Backend that handled it."""
   backend: String!
+  """Backend-reported cached prompt tokens (0 if none)."""
+  cachedTokens: Long!
   """Metered completion tokens."""
   completionTokens: Long!
   """Resolved request cost in USD."""
@@ -188,6 +196,10 @@ type corrallm_ActivityRecord {
   key: String!
   """Request path."""
   path: String!
+  """Backend-reported generation speed, tokens/sec (tg/s); 0 if unavailable."""
+  predictedPerSec: Float!
+  """Backend-reported prompt-processing speed, tokens/sec (tp/s); 0 if unavailable."""
+  promptPerSec: Float!
   """Metered prompt tokens."""
   promptTokens: Long!
   """Time queued before admission/reject, milliseconds."""

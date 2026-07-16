@@ -1680,3 +1680,55 @@ func TestCapabilitiesManifest(t *testing.T) {
 		t.Error("API key leaked into /v1/capabilities")
 	}
 }
+
+// TestExtractUsageTelemetry covers the backend-measured telemetry (cached
+// tokens + tp/s + tg/s) extractUsage derives alongside token accounting, for
+// both non-streaming and streaming replies, plus the cache_n fallback.
+func TestExtractUsageTelemetry(t *testing.T) {
+	// Non-streaming: OpenAI-shape cached_tokens + llama.cpp timings.
+	nonStream := []byte(`{
+		"usage": {
+			"prompt_tokens": 100,
+			"completion_tokens": 20,
+			"prompt_tokens_details": {"cached_tokens": 64}
+		},
+		"timings": {"prompt_per_second": 512.5, "predicted_per_second": 88.25, "cache_n": 40}
+	}`)
+	u := extractUsage(nonStream, false)
+	if u.PromptTokens != 100 || u.CompletionTokens != 20 {
+		t.Fatalf("token accounting changed: %+v", u)
+	}
+	if u.CachedTokens != 64 { // prefers prompt_tokens_details over cache_n
+		t.Errorf("cachedTokens = %d, want 64", u.CachedTokens)
+	}
+	if u.PromptPerSec != 512.5 || u.PredictedPerSec != 88.25 {
+		t.Errorf("speeds = tp/s %v tg/s %v", u.PromptPerSec, u.PredictedPerSec)
+	}
+
+	// cache_n fallback: no prompt_tokens_details.cached_tokens present.
+	fallback := []byte(`{
+		"usage": {"prompt_tokens": 100, "completion_tokens": 20},
+		"timings": {"prompt_per_second": 10, "predicted_per_second": 5, "cache_n": 33}
+	}`)
+	if u := extractUsage(fallback, false); u.CachedTokens != 33 {
+		t.Errorf("cache_n fallback: cachedTokens = %d, want 33", u.CachedTokens)
+	}
+
+	// Streaming: usage + timings ride in the final data: event.
+	stream := []byte(strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"hi"}}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":64}},"timings":{"prompt_per_second":512.5,"predicted_per_second":88.25,"cache_n":40}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n"))
+	su := extractUsage(stream, true)
+	if su.CachedTokens != 64 || su.PromptPerSec != 512.5 || su.PredictedPerSec != 88.25 {
+		t.Errorf("streaming telemetry = %+v", su)
+	}
+
+	// Neither present → zeros (existing behavior preserved).
+	bare := []byte(`{"usage": {"prompt_tokens": 100, "completion_tokens": 20}}`)
+	if u := extractUsage(bare, false); u.CachedTokens != 0 || u.PromptPerSec != 0 || u.PredictedPerSec != 0 {
+		t.Errorf("bare body should yield zero telemetry, got %+v", u)
+	}
+}

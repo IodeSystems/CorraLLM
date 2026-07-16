@@ -97,6 +97,9 @@ type ActivityRecord struct {
 	DwellMS          int64   `json:"dwellMs" doc:"Time in request, milliseconds."`
 	PromptTokens     int     `json:"promptTokens" doc:"Metered prompt tokens."`
 	CompletionTokens int     `json:"completionTokens" doc:"Metered completion tokens."`
+	CachedTokens     int     `json:"cachedTokens" doc:"Backend-reported cached prompt tokens (0 if none)."`
+	PromptPerSec     float64 `json:"promptPerSec" doc:"Backend-reported prompt-processing speed, tokens/sec (tp/s); 0 if unavailable."`
+	PredictedPerSec  float64 `json:"predictedPerSec" doc:"Backend-reported generation speed, tokens/sec (tg/s); 0 if unavailable."`
 	CostUSD          float64 `json:"costUsd" doc:"Resolved request cost in USD."`
 	AudioBytes       int64   `json:"audioBytes" doc:"Metered audio request bytes (STT/TTS); 0 for text."`
 	Error            string  `json:"error" doc:"Proxy/backpressure failure reason, if any (empty on success)."`
@@ -136,6 +139,9 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			DwellMS:          a.DwellMS,
 			PromptTokens:     a.PromptTokens,
 			CompletionTokens: a.CompletionTokens,
+			CachedTokens:     a.CachedTokens,
+			PromptPerSec:     a.PromptPerSec,
+			PredictedPerSec:  a.PredictedPerSec,
 			CostUSD:          a.CostUSD,
 			AudioBytes:       a.AudioBytes,
 			Error:            a.Error,
@@ -177,7 +183,9 @@ func (h *Handlers) ActivityDetail(_ context.Context, in *ActivityDetailInput) (*
 		ActivityRecord: ActivityRecord{
 			ID: a.ID, TS: a.TS, Served: a.Served, Backend: a.Backend, Key: a.Key, SourceIP: a.SourceIP, Path: a.Path,
 			Status: a.Status, DwellMS: a.DwellMS, PromptTokens: a.PromptTokens,
-			CompletionTokens: a.CompletionTokens, CostUSD: a.CostUSD, AudioBytes: a.AudioBytes,
+			CompletionTokens: a.CompletionTokens, CachedTokens: a.CachedTokens,
+			PromptPerSec: a.PromptPerSec, PredictedPerSec: a.PredictedPerSec,
+			CostUSD: a.CostUSD, AudioBytes: a.AudioBytes,
 			Error: a.Error, TTFBMs: a.TTFBMs, QueuedMS: a.QueuedMS,
 		},
 		ReqBody:  a.ReqBody,

@@ -26,7 +26,8 @@ func TestRecentActivity(t *testing.T) {
 			TS: int64(i), Served: "m", Backend: "m", Key: "k",
 			Path: "/v1/chat/completions", Status: 200,
 			DwellMS: int64(i * 10), PromptTokens: i, CompletionTokens: i, CostUSD: float64(i) * 0.001,
-			AudioBytes: int64(i * 1000),
+			AudioBytes:   int64(i * 1000),
+			CachedTokens: i * 2, PromptPerSec: float64(i) * 100, PredictedPerSec: float64(i) * 10,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -49,6 +50,19 @@ func TestRecentActivity(t *testing.T) {
 	// Metering fields carried through (incl. audio bytes, P9d).
 	if out.Body.Records[0].CostUSD != 0.003 || out.Body.Records[0].DwellMS != 30 || out.Body.Records[0].AudioBytes != 3000 {
 		t.Errorf("metering not carried: %+v", out.Body.Records[0])
+	}
+	// Backend telemetry (cached tokens + tp/s + tg/s) carried through.
+	if r := out.Body.Records[0]; r.CachedTokens != 6 || r.PromptPerSec != 300 || r.PredictedPerSec != 30 {
+		t.Errorf("telemetry not carried: %+v", r)
+	}
+
+	// ActivityDetail exposes the same telemetry (row id 3 is newest).
+	det, err := h.ActivityDetail(context.Background(), &ActivityDetailInput{ID: out.Body.Records[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := det.Body.Record.ActivityRecord; r.CachedTokens != 6 || r.PromptPerSec != 300 || r.PredictedPerSec != 30 {
+		t.Errorf("detail telemetry mismatch: %+v", r)
 	}
 
 	// Explicit limit bounds the result.

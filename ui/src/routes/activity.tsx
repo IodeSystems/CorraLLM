@@ -42,6 +42,9 @@ const ActivityDoc = graphql(/* GraphQL */ `
           ttfbMs
           promptTokens
           completionTokens
+          cachedTokens
+          promptPerSec
+          predictedPerSec
           audioBytes
           costUsd
           error
@@ -69,6 +72,9 @@ const ActivityDetailDoc = graphql(/* GraphQL */ `
           queuedMs
           promptTokens
           completionTokens
+          cachedTokens
+          promptPerSec
+          predictedPerSec
           audioBytes
           costUsd
           error
@@ -130,6 +136,11 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
                 dwell {fmtDuration(rec.dwellMs)} · ttfb {fmtDuration(rec.ttfbMs)} · queued{' '}
                 {fmtDuration(rec.queuedMs)} · {fmtInt(rec.promptTokens)}→
                 {fmtInt(rec.completionTokens)} tok · {fmtUSD(rec.costUsd)}
+                {Number(rec.cachedTokens) > 0 && <> · {fmtInt(rec.cachedTokens)} cached</>}
+                {Number(rec.promptPerSec) > 0 && <> · {Number(rec.promptPerSec).toFixed(1)} tp/s</>}
+                {Number(rec.predictedPerSec) > 0 && (
+                  <> · {Number(rec.predictedPerSec).toFixed(1)} tg/s</>
+                )}
                 {Number(rec.audioBytes) > 0 && <> · audio {fmtBytes(rec.audioBytes)}</>}
               </Typography>
             </Box>
@@ -219,6 +230,9 @@ function Activity() {
               <TableCell align="right">Dwell</TableCell>
               <TableCell align="right">Prompt</TableCell>
               <TableCell align="right">Completion</TableCell>
+              <TableCell align="right">Cached</TableCell>
+              <TableCell align="right">tp/s</TableCell>
+              <TableCell align="right">tg/s</TableCell>
               <TableCell align="right">Audio</TableCell>
               <TableCell align="right">Cost</TableCell>
             </TableRow>
@@ -226,7 +240,7 @@ function Activity() {
           <TableBody>
             {records.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={12}>
+                <TableCell colSpan={15}>
                   <Typography color="text.secondary">No activity yet.</Typography>
                 </TableCell>
               </TableRow>
@@ -257,6 +271,15 @@ function Activity() {
                   <TableCell align="right">{Number(r.audioBytes) > 0 ? '—' : fmtInt(r.promptTokens)}</TableCell>
                   <TableCell align="right">
                     {Number(r.audioBytes) > 0 ? '—' : fmtInt(r.completionTokens)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {Number(r.cachedTokens) > 0 ? fmtInt(r.cachedTokens) : '—'}
+                  </TableCell>
+                  <TableCell align="right">
+                    {Number(r.promptPerSec) > 0 ? Number(r.promptPerSec).toFixed(1) : '—'}
+                  </TableCell>
+                  <TableCell align="right">
+                    {Number(r.predictedPerSec) > 0 ? Number(r.predictedPerSec).toFixed(1) : '—'}
                   </TableCell>
                   <TableCell align="right">{Number(r.audioBytes) > 0 ? fmtBytes(r.audioBytes) : '—'}</TableCell>
                   <TableCell align="right">{fmtUSD(r.costUsd)}</TableCell>

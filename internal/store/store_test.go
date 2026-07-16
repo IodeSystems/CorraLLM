@@ -17,6 +17,7 @@ func TestActivityRoundTrip(t *testing.T) {
 	in := Activity{
 		TS: 1, Served: "m", Backend: "m#0", Key: "k", SourceIP: "192.168.1.160", Path: "/v1/chat/completions",
 		Status: 200, DwellMS: 42, PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.00105,
+		CachedTokens: 7, PromptPerSec: 123.5, PredictedPerSec: 45.25,
 	}
 	if err := st.InsertActivity(in); err != nil {
 		t.Fatal(err)
@@ -35,7 +36,8 @@ func TestActivityRoundTrip(t *testing.T) {
 
 	// ActivityByID returns the full row including captured payloads.
 	full := Activity{TS: 2, Served: "m", Backend: "m#0", Status: 200, SourceIP: "10.0.0.5",
-		ReqBody: `{"model":"m"}`, RespBody: "hi", TTFBMs: 12}
+		ReqBody: `{"model":"m"}`, RespBody: "hi", TTFBMs: 12,
+		CachedTokens: 3, PromptPerSec: 200.0, PredictedPerSec: 60.5}
 	if err := st.InsertActivity(full); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +47,9 @@ func TestActivityRoundTrip(t *testing.T) {
 	}
 	if got2.ID != 2 || got2.ReqBody != `{"model":"m"}` || got2.RespBody != "hi" || got2.TTFBMs != 12 || got2.SourceIP != "10.0.0.5" {
 		t.Errorf("ActivityByID = %+v", got2)
+	}
+	if got2.CachedTokens != 3 || got2.PromptPerSec != 200.0 || got2.PredictedPerSec != 60.5 {
+		t.Errorf("ActivityByID telemetry = cached %d, tp/s %v, tg/s %v", got2.CachedTokens, got2.PromptPerSec, got2.PredictedPerSec)
 	}
 }
 
