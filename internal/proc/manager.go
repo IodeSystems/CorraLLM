@@ -35,6 +35,16 @@ var ErrNoCapacity = errors.New("no capacity")
 // damping load/evict thrash under bursty contention.
 const minResidency = 10 * time.Second
 
+// defaultActiveUse treats a model as non-idle for eviction if a request
+// touched it this recently. refs only guards a model DURING a request — a
+// multi-turn agent session drops refs to 0 for milliseconds between turns, and
+// a competing load in that window would evict a model that is in active
+// conversational use (observed: 107 no-capacity spills during a bench run as
+// live chat-lane traffic and the bench evicted each other between turns).
+// Within this window a model can't be chosen as an eviction victim; the
+// incoming load spills/queues per its stage instead.
+const defaultActiveUse = 30 * time.Second
+
 // State is a backend process's lifecycle state.
 type State string
 
@@ -83,6 +93,7 @@ type Manager struct {
 
 	healthCli     *http.Client
 	healthTimeout time.Duration
+	activeUse     time.Duration // recently-used models are not eviction victims
 }
 
 // NewManager constructs a Manager and precomputes each server's pool budgets.
@@ -94,6 +105,7 @@ func NewManager(cfg *config.Config) *Manager {
 		budget:        map[string]map[string]int64{},
 		healthCli:     &http.Client{Timeout: 2 * time.Second},
 		healthTimeout: 120 * time.Second,
+		activeUse:     defaultActiveUse,
 	}
 	for name, srv := range cfg.Servers {
 		totals, _ := config.ParseSizes(srv.Pools) // validated at config load
@@ -310,15 +322,17 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64) error {
 	if m.fitsLocked(server, usage, nil) {
 		return nil
 	}
-	// Candidate victims on this server: idle (refs==0), not pinned, ready, and
-	// touching at least one pool we need.
+	// Candidate victims on this server: idle (refs==0 AND not used within the
+	// activeUse window — between-turn gaps of an agent session don't count as
+	// idle), not pinned, ready, and touching at least one pool we need.
+	now := time.Now()
 	var victims []*Process
 	for _, q := range m.procs {
 		if q.server != server || q.persistent {
 			continue
 		}
 		q.mu.Lock()
-		idle := q.refs == 0 && q.state == StateReady
+		idle := q.refs == 0 && q.state == StateReady && now.Sub(q.lastUsed) >= m.activeUse
 		q.mu.Unlock()
 		if idle && touchesAny(q.usage, usage) {
 			victims = append(victims, q)

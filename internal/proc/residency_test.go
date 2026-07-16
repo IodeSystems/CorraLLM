@@ -63,6 +63,7 @@ func TestEvictIdleToFit(t *testing.T) {
 	portA, portB := listenTCP(t), listenTCP(t)
 	cfg := resConfig(t, "10", "6", portA, portB) // 6+6 > 10 → mutually exclusive
 	mgr := NewManager(cfg)
+	mgr.activeUse = 0 // this test exercises eviction mechanics, not activity semantics
 	mgr.healthTimeout = 5 * time.Second
 	defer mgr.Shutdown()
 	ctx := context.Background()
@@ -293,5 +294,41 @@ func TestFitsAlongside(t *testing.T) {
 	mgr.mu.Unlock()
 	if used != 12 {
 		t.Errorf("gpu used = %d, want 12 (A+B)", used)
+	}
+}
+
+// TestActiveUseBlocksEviction: a model whose last request finished within the
+// activeUse window is NOT an eviction victim, even with refs==0 — the
+// between-turn gap of an agent session must not read as idle. The incoming
+// load gets ErrNoCapacity (→ spill/queue) instead. Regression for the
+// bench-vs-chat-lane thrash (107 no-capacity spills as each evicted the other
+// between turns).
+func TestActiveUseBlocksEviction(t *testing.T) {
+	portA, portB := listenTCP(t), listenTCP(t)
+	cfg := resConfig(t, "10", "6", portA, portB) // 6+6 > 10 → mutually exclusive
+	mgr := NewManager(cfg)                       // default activeUse window
+	mgr.healthTimeout = 5 * time.Second
+	defer mgr.Shutdown()
+	ctx := context.Background()
+
+	pA, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	if err != nil {
+		t.Fatalf("load A: %v", err)
+	}
+	doneA() // refs → 0, but lastUsed is NOW: A is between turns, not idle
+
+	if _, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil); !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("load B during A's active-use window: want ErrNoCapacity, got %v", err)
+	}
+	if pA.state != StateReady {
+		t.Errorf("A must survive: state = %s", pA.state)
+	}
+
+	// Backdate A's last use past the window → now it's a legitimate victim.
+	pA.mu.Lock()
+	pA.lastUsed = time.Now().Add(-defaultActiveUse - time.Second)
+	pA.mu.Unlock()
+	if _, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil); err != nil {
+		t.Fatalf("load B after A idled past the window: %v", err)
 	}
 }
