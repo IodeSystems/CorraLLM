@@ -11,9 +11,18 @@ import (
 //
 //	slot load_model: id 0 | task -1 | new slot, n_ctx = 220160
 //	srv  load_model: initializing slots, n_slots = 1
+//	llama_kv_cache_init: CUDA0 KV self size = 1234.00 MiB
+//	llama_new_context_with_model: KV self size = 1234.00 MiB
+//	KV buffer size = 1234.00 MiB
+//
+// The KV line's middle word varies (self/buffer/cache/…) but the shape is
+// constant, so one regex covers all of llama.cpp's variants — it's the
+// total KV allocation across every slot, not a per-slot figure (the tuner
+// divides by n_slots itself).
 var (
 	reNCtx   = regexp.MustCompile(`n_ctx\s*=\s*(\d+)`)
 	reNSlots = regexp.MustCompile(`n_slots\s*=\s*(\d+)`)
+	reKVMiB  = regexp.MustCompile(`KV\s+\w+\s+size\s*=\s*([\d.]+)\s*MiB`)
 )
 
 // logBuffer is a backend's bounded, line-oriented capture of its stdout/stderr.
@@ -27,6 +36,7 @@ type logBuffer struct {
 	partial []byte
 	nCtx    int
 	nSlots  int
+	kvMiB   int
 }
 
 func newLogBuffer(max int) *logBuffer { return &logBuffer{max: max} }
@@ -68,6 +78,13 @@ func (b *logBuffer) appendLine(line string) {
 			}
 		}
 	}
+	if b.kvMiB == 0 {
+		if m := reKVMiB.FindStringSubmatch(line); m != nil {
+			if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+				b.kvMiB = int(v)
+			}
+		}
+	}
 }
 
 // Lines returns a copy of the buffered lines, oldest first.
@@ -77,9 +94,10 @@ func (b *logBuffer) Lines() []string {
 	return append([]string(nil), b.lines...)
 }
 
-// Stats returns the parsed context length and slot count (0 if not yet seen).
-func (b *logBuffer) Stats() (nCtx, nSlots int) {
+// Stats returns the parsed context length, slot count, and total KV-cache
+// allocation in MiB (each 0 if not yet seen).
+func (b *logBuffer) Stats() (nCtx, nSlots, kvMiB int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.nCtx, b.nSlots
+	return b.nCtx, b.nSlots, b.kvMiB
 }

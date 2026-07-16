@@ -910,7 +910,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",
 			Persistent: mc.Persistent,
-			Slots:      mc.Slots(),
+			Slots:      p.mgr.TunedSlots(name, mc.Slots()),
 			Modality:   modality, Capability: config.ModelCapability(mc),
 		}
 		if r, ok := resident[name]; ok {
@@ -945,7 +945,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		}
 		laneSlots := 0
 		if len(cands) > 0 {
-			laneSlots = cands[0].Model.Slots() // primary member's capacity
+			laneSlots = p.mgr.TunedSlots(cands[0].Name, cands[0].Model.Slots()) // primary member's (tuned) capacity
 		}
 		out.Data = append(out.Data, model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",

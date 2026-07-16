@@ -6,12 +6,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -23,10 +26,12 @@ import (
 	"github.com/iodesystems/corrallm/internal/auth"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/events"
+	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/proxy"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
+	"github.com/iodesystems/corrallm/internal/tune"
 	"github.com/iodesystems/corrallm/internal/webui"
 )
 
@@ -47,7 +52,7 @@ func newRoot() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newServeCmd(), newDumpGraphQLCmd(), newVersionCmd())
+	root.AddCommand(newServeCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd())
 	return root
 }
 
@@ -83,6 +88,136 @@ func newDumpGraphQLCmd() *cobra.Command {
 	}
 }
 
+// introspect reports live GPU VRAM and each configured model's cached
+// slot-tuning profile. Read-only by design: it loads the config to enumerate
+// models but never opens the SQLite store or spawns anything — a diagnostic
+// a human (or a script, via --json) runs alongside a running `serve` without
+// disturbing it.
+func newIntrospectCmd() *cobra.Command {
+	var (
+		configPath, dbPath string
+		vramMargin         int
+		asJSON             bool
+	)
+	cmd := &cobra.Command{
+		Use:   "introspect",
+		Short: "Report GPU VRAM and cached slot-tuning profiles (read-only; spawns nothing)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			dbPathResolved := pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db"))
+			return introspect(cmd, introspectOpts{
+				configPath: pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
+				tuneCache:  envOr("CORRALLM_TUNE_CACHE", defaultTuneCachePath(dbPathResolved)),
+				vramMargin: pickInt(vramMargin, envInt("CORRALLM_VRAM_MARGIN", 512)),
+				json:       asJSON,
+			})
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default ./corrallm.yaml or CORRALLM_CONFIG)")
+	f.StringVar(&dbPath, "db", "", "path used only to resolve the default tune-cache location, <db-dir>/vram-profile.json (default ./home/var/corrallm.db or CORRALLM_DB); introspect never opens the DB itself")
+	f.IntVar(&vramMargin, "vram-margin", 0, "MiB of free VRAM kept back when computing the slot count a model would tune to right now (default 512 or CORRALLM_VRAM_MARGIN; must match serve's setting to predict its behavior)")
+	f.BoolVar(&asJSON, "json", false, "machine-readable JSON output")
+	return cmd
+}
+
+type introspectOpts struct {
+	configPath, tuneCache string
+	vramMargin            int
+	json                  bool
+}
+
+// introspectReport is the `corrallm introspect` output shape (JSON or table).
+type introspectReport struct {
+	GPU      *introspectGPU    `json:"gpu,omitempty"`
+	GPUError string            `json:"gpu_error,omitempty"` // set (only) when nvidia-smi is unavailable
+	Models   []introspectModel `json:"models"`
+}
+
+type introspectGPU struct {
+	Name     string `json:"name"`
+	TotalMiB int    `json:"total_mib"`
+	UsedMiB  int    `json:"used_mib"`
+	FreeMiB  int    `json:"free_mib"`
+}
+
+type introspectModel struct {
+	Name          string `json:"name"`
+	ConfigSlots   int    `json:"config_slots"` // maxConcurrent (today's behavior, unconditionally)
+	HasProfile    bool   `json:"has_profile"`
+	BaseMiB       int    `json:"base_mib,omitempty"`
+	PerSlotMiB    int    `json:"per_slot_mib,omitempty"`
+	PeakMiB       int    `json:"peak_mib,omitempty"`
+	MeasuredSlots int    `json:"measured_slots,omitempty"`
+	Ctx           int    `json:"ctx,omitempty"`
+	TunedSlots    int    `json:"tuned_slots,omitempty"` // what SlotsFor picks against CURRENT free VRAM; 0 = would not tune
+}
+
+func introspect(cmd *cobra.Command, o introspectOpts) error {
+	out := cmd.OutOrStdout()
+
+	cfg, err := config.Load(o.configPath)
+	if err != nil {
+		return err
+	}
+	cache, err := tune.New(o.tuneCache)
+	if err != nil {
+		return err
+	}
+
+	stats, gpuErr := gpu.Probe()
+	report := introspectReport{}
+	budget := 0
+	if gpuErr != nil {
+		report.GPUError = gpuErr.Error()
+	} else {
+		report.GPU = &introspectGPU{Name: stats.Name, TotalMiB: stats.TotalMiB, UsedMiB: stats.UsedMiB, FreeMiB: stats.FreeMiB}
+		budget = stats.FreeMiB - o.vramMargin
+	}
+
+	names := make([]string, 0, len(cfg.Models))
+	for name := range cfg.Models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		mc := cfg.Models[name]
+		im := introspectModel{Name: name, ConfigSlots: mc.Slots()}
+		if gpuErr == nil {
+			if p, ok := cache.Get(stats.Name, name); ok {
+				im.HasProfile = true
+				im.BaseMiB, im.PerSlotMiB, im.PeakMiB, im.MeasuredSlots, im.Ctx = p.BaseMiB, p.PerSlotMiB, p.PeakMiB, p.MeasuredSlots, p.Ctx
+				if n, ok := cache.SlotsFor(stats.Name, name, budget); ok {
+					im.TunedSlots = n
+				}
+			}
+		}
+		report.Models = append(report.Models, im)
+	}
+
+	if o.json {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+
+	if report.GPUError != "" {
+		fmt.Fprintf(out, "GPU introspection unavailable: %s\n", report.GPUError)
+		fmt.Fprintf(out, "(model profiles below are as last cached; live tuned-slot counts can't be computed without a GPU read)\n\n")
+	} else {
+		fmt.Fprintf(out, "GPU: %s  total=%dMiB used=%dMiB free=%dMiB  (margin=%dMiB budget=%dMiB)\n\n",
+			report.GPU.Name, report.GPU.TotalMiB, report.GPU.UsedMiB, report.GPU.FreeMiB, o.vramMargin, budget)
+	}
+	for _, m := range report.Models {
+		if !m.HasProfile {
+			fmt.Fprintf(out, "  %-30s config_slots=%-3d  no cached profile\n", m.Name, m.ConfigSlots)
+			continue
+		}
+		fmt.Fprintf(out, "  %-30s config_slots=%-3d tuned_slots=%-3d base=%dMiB per_slot=%dMiB peak=%dMiB measured_slots=%d ctx=%d\n",
+			m.Name, m.ConfigSlots, m.TunedSlots, m.BaseMiB, m.PerSlotMiB, m.PeakMiB, m.MeasuredSlots, m.Ctx)
+	}
+	return nil
+}
+
 func newServeCmd() *cobra.Command {
 	var (
 		home, service, webRoot, configPath, dbPath string
@@ -92,6 +227,8 @@ func newServeCmd() *cobra.Command {
 		pdfMaxChars, ocrMaxPages                   int
 		realtimeIdle, realtimeMaxSession           time.Duration
 		reservationMaxTTL                          time.Duration
+		tuneCachePath                              string
+		vramMargin                                 int
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -102,10 +239,11 @@ func newServeCmd() *cobra.Command {
 			} else if n > 0 {
 				slog.Info("properties loaded", "keys", n, "home", home, "service", service)
 			}
+			dbPathResolved := pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db"))
 			return serve(cmd.Context(), serveOpts{
 				webRoot:            pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
 				configPath:         pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
-				dbPath:             pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db")),
+				dbPath:             dbPathResolved,
 				addr:               envOr("ADDR", ":6502"),
 				healthTimeout:      pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
 				tokenPath:          filepath.Join(home, "admin.token"),
@@ -119,6 +257,8 @@ func newServeCmd() *cobra.Command {
 				realtimeIdle:       pickDuration(realtimeIdle, envDuration("CORRALLM_REALTIME_IDLE_TIMEOUT", 5*time.Minute)),
 				realtimeMaxSession: pickDuration(realtimeMaxSession, envDuration("CORRALLM_REALTIME_MAX_SESSION", 0)),
 				reservationMaxTTL:  pickDuration(reservationMaxTTL, envDuration("CORRALLM_RESERVATION_MAX_TTL", 5*time.Minute)),
+				tuneCachePath:      pick(tuneCachePath, envOr("CORRALLM_TUNE_CACHE", defaultTuneCachePath(dbPathResolved))),
+				vramMargin:         pickInt(vramMargin, envInt("CORRALLM_VRAM_MARGIN", 512)),
 			})
 		},
 	}
@@ -139,7 +279,16 @@ func newServeCmd() *cobra.Command {
 	f.DurationVar(&realtimeIdle, "realtime-idle-timeout", 0, "reap a /v1/realtime ws session after this long with no traffic (default 5m or CORRALLM_REALTIME_IDLE_TIMEOUT; 0 disables)")
 	f.DurationVar(&realtimeMaxSession, "realtime-max-session", 0, "hard cap on a /v1/realtime ws session's duration (or CORRALLM_REALTIME_MAX_SESSION; 0 disables)")
 	f.DurationVar(&reservationMaxTTL, "reservation-max-ttl", 0, "cap on a /v1/reservations slot lease before it must be renewed (default 5m or CORRALLM_RESERVATION_MAX_TTL)")
+	f.StringVar(&tuneCachePath, "tune-cache", "", "path to the VRAM slot auto-tuner's profile cache (default <db-dir>/vram-profile.json or CORRALLM_TUNE_CACHE)")
+	f.IntVar(&vramMargin, "vram-margin", 0, "MiB of free VRAM kept back when sizing --parallel from a cached profile (default 512 or CORRALLM_VRAM_MARGIN)")
 	return cmd
+}
+
+// defaultTuneCachePath places the VRAM auto-tuner's profile cache next to the
+// SQLite DB by default (same "home/var" convention) — no extra directory to
+// manage or document separately.
+func defaultTuneCachePath(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), "vram-profile.json")
 }
 
 type serveOpts struct {
@@ -152,6 +301,8 @@ type serveOpts struct {
 	pdfMaxChars, ocrMaxPages              int
 	realtimeIdle, realtimeMaxSession      time.Duration
 	reservationMaxTTL                     time.Duration
+	tuneCachePath                         string
+	vramMargin                            int
 }
 
 func serve(ctx context.Context, o serveOpts) error {
@@ -173,6 +324,15 @@ func serve(ctx context.Context, o serveOpts) error {
 		mgr.SetHealthTimeout(o.healthTimeout)
 		slog.Info("health timeout overridden", "timeout", o.healthTimeout)
 	}
+	// VRAM slot auto-tuner: a missing/empty cache file is fine (empty cache,
+	// introspect stays a no-op until models have measured once); a read/parse
+	// error is the only thing that aborts boot, same as a broken YAML config.
+	tuneCache, err := tune.New(o.tuneCachePath)
+	if err != nil {
+		return fmt.Errorf("tune cache: %w", err)
+	}
+	mgr.SetTuneCache(tuneCache)
+	mgr.SetVRAMMargin(o.vramMargin)
 	defer mgr.Shutdown()
 	// Preload pinned (persistent) models in the background so boot isn't blocked.
 	go mgr.Preload(ctx)
@@ -350,6 +510,24 @@ func envDuration(key string, def time.Duration) time.Duration {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
+		}
+	}
+	return def
+}
+
+// pickInt prefers a positive flag value, else the env-derived default.
+func pickInt(flagVal, def int) int {
+	if flagVal > 0 {
+		return flagVal
+	}
+	return def
+}
+
+// envInt parses an int env var, falling back to def.
+func envInt(key string, def int) int {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
 		}
 	}
 	return def

@@ -19,13 +19,30 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/gpu"
+	"github.com/iodesystems/corrallm/internal/tune"
 )
+
+// defaultVRAMMargin is the MiB of free VRAM kept back (unused) when sizing
+// --parallel from a cached profile — headroom against measurement noise and
+// whatever else shares the GPU.
+const defaultVRAMMargin = 512
+
+// vramSampleInterval is how often the runtime peak sampler re-probes a
+// resident process's VRAM footprint (see sampleVRAMPeak).
+const vramSampleInterval = 15 * time.Second
+
+// reParallel matches a llama-server `--parallel N` flag so it can be rewritten
+// in place. If a model's cmd has no --parallel flag, tuneCmd leaves it
+// untouched entirely rather than injecting one (spec: additive only).
+var reParallel = regexp.MustCompile(`--parallel\s+\d+`)
 
 // ErrNoCapacity means a backend can't be made to fit its server even after
 // considering eviction — the caller should spill to the next backend.
@@ -72,14 +89,15 @@ type Process struct {
 
 	hasUI atomic.Int32 // 0 unknown · 1 has a web UI · 2 none (probed once when ready, P11b)
 
-	mu       sync.Mutex
-	state    State
-	cmd      *exec.Cmd
-	ready    chan struct{} // closed when load resolves; supports coalescing
-	err      error
-	refs     int       // in-flight requests holding this backend
-	readyAt  time.Time // when it became ready (min-residency anchor)
-	lastUsed time.Time
+	mu         sync.Mutex
+	state      State
+	cmd        *exec.Cmd
+	ready      chan struct{} // closed when load resolves; supports coalescing
+	err        error
+	refs       int       // in-flight requests holding this backend
+	readyAt    time.Time // when it became ready (min-residency anchor)
+	lastUsed   time.Time
+	tunedSlots int // --parallel N actually applied by the auto-tuner; 0 = untuned (config default stands)
 }
 
 // Manager owns all processes and the per-server residency ledger.
@@ -94,6 +112,13 @@ type Manager struct {
 	healthCli     *http.Client
 	healthTimeout time.Duration
 	activeUse     time.Duration // recently-used models are not eviction victims
+
+	// tuneCache is the VRAM slot auto-tuner's profile store. Unset (nil, the
+	// zero value) — the default — means introspection is entirely disabled:
+	// every spawn uses its configured cmd/maxConcurrent verbatim. Set via
+	// SetTuneCache before the first EnsureReady/Preload.
+	tuneCache  *tune.Cache
+	vramMargin int // MiB of free VRAM kept back when sizing --parallel (default defaultVRAMMargin)
 }
 
 // NewManager constructs a Manager and precomputes each server's pool budgets.
@@ -106,6 +131,7 @@ func NewManager(cfg *config.Config) *Manager {
 		healthCli:     &http.Client{Timeout: 2 * time.Second},
 		healthTimeout: 120 * time.Second,
 		activeUse:     defaultActiveUse,
+		vramMargin:    defaultVRAMMargin,
 	}
 	for name, srv := range cfg.Servers {
 		totals, _ := config.ParseSizes(srv.Pools) // validated at config load
@@ -131,6 +157,23 @@ func NewManager(cfg *config.Config) *Manager {
 func (m *Manager) SetHealthTimeout(d time.Duration) {
 	if d > 0 {
 		m.healthTimeout = d
+	}
+}
+
+// SetTuneCache wires the VRAM slot auto-tuner's profile cache. Unset (the
+// nil default), every spawn uses its configured cmd/maxConcurrent verbatim —
+// tuning is entirely opt-in and additive on top of that. Set before the
+// first EnsureReady/Preload.
+func (m *Manager) SetTuneCache(c *tune.Cache) {
+	m.tuneCache = c
+}
+
+// SetVRAMMargin overrides the MiB of free VRAM kept back (unused) when sizing
+// --parallel from a cached profile (default 512). A non-positive mb is
+// ignored.
+func (m *Manager) SetVRAMMargin(mb int) {
+	if mb > 0 {
+		m.vramMargin = mb
 	}
 }
 
@@ -243,9 +286,20 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 	}
 
 	if mdl.Cmd != "" {
-		cmd := exec.Command("sh", "-c", mdl.Cmd)
+		// A local copy: tuneCmd may rewrite --parallel N in place, and it must
+		// NEVER mutate mdl (config.Model is passed by value into load, but mdl.Cmd
+		// is still the same backing string as m.cfg.Models[name].Cmd until copied).
+		cmdStr := mdl.Cmd
+		tunedSlots := m.tuneCmd(name, &cmdStr)
+		if tunedSlots > 0 {
+			p.mu.Lock()
+			p.tunedSlots = tunedSlots
+			p.mu.Unlock()
+		}
+
+		cmd := exec.Command("sh", "-c", cmdStr)
 		// Tee output to our stdout AND the per-backend ring buffer (for the logs
-		// view + n_ctx/n_slots parsing).
+		// view + n_ctx/n_slots/KV-size parsing).
 		out := io.Writer(os.Stdout)
 		if p.logs != nil {
 			out = io.MultiWriter(os.Stdout, p.logs)
@@ -253,17 +307,23 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		cmd.Stdout, cmd.Stderr = out, out
 		cmd.SysProcAttr = sysProcAttr()
 		if err := cmd.Start(); err != nil {
-			finish(StateFailed, fmt.Errorf("spawn %q: %w", mdl.Cmd, err))
+			finish(StateFailed, fmt.Errorf("spawn %q: %w", cmdStr, err))
 			return
 		}
 		p.mu.Lock()
 		p.cmd = cmd
 		p.mu.Unlock()
+		stopped := make(chan struct{}) // closed when cmd.Wait() returns — stops the peak sampler
 		go func() {
 			err := cmd.Wait()
+			close(stopped)
 			slog.Info("backend exited", "name", name, "err", err)
 			m.onProcExit(name, p) // free pools if it exited on its own (idempotent)
 		}()
+		// Track this process's VRAM footprint over its lifetime so a burst well
+		// after boot (long-context growth, a big batch) still feeds the NEXT
+		// spawn's tuning, not just the boot-time snapshot below.
+		go m.sampleVRAMPeak(name, cmd.Process.Pid, stopped)
 		slog.Info("backend spawned", "name", name, "pid", cmd.Process.Pid, "target", p.Target.URL.String())
 
 		// Wait until the spawned server can actually serve. A pure-proxy backend
@@ -273,6 +333,13 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 			finish(StateFailed, err)
 			return
 		}
+
+		// Boot-time measurement: an exact per-process VRAM read (we spawned it, so
+		// the PID is exact — no guessing at "GPU used minus everyone else") minus
+		// the KV cache total gives BaseMiB; KV/nSlots gives PerSlotMiB. Feeds this
+		// model's NEXT spawn, never this one. Best-effort: any gpu/tune failure is
+		// logged and skipped, never fatal — the backend is already StateReady.
+		m.measure(name, mdl, p, cmd.Process.Pid)
 	}
 
 	slog.Info("backend ready", "name", name, "target", p.Target.URL.String())
@@ -301,6 +368,152 @@ func (m *Manager) probeUI(p *Process) {
 	} else {
 		p.hasUI.Store(2)
 	}
+}
+
+// --- VRAM slot auto-tuner ("introspect") ---
+//
+// tuneCmd/measure/sampleVRAMPeak/TunedSlots are the whole mechanism: size
+// --parallel from a PRIOR spawn's measured footprint, then measure THIS
+// spawn's footprint for the NEXT one. Every step is fail-safe by
+// construction — a nil tuneCache, an unprobeable GPU, or no cached profile
+// all resolve to "do nothing, use the configured cmd/maxConcurrent exactly
+// as today." A bug here can only leave a model untuned, never unlaunchable.
+
+// tuneCmd rewrites `--parallel N` in *cmdStr to the cached tuned slot count
+// for model on the current GPU, if a profile exists and the GPU is
+// probeable. Fail-safe by construction: any error (no tune cache, no GPU, no
+// profile, or no --parallel flag present in the configured cmd) leaves
+// *cmdStr byte-for-byte unchanged and returns 0 (TunedSlots then falls back
+// to the config default). Returns the tuned slot count actually applied.
+func (m *Manager) tuneCmd(model string, cmdStr *string) int {
+	if m.tuneCache == nil {
+		return 0
+	}
+	stats, err := gpu.Probe()
+	if err != nil {
+		slog.Debug("gpu probe unavailable; spawning with configured cmd", "model", model, "err", err)
+		return 0
+	}
+	budget := stats.FreeMiB - m.vramMargin
+	n, ok := m.tuneCache.SlotsFor(stats.Name, model, budget)
+	if !ok {
+		return 0
+	}
+	if !reParallel.MatchString(*cmdStr) {
+		// No --parallel flag to tune: leave the cmd completely untouched rather
+		// than injecting one (spec: additive only, never alter cmd shape).
+		return 0
+	}
+	*cmdStr = reParallel.ReplaceAllString(*cmdStr, fmt.Sprintf("--parallel %d", n))
+	return n
+}
+
+// measure records this spawn's empirical VRAM footprint into the tune cache.
+// Best-effort: any gpu/tune error here just skips the measurement (logged at
+// Debug/Warn) — never fatal, the backend is already StateReady regardless.
+func (m *Manager) measure(model string, mdl config.Model, p *Process, pid int) {
+	if m.tuneCache == nil {
+		return
+	}
+	stats, err := gpu.Probe()
+	if err != nil {
+		slog.Debug("gpu probe unavailable; skipping vram measurement", "model", model, "err", err)
+		return
+	}
+	procVRAM, err := gpu.ProcVRAM()
+	if err != nil {
+		slog.Debug("nvidia-smi proc query unavailable; skipping vram measurement", "model", model, "err", err)
+		return
+	}
+	footprint, ok := procVRAM[pid]
+	if !ok || footprint <= 0 {
+		slog.Debug("no vram usage reported for pid; skipping vram measurement", "model", model, "pid", pid)
+		return
+	}
+	nCtx, nSlots, kvMiB := 0, 0, 0
+	if p.logs != nil {
+		nCtx, nSlots, kvMiB = p.logs.Stats()
+	}
+	if nSlots <= 0 {
+		nSlots = mdl.Slots() // banner not parsed yet (or --slots omitted): fall back to config
+	}
+	// "KV self/buffer/cache size" as llama.cpp logs it is the TOTAL allocation
+	// across every slot, not a per-slot figure.
+	perSlot := kvMiB / max(1, nSlots)
+	base := footprint - kvMiB
+	if base < 0 {
+		base = 0
+	}
+	m.tuneCache.Update(stats.Name, model, tune.Profile{
+		BaseMiB: base, PerSlotMiB: perSlot, PeakMiB: footprint, MeasuredSlots: nSlots, Ctx: nCtx,
+	})
+	if err := m.tuneCache.Save(); err != nil {
+		slog.Warn("save tune cache", "model", model, "err", err)
+	}
+}
+
+// sampleVRAMPeak periodically re-probes a resident process's VRAM footprint
+// and raises the cached profile's PeakMiB if it grew — a burst well after
+// boot (long-context growth, a big batch) that the one-shot measure() at
+// health-check time wouldn't see. Only ever raises an EXISTING profile
+// (BumpPeak is a no-op otherwise); never synthesizes one. Stops when stopped
+// closes (tied to the process's cmd.Wait() returning) so it never leaks past
+// the process's life or blocks shutdown.
+func (m *Manager) sampleVRAMPeak(model string, pid int, stopped <-chan struct{}) {
+	if m.tuneCache == nil {
+		return
+	}
+	t := time.NewTicker(vramSampleInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-stopped:
+			return
+		case <-t.C:
+			stats, err := gpu.Probe()
+			if err != nil {
+				slog.Debug("vram peak sample: gpu probe unavailable", "model", model, "err", err)
+				continue
+			}
+			procVRAM, err := gpu.ProcVRAM()
+			if err != nil {
+				slog.Debug("vram peak sample: nvidia-smi proc query unavailable", "model", model, "err", err)
+				continue
+			}
+			footprint, ok := procVRAM[pid]
+			if !ok || footprint <= 0 {
+				continue
+			}
+			m.tuneCache.BumpPeak(stats.Name, model, footprint)
+		}
+	}
+}
+
+// TunedSlots returns the slot count the auto-tuner applied at model's last
+// spawn (via --parallel rewriting), or configDefault if the model isn't
+// resident, or was spawned without tuning (no cached profile, no GPU, or
+// --parallel absent from its cmd). This is the fail-safe fallback surfaced
+// through /v1/models: Slots always reflects the truth of what was launched.
+func (m *Manager) TunedSlots(model string, configDefault int) int {
+	m.mu.Lock()
+	var p *Process
+	for _, q := range m.procs {
+		if q.ModelName == model {
+			p = q
+			break
+		}
+	}
+	m.mu.Unlock()
+	if p == nil {
+		return configDefault
+	}
+	p.mu.Lock()
+	tuned := p.tunedSlots
+	p.mu.Unlock()
+	if tuned > 0 {
+		return tuned
+	}
+	return configDefault
 }
 
 // onProcExit removes p from the ledger and frees its pools, but only if p is
@@ -625,7 +838,7 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 			rm.HasUI = "unknown"
 		}
 		if logs != nil {
-			rm.NCtx, rm.NSlots = logs.Stats()
+			rm.NCtx, rm.NSlots, _ = logs.Stats()
 		}
 		sort.Slice(rm.Usage, func(i, j int) bool { return rm.Usage[i].Pool < rm.Usage[j].Pool })
 		snap.Models = append(snap.Models, rm)
