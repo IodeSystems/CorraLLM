@@ -885,6 +885,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Members       []string `json:"members,omitempty"`        // lane member model names, in fallback order
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
 		ContextLength int      `json:"context_length,omitempty"` // parsed n_ctx (if resident)
+		Slots         int      `json:"slots,omitempty"`          // admission concurrency (maxConcurrent / --parallel)
 		Modality      string   `json:"modality"`                 // text|audio (P9d, coarse bucket)
 		Capability    string   `json:"capability"`               // chat|embeddings|audio.stt|audio.tts|rerank
 	}
@@ -909,6 +910,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",
 			Persistent: mc.Persistent,
+			Slots:      mc.Slots(),
 			Modality:   modality, Capability: config.ModelCapability(mc),
 		}
 		if r, ok := resident[name]; ok {
@@ -941,10 +943,14 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 				state = r.State
 			}
 		}
+		laneSlots := 0
+		if len(cands) > 0 {
+			laneSlots = cands[0].Model.Slots() // primary member's capacity
+		}
 		out.Data = append(out.Data, model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: state, Quality: config.MaxQuality(cands), Kind: "lane",
-			Members: members, Modality: modality, Capability: capability,
+			Members: members, Slots: laneSlots, Modality: modality, Capability: capability,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
