@@ -308,6 +308,14 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("backend unavailable, spilling", "backend", name, "err", err)
 			continue
 		}
+		// Drop the residency ref on EVERY exit path, panic included — the same
+		// ErrAbortHandler lesson as the admission slot above: a client abort
+		// mid-stream panics out of ServeHTTP, net/http recovers it silently, and
+		// the inline done() below never runs. A leaked ref makes the model
+		// permanently unevictable (observed: refs=1 450s after last use, starving
+		// every other model with ErrNoCapacity). done is sync.Once-guarded, so
+		// the inline call on the success path stays a cheap no-op here.
+		defer done()
 
 		// Restore the buffered body for the proxy, clamping max_tokens to this
 		// backend's cap when it declares one (degrade transform, P7).
@@ -477,6 +485,9 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("realtime backend unavailable, spilling", "backend", name, "err", err)
 			continue
 		}
+		// Same abort-panic guard as the inference path: never leak the residency
+		// ref (done is sync.Once-guarded; inline calls stay no-ops).
+		defer done()
 
 		if !ws {
 			// WebRTC signaling: reverse-proxy the SDP offer→answer. The slot is held
