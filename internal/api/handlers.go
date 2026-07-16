@@ -16,6 +16,7 @@ import (
 
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
+	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
@@ -231,6 +232,14 @@ type ResidentModelView struct {
 	NSlots     int             `json:"nSlots" doc:"Slot count parsed from the backend (0 if unknown)."`
 	HasUI      string          `json:"hasUi" doc:"unknown|yes|no — does the backend serve a web UI at / (P11b)."`
 	Usage      []PoolUsageView `json:"usage" doc:"Per-pool reservation."`
+
+	FootprintMiB  int `json:"footprintMiB" doc:"Live VRAM (MiB) of the resident process group; 0 if unavailable or not spawned."`
+	BaseMiB       int `json:"baseMiB" doc:"Tune-cache: process footprint with KV excluded (weights + fixed overhead); 0 if unmeasured."`
+	PerSlotMiB    int `json:"perSlotMiB" doc:"Tune-cache: measured KV cache cost per slot; 0 if unmeasured."`
+	PeakMiB       int `json:"peakMiB" doc:"Tune-cache: highest total process footprint ever observed; 0 if unmeasured."`
+	MeasuredSlots int `json:"measuredSlots" doc:"Tune-cache: n_slots the measurement was taken at; 0 if unmeasured."`
+	TunedSlots    int `json:"tunedSlots" doc:"Slot count the auto-tuner applied at last spawn, or configSlots if untuned/not resident."`
+	ConfigSlots   int `json:"configSlots" doc:"Model's configured maxConcurrent (default 1)."`
 }
 
 // ResidencyOutput reports server pool budgets and resident backends.
@@ -253,13 +262,28 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 		}
 		out.Body.Servers = append(out.Body.Servers, sv)
 	}
+	// Post-eviction budget can't be attributed per query cheaply, but the raw
+	// GPU name is: probe once for the whole snapshot (not per model) so the
+	// tune-cache lookups below share it. Best-effort — a failed probe just
+	// leaves every model's profile fields at their zero/unmeasured default.
+	stats, gpuErr := gpu.Probe()
 	out.Body.Models = make([]ResidentModelView, 0, len(snap.Models))
 	for _, m := range snap.Models {
+		configSlots := h.Cfg.Models[m.ModelName].Slots()
 		mv := ResidentModelView{
 			Name: m.Name, ModelName: m.ModelName, Server: m.Server, State: m.State,
 			Refs: m.Refs, Persistent: m.Persistent, LastUsedMS: m.LastUsedMS,
 			NCtx: m.NCtx, NSlots: m.NSlots, HasUI: m.HasUI,
 			Usage: make([]PoolUsageView, 0, len(m.Usage)),
+
+			FootprintMiB: h.Mgr.ModelVRAM(m.ModelName),
+			TunedSlots:   h.Mgr.TunedSlots(m.ModelName, configSlots),
+			ConfigSlots:  configSlots,
+		}
+		if gpuErr == nil {
+			if p, ok := h.Mgr.TuneProfile(stats.Name, m.ModelName); ok {
+				mv.BaseMiB, mv.PerSlotMiB, mv.PeakMiB, mv.MeasuredSlots = p.BaseMiB, p.PerSlotMiB, p.PeakMiB, p.MeasuredSlots
+			}
 		}
 		for _, u := range m.Usage {
 			mv.Usage = append(mv.Usage, PoolUsageView{Pool: u.Pool, Bytes: u.Bytes})

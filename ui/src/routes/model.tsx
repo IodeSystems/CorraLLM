@@ -25,7 +25,7 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { capLabel, fmtDuration, fmtInt, fmtUSD } from '@/format'
+import { capLabel, fmtDuration, fmtInt, fmtMiB, fmtUSD } from '@/format'
 
 // --- data ---------------------------------------------------------------
 
@@ -55,6 +55,13 @@ const ConsoleDoc = graphql(/* GraphQL */ `
           hasUi
           nCtx
           nSlots
+          footprintMiB
+          baseMiB
+          perSlotMiB
+          peakMiB
+          measuredSlots
+          tunedSlots
+          configSlots
         }
       }
     }
@@ -210,7 +217,21 @@ type OvModel = {
   cmd: string
   maxConcurrent: string
 }
-type ResModel = { name: string; modelName: string; state: string; hasUi: string; nCtx: string; nSlots: string }
+type ResModel = {
+  name: string
+  modelName: string
+  state: string
+  hasUi: string
+  nCtx: string
+  nSlots: string
+  footprintMiB: string
+  baseMiB: string
+  perSlotMiB: string
+  peakMiB: string
+  measuredSlots: string
+  tunedSlots: string
+  configSlots: string
+}
 
 function InfoTab({
   model,
@@ -266,6 +287,32 @@ function InfoTab({
             {model.cmd}
           </Box>
         )}
+      </Box>
+
+      <Box>
+        <Typography variant="subtitle2">Memory</Typography>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>live footprint</TableCell>
+              <TableCell>base</TableCell>
+              <TableCell>per-slot KV</TableCell>
+              <TableCell>peak</TableCell>
+              <TableCell>slots (tuned / config)</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            <TableRow>
+              <TableCell>{res ? fmtMiB(res.footprintMiB) : '—'}</TableCell>
+              <TableCell>{res ? fmtMiB(res.baseMiB) : '—'}</TableCell>
+              <TableCell>{res ? fmtMiB(res.perSlotMiB) : '—'}</TableCell>
+              <TableCell>{res ? fmtMiB(res.peakMiB) : '—'}</TableCell>
+              <TableCell>
+                {res ? `${fmtInt(res.tunedSlots)} / ${fmtInt(res.configSlots)}` : '—'}
+              </TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
       </Box>
 
       <Box>

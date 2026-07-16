@@ -677,6 +677,44 @@ func (m *Manager) TunedSlots(model string, configDefault int) int {
 	return configDefault
 }
 
+// ModelVRAM returns the live VRAM footprint (MiB) of model's resident process
+// group, for the residency view (P-vram). Fail-safe by construction: model
+// not resident, no pid yet, or GPU introspection unavailable all resolve to
+// 0, never an error.
+func (m *Manager) ModelVRAM(model string) int {
+	m.mu.Lock()
+	p := m.procs[model]
+	m.mu.Unlock()
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	pid := 0
+	if p.cmd != nil && p.cmd.Process != nil {
+		pid = p.cmd.Process.Pid
+	}
+	p.mu.Unlock()
+	if pid <= 0 {
+		return 0
+	}
+	v, err := gpu.GroupVRAM(pid)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// TuneProfile returns the tune cache's measured VRAM profile for (gpuName,
+// model), for the residency view (P-vram). ok=false when introspection is
+// disabled (nil tuneCache) or the pair has never been measured — the
+// fail-safe "unmeasured" case, not an error.
+func (m *Manager) TuneProfile(gpuName, model string) (tune.Profile, bool) {
+	if m.tuneCache == nil {
+		return tune.Profile{}, false
+	}
+	return m.tuneCache.Get(gpuName, model)
+}
+
 // onProcExit removes p from the ledger and frees its pools, but only if p is
 // still the registered process for name (eviction may have already removed it).
 func (m *Manager) onProcExit(name string, p *Process) {

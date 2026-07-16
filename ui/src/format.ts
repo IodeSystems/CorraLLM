@@ -37,6 +37,15 @@ export function fmtBytes(nStr: string | number): string {
   return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`
 }
 
+// fmtMiB formats a MiB-denominated metric (VRAM footprints from the tune
+// cache / GPU probe) via fmtBytes. 0 (or absent) means "unmeasured", not
+// "zero bytes" for these fields, so it renders as '—' rather than '0'.
+export function fmtMiB(nStr: string | number): string {
+  const n = typeof nStr === 'string' ? Number(nStr) : nStr
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  return fmtBytes(n * 1024 * 1024)
+}
+
 export function fmtInt(nStr: string | number): string {
   const n = typeof nStr === 'string' ? Number(nStr) : nStr
   return Number.isFinite(n) ? n.toLocaleString() : '—'

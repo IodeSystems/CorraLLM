@@ -508,10 +508,18 @@ type corrallm_ResidencyOutputBody {
 }
 
 type corrallm_ResidentModelView {
+  """Tune-cache: process footprint with KV excluded (weights + fixed overhead); 0 if unmeasured."""
+  baseMiB: Long!
+  """Model's configured maxConcurrent (default 1)."""
+  configSlots: Long!
+  """Live VRAM (MiB) of the resident process group; 0 if unavailable or not spawned."""
+  footprintMiB: Long!
   """unknown|yes|no — does the backend serve a web UI at / (P11b)."""
   hasUi: String!
   """Unix millis of last use, 0 if never."""
   lastUsedMs: Long!
+  """Tune-cache: n_slots the measurement was taken at; 0 if unmeasured."""
+  measuredSlots: Long!
   """Served model name."""
   modelName: String!
   """Context length parsed from the backend (0 if unknown)."""
@@ -520,6 +528,10 @@ type corrallm_ResidentModelView {
   nSlots: Long!
   """Backend id (<servedModel>#<index>)."""
   name: String!
+  """Tune-cache: highest total process footprint ever observed; 0 if unmeasured."""
+  peakMiB: Long!
+  """Tune-cache: measured KV cache cost per slot; 0 if unmeasured."""
+  perSlotMiB: Long!
   """Pinned: exempt from eviction."""
   persistent: Boolean!
   """In-flight requests holding it."""
@@ -528,6 +540,8 @@ type corrallm_ResidentModelView {
   server: String!
   """absent|loading|ready|failed|evicting."""
   state: String!
+  """Slot count the auto-tuner applied at last spawn, or configSlots if untuned/not resident."""
+  tunedSlots: Long!
   """Per-pool reservation."""
   usage: [corrallm_PoolUsageView!]!
 }
