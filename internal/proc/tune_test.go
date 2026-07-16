@@ -8,8 +8,35 @@ import (
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/tune"
 )
+
+// TestVramBudgetPostEviction: the budget for a model is total − pre-crowded −
+// persistent (non-evictable) footprints − margin. Evictable residents are NOT
+// subtracted, and the model being sized excludes ITSELF from non-evictable.
+func TestVramBudgetPostEviction(t *testing.T) {
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.Update("Fake GPU", "embed", tune.Profile{BaseMiB: 2000, PeakMiB: 2000, MeasuredSlots: 1})
+	mgr := NewManager(&config.Config{Models: map[string]config.Model{
+		"embed": {Persistent: true}, // pinned → non-evictable
+		"chat":  {},                 // sticky/evictable → not subtracted
+	}})
+	mgr.SetTuneCache(cache)
+	mgr.SetVRAMMargin(512)
+
+	// No resident procs → ownUsed 0 → preCrowded == UsedMiB.
+	stats := gpu.Stats{Name: "Fake GPU", TotalMiB: 32000, UsedMiB: 8000, FreeMiB: 24000}
+	if b := mgr.vramBudget(stats, "chat"); b != 32000-8000-2000-512 {
+		t.Errorf("chat budget = %d, want %d (persistent embed subtracted)", b, 32000-8000-2000-512)
+	}
+	if b := mgr.vramBudget(stats, "embed"); b != 32000-8000-0-512 {
+		t.Errorf("embed budget = %d, want %d (self excluded from non-evictable)", b, 32000-8000-512)
+	}
+}
 
 // fakeNvidiaSMI puts a fake `nvidia-smi` script FIRST on PATH for the
 // duration of the test (the rest of PATH is kept, so `sh` and everything else
@@ -216,7 +243,7 @@ func TestParallelRewriteWithProfile(t *testing.T) {
 // --parallel token, including when it appears mid-string with other flags on
 // both sides and a different original slot count.
 func TestParallelRewritePreservesRestOfCmd(t *testing.T) {
-	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 20000, 40098", "")
+	fakeNvidiaSMI(t, "0, Fake GPU, 60098, 20000, 40098", "")
 
 	port := listenTCP(t)
 	mgr := NewManager(&config.Config{})
@@ -227,8 +254,9 @@ func TestParallelRewritePreservesRestOfCmd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// budget = 40098 - 512 = 39586; growth = max(0, 20000-(10000+2*5000))=0;
-	// n = (39586-10000-0)/5000 = 5
+	// post-eviction budget = total(60098) - preCrowded(20000 used, no corrallm
+	// residents) - nonEvictable(0, no persistent models) - margin(512) = 39586;
+	// growth = max(0, 20000-(10000+2*5000)) = 0; n = (39586-10000-0)/5000 = 5
 	cache.Update("Fake GPU", "wrapped", tune.Profile{BaseMiB: 10000, PerSlotMiB: 5000, PeakMiB: 20000, MeasuredSlots: 2})
 	mgr.SetTuneCache(cache)
 

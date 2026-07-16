@@ -379,6 +379,64 @@ func (m *Manager) probeUI(p *Process) {
 // all resolve to "do nothing, use the configured cmd/maxConcurrent exactly
 // as today." A bug here can only leave a model untuned, never unlaunchable.
 
+// vramBudget returns the VRAM (MiB) available to forModel AFTER the residency
+// solver evicts what it can. Using current-free VRAM under-counts, because
+// evictable (sticky) residents free when forModel loads:
+//
+//	budget = Total − preCrowded − nonEvictable(forModel) − margin
+//
+// preCrowded is non-corrallm usage (total used minus corrallm's own resident
+// model process groups). nonEvictable is the persistent/pinned models that stay
+// put — by measured footprint (PeakMiB), falling back to config ramUsage.gpu0.
+// Evictable residents are deliberately NOT subtracted. Never negative.
+func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
+	m.mu.Lock()
+	procs := make([]*Process, 0, len(m.procs))
+	for _, p := range m.procs {
+		procs = append(procs, p)
+	}
+	m.mu.Unlock()
+
+	ownUsed := 0
+	for _, p := range procs {
+		p.mu.Lock()
+		pid := 0
+		if p.cmd != nil && p.cmd.Process != nil {
+			pid = p.cmd.Process.Pid
+		}
+		p.mu.Unlock()
+		if pid > 0 {
+			if v, err := gpu.GroupVRAM(pid); err == nil {
+				ownUsed += v
+			}
+		}
+	}
+	preCrowded := stats.UsedMiB - ownUsed
+	if preCrowded < 0 {
+		preCrowded = 0
+	}
+
+	nonEvictable := 0
+	for name, mc := range m.cfg.Models {
+		if name == forModel || !mc.Persistent {
+			continue
+		}
+		if prof, ok := m.tuneCache.Get(stats.Name, name); ok && prof.PeakMiB > 0 {
+			nonEvictable += prof.PeakMiB
+		} else if b, err := config.ParseSize(mc.RAMUsage["gpu0"]); err == nil && b > 0 {
+			nonEvictable += int(b / (1024 * 1024))
+		}
+	}
+
+	budget := stats.TotalMiB - preCrowded - nonEvictable - m.vramMargin
+	if budget < 0 {
+		budget = 0
+	}
+	slog.Debug("vram budget (post-eviction)", "model", forModel, "budgetMiB", budget,
+		"totalMiB", stats.TotalMiB, "preCrowdedMiB", preCrowded, "nonEvictableMiB", nonEvictable, "marginMiB", m.vramMargin)
+	return budget
+}
+
 // tuneCmd rewrites `--parallel N` in *cmdStr to the cached tuned slot count
 // for model on the current GPU, if a profile exists and the GPU is
 // probeable. Fail-safe by construction: any error (no tune cache, no GPU, no
@@ -394,7 +452,7 @@ func (m *Manager) tuneCmd(model string, cmdStr *string) int {
 		slog.Debug("gpu probe unavailable; spawning with configured cmd", "model", model, "err", err)
 		return 0
 	}
-	budget := stats.FreeMiB - m.vramMargin
+	budget := m.vramBudget(stats, model)
 	n, ok := m.tuneCache.SlotsFor(stats.Name, model, budget)
 	if !ok {
 		return 0

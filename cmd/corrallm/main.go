@@ -171,7 +171,24 @@ func introspect(cmd *cobra.Command, o introspectOpts) error {
 		report.GPUError = gpuErr.Error()
 	} else {
 		report.GPU = &introspectGPU{Name: stats.Name, TotalMiB: stats.TotalMiB, UsedMiB: stats.UsedMiB, FreeMiB: stats.FreeMiB}
-		budget = stats.FreeMiB - o.vramMargin
+		// Post-eviction budget: a loading model gets the whole card minus what
+		// won't move (persistent/pinned models) and the margin. This CLI can't
+		// attribute live pre-crowded (non-corrallm) usage without the running
+		// server's process list, so it assumes ~0; the serve path subtracts it.
+		budget = stats.TotalMiB - o.vramMargin
+		for name, mc := range cfg.Models {
+			if !mc.Persistent {
+				continue
+			}
+			if prof, ok := cache.Get(stats.Name, name); ok && prof.PeakMiB > 0 {
+				budget -= prof.PeakMiB
+			} else if b, err := config.ParseSize(mc.RAMUsage["gpu0"]); err == nil && b > 0 {
+				budget -= int(b / (1024 * 1024))
+			}
+		}
+		if budget < 0 {
+			budget = 0
+		}
 	}
 
 	names := make([]string, 0, len(cfg.Models))
@@ -204,7 +221,7 @@ func introspect(cmd *cobra.Command, o introspectOpts) error {
 		fmt.Fprintf(out, "GPU introspection unavailable: %s\n", report.GPUError)
 		fmt.Fprintf(out, "(model profiles below are as last cached; live tuned-slot counts can't be computed without a GPU read)\n\n")
 	} else {
-		fmt.Fprintf(out, "GPU: %s  total=%dMiB used=%dMiB free=%dMiB  (margin=%dMiB budget=%dMiB)\n\n",
+		fmt.Fprintf(out, "GPU: %s  total=%dMiB used=%dMiB free=%dMiB  (margin=%dMiB post-eviction budget=%dMiB)\n\n",
 			report.GPU.Name, report.GPU.TotalMiB, report.GPU.UsedMiB, report.GPU.FreeMiB, o.vramMargin, budget)
 	}
 	for _, m := range report.Models {
