@@ -19,6 +19,11 @@ import (
 func TestMeasureOnLoad(t *testing.T) {
 	const fakePid = 424242
 	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 20000, 12000", strconv.Itoa(fakePid)+", 9000")
+	// The fake pid has no /proc entry; make group attribution treat each pid as
+	// its own group leader so GroupVRAM(fakePid) sums the fake pid's usage.
+	origPGID := gpu.PGIDFn
+	gpu.PGIDFn = func(pid int) (int, error) { return pid, nil }
+	t.Cleanup(func() { gpu.PGIDFn = origPGID })
 
 	cachePath := filepath.Join(t.TempDir(), "vram-profile.json")
 	cache, err := tune.New(cachePath)

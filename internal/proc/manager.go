@@ -420,14 +420,16 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, pid int) {
 		slog.Debug("gpu probe unavailable; skipping vram measurement", "model", model, "err", err)
 		return
 	}
-	procVRAM, err := gpu.ProcVRAM()
+	// Attribute by process GROUP: we spawn `sh -c` (Setpgid), and nvidia-smi
+	// reports the llama-server CHILD's pid, not the shell's. pid here is the
+	// shell (== the group's pgid), so sum the whole group.
+	footprint, err := gpu.GroupVRAM(pid)
 	if err != nil {
 		slog.Debug("nvidia-smi proc query unavailable; skipping vram measurement", "model", model, "err", err)
 		return
 	}
-	footprint, ok := procVRAM[pid]
-	if !ok || footprint <= 0 {
-		slog.Debug("no vram usage reported for pid; skipping vram measurement", "model", model, "pid", pid)
+	if footprint <= 0 {
+		slog.Debug("no vram usage reported for process group; skipping vram measurement", "model", model, "pgid", pid)
 		return
 	}
 	nCtx, nSlots, kvMiB := 0, 0, 0
@@ -449,7 +451,10 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, pid int) {
 	})
 	if err := m.tuneCache.Save(); err != nil {
 		slog.Warn("save tune cache", "model", model, "err", err)
+		return
 	}
+	slog.Info("vram measured", "model", model, "footprintMiB", footprint,
+		"baseMiB", base, "perSlotMiB", perSlot, "slots", nSlots, "kvMiB", kvMiB, "ctx", nCtx)
 }
 
 // sampleVRAMPeak periodically re-probes a resident process's VRAM footprint
@@ -475,13 +480,12 @@ func (m *Manager) sampleVRAMPeak(model string, pid int, stopped <-chan struct{})
 				slog.Debug("vram peak sample: gpu probe unavailable", "model", model, "err", err)
 				continue
 			}
-			procVRAM, err := gpu.ProcVRAM()
+			footprint, err := gpu.GroupVRAM(pid) // pid = spawned shell == process-group pgid
 			if err != nil {
 				slog.Debug("vram peak sample: nvidia-smi proc query unavailable", "model", model, "err", err)
 				continue
 			}
-			footprint, ok := procVRAM[pid]
-			if !ok || footprint <= 0 {
+			if footprint <= 0 {
 				continue
 			}
 			m.tuneCache.BumpPeak(stats.Name, model, footprint)

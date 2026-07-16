@@ -7,6 +7,7 @@ package gpu
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -97,6 +98,52 @@ func ProcVRAM() (map[int]int, error) {
 		return nil, fmt.Errorf("nvidia-smi: %w", err)
 	}
 	return parseProcCSV(out)
+}
+
+// GroupVRAM sums the VRAM (MiB) of every compute process in process group pgid.
+// corrallm spawns each backend via `sh -c` with Setpgid, so nvidia-smi reports
+// the llama-server CHILD's pid, not the shell's — but the child shares the
+// shell's PGID (== the spawned cmd's Pid). Attributing by the bare spawn pid
+// misses entirely; we must sum the whole group. Linux /proc only; a pid that
+// vanishes mid-scan is skipped, not fatal.
+func GroupVRAM(pgid int) (int, error) {
+	procs, err := ProcVRAM()
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for pid, mib := range procs {
+		if g, err := PGIDFn(pid); err == nil && g == pgid {
+			total += mib
+		}
+	}
+	return total, nil
+}
+
+// PGIDFn resolves a pid's process-group id. It is a package var (like runCmd) so
+// tests in other packages — which mock nvidia-smi with synthetic pids that have
+// no /proc entry — can substitute a deterministic resolver. Production reads
+// /proc/<pid>/stat.
+var PGIDFn = procPGID
+
+// procPGID returns the process-group id of pid from /proc/<pid>/stat. The comm
+// field is parenthesized and may itself contain spaces/parens, so scan past the
+// LAST ')' and take pgrp = the 3rd field after it (state, ppid, pgrp).
+func procPGID(pid int) (int, error) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 || i+1 >= len(s) {
+		return 0, fmt.Errorf("proc %d: malformed stat", pid)
+	}
+	fields := strings.Fields(s[i+1:])
+	if len(fields) < 3 {
+		return 0, fmt.Errorf("proc %d: short stat", pid)
+	}
+	return strconv.Atoi(fields[2]) // state, ppid, pgrp
 }
 
 // parseProcCSV parses `nvidia-smi --query-compute-apps=pid,used_memory
