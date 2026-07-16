@@ -26,6 +26,7 @@ func Handler(webRoot string) http.Handler {
 		f, err := root.Open(upath)
 		if err != nil {
 			// Unknown path → SPA shell. The router resolves it client-side.
+			w.Header().Set("Cache-Control", "no-cache")
 			serveFile(w, r, root, "index.html")
 			return
 		}
