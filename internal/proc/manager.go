@@ -513,9 +513,19 @@ func (m *Manager) TunedSlots(model string, configDefault int) int {
 	}
 	p.mu.Lock()
 	tuned := p.tunedSlots
+	logs := p.logs
 	p.mu.Unlock()
 	if tuned > 0 {
 		return tuned
+	}
+	// Untuned but RESIDENT: report the actual n_slots the process launched with
+	// (parsed from its llama.cpp banner), which is the truth even when config
+	// maxConcurrent disagrees with the cmd's --parallel. Falls back to config
+	// only when the banner hasn't been parsed yet (or the model isn't resident).
+	if logs != nil {
+		if _, nSlots, _ := logs.Stats(); nSlots > 0 {
+			return nSlots
+		}
 	}
 	return configDefault
 }
