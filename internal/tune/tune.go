@@ -23,10 +23,100 @@ const DefaultCap = 32
 // Profile is one (gpu, model) pair's measured VRAM footprint shape.
 type Profile struct {
 	BaseMiB       int // process footprint with KV excluded (weights + fixed overhead)
-	PerSlotMiB    int // KV cache cost per slot (measured KV total / MeasuredSlots)
+	PerSlotMiB    int // KV cache cost per slot (measured KV total / MeasuredSlots, or slope-derived — see Samples)
 	PeakMiB       int // highest total process footprint ever observed
 	MeasuredSlots int // n_slots the measurement was taken at
 	Ctx           int // n_ctx at measurement time
+
+	// Samples holds up to the two most-recent-DISTINCT (slots, footprint)
+	// spawn measurements. It exists for hosts where llama.cpp logs no KV
+	// cache size, so BaseMiB/PerSlotMiB can't be split out of a single
+	// spawn's footprint directly: with two spawns at different --parallel,
+	// the SLOPE of footprint vs slots gives PerSlotMiB (and the intercept
+	// gives BaseMiB) empirically — see SlopeFromSamples. When the KV log IS
+	// available, BaseMiB/PerSlotMiB are computed directly (the cheaper, more
+	// precise path) and Samples is still recorded but not needed. A profile
+	// decoded from before this field existed simply has Samples == nil,
+	// which SlopeFromSamples treats as "not enough data" — no behavior
+	// change for already-tuned (KV-log-derived) profiles.
+	Samples []Sample
+}
+
+// Sample is one spawn's empirical VRAM measurement: total observed process
+// footprint at a specific slot (--parallel) count.
+type Sample struct {
+	Slots        int
+	FootprintMiB int
+}
+
+// MergeSample folds a fresh (slots, footprint) measurement into samples,
+// keeping at most the two most-recent-distinct slot counts (index 0 older,
+// index 1 newer). A sample at a slot count already present refreshes that
+// entry in place (repeat measurement / noise) rather than growing the set.
+// Always returns a new slice — never mutates samples' backing array, so a
+// caller holding a Profile read from the cache can pass its Samples in
+// without risking a concurrent reader observing a half-updated slice.
+func MergeSample(samples []Sample, s Sample) []Sample {
+	out := make([]Sample, 0, 2)
+	replaced := false
+	for _, e := range samples {
+		if e.Slots == s.Slots {
+			out = append(out, s)
+			replaced = true
+		} else {
+			out = append(out, e)
+		}
+	}
+	if replaced {
+		return out
+	}
+	if len(out) < 2 {
+		return append(out, s)
+	}
+	// Already two distinct slot counts: drop the older (index 0), keep the
+	// most-recent-distinct pair.
+	return []Sample{out[1], s}
+}
+
+// SlopeFromSamples derives PerSlotMiB/BaseMiB from the two furthest-apart
+// distinct slot counts in samples:
+//
+//	perSlot = (f2 - f1) / (s2 - s1)
+//	base    = f1 - s1*perSlot        (clamped >= 0)
+//
+// ok=false when samples doesn't hold at least two distinct slot counts, or
+// the slope would be negative — a noisy/invalid pair that must never be
+// trusted to size slots (negative per-slot cost would make SlotsFor
+// overcommit VRAM as slot count grows).
+func SlopeFromSamples(samples []Sample) (perSlot, base int, ok bool) {
+	var lo, hi Sample
+	found := false
+	for i := 0; i < len(samples); i++ {
+		for j := i + 1; j < len(samples); j++ {
+			a, b := samples[i], samples[j]
+			if a.Slots == b.Slots {
+				continue
+			}
+			if a.Slots > b.Slots {
+				a, b = b, a
+			}
+			if !found || b.Slots-a.Slots > hi.Slots-lo.Slots {
+				lo, hi, found = a, b, true
+			}
+		}
+	}
+	if !found {
+		return 0, 0, false
+	}
+	perSlot = (hi.FootprintMiB - lo.FootprintMiB) / (hi.Slots - lo.Slots)
+	if perSlot < 0 {
+		return 0, 0, false
+	}
+	base = lo.FootprintMiB - lo.Slots*perSlot
+	if base < 0 {
+		base = 0
+	}
+	return perSlot, base, true
 }
 
 // Cache is a persisted, concurrency-safe table of VRAM profiles keyed by

@@ -270,3 +270,166 @@ func TestParallelRewritePreservesRestOfCmd(t *testing.T) {
 		t.Fatalf("spawned cmd = %q, want %q", got, want)
 	}
 }
+
+// --- calibration probe (two-point empirical KV measurement) ---
+//
+// A profile with exactly one measured slot count can't derive PerSlotMiB via
+// SlotsFor (it needs the slope between TWO distinct slot counts). These
+// tests cover calibrationProbe's safety gate directly: footprint(k+1) <=
+// footprint(k)*(k+1)/k always holds when BaseMiB>=0, so probing k+1 is safe
+// exactly when budget covers that worst case — for k=2, footprint(k)=6000,
+// the bound is ceil(6000*3/2)=9000.
+
+// TestCalibrationProbeSafeWhenBudgetCoversWorstCase: budget exactly at the
+// worst-case bound (9000) is sufficient — probe k+1=3.
+func TestCalibrationProbeSafeWhenBudgetCoversWorstCase(t *testing.T) {
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.Update("Fake GPU", "probe-me", tune.Profile{
+		BaseMiB: 6000, PerSlotMiB: 0, PeakMiB: 6000, MeasuredSlots: 2,
+		Samples: []tune.Sample{{Slots: 2, FootprintMiB: 6000}},
+	})
+	mgr := NewManager(&config.Config{})
+	mgr.SetTuneCache(cache)
+
+	n, ok := mgr.calibrationProbe(gpu.Stats{Name: "Fake GPU"}, 9000, "probe-me")
+	if !ok {
+		t.Fatal("want ok=true: budget exactly covers the worst-case bound")
+	}
+	if n != 3 {
+		t.Errorf("n = %d, want 3 (k+1)", n)
+	}
+}
+
+// TestCalibrationProbeRefusesUnderBudget: one MiB short of the worst-case
+// bound must refuse to probe — fail-safe: if it's not provably safe, don't.
+func TestCalibrationProbeRefusesUnderBudget(t *testing.T) {
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.Update("Fake GPU", "probe-me", tune.Profile{
+		BaseMiB: 6000, PerSlotMiB: 0, PeakMiB: 6000, MeasuredSlots: 2,
+		Samples: []tune.Sample{{Slots: 2, FootprintMiB: 6000}},
+	})
+	mgr := NewManager(&config.Config{})
+	mgr.SetTuneCache(cache)
+
+	if n, ok := mgr.calibrationProbe(gpu.Stats{Name: "Fake GPU"}, 8999, "probe-me"); ok {
+		t.Errorf("want ok=false when budget(8999) < worst-case(9000); got n=%d", n)
+	}
+}
+
+// TestCalibrationProbeRefusesWhenAlreadyTuned: PerSlotMiB already known
+// (>0, from the KV log or a prior 2-point derivation) — nothing to
+// calibrate, regardless of how much budget is available.
+func TestCalibrationProbeRefusesWhenAlreadyTuned(t *testing.T) {
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.Update("Fake GPU", "tuned", tune.Profile{
+		BaseMiB: 4000, PerSlotMiB: 1000, PeakMiB: 5000, MeasuredSlots: 1,
+		Samples: []tune.Sample{{Slots: 1, FootprintMiB: 5000}},
+	})
+	mgr := NewManager(&config.Config{})
+	mgr.SetTuneCache(cache)
+
+	if n, ok := mgr.calibrationProbe(gpu.Stats{Name: "Fake GPU"}, 1_000_000, "tuned"); ok {
+		t.Errorf("want ok=false when PerSlotMiB already known; got n=%d", n)
+	}
+}
+
+// TestCalibrationProbeRefusesWithoutProfile: no profile at all for the
+// model — nothing to calibrate from.
+func TestCalibrationProbeRefusesWithoutProfile(t *testing.T) {
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(&config.Config{})
+	mgr.SetTuneCache(cache)
+
+	if n, ok := mgr.calibrationProbe(gpu.Stats{Name: "Fake GPU"}, 1_000_000, "never-measured"); ok {
+		t.Errorf("want ok=false without a profile; got n=%d", n)
+	}
+}
+
+// TestCalibrationProbeEndToEnd: wired through tuneCmd/EnsureReady, a
+// one-sample profile with a safely-covering budget causes --parallel to be
+// rewritten to k+1 (NOT the config's own --parallel N) — the calibration
+// spawn that gives the next measurement the second slot-count point it
+// needs to derive PerSlotMiB via slope.
+func TestCalibrationProbeEndToEnd(t *testing.T) {
+	// budget = FreeMiB(12000) - margin(512) = 11488, comfortably clears the
+	// worst-case bound (9000) for a k=2, footprint=6000 profile.
+	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 20000, 12000", "")
+
+	port := listenTCP(t)
+	mgr := NewManager(&config.Config{})
+	mgr.healthTimeout = 5 * time.Second
+	defer mgr.Shutdown()
+
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.Update("Fake GPU", "calibrate", tune.Profile{
+		BaseMiB: 6000, PerSlotMiB: 0, PeakMiB: 6000, MeasuredSlots: 2,
+		Samples: []tune.Sample{{Slots: 2, FootprintMiB: 6000}},
+	})
+	mgr.SetTuneCache(cache)
+
+	mdl := modelCmd(t, "exec sleep 30 --parallel 2", port)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "calibrate", mdl, nil)
+	if err != nil {
+		t.Fatalf("EnsureReady: %v", err)
+	}
+	want := "exec sleep 30 --parallel 3"
+	if got := p.cmd.Args[2]; got != want {
+		t.Fatalf("spawned cmd = %q, want %q (calibration probe to k+1)", got, want)
+	}
+	if p.tunedSlots != 3 {
+		t.Errorf("tunedSlots = %d, want 3", p.tunedSlots)
+	}
+}
+
+// TestCalibrationProbeEndToEndUnsafeLeavesCmdUntouched: same one-sample
+// profile, but budget too tight to safely cover k+1 — the config cmd is
+// spawned byte-identical, exactly like every other fail-safe path (probing
+// only ever RAISES --parallel within a provably-safe bound; if uncertain,
+// don't).
+func TestCalibrationProbeEndToEndUnsafeLeavesCmdUntouched(t *testing.T) {
+	// budget = 32000 - 22500 - margin(512) = 8988 < worst-case bound (9000)
+	// for a k=2, footprint=6000 profile.
+	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 22500, 9500", "")
+
+	port := listenTCP(t)
+	mgr := NewManager(&config.Config{})
+	mgr.healthTimeout = 5 * time.Second
+	defer mgr.Shutdown()
+
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.Update("Fake GPU", "calibrate-unsafe", tune.Profile{
+		BaseMiB: 6000, PerSlotMiB: 0, PeakMiB: 6000, MeasuredSlots: 2,
+		Samples: []tune.Sample{{Slots: 2, FootprintMiB: 6000}},
+	})
+	mgr.SetTuneCache(cache)
+
+	mdl := modelCmd(t, "exec sleep 30 --parallel 2", port)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "calibrate-unsafe", mdl, nil)
+	if err != nil {
+		t.Fatalf("EnsureReady: %v", err)
+	}
+	if got := p.cmd.Args[2]; got != mdl.Cmd {
+		t.Fatalf("spawned cmd = %q, want byte-identical to configured %q (probe unsafe)", got, mdl.Cmd)
+	}
+	if p.tunedSlots != 0 {
+		t.Errorf("tunedSlots = %d, want 0 (probe refused)", p.tunedSlots)
+	}
+}

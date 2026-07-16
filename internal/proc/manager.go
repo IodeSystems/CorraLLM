@@ -336,9 +336,13 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 
 		// Boot-time measurement: an exact per-process VRAM read (we spawned it, so
 		// the PID is exact — no guessing at "GPU used minus everyone else") minus
-		// the KV cache total gives BaseMiB; KV/nSlots gives PerSlotMiB. Feeds this
-		// model's NEXT spawn, never this one. Best-effort: any gpu/tune failure is
-		// logged and skipped, never fatal — the backend is already StateReady.
+		// the KV cache total gives BaseMiB; KV/nSlots gives PerSlotMiB, when
+		// llama.cpp's log reports a KV size at all. When it doesn't (kvMiB==0),
+		// BaseMiB/PerSlotMiB fall back to the slope between this and a prior
+		// spawn's footprint at a different slot count (tune.SlopeFromSamples).
+		// Feeds this model's NEXT spawn, never this one. Best-effort: any
+		// gpu/tune failure is logged and skipped, never fatal — the backend is
+		// already StateReady.
 		m.measure(name, mdl, p, cmd.Process.Pid)
 	}
 
@@ -443,6 +447,13 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 // profile, or no --parallel flag present in the configured cmd) leaves
 // *cmdStr byte-for-byte unchanged and returns 0 (TunedSlots then falls back
 // to the config default). Returns the tuned slot count actually applied.
+//
+// When PerSlotMiB isn't computable yet (KV size wasn't in llama.cpp's log,
+// and fewer than two distinct-slots spawns have been measured), tuneCmd
+// falls back to calibrationProbe: a provably-safe one-slot-higher spawn that
+// gathers the second data point SlopeFromSamples needs, so the model
+// converges to a real tuned profile within two spawns instead of staying
+// stuck at whatever --parallel the config happens to say forever.
 func (m *Manager) tuneCmd(model string, cmdStr *string) int {
 	if m.tuneCache == nil {
 		return 0
@@ -452,18 +463,67 @@ func (m *Manager) tuneCmd(model string, cmdStr *string) int {
 		slog.Debug("gpu probe unavailable; spawning with configured cmd", "model", model, "err", err)
 		return 0
 	}
-	budget := m.vramBudget(stats, model)
-	n, ok := m.tuneCache.SlotsFor(stats.Name, model, budget)
-	if !ok {
-		return 0
-	}
 	if !reParallel.MatchString(*cmdStr) {
 		// No --parallel flag to tune: leave the cmd completely untouched rather
 		// than injecting one (spec: additive only, never alter cmd shape).
 		return 0
 	}
+	budget := m.vramBudget(stats, model)
+	n, ok := m.tuneCache.SlotsFor(stats.Name, model, budget)
+	if !ok {
+		n, ok = m.calibrationProbe(stats, budget, model)
+		if ok {
+			slog.Info("calibration probe: spawning one slot higher to derive per-slot VRAM cost",
+				"model", model, "probeSlots", n)
+		}
+	}
+	if !ok {
+		return 0
+	}
 	*cmdStr = reParallel.ReplaceAllString(*cmdStr, fmt.Sprintf("--parallel %d", n))
 	return n
+}
+
+// calibrationProbe looks for a profile that has exactly ONE distinct
+// measured slot count (PerSlotMiB not yet derivable — no KV-log support on
+// this host, and no second distinct --parallel spawn yet) and, if probing
+// one more slot is PROVABLY safe, returns the higher slot count so tuneCmd
+// spawns there instead of the config default — gathering the second
+// (slots, footprint) point tune.SlopeFromSamples needs.
+//
+// Safety: for k slots at measured footprint f(k) = base + k*perSlot with
+// base >= 0, footprint at k+1 is bounded by f(k)*(k+1)/k — scaling the
+// WHOLE measured footprint (including base) by (k+1)/k always over-estimates
+// the true f(k+1), because base doesn't grow with slots but this bound
+// charges it as if it did. So probing k+1 is safe exactly when the
+// post-eviction budget covers that worst case (rounded up, so integer
+// truncation never makes the bound optimistic). Returns ok=false — no probe,
+// caller leaves the config cmd/slots untouched — when: no profile, the
+// profile already has 2+ distinct samples (nothing to calibrate), the
+// recorded footprint/slots are non-positive, the probe would exceed
+// tune.DefaultCap, or the safety bound doesn't clear budget.
+func (m *Manager) calibrationProbe(stats gpu.Stats, budget int, model string) (int, bool) {
+	p, ok := m.tuneCache.Get(stats.Name, model)
+	if !ok || p.PerSlotMiB > 0 {
+		return 0, false // no profile yet, or already tuned (KV-log or 2-point slope)
+	}
+	if len(p.Samples) != 1 {
+		return 0, false // 0 samples (shouldn't happen if a profile exists) or already 2+ (not our job)
+	}
+	k := p.Samples[0].Slots
+	footprintK := p.Samples[0].FootprintMiB
+	if k <= 0 || footprintK <= 0 {
+		return 0, false
+	}
+	probe := k + 1
+	if probe > tune.DefaultCap {
+		return 0, false
+	}
+	worst := (footprintK*probe + k - 1) / k // ceil(footprintK*(k+1)/k): round UP so the bound stays conservative
+	if budget < worst {
+		return 0, false
+	}
+	return probe, true
 }
 
 // measure records this spawn's empirical VRAM footprint into the tune cache.
@@ -497,19 +557,48 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, pid int) {
 	if nSlots <= 0 {
 		nSlots = mdl.Slots() // banner not parsed yet (or --slots omitted): fall back to config
 	}
-	// "KV self/buffer/cache size" as llama.cpp logs it is the TOTAL allocation
-	// across every slot, not a per-slot figure.
-	perSlot := kvMiB / max(1, nSlots)
-	base := footprint - kvMiB
-	if base < 0 {
-		base = 0
+
+	// Record this spawn's (slots, footprint) sample every time, regardless of
+	// whether the KV-log fast path below is available this run — it's the
+	// data the two-point slope fallback needs, and costs nothing to keep.
+	existing, _ := m.tuneCache.Get(stats.Name, model)
+	samples := tune.MergeSample(existing.Samples, tune.Sample{Slots: nSlots, FootprintMiB: footprint})
+
+	var base, perSlot int
+	derivedFromSlope := false
+	if kvMiB > 0 {
+		// Fast path: llama.cpp logged the KV cache total directly. "KV
+		// self/buffer/cache size" as it logs it is the TOTAL allocation across
+		// every slot, not a per-slot figure — divide it out.
+		perSlot = kvMiB / max(1, nSlots)
+		base = footprint - kvMiB
+		if base < 0 {
+			base = 0
+		}
+	} else if sp, sb, ok := tune.SlopeFromSamples(samples); ok {
+		// This host's llama.cpp logs no KV size (kvMiB==0): with two spawns at
+		// distinct slot counts now on record, derive PerSlotMiB/BaseMiB from the
+		// slope of footprint vs slots instead.
+		perSlot, base = sp, sb
+		derivedFromSlope = true
+	} else {
+		// Still only one distinct slot-count sample: PerSlotMiB stays unknown
+		// (0, the fail-safe "not tunable yet" value) until a second
+		// distinct-slots spawn (see calibrationProbe) gives us a slope.
+		base = footprint
 	}
+
 	m.tuneCache.Update(stats.Name, model, tune.Profile{
 		BaseMiB: base, PerSlotMiB: perSlot, PeakMiB: footprint, MeasuredSlots: nSlots, Ctx: nCtx,
+		Samples: samples,
 	})
 	if err := m.tuneCache.Save(); err != nil {
 		slog.Warn("save tune cache", "model", model, "err", err)
 		return
+	}
+	if derivedFromSlope {
+		slog.Info("vram per-slot cost derived from two-point measurement (no KV log on this host)",
+			"model", model, "baseMiB", base, "perSlotMiB", perSlot, "samples", samples)
 	}
 	slog.Info("vram measured", "model", model, "footprintMiB", footprint,
 		"baseMiB", base, "perSlotMiB", perSlot, "slots", nSlots, "kvMiB", kvMiB, "ctx", nCtx)

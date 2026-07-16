@@ -2,6 +2,7 @@ package tune
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -170,7 +171,108 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("want profile present after reload")
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got = %+v, want %+v", got, want)
+	}
+}
+
+// TestSlopeFromSamplesTwoPoints: two spawns at distinct slot counts (2 and
+// 5) derive PerSlotMiB/BaseMiB by slope: perSlot = (11000-8000)/(5-2) = 1000,
+// base = 8000 - 2*1000 = 6000.
+func TestSlopeFromSamplesTwoPoints(t *testing.T) {
+	perSlot, base, ok := SlopeFromSamples([]Sample{
+		{Slots: 2, FootprintMiB: 8000},
+		{Slots: 5, FootprintMiB: 11000},
+	})
+	if !ok {
+		t.Fatal("want ok=true with two distinct-slot samples")
+	}
+	if perSlot != 1000 {
+		t.Errorf("perSlot = %d, want 1000", perSlot)
+	}
+	if base != 6000 {
+		t.Errorf("base = %d, want 6000", base)
+	}
+}
+
+// TestSlopeFromSamplesOrderIndependent: the same two points in reverse
+// insertion order (older sample last in the slice) derive identically —
+// SlopeFromSamples picks the pair by slot-count distance, not slice order.
+func TestSlopeFromSamplesOrderIndependent(t *testing.T) {
+	perSlot, base, ok := SlopeFromSamples([]Sample{
+		{Slots: 5, FootprintMiB: 11000},
+		{Slots: 2, FootprintMiB: 8000},
+	})
+	if !ok || perSlot != 1000 || base != 6000 {
+		t.Errorf("perSlot=%d base=%d ok=%v, want 1000/6000/true", perSlot, base, ok)
+	}
+}
+
+// TestSlopeFromSamplesInsufficientData: fewer than two distinct slot counts
+// (zero, one, or a repeat of the same slot count) reports ok=false — the
+// fail-safe "not enough data yet" signal that leaves PerSlotMiB undetermined.
+func TestSlopeFromSamplesInsufficientData(t *testing.T) {
+	cases := [][]Sample{
+		nil,
+		{{Slots: 2, FootprintMiB: 8000}},
+		{{Slots: 2, FootprintMiB: 8000}, {Slots: 2, FootprintMiB: 8100}}, // same slots, not distinct
+	}
+	for _, samples := range cases {
+		if _, _, ok := SlopeFromSamples(samples); ok {
+			t.Errorf("samples=%+v: want ok=false (insufficient distinct data)", samples)
+		}
+	}
+}
+
+// TestSlopeFromSamplesNegativeSlopeRejected: a decreasing footprint as slots
+// rise is impossible (KV cost can't be negative) — treat it as noise and
+// refuse to derive a profile from it, rather than sizing slots into
+// overcommit.
+func TestSlopeFromSamplesNegativeSlopeRejected(t *testing.T) {
+	if _, _, ok := SlopeFromSamples([]Sample{
+		{Slots: 2, FootprintMiB: 9000},
+		{Slots: 5, FootprintMiB: 8000}, // smaller footprint at MORE slots
+	}); ok {
+		t.Error("want ok=false for a negative slope")
+	}
+}
+
+// TestMergeSampleCapsAtTwoMostRecentDistinct: a third distinct slot count
+// evicts the oldest, keeping exactly the two most-recent-distinct entries; a
+// repeat of an already-present slot count refreshes in place instead of
+// growing the set.
+func TestMergeSampleCapsAtTwoMostRecentDistinct(t *testing.T) {
+	var samples []Sample
+	samples = MergeSample(samples, Sample{Slots: 1, FootprintMiB: 5000})
+	samples = MergeSample(samples, Sample{Slots: 2, FootprintMiB: 6000})
+	if len(samples) != 2 {
+		t.Fatalf("after 2 distinct: len = %d, want 2", len(samples))
+	}
+	// Repeat measurement at slots=2 (noise) must refresh, not grow.
+	samples = MergeSample(samples, Sample{Slots: 2, FootprintMiB: 6100})
+	if len(samples) != 2 {
+		t.Fatalf("after repeat: len = %d, want 2", len(samples))
+	}
+	// A third distinct slot count evicts the oldest (slots=1).
+	samples = MergeSample(samples, Sample{Slots: 4, FootprintMiB: 8000})
+	if len(samples) != 2 {
+		t.Fatalf("after 3rd distinct: len = %d, want 2", len(samples))
+	}
+	for _, s := range samples {
+		if s.Slots == 1 {
+			t.Errorf("oldest distinct sample (slots=1) should have been evicted: %+v", samples)
+		}
+	}
+	// Surviving pair is (slots=2, 6100) and (slots=4, 8000):
+	// perSlot = (8000-6100)/(4-2) = 950, base = 6100 - 2*950 = 4200.
+	perSlot, base, ok := SlopeFromSamples(samples)
+	if !ok {
+		t.Fatal("want ok=true after capping to 2 distinct")
+	}
+	if perSlot != 950 {
+		t.Errorf("perSlot = %d, want 950", perSlot)
+	}
+	if base != 4200 {
+		t.Errorf("base = %d, want 4200", base)
 	}
 }
