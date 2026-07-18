@@ -99,6 +99,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.CancelBenchRun)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "publishBenchResult",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/measurements/result",
+		Summary:     "Publish one model's aggregate outcome from a bench run (llm-bench).",
+		Tags:        []string{"control"},
+	}, h.PublishBenchResult)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchResults",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/results",
+		Summary:     "Latest bench result per model, or one model's history.",
+		Tags:        []string{"observability"},
+	}, h.BenchResults)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchPlan",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/bench/plan",

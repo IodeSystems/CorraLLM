@@ -23,12 +23,38 @@ import {
   TableRow,
   Typography,
 } from '@mui/material'
+import { BarChart, ScatterChart } from '@mui/x-charts'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
+import { fmtInt } from '@/format'
 
-const BenchPlanDoc = graphql(/* GraphQL */ `
-  query BenchPlan {
+/**
+ * Bench is the AGGREGATE view: how do the models compare?
+ *
+ * Per-model actions (probe this one, load/unload it) live on the model card and
+ * the model console, where the model already is. This page exists for the
+ * question you cannot answer from one card — which model is worth its VRAM.
+ */
+const BenchDoc = graphql(/* GraphQL */ `
+  query BenchAggregate {
     corrallm {
+      benchResults {
+        results {
+          runId
+          model
+          at
+          score
+          stages
+          stagesPassed
+          classes
+          tokensProcessed
+          tokensGenerated
+          cachedTokens
+          wallMs
+          tokPerSec
+          footprintMiB
+        }
+      }
       benchPlan {
         gpu
         newModels
@@ -36,25 +62,19 @@ const BenchPlanDoc = graphql(/* GraphQL */ `
           model
           new
           hasTuneProfile
-          hasCapabilityData
-          declaredModalities
           unverifiedModalities
           disagreements {
             modality
             runMode
-            verified
-            detail
           }
           probes {
             kind
             default
-            reason
           }
         }
       }
       benchStatus {
         running
-        startedAt
         args
         log
         done
@@ -65,23 +85,19 @@ const BenchPlanDoc = graphql(/* GraphQL */ `
 `)
 
 const StartBenchDoc = graphql(/* GraphQL */ `
-  mutation StartBenchRun($body: corrallm_BenchRunInputBodyInput!) {
+  mutation StartAggregateBench($body: corrallm_BenchRunInputBodyInput!) {
     corrallm {
       startBenchRun(body: $body) {
         ok
         message
         warning
-        status {
-          running
-          args
-        }
       }
     }
   }
 `)
 
 const CancelBenchDoc = graphql(/* GraphQL */ `
-  mutation CancelBenchRun {
+  mutation CancelAggregateBench {
     corrallm {
       cancelBenchRun {
         running
@@ -91,7 +107,11 @@ const CancelBenchDoc = graphql(/* GraphQL */ `
   }
 `)
 
-/** The probe kinds a run can select, in the order they are offered. */
+// Codegen maps GraphQL Long (int64) to string for a uniform id contract, so
+// every count arrives as text. Coerce once at the boundary rather than sprinkling
+// Number() through the chart props.
+const n = (v: unknown): number => Number(v ?? 0) || 0
+
 const KINDS = ['measure', 'capability', 'quality'] as const
 type Kind = (typeof KINDS)[number]
 
@@ -101,20 +121,16 @@ function BenchPage() {
   const [confirming, setConfirming] = useState(false)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['benchPlan'],
-    queryFn: () => gqlClient.request(BenchPlanDoc),
-    // Poll while a run is in flight so the log tails; the interval is set from
-    // the previous response rather than a constant, so an idle page is quiet.
-    refetchInterval: (q) =>
-      q.state.data?.corrallm?.benchStatus?.running ? 2000 : false,
+    queryKey: ['benchAggregate'],
+    queryFn: () => gqlClient.request(BenchDoc),
+    refetchInterval: (q) => (q.state.data?.corrallm?.benchStatus?.running ? 2000 : false),
   })
 
+  const results = data?.corrallm?.benchResults?.results ?? []
   const plan = data?.corrallm?.benchPlan
   const status = data?.corrallm?.benchStatus
   const running = !!status?.running
 
-  // Seed the checkboxes from the server's suggestion exactly once, then let the
-  // user own them. Re-seeding on every poll would fight anyone mid-edit.
   const checks = useMemo(() => {
     if (selected) return selected
     const init: Record<string, Set<Kind>> = {}
@@ -135,8 +151,6 @@ function BenchPage() {
     setSelected(next)
   }
 
-  // A probe KIND maps onto llm-bench's --classes; "measure" is not a probe
-  // class but a by-product of any run, so it contributes no class of its own.
   const request = useMemo(() => {
     const models: string[] = []
     const classes = new Set<string>()
@@ -156,168 +170,232 @@ function BenchPage() {
   const start = useMutation({
     mutationFn: () =>
       gqlClient.request(StartBenchDoc, {
-        body: { models: request.models, classes: request.classes, reason: 'dashboard bench run' },
+        body: { models: request.models, classes: request.classes, reason: 'aggregate bench' },
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['benchPlan'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['benchAggregate'] }),
   })
   const cancel = useMutation({
     mutationFn: () => gqlClient.request(CancelBenchDoc),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['benchPlan'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['benchAggregate'] }),
   })
 
-  if (isLoading) return <Box sx={{ p: 4 }}><CircularProgress /></Box>
+  if (isLoading)
+    return (
+      <Box sx={{ p: 4 }}>
+        <CircularProgress />
+      </Box>
+    )
 
+  const ranked = [...results].sort((a, b) => n(b.score) - n(a.score))
+  const labels = ranked.map((r) => r.model)
   const nothingSelected = request.models.length === 0
 
   return (
-    <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <Typography variant="h5">Bench</Typography>
-      <Typography variant="body2" color="text.secondary">
-        corrallm cannot learn a model&apos;s real VRAM footprint or verify its declared
-        modalities on its own — both come from a bench run. GPU: {plan?.gpu || 'unknown'}
-      </Typography>
-
-      {!!plan?.newModels && !running && (
-        <Alert severity="info">
-          <AlertTitle>{plan.newModels} model(s) have never been benched</AlertTitle>
-          Until they are, corrallm schedules them on their declared <code>ramUsage</code>
-          (unverified) and advertises modalities nothing has exercised.
-        </Alert>
-      )}
+    <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <Box>
+        <Typography variant="h5">Bench</Typography>
+        <Typography variant="body2" color="text.secondary">
+          Cross-model comparison. GPU: {plan?.gpu || 'unknown'}
+        </Typography>
+      </Box>
 
       {running && (
         <Alert severity="warning">
           <AlertTitle>Bench running — exclusive mode</AlertTitle>
-          Every caller except this run is receiving 429 + Retry-After, and models are
-          being evicted to take cold measurements.
+          Models are being evicted and every other caller is receiving 429 + Retry-After.
         </Alert>
       )}
 
-      <TableContainer component={Paper}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Model</TableCell>
-              <TableCell>Coverage</TableCell>
-              {KINDS.map((k) => (
-                <TableCell key={k} align="center">{k}</TableCell>
-              ))}
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {(plan?.models ?? []).map((m) => {
-              const offered = new Set((m.probes ?? []).map((p) => p.kind))
-              return (
-                <TableRow key={m.model} hover>
-                  <TableCell>
-                    <Typography variant="body2">{m.model}</Typography>
-                    {m.new && <Chip size="small" color="info" label="never benched" sx={{ mr: 0.5 }} />}
-                    {!!m.disagreements?.length && (
-                      <Chip
-                        size="small"
-                        color="error"
-                        label="cold/warm disagreement"
-                        title="A modality verified in one residency state and failed in the other."
-                      />
-                    )}
+      {results.length === 0 ? (
+        <Alert severity="info">
+          <AlertTitle>No benchmark results yet</AlertTitle>
+          Nothing has been benched on this box. Select probes below and run one — or probe a
+          single model from its card on the Overview page.
+        </Alert>
+      ) : (
+        <>
+          <Paper sx={{ p: 2 }}>
+            <Typography variant="subtitle1" gutterBottom>
+              Score — stage pass rate
+            </Typography>
+            <BarChart
+              height={260}
+              xAxis={[{ scaleType: 'band', data: labels }]}
+              yAxis={[{ min: 0, max: 1 }]}
+              series={[{ data: ranked.map((r) => Number(n(r.score).toFixed(3))), label: 'pass rate' }]}
+            />
+          </Paper>
+
+          <Paper sx={{ p: 2 }}>
+            <Typography variant="subtitle1">Score vs resident VRAM</Typography>
+            <Typography variant="caption" color="text.secondary">
+              The tradeoff that actually decides what to run: quality against what it costs to
+              keep resident. Up and to the left is better.
+            </Typography>
+            <ScatterChart
+              height={300}
+              xAxis={[{ label: 'resident MiB' }]}
+              yAxis={[{ label: 'pass rate', min: 0, max: 1 }]}
+              series={ranked
+                .filter((r) => n(r.footprintMiB) > 0)
+                .map((r) => ({
+                  label: r.model,
+                  data: [{ x: n(r.footprintMiB), y: Number(n(r.score).toFixed(3)), id: r.model }],
+                }))}
+            />
+          </Paper>
+
+          <Paper sx={{ p: 2 }}>
+            <Typography variant="subtitle1">Tokens — processed vs generated</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Cache hits are excluded from &ldquo;processed&rdquo;: a model that ran second over the
+              same fixtures gets cheap prompt tokens through no merit of its own, so counting
+              them would reward the running order rather than the model.
+            </Typography>
+            <BarChart
+              height={280}
+              xAxis={[{ scaleType: 'band', data: labels }]}
+              series={[
+                { data: ranked.map((r) => n(r.tokensProcessed)), label: 'processed (uncached)', stack: 'a' },
+                { data: ranked.map((r) => n(r.tokensGenerated)), label: 'generated', stack: 'a' },
+              ]}
+            />
+          </Paper>
+
+          <TableContainer component={Paper}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Model</TableCell>
+                  <TableCell align="right">Score</TableCell>
+                  <TableCell align="right">Stages</TableCell>
+                  <TableCell align="right">Processed</TableCell>
+                  <TableCell align="right">Generated</TableCell>
+                  <TableCell align="right">Cached</TableCell>
+                  <TableCell align="right">tok/s</TableCell>
+                  <TableCell align="right">VRAM MiB</TableCell>
+                  <TableCell>Classes</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {ranked.map((r) => (
+                  <TableRow key={r.model} hover>
+                    <TableCell>{r.model}</TableCell>
+                    <TableCell align="right">{(n(r.score) * 100).toFixed(0)}%</TableCell>
+                    <TableCell align="right">
+                      {r.stagesPassed}/{r.stages}
+                    </TableCell>
+                    <TableCell align="right">{fmtInt(n(r.tokensProcessed))}</TableCell>
+                    <TableCell align="right">{fmtInt(n(r.tokensGenerated))}</TableCell>
+                    <TableCell align="right">{fmtInt(n(r.cachedTokens))}</TableCell>
+                    <TableCell align="right">{n(r.tokPerSec).toFixed(0)}</TableCell>
+                    <TableCell align="right">{fmtInt(n(r.footprintMiB))}</TableCell>
+                    <TableCell>
+                      <Typography variant="caption">{r.classes || '—'}</Typography>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </>
+      )}
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" gutterBottom>
+          Run a benchmark
+        </Typography>
+        {!!plan?.newModels && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            {plan.newModels} model(s) have never been benched — corrallm is scheduling them on
+            unverified <code>ramUsage</code>.
+          </Alert>
+        )}
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Model</TableCell>
+                {KINDS.map((k) => (
+                  <TableCell key={k} align="center">
+                    {k}
                   </TableCell>
-                  <TableCell>
-                    <Typography variant="caption" display="block">
-                      VRAM profile: {m.hasTuneProfile ? 'measured' : '— none —'}
-                    </Typography>
-                    <Typography variant="caption" display="block">
-                      {m.unverifiedModalities?.length
-                        ? `unverified: ${m.unverifiedModalities.join(', ')}`
-                        : 'declared modalities verified'}
-                    </Typography>
-                  </TableCell>
-                  {KINDS.map((k) => (
-                    <TableCell key={k} align="center">
-                      {offered.has(k) ? (
-                        <Checkbox
-                          size="small"
-                          disabled={running}
-                          checked={checks[m.model]?.has(k) ?? false}
-                          onChange={() => toggle(m.model, k)}
-                        />
-                      ) : (
-                        <Typography variant="caption" color="text.disabled">n/a</Typography>
+                ))}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {(plan?.models ?? []).map((m) => {
+                const offered = new Set((m.probes ?? []).map((p) => p.kind))
+                return (
+                  <TableRow key={m.model} hover>
+                    <TableCell>
+                      {m.model}{' '}
+                      {m.new && <Chip size="small" color="info" label="never benched" />}
+                      {!!m.disagreements?.length && (
+                        <Chip size="small" color="error" label="cold/warm disagreement" />
                       )}
                     </TableCell>
-                  ))}
-                </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
-      </TableContainer>
-
-      <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-        <Button
-          variant="contained"
-          color="warning"
-          disabled={running || nothingSelected}
-          onClick={() => setConfirming(true)}
-        >
-          Run bench
-        </Button>
-        {running && (
-          <Button variant="outlined" color="error" onClick={() => cancel.mutate()}>
-            Cancel run
+                    {KINDS.map((k) => (
+                      <TableCell key={k} align="center">
+                        {offered.has(k) ? (
+                          <Checkbox
+                            size="small"
+                            disabled={running}
+                            checked={checks[m.model]?.has(k) ?? false}
+                            onChange={() => toggle(m.model, k)}
+                          />
+                        ) : (
+                          <Typography variant="caption" color="text.disabled">
+                            n/a
+                          </Typography>
+                        )}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+        </TableContainer>
+        <Box sx={{ display: 'flex', gap: 2, mt: 2, alignItems: 'center' }}>
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={running || nothingSelected}
+            onClick={() => setConfirming(true)}
+          >
+            Run bench
           </Button>
-        )}
-        {nothingSelected && !running && (
-          <Typography variant="caption" color="text.secondary">
-            Nothing selected — every model already has the data a default run would produce.
-          </Typography>
-        )}
-      </Box>
-
-      {(status?.args?.length ?? 0) > 0 && (
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="subtitle2">Invocation</Typography>
-          {/* Shown so a run started here is reproducible from a shell — llm-bench
-              is a first-class CLI, not an implementation detail of this page. */}
-          <Box component="pre" sx={{ m: 0, fontSize: 12, overflowX: 'auto' }}>
-            {status?.args?.join(' ')}
-          </Box>
-        </Paper>
-      )}
-
-      {!!status?.error && (
-        <Alert severity="error">
-          <AlertTitle>Run failed</AlertTitle>
-          {status.error}
-        </Alert>
-      )}
+          {running && (
+            <Button variant="outlined" color="error" onClick={() => cancel.mutate()}>
+              Cancel run
+            </Button>
+          )}
+        </Box>
+      </Paper>
 
       {(status?.log?.length ?? 0) > 0 && (
-        <Paper sx={{ p: 2, maxHeight: 360, overflow: 'auto' }}>
-          <Typography variant="subtitle2">Output</Typography>
+        <Paper sx={{ p: 2, maxHeight: 320, overflow: 'auto' }}>
+          <Typography variant="subtitle2">Run output</Typography>
           <Box component="pre" sx={{ m: 0, fontSize: 12 }}>
             {status?.log?.join('\n')}
           </Box>
         </Paper>
       )}
+      {!!status?.error && <Alert severity="error">{status.error}</Alert>}
 
       <Dialog open={confirming} onClose={() => setConfirming(false)}>
         <DialogTitle>Run bench in exclusive mode?</DialogTitle>
         <DialogContent>
-          {/* The destructive consequences are stated before the click, not after.
-              A run evicts models and locks out every other caller. */}
           <DialogContentText component="div">
-            This will:
-            <ul>
-              <li><b>Evict resident models</b> so cold measurements are uncontended.</li>
-              <li>
-                <b>Turn away every other caller</b> with 429 + Retry-After until the run
-                finishes. Clients that honor Retry-After will pause and resume rather than
-                fail.
-              </li>
-            </ul>
+            This will <b>evict resident models</b> so measurements are uncontended, and turn
+            away every other caller with <b>429 + Retry-After</b> until it finishes. Clients
+            that honor Retry-After pause and resume rather than fail.
+            <br />
+            <br />
             Models: <b>{request.models.join(', ') || 'none'}</b>
             <br />
-            Probe classes: <b>{request.classes.join(', ') || 'measurement only'}</b>
+            Classes: <b>{request.classes.join(', ') || 'measurement only'}</b>
             <br />
             <br />
             The lease self-expires, so a crashed run cannot lock the server permanently.
@@ -338,9 +416,6 @@ function BenchPage() {
         </DialogActions>
       </Dialog>
 
-      {start.data?.corrallm?.startBenchRun?.warning && (
-        <Alert severity="warning">{start.data.corrallm.startBenchRun.warning}</Alert>
-      )}
       {start.data?.corrallm?.startBenchRun?.ok === false && (
         <Alert severity="error">{start.data.corrallm.startBenchRun.message}</Alert>
       )}

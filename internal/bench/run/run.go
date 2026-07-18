@@ -243,6 +243,9 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	// sequences and trigger queue-timeouts. Models stay SEQUENTIAL (one resident
 	// at a time on a single GPU), and the adv-phase barrier keeps poisoned
 	// context from bleeding into clean tasks via the server-side prompt cache.
+	// VRAM footprint per model, captured while each was resident — the resource
+	// axis of a cross-model comparison.
+	footprints := map[string]int{}
 	slotsByModel := fetchModelSlots(opts)
 	modsByModel := fetchModelModalities(opts)
 	resid := newResidencyClient(opts.Config)
@@ -302,7 +305,11 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 							// Measure and publish while the model is still resident
 							// and nothing else is contending — the whole reason
 							// llm-bench, not the serving path, is the measurer.
-							publishMeasurements(comboCtx, resid, model, mode, tsk, r)
+							if fp := publishMeasurements(comboCtx, resid, model, mode, tsk, r); fp > 0 {
+								mu.Lock()
+								footprints[model] = fp
+								mu.Unlock()
+							}
 							// Stamp the run's tool-result format on every row (constant
 							// per run) so format aggregates are comparable.
 							for j := range r {
@@ -319,6 +326,10 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 		}
 	}
 	_ = rf.Close()
+
+	// Publish per-model aggregates so corrallm can compare models at all: until
+	// now the numbers existed only in out/<ts>/ on the bench host.
+	PublishResults(ctx, resid, ts, rows, footprints)
 
 	if err := report.WriteAll(outDir, ts, rows); err != nil {
 		return rows, outDir, err

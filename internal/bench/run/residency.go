@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -343,13 +344,15 @@ func (c *residencyClient) PublishCapability(ctx context.Context, model, modality
 // strictly better than losing the run. Failures are logged, not swallowed
 // silently, because a measurement pipeline that quietly stops publishing looks
 // exactly like one with nothing to report.
-func publishMeasurements(ctx context.Context, c *residencyClient, model string, mode RunMode, tsk *task.Task, rows []Row) {
+func publishMeasurements(ctx context.Context, c *residencyClient, model string, mode RunMode, tsk *task.Task, rows []Row) int {
 	if c == nil || len(rows) == 0 {
-		return
+		return 0
 	}
 
+	footprint := 0
 	// VRAM: read it while the model is still resident from this pass.
 	if v, ok := c.MeasureResident(ctx, model); ok {
+		footprint = v.FootprintMiB
 		if err := c.PublishTune(ctx, model, v); err != nil {
 			log.Printf("llm-bench: publish tune profile for %s failed: %v", model, err)
 		} else {
@@ -363,7 +366,7 @@ func publishMeasurements(ctx context.Context, c *residencyClient, model string, 
 	// about vision, and publishing a verdict from one would be worse than
 	// publishing none — it would assert, with authority, something never tested.
 	if tsk.Class != "capability" || tsk.Requires.Modality == "" {
-		return
+		return footprint
 	}
 	verified := true
 	var detail string
@@ -383,5 +386,84 @@ func publishMeasurements(ctx context.Context, c *residencyClient, model string, 
 		log.Printf("llm-bench: publish capability verdict for %s failed: %v", model, err)
 	} else {
 		log.Printf("llm-bench: %s modality=%s runMode=%q verified=%v", model, tsk.Requires.Modality, mode, verified)
+	}
+	return footprint
+}
+
+// PublishResults sends per-model aggregates to corrallm at the end of a run.
+//
+// This is what makes cross-model comparison possible at all: without it the
+// numbers live only in out/<ts>/summary.csv on the bench host, and corrallm —
+// the thing with the dashboard — has never seen them.
+//
+// Aggregated here rather than server-side because the rows are already in hand
+// and the shape is the run's own summary; shipping every stage row so corrallm
+// could re-derive it would move more data to compute the same thing.
+func PublishResults(ctx context.Context, c *residencyClient, runID string, rows []Row, footprints map[string]int) {
+	if c == nil || runID == "" {
+		return
+	}
+	type agg struct {
+		stages, passed             int
+		prompt, cached, completion int
+		wall                       int64
+		classes                    map[string]bool
+	}
+	byModel := map[string]*agg{}
+	for _, r := range rows {
+		a := byModel[r.Model]
+		if a == nil {
+			a = &agg{classes: map[string]bool{}}
+			byModel[r.Model] = a
+		}
+		a.stages++
+		if r.Pass {
+			a.passed++
+		}
+		a.prompt += r.PromptTokens
+		a.cached += r.CachedTokens
+		a.completion += r.CompletionTokens
+		a.wall += r.WallMs
+		if r.Class != "" {
+			a.classes[r.Class] = true
+		}
+	}
+	for model, a := range byModel {
+		var classes []string
+		for c := range a.classes {
+			classes = append(classes, c)
+		}
+		sort.Strings(classes)
+		tps := 0.0
+		if a.wall > 0 {
+			tps = float64(a.prompt+a.completion) / (float64(a.wall) / 1000)
+		}
+		body, err := json.Marshal(map[string]any{
+			"runId": runID, "model": model, "classes": strings.Join(classes, ","),
+			"stages": a.stages, "stagesPassed": a.passed,
+			"promptTokens": a.prompt, "cachedTokens": a.cached, "completionTokens": a.completion,
+			"wallMs": a.wall, "tokPerSec": tps, "footprintMiB": footprints[model],
+		})
+		if err != nil {
+			continue
+		}
+		base := strings.TrimSuffix(c.base, "/v1")
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/measurements/result", bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			log.Printf("llm-bench: publish result for %s failed: %v", model, err)
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			log.Printf("llm-bench: publish result for %s -> HTTP %d", model, resp.StatusCode)
+			continue
+		}
+		log.Printf("llm-bench: published result for %s (%d/%d stages)", model, a.passed, a.stages)
 	}
 }

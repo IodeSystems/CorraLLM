@@ -44,6 +44,32 @@ CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
 -- Periodic snapshots of instantaneous per-lane admission load (P8-beyond), so
 -- queue depth is visible even before requests resolve. Sparse: only non-idle
 -- lanes are sampled. ("grp" — "group" is reserved.)
+-- bench_results: one row per (run, model). Published by llm-bench at the end of
+-- a run, NOT derived from serving traffic.
+--
+-- Persisted, unlike capability verdicts (which live in memory because a verdict
+-- describes what a backend does RIGHT NOW and a stale one would assert something
+-- nobody rechecked). A completed run is the opposite: a historical fact about a
+-- measurement that happened at a point in time, and losing the set on restart
+-- would mean re-benching every model just to compare them again.
+CREATE TABLE IF NOT EXISTS bench_results (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id            TEXT    NOT NULL,
+  model             TEXT    NOT NULL,
+  at                INTEGER NOT NULL,
+  classes           TEXT    NOT NULL DEFAULT '',
+  stages            INTEGER NOT NULL DEFAULT 0,
+  stages_passed     INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+  cached_tokens     INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  wall_ms           INTEGER NOT NULL DEFAULT 0,
+  tok_per_sec       REAL    NOT NULL DEFAULT 0,
+  footprint_mib     INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(run_id, model)
+);
+CREATE INDEX IF NOT EXISTS bench_results_model_at ON bench_results(model, at DESC);
+
 CREATE TABLE IF NOT EXISTS lane_samples (
     ts      INTEGER NOT NULL,   -- unix millis of the sample
     grp     TEXT    NOT NULL,   -- priority group
@@ -400,3 +426,89 @@ func (s *Store) DB() *sql.DB { return s.db }
 
 // Close releases the database handle.
 func (s *Store) Close() error { return s.db.Close() }
+
+// BenchResult is one model's aggregate outcome from one bench run.
+//
+// PromptTokens is the total prompted; CachedTokens is the part that was served
+// from the prompt cache. "Tokens processed" for comparison purposes is
+// PromptTokens - CachedTokens: charging a model for cache hits would flatter
+// whichever model happened to run second on the same fixtures.
+type BenchResult struct {
+	ID               int64   `json:"id"`
+	RunID            string  `json:"runId"`
+	Model            string  `json:"model"`
+	At               int64   `json:"at"`
+	Classes          string  `json:"classes"`
+	Stages           int     `json:"stages"`
+	StagesPassed     int     `json:"stagesPassed"`
+	PromptTokens     int     `json:"promptTokens"`
+	CachedTokens     int     `json:"cachedTokens"`
+	CompletionTokens int     `json:"completionTokens"`
+	WallMS           int64   `json:"wallMs"`
+	TokPerSec        float64 `json:"tokPerSec"`
+	FootprintMiB     int     `json:"footprintMiB"`
+}
+
+// SaveBenchResult upserts one (run, model) aggregate. Re-publishing the same
+// pair replaces it, so a re-run or a retried publish cannot double-count.
+func (s *Store) SaveBenchResult(ctx context.Context, r BenchResult) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO bench_results
+  (run_id, model, at, classes, stages, stages_passed, prompt_tokens, cached_tokens, completion_tokens, wall_ms, tok_per_sec, footprint_mib)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(run_id, model) DO UPDATE SET
+  at=excluded.at, classes=excluded.classes, stages=excluded.stages,
+  stages_passed=excluded.stages_passed, prompt_tokens=excluded.prompt_tokens,
+  cached_tokens=excluded.cached_tokens, completion_tokens=excluded.completion_tokens,
+  wall_ms=excluded.wall_ms, tok_per_sec=excluded.tok_per_sec, footprint_mib=excluded.footprint_mib`,
+		r.RunID, r.Model, r.At, r.Classes, r.Stages, r.StagesPassed,
+		r.PromptTokens, r.CachedTokens, r.CompletionTokens, r.WallMS, r.TokPerSec, r.FootprintMiB)
+	return err
+}
+
+// LatestBenchResults returns the most recent result per model — the comparison
+// view's data. Older runs stay in the table for history but do not compete with
+// the current one in a side-by-side.
+func (s *Store) LatestBenchResults(ctx context.Context) ([]BenchResult, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT b.id, b.run_id, b.model, b.at, b.classes, b.stages, b.stages_passed,
+       b.prompt_tokens, b.cached_tokens, b.completion_tokens, b.wall_ms, b.tok_per_sec, b.footprint_mib
+FROM bench_results b
+JOIN (SELECT model, MAX(at) AS at FROM bench_results GROUP BY model) m
+  ON m.model = b.model AND m.at = b.at
+ORDER BY b.model`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanBenchResults(rows)
+}
+
+// BenchResultsFor returns a model's history, newest first.
+func (s *Store) BenchResultsFor(ctx context.Context, model string, limit int) ([]BenchResult, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, run_id, model, at, classes, stages, stages_passed,
+       prompt_tokens, cached_tokens, completion_tokens, wall_ms, tok_per_sec, footprint_mib
+FROM bench_results WHERE model = ? ORDER BY at DESC LIMIT ?`, model, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanBenchResults(rows)
+}
+
+func scanBenchResults(rows *sql.Rows) ([]BenchResult, error) {
+	var out []BenchResult
+	for rows.Next() {
+		var r BenchResult
+		if err := rows.Scan(&r.ID, &r.RunID, &r.Model, &r.At, &r.Classes, &r.Stages, &r.StagesPassed,
+			&r.PromptTokens, &r.CachedTokens, &r.CompletionTokens, &r.WallMS, &r.TokPerSec, &r.FootprintMiB); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

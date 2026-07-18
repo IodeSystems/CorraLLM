@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/gpu"
+	"github.com/iodesystems/corrallm/internal/store"
 	"github.com/iodesystems/corrallm/internal/tune"
 )
 
@@ -380,5 +381,138 @@ func (h *Handlers) UnloadAllModels(_ context.Context, _ *UnloadAllInput) (*Unloa
 	out.Body.Evicted = n
 	out.Body.Skipped = skipped
 	out.Body.Message = fmt.Sprintf("evicted %d backend(s), %d could not be evicted", n, len(skipped))
+	return out, nil
+}
+
+// --- bench results ----------------------------------------------------------
+
+// BenchResultInput publishes one model's aggregate outcome from a run.
+type BenchResultInput struct {
+	Body struct {
+		RunID            string  `json:"runId" doc:"The run's timestamp id (llm-bench out/<ts>)."`
+		Model            string  `json:"model"`
+		Classes          string  `json:"classes,omitempty" doc:"Probe classes that ran, comma separated."`
+		Stages           int     `json:"stages"`
+		StagesPassed     int     `json:"stagesPassed"`
+		PromptTokens     int     `json:"promptTokens"`
+		CachedTokens     int     `json:"cachedTokens" doc:"Prompt tokens served from cache; excluded from 'processed' so cache hits don't flatter whichever model ran second."`
+		CompletionTokens int     `json:"completionTokens"`
+		WallMS           int64   `json:"wallMs"`
+		TokPerSec        float64 `json:"tokPerSec"`
+		FootprintMiB     int     `json:"footprintMiB,omitempty"`
+		At               int64   `json:"at,omitempty"`
+	}
+}
+
+// BenchResultOutput acknowledges a published result.
+type BenchResultOutput struct {
+	Body struct {
+		OK      bool   `json:"ok"`
+		Message string `json:"message"`
+	}
+}
+
+// PublishBenchResult records one model's aggregate from a bench run.
+//
+// Upserted by (runId, model), so a retried publish cannot double-count a run.
+func (h *Handlers) PublishBenchResult(ctx context.Context, in *BenchResultInput) (*BenchResultOutput, error) {
+	out := &BenchResultOutput{}
+	if h.Store == nil {
+		out.Body.Message = "no store"
+		return out, nil
+	}
+	if in.Body.RunID == "" || in.Body.Model == "" {
+		out.Body.Message = "runId and model are required"
+		return out, nil
+	}
+	at := in.Body.At
+	if at == 0 {
+		at = time.Now().Unix()
+	}
+	err := h.Store.SaveBenchResult(ctx, store.BenchResult{
+		RunID: in.Body.RunID, Model: in.Body.Model, At: at, Classes: in.Body.Classes,
+		Stages: in.Body.Stages, StagesPassed: in.Body.StagesPassed,
+		PromptTokens: in.Body.PromptTokens, CachedTokens: in.Body.CachedTokens,
+		CompletionTokens: in.Body.CompletionTokens, WallMS: in.Body.WallMS,
+		TokPerSec: in.Body.TokPerSec, FootprintMiB: in.Body.FootprintMiB,
+	})
+	if err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	out.Body.OK = true
+	out.Body.Message = fmt.Sprintf("recorded %s for run %s", in.Body.Model, in.Body.RunID)
+	return out, nil
+}
+
+// BenchResultView is one model's comparable outcome.
+type BenchResultView struct {
+	RunID string `json:"runId"`
+	Model string `json:"model"`
+	At    int64  `json:"at"`
+	// Score is the stage pass rate 0..1 — the quality axis of a comparison.
+	Score           float64 `json:"score"`
+	Stages          int     `json:"stages"`
+	StagesPassed    int     `json:"stagesPassed"`
+	Classes         string  `json:"classes,omitempty"`
+	TokensProcessed int     `json:"tokensProcessed" doc:"Prompt tokens EXCLUDING cache hits."`
+	TokensGenerated int     `json:"tokensGenerated"`
+	CachedTokens    int     `json:"cachedTokens"`
+	WallMS          int64   `json:"wallMs"`
+	TokPerSec       float64 `json:"tokPerSec"`
+	FootprintMiB    int     `json:"footprintMiB"`
+}
+
+// BenchResultsInput optionally scopes to one model.
+type BenchResultsInput struct {
+	Model string `query:"model" doc:"Only this model's history; omit for the latest per model."`
+	Limit int    `query:"limit" doc:"History depth when model is set (default 20)."`
+}
+
+// BenchResultsOutput lists comparable results.
+type BenchResultsOutput struct {
+	Body struct {
+		Results []BenchResultView `json:"results"`
+	}
+}
+
+// BenchResults returns the latest result per model, or one model's history.
+func (h *Handlers) BenchResults(ctx context.Context, in *BenchResultsInput) (*BenchResultsOutput, error) {
+	out := &BenchResultsOutput{}
+	if h.Store == nil {
+		return out, nil
+	}
+	var (
+		rows []store.BenchResult
+		err  error
+	)
+	if in.Model != "" {
+		rows, err = h.Store.BenchResultsFor(ctx, in.Model, in.Limit)
+	} else {
+		rows, err = h.Store.LatestBenchResults(ctx)
+	}
+	if err != nil {
+		return out, err
+	}
+	for _, r := range rows {
+		score := 0.0
+		if r.Stages > 0 {
+			score = float64(r.StagesPassed) / float64(r.Stages)
+		}
+		// Cache hits are subtracted, not counted: a model that ran second over
+		// the same fixtures gets cheap prompt tokens through no merit of its own,
+		// and comparing raw prompt totals would reward the running order.
+		processed := r.PromptTokens - r.CachedTokens
+		if processed < 0 {
+			processed = 0
+		}
+		out.Body.Results = append(out.Body.Results, BenchResultView{
+			RunID: r.RunID, Model: r.Model, At: r.At, Score: score,
+			Stages: r.Stages, StagesPassed: r.StagesPassed, Classes: r.Classes,
+			TokensProcessed: processed, TokensGenerated: r.CompletionTokens,
+			CachedTokens: r.CachedTokens, WallMS: r.WallMS,
+			TokPerSec: r.TokPerSec, FootprintMiB: r.FootprintMiB,
+		})
+	}
 	return out, nil
 }

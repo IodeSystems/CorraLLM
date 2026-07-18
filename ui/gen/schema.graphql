@@ -10,6 +10,7 @@ type CorrallmMutationNamespace {
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
@@ -24,6 +25,12 @@ type CorrallmQueryNamespace {
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchResults(
+    """History depth when model is set (default 20)."""
+    limit: Long
+    """Only this model's history; omit for the latest per model."""
+    model: String
+  ): corrallm_BenchResultsOutputBody @derived(operationId: "benchResults")
   benchStatus: corrallm_BenchRunStatus @derived(operationId: "benchStatus")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
@@ -76,6 +83,7 @@ type CorrallmV1MutationNamespace {
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
@@ -89,6 +97,12 @@ type CorrallmV1QueryNamespace {
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchResults(
+    """History depth when model is set (default 20)."""
+    limit: Long
+    """Only this model's history; omit for the latest per model."""
+    model: String
+  ): corrallm_BenchResultsOutputBody @derived(operationId: "benchResults")
   benchStatus: corrallm_BenchRunStatus @derived(operationId: "benchStatus")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
@@ -277,6 +291,50 @@ type corrallm_BenchProbeSuggestion {
   kind: String!
   """Why it is (or is not) pre-checked."""
   reason: String!
+}
+
+input corrallm_BenchResultInputBodyInput {
+  at: Long
+  """Prompt tokens served from cache; excluded from 'processed' so cache hits don't flatter whichever model ran second."""
+  cachedTokens: Long!
+  """Probe classes that ran, comma separated."""
+  classes: String
+  completionTokens: Long!
+  footprintMiB: Long
+  model: String!
+  promptTokens: Long!
+  """The run's timestamp id (llm-bench out/<ts>)."""
+  runId: String!
+  stages: Long!
+  stagesPassed: Long!
+  tokPerSec: Float!
+  wallMs: Long!
+}
+
+type corrallm_BenchResultOutputBody {
+  message: String!
+  ok: Boolean!
+}
+
+type corrallm_BenchResultView {
+  at: Long!
+  cachedTokens: Long!
+  classes: String
+  footprintMiB: Long!
+  model: String!
+  runId: String!
+  score: Float!
+  stages: Long!
+  stagesPassed: Long!
+  tokPerSec: Float!
+  tokensGenerated: Long!
+  """Prompt tokens EXCLUDING cache hits."""
+  tokensProcessed: Long!
+  wallMs: Long!
+}
+
+type corrallm_BenchResultsOutputBody {
+  results: [corrallm_BenchResultView!]!
 }
 
 input corrallm_BenchRunInputBodyInput {
