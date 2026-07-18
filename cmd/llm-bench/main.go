@@ -124,7 +124,8 @@ func cmdValidate(argv []string) int {
 			continue // not a probe dir
 		}
 		n++
-		if _ = t; err != nil {
+		_ = t
+		if err != nil {
 			fmt.Printf("INVALID %s: %v\n", e.Name(), err)
 			bad++
 		} else {

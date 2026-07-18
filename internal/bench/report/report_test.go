@@ -106,3 +106,36 @@ func TestWriteAll(t *testing.T) {
 		t.Errorf("report.md: %v", err)
 	}
 }
+
+// A `run: both` probe emits a cold pass and a warm pass. They must stay SEPARATE
+// rows in summary.csv: merging them averages a model that works warm with the
+// same model failing cold into a meaningless ~50% and hides the disagreement
+// that is the whole reason both passes ran.
+func TestWriteSummaryCSV_SplitsRunModes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "summary.csv")
+	rows := []Row{
+		{Model: "m", Toolset: "baseline", Task: "vision", RunMode: "warm", Class: "capability", Pass: true, ChecksTotal: 1, ChecksPassed: 1},
+		{Model: "m", Toolset: "baseline", Task: "vision", RunMode: "cold", Class: "capability", Pass: false, ChecksTotal: 1, ChecksPassed: 0},
+	}
+	if err := WriteSummaryCSV(path, rows, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "run_mode") {
+		t.Error("summary.csv must carry a run_mode column or the passes are indistinguishable")
+	}
+	lines := 0
+	for _, ln := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.HasPrefix(ln, "m,baseline,vision,") {
+			lines++
+		}
+	}
+	if lines != 2 {
+		t.Errorf("want 2 rows (cold + warm), got %d:\n%s", lines, out)
+	}
+}

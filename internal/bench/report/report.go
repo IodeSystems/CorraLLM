@@ -197,7 +197,7 @@ func (a *agg) tokPerSec() float64 {
 // ── summary.csv (one row per model×toolset×task) ────────────────────
 
 var summaryHeader = []string{
-	"model", "toolset", "task", "class", "tool_format",
+	"model", "toolset", "task", "run_mode", "class", "tool_format",
 	"stages", "stages_passed", "pass_rate",
 	"turns", "tool_calls",
 	"prompt_tokens", "completion_tokens", "tokens",
@@ -211,13 +211,17 @@ var summaryHeader = []string{
 // is non-nil, the judge_* columns are filled from it (keyed by SummaryKey);
 // otherwise those columns are empty (deterministic pass/fail is unaffected).
 func WriteSummaryCSV(path string, rows []Row, judge map[string]JudgeScores) error {
-	type key struct{ model, toolset, task string }
+	// runMode is part of the key: a `run: both` probe emits a cold pass AND a
+	// warm pass, and merging them would average a model that WORKS warm with the
+	// same model FAILING cold into a meaningless ~50%, hiding the disagreement
+	// that is the entire reason both passes were run.
+	type key struct{ model, toolset, task, runMode string }
 	aggs := map[key]*agg{}
 	classOf := map[key]string{}
 	formatOf := map[key]string{}
 	var order []key
 	for _, r := range rows {
-		k := key{r.Model, r.Toolset, r.Task}
+		k := key{r.Model, r.Toolset, r.Task, r.RunMode}
 		a, ok := aggs[k]
 		if !ok {
 			a = &agg{}
@@ -235,7 +239,10 @@ func WriteSummaryCSV(path string, rows []Row, judge map[string]JudgeScores) erro
 		if order[i].toolset != order[j].toolset {
 			return order[i].toolset < order[j].toolset
 		}
-		return order[i].task < order[j].task
+		if order[i].task != order[j].task {
+			return order[i].task < order[j].task
+		}
+		return order[i].runMode < order[j].runMode
 	})
 
 	f, err := os.Create(path)
@@ -259,7 +266,7 @@ func WriteSummaryCSV(path string, rows []Row, judge map[string]JudgeScores) erro
 			}
 		}
 		rec := []string{
-			k.model, k.toolset, k.task, classOf[k], formatOf[k],
+			k.model, k.toolset, k.task, k.runMode, classOf[k], formatOf[k],
 			itoa(a.stages), itoa(a.passed), ftoa(a.passRate()),
 			itoa(a.turns), itoa(a.toolCalls),
 			itoa(a.promptTokens), itoa(a.completionTokens), itoa(a.tokens),
