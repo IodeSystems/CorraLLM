@@ -611,36 +611,16 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, pid int) {
 	// whether the KV-log fast path below is available this run — it's the
 	// data the two-point slope fallback needs, and costs nothing to keep.
 	existing, _ := m.tuneCache.Get(stats.Name, model)
-	samples := tune.MergeSample(existing.Samples, tune.Sample{Slots: nSlots, FootprintMiB: footprint})
+	// Shared derivation — the SAME code llm-bench's published measurement runs
+	// through. Two implementations of "what is this model's per-slot cost"
+	// would drift.
+	prof := tune.Derive(existing, tune.SourceServing, footprint, kvMiB, nSlots, nCtx, time.Now().Unix())
+	base, perSlot, samples := prof.BaseMiB, prof.PerSlotMiB, prof.Samples
+	derivedFromSlope := kvMiB <= 0 && perSlot > 0
 
-	var base, perSlot int
-	derivedFromSlope := false
-	if kvMiB > 0 {
-		// Fast path: llama.cpp logged the KV cache total directly. "KV
-		// self/buffer/cache size" as it logs it is the TOTAL allocation across
-		// every slot, not a per-slot figure — divide it out.
-		perSlot = kvMiB / max(1, nSlots)
-		base = footprint - kvMiB
-		if base < 0 {
-			base = 0
-		}
-	} else if sp, sb, ok := tune.SlopeFromSamples(samples); ok {
-		// This host's llama.cpp logs no KV size (kvMiB==0): with two spawns at
-		// distinct slot counts now on record, derive PerSlotMiB/BaseMiB from the
-		// slope of footprint vs slots instead.
-		perSlot, base = sp, sb
-		derivedFromSlope = true
-	} else {
-		// Still only one distinct slot-count sample: PerSlotMiB stays unknown
-		// (0, the fail-safe "not tunable yet" value) until a second
-		// distinct-slots spawn (see calibrationProbe) gives us a slope.
-		base = footprint
-	}
-
-	m.tuneCache.Update(stats.Name, model, tune.Profile{
-		BaseMiB: base, PerSlotMiB: perSlot, PeakMiB: footprint, MeasuredSlots: nSlots, Ctx: nCtx,
-		Samples: samples,
-	})
+	// Update applies precedence: this serving measurement will NOT overwrite a
+	// bench-published profile's shape, only contribute its sample and peak.
+	m.tuneCache.Update(stats.Name, model, prof)
 	if err := m.tuneCache.Save(); err != nil {
 		slog.Warn("save tune cache", "model", model, "err", err)
 		return

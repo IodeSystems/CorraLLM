@@ -45,11 +45,18 @@ func TestMeasureOnLoad(t *testing.T) {
 	want := tune.Profile{
 		BaseMiB: 7000, PerSlotMiB: 1000, PeakMiB: 9000, MeasuredSlots: 2, Ctx: 0,
 		Samples: []tune.Sample{{Slots: 2, FootprintMiB: 9000}}, // every spawn records a sample, KV-log fast path or not
+		Source:  tune.SourceServing,                            // an in-spawn measurement, NOT a bench one
 	}
 	got, ok := cache.Get("Fake GPU", "measured")
 	if !ok {
 		t.Fatal("want profile persisted in-memory")
 	}
+	// MeasuredAt is wall-clock; assert it was stamped, then normalize so the
+	// rest can be compared exactly.
+	if got.MeasuredAt == 0 {
+		t.Error("MeasuredAt not stamped — a profile with no timestamp cannot be superseded by a newer one")
+	}
+	got.MeasuredAt = 0
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("profile = %+v, want %+v", got, want)
 	}
@@ -60,7 +67,9 @@ func TestMeasureOnLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if g, ok := reloaded.Get("Fake GPU", "measured"); !ok || !reflect.DeepEqual(g, want) {
+	g, ok := reloaded.Get("Fake GPU", "measured")
+	g.MeasuredAt = 0
+	if !ok || !reflect.DeepEqual(g, want) {
 		t.Errorf("reloaded profile = %+v, ok=%v, want %+v", g, ok, want)
 	}
 }

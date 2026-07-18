@@ -71,38 +71,25 @@ func (h *Handlers) PublishTuneProfile(_ context.Context, in *TuneProfileInput) (
 		}
 		gpuName = st.Name
 	}
-	p := tune.Profile{
-		BaseMiB:       in.Body.BaseMiB,
-		PerSlotMiB:    in.Body.PerSlotMiB,
-		PeakMiB:       in.Body.PeakMiB,
-		MeasuredSlots: in.Body.MeasuredSlots,
-		Ctx:           in.Body.Ctx,
+	existing, _ := h.Mgr.TuneProfile(gpuName, in.Body.Model)
+	// Run through the SAME derivation the serving path uses — one
+	// implementation of the base/per-slot split, not two that can drift.
+	// kvMiB is passed as 0: a bench reports the split it measured directly, or
+	// leaves it to the two-point slope across samples.
+	footprint := in.Body.FootprintMiB
+	if footprint == 0 {
+		footprint = in.Body.BaseMiB + in.Body.PerSlotMiB*in.Body.MeasuredSlots
 	}
-	// Merge rather than replace the sample set: two measurements at DIFFERENT
-	// slot counts are what make the per-slot slope derivable without the
-	// calibration probe perturbing a live server.
-	if existing, ok := h.Mgr.TuneProfile(gpuName, in.Body.Model); ok {
-		p.Samples = existing.Samples
-		if p.PeakMiB == 0 {
-			p.PeakMiB = existing.PeakMiB
-		}
+	p := tune.Derive(existing, tune.SourceBench, footprint, 0, in.Body.MeasuredSlots, in.Body.Ctx, time.Now().Unix())
+	// A bench that measured the split directly wins over the slope estimate.
+	if in.Body.BaseMiB > 0 {
+		p.BaseMiB = in.Body.BaseMiB
 	}
-	if in.Body.FootprintMiB > 0 && in.Body.MeasuredSlots > 0 {
-		p.Samples = tune.MergeSample(p.Samples, tune.Sample{
-			Slots:        in.Body.MeasuredSlots,
-			FootprintMiB: in.Body.FootprintMiB,
-		})
-		if p.PeakMiB < in.Body.FootprintMiB {
-			p.PeakMiB = in.Body.FootprintMiB
-		}
-		// With two distinct points and no directly-measured per-slot cost,
-		// derive the slope — the same computation calibrationProbe exists to
-		// enable, now fed by a deliberate measurement instead of a live spawn.
-		if p.PerSlotMiB == 0 {
-			if perSlot, base, ok := tune.SlopeFromSamples(p.Samples); ok {
-				p.PerSlotMiB, p.BaseMiB = perSlot, base
-			}
-		}
+	if in.Body.PerSlotMiB > 0 {
+		p.PerSlotMiB = in.Body.PerSlotMiB
+	}
+	if in.Body.PeakMiB > p.PeakMiB {
+		p.PeakMiB = in.Body.PeakMiB
 	}
 	if err := h.Mgr.PublishTuneProfile(gpuName, in.Body.Model, p); err != nil {
 		out.Body.Message = err.Error()

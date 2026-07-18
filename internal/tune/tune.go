@@ -28,6 +28,20 @@ type Profile struct {
 	MeasuredSlots int // n_slots the measurement was taken at
 	Ctx           int // n_ctx at measurement time
 
+	// Source records WHO measured this profile: SourceBench (llm-bench, measured
+	// deliberately in isolation with residency under its control) or
+	// SourceServing (corrallm's opportunistic in-spawn measurement, taken
+	// against whatever contention live traffic happened to produce).
+	//
+	// It exists because the two are not equally trustworthy and the cache is
+	// last-writer-wins. Without it, a bench publishes a careful measurement and
+	// the very next real spawn silently overwrites it with a contended one —
+	// which made "llm-bench is the authoritative measurer" false in practice.
+	Source string
+	// MeasuredAt is the unix second the profile was recorded. Used to let a
+	// NEWER bench measurement supersede an older one.
+	MeasuredAt int64
+
 	// Samples holds up to the two most-recent-DISTINCT (slots, footprint)
 	// spawn measurements. It exists for hosts where llama.cpp logs no KV
 	// cache size, so BaseMiB/PerSlotMiB can't be split out of a single
@@ -40,6 +54,55 @@ type Profile struct {
 	// which SlopeFromSamples treats as "not enough data" — no behavior
 	// change for already-tuned (KV-log-derived) profiles.
 	Samples []Sample
+}
+
+// Measurement provenance. A serving measurement never downgrades a bench one.
+const (
+	SourceBench   = "bench"
+	SourceServing = "serving"
+)
+
+// Derive computes a Profile from one observation, folding it into whatever is
+// already known.
+//
+// SINGLE implementation, shared by corrallm's in-spawn measurement and
+// llm-bench's published measurement. Both previously did their own
+// MergeSample/SlopeFromSamples/peak arithmetic, which is exactly the kind of
+// duplication that drifts: two answers to "what is this model's per-slot cost"
+// computed slightly differently is worse than one imperfect answer.
+//
+// kvMiB > 0 takes the fast path (llama.cpp logged the KV total directly, so the
+// split is exact). Otherwise two samples at DISTINCT slot counts give the slope.
+// With neither, PerSlotMiB stays 0 — the fail-safe "not tunable yet" value.
+func Derive(existing Profile, source string, footprintMiB, kvMiB, nSlots, nCtx int, at int64) Profile {
+	samples := MergeSample(existing.Samples, Sample{Slots: nSlots, FootprintMiB: footprintMiB})
+	var base, perSlot int
+	switch {
+	case kvMiB > 0:
+		// "KV self/buffer/cache size" is the TOTAL across every slot, not
+		// per-slot — divide it out.
+		perSlot = kvMiB / max(1, nSlots)
+		base = footprintMiB - kvMiB
+		if base < 0 {
+			base = 0
+		}
+	default:
+		if sp, sb, ok := SlopeFromSamples(samples); ok {
+			perSlot, base = sp, sb
+		} else {
+			base = footprintMiB
+		}
+	}
+	peak := footprintMiB
+	if existing.PeakMiB > peak {
+		peak = existing.PeakMiB
+	}
+	return Profile{
+		BaseMiB: base, PerSlotMiB: perSlot, PeakMiB: peak,
+		MeasuredSlots: nSlots, Ctx: nCtx,
+		Source: source, MeasuredAt: at,
+		Samples: samples,
+	}
 }
 
 // Sample is one spawn's empirical VRAM measurement: total observed process
@@ -241,8 +304,27 @@ func (c *Cache) Update(gpuName, model string, p Profile) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	k := key(gpuName, model)
-	if existing, ok := c.data[k]; ok && existing.PeakMiB > p.PeakMiB {
+	existing, ok := c.data[k]
+	if ok && existing.PeakMiB > p.PeakMiB {
 		p.PeakMiB = existing.PeakMiB
+	}
+	// PRECEDENCE: a serving-sourced measurement must not overwrite a
+	// bench-sourced one's shape. The cache is last-writer-wins and corrallm
+	// spawns constantly, so without this the next real request after a
+	// calibration run silently replaces the isolated measurement with a
+	// contended one — defeating the whole point of measuring deliberately.
+	//
+	// The serving observation is NOT discarded: its sample and any higher peak
+	// are still folded in, because a real spawn is genuine evidence about
+	// footprint even when it is not the authority on the base/per-slot split.
+	if ok && existing.Source == SourceBench && p.Source != SourceBench {
+		merged := existing
+		merged.PeakMiB = p.PeakMiB
+		for _, sm := range p.Samples {
+			merged.Samples = MergeSample(merged.Samples, sm)
+		}
+		c.data[k] = merged
+		return
 	}
 	c.data[k] = p
 }
