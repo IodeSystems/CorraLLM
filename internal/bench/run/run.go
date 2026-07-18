@@ -63,9 +63,14 @@ type Options struct {
 	Models    []string // filter (empty = all configured)
 	Toolsets  []string // filter (empty = all configured)
 	TasksGlob string   // shell glob on task dir basename (empty = all)
-	McpBin    string   // path to the llm-bench-mcp binary
-	BinDir    string   // dir searched for toolset server binaries (e.g. local/bin); "" = $PATH only
-	Judge     bool     // run the P1 judge phase after candidates finish
+	// Classes filters probes by class (capability | coding | tooluse |
+	// adversarial). Empty = every class. This is the axis a UI exposes as
+	// checkboxes: "measure + capability" is a fast new-model pass, while the
+	// quality classes are the slow opt-in.
+	Classes []string
+	McpBin  string // path to the llm-bench-mcp binary
+	BinDir  string // dir searched for toolset server binaries (e.g. local/bin); "" = $PATH only
+	Judge   bool   // run the P1 judge phase after candidates finish
 
 	// NewRunner builds the LLM runner for a model. Injectable for tests; nil
 	// uses a corrallm llm.Client from Config. Also used for the judge model.
@@ -176,6 +181,9 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 		return nil, "", err
 	}
 	tasks, err := loadTasks(opts.TasksDir, opts.TasksGlob)
+	if err == nil {
+		tasks = filterClasses(tasks, opts.Classes)
+	}
 	if err != nil {
 		return nil, "", err
 	}
@@ -1148,4 +1156,29 @@ func contains(ss []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// filterClasses keeps only probes whose class is listed. An empty list keeps
+// everything, so the default behavior is unchanged for every existing caller.
+func filterClasses(tasks []*task.Task, classes []string) []*task.Task {
+	if len(classes) == 0 {
+		return tasks
+	}
+	want := map[string]bool{}
+	for _, c := range classes {
+		c = strings.TrimSpace(c)
+		if c != "" {
+			want[c] = true
+		}
+	}
+	if len(want) == 0 {
+		return tasks
+	}
+	out := tasks[:0:0]
+	for _, t := range tasks {
+		if want[t.Class] {
+			out = append(out, t)
+		}
+	}
+	return out
 }

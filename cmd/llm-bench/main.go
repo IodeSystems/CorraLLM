@@ -55,6 +55,7 @@ func cmdRun(argv []string) int {
 	models := fs.String("models", "", "comma-separated model filter (default: all in config)")
 	toolsets := fs.String("toolsets", "", "comma-separated toolset filter (default: all in config)")
 	tasksGlob := fs.String("tasks", "", "glob on task dir names (default: all)")
+	classes := fs.String("classes", "", "comma-separated class filter: capability|coding|tooluse|adversarial (default: all)")
 	out := fs.String("out", "out", "output root directory")
 	mcpBin := fs.String("mcp-bin", "", "path to llm-bench-mcp (default: local/bin/llm-bench-mcp or $PATH)")
 	doJudge := fs.Bool("judge", false, "run the P1 judge phase after candidates finish")
@@ -83,6 +84,7 @@ func cmdRun(argv []string) int {
 		Models:    splitCSV(*models),
 		Toolsets:  splitCSV(*toolsets),
 		TasksGlob: *tasksGlob,
+		Classes:   splitCSV(*classes),
 		McpBin:    bin,
 		BinDir:    resolveBinDir(),
 		Judge:     *doJudge,

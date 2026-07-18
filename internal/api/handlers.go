@@ -37,6 +37,13 @@ type Handlers struct {
 	// Proxy is needed to drive the exclusive calibration lease. Nil disables
 	// calibration mode rather than panicking.
 	Proxy *proxy.Proxy
+	// Bench spawns llm-bench for UI-driven runs. Nil disables the endpoints.
+	Bench *BenchRunner
+	// BenchBin/BenchConfig/BenchProbes locate the llm-bench binary and its
+	// inputs. The binary is the same one a human runs from a shell.
+	BenchBin    string
+	BenchConfig string
+	BenchProbes string
 }
 
 // --- health ---

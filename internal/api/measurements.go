@@ -262,3 +262,90 @@ func (h *Handlers) CalibrationStatus(_ context.Context, _ *CalibrationStatusInpu
 	out.Body.RemainingSeconds = int(remaining.Seconds())
 	return out, nil
 }
+
+// --- bench run (corrallm spawns llm-bench) -----------------------------------
+
+// BenchRunInput selects what to run.
+type BenchRunInput struct {
+	Body struct {
+		Models  []string `json:"models,omitempty" doc:"Models to bench; empty = every model in the bench config."`
+		Classes []string `json:"classes,omitempty" doc:"Probe classes: capability | coding | tooluse | adversarial. Empty = all."`
+		Reason  string   `json:"reason,omitempty" doc:"Shown to turned-away callers."`
+		TTL     int      `json:"ttlSeconds,omitempty" doc:"Lease duration; the run is killed and the lease released when it expires."`
+	}
+}
+
+// BenchRunOutput reports the spawned run.
+type BenchRunOutput struct {
+	Body struct {
+		OK      bool           `json:"ok"`
+		Message string         `json:"message"`
+		Warning string         `json:"warning,omitempty"`
+		Status  BenchRunStatus `json:"status"`
+	}
+}
+
+// StartBenchRun spawns llm-bench under an exclusive lease.
+//
+// It runs the SAME binary with the same flags a human would type — the Args in
+// the status are the literal invocation, so any run started here is
+// reproducible from a shell, and llm-bench stays a first-class CLI rather than
+// an implementation detail of the dashboard.
+func (h *Handlers) StartBenchRun(_ context.Context, in *BenchRunInput) (*BenchRunOutput, error) {
+	out := &BenchRunOutput{}
+	if h.Bench == nil || h.Proxy == nil {
+		out.Body.Message = "bench runs unavailable (runner or proxy not wired)"
+		return out, nil
+	}
+	calib := h.Proxy.Calibration()
+	st, err := h.Bench.Start(BenchStartOptions{
+		Bin:        h.BenchBin,
+		ConfigPath: h.BenchConfig,
+		ProbesDir:  h.BenchProbes,
+		Models:     in.Body.Models,
+		Classes:    in.Body.Classes,
+		TTLSeconds: in.Body.TTL,
+		Reason:     in.Body.Reason,
+	}, calib.Begin, calib.End)
+	if err != nil {
+		out.Body.Message = err.Error()
+		out.Body.Status = st
+		return out, nil
+	}
+	out.Body.OK = true
+	out.Body.Message = "bench run started"
+	out.Body.Warning = "EXCLUSIVE MODE: models will be EVICTED to take cold measurements, and every caller except this run receives 429 + Retry-After until it finishes."
+	out.Body.Status = st
+	return out, nil
+}
+
+// BenchStatusInput has no parameters.
+type BenchStatusInput struct{}
+
+// BenchStatusOutput reports the current or last run.
+type BenchStatusOutput struct {
+	Body BenchRunStatus
+}
+
+// BenchStatus reports the in-flight (or most recent) bench run.
+func (h *Handlers) BenchStatus(_ context.Context, _ *BenchStatusInput) (*BenchStatusOutput, error) {
+	out := &BenchStatusOutput{}
+	if h.Bench != nil {
+		out.Body = h.Bench.Status()
+	}
+	return out, nil
+}
+
+// CancelBenchInput has no parameters.
+type CancelBenchInput struct{}
+
+// CancelBenchRun stops an in-flight run; the lease is released by the run's own
+// exit path, so cancelling can never strand the lockout.
+func (h *Handlers) CancelBenchRun(_ context.Context, _ *CancelBenchInput) (*BenchStatusOutput, error) {
+	out := &BenchStatusOutput{}
+	if h.Bench != nil {
+		h.Bench.Cancel()
+		out.Body = h.Bench.Status()
+	}
+	return out, nil
+}

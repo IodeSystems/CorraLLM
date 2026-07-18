@@ -75,6 +75,30 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.LoadModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "startBenchRun",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/bench/run",
+		Summary:     "Spawn llm-bench under an exclusive lease (EVICTS models; other callers get 429).",
+		Tags:        []string{"control"},
+	}, h.StartBenchRun)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchStatus",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/status",
+		Summary:     "Progress and captured output of the current or last bench run.",
+		Tags:        []string{"observability"},
+	}, h.BenchStatus)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "cancelBenchRun",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/bench/cancel",
+		Summary:     "Stop an in-flight bench run and release the lease.",
+		Tags:        []string{"control"},
+	}, h.CancelBenchRun)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchPlan",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/bench/plan",
