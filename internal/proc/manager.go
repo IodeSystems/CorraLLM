@@ -238,7 +238,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	p := m.procs[name]
 	triggered := p == nil
 	if p == nil {
-		usage, _ := config.ParseSizes(mdl.RAMUsage) // validated at config load
+		usage := m.effectiveUsage(name, mdl)
 		// Residency applies to spawned models bound to a server pool; pure
 		// proxies (remote/paid) consume no local pools.
 		if mdl.Server != "" && len(usage) > 0 {
@@ -479,6 +479,77 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 	slog.Debug("vram budget (post-eviction)", "model", forModel, "budgetMiB", budget,
 		"totalMiB", stats.TotalMiB, "preCrowdedMiB", preCrowded, "nonEvictableMiB", nonEvictable, "marginMiB", m.vramMargin)
 	return budget
+}
+
+// vramPool is the pool name treated as GPU memory when reconciling a config
+// declaration against a MEASURED footprint. Matches the existing convention in
+// vramBudget; a multi-GPU or differently-named pool layout would need this
+// generalised rather than hardcoded.
+const vramPool = "gpu0"
+
+// effectiveUsage returns the pool reservation for a spawn, preferring a MEASURED
+// VRAM footprint over the config's hand-written ramUsage.
+//
+// ramUsage is what admission and eviction actually trust, and it is a number a
+// human typed. It goes stale the moment anything about the model changes:
+// ternary-bonsai-27b declared 16GB and really took 23098 MiB after its context
+// window was restored, a 7 GB under-declaration that would have let the
+// scheduler admit a neighbour which could not fit. The tune profile had the
+// truth the whole time and nothing consulted it.
+//
+// The estimate is computed for THIS spawn's slot count rather than reused
+// verbatim, since a profile measured at one slot must not be applied unchanged
+// to two. PeakMiB is a floor: it is the largest footprint ever observed, so
+// anything below it is known to be an under-estimate.
+//
+// Falls back to the config value when there is no usable profile — a fresh
+// install must schedule before anything has been measured. The non-GPU pools
+// (system RAM) always come from config; the profile only measures VRAM.
+func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64 {
+	usage, _ := config.ParseSizes(mdl.RAMUsage) // validated at config load
+	if m.tuneCache == nil || mdl.Server == "" {
+		return usage
+	}
+	stats, err := gpu.Probe()
+	if err != nil {
+		return usage
+	}
+	prof, ok := m.tuneCache.Get(stats.Name, name)
+	if !ok || prof.PeakMiB <= 0 {
+		return usage
+	}
+
+	slots := mdl.Slots()
+	est := prof.BaseMiB + slots*prof.PerSlotMiB
+	if prof.PeakMiB > est {
+		est = prof.PeakMiB
+	}
+	if est <= 0 {
+		return usage
+	}
+	measured := int64(est) * 1024 * 1024
+
+	declared := usage[vramPool]
+	if declared == measured {
+		return usage
+	}
+	// Surface drift in BOTH directions. Under-declaring risks over-commitment
+	// and an OOM; over-declaring silently wastes VRAM that could hold another
+	// model. Either way the config is lying and the operator should know.
+	dir := "under-declared"
+	if declared > measured {
+		dir = "over-declared"
+	}
+	slog.Info("using measured VRAM footprint instead of configured ramUsage",
+		"model", name, "config", dir,
+		"configuredMiB", declared/(1024*1024), "measuredMiB", est, "slots", slots)
+
+	out := make(map[string]int64, len(usage))
+	for k, v := range usage {
+		out[k] = v
+	}
+	out[vramPool] = measured
+	return out
 }
 
 // tuneCmd rewrites `--parallel N` in *cmdStr to the cached tuned slot count
