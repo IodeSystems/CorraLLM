@@ -271,7 +271,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if group.PreferResident {
 		walk = partitionResident(walk, cands, p.residentBackends())
 	}
-	var lastBP *sched.BackpressureError
+	// bestBP is the most OPTIMISTIC backpressure seen while walking candidates —
+	// the smallest Retry-After, i.e. the soonest anything in the lane could
+	// serve. Keeping the last one instead would report whichever backend
+	// happened to be tried last, which is arbitrary: a saturated-but-live model
+	// that frees a slot in 2s is a better answer than a cold one 30s from
+	// resident. Only if EVERY candidate is permanently unusable do we 503.
+	var bestBP *sched.BackpressureError
 	var queuedMS int64 // queue wait on the terminal backend (admit or reject)
 
 	for _, idx := range walk {
@@ -290,7 +296,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
 				if bp.Reason == "spill" {
-					lastBP = bp
+					bestBP = keepSoonest(bestBP, bp)
 					continue // advance to the next backend
 				}
 				// rejected or queue-timeout → terminal backoff.
@@ -323,6 +329,18 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			release()
 			// Doesn't fit + can't evict, or won't come up → spill to next backend.
+			// A TRANSIENT capacity miss (a resident is inside its protection
+			// window and about to become evictable) is backpressure, not a
+			// fault: record it so an exhausted walk answers 429 + Retry-After
+			// rather than a bare 503. Permanent misses (won't fit even fully
+			// evicted) and spawn failures record nothing and stay 503.
+			var ce *proc.CapacityError
+			if errors.As(err, &ce) && !ce.Permanent {
+				bestBP = keepSoonest(bestBP, &sched.BackpressureError{
+					Reason:     "capacity",
+					RetryAfter: ce.RetryAfter,
+				})
+			}
 			slog.Warn("backend unavailable, spilling", "backend", name, "err", err)
 			continue
 		}
@@ -419,9 +437,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Exhausted the list without serving.
-	if lastBP != nil {
-		lastBP.Reason = "exhausted"
-		writeBackpressure(w, lastBP)
+	if bestBP != nil {
+		bestBP.Reason = "exhausted"
+		writeBackpressure(w, bestBP)
 		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			QueuedMS: queuedMS, Error: "exhausted", ReqBody: reqBody})
@@ -484,7 +502,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
 				if bp.Reason == "spill" {
-					lastBP = bp
+					lastBP = keepSoonest(lastBP, bp)
 					continue
 				}
 				writeBackpressure(w, bp)
@@ -502,6 +520,15 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		pr, done, _, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky)
 		if err != nil {
 			release()
+			// Transient capacity → backpressure, same rationale as the
+			// inference path above (429 + Retry-After, not a bare 503).
+			var ce *proc.CapacityError
+			if errors.As(err, &ce) && !ce.Permanent {
+				lastBP = keepSoonest(lastBP, &sched.BackpressureError{
+					Reason:     "capacity",
+					RetryAfter: ce.RetryAfter,
+				})
+			}
 			slog.Warn("realtime backend unavailable, spilling", "backend", name, "err", err)
 			continue
 		}
@@ -1168,6 +1195,25 @@ func clientIP(r *http.Request) string {
 		return host
 	}
 	return ra
+}
+
+// keepSoonest returns whichever backpressure promises relief first, so a walk
+// over several candidates reports the earliest moment ANY of them could serve
+// rather than whichever happened to be tried last. A zero RetryAfter means
+// "unknown" (e.g. every blocker is held by an in-flight request with no
+// predictable end), so it loses to any concrete estimate; two unknowns keep the
+// incumbent.
+func keepSoonest(cur, next *sched.BackpressureError) *sched.BackpressureError {
+	if cur == nil {
+		return next
+	}
+	if next == nil || next.RetryAfter == 0 {
+		return cur
+	}
+	if cur.RetryAfter == 0 || next.RetryAfter < cur.RetryAfter {
+		return next
+	}
+	return cur
 }
 
 // writeBackpressure renders a BackpressureError as 429 + informative headers and

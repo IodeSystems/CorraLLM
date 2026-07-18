@@ -46,7 +46,42 @@ var reParallel = regexp.MustCompile(`--parallel\s+\d+`)
 
 // ErrNoCapacity means a backend can't be made to fit its server even after
 // considering eviction — the caller should spill to the next backend.
+// Returned wrapped in a *CapacityError; match with errors.Is.
 var ErrNoCapacity = errors.New("no capacity")
+
+// CapacityError carries WHY a backend didn't fit, so the request edge can tell
+// "wait, a resident is about to become evictable" (transient → 429 with a
+// Retry-After the client can actually shape against) apart from "this will
+// never fit here" (permanent → 503, a real operator-visible fault).
+//
+// The distinction matters because the two get opposite client treatment: an
+// agentkit-style client retries 429 against its whole retry budget but caps 5xx
+// at a handful of attempts, so mislabeling a mid-swap capacity miss as 5xx made
+// every cold load inside a ~15s window unretryable.
+//
+// RetryAfter is the wall-clock until the earliest blocking resident leaves its
+// protection window (activeUse / minResidency) and becomes a legal victim. It
+// is a lower bound on "when could this succeed", not a promise — another
+// request may take the freed room first.
+type CapacityError struct {
+	// Permanent reports that usage exceeds the server's pool budget even with
+	// every non-persistent resident evicted. Retrying cannot help.
+	Permanent bool
+	// RetryAfter is when the earliest blocker becomes evictable. Zero when
+	// Permanent, or when no blocker has a predictable expiry (refs still held).
+	RetryAfter time.Duration
+	// Blocking names the residents standing in the way, for diagnostics.
+	Blocking []string
+}
+
+func (e *CapacityError) Error() string {
+	if e.Permanent {
+		return fmt.Sprintf("no capacity: exceeds pool budget (blocking=%v)", e.Blocking)
+	}
+	return fmt.Sprintf("no capacity: retry_after=%s (blocking=%v)", e.RetryAfter, e.Blocking)
+}
+
+func (e *CapacityError) Unwrap() error { return ErrNoCapacity }
 
 // minResidency protects a just-loaded backend from eviction for a short window,
 // damping load/evict thrash under bursty contention.
@@ -764,7 +799,63 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64) error {
 			return nil
 		}
 	}
-	return ErrNoCapacity
+	return m.capacityErrorLocked(server, usage, now)
+}
+
+// capacityErrorLocked classifies a failed makeRoom into permanent vs transient.
+// Caller holds m.mu and has already established that the idle victim set is
+// insufficient.
+//
+// Permanent = it wouldn't fit even with EVERY non-persistent resident on this
+// server gone. That is a config/hardware fault (declared ramUsage above the
+// pool budget), not contention, and no amount of waiting fixes it.
+//
+// Otherwise some resident that is currently protected — held by an in-flight
+// request (refs>0), inside its activeUse window, or inside minResidency — would
+// have made it fit. RetryAfter is the soonest any of them becomes a legal
+// victim, so a client that waits exactly that long finds room.
+func (m *Manager) capacityErrorLocked(server string, usage map[string]int64, now time.Time) error {
+	all := map[string]*Process{}
+	var blocking []string
+	for _, q := range m.procs {
+		if q.server != server || q.persistent {
+			continue
+		}
+		if !touchesAny(q.usage, usage) {
+			continue
+		}
+		all[q.Name] = q
+		blocking = append(blocking, q.Name)
+	}
+	sort.Strings(blocking) // stable diagnostics
+	if !m.fitsLocked(server, usage, all) {
+		return &CapacityError{Permanent: true, Blocking: blocking}
+	}
+
+	// Transient: find the soonest protection expiry among the blockers.
+	// refs>0 has no predictable expiry (the request ends when it ends), so it
+	// contributes nothing — if every blocker is refs-held, RetryAfter stays 0
+	// and the edge falls back to its own default.
+	var soonest time.Duration
+	for _, q := range all {
+		q.mu.Lock()
+		refs, lastUsed, readyAt := q.refs, q.lastUsed, q.readyAt
+		q.mu.Unlock()
+		if refs > 0 {
+			continue
+		}
+		wait := m.activeUse - now.Sub(lastUsed)
+		if r := minResidency - now.Sub(readyAt); r > wait {
+			wait = r
+		}
+		if wait < 0 {
+			wait = 0
+		}
+		if soonest == 0 || wait < soonest {
+			soonest = wait
+		}
+	}
+	return &CapacityError{RetryAfter: soonest, Blocking: blocking}
 }
 
 // fitsLocked reports whether usage fits on server, pretending the processes in
