@@ -75,6 +75,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.LoadModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchPlan",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/plan",
+		Summary:     "Which models lack measurement data, and what to run for them.",
+		Tags:        []string{"observability"},
+	}, h.BenchPlan)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "beginCalibration",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/calibrate/begin",
