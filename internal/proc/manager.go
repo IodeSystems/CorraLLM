@@ -911,6 +911,57 @@ func (m *Manager) evictLocked(p *Process) {
 	if cmd != nil && cmd.Process != nil {
 		slog.Info("evicting backend", "name", p.Name, "pid", cmd.Process.Pid)
 		_ = killGroup(cmd)
+		// SIGTERM is a REQUEST. A llama-server in CUDA teardown (or still
+		// initialising one) can ignore it for minutes, and by this point the
+		// pool reservation has already been freed and the process dropped from
+		// m.procs — so a survivor is untracked, unkillable by any later
+		// eviction, and holding VRAM corrallm believes is available. Every
+		// subsequent spawn then dies with a cudaMalloc OOM (observed live: a
+		// 16 GB backend outlived its "backend exited" log by 5+ minutes and
+		// crash-looped every replacement).
+		//
+		// So verify, and escalate. Asynchronously: the caller holds m.mu and
+		// blocking eviction on a stuck process would wedge the scheduler.
+		go m.reapGroup(p.Name, cmd.Process.Pid)
+	}
+}
+
+// evictGrace is how long a backend gets to honor SIGTERM before it is SIGKILLed.
+// Generous enough for an orderly CUDA teardown, short enough that the VRAM does
+// not stay stranded through the next few load attempts.
+const evictGrace = 15 * time.Second
+
+// reapGroup waits for an evicted backend's process GROUP to actually die,
+// escalating to SIGKILL if it outlives the grace period.
+//
+// Checking the group rather than the leader is the whole point: the leader is
+// the `sh -c` wrapper, whose exit is what cmd.Wait() reports as "backend
+// exited", while the llama-server grandchild is what owns the GPU memory.
+func (m *Manager) reapGroup(name string, pid int) {
+	deadline := time.Now().Add(evictGrace)
+	for time.Now().Before(deadline) {
+		if !groupAlive(pid) {
+			return // clean exit
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !groupAlive(pid) {
+		return
+	}
+	slog.Warn("backend ignored SIGTERM; sending SIGKILL",
+		"name", name, "pid", pid, "grace", evictGrace)
+	if err := killGroupHard(pid); err != nil {
+		slog.Error("SIGKILL failed — process group may still hold VRAM",
+			"name", name, "pid", pid, "err", err)
+		return
+	}
+	// Confirm rather than assume: an unkillable process (uninterruptible driver
+	// wait) leaves VRAM stranded and corrallm over-committed, and an operator
+	// needs to know that from the log rather than from OOMing spawns.
+	time.Sleep(2 * time.Second)
+	if groupAlive(pid) {
+		slog.Error("backend SURVIVED SIGKILL — VRAM is stranded and this server is now over-committed",
+			"name", name, "pid", pid)
 	}
 }
 
@@ -976,6 +1027,7 @@ func (m *Manager) Preload(ctx context.Context) {
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var pending []procRef
 	for name, p := range m.procs {
 		p.mu.Lock()
 		cmd := p.cmd
@@ -983,6 +1035,55 @@ func (m *Manager) Shutdown() {
 		if cmd != nil && cmd.Process != nil {
 			slog.Info("stopping backend", "name", name, "pid", cmd.Process.Pid)
 			_ = killGroup(cmd)
+			pending = append(pending, procRef{name: name, pid: cmd.Process.Pid})
+		}
+	}
+	// Wait for the groups to actually die, escalating if they do not. On
+	// shutdown this matters MORE than on eviction: a survivor outlives the
+	// corrallm that spawned it, so nothing will ever reap it and the next
+	// corrallm starts against a GPU that is mysteriously full.
+	//
+	// Polled, not slept: this returns the instant everything is gone, so an
+	// orderly shutdown stays fast and only a genuinely stuck backend pays the
+	// grace period.
+	m.mu.Unlock()
+	reapAll(pending)
+	m.mu.Lock()
+}
+
+// procRef is a backend's identity for reaping after its Process may be gone.
+type procRef struct {
+	name string
+	pid  int
+}
+
+// reapAll waits for every group to exit, SIGKILLing any that outlive the grace
+// period. Returns as soon as all are gone.
+func reapAll(refs []procRef) {
+	if len(refs) == 0 {
+		return
+	}
+	deadline := time.Now().Add(evictGrace)
+	for time.Now().Before(deadline) {
+		alive := refs[:0:0]
+		for _, r := range refs {
+			if groupAlive(r.pid) {
+				alive = append(alive, r)
+			}
+		}
+		if len(alive) == 0 {
+			return
+		}
+		refs = alive
+		time.Sleep(100 * time.Millisecond)
+	}
+	for _, r := range refs {
+		if !groupAlive(r.pid) {
+			continue
+		}
+		slog.Warn("backend ignored SIGTERM on shutdown; sending SIGKILL", "name", r.name, "pid", r.pid)
+		if err := killGroupHard(r.pid); err != nil {
+			slog.Error("SIGKILL failed — VRAM may be stranded after exit", "name", r.name, "pid", r.pid, "err", err)
 		}
 	}
 }

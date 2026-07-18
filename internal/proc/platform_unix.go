@@ -21,3 +21,21 @@ func killGroup(cmd *exec.Cmd) error {
 	// Negative pid → the process group led by pid.
 	return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 }
+
+// killGroupHard SIGKILLs the backend's entire process group. Used only after a
+// SIGTERM grace period has expired — see Manager.reapGroup.
+func killGroupHard(pid int) error {
+	return syscall.Kill(-pid, syscall.SIGKILL)
+}
+
+// groupAlive reports whether ANY process remains in the group led by pid.
+//
+// Signal 0 performs the permission/existence check without delivering
+// anything. This is deliberately a group check, not a check on the leader: the
+// leader is `sh -c`, which exits as soon as it has exec'd or been signalled,
+// while the llama-server GRANDCHILD is the process actually holding tens of GB
+// of VRAM. Watching only the leader is exactly how a "backend exited" log line
+// coexisted with a live process still owning the GPU.
+func groupAlive(pid int) bool {
+	return syscall.Kill(-pid, 0) == nil
+}
