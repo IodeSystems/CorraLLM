@@ -38,6 +38,7 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	go.starlark.net v0.0.0-20260708150628-5395d018f003 // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect

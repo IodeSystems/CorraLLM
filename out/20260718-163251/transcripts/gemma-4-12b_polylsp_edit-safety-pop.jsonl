@@ -1,0 +1,1 @@
+{"kind":"user","content":"This Go module has one unimplemented method. Implement the `Pop` method on\n`IntStack` in stack/stack.go: it removes and returns the top element with\nok=true, or returns 0, false when the stack is empty. Change nothing else,\nand make the tests pass.\n","createdAt":1}

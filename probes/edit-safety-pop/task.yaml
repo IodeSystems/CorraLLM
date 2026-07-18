@@ -1,0 +1,30 @@
+name: edit-safety-pop
+class: coding
+# Isolates ONE failure mode: compile breakage from a single-node edit — exactly
+# what revert-on-new-diagnostics (poly-lsp `--validate`) catches. Implementing
+# Pop is one node_edit, and a plausible attempt trips Go's strict compiler
+# (missing return, declared-and-not-used, wrong type) — a NEW same-file
+# diagnostic. Validated node_edit reverts it and hands the error back for an
+# in-turn retry; unvalidated leaves the file broken until the model happens to
+# re-run the tests, spending a turn budget it may not have. Single node, single
+# edit — no multi-site refactor confound, so the polylsp-vs-polylsp-validate
+# delta attributes cleanly to edit safety.
+workspace: fixture/
+limits: { maxTurnsPerStage: 8, maxToolCallsPerStage: 24 }
+stages:
+  - prompt: |
+      This Go module has one unimplemented method. Implement the `Pop` method on
+      `IntStack` in stack/stack.go: it removes and returns the top element with
+      ok=true, or returns 0, false when the stack is empty. Change nothing else,
+      and make the tests pass.
+    checks:
+      # Spine signal, toolset-agnostic: passing tests requires the file to
+      # COMPILE and be correct. A compile-broken edit fails here — this is the
+      # pass-rate the validated arm should lift.
+      - cmd_ok: "go test ./..."
+      # Assert compilation explicitly so a build break is attributed cleanly in
+      # the report (separates "broke the build" from "logic wrong").
+      - cmd_ok: "go build ./..."
+      # No passing tests by weakening them — the runner git-commits the fixture,
+      # so any edit to the test file shows in the diff (exit!=0 fails the check).
+      - cmd_ok: "git diff --quiet -- stack/stack_test.go"

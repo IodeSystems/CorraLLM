@@ -68,6 +68,8 @@ func Evaluate(ctx context.Context, c task.Check, workspace string, journ []journ
 		return compactionsMin(c, m)
 	case "compaction_under":
 		return compactionUnder(c, m)
+	case "python":
+		return runScript(c, scriptEnv{response: m.Response, journ: journ, m: m, dir: workspace})
 	case "response_contains":
 		return responseContains(c, m, true)
 	case "response_not_contains":

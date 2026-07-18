@@ -70,6 +70,16 @@ toolsets:
     servers:
       - cmd: poly-lsp-mcp
         args: ["mcp", "--root", "{{workspace}}", "--read-only"]
+  # polylsp + edit validation. node_edit runs the child LSP after each write and
+  # REVERTS any edit that introduces a NEW error (revert-on-new-diagnostics).
+  # Byte-identical to `polylsp` except the --validate flag, so a
+  # polylsp-vs-polylsp-validate diff isolates EDIT SAFETY as the single variable
+  # (the `edit-safety` group). Requires poly-lsp-mcp's --validate build.
+  polylsp-validate:
+    cedeFileTools: true
+    servers:
+      - cmd: poly-lsp-mcp
+        args: ["mcp", "--root", "{{workspace}}", "--validate"]
   # The 9-tool surface the 3-tool one replaced. Identical to `polylsp` in
   # every other respect, so a polylsp-vs-polylsp-legacy diff isolates the
   # SURFACE — which is the thing under test. The 9 tools bill ~4327
@@ -89,3 +99,29 @@ toolsets:
         args: ["mcp"]
       - cmd: poly-lsp-mcp
         args: ["mcp", "--root", "{{workspace}}"]
+
+# experiments: the A/B layer over (task x toolset). Each renders tasks x variants
+# into individual bench cases TAGGED {group, name(=task), variant(=id), label},
+# so a report pivots on (group, name) with variants as columns. One RULE for a
+# valid A/B: everything but the variant is held constant (same task, prompt,
+# checks, model, budget) — a variant may override ONLY the toolset/server config.
+# One DISCIPLINE: each group isolates ONE factor, named by the group.
+#
+# NOT YET PARSED — needs a Config.Experiments field + a render step in
+# internal/bench/run (expand experiments -> the model x variant x task matrix)
+# and Group/Variant/Label added to the Result key (today: model/toolset/task).
+# Until then, run the same comparison directly:
+#   llm-bench run --tasks edit-safety-pop --toolsets polylsp,polylsp-validate
+#
+# experiments:
+#   - group: edit-safety          # isolates: does revert-on-new-diagnostics lift success?
+#     tasks: [edit-safety-pop]     # the `name` axis (add more single-node edit tasks here)
+#     variants:                    # the A/B(/C+) axis; A is the control by convention
+#       - id: A
+#         label: polylsp           # unvalidated node_edit
+#         toolset: polylsp
+#       - id: B
+#         label: polylsp+validate  # revert-on-new-diagnostics
+#         toolset: polylsp-validate
+#         # inline override form (instead of a named toolset) — same effect:
+#         # serverArgs: { poly-lsp-mcp: ["mcp","--root","{{workspace}}","--validate"] }

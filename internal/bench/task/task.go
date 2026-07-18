@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -186,6 +187,13 @@ func (c *Check) UnmarshalYAML(node *yaml.Node) error {
 	case "compactions_min", "compaction_under":
 		// Scalar int: `compactions_min: 1` / `compaction_under: 1500`.
 		if err := val.Decode(&c.N); err != nil {
+			return err
+		}
+	case "python":
+		// A scripted predicate. Block scalar in YAML/markdown:
+		//   - python: |
+		//       if "red" not in response.lower(): fail("expected red")
+		if err := val.Decode(&c.Text); err != nil {
 			return err
 		}
 	case "response_contains", "response_not_contains":
@@ -390,6 +398,10 @@ func (c *Check) validate() error {
 	case "compaction_under":
 		if c.N < 1 {
 			return fmt.Errorf("compaction_under: bound must be >= 1")
+		}
+	case "python":
+		if strings.TrimSpace(c.Text) == "" {
+			return fmt.Errorf("python: script is required")
 		}
 	case "response_contains", "response_not_contains":
 		if c.Text == "" {
