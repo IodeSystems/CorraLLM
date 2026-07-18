@@ -44,6 +44,11 @@ const vramSampleInterval = 15 * time.Second
 // untouched entirely rather than injecting one (spec: additive only).
 var reParallel = regexp.MustCompile(`--parallel\s+\d+`)
 
+// reCtx matches llama.cpp's context-size flag in either spelling so a model
+// declaring contextPerRequest can have the TOTAL rewritten in place. Same
+// additive contract as reParallel: a cmd with no ctx flag is left untouched.
+var reCtx = regexp.MustCompile(`(-c|--ctx-size)\s+\d+`)
+
 // ErrNoCapacity means a backend can't be made to fit its server even after
 // considering eviction — the caller should spill to the next backend.
 // Returned wrapped in a *CapacityError; match with errors.Is.
@@ -325,7 +330,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		// NEVER mutate mdl (config.Model is passed by value into load, but mdl.Cmd
 		// is still the same backing string as m.cfg.Models[name].Cmd until copied).
 		cmdStr := mdl.Cmd
-		tunedSlots := m.tuneCmd(name, &cmdStr, mdl.Slots())
+		tunedSlots := m.tuneCmd(name, &cmdStr, mdl.Slots(), mdl.ContextPerRequest)
 		if tunedSlots > 0 {
 			p.mu.Lock()
 			p.tunedSlots = tunedSlots
@@ -489,7 +494,7 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 // gathers the second data point SlopeFromSamples needs, so the model
 // converges to a real tuned profile within two spawns instead of staying
 // stuck at whatever --parallel the config happens to say forever.
-func (m *Manager) tuneCmd(model string, cmdStr *string, maxConcurrent int) int {
+func (m *Manager) tuneCmd(model string, cmdStr *string, maxConcurrent, perReq int) int {
 	if m.tuneCache == nil {
 		return 0
 	}
@@ -534,7 +539,40 @@ func (m *Manager) tuneCmd(model string, cmdStr *string, maxConcurrent int) int {
 			"model", model, "wanted", n, "maxConcurrent", maxConcurrent)
 		n = maxConcurrent
 	}
+	// CONTEXT IS THE INVARIANT. When the model declares contextPerRequest, the
+	// window each request gets is a requirement, and concurrency is what bends
+	// to fit it — the opposite of llama.cpp's native behavior, where --parallel
+	// silently divides --ctx-size.
+	if perReq > 0 {
+		if fit, ok := m.tuneCache.SlotsForContext(stats.Name, model, budget, perReq); ok {
+			switch {
+			case fit == 0:
+				// Not even one slot at the requested window. Do NOT quietly
+				// serve a shorter context: that is the failure mode this whole
+				// field exists to remove. Spawn at 1 slot so the operator gets
+				// llama.cpp's own OOM instead of a model that looks fine and
+				// silently truncates.
+				slog.Error("contextPerRequest does not fit in VRAM even at one slot; spawning anyway so the failure is visible rather than silent",
+					"model", model, "contextPerRequest", perReq, "budgetMiB", budget)
+				n = 1
+			case fit < n:
+				slog.Info("reduced slots to preserve the requested context window",
+					"model", model, "contextPerRequest", perReq, "slotsWanted", n, "slotsThatFit", fit)
+				n = fit
+			}
+		}
+	}
 	*cmdStr = reParallel.ReplaceAllString(*cmdStr, fmt.Sprintf("--parallel %d", n))
+	// Total = per-request * slots, because llama.cpp divides it back out. This
+	// is what keeps the declared window intact as concurrency changes: bump
+	// maxConcurrent and the total grows with it, instead of every request
+	// quietly getting half as much room.
+	if perReq > 0 && reCtx.MatchString(*cmdStr) {
+		total := perReq * n
+		*cmdStr = reCtx.ReplaceAllString(*cmdStr, fmt.Sprintf("-c %d", total))
+		slog.Info("context sized from contextPerRequest",
+			"model", model, "contextPerRequest", perReq, "slots", n, "totalCtx", total)
+	}
 	return n
 }
 

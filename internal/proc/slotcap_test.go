@@ -17,6 +17,7 @@ import (
 // maxConcurrent 2 was spawned at --parallel 32 because 32 slots fit in VRAM,
 // giving every request n_ctx_slot=4096 — a 32x cut with no error anywhere.
 func TestTuneCmd_NeverExceedsMaxConcurrent(t *testing.T) {
+	fakeNvidiaSMI(t, "0, Fake GPU, 60000, 0, 60000", "")
 	cache, err := tune.New(t.TempDir() + "/vram-profile.json")
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +35,7 @@ func TestTuneCmd_NeverExceedsMaxConcurrent(t *testing.T) {
 	m.SetTuneCache(cache)
 
 	cmd := "llama-server --parallel 2"
-	n := m.tuneCmd("roomy", &cmd, 2)
+	n := m.tuneCmd("roomy", &cmd, 2, 0)
 	if n > 2 {
 		t.Errorf("tuner raised slots to %d above maxConcurrent 2 — unreachable concurrency bought with context window", n)
 	}
@@ -46,6 +47,7 @@ func TestTuneCmd_NeverExceedsMaxConcurrent(t *testing.T) {
 // Lowering is still allowed: a model that cannot fit its configured slots must
 // come down, or it will not fit at all.
 func TestTuneCmd_StillLowersWhenVRAMIsTight(t *testing.T) {
+	fakeNvidiaSMI(t, "0, Fake GPU, 60000, 0, 60000", "")
 	cache, err := tune.New(t.TempDir() + "/vram-profile.json")
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +64,7 @@ func TestTuneCmd_StillLowersWhenVRAMIsTight(t *testing.T) {
 	m.SetTuneCache(cache)
 
 	cmd := "llama-server --parallel 8"
-	n := m.tuneCmd("hungry", &cmd, 8)
+	n := m.tuneCmd("hungry", &cmd, 8, 0)
 	if n > 1 {
 		t.Errorf("tuner should have lowered slots for a model that cannot fit 8, got %d", n)
 	}

@@ -87,6 +87,25 @@ type Model struct {
 	// MaxConcurrent is the model's admission slots (the fairshare capacity
 	// unit). For a local llama-server this mirrors --parallel. Default 1.
 	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
+
+	// ContextPerRequest is the context window each REQUEST must get, in tokens.
+	//
+	// llama.cpp's --ctx-size is a TOTAL divided across --parallel slots, so
+	// raising concurrency silently shrinks the window every request sees. That
+	// inverts how anyone actually reasons about it: the context length is a
+	// requirement ("this model must serve 220k-token prompts") and concurrency
+	// is the free variable you discover by tuning.
+	//
+	// When set, corrallm computes the spawned --ctx-size as
+	// ContextPerRequest * slots, so the declared window is preserved by
+	// construction and SLOTS become what gets reduced under VRAM pressure. If
+	// not even one slot fits, that is reported loudly rather than served
+	// quietly at a shorter window.
+	//
+	// Unset (0) keeps llama.cpp's native meaning: whatever --ctx-size the cmd
+	// says is the total, divided by slots. Existing configs are unaffected
+	// until they opt in.
+	ContextPerRequest int `yaml:"contextPerRequest"`
 	// MaxTokens caps the completion length this (often smaller/degraded) model
 	// will be asked for: when a lane request degrades onto it, its max_tokens is
 	// clamped to this value (P7). 0 = no cap.

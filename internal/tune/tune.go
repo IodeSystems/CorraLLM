@@ -345,3 +345,59 @@ func (c *Cache) BumpPeak(gpuName, model string, footprintMiB int) {
 	p.PeakMiB = footprintMiB
 	c.data[k] = p
 }
+
+// KVMiBPerToken derives the KV-cache cost of ONE token from a profile, or 0 when
+// the profile cannot support the estimate.
+//
+// PerSlotMiB is the KV cost of one slot at the context the measurement was
+// taken under, and each slot held Ctx/MeasuredSlots tokens. KV scales linearly
+// with tokens, so dividing gives a per-token cost that transfers to a different
+// context size. A profile with no recorded Ctx (measured before that field
+// existed, or a backend that never logged it) returns 0, and the caller must
+// fall back to trusting the operator rather than guessing.
+func (p Profile) KVMiBPerToken() float64 {
+	if p.PerSlotMiB <= 0 || p.Ctx <= 0 || p.MeasuredSlots <= 0 {
+		return 0
+	}
+	tokensPerSlot := float64(p.Ctx) / float64(p.MeasuredSlots)
+	if tokensPerSlot <= 0 {
+		return 0
+	}
+	return float64(p.PerSlotMiB) / tokensPerSlot
+}
+
+// SlotsForContext reports how many slots of contextPerRequest tokens fit in
+// budgetMiB, and whether the estimate is usable at all.
+//
+// This is the inversion: context is the invariant and concurrency is what
+// gives. Returns (0,false) when no profile or no per-token cost is available —
+// the caller then honors the operator's request unmodified rather than
+// inventing a limit from nothing.
+//
+// A return of 0 slots with ok=true is meaningful and must not be treated as
+// "unknown": it means not even ONE slot of the requested context fits, which is
+// a configuration error the operator has to see.
+func (c *Cache) SlotsForContext(gpuName, model string, budgetMiB, contextPerRequest int) (int, bool) {
+	p, ok := c.Get(gpuName, model)
+	if !ok || contextPerRequest <= 0 {
+		return 0, false
+	}
+	perToken := p.KVMiBPerToken()
+	if perToken <= 0 {
+		return 0, false
+	}
+	growth := p.PeakMiB - (p.BaseMiB + p.MeasuredSlots*p.PerSlotMiB)
+	if growth < 0 {
+		growth = 0
+	}
+	avail := float64(budgetMiB - p.BaseMiB - growth)
+	perSlot := perToken * float64(contextPerRequest)
+	if perSlot <= 0 {
+		return 0, false
+	}
+	n := int(avail / perSlot)
+	if n < 0 {
+		n = 0
+	}
+	return clamp(n, 0, DefaultCap), true
+}
