@@ -35,7 +35,12 @@ const ConsoleDoc = graphql(/* GraphQL */ `
       overview {
         models {
           name
-          modality
+          modalities {
+            modality
+            maxResolution
+            formats
+            maxTokens
+          }
           capability
           persistent
           ttl
@@ -135,6 +140,16 @@ function capabilityOf(man: Manifest | undefined, name: string): string {
   return 'chat'
 }
 
+// modalityLabel renders a modality + its salient metadata as a compact chip
+// label: "image ≤1024px jpeg,png", "text ≤4k tok", or just the name.
+function modalityLabel(md: Modality): string {
+  const parts = [md.modality]
+  if (md.maxResolution) parts.push(`≤${md.maxResolution}px`)
+  if (md.maxTokens) parts.push(`≤${fmtInt(md.maxTokens)} tok`)
+  if (md.formats?.length) parts.push(md.formats.join(','))
+  return parts.join(' ')
+}
+
 // --- console ------------------------------------------------------------
 
 function ModelConsole() {
@@ -178,6 +193,9 @@ function ModelConsole() {
         <Typography variant="h6">{name}</Typography>
         <Chip size="small" label={res?.state ?? 'absent'} />
         <Chip size="small" color="info" variant="outlined" label={capLabel(capability)} />
+        {(model.modalities ?? []).map((md) => (
+          <Chip key={md.modality} size="small" variant="outlined" label={modalityLabel(md)} />
+        ))}
         {model.persistent && <Chip size="small" variant="outlined" label="pinned" />}
       </Stack>
 
@@ -205,9 +223,15 @@ function ModelConsole() {
 
 // --- Info ---------------------------------------------------------------
 
+type Modality = {
+  modality: string
+  maxResolution?: string | null
+  formats?: string[] | null
+  maxTokens?: string | null
+}
 type OvModel = {
   name: string
-  modality: string
+  modalities: Modality[]
   capability: string
   persistent: boolean
   type: string

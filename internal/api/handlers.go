@@ -887,20 +887,47 @@ type ServerDef struct {
 // Spawnable models carry their cmd; pure-proxy models have an empty cmd and
 // forward to Target. Auth headers on remote targets are NOT exposed.
 type ModelDef struct {
-	Name          string `json:"name" doc:"Served model name."`
-	Persistent    bool   `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
-	TTL           string `json:"ttl" doc:"Idle keep-warm window (sticky)."`
-	EvictCost     string `json:"evictCost" doc:"Eviction resistance (sticky)."`
-	Spawnable     bool   `json:"spawnable" doc:"True if corrallm spawns it (has a cmd)."`
-	Modality      string `json:"modality" doc:"text|audio coarse bucket (P9d)."`
-	Capability    string `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
-	Type          string `json:"type" doc:"Cost class (chat | embed | openrouter | …)."`
-	Quality       int    `json:"quality" doc:"Relative quality rank."`
-	Server        string `json:"server" doc:"Server it draws capacity from (spawned only)."`
-	Target        string `json:"target" doc:"Forward URL (scheme://host:port; headers redacted)."`
-	MaxConcurrent int    `json:"maxConcurrent" doc:"Admission slots."`
-	MaxTokens     int    `json:"maxTokens" doc:"max_tokens clamp when degraded onto (0 = none)."`
-	Cmd           string `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
+	Name          string         `json:"name" doc:"Served model name."`
+	Persistent    bool           `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
+	TTL           string         `json:"ttl" doc:"Idle keep-warm window (sticky)."`
+	EvictCost     string         `json:"evictCost" doc:"Eviction resistance (sticky)."`
+	Spawnable     bool           `json:"spawnable" doc:"True if corrallm spawns it (has a cmd)."`
+	Modalities    []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
+	Capability    string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
+	Type          string         `json:"type" doc:"Cost class (chat | embed | openrouter | …)."`
+	Quality       int            `json:"quality" doc:"Relative quality rank."`
+	Server        string         `json:"server" doc:"Server it draws capacity from (spawned only)."`
+	Target        string         `json:"target" doc:"Forward URL (scheme://host:port; headers redacted)."`
+	MaxConcurrent int            `json:"maxConcurrent" doc:"Admission slots."`
+	MaxTokens     int            `json:"maxTokens" doc:"max_tokens clamp when degraded onto (0 = none)."`
+	Cmd           string         `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
+}
+
+// ModalityView is one accepted input modality plus optional client-facing
+// metadata — the GraphQL-friendly list form of the config's modalities map
+// (GraphQL has no map type). Metadata fields are per-modality: image sets
+// maxResolution/formats, audio sets formats, text may set maxTokens.
+type ModalityView struct {
+	Modality      string   `json:"modality" doc:"text|image|audio."`
+	MaxResolution int      `json:"maxResolution,omitempty" doc:"image: longest-edge pixel cap."`
+	Formats       []string `json:"formats,omitempty" doc:"image/audio: accepted encodings."`
+	MaxTokens     int      `json:"maxTokens,omitempty" doc:"text: generation-length cap."`
+}
+
+// modalityViews converts a config modalities map to a stable, key-sorted list
+// for the GraphQL surface.
+func modalityViews(m map[string]config.ModalitySpec) []ModalityView {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]ModalityView, 0, len(keys))
+	for _, k := range keys {
+		s := m[k]
+		out = append(out, ModalityView{Modality: k, MaxResolution: s.MaxResolution, Formats: s.Formats, MaxTokens: s.MaxTokens})
+	}
+	return out
 }
 
 // LaneMemberDef is one lane member: a model name + optional sticky override.
@@ -1000,8 +1027,9 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	costModel := cost.NewModel(h.Cfg) // modality inference (P9d): audio cost class ⇒ audio model
 	for name, m := range h.Cfg.Models {
 		md := ModelDef{
-			Name: name, Persistent: m.Persistent, Modality: "text", Capability: config.ModelCapability(m),
-			Type: m.Type, Quality: m.Quality, Spawnable: m.Cmd != "", Server: m.Server,
+			Name: name, Persistent: m.Persistent, Capability: config.ModelCapability(m),
+			Modalities: modalityViews(m.EffectiveModalities(costModel.IsAudioType(m.Type))),
+			Type:       m.Type, Quality: m.Quality, Spawnable: m.Cmd != "", Server: m.Server,
 			MaxConcurrent: m.Slots(), MaxTokens: m.MaxTokens, Cmd: m.Cmd,
 		}
 		if m.Sticky != nil {
@@ -1009,9 +1037,6 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		}
 		if t, err := m.ProxyTarget(); err == nil {
 			md.Target = t.URL.String() // headers (auth) intentionally omitted
-		}
-		if costModel.IsAudioType(m.Type) {
-			md.Modality = "audio"
 		}
 		out.Body.Models = append(out.Body.Models, md)
 	}

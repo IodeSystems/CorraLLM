@@ -91,6 +91,40 @@ type Model struct {
 	// will be asked for: when a lane request degrades onto it, its max_tokens is
 	// clamped to this value (P7). 0 = no cap.
 	MaxTokens int `yaml:"maxTokens,omitempty"`
+	// Modalities declares the input modalities this model accepts, each with
+	// optional client-facing metadata (see ModalitySpec). Keys: text|image|audio.
+	// Replaces the old coarse modality bucket. Unset → inferred: {audio} for audio
+	// cost types, else {text}. Note: llama.cpp auto-loads the mmproj sibling from a
+	// vision repo (no --mmproj flag), so `image` is declared here, not detected.
+	Modalities map[string]ModalitySpec `yaml:"modalities,omitempty"`
+}
+
+// ModalitySpec is optional client-facing metadata for one accepted input
+// modality. Only the fields relevant to that modality are set: image uses
+// maxResolution + formats, audio uses formats, text may cap generation with
+// maxTokens; the rest stay zero and are omitted from output.
+type ModalitySpec struct {
+	MaxResolution int      `yaml:"maxResolution,omitempty" json:"maxResolution,omitempty"` // image: longest-edge px cap
+	Formats       []string `yaml:"formats,omitempty" json:"formats,omitempty"`             // image/audio: accepted encodings
+	MaxTokens     int      `yaml:"maxTokens,omitempty" json:"maxTokens,omitempty"`         // text: generation-length cap
+}
+
+// KnownModalities is the accepted set of modality keys (typo guard in Validate).
+var KnownModalities = map[string]bool{"text": true, "image": true, "audio": true}
+
+// EffectiveModalities returns the model's declared modalities, or a single
+// inferred default when none are configured: "audio" when audioDefault (an audio
+// cost type), else "text". Callers pass audioDefault because audio-ness lives in
+// the cost model, not config.
+func (m Model) EffectiveModalities(audioDefault bool) map[string]ModalitySpec {
+	if len(m.Modalities) > 0 {
+		return m.Modalities
+	}
+	d := "text"
+	if audioDefault {
+		d = "audio"
+	}
+	return map[string]ModalitySpec{d: {}}
 }
 
 // Slots returns the model's concurrency capacity, defaulting to 1.
@@ -406,6 +440,11 @@ func (c *Config) Validate() error {
 			// meaningless on it and almost certainly a config mistake.
 			if m.Sticky != nil || m.Persistent || len(m.RAMUsage) > 0 || m.Swap != nil || m.Server != "" {
 				return fmt.Errorf("model %q: sticky/persistent/ramUsage/swap/server only apply to cmd models", name)
+			}
+		}
+		for k := range m.Modalities {
+			if !KnownModalities[k] {
+				return fmt.Errorf("model %q: unknown modality %q (want text|image|audio)", name, k)
 			}
 		}
 		if m.Server != "" {

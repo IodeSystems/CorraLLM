@@ -195,8 +195,8 @@ func TestOverview(t *testing.T) {
 	if !local.Spawnable || local.Cmd == "" || local.MaxTokens != 512 {
 		t.Errorf("m-local = %+v", local)
 	}
-	if local.Modality != "text" {
-		t.Errorf("modality = %q, want text (no audio cost class)", local.Modality)
+	if !hasModality(local.Modalities, "text") || len(local.Modalities) != 1 {
+		t.Errorf("modalities = %+v, want [text] (no audio cost class)", local.Modalities)
 	}
 	claude := byName["m-claude"]
 	if claude.Spawnable {
@@ -211,6 +211,16 @@ func TestOverview(t *testing.T) {
 	if len(out.Body.Keys) != 1 || out.Body.Keys[0].Group != "batch" {
 		t.Errorf("keys = %+v", out.Body.Keys)
 	}
+}
+
+// hasModality reports whether a modality name is present in the list.
+func hasModality(ms []ModalityView, name string) bool {
+	for _, m := range ms {
+		if m.Modality == name {
+			return true
+		}
+	}
+	return false
 }
 
 // TestOverviewAudioModality: a model with a backend whose type declares audio
@@ -228,15 +238,15 @@ func TestOverviewAudioModality(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]string{}
+	got := map[string][]ModalityView{}
 	for _, md := range out.Body.Models {
-		got[md.Name] = md.Modality
+		got[md.Name] = md.Modalities
 	}
-	if got["whisper"] != "audio" {
-		t.Errorf("whisper modality = %q, want audio", got["whisper"])
+	if !hasModality(got["whisper"], "audio") {
+		t.Errorf("whisper modalities = %+v, want audio", got["whisper"])
 	}
-	if got["chat"] != "text" {
-		t.Errorf("chat modality = %q, want text", got["chat"])
+	if !hasModality(got["chat"], "text") {
+		t.Errorf("chat modalities = %+v, want text", got["chat"])
 	}
 }
 

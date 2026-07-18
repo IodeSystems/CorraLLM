@@ -50,7 +50,12 @@ const OverviewDoc = graphql(/* GraphQL */ `
           ttl
           evictCost
           spawnable
-          modality
+          modalities {
+            modality
+            maxResolution
+            formats
+            maxTokens
+          }
           capability
           type
           quality

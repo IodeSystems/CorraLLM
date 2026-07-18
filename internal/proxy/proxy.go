@@ -886,8 +886,10 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
 		ContextLength int      `json:"context_length,omitempty"` // parsed n_ctx (if resident)
 		Slots         int      `json:"slots,omitempty"`          // admission concurrency (maxConcurrent / --parallel)
-		Modality      string   `json:"modality"`                 // text|audio (P9d, coarse bucket)
-		Capability    string   `json:"capability"`               // chat|embeddings|audio.stt|audio.tts|rerank
+		// Modalities: accepted input modalities keyed by name (text|image|audio),
+		// each with optional metadata (image maxResolution/formats, text maxTokens).
+		Modalities map[string]config.ModalitySpec `json:"modalities"`
+		Capability string                         `json:"capability"` // chat|embeddings|audio.stt|audio.tts|rerank
 	}
 	out := struct {
 		Object string  `json:"object"`
@@ -902,16 +904,13 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 
 	for _, name := range names {
 		mc := p.cfg.Models[name]
-		modality := "text"
-		if p.cost.IsAudioType(mc.Type) {
-			modality = "audio"
-		}
 		e := model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",
 			Persistent: mc.Persistent,
 			Slots:      p.mgr.TunedSlots(name, mc.Slots()),
-			Modality:   modality, Capability: config.ModelCapability(mc),
+			Modalities: mc.EffectiveModalities(p.cost.IsAudioType(mc.Type)),
+			Capability: config.ModelCapability(mc),
 		}
 		if r, ok := resident[name]; ok {
 			e.State = r.State
@@ -930,14 +929,15 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	for _, name := range laneNames {
 		cands, _ := p.cfg.ResolveServed(name)
 		members := make([]string, 0, len(cands))
-		modality, capability, state := "text", "chat", "absent"
+		// Lane modalities/capability follow the PRIMARY member: a lane advertises
+		// what its first-choice model accepts (a fallback may support less).
+		var modalities map[string]config.ModalitySpec
+		capability, state := "chat", "absent"
 		for i, c := range cands {
 			members = append(members, c.Name)
 			if i == 0 {
 				capability = config.ModelCapability(c.Model)
-			}
-			if p.cost.IsAudioType(c.Model.Type) {
-				modality = "audio"
+				modalities = c.Model.EffectiveModalities(p.cost.IsAudioType(c.Model.Type))
 			}
 			if r, ok := resident[c.Name]; ok && state == "absent" {
 				state = r.State
@@ -950,7 +950,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		out.Data = append(out.Data, model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: state, Quality: config.MaxQuality(cands), Kind: "lane",
-			Members: members, Slots: laneSlots, Modality: modality, Capability: capability,
+			Members: members, Slots: laneSlots, Modalities: modalities, Capability: capability,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")

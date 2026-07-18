@@ -480,6 +480,23 @@ the BackpressureError shape we already validated.
     carried). `go test -race ./...` green, gofmt clean.
     *Deferred to opportunistic polish: per-`audio_bytes` SUMs in the rollup/usage ops
     (`usageRollup`/`usageByKey`/`usageSeries`) — activity rows + catalog cover the P9d goal.*
+    *SUPERSEDED (this session): the coarse `modality: text|audio` string is replaced by
+    per-model INPUT `modalities` — a nested map keyed text|image|audio, each with optional
+    client metadata (image `maxResolution`/`formats`, text `maxTokens`). Config: `Model.Modalities
+    map[string]ModalitySpec` + `EffectiveModalities(audioDefault)` fallback (audio cost class →
+    {audio}, else {text}); Validate rejects unknown keys. `/v1/models` emits a JSON object;
+    GraphQL `ModelDef.Modalities []ModalityView` (list — GraphQL has no map). UI: `modality`
+    query field dropped, `modalities{…}` selected + rendered as chips on the model page. Drove
+    it: llama.cpp auto-loads the mmproj sibling from a `-hf` vision repo (no `--mmproj`), so
+    `image` is CONFIG-DECLARED, not backend-detected. **bonsai vision verified end-to-end**
+    (/props modalities.vision=true + red-circle test → "Circle, Red"). **All 3 chat models
+    ship mmproj** (HF-API repo check: Qwen, gemma, bonsai each have mmproj-*.gguf) → declared
+    text+image in ml-kit/corrallm.yaml; the whole `chat` lane [Qwen, gemma] is uniformly vision,
+    so a degrade keeps image. Qwen/gemma repo-verified but runtime /props NOT re-checked (box too
+    busy to load 29 GB Qwen). gemma-4-12b is "omni" — audio-in left undeclared (separate path,
+    unverified). Lane modalities = PRIMARY member's (matches capability derivation). Backend build
+    + full `go test` + tsc clean; `make gen` lint gate already red on main (pre-existing `any` debt
+    in model.tsx, unrelated). Uncommitted.*
   - ✅ **P9e — Realtime WebSocket passthrough (live/conversational transcription).** **Done +
     validated end-to-end.** New `handleRealtime` (`/v1/realtime`): model from `?model=` query,
     ordered-backend admission holding **one slot for the session**, then `proxyWebSocket` — a manual

@@ -376,6 +376,17 @@ type corrallm_LaneMemberDef {
   ttl: String!
 }
 
+type corrallm_ModalityView {
+  """image/audio: accepted encodings."""
+  formats: [String!]
+  """image: longest-edge pixel cap."""
+  maxResolution: Long
+  """text: generation-length cap."""
+  maxTokens: Long
+  """text|image|audio."""
+  modality: String!
+}
+
 input corrallm_ModelActionInputBodyInput {
   """Served model name."""
   model: String!
@@ -403,8 +414,8 @@ type corrallm_ModelDef {
   maxConcurrent: Long!
   """max_tokens clamp when degraded onto (0 = none)."""
   maxTokens: Long!
-  """text|audio coarse bucket (P9d)."""
-  modality: String!
+  """Accepted input modalities (text|image|audio) with optional per-modality metadata."""
+  modalities: [corrallm_ModalityView!]!
   """Served model name."""
   name: String!
   """Pinned (preloaded, never evicted)."""
