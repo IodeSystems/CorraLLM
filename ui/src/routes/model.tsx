@@ -1,14 +1,22 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
   Accordion,
   AccordionDetails,
   AccordionSummary,
+  Alert,
+  AlertTitle,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  FormControlLabel,
   Link as MuiLink,
   Paper,
   Stack,
@@ -16,10 +24,12 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
@@ -153,9 +163,18 @@ function modalityLabel(md: Modality): string {
 // --- console ------------------------------------------------------------
 
 function ModelConsole() {
-  const { name, replay } = Route.useSearch()
+  const { name, replay, tab: tabParam } = Route.useSearch()
   const navigate = useNavigate()
-  const [tab, setTab] = useState(replay ? 1 : 0)
+  // Deep-linkable tabs: the Overview's Logs button now navigates HERE rather
+  // than opening its own dialog, so the console is the single place a model's
+  // detail lives instead of two half-views of it.
+  const TAB_NAMES = ['info', 'test', 'logs', 'usage', 'bench'] as const
+  const initialTab = tabParam
+    ? Math.max(0, TAB_NAMES.indexOf(tabParam as (typeof TAB_NAMES)[number]))
+    : replay
+      ? 1
+      : 0
+  const [tab, setTab] = useState(initialTab)
   const ov = useQuery({ queryKey: ['console'], queryFn: () => gqlClient.request(ConsoleDoc), refetchInterval: 15000 })
   const caps = useCapabilities()
 
@@ -204,6 +223,7 @@ function ModelConsole() {
         <Tab label="Test" />
         <Tab label="Logs" />
         <Tab label="Usage" />
+        <Tab label="Bench" />
       </Tabs>
 
       {tab === 0 && <InfoTab model={model} res={res} caps={caps.data} name={name} />}
@@ -217,6 +237,7 @@ function ModelConsole() {
       )}
       {tab === 2 && <LogsTab backend={res?.name ?? `${name}#0`} ready={!!res} />}
       {tab === 3 && <UsageTab name={name} />}
+      {tab === 4 && <BenchTab name={name} />}
     </Box>
   )
 }
@@ -1362,3 +1383,285 @@ export const Route = createFileRoute('/model')({
   }),
   component: ModelConsole,
 })
+
+// --- Bench --------------------------------------------------------------
+
+const ModelBenchDoc = graphql(/* GraphQL */ `
+  query ModelBench($model: String!) {
+    corrallm {
+      benchResults(model: $model) {
+        results {
+          runId
+          at
+          score
+          stages
+          stagesPassed
+          classes
+          tokensProcessed
+          tokensGenerated
+          cachedTokens
+          tokPerSec
+          footprintMiB
+        }
+      }
+      benchPlan {
+        models {
+          model
+          new
+          hasTuneProfile
+          unverifiedModalities
+          disagreements {
+            modality
+            runMode
+            detail
+          }
+          probes {
+            kind
+            default
+            reason
+          }
+        }
+      }
+      benchStatus {
+        running
+        args
+        log
+        done
+        error
+      }
+    }
+  }
+`)
+
+const RunModelBenchDoc = graphql(/* GraphQL */ `
+  mutation RunModelBench($body: corrallm_BenchRunInputBodyInput!) {
+    corrallm {
+      startBenchRun(body: $body) {
+        ok
+        message
+        warning
+      }
+    }
+  }
+`)
+
+const CancelModelBenchDoc = graphql(/* GraphQL */ `
+  mutation CancelModelBench {
+    corrallm {
+      cancelBenchRun {
+        running
+      }
+    }
+  }
+`)
+
+const BENCH_KINDS = ['measure', 'capability', 'quality'] as const
+type BenchKind = (typeof BENCH_KINDS)[number]
+
+// Codegen maps int64 -> string; coerce once rather than per-use.
+const bn = (v: unknown): number => Number(v ?? 0) || 0
+
+/**
+ * This model's measurement history plus the controls to take a new one.
+ *
+ * Scoped to ONE model deliberately: the cross-model comparison lives on /bench.
+ * Here the question is "what do we know about this model, and what is missing?"
+ */
+function BenchTab({ name }: { name: string }) {
+  const qc = useQueryClient()
+  const [kinds, setKinds] = useState<Set<BenchKind> | null>(null)
+  const [confirming, setConfirming] = useState(false)
+
+  const q = useQuery({
+    queryKey: ['modelBench', name],
+    queryFn: () => gqlClient.request(ModelBenchDoc, { model: name }),
+    refetchInterval: (r) => (r.state.data?.corrallm?.benchStatus?.running ? 2000 : false),
+  })
+
+  const results = q.data?.corrallm?.benchResults?.results ?? []
+  const plan = (q.data?.corrallm?.benchPlan?.models ?? []).find((m) => m.model === name)
+  const status = q.data?.corrallm?.benchStatus
+  const running = !!status?.running
+
+  // Seeded from what is MISSING, then the user owns it — same rule as the
+  // aggregate page, so a probe defaults on exactly where it would teach us
+  // something.
+  const checked = kinds ?? new Set<BenchKind>(
+    (plan?.probes ?? []).filter((p) => p.default).map((p) => p.kind as BenchKind),
+  )
+  const toggle = (k: BenchKind) => {
+    const next = new Set(checked)
+    if (next.has(k)) next.delete(k)
+    else next.add(k)
+    setKinds(next)
+  }
+
+  const classes = [...checked].flatMap((k) =>
+    k === 'capability' ? ['capability'] : k === 'quality' ? ['coding', 'tooluse', 'adversarial'] : [],
+  )
+
+  const run = useMutation({
+    mutationFn: () =>
+      gqlClient.request(RunModelBenchDoc, {
+        body: { models: [name], classes, reason: `console bench ${name}` },
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['modelBench', name] }),
+  })
+  const cancel = useMutation({
+    mutationFn: () => gqlClient.request(CancelModelBenchDoc),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['modelBench', name] }),
+  })
+
+  const offered = new Set((plan?.probes ?? []).map((p) => p.kind))
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {!!plan?.disagreements?.length && (
+        <Alert severity="error">
+          <AlertTitle>Cold/warm disagreement</AlertTitle>
+          A declared modality worked in one residency state and failed in the other. This is the
+          failure a warm-only check cannot see:{' '}
+          {plan.disagreements.map((d) => `${d.modality} (${d.runMode || 'any'})`).join(', ')}
+        </Alert>
+      )}
+      {!plan?.hasTuneProfile && (
+        <Alert severity="info">
+          No measured VRAM profile — corrallm is scheduling this model on its declared{' '}
+          <code>ramUsage</code>, which nothing has verified.
+        </Alert>
+      )}
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" gutterBottom>
+          Run a benchmark on {name}
+        </Typography>
+        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
+          {BENCH_KINDS.map((k) => {
+            const p = (plan?.probes ?? []).find((x) => x.kind === k)
+            return (
+              <Tooltip key={k} title={p?.reason ?? 'not applicable to this model'}>
+                <span>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        size="small"
+                        disabled={running || !offered.has(k)}
+                        checked={checked.has(k)}
+                        onChange={() => toggle(k)}
+                      />
+                    }
+                    label={k}
+                  />
+                </span>
+              </Tooltip>
+            )
+          })}
+          <Box sx={{ flexGrow: 1 }} />
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={running || checked.size === 0}
+            onClick={() => setConfirming(true)}
+          >
+            Run
+          </Button>
+          {running && (
+            <Button variant="outlined" color="error" onClick={() => cancel.mutate()}>
+              Cancel
+            </Button>
+          )}
+        </Stack>
+      </Paper>
+
+      {running && (
+        <Alert severity="warning">
+          <AlertTitle>Bench running — exclusive mode</AlertTitle>
+          Models are being evicted and all other callers are receiving 429 + Retry-After.
+        </Alert>
+      )}
+
+      {(status?.log?.length ?? 0) > 0 && (
+        <Paper sx={{ p: 2, maxHeight: 280, overflow: 'auto' }}>
+          <Typography variant="subtitle2">Run output</Typography>
+          <Box component="pre" sx={{ m: 0, fontSize: 12 }}>
+            {status?.log?.join('\n')}
+          </Box>
+        </Paper>
+      )}
+      {!!status?.error && <Alert severity="error">{status.error}</Alert>}
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" gutterBottom>
+          History
+        </Typography>
+        {results.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No benchmark has been run against this model.
+          </Typography>
+        ) : (
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Run</TableCell>
+                  <TableCell align="right">Score</TableCell>
+                  <TableCell align="right">Processed</TableCell>
+                  <TableCell align="right">Generated</TableCell>
+                  <TableCell align="right">Cached</TableCell>
+                  <TableCell align="right">tok/s</TableCell>
+                  <TableCell align="right">VRAM MiB</TableCell>
+                  <TableCell>Classes</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {results.map((r) => (
+                  <TableRow key={r.runId} hover>
+                    <TableCell>{r.runId}</TableCell>
+                    <TableCell align="right">
+                      {(bn(r.score) * 100).toFixed(0)}% ({r.stagesPassed}/{r.stages})
+                    </TableCell>
+                    <TableCell align="right">{fmtInt(bn(r.tokensProcessed))}</TableCell>
+                    <TableCell align="right">{fmtInt(bn(r.tokensGenerated))}</TableCell>
+                    <TableCell align="right">{fmtInt(bn(r.cachedTokens))}</TableCell>
+                    <TableCell align="right">{bn(r.tokPerSec).toFixed(0)}</TableCell>
+                    <TableCell align="right">{fmtInt(bn(r.footprintMiB))}</TableCell>
+                    <TableCell>
+                      <Typography variant="caption">{r.classes || '—'}</Typography>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </Paper>
+
+      <Dialog open={confirming} onClose={() => setConfirming(false)}>
+        <DialogTitle>Bench {name} in exclusive mode?</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" component="div">
+            Selected: <b>{[...checked].join(', ') || 'nothing'}</b>
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              Models are <b>evicted</b> so measurements are uncontended, and every other caller
+              receives <b>429 + Retry-After</b> until the run finishes. The lease self-expires, so
+              a crashed run cannot lock the server permanently.
+            </Alert>
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirming(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={() => {
+              setConfirming(false)
+              run.mutate()
+            }}
+          >
+            Evict and run
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  )
+}

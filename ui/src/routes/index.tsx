@@ -475,7 +475,14 @@ function Home() {
                     Open UI
                   </Button>
                 )}
-                <Button size="small" disabled={!st} onClick={() => st && setLogsFor(st.name)}>
+                {/* Logs live in the CONSOLE, not a second dialog here. Two
+                    half-views of one model is how a detail page and a popup
+                    drift apart; deep-link into the console instead. */}
+                <Button
+                  size="small"
+                  disabled={!st}
+                  onClick={() => navigate({ to: '/model', search: { name: m.name, tab: 'logs' } })}
+                >
                   Logs
                 </Button>
                 <Button size="small" onClick={() => navigate({ to: '/model', search: { name: m.name } })}>
