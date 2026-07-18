@@ -415,18 +415,52 @@ const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60
 
 // --- Logs ---------------------------------------------------------------
 
+/**
+ * The console is now the ONLY place logs are read — the Overview's dialog was
+ * removed rather than left as a second half-view. This absorbs what that dialog
+ * did better, so the consolidation is not a downgrade:
+ *
+ *   - 2s refresh (was 5s here): logs are watched while something is loading or
+ *     failing, and 5s is a long time to stare at a stale tail.
+ *   - a tall viewport (was a fixed 200-480px): a spawn failure's useful line is
+ *     usually well above the last one.
+ *   - terminal styling, so a wall of llama.cpp output reads as output.
+ */
 function LogsTab({ backend, ready }: { backend: string; ready: boolean }) {
   const q = useQuery({
     queryKey: ['consoleLogs', backend],
     queryFn: () => gqlClient.request(LogsDoc, { backend }),
-    refetchInterval: 5000,
-    enabled: ready,
+    refetchInterval: 2000,
+    // Fetch even when not ready: a backend that FAILED to load is exactly when
+    // its logs matter most, and gating on `ready` hid the crash output.
+    enabled: !!backend,
   })
   const lines = q.data?.corrallm.modelLogs?.lines ?? []
-  if (!ready) return <Typography color="text.secondary">Backend not loaded — no logs yet.</Typography>
   return (
-    <Box component="pre" sx={{ ...preSx, maxHeight: 480 }}>
-      {lines.length ? lines.join('\n') : 'No logs.'}
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      {!ready && (
+        <Typography variant="caption" color="text.secondary">
+          Backend is not resident — showing whatever output was captured from its last run.
+        </Typography>
+      )}
+      <Box
+        component="pre"
+        sx={{
+          m: 0,
+          p: 1,
+          fontSize: 12,
+          lineHeight: 1.4,
+          maxHeight: '65vh',
+          overflow: 'auto',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-all',
+          bgcolor: 'grey.900',
+          color: 'grey.100',
+          borderRadius: 1,
+        }}
+      >
+        {lines.length ? lines.join('\n') : q.isLoading ? 'loading…' : '(no output captured)'}
+      </Box>
     </Box>
   )
 }

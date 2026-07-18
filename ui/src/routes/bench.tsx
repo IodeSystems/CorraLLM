@@ -15,6 +15,7 @@ import {
   DialogContentText,
   DialogTitle,
   Paper,
+  Stack,
   Table,
   TableBody,
   TableCell,
@@ -75,10 +76,16 @@ const BenchDoc = graphql(/* GraphQL */ `
       }
       benchStatus {
         running
+        startedAt
         args
         log
         done
         error
+      }
+      calibrationStatus {
+        active
+        reason
+        remainingSeconds
       }
     }
   }
@@ -112,6 +119,86 @@ const CancelBenchDoc = graphql(/* GraphQL */ `
 // Number() through the chart props.
 const n = (v: unknown): number => Number(v ?? 0) || 0
 
+
+/** Seconds -> "3m 12s", so an elapsed clock reads at a glance. */
+function elapsed(sinceUnix: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - sinceUnix))
+  const m = Math.floor(s / 60)
+  return m > 0 ? `${m}m ${s % 60}s` : `${s}s`
+}
+
+/**
+ * The live view of a run in flight — the first thing on the page while anything
+ * is running, because a bench takes minutes and evicts models while it does.
+ *
+ * It shows a run started ANYWHERE: a probe fired from a model card and an
+ * aggregate run started here are the same single runner, so this is the one
+ * place to watch either. Without that, clicking Probe on the Overview left you
+ * with no way to see what it was doing.
+ */
+function ActiveRun(props: {
+  args: readonly string[]
+  log: readonly string[]
+  startedAt: number
+  leaseReason?: string | null
+  leaseRemaining: number
+  onCancel: () => void
+}) {
+  const { args, log, startedAt, leaseReason, leaseRemaining, onCancel } = props
+  // Tail, not head: the interesting line during a run is the newest one.
+  const tail = log.slice(-200)
+  return (
+    <Paper sx={{ p: 2, borderLeft: 4, borderColor: 'warning.main' }}>
+      <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
+        <CircularProgress size={20} />
+        <Typography variant="subtitle1">Bench running</Typography>
+        {startedAt > 0 && <Chip size="small" label={`elapsed ${elapsed(startedAt)}`} />}
+        {leaseRemaining > 0 && (
+          <Chip
+            size="small"
+            color="warning"
+            label={`lease expires in ~${Math.ceil(leaseRemaining / 60)}m`}
+            title="The lease self-expires, so a crashed run cannot lock the server permanently."
+          />
+        )}
+        {leaseReason && <Chip size="small" variant="outlined" label={leaseReason} />}
+        <Box sx={{ flexGrow: 1 }} />
+        <Button size="small" variant="outlined" color="error" onClick={onCancel}>
+          Cancel run
+        </Button>
+      </Stack>
+      <Typography variant="caption" color="text.secondary">
+        Models are being evicted for uncontended measurement; every other caller is receiving 429
+        + Retry-After.
+      </Typography>
+      {args.length > 0 && (
+        <Box component="pre" sx={{ m: 0, mt: 1, fontSize: 11, opacity: 0.75, overflowX: 'auto' }}>
+          $ {args.join(' ')}
+        </Box>
+      )}
+      <Box
+        component="pre"
+        sx={{
+          m: 0,
+          mt: 1,
+          p: 1,
+          fontSize: 12,
+          lineHeight: 1.4,
+          maxHeight: 320,
+          overflow: 'auto',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-all',
+          bgcolor: 'grey.900',
+          color: 'grey.100',
+          borderRadius: 1,
+        }}
+      >
+        {tail.length ? tail.join('\n') : 'waiting for output…'}
+      </Box>
+    </Paper>
+  )
+}
+
 const KINDS = ['measure', 'capability', 'quality'] as const
 type Kind = (typeof KINDS)[number]
 
@@ -129,6 +216,7 @@ function BenchPage() {
   const results = data?.corrallm?.benchResults?.results ?? []
   const plan = data?.corrallm?.benchPlan
   const status = data?.corrallm?.benchStatus
+  const lease = data?.corrallm?.calibrationStatus
   const running = !!status?.running
 
   const checks = useMemo(() => {
@@ -200,10 +288,14 @@ function BenchPage() {
       </Box>
 
       {running && (
-        <Alert severity="warning">
-          <AlertTitle>Bench running — exclusive mode</AlertTitle>
-          Models are being evicted and every other caller is receiving 429 + Retry-After.
-        </Alert>
+        <ActiveRun
+          args={status?.args ?? []}
+          log={status?.log ?? []}
+          startedAt={n(status?.startedAt)}
+          leaseReason={lease?.reason}
+          leaseRemaining={n(lease?.remainingSeconds)}
+          onCancel={() => cancel.mutate()}
+        />
       )}
 
       {results.length === 0 ? (
@@ -374,10 +466,12 @@ function BenchPage() {
         </Box>
       </Paper>
 
-      {(status?.log?.length ?? 0) > 0 && (
+      {/* Finished runs keep their output available; a running one is shown in
+          the live panel at the top instead of twice on one page. */}
+      {!running && (status?.log?.length ?? 0) > 0 && (
         <Paper sx={{ p: 2, maxHeight: 320, overflow: 'auto' }}>
-          <Typography variant="subtitle2">Run output</Typography>
-          <Box component="pre" sx={{ m: 0, fontSize: 12 }}>
+          <Typography variant="subtitle2">Last run output</Typography>
+          <Box component="pre" sx={{ m: 0, fontSize: 12, whiteSpace: 'pre-wrap' }}>
             {status?.log?.join('\n')}
           </Box>
         </Paper>

@@ -272,13 +272,20 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 						continue
 					}
 					tset, tsk := tset, tsk
-					for _, mode := range RunMode(tsk.Run).Modes() {
-						mode := mode
-						wg.Add(1)
-						sem <- struct{}{}
-						go func() {
-							defer wg.Done()
-							defer func() { <-sem }()
+					// Modes run SEQUENTIALLY inside one goroutine, never one
+					// goroutine each. Concurrent passes of the same probe
+					// sabotage each other: the cold pass's evict-all pulls the
+					// model out from under the warm pass (measured live: a 0 MiB
+					// footprint because nothing was resident by publish time),
+					// and the warm pass's load can make the "cold" pass warm —
+					// which silently turns a cold verdict into a lie. Cold-first
+					// ordering only means anything if nothing reloads in between.
+					wg.Add(1)
+					sem <- struct{}{}
+					go func() {
+						defer wg.Done()
+						defer func() { <-sem }()
+						for _, mode := range RunMode(tsk.Run).Modes() {
 							// Per-combo watchdog: a hung MCP tool discovery or a stuck
 							// LLM retry has no internal deadline and would wedge the
 							// whole matrix silently (observed: 87min hang). Cap each
@@ -305,7 +312,19 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 							// Measure and publish while the model is still resident
 							// and nothing else is contending — the whole reason
 							// llm-bench, not the serving path, is the measurer.
-							if fp := publishMeasurements(comboCtx, resid, model, mode, tsk, r); fp > 0 {
+							// Publish on a FRESH context derived from the run's
+							// ctx, never comboCtx: comboCancel() has already
+							// fired by here, so comboCtx is dead and every
+							// publish failed with "context canceled" — silently
+							// for the VRAM read, which just returned ok=false and
+							// recorded a 0 footprint. A measurement must also
+							// outlive a combo that TIMED OUT: the model was
+							// resident and its footprint is real regardless of
+							// whether the probe finished in time.
+							pubCtx, pubCancel := context.WithTimeout(ctx, 60*time.Second)
+							fp := publishMeasurements(pubCtx, resid, model, mode, tsk, r)
+							pubCancel()
+							if fp > 0 {
 								mu.Lock()
 								footprints[model] = fp
 								mu.Unlock()
@@ -318,8 +337,8 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 								r[j].ResidencyNote = residNote
 							}
 							appendRows(r)
-						}()
-					}
+						}
+					}()
 				}
 			}
 			wg.Wait() // barrier: finish all clean combos before any adversarial one

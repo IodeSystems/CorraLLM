@@ -207,17 +207,6 @@ const UnloadDoc = graphql(/* GraphQL */ `
   }
 `)
 
-const LogsDoc = graphql(/* GraphQL */ `
-  query ModelLogs($backend: String!) {
-    corrallm {
-      modelLogs(backend: $backend) {
-        backend
-        lines
-      }
-    }
-  }
-`)
-
 // Task-oriented capability sections — "I want to chat / transcribe / synthesize /
 // embed / …". A model lands in the first section whose caps include its
 // capability; groupTypes maps the section to the model cost type(s) whose group
@@ -236,40 +225,6 @@ const CAP_SECTIONS: { title: string; blurb: string; caps: string[]; groupTypes: 
   { title: 'Text-to-speech', blurb: 'Speech synthesis', caps: ['audio.tts'], groupTypes: ['tts'] },
   { title: 'Rerank', blurb: 'Document reranking', caps: ['rerank'], groupTypes: ['rerank'] },
 ]
-
-function LogsDialog({ backend, onClose }: { backend: string; onClose: () => void }) {
-  const q = useQuery({
-    queryKey: ['logs', backend],
-    queryFn: () => gqlClient.request(LogsDoc, { backend }),
-    refetchInterval: 2000,
-  })
-  const lines = q.data?.corrallm.modelLogs?.lines ?? []
-  return (
-    <Dialog open onClose={onClose} maxWidth="lg" fullWidth>
-      <DialogTitle>Logs · {backend}</DialogTitle>
-      <DialogContent dividers>
-        <Box
-          component="pre"
-          sx={{
-            m: 0,
-            p: 1,
-            fontSize: 12,
-            lineHeight: 1.4,
-            maxHeight: '65vh',
-            overflow: 'auto',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-            bgcolor: 'grey.900',
-            color: 'grey.100',
-            borderRadius: 1,
-          }}
-        >
-          {lines.length ? lines.join('\n') : q.isLoading ? 'loading…' : '(no output captured)'}
-        </Box>
-      </DialogContent>
-    </Dialog>
-  )
-}
 
 function stateColor(state?: string): 'success' | 'info' | 'warning' | 'error' | 'default' {
   switch (state) {
@@ -290,7 +245,6 @@ function Home() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
-  const [logsFor, setLogsFor] = useState<string | null>(null)
   const [cmdView, setCmdView] = useState<{ title: string; cmd: string } | null>(null)
 
   const q = useQuery({
@@ -552,8 +506,6 @@ function Home() {
           {msg.text}
         </Alert>
       )}
-
-      {logsFor && <LogsDialog backend={logsFor} onClose={() => setLogsFor(null)} />}
 
       {/* A probe is DESTRUCTIVE: it evicts models and locks out other callers.
           Say so before the click, name exactly what this run will learn, and

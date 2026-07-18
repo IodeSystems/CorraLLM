@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -176,6 +177,17 @@ func (b *BenchRunner) Start(
 	// The bench presents this key so the lease serves it while everyone else is
 	// turned away, and carries the admin token so it can drive load/unload.
 	cmd.Env = append(os.Environ(), "CORRALLM_BENCH_KEY="+key)
+	// llm-bench resolves its MCP helper (llm-bench-mcp) from local/bin RELATIVE
+	// TO ITS CWD, or from $PATH. corrallm's cwd is wherever corrallm was
+	// started — typically an ops repo, not the bench's build tree — so the
+	// relative lookup finds nothing. The two binaries are always built side by
+	// side, so putting the bench binary's own directory on PATH makes the helper
+	// resolvable no matter where corrallm runs from.
+	if dir := filepath.Dir(opts.Bin); dir != "" && dir != "." {
+		if abs, err := filepath.Abs(dir); err == nil {
+			cmd.Env = append(cmd.Env, "PATH="+abs+string(os.PathListSeparator)+os.Getenv("PATH"))
+		}
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

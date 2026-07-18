@@ -213,7 +213,11 @@ func prepareResidency(ctx context.Context, c *residencyClient, mode RunMode, mod
 
 // residentView is the subset of corrallm's residency op llm-bench needs.
 type residentView struct {
-	Model         string `json:"model"`
+	// The residency op names this "modelName" (a backend's "name" is
+	// "<model>#<index>"). Decoding it as "model" silently matched nothing, so
+	// every footprint read returned ok=false and published a 0 MiB profile — a
+	// wrong measurement that looked like an absent one.
+	Model         string `json:"modelName"`
 	FootprintMiB  int    `json:"footprintMiB"`
 	BaseMiB       int    `json:"baseMiB"`
 	PerSlotMiB    int    `json:"perSlotMiB"`
