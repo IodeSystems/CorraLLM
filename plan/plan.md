@@ -488,8 +488,15 @@ the BackpressureError shape we already validated.
     GraphQL `ModelDef.Modalities []ModalityView` (list — GraphQL has no map). UI: `modality`
     query field dropped, `modalities{…}` selected + rendered as chips on the model page. Drove
     it: llama.cpp auto-loads the mmproj sibling from a `-hf` vision repo (no `--mmproj`), so
-    `image` is CONFIG-DECLARED, not backend-detected. **bonsai vision verified end-to-end**
-    (/props modalities.vision=true + red-circle test → "Circle, Red"). **All 3 chat models
+    `image` is CONFIG-DECLARED, not backend-detected. ~~**bonsai vision verified end-to-end**
+    (/props modalities.vision=true + red-circle test → "Circle, Red")~~ — **RETRACTED
+    (2026-07-18): that check was run against a WARM bonsai.** Cold (first request after a load)
+    it silently drops the image and answers as if none were attached; warm it is correct, and a
+    fresh second image proves the warm pass is genuine perception, not prompt-cache reuse.
+    `/props` still says `vision: true` and the mmproj still loads, so no warm probe can catch
+    this. Root cause not yet found (corrallm readiness gate vs. llama.cpp mmproj init), and the
+    scope on Qwen/gemma is UNKNOWN — both were only ever probed warm. See **P15** (cold-path
+    capability probing exists because of this bug). **All 3 chat models
     ship mmproj** (HF-API repo check: Qwen, gemma, bonsai each have mmproj-*.gguf) → declared
     text+image in ml-kit/corrallm.yaml; the whole `chat` lane [Qwen, gemma] is uniformly vision,
     so a degrade keeps image. Qwen/gemma repo-verified but runtime /props NOT re-checked (box too
@@ -691,6 +698,79 @@ the BackpressureError shape we already validated.
   persisted `lane_samples` schema untouched. Motivating case: ml-kit's `chat` lane
   (Qwen 27B → gemma-4-12b) replacing a misleading `Qwen3-6-27B-MPT`-serves-gemma proxy row.
 
+- ☐ **P15 — Bench: capability verification, performance profiling & user probes.** Fold the
+  crucible eval harness (`github.com/iodesystems/crucible`) INTO this repo as a **second binary**
+  (`cmd/corrallm-bench`, plus its MCP helper) so corrallm owns measurement as well as serving.
+  One engine, three probe tiers. Depends on nothing in P0–P14; sequence it after P11d.
+
+  **Why fold rather than federate.** The decisive argument is lifecycle access, not tidiness.
+  A capability claim can only be falsified by probing a model **cold**, and corrallm is the only
+  component that can force that — it owns residency, eviction and the `loadModel`/`unloadModel`
+  ops (`internal/api/handlers.go:1109,1123`). Crucible today talks to corrallm over HTTP as a
+  black box: it cannot evict, so it can never test the cold path, so the entire class of
+  cold-load bugs is invisible to it. In-repo, the bench binary drives residency deliberately.
+  Keep the transport **HTTP over the real `/v1` surface** even in one repo — an in-process
+  shortcut would stop testing the thing users actually hit.
+
+  **Motivating bug (2026-07-18).** `ternary-bonsai-27b` declared `modalities.image` and
+  `corrallm.yaml` claimed it "verified end-to-end (red-circle test)". It silently drops the image
+  on the FIRST request after a cold load — the model's own reasoning says "no actual image
+  attached" — and works once warm. `/props` reports `vision: true` and the mmproj loads, so every
+  warm probe passes. Nothing in either codebase could contradict the declaration: corrallm never
+  calls `/props` or otherwise checks a declared modality against the live backend (declaration is
+  pure operator-trust, `config.go:96-98`), and crucible has no modality concept at all. The claim
+  was verified once, by a human, against a warm model. **Cold-path probing is therefore a P15
+  requirement, not a nice-to-have** — a warm-only capability check would have passed this bug.
+
+  **Tiers (one runner, three probe kinds):**
+  - **T1 capability** — does the model do what it CLAIMS? Cross-check declared `modalities`
+    against the live backend: `/props`, plus real payloads per declared modality (image in →
+    describes it, audio in → transcribes, declared `formats`, tool-calling, structured output).
+    Cheap, deterministic, pass/fail. **Runs cold AND warm**; a cold/warm disagreement is itself
+    the finding. This supersedes the ad-hoc `ml-kit/bin/capcheck` sketch — don't build both.
+  - **T2 performance** — gen/prompt tok/s at several context depths, cold load seconds, VRAM,
+    spec-decode acceptance. Most inputs already exist: `tune` measures VRAM
+    (`internal/tune/tune.go`), and llama.cpp's `timings` are parsed into
+    `PromptPerSec`/`PredictedPerSec` per request (`proxy.go:1343-1364`, `store.go:119-120`) —
+    but they are **never aggregated**: `RollupByModel` (`store.go:209`) sums tokens/dwell/cost
+    only, so there is no per-model "typical tok/s" anywhere in the product. T2 adds deliberate
+    timed probes + the missing aggregation.
+  - **T3 quality** — crucible's existing tasks/checks/judge/toolsets, moved wholesale. Its
+    `task.yaml` + check DSL IS the **user-defined probe format**; reuse it for T1/T2 built-ins
+    (a new task `class`) rather than inventing a second assertion language. That was the whole
+    risk in growing a separate bench, and folding is what removes it.
+
+  **Run N times, report variance — non-negotiable.** Four back-to-back baseline runs of the same
+  two models (2026-07-18) gave 15/19, 18/20, 16/20, 18/20 for one model against 15/19, 18/20,
+  18/20, 18/20 for the other. Three runs tied exactly; the one apparent 2-stage gap was
+  infrastructure (aborted stages), not capability. **A single run's per-task diff between similar
+  models is noise** and reading it as signal is the default failure mode of this kind of tool.
+  Throughput was the stable discriminator (1.43× aggregate across runs, consistent every run)
+  while wall-clock was not (one run had the "faster" model slower, via swap churn). So: repeat
+  probes, surface spread not just a point estimate, and prefer throughput over wall-clock.
+
+  **Persistence + UI.** Keep crucible's `out/<ts>/{runs.jsonl,summary.csv,report.md}` artifacts
+  for a full run, but ALSO persist a per-`(gpuName, model)` summary the way `tune.Cache` does
+  (`tune.go:132-134`) so the dashboard shows current capability/perf without re-running. UI: a
+  **model catalog / comparison view** — the gap today is that `ui/src/routes/index.tsx` groups by
+  capability and `model.tsx` shows one model's own numbers, but nothing is cross-model. The T1
+  capability matrix wants a declared-vs-verified column, so a false claim is visible as a red cell
+  rather than a comment in a YAML file.
+
+  **Migration risks / decisions to make before starting:**
+  - crucible pulls in `agentkit` (`agent`, `llm`, `mcpmgr`); corrallm currently does not. New dep
+    on the serving repo even though only the bench binary uses it — acceptable, but name it.
+  - `crucible-mcp` is a separate spawned binary (workspace tools for T3). Two new binaries, not one.
+  - Module path rewrite `github.com/iodesystems/crucible/...` → `.../corrallm/...`; crucible's own
+    `plan/plan.md`, `tasks/`, and `out/` run history need a home (archive the history, port the plan
+    into this file).
+  - The bench must NOT run inside the serving process — it contends for the GPU it is measuring.
+    Separate binary is the point; if it ever gains an API trigger, it still shells out.
+  - **Carry crucible's hard-won scoring lessons, don't re-derive them:** a turn/tool-call cap must
+    not veto passing checks (it hid a model that had written the correct answer), but a
+    *pathological* breach (identical-call loop, tool-call budget) must; and never infer an abort's
+    cause — report the underlying error, or a 9.6 s failure gets blamed on a 10-minute timeout.
+
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
 ---
@@ -837,6 +917,21 @@ the BackpressureError shape we already validated.
   fallback poll). Store carries dwell/tokens/$ per request + a per-model rollup query.
 - **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
   (benign warning); revisit if it becomes flaky.
+- ✅ ~~Transient capacity misses reported as 503~~ — resolved: `ErrNoCapacity` now returns a
+  `*proc.CapacityError` splitting **permanent** (won't fit even fully evicted → stays 503, a real
+  operator fault) from **transient** (a resident is inside its `activeUse`/`minResidency` window →
+  429 + `Retry-After` = when that blocker becomes a legal victim). The proxy walk keeps the
+  *soonest* backpressure across candidates (`keepSoonest`) instead of the last one, so a lane
+  answers "when could ANYTHING here serve", including a saturated-but-live member's dwell EWMA.
+  Applied to both the inference and realtime paths. **Why it mattered:** agentkit-style clients
+  retry 429 against their whole budget but cap 5xx at ~5 attempts (1+2+4+8s = 15s), which is
+  shorter than these models' 30s cold load — so every mid-swap load was unretryable. Found via
+  crucible, where pinned model names give a 1-element candidate list: any capacity miss was an
+  instant, unretryable 503 that silently scored the task zero.
+  *Deliberately NOT added: a queued-load intent marker.* It would re-create the load/evict thrash
+  `activeUse` exists to damp (see the 107-spill note at `manager.go`), and the computed
+  `Retry-After` already lands the client's retry at the moment eviction becomes legal. Revisit only
+  with measurements showing spills persist.
 - **P8-beyond known gaps / OSS pre-reqs:**
   (1) ✅ ~~`/api` unauthenticated~~ — resolved (`3e83001`): admin token (`<home>/admin.token`) gates
   `/api/*` incl. load/unload, via Bearer or cookie; `/v1`/`/upstream`/`/health` stay open.
@@ -863,7 +958,14 @@ the BackpressureError shape we already validated.
      P10c detail modal). NOTE: the actual qwen failures still need the **upstream** ~120 s timeout raised
      (front proxy / client) — outside corrallm; and a production rebuild/restart (`ml-kit/bin/run`) to
      pick up P10.
-  3. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
+  3. **P15: bench (capability + performance + user probes)** — fold the crucible harness in as a
+     second binary; corrallm owns measurement, not just serving. Unblocks the two things nothing
+     currently covers: verifying a declared modality against the live backend, and aggregating
+     per-model throughput. **Blocking decision for the USER before starting:** whether crucible's
+     repo is archived on merge or kept dual-homed for a transition (affects whether its `out/` run
+     history and `plan/plan.md` move or get referenced). Also carries an open bug — the bonsai
+     cold-load vision drop (§6 P9d retraction) is unrooted, and its scope on Qwen/gemma is untested.
+  4. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
   - OSS follow-ups (not blockers): auth multi-user accounts/roles + token rotation (today is a single
     shared admin token); rename the `WattsPerToken` cost fields to `WhPerToken`.
 - Optional polish in §7 Optional extensions (affinity weighting, context-window clamp on degrade,
