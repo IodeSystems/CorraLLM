@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Builds llm-bench + llm-bench-mcp into local/bin/ (mirrors crucible's bin/setup,
+# the harness this was ported from — see plan/ for the port note).
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+bin_dir="$root/local/bin"
+mkdir -p "$bin_dir"
+
+echo "building llm-bench + llm-bench-mcp -> $bin_dir"
+( cd "$root" && go build -o "$bin_dir/llm-bench"     ./cmd/llm-bench )
+( cd "$root" && go build -o "$bin_dir/llm-bench-mcp" ./cmd/llm-bench-mcp )
+
+echo "done. add to PATH:  export PATH=\"$bin_dir:\$PATH\""

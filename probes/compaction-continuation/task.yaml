@@ -1,0 +1,62 @@
+name: compaction-continuation
+class: tooluse
+workspace: fixture/
+# Facts are established in stage 1, then the session history is DETERMINISTICALLY
+# folded (forceCompact) before stage 2 — so we measure whether the model still
+# recalls pre-compaction facts from the summary, not whether budget pressure
+# happened to trigger a fold. A moderate budget keeps LOD in play too.
+contextBudget: 8000
+limits: { maxTurnsPerStage: 16, maxToolCallsPerStage: 40 }
+stages:
+  # Stage 1: establish facts. Survey the files so the production port (7443) and
+  # primary region (us-west-2) enter the conversation history. No tool-name check
+  # here — the read tool differs by toolset (read_file vs poly-lsp's node_read),
+  # and stage 2's recall is the real gate.
+  - prompt: |
+      This repository has several documentation, config, and log files. Survey ALL
+      of them using the available file/read tools (list the tree, then read each
+      file) and build a mental inventory of the system: services, ports, regions,
+      and any operational notes. Do not write anything yet — just read and understand.
+    checks: []
+  # Stage 2: forceCompact folds stage-1 history into a summary BEFORE this prompt
+  # runs, so recall is genuinely post-compaction. The model MAY re-read files to
+  # recover facts — that is continuation behavior; only failing the task is
+  # disallowed. compactions_min guards that the fold actually happened.
+  - forceCompact: true
+    prompt: |
+      Based on what you learned, write a file named answers.txt containing exactly
+      two lines: the production service port, and the primary region. Use the values
+      from the documentation.
+    checks:
+      - compactions_min: 1
+      # SOFT size gate (lower-is-better): the fold must have happened (>0) and be
+      # reasonably terse. compactionTokensAfter is the agentkit CompactionInfo
+      # active-window estimate summed across this stage's folds.
+      #
+      # 4500, not 1500. TokensAfter is marker + PRESERVED TAIL, and llm-bench
+      # configures PreserveLastMessages: 20 / PreserveLastToolCalls: 5 with
+      # LODTruncateAboveChars: 4000 that never engages here (no fixture file is
+      # that large), so the last 5 tool-call/result pairs from the stage-0 file
+      # survey pass through verbatim. That fixed tail dominates: Qwen3-6-27B-MPT
+      # and qwen36-27b-nvfp4 landed at 2950 and 3211 — a 9% spread across two
+      # different quantizations, i.e. the number barely moves with the model.
+      # 1500 was below anything this harness config can emit, so the check failed
+      # 100% of the time while the recall checks below passed, measuring the
+      # preserve policy rather than summary quality.
+      #
+      # TODO: the honest fix is for agentkit to report summary size separately
+      # from the preserved tail, so this can gate the summary alone. Until then
+      # this bound only catches a genuinely bloated fold.
+      - compaction_under: 4500
+      - file_contains: { path: answers.txt, text: "7443" }
+      - file_contains: { path: answers.txt, text: "us-west-2" }
+  # Stage 3: an action that depends on stage-1 knowledge, also post-compaction —
+  # exactly one service config disagrees with the documented production port; fix it.
+  - forceCompact: true
+    prompt: |
+      Exactly one service config file uses a port that disagrees with the documented
+      production port. Find it and edit it so its port matches the documented
+      production port. Change nothing else.
+    checks:
+      - file_contains: { path: configs/service-b.yaml, text: "7443" }
+      - cmd_ok: "grep -q 'port: 7443' configs/service-b.yaml"

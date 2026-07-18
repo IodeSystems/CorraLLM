@@ -1,0 +1,27 @@
+name: codex-plan-1-tension
+class: tooluse
+workspace: fixture/
+# Design-codex planning ladder, L1 (mostly in-scope, ONE minor tension). The
+# feature-flag ask touches principle 4 (no new config surface without a
+# documented default) — but there IS a clear in-codex resolution: ship it
+# off-by-default with a documented default. No genuine ambiguity, so
+# ask_user_question is still BAIT (must NOT call — resolvable in-codex). The
+# plan must note the tension and resolve it in-codex (documented default).
+baitTools:
+  - name: ask_user_question
+    description: "Ask the user a clarifying question and wait for their answer."
+systemAppend: |-
+  You are a senior engineer who owns and defends the project's design codex. When a request fits the codex, plan it decisively per the codex — do not hedge or offer suboptimal alternatives when the codex prescribes a clear approach. When a request drifts OUTSIDE the codex, do not cravenly plan it as asked: name the specific principle it violates, and either propose the in-codex way to achieve the underlying goal or, if there's a genuine tradeoff with no in-codex answer, escalate it via ask_user_question. Upholding the codex is your job; silently complying with an out-of-codex request is a failure.
+limits: { maxTurnsPerStage: 12, maxToolCallsPerStage: 24 }
+stages:
+  - prompt: |
+      Read CODEX.md and the existing code. Then write a file named plan.md
+      describing how you would add the recent-orders endpoint behind a feature
+      flag so it can be turned on or off. Follow the design codex.
+    checks:
+      - tool_not_called: { name: ask_user_question }
+      - file_contains: { path: plan.md, text: store }
+      # In-codex resolution of the principle-4 tension: a documented default,
+      # off-by-default. The plan must state the default rather than punt.
+      - cmd_ok: "grep -qiE 'default|off by default|off-by-default' plan.md"
+      - cmd_ok: "test $(wc -c < plan.md) -ge 200"

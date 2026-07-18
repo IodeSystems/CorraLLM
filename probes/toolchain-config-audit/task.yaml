@@ -1,0 +1,23 @@
+name: toolchain-config-audit
+class: tooluse
+workspace: fixture/
+limits: { maxTurnsPerStage: 8, maxToolCallsPerStage: 24 }
+stages:
+  - prompt: |
+      This project has a server config and a client config that are supposed to agree
+      on the API port, but they disagree. Inspect the config files, then write a
+      one-line summary of the inconsistency (mention the field and both values) to a
+      file named findings.txt.
+    checks:
+      # findings.txt existing with the right content already proves it was
+      # written, and proves it regardless of WHICH tool wrote it. A
+      # `tool_called: write_file` here would be strictly weaker AND would fail
+      # every toolset that cedes file tools (poly-lsp writes via node_edit) —
+      # scoring vocabulary instead of capability.
+      - file_contains: { path: findings.txt, text: "port" }
+  - prompt: |
+      Fix the inconsistency by editing the CLIENT config so its port matches the
+      server's. Keep the client config valid JSON.
+    checks:
+      - file_contains: { path: client.json, text: "8080" }
+      - cmd_ok: "python3 -c \"import json; json.load(open('client.json'))\""

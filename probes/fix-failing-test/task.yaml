@@ -1,0 +1,31 @@
+name: fix-failing-test
+class: coding
+workspace: fixture/
+limits: { maxTurnsPerStage: 8, maxToolCallsPerStage: 24 }
+stages:
+  - prompt: |
+      This is a small Go module. Its test suite is failing. Run the tests with the
+      run tool and report what is going wrong.
+    checks:
+      - tool_called: { name: run, argContains: "test" }
+  - prompt: |
+      Find the bug in the source and fix it by writing the corrected file. Do not edit
+      the test file.
+    checks:
+      # "Did the fix work", not "did you call write_file". Passing tests is
+      # strictly stronger (writing a file proves nothing about its contents)
+      # and is toolset-agnostic — poly-lsp edits via node_edit, and a check
+      # naming write_file would fail it for using its own vocabulary.
+      - cmd_ok: "go test ./..."
+      # "Don't edit the test file" as an OUTCOME. The runner git-inits and
+      # commits every scratch workspace, so this catches ANY modification —
+      # including a prepended t.Skip(), which leaves the assertions textually
+      # intact and would slip past a file_contains check while still making
+      # `go test` green. Also stronger than the tool check it replaces
+      # (tool_not_called: write_file), which `run sed -i` walked around.
+      - cmd_ok: "git diff --exit-code -- mathx_test.go"
+  - prompt: |
+      Verify your fix: run the full test suite and confirm it passes.
+    checks:
+      - cmd_ok: "go test ./..."
+      - tool_called: { name: run, argContains: "test" }

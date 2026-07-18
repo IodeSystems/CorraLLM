@@ -1,0 +1,24 @@
+# Fleet inventory (generated; do not hand-edit the header)
+#
+# columns: host  role  region  status
+
+host-101  api-primary     us-west-2  active
+host-102  api-primary     us-west-2  active
+host-103  api-secondary   us-east-1  active
+host-104  worker          us-west-2  active
+host-105  worker          us-west-2  active
+host-106  worker          us-east-1  active
+host-107  cache           us-west-2  active
+host-108  cache           us-east-1  standby
+host-109  db-leader       us-west-2  active
+host-110  db-replica      us-east-1  active
+host-111  db-replica      us-east-1  active
+host-112  gateway         us-west-2  active
+
+# Notes:
+# - The primary region is us-west-2; it holds the db-leader (host-109) and both
+#   api-primary nodes. All writes route here.
+# - us-east-1 is failover: read replicas and standby cache only.
+# - Every "active" gateway/api host terminates TLS on the production port.
+# - Capacity in us-west-2 was expanded in 2024-08; it is now the authoritative
+#   primary region for all stateful services.

@@ -1,0 +1,30 @@
+# service-a: public API front door (region: us-west-2)
+service:
+  name: service-a
+  role: api-primary
+  region: us-west-2
+  # Canonical production port — matches deploy.md.
+  port: 7443
+  tls:
+    enabled: true
+    min_version: "1.2"
+    cert: /etc/service-a/tls/fullchain.pem
+    key: /etc/service-a/tls/privkey.pem
+  health:
+    path: /healthz
+    interval_s: 5
+    timeout_s: 2
+    unhealthy_threshold: 3
+  limits:
+    max_conns: 4096
+    read_timeout_ms: 3000
+    write_timeout_ms: 3000
+  upstreams:
+    - name: worker-pool
+      addr: worker.internal:9100
+    - name: cache
+      addr: cache.internal:6379
+logging:
+  level: info
+  format: json
+  sample_rate: 0.1

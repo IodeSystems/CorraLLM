@@ -1,0 +1,6 @@
+name: missing-workspace
+class: coding
+workspace: nope/
+stages:
+  - prompt: "hi"
+    checks: []

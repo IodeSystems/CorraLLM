@@ -1,0 +1,6 @@
+name: bad-class
+class: wizardry
+workspace: fixture/
+stages:
+  - prompt: "hi"
+    checks: []

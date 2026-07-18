@@ -1,0 +1,24 @@
+2026-07-15T08:00:01Z INFO  service-a starting up region=us-west-2 port=7443
+2026-07-15T08:00:01Z INFO  service-a tls enabled min_version=1.2
+2026-07-15T08:00:02Z INFO  service-a health server listening path=/healthz
+2026-07-15T08:00:02Z INFO  service-a connected upstream=worker-pool addr=worker.internal:9100
+2026-07-15T08:00:02Z INFO  service-a connected upstream=cache addr=cache.internal:6379
+2026-07-15T08:00:03Z INFO  service-a ready accepting connections on 7443
+2026-07-15T08:01:10Z INFO  request id=a1 method=GET path=/v1/items status=200 dur_ms=12
+2026-07-15T08:01:11Z INFO  request id=a2 method=POST path=/v1/items status=201 dur_ms=41
+2026-07-15T08:01:12Z WARN  request id=a3 method=GET path=/v1/items/999 status=404 dur_ms=3
+2026-07-15T08:01:15Z INFO  request id=a4 method=GET path=/v1/items status=200 dur_ms=9
+2026-07-15T08:02:00Z INFO  health check ok consecutive=3 port=7443
+2026-07-15T08:03:22Z INFO  request id=a5 method=PUT path=/v1/items/12 status=200 dur_ms=18
+2026-07-15T08:03:40Z WARN  upstream worker-pool slow addr=worker.internal:9100 dur_ms=1900
+2026-07-15T08:03:41Z INFO  upstream worker-pool recovered addr=worker.internal:9100
+2026-07-15T08:05:00Z INFO  rollout node drained host=host-101 region=us-west-2
+2026-07-15T08:05:30Z INFO  rollout node deployed host=host-101 artifact=service-a:2026.07.15
+2026-07-15T08:05:48Z INFO  rollout health passed host=host-101 port=7443 consecutive=3
+2026-07-15T08:05:49Z INFO  rollout node readded host=host-101 pool=api-primary
+2026-07-15T08:07:11Z INFO  request id=a6 method=GET path=/v1/status status=200 dur_ms=2
+2026-07-15T08:09:33Z ERROR request id=a7 method=POST path=/v1/items status=500 dur_ms=120 err="db timeout"
+2026-07-15T08:09:34Z INFO  db failover check leader=host-109 region=us-west-2 healthy=true
+2026-07-15T08:09:35Z INFO  request id=a8 method=POST path=/v1/items status=201 dur_ms=52
+2026-07-15T08:12:00Z INFO  health check ok consecutive=3 port=7443
+2026-07-15T08:15:41Z INFO  metrics flush qps=812 p50_ms=11 p99_ms=88 region=us-west-2

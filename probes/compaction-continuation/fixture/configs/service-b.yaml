@@ -1,0 +1,31 @@
+# service-b: secondary API front door (region: us-east-1 failover)
+service:
+  name: service-b
+  role: api-secondary
+  region: us-east-1
+  # BUG: this disagrees with the documented production port (deploy.md → 7443).
+  # It was left over from the 2023 staging misconfiguration and must be fixed.
+  port: 7442
+  tls:
+    enabled: true
+    min_version: "1.2"
+    cert: /etc/service-b/tls/fullchain.pem
+    key: /etc/service-b/tls/privkey.pem
+  health:
+    path: /healthz
+    interval_s: 5
+    timeout_s: 2
+    unhealthy_threshold: 3
+  limits:
+    max_conns: 2048
+    read_timeout_ms: 3000
+    write_timeout_ms: 3000
+  upstreams:
+    - name: worker-pool
+      addr: worker.internal:9100
+    - name: cache
+      addr: cache.internal:6379
+logging:
+  level: info
+  format: json
+  sample_rate: 0.1

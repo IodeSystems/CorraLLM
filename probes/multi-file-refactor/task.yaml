@@ -1,0 +1,29 @@
+name: multi-file-refactor
+class: coding
+workspace: fixture/
+# Favors poly-lsp: `UserID` is defined in types.go and referenced across 4 more
+# files (struct field, func params, map key type, call sites, test). A structural
+# rename (node_references/node_refactor over file#sym) touches every site in one
+# pass; baseline read_file/write_file must grep out each site and rewrite each
+# file by hand, and MISSING ONE breaks the build (checked below).
+limits: { maxTurnsPerStage: 12, maxToolCallsPerStage: 30 }
+stages:
+  - prompt: |
+      Rename the `UserID` type to `AccountID` throughout this Go module. Update
+      every reference — the type definition, struct fields, function parameters,
+      map key types, call sites, and the test. Nothing else should change; the
+      module must still build and its tests must still pass.
+    checks:
+      # SEMANTIC, not textual: build passing proves EVERY code reference was
+      # renamed (a leftover `UserID` identifier would be undefined → won't
+      # compile). We deliberately do NOT grep for a bare "UserID" everywhere: a
+      # symbol rename (node_refactor) correctly leaves a doc COMMENT that mentions
+      # UserID alone, and penalizing that would reward blind text-replace over
+      # correct refactoring — exactly backwards for what this task measures.
+      - cmd_ok: "go build ./..."
+      # The rename actually happened (not a no-op): the type is now AccountID.
+      - cmd_ok: "grep -rq --include='*.go' 'type AccountID' ."
+      # The old TYPE declaration is gone (a code declaration, not a comment).
+      - cmd_ok: "! grep -rq --include='*.go' 'type UserID' ."
+      # Behaviour preserved.
+      - cmd_ok: "go test ./..."

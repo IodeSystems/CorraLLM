@@ -1,0 +1,7 @@
+name: bad-check
+class: tooluse
+workspace: fixture/
+stages:
+  - prompt: "hi"
+    checks:
+      - file_contains: { path: out.txt }

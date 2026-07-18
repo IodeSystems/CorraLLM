@@ -1,0 +1,27 @@
+name: codebase-navigation
+class: tooluse
+workspace: fixture/
+# Favors poly-lsp: read-only structural questions with exact answers. poly-lsp's
+# node_references answers "who calls Store.Save" precisely; node_query resolves
+# Server.Handle's return type and enumerates structs with a CreatedAt field.
+# Baseline must grep and reason by hand — `s.Save`/`store.Save` receiver aliasing
+# hides call sites from a naive `grep Save`, and a shared field name across three
+# structs is easy to under-count. No code changes required.
+limits: { maxTurnsPerStage: 12, maxToolCallsPerStage: 30 }
+stages:
+  - prompt: |
+      Answer these questions about this Go codebase. Write the answers to a file
+      named answers.txt with one labeled line per answer:
+        (1) Which functions/methods call `Store.Save`?
+        (2) What is the return type of the `Server.Handle` method?
+        (3) List every struct type that has a field named `CreatedAt`.
+    checks:
+      # Q1: the two call sites of Store.Save.
+      - file_contains: { path: answers.txt, text: "Register" }
+      - file_contains: { path: answers.txt, text: "Import" }
+      # Q2: Server.Handle's return type.
+      - file_contains: { path: answers.txt, text: "*Response" }
+      # Q3: the three structs with a CreatedAt field.
+      - file_contains: { path: answers.txt, text: "Record" }
+      - file_contains: { path: answers.txt, text: "Session" }
+      - file_contains: { path: answers.txt, text: "AuditEntry" }
