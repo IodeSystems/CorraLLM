@@ -10,6 +10,7 @@ import {
   Chip,
   CircularProgress,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   Link as MuiLink,
@@ -100,6 +101,83 @@ const OverviewDoc = graphql(/* GraphQL */ `
           nSlots
           hasUi
         }
+      }
+    }
+  }
+`)
+
+
+/**
+ * One action whose meaning follows residency, replacing a Load/Unload pair that
+ * were both always enabled — so half of every pair was a silent no-op.
+ *
+ *   absent/failed -> Load     ready -> Unload     loading/evicting -> Cancel
+ *
+ * Cancel unloads: mid-spawn there is nothing else useful to do, and leaving a
+ * half-loaded backend occupying VRAM is the state people actually get stuck in.
+ */
+function ResidencyToggle(props: {
+  state: string
+  persistent: boolean
+  busy: boolean
+  onLoad: () => void
+  onUnload: () => void
+}) {
+  const { state, persistent, busy, onLoad, onUnload } = props
+  const inFlight = state === 'loading' || state === 'evicting'
+  const resident = state === 'ready'
+
+  if (inFlight) {
+    return (
+      <Button size="small" variant="outlined" color="warning" disabled={busy || persistent} onClick={onUnload}>
+        Cancel
+      </Button>
+    )
+  }
+  if (resident) {
+    return (
+      <Tooltip title={persistent ? 'pinned models cannot be unloaded' : ''}>
+        <span>
+          <Button size="small" variant="outlined" color="warning" disabled={busy || persistent} onClick={onUnload}>
+            Unload
+          </Button>
+        </span>
+      </Tooltip>
+    )
+  }
+  return (
+    <Button size="small" variant="outlined" disabled={busy} onClick={onLoad}>
+      Load
+    </Button>
+  )
+}
+
+const ProbePlanDoc = graphql(/* GraphQL */ `
+  query ProbePlanOverview {
+    corrallm {
+      benchPlan {
+        models {
+          model
+          new
+          hasTuneProfile
+          unverifiedModalities
+          disagreements {
+            modality
+            runMode
+          }
+        }
+      }
+    }
+  }
+`)
+
+const ProbeRunDoc = graphql(/* GraphQL */ `
+  mutation ProbeRun($body: corrallm_BenchRunInputBodyInput!) {
+    corrallm {
+      startBenchRun(body: $body) {
+        ok
+        message
+        warning
       }
     }
   }
@@ -221,6 +299,40 @@ function Home() {
     refetchInterval: 15000, // fallback; live via SSE (useLiveEvents)
   })
 
+  const [probeFor, setProbeFor] = useState<string | null>(null)
+
+  // What is missing per model — drives whether a Probe button appears at all.
+  const probePlan = useQuery({
+    queryKey: ['probePlanOverview'],
+    queryFn: () => gqlClient.request(ProbePlanDoc),
+    refetchInterval: 30000,
+  })
+  const planByModel = new Map(
+    (probePlan.data?.corrallm?.benchPlan?.models ?? []).map((m) => [m.model, m]),
+  )
+  // Offer a probe only when there is something to learn: no VRAM profile, a
+  // declared modality nothing has exercised, or a cold/warm disagreement. A
+  // fully-covered model gets no button — an always-present Probe would train
+  // people to ignore it.
+  const needsProbe = (name: string) => {
+    const p = planByModel.get(name)
+    if (!p) return false
+    return !p.hasTuneProfile || !!p.unverifiedModalities?.length || !!p.disagreements?.length
+  }
+
+  const probe = useMutation({
+    mutationFn: (model: string) =>
+      gqlClient.request(ProbeRunDoc, {
+        body: { models: [model], classes: ['capability'], reason: `probe ${model}` },
+      }),
+    onSuccess: (d) => {
+      const r = d.corrallm?.startBenchRun
+      setMsg({ ok: !!r?.ok, text: r?.message ?? '' })
+      void qc.invalidateQueries({ queryKey: ['probePlanOverview'] })
+    },
+    onError: (e) => setMsg({ ok: false, text: String(e) }),
+  })
+
   const load = useMutation({
     mutationFn: (model: string) => gqlClient.request(LoadDoc, { model }),
     onSuccess: (d) => {
@@ -319,22 +431,31 @@ function Home() {
             <Box sx={{ flexGrow: 1 }} />
             {m.spawnable && (
               <>
-                <Button size="small" variant="outlined" disabled={busy} onClick={() => load.mutate(m.name)}>
-                  Load
-                </Button>
-                <Tooltip title={m.persistent ? 'pinned models cannot be unloaded' : ''}>
-                  <span>
+                {/* ONE state-driven action, not two always-on buttons. Load and
+                    Unload were both clickable regardless of residency, so half
+                    of every pair was a no-op you could not tell apart from a
+                    working one. While loading it becomes Cancel — the only
+                    useful action mid-spawn. */}
+                <ResidencyToggle
+                  state={st?.state ?? 'absent'}
+                  persistent={!!m.persistent}
+                  busy={busy}
+                  onLoad={() => load.mutate(m.name)}
+                  onUnload={() => unload.mutate(m.name)}
+                />
+                {needsProbe(m.name) && (
+                  <Tooltip title="This model has never been measured or verified">
                     <Button
                       size="small"
                       variant="outlined"
-                      color="warning"
-                      disabled={busy || m.persistent}
-                      onClick={() => unload.mutate(m.name)}
+                      color="info"
+                      disabled={busy}
+                      onClick={() => setProbeFor(m.name)}
                     >
-                      Unload
+                      Probe
                     </Button>
-                  </span>
-                </Tooltip>
+                  </Tooltip>
+                )}
                 {st?.hasUi === 'no' ? (
                   <Tooltip title="This backend serves no web UI">
                     <span>
@@ -426,6 +547,62 @@ function Home() {
       )}
 
       {logsFor && <LogsDialog backend={logsFor} onClose={() => setLogsFor(null)} />}
+
+      {/* A probe is DESTRUCTIVE: it evicts models and locks out other callers.
+          Say so before the click, name exactly what this run will learn, and
+          state that the lease self-expires — "will this wedge my server" is the
+          first thing anyone sane wants to know. */}
+      {probeFor && (
+        <Dialog open onClose={() => setProbeFor(null)} maxWidth="sm" fullWidth>
+          <DialogTitle>Probe {probeFor}?</DialogTitle>
+          <DialogContent dividers>
+            <Typography variant="body2" gutterBottom>
+              This runs llm-bench against <b>{probeFor}</b> to learn what corrallm cannot
+              observe on its own:
+            </Typography>
+            <ul>
+              {!planByModel.get(probeFor)?.hasTuneProfile && (
+                <li>
+                  <b>VRAM footprint</b> — today corrallm schedules this model on its
+                  declared <code>ramUsage</code>, which nothing has verified.
+                </li>
+              )}
+              {!!planByModel.get(probeFor)?.unverifiedModalities?.length && (
+                <li>
+                  <b>Declared modalities</b> (
+                  {planByModel.get(probeFor)?.unverifiedModalities?.join(', ')}) — advertised
+                  but never exercised against the live backend.
+                </li>
+              )}
+              {!!planByModel.get(probeFor)?.disagreements?.length && (
+                <li>
+                  <b>Cold/warm disagreement</b> — this modality worked in one residency state
+                  and failed in the other. Re-running confirms whether it persists.
+                </li>
+              )}
+            </ul>
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              While it runs, models are <b>evicted</b> so measurements are uncontended, and
+              every other caller receives <b>429 + Retry-After</b>. Clients that honor
+              Retry-After pause and resume rather than fail. The lease self-expires, so a
+              crashed run cannot lock the server permanently.
+            </Alert>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setProbeFor(null)}>Cancel</Button>
+            <Button
+              variant="contained"
+              color="warning"
+              onClick={() => {
+                probe.mutate(probeFor)
+                setProbeFor(null)
+              }}
+            >
+              Evict and probe
+            </Button>
+          </DialogActions>
+        </Dialog>
+      )}
 
       {cmdView && (
         <Dialog open onClose={() => setCmdView(null)} maxWidth="lg" fullWidth>
