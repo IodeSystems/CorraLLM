@@ -286,6 +286,10 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 								mu.Unlock()
 								r = failedRows(tsk, model, tset.Name, ts, err.Error())
 							}
+							// Measure and publish while the model is still resident
+							// and nothing else is contending — the whole reason
+							// llm-bench, not the serving path, is the measurer.
+							publishMeasurements(comboCtx, resid, model, mode, tsk, r)
 							// Stamp the run's tool-result format on every row (constant
 							// per run) so format aggregates are comparable.
 							for j := range r {

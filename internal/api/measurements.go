@@ -1,0 +1,167 @@
+package api
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/iodesystems/corrallm/internal/gpu"
+	"github.com/iodesystems/corrallm/internal/tune"
+)
+
+// Measurement ingest — llm-bench is the authoritative measurer.
+//
+// corrallm has always measured VRAM opportunistically, from inside the serving
+// path: manager.measure() samples a spawn's footprint, and calibrationProbe
+// deliberately spawns ONE EXTRA SLOT during live serving purely to gather the
+// second (slots, footprint) data point the per-slot slope needs. That works, but
+// it perturbs production to take a measurement and it can only observe whatever
+// residency states real traffic happens to produce.
+//
+// llm-bench can do better because it CONTROLS residency: it loads and unloads
+// deliberately, measures in isolation, repeats for variance, and does it when
+// nobody is being served. These endpoints let it publish what it found so
+// corrallm's admission and eviction decisions run on measurements taken on
+// purpose rather than measurements taken by accident.
+//
+// Ingest is additive and NEVER destructive: corrallm's own in-serving
+// measurement stays as the fallback for a box where llm-bench has never run.
+// A fresh install must not need a benchmark pass before it can schedule.
+
+// TuneProfileInput publishes one measured VRAM profile.
+type TuneProfileInput struct {
+	Body struct {
+		Model string `json:"model" doc:"Served model name."`
+		GPU   string `json:"gpu,omitempty" doc:"GPU name the measurement was taken on; defaults to this host's GPU."`
+
+		BaseMiB       int `json:"baseMiB" doc:"Footprint with KV excluded (weights + fixed overhead)."`
+		PerSlotMiB    int `json:"perSlotMiB" doc:"KV cache cost per slot."`
+		PeakMiB       int `json:"peakMiB,omitempty" doc:"Highest total footprint observed."`
+		MeasuredSlots int `json:"measuredSlots" doc:"Slot count (--parallel) the measurement was taken at."`
+		Ctx           int `json:"ctx,omitempty" doc:"n_ctx at measurement time."`
+		FootprintMiB  int `json:"footprintMiB,omitempty" doc:"Total observed footprint at measuredSlots; recorded as a sample so a second point at a different slot count yields the per-slot slope."`
+	}
+}
+
+// TuneProfileOutput reports the stored profile.
+type TuneProfileOutput struct {
+	Body struct {
+		OK      bool   `json:"ok"`
+		GPU     string `json:"gpu"`
+		Message string `json:"message"`
+	}
+}
+
+// PublishTuneProfile ingests an llm-bench VRAM measurement into the tune cache.
+func (h *Handlers) PublishTuneProfile(_ context.Context, in *TuneProfileInput) (*TuneProfileOutput, error) {
+	out := &TuneProfileOutput{}
+	if in.Body.Model == "" {
+		out.Body.Message = "model is required"
+		return out, nil
+	}
+	gpuName := in.Body.GPU
+	if gpuName == "" {
+		// Default to this host's GPU rather than a blank key: a profile stored
+		// under "" would never be found by the scheduler, which always looks up
+		// by the probed GPU name, and the publish would silently do nothing.
+		st, err := gpu.Probe()
+		if err != nil {
+			out.Body.Message = fmt.Sprintf("gpu not specified and probe failed: %v", err)
+			return out, nil
+		}
+		gpuName = st.Name
+	}
+	p := tune.Profile{
+		BaseMiB:       in.Body.BaseMiB,
+		PerSlotMiB:    in.Body.PerSlotMiB,
+		PeakMiB:       in.Body.PeakMiB,
+		MeasuredSlots: in.Body.MeasuredSlots,
+		Ctx:           in.Body.Ctx,
+	}
+	// Merge rather than replace the sample set: two measurements at DIFFERENT
+	// slot counts are what make the per-slot slope derivable without the
+	// calibration probe perturbing a live server.
+	if existing, ok := h.Mgr.TuneProfile(gpuName, in.Body.Model); ok {
+		p.Samples = existing.Samples
+		if p.PeakMiB == 0 {
+			p.PeakMiB = existing.PeakMiB
+		}
+	}
+	if in.Body.FootprintMiB > 0 && in.Body.MeasuredSlots > 0 {
+		p.Samples = tune.MergeSample(p.Samples, tune.Sample{
+			Slots:        in.Body.MeasuredSlots,
+			FootprintMiB: in.Body.FootprintMiB,
+		})
+		if p.PeakMiB < in.Body.FootprintMiB {
+			p.PeakMiB = in.Body.FootprintMiB
+		}
+		// With two distinct points and no directly-measured per-slot cost,
+		// derive the slope — the same computation calibrationProbe exists to
+		// enable, now fed by a deliberate measurement instead of a live spawn.
+		if p.PerSlotMiB == 0 {
+			if perSlot, base, ok := tune.SlopeFromSamples(p.Samples); ok {
+				p.PerSlotMiB, p.BaseMiB = perSlot, base
+			}
+		}
+	}
+	if err := h.Mgr.PublishTuneProfile(gpuName, in.Body.Model, p); err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	out.Body.OK = true
+	out.Body.GPU = gpuName
+	out.Body.Message = fmt.Sprintf("stored profile for %s on %s", in.Body.Model, gpuName)
+	return out, nil
+}
+
+// VerifiedCapabilityInput publishes what a capability probe actually observed.
+type VerifiedCapabilityInput struct {
+	Body struct {
+		Model string `json:"model" doc:"Served model name."`
+		// Modality is the capability that was exercised (image | audio | text).
+		Modality string `json:"modality" doc:"Modality exercised by the probe."`
+		// RunMode records whether the verdict was obtained cold or warm. A
+		// modality can work warm and fail cold (observed on a 27B vision model),
+		// so a verdict without its residency state is not interpretable.
+		RunMode  string `json:"runMode,omitempty" doc:"Residency state the probe ran against: cold | warm | \"\"."`
+		Verified bool   `json:"verified" doc:"Whether the probe actually observed the capability working."`
+		Probe    string `json:"probe,omitempty" doc:"Probe name that produced the verdict."`
+		Detail   string `json:"detail,omitempty" doc:"Human-readable evidence or failure reason."`
+		At       int64  `json:"at,omitempty" doc:"Unix seconds the verdict was taken; defaults to now."`
+	}
+}
+
+// VerifiedCapabilityOutput acknowledges a verdict.
+type VerifiedCapabilityOutput struct {
+	Body struct {
+		OK      bool   `json:"ok"`
+		Message string `json:"message"`
+	}
+}
+
+// PublishVerifiedCapability records an OBSERVED capability verdict.
+//
+// This is data corrallm has never had. Modalities are declared in config and
+// served from that declaration verbatim — nothing ever checked them against a
+// live backend, so a wrong declaration was indistinguishable from a right one.
+// A verdict here does not change routing (the declaration still governs what is
+// offered); it makes the discrepancy VISIBLE, which is the part that was missing
+// when a model advertised vision it silently dropped on its first request.
+func (h *Handlers) PublishVerifiedCapability(_ context.Context, in *VerifiedCapabilityInput) (*VerifiedCapabilityOutput, error) {
+	out := &VerifiedCapabilityOutput{}
+	if in.Body.Model == "" || in.Body.Modality == "" {
+		out.Body.Message = "model and modality are required"
+		return out, nil
+	}
+	v := Verdict{
+		Modality: in.Body.Modality,
+		RunMode:  in.Body.RunMode,
+		Verified: in.Body.Verified,
+		Probe:    in.Body.Probe,
+		Detail:   in.Body.Detail,
+		At:       in.Body.At,
+	}
+	h.Verified.Record(in.Body.Model, v)
+	out.Body.OK = true
+	out.Body.Message = fmt.Sprintf("recorded %s/%s verified=%v", in.Body.Model, in.Body.Modality, in.Body.Verified)
+	return out, nil
+}

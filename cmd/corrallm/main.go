@@ -356,7 +356,7 @@ func serve(ctx context.Context, o serveOpts) error {
 
 	scheduler := sched.NewWithConfig(cfg)
 	scheduler.SetMaxReservationTTL(o.reservationMaxTTL)
-	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler}
+	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler, Verified: api.NewVerifiedStore()}
 
 	// Admin token gates the management surface (/api/*). Generated into
 	// <home>/admin.token on first run; the dashboard's login screen points there.

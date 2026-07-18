@@ -75,6 +75,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.LoadModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "publishTuneProfile",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/measurements/tune",
+		Summary:     "Publish an externally-measured VRAM profile (llm-bench).",
+		Tags:        []string{"control"},
+	}, h.PublishTuneProfile)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "publishVerifiedCapability",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/measurements/capability",
+		Summary:     "Publish an OBSERVED capability verdict (llm-bench).",
+		Tags:        []string{"control"},
+	}, h.PublishVerifiedCapability)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "unloadModel",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/models/unload",

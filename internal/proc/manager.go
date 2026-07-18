@@ -519,6 +519,20 @@ func (m *Manager) tuneCmd(model string, cmdStr *string) int {
 	return n
 }
 
+// calibrationProbe is the FALLBACK second-data-point source, used only when
+// llm-bench has not published a profile for this (gpu, model).
+//
+// It perturbs a live server to take a measurement: it deliberately spawns one
+// extra slot during real serving purely to gather the second (slots, footprint)
+// point the per-slot slope needs. That was the only option while corrallm was
+// the only thing that could observe a spawn. llm-bench can now measure
+// deliberately, in isolation, with residency under its control, and publish via
+// POST /api/v1/measurements/tune — which fills PerSlotMiB directly and makes
+// this probe a no-op (it returns early once PerSlotMiB > 0).
+//
+// Kept because a host where no bench has ever run must still schedule sanely: a
+// fresh install cannot be required to run a benchmark before it can serve.
+//
 // calibrationProbe looks for a profile that has exactly ONE distinct
 // measured slot count (PerSlotMiB not yet derivable — no KV-log support on
 // this host, and no second distinct --parallel spawn yet) and, if probing
@@ -737,6 +751,21 @@ func (m *Manager) ModelVRAM(model string) int {
 		return 0
 	}
 	return v
+}
+
+// PublishTuneProfile stores an EXTERNALLY measured VRAM profile and persists the
+// cache immediately.
+//
+// The measurement source is llm-bench, which can load/unload deliberately and
+// measure in isolation. corrallm's own in-serving measurement remains the
+// fallback for a host where no bench has run — this is additive, so a fresh
+// install still schedules correctly without a benchmark pass.
+func (m *Manager) PublishTuneProfile(gpuName, model string, p tune.Profile) error {
+	if m.tuneCache == nil {
+		return fmt.Errorf("tune cache not configured")
+	}
+	m.tuneCache.Update(gpuName, model, p)
+	return m.tuneCache.Save()
 }
 
 // TuneProfile returns the tune cache's measured VRAM profile for (gpuName,

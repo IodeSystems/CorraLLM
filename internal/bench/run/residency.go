@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/iodesystems/corrallm/internal/bench/task"
 )
 
 // Residency control — the reason this harness lives inside corrallm.
@@ -181,4 +183,188 @@ func prepareResidency(ctx context.Context, c *residencyClient, mode RunMode, mod
 		return "warm: model resident before the probe"
 	}
 	return ""
+}
+
+// --- measurement publishing -------------------------------------------------
+//
+// llm-bench is the authoritative measurer: it controls residency, so it can
+// measure a model in isolation, cold, with nothing else contending for the GPU.
+// corrallm's own in-serving measurement stays as a fallback, but it can only
+// observe whatever states live traffic happens to produce, and its calibration
+// probe has to spawn an extra slot on a live server to get a second data point.
+
+// residentView is the subset of corrallm's residency op llm-bench needs.
+type residentView struct {
+	Model         string `json:"model"`
+	FootprintMiB  int    `json:"footprintMiB"`
+	BaseMiB       int    `json:"baseMiB"`
+	PerSlotMiB    int    `json:"perSlotMiB"`
+	PeakMiB       int    `json:"peakMiB"`
+	MeasuredSlots int    `json:"measuredSlots"`
+	TunedSlots    int    `json:"tunedSlots"`
+	ConfigSlots   int    `json:"configSlots"`
+}
+
+// Residency reads corrallm's live residency view.
+func (c *residencyClient) Residency(ctx context.Context) ([]residentView, error) {
+	base := strings.TrimSuffix(c.base, "/v1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/residency", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("residency -> HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Models []residentView `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	return body.Models, nil
+}
+
+// MeasureResident reads the model's live footprint. Returns ok=false when the
+// model is not currently resident — measuring a model that is not loaded would
+// record a zero footprint as though it were a real measurement.
+func (c *residencyClient) MeasureResident(ctx context.Context, model string) (residentView, bool) {
+	views, err := c.Residency(ctx)
+	if err != nil {
+		return residentView{}, false
+	}
+	for _, v := range views {
+		if v.Model == model && v.FootprintMiB > 0 {
+			return v, true
+		}
+	}
+	return residentView{}, false
+}
+
+// PublishTune sends a measured VRAM profile back to corrallm.
+func (c *residencyClient) PublishTune(ctx context.Context, model string, v residentView) error {
+	base := strings.TrimSuffix(c.base, "/v1")
+	slots := v.TunedSlots
+	if slots <= 0 {
+		slots = v.ConfigSlots
+	}
+	payload := map[string]any{
+		"model":         model,
+		"baseMiB":       v.BaseMiB,
+		"perSlotMiB":    v.PerSlotMiB,
+		"peakMiB":       v.PeakMiB,
+		"measuredSlots": slots,
+		"footprintMiB":  v.FootprintMiB,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/measurements/tune", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("publish tune -> HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// PublishCapability sends an OBSERVED capability verdict back to corrallm.
+//
+// The verdict carries its runMode because a modality can work warm and fail
+// cold; a verdict without its residency state is not interpretable, and
+// publishing only the warm one is how a broken cold path stays invisible.
+func (c *residencyClient) PublishCapability(ctx context.Context, model, modality, runMode, probe, detail string, verified bool) error {
+	base := strings.TrimSuffix(c.base, "/v1")
+	body, err := json.Marshal(map[string]any{
+		"model":    model,
+		"modality": modality,
+		"runMode":  runMode,
+		"verified": verified,
+		"probe":    probe,
+		"detail":   detail,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/measurements/capability", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("publish capability -> HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// publishMeasurements feeds corrallm what this pass observed: the model's live
+// VRAM footprint, and — for a capability probe — whether the declared modality
+// actually worked.
+//
+// Best-effort by design. A publish failure must never fail a benchmark: the
+// measurement is a by-product of the run, not its purpose, and losing it is
+// strictly better than losing the run. Failures are logged, not swallowed
+// silently, because a measurement pipeline that quietly stops publishing looks
+// exactly like one with nothing to report.
+func publishMeasurements(ctx context.Context, c *residencyClient, model string, mode RunMode, tsk *task.Task, rows []Row) {
+	if c == nil || len(rows) == 0 {
+		return
+	}
+
+	// VRAM: read it while the model is still resident from this pass.
+	if v, ok := c.MeasureResident(ctx, model); ok {
+		if err := c.PublishTune(ctx, model, v); err != nil {
+			log.Printf("llm-bench: publish tune profile for %s failed: %v", model, err)
+		} else {
+			log.Printf("llm-bench: published VRAM profile for %s (footprint %d MiB, %d slots)",
+				model, v.FootprintMiB, v.MeasuredSlots)
+		}
+	}
+
+	// Capability verdict: only a capability-class probe declaring a modality
+	// says anything about a modality. A coding task passing proves nothing
+	// about vision, and publishing a verdict from one would be worse than
+	// publishing none — it would assert, with authority, something never tested.
+	if tsk.Class != "capability" || tsk.Requires.Modality == "" {
+		return
+	}
+	verified := true
+	var detail string
+	for _, r := range rows {
+		if !r.Pass {
+			verified = false
+			for _, ck := range r.Checks {
+				if !ck.Pass {
+					detail = ck.Desc + " — " + ck.Detail
+					break
+				}
+			}
+			break
+		}
+	}
+	if err := c.PublishCapability(ctx, model, tsk.Requires.Modality, string(mode), tsk.Name, detail, verified); err != nil {
+		log.Printf("llm-bench: publish capability verdict for %s failed: %v", model, err)
+	} else {
+		log.Printf("llm-bench: %s modality=%s runMode=%q verified=%v", model, tsk.Requires.Modality, mode, verified)
+	}
 }

@@ -30,6 +30,9 @@ type Handlers struct {
 	Store   *store.Store
 	Mgr     *proc.Manager    // residency introspection (P8)
 	Sched   *sched.Scheduler // live admission load (P8-beyond)
+	// Verified holds OBSERVED capability verdicts published by llm-bench.
+	// Nil is valid (no bench has run); every reader must tolerate it.
+	Verified *VerifiedStore
 }
 
 // --- health ---
