@@ -217,6 +217,11 @@ func TestParallelRewriteWithProfile(t *testing.T) {
 	// stays resident long enough for the mgr.TunedSlots lookup below — the
 	// regex rewrite itself doesn't care what the surrounding command does.
 	mdl := modelCmd(t, "true --parallel 2 --ctx-size 4096 && exec sleep 30", port)
+	// maxConcurrent is now a CEILING on the tuner (slots beyond it are
+	// unreachable, and --parallel divides the context window). This test
+	// exercises the VRAM math, so it must declare enough admission capacity for
+	// the computed 6 to be legal.
+	mdl.MaxConcurrent = 8
 	p, _, _, err := mgr.EnsureReady(context.Background(), "tuned", mdl, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
@@ -261,6 +266,7 @@ func TestParallelRewritePreservesRestOfCmd(t *testing.T) {
 	mgr.SetTuneCache(cache)
 
 	mdl := modelCmd(t, "exec llama-server -m model.gguf -ngl 60 --parallel 2 --host 0.0.0.0", port)
+	mdl.MaxConcurrent = 8 // headroom: the tuner may not exceed maxConcurrent
 	p, _, _, err := mgr.EnsureReady(context.Background(), "wrapped", mdl, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
@@ -383,6 +389,9 @@ func TestCalibrationProbeEndToEnd(t *testing.T) {
 	mgr.SetTuneCache(cache)
 
 	mdl := modelCmd(t, "exec sleep 30 --parallel 2", port)
+	// The calibration probe deliberately spawns ONE slot higher to gather a
+	// second data point, so the ceiling must leave room for k+1.
+	mdl.MaxConcurrent = 4
 	p, _, _, err := mgr.EnsureReady(context.Background(), "calibrate", mdl, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)

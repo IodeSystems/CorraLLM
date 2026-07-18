@@ -34,7 +34,7 @@ func TestTuneCmd_NeverExceedsMaxConcurrent(t *testing.T) {
 	m.SetTuneCache(cache)
 
 	cmd := "llama-server --parallel 2"
-	n := m.tuneCmd("roomy", &cmd)
+	n := m.tuneCmd("roomy", &cmd, 2)
 	if n > 2 {
 		t.Errorf("tuner raised slots to %d above maxConcurrent 2 — unreachable concurrency bought with context window", n)
 	}
@@ -62,7 +62,7 @@ func TestTuneCmd_StillLowersWhenVRAMIsTight(t *testing.T) {
 	m.SetTuneCache(cache)
 
 	cmd := "llama-server --parallel 8"
-	n := m.tuneCmd("hungry", &cmd)
+	n := m.tuneCmd("hungry", &cmd, 8)
 	if n > 1 {
 		t.Errorf("tuner should have lowered slots for a model that cannot fit 8, got %d", n)
 	}

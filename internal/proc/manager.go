@@ -325,7 +325,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		// NEVER mutate mdl (config.Model is passed by value into load, but mdl.Cmd
 		// is still the same backing string as m.cfg.Models[name].Cmd until copied).
 		cmdStr := mdl.Cmd
-		tunedSlots := m.tuneCmd(name, &cmdStr)
+		tunedSlots := m.tuneCmd(name, &cmdStr, mdl.Slots())
 		if tunedSlots > 0 {
 			p.mu.Lock()
 			p.tunedSlots = tunedSlots
@@ -489,7 +489,7 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 // gathers the second data point SlopeFromSamples needs, so the model
 // converges to a real tuned profile within two spawns instead of staying
 // stuck at whatever --parallel the config happens to say forever.
-func (m *Manager) tuneCmd(model string, cmdStr *string) int {
+func (m *Manager) tuneCmd(model string, cmdStr *string, maxConcurrent int) int {
 	if m.tuneCache == nil {
 		return 0
 	}
@@ -529,10 +529,10 @@ func (m *Manager) tuneCmd(model string, cmdStr *string) int {
 	// spawned at --parallel 32 (the DefaultCap) because 32 slots happened to
 	// fit in VRAM. Each request got n_ctx_slot=4096 — a 32x silent cut to the
 	// usable context, with no error and nothing in the config to explain it.
-	if cap := m.cfg.Models[model].Slots(); cap > 0 && n > cap {
+	if maxConcurrent > 0 && n > maxConcurrent {
 		slog.Debug("tuner clamped to configured maxConcurrent",
-			"model", model, "wanted", n, "maxConcurrent", cap)
-		n = cap
+			"model", model, "wanted", n, "maxConcurrent", maxConcurrent)
+		n = maxConcurrent
 	}
 	*cmdStr = reParallel.ReplaceAllString(*cmdStr, fmt.Sprintf("--parallel %d", n))
 	return n
