@@ -65,7 +65,7 @@ func TestPrepareResidency_ColdEvicts(t *testing.T) {
 	if c == nil {
 		t.Fatal("client should exist when a token is configured")
 	}
-	note := prepareResidency(context.Background(), c, ModeCold, "m")
+	note := prepareResidency(context.Background(), c, ModeCold, "m", false)
 	if len(calls) != 1 || calls[0] != "/api/v1/models/unload" {
 		t.Errorf("cold should call unload, got %v", calls)
 	}
@@ -79,7 +79,7 @@ func TestPrepareResidency_WarmLoads(t *testing.T) {
 	srv := stubCorrallm(t, true, "loaded", &calls)
 	t.Setenv("TEST_ADMIN_TOKEN", "tok")
 	c := newResidencyClient(cfgFor(srv.URL))
-	prepareResidency(context.Background(), c, ModeWarm, "m")
+	prepareResidency(context.Background(), c, ModeWarm, "m", false)
 	if len(calls) != 1 || calls[0] != "/api/v1/models/load" {
 		t.Errorf("warm should call load, got %v", calls)
 	}
@@ -94,7 +94,7 @@ func TestPrepareResidency_RefusedEvictionWarnsLoudly(t *testing.T) {
 	srv := stubCorrallm(t, false, "model is persistent", &calls)
 	t.Setenv("TEST_ADMIN_TOKEN", "tok")
 	c := newResidencyClient(cfgFor(srv.URL))
-	note := prepareResidency(context.Background(), c, ModeCold, "m")
+	note := prepareResidency(context.Background(), c, ModeCold, "m", false)
 	if !strings.Contains(note, "WARNING") || !strings.Contains(note, "NOT evicted") {
 		t.Errorf("a refused eviction must warn loudly, got %q", note)
 	}
@@ -109,7 +109,7 @@ func TestPrepareResidency_NoTokenWarns(t *testing.T) {
 	if c := newResidencyClient(cfgFor("http://x")); c != nil {
 		t.Fatal("no token should yield a nil client")
 	}
-	note := prepareResidency(context.Background(), nil, ModeCold, "m")
+	note := prepareResidency(context.Background(), nil, ModeCold, "m", false)
 	if !strings.Contains(note, "WARNING") || !strings.Contains(note, "does not prove") {
 		t.Errorf("missing token must warn that the result proves nothing: %q", note)
 	}
@@ -122,10 +122,39 @@ func TestPrepareResidency_AnyIsNoOp(t *testing.T) {
 	srv := stubCorrallm(t, true, "", &calls)
 	t.Setenv("TEST_ADMIN_TOKEN", "tok")
 	c := newResidencyClient(cfgFor(srv.URL))
-	if note := prepareResidency(context.Background(), c, ModeAny, "m"); note != "" {
+	if note := prepareResidency(context.Background(), c, ModeAny, "m", false); note != "" {
 		t.Errorf("ModeAny should produce no note, got %q", note)
 	}
 	if len(calls) != 0 {
 		t.Errorf("ModeAny must not call the admin API, got %v", calls)
+	}
+}
+
+// Under an exclusive lease a cold pass clears the WHOLE GPU: a footprint read
+// with a neighbour still resident measures the neighbour too.
+func TestPrepareResidency_ExclusiveColdEvictsEverything(t *testing.T) {
+	var calls []string
+	srv := stubCorrallm(t, true, "evicted 3 backend(s)", &calls)
+	t.Setenv("TEST_ADMIN_TOKEN", "tok")
+	c := newResidencyClient(cfgFor(srv.URL))
+	note := prepareResidency(context.Background(), c, ModeCold, "m", true)
+	if len(calls) != 1 || calls[0] != "/api/v1/models/unload-all" {
+		t.Errorf("exclusive cold should call unload-all, got %v", calls)
+	}
+	if !strings.Contains(note, "exclusive") {
+		t.Errorf("note should record that the whole GPU was cleared: %q", note)
+	}
+}
+
+// A hand-run CLI must NOT evict a colleague's model as a side effect of
+// measuring one of its own — exclusive is opt-in.
+func TestPrepareResidency_NonExclusiveColdEvictsOnlyTarget(t *testing.T) {
+	var calls []string
+	srv := stubCorrallm(t, true, "evicted 1", &calls)
+	t.Setenv("TEST_ADMIN_TOKEN", "tok")
+	c := newResidencyClient(cfgFor(srv.URL))
+	prepareResidency(context.Background(), c, ModeCold, "m", false)
+	if len(calls) != 1 || calls[0] != "/api/v1/models/unload" {
+		t.Errorf("non-exclusive cold must evict only its own model, got %v", calls)
 	}
 }

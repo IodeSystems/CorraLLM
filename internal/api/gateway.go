@@ -131,6 +131,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.CalibrationStatus)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "unloadAllModels",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/models/unload-all",
+		Summary:     "Evict every evictable resident (calibration primitive; pinned/in-flight are reported as skipped).",
+		Tags:        []string{"control"},
+	}, h.UnloadAllModels)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "publishTuneProfile",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/measurements/tune",

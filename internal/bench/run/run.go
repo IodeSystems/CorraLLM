@@ -68,9 +68,14 @@ type Options struct {
 	// checkboxes: "measure + capability" is a fast new-model pass, while the
 	// quality classes are the slow opt-in.
 	Classes []string
-	McpBin  string // path to the llm-bench-mcp binary
-	BinDir  string // dir searched for toolset server binaries (e.g. local/bin); "" = $PATH only
-	Judge   bool   // run the P1 judge phase after candidates finish
+	// Exclusive says this run holds corrallm's calibration lease, so a cold
+	// pass may clear the ENTIRE GPU rather than just its own model. Off by
+	// default: a hand-run CLI must not evict a colleague's model as a side
+	// effect of measuring one of its own.
+	Exclusive bool
+	McpBin    string // path to the llm-bench-mcp binary
+	BinDir    string // dir searched for toolset server binaries (e.g. local/bin); "" = $PATH only
+	Judge     bool   // run the P1 judge phase after candidates finish
 
 	// NewRunner builds the LLM runner for a model. Injectable for tests; nil
 	// uses a corrallm llm.Client from Config. Also used for the judge model.
@@ -281,7 +286,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 							// what actually happened, including failure — a cold
 							// pass that silently ran warm must not stand as
 							// evidence for a path it never tested.
-							residNote := prepareResidency(comboCtx, resid, mode, model)
+							residNote := prepareResidency(comboCtx, resid, mode, model, opts.Exclusive)
 							r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir)
 							comboCancel()
 							if err != nil {

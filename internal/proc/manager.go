@@ -1039,6 +1039,47 @@ func (m *Manager) UnloadModel(served string) (int, error) {
 	return len(targets), nil
 }
 
+// UnloadAll evicts every evictable resident, returning how many went and which
+// were SKIPPED with why.
+//
+// This is the calibration primitive. A measurement is only trustworthy if the
+// model under test has the GPU to itself: a footprint read while a second model
+// is resident (or mid-load) measures the neighbour as much as the subject.
+// Evicting everything up front is both simpler and more correct than trying to
+// free "just enough" — under an exclusive lease nothing else should be resident
+// anyway, and a partial eviction leaves exactly the contamination the lease
+// exists to remove.
+//
+// Unlike UnloadModel this NEVER returns an error for an unevictable resident:
+// a persistent model (a pinned embedder) or one with an in-flight request is
+// reported as skipped and the rest still go. Failing the whole call because one
+// model is pinned would make calibration impossible on any box with a preloaded
+// model — which is most of them.
+func (m *Manager) UnloadAll() (evicted int, skipped map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	skipped = map[string]string{}
+	var targets []*Process
+	for _, p := range m.procs {
+		p.mu.Lock()
+		persistent, refs, name := p.persistent, p.refs, p.ModelName
+		p.mu.Unlock()
+		switch {
+		case persistent:
+			skipped[name] = "persistent (pinned)"
+		case refs > 0:
+			skipped[name] = fmt.Sprintf("%d in-flight request(s)", refs)
+		default:
+			targets = append(targets, p)
+		}
+	}
+	for _, p := range targets {
+		m.evictLocked(p)
+	}
+	return len(targets), skipped
+}
+
 // --- residency introspection (P8) ---
 
 // PoolResidency is one memory pool's budget and current reservation.

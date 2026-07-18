@@ -133,6 +133,11 @@ func (c *residencyClient) post(ctx context.Context, path, model string) (residen
 	return out, nil
 }
 
+// UnloadAll evicts every evictable resident, freeing the GPU entirely.
+func (c *residencyClient) UnloadAll(ctx context.Context) (residencyResult, error) {
+	return c.post(ctx, "/api/v1/models/unload-all", "")
+}
+
 // Unload evicts a model's resident backends.
 func (c *residencyClient) Unload(ctx context.Context, model string) (residencyResult, error) {
 	return c.post(ctx, "/api/v1/models/unload", model)
@@ -151,7 +156,7 @@ func (c *residencyClient) Load(ctx context.Context, model string) (residencyResu
 // pass is then evidence for a claim it never tested. corrallm refuses to evict
 // pinned or in-flight models, so "cold" is a request, not a guarantee — persistent
 // models can never go cold and this is where that surfaces.
-func prepareResidency(ctx context.Context, c *residencyClient, mode RunMode, model string) string {
+func prepareResidency(ctx context.Context, c *residencyClient, mode RunMode, model string, exclusive bool) string {
 	if mode == ModeAny {
 		return ""
 	}
@@ -160,6 +165,18 @@ func prepareResidency(ctx context.Context, c *residencyClient, mode RunMode, mod
 	}
 	switch mode {
 	case ModeCold:
+		if exclusive {
+			// Under an exclusive lease, clear the whole GPU. A footprint read
+			// with a neighbour still resident measures the neighbour too, and
+			// a "cold" load that had to evict someone mid-request is not the
+			// clean cold path we meant to test.
+			res, err := c.UnloadAll(ctx)
+			if err != nil {
+				return fmt.Sprintf("WARNING: exclusive cold requested but unload-all failed (%v) — other models may still be resident", err)
+			}
+			log.Printf("llm-bench: exclusive cold pass — evicted %d backend(s)", res.Evicted)
+			return fmt.Sprintf("cold (exclusive): evicted %d backend(s)", res.Evicted)
+		}
 		res, err := c.Unload(ctx, model)
 		if err != nil {
 			return fmt.Sprintf("WARNING: cold requested but unload failed (%v) — model may still be resident", err)

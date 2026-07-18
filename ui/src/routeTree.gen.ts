@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as UsageRouteImport } from './routes/usage'
 import { Route as ModelRouteImport } from './routes/model'
 import { Route as GroupsRouteImport } from './routes/groups'
+import { Route as BenchRouteImport } from './routes/bench'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -30,6 +31,11 @@ const GroupsRoute = GroupsRouteImport.update({
   path: '/groups',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BenchRoute = BenchRouteImport.update({
+  id: '/bench',
+  path: '/bench',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ActivityRoute = ActivityRouteImport.update({
   id: '/activity',
   path: '/activity',
@@ -44,6 +50,7 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/bench': typeof BenchRoute
   '/groups': typeof GroupsRoute
   '/model': typeof ModelRoute
   '/usage': typeof UsageRoute
@@ -51,6 +58,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/bench': typeof BenchRoute
   '/groups': typeof GroupsRoute
   '/model': typeof ModelRoute
   '/usage': typeof UsageRoute
@@ -59,21 +67,30 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/bench': typeof BenchRoute
   '/groups': typeof GroupsRoute
   '/model': typeof ModelRoute
   '/usage': typeof UsageRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/activity' | '/groups' | '/model' | '/usage'
+  fullPaths: '/' | '/activity' | '/bench' | '/groups' | '/model' | '/usage'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/activity' | '/groups' | '/model' | '/usage'
-  id: '__root__' | '/' | '/activity' | '/groups' | '/model' | '/usage'
+  to: '/' | '/activity' | '/bench' | '/groups' | '/model' | '/usage'
+  id:
+    | '__root__'
+    | '/'
+    | '/activity'
+    | '/bench'
+    | '/groups'
+    | '/model'
+    | '/usage'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActivityRoute: typeof ActivityRoute
+  BenchRoute: typeof BenchRoute
   GroupsRoute: typeof GroupsRoute
   ModelRoute: typeof ModelRoute
   UsageRoute: typeof UsageRoute
@@ -102,6 +119,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GroupsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/bench': {
+      id: '/bench'
+      path: '/bench'
+      fullPath: '/bench'
+      preLoaderRoute: typeof BenchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/activity': {
       id: '/activity'
       path: '/activity'
@@ -122,6 +146,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
+  BenchRoute: BenchRoute,
   GroupsRoute: GroupsRoute,
   ModelRoute: ModelRoute,
   UsageRoute: UsageRoute,

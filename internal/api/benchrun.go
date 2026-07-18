@@ -167,6 +167,9 @@ func (b *BenchRunner) Start(
 	if len(opts.Classes) > 0 {
 		args = append(args, "--classes", strings.Join(opts.Classes, ","))
 	}
+	// A spawned run always holds the lease, so its cold passes may clear the
+	// whole GPU. A hand-run CLI does not get this by default.
+	args = append(args, "--exclusive")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, opts.Bin, args...)

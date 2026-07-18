@@ -9,6 +9,7 @@ const NAV = [
   { to: '/activity', label: 'Activity' },
   { to: '/usage', label: 'Usage' },
   { to: '/groups', label: 'Groups' },
+  { to: '/bench', label: 'Bench' },
 ] as const
 
 function RootLayout() {

@@ -349,3 +349,36 @@ func (h *Handlers) CancelBenchRun(_ context.Context, _ *CancelBenchInput) (*Benc
 	}
 	return out, nil
 }
+
+// UnloadAllInput has no parameters.
+type UnloadAllInput struct{}
+
+// UnloadAllOutput reports a mass eviction.
+type UnloadAllOutput struct {
+	Body struct {
+		OK      bool              `json:"ok"`
+		Evicted int               `json:"evicted"`
+		Skipped map[string]string `json:"skipped,omitempty" doc:"Residents that could NOT be evicted, and why (pinned / in-flight)."`
+		Message string            `json:"message"`
+	}
+}
+
+// UnloadAllModels frees the GPU for a calibration run.
+//
+// Skipped residents are reported rather than treated as failure: a pinned
+// embedder cannot be evicted, and refusing the whole call because of it would
+// make calibration impossible on any box with a preloaded model. The caller
+// decides whether the remaining occupancy invalidates its measurement.
+func (h *Handlers) UnloadAllModels(_ context.Context, _ *UnloadAllInput) (*UnloadAllOutput, error) {
+	out := &UnloadAllOutput{}
+	if h.Mgr == nil {
+		out.Body.Message = "no manager"
+		return out, nil
+	}
+	n, skipped := h.Mgr.UnloadAll()
+	out.Body.OK = true
+	out.Body.Evicted = n
+	out.Body.Skipped = skipped
+	out.Body.Message = fmt.Sprintf("evicted %d backend(s), %d could not be evicted", n, len(skipped))
+	return out, nil
+}

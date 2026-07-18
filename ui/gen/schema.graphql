@@ -6,7 +6,14 @@ schema {
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
 
 type CorrallmMutationNamespace {
+  beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
+  cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
+  endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
+  publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
+  startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
   v1: CorrallmV1MutationNamespace!
 }
@@ -16,6 +23,9 @@ type CorrallmQueryNamespace {
     """Activity row id (from recentActivity)."""
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
+  benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchStatus: corrallm_BenchRunStatus @derived(operationId: "benchStatus")
+  calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
@@ -62,7 +72,14 @@ type CorrallmQueryNamespace {
 }
 
 type CorrallmV1MutationNamespace {
+  beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
+  cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
+  endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
+  publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
+  startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
 }
 
@@ -71,6 +88,9 @@ type CorrallmV1QueryNamespace {
     """Activity row id (from recentActivity)."""
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
+  benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchStatus: corrallm_BenchRunStatus @derived(operationId: "benchStatus")
+  calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
@@ -114,6 +134,9 @@ type CorrallmV1QueryNamespace {
     windowHours: Long
   ): corrallm_UsageSeriesByGroupOutputBody @derived(operationId: "usageSeriesByGroup")
 }
+
+"""Untyped JSON value (used as a fallback for OpenAPI schemas that can't be mapped exactly)."""
+scalar JSON
 
 """64-bit integer encoded as a decimal string to preserve precision past 2^53. Accepts a JSON number or a decimal string as input."""
 scalar Long
@@ -227,6 +250,84 @@ type corrallm_BackendLoadView {
   groups: [corrallm_GroupLoadView!]!
   """Queued requests."""
   waiting: Long!
+}
+
+type corrallm_BenchModelPlan {
+  declaredModalities: [String!]
+  """Modalities that verified in one residency state and failed in another (cold vs warm)."""
+  disagreements: [corrallm_Verdict!]
+  hasCapabilityData: Boolean!
+  hasTuneProfile: Boolean!
+  model: String!
+  new: Boolean!
+  probes: [corrallm_BenchProbeSuggestion!]!
+  """Modalities the config DECLARES but no probe has ever confirmed."""
+  unverifiedModalities: [String!]
+}
+
+type corrallm_BenchPlanOutputBody {
+  gpu: String
+  models: [corrallm_BenchModelPlan!]!
+  newModels: Long!
+}
+
+type corrallm_BenchProbeSuggestion {
+  default: Boolean!
+  """capability | measure | quality"""
+  kind: String!
+  """Why it is (or is not) pre-checked."""
+  reason: String!
+}
+
+input corrallm_BenchRunInputBodyInput {
+  """Probe classes: capability | coding | tooluse | adversarial. Empty = all."""
+  classes: [String!]
+  """Models to bench; empty = every model in the bench config."""
+  models: [String!]
+  """Shown to turned-away callers."""
+  reason: String
+  """Lease duration; the run is killed and the lease released when it expires."""
+  ttlSeconds: Long
+}
+
+type corrallm_BenchRunOutputBody {
+  message: String!
+  ok: Boolean!
+  status: corrallm_BenchRunStatus!
+  warning: String
+}
+
+type corrallm_BenchRunStatus {
+  """The exact llm-bench invocation — copy it to reproduce this run from a shell."""
+  args: [String!]
+  done: Boolean!
+  error: String
+  log: [String!]
+  running: Boolean!
+  startedAt: Long
+}
+
+input corrallm_CalibrateInputBodyInput {
+  """The caller key llm-bench will present; only this key is served while the lease holds."""
+  key: String!
+  """Shown to turned-away callers and in the dashboard."""
+  reason: String
+  """Lease duration in seconds (default 900, max 7200). The lease self-expires: a crashed bench cannot lock the box."""
+  ttlSeconds: Long
+}
+
+type corrallm_CalibrateOutputBody {
+  """Unix seconds the lease self-expires."""
+  expiresAt: Long
+  message: String!
+  ok: Boolean!
+  warning: String
+}
+
+type corrallm_CalibrationStatusOutputBody {
+  active: Boolean!
+  reason: String
+  remainingSeconds: Long
 }
 
 type corrallm_ConfigSummaryOutputBody {
@@ -606,6 +707,39 @@ type corrallm_StageView {
   type: String!
 }
 
+input corrallm_TuneProfileInputBodyInput {
+  """Footprint with KV excluded (weights + fixed overhead)."""
+  baseMiB: Long!
+  """n_ctx at measurement time."""
+  ctx: Long
+  """Total observed footprint at measuredSlots; recorded as a sample so a second point at a different slot count yields the per-slot slope."""
+  footprintMiB: Long
+  """GPU name the measurement was taken on; defaults to this host's GPU."""
+  gpu: String
+  """Slot count (--parallel) the measurement was taken at."""
+  measuredSlots: Long!
+  """Served model name."""
+  model: String!
+  """Highest total footprint observed."""
+  peakMiB: Long
+  """KV cache cost per slot."""
+  perSlotMiB: Long!
+}
+
+type corrallm_TuneProfileOutputBody {
+  gpu: String!
+  message: String!
+  ok: Boolean!
+}
+
+type corrallm_UnloadAllOutputBody {
+  evicted: Long!
+  message: String!
+  ok: Boolean!
+  """Residents that could NOT be evicted, and why (pinned / in-flight)."""
+  skipped: JSON
+}
+
 type corrallm_UsageByKeyOutputBody {
   """Per-key usage, costliest first."""
   rows: [corrallm_KeyUsageRow!]!
@@ -637,4 +771,35 @@ type corrallm_UsageSeriesOutputBody {
   buckets: [Long!]!
   """Per-key dense series, costliest first."""
   keys: [corrallm_KeySeries!]!
+}
+
+type corrallm_Verdict {
+  at: Long!
+  detail: String
+  modality: String!
+  probe: String
+  runMode: String
+  verified: Boolean!
+}
+
+input corrallm_VerifiedCapabilityInputBodyInput {
+  """Unix seconds the verdict was taken; defaults to now."""
+  at: Long
+  """Human-readable evidence or failure reason."""
+  detail: String
+  """Modality exercised by the probe."""
+  modality: String!
+  """Served model name."""
+  model: String!
+  """Probe name that produced the verdict."""
+  probe: String
+  """Residency state the probe ran against: cold | warm | ""."""
+  runMode: String
+  """Whether the probe actually observed the capability working."""
+  verified: Boolean!
+}
+
+type corrallm_VerifiedCapabilityOutputBody {
+  message: String!
+  ok: Boolean!
 }
