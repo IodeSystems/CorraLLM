@@ -8,6 +8,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -230,6 +231,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	// at a time on a single GPU), and the adv-phase barrier keeps poisoned
 	// context from bleeding into clean tasks via the server-side prompt cache.
 	slotsByModel := fetchModelSlots(opts)
+	modsByModel := fetchModelModalities(opts)
 	for _, model := range models {
 		slots := slotsByModel[model]
 		if slots < 1 {
@@ -242,6 +244,14 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 			for _, tset := range toolsets {
 				for _, tsk := range tasks {
 					if tsk.Adversarial() != adv {
+						continue
+					}
+					// A probe the model cannot satisfy is SKIPPED, not failed —
+					// and skipping is LOGGED, because a probe that quietly never
+					// ran looks identical to one that passed when you read the
+					// summary later.
+					if why := skipReason(tsk, model, modsByModel); why != "" {
+						log.Printf("llm-bench: skip %s/%s/%s — %s", model, tset.Name, tsk.Name, why)
 						continue
 					}
 					tset, tsk := tset, tsk
@@ -359,8 +369,9 @@ func fetchModelSlots(opts Options) map[string]int {
 	defer resp.Body.Close()
 	var body struct {
 		Data []struct {
-			ID    string `json:"id"`
-			Slots int    `json:"slots"`
+			ID         string                     `json:"id"`
+			Slots      int                        `json:"slots"`
+			Modalities map[string]json.RawMessage `json:"modalities"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -372,6 +383,82 @@ func fetchModelSlots(opts Options) map[string]int {
 		}
 	}
 	return out
+}
+
+// fetchModelModalities reads each model's DECLARED modalities from corrallm's
+// /v1/models catalog, so a probe's `requires:` can skip models that never
+// claimed the capability.
+//
+// This is the model's own claim, not ground truth — verifying the claim is
+// precisely what a capability probe does. Using it to decide who to SKIP is
+// sound (a model that never claimed vision is not a candidate); using it to
+// decide who PASSES would be circular.
+//
+// Best-effort: on any error the map is empty and nothing is skipped, so a
+// catalog outage produces real runs rather than a silently empty matrix.
+func fetchModelModalities(opts Options) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	base := strings.TrimRight(opts.Config.LLM.BaseURL, "/")
+	url := base + "/v1/models"
+	if strings.HasSuffix(base, "/v1") {
+		url = base + "/models"
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return out
+	}
+	if env := opts.Config.LLM.APIKeyEnv; env != "" {
+		if k := os.Getenv(env); k != "" {
+			req.Header.Set("Authorization", "Bearer "+k)
+		}
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("llm-bench: /v1/models modality query failed (%v); no probe will be skipped", err)
+		return out
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Data []struct {
+			ID         string                     `json:"id"`
+			Modalities map[string]json.RawMessage `json:"modalities"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return out
+	}
+	for _, m := range body.Data {
+		set := map[string]bool{}
+		for k := range m.Modalities {
+			set[k] = true
+		}
+		out[m.ID] = set
+	}
+	return out
+}
+
+// skipReason reports why model must not run tsk, or "" to run it.
+//
+// A model that does not declare the required modality is SKIPPED, never failed:
+// a text-only model has not failed a vision probe, it was never a candidate.
+// Recording it as a failure would be the same category error as letting a turn
+// cap veto passing checks -- it puts a number in the results table that reads
+// as a capability gap when it is a configuration fact.
+func skipReason(tsk *task.Task, model string, mods map[string]map[string]bool) string {
+	want := tsk.Requires.Modality
+	if want == "" {
+		return ""
+	}
+	declared, known := mods[model]
+	if !known {
+		// Catalog said nothing about this model: run it rather than silently
+		// dropping coverage. A spurious failure is visible; a silent skip is not.
+		return ""
+	}
+	if declared[want] {
+		return ""
+	}
+	return fmt.Sprintf("model does not declare modality %q", want)
 }
 
 func validateToolsetBins(toolsets []Toolset, binDir string) error {
@@ -441,7 +528,12 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 	}
 	defer os.RemoveAll(meta)
 
-	if err := copyDir(tsk.WorkspaceDir(), scratch); err != nil {
+	// A probe with no workspace (capability probes) gets an empty scratch dir.
+	if tsk.Workspace == "" {
+		if err := os.MkdirAll(scratch, 0o755); err != nil {
+			return nil, err
+		}
+	} else if err := copyDir(tsk.WorkspaceDir(), scratch); err != nil {
 		return nil, fmt.Errorf("seed workspace: %w", err)
 	}
 	gitInit(scratch)
@@ -585,8 +677,12 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 			}
 		}
 
+		// Parts carries a markdown probe's images. Content stays set to the
+		// prompt text: it is what LOD truncation, compaction summaries and the
+		// transcript read, and an entry with Parts but no Content goes blank
+		// the moment the shaper substitutes a stub.
 		if err := store.Append(stageCtx, sess.SessionID, agent.Entry{
-			Kind: agent.KindUser, Content: stage.Prompt, CreatedAt: now(),
+			Kind: agent.KindUser, Content: stage.Prompt, Parts: stage.Parts, CreatedAt: now(),
 		}); err != nil {
 			cancel()
 			return nil, err
@@ -989,10 +1085,10 @@ func loadTasks(dir, glob string) ([]*task.Task, error) {
 			}
 		}
 		p := filepath.Join(dir, e.Name())
-		if _, err := os.Stat(filepath.Join(p, "task.yaml")); err != nil {
-			continue
+		t, err := task.LoadDir(p)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // not a probe dir
 		}
-		t, err := task.Load(p)
 		if err != nil {
 			return nil, err
 		}

@@ -112,3 +112,82 @@ These reward structure/reference/refactor power: baseline read_file/write_file/r
 - `cross-language-rename` (tooluse, 1 stage) — the same field in three languages (`LegacyID`+json tag `legacy_id` in model.go, `legacyId` in client.ts, `legacy_id` in config.yaml) renamed to the `archived_id`/`ArchivedID`/`archivedId` family. Per-file greps assert the new name present AND the old name gone in each of the three files.
 - `codebase-navigation` (tooluse, 1 stage, read-only) — write `answers.txt`: which functions call `Store.Save` (Register, Import), the return type of `Server.Handle` (`*Response`), and every struct with a `CreatedAt` field (Record, Session, AuditEntry). `file_contains` on each expected token.
 - `find-render-entrypoints` (tooluse, 1 stage, read-only) — over a REAL ~8.3k-line corpus (poly-lsp's own `mcp` package), not a toy fixture: trace every function from which the selector-grammar help text can reach a user, and write `file.go#Symbol` lines to `findings.txt`. Ground truth is a two-hop reference chain (`handleModernNodeQuery`, `errf`, `parseAttr`, `parsePseudo`) — grep finds the *sites* but not the enclosing function, which is what a symbol index knows. `file_contains` on each expected symbol. Carries raised limits (20 turns / 40 tool calls) proportional to the corpus.
+
+
+## Markdown probes (`probe.md`)
+
+A probe directory may hold **either** `task.yaml` **or** `probe.md`. The markdown
+format exists so a probe can be authored without learning the YAML schema and so
+it reads as documentation of what it tests. It maps losslessly onto the same
+`Task` — same runner, same checks, same defaults. There is deliberately nothing a
+markdown probe can express that a `task.yaml` cannot, and
+`TestLoadMarkdown_EquivalentToYAML` pins that: a second assertion language beside
+the existing one is the duplication that folding this harness into corrallm was
+meant to prevent.
+
+```markdown
+---
+name: capability-vision
+class: capability
+requires: { modality: image }
+limits: { maxTurnsPerStage: 2 }
+---
+
+# Vision: does the model actually see the image?
+
+Prose here documents WHY the probe exists. It is shown in the UI and is never
+sent to the model.
+
+## Prompt
+
+What shape and what colour is in this image?
+
+![a red circle](fixture/red-circle.png)
+
+## Checks
+
+- response_contains: red
+- response_contains: circle
+```
+
+| section | meaning |
+|---|---|
+| YAML frontmatter | every non-stage `task.yaml` field, plus `description` and `requires` |
+| prose before the first `##` | the probe's description — UI only, never sent |
+| `## Prompt` | opens a new stage; repeat for multi-stage probes |
+| `![alt](path)` in a prompt | attached as a multimodal image part; local paths are inlined as base64 data URIs |
+| `## Checks` | that stage's checks, as a `- ` list (parsed by the SAME decoder `task.yaml` uses) |
+| `## Options` | per-stage flags (`forceCompact: true`) |
+| any other `## Section` | prose; ignored, so a probe can carry `## Why` or `## Notes` |
+
+`task.yaml` wins if both files exist — arbitrary, but deterministic beats
+silently running something other than the file you edited.
+
+### `class: capability`
+
+Does the model do what it CLAIMS — modalities, formats, tool calling? Cheap,
+deterministic, pass/fail, as opposed to the quality-oriented `coding` /
+`tooluse` / `adversarial` classes. `workspace` is optional (a capability probe
+usually has no fixture); the runner supplies an empty scratch dir.
+
+### `requires:` — skip, don't fail
+
+`requires: { modality: image }` means a model that does not DECLARE that
+modality is **skipped**, not failed. A text-only model has not failed a vision
+probe; it was never a candidate. Skips are logged, because a probe that quietly
+never ran looks exactly like one that passed when you read the summary later.
+
+The declaration comes from corrallm's `/v1/models`. It is the model's own claim,
+not ground truth — verifying the claim is what a capability probe is *for*. Using
+it to decide who to skip is sound; using it to decide who passes would be
+circular. If the catalog is unreachable nothing is skipped, so an outage yields
+real runs rather than an empty matrix that reads as a clean sweep.
+
+### Probes must run COLD to be meaningful
+
+A capability probe against a warm model proves much less than it appears to. The
+bug that motivated this whole tier — `ternary-bonsai-27b` silently dropping an
+attached image on the first request after a cold load, while `/props` still
+reported `vision: true` — is invisible to a warm probe, and the config claimed
+the modality was "verified end-to-end" precisely because the one manual check
+anyone ran happened to hit a warm model.

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/iodesystems/agentkit/llm"
 )
 
 // Task is one benchmark scenario loaded from tasks/<name>/task.yaml.
@@ -17,13 +19,17 @@ type Task struct {
 	// Dir is the absolute directory the task was loaded from (not from YAML).
 	Dir string `yaml:"-"`
 
-	Name      string       `yaml:"name"`
-	Class     string       `yaml:"class"`     // coding | tooluse | adversarial
-	Workspace string       `yaml:"workspace"` // dir (relative to Dir) copied into the scratch workspace
-	Limits    Limits       `yaml:"limits"`
-	BaitTools []BaitTool   `yaml:"baitTools"`
-	Poison    []PoisonRule `yaml:"poison"`
-	Stages    []Stage      `yaml:"stages"`
+	Name string `yaml:"name"`
+	// Description is human prose shown in the UI and never sent to the model.
+	// Markdown probes get it from the text above the first `##` heading;
+	// task.yaml declares it explicitly. Optional in both.
+	Description string       `yaml:"description"`
+	Class       string       `yaml:"class"`     // coding | tooluse | adversarial | capability
+	Workspace   string       `yaml:"workspace"` // dir (relative to Dir) copied into the scratch workspace
+	Limits      Limits       `yaml:"limits"`
+	BaitTools   []BaitTool   `yaml:"baitTools"`
+	Poison      []PoisonRule `yaml:"poison"`
+	Stages      []Stage      `yaml:"stages"`
 
 	// System REPLACES the runner's base system prompt entirely for this task.
 	//
@@ -51,6 +57,20 @@ type Task struct {
 	// When set it must be >= 2000 (below that the Shaper cannot keep a usable
 	// pristine tail).
 	ContextBudget int `yaml:"contextBudget"`
+
+	// Requires declares what a model must ALREADY claim for this probe to be
+	// meaningful. A model that does not satisfy it is SKIPPED, not failed:
+	// a text-only model has not failed a vision probe, it was never a
+	// candidate. Scoring it as a failure is the same category error as
+	// letting a turn cap veto passing checks.
+	Requires Requires `yaml:"requires"`
+}
+
+// Requires gates a probe on a model's declared capabilities.
+type Requires struct {
+	// Modality names a modality the model must declare (image | audio | text).
+	// Matched against the model's corrallm `modalities` declaration.
+	Modality string `yaml:"modality"`
 }
 
 // Limits bounds a looping model so a bad run burns bounded tokens. A zero
@@ -80,6 +100,11 @@ type PoisonRule struct {
 type Stage struct {
 	Prompt string  `yaml:"prompt"`
 	Checks []Check `yaml:"checks"`
+	// Parts, when non-empty, sends this stage's prompt as MULTIMODAL content
+	// (text + images) instead of a plain string. Populated by markdown probes
+	// from ![](path) syntax; task.yaml has no syntax for it. Requires
+	// agentkit's Entry.Parts to reach the model.
+	Parts []llm.ContentPart `yaml:"-"`
 	// ForceCompact folds the session history (agentkit Shaper.Compact) BEFORE
 	// this stage's prompt runs, so a compaction-continuation task deterministically
 	// exercises recall-across-compaction instead of hoping budget pressure trips
@@ -213,7 +238,40 @@ const (
 	defaultMaxToolCalls = 24
 )
 
-var validClasses = map[string]bool{"coding": true, "tooluse": true, "adversarial": true}
+// capability: does the model do what it CLAIMS (modalities, formats, tool
+// calling)? Cheap and deterministic, unlike the quality-oriented classes.
+// applyDefaults fills the zero-valued knobs a loader may leave unset. Shared by
+// the task.yaml and probe.md loaders so the two formats cannot drift on
+// defaults — a markdown probe silently getting different turn limits than the
+// equivalent YAML would make the formats non-equivalent, which is the one
+// property the markdown format must preserve.
+func applyDefaults(t *Task) {
+	if t.Limits.MaxTurnsPerStage == 0 {
+		t.Limits.MaxTurnsPerStage = defaultMaxTurns
+	}
+	if t.Limits.MaxToolCallsPerStage == 0 {
+		t.Limits.MaxToolCallsPerStage = defaultMaxToolCalls
+	}
+}
+
+var validClasses = map[string]bool{"coding": true, "tooluse": true, "adversarial": true, "capability": true}
+
+// LoadDir loads a probe directory in EITHER format: task.yaml if present,
+// otherwise probe.md. Returns os.ErrNotExist if the dir holds neither, so
+// callers can skip non-probe directories.
+//
+// task.yaml wins when both exist. That is arbitrary but must be deterministic —
+// silently running a different probe than the author edited is worse than
+// either choice.
+func LoadDir(dir string) (*Task, error) {
+	if _, err := os.Stat(filepath.Join(dir, "task.yaml")); err == nil {
+		return Load(dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ProbeFile)); err == nil {
+		return LoadMarkdown(dir)
+	}
+	return nil, fmt.Errorf("%s: no task.yaml or %s: %w", dir, ProbeFile, os.ErrNotExist)
+}
 
 // Load reads and validates tasks/<name>/task.yaml under dir.
 func Load(dir string) (*Task, error) {
@@ -231,12 +289,7 @@ func Load(dir string) (*Task, error) {
 		return nil, err
 	}
 	t.Dir = abs
-	if t.Limits.MaxTurnsPerStage == 0 {
-		t.Limits.MaxTurnsPerStage = defaultMaxTurns
-	}
-	if t.Limits.MaxToolCallsPerStage == 0 {
-		t.Limits.MaxToolCallsPerStage = defaultMaxToolCalls
-	}
+	applyDefaults(&t)
 	if err := t.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -257,11 +310,14 @@ func (t *Task) Validate() error {
 	if !validClasses[t.Class] {
 		return fmt.Errorf("class %q invalid (want coding|tooluse|adversarial)", t.Class)
 	}
-	if t.Workspace == "" {
-		return fmt.Errorf("workspace is required")
-	}
-	if fi, err := os.Stat(t.WorkspaceDir()); err != nil || !fi.IsDir() {
-		return fmt.Errorf("workspace dir %q does not exist", t.Workspace)
+	// Workspace is optional. A capability probe ("describe this image") needs
+	// no fixture at all; requiring one would force every such probe to carry an
+	// empty directory purely to satisfy the validator. When unset the runner
+	// gets an empty scratch dir.
+	if t.Workspace != "" {
+		if fi, err := os.Stat(t.WorkspaceDir()); err != nil || !fi.IsDir() {
+			return fmt.Errorf("workspace dir %q does not exist", t.Workspace)
+		}
 	}
 	if len(t.Stages) == 0 {
 		return fmt.Errorf("at least one stage is required")
@@ -324,6 +380,12 @@ func (c *Check) validate() error {
 	case "compaction_under":
 		if c.N < 1 {
 			return fmt.Errorf("compaction_under: bound must be >= 1")
+		}
+	case "response_contains", "response_not_contains":
+		if c.Text == "" {
+			// An empty needle matches everything, so a positive check would be
+			// vacuous and a prohibition unsatisfiable. Both are author errors.
+			return fmt.Errorf("%s: text is required", c.Kind)
 		}
 	default:
 		return fmt.Errorf("unknown check kind %q", c.Kind)

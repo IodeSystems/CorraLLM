@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -118,11 +119,12 @@ func cmdValidate(argv []string) int {
 			continue
 		}
 		dir := filepath.Join(*tasksDir, e.Name())
-		if _, err := os.Stat(filepath.Join(dir, "task.yaml")); err != nil {
-			continue
+		t, err := task.LoadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // not a probe dir
 		}
 		n++
-		if _, err := task.Load(dir); err != nil {
+		if _ = t; err != nil {
 			fmt.Printf("INVALID %s: %v\n", e.Name(), err)
 			bad++
 		} else {
