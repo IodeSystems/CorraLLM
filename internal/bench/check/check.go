@@ -36,6 +36,16 @@ type Metrics struct {
 	// token estimate (Σ CompactionInfo.TokensAfter across this stage's folds).
 	// A lower-is-better size signal the compaction_under check gates on.
 	CompactionTokensAfter int
+	// Response is the model's VISIBLE reply text for this stage
+	// (agentkit TurnResult.Reply). Reasoning traces are NOT included: the llm
+	// client decodes only the `content` field and ignores `reasoning_content`,
+	// which is the behavior response_contains wants — a reply whose entire
+	// token budget went to reasoning arrives here EMPTY, and that is a real
+	// failure worth surfacing rather than a technicality to paper over. Models
+	// that emit reasoning by default (no `--reasoning off`) need a max_tokens
+	// generous enough to reach visible content, or every response check fails
+	// for a reason that has nothing to do with the capability under test.
+	Response string
 }
 
 // Evaluate runs one check against the workspace dir, journal entries, and
@@ -58,6 +68,10 @@ func Evaluate(ctx context.Context, c task.Check, workspace string, journ []journ
 		return compactionsMin(c, m)
 	case "compaction_under":
 		return compactionUnder(c, m)
+	case "response_contains":
+		return responseContains(c, m, true)
+	case "response_not_contains":
+		return responseContains(c, m, false)
 	default:
 		return Result{Kind: c.Kind, Desc: c.Kind, Pass: false, Detail: "unknown check kind"}
 	}
@@ -106,6 +120,47 @@ func compactionUnder(c task.Check, m Metrics) Result {
 	}
 	return r
 }
+
+// responseContains asserts on the model's visible reply. want=false inverts it
+// (response_not_contains).
+//
+// Matching is CASE-INSENSITIVE and whitespace-collapsed. A probe asking "what
+// shape and color is this?" gets "The image shows a **red circle**." from one
+// model and "Red circle" from another; a case-sensitive exact-substring match
+// would score those differently for no reason connected to the capability being
+// probed. This is a deliberately loose check — it answers "did the model see
+// it", not "did the model phrase it well". Use the judge for quality.
+//
+// An EMPTY response fails a response_contains (there is nothing to match) and
+// PASSES a response_not_contains. That asymmetry is intentional but sharp: a
+// model whose whole token budget went to reasoning emits empty visible content,
+// so a probe built only from response_not_contains checks would pass a model
+// that said nothing at all. Pair prohibitions with at least one positive check
+// — the same lesson tool_not_called taught in the adversarial tasks.
+func responseContains(c task.Check, m Metrics, want bool) Result {
+	kind := "response_contains"
+	if !want {
+		kind = "response_not_contains"
+	}
+	got := collapseWS(m.Response)
+	found := strings.Contains(strings.ToLower(got), strings.ToLower(collapseWS(c.Text)))
+	r := Result{Kind: c.Kind, Desc: fmt.Sprintf("%s: %q", kind, c.Text), Pass: found == want}
+	if !r.Pass {
+		switch {
+		case got == "":
+			r.Detail = "model produced NO visible content (all output may have gone to reasoning — raise max_tokens or disable reasoning)"
+		case len(got) > 200:
+			r.Detail = fmt.Sprintf("response: %.200q…", got)
+		default:
+			r.Detail = fmt.Sprintf("response: %q", got)
+		}
+	}
+	return r
+}
+
+// collapseWS folds all whitespace runs to single spaces and trims, so a match
+// isn't defeated by a newline landing mid-phrase in a wrapped reply.
+func collapseWS(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func cmdOK(ctx context.Context, c task.Check, workspace string) Result {
 	r := Result{Kind: c.Kind, Desc: "cmd_ok: " + c.Cmd}

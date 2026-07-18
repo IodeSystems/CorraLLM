@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iodesystems/corrallm/internal/bench/journal"
@@ -129,5 +130,66 @@ func TestCompactionUnder(t *testing.T) {
 	// Zero folds → FAIL (nothing summarized; a vacuous fold must not pass).
 	if r := Evaluate(ctx, task.Check{Kind: "compaction_under", N: 1500}, "", nil, Metrics{CompactionTokensAfter: 0}); r.Pass {
 		t.Errorf("compaction_under:1500 should FAIL when 0 folds (compactionTokensAfter=0)")
+	}
+}
+
+func respMetrics(s string) Metrics { return Metrics{Response: s} }
+
+// response_contains is the only check that reads the model's prose. Without it
+// a capability probe ("describe this image") is unassertable: no file is
+// written and no tool is called, so every other kind has nothing to inspect.
+func TestResponseContains(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name     string
+		kind     string
+		text     string
+		response string
+		want     bool
+	}{
+		{"plain hit", "response_contains", "red circle", "The image shows a red circle.", true},
+		{"miss", "response_contains", "blue square", "The image shows a red circle.", false},
+		// Models phrase the same perception differently; a probe asserting a
+		// capability must not fail on markdown emphasis or capitalisation.
+		{"case-insensitive", "response_contains", "RED", "a red circle", true},
+		// Emphasis AROUND a phrase is harmless (the substring survives)...
+		{"emphasis wrapping the phrase still matches", "response_contains", "red circle", "shows a **red circle**", true},
+		// ...but emphasis INSIDE it breaks the substring. Real gotcha: models
+		// bold individual words constantly ("a **red** circle"), so a probe
+		// should assert on single words, not multi-word phrases.
+		{"emphasis splitting the phrase does NOT match", "response_contains", "red circle", "shows a **red** circle", false},
+		{"single word survives emphasis", "response_contains", "circle", "shows a **red** circle", true},
+		{"whitespace collapsed across a wrap", "response_contains", "red circle", "shows a red\n   circle here", true},
+		// The reasoning trap: all budget spent on reasoning_content leaves the
+		// visible reply empty. That must FAIL loudly, not match vacuously.
+		{"empty response fails a positive check", "response_contains", "red", "", false},
+		{"prohibition hit", "response_not_contains", "sorry", "Here is the answer.", true},
+		{"prohibition violated", "response_not_contains", "sorry", "I'm sorry, I cannot.", false},
+		// Sharp edge, asserted so it stays deliberate: a silent model satisfies
+		// every prohibition. Pair prohibitions with a positive check.
+		{"empty response PASSES a prohibition", "response_not_contains", "sorry", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := task.Check{Kind: tc.kind, Text: tc.text}
+			got := Evaluate(ctx, c, t.TempDir(), nil, respMetrics(tc.response))
+			if got.Pass != tc.want {
+				t.Errorf("Evaluate(%s %q) on %q = %v, want %v (detail: %s)",
+					tc.kind, tc.text, tc.response, got.Pass, tc.want, got.Detail)
+			}
+		})
+	}
+}
+
+// An empty visible reply is the single most confusing failure in practice (it
+// looks like the model ignored the prompt), so it must say what happened.
+func TestResponseContainsEmptyDetailNamesTheCause(t *testing.T) {
+	r := Evaluate(context.Background(), task.Check{Kind: "response_contains", Text: "red"},
+		t.TempDir(), nil, respMetrics(""))
+	if r.Pass {
+		t.Fatal("empty response must not satisfy response_contains")
+	}
+	if !strings.Contains(r.Detail, "reasoning") {
+		t.Errorf("detail should point at the reasoning/max_tokens cause, got %q", r.Detail)
 	}
 }

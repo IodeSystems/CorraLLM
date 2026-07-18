@@ -593,7 +593,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		}
 
 		start := time.Now()
-		_, turnErr := sess.Turn(stageCtx)
+		turnRes, turnErr := sess.Turn(stageCtx)
 		wall := time.Since(start)
 		cancel()
 
@@ -644,7 +644,14 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		stageJourn := journ[journConsumed:]
 		journConsumed = len(journ)
 		results, allPass := check.EvaluateAll(ctx, stage.Checks, scratch, stageJourn,
-			check.Metrics{Compactions: cumulativeCompactions, CompactionTokensAfter: m.CompactionTokensAfter})
+			check.Metrics{
+				Compactions:           cumulativeCompactions,
+				CompactionTokensAfter: m.CompactionTokensAfter,
+				// The stage's visible reply. Turn's result was previously
+				// discarded outright; response_contains is the first check kind
+				// that asserts on prose rather than on the workspace or journal.
+				Response: turnRes.Reply,
+			})
 		passed := 0
 		for _, c := range results {
 			if c.Pass {

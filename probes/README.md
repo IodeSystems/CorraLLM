@@ -52,10 +52,27 @@ Each check is a single-key YAML mapping. Kinds:
 | `no_repeat_calls` | `n?` | no identical (name+args) call appears more than `n` times (default 2) |
 | `compactions_min` | scalar int `N` (>= 1) | the agentkit Shaper compacted >= N times cumulatively up to & including this stage (proves the compaction-continuation mechanism fired; a task that never compacts FAILS) |
 | `compaction_under` | scalar int `N` (>= 1) | this stage's `compactionTokensAfter` is `> 0` AND `<= N` — a soft, lower-is-better size gate: the fold happened and the summary is reasonably terse (0 folds FAILS) |
+| `response_contains` | scalar string | the model's VISIBLE reply contains the text (case-insensitive, whitespace-collapsed) |
+| `response_not_contains` | scalar string | the reply does NOT contain the text |
 
 `cmd_ok`, `file_contains`, `file_absent` read the workspace filesystem.
 `tool_called`, `tool_not_called`, `no_repeat_calls` read the llm-bench-mcp call
 journal (JSONL). The journal accumulates across stages, so tool-usage checks see
+`response_contains` / `response_not_contains` read the model's reply text — the
+only checks that assert on prose rather than the workspace or the journal, and
+therefore the only way to assert a **capability** probe ("describe this image"),
+which writes no file and calls no tool.
+
+Two things to know before using them. **Reasoning models can return an empty
+visible reply**: the client decodes `content` and ignores `reasoning_content`, so
+a model with reasoning on and a tight `max_tokens` spends its whole budget before
+emitting anything visible, and every response check fails for a reason unrelated
+to the capability. Give such probes room. **Assert on single words, not
+phrases** — matching is a substring test after whitespace collapsing, so a model
+that writes `a **red** circle` will not match `red circle`, though it does match
+`circle`. And note an empty reply PASSES `response_not_contains`: a silent model
+satisfies every prohibition, so always pair one with a positive check.
+
 every call made so far in the session. `compactions_min` and `compaction_under`
 read run METRICS (the Shaper compaction count / the agentkit CompactionInfo
 active-window token estimate), not the journal.

@@ -158,6 +158,15 @@ func (c *Check) UnmarshalYAML(node *yaml.Node) error {
 		if err := val.Decode(&c.N); err != nil {
 			return err
 		}
+	case "response_contains", "response_not_contains":
+		// Scalar string: `response_contains: red`. Asserts on the model's
+		// VISIBLE reply text — the only check kind that does, which is what
+		// makes capability probing possible at all: "describe this image"
+		// writes no file and calls no tool, so every other kind has nothing
+		// to read.
+		if err := val.Decode(&c.Text); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown check kind %q", key)
 	}
