@@ -515,6 +515,25 @@ func (m *Manager) tuneCmd(model string, cmdStr *string) int {
 	if !ok {
 		return 0
 	}
+	// maxConcurrent is a CEILING the tuner may lower but never raise.
+	//
+	// Two reasons, either sufficient. First, slots beyond maxConcurrent are
+	// unreachable: the scheduler admits at most maxConcurrent concurrent
+	// requests to this backend, so extra llama.cpp slots can never be used.
+	// Second, and worse, --parallel DIVIDES the context window — llama.cpp
+	// gives each slot n_ctx/n_parallel. Sizing slots purely by free VRAM
+	// therefore trades a context window the operator explicitly configured for
+	// concurrency that cannot be reached.
+	//
+	// Observed: gemma-4-12b, configured `-c 131072` with maxConcurrent 2, was
+	// spawned at --parallel 32 (the DefaultCap) because 32 slots happened to
+	// fit in VRAM. Each request got n_ctx_slot=4096 — a 32x silent cut to the
+	// usable context, with no error and nothing in the config to explain it.
+	if cap := m.cfg.Models[model].Slots(); cap > 0 && n > cap {
+		slog.Debug("tuner clamped to configured maxConcurrent",
+			"model", model, "wanted", n, "maxConcurrent", cap)
+		n = cap
+	}
 	*cmdStr = reParallel.ReplaceAllString(*cmdStr, fmt.Sprintf("--parallel %d", n))
 	return n
 }
