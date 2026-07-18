@@ -66,6 +66,14 @@ type LLMConfig struct {
 	BaseURL       string `yaml:"baseURL"`
 	APIKeyEnv     string `yaml:"apiKeyEnv"`
 	ContextBudget int    `yaml:"contextBudget"`
+
+	// AdminTokenFile / AdminTokenEnv locate corrallm's ADMIN token, which gates
+	// /api/v1/models/{load,unload}. Only probes declaring `run: cold|warm|both`
+	// need it; a plain quality benchmark runs without one, so this is optional
+	// by design — requiring a privileged token to run any benchmark would be a
+	// regression. File wins over env when both are set.
+	AdminTokenFile string `yaml:"adminTokenFile"`
+	AdminTokenEnv  string `yaml:"adminTokenEnv"`
 }
 
 // EffectiveContextBudget returns the shaper budget, defaulted.

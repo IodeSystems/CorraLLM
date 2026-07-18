@@ -67,6 +67,16 @@ type Row struct {
 	Stage   int    `json:"stage"`
 	Prompt  string `json:"prompt"`
 
+	// RunMode is the residency state this pass ran against ("" | cold | warm).
+	// A `both` probe emits two sets of rows, one per mode: a disagreement
+	// between them is the finding, so the mode must be on the row or the two
+	// passes are indistinguishable in the results.
+	RunMode string `json:"runMode,omitempty"`
+	// ResidencyNote records what residency control ACTUALLY did — including
+	// failing. A cold pass that silently ran warm would otherwise stand as
+	// evidence for a claim it never tested.
+	ResidencyNote string `json:"residencyNote,omitempty"`
+
 	// ToolFormat is the tool-result encoding used for this run (json | toon |
 	// csv | json-toon | loose | tight | tight-lift). Constant across a run; recorded per-row so runs
 	// across formats are directly comparable in the aggregates.

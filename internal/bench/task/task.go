@@ -58,6 +58,11 @@ type Task struct {
 	// pristine tail).
 	ContextBudget int `yaml:"contextBudget"`
 
+	// Run selects the residency state this probe runs against:
+	// "" (any, the default -- residency untouched) | cold | warm | both.
+	// A capability probe is usually only meaningful COLD; see probes/README.md.
+	Run string `yaml:"run"`
+
 	// Requires declares what a model must ALREADY claim for this probe to be
 	// meaningful. A model that does not satisfy it is SKIPPED, not failed:
 	// a text-only model has not failed a vision probe, it was never a
@@ -321,6 +326,11 @@ func (t *Task) Validate() error {
 	}
 	if len(t.Stages) == 0 {
 		return fmt.Errorf("at least one stage is required")
+	}
+	switch t.Run {
+	case "", "cold", "warm", "both":
+	default:
+		return fmt.Errorf("run %q invalid (want cold|warm|both, or omit)", t.Run)
 	}
 	if t.ContextBudget != 0 && t.ContextBudget < 2000 {
 		return fmt.Errorf("contextBudget %d is too small (must be >= 2000 when set)", t.ContextBudget)

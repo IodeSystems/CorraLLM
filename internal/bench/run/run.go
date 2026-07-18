@@ -232,6 +232,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	// context from bleeding into clean tasks via the server-side prompt cache.
 	slotsByModel := fetchModelSlots(opts)
 	modsByModel := fetchModelModalities(opts)
+	resid := newResidencyClient(opts.Config)
 	for _, model := range models {
 		slots := slotsByModel[model]
 		if slots < 1 {
@@ -255,35 +256,46 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 						continue
 					}
 					tset, tsk := tset, tsk
-					wg.Add(1)
-					sem <- struct{}{}
-					go func() {
-						defer wg.Done()
-						defer func() { <-sem }()
-						// Per-combo watchdog: a hung MCP tool discovery or a stuck
-						// LLM retry has no internal deadline and would wedge the
-						// whole matrix silently (observed: 87min hang). Cap each
-						// combo; a timeout aborts it into failed rows.
-						comboCtx, comboCancel := context.WithTimeout(ctx, opts.comboTimeout())
-						r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir)
-						comboCancel()
-						if err != nil {
-							// A combo failure is DATA, not fatal: log it, synthesize
-							// failed stage rows, and keep the matrix going.
-							msg := fmt.Sprintf("%s/%s/%s: %v", model, tset.Name, tsk.Name, err)
-							log.Printf("llm-bench: combo failed (continuing): %s", msg)
-							mu.Lock()
-							comboErrs = append(comboErrs, msg)
-							mu.Unlock()
-							r = failedRows(tsk, model, tset.Name, ts, err.Error())
-						}
-						// Stamp the run's tool-result format on every row (constant
-						// per run) so format aggregates are comparable.
-						for j := range r {
-							r[j].ToolFormat = toolFmt
-						}
-						appendRows(r)
-					}()
+					for _, mode := range RunMode(tsk.Run).Modes() {
+						mode := mode
+						wg.Add(1)
+						sem <- struct{}{}
+						go func() {
+							defer wg.Done()
+							defer func() { <-sem }()
+							// Per-combo watchdog: a hung MCP tool discovery or a stuck
+							// LLM retry has no internal deadline and would wedge the
+							// whole matrix silently (observed: 87min hang). Cap each
+							// combo; a timeout aborts it into failed rows.
+							comboCtx, comboCancel := context.WithTimeout(ctx, opts.comboTimeout())
+							// Put the model into the residency state this pass
+							// asks for BEFORE the clock starts. residNote records
+							// what actually happened, including failure — a cold
+							// pass that silently ran warm must not stand as
+							// evidence for a path it never tested.
+							residNote := prepareResidency(comboCtx, resid, mode, model)
+							r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir)
+							comboCancel()
+							if err != nil {
+								// A combo failure is DATA, not fatal: log it, synthesize
+								// failed stage rows, and keep the matrix going.
+								msg := fmt.Sprintf("%s/%s/%s: %v", model, tset.Name, tsk.Name, err)
+								log.Printf("llm-bench: combo failed (continuing): %s", msg)
+								mu.Lock()
+								comboErrs = append(comboErrs, msg)
+								mu.Unlock()
+								r = failedRows(tsk, model, tset.Name, ts, err.Error())
+							}
+							// Stamp the run's tool-result format on every row (constant
+							// per run) so format aggregates are comparable.
+							for j := range r {
+								r[j].ToolFormat = toolFmt
+								r[j].RunMode = string(mode)
+								r[j].ResidencyNote = residNote
+							}
+							appendRows(r)
+						}()
+					}
 				}
 			}
 			wg.Wait() // barrier: finish all clean combos before any adversarial one

@@ -79,6 +79,7 @@ type probeFrontmatter struct {
 	System        string       `yaml:"system"`
 	SystemAppend  string       `yaml:"systemAppend"`
 	ContextBudget int          `yaml:"contextBudget"`
+	Run           string       `yaml:"run"`
 	Requires      Requires     `yaml:"requires"`
 }
 
@@ -118,7 +119,8 @@ func parseMarkdown(src, dir string) (*Task, error) {
 	}
 	t.Name, t.Class, t.Description = fm.Name, fm.Class, fm.Description
 	t.Workspace, t.Limits, t.BaitTools, t.Poison = fm.Workspace, fm.Limits, fm.BaitTools, fm.Poison
-	t.System, t.SystemAppend, t.ContextBudget, t.Requires = fm.System, fm.SystemAppend, fm.ContextBudget, fm.Requires
+	t.System, t.SystemAppend, t.ContextBudget = fm.System, fm.SystemAppend, fm.ContextBudget
+	t.Run, t.Requires = fm.Run, fm.Requires
 
 	body := src[len(m[0]):]
 

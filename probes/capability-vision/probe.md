@@ -2,6 +2,7 @@
 name: capability-vision
 class: capability
 requires: { modality: image }
+run: both
 limits: { maxTurnsPerStage: 2, maxToolCallsPerStage: 0 }
 ---
 
@@ -19,8 +20,11 @@ in its reasoning while `/props` reported vision support. Warm, it answered
 correctly. The config had claimed the modality was "verified end-to-end" because
 the one manual check anyone ran happened to hit a warm model.
 
-So this probe is only meaningful when run COLD. A warm run of it proves very
-little — see the `cold` run mode.
+So this probe declares `run: both`: it runs once cold and once warm, and a
+DISAGREEMENT between the two passes is the finding. A warm-only run of it proves
+very little. Cold requires an admin token (`llm.adminTokenFile` /
+`llm.adminTokenEnv`); without one the pass is recorded with a loud warning that
+it does not prove the cold path, rather than quietly passing.
 
 The image is a solid red circle, centred on white. Deliberately trivial: the
 probe asks whether the pixels arrived, not whether the model is a good

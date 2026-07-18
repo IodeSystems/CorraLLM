@@ -183,6 +183,30 @@ it to decide who to skip is sound; using it to decide who passes would be
 circular. If the catalog is unreachable nothing is skipped, so an outage yields
 real runs rather than an empty matrix that reads as a clean sweep.
 
+### `run:` — cold / warm / both
+
+| value | behavior |
+|---|---|
+| omitted (default) | residency untouched: the model may be warm, cold, or mid-swap depending on what ran before |
+| `cold` | evict the model first, so the probe's first request pays the cold load |
+| `warm` | ensure the model is resident first, so no load latency lands in the numbers |
+| `both` | run the probe twice, **cold then warm** — a disagreement between the passes is the finding |
+
+`both` expands cold-first deliberately: running warm first would leave the model
+resident and make the "cold" pass a lie.
+
+Each row records `runMode` and a `residencyNote` describing what residency
+control *actually did*. That note is not cosmetic. corrallm refuses to evict
+pinned, persistent, or in-flight models, so `cold` is a **request, not a
+guarantee** — a persistent model can never go cold. When eviction is refused, or
+no admin token is configured, the note carries a loud `WARNING` and the pass is
+still recorded. A cold pass that silently ran warm would otherwise stand as
+evidence for a path it never tested, which is precisely how the bug below stayed
+hidden.
+
+Cold/warm needs corrallm's admin token (`llm.adminTokenFile` or
+`llm.adminTokenEnv`). Probes that do not declare `run:` never need one.
+
 ### Probes must run COLD to be meaningful
 
 A capability probe against a warm model proves much less than it appears to. The

@@ -1,6 +1,13 @@
 # llm-bench benchmark config. The runner reads this from the repo root (or --config).
 #
-# llm: the corrallm endpoint. apiKeyEnv names the env var holding the bearer
+# llm:
+  # Admin token for corrallm's control surface (/api/v1/models/{load,unload}).
+  # ONLY needed by probes declaring `run: cold|warm|both` — a plain quality
+  # benchmark runs without it. Without a token those probes still run, but each
+  # row is stamped with a warning that residency was not controlled, so a cold
+  # claim is never made on evidence that does not support it.
+  # adminTokenFile: /home/you/ml-kit/home/admin.token
+  # adminTokenEnv: CORRALLM_ADMIN_TOKEN the corrallm endpoint. apiKeyEnv names the env var holding the bearer
 # key — the fair-share SCHEDULING IDENTITY (map a `llm-bench` key to corrallm's
 # batch group so runs queue behind interactive traffic). Empty env = no auth.
 llm:
