@@ -75,6 +75,30 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.LoadModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "beginCalibration",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/calibrate/begin",
+		Summary:     "Claim exclusive access for a measurement run (EVICTS models; all other callers get 429).",
+		Tags:        []string{"control"},
+	}, h.BeginCalibration)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "endCalibration",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/calibrate/end",
+		Summary:     "Release the calibration lease early.",
+		Tags:        []string{"control"},
+	}, h.EndCalibration)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "calibrationStatus",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/calibrate/status",
+		Summary:     "Report whether an exclusive calibration lease is held.",
+		Tags:        []string{"observability"},
+	}, h.CalibrationStatus)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "publishTuneProfile",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/measurements/tune",

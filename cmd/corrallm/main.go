@@ -399,6 +399,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	// OpenAI-compatible inference passthrough (raw, streaming — bypasses gat),
 	// gated by the fairshare admission scheduler (shared with the lanes read op).
 	px := proxy.New(cfg, mgr, scheduler, st)
+	// Wired after construction: the proxy is built later than the handlers, and
+	// the admin API needs it to drive the exclusive calibration lease.
+	h.Proxy = px
 	px.SetBroker(broker)
 	px.SetRequestTimeout(o.requestTimeout)
 	px.SetCapturePayloads(o.capturePayloads)

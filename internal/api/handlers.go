@@ -18,6 +18,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/proc"
+	"github.com/iodesystems/corrallm/internal/proxy"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
 )
@@ -33,6 +34,9 @@ type Handlers struct {
 	// Verified holds OBSERVED capability verdicts published by llm-bench.
 	// Nil is valid (no bench has run); every reader must tolerate it.
 	Verified *VerifiedStore
+	// Proxy is needed to drive the exclusive calibration lease. Nil disables
+	// calibration mode rather than panicking.
+	Proxy *proxy.Proxy
 }
 
 // --- health ---

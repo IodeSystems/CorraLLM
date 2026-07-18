@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/tune"
@@ -163,5 +164,114 @@ func (h *Handlers) PublishVerifiedCapability(_ context.Context, in *VerifiedCapa
 	h.Verified.Record(in.Body.Model, v)
 	out.Body.OK = true
 	out.Body.Message = fmt.Sprintf("recorded %s/%s verified=%v", in.Body.Model, in.Body.Modality, in.Body.Verified)
+	return out, nil
+}
+
+// --- exclusive calibration lease --------------------------------------------
+
+// CalibrateInput starts or extends an exclusive calibration lease.
+type CalibrateInput struct {
+	Body struct {
+		Key string `json:"key" doc:"The caller key llm-bench will present; only this key is served while the lease holds."`
+		// TTLSeconds bounds the lease. A calibration run that crashes must not
+		// leave the box refusing every caller forever, so this is REQUIRED to be
+		// finite and is clamped below.
+		TTLSeconds int    `json:"ttlSeconds,omitempty" doc:"Lease duration in seconds (default 900, max 7200). The lease self-expires: a crashed bench cannot lock the box."`
+		Reason     string `json:"reason,omitempty" doc:"Shown to turned-away callers and in the dashboard."`
+	}
+}
+
+// CalibrateOutput reports the lease.
+type CalibrateOutput struct {
+	Body struct {
+		OK        bool   `json:"ok"`
+		ExpiresAt int64  `json:"expiresAt,omitempty" doc:"Unix seconds the lease self-expires."`
+		Message   string `json:"message"`
+		// Warning is always populated on success. Starting a lease EVICTS
+		// models and turns away every other caller; a client that fires this
+		// without surfacing that has misled its user.
+		Warning string `json:"warning,omitempty"`
+	}
+}
+
+const (
+	defaultCalibrationTTL = 900  // 15m
+	maxCalibrationTTL     = 7200 // 2h
+)
+
+// BeginCalibration claims the box for a measurement run.
+//
+// While the lease holds, every caller except Key gets 429 + Retry-After. This is
+// a real outage for other traffic and is deliberately not silent: the response
+// carries an explicit warning, and the lease always self-expires so a crashed
+// bench heals the box on its own.
+func (h *Handlers) BeginCalibration(_ context.Context, in *CalibrateInput) (*CalibrateOutput, error) {
+	out := &CalibrateOutput{}
+	if h.Proxy == nil {
+		out.Body.Message = "calibration unavailable (no proxy wired)"
+		return out, nil
+	}
+	if in.Body.Key == "" {
+		// Without a key the lease would turn away EVERYONE including the bench,
+		// which is a self-inflicted outage with no upside.
+		out.Body.Message = "key is required (the lease would otherwise block the calibration run itself)"
+		return out, nil
+	}
+	ttl := in.Body.TTLSeconds
+	if ttl <= 0 {
+		ttl = defaultCalibrationTTL
+	}
+	if ttl > maxCalibrationTTL {
+		ttl = maxCalibrationTTL
+	}
+	deadline, ok := h.Proxy.Calibration().Begin(in.Body.Key, in.Body.Reason, time.Duration(ttl)*time.Second)
+	if !ok {
+		out.Body.Message = fmt.Sprintf("a calibration lease is already held by another key until %s", deadline.UTC().Format(time.RFC3339))
+		return out, nil
+	}
+	out.Body.OK = true
+	out.Body.ExpiresAt = deadline.Unix()
+	out.Body.Message = fmt.Sprintf("calibration lease held until %s", deadline.UTC().Format(time.RFC3339))
+	out.Body.Warning = "EXCLUSIVE MODE: every caller except the calibration key now receives 429 + Retry-After, and the run will EVICT resident models to take cold measurements. The lease self-expires at expiresAt even if the run dies."
+	return out, nil
+}
+
+// EndCalibration releases the lease early. Idempotent, so a bench can always
+// call it from a defer without checking whether it still holds one.
+func (h *Handlers) EndCalibration(_ context.Context, in *CalibrateInput) (*CalibrateOutput, error) {
+	out := &CalibrateOutput{}
+	if h.Proxy == nil {
+		out.Body.Message = "calibration unavailable (no proxy wired)"
+		return out, nil
+	}
+	h.Proxy.Calibration().End(in.Body.Key)
+	out.Body.OK = true
+	out.Body.Message = "calibration lease released; normal traffic resumes"
+	return out, nil
+}
+
+// CalibrationStatusInput has no parameters.
+type CalibrationStatusInput struct{}
+
+// CalibrationStatusOutput reports whether a lease is held.
+type CalibrationStatusOutput struct {
+	Body struct {
+		Active           bool   `json:"active"`
+		Reason           string `json:"reason,omitempty"`
+		RemainingSeconds int    `json:"remainingSeconds,omitempty"`
+	}
+}
+
+// CalibrationStatus lets the dashboard show that the box is in exclusive mode —
+// otherwise a user seeing every request 429 has no way to tell why.
+func (h *Handlers) CalibrationStatus(_ context.Context, _ *CalibrationStatusInput) (*CalibrationStatusOutput, error) {
+	out := &CalibrationStatusOutput{}
+	if h.Proxy == nil {
+		return out, nil
+	}
+	active, reason, remaining := h.Proxy.Calibration().Status()
+	out.Body.Active = active
+	out.Body.Reason = reason
+	out.Body.RemainingSeconds = int(remaining.Seconds())
 	return out, nil
 }
