@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iodesystems/corrallm/internal/bench/check"
 	"github.com/iodesystems/corrallm/internal/bench/task"
 )
 
@@ -32,6 +33,11 @@ type audioResult struct {
 	transcript string // STT output, or the round-trip transcript of TTS output
 	bytes      int    // synthesized audio size, 0 for a pure transcription
 	format     string // container actually returned
+	// segments is a diarizing model's speaker-labeled output. Nil for a plain
+	// transcription. This is the ONLY thing distinguishing stt-diarize from
+	// stt — asserting on the joined transcript alone would pass a diarizer that
+	// had stopped diarizing entirely.
+	segments []check.AudioSegment
 }
 
 const audioTimeout = 5 * time.Minute
@@ -54,8 +60,8 @@ func runAudioProbe(ctx context.Context, opts Options, model string, tsk *task.Ta
 		// Read from the scratch workspace so an audio fixture ships with the
 		// probe exactly like any other fixture.
 		path := filepath.Join(workspace, filepath.Clean("/"+a.Transcribe))
-		text, err := transcribe(ctx, cl, base, key, model, path)
-		return audioResult{transcript: text}, err
+		text, segs, err := transcribe(ctx, cl, base, key, model, path)
+		return audioResult{transcript: text, segments: segs}, err
 
 	case a.Speak != "":
 		format := a.Format
@@ -77,39 +83,39 @@ func runAudioProbe(ctx context.Context, opts Options, model string, tsk *task.Ta
 		if err := os.WriteFile(tmp, audio, 0o644); err != nil {
 			return res, err
 		}
-		text, err := transcribe(ctx, cl, base, key, a.ThenTranscribe, tmp)
-		res.transcript = text
+		text, segs, err := transcribe(ctx, cl, base, key, a.ThenTranscribe, tmp)
+		res.transcript, res.segments = text, segs
 		return res, err
 	}
 	return audioResult{}, fmt.Errorf("audio probe has neither transcribe nor speak")
 }
 
-func transcribe(ctx context.Context, cl *http.Client, base, key, model, path string) (string, error) {
+func transcribe(ctx context.Context, cl *http.Client, base, key, model, path string) (string, []check.AudioSegment, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("open audio fixture %s: %w", path, err)
+		return "", nil, fmt.Errorf("open audio fixture %s: %w", path, err)
 	}
 	defer f.Close()
 
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	if err := w.WriteField("model", model); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	part, err := w.CreateFormFile("file", filepath.Base(path))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if _, err := io.Copy(part, f); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := w.Close(); err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/audio/transcriptions", &body)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	if key != "" {
@@ -117,20 +123,31 @@ func transcribe(ctx context.Context, cl *http.Client, base, key, model, path str
 	}
 	resp, err := cl.Do(req)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("transcriptions -> HTTP %d: %s", resp.StatusCode, tailStr(string(raw), 200))
+		return "", nil, fmt.Errorf("transcriptions -> HTTP %d: %s", resp.StatusCode, tailStr(string(raw), 200))
 	}
 	var out struct {
-		Text string `json:"text"`
+		Text     string               `json:"text"`
+		Segments []check.AudioSegment `json:"segments"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("decode transcript: %w", err)
+		return "", nil, fmt.Errorf("decode transcript: %w", err)
 	}
-	return out.Text, nil
+	text := out.Text
+	if text == "" && len(out.Segments) > 0 {
+		// A diarizing response has no top-level text; join the segments so the
+		// ordinary response_contains checks still work against it.
+		parts := make([]string, 0, len(out.Segments))
+		for _, sg := range out.Segments {
+			parts = append(parts, sg.Text)
+		}
+		text = strings.Join(parts, " ")
+	}
+	return text, out.Segments, nil
 }
 
 func speak(ctx context.Context, cl *http.Client, base, key, model, input, voice, format string) ([]byte, string, error) {

@@ -47,6 +47,10 @@ func main() {
 		// stays — executing is the one thing poly-lsp can't do, so it's
 		// llm-bench-mcp's sole unique capability.
 		fileTools = flag.Bool("file-tools", true, "expose read_file/write_file/list_dir (off = run-only, cede file+nav to a richer server)")
+		// runTool gates the `run` (execute) tool. Off = the model CANNOT
+		// build/test itself — used to isolate features whose value only shows
+		// when the model can't self-diagnose (e.g. edit validation).
+		runTool = flag.Bool("run-tool", true, "expose the run tool (off = no execution; the model cannot build/test itself)")
 	)
 	flag.Parse()
 
@@ -83,6 +87,7 @@ func main() {
 	}
 
 	srv.fileTools = *fileTools
+	srv.runTool = *runTool
 	s := server.NewMCPServer("llm-bench-mcp", "0.1.0")
 	srv.register(s, spec.BaitTools)
 
@@ -97,6 +102,7 @@ type mcpServer struct {
 	poison    []task.PoisonRule
 	journ     *journal.Writer
 	fileTools bool // expose read_file/write_file (see --file-tools)
+	runTool   bool // expose the run tool (see --run-tool)
 }
 
 func splitSet(csv string) map[string]bool {
@@ -130,11 +136,13 @@ func (srv *mcpServer) register(s *server.MCPServer, bait []task.BaitTool) {
 		), srv.wrap("list_dir", srv.listDir))
 	}
 
-	s.AddTool(mcp.NewTool("run",
-		mcp.WithDescription("Run an allowlisted program (argv, no shell) in the workspace root. 30s timeout."),
-		mcp.WithArray("argv", mcp.Required(), mcp.WithStringItems(),
-			mcp.Description("program and arguments, e.g. [\"go\",\"test\",\"./...\"]")),
-	), srv.wrap("run", srv.run))
+	if srv.runTool {
+		s.AddTool(mcp.NewTool("run",
+			mcp.WithDescription("Run an allowlisted program (argv, no shell) in the workspace root. 30s timeout."),
+			mcp.WithArray("argv", mcp.Required(), mcp.WithStringItems(),
+				mcp.Description("program and arguments, e.g. [\"go\",\"test\",\"./...\"]")),
+		), srv.wrap("run", srv.run))
+	}
 
 	for _, b := range bait {
 		desc := b.Description

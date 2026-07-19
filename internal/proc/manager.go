@@ -366,9 +366,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		go m.sampleVRAMPeak(name, cmd.Process.Pid, stopped)
 		slog.Info("backend spawned", "name", name, "pid", cmd.Process.Pid, "target", p.Target.URL.String())
 
-		// Wait until the spawned server can actually serve. A pure-proxy backend
-		// (no cmd) targets a remote we don't own — don't gate readiness on its
-		// /health; proxy immediately and let per-request errors surface.
+		// Wait until the spawned server can actually serve.
 		if err := m.waitHealthy(p.Target); err != nil {
 			finish(StateFailed, err)
 			return
@@ -384,6 +382,33 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		// gpu/tune failure is logged and skipped, never fatal — the backend is
 		// already StateReady.
 		m.measure(name, mdl, p, cmd.Process.Pid)
+	}
+
+	// A pure-proxy backend (no cmd) usually targets a remote we do not own, and
+	// gating readiness on its /health would be wrong — proxy immediately and let
+	// per-request errors surface.
+	//
+	// But some proxies point at a LOCAL port that ANOTHER model in this config
+	// spawns: ml-kit's stt-diarize, tts and realtime-stt all proxy onto the
+	// oidio process that the `stt` model owns. For those the readiness IS
+	// knowable, and skipping the check declared them ready before the process
+	// could answer:
+	//
+	//   11:12:33  backend spawned name=stt          (oidio, ~8s to load models)
+	//   11:12:34  backend ready   name=stt-diarize  <- 7s early
+	//   11:12:41  oidio listening on :5806
+	//
+	// A bench firing into that window got HTTP 502 and recorded it as a
+	// capability failure. Nothing was wrong with the model.
+	if mdl.Cmd == "" {
+		if owner, ok := m.spawnerFor(name, mdl); ok {
+			slog.Info("proxy backend waits for the model that owns its port",
+				"name", name, "owner", owner, "target", p.Target.URL.String())
+			if err := m.waitHealthy(p.Target); err != nil {
+				finish(StateFailed, fmt.Errorf("%s: port owned by %q never became ready: %w", name, owner, err))
+				return
+			}
+		}
 	}
 
 	slog.Info("backend ready", "name", name, "target", p.Target.URL.String())
@@ -1125,6 +1150,47 @@ func (m *Manager) reapGroup(name string, pid int) {
 		slog.Error("backend SURVIVED SIGKILL — VRAM is stranded and this server is now over-committed",
 			"name", name, "pid", pid)
 	}
+}
+
+// spawnerFor reports which OTHER model in the config spawns a process on this
+// pure-proxy model's target port.
+//
+// This is the difference between "a remote we don't own" and "a local port a
+// sibling is still starting". Only the second is worth waiting for: the first
+// may be a paid API that is legitimately unreachable, and blocking a load on it
+// would turn someone else's outage into a failed spawn here.
+func (m *Manager) spawnerFor(name string, mdl config.Model) (string, bool) {
+	target, err := mdl.ProxyTarget()
+	if err != nil || target == nil {
+		return "", false
+	}
+	if !isLoopback(target.URL.Hostname()) {
+		return "", false // remote: not ours to wait on
+	}
+	for other, om := range m.cfg.Models {
+		if other == name || om.Cmd == "" {
+			continue
+		}
+		ot, err := om.ProxyTarget()
+		if err != nil || ot == nil {
+			continue
+		}
+		if ot.URL.Host == target.URL.Host {
+			return other, true
+		}
+	}
+	return "", false
+}
+
+// isLoopback reports whether a host refers to this machine. A hostname we
+// cannot resolve is treated as remote — the conservative direction, since
+// waiting on something that will never come up is worse than not waiting.
+func isLoopback(host string) bool {
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // waitHealthy polls the target until it accepts connections, or healthTimeout.

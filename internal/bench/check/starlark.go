@@ -109,7 +109,12 @@ func runScript(c task.Check, env scriptEnv) Result {
 		// script can tell the two directions apart.
 		"audio_bytes":  starlark.MakeInt(env.m.AudioBytes),
 		"audio_format": starlark.String(env.m.AudioFormat),
-		"fail":         starlark.NewBuiltin("fail", fail),
+		// Diarized output. Each entry is a dict with speaker/start/end/text, so
+		// a probe can assert on STRUCTURE — how many speakers, in what order,
+		// saying what. Speaker ids are per-run UUIDs, so a check must assert
+		// they are DISTINCT, never what they equal.
+		"segments": segmentsValue(env.m.AudioSegments),
+		"fail":     starlark.NewBuiltin("fail", fail),
 		// Seeded False-if-set semantics: a script that never touches `ok` passes.
 		"ok": starlark.Bool(true),
 	}
@@ -165,4 +170,23 @@ func firstLine(s string) string {
 		return s[:i] + " …"
 	}
 	return s
+}
+
+// segmentsValue converts diarized segments into Starlark dicts.
+//
+// Dicts rather than structs so a probe can iterate keys and use ordinary
+// indexing — a check author should not need to learn a bespoke value type to
+// ask how many speakers there were.
+func segmentsValue(segs []AudioSegment) *starlark.List {
+	items := make([]starlark.Value, 0, len(segs))
+	for _, sg := range segs {
+		d := starlark.NewDict(5)
+		_ = d.SetKey(starlark.String("id"), starlark.MakeInt(sg.ID))
+		_ = d.SetKey(starlark.String("speaker"), starlark.String(sg.Speaker))
+		_ = d.SetKey(starlark.String("text"), starlark.String(sg.Text))
+		_ = d.SetKey(starlark.String("start"), starlark.Float(sg.Start))
+		_ = d.SetKey(starlark.String("end"), starlark.Float(sg.End))
+		items = append(items, d)
+	}
+	return starlark.NewList(items)
 }

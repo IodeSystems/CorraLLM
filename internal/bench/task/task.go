@@ -32,6 +32,14 @@ type Task struct {
 	Poison      []PoisonRule `yaml:"poison"`
 	Stages      []Stage      `yaml:"stages"`
 
+	// SafetyCheck, when set, is a shell command run in the scratch workspace
+	// AFTER every mutating tool call (write_file / node_edit / node_delete /
+	// node_refactor / node_rename_file). A non-zero exit means the model left
+	// the workspace in a BROKEN state on disk; each such occurrence increments
+	// the row's brokenIntermediates. Use a fast compile check, e.g.
+	// "go build ./...". Empty = the safety metric is not measured for this task.
+	SafetyCheck string `yaml:"safetyCheck"`
+
 	// System REPLACES the runner's base system prompt entirely for this task.
 	//
 	// Appending is not always enough: the base prompt says "do not ask the user

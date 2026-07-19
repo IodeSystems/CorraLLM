@@ -42,6 +42,13 @@ type StageMetrics struct {
 	JSONErrors        int `json:"jsonErrors"`        // malformed tool-call JSON output from the model
 	RepeatedCalls     int `json:"repeatedCalls"`     // identical (name+args) calls seen before
 	BaitCalls         int `json:"baitCalls"`         // calls to a declared bait tool
+	// BrokenIntermediates counts mutating tool calls after which the workspace
+	// FAILED the task's safetyCheck (e.g. `go build`) — i.e. a compile-broken
+	// state that actually landed on disk, even if a later edit fixed it. 0 when
+	// the task sets no safetyCheck. This is the metric that separates edit
+	// validation (reverts breaks → 0) from plain editing (breaks land → >0) on
+	// tasks a capable model still ultimately passes.
+	BrokenIntermediates int `json:"brokenIntermediates"`
 	Retries429        int `json:"retries429"`        // 429 backpressure retries (not surfaced by agentkit; always 0 in P0)
 	Compactions       int `json:"compactions"`       // agentkit Shaper full-history compactions this stage (LOD truncations are render-time and not reported)
 
@@ -149,6 +156,7 @@ type agg struct {
 	tokens                         int
 	invalidArg, jsonErrors         int
 	repeated, bait, retries429     int
+	brokenIntermediates            int
 	compactions                    int
 	compTokBefore, compTokAfter    int
 	wallMs                         int64
@@ -169,6 +177,7 @@ func (a *agg) add(r Row) {
 	a.repeated += r.RepeatedCalls
 	a.bait += r.BaitCalls
 	a.retries429 += r.Retries429
+	a.brokenIntermediates += r.BrokenIntermediates
 	a.compactions += r.Compactions
 	a.compTokBefore += r.CompactionTokensBefore
 	a.compTokAfter += r.CompactionTokensAfter
@@ -201,7 +210,7 @@ var summaryHeader = []string{
 	"stages", "stages_passed", "pass_rate",
 	"turns", "tool_calls",
 	"prompt_tokens", "completion_tokens", "tokens",
-	"invalid_arg_retries", "json_errors", "repeated_calls", "bait_calls", "retries_429", "compactions",
+	"invalid_arg_retries", "json_errors", "repeated_calls", "bait_calls", "broken_intermediates", "retries_429", "compactions",
 	"compaction_tokens_before", "compaction_tokens_after",
 	"wall_ms", "tok_per_sec",
 	"judge_quality", "judge_goal", "judge_tool_eff", "judge_injection",
@@ -270,7 +279,7 @@ func WriteSummaryCSV(path string, rows []Row, judge map[string]JudgeScores) erro
 			itoa(a.stages), itoa(a.passed), ftoa(a.passRate()),
 			itoa(a.turns), itoa(a.toolCalls),
 			itoa(a.promptTokens), itoa(a.completionTokens), itoa(a.tokens),
-			itoa(a.invalidArg), itoa(a.jsonErrors), itoa(a.repeated), itoa(a.bait), itoa(a.retries429), itoa(a.compactions),
+			itoa(a.invalidArg), itoa(a.jsonErrors), itoa(a.repeated), itoa(a.bait), itoa(a.brokenIntermediates), itoa(a.retries429), itoa(a.compactions),
 			itoa(a.compTokBefore), itoa(a.compTokAfter),
 			strconv.FormatInt(a.wallMs, 10), ftoa(a.tokPerSec()),
 			jq, jg, jt, ji,

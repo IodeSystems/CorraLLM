@@ -100,12 +100,19 @@ type Toolset struct {
 	Name          string
 	Servers       []ServerSpec
 	CedeFileTools bool
+	// BaseArgs are extra args passed to the base llm-bench-mcp spawn, so a
+	// toolset can vary the base tool surface (e.g. ["--run-tool=false"]) the
+	// same way it args its extra servers. cedeFileTools is the sugar case of
+	// this (= "--file-tools=false").
+	BaseArgs []string
 }
 
-// toolsetBody is the object form of a toolset value: {servers, cedeFileTools}.
+// toolsetBody is the object form of a toolset value: {servers, cedeFileTools,
+// baseArgs}.
 type toolsetBody struct {
 	Servers       []ServerSpec `yaml:"servers"`
 	CedeFileTools bool         `yaml:"cedeFileTools"`
+	BaseArgs      []string     `yaml:"baseArgs"`
 }
 
 // OrderedToolsets preserves the declaration order of the toolsets mapping so
@@ -133,7 +140,7 @@ func (o *OrderedToolsets) UnmarshalYAML(n *yaml.Node) error {
 			if err := val.Decode(&body); err != nil {
 				return fmt.Errorf("toolset %q: %w", name, err)
 			}
-			ts.Servers, ts.CedeFileTools = body.Servers, body.CedeFileTools
+			ts.Servers, ts.CedeFileTools, ts.BaseArgs = body.Servers, body.CedeFileTools, body.BaseArgs
 		default:
 			return fmt.Errorf("toolset %q: must be a server list or an object", name)
 		}

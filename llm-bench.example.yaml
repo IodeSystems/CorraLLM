@@ -80,6 +80,24 @@ toolsets:
     servers:
       - cmd: poly-lsp-mcp
         args: ["mcp", "--root", "{{workspace}}", "--validate"]
+  # No-run variants: withdraw llm-bench-mcp's `run` tool via baseArgs, so the
+  # model CANNOT build/test itself. This isolates edit validation's value — with
+  # no self-check, a broken edit either lands (polylsp-norun → the external
+  # check fails) or is reverted at edit-time (…-validate → passes). The
+  # polylsp-norun vs polylsp-norun-validate delta is what --validate is worth
+  # when the model can't self-diagnose (the case a capable model+run washes out).
+  polylsp-norun:
+    cedeFileTools: true
+    baseArgs: ["--run-tool=false"]
+    servers:
+      - cmd: poly-lsp-mcp
+        args: ["mcp", "--root", "{{workspace}}"]
+  polylsp-norun-validate:
+    cedeFileTools: true
+    baseArgs: ["--run-tool=false"]
+    servers:
+      - cmd: poly-lsp-mcp
+        args: ["mcp", "--root", "{{workspace}}", "--validate"]
   # The 9-tool surface the 3-tool one replaced. Identical to `polylsp` in
   # every other respect, so a polylsp-vs-polylsp-legacy diff isolates the
   # SURFACE — which is the thing under test. The 9 tools bill ~4327

@@ -115,6 +115,7 @@ type stageCounters struct {
 	jsonErrors   int // malformed tool-call JSON output from the model
 	repeated     int
 	bait         int
+	brokenStates int // mutating calls after which the workspace failed safetyCheck
 	turns        int
 	promptTok    int             // prompt tokens SENT this stage (cached prefix included — see cachedTok)
 	complTok     int             // completion tokens generated this stage
@@ -138,6 +139,7 @@ func (sc *stageCounters) resetStage(budget int, cancel context.CancelFunc) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	sc.toolCalls, sc.invalid, sc.jsonErrors, sc.repeated, sc.bait, sc.turns = 0, 0, 0, 0, 0, 0
+	sc.brokenStates = 0
 	sc.promptTok, sc.complTok, sc.compactions = 0, 0, 0
 	sc.cachedTok, sc.newPromptTok = 0, 0
 	sc.compTokBef, sc.compTokAft = 0, 0
@@ -678,6 +680,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 	if tset.CedeFileTools {
 		mcpArgs = append(mcpArgs, "--file-tools=false")
 	}
+	mcpArgs = append(mcpArgs, tset.BaseArgs...) // toolset-supplied base-server args
 	configs := []mcpmgr.MCPConfig{{
 		ID: "llm-bench", Name: "llm-bench-mcp", Command: opts.McpBin,
 		Args:    mcpArgs,
@@ -741,7 +744,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		Runner:   runner,
 		Build:    shaper.Build,
 		Tools:    defs,
-		Dispatch: wrapDispatch(mcpDispatcher(mgr, tools), validator, sc),
+		Dispatch: wrapDispatch(mcpDispatcher(mgr, tools), validator, sc, scratch, tsk.SafetyCheck),
 		OnUsage:  func(u agent.TokenUsage) { sc.mu.Lock(); sc.turns++; sc.mu.Unlock() },
 		// OnCompaction fires once per Shaper full-history compaction (LOD
 		// truncation is render-time and NOT reported — agentkit's CompactionInfo
@@ -803,9 +806,10 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 			ares, aerr := runAudioProbe(stageCtx, opts, model, tsk, scratch)
 			m := StageMetrics{}
 			am := check.Metrics{
-				Response:    ares.transcript,
-				AudioBytes:  ares.bytes,
-				AudioFormat: ares.format,
+				Response:      ares.transcript,
+				AudioBytes:    ares.bytes,
+				AudioFormat:   ares.format,
+				AudioSegments: ares.segments,
 			}
 			results, allPass := check.EvaluateAll(ctx, stage.Checks, scratch, nil, am)
 			passed := 0
@@ -866,7 +870,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 			PromptTokens: sc.promptTok, CompletionTokens: sc.complTok, Tokens: tokens,
 			CachedTokens: sc.cachedTok, NewPromptTokens: sc.newPromptTok,
 			InvalidArgRetries: sc.invalid, JSONErrors: sc.jsonErrors,
-			RepeatedCalls: sc.repeated, BaitCalls: sc.bait, Retries429: 0,
+			RepeatedCalls: sc.repeated, BaitCalls: sc.bait, BrokenIntermediates: sc.brokenStates, Retries429: 0,
 			Compactions:            sc.compactions,
 			CompactionTokensBefore: sc.compTokBef,
 			CompactionTokensAfter:  sc.compTokAft,
@@ -1038,7 +1042,7 @@ func classifyErr(err error, stageCtx context.Context, loopNote, budgetNote strin
 // the total number of output-quality re-requests. Invalid calls never reach
 // llm-bench-mcp, so they are absent from the journal (which records only real
 // tool executions).
-func wrapDispatch(inner agent.ToolDispatcher, v *agent.SchemaValidator, sc *stageCounters) agent.ToolDispatcher {
+func wrapDispatch(inner agent.ToolDispatcher, v *agent.SchemaValidator, sc *stageCounters, scratch, safetyCmd string) agent.ToolDispatcher {
 	return func(ctx context.Context, tc llm.ToolCall) (string, error) {
 		name := tc.Function.Name
 		sc.mu.Lock()
@@ -1108,8 +1112,39 @@ func wrapDispatch(inner agent.ToolDispatcher, v *agent.SchemaValidator, sc *stag
 			sc.mu.Unlock()
 			return fmt.Sprintf("INVALID arguments for %s: %v. Fix the arguments and call %s again.", name, err, name), nil
 		}
-		return inner(ctx, tc)
+		res, err := inner(ctx, tc)
+		// Safety probe: after a mutating call lands, is the workspace still
+		// buildable? A failure means a broken state actually hit disk — the
+		// metric that separates edit validation (reverts breaks) from plain
+		// editing (breaks land, model fixes later). Only runs when the task
+		// declares a safetyCheck and the call actually mutates files.
+		if err == nil && safetyCmd != "" && isMutatingTool(name) && !workspaceBuilds(scratch, safetyCmd) {
+			sc.mu.Lock()
+			sc.brokenStates++
+			sc.mu.Unlock()
+		}
+		return res, err
 	}
+}
+
+// isMutatingTool reports whether a tool call may have written to workspace files
+// — the calls worth re-probing the workspace after.
+func isMutatingTool(name string) bool {
+	switch name {
+	case "write_file", "node_edit", "node_delete", "node_refactor", "node_rename_file":
+		return true
+	}
+	return false
+}
+
+// workspaceBuilds runs the task's safetyCheck in the scratch workspace and
+// reports whether it exited 0 (workspace not broken).
+func workspaceBuilds(scratch, cmd string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	c.Dir = scratch
+	return c.Run() == nil
 }
 
 // meteredRunner decorates an agent.LLMRunner to observe StreamChunk.Usage on

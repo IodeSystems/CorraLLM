@@ -52,6 +52,18 @@ type Metrics struct {
 	// Response to the transcript.
 	AudioBytes  int
 	AudioFormat string
+	// AudioSegments is a diarizing transcription's speaker-labeled output.
+	// Nil for a plain transcription.
+	AudioSegments []AudioSegment
+}
+
+// AudioSegment is one speaker-labeled span of a diarized transcription.
+type AudioSegment struct {
+	ID      int     `json:"id"`
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Text    string  `json:"text"`
+	Speaker string  `json:"speaker"`
 }
 
 // Evaluate runs one check against the workspace dir, journal entries, and

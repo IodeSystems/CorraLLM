@@ -10,6 +10,7 @@ class: coding
 # edit — no multi-site refactor confound, so the polylsp-vs-polylsp-validate
 # delta attributes cleanly to edit safety.
 workspace: fixture/
+safetyCheck: "go build ./..."
 limits: { maxTurnsPerStage: 8, maxToolCallsPerStage: 24 }
 stages:
   - prompt: |

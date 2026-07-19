@@ -1,0 +1,21 @@
+name: edit-safety-import
+class: coding
+# Harder edit-safety task, tuned to trip even a capable model on a FIXED strong
+# candidate (Qwen). Removing Parse orphans ONLY the strconv import — errors must
+# stay (ErrEmpty uses it). The narrow-correct edit is "drop Parse + strconv,
+# keep errors"; the plausible slips all COMPILE-break in-file: drop both imports
+# → `undefined: errors`; drop neither → `strconv imported and not used`; drop
+# errors → ErrEmpty breaks. Every miss is a NEW same-file diagnostic — exactly
+# what --validate reverts. The polylsp-vs-polylsp-validate delta is the runs
+# where Qwen slips and validation converts the fail into a guided retry.
+workspace: fixture/
+safetyCheck: "go build ./..."
+limits: { maxTurnsPerStage: 10, maxToolCallsPerStage: 30 }
+stages:
+  - prompt: |
+      In calc/calc.go, remove the deprecated `Parse` function. Keep the package
+      compiling and the tests passing, and change nothing else.
+    checks:
+      - cmd_ok: "go build ./..."
+      - cmd_ok: "go test ./..."
+      - cmd_ok: "git diff --quiet -- calc/calc_test.go"
