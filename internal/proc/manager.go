@@ -487,6 +487,40 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 // generalised rather than hardcoded.
 const vramPool = "gpu0"
 
+// unknownIfEmpty handles a model whose size is genuinely UNKNOWN: no measured
+// profile and no declared ramUsage.
+//
+// The old behavior was the worst possible one. ParseSizes(nil) yields an empty
+// map, len(usage) > 0 is false, and the spawn skipped reservation entirely — so
+// corrallm admitted a model of unknown size while believing it consumed nothing,
+// and kept believing that until something OOMed.
+//
+// "Unknown" now means "assume it needs the whole pool": every evictable resident
+// is cleared, the model spawns alone, and the measurement taken on that spawn is
+// what governs from then on. It costs one heavy-handed eviction, exactly once
+// per (gpu, model), and it is honest — the alternative is guessing, and every
+// guessed number on this box turned out wrong (the pool understated the card by
+// 2 GB, bonsai's ramUsage by 7 GB, Qwen's by 1 GB).
+//
+// This is why ramUsage is now advisory: it is a bootstrap hint that saves one
+// eviction, not a fact anything relies on.
+func (m *Manager) unknownIfEmpty(name string, mdl config.Model, usage map[string]int64) map[string]int64 {
+	if len(usage) > 0 || mdl.Server == "" {
+		return usage
+	}
+	budget := m.budget[mdl.Server]
+	if len(budget) == 0 {
+		return usage
+	}
+	out := make(map[string]int64, len(budget))
+	for pool, b := range budget {
+		out[pool] = b
+	}
+	slog.Info("model size unknown (no measured profile, no ramUsage) — reserving the whole pool for one spawn, then measuring",
+		"model", name, "server", mdl.Server)
+	return out
+}
+
 // effectiveUsage returns the pool reservation for a spawn, preferring a MEASURED
 // VRAM footprint over the config's hand-written ramUsage.
 //
@@ -508,15 +542,15 @@ const vramPool = "gpu0"
 func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64 {
 	usage, _ := config.ParseSizes(mdl.RAMUsage) // validated at config load
 	if m.tuneCache == nil || mdl.Server == "" {
-		return usage
+		return m.unknownIfEmpty(name, mdl, usage)
 	}
 	stats, err := gpu.Probe()
 	if err != nil {
-		return usage
+		return m.unknownIfEmpty(name, mdl, usage)
 	}
 	prof, ok := m.tuneCache.Get(stats.Name, name)
 	if !ok || prof.PeakMiB <= 0 {
-		return usage
+		return m.unknownIfEmpty(name, mdl, usage)
 	}
 
 	slots := mdl.Slots()

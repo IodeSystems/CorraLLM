@@ -77,8 +77,20 @@ type Model struct {
 	// (e.g. a vision model rasterizes PDFs to images instead of extracting text).
 	Convert *ConvertConfig `yaml:"convert,omitempty"`
 
-	Cmd      string            `yaml:"cmd,omitempty"`      // spawn it (local model); empty → pure proxy
-	Server   string            `yaml:"server,omitempty"`   // which server it draws capacity from (cmd only)
+	Cmd    string `yaml:"cmd,omitempty"`    // spawn it (local model); empty → pure proxy
+	Server string `yaml:"server,omitempty"` // which server it draws capacity from (cmd only)
+	// RAMUsage is an ADVISORY bootstrap hint, not a fact anything relies on.
+	//
+	// A measured profile supersedes it the moment one exists (see
+	// proc.effectiveUsage), and a model with neither is treated as needing the
+	// whole pool for one spawn so it can be measured alone. Declaring it only
+	// saves that first heavy eviction.
+	//
+	// It is advisory because every hand-written size on this box was wrong: the
+	// gpu0 pool understated the real card by 2 GB, ternary-bonsai-27b's ramUsage
+	// by 7 GB, Qwen3-6-27B-MPT's by 1 GB, and nomic-embed-text's OVER-stated by
+	// 262 MiB. They stayed invisible because the errors cancelled — until
+	// measurement made one side honest and the arithmetic stopped working.
 	RAMUsage map[string]string `yaml:"ramUsage,omitempty"` // per-pool footprint vector (cmd only)
 	Swap     *Swap             `yaml:"swap,omitempty"`     // measured load cost (cmd only)
 	Proxy    yaml.Node         `yaml:"proxy,omitempty"`    // forward target: number | "host:port" | {host,port,headers}

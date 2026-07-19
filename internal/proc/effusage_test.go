@@ -105,3 +105,42 @@ func TestEffectiveUsage_ProxyModelUntouched(t *testing.T) {
 		t.Errorf("pure proxy should reserve nothing, got %+v", got)
 	}
 }
+
+// A model with NO profile and NO ramUsage is of unknown size. The old behavior
+// was the worst available: an empty usage map meant the spawn reserved NOTHING,
+// so corrallm admitted an unknown-sized model while believing it consumed zero —
+// and kept believing that until something OOMed.
+//
+// Unknown now means "assume it needs the whole pool": clear the board, spawn
+// alone, measure. One heavy eviction, once, and then the measurement governs.
+func TestEffectiveUsage_UnknownSizeReservesWholePool(t *testing.T) {
+	m := usageMgr(t, nil) // no profile
+	m.budget["box"] = map[string]int64{"gpu0": 31654 * mib}
+
+	mdl := config.Model{Server: "box", MaxConcurrent: 1} // no RAMUsage at all
+	got := m.effectiveUsage("mystery", mdl)
+	if len(got) == 0 {
+		t.Fatal("unknown size must NOT reserve nothing — that is how an unmeasured model gets admitted as free")
+	}
+	if got["gpu0"] != 31654*mib {
+		t.Errorf("gpu0 = %d MiB, want the whole pool while the size is unknown", got["gpu0"]/mib)
+	}
+}
+
+// Once measured, the profile governs and the whole-pool assumption is dropped —
+// otherwise a model would monopolise the box forever.
+func TestEffectiveUsage_MeasuredReplacesUnknown(t *testing.T) {
+	m := usageMgr(t, &tune.Profile{
+		BaseMiB: 8000, PerSlotMiB: 500, PeakMiB: 8500,
+		MeasuredSlots: 1, Ctx: 100000, Source: tune.SourceBench,
+	})
+	m.budget["box"] = map[string]int64{"gpu0": 31654 * mib}
+
+	got := m.effectiveUsage("m", config.Model{Server: "box", MaxConcurrent: 1})
+	if got["gpu0"] >= 31654*mib {
+		t.Errorf("a measured model must not keep reserving the whole pool: %d MiB", got["gpu0"]/mib)
+	}
+	if got["gpu0"] != 8500*mib {
+		t.Errorf("gpu0 = %d MiB, want the measured 8500", got["gpu0"]/mib)
+	}
+}
