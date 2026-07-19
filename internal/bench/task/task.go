@@ -59,6 +59,12 @@ type Task struct {
 	// pristine tail).
 	ContextBudget int `yaml:"contextBudget"`
 
+	// Audio, when set, makes this probe drive an AUDIO surface directly instead
+	// of a chat session. STT and TTS are not conversations — multipart upload
+	// in, binary audio out — so the agent loop has nothing to do with them and
+	// a probe that needs them cannot be expressed as a prompt.
+	Audio *AudioProbe `yaml:"audio"`
+
 	// Run selects the residency state this probe runs against:
 	// "" (any, the default -- residency untouched) | cold | warm | both.
 	// A capability probe is usually only meaningful COLD; see probes/README.md.
@@ -72,11 +78,57 @@ type Task struct {
 	Requires Requires `yaml:"requires"`
 }
 
+// AudioProbe drives one audio endpoint. Exactly one direction is set.
+type AudioProbe struct {
+	// Transcribe is a workspace-relative audio file POSTed to
+	// /v1/audio/transcriptions. The transcript becomes the probe's "response",
+	// so the ordinary response_contains / python checks apply unchanged.
+	Transcribe string `yaml:"transcribe"`
+
+	// Speak is text POSTed to /v1/audio/speech. The synthesized bytes are not
+	// text, so checks see audio_bytes and audio_format instead of a response —
+	// asserting on the CONTENT of generated speech would need an STT round trip,
+	// which is what the round-trip probe does explicitly rather than by magic.
+	Speak string `yaml:"speak"`
+	Voice string `yaml:"voice"`
+	// Format requests a container ("wav" | "mp3"). wav matters when the output
+	// is fed back into STT.
+	Format string `yaml:"format"`
+
+	// ThenTranscribe feeds the synthesized audio straight back into an STT
+	// model, so one probe exercises both directions and the transcript can be
+	// compared against the text that produced it. That round trip is the only
+	// way to assert TTS actually said something intelligible rather than
+	// emitting a well-formed blob of silence.
+	ThenTranscribe string `yaml:"thenTranscribe"`
+}
+
 // Requires gates a probe on a model's declared capabilities.
 type Requires struct {
 	// Modality names a modality the model must declare (image | audio | text).
 	// Matched against the model's corrallm `modalities` declaration.
 	Modality string `yaml:"modality"`
+
+	// Capability names the SERVING SURFACE this probe needs: chat, audio.stt,
+	// audio.tts, embeddings. Empty means chat, since every probe written before
+	// this field existed drives a chat session.
+	//
+	// Modality alone is not enough. A coding probe is text-shaped and an STT
+	// backend declares the text modality too, so `requires: {modality: text}`
+	// happily matches an endpoint that cannot hold a conversation. That is not
+	// theoretical: a UI-triggered run put all 13 chat probes against stt, tts,
+	// stt-diarize and realtime-stt, which scored 1/21 apiece and published
+	// results that mean nothing.
+	Capability string `yaml:"capability"`
+}
+
+// EffectiveCapability returns the serving surface this probe needs, defaulting
+// to chat.
+func (r Requires) EffectiveCapability() string {
+	if r.Capability == "" {
+		return "chat"
+	}
+	return r.Capability
 }
 
 // Limits bounds a looping model so a bad run burns bounded tokens. A zero
@@ -334,6 +386,18 @@ func (t *Task) Validate() error {
 	}
 	if len(t.Stages) == 0 {
 		return fmt.Errorf("at least one stage is required")
+	}
+	if t.Audio != nil {
+		a := t.Audio
+		if a.Transcribe == "" && a.Speak == "" {
+			return fmt.Errorf("audio: set transcribe (a file) or speak (text)")
+		}
+		if a.Transcribe != "" && a.Speak != "" {
+			return fmt.Errorf("audio: set transcribe OR speak, not both — one probe drives one direction")
+		}
+		if a.ThenTranscribe != "" && a.Speak == "" {
+			return fmt.Errorf("audio: thenTranscribe needs speak (there is nothing to feed back otherwise)")
+		}
 	}
 	switch t.Run {
 	case "", "cold", "warm", "both":

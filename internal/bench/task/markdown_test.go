@@ -298,3 +298,56 @@ func sameCheck(a, b Check) bool {
 	return a.Kind == b.Kind && a.Cmd == b.Cmd && a.Path == b.Path && a.Text == b.Text &&
 		a.Name == b.Name && a.ArgContains == b.ArgContains && a.N == b.N && eq(a.Min, b.Min) && eq(a.Max, b.Max)
 }
+
+// A multi-line block scalar inside a check list must survive the markdown
+// parser. It did not: parseChecks kept only lines starting with "- ", so
+// `- python: |` retained its first line and dropped the script — surfacing as
+// "python: script is required" on a check whose script was plainly there.
+func TestParseChecks_BlockScalarSurvives(t *testing.T) {
+	dir := writeProbe(t, `---
+name: scripted
+class: capability
+---
+
+## Prompt
+
+hi
+
+## Checks
+
+- response_contains: red
+- python: |
+    words = response.split()
+    if len(words) < 2:
+        fail("too short: %r" % response)
+
+    if "red" not in response:
+        fail("no red")
+- response_contains: circle
+`, nil)
+	tk, err := LoadMarkdown(dir)
+	if err != nil {
+		t.Fatalf("LoadMarkdown: %v", err)
+	}
+	cks := tk.Stages[0].Checks
+	if len(cks) != 3 {
+		t.Fatalf("want 3 checks, got %d: %+v", len(cks), cks)
+	}
+	py := cks[1]
+	if py.Kind != "python" {
+		t.Fatalf("check[1] kind = %q", py.Kind)
+	}
+	for _, want := range []string{"words = response.split()", "too short", `if "red" not in response`} {
+		if !strings.Contains(py.Text, want) {
+			t.Errorf("script lost %q:\n%s", want, py.Text)
+		}
+	}
+	// The blank line inside the scalar is content, not a terminator.
+	if !strings.Contains(py.Text, "\n\n") {
+		t.Error("blank line inside the block scalar was dropped")
+	}
+	// And the item AFTER the scalar must still parse.
+	if cks[2].Kind != "response_contains" || cks[2].Text != "circle" {
+		t.Errorf("check following a block scalar mangled: %+v", cks[2])
+	}
+}

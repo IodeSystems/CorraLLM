@@ -33,7 +33,7 @@ func TestSkipReason(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := skipReason(tc.tsk, tc.model, mods)
+			got := skipReason(tc.tsk, tc.model, mods, nil)
 			if (got != "") != tc.skip {
 				t.Errorf("skipReason = %q, want skip=%v", got, tc.skip)
 			}
@@ -45,7 +45,37 @@ func TestSkipReason(t *testing.T) {
 // produce an empty matrix that looks like a clean run.
 func TestSkipReason_EmptyCatalogSkipsNothing(t *testing.T) {
 	vision := &task.Task{Name: "v", Requires: task.Requires{Modality: "image"}}
-	if got := skipReason(vision, "anything", map[string]map[string]bool{}); got != "" {
+	if got := skipReason(vision, "anything", map[string]map[string]bool{}, nil); got != "" {
 		t.Errorf("empty catalog should skip nothing, got %q", got)
+	}
+}
+
+// Capability decides whether a probe can even be DELIVERED. Modality alone let
+// an audio.tts probe run against an STT endpoint and the chat suite run against
+// both: every audio model ran every audio probe, scored 0/2, and the failures
+// said nothing about the models.
+func TestSkipReason_CapabilityMismatch(t *testing.T) {
+	sttProbe := &task.Task{Name: "stt-probe", Requires: task.Requires{Capability: "audio.stt", Modality: "audio"}}
+	caps := map[string]string{"stt": "audio.stt", "tts": "audio.tts", "chatty": "chat"}
+	mods := map[string]map[string]bool{
+		"stt": {"audio": true}, "tts": {"audio": true}, "chatty": {"text": true},
+	}
+	if got := skipReason(sttProbe, "stt", mods, caps); got != "" {
+		t.Errorf("an STT probe on an STT model must run, got skip: %q", got)
+	}
+	if got := skipReason(sttProbe, "tts", mods, caps); got == "" {
+		t.Error("an STT probe must NOT run against a TTS endpoint")
+	}
+	if got := skipReason(sttProbe, "chatty", mods, caps); got == "" {
+		t.Error("an STT probe must NOT run against a chat model")
+	}
+	// A probe with no capability requirement defaults to chat and is unaffected.
+	plain := &task.Task{Name: "plain"}
+	if got := skipReason(plain, "stt", mods, caps); got != "" {
+		t.Errorf("a probe with no capability requirement should be unaffected here: %q", got)
+	}
+	// Unknown model: run it rather than silently dropping coverage.
+	if got := skipReason(sttProbe, "ghost", mods, caps); got != "" {
+		t.Errorf("unknown model should run, got %q", got)
 	}
 }

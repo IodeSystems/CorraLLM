@@ -2,8 +2,13 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 
+	"github.com/iodesystems/corrallm/internal/bench/task"
+	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/gpu"
 )
@@ -91,6 +96,14 @@ func (h *Handlers) BenchPlan(_ context.Context, _ *BenchPlanInput) (*BenchPlanOu
 		gpuName = st.Name
 	}
 	out.Body.GPU = gpuName
+
+	// What can actually be PROBED, read from the probe directory. Without this
+	// the plan defaults `capability` ON for any unverified modality, including
+	// ones no probe can exercise — which is how the four audio models ended up
+	// running 13 chat probes apiece and publishing 1/21 scores that mean
+	// nothing. Coverage is data, not a hardcoded list, so adding an audio probe
+	// makes audio offerable with no code change here.
+	cov := h.probeCoverage()
 	costModel := cost.NewModel(h.Cfg)
 
 	for name, m := range h.Cfg.Models {
@@ -150,12 +163,24 @@ func (h *Handlers) BenchPlan(_ context.Context, _ *BenchPlanInput) (*BenchPlanOu
 					"VRAM profile already measured"),
 			})
 		}
-		capNeeded := len(plan.UnverifiedModality) > 0 || len(plan.Disagreements) > 0
+		// Offer a capability probe only when one EXISTS for this model's serving
+		// surface and for something it declares. Otherwise the checkbox invites
+		// a run that cannot say anything.
+		modelCap := config.ModelCapability(m)
+		coverable := cov.covers(modelCap, plan.UnverifiedModality) ||
+			(len(plan.Disagreements) > 0 && cov.hasCapability(modelCap))
+		capReason := "all declared modalities verified"
+		switch {
+		case !cov.hasCapability(modelCap):
+			capReason = fmt.Sprintf("no capability probe exists for a %s model — nothing to run", modelCap)
+		case coverable:
+			capReason = "declared modalities have never been exercised against the live backend"
+		case len(plan.UnverifiedModality) > 0:
+			capReason = fmt.Sprintf("unverified %v, but no probe covers %s on a %s model",
+				plan.UnverifiedModality, plan.UnverifiedModality, modelCap)
+		}
 		plan.Probes = append(plan.Probes, BenchProbeSuggestion{
-			Kind: "capability", Default: capNeeded,
-			Reason: reasonFor(!capNeeded,
-				"declared modalities have never been exercised against the live backend",
-				"all declared modalities verified"),
+			Kind: "capability", Default: coverable, Reason: capReason,
 		})
 		// Quality is never pre-checked: it is slow, it is not data corrallm
 		// itself consumes, and defaulting it ON would make every new-model
@@ -185,4 +210,61 @@ func reasonFor(have bool, missing, present string) string {
 		return present
 	}
 	return missing
+}
+
+// probeSet is what the probe directory can actually exercise.
+type probeSet struct {
+	// capability -> set of modalities that capability's probes require. A probe
+	// with no modality requirement contributes the empty string, meaning "this
+	// capability is probeable at all".
+	byCapability map[string]map[string]bool
+}
+
+func (p probeSet) hasCapability(capability string) bool {
+	_, ok := p.byCapability[capability]
+	return ok
+}
+
+// covers reports whether a probe exists for this capability targeting any of
+// the given modalities.
+func (p probeSet) covers(capability string, modalities []string) bool {
+	mods, ok := p.byCapability[capability]
+	if !ok {
+		return false
+	}
+	for _, m := range modalities {
+		if mods[m] {
+			return true
+		}
+	}
+	return false
+}
+
+// probeCoverage scans the probe directory. A missing or unreadable directory
+// yields empty coverage, which suppresses the capability checkbox everywhere
+// rather than offering runs that cannot happen.
+func (h *Handlers) probeCoverage() probeSet {
+	set := probeSet{byCapability: map[string]map[string]bool{}}
+	if h.BenchProbes == "" {
+		return set
+	}
+	ents, err := os.ReadDir(h.BenchProbes)
+	if err != nil {
+		return set
+	}
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		t, err := task.LoadDir(filepath.Join(h.BenchProbes, e.Name()))
+		if err != nil || t.Class != "capability" {
+			continue
+		}
+		capability := t.Requires.EffectiveCapability()
+		if set.byCapability[capability] == nil {
+			set.byCapability[capability] = map[string]bool{}
+		}
+		set.byCapability[capability][t.Requires.Modality] = true
+	}
+	return set
 }

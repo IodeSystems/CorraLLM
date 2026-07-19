@@ -46,6 +46,12 @@ type Metrics struct {
 	// generous enough to reach visible content, or every response check fails
 	// for a reason that has nothing to do with the capability under test.
 	Response string
+	// AudioBytes / AudioFormat describe a TTS probe's output. Synthesized speech
+	// is not text, so a check asserts on its size and container; asserting on
+	// what it SAYS requires the round trip back through STT, which sets
+	// Response to the transcript.
+	AudioBytes  int
+	AudioFormat string
 }
 
 // Evaluate runs one check against the workspace dir, journal entries, and

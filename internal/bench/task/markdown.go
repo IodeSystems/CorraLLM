@@ -81,6 +81,7 @@ type probeFrontmatter struct {
 	ContextBudget int          `yaml:"contextBudget"`
 	Run           string       `yaml:"run"`
 	Requires      Requires     `yaml:"requires"`
+	Audio         *AudioProbe  `yaml:"audio"`
 }
 
 // LoadMarkdown reads and validates <dir>/probe.md.
@@ -120,7 +121,7 @@ func parseMarkdown(src, dir string) (*Task, error) {
 	t.Name, t.Class, t.Description = fm.Name, fm.Class, fm.Description
 	t.Workspace, t.Limits, t.BaitTools, t.Poison = fm.Workspace, fm.Limits, fm.BaitTools, fm.Poison
 	t.System, t.SystemAppend, t.ContextBudget = fm.System, fm.SystemAppend, fm.ContextBudget
-	t.Run, t.Requires = fm.Run, fm.Requires
+	t.Run, t.Requires, t.Audio = fm.Run, fm.Requires, fm.Audio
 
 	body := src[len(m[0]):]
 
@@ -189,11 +190,34 @@ func parseMarkdown(src, dir string) (*Task, error) {
 // Check.UnmarshalYAML. Lines that are not list items are ignored so a section
 // can carry an explanatory sentence above its list.
 func parseChecks(section string) ([]Check, error) {
+	// Keep each `- ` item AND the indented lines that belong to it. Discarding
+	// continuations silently truncated every block scalar: `- python: |` kept
+	// its first line and dropped the script, which surfaced as the baffling
+	// "python: script is required" on a check whose script was plainly there.
 	var items []string
+	inItem := false
+	itemIndent := 0
 	for _, ln := range strings.Split(section, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(ln), "- ") {
+		trimmed := strings.TrimSpace(ln)
+		indent := len(ln) - len(strings.TrimLeft(ln, " \t"))
+		switch {
+		case strings.HasPrefix(trimmed, "- "):
 			items = append(items, strings.TrimSpace(ln))
+			inItem, itemIndent = true, indent
+		case inItem && trimmed == "":
+			// A blank line inside a block scalar is content, not a terminator.
+			items = append(items, "")
+		case inItem && indent > itemIndent:
+			// Re-indent relative to the item so the YAML decoder sees a
+			// consistent block, whatever the markdown nesting was.
+			items = append(items, "  "+strings.TrimRight(ln[min(indent, itemIndent+2):], " "))
+		default:
+			inItem = false
 		}
+	}
+	// Trailing blanks would end the document mid-scalar.
+	for len(items) > 0 && strings.TrimSpace(items[len(items)-1]) == "" {
+		items = items[:len(items)-1]
 	}
 	if len(items) == 0 {
 		return nil, fmt.Errorf("'## Checks' section has no `- ` list items")
@@ -266,4 +290,11 @@ func stripH1(s string) string {
 		out = append(out, ln)
 	}
 	return strings.Join(out, "\n")
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

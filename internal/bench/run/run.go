@@ -248,6 +248,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	footprints := map[string]int{}
 	slotsByModel := fetchModelSlots(opts)
 	modsByModel := fetchModelModalities(opts)
+	capsByModel := fetchModelCapabilities(opts)
 	resid := newResidencyClient(opts.Config)
 	for _, model := range models {
 		slots := slotsByModel[model]
@@ -267,7 +268,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 					// and skipping is LOGGED, because a probe that quietly never
 					// ran looks identical to one that passed when you read the
 					// summary later.
-					if why := skipReason(tsk, model, modsByModel); why != "" {
+					if why := skipReason(tsk, model, modsByModel, capsByModel); why != "" {
 						log.Printf("llm-bench: skip %s/%s/%s — %s", model, tset.Name, tsk.Name, why)
 						continue
 					}
@@ -496,6 +497,56 @@ func fetchModelModalities(opts Options) map[string]map[string]bool {
 	return out
 }
 
+// fetchModelCapabilities reads each model's SERVING SURFACE (chat, audio.stt,
+// audio.tts, embeddings) from the catalog.
+//
+// Modality cannot substitute for this. An STT backend declares the text
+// modality too, so a chat probe "matches" an endpoint whose
+// /v1/chat/completions answers 404 — which is exactly what happened: every
+// audio model ran every audio probe plus the chat suite, and the failures said
+// nothing about the models.
+//
+// Best-effort: an unreachable catalog yields an empty map and skips nothing,
+// so an outage produces real runs rather than a silently empty matrix.
+func fetchModelCapabilities(opts Options) map[string]string {
+	out := map[string]string{}
+	base := strings.TrimRight(opts.Config.LLM.BaseURL, "/")
+	url := base + "/v1/models"
+	if strings.HasSuffix(base, "/v1") {
+		url = base + "/models"
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return out
+	}
+	if env := opts.Config.LLM.APIKeyEnv; env != "" {
+		if k := os.Getenv(env); k != "" {
+			req.Header.Set("Authorization", "Bearer "+k)
+		}
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("llm-bench: /v1/models capability query failed (%v); no probe will be skipped by surface", err)
+		return out
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Data []struct {
+			ID         string `json:"id"`
+			Capability string `json:"capability"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return out
+	}
+	for _, m := range body.Data {
+		if m.Capability != "" {
+			out[m.ID] = m.Capability
+		}
+	}
+	return out
+}
+
 // skipReason reports why model must not run tsk, or "" to run it.
 //
 // A model that does not declare the required modality is SKIPPED, never failed:
@@ -503,7 +554,17 @@ func fetchModelModalities(opts Options) map[string]map[string]bool {
 // Recording it as a failure would be the same category error as letting a turn
 // cap veto passing checks -- it puts a number in the results table that reads
 // as a capability gap when it is a configuration fact.
-func skipReason(tsk *task.Task, model string, mods map[string]map[string]bool) string {
+func skipReason(tsk *task.Task, model string, mods map[string]map[string]bool, caps map[string]string) string {
+	// Capability first: it decides whether the probe can even be DELIVERED.
+	// Modality alone let an STT-surface probe run against a TTS model and a
+	// chat probe against both — every audio model ran every audio probe and
+	// scored 0/2, half of them for the sole reason that the endpoint does not
+	// speak that protocol.
+	if want := tsk.Requires.Capability; want != "" {
+		if got, known := caps[model]; known && got != want {
+			return fmt.Sprintf("probe needs capability %q, model serves %q", want, got)
+		}
+	}
 	want := tsk.Requires.Modality
 	if want == "" {
 		return ""
@@ -734,6 +795,38 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 				sc.compTokAft += info.TokensAfter
 				sc.mu.Unlock()
 			}
+		}
+
+		// An AUDIO probe drives the audio surface directly — see audio.go for
+		// why routing it through the agent loop would measure the wrong thing.
+		if tsk.Audio != nil {
+			ares, aerr := runAudioProbe(stageCtx, opts, model, tsk, scratch)
+			m := StageMetrics{}
+			am := check.Metrics{
+				Response:    ares.transcript,
+				AudioBytes:  ares.bytes,
+				AudioFormat: ares.format,
+			}
+			results, allPass := check.EvaluateAll(ctx, stage.Checks, scratch, nil, am)
+			passed := 0
+			for _, c := range results {
+				if c.Pass {
+					passed++
+				}
+			}
+			note := ""
+			if aerr != nil {
+				note = "audio probe error: " + aerr.Error()
+				allPass = false
+			}
+			rows = append(rows, Row{
+				TS: ts, Model: model, Toolset: tset.Name, Task: tsk.Name, Class: tsk.Class,
+				Stage: i, Prompt: stage.Prompt, StageMetrics: m, Checks: results,
+				ChecksPassed: passed, ChecksTotal: len(results),
+				Pass: allPass, Note: note,
+			})
+			cancel()
+			continue
 		}
 
 		// Parts carries a markdown probe's images. Content stays set to the

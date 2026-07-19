@@ -105,6 +105,10 @@ func runScript(c task.Check, env scriptEnv) Result {
 		// Every tool name called this stage, in order.
 		"tools_called": toolNames,
 		"compactions":  starlark.MakeInt(env.m.Compactions),
+		// Audio probe output. audio_bytes is 0 for a pure transcription, so a
+		// script can tell the two directions apart.
+		"audio_bytes":  starlark.MakeInt(env.m.AudioBytes),
+		"audio_format": starlark.String(env.m.AudioFormat),
 		"fail":         starlark.NewBuiltin("fail", fail),
 		// Seeded False-if-set semantics: a script that never touches `ok` passes.
 		"ok": starlark.Bool(true),
