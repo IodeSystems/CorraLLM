@@ -289,6 +289,14 @@ function InfoTab({
   caps: Manifest | undefined
   name: string
 }) {
+  // A measurement outlives residency: read it from benchPlan so the Memory
+  // table below still has numbers when the model is evicted.
+  const profQ = useQuery({
+    queryKey: ['modelProfile'],
+    queryFn: () => gqlClient.request(ModelProfileDoc),
+    staleTime: 30000,
+  })
+  const prof = (profQ.data?.corrallm?.benchPlan?.models ?? []).find((m) => m.model === name)?.profile
   const examples = (caps?.endpoints ?? []).filter((e) => (e.models ?? []).includes(name))
   const noUI = res?.hasUi === 'no'
   return (
@@ -348,12 +356,15 @@ function InfoTab({
           </TableHead>
           <TableBody>
             <TableRow>
-              <TableCell>{res ? fmtMiB(res.footprintMiB) : '—'}</TableCell>
-              <TableCell>{res ? fmtMiB(res.baseMiB) : '—'}</TableCell>
-              <TableCell>{res ? fmtMiB(res.perSlotMiB) : '—'}</TableCell>
-              <TableCell>{res ? fmtMiB(res.peakMiB) : '—'}</TableCell>
+              {/* Live footprint needs residency; everything else comes from the
+                  persisted MEASUREMENT, so an evicted model still shows what it
+                  was measured at instead of a row of dashes. */}
+              <TableCell>{res ? fmtMiB(res.footprintMiB) : 'not resident'}</TableCell>
+              <TableCell>{prof ? fmtMiB(prof.baseMiB) : res ? fmtMiB(res.baseMiB) : '—'}</TableCell>
+              <TableCell>{prof ? fmtMiB(prof.perSlotMiB) : res ? fmtMiB(res.perSlotMiB) : '—'}</TableCell>
+              <TableCell>{prof ? fmtMiB(prof.peakMiB) : res ? fmtMiB(res.peakMiB) : '—'}</TableCell>
               <TableCell>
-                {res ? `${fmtInt(res.tunedSlots)} / ${fmtInt(res.configSlots)}` : '—'}
+                {res ? `${fmtInt(res.tunedSlots)} / ${fmtInt(res.configSlots)}` : prof ? `measured at ${prof.measuredSlots}` : '—'}
               </TableCell>
             </TableRow>
           </TableBody>
@@ -1462,6 +1473,29 @@ const ModelBenchDoc = graphql(/* GraphQL */ `
         log
         done
         error
+      }
+    }
+  }
+`)
+
+// The measured profile, queried on the INFO tab so the Memory table has numbers
+// even when the model is not resident.
+const ModelProfileDoc = graphql(/* GraphQL */ `
+  query ModelProfile {
+    corrallm {
+      benchPlan {
+        models {
+          model
+          profile {
+            baseMiB
+            perSlotMiB
+            peakMiB
+            measuredSlots
+            ctx
+            source
+            measuredAt
+          }
+        }
       }
     }
   }

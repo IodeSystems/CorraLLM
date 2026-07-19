@@ -46,6 +46,24 @@ type BenchModelPlan struct {
 	UnverifiedModality []string               `json:"unverifiedModalities,omitempty" doc:"Modalities the config DECLARES but no probe has ever confirmed."`
 	Disagreements      []Verdict              `json:"disagreements,omitempty" doc:"Modalities that verified in one residency state and failed in another (cold vs warm)."`
 	Probes             []BenchProbeSuggestion `json:"probes"`
+
+	// Profile is the MEASURED VRAM shape, present whether or not the model is
+	// currently resident. The console previously read these numbers from the
+	// residency op, which lists only resident backends — so evicting a model
+	// blanked its Memory table to "—" even though the measurement persists in
+	// the tune cache. A measurement outlives residency; the UI should too.
+	Profile *TuneProfileView `json:"profile,omitempty"`
+}
+
+// TuneProfileView is a model's measured VRAM shape.
+type TuneProfileView struct {
+	BaseMiB       int    `json:"baseMiB" doc:"Footprint with KV excluded (weights + fixed overhead)."`
+	PerSlotMiB    int    `json:"perSlotMiB" doc:"KV cost per slot; 0 when not yet derivable."`
+	PeakMiB       int    `json:"peakMiB" doc:"Highest total footprint ever observed."`
+	MeasuredSlots int    `json:"measuredSlots"`
+	Ctx           int    `json:"ctx" doc:"n_ctx the measurement was taken at."`
+	Source        string `json:"source" doc:"bench (deliberate, isolated) | serving (opportunistic, possibly contended)."`
+	MeasuredAt    int64  `json:"measuredAt"`
 }
 
 // BenchPlanInput has no parameters.
@@ -85,6 +103,11 @@ func (h *Handlers) BenchPlan(_ context.Context, _ *BenchPlanInput) (*BenchPlanOu
 		if h.Mgr != nil && measurable && gpuName != "" {
 			if p, ok := h.Mgr.TuneProfile(gpuName, name); ok && p.BaseMiB > 0 {
 				plan.HasTuneProfile = true
+				plan.Profile = &TuneProfileView{
+					BaseMiB: p.BaseMiB, PerSlotMiB: p.PerSlotMiB, PeakMiB: p.PeakMiB,
+					MeasuredSlots: p.MeasuredSlots, Ctx: p.Ctx,
+					Source: p.Source, MeasuredAt: p.MeasuredAt,
+				}
 			}
 		}
 

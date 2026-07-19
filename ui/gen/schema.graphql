@@ -275,6 +275,7 @@ type corrallm_BenchModelPlan {
   model: String!
   new: Boolean!
   probes: [corrallm_BenchProbeSuggestion!]!
+  profile: corrallm_TuneProfileView
   """Modalities the config DECLARES but no probe has ever confirmed."""
   unverifiedModalities: [String!]
 }
@@ -788,6 +789,21 @@ type corrallm_TuneProfileOutputBody {
   gpu: String!
   message: String!
   ok: Boolean!
+}
+
+type corrallm_TuneProfileView {
+  """Footprint with KV excluded (weights + fixed overhead)."""
+  baseMiB: Long!
+  """n_ctx the measurement was taken at."""
+  ctx: Long!
+  measuredAt: Long!
+  measuredSlots: Long!
+  """Highest total footprint ever observed."""
+  peakMiB: Long!
+  """KV cost per slot; 0 when not yet derivable."""
+  perSlotMiB: Long!
+  """bench (deliberate, isolated) | serving (opportunistic, possibly contended)."""
+  source: String!
 }
 
 type corrallm_UnloadAllOutputBody {
