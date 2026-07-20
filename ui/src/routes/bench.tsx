@@ -27,7 +27,7 @@ import {
 import { BarChart, ScatterChart } from '@mui/x-charts'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { fmtInt } from '@/format'
+import { capLabel, fmtInt } from '@/format'
 
 /**
  * Bench is the AGGREGATE view: how do the models compare?
@@ -71,6 +71,20 @@ const BenchDoc = graphql(/* GraphQL */ `
           probes {
             kind
             default
+          }
+        }
+      }
+      benchCapabilityMatrix {
+        capabilities {
+          capability
+          models {
+            model
+            runId
+            score
+            stages
+            stagesPassed
+            probes
+            skippedProbes
           }
         }
       }
@@ -276,6 +290,11 @@ function BenchPage() {
 
   const ranked = [...results].sort((a, b) => n(b.score) - n(a.score))
   const labels = ranked.map((r) => r.model)
+  const matrix = data?.corrallm?.benchCapabilityMatrix?.capabilities ?? []
+  // VRAM lives on the run aggregate, not the probe rows — join it here so the
+  // per-capability scatter can plot quality against what it costs to keep
+  // resident without the matrix endpoint having to duplicate the field.
+  const vramByModel = new Map(results.map((r) => [r.model, n(r.footprintMiB)]))
   const nothingSelected = request.models.length === 0
 
   return (
@@ -306,36 +325,101 @@ function BenchPage() {
         </Alert>
       ) : (
         <>
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="subtitle1" gutterBottom>
-              Score — stage pass rate
-            </Typography>
-            <BarChart
-              height={260}
-              xAxis={[{ scaleType: 'band', data: labels }]}
-              yAxis={[{ min: 0, max: 1 }]}
-              series={[{ data: ranked.map((r) => Number(n(r.score).toFixed(3))), label: 'pass rate' }]}
-            />
-          </Paper>
-
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="subtitle1">Score vs resident VRAM</Typography>
-            <Typography variant="caption" color="text.secondary">
-              The tradeoff that actually decides what to run: quality against what it costs to
-              keep resident. Up and to the left is better.
-            </Typography>
-            <ScatterChart
-              height={300}
-              xAxis={[{ label: 'resident MiB' }]}
-              yAxis={[{ label: 'pass rate', min: 0, max: 1 }]}
-              series={ranked
-                .filter((r) => n(r.footprintMiB) > 0)
-                .map((r) => ({
-                  label: r.model,
-                  data: [{ x: n(r.footprintMiB), y: Number(n(r.score).toFixed(3)), id: r.model }],
-                }))}
-            />
-          </Paper>
+          {matrix.length === 0 ? (
+            <Alert severity="info">
+              These results predate per-capability scoring. Re-run a bench to get scores broken
+              out by capability — the run-wide pass rate below cannot rank models against each
+              other on its own.
+            </Alert>
+          ) : (
+            matrix.map((c) => {
+              const models = c.models ?? []
+              const withVram = models.filter((m) => (vramByModel.get(m.model) ?? 0) > 0)
+              return (
+                <Paper key={c.capability} sx={{ p: 2 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                    <Typography variant="subtitle1">Score —</Typography>
+                    <Chip size="small" label={capLabel(c.capability)} />
+                  </Stack>
+                  <Typography variant="caption" color="text.secondary">
+                    Ranked on the probes written for this capability only. A model appears here
+                    just when it was actually measured on this surface — one that skipped every
+                    probe is absent rather than shown at 0%, which would assert a failure that
+                    never ran.
+                  </Typography>
+                  <BarChart
+                    height={260}
+                    xAxis={[{ scaleType: 'band', data: models.map((m) => m.model) }]}
+                    yAxis={[{ min: 0, max: 1 }]}
+                    series={[
+                      {
+                        data: models.map((m) => Number(n(m.score).toFixed(3))),
+                        label: `${capLabel(c.capability)} pass rate`,
+                      },
+                    ]}
+                  />
+                  {withVram.length > 0 && (
+                    <>
+                      <Typography variant="subtitle2" sx={{ mt: 2 }}>
+                        vs resident VRAM
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        The tradeoff that actually decides what to run: quality on THIS surface
+                        against what it costs to keep resident. Up and to the left is better.
+                      </Typography>
+                      <ScatterChart
+                        height={280}
+                        xAxis={[{ label: 'resident MiB' }]}
+                        yAxis={[{ label: 'pass rate', min: 0, max: 1 }]}
+                        series={withVram.map((m) => ({
+                          label: m.model,
+                          data: [
+                            {
+                              x: vramByModel.get(m.model) ?? 0,
+                              y: Number(n(m.score).toFixed(3)),
+                              id: m.model,
+                            },
+                          ],
+                        }))}
+                      />
+                    </>
+                  )}
+                  <TableContainer sx={{ mt: 1 }}>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Model</TableCell>
+                          <TableCell align="right">Score</TableCell>
+                          <TableCell align="right">Stages</TableCell>
+                          <TableCell align="right">Probes</TableCell>
+                          <TableCell align="right">VRAM MiB</TableCell>
+                          <TableCell>Run</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {models.map((m) => (
+                          <TableRow key={m.model} hover>
+                            <TableCell>{m.model}</TableCell>
+                            <TableCell align="right">{(n(m.score) * 100).toFixed(0)}%</TableCell>
+                            <TableCell align="right">
+                              {m.stagesPassed}/{m.stages}
+                            </TableCell>
+                            <TableCell align="right">{m.probes}</TableCell>
+                            <TableCell align="right">
+                              {fmtInt(vramByModel.get(m.model) ?? 0)}
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="caption">{m.runId}</Typography>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
+              )
+            })
+          )}
 
           <Paper sx={{ p: 2 }}>
             <Typography variant="subtitle1">Tokens — processed vs generated</Typography>
@@ -354,12 +438,21 @@ function BenchPage() {
             />
           </Paper>
 
+          <Paper sx={{ p: 2, pb: 0 }}>
+            <Typography variant="subtitle1">Run totals</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Whole-run figures per model. The score column mixes every capability a model was
+              measured on, so it is <b>not</b> a ranking — two models rarely run the same probe
+              set, and a model that skipped most probes scores high on the few it kept. Compare
+              quality in the per-capability sections above; this table is for cost and throughput.
+            </Typography>
+          </Paper>
           <TableContainer component={Paper}>
             <Table size="small">
               <TableHead>
                 <TableRow>
                   <TableCell>Model</TableCell>
-                  <TableCell align="right">Score</TableCell>
+                  <TableCell align="right">Score (all probes)</TableCell>
                   <TableCell align="right">Stages</TableCell>
                   <TableCell align="right">Processed</TableCell>
                   <TableCell align="right">Generated</TableCell>

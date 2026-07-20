@@ -70,6 +70,45 @@ CREATE TABLE IF NOT EXISTS bench_results (
 );
 CREATE INDEX IF NOT EXISTS bench_results_model_at ON bench_results(model, at DESC);
 
+-- bench_probe_results: one row per (run, model, probe, run_mode) — the detail
+-- bench_results throws away.
+--
+-- bench_results aggregates every probe a model ran into a single pass rate,
+-- which is only meaningful if the probes are comparable. They are not: a probe
+-- the model cannot serve is SKIPPED, not failed, so an STT model runs its four
+-- audio probes, passes them, and scores 100% while a chat model running twenty
+-- mixed probes scores 90% — and the table ranks the STT model above it. The
+-- capability column is what makes the two comparable again (compare chat to
+-- chat), and the per-probe rows are what let the console answer "which probe,
+-- and how did it do" instead of just showing an aggregate.
+--
+-- Skipped probes are recorded, not omitted. "This model ran no chat probes
+-- because it has no chat capability" and "this model has no chat results yet"
+-- look identical when the rows simply aren't there, and that ambiguity is the
+-- thing that made the aggregate misleading in the first place.
+CREATE TABLE IF NOT EXISTS bench_probe_results (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id        TEXT    NOT NULL,
+  model         TEXT    NOT NULL,
+  at            INTEGER NOT NULL,
+  probe         TEXT    NOT NULL,          -- task name, e.g. "capability-stt"
+  class         TEXT    NOT NULL DEFAULT '', -- coding | tooluse | adversarial | capability
+  capability    TEXT    NOT NULL DEFAULT '', -- serving surface the probe needs: chat | audio.stt | ...
+  run_mode      TEXT    NOT NULL DEFAULT '', -- "" | cold | warm
+  stages        INTEGER NOT NULL DEFAULT 0,
+  stages_passed INTEGER NOT NULL DEFAULT 0,
+  checks_passed INTEGER NOT NULL DEFAULT 0,
+  checks_total  INTEGER NOT NULL DEFAULT 0,
+  pass          INTEGER NOT NULL DEFAULT 0, -- every stage passed
+  wall_ms       INTEGER NOT NULL DEFAULT 0,
+  skipped       INTEGER NOT NULL DEFAULT 0,
+  skip_reason   TEXT    NOT NULL DEFAULT '',
+  note          TEXT    NOT NULL DEFAULT '', -- first failing check, or combo error
+  UNIQUE(run_id, model, probe, run_mode)
+);
+CREATE INDEX IF NOT EXISTS bench_probe_results_model_at ON bench_probe_results(model, at DESC);
+CREATE INDEX IF NOT EXISTS bench_probe_results_run ON bench_probe_results(run_id, model);
+
 CREATE TABLE IF NOT EXISTS lane_samples (
     ts      INTEGER NOT NULL,   -- unix millis of the sample
     grp     TEXT    NOT NULL,   -- priority group
@@ -498,6 +537,144 @@ FROM bench_results WHERE model = ? ORDER BY at DESC LIMIT ?`, model, limit)
 	}
 	defer rows.Close()
 	return scanBenchResults(rows)
+}
+
+// BenchProbeResult is one probe's outcome for one model in one run, at one
+// residency mode. Stages/StagesPassed are that probe's own stages, so a probe
+// score stands on its own rather than being diluted into a run-wide average.
+//
+// Skipped rows carry SkipReason and zero counts: they say the probe was never a
+// candidate (wrong capability or undeclared modality), which is a configuration
+// fact and must not read as a capability gap.
+type BenchProbeResult struct {
+	ID           int64  `json:"id"`
+	RunID        string `json:"runId"`
+	Model        string `json:"model"`
+	At           int64  `json:"at"`
+	Probe        string `json:"probe"`
+	Class        string `json:"class"`
+	Capability   string `json:"capability"`
+	RunMode      string `json:"runMode"`
+	Stages       int    `json:"stages"`
+	StagesPassed int    `json:"stagesPassed"`
+	ChecksPassed int    `json:"checksPassed"`
+	ChecksTotal  int    `json:"checksTotal"`
+	Pass         bool   `json:"pass"`
+	WallMS       int64  `json:"wallMs"`
+	Skipped      bool   `json:"skipped"`
+	SkipReason   string `json:"skipReason"`
+	Note         string `json:"note"`
+}
+
+// SaveBenchProbeResults upserts a batch of probe rows in one transaction.
+// Keyed by (run, model, probe, runMode), so a retried publish replaces rather
+// than duplicates.
+func (s *Store) SaveBenchProbeResults(ctx context.Context, rows []BenchProbeResult) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO bench_probe_results
+  (run_id, model, at, probe, class, capability, run_mode, stages, stages_passed,
+   checks_passed, checks_total, pass, wall_ms, skipped, skip_reason, note)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(run_id, model, probe, run_mode) DO UPDATE SET
+  at=excluded.at, class=excluded.class, capability=excluded.capability,
+  stages=excluded.stages, stages_passed=excluded.stages_passed,
+  checks_passed=excluded.checks_passed, checks_total=excluded.checks_total,
+  pass=excluded.pass, wall_ms=excluded.wall_ms, skipped=excluded.skipped,
+  skip_reason=excluded.skip_reason, note=excluded.note`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, r := range rows {
+		if _, err := stmt.ExecContext(ctx, r.RunID, r.Model, r.At, r.Probe, r.Class,
+			r.Capability, r.RunMode, r.Stages, r.StagesPassed, r.ChecksPassed,
+			r.ChecksTotal, boolInt(r.Pass), r.WallMS, boolInt(r.Skipped),
+			r.SkipReason, r.Note); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// BenchProbeResultsFor returns a model's probe rows. With runID set it scopes to
+// that run; empty runID returns the model's most recent run only — the console
+// asks "how did the last bench go", and mixing runs would average away the
+// regression it is there to show.
+func (s *Store) BenchProbeResultsFor(ctx context.Context, model, runID string) ([]BenchProbeResult, error) {
+	const cols = `id, run_id, model, at, probe, class, capability, run_mode, stages,
+       stages_passed, checks_passed, checks_total, pass, wall_ms, skipped, skip_reason, note`
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if runID != "" {
+		rows, err = s.db.QueryContext(ctx, `SELECT `+cols+`
+FROM bench_probe_results WHERE model = ? AND run_id = ?
+ORDER BY capability, class, probe, run_mode`, model, runID)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `SELECT `+cols+`
+FROM bench_probe_results
+WHERE model = ? AND run_id = (SELECT run_id FROM bench_probe_results WHERE model = ? ORDER BY at DESC LIMIT 1)
+ORDER BY capability, class, probe, run_mode`, model, model)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanBenchProbeResults(rows)
+}
+
+// LatestBenchProbeResults returns every model's most recent run's probe rows —
+// the cross-model comparison's data.
+//
+// Latest-per-model rather than latest-overall: models are benched at different
+// times, and scoping to one run id would silently drop every model that was not
+// in it, which reads as "no data" rather than "not in that run".
+func (s *Store) LatestBenchProbeResults(ctx context.Context) ([]BenchProbeResult, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT b.id, b.run_id, b.model, b.at, b.probe, b.class, b.capability, b.run_mode,
+       b.stages, b.stages_passed, b.checks_passed, b.checks_total, b.pass,
+       b.wall_ms, b.skipped, b.skip_reason, b.note
+FROM bench_probe_results b
+JOIN (SELECT model, MAX(at) AS at FROM bench_probe_results GROUP BY model) m
+  ON m.model = b.model AND m.at = b.at
+ORDER BY b.capability, b.model, b.probe, b.run_mode`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanBenchProbeResults(rows)
+}
+
+func scanBenchProbeResults(rows *sql.Rows) ([]BenchProbeResult, error) {
+	var out []BenchProbeResult
+	for rows.Next() {
+		var r BenchProbeResult
+		var pass, skipped int
+		if err := rows.Scan(&r.ID, &r.RunID, &r.Model, &r.At, &r.Probe, &r.Class,
+			&r.Capability, &r.RunMode, &r.Stages, &r.StagesPassed, &r.ChecksPassed,
+			&r.ChecksTotal, &pass, &r.WallMS, &skipped, &r.SkipReason, &r.Note); err != nil {
+			return nil, err
+		}
+		r.Pass, r.Skipped = pass != 0, skipped != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func scanBenchResults(rows *sql.Rows) ([]BenchResult, error) {

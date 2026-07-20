@@ -107,6 +107,30 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.PublishBenchResult)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "publishBenchProbeResults",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/measurements/probes",
+		Summary:     "Publish a bench run's per-probe detail, including skipped probes (llm-bench).",
+		Tags:        []string{"control"},
+	}, h.PublishBenchProbeResults)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchProbes",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/probes",
+		Summary:     "One model's last bench run broken out by capability, probe by probe.",
+		Tags:        []string{"observability"},
+	}, h.BenchProbeDetail)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchCapabilityMatrix",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/capabilities",
+		Summary:     "Models ranked within each capability — the comparison a run-wide pass rate cannot make.",
+		Tags:        []string{"observability"},
+	}, h.BenchCapabilityMatrix)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchResults",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/bench/results",

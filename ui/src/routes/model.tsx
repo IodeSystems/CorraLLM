@@ -34,6 +34,7 @@ import {
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { graphql } from '@/gql'
+import type { ModelBenchQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
 import { capLabel, fmtDuration, fmtInt, fmtMiB, fmtUSD } from '@/format'
 
@@ -1474,6 +1475,31 @@ const ModelBenchDoc = graphql(/* GraphQL */ `
         done
         error
       }
+      benchProbes(model: $model) {
+        runId
+        at
+        capabilities {
+          capability
+          stages
+          stagesPassed
+          score
+          skippedProbes
+          probes {
+            probe
+            class
+            runMode
+            stages
+            stagesPassed
+            checksPassed
+            checksTotal
+            pass
+            wallMs
+            skipped
+            skipReason
+            note
+          }
+        }
+      }
     }
   }
 `)
@@ -1528,6 +1554,128 @@ type BenchKind = (typeof BENCH_KINDS)[number]
 
 // Codegen maps int64 -> string; coerce once rather than per-use.
 const bn = (v: unknown): number => Number(v ?? 0) || 0
+
+/**
+ * The last run, broken out by the capability each probe required.
+ *
+ * The single run-wide pass rate in History is NOT comparable across models and
+ * reading it as if it were is the bug this section fixes: a probe a model cannot
+ * serve is skipped rather than failed, so an STT model is scored on its four
+ * audio probes, passes them, and shows 100% — ranking above a chat model that
+ * ran twenty mixed probes and scored 90%. Split by capability, "stt: 4/4, chat:
+ * not applicable" says what actually happened.
+ *
+ * Skipped capabilities are shown, not hidden. "No chat probes ran because this
+ * model has no chat surface" and "no chat data yet" are different facts, and
+ * omitting the row makes them look identical.
+ */
+function CapabilityBreakdown({
+  data,
+}: {
+  data: ModelBenchQuery['corrallm']['benchProbes']
+}) {
+  const caps = data?.capabilities ?? []
+  if (caps.length === 0) return null
+  return (
+    <Paper sx={{ p: 2 }}>
+      <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 1 }}>
+        <Typography variant="subtitle1">Last run by capability</Typography>
+        <Typography variant="caption" color="text.secondary">
+          run {data?.runId}
+        </Typography>
+      </Stack>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Each capability is scored only on the probes written for it. Scores across different
+        capabilities are not comparable — a speech model passing every speech probe says nothing
+        about whether it can hold a conversation.
+      </Typography>
+      {caps.map((c) => {
+        const ran = (c.probes ?? []).filter((p) => !p.skipped)
+        const skipped = (c.probes ?? []).filter((p) => p.skipped)
+        const notApplicable = ran.length === 0 && skipped.length > 0
+        return (
+          <Accordion key={c.capability} disableGutters>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Stack direction="row" spacing={1.5} alignItems="center" sx={{ width: '100%' }}>
+                <Chip size="small" label={capLabel(c.capability)} />
+                {notApplicable ? (
+                  <Typography variant="body2" color="text.secondary">
+                    not applicable — {skipped.length} probe{skipped.length === 1 ? '' : 's'} skipped
+                  </Typography>
+                ) : (
+                  <Typography variant="body2">
+                    <b>{(bn(c.score) * 100).toFixed(0)}%</b> ({c.stagesPassed}/{c.stages} stages,{' '}
+                    {ran.length} probe{ran.length === 1 ? '' : 's'})
+                  </Typography>
+                )}
+                <Box sx={{ flexGrow: 1 }} />
+                {!notApplicable && skipped.length > 0 && (
+                  <Typography variant="caption" color="text.secondary">
+                    {skipped.length} skipped
+                  </Typography>
+                )}
+              </Stack>
+            </AccordionSummary>
+            <AccordionDetails>
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Probe</TableCell>
+                      <TableCell>Class</TableCell>
+                      <TableCell>Mode</TableCell>
+                      <TableCell align="right">Stages</TableCell>
+                      <TableCell align="right">Checks</TableCell>
+                      <TableCell align="right">Wall</TableCell>
+                      <TableCell>Result</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {(c.probes ?? []).map((p) => (
+                      <TableRow key={`${p.probe} ${p.runMode}`} hover>
+                        <TableCell>{p.probe}</TableCell>
+                        <TableCell>
+                          <Typography variant="caption">{p.class || '—'}</Typography>
+                        </TableCell>
+                        {/* Cold and warm are separate rows on purpose: a probe that
+                            passes warm and fails cold is the finding, not an average. */}
+                        <TableCell>
+                          <Typography variant="caption">{p.runMode || 'any'}</Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          {p.skipped ? '—' : `${p.stagesPassed}/${p.stages}`}
+                        </TableCell>
+                        <TableCell align="right">
+                          {p.skipped ? '—' : `${p.checksPassed}/${p.checksTotal}`}
+                        </TableCell>
+                        <TableCell align="right">
+                          {p.skipped ? '—' : fmtDuration(bn(p.wallMs))}
+                        </TableCell>
+                        <TableCell>
+                          {p.skipped ? (
+                            <Tooltip title={p.skipReason ?? ''}>
+                              <Chip size="small" variant="outlined" label="skipped" />
+                            </Tooltip>
+                          ) : p.pass ? (
+                            <Chip size="small" color="success" label="pass" />
+                          ) : (
+                            <Tooltip title={p.note ?? ''}>
+                              <Chip size="small" color="error" label="fail" />
+                            </Tooltip>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </AccordionDetails>
+          </Accordion>
+        )
+      })}
+    </Paper>
+  )
+}
 
 /**
  * This model's measurement history plus the controls to take a new one.
@@ -1658,9 +1806,16 @@ function BenchTab({ name }: { name: string }) {
       )}
       {!!status?.error && <Alert severity="error">{status.error}</Alert>}
 
+      <CapabilityBreakdown data={q.data?.corrallm?.benchProbes} />
+
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" gutterBottom>
           History
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          One pass rate per run, across every probe that ran. Use it to track a model against
+          itself over time — not to rank models against each other, since two models rarely run
+          the same probe set. The capability breakdown above is the comparable view.
         </Typography>
         {results.length === 0 ? (
           <Typography variant="body2" color="text.secondary">

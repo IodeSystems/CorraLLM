@@ -757,6 +757,45 @@ the BackpressureError shape we already validated.
   capability matrix wants a declared-vs-verified column, so a false claim is visible as a red cell
   rather than a comment in a YAML file.
 
+  ✅ **per-capability scoring + per-probe detail** (2026-07-19) — the run-wide pass rate was not a
+  comparable number and was being read as one. A probe a model cannot serve is skipped, not failed,
+  so an STT model ran 4 audio probes, passed them, and showed ~100% while a chat model ran 20 mixed
+  probes and showed 90% — the table ranked the speech model above the chat model at chatting.
+  `PublishResults` also flattened every row into one aggregate before it reached the DB, so "which
+  probe, and how did it do" had no answer server-side at all.
+  - `report.Row.Capability` records the surface the PROBE required (`Requires.EffectiveCapability`),
+    stamped in `run.go` alongside RunMode.
+  - Skipped probes are captured as `run.Skip` in a slice kept OUT of `rows` — letting them into the
+    row set would put zeros into summary.csv/report.md and restate a config fact as a capability gap.
+  - `PublishProbeResults` → `POST /api/v1/measurements/probes` folds stage rows to one record per
+    (model, probe, runMode); cold/warm stay split because the disagreement is the finding.
+  - `bench_probe_results` table; `GET /api/v1/bench/probes` groups by capability server-side and
+    scores each capability only on its own probes. Skips count toward neither numerator nor
+    denominator but ARE returned, so the console says "not applicable" rather than leaving a hole.
+  - `model.tsx` gains a "Last run by capability" accordion (per-probe rows, cold/warm, pass/fail with
+    the failing check in a tooltip, skips with their reason); History keeps the aggregate with a note
+    that it tracks a model against itself, not against other models.
+  - The aggregate `bench_results` path is unchanged and still published — an older llm-bench that
+    knows nothing about probe detail keeps working.
+  - **Gotcha worth keeping:** Huma derives "required" from the absence of `omitempty`, so reusing the
+    read struct as the publish struct made a skip record (which legitimately carries no measurement
+    fields) fail validation with 422. Publish and read shapes are separate types for that reason —
+    caught only by driving the real endpoint, not by the unit tests.
+  - `GET /api/v1/bench/capabilities` (`BenchCapabilityMatrix`) ranks models WITHIN each capability
+    off each model's own latest run — latest-per-model, not latest-overall, since models are benched
+    at different times and one run id would drop everything not in it. A model whose every probe on
+    a surface was skipped is **omitted** from that ranking rather than listed at 0%, which would
+    assert a failure that never ran. Ties break by name so map iteration can't reorder a ranking.
+  - `bench.tsx` renders one score chart + scatter + table per capability; the flat cross-model table
+    is retained but retitled "Run totals" and explicitly labeled not-a-ranking, since its score
+    column mixes capabilities. VRAM is joined in from `benchResults` rather than duplicated onto the
+    matrix endpoint.
+  - **untested** — no real llm-bench run has published through either new endpoint yet; both were
+    verified with synthetic payloads against a live server. The end-to-end check reproduced the
+    original bug's shape: stt 100% on audio.stt, absent from chat; qwen 90% and gemma 70% on chat.
+  - **unverified** — neither UI surface has been visually rendered (the console requires pasting an
+    admin token). Both typecheck and lint clean and their data sources are verified.
+
   **Migration risks / decisions to make before starting:**
   - crucible pulls in `agentkit` (`agent`, `llm`, `mcpmgr`); corrallm currently does not. New dep
     on the serving repo even though only the bench binary uses it — acceptable, but name it.

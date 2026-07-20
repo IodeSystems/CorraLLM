@@ -10,6 +10,7 @@ type CorrallmMutationNamespace {
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
@@ -24,7 +25,14 @@ type CorrallmQueryNamespace {
     """Activity row id (from recentActivity)."""
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
+  benchCapabilityMatrix: corrallm_BenchCapabilityMatrixOutputBody @derived(operationId: "benchCapabilityMatrix")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchProbes(
+    """Model whose probe detail to return."""
+    model: String!
+    """Scope to one run; omit for the model's most recent run."""
+    runId: String
+  ): corrallm_BenchProbesOutputBody @derived(operationId: "benchProbes")
   benchResults(
     """History depth when model is set (default 20)."""
     limit: Long
@@ -83,6 +91,7 @@ type CorrallmV1MutationNamespace {
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
@@ -96,7 +105,14 @@ type CorrallmV1QueryNamespace {
     """Activity row id (from recentActivity)."""
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
+  benchCapabilityMatrix: corrallm_BenchCapabilityMatrixOutputBody @derived(operationId: "benchCapabilityMatrix")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchProbes(
+    """Model whose probe detail to return."""
+    model: String!
+    """Scope to one run; omit for the model's most recent run."""
+    runId: String
+  ): corrallm_BenchProbesOutputBody @derived(operationId: "benchProbes")
   benchResults(
     """History depth when model is set (default 20)."""
     limit: Long
@@ -266,6 +282,38 @@ type corrallm_BackendLoadView {
   waiting: Long!
 }
 
+type corrallm_BenchCapabilityMatrixEntry {
+  capability: String!
+  models: [corrallm_BenchCapabilityModelView!]!
+}
+
+type corrallm_BenchCapabilityMatrixOutputBody {
+  capabilities: [corrallm_BenchCapabilityMatrixEntry!]!
+}
+
+type corrallm_BenchCapabilityModelView {
+  at: Long!
+  model: String!
+  """Probes that actually ran."""
+  probes: Long!
+  runId: String!
+  """Stage pass rate 0..1 within this capability only."""
+  score: Float!
+  skippedProbes: Long!
+  stages: Long!
+  stagesPassed: Long!
+}
+
+type corrallm_BenchCapabilityView {
+  capability: String!
+  probes: [corrallm_BenchProbeRecord!]!
+  """Stage pass rate 0..1 within this capability."""
+  score: Float!
+  skippedProbes: Long!
+  stages: Long!
+  stagesPassed: Long!
+}
+
 type corrallm_BenchModelPlan {
   declaredModalities: [String!]
   """Modalities that verified in one residency state and failed in another (cold vs warm)."""
@@ -286,12 +334,72 @@ type corrallm_BenchPlanOutputBody {
   newModels: Long!
 }
 
+input corrallm_BenchProbePublishInput {
+  capability: String
+  checksPassed: Long
+  checksTotal: Long
+  class: String
+  model: String!
+  note: String
+  pass: Boolean
+  """Probe (task) name."""
+  probe: String!
+  runMode: String
+  skipReason: String
+  skipped: Boolean
+  stages: Long
+  stagesPassed: Long
+  wallMs: Long
+}
+
+type corrallm_BenchProbeRecord {
+  """Serving surface the PROBE required: chat, audio.stt, …"""
+  capability: String
+  checksPassed: Long!
+  checksTotal: Long!
+  """coding | tooluse | adversarial | capability."""
+  class: String
+  model: String!
+  """First failing check, or the combo error."""
+  note: String
+  pass: Boolean!
+  """Probe (task) name."""
+  probe: String!
+  """Residency the pass ran against: cold | warm | empty."""
+  runMode: String
+  skipReason: String
+  """Probe was never a candidate for this model — a configuration fact, not a failure."""
+  skipped: Boolean
+  stages: Long!
+  stagesPassed: Long!
+  wallMs: Long!
+}
+
+input corrallm_BenchProbeResultsInputBodyInput {
+  at: Long
+  results: [corrallm_BenchProbePublishInput!]
+  runId: String!
+}
+
+type corrallm_BenchProbeResultsOutputBody {
+  message: String!
+  ok: Boolean!
+  saved: Long!
+}
+
 type corrallm_BenchProbeSuggestion {
   default: Boolean!
   """capability | measure | quality"""
   kind: String!
   """Why it is (or is not) pre-checked."""
   reason: String!
+}
+
+type corrallm_BenchProbesOutputBody {
+  at: Long!
+  capabilities: [corrallm_BenchCapabilityView!]!
+  model: String!
+  runId: String!
 }
 
 input corrallm_BenchResultInputBodyInput {

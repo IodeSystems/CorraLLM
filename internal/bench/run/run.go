@@ -239,6 +239,14 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 		flush(r)
 		mu.Unlock()
 	}
+	// skips are kept OUT of rows deliberately. A skipped probe produced no
+	// measurement, so letting it into the row set would put it into summary.csv,
+	// report.md and every existing aggregate as a zero — the exact "reads as a
+	// capability gap when it is a configuration fact" failure skipReason exists
+	// to avoid. They are published separately so the console can say "not
+	// applicable" rather than leaving the reader to guess why a capability has
+	// no results.
+	var skips []Skip
 	// Slot-aware concurrency: corrallm advertises each model's admission slots
 	// (--parallel) via /v1/models. Within a resident model we run up to `slots`
 	// combos CONCURRENTLY — no more, so we never exceed the backend's parallel
@@ -272,6 +280,12 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 					// summary later.
 					if why := skipReason(tsk, model, modsByModel, capsByModel); why != "" {
 						log.Printf("llm-bench: skip %s/%s/%s — %s", model, tset.Name, tsk.Name, why)
+						mu.Lock()
+						skips = append(skips, Skip{
+							Model: model, Task: tsk.Name, Class: tsk.Class,
+							Capability: tsk.Requires.EffectiveCapability(), Reason: why,
+						})
+						mu.Unlock()
 						continue
 					}
 					tset, tsk := tset, tsk
@@ -338,6 +352,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 								r[j].ToolFormat = toolFmt
 								r[j].RunMode = string(mode)
 								r[j].ResidencyNote = residNote
+								r[j].Capability = tsk.Requires.EffectiveCapability()
 							}
 							appendRows(r)
 						}
@@ -352,6 +367,11 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	// Publish per-model aggregates so corrallm can compare models at all: until
 	// now the numbers existed only in out/<ts>/ on the bench host.
 	PublishResults(ctx, resid, ts, rows, footprints)
+	// Per-probe detail, published alongside the aggregate rather than instead of
+	// it: the aggregate still drives the existing cross-model table, while these
+	// rows are what let the console break a score out by capability and show
+	// which probe produced it.
+	PublishProbeResults(ctx, resid, ts, rows, skips)
 
 	if err := report.WriteAll(outDir, ts, rows); err != nil {
 		return rows, outDir, err

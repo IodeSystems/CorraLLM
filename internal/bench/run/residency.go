@@ -394,6 +394,123 @@ func publishMeasurements(ctx context.Context, c *residencyClient, model string, 
 	return footprint
 }
 
+// Skip records a probe that was never a candidate for a model, and why. It is
+// not a Row: no stage ran, so it has no metrics and must not enter any average.
+type Skip struct {
+	Model      string
+	Task       string
+	Class      string
+	Capability string
+	Reason     string
+}
+
+// PublishProbeResults sends per-probe detail to corrallm at the end of a run.
+//
+// PublishResults collapses a model's whole matrix into one pass rate, which is
+// only comparable across models that ran comparable probes — and they don't.
+// Probes a model cannot serve are skipped, so an STT model is scored on four
+// audio probes and a chat model on twenty mixed ones, and the flat table ranks
+// the former above the latter. These rows carry the probe's capability, so the
+// dashboard can compare chat to chat, and its name, so "how did the model do"
+// has an answer beyond a percentage.
+//
+// Rows are folded to one record per (model, probe, runMode): the probe, not the
+// stage, is the unit a reader reasons about, and cold-vs-warm stays split
+// because a disagreement between them is itself the finding.
+func PublishProbeResults(ctx context.Context, c *residencyClient, runID string, rows []Row, skips []Skip) {
+	if c == nil || runID == "" {
+		return
+	}
+	type key struct{ model, probe, mode string }
+	type agg struct {
+		class, capability         string
+		stages, passed            int
+		checksPassed, checksTotal int
+		wall                      int64
+		note                      string
+	}
+	byProbe := map[key]*agg{}
+	var order []key
+	for _, r := range rows {
+		k := key{r.Model, r.Task, r.RunMode}
+		a := byProbe[k]
+		if a == nil {
+			a = &agg{class: r.Class, capability: r.Capability}
+			byProbe[k] = a
+			order = append(order, k)
+		}
+		a.stages++
+		if r.Pass {
+			a.passed++
+		}
+		a.checksPassed += r.ChecksPassed
+		a.checksTotal += r.ChecksTotal
+		a.wall += r.WallMs
+		// First note wins: the earliest failing stage is the one that explains
+		// the probe: later stages fail downstream of it.
+		if a.note == "" && !r.Pass && r.Note != "" {
+			a.note = r.Note
+		}
+	}
+	type record struct {
+		Model        string `json:"model"`
+		Probe        string `json:"probe"`
+		Class        string `json:"class,omitempty"`
+		Capability   string `json:"capability,omitempty"`
+		RunMode      string `json:"runMode,omitempty"`
+		Stages       int    `json:"stages"`
+		StagesPassed int    `json:"stagesPassed"`
+		ChecksPassed int    `json:"checksPassed"`
+		ChecksTotal  int    `json:"checksTotal"`
+		Pass         bool   `json:"pass"`
+		WallMS       int64  `json:"wallMs"`
+		Skipped      bool   `json:"skipped,omitempty"`
+		SkipReason   string `json:"skipReason,omitempty"`
+		Note         string `json:"note,omitempty"`
+	}
+	recs := make([]record, 0, len(order)+len(skips))
+	for _, k := range order {
+		a := byProbe[k]
+		recs = append(recs, record{
+			Model: k.model, Probe: k.probe, Class: a.class, Capability: a.capability,
+			RunMode: k.mode, Stages: a.stages, StagesPassed: a.passed,
+			ChecksPassed: a.checksPassed, ChecksTotal: a.checksTotal,
+			Pass: a.stages > 0 && a.passed == a.stages, WallMS: a.wall, Note: a.note,
+		})
+	}
+	for _, s := range skips {
+		recs = append(recs, record{
+			Model: s.Model, Probe: s.Task, Class: s.Class, Capability: s.Capability,
+			Skipped: true, SkipReason: s.Reason,
+		})
+	}
+	if len(recs) == 0 {
+		return
+	}
+	body, err := json.Marshal(map[string]any{"runId": runID, "results": recs})
+	if err != nil {
+		return
+	}
+	base := strings.TrimSuffix(c.base, "/v1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/measurements/probes", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		log.Printf("llm-bench: publish probe results failed: %v", err)
+		return
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		log.Printf("llm-bench: publish probe results -> HTTP %d", resp.StatusCode)
+		return
+	}
+	log.Printf("llm-bench: published %d probe result(s) (%d skipped)", len(recs), len(skips))
+}
+
 // PublishResults sends per-model aggregates to corrallm at the end of a run.
 //
 // This is what makes cross-model comparison possible at all: without it the

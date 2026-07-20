@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/gpu"
@@ -442,6 +443,308 @@ func (h *Handlers) PublishBenchResult(ctx context.Context, in *BenchResultInput)
 	}
 	out.Body.OK = true
 	out.Body.Message = fmt.Sprintf("recorded %s for run %s", in.Body.Model, in.Body.RunID)
+	return out, nil
+}
+
+// --- per-probe bench detail -------------------------------------------------
+
+// BenchProbeRecord is one probe's outcome for one model, at one residency mode.
+type BenchProbeRecord struct {
+	Model        string `json:"model"`
+	Probe        string `json:"probe" doc:"Probe (task) name."`
+	Class        string `json:"class,omitempty" doc:"coding | tooluse | adversarial | capability."`
+	Capability   string `json:"capability,omitempty" doc:"Serving surface the PROBE required: chat, audio.stt, …"`
+	RunMode      string `json:"runMode,omitempty" doc:"Residency the pass ran against: cold | warm | empty."`
+	Stages       int    `json:"stages"`
+	StagesPassed int    `json:"stagesPassed"`
+	ChecksPassed int    `json:"checksPassed"`
+	ChecksTotal  int    `json:"checksTotal"`
+	Pass         bool   `json:"pass"`
+	WallMS       int64  `json:"wallMs"`
+	Skipped      bool   `json:"skipped,omitempty" doc:"Probe was never a candidate for this model — a configuration fact, not a failure."`
+	SkipReason   string `json:"skipReason,omitempty"`
+	Note         string `json:"note,omitempty" doc:"First failing check, or the combo error."`
+}
+
+// BenchProbePublish is one probe's outcome as PUBLISHED.
+//
+// Deliberately not BenchProbeRecord: every measurement field here is optional,
+// because a skipped probe legitimately carries none of them. Huma derives
+// "required" from the absence of omitempty, so reusing the read struct made a
+// skip record — the exact shape this feature exists to persist — fail
+// validation with 422.
+type BenchProbePublish struct {
+	Model        string `json:"model"`
+	Probe        string `json:"probe" doc:"Probe (task) name."`
+	Class        string `json:"class,omitempty"`
+	Capability   string `json:"capability,omitempty"`
+	RunMode      string `json:"runMode,omitempty"`
+	Stages       int    `json:"stages,omitempty"`
+	StagesPassed int    `json:"stagesPassed,omitempty"`
+	ChecksPassed int    `json:"checksPassed,omitempty"`
+	ChecksTotal  int    `json:"checksTotal,omitempty"`
+	Pass         bool   `json:"pass,omitempty"`
+	WallMS       int64  `json:"wallMs,omitempty"`
+	Skipped      bool   `json:"skipped,omitempty"`
+	SkipReason   string `json:"skipReason,omitempty"`
+	Note         string `json:"note,omitempty"`
+}
+
+// BenchProbeResultsInput publishes a run's per-probe detail in one batch.
+type BenchProbeResultsInput struct {
+	Body struct {
+		RunID   string              `json:"runId"`
+		At      int64               `json:"at,omitempty"`
+		Results []BenchProbePublish `json:"results"`
+	}
+}
+
+// BenchProbeResultsOutput acknowledges a published batch.
+type BenchProbeResultsOutput struct {
+	Body struct {
+		OK      bool   `json:"ok"`
+		Saved   int    `json:"saved"`
+		Message string `json:"message"`
+	}
+}
+
+// PublishBenchProbeResults records a run's per-probe rows.
+//
+// Separate from PublishBenchResult rather than folded into it: the aggregate is
+// one row and this is a batch, and the aggregate must keep working unchanged for
+// runs published by an older llm-bench that knows nothing about probe detail.
+func (h *Handlers) PublishBenchProbeResults(ctx context.Context, in *BenchProbeResultsInput) (*BenchProbeResultsOutput, error) {
+	out := &BenchProbeResultsOutput{}
+	if h.Store == nil {
+		out.Body.Message = "no store"
+		return out, nil
+	}
+	if in.Body.RunID == "" {
+		out.Body.Message = "runId is required"
+		return out, nil
+	}
+	at := in.Body.At
+	if at == 0 {
+		at = time.Now().Unix()
+	}
+	rows := make([]store.BenchProbeResult, 0, len(in.Body.Results))
+	for _, r := range in.Body.Results {
+		if r.Model == "" || r.Probe == "" {
+			continue
+		}
+		rows = append(rows, store.BenchProbeResult{
+			RunID: in.Body.RunID, Model: r.Model, At: at, Probe: r.Probe,
+			Class: r.Class, Capability: r.Capability, RunMode: r.RunMode,
+			Stages: r.Stages, StagesPassed: r.StagesPassed,
+			ChecksPassed: r.ChecksPassed, ChecksTotal: r.ChecksTotal,
+			Pass: r.Pass, WallMS: r.WallMS, Skipped: r.Skipped,
+			SkipReason: r.SkipReason, Note: r.Note,
+		})
+	}
+	if err := h.Store.SaveBenchProbeResults(ctx, rows); err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	out.Body.OK = true
+	out.Body.Saved = len(rows)
+	out.Body.Message = fmt.Sprintf("recorded %d probe result(s) for run %s", len(rows), in.Body.RunID)
+	return out, nil
+}
+
+// BenchCapabilityView is one capability's score for a model in one run — the
+// unit that is actually comparable across models.
+type BenchCapabilityView struct {
+	Capability   string             `json:"capability"`
+	Stages       int                `json:"stages"`
+	StagesPassed int                `json:"stagesPassed"`
+	Score        float64            `json:"score" doc:"Stage pass rate 0..1 within this capability."`
+	Probes       []BenchProbeRecord `json:"probes"`
+	// SkippedProbes counts probes in this capability the model was not a
+	// candidate for. A capability whose probes ALL skipped has no score, and the
+	// UI must say "not applicable" rather than render 0% or omit it silently.
+	SkippedProbes int `json:"skippedProbes"`
+}
+
+// BenchProbesInput scopes probe detail to one model, optionally one run.
+type BenchProbesInput struct {
+	Model string `query:"model" required:"true" doc:"Model whose probe detail to return."`
+	RunID string `query:"runId" doc:"Scope to one run; omit for the model's most recent run."`
+}
+
+// BenchProbesOutput is one model's last (or named) run, grouped by capability.
+type BenchProbesOutput struct {
+	Body struct {
+		RunID        string                `json:"runId"`
+		Model        string                `json:"model"`
+		At           int64                 `json:"at"`
+		Capabilities []BenchCapabilityView `json:"capabilities"`
+	}
+}
+
+// BenchProbeDetail returns a model's per-probe results grouped by capability.
+//
+// Grouped server-side because the grouping IS the fix: a flat list re-invites
+// the reader to average an STT model's audio probes against a chat model's chat
+// probes, which is the comparison that made a speech model look like it could
+// hold a conversation.
+func (h *Handlers) BenchProbeDetail(ctx context.Context, in *BenchProbesInput) (*BenchProbesOutput, error) {
+	out := &BenchProbesOutput{}
+	out.Body.Model = in.Model
+	out.Body.Capabilities = []BenchCapabilityView{}
+	if h.Store == nil || in.Model == "" {
+		return out, nil
+	}
+	rows, err := h.Store.BenchProbeResultsFor(ctx, in.Model, in.RunID)
+	if err != nil {
+		return out, err
+	}
+	byCap := map[string]*BenchCapabilityView{}
+	var order []string
+	for _, r := range rows {
+		out.Body.RunID = r.RunID
+		if r.At > out.Body.At {
+			out.Body.At = r.At
+		}
+		capName := r.Capability
+		if capName == "" {
+			capName = "chat"
+		}
+		v := byCap[capName]
+		if v == nil {
+			v = &BenchCapabilityView{Capability: capName, Probes: []BenchProbeRecord{}}
+			byCap[capName] = v
+			order = append(order, capName)
+		}
+		v.Probes = append(v.Probes, BenchProbeRecord{
+			Model: r.Model, Probe: r.Probe, Class: r.Class, Capability: capName,
+			RunMode: r.RunMode, Stages: r.Stages, StagesPassed: r.StagesPassed,
+			ChecksPassed: r.ChecksPassed, ChecksTotal: r.ChecksTotal, Pass: r.Pass,
+			WallMS: r.WallMS, Skipped: r.Skipped, SkipReason: r.SkipReason, Note: r.Note,
+		})
+		// Skipped probes contribute to neither numerator nor denominator: they
+		// produced no measurement, and counting them either way would restate
+		// a configuration fact as a score.
+		if r.Skipped {
+			v.SkippedProbes++
+			continue
+		}
+		v.Stages += r.Stages
+		v.StagesPassed += r.StagesPassed
+	}
+	sort.Strings(order)
+	for _, name := range order {
+		v := byCap[name]
+		if v.Stages > 0 {
+			v.Score = float64(v.StagesPassed) / float64(v.Stages)
+		}
+		out.Body.Capabilities = append(out.Body.Capabilities, *v)
+	}
+	return out, nil
+}
+
+// BenchCapabilityModelView is one model's score WITHIN one capability.
+type BenchCapabilityModelView struct {
+	Model         string  `json:"model"`
+	RunID         string  `json:"runId"`
+	At            int64   `json:"at"`
+	Stages        int     `json:"stages"`
+	StagesPassed  int     `json:"stagesPassed"`
+	Score         float64 `json:"score" doc:"Stage pass rate 0..1 within this capability only."`
+	Probes        int     `json:"probes" doc:"Probes that actually ran."`
+	SkippedProbes int     `json:"skippedProbes"`
+}
+
+// BenchCapabilityMatrixEntry ranks the models that were measured on one
+// capability against each other.
+type BenchCapabilityMatrixEntry struct {
+	Capability string                     `json:"capability"`
+	Models     []BenchCapabilityModelView `json:"models"`
+}
+
+// BenchCapabilityMatrixOutput is the cross-model comparison, split by surface.
+type BenchCapabilityMatrixOutput struct {
+	Body struct {
+		Capabilities []BenchCapabilityMatrixEntry `json:"capabilities"`
+	}
+}
+
+// BenchCapabilityMatrix ranks models within each capability, using each model's
+// most recent run.
+//
+// The flat cross-model table this supplements ranks on a run-wide pass rate,
+// which is not a comparable quantity: probes a model cannot serve are skipped,
+// so each model is scored on a different set. An STT model passing its four
+// audio probes outranked a chat model that passed eighteen of twenty. Ranking
+// only WITHIN a capability is what makes the ordering mean something — a model
+// appears in a row only if it was actually measured on that surface.
+func (h *Handlers) BenchCapabilityMatrix(ctx context.Context, _ *struct{}) (*BenchCapabilityMatrixOutput, error) {
+	out := &BenchCapabilityMatrixOutput{}
+	out.Body.Capabilities = []BenchCapabilityMatrixEntry{}
+	if h.Store == nil {
+		return out, nil
+	}
+	rows, err := h.Store.LatestBenchProbeResults(ctx)
+	if err != nil {
+		return out, err
+	}
+	type acc struct {
+		view  BenchCapabilityModelView
+		order int
+	}
+	byCap := map[string]map[string]*acc{}
+	var capOrder []string
+	for _, r := range rows {
+		capName := r.Capability
+		if capName == "" {
+			capName = "chat"
+		}
+		models := byCap[capName]
+		if models == nil {
+			models = map[string]*acc{}
+			byCap[capName] = models
+			capOrder = append(capOrder, capName)
+		}
+		a := models[r.Model]
+		if a == nil {
+			a = &acc{view: BenchCapabilityModelView{Model: r.Model, RunID: r.RunID, At: r.At}}
+			models[r.Model] = a
+		}
+		if r.Skipped {
+			a.view.SkippedProbes++
+			continue
+		}
+		a.view.Probes++
+		a.view.Stages += r.Stages
+		a.view.StagesPassed += r.StagesPassed
+	}
+	sort.Strings(capOrder)
+	for _, capName := range capOrder {
+		entry := BenchCapabilityMatrixEntry{Capability: capName, Models: []BenchCapabilityModelView{}}
+		for _, a := range byCap[capName] {
+			// A model whose every probe on this surface was skipped was never
+			// measured on it, so it must not appear in the ranking at all —
+			// listing it at 0% would assert a failure that never happened.
+			if a.view.Probes == 0 {
+				continue
+			}
+			if a.view.Stages > 0 {
+				a.view.Score = float64(a.view.StagesPassed) / float64(a.view.Stages)
+			}
+			entry.Models = append(entry.Models, a.view)
+		}
+		if len(entry.Models) == 0 {
+			continue
+		}
+		// Best first, then by name so equal scores have a stable order rather
+		// than SQLite's map iteration deciding the ranking.
+		sort.Slice(entry.Models, func(i, j int) bool {
+			if entry.Models[i].Score != entry.Models[j].Score {
+				return entry.Models[i].Score > entry.Models[j].Score
+			}
+			return entry.Models[i].Model < entry.Models[j].Model
+		})
+		out.Body.Capabilities = append(out.Body.Capabilities, entry)
+	}
 	return out, nil
 }
 

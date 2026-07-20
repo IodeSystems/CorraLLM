@@ -49,8 +49,8 @@ type StageMetrics struct {
 	// validation (reverts breaks → 0) from plain editing (breaks land → >0) on
 	// tasks a capable model still ultimately passes.
 	BrokenIntermediates int `json:"brokenIntermediates"`
-	Retries429        int `json:"retries429"`        // 429 backpressure retries (not surfaced by agentkit; always 0 in P0)
-	Compactions       int `json:"compactions"`       // agentkit Shaper full-history compactions this stage (LOD truncations are render-time and not reported)
+	Retries429          int `json:"retries429"`  // 429 backpressure retries (not surfaced by agentkit; always 0 in P0)
+	Compactions         int `json:"compactions"` // agentkit Shaper full-history compactions this stage (LOD truncations are render-time and not reported)
 
 	// CompactionTokensBefore/After are the agentkit CompactionInfo active-window
 	// token estimates, SUMMED across every fold in this stage (common case: one
@@ -73,6 +73,14 @@ type Row struct {
 	Class   string `json:"class"`
 	Stage   int    `json:"stage"`
 	Prompt  string `json:"prompt"`
+
+	// Capability is the serving surface the PROBE required (chat, audio.stt,
+	// …), not the model's. Recorded per row because a run-wide pass rate mixes
+	// surfaces that were never comparable: an audio model runs only its audio
+	// probes (the rest skip) and scores near 100%, which reads as "better than
+	// the chat model" when it means "measured on an easier, smaller set".
+	// Grouping by this column is what restores the comparison.
+	Capability string `json:"capability,omitempty"`
 
 	// RunMode is the residency state this pass ran against ("" | cold | warm).
 	// A `both` probe emits two sets of rows, one per mode: a disagreement
