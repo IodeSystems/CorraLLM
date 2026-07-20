@@ -25,6 +25,7 @@ type CorrallmQueryNamespace {
     """Activity row id (from recentActivity)."""
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
+  benchArmMatrix: corrallm_BenchArmMatrixOutputBody @derived(operationId: "benchArmMatrix")
   benchCapabilityMatrix: corrallm_BenchCapabilityMatrixOutputBody @derived(operationId: "benchCapabilityMatrix")
   benchJournal(
     model: String!
@@ -120,6 +121,7 @@ type CorrallmV1QueryNamespace {
     """Activity row id (from recentActivity)."""
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
+  benchArmMatrix: corrallm_BenchArmMatrixOutputBody @derived(operationId: "benchArmMatrix")
   benchCapabilityMatrix: corrallm_BenchCapabilityMatrixOutputBody @derived(operationId: "benchCapabilityMatrix")
   benchJournal(
     model: String!
@@ -312,12 +314,48 @@ type corrallm_BackendLoadView {
   waiting: Long!
 }
 
+type corrallm_BenchArmComparisonView {
+  byModel: [corrallm_BenchArmModelView!]!
+  label: String!
+  losses: Long!
+  meanScoreDelta: Float!
+  meanTokenDelta: Long!
+  """Robust to one pathological probe dominating the mean."""
+  medianScoreDelta: Float!
+  models: Long!
+  probes: Long!
+  runMode: String!
+  ties: Long!
+  toolFormat: String!
+  toolset: String!
+  wins: Long!
+}
+
 type corrallm_BenchArmDetailView {
   label: String!
   runMode: String!
   stages: [corrallm_BenchStageView!]!
   toolFormat: String!
   toolset: String!
+}
+
+type corrallm_BenchArmMatrixOutputBody {
+  capabilities: [corrallm_BenchCapabilityArmsView!]!
+}
+
+type corrallm_BenchArmModelView {
+  armScore: Float!
+  baselineScore: Float!
+  losses: Long!
+  model: String!
+  probes: Long!
+  scoreDelta: Float!
+  ties: Long!
+  """Evaluated prompt + completion tokens, arm minus baseline. Negative is cheaper."""
+  tokenDelta: Long!
+  wallDeltaMs: Long!
+  """Probes where the arm beat the baseline."""
+  wins: Long!
 }
 
 type corrallm_BenchArmView {
@@ -342,6 +380,12 @@ type corrallm_BenchArmView {
   toolFormat: String!
   toolset: String!
   wallMs: Long!
+}
+
+type corrallm_BenchCapabilityArmsView {
+  arms: [corrallm_BenchArmComparisonView!]!
+  baselineLabels: [String!]!
+  capability: String!
 }
 
 type corrallm_BenchCapabilityMatrixEntry {

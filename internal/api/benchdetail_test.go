@@ -265,3 +265,132 @@ func TestBenchArtifacts_NoStoreIsEmptyNotNil(t *testing.T) {
 		t.Error("entries must serialize as [] not null")
 	}
 }
+
+// The cross-model question ("does toon help at all") is not the per-model one,
+// and reading it off unpaired data is how an arm that only ever ran against
+// strong models looks like an improvement it never made.
+func TestBenchArmMatrix_PairsArmAgainstItsOwnBaseline(t *testing.T) {
+	h, ctx := probeHandlers(t)
+	publish(t, h, ctx, "r1",
+		// a: toon beats json by 20 points.
+		BenchProbePublish{Model: "a", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "json", RunMode: "warm", Stages: 10, StagesPassed: 6, NewPromptTokens: 1000},
+		BenchProbePublish{Model: "a", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "toon", RunMode: "warm", Stages: 10, StagesPassed: 8, NewPromptTokens: 700},
+		// b: toon loses by 10 points.
+		BenchProbePublish{Model: "b", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "json", RunMode: "warm", Stages: 10, StagesPassed: 9, NewPromptTokens: 1000},
+		BenchProbePublish{Model: "b", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "toon", RunMode: "warm", Stages: 10, StagesPassed: 8, NewPromptTokens: 800},
+	)
+	out, err := h.BenchArmMatrix(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Body.Capabilities) != 1 {
+		t.Fatalf("want one capability: %+v", out.Body.Capabilities)
+	}
+	arms := out.Body.Capabilities[0].Arms
+	if len(arms) != 1 || arms[0].ToolFormat != "toon" {
+		t.Fatalf("only the non-baseline arm is a comparison: %+v", arms)
+	}
+	a := arms[0]
+	if a.Models != 2 || a.Probes != 2 {
+		t.Errorf("paired sample sizes wrong: %+v", a)
+	}
+	// (+0.2 and -0.1) / 2 = +0.05
+	if a.MeanScoreDelta < 0.049 || a.MeanScoreDelta > 0.051 {
+		t.Errorf("mean delta should be +0.05, got %v", a.MeanScoreDelta)
+	}
+	if a.Wins != 1 || a.Losses != 1 {
+		t.Errorf("want 1 win 1 loss: %+v", a)
+	}
+	// toon is cheaper for both: (-300 + -200)/2 = -250
+	if a.MeanTokenDelta != -250 {
+		t.Errorf("want -250 mean token delta, got %d", a.MeanTokenDelta)
+	}
+	if len(a.ByModel) != 2 || a.ByModel[0].Model != "a" {
+		t.Fatalf("per-model rollup wrong: %+v", a.ByModel)
+	}
+	if got := a.ByModel[0].BaselineScore; got != 0.6 {
+		t.Errorf("baseline score should be filled: %v", got)
+	}
+	if got := a.ByModel[0].ArmScore; got != 0.8 {
+		t.Errorf("arm score should be filled: %v", got)
+	}
+}
+
+// An arm on a probe whose baseline never ran has nothing to be measured
+// against. Crediting it anyway is exactly the selection bias pairing prevents.
+func TestBenchArmMatrix_IgnoresProbesWithNoBaseline(t *testing.T) {
+	h, ctx := probeHandlers(t)
+	publish(t, h, ctx, "r1",
+		BenchProbePublish{Model: "a", Probe: "paired", Capability: "chat", ToolFormat: "json",
+			RunMode: "warm", Stages: 10, StagesPassed: 5},
+		BenchProbePublish{Model: "a", Probe: "paired", Capability: "chat", ToolFormat: "toon",
+			RunMode: "warm", Stages: 10, StagesPassed: 7},
+		// Only toon ran here — it becomes its OWN baseline and must not be
+		// counted as a win for toon.
+		BenchProbePublish{Model: "a", Probe: "solo", Capability: "chat", ToolFormat: "toon",
+			RunMode: "warm", Stages: 10, StagesPassed: 10},
+	)
+	out, err := h.BenchArmMatrix(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := out.Body.Capabilities[0].Arms[0]
+	if a.Probes != 1 {
+		t.Fatalf("only the paired probe counts, got %d: %+v", a.Probes, a)
+	}
+	if a.MeanScoreDelta < 0.19 || a.MeanScoreDelta > 0.21 {
+		t.Errorf("unpaired probe must not inflate the delta: %v", a.MeanScoreDelta)
+	}
+}
+
+// The median exists so one pathological probe cannot carry a verdict the rest
+// of the evidence does not support.
+func TestBenchArmMatrix_MedianResistsOneOutlier(t *testing.T) {
+	h, ctx := probeHandlers(t)
+	recs := []BenchProbePublish{}
+	for i, passed := range []int{5, 5, 5} {
+		probe := string(rune('a' + i))
+		recs = append(recs,
+			BenchProbePublish{Model: "m", Probe: probe, Capability: "chat", ToolFormat: "json",
+				RunMode: "warm", Stages: 10, StagesPassed: passed},
+			BenchProbePublish{Model: "m", Probe: probe, Capability: "chat", ToolFormat: "toon",
+				RunMode: "warm", Stages: 10, StagesPassed: passed},
+		)
+	}
+	// One probe where toon runs away with it.
+	recs = append(recs,
+		BenchProbePublish{Model: "m", Probe: "outlier", Capability: "chat", ToolFormat: "json",
+			RunMode: "warm", Stages: 10, StagesPassed: 0},
+		BenchProbePublish{Model: "m", Probe: "outlier", Capability: "chat", ToolFormat: "toon",
+			RunMode: "warm", Stages: 10, StagesPassed: 10},
+	)
+	publish(t, h, ctx, "r1", recs...)
+	a := (func() BenchArmComparisonView {
+		out, err := h.BenchArmMatrix(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.Body.Capabilities[0].Arms[0]
+	})()
+	if a.MeanScoreDelta <= a.MedianScoreDelta {
+		t.Errorf("the outlier should pull the mean above the median: mean=%v median=%v",
+			a.MeanScoreDelta, a.MedianScoreDelta)
+	}
+	if a.MedianScoreDelta != 0 {
+		t.Errorf("three tied probes should hold the median at 0, got %v", a.MedianScoreDelta)
+	}
+}
+
+func TestBenchArmMatrix_NoStoreIsEmptyNotNil(t *testing.T) {
+	out, err := (&Handlers{}).BenchArmMatrix(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Body.Capabilities == nil {
+		t.Error("capabilities must serialize as [] not null")
+	}
+}

@@ -74,6 +74,37 @@ const BenchDoc = graphql(/* GraphQL */ `
           }
         }
       }
+      benchArmMatrix {
+        capabilities {
+          capability
+          baselineLabels
+          arms {
+            label
+            toolset
+            toolFormat
+            runMode
+            models
+            probes
+            meanScoreDelta
+            medianScoreDelta
+            meanTokenDelta
+            wins
+            losses
+            ties
+            byModel {
+              model
+              probes
+              baselineScore
+              armScore
+              scoreDelta
+              tokenDelta
+              wallDeltaMs
+              wins
+              losses
+            }
+          }
+        }
+      }
       benchCapabilityMatrix {
         capabilities {
           capability
@@ -132,6 +163,9 @@ const CancelBenchDoc = graphql(/* GraphQL */ `
 // every count arrives as text. Coerce once at the boundary rather than sprinkling
 // Number() through the chart props.
 const n = (v: unknown): number => Number(v ?? 0) || 0
+
+/** Signed percentage-point delta, e.g. "+5%" / "-3%" / "0%". */
+const deltaPct = (d: number): string => `${d > 0 ? '+' : ''}${(d * 100).toFixed(0)}%`
 
 
 /** Seconds -> "3m 12s", so an elapsed clock reads at a glance. */
@@ -291,6 +325,7 @@ function BenchPage() {
   const ranked = [...results].sort((a, b) => n(b.score) - n(a.score))
   const labels = ranked.map((r) => r.model)
   const matrix = data?.corrallm?.benchCapabilityMatrix?.capabilities ?? []
+  const armMatrix = data?.corrallm?.benchArmMatrix?.capabilities ?? []
   // VRAM lives on the run aggregate, not the probe rows — join it here so the
   // per-capability scatter can plot quality against what it costs to keep
   // resident without the matrix endpoint having to duplicate the field.
@@ -325,6 +360,113 @@ function BenchPage() {
         </Alert>
       ) : (
         <>
+          {armMatrix.length > 0 && (
+            <Paper sx={{ p: 2 }}>
+              <Typography variant="subtitle1">A/B arms across models</Typography>
+              <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1 }}>
+                &ldquo;Did this arm help THIS model&rdquo; is on the model console. This is
+                &ldquo;does it help at all&rdquo;. Comparisons are <b>paired</b>: an arm is credited
+                only on probes where its baseline also ran, so an arm that happened to run against
+                the strong models cannot look like an improvement it never made. The paired counts
+                are shown because a verdict resting on three probes should not read like one
+                resting on sixty.
+              </Typography>
+              {armMatrix.map((c) => (
+                <Box key={c.capability} sx={{ mb: 2 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                    <Chip size="small" label={capLabel(c.capability)} />
+                    <Typography variant="caption" color="text.secondary">
+                      vs {(c.baselineLabels ?? []).join(', ') || 'baseline'}
+                    </Typography>
+                  </Stack>
+                  {(c.arms ?? []).map((a) => (
+                    <Box key={a.label} sx={{ mb: 1.5 }}>
+                      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                        <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                          {a.label}
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          color={
+                            n(a.meanScoreDelta) > 0
+                              ? 'success.main'
+                              : n(a.meanScoreDelta) < 0
+                                ? 'error.main'
+                                : 'text.secondary'
+                          }
+                        >
+                          <b>{deltaPct(n(a.meanScoreDelta))}</b> mean
+                        </Typography>
+                        {/* Median beside the mean so one pathological probe cannot
+                            carry a verdict the rest of the evidence does not support. */}
+                        <Typography variant="caption" color="text.secondary">
+                          {deltaPct(n(a.medianScoreDelta))} median · {a.wins}W/{a.losses}L/{a.ties}T
+                          · {a.probes} paired probe{n(a.probes) === 1 ? '' : 's'} over {a.models}{' '}
+                          model{n(a.models) === 1 ? '' : 's'}
+                        </Typography>
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={`${n(a.meanTokenDelta) > 0 ? '+' : ''}${fmtInt(n(a.meanTokenDelta))} tokens`}
+                        />
+                      </Stack>
+                      <TableContainer sx={{ mt: 0.5 }}>
+                        <Table size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>Model</TableCell>
+                              <TableCell align="right">Baseline</TableCell>
+                              <TableCell align="right">Arm</TableCell>
+                              <TableCell align="right">Δ</TableCell>
+                              <TableCell align="right">W/L</TableCell>
+                              <TableCell align="right">Tokens</TableCell>
+                              <TableCell align="right">Paired</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {(a.byModel ?? []).map((m) => (
+                              <TableRow key={m.model} hover>
+                                <TableCell>{m.model}</TableCell>
+                                <TableCell align="right">
+                                  {(n(m.baselineScore) * 100).toFixed(0)}%
+                                </TableCell>
+                                <TableCell align="right">
+                                  {(n(m.armScore) * 100).toFixed(0)}%
+                                </TableCell>
+                                <TableCell align="right">
+                                  <Typography
+                                    variant="body2"
+                                    color={
+                                      n(m.scoreDelta) > 0
+                                        ? 'success.main'
+                                        : n(m.scoreDelta) < 0
+                                          ? 'error.main'
+                                          : 'text.secondary'
+                                    }
+                                  >
+                                    {deltaPct(n(m.scoreDelta))}
+                                  </Typography>
+                                </TableCell>
+                                <TableCell align="right">
+                                  {m.wins}/{m.losses}
+                                </TableCell>
+                                <TableCell align="right">
+                                  {n(m.tokenDelta) > 0 ? '+' : ''}
+                                  {fmtInt(n(m.tokenDelta))}
+                                </TableCell>
+                                <TableCell align="right">{m.probes}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                    </Box>
+                  ))}
+                </Box>
+              ))}
+            </Paper>
+          )}
+
           {matrix.length === 0 ? (
             <Alert severity="info">
               These results predate per-capability scoring. Re-run a bench to get scores broken

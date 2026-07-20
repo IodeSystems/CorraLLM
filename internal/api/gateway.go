@@ -123,6 +123,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.BenchProbesByCapability)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchArmMatrix",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/arms",
+		Summary:     "A/B arms compared across every model that ran them, paired per probe.",
+		Tags:        []string{"observability"},
+	}, h.BenchArmMatrix)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchProbeDetail",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/bench/probe/detail",

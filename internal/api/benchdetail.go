@@ -202,6 +202,252 @@ func armsFor(rows []store.BenchProbeResult) []BenchArmView {
 	return out
 }
 
+// --- cross-model arm comparison ----------------------------------------------
+
+// BenchArmModelView is one model's verdict on one arm, averaged over the probes
+// where that arm and its baseline both ran.
+type BenchArmModelView struct {
+	Model string `json:"model"`
+	// Probes is the PAIRED count: probes where this arm and the baseline both
+	// ran. It is the sample size behind the delta, not the model's probe total.
+	Probes        int     `json:"probes"`
+	BaselineScore float64 `json:"baselineScore"`
+	ArmScore      float64 `json:"armScore"`
+	ScoreDelta    float64 `json:"scoreDelta"`
+	TokenDelta    int     `json:"tokenDelta" doc:"Evaluated prompt + completion tokens, arm minus baseline. Negative is cheaper."`
+	WallDeltaMS   int64   `json:"wallDeltaMs"`
+	Wins          int     `json:"wins" doc:"Probes where the arm beat the baseline."`
+	Losses        int     `json:"losses"`
+	Ties          int     `json:"ties"`
+}
+
+// BenchArmComparisonView is one arm judged across every model that ran it.
+type BenchArmComparisonView struct {
+	Label      string `json:"label"`
+	Toolset    string `json:"toolset"`
+	ToolFormat string `json:"toolFormat"`
+	RunMode    string `json:"runMode"`
+
+	// Models/Probes are the paired sample sizes the verdict rests on.
+	Models int `json:"models"`
+	Probes int `json:"probes"`
+	// MeanScoreDelta averages over PROBES, not models, so a model benched on
+	// twenty probes carries more weight than one benched on two — the pairing is
+	// per probe and that is where the evidence actually is.
+	MeanScoreDelta   float64 `json:"meanScoreDelta"`
+	MedianScoreDelta float64 `json:"medianScoreDelta" doc:"Robust to one pathological probe dominating the mean."`
+	MeanTokenDelta   int     `json:"meanTokenDelta"`
+	Wins             int     `json:"wins"`
+	Losses           int     `json:"losses"`
+	Ties             int     `json:"ties"`
+
+	ByModel []BenchArmModelView `json:"byModel"`
+}
+
+// BenchCapabilityArmsView groups arm comparisons under one capability.
+type BenchCapabilityArmsView struct {
+	Capability string `json:"capability"`
+	// BaselineLabels lists the baseline arms these deltas are measured against.
+	// Usually one; more than one means probes disagreed on which arm was the
+	// baseline (e.g. some ran warm-only), and the deltas are per-probe pairings
+	// rather than against a single global reference.
+	BaselineLabels []string                 `json:"baselineLabels"`
+	Arms           []BenchArmComparisonView `json:"arms"`
+}
+
+// BenchArmMatrixOutput is the cross-model A/B view.
+type BenchArmMatrixOutput struct {
+	Body struct {
+		Capabilities []BenchCapabilityArmsView `json:"capabilities"`
+	}
+}
+
+// armPair is one probe's paired observation: an arm against its own baseline.
+type armPair struct {
+	model      string
+	baseScore  float64
+	armScore   float64
+	scoreDelta float64
+	tokenDelta int
+	wallDelta  int64
+}
+
+// BenchArmMatrix compares A/B arms across every model that ran them.
+//
+// The per-model view answers "did toon help THIS model"; this answers "does
+// toon help at all". They are different questions and the second cannot be read
+// off the first without pairing: an arm that only ever ran against the two
+// models that happen to score well would otherwise look like an improvement it
+// never made.
+//
+// So comparisons are PAIRED per probe — an arm is only credited on probes where
+// its baseline also ran — and the paired counts are reported alongside the
+// delta so a verdict resting on three probes cannot pass for one resting on
+// sixty.
+func (h *Handlers) BenchArmMatrix(ctx context.Context, _ *struct{}) (*BenchArmMatrixOutput, error) {
+	out := &BenchArmMatrixOutput{}
+	out.Body.Capabilities = []BenchCapabilityArmsView{}
+	if h.Store == nil {
+		return out, nil
+	}
+	rows, err := h.Store.LatestBenchProbeResults(ctx)
+	if err != nil {
+		return out, err
+	}
+	type probeKey struct{ capability, model, probe string }
+	byProbe := map[probeKey][]store.BenchProbeResult{}
+	var probeOrder []probeKey
+	for _, r := range rows {
+		capName := r.Capability
+		if capName == "" {
+			capName = "chat"
+		}
+		k := probeKey{capName, r.Model, r.Probe}
+		if _, seen := byProbe[k]; !seen {
+			probeOrder = append(probeOrder, k)
+		}
+		byProbe[k] = append(byProbe[k], r)
+	}
+
+	// capability -> arm label -> paired observations
+	pairs := map[string]map[string][]armPair{}
+	meta := map[string]map[string]armKey{}
+	baselines := map[string]map[string]bool{}
+	var capOrder []string
+	for _, k := range probeOrder {
+		arms := armsFor(byProbe[k])
+		var base *BenchArmView
+		for i := range arms {
+			if arms[i].IsBaseline && !arms[i].Skipped {
+				base = &arms[i]
+				break
+			}
+		}
+		// No baseline ran for this probe, so nothing here can be paired against
+		// one. Counting these as wins for whatever DID run is the selection bias
+		// this pairing exists to prevent.
+		if base == nil {
+			continue
+		}
+		if pairs[k.capability] == nil {
+			pairs[k.capability] = map[string][]armPair{}
+			meta[k.capability] = map[string]armKey{}
+			baselines[k.capability] = map[string]bool{}
+			capOrder = append(capOrder, k.capability)
+		}
+		baselines[k.capability][base.Label] = true
+		baseTokens := base.NewPromptTokens + base.CompletionTokens
+		for i := range arms {
+			a := arms[i]
+			if a.IsBaseline || a.Skipped {
+				continue
+			}
+			pairs[k.capability][a.Label] = append(pairs[k.capability][a.Label], armPair{
+				model:      k.model,
+				baseScore:  base.Score,
+				armScore:   a.Score,
+				scoreDelta: a.Score - base.Score,
+				tokenDelta: (a.NewPromptTokens + a.CompletionTokens) - baseTokens,
+				wallDelta:  a.WallMS - base.WallMS,
+			})
+			meta[k.capability][a.Label] = armKey{a.Toolset, a.ToolFormat, a.RunMode}
+		}
+	}
+
+	sort.Strings(capOrder)
+	for _, capName := range capOrder {
+		entry := BenchCapabilityArmsView{Capability: capName, Arms: []BenchArmComparisonView{}}
+		for label := range baselines[capName] {
+			entry.BaselineLabels = append(entry.BaselineLabels, label)
+		}
+		sort.Strings(entry.BaselineLabels)
+
+		var labels []string
+		for label := range pairs[capName] {
+			labels = append(labels, label)
+		}
+		sort.Strings(labels)
+		for _, label := range labels {
+			obs := pairs[capName][label]
+			if len(obs) == 0 {
+				continue
+			}
+			k := meta[capName][label]
+			v := BenchArmComparisonView{
+				Label: label, Toolset: k.toolset, ToolFormat: k.format, RunMode: k.runMode,
+				Probes: len(obs), ByModel: []BenchArmModelView{},
+			}
+			byModel := map[string]*BenchArmModelView{}
+			var modelOrder []string
+			var deltas []float64
+			sumScore, sumTokens := 0.0, 0
+			for _, o := range obs {
+				sumScore += o.scoreDelta
+				sumTokens += o.tokenDelta
+				deltas = append(deltas, o.scoreDelta)
+				switch {
+				case o.scoreDelta > 0:
+					v.Wins++
+				case o.scoreDelta < 0:
+					v.Losses++
+				default:
+					v.Ties++
+				}
+				m := byModel[o.model]
+				if m == nil {
+					m = &BenchArmModelView{Model: o.model}
+					byModel[o.model] = m
+					modelOrder = append(modelOrder, o.model)
+				}
+				m.Probes++
+				m.BaselineScore += o.baseScore
+				m.ArmScore += o.armScore
+				m.ScoreDelta += o.scoreDelta
+				m.TokenDelta += o.tokenDelta
+				m.WallDeltaMS += o.wallDelta
+				switch {
+				case o.scoreDelta > 0:
+					m.Wins++
+				case o.scoreDelta < 0:
+					m.Losses++
+				default:
+					m.Ties++
+				}
+			}
+			v.Models = len(modelOrder)
+			v.MeanScoreDelta = sumScore / float64(len(obs))
+			v.MeanTokenDelta = sumTokens / len(obs)
+			sort.Float64s(deltas)
+			mid := len(deltas) / 2
+			if len(deltas)%2 == 1 {
+				v.MedianScoreDelta = deltas[mid]
+			} else {
+				v.MedianScoreDelta = (deltas[mid-1] + deltas[mid]) / 2
+			}
+			sort.Strings(modelOrder)
+			for _, name := range modelOrder {
+				m := byModel[name]
+				m.BaselineScore /= float64(m.Probes)
+				m.ArmScore /= float64(m.Probes)
+				m.ScoreDelta /= float64(m.Probes)
+				m.TokenDelta /= m.Probes
+				m.WallDeltaMS /= int64(m.Probes)
+				v.ByModel = append(v.ByModel, *m)
+			}
+			entry.Arms = append(entry.Arms, v)
+		}
+		if len(entry.Arms) == 0 {
+			continue
+		}
+		// Best mean delta first: the arm most worth adopting leads.
+		sort.SliceStable(entry.Arms, func(i, j int) bool {
+			return entry.Arms[i].MeanScoreDelta > entry.Arms[j].MeanScoreDelta
+		})
+		out.Body.Capabilities = append(out.Body.Capabilities, entry)
+	}
+	return out, nil
+}
+
 // --- per-probe stage + check detail ------------------------------------------
 
 // BenchCheckView is one assertion's verdict.

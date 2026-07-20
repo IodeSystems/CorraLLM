@@ -828,8 +828,24 @@ the BackpressureError shape we already validated.
     surfaced in the journal.
   - **still unverified** — no real llm-bench run has published through this path, and the UI remains
     visually unrendered.
-  - **next** — `bench.tsx` shows per-capability rankings but no arm breakdown; the cross-model view
-    cannot yet answer "which tool format is better across all models".
+  ✅ **cross-model arm comparison** (2026-07-19, follow-on) — `GET /bench/arms`
+  (`BenchArmMatrix`) + an "A/B arms across models" section on `bench.tsx`. The per-model view
+  answers "did toon help THIS model"; this answers "does toon help at all", and the second cannot
+  be read off the first.
+  - Comparisons are **paired per probe**: an arm is credited only on probes where its baseline also
+    ran. Unpaired, an arm that happened to run against the strong models looks like an improvement
+    it never made. A probe whose baseline never ran is skipped entirely rather than counted as a win
+    for whatever did run.
+  - Mean **and** median delta are both reported, plus W/L/T and the paired probe/model counts — one
+    pathological probe must not carry a verdict the rest of the evidence does not support, and a
+    verdict resting on 3 probes must not read like one resting on 60. The mean averages over
+    PROBES, not models, since the pairing is per probe and that is where the evidence is.
+  - Token delta uses evaluated prompt + completion, so a cached prefix re-sent every turn is not
+    charged to an arm twice.
+  - Verified live: toon **+5.0% mean / +5.0% median, 3W/1L/2T over 6 paired probes, −1500 tokens** —
+    but the per-model table shows that is qwen +13% and claude −3%, i.e. the headline hides a split
+    decision. This is exactly why `byModel` is rendered under every arm rather than the aggregate
+    alone.
 
   **Migration risks / decisions to make before starting:**
   - crucible pulls in `agentkit` (`agent`, `llm`, `mcpmgr`); corrallm currently does not. New dep
