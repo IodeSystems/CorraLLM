@@ -1,0 +1,24 @@
+name: edit-safety-rename
+class: coding
+# Ladder rung L3: a cross-file rename (type Config → Settings, 6 usages across 4
+# files). This is where grep+sed/write (baseline) gets error-prone — miss a
+# usage and it won't compile — and where poly-lsp's workspace-wide node_edit
+# rename is atomic + (under --validate) reverts a partial break. Measures both
+# pass-rate (does baseline slip?) and broken_intermediates (do partial renames
+# land on disk?), vs polylsp / polylsp-validate.
+workspace: fixture/
+safetyCheck: "go build ./..."
+limits: { maxTurnsPerStage: 14, maxToolCallsPerStage: 40 }
+stages:
+  - prompt: |
+      Rename the type `Config` to `Settings` throughout this Go package. Keep the
+      package compiling and the tests passing. Update every usage.
+    checks:
+      # build+test enforce a CONSISTENT rename: a partial one (renamed the decl
+      # but not a caller, or vice versa) won't compile.
+      - cmd_ok: "go build ./..."
+      - cmd_ok: "go test ./..."
+      # the rename actually happened (type decl is Settings, not Config). Ignores
+      # comment mentions of Config — only the declaration matters.
+      - cmd_ok: "grep -q 'type Settings struct' app/config.go"
+      - cmd_ok: "! grep -q 'type Config struct' app/config.go"
