@@ -47,6 +47,14 @@ const defaultAllow = "go,git,ls,cat,grep,sed,python3"
 // did the right thing for the third time.
 const identicalCallLimit = 3
 
+// capabilitySystemPrompt deliberately mentions no workspace and no tools: a
+// capability probe tests the backend surface, not agentic behaviour, and any
+// mention of files gives a model somewhere else to look.
+const capabilitySystemPrompt = `You are answering a direct question about the content you were given.
+Answer from the content in this conversation — the image, audio, or text attached to the message.
+Do not look for files and do not ask for the content to be provided; it is already here.
+Answer concisely and directly.`
+
 const systemPrompt = `You are a precise autonomous software engineer working in a sandboxed workspace.
 You have MCP tools: read_file, write_file, list_dir, run (allowlisted programs, no shell), and possibly others.
 Work directly with the tools — do not ask the user questions. Investigate before editing.
@@ -315,6 +323,12 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 						defer wg.Done()
 						defer func() { <-sem }()
 						for _, mode := range RunMode(tsk.Run).Modes() {
+							// Capability observations across every repeat of this
+							// probe. Published once after the loop: a single pass is
+							// one sample, and the runner sends no temperature or
+							// seed, so a sampled model turned a coin flip into an
+							// authoritative capability verdict.
+							var capObs []CapabilityObservation
 							for runIdx := 0; runIdx < opts.runs(); runIdx++ {
 								// Per-combo watchdog: a hung MCP tool discovery or a stuck
 								// LLM retry has no internal deadline and would wedge the
@@ -327,7 +341,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 								// pass that silently ran warm must not stand as
 								// evidence for a path it never tested.
 								residNote := prepareResidency(comboCtx, resid, mode, model, opts.Exclusive)
-								r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir, runIdx)
+								r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir, string(mode), runIdx)
 								comboCancel()
 								if err != nil {
 									// A combo failure is DATA, not fatal: log it, synthesize
@@ -352,8 +366,11 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 								// resident and its footprint is real regardless of
 								// whether the probe finished in time.
 								pubCtx, pubCancel := context.WithTimeout(ctx, 60*time.Second)
-								fp := publishMeasurements(pubCtx, resid, model, mode, tsk, r)
+								fp, obs := publishMeasurements(pubCtx, resid, model, mode, tsk, r)
 								pubCancel()
+								if obs != nil {
+									capObs = append(capObs, *obs)
+								}
 								if fp > 0 {
 									mu.Lock()
 									footprints[model] = fp
@@ -370,6 +387,11 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 								}
 								appendRows(r)
 							}
+							// One verdict per (model, probe, mode), from every
+							// repeat that ran.
+							verdictCtx, verdictCancel := context.WithTimeout(ctx, 60*time.Second)
+							publishCapabilityVerdict(verdictCtx, resid, model, mode, tsk, capObs)
+							verdictCancel()
 						}
 					}()
 				}
@@ -663,6 +685,14 @@ func taskBudget(cfg Config, tsk *task.Task) int {
 // model resolved in favor of the base, failing that check 8/8 across every arm.
 func buildSystemPrompt(tsk *task.Task) string {
 	base := systemPrompt
+	// The default prompt opens "You are a precise autonomous software engineer
+	// working in a sandboxed workspace" and lists read_file/write_file/list_dir.
+	// For a capability check that framing IS the bug: it tells a model asked
+	// about an attached image to go looking for image files. A capability probe
+	// answers from what it was given, so it gets a prompt that says only that.
+	if tsk.Class == "capability" {
+		base = capabilitySystemPrompt
+	}
 	if tsk.System != "" {
 		base = tsk.System
 	}
@@ -673,7 +703,7 @@ func buildSystemPrompt(tsk *task.Task) string {
 }
 
 // runOne runs every stage of one task under one model + toolset.
-func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *task.Task, ts, outDir string, runIdx int) ([]Row, error) {
+func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *task.Task, ts, outDir, runMode string, runIdx int) ([]Row, error) {
 	scratch, err := os.MkdirTemp("", "llm-bench-ws-")
 	if err != nil {
 		return nil, err
@@ -704,6 +734,20 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 	mgr := mcpmgr.NewManager()
 	defer mgr.Close()
 
+	// A capability probe gets NO tools. It asks whether the BACKEND can do
+	// something — did the pixels arrive, did the audio decode — and the agent
+	// loop is not part of that question. Offering the workspace surface makes it
+	// part of the answer: capability-vision handed the model read_file/list_dir,
+	// so it read "this image" as a file to go find, listed an empty directory and
+	// replied "I don't see any image files in the workspace" — while the very
+	// same prompt sent straight to the backend answered "Red circles". The probe
+	// was measuring the harness and publishing the result as a capability gap.
+	//
+	// maxToolCallsPerStage: 0 was not enough: it caps how many calls may be MADE,
+	// but the tools were still advertised, and a model that can see a list_dir in
+	// its schema will reason about files whether or not it is allowed to call one.
+	toolless := tsk.Class == "capability"
+
 	// llm-bench-mcp is server 0; toolset servers follow. A toolset with its own
 	// file+nav surface cedes llm-bench-mcp's read/write/list (only run stays).
 	mcpArgs := []string{
@@ -730,17 +774,23 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 			Timeout: 60,
 		})
 	}
-	for _, cfg := range configs {
-		if err := mgr.StartServer(ctx, cfg); err != nil {
-			return nil, fmt.Errorf("start MCP %s: %w", cfg.Name, err)
+	var (
+		defs  []llm.ToolDef
+		tools []mcpmgr.MCPTool
+	)
+	if !toolless {
+		for _, cfg := range configs {
+			if err := mgr.StartServer(ctx, cfg); err != nil {
+				return nil, fmt.Errorf("start MCP %s: %w", cfg.Name, err)
+			}
 		}
+		t, err := waitTools(ctx, mgr, len(configs))
+		if err != nil {
+			return nil, err
+		}
+		tools = t
+		defs = mcpToolDefs(tools)
 	}
-	tools, err := waitTools(ctx, mgr, len(configs))
-	if err != nil {
-		return nil, err
-	}
-
-	defs := mcpToolDefs(tools)
 	validator := agent.NewSchemaValidator(defs)
 	baitNames := map[string]bool{}
 	for _, b := range tsk.BaitTools {
@@ -753,6 +803,21 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 	now := func() int64 { clock++; return clock }
 
 	runner := &meteredRunner{inner: opts.NewRunner(model), sc: sc}
+	// Pin sampling for capability probes. A capability check asks a yes/no
+	// question about the backend — did the pixels arrive, did the audio decode —
+	// and its answer must not depend on a sampler. corrallm.yaml launches
+	// ternary-bonsai-27b and gemma-4-12b with --temp 0.7, and the harness sent
+	// no temperature at all, so those models were sampled: capability-vision
+	// failed cold and passed warm on byte-identical input and was published as a
+	// cold-path capability failure.
+	//
+	// Quality probes are deliberately NOT pinned. They are meant to measure the
+	// model as it is actually served, sampler included; forcing greedy decoding
+	// there would measure a configuration nobody runs.
+	if tsk.Class == "capability" {
+		runner.temperature = &capabilityTemperature
+		runner.seed = &capabilitySeed
+	}
 	// The Shaper keeps every session inside the SAME token budget regardless of
 	// the model's raw window: unbounded tool results (a full `go test all` dump)
 	// otherwise snowball the prompt until every turn is a slow re-prefill.
@@ -975,7 +1040,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 	// P1 persistence: the scratch workspace + journal temp dir are about to be
 	// removed, so copy the journal and dump the session transcript under out/
 	// for the judge phase. Additive — runs.jsonl is unaffected.
-	if err := persistRun(ctx, outDir, model, tset.Name, tsk.Name, journalPath, store, runIdx); err != nil {
+	if err := persistRun(ctx, outDir, model, tset.Name, tsk.Name, runMode, journalPath, store, runIdx); err != nil {
 		return nil, fmt.Errorf("persist run artifacts: %w", err)
 	}
 	return rows, nil
@@ -983,13 +1048,11 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 
 // persistRun copies the call journal and dumps the conversation transcript into
 // out/<ts>/{journals,transcripts}/<combo>.jsonl for the judge phase.
-func persistRun(ctx context.Context, outDir, model, toolset, taskName, journalPath string, store *memStore, runIdx int) error {
-	combo := judge.ComboName(model, toolset, taskName)
-	// Per-run suffix so repeats (--runs) don't overwrite each other's artifacts.
-	// Run 0 keeps the plain name (single-run compat + the judge phase reads it).
-	if runIdx > 0 {
-		combo = fmt.Sprintf("%s_r%d", combo, runIdx)
-	}
+func persistRun(ctx context.Context, outDir, model, toolset, taskName, runMode, journalPath string, store *memStore, runIdx int) error {
+	// Mode AND repeat index, or two passes of the same probe overwrite each
+	// other: cold then warm left only the warm transcript, and repeats left only
+	// the last. Run 0 with no mode keeps the plain name for compatibility.
+	combo := judge.ComboVariant(model, toolset, taskName, runMode, runIdx)
 
 	jdir := filepath.Join(outDir, "journals")
 	if err := os.MkdirAll(jdir, 0o755); err != nil {
@@ -1192,12 +1255,39 @@ func workspaceBuilds(scratch, cmd string) bool {
 // current stage. This is the seam where the split is obtainable: agentkit's
 // Session only surfaces the combined cumulative Total (TokenUsage.Total), but
 // each round's StreamChunk.Usage carries prompt/completion separately.
+// capabilityTemperature/capabilitySeed pin greedy, reproducible decoding for
+// capability-class probes. Package-level so their addresses are stable.
+var (
+	capabilityTemperature = 0.0
+	capabilitySeed        = 1
+)
+
 type meteredRunner struct {
 	inner agent.LLMRunner
 	sc    *stageCounters
+	// temperature/seed, when set, override whatever the agent asked for. nil
+	// leaves the request untouched so the server's own sampling config governs.
+	temperature *float64
+	seed        *int
 }
 
 func (m *meteredRunner) ChatStream(ctx context.Context, msgs []llm.Message, tools []llm.ToolDef, opts *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	if m.temperature != nil || m.seed != nil {
+		// Copy rather than mutate: opts belongs to the agent loop and is reused
+		// across turns, so writing to it would leak this override into calls
+		// this runner does not own.
+		var o llm.ChatOpts
+		if opts != nil {
+			o = *opts
+		}
+		if m.temperature != nil {
+			o.Temperature = m.temperature
+		}
+		if m.seed != nil {
+			o.Seed = m.seed
+		}
+		opts = &o
+	}
 	in, err := m.inner.ChatStream(ctx, msgs, tools, opts)
 	if err != nil {
 		return nil, err

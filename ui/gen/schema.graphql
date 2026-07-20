@@ -30,8 +30,12 @@ type CorrallmQueryNamespace {
   benchJournal(
     model: String!
     probe: String!
+    """Repeat index for --runs; 0 is the first pass."""
+    run: Long
     runId: String!
-    """Arm's toolset; defaults to "baseline". Artifacts are per (model, toolset, probe)."""
+    """Arm's residency mode (cold | warm). A run:both probe writes one file per mode; without this you get whichever pass is named plainly."""
+    runMode: String
+    """Arm's toolset; defaults to "baseline"."""
     toolset: String
   ): corrallm_BenchJournalOutputBody @derived(operationId: "benchJournal")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
@@ -52,8 +56,12 @@ type CorrallmQueryNamespace {
   benchTranscript(
     model: String!
     probe: String!
+    """Repeat index for --runs; 0 is the first pass."""
+    run: Long
     runId: String!
-    """Arm's toolset; defaults to "baseline". Artifacts are per (model, toolset, probe)."""
+    """Arm's residency mode (cold | warm). A run:both probe writes one file per mode; without this you get whichever pass is named plainly."""
+    runMode: String
+    """Arm's toolset; defaults to "baseline"."""
     toolset: String
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
@@ -126,8 +134,12 @@ type CorrallmV1QueryNamespace {
   benchJournal(
     model: String!
     probe: String!
+    """Repeat index for --runs; 0 is the first pass."""
+    run: Long
     runId: String!
-    """Arm's toolset; defaults to "baseline". Artifacts are per (model, toolset, probe)."""
+    """Arm's residency mode (cold | warm). A run:both probe writes one file per mode; without this you get whichever pass is named plainly."""
+    runMode: String
+    """Arm's toolset; defaults to "baseline"."""
     toolset: String
   ): corrallm_BenchJournalOutputBody @derived(operationId: "benchJournal")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
@@ -148,8 +160,12 @@ type CorrallmV1QueryNamespace {
   benchTranscript(
     model: String!
     probe: String!
+    """Repeat index for --runs; 0 is the first pass."""
+    run: Long
     runId: String!
-    """Arm's toolset; defaults to "baseline". Artifacts are per (model, toolset, probe)."""
+    """Arm's residency mode (cold | warm). A run:both probe writes one file per mode; without this you get whichever pass is named plainly."""
+    runMode: String
+    """Arm's toolset; defaults to "baseline"."""
     toolset: String
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")

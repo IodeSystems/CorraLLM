@@ -183,12 +183,19 @@ func groupRows(rows []report.Row) []group {
 // loadContext returns the transcript/journal body text and its source label,
 // degrading gracefully: transcript → journal → checks-only.
 func loadContext(runDir string, g group, maxBytes int) (body, source string) {
-	combo := ComboName(g.model, g.toolset, g.task)
-	if entries, ok, _ := ReadTranscript(filepath.Join(runDir, "transcripts", combo+".jsonl")); ok {
-		return truncateMiddle(renderTranscript(entries), maxBytes), "transcript"
+	// Try each name a `run: both` probe may have written under, not just the
+	// bare combo: with the mode in the filename there is no longer a single
+	// predictable path, and falling straight through to checks-only would throw
+	// away a transcript that is sitting right there.
+	for _, combo := range ComboCandidates(g.model, g.toolset, g.task) {
+		if entries, ok, _ := ReadTranscript(filepath.Join(runDir, "transcripts", combo+".jsonl")); ok {
+			return truncateMiddle(renderTranscript(entries), maxBytes), "transcript"
+		}
 	}
-	if j, err := journal.Read(filepath.Join(runDir, "journals", combo+".jsonl")); err == nil && len(j) > 0 {
-		return truncateMiddle(renderJournal(j), maxBytes), "journal"
+	for _, combo := range ComboCandidates(g.model, g.toolset, g.task) {
+		if j, err := journal.Read(filepath.Join(runDir, "journals", combo+".jsonl")); err == nil && len(j) > 0 {
+			return truncateMiddle(renderJournal(j), maxBytes), "journal"
+		}
 	}
 	return "(no transcript or journal was persisted for this run — judge from the stage prompts and deterministic check outcomes only)", "checks-only"
 }
@@ -363,6 +370,41 @@ func writeJudgeJSONL(path string, results []Result) error {
 // transcripts/journals) and the judge (reading them).
 func ComboName(model, toolset, task string) string {
 	return sanitize(model) + "_" + sanitize(toolset) + "_" + sanitize(task)
+}
+
+// ComboVariant qualifies a combo with the residency mode and repeat index that
+// produced it.
+//
+// Without the mode, a `run: both` probe writes cold and warm to the SAME file
+// and the second pass silently overwrites the first — so the surviving
+// transcript for a cold/warm disagreement was the WARM one, i.e. the pass that
+// worked, which is precisely the one nobody needs to debug. Measured on
+// ternary-bonsai-27b/capability-vision: a 169-byte file holding only "Red
+// circles" while the cold failure it disagreed with was gone.
+//
+// Run 0 with no mode keeps the bare combo name, so single-run output and every
+// artifact written before this existed still resolve.
+func ComboVariant(model, toolset, task, runMode string, runIdx int) string {
+	name := ComboName(model, toolset, task)
+	if runMode != "" {
+		name += "_" + sanitize(runMode)
+	}
+	if runIdx > 0 {
+		name = fmt.Sprintf("%s_r%d", name, runIdx)
+	}
+	return name
+}
+
+// ComboCandidates lists the file names that may hold a combo's artifacts,
+// best-first, for a reader that does not know which passes ran.
+//
+// The judge is such a reader: it groups by model×toolset×task and has no run
+// mode, so it needs a defined order rather than a guess. Warm precedes cold
+// because a quality judgement should read the steady-state pass — a cold pass
+// exists to falsify a capability claim, not to represent normal behaviour.
+func ComboCandidates(model, toolset, task string) []string {
+	base := ComboName(model, toolset, task)
+	return []string{base, base + "_warm", base + "_cold"}
 }
 
 func sanitize(s string) string {

@@ -349,9 +349,27 @@ func (c *residencyClient) PublishCapability(ctx context.Context, model, modality
 // strictly better than losing the run. Failures are logged, not swallowed
 // silently, because a measurement pipeline that quietly stops publishing looks
 // exactly like one with nothing to report.
-func publishMeasurements(ctx context.Context, c *residencyClient, model string, mode RunMode, tsk *task.Task, rows []Row) int {
+// CapabilityObservation is one repeat's verdict on one capability probe.
+type CapabilityObservation struct {
+	Verified bool
+	Detail   string
+}
+
+// publishMeasurements reads VRAM while the model is still resident and returns
+// the footprint plus this pass's capability observation (nil when the probe says
+// nothing about a modality).
+//
+// The capability verdict is NOT published here any more. One pass is one sample,
+// and llm-bench sends no temperature or seed, so a model configured with
+// --temp 0.7 is sampled: publishing per pass turned a coin flip into an
+// authoritative "this modality does not work". Observed on
+// ternary-bonsai-27b/capability-vision, which failed cold and passed warm on
+// identical input and was recorded as a cold-path capability failure. The caller
+// collects observations across repeats and publishes once via
+// publishCapabilityVerdict.
+func publishMeasurements(ctx context.Context, c *residencyClient, model string, mode RunMode, tsk *task.Task, rows []Row) (int, *CapabilityObservation) {
 	if c == nil || len(rows) == 0 {
-		return 0
+		return 0, nil
 	}
 
 	footprint := 0
@@ -371,28 +389,66 @@ func publishMeasurements(ctx context.Context, c *residencyClient, model string, 
 	// about vision, and publishing a verdict from one would be worse than
 	// publishing none — it would assert, with authority, something never tested.
 	if tsk.Class != "capability" || tsk.Requires.Modality == "" {
-		return footprint
+		return footprint, nil
 	}
-	verified := true
-	var detail string
+	obs := &CapabilityObservation{Verified: true}
 	for _, r := range rows {
 		if !r.Pass {
-			verified = false
+			obs.Verified = false
 			for _, ck := range r.Checks {
 				if !ck.Pass {
-					detail = ck.Desc + " — " + ck.Detail
+					obs.Detail = ck.Desc + " \u2014 " + ck.Detail
 					break
 				}
 			}
 			break
 		}
 	}
+	return footprint, obs
+}
+
+// publishCapabilityVerdict publishes ONE verdict for a probe from every repeat
+// of it, and reports flakiness rather than hiding it.
+//
+// A capability is claimed as verified if ANY repeat observed it working: the
+// question is whether the model can do this at all, and a model that described
+// the image correctly once demonstrably can. Reliability is a different axis and
+// belongs in the detail, not in a boolean that routing reads.
+//
+// The asymmetry is deliberate. Publishing verified=false needs EVERY repeat to
+// agree, because a false verdict asserts a capability is absent and one sampled
+// miss is not evidence of that. Publishing verified=true needs one success,
+// because a success cannot be a false positive in the way a failure can be a
+// false negative — the pixels either arrived or they did not.
+func publishCapabilityVerdict(ctx context.Context, c *residencyClient, model string, mode RunMode, tsk *task.Task, obs []CapabilityObservation) {
+	if c == nil || len(obs) == 0 {
+		return
+	}
+	passed := 0
+	detail := ""
+	for _, o := range obs {
+		if o.Verified {
+			passed++
+		} else if detail == "" {
+			detail = o.Detail
+		}
+	}
+	verified := passed > 0
+	switch {
+	case passed == len(obs):
+		detail = ""
+	case passed > 0:
+		// Flaky: say so in the detail so a reader is not told a shaky capability
+		// is solid. Without repeats (--runs 1) this branch cannot be reached, so
+		// a single run still reads exactly as it did before.
+		detail = fmt.Sprintf("FLAKY: observed in %d of %d runs \u2014 %s", passed, len(obs), detail)
+	}
 	if err := c.PublishCapability(ctx, model, tsk.Requires.Modality, string(mode), tsk.Name, detail, verified); err != nil {
 		log.Printf("llm-bench: publish capability verdict for %s failed: %v", model, err)
-	} else {
-		log.Printf("llm-bench: %s modality=%s runMode=%q verified=%v", model, tsk.Requires.Modality, mode, verified)
+		return
 	}
-	return footprint
+	log.Printf("llm-bench: %s modality=%s runMode=%q verified=%v (%d/%d runs)",
+		model, tsk.Requires.Modality, mode, verified, passed, len(obs))
 }
 
 // Skip records a probe that was never a candidate for a model, and why. It is

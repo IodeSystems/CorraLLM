@@ -722,6 +722,26 @@ the BackpressureError shape we already validated.
   was verified once, by a human, against a warm model. **Cold-path probing is therefore a P15
   requirement, not a nice-to-have** — a warm-only capability check would have passed this bug.
 
+  > **⚠ Correction (2026-07-20): the cold-drop bug did not reproduce, and the probe was at fault.**
+  > With sampling pinned (`--temp 0` + seed) and the workspace tools removed from capability probes,
+  > `ternary-bonsai-27b` answers "Red circle" **cold AND warm, 3/3 runs each** — and so does
+  > `gemma-4-12b` (12/12 stage rows). The cold pass evaluates ~900 prompt tokens of image and gives
+  > the same answer as warm, so the image is not being dropped.
+  >
+  > What actually happened: the probe ran through the agent loop with the default system prompt
+  > ("...working in a sandboxed workspace. You have MCP tools: read_file, write_file, list_dir...").
+  > The model read "this image" as a file to go find, called `list_dir`, got `.git/`, and answered
+  > *"I don't see any image files in the workspace"* — while the identical prompt sent straight to
+  > the backend answered *"Red circles"*. `maxToolCallsPerStage: 0` did not save it: that caps calls
+  > made, but the tools were still advertised. Sampling then hid the pattern — bonsai and gemma run
+  > at `--temp 0.7` and the harness sent no temperature, so warm sometimes got lucky and the
+  > cold/warm split read as a residency bug.
+  >
+  > The 2026-07-18 human observation is left above as recorded; it may have been the same harness
+  > effect or genuinely fixed since. **Cold-path probing stays a requirement** — nothing here shows
+  > it is unnecessary, only that this particular finding was an artifact. What it does show is that
+  > a capability probe must test the BACKEND, not the agent loop wrapped around it.
+
   **Tiers (one runner, three probe kinds):**
   - **T1 capability** — does the model do what it CLAIMS? Cross-check declared `modalities`
     against the live backend: `/props`, plus real payloads per declared modality (image in →
@@ -846,6 +866,31 @@ the BackpressureError shape we already validated.
     but the per-model table shows that is qwen +13% and claude −3%, i.e. the headline hides a split
     decision. This is exactly why `byModel` is rendered under every arm rather than the aggregate
     alone.
+
+  ✅ **first real run + the four fixes it forced** (2026-07-20) — full matrix, 4 models, exclusive,
+  19 min: `83 probe results, 98 stages, 288 checks (13 skipped)`, all readable through the API.
+  Capability scoring, the drill-in, and the arm split all worked on real data. Four defects surfaced:
+  1. **Artifacts collided per arm.** `persistRun` named files by (model, toolset, task) only, so a
+     `run: both` probe's warm pass overwrote the cold one and the drill-in served the PASSING arm's
+     transcript — the one nobody needs. Fixed by `judge.ComboVariant` (mode + repeat index in the
+     name); the judge reads via `ComboCandidates` (warm before cold), and the API falls back to the
+     bare name so historical artifacts still resolve.
+  2. **Nothing pinned sampling.** `agentkit`'s `llm.ChatOpts` had no temperature or seed at all, so
+     llama.cpp's own `--temp 0.7` governed and capability probes were a coin flip. Added
+     `Temperature`/`Seed` (pointers, so unset stays distinct from a deliberate 0) to agentkit and
+     pinned them for capability-class probes only — quality probes still measure the model as served.
+  3. **One sample became a verdict.** `publishMeasurements` published a capability verdict per pass.
+     Now observations accumulate across repeats and `publishCapabilityVerdict` publishes once:
+     `verified=true` if ANY repeat saw it work, `verified=false` only when EVERY repeat agrees, and
+     a mixed result is labelled `FLAKY: observed in k of n runs`. Deliberately asymmetric — a
+     success cannot be a false positive the way a miss can be a false negative.
+  4. **Capability probes were measuring the harness** — see the correction under the motivating bug
+     above. They now run tool-free with `capabilitySystemPrompt`, which mentions no workspace and no
+     tools.
+  - **next** — the `find-render-entrypoints` failure the drill-in explained is still real: gemma
+    burned 10 turns and 9 tool calls exploring, never wrote `findings.txt`, and one grep went out
+    malformed (`"grep","-r","","selectorGrammarHelp","."`). Worth a look as a genuine finding rather
+    than a harness artifact.
 
   **Migration risks / decisions to make before starting:**
   - crucible pulls in `agentkit` (`agent`, `llm`, `mcpmgr`); corrallm currently does not. New dep

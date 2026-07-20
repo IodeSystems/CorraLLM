@@ -1812,6 +1812,8 @@ function ProbeRow({
             model={model}
             probe={probe.probe}
             toolset={baseline?.toolset || undefined}
+            runMode={baseline?.runMode || undefined}
+            armLabel={baseline?.label || undefined}
           />
         )}
       </AccordionDetails>

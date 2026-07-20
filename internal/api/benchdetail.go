@@ -582,7 +582,9 @@ type BenchArtifactInput struct {
 	RunID   string `query:"runId" required:"true"`
 	Model   string `query:"model" required:"true"`
 	Probe   string `query:"probe" required:"true"`
-	Toolset string `query:"toolset" doc:"Arm's toolset; defaults to \"baseline\". Artifacts are per (model, toolset, probe)."`
+	Toolset string `query:"toolset" doc:"Arm's toolset; defaults to \"baseline\"."`
+	RunMode string `query:"runMode" doc:"Arm's residency mode (cold | warm). A run:both probe writes one file per mode; without this you get whichever pass is named plainly."`
+	Run     int    `query:"run" doc:"Repeat index for --runs; 0 is the first pass."`
 }
 
 // BenchTranscriptEntry is one message in a probe's conversation.
@@ -653,16 +655,25 @@ func (h *Handlers) artifactPath(ctx context.Context, kind string, in *BenchArtif
 	if toolset == "" {
 		toolset = "baseline"
 	}
-	combo := judge.ComboName(in.Model, toolset, in.Probe)
 	root := filepath.Clean(run.OutDir)
-	p := filepath.Join(root, kind, combo+".jsonl")
-	if !strings.HasPrefix(p, root+string(filepath.Separator)) {
-		return "", "resolved artifact path escapes the run directory"
+	// Exact arm first, then the bare combo. The fallback is what lets runs
+	// benched before the mode was in the filename still resolve; without it
+	// every historical artifact would report as missing.
+	candidates := []string{judge.ComboVariant(in.Model, toolset, in.Probe, in.RunMode, in.Run)}
+	if in.RunMode != "" || in.Run != 0 {
+		candidates = append(candidates, judge.ComboName(in.Model, toolset, in.Probe))
 	}
-	if _, err := os.Stat(p); err != nil {
-		return "", fmt.Sprintf("no %s recorded for %s under toolset %q", kind, in.Probe, toolset)
+	for _, combo := range candidates {
+		p := filepath.Join(root, kind, combo+".jsonl")
+		if !strings.HasPrefix(p, root+string(filepath.Separator)) {
+			return "", "resolved artifact path escapes the run directory"
+		}
+		if _, err := os.Stat(p); err == nil {
+			return p, ""
+		}
 	}
-	return p, ""
+	return "", fmt.Sprintf("no %s recorded for %s under toolset %q runMode %q",
+		kind, in.Probe, toolset, in.RunMode)
 }
 
 // readJSONL streams a JSONL artifact, calling fn per line, capped.

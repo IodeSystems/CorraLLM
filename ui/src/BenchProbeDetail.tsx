@@ -75,9 +75,9 @@ const ProbeDetailDoc = graphql(/* GraphQL */ `
 `)
 
 const TranscriptDoc = graphql(/* GraphQL */ `
-  query BenchTranscript($runId: String!, $model: String!, $probe: String!, $toolset: String) {
+  query BenchTranscript($runId: String!, $model: String!, $probe: String!, $toolset: String, $runMode: String) {
     corrallm {
-      benchTranscript(runId: $runId, model: $model, probe: $probe, toolset: $toolset) {
+      benchTranscript(runId: $runId, model: $model, probe: $probe, toolset: $toolset, runMode: $runMode) {
         available
         reason
         truncated
@@ -93,9 +93,9 @@ const TranscriptDoc = graphql(/* GraphQL */ `
 `)
 
 const JournalDoc = graphql(/* GraphQL */ `
-  query BenchJournal($runId: String!, $model: String!, $probe: String!, $toolset: String) {
+  query BenchJournal($runId: String!, $model: String!, $probe: String!, $toolset: String, $runMode: String) {
     corrallm {
-      benchJournal(runId: $runId, model: $model, probe: $probe, toolset: $toolset) {
+      benchJournal(runId: $runId, model: $model, probe: $probe, toolset: $toolset, runMode: $runMode) {
         available
         reason
         truncated
@@ -114,7 +114,17 @@ const JournalDoc = graphql(/* GraphQL */ `
 
 const n = (v: unknown): number => Number(v ?? 0) || 0
 
-type Props = { runId: string; model: string; probe: string; toolset?: string }
+type Props = {
+  runId: string
+  model: string
+  probe: string
+  // Which ARM's artifacts to read. A run:both probe writes one transcript per
+  // residency mode, so without the mode you get whichever pass happens to be
+  // named plainly rather than the arm on screen.
+  toolset?: string
+  runMode?: string
+  armLabel?: string
+}
 
 /** Monospace block for prompts, args, and message bodies. */
 function Mono({ children }: { children: React.ReactNode }) {
@@ -263,10 +273,10 @@ function ChecksAndStages({ runId, model, probe }: Props) {
   )
 }
 
-function Transcript({ runId, model, probe, toolset }: Props) {
+function Transcript({ runId, model, probe, toolset, runMode, armLabel }: Props) {
   const q = useQuery({
-    queryKey: ['benchTranscript', runId, model, probe, toolset],
-    queryFn: () => gqlClient.request(TranscriptDoc, { runId, model, probe, toolset }),
+    queryKey: ['benchTranscript', runId, model, probe, toolset, runMode],
+    queryFn: () => gqlClient.request(TranscriptDoc, { runId, model, probe, toolset, runMode }),
   })
   if (q.isLoading) return <CircularProgress size={20} />
   const t = q.data?.corrallm?.benchTranscript
@@ -275,6 +285,11 @@ function Transcript({ runId, model, probe, toolset }: Props) {
   }
   return (
     <Stack spacing={1}>
+      {armLabel && (
+        <Typography variant="caption" color="text.secondary">
+          Arm: <b>{armLabel}</b> — each arm records its own conversation.
+        </Typography>
+      )}
       {t.truncated && <Alert severity="warning">Transcript truncated — showing the first 2000 entries.</Alert>}
       {(t.entries ?? []).map((e, i) => (
         <Box key={i}>
@@ -296,10 +311,10 @@ function Transcript({ runId, model, probe, toolset }: Props) {
   )
 }
 
-function Journal({ runId, model, probe, toolset }: Props) {
+function Journal({ runId, model, probe, toolset, runMode, armLabel }: Props) {
   const q = useQuery({
-    queryKey: ['benchJournal', runId, model, probe, toolset],
-    queryFn: () => gqlClient.request(JournalDoc, { runId, model, probe, toolset }),
+    queryKey: ['benchJournal', runId, model, probe, toolset, runMode],
+    queryFn: () => gqlClient.request(JournalDoc, { runId, model, probe, toolset, runMode }),
   })
   if (q.isLoading) return <CircularProgress size={20} />
   const j = q.data?.corrallm?.benchJournal
@@ -311,6 +326,11 @@ function Journal({ runId, model, probe, toolset }: Props) {
   }
   return (
     <TableContainer>
+      {armLabel && (
+        <Typography variant="caption" color="text.secondary">
+          Arm: <b>{armLabel}</b>
+        </Typography>
+      )}
       <Table size="small">
         <TableHead>
           <TableRow>
