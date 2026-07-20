@@ -120,7 +120,31 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Path:        "/api/v1/bench/probes",
 		Summary:     "One model's last bench run broken out by capability, probe by probe.",
 		Tags:        []string{"observability"},
+	}, h.BenchProbesByCapability)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchProbeDetail",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/probe/detail",
+		Summary:     "One probe's stage-by-stage metrics and check verdicts — why it scored what it did.",
+		Tags:        []string{"observability"},
 	}, h.BenchProbeDetail)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchTranscript",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/probe/transcript",
+		Summary:     "One probe's recorded conversation, read from the run's artifacts on disk.",
+		Tags:        []string{"observability"},
+	}, h.BenchTranscript)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchJournal",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/probe/journal",
+		Summary:     "One probe's tool-call journal, including bait and poisoned-result flags.",
+		Tags:        []string{"observability"},
+	}, h.BenchJournal)
 
 	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchCapabilityMatrix",

@@ -796,6 +796,41 @@ the BackpressureError shape we already validated.
   - **unverified** — neither UI surface has been visually rendered (the console requires pasting an
     admin token). Both typecheck and lint clean and their data sources are verified.
 
+  ✅ **A/B arms + probe drill-in** (2026-07-19, follow-on) — two gaps in the above.
+  - **Arms were being averaged.** `PublishProbeResults` keyed on (model, probe, runMode), so two
+    toolsets or two tool formats of the same probe UPSERTed over each other — destroying the exact
+    comparison an A/B exists to make. An **arm is (toolset, toolFormat, runMode)** and all three are
+    now part of the key, in the publisher and in `bench_probe_results`' UNIQUE constraint.
+  - **Baseline arm, not pooled average.** A probe's headline score comes from one designated arm
+    (rank: warm > any > cold, then `baseline` toolset, then `json` format, then a lexicographic
+    tiebreak so the choice is deterministic); other arms render as ± deltas. Pooling would move a
+    model's score whenever an arm was added or dropped, which reads as a quality change that never
+    happened. `BenchCapabilityMatrix` folds to the baseline BEFORE accumulating, or a model running
+    a 3-arm A/B contributes 3× the stages of one running a single arm.
+  - Arms reaching different verdicts set `disagreement` — the finding a pooled score hides.
+  - **Drill-in.** `bench_probe_stages` + `bench_probe_checks` persist per-stage metrics (turns, tool
+    calls, bait calls, broken intermediates, compactions, tok/s) and every check's kind/desc/pass/
+    detail. `GET /bench/probe/detail` serves them. Transcripts and journals stay as FILES and are
+    served by `GET /bench/probe/{transcript,journal}` from `bench_runs.out_dir`, which llm-bench now
+    reports (corrallm cannot infer it: `--out` is relative to llm-bench's cwd, and it previously
+    learned the path only by scraping `wrote out/<ts>` from the child's stdout). Host is recorded so
+    a run benched elsewhere says so instead of returning an empty transcript that reads as "the
+    model said nothing".
+  - Artifact filenames are built server-side via `judge.ComboName`, never taken from the caller,
+    with a containment check as backstop — otherwise these endpoints are a file-read primitive for
+    anyone who reaches the API. Covered by a traversal test.
+  - `Open` drops a pre-arms `bench_probe_results` so the schema recreates it: the fix is to a UNIQUE
+    constraint and SQLite cannot alter one in place. **Safe only because the table has never carried
+    a real run** — if it ever ships with real history this must become a copy-into-new-table
+    migration. See `dropStaleProbeTables`.
+  - Verified end-to-end against a live server: `json` baseline 50% vs `toon` **+50%** at 25% fewer
+    input tokens, failing check `cmd_ok: exit 2: auth.go:14: undefined: Register`, bait tool call
+    surfaced in the journal.
+  - **still unverified** — no real llm-bench run has published through this path, and the UI remains
+    visually unrendered.
+  - **next** — `bench.tsx` shows per-capability rankings but no arm breakdown; the cross-model view
+    cannot yet answer "which tool format is better across all models".
+
   **Migration risks / decisions to make before starting:**
   - crucible pulls in `agentkit` (`agent`, `llm`, `mcpmgr`); corrallm currently does not. New dep
     on the serving repo even though only the bench binary uses it — acceptable, but name it.

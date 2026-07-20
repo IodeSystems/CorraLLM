@@ -89,6 +89,18 @@ type Options struct {
 	// (20m). A combo that outlasts it is aborted into failed rows so no single
 	// hang (MCP discovery, LLM retry storm) can wedge the matrix.
 	ComboTimeout time.Duration
+
+	// Runs re-runs each combo this many times to measure variance (LLM tool
+	// choice + broken/token metrics are stochastic). 0/1 = one run. Each repeat
+	// emits its own rows, tagged Row.Run.
+	Runs int
+}
+
+func (o Options) runs() int {
+	if o.Runs > 1 {
+		return o.Runs
+	}
+	return 1
 }
 
 func (o Options) comboTimeout() time.Duration {
@@ -303,58 +315,61 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 						defer wg.Done()
 						defer func() { <-sem }()
 						for _, mode := range RunMode(tsk.Run).Modes() {
-							// Per-combo watchdog: a hung MCP tool discovery or a stuck
-							// LLM retry has no internal deadline and would wedge the
-							// whole matrix silently (observed: 87min hang). Cap each
-							// combo; a timeout aborts it into failed rows.
-							comboCtx, comboCancel := context.WithTimeout(ctx, opts.comboTimeout())
-							// Put the model into the residency state this pass
-							// asks for BEFORE the clock starts. residNote records
-							// what actually happened, including failure — a cold
-							// pass that silently ran warm must not stand as
-							// evidence for a path it never tested.
-							residNote := prepareResidency(comboCtx, resid, mode, model, opts.Exclusive)
-							r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir)
-							comboCancel()
-							if err != nil {
-								// A combo failure is DATA, not fatal: log it, synthesize
-								// failed stage rows, and keep the matrix going.
-								msg := fmt.Sprintf("%s/%s/%s: %v", model, tset.Name, tsk.Name, err)
-								log.Printf("llm-bench: combo failed (continuing): %s", msg)
-								mu.Lock()
-								comboErrs = append(comboErrs, msg)
-								mu.Unlock()
-								r = failedRows(tsk, model, tset.Name, ts, err.Error())
+							for runIdx := 0; runIdx < opts.runs(); runIdx++ {
+								// Per-combo watchdog: a hung MCP tool discovery or a stuck
+								// LLM retry has no internal deadline and would wedge the
+								// whole matrix silently (observed: 87min hang). Cap each
+								// combo; a timeout aborts it into failed rows.
+								comboCtx, comboCancel := context.WithTimeout(ctx, opts.comboTimeout())
+								// Put the model into the residency state this pass
+								// asks for BEFORE the clock starts. residNote records
+								// what actually happened, including failure — a cold
+								// pass that silently ran warm must not stand as
+								// evidence for a path it never tested.
+								residNote := prepareResidency(comboCtx, resid, mode, model, opts.Exclusive)
+								r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir, runIdx)
+								comboCancel()
+								if err != nil {
+									// A combo failure is DATA, not fatal: log it, synthesize
+									// failed stage rows, and keep the matrix going.
+									msg := fmt.Sprintf("%s/%s/%s: %v", model, tset.Name, tsk.Name, err)
+									log.Printf("llm-bench: combo failed (continuing): %s", msg)
+									mu.Lock()
+									comboErrs = append(comboErrs, msg)
+									mu.Unlock()
+									r = failedRows(tsk, model, tset.Name, ts, err.Error())
+								}
+								// Measure and publish while the model is still resident
+								// and nothing else is contending — the whole reason
+								// llm-bench, not the serving path, is the measurer.
+								// Publish on a FRESH context derived from the run's
+								// ctx, never comboCtx: comboCancel() has already
+								// fired by here, so comboCtx is dead and every
+								// publish failed with "context canceled" — silently
+								// for the VRAM read, which just returned ok=false and
+								// recorded a 0 footprint. A measurement must also
+								// outlive a combo that TIMED OUT: the model was
+								// resident and its footprint is real regardless of
+								// whether the probe finished in time.
+								pubCtx, pubCancel := context.WithTimeout(ctx, 60*time.Second)
+								fp := publishMeasurements(pubCtx, resid, model, mode, tsk, r)
+								pubCancel()
+								if fp > 0 {
+									mu.Lock()
+									footprints[model] = fp
+									mu.Unlock()
+								}
+								// Stamp the run's tool-result format on every row (constant
+								// per run) so format aggregates are comparable.
+								for j := range r {
+									r[j].ToolFormat = toolFmt
+									r[j].RunMode = string(mode)
+									r[j].ResidencyNote = residNote
+									r[j].Capability = tsk.Requires.EffectiveCapability()
+									r[j].Run = runIdx
+								}
+								appendRows(r)
 							}
-							// Measure and publish while the model is still resident
-							// and nothing else is contending — the whole reason
-							// llm-bench, not the serving path, is the measurer.
-							// Publish on a FRESH context derived from the run's
-							// ctx, never comboCtx: comboCancel() has already
-							// fired by here, so comboCtx is dead and every
-							// publish failed with "context canceled" — silently
-							// for the VRAM read, which just returned ok=false and
-							// recorded a 0 footprint. A measurement must also
-							// outlive a combo that TIMED OUT: the model was
-							// resident and its footprint is real regardless of
-							// whether the probe finished in time.
-							pubCtx, pubCancel := context.WithTimeout(ctx, 60*time.Second)
-							fp := publishMeasurements(pubCtx, resid, model, mode, tsk, r)
-							pubCancel()
-							if fp > 0 {
-								mu.Lock()
-								footprints[model] = fp
-								mu.Unlock()
-							}
-							// Stamp the run's tool-result format on every row (constant
-							// per run) so format aggregates are comparable.
-							for j := range r {
-								r[j].ToolFormat = toolFmt
-								r[j].RunMode = string(mode)
-								r[j].ResidencyNote = residNote
-								r[j].Capability = tsk.Requires.EffectiveCapability()
-							}
-							appendRows(r)
 						}
 					}()
 				}
@@ -371,7 +386,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	// it: the aggregate still drives the existing cross-model table, while these
 	// rows are what let the console break a score out by capability and show
 	// which probe produced it.
-	PublishProbeResults(ctx, resid, ts, rows, skips)
+	PublishProbeResults(ctx, resid, ts, outDir, rows, skips)
 
 	if err := report.WriteAll(outDir, ts, rows); err != nil {
 		return rows, outDir, err
@@ -658,7 +673,7 @@ func buildSystemPrompt(tsk *task.Task) string {
 }
 
 // runOne runs every stage of one task under one model + toolset.
-func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *task.Task, ts, outDir string) ([]Row, error) {
+func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *task.Task, ts, outDir string, runIdx int) ([]Row, error) {
 	scratch, err := os.MkdirTemp("", "llm-bench-ws-")
 	if err != nil {
 		return nil, err
@@ -960,7 +975,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 	// P1 persistence: the scratch workspace + journal temp dir are about to be
 	// removed, so copy the journal and dump the session transcript under out/
 	// for the judge phase. Additive — runs.jsonl is unaffected.
-	if err := persistRun(ctx, outDir, model, tset.Name, tsk.Name, journalPath, store); err != nil {
+	if err := persistRun(ctx, outDir, model, tset.Name, tsk.Name, journalPath, store, runIdx); err != nil {
 		return nil, fmt.Errorf("persist run artifacts: %w", err)
 	}
 	return rows, nil
@@ -968,8 +983,13 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 
 // persistRun copies the call journal and dumps the conversation transcript into
 // out/<ts>/{journals,transcripts}/<combo>.jsonl for the judge phase.
-func persistRun(ctx context.Context, outDir, model, toolset, taskName, journalPath string, store *memStore) error {
+func persistRun(ctx context.Context, outDir, model, toolset, taskName, journalPath string, store *memStore, runIdx int) error {
 	combo := judge.ComboName(model, toolset, taskName)
+	// Per-run suffix so repeats (--runs) don't overwrite each other's artifacts.
+	// Run 0 keeps the plain name (single-run compat + the judge phase reads it).
+	if runIdx > 0 {
+		combo = fmt.Sprintf("%s_r%d", combo, runIdx)
+	}
 
 	jdir := filepath.Join(outDir, "journals")
 	if err := os.MkdirAll(jdir, 0o755); err != nil {

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -417,22 +418,26 @@ type Skip struct {
 // Rows are folded to one record per (model, probe, runMode): the probe, not the
 // stage, is the unit a reader reasons about, and cold-vs-warm stays split
 // because a disagreement between them is itself the finding.
-func PublishProbeResults(ctx context.Context, c *residencyClient, runID string, rows []Row, skips []Skip) {
+func PublishProbeResults(ctx context.Context, c *residencyClient, runID, outDir string, rows []Row, skips []Skip) {
 	if c == nil || runID == "" {
 		return
 	}
-	type key struct{ model, probe, mode string }
+	// The key is the ARM, not just the probe. Toolset and tool format are the
+	// A/B dimensions a run varies on purpose; folding them together averages
+	// the arms into one number and destroys the comparison they exist to make.
+	type key struct{ model, probe, mode, toolset, format string }
 	type agg struct {
 		class, capability         string
 		stages, passed            int
 		checksPassed, checksTotal int
+		newPrompt, completion     int
 		wall                      int64
 		note                      string
 	}
 	byProbe := map[key]*agg{}
 	var order []key
 	for _, r := range rows {
-		k := key{r.Model, r.Task, r.RunMode}
+		k := key{r.Model, r.Task, r.RunMode, r.Toolset, r.ToolFormat}
 		a := byProbe[k]
 		if a == nil {
 			a = &agg{class: r.Class, capability: r.Capability}
@@ -445,6 +450,11 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID string, 
 		}
 		a.checksPassed += r.ChecksPassed
 		a.checksTotal += r.ChecksTotal
+		// NewPromptTokens, not PromptTokens: the cached prefix is re-sent every
+		// turn and evaluated once, so summing the prompt charges the tool schema
+		// per turn — which made a ~12% real gap between two arms look like 2.2x.
+		a.newPrompt += r.NewPromptTokens
+		a.completion += r.CompletionTokens
 		a.wall += r.WallMs
 		// First note wins: the earliest failing stage is the one that explains
 		// the probe: later stages fail downstream of it.
@@ -453,29 +463,36 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID string, 
 		}
 	}
 	type record struct {
-		Model        string `json:"model"`
-		Probe        string `json:"probe"`
-		Class        string `json:"class,omitempty"`
-		Capability   string `json:"capability,omitempty"`
-		RunMode      string `json:"runMode,omitempty"`
-		Stages       int    `json:"stages"`
-		StagesPassed int    `json:"stagesPassed"`
-		ChecksPassed int    `json:"checksPassed"`
-		ChecksTotal  int    `json:"checksTotal"`
-		Pass         bool   `json:"pass"`
-		WallMS       int64  `json:"wallMs"`
-		Skipped      bool   `json:"skipped,omitempty"`
-		SkipReason   string `json:"skipReason,omitempty"`
-		Note         string `json:"note,omitempty"`
+		Model            string `json:"model"`
+		Probe            string `json:"probe"`
+		Class            string `json:"class,omitempty"`
+		Capability       string `json:"capability,omitempty"`
+		RunMode          string `json:"runMode,omitempty"`
+		Toolset          string `json:"toolset,omitempty"`
+		ToolFormat       string `json:"toolFormat,omitempty"`
+		Stages           int    `json:"stages"`
+		StagesPassed     int    `json:"stagesPassed"`
+		ChecksPassed     int    `json:"checksPassed"`
+		ChecksTotal      int    `json:"checksTotal"`
+		Pass             bool   `json:"pass"`
+		WallMS           int64  `json:"wallMs"`
+		NewPromptTokens  int    `json:"newPromptTokens"`
+		CompletionTokens int    `json:"completionTokens"`
+		Skipped          bool   `json:"skipped,omitempty"`
+		SkipReason       string `json:"skipReason,omitempty"`
+		Note             string `json:"note,omitempty"`
 	}
 	recs := make([]record, 0, len(order)+len(skips))
 	for _, k := range order {
 		a := byProbe[k]
 		recs = append(recs, record{
 			Model: k.model, Probe: k.probe, Class: a.class, Capability: a.capability,
-			RunMode: k.mode, Stages: a.stages, StagesPassed: a.passed,
+			RunMode: k.mode, Toolset: k.toolset, ToolFormat: k.format,
+			Stages: a.stages, StagesPassed: a.passed,
 			ChecksPassed: a.checksPassed, ChecksTotal: a.checksTotal,
-			Pass: a.stages > 0 && a.passed == a.stages, WallMS: a.wall, Note: a.note,
+			Pass: a.stages > 0 && a.passed == a.stages, WallMS: a.wall,
+			NewPromptTokens: a.newPrompt, CompletionTokens: a.completion,
+			Note: a.note,
 		})
 	}
 	for _, s := range skips {
@@ -487,7 +504,80 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID string, 
 	if len(recs) == 0 {
 		return
 	}
-	body, err := json.Marshal(map[string]any{"runId": runID, "results": recs})
+
+	// Per-stage detail and per-check verdicts: the evidence behind the score.
+	// Published in the same call as the summary so a reader who sees a bad probe
+	// can always ask why — a two-call design would leave runs whose second call
+	// failed showing a score with no explanation.
+	type stageRec struct {
+		Model               string  `json:"model"`
+		Probe               string  `json:"probe"`
+		RunMode             string  `json:"runMode,omitempty"`
+		Toolset             string  `json:"toolset,omitempty"`
+		ToolFormat          string  `json:"toolFormat,omitempty"`
+		Stage               int     `json:"stage"`
+		Prompt              string  `json:"prompt,omitempty"`
+		Pass                bool    `json:"pass,omitempty"`
+		LimitBreached       bool    `json:"limitBreached,omitempty"`
+		Note                string  `json:"note,omitempty"`
+		Turns               int     `json:"turns,omitempty"`
+		ToolCalls           int     `json:"toolCalls,omitempty"`
+		NewPromptTokens     int     `json:"newPromptTokens,omitempty"`
+		CompletionTokens    int     `json:"completionTokens,omitempty"`
+		InvalidArgRetries   int     `json:"invalidArgRetries,omitempty"`
+		JSONErrors          int     `json:"jsonErrors,omitempty"`
+		RepeatedCalls       int     `json:"repeatedCalls,omitempty"`
+		BaitCalls           int     `json:"baitCalls,omitempty"`
+		BrokenIntermediates int     `json:"brokenIntermediates,omitempty"`
+		Compactions         int     `json:"compactions,omitempty"`
+		TokPerSec           float64 `json:"tokPerSec,omitempty"`
+		WallMS              int64   `json:"wallMs,omitempty"`
+	}
+	type checkRec struct {
+		Model      string `json:"model"`
+		Probe      string `json:"probe"`
+		RunMode    string `json:"runMode,omitempty"`
+		Toolset    string `json:"toolset,omitempty"`
+		ToolFormat string `json:"toolFormat,omitempty"`
+		Stage      int    `json:"stage"`
+		Idx        int    `json:"idx"`
+		Kind       string `json:"kind,omitempty"`
+		Desc       string `json:"desc,omitempty"`
+		Pass       bool   `json:"pass,omitempty"`
+		Detail     string `json:"detail,omitempty"`
+	}
+	stageRecs := make([]stageRec, 0, len(rows))
+	var checkRecs []checkRec
+	for _, r := range rows {
+		stageRecs = append(stageRecs, stageRec{
+			Model: r.Model, Probe: r.Task, RunMode: r.RunMode, Toolset: r.Toolset,
+			ToolFormat: r.ToolFormat, Stage: r.Stage, Prompt: r.Prompt, Pass: r.Pass,
+			LimitBreached: r.LimitBreached, Note: r.Note, Turns: r.Turns,
+			ToolCalls: r.ToolCalls, NewPromptTokens: r.NewPromptTokens,
+			CompletionTokens: r.CompletionTokens, InvalidArgRetries: r.InvalidArgRetries,
+			JSONErrors: r.JSONErrors, RepeatedCalls: r.RepeatedCalls,
+			BaitCalls: r.BaitCalls, BrokenIntermediates: r.BrokenIntermediates,
+			Compactions: r.Compactions, TokPerSec: r.TokPerSec, WallMS: r.WallMs,
+		})
+		for i, ck := range r.Checks {
+			checkRecs = append(checkRecs, checkRec{
+				Model: r.Model, Probe: r.Task, RunMode: r.RunMode, Toolset: r.Toolset,
+				ToolFormat: r.ToolFormat, Stage: r.Stage, Idx: i, Kind: ck.Kind,
+				Desc: ck.Desc, Pass: ck.Pass, Detail: ck.Detail,
+			})
+		}
+	}
+
+	host, _ := os.Hostname()
+	body, err := json.Marshal(map[string]any{
+		"runId": runID, "results": recs,
+		"stages": stageRecs, "checks": checkRecs,
+		// Where the transcripts and journals landed. corrallm cannot infer it:
+		// llm-bench's --out is relative to ITS cwd, so the path depends on how
+		// the run was launched, and the host matters because artifacts written
+		// on another box are not readable from this one.
+		"outDir": absOutDir(outDir), "host": host,
+	})
 	if err != nil {
 		return
 	}
@@ -508,7 +598,21 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID string, 
 		log.Printf("llm-bench: publish probe results -> HTTP %d", resp.StatusCode)
 		return
 	}
-	log.Printf("llm-bench: published %d probe result(s) (%d skipped)", len(recs), len(skips))
+	log.Printf("llm-bench: published %d probe result(s), %d stage(s), %d check(s) (%d skipped)",
+		len(recs), len(stageRecs), len(checkRecs), len(skips))
+}
+
+// absOutDir resolves the run directory to an absolute path so the server can
+// read it regardless of its own cwd. Falls back to the original on failure —
+// a relative path the server may not resolve still beats no path at all.
+func absOutDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
 }
 
 // PublishResults sends per-model aggregates to corrallm at the end of a run.

@@ -37,6 +37,7 @@ import { graphql } from '@/gql'
 import type { ModelBenchQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
 import { capLabel, fmtDuration, fmtInt, fmtMiB, fmtUSD } from '@/format'
+import { BenchProbeDetail } from '@/BenchProbeDetail'
 
 // --- data ---------------------------------------------------------------
 
@@ -1487,16 +1488,34 @@ const ModelBenchDoc = graphql(/* GraphQL */ `
           probes {
             probe
             class
-            runMode
+            score
             stages
             stagesPassed
-            checksPassed
-            checksTotal
             pass
-            wallMs
             skipped
             skipReason
             note
+            disagreement
+            arms {
+              label
+              toolset
+              toolFormat
+              runMode
+              isBaseline
+              stages
+              stagesPassed
+              score
+              scoreDelta
+              checksPassed
+              checksTotal
+              pass
+              wallMs
+              newPromptTokens
+              completionTokens
+              note
+              skipped
+              skipReason
+            }
           }
         }
       }
@@ -1571,10 +1590,13 @@ const bn = (v: unknown): number => Number(v ?? 0) || 0
  */
 function CapabilityBreakdown({
   data,
+  model,
 }: {
   data: ModelBenchQuery['corrallm']['benchProbes']
+  model: string
 }) {
   const caps = data?.capabilities ?? []
+  const runId = data?.runId ?? ''
   if (caps.length === 0) return null
   return (
     <Paper sx={{ p: 2 }}>
@@ -1616,64 +1638,184 @@ function CapabilityBreakdown({
                 )}
               </Stack>
             </AccordionSummary>
-            <AccordionDetails>
-              <TableContainer>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Probe</TableCell>
-                      <TableCell>Class</TableCell>
-                      <TableCell>Mode</TableCell>
-                      <TableCell align="right">Stages</TableCell>
-                      <TableCell align="right">Checks</TableCell>
-                      <TableCell align="right">Wall</TableCell>
-                      <TableCell>Result</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {(c.probes ?? []).map((p) => (
-                      <TableRow key={`${p.probe} ${p.runMode}`} hover>
-                        <TableCell>{p.probe}</TableCell>
-                        <TableCell>
-                          <Typography variant="caption">{p.class || '—'}</Typography>
-                        </TableCell>
-                        {/* Cold and warm are separate rows on purpose: a probe that
-                            passes warm and fails cold is the finding, not an average. */}
-                        <TableCell>
-                          <Typography variant="caption">{p.runMode || 'any'}</Typography>
-                        </TableCell>
-                        <TableCell align="right">
-                          {p.skipped ? '—' : `${p.stagesPassed}/${p.stages}`}
-                        </TableCell>
-                        <TableCell align="right">
-                          {p.skipped ? '—' : `${p.checksPassed}/${p.checksTotal}`}
-                        </TableCell>
-                        <TableCell align="right">
-                          {p.skipped ? '—' : fmtDuration(bn(p.wallMs))}
-                        </TableCell>
-                        <TableCell>
-                          {p.skipped ? (
-                            <Tooltip title={p.skipReason ?? ''}>
-                              <Chip size="small" variant="outlined" label="skipped" />
-                            </Tooltip>
-                          ) : p.pass ? (
-                            <Chip size="small" color="success" label="pass" />
-                          ) : (
-                            <Tooltip title={p.note ?? ''}>
-                              <Chip size="small" color="error" label="fail" />
-                            </Tooltip>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+            <AccordionDetails sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {(c.probes ?? []).map((p) => (
+                <ProbeRow key={p.probe} runId={runId} model={model} probe={p} />
+              ))}
             </AccordionDetails>
           </Accordion>
         )
       })}
     </Paper>
+  )
+}
+
+type ProbeArm = NonNullable<
+  NonNullable<
+    NonNullable<ModelBenchQuery['corrallm']['benchProbes']>['capabilities'][number]['probes']
+  >[number]['arms']
+>[number]
+
+type ProbeEntry = NonNullable<
+  NonNullable<ModelBenchQuery['corrallm']['benchProbes']>['capabilities'][number]['probes']
+>[number]
+
+/** Signed percentage delta, e.g. "+2%" / "-5%". */
+function deltaLabel(d: number): string {
+  const pct = d * 100
+  return `${pct > 0 ? '+' : ''}${pct.toFixed(0)}%`
+}
+
+/**
+ * One probe: its baseline score, every A/B arm beside it, and the evidence.
+ *
+ * Arms are rows rather than a merged number because that is the whole point of
+ * running them — the comparison is the result. The headline comes from the
+ * baseline arm alone so it means the same thing run to run; the others show as
+ * deltas against it.
+ */
+function ProbeRow({
+  runId,
+  model,
+  probe,
+}: {
+  runId: string
+  model: string
+  probe: ProbeEntry
+}) {
+  const arms = (probe.arms ?? []) as ProbeArm[]
+  const ranArms = arms.filter((a) => !a.skipped)
+  const baseline = ranArms.find((a) => a.isBaseline)
+  return (
+    <Accordion variant="outlined" disableGutters>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Stack direction="row" spacing={1.5} alignItems="center" sx={{ width: '100%' }}>
+          <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+            {probe.probe}
+          </Typography>
+          <Chip size="small" variant="outlined" label={probe.class || 'probe'} />
+          {probe.skipped ? (
+            <Tooltip title={probe.skipReason ?? ''}>
+              <Chip size="small" variant="outlined" label="skipped" />
+            </Tooltip>
+          ) : (
+            <>
+              <Typography variant="body2">
+                <b>{(bn(probe.score) * 100).toFixed(0)}%</b> ({probe.stagesPassed}/{probe.stages})
+              </Typography>
+              <Chip
+                size="small"
+                color={probe.pass ? 'success' : 'error'}
+                label={probe.pass ? 'pass' : 'fail'}
+              />
+            </>
+          )}
+          {probe.disagreement && (
+            <Tooltip title="Arms of this probe reached different verdicts. That disagreement is the finding — a pooled score would hide it.">
+              <Chip size="small" color="warning" label="arms disagree" />
+            </Tooltip>
+          )}
+          <Box sx={{ flexGrow: 1 }} />
+          {ranArms.length > 1 && (
+            <Typography variant="caption" color="text.secondary">
+              {ranArms.length} arms
+            </Typography>
+          )}
+        </Stack>
+      </AccordionSummary>
+      <AccordionDetails sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {!!probe.note && (
+          <Typography variant="body2" color="error">
+            {probe.note}
+          </Typography>
+        )}
+        {ranArms.length > 1 && (
+          <Box>
+            <Typography variant="subtitle2">A/B arms</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Delta is against the baseline arm. Token counts are prompt tokens actually
+              evaluated, so a cached prefix re-sent every turn is not charged to an arm twice.
+            </Typography>
+            <TableContainer sx={{ mt: 1 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Arm</TableCell>
+                    <TableCell align="right">Score</TableCell>
+                    <TableCell align="right">Δ</TableCell>
+                    <TableCell align="right">Stages</TableCell>
+                    <TableCell align="right">Checks</TableCell>
+                    <TableCell align="right">In</TableCell>
+                    <TableCell align="right">Out</TableCell>
+                    <TableCell align="right">Wall</TableCell>
+                    <TableCell>Result</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {ranArms.map((a) => (
+                    <TableRow key={a.label} hover>
+                      <TableCell>
+                        <Stack direction="row" spacing={0.5} alignItems="center">
+                          <Typography variant="caption">{a.label}</Typography>
+                          {a.isBaseline && <Chip size="small" label="baseline" />}
+                        </Stack>
+                      </TableCell>
+                      <TableCell align="right">{(bn(a.score) * 100).toFixed(0)}%</TableCell>
+                      <TableCell align="right">
+                        {a.isBaseline ? (
+                          '—'
+                        ) : (
+                          <Typography
+                            variant="body2"
+                            color={
+                              bn(a.scoreDelta) > 0
+                                ? 'success.main'
+                                : bn(a.scoreDelta) < 0
+                                  ? 'error.main'
+                                  : 'text.secondary'
+                            }
+                          >
+                            {deltaLabel(bn(a.scoreDelta))}
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        {a.stagesPassed}/{a.stages}
+                      </TableCell>
+                      <TableCell align="right">
+                        {a.checksPassed}/{a.checksTotal}
+                      </TableCell>
+                      <TableCell align="right">{fmtInt(bn(a.newPromptTokens))}</TableCell>
+                      <TableCell align="right">{fmtInt(bn(a.completionTokens))}</TableCell>
+                      <TableCell align="right">{fmtDuration(bn(a.wallMs))}</TableCell>
+                      <TableCell>
+                        <Tooltip title={a.note ?? ''}>
+                          <Chip
+                            size="small"
+                            color={a.pass ? 'success' : 'error'}
+                            label={a.pass ? 'pass' : 'fail'}
+                          />
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Box>
+        )}
+        {probe.skipped ? (
+          <Alert severity="info">{probe.skipReason || 'This probe was not run.'}</Alert>
+        ) : (
+          <BenchProbeDetail
+            runId={runId}
+            model={model}
+            probe={probe.probe}
+            toolset={baseline?.toolset || undefined}
+          />
+        )}
+      </AccordionDetails>
+    </Accordion>
   )
 }
 
@@ -1806,7 +1948,7 @@ function BenchTab({ name }: { name: string }) {
       )}
       {!!status?.error && <Alert severity="error">{status.error}</Alert>}
 
-      <CapabilityBreakdown data={q.data?.corrallm?.benchProbes} />
+      <CapabilityBreakdown data={q.data?.corrallm?.benchProbes} model={name} />
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" gutterBottom>

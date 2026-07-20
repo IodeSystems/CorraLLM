@@ -72,7 +72,11 @@ type Row struct {
 	Task    string `json:"task"`
 	Class   string `json:"class"`
 	Stage   int    `json:"stage"`
-	Prompt  string `json:"prompt"`
+	// Run is the 0-based repeat index when --runs > 1: the SAME combo re-run to
+	// measure variance. Rows with the same (model,toolset,task,stage) but
+	// different Run are independent samples. 0 for a single-run matrix.
+	Run    int    `json:"run,omitempty"`
+	Prompt string `json:"prompt"`
 
 	// Capability is the serving surface the PROBE required (chat, audio.stt,
 	// …), not the model's. Recorded per row because a run-wide pass rate mixes

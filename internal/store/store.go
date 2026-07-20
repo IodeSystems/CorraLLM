@@ -86,6 +86,10 @@ CREATE INDEX IF NOT EXISTS bench_results_model_at ON bench_results(model, at DES
 -- because it has no chat capability" and "this model has no chat results yet"
 -- look identical when the rows simply aren't there, and that ambiguity is the
 -- thing that made the aggregate misleading in the first place.
+-- An ARM is (toolset, tool_format, run_mode): the same probe against the same
+-- model, varied deliberately. Every one of those belongs in the key. Keying on
+-- run_mode alone averaged the arms of an A/B into a single record — destroying
+-- the comparison the arms existed to make.
 CREATE TABLE IF NOT EXISTS bench_probe_results (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id        TEXT    NOT NULL,
@@ -95,19 +99,99 @@ CREATE TABLE IF NOT EXISTS bench_probe_results (
   class         TEXT    NOT NULL DEFAULT '', -- coding | tooluse | adversarial | capability
   capability    TEXT    NOT NULL DEFAULT '', -- serving surface the probe needs: chat | audio.stt | ...
   run_mode      TEXT    NOT NULL DEFAULT '', -- "" | cold | warm
+  toolset       TEXT    NOT NULL DEFAULT '', -- A/B arm: tool surface offered
+  tool_format   TEXT    NOT NULL DEFAULT '', -- A/B arm: tool-result encoding (json | toon | tight | …)
   stages        INTEGER NOT NULL DEFAULT 0,
   stages_passed INTEGER NOT NULL DEFAULT 0,
   checks_passed INTEGER NOT NULL DEFAULT 0,
   checks_total  INTEGER NOT NULL DEFAULT 0,
   pass          INTEGER NOT NULL DEFAULT 0, -- every stage passed
   wall_ms       INTEGER NOT NULL DEFAULT 0,
+  new_prompt_tokens INTEGER NOT NULL DEFAULT 0, -- prompt actually evaluated; the comparable token cost
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
   skipped       INTEGER NOT NULL DEFAULT 0,
   skip_reason   TEXT    NOT NULL DEFAULT '',
   note          TEXT    NOT NULL DEFAULT '', -- first failing check, or combo error
-  UNIQUE(run_id, model, probe, run_mode)
+  UNIQUE(run_id, model, probe, run_mode, toolset, tool_format)
 );
 CREATE INDEX IF NOT EXISTS bench_probe_results_model_at ON bench_probe_results(model, at DESC);
 CREATE INDEX IF NOT EXISTS bench_probe_results_run ON bench_probe_results(run_id, model);
+
+-- bench_probe_stages / bench_probe_checks: the evidence behind a probe's score.
+--
+-- "This probe scored 1/3" does not say WHY, and the why already exists — it is
+-- in out/<ts>/runs.jsonl on the bench host and nowhere else. These two tables
+-- carry the small, structured part of it (which check failed, and what the
+-- stage cost) so a post-mortem survives out/ being deleted. The bulky replay —
+-- transcripts and tool-call journals — stays on disk and is served from
+-- bench_runs.out_dir, because duplicating it into SQLite would grow the DB by
+-- the size of every conversation ever benched to serve a rare read.
+CREATE TABLE IF NOT EXISTS bench_probe_stages (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id         TEXT    NOT NULL,
+  model          TEXT    NOT NULL,
+  probe          TEXT    NOT NULL,
+  run_mode       TEXT    NOT NULL DEFAULT '',
+  toolset        TEXT    NOT NULL DEFAULT '',
+  tool_format    TEXT    NOT NULL DEFAULT '',
+  stage          INTEGER NOT NULL,
+  prompt         TEXT    NOT NULL DEFAULT '',
+  pass           INTEGER NOT NULL DEFAULT 0,
+  limit_breached INTEGER NOT NULL DEFAULT 0,
+  note           TEXT    NOT NULL DEFAULT '',
+  turns          INTEGER NOT NULL DEFAULT 0,
+  tool_calls     INTEGER NOT NULL DEFAULT 0,
+  -- new_prompt_tokens, not prompt_tokens: the cached prefix is sent every turn
+  -- and evaluated once, so summing the prompt charges the tool schema per turn
+  -- and made a ~12% gap look like 2.2x.
+  new_prompt_tokens   INTEGER NOT NULL DEFAULT 0,
+  completion_tokens   INTEGER NOT NULL DEFAULT 0,
+  invalid_arg_retries INTEGER NOT NULL DEFAULT 0,
+  json_errors         INTEGER NOT NULL DEFAULT 0,
+  repeated_calls      INTEGER NOT NULL DEFAULT 0,
+  bait_calls          INTEGER NOT NULL DEFAULT 0,
+  broken_intermediates INTEGER NOT NULL DEFAULT 0,
+  compactions    INTEGER NOT NULL DEFAULT 0,
+  tok_per_sec    REAL    NOT NULL DEFAULT 0,
+  wall_ms        INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(run_id, model, probe, run_mode, toolset, tool_format, stage)
+);
+CREATE INDEX IF NOT EXISTS bench_probe_stages_probe
+  ON bench_probe_stages(run_id, model, probe);
+
+CREATE TABLE IF NOT EXISTS bench_probe_checks (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id   TEXT    NOT NULL,
+  model    TEXT    NOT NULL,
+  probe    TEXT    NOT NULL,
+  run_mode TEXT    NOT NULL DEFAULT '',
+  toolset  TEXT    NOT NULL DEFAULT '',
+  tool_format TEXT NOT NULL DEFAULT '',
+  stage    INTEGER NOT NULL,
+  idx      INTEGER NOT NULL,          -- order within the stage; checks have no natural key
+  kind     TEXT    NOT NULL DEFAULT '',
+  descr    TEXT    NOT NULL DEFAULT '', -- ("desc" is reserved)
+  pass     INTEGER NOT NULL DEFAULT 0,
+  detail   TEXT    NOT NULL DEFAULT '',
+  UNIQUE(run_id, model, probe, run_mode, toolset, tool_format, stage, idx)
+);
+CREATE INDEX IF NOT EXISTS bench_probe_checks_probe
+  ON bench_probe_checks(run_id, model, probe);
+
+-- bench_runs: where a run's artifacts landed, so the transcript/journal
+-- endpoints can find them.
+--
+-- Recorded rather than inferred: llm-bench's --out defaults to ./out relative
+-- to ITS cwd, so the path depends on how the run was launched and corrallm
+-- previously learned it only by scraping "wrote out/<ts>" from the child's
+-- stdout. Host is stored because a run benched elsewhere has artifacts this
+-- server cannot read, and saying so beats a confusing empty transcript.
+CREATE TABLE IF NOT EXISTS bench_runs (
+  run_id  TEXT    PRIMARY KEY,
+  out_dir TEXT    NOT NULL DEFAULT '',
+  host    TEXT    NOT NULL DEFAULT '',
+  at      INTEGER NOT NULL DEFAULT 0
+);
 
 CREATE TABLE IF NOT EXISTS lane_samples (
     ts      INTEGER NOT NULL,   -- unix millis of the sample
@@ -137,6 +221,40 @@ var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN predicted_per_sec REAL NOT NULL DEFAULT 0`,
 }
 
+// dropStaleProbeTables removes a bench_probe_results created before A/B arms
+// were part of its identity, so the schema below can recreate it correctly.
+//
+// A rebuild rather than an ALTER because the fix is to the UNIQUE constraint —
+// the old key was (run, model, probe, run_mode), which UPSERTs one arm of an
+// A/B over another instead of storing both — and SQLite cannot alter a
+// constraint in place. ADDing the columns alone would leave the broken key and
+// silently keep collapsing arms.
+//
+// Dropping the rows is acceptable ONLY because this table has never carried a
+// real run: it was added and revised in the same unreleased change, and every
+// row in it is either synthetic or re-derivable by re-benching. If it ever ships
+// with real history, this must become a copy-into-new-table migration instead.
+func dropStaleProbeTables(ctx context.Context, db *sql.DB) error {
+	var ddl string
+	err := db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='bench_probe_results'`).Scan(&ddl)
+	if err == sql.ErrNoRows {
+		return nil // fresh database; the schema creates the current shape
+	}
+	if err != nil {
+		return fmt.Errorf("inspect bench_probe_results: %w", err)
+	}
+	if strings.Contains(ddl, "toolset") {
+		return nil // already the arm-aware shape
+	}
+	for _, t := range []string{"bench_probe_results", "bench_probe_stages", "bench_probe_checks"} {
+		if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS `+t); err != nil {
+			return fmt.Errorf("drop stale %s: %w", t, err)
+		}
+	}
+	return nil
+}
+
 // Store wraps the SQLite handle.
 type Store struct {
 	db *sql.DB
@@ -151,6 +269,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 	// SQLite is single-writer; one connection avoids "database is locked".
 	db.SetMaxOpenConns(1)
+	if err := dropStaleProbeTables(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
@@ -547,23 +669,27 @@ FROM bench_results WHERE model = ? ORDER BY at DESC LIMIT ?`, model, limit)
 // candidate (wrong capability or undeclared modality), which is a configuration
 // fact and must not read as a capability gap.
 type BenchProbeResult struct {
-	ID           int64  `json:"id"`
-	RunID        string `json:"runId"`
-	Model        string `json:"model"`
-	At           int64  `json:"at"`
-	Probe        string `json:"probe"`
-	Class        string `json:"class"`
-	Capability   string `json:"capability"`
-	RunMode      string `json:"runMode"`
-	Stages       int    `json:"stages"`
-	StagesPassed int    `json:"stagesPassed"`
-	ChecksPassed int    `json:"checksPassed"`
-	ChecksTotal  int    `json:"checksTotal"`
-	Pass         bool   `json:"pass"`
-	WallMS       int64  `json:"wallMs"`
-	Skipped      bool   `json:"skipped"`
-	SkipReason   string `json:"skipReason"`
-	Note         string `json:"note"`
+	ID               int64  `json:"id"`
+	RunID            string `json:"runId"`
+	Model            string `json:"model"`
+	At               int64  `json:"at"`
+	Probe            string `json:"probe"`
+	Class            string `json:"class"`
+	Capability       string `json:"capability"`
+	RunMode          string `json:"runMode"`
+	Toolset          string `json:"toolset"`
+	ToolFormat       string `json:"toolFormat"`
+	Stages           int    `json:"stages"`
+	StagesPassed     int    `json:"stagesPassed"`
+	ChecksPassed     int    `json:"checksPassed"`
+	ChecksTotal      int    `json:"checksTotal"`
+	Pass             bool   `json:"pass"`
+	WallMS           int64  `json:"wallMs"`
+	NewPromptTokens  int    `json:"newPromptTokens"`
+	CompletionTokens int    `json:"completionTokens"`
+	Skipped          bool   `json:"skipped"`
+	SkipReason       string `json:"skipReason"`
+	Note             string `json:"note"`
 }
 
 // SaveBenchProbeResults upserts a batch of probe rows in one transaction.
@@ -580,14 +706,17 @@ func (s *Store) SaveBenchProbeResults(ctx context.Context, rows []BenchProbeResu
 	defer func() { _ = tx.Rollback() }()
 	stmt, err := tx.PrepareContext(ctx, `
 INSERT INTO bench_probe_results
-  (run_id, model, at, probe, class, capability, run_mode, stages, stages_passed,
-   checks_passed, checks_total, pass, wall_ms, skipped, skip_reason, note)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(run_id, model, probe, run_mode) DO UPDATE SET
+  (run_id, model, at, probe, class, capability, run_mode, toolset, tool_format,
+   stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
+   new_prompt_tokens, completion_tokens, skipped, skip_reason, note)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(run_id, model, probe, run_mode, toolset, tool_format) DO UPDATE SET
   at=excluded.at, class=excluded.class, capability=excluded.capability,
   stages=excluded.stages, stages_passed=excluded.stages_passed,
   checks_passed=excluded.checks_passed, checks_total=excluded.checks_total,
-  pass=excluded.pass, wall_ms=excluded.wall_ms, skipped=excluded.skipped,
+  pass=excluded.pass, wall_ms=excluded.wall_ms,
+  new_prompt_tokens=excluded.new_prompt_tokens,
+  completion_tokens=excluded.completion_tokens, skipped=excluded.skipped,
   skip_reason=excluded.skip_reason, note=excluded.note`)
 	if err != nil {
 		return err
@@ -595,8 +724,9 @@ ON CONFLICT(run_id, model, probe, run_mode) DO UPDATE SET
 	defer func() { _ = stmt.Close() }()
 	for _, r := range rows {
 		if _, err := stmt.ExecContext(ctx, r.RunID, r.Model, r.At, r.Probe, r.Class,
-			r.Capability, r.RunMode, r.Stages, r.StagesPassed, r.ChecksPassed,
-			r.ChecksTotal, boolInt(r.Pass), r.WallMS, boolInt(r.Skipped),
+			r.Capability, r.RunMode, r.Toolset, r.ToolFormat, r.Stages, r.StagesPassed,
+			r.ChecksPassed, r.ChecksTotal, boolInt(r.Pass), r.WallMS,
+			r.NewPromptTokens, r.CompletionTokens, boolInt(r.Skipped),
 			r.SkipReason, r.Note); err != nil {
 			return err
 		}
@@ -616,8 +746,9 @@ func boolInt(b bool) int {
 // asks "how did the last bench go", and mixing runs would average away the
 // regression it is there to show.
 func (s *Store) BenchProbeResultsFor(ctx context.Context, model, runID string) ([]BenchProbeResult, error) {
-	const cols = `id, run_id, model, at, probe, class, capability, run_mode, stages,
-       stages_passed, checks_passed, checks_total, pass, wall_ms, skipped, skip_reason, note`
+	const cols = `id, run_id, model, at, probe, class, capability, run_mode, toolset,
+       tool_format, stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
+       new_prompt_tokens, completion_tokens, skipped, skip_reason, note`
 	var (
 		rows *sql.Rows
 		err  error
@@ -625,18 +756,220 @@ func (s *Store) BenchProbeResultsFor(ctx context.Context, model, runID string) (
 	if runID != "" {
 		rows, err = s.db.QueryContext(ctx, `SELECT `+cols+`
 FROM bench_probe_results WHERE model = ? AND run_id = ?
-ORDER BY capability, class, probe, run_mode`, model, runID)
+ORDER BY capability, class, probe, run_mode, toolset, tool_format`, model, runID)
 	} else {
 		rows, err = s.db.QueryContext(ctx, `SELECT `+cols+`
 FROM bench_probe_results
 WHERE model = ? AND run_id = (SELECT run_id FROM bench_probe_results WHERE model = ? ORDER BY at DESC LIMIT 1)
-ORDER BY capability, class, probe, run_mode`, model, model)
+ORDER BY capability, class, probe, run_mode, toolset, tool_format`, model, model)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanBenchProbeResults(rows)
+}
+
+// BenchProbeStage is one stage of one probe arm: what it was asked, what it
+// cost, and whether it passed.
+type BenchProbeStage struct {
+	RunID               string  `json:"runId"`
+	Model               string  `json:"model"`
+	Probe               string  `json:"probe"`
+	RunMode             string  `json:"runMode"`
+	Toolset             string  `json:"toolset"`
+	ToolFormat          string  `json:"toolFormat"`
+	Stage               int     `json:"stage"`
+	Prompt              string  `json:"prompt"`
+	Pass                bool    `json:"pass"`
+	LimitBreached       bool    `json:"limitBreached"`
+	Note                string  `json:"note"`
+	Turns               int     `json:"turns"`
+	ToolCalls           int     `json:"toolCalls"`
+	NewPromptTokens     int     `json:"newPromptTokens"`
+	CompletionTokens    int     `json:"completionTokens"`
+	InvalidArgRetries   int     `json:"invalidArgRetries"`
+	JSONErrors          int     `json:"jsonErrors"`
+	RepeatedCalls       int     `json:"repeatedCalls"`
+	BaitCalls           int     `json:"baitCalls"`
+	BrokenIntermediates int     `json:"brokenIntermediates"`
+	Compactions         int     `json:"compactions"`
+	TokPerSec           float64 `json:"tokPerSec"`
+	WallMS              int64   `json:"wallMs"`
+}
+
+// BenchProbeCheck is one assertion's verdict within a stage.
+type BenchProbeCheck struct {
+	RunID      string `json:"runId"`
+	Model      string `json:"model"`
+	Probe      string `json:"probe"`
+	RunMode    string `json:"runMode"`
+	Toolset    string `json:"toolset"`
+	ToolFormat string `json:"toolFormat"`
+	Stage      int    `json:"stage"`
+	Idx        int    `json:"idx"`
+	Kind       string `json:"kind"`
+	Desc       string `json:"desc"`
+	Pass       bool   `json:"pass"`
+	Detail     string `json:"detail"`
+}
+
+// BenchRun records where a run's on-disk artifacts live.
+type BenchRun struct {
+	RunID  string `json:"runId"`
+	OutDir string `json:"outDir"`
+	Host   string `json:"host"`
+	At     int64  `json:"at"`
+}
+
+// SaveBenchRun upserts a run's artifact location.
+func (s *Store) SaveBenchRun(ctx context.Context, r BenchRun) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO bench_runs (run_id, out_dir, host, at) VALUES (?,?,?,?)
+ON CONFLICT(run_id) DO UPDATE SET
+  out_dir=excluded.out_dir, host=excluded.host, at=excluded.at`,
+		r.RunID, r.OutDir, r.Host, r.At)
+	return err
+}
+
+// BenchRunFor returns a run's artifact location, or ok=false when unknown.
+func (s *Store) BenchRunFor(ctx context.Context, runID string) (BenchRun, bool, error) {
+	var r BenchRun
+	err := s.db.QueryRowContext(ctx,
+		`SELECT run_id, out_dir, host, at FROM bench_runs WHERE run_id = ?`, runID).
+		Scan(&r.RunID, &r.OutDir, &r.Host, &r.At)
+	if err == sql.ErrNoRows {
+		return r, false, nil
+	}
+	return r, err == nil, err
+}
+
+// SaveBenchProbeStages upserts per-stage detail in one transaction.
+func (s *Store) SaveBenchProbeStages(ctx context.Context, rows []BenchProbeStage) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO bench_probe_stages
+  (run_id, model, probe, run_mode, toolset, tool_format, stage, prompt, pass,
+   limit_breached, note, turns, tool_calls, new_prompt_tokens, completion_tokens,
+   invalid_arg_retries, json_errors, repeated_calls, bait_calls,
+   broken_intermediates, compactions, tok_per_sec, wall_ms)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(run_id, model, probe, run_mode, toolset, tool_format, stage) DO UPDATE SET
+  prompt=excluded.prompt, pass=excluded.pass, limit_breached=excluded.limit_breached,
+  note=excluded.note, turns=excluded.turns, tool_calls=excluded.tool_calls,
+  new_prompt_tokens=excluded.new_prompt_tokens,
+  completion_tokens=excluded.completion_tokens,
+  invalid_arg_retries=excluded.invalid_arg_retries, json_errors=excluded.json_errors,
+  repeated_calls=excluded.repeated_calls, bait_calls=excluded.bait_calls,
+  broken_intermediates=excluded.broken_intermediates,
+  compactions=excluded.compactions, tok_per_sec=excluded.tok_per_sec,
+  wall_ms=excluded.wall_ms`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, r := range rows {
+		if _, err := stmt.ExecContext(ctx, r.RunID, r.Model, r.Probe, r.RunMode,
+			r.Toolset, r.ToolFormat, r.Stage, r.Prompt, boolInt(r.Pass),
+			boolInt(r.LimitBreached), r.Note, r.Turns, r.ToolCalls, r.NewPromptTokens,
+			r.CompletionTokens, r.InvalidArgRetries, r.JSONErrors, r.RepeatedCalls,
+			r.BaitCalls, r.BrokenIntermediates, r.Compactions, r.TokPerSec,
+			r.WallMS); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SaveBenchProbeChecks upserts per-check verdicts in one transaction.
+func (s *Store) SaveBenchProbeChecks(ctx context.Context, rows []BenchProbeCheck) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO bench_probe_checks
+  (run_id, model, probe, run_mode, toolset, tool_format, stage, idx, kind, descr, pass, detail)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(run_id, model, probe, run_mode, toolset, tool_format, stage, idx) DO UPDATE SET
+  kind=excluded.kind, descr=excluded.descr, pass=excluded.pass, detail=excluded.detail`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, r := range rows {
+		if _, err := stmt.ExecContext(ctx, r.RunID, r.Model, r.Probe, r.RunMode,
+			r.Toolset, r.ToolFormat, r.Stage, r.Idx, r.Kind, r.Desc,
+			boolInt(r.Pass), r.Detail); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// BenchProbeStagesFor returns one probe arm's stages, in order.
+func (s *Store) BenchProbeStagesFor(ctx context.Context, runID, model, probe string) ([]BenchProbeStage, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT run_id, model, probe, run_mode, toolset, tool_format, stage, prompt, pass,
+       limit_breached, note, turns, tool_calls, new_prompt_tokens, completion_tokens,
+       invalid_arg_retries, json_errors, repeated_calls, bait_calls,
+       broken_intermediates, compactions, tok_per_sec, wall_ms
+FROM bench_probe_stages WHERE run_id = ? AND model = ? AND probe = ?
+ORDER BY toolset, tool_format, run_mode, stage`, runID, model, probe)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BenchProbeStage
+	for rows.Next() {
+		var r BenchProbeStage
+		var pass, breached int
+		if err := rows.Scan(&r.RunID, &r.Model, &r.Probe, &r.RunMode, &r.Toolset,
+			&r.ToolFormat, &r.Stage, &r.Prompt, &pass, &breached, &r.Note, &r.Turns,
+			&r.ToolCalls, &r.NewPromptTokens, &r.CompletionTokens, &r.InvalidArgRetries,
+			&r.JSONErrors, &r.RepeatedCalls, &r.BaitCalls, &r.BrokenIntermediates,
+			&r.Compactions, &r.TokPerSec, &r.WallMS); err != nil {
+			return nil, err
+		}
+		r.Pass, r.LimitBreached = pass != 0, breached != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// BenchProbeChecksFor returns one probe arm's checks, in stage then declared order.
+func (s *Store) BenchProbeChecksFor(ctx context.Context, runID, model, probe string) ([]BenchProbeCheck, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT run_id, model, probe, run_mode, toolset, tool_format, stage, idx, kind, descr, pass, detail
+FROM bench_probe_checks WHERE run_id = ? AND model = ? AND probe = ?
+ORDER BY toolset, tool_format, run_mode, stage, idx`, runID, model, probe)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BenchProbeCheck
+	for rows.Next() {
+		var r BenchProbeCheck
+		var pass int
+		if err := rows.Scan(&r.RunID, &r.Model, &r.Probe, &r.RunMode, &r.Toolset,
+			&r.ToolFormat, &r.Stage, &r.Idx, &r.Kind, &r.Desc, &pass, &r.Detail); err != nil {
+			return nil, err
+		}
+		r.Pass = pass != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // LatestBenchProbeResults returns every model's most recent run's probe rows —
@@ -648,12 +981,13 @@ ORDER BY capability, class, probe, run_mode`, model, model)
 func (s *Store) LatestBenchProbeResults(ctx context.Context) ([]BenchProbeResult, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT b.id, b.run_id, b.model, b.at, b.probe, b.class, b.capability, b.run_mode,
-       b.stages, b.stages_passed, b.checks_passed, b.checks_total, b.pass,
-       b.wall_ms, b.skipped, b.skip_reason, b.note
+       b.toolset, b.tool_format, b.stages, b.stages_passed, b.checks_passed,
+       b.checks_total, b.pass, b.wall_ms, b.new_prompt_tokens, b.completion_tokens,
+       b.skipped, b.skip_reason, b.note
 FROM bench_probe_results b
 JOIN (SELECT model, MAX(at) AS at FROM bench_probe_results GROUP BY model) m
   ON m.model = b.model AND m.at = b.at
-ORDER BY b.capability, b.model, b.probe, b.run_mode`)
+ORDER BY b.capability, b.model, b.probe, b.run_mode, b.toolset, b.tool_format`)
 	if err != nil {
 		return nil, err
 	}
@@ -667,8 +1001,10 @@ func scanBenchProbeResults(rows *sql.Rows) ([]BenchProbeResult, error) {
 		var r BenchProbeResult
 		var pass, skipped int
 		if err := rows.Scan(&r.ID, &r.RunID, &r.Model, &r.At, &r.Probe, &r.Class,
-			&r.Capability, &r.RunMode, &r.Stages, &r.StagesPassed, &r.ChecksPassed,
-			&r.ChecksTotal, &pass, &r.WallMS, &skipped, &r.SkipReason, &r.Note); err != nil {
+			&r.Capability, &r.RunMode, &r.Toolset, &r.ToolFormat, &r.Stages,
+			&r.StagesPassed, &r.ChecksPassed, &r.ChecksTotal, &pass, &r.WallMS,
+			&r.NewPromptTokens, &r.CompletionTokens, &skipped, &r.SkipReason,
+			&r.Note); err != nil {
 			return nil, err
 		}
 		r.Pass, r.Skipped = pass != 0, skipped != 0

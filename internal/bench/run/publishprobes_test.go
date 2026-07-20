@@ -46,7 +46,7 @@ func capturePublish(t *testing.T, rows []Row, skips []Skip) probePayload {
 	if c == nil {
 		t.Fatal("client should exist when a token is configured")
 	}
-	PublishProbeResults(context.Background(), c, "r1", rows, skips)
+	PublishProbeResults(context.Background(), c, "r1", t.TempDir(), rows, skips)
 	return got
 }
 
@@ -146,11 +146,11 @@ func TestPublishProbeResults_NoRowsNoRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	defer srv.Close()
 	t.Setenv("TEST_ADMIN_TOKEN", "tok")
-	PublishProbeResults(context.Background(), newResidencyClient(cfgFor(srv.URL)), "r1", nil, nil)
+	PublishProbeResults(context.Background(), newResidencyClient(cfgFor(srv.URL)), "r1", "", nil, nil)
 	if called {
 		t.Error("an empty run must not POST an empty batch")
 	}
 	// A nil client (no admin token) must be a no-op, not a panic: plain quality
 	// runs never configure one.
-	PublishProbeResults(context.Background(), nil, "r1", []Row{{Model: "m", Task: "p"}}, nil)
+	PublishProbeResults(context.Background(), nil, "r1", "", []Row{{Model: "m", Task: "p"}}, nil)
 }

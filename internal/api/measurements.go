@@ -474,20 +474,65 @@ type BenchProbeRecord struct {
 // skip record — the exact shape this feature exists to persist — fail
 // validation with 422.
 type BenchProbePublish struct {
-	Model        string `json:"model"`
-	Probe        string `json:"probe" doc:"Probe (task) name."`
-	Class        string `json:"class,omitempty"`
-	Capability   string `json:"capability,omitempty"`
-	RunMode      string `json:"runMode,omitempty"`
-	Stages       int    `json:"stages,omitempty"`
-	StagesPassed int    `json:"stagesPassed,omitempty"`
-	ChecksPassed int    `json:"checksPassed,omitempty"`
-	ChecksTotal  int    `json:"checksTotal,omitempty"`
-	Pass         bool   `json:"pass,omitempty"`
-	WallMS       int64  `json:"wallMs,omitempty"`
-	Skipped      bool   `json:"skipped,omitempty"`
-	SkipReason   string `json:"skipReason,omitempty"`
-	Note         string `json:"note,omitempty"`
+	Model            string `json:"model"`
+	Probe            string `json:"probe" doc:"Probe (task) name."`
+	Class            string `json:"class,omitempty"`
+	Capability       string `json:"capability,omitempty"`
+	RunMode          string `json:"runMode,omitempty"`
+	Toolset          string `json:"toolset,omitempty" doc:"A/B arm: tool surface offered."`
+	ToolFormat       string `json:"toolFormat,omitempty" doc:"A/B arm: tool-result encoding."`
+	Stages           int    `json:"stages,omitempty"`
+	StagesPassed     int    `json:"stagesPassed,omitempty"`
+	ChecksPassed     int    `json:"checksPassed,omitempty"`
+	ChecksTotal      int    `json:"checksTotal,omitempty"`
+	Pass             bool   `json:"pass,omitempty"`
+	WallMS           int64  `json:"wallMs,omitempty"`
+	NewPromptTokens  int    `json:"newPromptTokens,omitempty"`
+	CompletionTokens int    `json:"completionTokens,omitempty"`
+	Skipped          bool   `json:"skipped,omitempty"`
+	SkipReason       string `json:"skipReason,omitempty"`
+	Note             string `json:"note,omitempty"`
+}
+
+// BenchStagePublish is one stage's metrics as published.
+type BenchStagePublish struct {
+	Model               string  `json:"model"`
+	Probe               string  `json:"probe"`
+	RunMode             string  `json:"runMode,omitempty"`
+	Toolset             string  `json:"toolset,omitempty"`
+	ToolFormat          string  `json:"toolFormat,omitempty"`
+	Stage               int     `json:"stage,omitempty"`
+	Prompt              string  `json:"prompt,omitempty"`
+	Pass                bool    `json:"pass,omitempty"`
+	LimitBreached       bool    `json:"limitBreached,omitempty"`
+	Note                string  `json:"note,omitempty"`
+	Turns               int     `json:"turns,omitempty"`
+	ToolCalls           int     `json:"toolCalls,omitempty"`
+	NewPromptTokens     int     `json:"newPromptTokens,omitempty"`
+	CompletionTokens    int     `json:"completionTokens,omitempty"`
+	InvalidArgRetries   int     `json:"invalidArgRetries,omitempty"`
+	JSONErrors          int     `json:"jsonErrors,omitempty"`
+	RepeatedCalls       int     `json:"repeatedCalls,omitempty"`
+	BaitCalls           int     `json:"baitCalls,omitempty"`
+	BrokenIntermediates int     `json:"brokenIntermediates,omitempty"`
+	Compactions         int     `json:"compactions,omitempty"`
+	TokPerSec           float64 `json:"tokPerSec,omitempty"`
+	WallMS              int64   `json:"wallMs,omitempty"`
+}
+
+// BenchCheckPublish is one assertion's verdict as published.
+type BenchCheckPublish struct {
+	Model      string `json:"model"`
+	Probe      string `json:"probe"`
+	RunMode    string `json:"runMode,omitempty"`
+	Toolset    string `json:"toolset,omitempty"`
+	ToolFormat string `json:"toolFormat,omitempty"`
+	Stage      int    `json:"stage,omitempty"`
+	Idx        int    `json:"idx,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Desc       string `json:"desc,omitempty"`
+	Pass       bool   `json:"pass,omitempty"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 // BenchProbeResultsInput publishes a run's per-probe detail in one batch.
@@ -496,15 +541,23 @@ type BenchProbeResultsInput struct {
 		RunID   string              `json:"runId"`
 		At      int64               `json:"at,omitempty"`
 		Results []BenchProbePublish `json:"results"`
+		Stages  []BenchStagePublish `json:"stages,omitempty"`
+		Checks  []BenchCheckPublish `json:"checks,omitempty"`
+		// OutDir/Host locate the run's transcripts and journals. corrallm cannot
+		// infer them: llm-bench's --out is relative to ITS cwd.
+		OutDir string `json:"outDir,omitempty"`
+		Host   string `json:"host,omitempty"`
 	}
 }
 
 // BenchProbeResultsOutput acknowledges a published batch.
 type BenchProbeResultsOutput struct {
 	Body struct {
-		OK      bool   `json:"ok"`
-		Saved   int    `json:"saved"`
-		Message string `json:"message"`
+		OK          bool   `json:"ok"`
+		Saved       int    `json:"saved"`
+		SavedStages int    `json:"savedStages"`
+		SavedChecks int    `json:"savedChecks"`
+		Message     string `json:"message"`
 	}
 }
 
@@ -535,9 +588,11 @@ func (h *Handlers) PublishBenchProbeResults(ctx context.Context, in *BenchProbeR
 		rows = append(rows, store.BenchProbeResult{
 			RunID: in.Body.RunID, Model: r.Model, At: at, Probe: r.Probe,
 			Class: r.Class, Capability: r.Capability, RunMode: r.RunMode,
+			Toolset: r.Toolset, ToolFormat: r.ToolFormat,
 			Stages: r.Stages, StagesPassed: r.StagesPassed,
 			ChecksPassed: r.ChecksPassed, ChecksTotal: r.ChecksTotal,
-			Pass: r.Pass, WallMS: r.WallMS, Skipped: r.Skipped,
+			Pass: r.Pass, WallMS: r.WallMS, NewPromptTokens: r.NewPromptTokens,
+			CompletionTokens: r.CompletionTokens, Skipped: r.Skipped,
 			SkipReason: r.SkipReason, Note: r.Note,
 		})
 	}
@@ -545,8 +600,54 @@ func (h *Handlers) PublishBenchProbeResults(ctx context.Context, in *BenchProbeR
 		out.Body.Message = err.Error()
 		return out, nil
 	}
+	stages := make([]store.BenchProbeStage, 0, len(in.Body.Stages))
+	for _, s := range in.Body.Stages {
+		if s.Model == "" || s.Probe == "" {
+			continue
+		}
+		stages = append(stages, store.BenchProbeStage{
+			RunID: in.Body.RunID, Model: s.Model, Probe: s.Probe, RunMode: s.RunMode,
+			Toolset: s.Toolset, ToolFormat: s.ToolFormat, Stage: s.Stage,
+			Prompt: s.Prompt, Pass: s.Pass, LimitBreached: s.LimitBreached,
+			Note: s.Note, Turns: s.Turns, ToolCalls: s.ToolCalls,
+			NewPromptTokens: s.NewPromptTokens, CompletionTokens: s.CompletionTokens,
+			InvalidArgRetries: s.InvalidArgRetries, JSONErrors: s.JSONErrors,
+			RepeatedCalls: s.RepeatedCalls, BaitCalls: s.BaitCalls,
+			BrokenIntermediates: s.BrokenIntermediates, Compactions: s.Compactions,
+			TokPerSec: s.TokPerSec, WallMS: s.WallMS,
+		})
+	}
+	if err := h.Store.SaveBenchProbeStages(ctx, stages); err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	checks := make([]store.BenchProbeCheck, 0, len(in.Body.Checks))
+	for _, c := range in.Body.Checks {
+		if c.Model == "" || c.Probe == "" {
+			continue
+		}
+		checks = append(checks, store.BenchProbeCheck{
+			RunID: in.Body.RunID, Model: c.Model, Probe: c.Probe, RunMode: c.RunMode,
+			Toolset: c.Toolset, ToolFormat: c.ToolFormat, Stage: c.Stage, Idx: c.Idx,
+			Kind: c.Kind, Desc: c.Desc, Pass: c.Pass, Detail: c.Detail,
+		})
+	}
+	if err := h.Store.SaveBenchProbeChecks(ctx, checks); err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	if in.Body.OutDir != "" {
+		if err := h.Store.SaveBenchRun(ctx, store.BenchRun{
+			RunID: in.Body.RunID, OutDir: in.Body.OutDir, Host: in.Body.Host, At: at,
+		}); err != nil {
+			out.Body.Message = err.Error()
+			return out, nil
+		}
+	}
 	out.Body.OK = true
 	out.Body.Saved = len(rows)
+	out.Body.SavedStages = len(stages)
+	out.Body.SavedChecks = len(checks)
 	out.Body.Message = fmt.Sprintf("recorded %d probe result(s) for run %s", len(rows), in.Body.RunID)
 	return out, nil
 }
@@ -554,11 +655,11 @@ func (h *Handlers) PublishBenchProbeResults(ctx context.Context, in *BenchProbeR
 // BenchCapabilityView is one capability's score for a model in one run — the
 // unit that is actually comparable across models.
 type BenchCapabilityView struct {
-	Capability   string             `json:"capability"`
-	Stages       int                `json:"stages"`
-	StagesPassed int                `json:"stagesPassed"`
-	Score        float64            `json:"score" doc:"Stage pass rate 0..1 within this capability."`
-	Probes       []BenchProbeRecord `json:"probes"`
+	Capability   string           `json:"capability"`
+	Stages       int              `json:"stages"`
+	StagesPassed int              `json:"stagesPassed"`
+	Score        float64          `json:"score" doc:"Stage pass rate 0..1 within this capability."`
+	Probes       []BenchProbeView `json:"probes"`
 	// SkippedProbes counts probes in this capability the model was not a
 	// candidate for. A capability whose probes ALL skipped has no score, and the
 	// UI must say "not applicable" rather than render 0% or omit it silently.
@@ -581,13 +682,13 @@ type BenchProbesOutput struct {
 	}
 }
 
-// BenchProbeDetail returns a model's per-probe results grouped by capability.
+// BenchProbesByCapability returns a model's per-probe results grouped by capability.
 //
 // Grouped server-side because the grouping IS the fix: a flat list re-invites
 // the reader to average an STT model's audio probes against a chat model's chat
 // probes, which is the comparison that made a speech model look like it could
 // hold a conversation.
-func (h *Handlers) BenchProbeDetail(ctx context.Context, in *BenchProbesInput) (*BenchProbesOutput, error) {
+func (h *Handlers) BenchProbesByCapability(ctx context.Context, in *BenchProbesInput) (*BenchProbesOutput, error) {
 	out := &BenchProbesOutput{}
 	out.Body.Model = in.Model
 	out.Body.Capabilities = []BenchCapabilityView{}
@@ -598,8 +699,13 @@ func (h *Handlers) BenchProbeDetail(ctx context.Context, in *BenchProbesInput) (
 	if err != nil {
 		return out, err
 	}
-	byCap := map[string]*BenchCapabilityView{}
-	var order []string
+	// Group to (capability -> probe -> arms). The arm dimension must survive
+	// this: rows for the same probe under different toolsets or tool formats are
+	// an A/B, and summing them reports the average of two things a run went out
+	// of its way to keep apart.
+	type probeKey struct{ capability, probe string }
+	byProbe := map[probeKey][]store.BenchProbeResult{}
+	var probeOrder []probeKey
 	for _, r := range rows {
 		out.Body.RunID = r.RunID
 		if r.At > out.Body.At {
@@ -609,30 +715,58 @@ func (h *Handlers) BenchProbeDetail(ctx context.Context, in *BenchProbesInput) (
 		if capName == "" {
 			capName = "chat"
 		}
-		v := byCap[capName]
-		if v == nil {
-			v = &BenchCapabilityView{Capability: capName, Probes: []BenchProbeRecord{}}
-			byCap[capName] = v
-			order = append(order, capName)
+		k := probeKey{capName, r.Probe}
+		if _, seen := byProbe[k]; !seen {
+			probeOrder = append(probeOrder, k)
 		}
-		v.Probes = append(v.Probes, BenchProbeRecord{
-			Model: r.Model, Probe: r.Probe, Class: r.Class, Capability: capName,
-			RunMode: r.RunMode, Stages: r.Stages, StagesPassed: r.StagesPassed,
-			ChecksPassed: r.ChecksPassed, ChecksTotal: r.ChecksTotal, Pass: r.Pass,
-			WallMS: r.WallMS, Skipped: r.Skipped, SkipReason: r.SkipReason, Note: r.Note,
-		})
-		// Skipped probes contribute to neither numerator nor denominator: they
-		// produced no measurement, and counting them either way would restate
-		// a configuration fact as a score.
-		if r.Skipped {
-			v.SkippedProbes++
-			continue
-		}
-		v.Stages += r.Stages
-		v.StagesPassed += r.StagesPassed
+		byProbe[k] = append(byProbe[k], r)
 	}
-	sort.Strings(order)
-	for _, name := range order {
+
+	byCap := map[string]*BenchCapabilityView{}
+	var capOrder []string
+	for _, k := range probeOrder {
+		v := byCap[k.capability]
+		if v == nil {
+			v = &BenchCapabilityView{Capability: k.capability, Probes: []BenchProbeView{}}
+			byCap[k.capability] = v
+			capOrder = append(capOrder, k.capability)
+		}
+		group := byProbe[k]
+		arms := armsFor(group)
+		pv := BenchProbeView{Probe: k.probe, Class: group[0].Class, Arms: arms}
+
+		// A probe every arm skipped was never a candidate; one no arm skipped
+		// ran everywhere. A mix means only some arms applied, and the ran ones
+		// are what the score should reflect.
+		ranArms := 0
+		verdicts := map[bool]bool{}
+		for _, a := range arms {
+			if a.Skipped {
+				continue
+			}
+			ranArms++
+			verdicts[a.Pass] = true
+			if a.IsBaseline {
+				pv.Score, pv.Stages, pv.StagesPassed = a.Score, a.Stages, a.StagesPassed
+				pv.Pass, pv.Note = a.Pass, a.Note
+			}
+		}
+		// Arms reaching different verdicts is the finding a pooled score hides.
+		pv.Disagreement = len(verdicts) > 1
+		if ranArms == 0 {
+			pv.Skipped = true
+			pv.SkipReason = arms[0].SkipReason
+			v.SkippedProbes++
+		} else {
+			// Score the capability off the baseline arm only, so adding an arm
+			// to a run cannot move a model's headline number.
+			v.Stages += pv.Stages
+			v.StagesPassed += pv.StagesPassed
+		}
+		v.Probes = append(v.Probes, pv)
+	}
+	sort.Strings(capOrder)
+	for _, name := range capOrder {
 		v := byCap[name]
 		if v.Stages > 0 {
 			v.Score = float64(v.StagesPassed) / float64(v.Stages)
@@ -687,35 +821,60 @@ func (h *Handlers) BenchCapabilityMatrix(ctx context.Context, _ *struct{}) (*Ben
 	if err != nil {
 		return out, err
 	}
+	// Fold each probe's arms down to its baseline BEFORE accumulating, or a
+	// model that ran a 3-arm A/B contributes three times the stages of one that
+	// ran a single arm — inflating the denominator for doing more work.
+	type probeKey struct{ capability, model, probe string }
+	byProbe := map[probeKey][]store.BenchProbeResult{}
+	var probeOrder []probeKey
+	for _, r := range rows {
+		capName := r.Capability
+		if capName == "" {
+			capName = "chat"
+		}
+		k := probeKey{capName, r.Model, r.Probe}
+		if _, seen := byProbe[k]; !seen {
+			probeOrder = append(probeOrder, k)
+		}
+		byProbe[k] = append(byProbe[k], r)
+	}
+
 	type acc struct {
 		view  BenchCapabilityModelView
 		order int
 	}
 	byCap := map[string]map[string]*acc{}
 	var capOrder []string
-	for _, r := range rows {
-		capName := r.Capability
-		if capName == "" {
-			capName = "chat"
-		}
-		models := byCap[capName]
+	for _, k := range probeOrder {
+		models := byCap[k.capability]
 		if models == nil {
 			models = map[string]*acc{}
-			byCap[capName] = models
-			capOrder = append(capOrder, capName)
+			byCap[k.capability] = models
+			capOrder = append(capOrder, k.capability)
 		}
-		a := models[r.Model]
+		group := byProbe[k]
+		a := models[k.model]
 		if a == nil {
-			a = &acc{view: BenchCapabilityModelView{Model: r.Model, RunID: r.RunID, At: r.At}}
-			models[r.Model] = a
+			a = &acc{view: BenchCapabilityModelView{
+				Model: k.model, RunID: group[0].RunID, At: group[0].At,
+			}}
+			models[k.model] = a
 		}
-		if r.Skipped {
+		var baseline *BenchArmView
+		arms := armsFor(group)
+		for i := range arms {
+			if arms[i].IsBaseline && !arms[i].Skipped {
+				baseline = &arms[i]
+				break
+			}
+		}
+		if baseline == nil {
 			a.view.SkippedProbes++
 			continue
 		}
 		a.view.Probes++
-		a.view.Stages += r.Stages
-		a.view.StagesPassed += r.StagesPassed
+		a.view.Stages += baseline.Stages
+		a.view.StagesPassed += baseline.StagesPassed
 	}
 	sort.Strings(capOrder)
 	for _, capName := range capOrder {

@@ -36,14 +36,14 @@ func publish(t *testing.T, h *Handlers, ctx context.Context, runID string, recs 
 // The regression this whole feature exists for: an STT model's audio probes and
 // a chat model's chat probes must not land in one pass rate, because the STT
 // model then reads as "as good as the chat model" at chatting.
-func TestBenchProbeDetail_GroupsByCapability(t *testing.T) {
+func TestBenchProbesByCapability_GroupsByCapability(t *testing.T) {
 	h, ctx := probeHandlers(t)
 	publish(t, h, ctx, "r1",
 		BenchProbePublish{Model: "m", Probe: "stt-1", Capability: "audio.stt", Stages: 2, StagesPassed: 2, Pass: true},
 		BenchProbePublish{Model: "m", Probe: "stt-2", Capability: "audio.stt", Stages: 2, StagesPassed: 2, Pass: true},
 		BenchProbePublish{Model: "m", Probe: "chat-1", Capability: "chat", Stages: 4, StagesPassed: 1},
 	)
-	out, err := h.BenchProbeDetail(ctx, &BenchProbesInput{Model: "m"})
+	out, err := h.BenchProbesByCapability(ctx, &BenchProbesInput{Model: "m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestBenchProbeDetail_GroupsByCapability(t *testing.T) {
 
 // A skipped probe is a configuration fact, not a score. Counting it as a
 // failure invents a capability gap; counting it as a pass invents a capability.
-func TestBenchProbeDetail_SkippedProbesScoreNeitherWay(t *testing.T) {
+func TestBenchProbesByCapability_SkippedProbesScoreNeitherWay(t *testing.T) {
 	h, ctx := probeHandlers(t)
 	publish(t, h, ctx, "r1",
 		BenchProbePublish{Model: "stt", Probe: "stt-1", Capability: "audio.stt", Stages: 2, StagesPassed: 2, Pass: true},
@@ -78,7 +78,7 @@ func TestBenchProbeDetail_SkippedProbesScoreNeitherWay(t *testing.T) {
 		BenchProbePublish{Model: "stt", Probe: "chat-2", Capability: "chat", Skipped: true,
 			SkipReason: `probe needs capability "chat", model serves "audio.stt"`},
 	)
-	out, err := h.BenchProbeDetail(ctx, &BenchProbesInput{Model: "stt"})
+	out, err := h.BenchProbesByCapability(ctx, &BenchProbesInput{Model: "stt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestBenchProbeDetail_SkippedProbesScoreNeitherWay(t *testing.T) {
 	}
 }
 
-func TestBenchProbeDetail_DefaultsToLatestRun(t *testing.T) {
+func TestBenchProbesByCapability_DefaultsToLatestRun(t *testing.T) {
 	h, ctx := probeHandlers(t)
 	publish(t, h, ctx, "r1", BenchProbePublish{Model: "m", Probe: "p", Capability: "chat", Stages: 2, StagesPassed: 2, Pass: true})
 	in := &BenchProbeResultsInput{}
@@ -111,7 +111,7 @@ func TestBenchProbeDetail_DefaultsToLatestRun(t *testing.T) {
 	if _, err := h.PublishBenchProbeResults(ctx, in); err != nil {
 		t.Fatal(err)
 	}
-	out, err := h.BenchProbeDetail(ctx, &BenchProbesInput{Model: "m"})
+	out, err := h.BenchProbesByCapability(ctx, &BenchProbesInput{Model: "m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,10 +125,10 @@ func TestBenchProbeDetail_DefaultsToLatestRun(t *testing.T) {
 
 // An empty capability on a row means the probe predates the field; it drives a
 // chat session, matching Requires.EffectiveCapability.
-func TestBenchProbeDetail_BlankCapabilityIsChat(t *testing.T) {
+func TestBenchProbesByCapability_BlankCapabilityIsChat(t *testing.T) {
 	h, ctx := probeHandlers(t)
 	publish(t, h, ctx, "r1", BenchProbePublish{Model: "m", Probe: "p", Stages: 1, StagesPassed: 1, Pass: true})
-	out, err := h.BenchProbeDetail(ctx, &BenchProbesInput{Model: "m"})
+	out, err := h.BenchProbesByCapability(ctx, &BenchProbesInput{Model: "m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,9 +137,9 @@ func TestBenchProbeDetail_BlankCapabilityIsChat(t *testing.T) {
 	}
 }
 
-func TestBenchProbeDetail_NoStoreIsEmptyNotNil(t *testing.T) {
+func TestBenchProbesByCapability_NoStoreIsEmptyNotNil(t *testing.T) {
 	h := &Handlers{}
-	out, err := h.BenchProbeDetail(context.Background(), &BenchProbesInput{Model: "m"})
+	out, err := h.BenchProbesByCapability(context.Background(), &BenchProbesInput{Model: "m"})
 	if err != nil {
 		t.Fatal(err)
 	}

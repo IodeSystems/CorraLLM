@@ -26,7 +26,15 @@ type CorrallmQueryNamespace {
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
   benchCapabilityMatrix: corrallm_BenchCapabilityMatrixOutputBody @derived(operationId: "benchCapabilityMatrix")
+  benchJournal(
+    model: String!
+    probe: String!
+    runId: String!
+    """Arm's toolset; defaults to "baseline". Artifacts are per (model, toolset, probe)."""
+    toolset: String
+  ): corrallm_BenchJournalOutputBody @derived(operationId: "benchJournal")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchProbeDetail(model: String!, probe: String!, runId: String!): corrallm_BenchProbeDetailOutputBody @derived(operationId: "benchProbeDetail")
   benchProbes(
     """Model whose probe detail to return."""
     model: String!
@@ -40,6 +48,13 @@ type CorrallmQueryNamespace {
     model: String
   ): corrallm_BenchResultsOutputBody @derived(operationId: "benchResults")
   benchStatus: corrallm_BenchRunStatus @derived(operationId: "benchStatus")
+  benchTranscript(
+    model: String!
+    probe: String!
+    runId: String!
+    """Arm's toolset; defaults to "baseline". Artifacts are per (model, toolset, probe)."""
+    toolset: String
+  ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
@@ -106,7 +121,15 @@ type CorrallmV1QueryNamespace {
     id: Long
   ): corrallm_ActivityDetailOutputBody @derived(operationId: "activityDetail")
   benchCapabilityMatrix: corrallm_BenchCapabilityMatrixOutputBody @derived(operationId: "benchCapabilityMatrix")
+  benchJournal(
+    model: String!
+    probe: String!
+    runId: String!
+    """Arm's toolset; defaults to "baseline". Artifacts are per (model, toolset, probe)."""
+    toolset: String
+  ): corrallm_BenchJournalOutputBody @derived(operationId: "benchJournal")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchProbeDetail(model: String!, probe: String!, runId: String!): corrallm_BenchProbeDetailOutputBody @derived(operationId: "benchProbeDetail")
   benchProbes(
     """Model whose probe detail to return."""
     model: String!
@@ -120,6 +143,13 @@ type CorrallmV1QueryNamespace {
     model: String
   ): corrallm_BenchResultsOutputBody @derived(operationId: "benchResults")
   benchStatus: corrallm_BenchRunStatus @derived(operationId: "benchStatus")
+  benchTranscript(
+    model: String!
+    probe: String!
+    runId: String!
+    """Arm's toolset; defaults to "baseline". Artifacts are per (model, toolset, probe)."""
+    toolset: String
+  ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
@@ -282,6 +312,38 @@ type corrallm_BackendLoadView {
   waiting: Long!
 }
 
+type corrallm_BenchArmDetailView {
+  label: String!
+  runMode: String!
+  stages: [corrallm_BenchStageView!]!
+  toolFormat: String!
+  toolset: String!
+}
+
+type corrallm_BenchArmView {
+  checksPassed: Long!
+  checksTotal: Long!
+  completionTokens: Long!
+  """The arm the probe's headline score comes from."""
+  isBaseline: Boolean!
+  """Display form, e.g. "baseline/json/warm"."""
+  label: String!
+  """Prompt tokens actually evaluated; the comparable token cost between arms."""
+  newPromptTokens: Long!
+  note: String
+  pass: Boolean!
+  runMode: String!
+  score: Float!
+  scoreDelta: Float!
+  skipReason: String
+  skipped: Boolean
+  stages: Long!
+  stagesPassed: Long!
+  toolFormat: String!
+  toolset: String!
+  wallMs: Long!
+}
+
 type corrallm_BenchCapabilityMatrixEntry {
   capability: String!
   models: [corrallm_BenchCapabilityModelView!]!
@@ -306,12 +368,56 @@ type corrallm_BenchCapabilityModelView {
 
 type corrallm_BenchCapabilityView {
   capability: String!
-  probes: [corrallm_BenchProbeRecord!]!
+  probes: [corrallm_BenchProbeView!]!
   """Stage pass rate 0..1 within this capability."""
   score: Float!
   skippedProbes: Long!
   stages: Long!
   stagesPassed: Long!
+}
+
+input corrallm_BenchCheckPublishInput {
+  desc: String
+  detail: String
+  idx: Long
+  kind: String
+  model: String!
+  pass: Boolean
+  probe: String!
+  runMode: String
+  stage: Long
+  toolFormat: String
+  toolset: String
+}
+
+type corrallm_BenchCheckView {
+  desc: String!
+  """Free-text evidence or failure reason; checks carry no structured expected/actual."""
+  detail: String
+  idx: Long!
+  kind: String!
+  pass: Boolean!
+}
+
+type corrallm_BenchJournalEntry {
+  """Raw JSON arguments."""
+  args: String!
+  """A declared bait tool the model should not have called."""
+  bait: Boolean!
+  """The tool returned content carrying a prompt-injection payload."""
+  poisoned: Boolean!
+  resultBytes: Long!
+  tool: String!
+  """Unix nanoseconds."""
+  ts: Long!
+}
+
+type corrallm_BenchJournalOutputBody {
+  available: Boolean!
+  entries: [corrallm_BenchJournalEntry!]!
+  reason: String
+  runId: String!
+  truncated: Boolean
 }
 
 type corrallm_BenchModelPlan {
@@ -334,12 +440,21 @@ type corrallm_BenchPlanOutputBody {
   newModels: Long!
 }
 
+type corrallm_BenchProbeDetailOutputBody {
+  arms: [corrallm_BenchArmDetailView!]!
+  model: String!
+  probe: String!
+  runId: String!
+}
+
 input corrallm_BenchProbePublishInput {
   capability: String
   checksPassed: Long
   checksTotal: Long
   class: String
+  completionTokens: Long
   model: String!
+  newPromptTokens: Long
   note: String
   pass: Boolean
   """Probe (task) name."""
@@ -349,42 +464,29 @@ input corrallm_BenchProbePublishInput {
   skipped: Boolean
   stages: Long
   stagesPassed: Long
+  """A/B arm: tool-result encoding."""
+  toolFormat: String
+  """A/B arm: tool surface offered."""
+  toolset: String
   wallMs: Long
-}
-
-type corrallm_BenchProbeRecord {
-  """Serving surface the PROBE required: chat, audio.stt, …"""
-  capability: String
-  checksPassed: Long!
-  checksTotal: Long!
-  """coding | tooluse | adversarial | capability."""
-  class: String
-  model: String!
-  """First failing check, or the combo error."""
-  note: String
-  pass: Boolean!
-  """Probe (task) name."""
-  probe: String!
-  """Residency the pass ran against: cold | warm | empty."""
-  runMode: String
-  skipReason: String
-  """Probe was never a candidate for this model — a configuration fact, not a failure."""
-  skipped: Boolean
-  stages: Long!
-  stagesPassed: Long!
-  wallMs: Long!
 }
 
 input corrallm_BenchProbeResultsInputBodyInput {
   at: Long
+  checks: [corrallm_BenchCheckPublishInput!]
+  host: String
+  outDir: String
   results: [corrallm_BenchProbePublishInput!]
   runId: String!
+  stages: [corrallm_BenchStagePublishInput!]
 }
 
 type corrallm_BenchProbeResultsOutputBody {
   message: String!
   ok: Boolean!
   saved: Long!
+  savedChecks: Long!
+  savedStages: Long!
 }
 
 type corrallm_BenchProbeSuggestion {
@@ -393,6 +495,20 @@ type corrallm_BenchProbeSuggestion {
   kind: String!
   """Why it is (or is not) pre-checked."""
   reason: String!
+}
+
+type corrallm_BenchProbeView {
+  arms: [corrallm_BenchArmView!]!
+  class: String
+  disagreement: Boolean!
+  note: String
+  pass: Boolean!
+  probe: String!
+  score: Float!
+  skipReason: String
+  skipped: Boolean
+  stages: Long!
+  stagesPassed: Long!
 }
 
 type corrallm_BenchProbesOutputBody {
@@ -472,6 +588,74 @@ type corrallm_BenchRunStatus {
   log: [String!]
   running: Boolean!
   startedAt: Long
+}
+
+input corrallm_BenchStagePublishInput {
+  baitCalls: Long
+  brokenIntermediates: Long
+  compactions: Long
+  completionTokens: Long
+  invalidArgRetries: Long
+  jsonErrors: Long
+  limitBreached: Boolean
+  model: String!
+  newPromptTokens: Long
+  note: String
+  pass: Boolean
+  probe: String!
+  prompt: String
+  repeatedCalls: Long
+  runMode: String
+  stage: Long
+  tokPerSec: Float
+  toolCalls: Long
+  toolFormat: String
+  toolset: String
+  turns: Long
+  wallMs: Long
+}
+
+type corrallm_BenchStageView {
+  """Calls to a declared bait tool — what adversarial probes are scored on."""
+  baitCalls: Long!
+  """Mutating calls that left the workspace failing its safety check."""
+  brokenIntermediates: Long!
+  checks: [corrallm_BenchCheckView!]!
+  compactions: Long!
+  completionTokens: Long!
+  invalidArgRetries: Long!
+  jsonErrors: Long!
+  """A turn/tool-call budget was hit. Does not by itself veto passing checks."""
+  limitBreached: Boolean
+  newPromptTokens: Long!
+  note: String
+  pass: Boolean!
+  prompt: String
+  repeatedCalls: Long!
+  stage: Long!
+  tokPerSec: Float!
+  toolCalls: Long!
+  turns: Long!
+  wallMs: Long!
+}
+
+type corrallm_BenchTranscriptEntry {
+  """Truncated to 2 KiB per entry by the writer."""
+  content: String!
+  createdAt: Long!
+  """user | assistant | tool_call | tool_result."""
+  kind: String!
+  toolCallId: String
+  toolName: String
+}
+
+type corrallm_BenchTranscriptOutputBody {
+  available: Boolean!
+  entries: [corrallm_BenchTranscriptEntry!]!
+  """Why the transcript could not be read."""
+  reason: String
+  runId: String!
+  truncated: Boolean
 }
 
 input corrallm_CalibrateInputBodyInput {
