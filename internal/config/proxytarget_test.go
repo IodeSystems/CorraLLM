@@ -81,3 +81,24 @@ func TestProxyTargetBasePath(t *testing.T) {
 		})
 	}
 }
+
+// A remote provider expects its own model id, distinct from corrallm's served
+// name; the object-form `model:` carries it onto the ProxyTarget.
+func TestProxyTargetUpstreamModel(t *testing.T) {
+	tgt, err := modelWithProxy(t,
+		"{ host: api.groq.com, port: 443, basePath: /openai, model: llama-3.3-70b-versatile }").ProxyTarget()
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if tgt.Model != "llama-3.3-70b-versatile" {
+		t.Errorf("Model = %q, want llama-3.3-70b-versatile", tgt.Model)
+	}
+	if tgt.BasePath != "/openai" {
+		t.Errorf("BasePath = %q, want /openai", tgt.BasePath)
+	}
+	// A local backend declares no upstream model — the body must forward unchanged.
+	local, _ := modelWithProxy(t, "5800").ProxyTarget()
+	if local.Model != "" {
+		t.Errorf("local Model = %q, want empty", local.Model)
+	}
+}

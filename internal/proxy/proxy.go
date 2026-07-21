@@ -370,6 +370,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// Restore the buffered body for the proxy, clamping max_tokens to this
 		// backend's cap when it declares one (degrade transform, P7).
 		outBody := clampMaxTokens(body, backend)
+		// Rewrite the body's `model` to the upstream's own id for a remote that
+		// declares one (P16): corrallm routed on the served name, but the remote
+		// does not know it. A local backend leaves Target.Model empty and the
+		// body forwards unchanged.
+		if pr.Target != nil && pr.Target.Model != "" {
+			outBody = rewriteModelField(outBody, pr.Target.Model)
+		}
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
 		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK, streaming: streaming}
@@ -839,6 +846,32 @@ func orderByTypeRR(idxs []int, cands []config.Candidate, rr uint64) []int {
 // (P7): a present max_tokens/max_completion_tokens larger than the cap is reduced
 // to it, and if neither is present the cap is set as max_tokens. Returns body
 // unchanged when the model declares no cap or the body isn't JSON.
+// rewriteModelField replaces the request body's top-level `model` with the
+// upstream's own id. corrallm routes on the served name, but a remote provider
+// only knows its own model id (Groq "llama-3.3-70b-versatile"), so the name has
+// to be swapped on the way out. Same map[string]json.RawMessage approach as
+// clampMaxTokens: it preserves every other field verbatim and is a no-op on a
+// body that does not parse as JSON or carries no `model` (e.g. multipart audio),
+// so a bad body forwards unchanged rather than being dropped.
+func rewriteModelField(body []byte, upstream string) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	if _, ok := m["model"]; !ok {
+		return body
+	}
+	nv, err := json.Marshal(upstream)
+	if err != nil {
+		return body
+	}
+	m["model"] = nv
+	if out, err := json.Marshal(m); err == nil {
+		return out
+	}
+	return body
+}
+
 func clampMaxTokens(body []byte, b config.Model) []byte {
 	if b.MaxTokens <= 0 {
 		return body

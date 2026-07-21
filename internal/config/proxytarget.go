@@ -25,15 +25,24 @@ type ProxyTarget struct {
 	// llama.cpp and most others mount at root and leave this "". Empty is a
 	// no-op, so local backends are unaffected.
 	BasePath string
+
+	// Model is the upstream's own model id, substituted into the request body's
+	// `model` field on the way out. corrallm routes on the SERVED name
+	// (e.g. "groq-llama-70b"), but the remote expects its own id
+	// (e.g. "llama-3.3-70b-versatile"); a local llama.cpp backend ignores the
+	// field entirely, so this is empty for them and the body forwards unchanged.
+	Model string
 }
 
-// proxyObj is the object form of `proxy:` ({host, port, headers, basePath}).
+// proxyObj is the object form of `proxy:`
+// ({host, port, headers, basePath, model}).
 type proxyObj struct {
 	Host     string            `yaml:"host"`
 	Port     int               `yaml:"port"`
 	Scheme   string            `yaml:"scheme"`
 	Headers  map[string]string `yaml:"headers"`
 	BasePath string            `yaml:"basePath"`
+	Model    string            `yaml:"model"`
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -80,6 +89,7 @@ func (m Model) ProxyTarget() (*ProxyTarget, error) {
 			return nil, err
 		}
 		t.BasePath = normalizeBasePath(o.BasePath)
+		t.Model = o.Model
 		return t, nil
 	default:
 		return nil, fmt.Errorf("unsupported proxy target kind %d", n.Kind)

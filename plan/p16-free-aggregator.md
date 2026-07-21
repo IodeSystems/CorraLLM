@@ -152,8 +152,11 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
 
 - **P16a — one provider, header-tracked.** ◐ In progress.
   - ✅ base-path support (this commit) — the blocker; fully tested, no key needed.
-  - ◻ model-id rewrite (served name → upstream id in the request body) — unit-
-    testable without a key.
+  - ✅ model-id rewrite (this commit) — `proxy: {model: <upstream id>}` →
+    `ProxyTarget.Model`, substituted into the outbound body's `model` field at
+    the dispatch site (beside clampMaxTokens). No-op when unset (local backends)
+    or on a non-JSON body. Tested unit + end-to-end (upstream receives the
+    substituted id, not the served name).
   - ❓ **parse Groq's rate-limit headers into a ledger + expose in console — GATED
     ON A GROQ API KEY.** The design's whole point ("prove the header path
     end-to-end") is a live Groq call, and open questions #2–4 (real header names,
