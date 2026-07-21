@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,14 +16,24 @@ import (
 type ProxyTarget struct {
 	URL     *url.URL
 	Headers map[string]string
+
+	// BasePath is a path PREFIX prepended to the incoming request path when the
+	// upstream mounts its OpenAI surface below root. The client always sends the
+	// standard /v1/... path; a remote like Groq serves it at
+	// /openai/v1/chat/completions, so its BasePath is "/openai" (NOT "/openai/v1"
+	// — the /v1 already arrives on the request). OpenRouter is "/api";
+	// llama.cpp and most others mount at root and leave this "". Empty is a
+	// no-op, so local backends are unaffected.
+	BasePath string
 }
 
-// proxyObj is the object form of `proxy:` ({host, port, headers}).
+// proxyObj is the object form of `proxy:` ({host, port, headers, basePath}).
 type proxyObj struct {
-	Host    string            `yaml:"host"`
-	Port    int               `yaml:"port"`
-	Scheme  string            `yaml:"scheme"`
-	Headers map[string]string `yaml:"headers"`
+	Host     string            `yaml:"host"`
+	Port     int               `yaml:"port"`
+	Scheme   string            `yaml:"scheme"`
+	Headers  map[string]string `yaml:"headers"`
+	BasePath string            `yaml:"basePath"`
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -64,7 +75,12 @@ func (m Model) ProxyTarget() (*ProxyTarget, error) {
 				scheme = "http"
 			}
 		}
-		return targetFromHostPort(host, o.Port, scheme, expandHeaders(o.Headers))
+		t, err := targetFromHostPort(host, o.Port, scheme, expandHeaders(o.Headers))
+		if err != nil {
+			return nil, err
+		}
+		t.BasePath = normalizeBasePath(o.BasePath)
+		return t, nil
 	default:
 		return nil, fmt.Errorf("unsupported proxy target kind %d", n.Kind)
 	}
@@ -92,6 +108,17 @@ func targetFromString(s string) (*ProxyTarget, error) {
 		return nil, fmt.Errorf("invalid proxy target %q", s)
 	}
 	return &ProxyTarget{URL: u}, nil
+}
+
+// normalizeBasePath cleans a configured base-path prefix: "" stays "" (a
+// no-op), and a non-empty value is forced to a single leading slash and no
+// trailing slash so the Director's join is unambiguous ("openai/" → "/openai").
+func normalizeBasePath(p string) string {
+	p = strings.Trim(p, "/")
+	if p == "" {
+		return ""
+	}
+	return "/" + p
 }
 
 func expandHeaders(h map[string]string) map[string]string {

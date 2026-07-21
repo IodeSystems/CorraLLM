@@ -1268,12 +1268,34 @@ func writeBackpressure(w http.ResponseWriter, bp *sched.BackpressureError) {
 
 // newReverseProxy builds a single-target reverse proxy that injects the
 // target's auth headers (for remote/paid endpoints) and preserves streaming.
+// joinPath concatenates a base-path prefix and the request path with exactly one
+// slash between them — the same single-joining-slash rule net/http/httputil uses,
+// so "/openai" + "/v1/chat/completions" = "/openai/v1/chat/completions" and a
+// stray trailing/leading slash never doubles.
+func joinPath(base, reqPath string) string {
+	aslash := strings.HasSuffix(base, "/")
+	bslash := strings.HasPrefix(reqPath, "/")
+	switch {
+	case aslash && bslash:
+		return base + reqPath[1:]
+	case !aslash && !bslash:
+		return base + "/" + reqPath
+	}
+	return base + reqPath
+}
+
 func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = t.URL.Scheme
 			req.URL.Host = t.URL.Host
 			req.Host = t.URL.Host
+			// Prepend the target's base path when the upstream mounts its
+			// OpenAI surface below root (Groq /openai, OpenRouter /api). Empty
+			// for local backends, so /v1/... forwards unchanged.
+			if t.BasePath != "" {
+				req.URL.Path = joinPath(t.BasePath, req.URL.Path)
+			}
 			// Drop the client's Accept-Encoding so the transport negotiates
 			// (and transparently decodes) compression itself — the body we
 			// capture for usage metering is then identity, not gzip. Without

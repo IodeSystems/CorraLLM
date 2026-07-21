@@ -56,3 +56,28 @@ func TestProxyTargetMissing(t *testing.T) {
 		t.Fatal("expected error for missing proxy target")
 	}
 }
+
+// A remote that mounts its OpenAI surface below root (Groq /openai, OpenRouter
+// /api) needs a base-path prefix; the client always sends the standard /v1/...
+func TestProxyTargetBasePath(t *testing.T) {
+	cases := []struct {
+		name, yaml, wantBase string
+	}{
+		{"groq", "{ host: api.groq.com, port: 443, basePath: /openai }", "/openai"},
+		{"openrouter", "{ host: openrouter.ai, port: 443, basePath: /api/v1 }", "/api/v1"},
+		{"trims slashes", "{ host: h, port: 1, basePath: /openai/ }", "/openai"},
+		{"bare word", "{ host: h, port: 1, basePath: api }", "/api"},
+		{"empty is noop", "{ host: h, port: 1 }", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tgt, err := modelWithProxy(t, c.yaml).ProxyTarget()
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if tgt.BasePath != c.wantBase {
+				t.Errorf("BasePath = %q, want %q", tgt.BasePath, c.wantBase)
+			}
+		})
+	}
+}

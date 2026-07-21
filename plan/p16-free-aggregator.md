@@ -127,10 +127,13 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
 
 ## 8. Open questions — close before/at build (several credential-gated)
 
-- **Base-path handling.** Groq serves at `/openai/v1/...`, not `/v1/...`. Does
-  `ProxyTarget` rewrite the request path, or pass it through? A `basePath` field
-  (above) is assumed — **verify `proxytarget.go` supports it or add it.** This is
-  the first thing to check; it blocks everything.
+- ✅ **Base-path handling** (P16a, done). It was NOT supported — the Director set
+  scheme/host but forwarded the client path unchanged, silently dropping any base
+  path. Added `ProxyTarget.BasePath` (object-form `basePath:`, normalized to a
+  single leading slash) and a `joinPath` prefix in the reverse-proxy Director.
+  Groq is `basePath: /openai` (the `/v1` arrives on the request), OpenRouter
+  `/api`; empty is a no-op so local backends are untouched. Tested:
+  `/v1/chat/completions` → `/openai/v1/chat/completions`.
 - **429-vs-daily distinction.** For each provider, the exact status/body/headers
   distinguishing "slow down (per-minute)" from "done for the day" is **not
   documented reliably** (the OpenRouter 402 assumption was refuted). Must probe
@@ -147,9 +150,17 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
 
 ## 9. Phased build order (each a green, tested sub-unit per §0)
 
-- **P16a — one provider, header-tracked.** Add Groq as a proxy model; confirm
-  base-path; parse its rate-limit headers into a ledger; expose the ledger in the
-  console. Proves the header path end-to-end on the best-instrumented provider.
+- **P16a — one provider, header-tracked.** ◐ In progress.
+  - ✅ base-path support (this commit) — the blocker; fully tested, no key needed.
+  - ◻ model-id rewrite (served name → upstream id in the request body) — unit-
+    testable without a key.
+  - ❓ **parse Groq's rate-limit headers into a ledger + expose in console — GATED
+    ON A GROQ API KEY.** The design's whole point ("prove the header path
+    end-to-end") is a live Groq call, and open questions #2–4 (real header names,
+    429-vs-daily body, token counting) can only be closed against the live API.
+    No key is on this box. Building the ledger before probing the real responses
+    would be building against unverified assumptions — do not. Get a key (env
+    `GROQ_API_KEY` or a file; never pasted in chat) and resume here.
 - **P16b — the ledger + selector.** Generalize to a `free` lane; quota-aware
   selection with cooling; fall to local floor. Test with Groq + one more.
 - **P16c — counter-mode + OpenRouter.** Local-counter tracking; the empirical
