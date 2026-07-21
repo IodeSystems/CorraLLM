@@ -906,6 +906,14 @@ the BackpressureError shape we already validated.
     *pathological* breach (identical-call loop, tool-call budget) must; and never infer an abort's
     cause — report the underlying error, or a 9.6 s failure gets blamed on a 10-minute timeout.
 
+- ☐ **P16 — Free-tier aggregator (quota-aware remote routing).** Pool many providers'
+  independent free daily/minute quotas into one serving budget: register free OpenAI-compatible
+  endpoints (Groq, Cerebras, OpenRouter, …) as proxy backends, track each provider's remaining
+  quota (from response rate-limit headers where present, else a local counter), and swap across
+  them before exhaustion. Extends P14 lanes from react-on-error failover to avoid-before-exhaust
+  selection; local models stay the floor (remote free is never the sole path). **Full design +
+  provider facts + phased build order in [plan/p16-free-aggregator.md](p16-free-aggregator.md).**
+
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
 ---
