@@ -236,3 +236,21 @@ func TestCounterMode_429Counts(t *testing.T) {
 		t.Error("2 requests (one a 429) reached the 2/min limit → unavailable")
 	}
 }
+
+// MarkDown (402/403 hard failure) takes a backend out of rotation.
+func TestMarkDown(t *testing.T) {
+	l := New()
+	t0 := time.Unix(1_800_000_000, 0)
+	fixed(l, t0)
+	if !l.Available("groq-a") {
+		t.Fatal("precondition: available")
+	}
+	l.MarkDown("groq-a", 5*time.Minute)
+	if l.Available("groq-a") {
+		t.Error("a marked-down backend must be unavailable")
+	}
+	l.now = func() time.Time { return t0.Add(6 * time.Minute) }
+	if !l.Available("groq-a") {
+		t.Error("should recover after the cooldown")
+	}
+}

@@ -424,14 +424,27 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		rp := newReverseProxy(pr.Target)
 		// Fold this response's rate-limit headers into the quota ledger (P16).
 		// A no-op for local backends (no such headers); learns a remote's
-		// remaining budget for the selector to route on.
+		// remaining budget for the selector to route on. On a HARD failure from a
+		// free-tier remote (401/402/403 — auth or billing, which a retry won't fix)
+		// take it out of rotation and abort with errBackendDown so the loop spills
+		// to the next candidate rather than returning the error to the caller.
+		isFree := backend.FreeTier != nil
+		hardFailStatus := 0
 		rp.ModifyResponse = func(resp *http.Response) error {
 			p.quota.ObserveResponse(name, resp.StatusCode, resp.Header)
+			if isFree && isHardFail(resp.StatusCode) {
+				hardFailStatus = resp.StatusCode
+				p.quota.MarkDown(name, hardFailCooldown)
+				return errBackendDown
+			}
 			return nil
 		}
 		var proxyErr error
 		rp.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, err error) {
 			proxyErr = err
+			if errors.Is(err, errBackendDown) {
+				return // spill: write nothing, the walk loop retries the next candidate
+			}
 			code := http.StatusBadGateway
 			switch {
 			case errors.Is(err, context.Canceled):
@@ -443,6 +456,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		rp.ServeHTTP(sc, r.WithContext(reqCtx))
 		done()
+		// Hard-fail spill: the response was aborted before anything reached the
+		// client (wroteHeader guards that), so free the slot and try the next
+		// candidate — a free-only lane with one broken key still serves from
+		// another backend instead of surfacing a 402/403.
+		if errors.Is(proxyErr, errBackendDown) && !sc.wroteHeader {
+			release()
+			slog.Warn("free-tier backend hard-failed, spilling", "backend", name, "status", hardFailStatus)
+			continue
+		}
 		status := sc.code
 		errReason := ""
 		if proxyErr != nil {
@@ -1381,6 +1403,27 @@ func joinPath(base, reqPath string) string {
 		return base + "/" + reqPath
 	}
 	return base + reqPath
+}
+
+// hardFailCooldown is how long a backend that returned a hard failure (auth or
+// billing) is taken out of rotation before it is tried again — long enough to
+// stop hammering it, short enough to recover once the operator fixes the key or
+// enables billing.
+const hardFailCooldown = 5 * time.Minute
+
+// errBackendDown aborts a proxied response and spills to the next candidate when
+// a free-tier remote hard-fails: 401/402/403 mean auth or billing, which a retry
+// cannot fix, so the error must not reach the caller while another backend can
+// serve. Returned from ModifyResponse before any body is written.
+var errBackendDown = errors.New("free-tier backend hard failure")
+
+// isHardFail is true for statuses that mean a backend structurally cannot serve
+// this caller (unauthorized / payment-required / forbidden), as opposed to a
+// transient 429 (rate limit) or 5xx (retryable).
+func isHardFail(status int) bool {
+	return status == http.StatusUnauthorized ||
+		status == http.StatusPaymentRequired ||
+		status == http.StatusForbidden
 }
 
 func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {

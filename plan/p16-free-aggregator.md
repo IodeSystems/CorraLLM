@@ -254,6 +254,24 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
   its limit, not only reactively after a 429. Still open: the empirical 429-body
   probe (not tripped), and reconciling counter drift if OpenRouter ever adds
   headers.
+- ✅ **error-spill for hard failures** (2026-07-21). A free-tier remote that
+  returns 401/402/403 (auth or billing — a retry won't fix it) is taken out of
+  rotation via `ledger.MarkDown(backend, 5m)` AND the in-flight response is
+  aborted before anything reaches the client (`errBackendDown` from
+  ModifyResponse → ErrorHandler writes nothing → the walk loop `release()`s and
+  `continue`s to the next candidate). So a lane with one broken key still serves
+  from another backend instead of surfacing the 402/403. Live: Cerebras (402,
+  billing off) as a same-tier free-lane member — every `model="free"` request
+  spilled past it to Groq/OpenRouter, http 200, and Cerebras showed cooling 299s.
+  **Requirement this exposed: free-lane members must SHARE a quality tier.** The
+  spill falls through the quality-gated walk, so a hard-failing member at a
+  HIGHER quality than its peers isolates itself (the gate keeps only the top tier)
+  and the spill exhausts to 503 with nothing at its tier to fall to. Peers at the
+  same quality spill to each other correctly. Edge still open: if EVERY member of
+  the top tier hard-fails on first contact simultaneously, the walk exhausts there
+  and 503s rather than degrading to a lower-quality local floor (the floor is only
+  reached once the failures are known and pre-filtered, or with an
+  acceptDegrade group) — narrow, and left as a known limitation.
 - **P16d — privacy tiering.** `private` flag + `sensitive` routing.
 - **P16e — refresh.** Periodic pull of OpenRouter's `:free` roster (the volatile
   one) into proxy entries; other providers have stable model lists.

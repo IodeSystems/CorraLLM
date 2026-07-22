@@ -228,6 +228,23 @@ func coolUntil(h http.Header, e *Entry, now time.Time) time.Time {
 	return now.Add(time.Minute)
 }
 
+// MarkDown puts a backend in cooldown for dur, used for a HARD failure (402
+// payment-required, 403 forbidden, 401 unauthorized) that a retry won't fix
+// soon. The selector skips it until it might recover — billing enabled, key
+// corrected — instead of hammering a backend that structurally cannot serve.
+func (l *Ledger) MarkDown(backend string, dur time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	e := l.entries[backend]
+	if e == nil {
+		e = &Entry{Backend: backend}
+		l.entries[backend] = e
+	}
+	e.CoolingUntil = now.Add(dur)
+	e.LastSeen = now
+}
+
 // Available reports whether a backend has budget and is not cooling. An unknown
 // backend (never observed) is optimistically available — the ledger learns on
 // the first response, and refusing a backend we know nothing about would strand

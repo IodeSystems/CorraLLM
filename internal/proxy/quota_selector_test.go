@@ -60,3 +60,25 @@ func TestFilterByQuota_NeverEmpties(t *testing.T) {
 		t.Errorf("must not empty the candidate set: %v", names(got))
 	}
 }
+
+// A hard-down backend (402/403 via MarkDown) is filtered out of the candidate set.
+func TestFilterByQuota_SkipsHardDown(t *testing.T) {
+	p := &Proxy{quota: quota.New()}
+	cands := []config.Candidate{cand("groq-a"), cand("MTP-local")}
+	p.quota.MarkDown("groq-a", 5*60*1e9) // 5 min in ns
+	got := p.filterByQuota(cands)
+	if len(got) != 1 || got[0].Name != "MTP-local" {
+		t.Errorf("hard-down groq-a should be dropped: %v", names(got))
+	}
+}
+
+func TestIsHardFail(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		want   bool
+	}{{401, true}, {402, true}, {403, true}, {429, false}, {500, false}, {200, false}} {
+		if got := isHardFail(c.status); got != c.want {
+			t.Errorf("isHardFail(%d) = %v, want %v", c.status, got, c.want)
+		}
+	}
+}
