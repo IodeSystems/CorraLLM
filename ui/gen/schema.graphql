@@ -86,6 +86,8 @@ type CorrallmQueryNamespace {
   recentActivity(
     """Max records, newest first."""
     limit: Long
+    """Filter to one served model; empty returns all models."""
+    served: String
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
   reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
@@ -192,6 +194,8 @@ type CorrallmV1QueryNamespace {
   recentActivity(
     """Max records, newest first."""
     limit: Long
+    """Filter to one served model; empty returns all models."""
+    served: String
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
   reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
@@ -1042,10 +1046,14 @@ type corrallm_QuotaOutputBody {
 }
 
 type corrallm_QuotaWindowView {
+  """The level has reached the limit — the backend is skipped until it drains below."""
+  blocked: Boolean
   """"1m" (per-minute) or "1d" (per-day)."""
   label: String!
   limit: Long!
+  """Time until the current level fully drains to zero."""
   resetsIn: String
+  """Decayed fill level, rounded; leaks back toward zero over the window."""
   used: Long!
 }
 

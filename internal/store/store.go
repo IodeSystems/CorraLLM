@@ -371,13 +371,24 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 	return n, nil
 }
 
-// RecentActivity returns the most recent records, newest first.
-func (s *Store) RecentActivity(limit int) ([]Activity, error) {
-	rows, err := s.db.Query(
-		`SELECT id, ts, served, backend, key, source_ip, path, status, dwell_ms,
-		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
-		        cached_tokens, prompt_per_sec, predicted_per_sec
+// RecentActivity returns the most recent records, newest first. A non-empty
+// served filters to one model's requests (the per-model console usage tab);
+// empty returns every model's activity (the global activity page).
+func (s *Store) RecentActivity(limit int, served string) ([]Activity, error) {
+	const cols = `id, ts, served, backend, key, source_ip, path, status, dwell_ms,
+	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
+	        cached_tokens, prompt_per_sec, predicted_per_sec`
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if served != "" {
+		rows, err = s.db.Query(`SELECT `+cols+`
+		 FROM activity WHERE served = ? ORDER BY ts DESC LIMIT ?`, served, limit)
+	} else {
+		rows, err = s.db.Query(`SELECT ` + cols + `
 		 FROM activity ORDER BY ts DESC LIMIT ?`, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

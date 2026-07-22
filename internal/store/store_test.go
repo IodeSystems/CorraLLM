@@ -22,7 +22,7 @@ func TestActivityRoundTrip(t *testing.T) {
 	if err := st.InsertActivity(in); err != nil {
 		t.Fatal(err)
 	}
-	got, err := st.RecentActivity(10)
+	got, err := st.RecentActivity(10, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +50,24 @@ func TestActivityRoundTrip(t *testing.T) {
 	}
 	if got2.CachedTokens != 3 || got2.PromptPerSec != 200.0 || got2.PredictedPerSec != 60.5 {
 		t.Errorf("ActivityByID telemetry = cached %d, tp/s %v, tg/s %v", got2.CachedTokens, got2.PromptPerSec, got2.PredictedPerSec)
+	}
+
+	// The served filter scopes RecentActivity to one model (per-model console
+	// usage tab); empty served returns every model. Two "m" rows + one "other".
+	if err := st.InsertActivity(Activity{TS: 3, Served: "other", Backend: "other#0", Status: 200}); err != nil {
+		t.Fatal(err)
+	}
+	if all, _ := st.RecentActivity(10, ""); len(all) != 3 {
+		t.Fatalf("unfiltered should see all models, got %d", len(all))
+	}
+	only, _ := st.RecentActivity(10, "m")
+	if len(only) != 2 {
+		t.Fatalf("served=m should return only model m's rows, got %d", len(only))
+	}
+	for _, r := range only {
+		if r.Served != "m" {
+			t.Errorf("served filter leaked a %q row", r.Served)
+		}
 	}
 }
 
@@ -228,7 +246,7 @@ func TestPruneActivity(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("pruned %d, want 2", n)
 	}
-	got, _ := st.RecentActivity(10)
+	got, _ := st.RecentActivity(10, "")
 	if len(got) != 2 {
 		t.Errorf("remaining %d rows, want 2", len(got))
 	}

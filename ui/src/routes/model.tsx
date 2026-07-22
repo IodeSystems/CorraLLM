@@ -36,7 +36,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { graphql } from '@/gql'
 import type { ModelBenchQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
-import { capLabel, fmtDuration, fmtInt, fmtMiB, fmtUSD } from '@/format'
+import { capLabel, fmtDuration, fmtInt, fmtMiB, fmtTime as fmtTs, fmtUSD } from '@/format'
 import { BenchProbeDetail } from '@/BenchProbeDetail'
 
 // --- data ---------------------------------------------------------------
@@ -126,6 +126,38 @@ const UsageDoc = graphql(/* GraphQL */ `
   }
 `)
 
+// Per-model activity, filtered server-side to this served model (the aggregate
+// rollup above answers "how much"; these rows answer "which requests, and did
+// they fail").
+const ConsoleActivityDoc = graphql(/* GraphQL */ `
+  query ConsoleActivity($served: String!) {
+    corrallm {
+      recentActivity(served: $served, limit: "50") {
+        records {
+          id
+          ts
+          backend
+          path
+          status
+          dwellMs
+          promptTokens
+          completionTokens
+          costUsd
+          error
+        }
+      }
+    }
+  }
+`)
+
+function statusColor(s: string | number): 'success' | 'warning' | 'error' | 'default' {
+  const n = typeof s === 'string' ? Number(s) : s
+  if (n >= 200 && n < 300) return 'success'
+  if (n === 429 || n === 503) return 'warning'
+  if (n >= 400) return 'error'
+  return 'default'
+}
+
 type Manifest = {
   models_by_capability?: Record<string, string[]>
   endpoints?: Array<{
@@ -212,7 +244,14 @@ function ModelConsole() {
           ← Overview
         </Button>
         <Typography variant="h6">{name}</Typography>
-        <Chip size="small" label={res?.state ?? 'absent'} />
+        {/* A pure-proxy backend (no cmd) has no local process, so it never has a
+            residency state — label it "proxy" (colored), not the misleading
+            "absent" that reads as a failed local load. */}
+        <Chip
+          size="small"
+          label={res?.state ?? (model.cmd ? 'absent' : 'proxy')}
+          color={!res?.state && !model.cmd ? 'secondary' : 'default'}
+        />
         <Chip size="small" color="info" variant="outlined" label={capLabel(capability)} />
         {(model.modalities ?? []).map((md) => (
           <Chip key={md.modality} size="small" variant="outlined" label={modalityLabel(md)} />
@@ -481,32 +520,110 @@ function LogsTab({ backend, ready }: { backend: string; ready: boolean }) {
 // --- Usage --------------------------------------------------------------
 
 function UsageTab({ name }: { name: string }) {
+  const navigate = useNavigate()
   const q = useQuery({ queryKey: ['consoleUsage'], queryFn: () => gqlClient.request(UsageDoc) })
+  const act = useQuery({
+    queryKey: ['consoleActivity', name],
+    queryFn: () => gqlClient.request(ConsoleActivityDoc, { served: name }),
+    refetchInterval: 5000,
+  })
   const row = (q.data?.corrallm.usageRollup?.rows ?? []).find((r) => r.served === name)
-  if (!row) return <Typography color="text.secondary">No usage in the last 24h.</Typography>
+  const records = act.data?.corrallm.recentActivity?.records ?? []
   return (
-    <Table size="small">
-      <TableBody>
-        <TableRow>
-          <TableCell>Requests (24h)</TableCell>
-          <TableCell align="right">{fmtInt(row.requests)}</TableCell>
-        </TableRow>
-        <TableRow>
-          <TableCell>Prompt → completion tokens</TableCell>
-          <TableCell align="right">
-            {fmtInt(row.promptTokens)} → {fmtInt(row.completionTokens)}
-          </TableCell>
-        </TableRow>
-        <TableRow>
-          <TableCell>Dwell</TableCell>
-          <TableCell align="right">{fmtDuration(row.dwellMs)}</TableCell>
-        </TableRow>
-        <TableRow>
-          <TableCell>Cost</TableCell>
-          <TableCell align="right">{fmtUSD(row.costUsd)}</TableCell>
-        </TableRow>
-      </TableBody>
-    </Table>
+    <Stack spacing={3}>
+      {/* Aggregate rollup — "how much" over the last 24h. */}
+      <Box>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Rollup (24h)
+        </Typography>
+        {row ? (
+          <Table size="small">
+            <TableBody>
+              <TableRow>
+                <TableCell>Requests</TableCell>
+                <TableCell align="right">{fmtInt(row.requests)}</TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>Prompt → completion tokens</TableCell>
+                <TableCell align="right">
+                  {fmtInt(row.promptTokens)} → {fmtInt(row.completionTokens)}
+                </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>Dwell</TableCell>
+                <TableCell align="right">{fmtDuration(row.dwellMs)}</TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>Cost</TableCell>
+                <TableCell align="right">{fmtUSD(row.costUsd)}</TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+        ) : (
+          <Typography color="text.secondary">No usage in the last 24h.</Typography>
+        )}
+      </Box>
+
+      {/* Per-model activity — "which requests". Click a row to replay it in Test. */}
+      <Box>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Recent activity
+        </Typography>
+        {records.length === 0 ? (
+          <Typography variant="caption" color="text.secondary">
+            No requests recorded for this model.
+          </Typography>
+        ) : (
+          <TableContainer sx={{ maxHeight: '55vh' }}>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Time</TableCell>
+                  <TableCell>Backend</TableCell>
+                  <TableCell align="right">Status</TableCell>
+                  <TableCell>Path</TableCell>
+                  <TableCell align="right">Tokens (p→c)</TableCell>
+                  <TableCell align="right">Dwell</TableCell>
+                  <TableCell align="right">Cost</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {records.map((r) => (
+                  <TableRow
+                    key={r.id}
+                    hover
+                    sx={{ cursor: 'pointer' }}
+                    onClick={() =>
+                      navigate({ to: '/model', search: { name, tab: 'test', replay: r.id } })
+                    }
+                  >
+                    <TableCell>{fmtTs(Number(r.ts))}</TableCell>
+                    <TableCell>{r.backend}</TableCell>
+                    <TableCell align="right">
+                      <Chip size="small" label={r.status} color={statusColor(r.status)} />
+                    </TableCell>
+                    <TableCell sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {r.error ? (
+                        <Typography variant="caption" color="error">
+                          {r.path} — {r.error}
+                        </Typography>
+                      ) : (
+                        r.path
+                      )}
+                    </TableCell>
+                    <TableCell align="right">
+                      {fmtInt(r.promptTokens)} → {fmtInt(r.completionTokens)}
+                    </TableCell>
+                    <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>
+                    <TableCell align="right">{fmtUSD(r.costUsd)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </Box>
+    </Stack>
   )
 }
 

@@ -376,7 +376,14 @@ function Home() {
         <CardContent>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
             <Typography variant="subtitle1">{m.name}</Typography>
-            <Chip size="small" label={st?.state ?? 'absent'} color={stateColor(st?.state)} />
+            {/* A pure-proxy backend (not spawnable — no cmd) has no local
+                process, so it never has a residency state. Label it "proxy"
+                (colored) rather than "absent", which reads as a failed local load. */}
+            <Chip
+              size="small"
+              label={st?.state ?? (m.spawnable ? 'absent' : 'proxy')}
+              color={!st?.state && !m.spawnable ? 'secondary' : stateColor(st?.state)}
+            />
             <Chip size="small" color="info" variant="outlined" label={capLabel(m.capability)} />
             {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
             {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
