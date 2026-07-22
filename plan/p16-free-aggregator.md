@@ -306,6 +306,23 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
   had not surfaced the stale field even though routing already honored it —
   fixed.) 6 new tests.
 
+- ✅ **P16f — durable falloff counters** (2026-07-21). Counter-mode budget was
+  in-memory only, so a restart reset the daily count to zero and corrallm
+  over-sent against OpenRouter's real 1000/day until it ate a 429 (header-tracked
+  backends self-heal from response headers; the counter-mode daily window was the
+  one durability hole, and OpenRouter's `/api/v1/key` reports dollar credit, not
+  the free RPD, so the true count can't be re-queried remotely). Replaced the
+  fixed-reset counter window with a FALLOFF counter (leaky bucket): each request
+  adds one unit, the level leaks back at limit/window, so an idle window drains
+  smoothly with no reset-boundary burst — and the whole state is just (level, at),
+  which persists to two SQLite columns (`quota_counter`). A fresh ledger seeds
+  each window from its saved level via `UseStore` (attached before `SetLimits`)
+  and decays it for the elapsed downtime. `Window.Blocked` carries the exact
+  availability decision so the console dot matches routing without float-rounding
+  drift. Persists outside the ledger lock (best-effort; the in-memory ledger stays
+  authoritative). Verified the migration against the real prod DB; 3 new tests
+  (falloff decay, restart survival, SQLite round-trip).
+
 ## 10. Non-goals / risks
 
 - **Not a production SLA.** Free tiers are best-effort; the local models remain
