@@ -34,18 +34,51 @@ type Entry struct {
 	CoolingUntil time.Time `json:"coolingUntil,omitempty"`
 	LastSeen     time.Time `json:"lastSeen"`
 	Seen         int64     `json:"seen"`
+	// CapRequests/CapTokens echo the configured self-cap (0 = none) so a consumer
+	// can render the effective budget via EffRemaining(bucket, cap).
+	CapRequests int `json:"capRequests,omitempty"`
+	CapTokens   int `json:"capTokens,omitempty"`
 }
+
+// cap is a per-backend self-throttle below the provider's own limit. 0 = none.
+type cap struct{ requests, tokens int }
 
 // Ledger holds live per-backend budgets. Safe for concurrent use.
 type Ledger struct {
 	mu      sync.RWMutex
 	now     func() time.Time
 	entries map[string]*Entry
+	caps    map[string]cap
 }
 
 // New builds an empty ledger.
 func New() *Ledger {
-	return &Ledger{now: time.Now, entries: map[string]*Entry{}}
+	return &Ledger{now: time.Now, entries: map[string]*Entry{}, caps: map[string]cap{}}
+}
+
+// SetCap self-throttles a backend below the provider's limit: budget is treated
+// as exhausted once usage reaches the cap, leaving the provider's own headroom
+// unspent. 0 for a window means no cap on it. Called at construction from the
+// backend's freeTier.cap config.
+func (l *Ledger) SetCap(backend string, requests, tokens int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if requests <= 0 && tokens <= 0 {
+		delete(l.caps, backend)
+		return
+	}
+	l.caps[backend] = cap{requests: requests, tokens: tokens}
+}
+
+// EffRemaining is a bucket's remaining budget after a self-cap: the provider
+// says `remaining` of `Limit` are left, but if we only allow `capN` of that
+// Limit, we have `remaining - (Limit - capN)` of OUR budget left. No cap (0) or
+// a cap at/above the provider's limit leaves the provider value untouched.
+func EffRemaining(b Bucket, capN int) int {
+	if capN <= 0 || capN >= b.Limit || b.Limit <= 0 {
+		return b.Remaining
+	}
+	return b.Remaining - (b.Limit - capN)
 }
 
 // ObserveResponse folds a proxied response's rate-limit headers into the
@@ -137,8 +170,13 @@ func (l *Ledger) Available(backend string) bool {
 	if now.Before(e.CoolingUntil) {
 		return false
 	}
-	for _, b := range []Bucket{e.Requests, e.Tokens} {
-		if b.Limit > 0 && b.Remaining <= 0 && now.Before(b.ResetsAt) {
+	c := l.caps[backend]
+	windows := []struct {
+		b   Bucket
+		cap int
+	}{{e.Requests, c.requests}, {e.Tokens, c.tokens}}
+	for _, w := range windows {
+		if w.b.Limit > 0 && EffRemaining(w.b, w.cap) <= 0 && now.Before(w.b.ResetsAt) {
 			return false
 		}
 	}
@@ -151,7 +189,11 @@ func (l *Ledger) Snapshot() []Entry {
 	defer l.mu.RUnlock()
 	out := make([]Entry, 0, len(l.entries))
 	for _, e := range l.entries {
-		out = append(out, *e)
+		v := *e
+		if c, ok := l.caps[e.Backend]; ok {
+			v.CapRequests, v.CapTokens = c.requests, c.tokens
+		}
+		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Backend < out[j].Backend })
 	return out

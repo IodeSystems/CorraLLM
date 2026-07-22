@@ -1003,10 +1003,14 @@ type corrallm_QueueDepthOutputBody {
 }
 
 type corrallm_QuotaBucketView {
+  cap: Long
+  effRemaining: Long
   limit: Long!
+  """The provider's own remaining count."""
   remaining: Long!
   """Human duration until this window refills, e.g. "1m26s"; empty when unknown."""
   resetsIn: String
+  stale: Boolean
 }
 
 type corrallm_QuotaEntryView {
@@ -1015,6 +1019,7 @@ type corrallm_QuotaEntryView {
   backend: String!
   """Seconds left in a 429 cooldown; 0 when not cooling."""
   coolingInSec: Long
+  observedAgoSec: Long!
   requests: corrallm_QuotaBucketView!
   seen: Long!
   tokens: corrallm_QuotaBucketView!

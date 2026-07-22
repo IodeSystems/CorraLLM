@@ -79,10 +79,17 @@ func (p *Proxy) QuotaSnapshot() []quota.Entry {
 
 // New constructs a Proxy.
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
-	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
+	p := &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
 		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true,
 		convertEnabled: true, convertGlobal: config.DefaultConvert(),
 		calib: NewCalibrationState(), quota: quota.New()}
+	// Seed the ledger's self-caps from each free-tier backend's freeTier.cap (P16).
+	for name, m := range cfg.Models {
+		if m.FreeTier != nil && (m.FreeTier.Cap.Requests > 0 || m.FreeTier.Cap.Tokens > 0) {
+			p.quota.SetCap(name, m.FreeTier.Cap.Requests, m.FreeTier.Cap.Tokens)
+		}
+	}
+	return p
 }
 
 // payloadCap bounds a captured RESPONSE payload (P10b) — enough to see a reply
@@ -282,6 +289,14 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// the tiers this group accepts. A non-degrading group sees only the top tier,
 	// so saturation there backs off (per its stage) instead of spilling onto a
 	// worse model; a degrading group walks down to its floor.
+	// P16 quota-aware selection, applied BEFORE quality gating: drop free-tier
+	// backends the ledger knows are exhausted/cooling from the candidate set, so
+	// an out-of-budget top-quality remote does not pin the quality ceiling and
+	// shut out a lower local floor. (A late filter could not fix this — the
+	// quality gate below would already have excluded the floor.) Locals are
+	// always Available; if every candidate is filtered out, all are kept so a
+	// free-only lane tries for the real 429 over a blind 503.
+	cands = p.filterByQuota(cands)
 	topQuality := config.MaxQuality(cands)
 	ordered := orderCandidates(cands, p.nextRR(served))
 	walk := ordered[:0:0]
@@ -403,7 +418,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// A no-op for local backends (no such headers); learns a remote's
 		// remaining budget for the selector to route on.
 		rp.ModifyResponse = func(resp *http.Response) error {
-			p.quota.ObserveResponse(served, resp.StatusCode, resp.Header)
+			p.quota.ObserveResponse(name, resp.StatusCode, resp.Header)
 			return nil
 		}
 		var proxyErr error
@@ -787,6 +802,28 @@ func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config
 // whose model is in the resident set keep their relative (quality) order at the
 // front, the rest follow in their original order. len<2 is returned as-is. The
 // engine of preferResident.
+// filterByQuota (P16) drops candidates the free-tier ledger knows are exhausted
+// or cooling from a 429, so a lane routes to a backend WITH budget rather than
+// eating the 429. Local backends are always Available (no rate-limit headers),
+// so a lane with a local floor never empties. If the filter WOULD empty the walk
+// (a free-only lane, all spent), the unfiltered walk is kept — trying an
+// exhausted backend for its own honest error beats a blind 503.
+func (p *Proxy) filterByQuota(cands []config.Candidate) []config.Candidate {
+	if p.quota == nil {
+		return cands
+	}
+	kept := make([]config.Candidate, 0, len(cands))
+	for _, c := range cands {
+		if p.quota.Available(c.Name) {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == 0 {
+		return cands
+	}
+	return kept
+}
+
 func partitionResident(walk []int, cands []config.Candidate, resident map[string]bool) []int {
 	if len(walk) < 2 {
 		return walk

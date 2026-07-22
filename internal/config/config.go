@@ -128,6 +128,32 @@ type Model struct {
 	// cost types, else {text}. Note: llama.cpp auto-loads the mmproj sibling from a
 	// vision repo (no --mmproj flag), so `image` is declared here, not detected.
 	Modalities map[string]ModalitySpec `yaml:"modalities,omitempty"`
+
+	// FreeTier marks a remote backend as a P16 free-tier member and carries its
+	// quota policy. Nil for local/paid models. See plan/p16-free-aggregator.md.
+	FreeTier *FreeTier `yaml:"freeTier,omitempty"`
+}
+
+// FreeTier is a remote free backend's quota policy (P16).
+type FreeTier struct {
+	// Provider is a LABEL only (display, privacy defaults) — never the budget
+	// key. The budget is per backend (one definition = one key), so two keys for
+	// the same provider are two independent budgets.
+	Provider string `yaml:"provider,omitempty"`
+	// Private excludes this backend when a request is marked sensitive (some free
+	// providers train on prompts). Advisory guardrail, not a guarantee.
+	Private bool `yaml:"private,omitempty"`
+	// Cap self-throttles BELOW the provider's own limit — leave headroom, avoid a
+	// hard 429, or be a good citizen. 0 = no cap (use the provider's full limit).
+	// Applied to the same two windows the provider reports; the effective budget
+	// is min(provider-remaining, cap-minus-used).
+	Cap FreeCap `yaml:"cap,omitempty"`
+}
+
+// FreeCap self-throttles the two rate-limit windows below the provider's limit.
+type FreeCap struct {
+	Requests int `yaml:"requests,omitempty"` // e.g. 800 of a provider's 1000/day
+	Tokens   int `yaml:"tokens,omitempty"`   // e.g. 10000 of a provider's 12000/min
 }
 
 // ModalitySpec is optional client-facing metadata for one accepted input

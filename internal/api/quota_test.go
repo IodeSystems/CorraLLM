@@ -21,7 +21,7 @@ func TestQuotaFormatting(t *testing.T) {
 	if !available(e, now) {
 		t.Error("entry with budget should be available")
 	}
-	if v := bucketView(e.Requests, now); v.Remaining != 999 || v.ResetsIn == "" {
+	if v := bucketView(e.Requests, 0, now); v.Remaining != 999 || v.ResetsIn == "" {
 		t.Errorf("bucketView dropped data: %+v", v)
 	}
 
@@ -44,8 +44,14 @@ func TestQuotaFormatting(t *testing.T) {
 		t.Error("cooling should clear")
 	}
 
+	// A self-cap surfaces cap + effRemaining and drives availability.
+	capped := bucketView(quota.Bucket{Limit: 1000, Remaining: 250}, 800, now)
+	if capped.Cap == nil || *capped.Cap != 800 || capped.EffRemaining == nil || *capped.EffRemaining != 50 {
+		t.Errorf("capped bucket view wrong: %+v", capped)
+	}
+
 	// A reset already in the past must not render a resetsIn.
-	if v := bucketView(quota.Bucket{Limit: 10, Remaining: 3, ResetsAt: now.Add(-time.Second)}, now); v.ResetsIn != "" {
+	if v := bucketView(quota.Bucket{Limit: 10, Remaining: 3, ResetsAt: now.Add(-time.Second)}, 0, now); v.ResetsIn != "" {
 		t.Errorf("past reset should not populate resetsIn: %q", v.ResetsIn)
 	}
 }

@@ -137,3 +137,41 @@ func TestObserve429_FallsBackToReset(t *testing.T) {
 		t.Errorf("coolingUntil = %v, want the +45s reset", got)
 	}
 }
+
+// A self-cap makes budget run out before the provider's own limit does.
+func TestSelfCap(t *testing.T) {
+	l := New()
+	t0 := time.Unix(1_800_000_000, 0)
+	fixed(l, t0)
+	l.SetCap("groq-a", 800, 0) // cap requests at 800 of Groq's 1000
+
+	// Provider says 250 left (used 750). Under our 800 cap, effective = 250-(1000-800)=50 → still available.
+	l.ObserveResponse("groq-a", 200, hdr(
+		"X-Ratelimit-Limit-Requests", "1000", "X-Ratelimit-Remaining-Requests", "250",
+		"X-Ratelimit-Reset-Requests", "60s"))
+	if !l.Available("groq-a") {
+		t.Error("50 of our cap left → should still be available")
+	}
+	// Provider says 200 left (used 800 = our whole cap). Effective = 200-200 = 0 → exhausted, though Groq has 200 to spare.
+	l.ObserveResponse("groq-a", 200, hdr(
+		"X-Ratelimit-Limit-Requests", "1000", "X-Ratelimit-Remaining-Requests", "200",
+		"X-Ratelimit-Reset-Requests", "60s"))
+	if l.Available("groq-a") {
+		t.Error("self-cap reached → should be unavailable even with provider headroom")
+	}
+}
+
+func TestEffRemaining(t *testing.T) {
+	// No cap → provider value untouched.
+	if got := EffRemaining(Bucket{Limit: 1000, Remaining: 300}, 0); got != 300 {
+		t.Errorf("no cap: got %d want 300", got)
+	}
+	// Cap 800 of 1000, 300 provider-remaining → 300-(1000-800)=100.
+	if got := EffRemaining(Bucket{Limit: 1000, Remaining: 300}, 800); got != 100 {
+		t.Errorf("capped: got %d want 100", got)
+	}
+	// Cap >= limit → no effect.
+	if got := EffRemaining(Bucket{Limit: 1000, Remaining: 300}, 1000); got != 300 {
+		t.Errorf("cap>=limit: got %d want 300", got)
+	}
+}

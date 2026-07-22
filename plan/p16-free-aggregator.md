@@ -223,10 +223,24 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
     remaining 1000→998, resetsIn 2m53s, available=true. 12 tests
     (quota + api). **429 cooling is unit-tested but not yet live** (no limit
     tripped); capture a real 429 body opportunistically to confirm the header set.
-  - ◻ console UI card for the ledger — data is on `/api/v1/quota`; the UI add is
-    thin but the ui/ build needs its node_modules restored after the flatten first.
-- **P16b — the ledger + selector.** Generalize to a `free` lane; quota-aware
-  selection with cooling; fall to local floor. Test with Groq + one more.
+  - ✅ **self-cap, staleness, selector, console card** (2026-07-21) — the four
+    P16b pieces, all live-validated:
+    - **Self-cap** (`freeTier.cap: {requests, tokens}`): treats budget as spent
+      once usage reaches the cap, leaving provider headroom unspent —
+      `EffRemaining = remaining - (limit - cap)`. Live: Groq with `cap.requests: 1`
+      read `available=false` at 999 provider-remaining.
+    - **Staleness**: the API marks a bucket `stale` once its reset has passed
+      (window rolled, count is last-known) and reports `observedAgoSec` — the
+      count is a snapshot, not a live tick, and now says so.
+    - **Selector** (`filterByQuota`): the candidate walk drops backends the ledger
+      says are exhausted/cooling; keeps the unfiltered walk if that would empty it
+      (never a blind 503). Live: `model="free"` with Groq capped-out routed to the
+      local MTP floor.
+    - **Console card** at `/quota` — per-backend budget bars, cap chip, cooling
+      state, staleness. UI typechecks + prod-builds (node_modules was fine; the
+      earlier "blocked" read was LSP noise, not the real build).
+- **P16b — DONE** (folded above): the `free` lane + quota-aware selection with
+  cooling + local floor, all live-validated.
 - **P16c — counter-mode + OpenRouter.** Local-counter tracking; the empirical
   429/daily probe; OpenRouter as a counter-tracked member.
 - **P16d — privacy tiering.** `private` flag + `sensitive` routing.

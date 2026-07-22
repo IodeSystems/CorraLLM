@@ -12,9 +12,19 @@ import (
 
 // QuotaBucketView is one rate-limit window for the API.
 type QuotaBucketView struct {
-	Limit     int    `json:"limit"`
-	Remaining int    `json:"remaining"`
-	ResetsIn  string `json:"resetsIn,omitempty" doc:"Human duration until this window refills, e.g. \"1m26s\"; empty when unknown."`
+	Limit     int `json:"limit"`
+	Remaining int `json:"remaining" doc:"The provider's own remaining count."`
+	// Cap and EffRemaining appear only when a self-throttle is configured
+	// (pointers so a real 0 — capped and exhausted — is distinct from "no cap").
+	// EffRemaining is the budget WE allow (remaining minus the provider headroom
+	// we deliberately leave unspent), and is what availability is judged on.
+	Cap          *int   `json:"cap,omitempty"`
+	EffRemaining *int   `json:"effRemaining,omitempty"`
+	ResetsIn     string `json:"resetsIn,omitempty" doc:"Human duration until this window refills, e.g. \"1m26s\"; empty when unknown."`
+	// Stale is true once the reset time has passed: the window has rolled on the
+	// provider's side but we only learn the new count on the next call, so
+	// `remaining` is a last-known value, not live. Availability still self-corrects.
+	Stale bool `json:"stale,omitempty"`
 }
 
 // QuotaEntryView is one backend's live budget.
@@ -25,6 +35,10 @@ type QuotaEntryView struct {
 	Available    bool            `json:"available" doc:"False when exhausted or cooling from a 429 — the selector skips it."`
 	CoolingInSec int             `json:"coolingInSec,omitempty" doc:"Seconds left in a 429 cooldown; 0 when not cooling."`
 	Seen         int64           `json:"seen"`
+	// ObservedAgoSec is how long ago the counts were learned. The ledger only
+	// updates on a request, so between calls the numbers are a snapshot this old,
+	// not live — surfaced so a stale count is not read as current.
+	ObservedAgoSec int `json:"observedAgoSec"`
 }
 
 // QuotaOutput lists every tracked backend's budget.
@@ -45,10 +59,13 @@ func (h *Handlers) QuotaLedger(_ context.Context, _ *struct{}) (*QuotaOutput, er
 	for _, e := range h.Proxy.QuotaSnapshot() {
 		v := QuotaEntryView{
 			Backend:   e.Backend,
-			Requests:  bucketView(e.Requests, now),
-			Tokens:    bucketView(e.Tokens, now),
+			Requests:  bucketView(e.Requests, e.CapRequests, now),
+			Tokens:    bucketView(e.Tokens, e.CapTokens, now),
 			Available: available(e, now),
 			Seen:      e.Seen,
+		}
+		if !e.LastSeen.IsZero() {
+			v.ObservedAgoSec = int(now.Sub(e.LastSeen).Seconds())
 		}
 		if e.CoolingUntil.After(now) {
 			v.CoolingInSec = int(time.Until(e.CoolingUntil).Seconds())
@@ -58,22 +75,36 @@ func (h *Handlers) QuotaLedger(_ context.Context, _ *struct{}) (*QuotaOutput, er
 	return out, nil
 }
 
-func bucketView(b quota.Bucket, now time.Time) QuotaBucketView {
+func bucketView(b quota.Bucket, cap int, now time.Time) QuotaBucketView {
 	v := QuotaBucketView{Limit: b.Limit, Remaining: b.Remaining}
-	if b.ResetsAt.After(now) {
-		v.ResetsIn = time.Until(b.ResetsAt).Round(time.Second).String()
+	if cap > 0 && cap < b.Limit {
+		eff := quota.EffRemaining(b, cap)
+		v.Cap, v.EffRemaining = &cap, &eff
+	}
+	if !b.ResetsAt.IsZero() {
+		if b.ResetsAt.After(now) {
+			v.ResetsIn = time.Until(b.ResetsAt).Round(time.Second).String()
+		} else {
+			// Window has rolled since we last observed it — the count is stale.
+			v.Stale = true
+		}
 	}
 	return v
 }
 
 // available mirrors quota.Ledger.Available for a snapshotted entry (the ledger's
-// own method needs the live map; this reads a copy the API already holds).
+// own method needs the live map; this reads a copy the API already holds),
+// honoring the self-cap.
 func available(e quota.Entry, now time.Time) bool {
 	if now.Before(e.CoolingUntil) {
 		return false
 	}
-	for _, b := range []quota.Bucket{e.Requests, e.Tokens} {
-		if b.Limit > 0 && b.Remaining <= 0 && now.Before(b.ResetsAt) {
+	windows := []struct {
+		b   quota.Bucket
+		cap int
+	}{{e.Requests, e.CapRequests}, {e.Tokens, e.CapTokens}}
+	for _, w := range windows {
+		if w.b.Limit > 0 && quota.EffRemaining(w.b, w.cap) <= 0 && now.Before(w.b.ResetsAt) {
 			return false
 		}
 	}
