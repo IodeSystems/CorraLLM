@@ -42,6 +42,9 @@ type QuotaEntryView struct {
 	// Windows is populated for counter-mode backends (OpenRouter): locally-counted
 	// request budgets, since the provider sends no rate-limit headers.
 	Windows []QuotaWindowView `json:"windows,omitempty"`
+	// Stale is true when the backend's model has churned out of its provider's
+	// free roster (P16e) — unavailable until a refresh finds it free again.
+	Stale bool `json:"stale,omitempty"`
 }
 
 // QuotaWindowView is a counter-mode backend's locally-counted request window.
@@ -74,6 +77,7 @@ func (h *Handlers) QuotaLedger(_ context.Context, _ *struct{}) (*QuotaOutput, er
 			Tokens:    bucketView(e.Tokens, e.CapTokens, now),
 			Available: available(e, now),
 			Seen:      e.Seen,
+			Stale:     e.Stale,
 		}
 		if !e.LastSeen.IsZero() {
 			v.ObservedAgoSec = int(now.Sub(e.LastSeen).Seconds())
@@ -114,6 +118,9 @@ func bucketView(b quota.Bucket, cap int, now time.Time) QuotaBucketView {
 // own method needs the live map; this reads a copy the API already holds),
 // honoring the self-cap.
 func available(e quota.Entry, now time.Time) bool {
+	if e.Stale {
+		return false
+	}
 	if now.Before(e.CoolingUntil) {
 		return false
 	}

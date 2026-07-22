@@ -290,8 +290,21 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
   excluded.
   - Open extension: a group/key-level default (a caller always sensitive) — the
     header handles per-request now; wire a group flag if a key must be forced.
-- **P16e — refresh.** Periodic pull of OpenRouter's `:free` roster (the volatile
-  one) into proxy entries; other providers have stable model lists.
+- ✅ **P16e — roster refresh** (2026-07-21). `internal/freeroster` holds each
+  provider's currently-free model set; `FetchFree` pulls an OpenAI `/v1/models`
+  through the backend's proxy target (base URL + auth) and keeps ids that are
+  `:free` or priced 0/0. A backend opts in with `freeTier.refresh: true`; a
+  poller (`runRosterRefresh`, 30m, started only when something opts in) refreshes
+  and, if a backend's model has churned out of the free set, `ledger.SetStale`s it
+  so the selector routes around it PROACTIVELY (before a 402/404). A fetch error
+  leaves the prior roster + staleness intact — a transient failure must not
+  strand every model. Exposed at `GET /api/v1/free-roster`; the quota card shows
+  a `stale` chip. Live: OpenRouter's 17 free models fetched, `nemotron-super-120b`
+  confirmed present (not stale); pointed at a bogus `:free` id, the backend was
+  logged "churned out", marked stale, and `model="free"` routed to Groq every
+  time, never the stale OpenRouter. (Integration test caught that the API view
+  had not surfaced the stale field even though routing already honored it —
+  fixed.) 6 new tests.
 
 ## 10. Non-goals / risks
 

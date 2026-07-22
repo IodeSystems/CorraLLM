@@ -32,6 +32,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/events"
+	"github.com/iodesystems/corrallm/internal/freeroster"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/quota"
 	"github.com/iodesystems/corrallm/internal/sched"
@@ -66,6 +67,67 @@ type Proxy struct {
 	// quota is the P16 free-tier budget ledger: it learns each remote backend's
 	// remaining rate-limit budget from the X-Ratelimit-* headers on its responses.
 	quota *quota.Ledger
+	// roster holds each provider's currently-free model set (P16e), refreshed
+	// periodically so a churned-out free model is skipped proactively.
+	roster *freeroster.Roster
+}
+
+// RosterSnapshot returns each provider's currently-free model roster (P16e).
+func (p *Proxy) RosterSnapshot() []freeroster.ProviderView {
+	if p.roster == nil {
+		return nil
+	}
+	return p.roster.Snapshot()
+}
+
+// HasRosterRefresh reports whether any backend opted into roster refresh, so the
+// poller is only started when it has work.
+func (p *Proxy) HasRosterRefresh() bool {
+	for _, m := range p.cfg.Models {
+		if m.FreeTier != nil && m.FreeTier.Refresh {
+			return true
+		}
+	}
+	return false
+}
+
+// RefreshRoster does one refresh pass: for each refresh-opted backend, pull its
+// provider's /v1/models, record the free set, and mark the backend stale if its
+// own model has churned out of it (so the selector routes around it). A fetch
+// error leaves the prior roster and staleness untouched — a transient failure
+// must not strand every free model.
+func (p *Proxy) RefreshRoster(ctx context.Context) {
+	if p.roster == nil {
+		return
+	}
+	hc := &http.Client{Timeout: 20 * time.Second}
+	for name, m := range p.cfg.Models {
+		if m.FreeTier == nil || !m.FreeTier.Refresh {
+			continue
+		}
+		tgt, err := m.ProxyTarget()
+		if err != nil {
+			continue
+		}
+		provider := m.FreeTier.Provider
+		if provider == "" {
+			provider = name
+		}
+		modelsURL := strings.TrimRight(tgt.URL.String(), "/") + tgt.BasePath + "/v1/models"
+		free, ferr := freeroster.FetchFree(ctx, hc, modelsURL, tgt.Headers)
+		p.roster.Set(provider, free, ferr, time.Now())
+		if ferr != nil {
+			slog.Warn("roster refresh failed", "provider", provider, "err", ferr)
+			continue
+		}
+		isFree, known := p.roster.Has(provider, tgt.Model)
+		if known && !isFree {
+			p.quota.SetStale(name, true)
+			slog.Warn("free model churned out of roster — marking stale", "backend", name, "model", tgt.Model)
+		} else {
+			p.quota.SetStale(name, false)
+		}
+	}
 }
 
 // QuotaSnapshot returns the current free-tier budget ledger (P16), for the
@@ -82,7 +144,7 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 	p := &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
 		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true,
 		convertEnabled: true, convertGlobal: config.DefaultConvert(),
-		calib: NewCalibrationState(), quota: quota.New()}
+		calib: NewCalibrationState(), quota: quota.New(), roster: freeroster.New()}
 	// Seed the ledger from each free-tier backend's config (P16): a self-cap for
 	// header-tracked backends, and the provider limits for counter-mode ones (no
 	// rate-limit headers, so budget is counted locally).

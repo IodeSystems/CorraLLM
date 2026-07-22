@@ -450,6 +450,13 @@ func serve(ctx context.Context, o serveOpts) error {
 	// resolve (the activity log is completion-driven). Stops on shutdown.
 	go runQueueSampler(sigCtx, scheduler, st, 5*time.Second, o.activityRetention)
 
+	// Periodically refresh each opted-in provider's free-model roster (P16e), so a
+	// free model that churns out (goes paid or is removed) is skipped proactively.
+	// Only started when a backend opts in via freeTier.refresh.
+	if px.HasRosterRefresh() {
+		go runRosterRefresh(sigCtx, px, 30*time.Minute)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("corrallm listening", "addr", o.addr, "version", version)
@@ -464,6 +471,28 @@ func serve(ctx context.Context, o serveOpts) error {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutCtx)
+	}
+}
+
+// runRosterRefresh refreshes the free-model roster once at startup and then on
+// an interval, until shutdown. The first pass runs after a short delay so a slow
+// provider does not hold up serving.
+func runRosterRefresh(ctx context.Context, px *proxy.Proxy, interval time.Duration) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(3 * time.Second):
+	}
+	px.RefreshRoster(ctx)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			px.RefreshRoster(ctx)
+		}
 	}
 }
 

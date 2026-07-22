@@ -32,6 +32,7 @@ const QuotaDoc = graphql(/* GraphQL */ `
         backends {
           backend
           available
+          stale
           coolingInSec
           observedAgoSec
           seen
@@ -146,6 +147,10 @@ function QuotaPage() {
                   <TableCell>
                     {be.available ? (
                       <Chip size="small" color="success" label="available" />
+                    ) : be.stale ? (
+                      <Tooltip title="Model churned out of the provider's free roster (P16e)">
+                        <Chip size="small" color="warning" variant="outlined" label="stale" />
+                      </Tooltip>
                     ) : n(be.coolingInSec) > 0 ? (
                       <Tooltip title="Cooling down after a 429">
                         <Chip size="small" color="error" label={`cooling ${be.coolingInSec}s`} />

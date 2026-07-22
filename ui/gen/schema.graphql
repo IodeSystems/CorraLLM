@@ -66,6 +66,7 @@ type CorrallmQueryNamespace {
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   modelLogs(
@@ -171,6 +172,7 @@ type CorrallmV1QueryNamespace {
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   modelLogs(
@@ -993,6 +995,14 @@ type corrallm_PoolView {
   used: Long!
 }
 
+type corrallm_ProviderView {
+  count: Long!
+  error: String
+  fetchedAt: Long
+  free: [String!]!
+  provider: String!
+}
+
 type corrallm_QueueDepthOutputBody {
   """Effective bucket width."""
   bucketMinutes: Long!
@@ -1022,6 +1032,7 @@ type corrallm_QuotaEntryView {
   observedAgoSec: Long!
   requests: corrallm_QuotaBucketView!
   seen: Long!
+  stale: Boolean
   tokens: corrallm_QuotaBucketView!
   windows: [corrallm_QuotaWindowView!]
 }
@@ -1120,6 +1131,10 @@ type corrallm_RollupRow {
   requests: Long!
   """Served model name."""
   served: String!
+}
+
+type corrallm_RosterOutputBody {
+  providers: [corrallm_ProviderView!]!
 }
 
 type corrallm_SeriesPoint {

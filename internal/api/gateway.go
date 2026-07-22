@@ -123,6 +123,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.BenchProbesByCapability)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "freeRoster",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/free-roster",
+		Summary:     "Each provider's currently-free model roster (P16e).",
+		Tags:        []string{"observability"},
+	}, h.FreeRoster)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "quotaLedger",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/quota",

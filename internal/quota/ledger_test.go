@@ -271,3 +271,24 @@ func TestMarkDown_ExponentialBackoff(t *testing.T) {
 		t.Errorf("after a success the backoff should reset to 5m, got %v", d)
 	}
 }
+
+// A stale backend (churned out of its provider's free roster) is unavailable
+// until the mark is cleared.
+func TestSetStale(t *testing.T) {
+	l := New()
+	fixed(l, time.Unix(1_800_000_000, 0))
+	if !l.Available("or") {
+		t.Fatal("precondition: available")
+	}
+	l.SetStale("or", true)
+	if l.Available("or") {
+		t.Error("a stale backend must be unavailable")
+	}
+	if s := l.Snapshot(); len(s) != 1 || !s[0].Stale {
+		t.Errorf("snapshot should show stale=true: %+v", s)
+	}
+	l.SetStale("or", false)
+	if !l.Available("or") {
+		t.Error("clearing stale should restore availability")
+	}
+}

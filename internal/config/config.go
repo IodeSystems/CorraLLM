@@ -154,6 +154,13 @@ type FreeTier struct {
 	// by counting OUR requests against these instead of learning from a response.
 	// Setting either field makes the backend counter-mode. 0 = untracked.
 	Limits FreeLimits `yaml:"limits,omitempty"`
+
+	// Refresh opts this backend into P16e roster refresh: corrallm periodically
+	// pulls the provider's /v1/models, and if this backend's model has churned out
+	// of the free set (gone paid or removed) marks it stale so the selector routes
+	// around it. For providers whose free roster is volatile (OpenRouter);
+	// stable-roster providers (Groq) leave it off.
+	Refresh bool `yaml:"refresh,omitempty"`
 }
 
 // FreeCap self-throttles the two rate-limit windows below the provider's limit.

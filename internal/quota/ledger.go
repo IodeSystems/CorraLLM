@@ -41,6 +41,9 @@ type Entry struct {
 	// Windows is populated for COUNTER-MODE backends (no rate-limit headers):
 	// locally-counted request budgets per window (per-minute, per-day).
 	Windows []Window `json:"windows,omitempty"`
+	// Stale is true when the backend's model has churned out of its provider's
+	// free roster (P16e): it is unavailable until a refresh finds it free again.
+	Stale bool `json:"stale,omitempty"`
 }
 
 // Window is a locally-counted request budget for a counter-mode backend.
@@ -82,7 +85,8 @@ type Ledger struct {
 	entries   map[string]*Entry
 	caps      map[string]cap
 	counters  map[string]*counterState
-	hardFails map[string]int // consecutive hard failures per backend, for backoff
+	hardFails map[string]int  // consecutive hard failures per backend, for backoff
+	stale     map[string]bool // backend's model has churned out of its provider's free roster (P16e)
 }
 
 // New builds an empty ledger.
@@ -90,7 +94,25 @@ func New() *Ledger {
 	return &Ledger{
 		now: time.Now, entries: map[string]*Entry{},
 		caps: map[string]cap{}, counters: map[string]*counterState{},
-		hardFails: map[string]int{},
+		hardFails: map[string]int{}, stale: map[string]bool{},
+	}
+}
+
+// SetStale marks (or clears) a backend as churned out of its provider's free
+// roster (P16e). A stale backend is unavailable to the selector until a later
+// roster refresh finds its model free again. Distinct from cooling: staleness is
+// a config/roster fact, not a rate limit, and clears the moment the model
+// reappears rather than after a timer.
+func (l *Ledger) SetStale(backend string, stale bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if stale {
+		l.stale[backend] = true
+		if l.entries[backend] == nil {
+			l.entries[backend] = &Entry{Backend: backend}
+		}
+	} else {
+		delete(l.stale, backend)
 	}
 }
 
@@ -285,6 +307,9 @@ func (l *Ledger) Available(backend string) bool {
 	if e == nil {
 		return true
 	}
+	if l.stale[backend] {
+		return false
+	}
 	now := l.now()
 	if now.Before(e.CoolingUntil) {
 		return false
@@ -322,6 +347,7 @@ func (l *Ledger) Snapshot() []Entry {
 		if c, ok := l.caps[e.Backend]; ok {
 			v.CapRequests, v.CapTokens = c.requests, c.tokens
 		}
+		v.Stale = l.stale[e.Backend]
 		if cs := l.counters[e.Backend]; cs != nil {
 			v.Windows = make([]Window, 0, len(cs.windows))
 			for _, cw := range cs.windows {
