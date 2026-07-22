@@ -175,3 +175,64 @@ func TestEffRemaining(t *testing.T) {
 		t.Errorf("cap>=limit: got %d want 300", got)
 	}
 }
+
+// Counter-mode: no headers, budget tracked by counting our requests. OpenRouter.
+func TestCounterMode(t *testing.T) {
+	l := New()
+	t0 := time.Unix(1_800_000_000, 0)
+	fixed(l, t0)
+	l.SetLimits("or", 20, 1000) // 20/min, 1000/day
+
+	// Registered but uncalled → visible with declared limits, available.
+	snap := l.Snapshot()
+	if len(snap) != 1 || len(snap[0].Windows) != 2 {
+		t.Fatalf("counter-mode backend should show 2 windows pre-call: %+v", snap)
+	}
+	if !l.Available("or") {
+		t.Error("uncalled counter-mode backend should be available")
+	}
+
+	// Fire 20 requests (no headers) → per-minute window exhausted.
+	for i := 0; i < 20; i++ {
+		l.ObserveResponse("or", 200, http.Header{})
+	}
+	if l.Available("or") {
+		t.Error("20/min reached → should be unavailable")
+	}
+	w := l.Snapshot()[0].Windows
+	var minute Window
+	for _, x := range w {
+		if x.Label == "1m" {
+			minute = x
+		}
+	}
+	if minute.Used != 20 {
+		t.Errorf("per-minute used = %d, want 20", minute.Used)
+	}
+
+	// After the minute rolls, the per-minute window resets → available again
+	// (still well under the 1000/day).
+	l.now = func() time.Time { return t0.Add(61 * time.Second) }
+	if !l.Available("or") {
+		t.Error("per-minute window should reset after 60s")
+	}
+	// One more call rolls the 1m window to used=1.
+	l.ObserveResponse("or", 200, http.Header{})
+	for _, x := range l.Snapshot()[0].Windows {
+		if x.Label == "1m" && x.Used != 1 {
+			t.Errorf("per-minute should have rolled to 1, got %d", x.Used)
+		}
+	}
+}
+
+// A 429 counts against the counter too (providers count failed requests).
+func TestCounterMode_429Counts(t *testing.T) {
+	l := New()
+	fixed(l, time.Unix(1_800_000_000, 0))
+	l.SetLimits("or", 2, 0)
+	l.ObserveResponse("or", 200, http.Header{})
+	l.ObserveResponse("or", 429, http.Header{}) // failed, but still counts
+	if l.Available("or") {
+		t.Error("2 requests (one a 429) reached the 2/min limit → unavailable")
+	}
+}

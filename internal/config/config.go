@@ -146,14 +146,26 @@ type FreeTier struct {
 	// Cap self-throttles BELOW the provider's own limit — leave headroom, avoid a
 	// hard 429, or be a good citizen. 0 = no cap (use the provider's full limit).
 	// Applied to the same two windows the provider reports; the effective budget
-	// is min(provider-remaining, cap-minus-used).
+	// is min(provider-remaining, cap-minus-used). Header-tracked backends only.
 	Cap FreeCap `yaml:"cap,omitempty"`
+
+	// Limits declares the provider's own rate limits for a COUNTER-MODE backend —
+	// one that returns no X-Ratelimit-* headers (OpenRouter), so budget is tracked
+	// by counting OUR requests against these instead of learning from a response.
+	// Setting either field makes the backend counter-mode. 0 = untracked.
+	Limits FreeLimits `yaml:"limits,omitempty"`
 }
 
 // FreeCap self-throttles the two rate-limit windows below the provider's limit.
 type FreeCap struct {
 	Requests int `yaml:"requests,omitempty"` // e.g. 800 of a provider's 1000/day
 	Tokens   int `yaml:"tokens,omitempty"`   // e.g. 10000 of a provider's 12000/min
+}
+
+// FreeLimits are a counter-mode backend's request-rate limits, counted locally.
+type FreeLimits struct {
+	RPM int `yaml:"rpm,omitempty"` // requests per minute (e.g. OpenRouter :free = 20)
+	RPD int `yaml:"rpd,omitempty"` // requests per day (50 under $10 lifetime, else 1000)
 }
 
 // ModalitySpec is optional client-facing metadata for one accepted input

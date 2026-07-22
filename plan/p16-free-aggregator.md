@@ -241,8 +241,19 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
       earlier "blocked" read was LSP noise, not the real build).
 - **P16b — DONE** (folded above): the `free` lane + quota-aware selection with
   cooling + local floor, all live-validated.
-- **P16c — counter-mode + OpenRouter.** Local-counter tracking; the empirical
-  429/daily probe; OpenRouter as a counter-tracked member.
+- ✅ **P16c — counter-mode + OpenRouter** (2026-07-21). `freeTier.limits: {rpm,
+  rpd}` marks a backend counter-mode; the ledger counts every response (a 429
+  counts too — providers charge failed requests) against per-minute and per-day
+  windows that roll on a wall clock, and `Available()` flips false when a live
+  window is at its limit. Counter-mode backends show their declared budget in the
+  ledger BEFORE the first call (header-mode is discovered on first response;
+  counter-mode is declared). Live: OpenRouter `nemotron-3-super-120b:free` shows
+  `[1m 0/20, 1d 0/1000]` pre-call, ticks to `2/20, 2/1000` after two calls; the
+  1000/day tier confirmed via `/api/v1/key` (`is_free_tier:false` = $10+ credit).
+  Console card renders the windows. So OpenRouter is now skipped PROACTIVELY at
+  its limit, not only reactively after a 429. Still open: the empirical 429-body
+  probe (not tripped), and reconciling counter drift if OpenRouter ever adds
+  headers.
 - **P16d — privacy tiering.** `private` flag + `sensitive` routing.
 - **P16e — refresh.** Periodic pull of OpenRouter's `:free` roster (the volatile
   one) into proxy entries; other providers have stable model lists.

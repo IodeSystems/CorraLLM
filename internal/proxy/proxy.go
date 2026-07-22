@@ -83,10 +83,18 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true,
 		convertEnabled: true, convertGlobal: config.DefaultConvert(),
 		calib: NewCalibrationState(), quota: quota.New()}
-	// Seed the ledger's self-caps from each free-tier backend's freeTier.cap (P16).
+	// Seed the ledger from each free-tier backend's config (P16): a self-cap for
+	// header-tracked backends, and the provider limits for counter-mode ones (no
+	// rate-limit headers, so budget is counted locally).
 	for name, m := range cfg.Models {
-		if m.FreeTier != nil && (m.FreeTier.Cap.Requests > 0 || m.FreeTier.Cap.Tokens > 0) {
+		if m.FreeTier == nil {
+			continue
+		}
+		if m.FreeTier.Cap.Requests > 0 || m.FreeTier.Cap.Tokens > 0 {
 			p.quota.SetCap(name, m.FreeTier.Cap.Requests, m.FreeTier.Cap.Tokens)
+		}
+		if m.FreeTier.Limits.RPM > 0 || m.FreeTier.Limits.RPD > 0 {
+			p.quota.SetLimits(name, m.FreeTier.Limits.RPM, m.FreeTier.Limits.RPD)
 		}
 	}
 	return p

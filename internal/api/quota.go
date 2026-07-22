@@ -39,6 +39,17 @@ type QuotaEntryView struct {
 	// updates on a request, so between calls the numbers are a snapshot this old,
 	// not live — surfaced so a stale count is not read as current.
 	ObservedAgoSec int `json:"observedAgoSec"`
+	// Windows is populated for counter-mode backends (OpenRouter): locally-counted
+	// request budgets, since the provider sends no rate-limit headers.
+	Windows []QuotaWindowView `json:"windows,omitempty"`
+}
+
+// QuotaWindowView is a counter-mode backend's locally-counted request window.
+type QuotaWindowView struct {
+	Label    string `json:"label" doc:"\"1m\" (per-minute) or \"1d\" (per-day)."`
+	Limit    int    `json:"limit"`
+	Used     int    `json:"used"`
+	ResetsIn string `json:"resetsIn,omitempty"`
 }
 
 // QuotaOutput lists every tracked backend's budget.
@@ -69,6 +80,13 @@ func (h *Handlers) QuotaLedger(_ context.Context, _ *struct{}) (*QuotaOutput, er
 		}
 		if e.CoolingUntil.After(now) {
 			v.CoolingInSec = int(time.Until(e.CoolingUntil).Seconds())
+		}
+		for _, w := range e.Windows {
+			wv := QuotaWindowView{Label: w.Label, Limit: w.Limit, Used: w.Used}
+			if w.ResetsAt.After(now) {
+				wv.ResetsIn = time.Until(w.ResetsAt).Round(time.Second).String()
+			}
+			v.Windows = append(v.Windows, wv)
 		}
 		out.Body.Backends = append(out.Body.Backends, v)
 	}
@@ -105,6 +123,12 @@ func available(e quota.Entry, now time.Time) bool {
 	}{{e.Requests, e.CapRequests}, {e.Tokens, e.CapTokens}}
 	for _, w := range windows {
 		if w.b.Limit > 0 && quota.EffRemaining(w.b, w.cap) <= 0 && now.Before(w.b.ResetsAt) {
+			return false
+		}
+	}
+	// Counter-mode windows: exhausted if a still-active window is at its limit.
+	for _, w := range e.Windows {
+		if w.Limit > 0 && w.Used >= w.Limit && now.Before(w.ResetsAt) {
 			return false
 		}
 	}

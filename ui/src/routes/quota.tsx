@@ -35,6 +35,12 @@ const QuotaDoc = graphql(/* GraphQL */ `
           coolingInSec
           observedAgoSec
           seen
+          windows {
+            label
+            limit
+            used
+            resetsIn
+          }
           requests {
             limit
             remaining
@@ -148,8 +154,28 @@ function QuotaPage() {
                       <Chip size="small" color="warning" label="exhausted" />
                     )}
                   </TableCell>
-                  <TableCell><BucketCell b={be.requests} /></TableCell>
-                  <TableCell><BucketCell b={be.tokens} /></TableCell>
+                  <TableCell>
+                    {(be.windows ?? []).length > 0 ? (
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
+                        {(be.windows ?? []).map((w) => (
+                          <Typography key={w.label} variant="caption">
+                            {w.used}/{w.limit} /{w.label}
+                            {w.resetsIn ? ` · resets ${w.resetsIn}` : ''}
+                          </Typography>
+                        ))}
+                        <Typography variant="caption" color="text.secondary">counter-mode</Typography>
+                      </Box>
+                    ) : (
+                      <BucketCell b={be.requests} />
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {(be.windows ?? []).length > 0 ? (
+                      <Typography variant="caption" color="text.secondary">—</Typography>
+                    ) : (
+                      <BucketCell b={be.tokens} />
+                    )}
+                  </TableCell>
                   <TableCell align="right">{fmtInt(n(be.seen))}</TableCell>
                   <TableCell align="right">
                     <Typography variant="caption" color="text.secondary">

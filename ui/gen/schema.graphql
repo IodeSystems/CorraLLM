@@ -1023,10 +1023,19 @@ type corrallm_QuotaEntryView {
   requests: corrallm_QuotaBucketView!
   seen: Long!
   tokens: corrallm_QuotaBucketView!
+  windows: [corrallm_QuotaWindowView!]
 }
 
 type corrallm_QuotaOutputBody {
   backends: [corrallm_QuotaEntryView!]!
+}
+
+type corrallm_QuotaWindowView {
+  """"1m" (per-minute) or "1d" (per-day)."""
+  label: String!
+  limit: Long!
+  resetsIn: String
+  used: Long!
 }
 
 type corrallm_RecentActivityOutputBody {

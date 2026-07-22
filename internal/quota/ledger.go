@@ -38,22 +38,85 @@ type Entry struct {
 	// can render the effective budget via EffRemaining(bucket, cap).
 	CapRequests int `json:"capRequests,omitempty"`
 	CapTokens   int `json:"capTokens,omitempty"`
+	// Windows is populated for COUNTER-MODE backends (no rate-limit headers):
+	// locally-counted request budgets per window (per-minute, per-day).
+	Windows []Window `json:"windows,omitempty"`
+}
+
+// Window is a locally-counted request budget for a counter-mode backend.
+type Window struct {
+	Label    string    `json:"label"` // "1m" | "1d"
+	Limit    int       `json:"limit"`
+	Used     int       `json:"used"`
+	ResetsAt time.Time `json:"resetsAt,omitempty"`
 }
 
 // cap is a per-backend self-throttle below the provider's own limit. 0 = none.
 type cap struct{ requests, tokens int }
 
+// counterWindow is one locally-counted request window for a counter-mode
+// backend: a limit, a rolling count, and the window's start.
+type counterWindow struct {
+	label string
+	limit int
+	dur   time.Duration
+	used  int
+	start time.Time
+}
+
+// roll resets the window if its duration has elapsed since start. A zero start
+// (never used) is treated as elapsed so the first tick begins a fresh window.
+func (w *counterWindow) roll(now time.Time) {
+	if w.start.IsZero() || now.Sub(w.start) >= w.dur {
+		w.start, w.used = now, 0
+	}
+}
+
+// counterState is a counter-mode backend's windows (per-minute, per-day).
+type counterState struct{ windows []*counterWindow }
+
 // Ledger holds live per-backend budgets. Safe for concurrent use.
 type Ledger struct {
-	mu      sync.RWMutex
-	now     func() time.Time
-	entries map[string]*Entry
-	caps    map[string]cap
+	mu       sync.RWMutex
+	now      func() time.Time
+	entries  map[string]*Entry
+	caps     map[string]cap
+	counters map[string]*counterState
 }
 
 // New builds an empty ledger.
 func New() *Ledger {
-	return &Ledger{now: time.Now, entries: map[string]*Entry{}, caps: map[string]cap{}}
+	return &Ledger{
+		now: time.Now, entries: map[string]*Entry{},
+		caps: map[string]cap{}, counters: map[string]*counterState{},
+	}
+}
+
+// SetLimits registers a COUNTER-MODE backend: one whose provider sends no
+// rate-limit headers, so budget is tracked by counting our requests against
+// these limits. Either window may be 0 to skip it. Called at construction from
+// the backend's freeTier.limits config.
+func (l *Ledger) SetLimits(backend string, rpm, rpd int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if rpm <= 0 && rpd <= 0 {
+		delete(l.counters, backend)
+		return
+	}
+	cs := &counterState{}
+	if rpm > 0 {
+		cs.windows = append(cs.windows, &counterWindow{label: "1m", limit: rpm, dur: time.Minute})
+	}
+	if rpd > 0 {
+		cs.windows = append(cs.windows, &counterWindow{label: "1d", limit: rpd, dur: 24 * time.Hour})
+	}
+	l.counters[backend] = cs
+	// Create the entry now so a counter-mode backend shows its declared budget in
+	// the ledger before its first call (header-mode backends are discovered on
+	// first response; counter-mode is declared, so surface it up front).
+	if l.entries[backend] == nil {
+		l.entries[backend] = &Entry{Backend: backend}
+	}
 }
 
 // SetCap self-throttles a backend below the provider's limit: budget is treated
@@ -87,12 +150,14 @@ func EffRemaining(b Bucket, capN int) int {
 // every proxied response.
 func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	is429 := status == http.StatusTooManyRequests
-	if !is429 && h.Get("X-Ratelimit-Limit-Requests") == "" && h.Get("X-Ratelimit-Limit-Tokens") == "" {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, isCounter := l.counters[backend]
+	hasHeaders := h.Get("X-Ratelimit-Limit-Requests") != "" || h.Get("X-Ratelimit-Limit-Tokens") != ""
+	if !is429 && !hasHeaders && !isCounter {
 		return
 	}
 	now := l.now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	e := l.entries[backend]
 	if e == nil {
 		e = &Entry{Backend: backend}
@@ -102,6 +167,14 @@ func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	e.Seen++
 	updateBucket(&e.Requests, h, "Requests", now)
 	updateBucket(&e.Tokens, h, "Tokens", now)
+	// Counter-mode: this completed request counts, INCLUDING a 429 — providers
+	// count failed requests against the quota too (verified in the research).
+	if cs := l.counters[backend]; cs != nil {
+		for _, w := range cs.windows {
+			w.roll(now)
+			w.used++
+		}
+	}
 	if is429 {
 		e.CoolingUntil = coolUntil(h, e, now)
 	}
@@ -180,6 +253,15 @@ func (l *Ledger) Available(backend string) bool {
 			return false
 		}
 	}
+	// Counter-mode windows: exhausted if a still-active window is at its limit.
+	if cs := l.counters[backend]; cs != nil {
+		for _, cw := range cs.windows {
+			active := !cw.start.IsZero() && now.Sub(cw.start) < cw.dur
+			if active && cw.used >= cw.limit {
+				return false
+			}
+		}
+	}
 	return true
 }
 
@@ -187,11 +269,26 @@ func (l *Ledger) Available(backend string) bool {
 func (l *Ledger) Snapshot() []Entry {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+	now := l.now()
 	out := make([]Entry, 0, len(l.entries))
 	for _, e := range l.entries {
 		v := *e
 		if c, ok := l.caps[e.Backend]; ok {
 			v.CapRequests, v.CapTokens = c.requests, c.tokens
+		}
+		if cs := l.counters[e.Backend]; cs != nil {
+			v.Windows = make([]Window, 0, len(cs.windows))
+			for _, cw := range cs.windows {
+				w := Window{Label: cw.label, Limit: cw.limit, Used: cw.used}
+				// A window whose duration has elapsed has effectively reset; show
+				// it as 0 used rather than a stale count from a spent window.
+				if cw.start.IsZero() || now.Sub(cw.start) >= cw.dur {
+					w.Used = 0
+				} else {
+					w.ResetsAt = cw.start.Add(cw.dur)
+				}
+				v.Windows = append(v.Windows, w)
+			}
 		}
 		out = append(out, v)
 	}
