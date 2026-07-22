@@ -256,7 +256,10 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
   headers.
 - ✅ **error-spill for hard failures** (2026-07-21). A free-tier remote that
   returns 401/402/403 (auth or billing — a retry won't fix it) is taken out of
-  rotation via `ledger.MarkDown(backend, 5m)` AND the in-flight response is
+  rotation via `ledger.MarkDown(backend)` with EXPONENTIAL BACKOFF (5m → 10m →
+  20m → … capped at 24h; a success resets the streak), so a persistently-broken
+  backend quiesces toward once a day instead of a 5m hammer — AND the in-flight
+  response is
   aborted before anything reaches the client (`errBackendDown` from
   ModifyResponse → ErrorHandler writes nothing → the walk loop `release()`s and
   `continue`s to the next candidate). So a lane with one broken key still serves

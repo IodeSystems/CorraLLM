@@ -77,11 +77,12 @@ type counterState struct{ windows []*counterWindow }
 
 // Ledger holds live per-backend budgets. Safe for concurrent use.
 type Ledger struct {
-	mu       sync.RWMutex
-	now      func() time.Time
-	entries  map[string]*Entry
-	caps     map[string]cap
-	counters map[string]*counterState
+	mu        sync.RWMutex
+	now       func() time.Time
+	entries   map[string]*Entry
+	caps      map[string]cap
+	counters  map[string]*counterState
+	hardFails map[string]int // consecutive hard failures per backend, for backoff
 }
 
 // New builds an empty ledger.
@@ -89,8 +90,19 @@ func New() *Ledger {
 	return &Ledger{
 		now: time.Now, entries: map[string]*Entry{},
 		caps: map[string]cap{}, counters: map[string]*counterState{},
+		hardFails: map[string]int{},
 	}
 }
+
+// Hard-failure backoff bounds: the cooldown after a 401/402/403 doubles each
+// consecutive failure from base, capped at max, so a persistently-broken backend
+// (e.g. 402 billing) quiesces toward once a day instead of being hammered every
+// few minutes. A success resets it (see ObserveResponse).
+const (
+	hardFailBase  = 5 * time.Minute
+	hardFailMax   = 24 * time.Hour
+	hardFailShift = 13 // cap the shift so base<<shift never overflows int64
+)
 
 // SetLimits registers a COUNTER-MODE backend: one whose provider sends no
 // rate-limit headers, so budget is tracked by counting our requests against
@@ -152,6 +164,11 @@ func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	is429 := status == http.StatusTooManyRequests
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// A success clears the hard-failure backoff streak: a backend that starts
+	// serving again returns to fast retries next time it fails.
+	if status >= 200 && status < 300 {
+		delete(l.hardFails, backend)
+	}
 	_, isCounter := l.counters[backend]
 	hasHeaders := h.Get("X-Ratelimit-Limit-Requests") != "" || h.Get("X-Ratelimit-Limit-Tokens") != ""
 	if !is429 && !hasHeaders && !isCounter {
@@ -228,14 +245,25 @@ func coolUntil(h http.Header, e *Entry, now time.Time) time.Time {
 	return now.Add(time.Minute)
 }
 
-// MarkDown puts a backend in cooldown for dur, used for a HARD failure (402
-// payment-required, 403 forbidden, 401 unauthorized) that a retry won't fix
-// soon. The selector skips it until it might recover — billing enabled, key
-// corrected — instead of hammering a backend that structurally cannot serve.
-func (l *Ledger) MarkDown(backend string, dur time.Duration) {
+// MarkDown records a HARD failure (401/402/403 — auth or billing, which a retry
+// won't fix) and cools the backend with EXPONENTIAL BACKOFF: 5m, 10m, 20m, …
+// doubling per consecutive failure, capped at 24h. A persistently-broken backend
+// thus backs off toward once a day instead of being retried every few minutes; a
+// later success (in ObserveResponse) resets the streak so a recovered backend
+// returns to fast retries. Returns the cooldown applied (for logging).
+func (l *Ledger) MarkDown(backend string) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
+	l.hardFails[backend]++
+	shift := l.hardFails[backend] - 1
+	if shift > hardFailShift {
+		shift = hardFailShift
+	}
+	dur := hardFailBase << shift
+	if dur > hardFailMax {
+		dur = hardFailMax
+	}
 	e := l.entries[backend]
 	if e == nil {
 		e = &Entry{Backend: backend}
@@ -243,6 +271,7 @@ func (l *Ledger) MarkDown(backend string, dur time.Duration) {
 	}
 	e.CoolingUntil = now.Add(dur)
 	e.LastSeen = now
+	return dur
 }
 
 // Available reports whether a backend has budget and is not cooling. An unknown

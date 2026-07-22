@@ -434,7 +434,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			p.quota.ObserveResponse(name, resp.StatusCode, resp.Header)
 			if isFree && isHardFail(resp.StatusCode) {
 				hardFailStatus = resp.StatusCode
-				p.quota.MarkDown(name, hardFailCooldown)
+				p.quota.MarkDown(name) // exponential backoff lives in the ledger
 				return errBackendDown
 			}
 			return nil
@@ -1404,12 +1404,6 @@ func joinPath(base, reqPath string) string {
 	}
 	return base + reqPath
 }
-
-// hardFailCooldown is how long a backend that returned a hard failure (auth or
-// billing) is taken out of rotation before it is tried again — long enough to
-// stop hammering it, short enough to recover once the operator fixes the key or
-// enables billing.
-const hardFailCooldown = 5 * time.Minute
 
 // errBackendDown aborts a proxied response and spills to the next candidate when
 // a free-tier remote hard-fails: 401/402/403 mean auth or billing, which a retry

@@ -237,20 +237,37 @@ func TestCounterMode_429Counts(t *testing.T) {
 	}
 }
 
-// MarkDown (402/403 hard failure) takes a backend out of rotation.
-func TestMarkDown(t *testing.T) {
+// MarkDown takes a backend out of rotation with exponential backoff.
+func TestMarkDown_ExponentialBackoff(t *testing.T) {
 	l := New()
 	t0 := time.Unix(1_800_000_000, 0)
 	fixed(l, t0)
-	if !l.Available("groq-a") {
-		t.Fatal("precondition: available")
+
+	// First failure = 5m base.
+	if d := l.MarkDown("c"); d != 5*time.Minute {
+		t.Errorf("1st backoff = %v, want 5m", d)
 	}
-	l.MarkDown("groq-a", 5*time.Minute)
-	if l.Available("groq-a") {
+	if l.Available("c") {
 		t.Error("a marked-down backend must be unavailable")
 	}
-	l.now = func() time.Time { return t0.Add(6 * time.Minute) }
-	if !l.Available("groq-a") {
-		t.Error("should recover after the cooldown")
+	// Doubling: 10m, 20m, 40m.
+	for i, want := range []time.Duration{10 * time.Minute, 20 * time.Minute, 40 * time.Minute} {
+		if d := l.MarkDown("c"); d != want {
+			t.Errorf("backoff #%d = %v, want %v", i+2, d, want)
+		}
+	}
+	// Enough consecutive failures reach the 24h cap and stay there.
+	for i := 0; i < 20; i++ {
+		l.MarkDown("c")
+	}
+	if d := l.MarkDown("c"); d != 24*time.Hour {
+		t.Errorf("backoff should cap at 24h, got %v", d)
+	}
+
+	// A success resets the streak → next failure is back to the 5m base.
+	l.ObserveResponse("c", 200, hdr(
+		"X-Ratelimit-Limit-Requests", "10", "X-Ratelimit-Remaining-Requests", "9"))
+	if d := l.MarkDown("c"); d != 5*time.Minute {
+		t.Errorf("after a success the backoff should reset to 5m, got %v", d)
 	}
 }

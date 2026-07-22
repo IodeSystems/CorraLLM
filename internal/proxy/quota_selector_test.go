@@ -65,7 +65,7 @@ func TestFilterByQuota_NeverEmpties(t *testing.T) {
 func TestFilterByQuota_SkipsHardDown(t *testing.T) {
 	p := &Proxy{quota: quota.New()}
 	cands := []config.Candidate{cand("groq-a"), cand("MTP-local")}
-	p.quota.MarkDown("groq-a", 5*60*1e9) // 5 min in ns
+	p.quota.MarkDown("groq-a")
 	got := p.filterByQuota(cands)
 	if len(got) != 1 || got[0].Name != "MTP-local" {
 		t.Errorf("hard-down groq-a should be dropped: %v", names(got))
