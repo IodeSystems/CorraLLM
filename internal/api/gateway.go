@@ -123,6 +123,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.BenchProbesByCapability)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "quotaLedger",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/quota",
+		Summary:     "Free-tier budget ledger: each remote backend's remaining rate-limit budget (P16).",
+		Tags:        []string{"observability"},
+	}, h.QuotaLedger)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchArmMatrix",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/bench/arms",

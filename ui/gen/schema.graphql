@@ -81,6 +81,7 @@ type CorrallmQueryNamespace {
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_QueueDepthOutputBody @derived(operationId: "queueDepth")
+  quotaLedger: corrallm_QuotaOutputBody @derived(operationId: "quotaLedger")
   recentActivity(
     """Max records, newest first."""
     limit: Long
@@ -185,6 +186,7 @@ type CorrallmV1QueryNamespace {
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_QueueDepthOutputBody @derived(operationId: "queueDepth")
+  quotaLedger: corrallm_QuotaOutputBody @derived(operationId: "quotaLedger")
   recentActivity(
     """Max records, newest first."""
     limit: Long
@@ -998,6 +1000,28 @@ type corrallm_QueueDepthOutputBody {
   buckets: [Long!]!
   """Per-lane sampled depth, busiest first."""
   lanes: [corrallm_LaneDepthSeriesView!]!
+}
+
+type corrallm_QuotaBucketView {
+  limit: Long!
+  remaining: Long!
+  """Human duration until this window refills, e.g. "1m26s"; empty when unknown."""
+  resetsIn: String
+}
+
+type corrallm_QuotaEntryView {
+  """False when exhausted or cooling from a 429 — the selector skips it."""
+  available: Boolean!
+  backend: String!
+  """Seconds left in a 429 cooldown; 0 when not cooling."""
+  coolingInSec: Long
+  requests: corrallm_QuotaBucketView!
+  seen: Long!
+  tokens: corrallm_QuotaBucketView!
+}
+
+type corrallm_QuotaOutputBody {
+  backends: [corrallm_QuotaEntryView!]!
 }
 
 type corrallm_RecentActivityOutputBody {

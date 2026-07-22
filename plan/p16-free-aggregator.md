@@ -11,15 +11,16 @@ Status: **design, not started.** Pointer from §6 roadmap in plan.md.
 
 A single free LLM endpoint is a toy: OpenRouter's `:free` tier is **20 req/min,
 50–1,000 req/day aggregate** across all its free models — a rounding error for a
-serving proxy. The insight that makes this worth building: **the daily/minute
-caps are per-provider and independent.** Pool N providers, each with its own free
-quota, and route across them as each exhausts, and the union is a real serving
-budget from free tiers.
+serving proxy. The insight that makes this worth building: **free quota is
+enforced per ACCOUNT and those budgets are independent** — across providers AND
+across multiple accounts of the same provider. Pool many accounts (Groq ×N,
+Cerebras, OpenRouter, …), route across them as each exhausts, and the union is a
+real serving budget from free tiers.
 
 So P16 is a **virtual model** (served name, e.g. `free`) backed by many remote
-provider endpoints, with a **quota ledger** that tracks each provider's remaining
-budget and a **selector** that picks a provider with budget + acceptable privacy,
-proactively avoiding exhaustion rather than only reacting to it.
+backends — each one endpoint + one key — with a **quota ledger** that tracks each
+backend's remaining budget and a **selector** that picks a backend with budget +
+acceptable privacy, proactively avoiding exhaustion rather than only reacting.
 
 This extends P14's lane concept from *react-on-error failover* to
 *avoid-before-exhaust selection*. Lanes already fail over on a backend error; P16
@@ -64,38 +65,87 @@ limits, reset on a wall-clock window). A provider's config declares which it is.
 
 ## 4. Config schema (extends the existing `proxy` model)
 
+**The ledger unit is the BACKEND (one model definition = one key), not the
+provider.** Free quota is enforced per ACCOUNT, so pooling a bigger budget means
+multiple keys/accounts for the same provider, each an independent backend with
+its own ledger entry. `groq-a` and `groq-b` below are the same endpoint and
+upstream model with *different keys* → two independent 30-RPM/1K-RPD budgets.
+Keying the ledger on "provider" would collapse them into one and throw away the
+second account's quota — the whole reason to have it. `provider:` survives only
+as a label (for privacy defaults / display), never as the budget key.
+
 A provider backend is a `proxy` model plus a `freeTier:` block. Sketch:
 
 ```yaml
 models:
-  groq-llama-70b:
-    proxy: { host: api.groq.com, basePath: /openai/v1,
+  groq-a:
+    proxy: { host: api.groq.com, basePath: /openai, model: llama-3.3-70b-versatile,
              headers: { authorization: "Bearer ${GROQ_API_KEY}" } }
     type: chat
     freeTier:
-      provider: groq                 # ledger key (shared across a provider's models)
-      private: true                  # false → excluded when request marked sensitive
-      track: header                  # header | counter
-      # header mode: which headers to read (defaults cover the OpenAI-style set)
-      # counter mode: declare the limits to count against
-      limits: { rpm: 30, rpd: 1000, tpm: 12000, tpd: 100000 }
+      provider: groq        # LABEL only (privacy defaults, display) — NOT the budget key
+      private: true         # false → excluded when a request is marked sensitive
+      track: header         # header | counter (how remaining budget is learned)
+      limits: { rpm: 30, rpd: 1000, tpm: 12000, tpd: 100000 }  # counter mode / sanity bound
+  groq-b:                   # SAME provider + model, DIFFERENT account key → its own budget
+    proxy: { host: api.groq.com, basePath: /openai, model: llama-3.3-70b-versatile,
+             headers: { authorization: "Bearer ${GROQ_API_KEY_2}" } }
+    type: chat
+    freeTier: { provider: groq, private: true, track: header,
+                limits: { rpm: 30, rpd: 1000, tpm: 12000, tpd: 100000 } }
 ```
 
-`lanes:` then composes them, best-first, with the local models as the floor:
+The ledger keys on the served name (`groq-a`, `groq-b`) — each an independent
+budget. (Caveat: keys under the SAME account share that account's quota, so the
+two would double-count. The pooling assumption is one account per backend;
+document it, don't enforce it.)
+
+`lanes:` then composes the backends, best-first, with the local models as the
+floor:
 
 ```yaml
 lanes:
-  free: [groq-llama-70b, cerebras-oss-120b, openrouter-nemotron-super, Qwen3-6-27B-MPT]
+  free: [groq-a, groq-b, cerebras-oss-120b, openrouter-nemotron-super, Qwen3-6-27B-MPT]
 ```
 
 Requesting `model="free"` gets quota-aware selection across the remotes, falling
 to the **local** MTP when every free provider is exhausted — the gateway-SPOF
 lesson from the OpenRouter research: remote free is never the sole path.
 
+### Live Groq evidence (P16a smoke test, 2026-07-21) — read before building
+
+A real corrallm→Groq call confirmed the header contract AND surfaced a format the
+research missed:
+
+```
+X-Ratelimit-Limit-Requests: 1000      X-Ratelimit-Remaining-Requests: 999
+X-Ratelimit-Limit-Tokens:   12000     X-Ratelimit-Remaining-Tokens:   11938
+X-Ratelimit-Reset-Requests: 1m26.4s   X-Ratelimit-Reset-Tokens:       310ms
+```
+
+- **Header names confirmed** (Go canonical caps): `X-Ratelimit-{Limit,Remaining,Reset}-{Requests,Tokens}`.
+- **Reset is a Go-DURATION STRING** (`1m26.4s`, `310ms`), NOT a unix timestamp or
+  an integer seconds — the ledger's parser must handle `time.ParseDuration`, not
+  `strconv`. This is the single most important build detail and the research did
+  not have it.
+- **Requests bucket ≈ daily** (limit 1000), **tokens bucket ≈ per-minute** (limit
+  12000) — two different windows on one response, so the ledger tracks them
+  separately (a `resetsAt` per bucket).
+- **Continuous/leaky refill**, not a hard reset: `Reset-Requests` was ~86s (time to
+  the next refill tick) even for the daily-ish bucket — so `coolingUntil` should be
+  min(reset of the exhausted bucket), and budget trickles back rather than snapping
+  to full at midnight.
+- **Headers pass straight through corrallm's reverse proxy to the client**, so the
+  ledger reads them off the upstream response inside the proxy path — no extra
+  round-trip, no polling. Still open: the **429 body/headers** (the smoke test did
+  not trip a limit) — capture opportunistically before finalizing cooling logic.
+
 ## 5. Quota ledger (the new component)
 
-Per `(provider, window)` state, held in memory (persistence optional — a lost
-ledger just re-learns from the next response's headers, or resets a counter):
+Per `(backend, window)` state — backend = one model definition = one key, so two
+keys for the same provider are two independent budgets (see §4). Held in memory
+(persistence optional — a lost ledger just re-learns from the next response's
+headers, or resets a counter):
 
 - `remaining` (requests, tokens), `resetsAt`, `coolingUntil`.
 - Updated on every proxied response: header mode parses `x-ratelimit-*`; counter
@@ -157,13 +207,24 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
     the dispatch site (beside clampMaxTokens). No-op when unset (local backends)
     or on a non-JSON body. Tested unit + end-to-end (upstream receives the
     substituted id, not the served name).
-  - ❓ **parse Groq's rate-limit headers into a ledger + expose in console — GATED
-    ON A GROQ API KEY.** The design's whole point ("prove the header path
-    end-to-end") is a live Groq call, and open questions #2–4 (real header names,
-    429-vs-daily body, token counting) can only be closed against the live API.
-    No key is on this box. Building the ledger before probing the real responses
-    would be building against unverified assumptions — do not. Get a key (env
-    `GROQ_API_KEY` or a file; never pasted in chat) and resume here.
+  - ✅ **live Groq validation** (2026-07-21). Key wired via `.env` → `${GROQ_API_KEY}`.
+    One real corrallm→Groq call proved base-path + model-rewrite + auth end-to-end
+    (Groq echoed its own id "llama-3.3-70b-versatile"; reply "groq works") and
+    captured the real rate-limit headers — see the evidence block in §5. The
+    header contract is now known, including the Go-duration reset format the
+    research missed.
+  - ✅ **quota ledger + API** (2026-07-21). `internal/quota.Ledger` learns each
+    backend's per-window budget (requests + tokens) from the X-Ratelimit-* headers
+    on every proxied response — parsing the Go-duration reset with
+    time.ParseDuration — sets `coolingUntil` on a 429 (Retry-After, else the
+    exhausted bucket's reset), and answers `Available(backend)`. Wired via the
+    reverse-proxy `ModifyResponse` hook (no-op for local backends); exposed at
+    `GET /api/v1/quota`. Live-validated: two Groq calls, ledger showed
+    remaining 1000→998, resetsIn 2m53s, available=true. 12 tests
+    (quota + api). **429 cooling is unit-tested but not yet live** (no limit
+    tripped); capture a real 429 body opportunistically to confirm the header set.
+  - ◻ console UI card for the ledger — data is on `/api/v1/quota`; the UI add is
+    thin but the ui/ build needs its node_modules restored after the flatten first.
 - **P16b — the ledger + selector.** Generalize to a `free` lane; quota-aware
   selection with cooling; fall to local floor. Test with Groq + one more.
 - **P16c — counter-mode + OpenRouter.** Local-counter tracking; the empirical

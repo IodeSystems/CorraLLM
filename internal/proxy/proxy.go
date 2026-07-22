@@ -33,6 +33,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/events"
 	"github.com/iodesystems/corrallm/internal/proc"
+	"github.com/iodesystems/corrallm/internal/quota"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
 )
@@ -61,6 +62,19 @@ type Proxy struct {
 
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
+
+	// quota is the P16 free-tier budget ledger: it learns each remote backend's
+	// remaining rate-limit budget from the X-Ratelimit-* headers on its responses.
+	quota *quota.Ledger
+}
+
+// QuotaSnapshot returns the current free-tier budget ledger (P16), for the
+// observability API. Empty until a remote backend has been called.
+func (p *Proxy) QuotaSnapshot() []quota.Entry {
+	if p.quota == nil {
+		return nil
+	}
+	return p.quota.Snapshot()
 }
 
 // New constructs a Proxy.
@@ -68,7 +82,7 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 	return &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
 		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true,
 		convertEnabled: true, convertGlobal: config.DefaultConvert(),
-		calib: NewCalibrationState()}
+		calib: NewCalibrationState(), quota: quota.New()}
 }
 
 // payloadCap bounds a captured RESPONSE payload (P10b) — enough to see a reply
@@ -385,6 +399,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// upstream front-proxy giving up) is 499, not a backend 502; corrallm's own
 		// deadline is 504; a genuine backend dial/transport error stays 502.
 		rp := newReverseProxy(pr.Target)
+		// Fold this response's rate-limit headers into the quota ledger (P16).
+		// A no-op for local backends (no such headers); learns a remote's
+		// remaining budget for the selector to route on.
+		rp.ModifyResponse = func(resp *http.Response) error {
+			p.quota.ObserveResponse(served, resp.StatusCode, resp.Header)
+			return nil
+		}
 		var proxyErr error
 		rp.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, err error) {
 			proxyErr = err
