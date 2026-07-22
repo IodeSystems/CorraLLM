@@ -304,6 +304,22 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// quality gate below would already have excluded the floor.) Locals are
 	// always Available; if every candidate is filtered out, all are kept so a
 	// free-only lane tries for the real 429 over a blind 503.
+	// P16 privacy tiering: a request marked sensitive (X-Corrallm-Sensitive) may
+	// only reach backends safe for its data — local models (own box) and remotes
+	// flagged freeTier.private (contractually don't train). Applied before quality
+	// gating for the same reason as the quota filter, and with NO keep-all
+	// fallback: a sensitive request must refuse rather than leak, so an empty
+	// result is a real "no privacy-safe backend" answer, not a reason to relax.
+	if isSensitive(r) {
+		cands = filterBySensitive(cands)
+		if len(cands) == 0 {
+			http.Error(w, "no privacy-safe backend available for a sensitive request", http.StatusServiceUnavailable)
+			p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+				Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
+				Error: "no private backend for sensitive request", ReqBody: reqBody})
+			return
+		}
+	}
 	cands = p.filterByQuota(cands)
 	topQuality := config.MaxQuality(cands)
 	ordered := orderCandidates(cands, p.nextRR(served))
@@ -1418,6 +1434,33 @@ func isHardFail(status int) bool {
 	return status == http.StatusUnauthorized ||
 		status == http.StatusPaymentRequired ||
 		status == http.StatusForbidden
+}
+
+// isSensitive reports whether a request opted into privacy-safe routing via the
+// X-Corrallm-Sensitive header (true / 1 / yes). Such a request is confined to
+// backends that will not expose its prompt to training (see filterBySensitive).
+func isSensitive(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("X-Corrallm-Sensitive"))) {
+	case "true", "1", "yes":
+		return true
+	}
+	return false
+}
+
+// filterBySensitive keeps only backends safe for sensitive data: local models
+// (own box — prompts never leave) and remotes flagged freeTier.private
+// (contractually don't train on inputs). A non-private remote that may train is
+// dropped. Unlike filterByQuota there is NO keep-all fallback — a sensitive
+// request must refuse rather than leak, so an empty result is the correct
+// "no privacy-safe backend" answer.
+func filterBySensitive(cands []config.Candidate) []config.Candidate {
+	kept := make([]config.Candidate, 0, len(cands))
+	for _, c := range cands {
+		if ft := c.Model.FreeTier; ft == nil || ft.Private {
+			kept = append(kept, c)
+		}
+	}
+	return kept
 }
 
 func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {

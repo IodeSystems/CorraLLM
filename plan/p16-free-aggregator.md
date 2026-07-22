@@ -275,7 +275,21 @@ budget. Do not try to micromanage OpenRouter's upstreams from corrallm.
   and 503s rather than degrading to a lower-quality local floor (the floor is only
   reached once the failures are known and pre-filtered, or with an
   acceptDegrade group) — narrow, and left as a known limitation.
-- **P16d — privacy tiering.** `private` flag + `sensitive` routing.
+- ✅ **P16d — privacy tiering** (2026-07-21). A request marks itself sensitive
+  with the `X-Corrallm-Sensitive: true` header (per-request, client-owned — the
+  caller knows if its data is sensitive). `filterBySensitive` then confines it to
+  backends safe for that data: local models (own box — prompts never leave) and
+  remotes flagged `freeTier.private`. Applied before the quality gate like the
+  quota filter, but with NO keep-all fallback — a sensitive request refuses (503
+  "no privacy-safe backend") rather than leak to a training-capable backend.
+  Config privacy is evidence-based: Groq `private: true` (research-confirmed
+  no-train), OpenRouter/Cerebras `private: false` (OpenRouter free may route to
+  training providers unless the account toggle is off; Cerebras unconfirmed).
+  Live: non-sensitive `model="free"` rr-rotated Groq/OpenRouter; the same request
+  with the header went to Groq every time (the only private remote), OpenRouter
+  excluded.
+  - Open extension: a group/key-level default (a caller always sensitive) — the
+    header handles per-request now; wire a group flag if a key must be forced.
 - **P16e — refresh.** Periodic pull of OpenRouter's `:free` roster (the volatile
   one) into proxy entries; other providers have stable model lists.
 
