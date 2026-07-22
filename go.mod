@@ -53,6 +53,6 @@ require (
 )
 
 // gat lives in the iodesystems monorepo libs/ tree; same pattern as redline2.
-replace github.com/iodesystems/gwag => ../../libs/gwag
+replace github.com/iodesystems/gwag => ../gwag
 
 replace github.com/iodesystems/agentkit => /home/nthalk/local/src/iodesystems/agentkit
