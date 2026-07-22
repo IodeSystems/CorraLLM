@@ -48,11 +48,15 @@ type QuotaEntryView struct {
 }
 
 // QuotaWindowView is a counter-mode backend's locally-counted request window.
+// It is a FALLOFF counter (leaky bucket): Used decays back toward zero at
+// limit/window, so ResetsIn is when the current level fully drains, not a hard
+// reset boundary.
 type QuotaWindowView struct {
 	Label    string `json:"label" doc:"\"1m\" (per-minute) or \"1d\" (per-day)."`
 	Limit    int    `json:"limit"`
-	Used     int    `json:"used"`
-	ResetsIn string `json:"resetsIn,omitempty"`
+	Used     int    `json:"used" doc:"Decayed fill level, rounded; leaks back toward zero over the window."`
+	Blocked  bool   `json:"blocked,omitempty" doc:"The level has reached the limit — the backend is skipped until it drains below."`
+	ResetsIn string `json:"resetsIn,omitempty" doc:"Time until the current level fully drains to zero."`
 }
 
 // QuotaOutput lists every tracked backend's budget.

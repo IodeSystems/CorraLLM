@@ -10,6 +10,7 @@
 package quota
 
 import (
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -50,33 +51,91 @@ type Entry struct {
 type Window struct {
 	Label    string    `json:"label"` // "1m" | "1d"
 	Limit    int       `json:"limit"`
-	Used     int       `json:"used"`
-	ResetsAt time.Time `json:"resetsAt,omitempty"`
+	Used     int       `json:"used"`             // decayed fill level, rounded for display
+	Blocked  bool      `json:"blocked,omitempty"` // level has reached the limit
+	ResetsAt time.Time `json:"resetsAt,omitempty"` // when the level fully drains to zero
 }
 
 // cap is a per-backend self-throttle below the provider's own limit. 0 = none.
 type cap struct{ requests, tokens int }
 
-// counterWindow is one locally-counted request window for a counter-mode
-// backend: a limit, a rolling count, and the window's start.
+// counterWindow is one locally-counted request budget for a counter-mode backend,
+// modeled as a FALLOFF COUNTER (leaky bucket): each request adds one unit and the
+// level leaks back out at limit/dur, so an idle window drains to empty over one
+// period instead of snapping to zero at a reset cliff. This has two payoffs over
+// a fixed-reset window: no thundering burst at a reset boundary, and the whole
+// state is just (used, at) — a scalar and a timestamp — so it persists to two
+// columns and a restart resumes by decaying the level for the elapsed downtime.
 type counterWindow struct {
 	label string
 	limit int
 	dur   time.Duration
-	used  int
-	start time.Time
+	used  float64   // fill level as of `at`
+	at    time.Time // when `used` was last computed
 }
 
-// roll resets the window if its duration has elapsed since start. A zero start
-// (never used) is treated as elapsed so the first tick begins a fresh window.
-func (w *counterWindow) roll(now time.Time) {
-	if w.start.IsZero() || now.Sub(w.start) >= w.dur {
-		w.start, w.used = now, 0
+// levelAt returns the decayed fill at now without mutating: the bucket leaks
+// `limit` units per `dur`, clamped at zero. A zero `at` (never used) is the
+// stored level as-is.
+func (w *counterWindow) levelAt(now time.Time) float64 {
+	if w.at.IsZero() {
+		return w.used
 	}
+	elapsed := now.Sub(w.at)
+	if elapsed <= 0 {
+		return w.used
+	}
+	lv := w.used - float64(w.limit)*(float64(elapsed)/float64(w.dur))
+	if lv < 0 {
+		return 0
+	}
+	return lv
+}
+
+// add decays to now, then adds one unit of usage.
+func (w *counterWindow) add(now time.Time) {
+	w.used = w.levelAt(now)
+	w.at = now
+	w.used++
+}
+
+// drainAt is when the current level would fully leak back to zero (the display
+// "resets" time); zero when already empty.
+func (w *counterWindow) drainAt(now time.Time) time.Time {
+	lv := w.levelAt(now)
+	if lv <= 0 {
+		return time.Time{}
+	}
+	return now.Add(time.Duration(lv / float64(w.limit) * float64(w.dur)))
 }
 
 // counterState is a counter-mode backend's windows (per-minute, per-day).
 type counterState struct{ windows []*counterWindow }
+
+// PersistedCounter is one falloff window's durable state (see CounterStore).
+type PersistedCounter struct {
+	Backend string
+	Label   string
+	Used    float64
+	At      time.Time
+}
+
+// CounterStore persists falloff-counter state so a counter-mode backend's usage
+// survives a restart. Header-tracked backends need none (they relearn from the
+// next response), but a locally-counted daily budget would otherwise reset to
+// zero on every restart and over-send against the provider's real cap.
+type CounterStore interface {
+	LoadQuotaCounters() ([]PersistedCounter, error)
+	SaveQuotaCounter(backend, label string, used float64, atUnixMS int64) error
+}
+
+// loadedCounter is a persisted level awaiting a matching window at construction.
+type loadedCounter struct {
+	used float64
+	at   time.Time
+}
+
+func counterKey(backend, label string) string { return backend + "\x00" + label }
 
 // Ledger holds live per-backend budgets. Safe for concurrent use.
 type Ledger struct {
@@ -87,6 +146,8 @@ type Ledger struct {
 	counters  map[string]*counterState
 	hardFails map[string]int  // consecutive hard failures per backend, for backoff
 	stale     map[string]bool // backend's model has churned out of its provider's free roster (P16e)
+	store     CounterStore    // durable falloff-counter state (nil = memory-only)
+	loaded    map[string]loadedCounter
 }
 
 // New builds an empty ledger.
@@ -95,6 +156,29 @@ func New() *Ledger {
 		now: time.Now, entries: map[string]*Entry{},
 		caps: map[string]cap{}, counters: map[string]*counterState{},
 		hardFails: map[string]int{}, stale: map[string]bool{},
+	}
+}
+
+// UseStore attaches durable storage for the falloff counters and loads any
+// persisted levels. Call it BEFORE SetLimits so each window seeds from its saved
+// state and a restart resumes the day's usage instead of resetting to zero. A nil
+// store (tests) leaves counters memory-only; a load error starts cold rather than
+// failing construction — persistence is a durability optimization, not a
+// correctness dependency.
+func (l *Ledger) UseStore(s CounterStore) {
+	if s == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.store = s
+	rows, err := s.LoadQuotaCounters()
+	if err != nil {
+		return
+	}
+	l.loaded = make(map[string]loadedCounter, len(rows))
+	for _, r := range rows {
+		l.loaded[counterKey(r.Backend, r.Label)] = loadedCounter{used: r.Used, at: r.At}
 	}
 }
 
@@ -139,10 +223,10 @@ func (l *Ledger) SetLimits(backend string, rpm, rpd int) {
 	}
 	cs := &counterState{}
 	if rpm > 0 {
-		cs.windows = append(cs.windows, &counterWindow{label: "1m", limit: rpm, dur: time.Minute})
+		cs.windows = append(cs.windows, l.seedWindow(backend, "1m", rpm, time.Minute))
 	}
 	if rpd > 0 {
-		cs.windows = append(cs.windows, &counterWindow{label: "1d", limit: rpd, dur: 24 * time.Hour})
+		cs.windows = append(cs.windows, l.seedWindow(backend, "1d", rpd, 24*time.Hour))
 	}
 	l.counters[backend] = cs
 	// Create the entry now so a counter-mode backend shows its declared budget in
@@ -151,6 +235,16 @@ func (l *Ledger) SetLimits(backend string, rpm, rpd int) {
 	if l.entries[backend] == nil {
 		l.entries[backend] = &Entry{Backend: backend}
 	}
+}
+
+// seedWindow builds a fresh falloff window, restoring its level from persisted
+// state (UseStore) when present so the count survives a restart.
+func (l *Ledger) seedWindow(backend, label string, limit int, dur time.Duration) *counterWindow {
+	w := &counterWindow{label: label, limit: limit, dur: dur}
+	if lc, ok := l.loaded[counterKey(backend, label)]; ok {
+		w.used, w.at = lc.used, lc.at
+	}
+	return w
 }
 
 // SetCap self-throttles a backend below the provider's limit: budget is treated
@@ -185,7 +279,6 @@ func EffRemaining(b Bucket, capN int) int {
 func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	is429 := status == http.StatusTooManyRequests
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	// A success clears the hard-failure backoff streak: a backend that starts
 	// serving again returns to fast retries next time it fails.
 	if status >= 200 && status < 300 {
@@ -194,6 +287,7 @@ func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	_, isCounter := l.counters[backend]
 	hasHeaders := h.Get("X-Ratelimit-Limit-Requests") != "" || h.Get("X-Ratelimit-Limit-Tokens") != ""
 	if !is429 && !hasHeaders && !isCounter {
+		l.mu.Unlock()
 		return
 	}
 	now := l.now()
@@ -208,14 +302,25 @@ func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	updateBucket(&e.Tokens, h, "Tokens", now)
 	// Counter-mode: this completed request counts, INCLUDING a 429 — providers
 	// count failed requests against the quota too (verified in the research).
+	var saves []PersistedCounter
 	if cs := l.counters[backend]; cs != nil {
 		for _, w := range cs.windows {
-			w.roll(now)
-			w.used++
+			w.add(now)
+			if l.store != nil {
+				saves = append(saves, PersistedCounter{Backend: backend, Label: w.label, Used: w.used, At: w.at})
+			}
 		}
 	}
 	if is429 {
 		e.CoolingUntil = coolUntil(h, e, now)
+	}
+	store := l.store
+	l.mu.Unlock()
+	// Persist the updated levels OUTSIDE the lock — SQLite I/O must not block
+	// other ledger readers, and the in-memory ledger is already authoritative;
+	// the write is best-effort durability, so a failure is swallowed.
+	for _, s := range saves {
+		_ = store.SaveQuotaCounter(s.Backend, s.Label, s.Used, s.At.UnixMilli())
 	}
 }
 
@@ -324,11 +429,10 @@ func (l *Ledger) Available(backend string) bool {
 			return false
 		}
 	}
-	// Counter-mode windows: exhausted if a still-active window is at its limit.
+	// Counter-mode windows: exhausted while the decayed fill is at the limit.
 	if cs := l.counters[backend]; cs != nil {
 		for _, cw := range cs.windows {
-			active := !cw.start.IsZero() && now.Sub(cw.start) < cw.dur
-			if active && cw.used >= cw.limit {
+			if cw.levelAt(now) >= float64(cw.limit) {
 				return false
 			}
 		}
@@ -351,13 +455,15 @@ func (l *Ledger) Snapshot() []Entry {
 		if cs := l.counters[e.Backend]; cs != nil {
 			v.Windows = make([]Window, 0, len(cs.windows))
 			for _, cw := range cs.windows {
-				w := Window{Label: cw.label, Limit: cw.limit, Used: cw.used}
-				// A window whose duration has elapsed has effectively reset; show
-				// it as 0 used rather than a stale count from a spent window.
-				if cw.start.IsZero() || now.Sub(cw.start) >= cw.dur {
-					w.Used = 0
-				} else {
-					w.ResetsAt = cw.start.Add(cw.dur)
+				lv := cw.levelAt(now)
+				w := Window{
+					Label:   cw.label,
+					Limit:   cw.limit,
+					Used:    int(math.Round(lv)),
+					Blocked: lv >= float64(cw.limit),
+				}
+				if d := cw.drainAt(now); !d.IsZero() {
+					w.ResetsAt = d
 				}
 				v.Windows = append(v.Windows, w)
 			}

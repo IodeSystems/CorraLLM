@@ -225,6 +225,83 @@ func TestCounterMode(t *testing.T) {
 	}
 }
 
+// Falloff: an idle counter window leaks its usage back out over the period, so a
+// backend at its per-minute limit becomes available again partway through the
+// minute (a fractional drain), not only at a hard reset boundary.
+func TestCounterMode_Falloff(t *testing.T) {
+	l := New()
+	t0 := time.Unix(1_800_000_000, 0)
+	fixed(l, t0)
+	l.SetLimits("or", 10, 0) // 10/min, no daily
+	for i := 0; i < 10; i++ {
+		l.ObserveResponse("or", 200, http.Header{})
+	}
+	if l.Available("or") {
+		t.Fatal("at the 10/min limit → unavailable")
+	}
+	// Half the window later, ~5 units have leaked out → available again.
+	l.now = func() time.Time { return t0.Add(30 * time.Second) }
+	if !l.Available("or") {
+		t.Error("after 30s the level should have leaked below the limit")
+	}
+	if u := l.Snapshot()[0].Windows[0].Used; u != 5 {
+		t.Errorf("used after 30s decay = %d, want 5", u)
+	}
+}
+
+// Durability: a counter-mode backend's usage survives a restart. The ledger
+// persists (level, at) to a CounterStore and, when a fresh ledger attaches the
+// same store before SetLimits, the window resumes its decayed level instead of
+// resetting to zero and over-sending against the provider's real daily cap.
+func TestCounterMode_DurableAcrossRestart(t *testing.T) {
+	t0 := time.Unix(1_800_000_000, 0)
+	st := &memCounterStore{}
+
+	// First process: attach store, declare the daily budget, spend 800.
+	l1 := New()
+	fixed(l1, t0)
+	l1.UseStore(st)
+	l1.SetLimits("or", 0, 1000)
+	for i := 0; i < 800; i++ {
+		l1.ObserveResponse("or", 200, http.Header{})
+	}
+	if u := l1.Snapshot()[0].Windows[0].Used; u != 800 {
+		t.Fatalf("first process used = %d, want 800", u)
+	}
+
+	// Restart one minute later: a NEW ledger attaches the SAME store, then
+	// declares the same limit. The persisted 800 must carry over (minus the tiny
+	// decay over 60s: 1000/day ≈ 0.7/min), NOT reset to zero.
+	l2 := New()
+	l2.now = func() time.Time { return t0.Add(time.Minute) }
+	l2.UseStore(st)
+	l2.SetLimits("or", 0, 1000)
+	if u := l2.Snapshot()[0].Windows[0].Used; u < 798 || u > 800 {
+		t.Errorf("after restart used = %d, want ~800 (survived), not 0", u)
+	}
+}
+
+// memCounterStore is an in-memory CounterStore for the durability test.
+type memCounterStore struct {
+	rows map[string]PersistedCounter
+}
+
+func (m *memCounterStore) SaveQuotaCounter(backend, label string, used float64, atMS int64) error {
+	if m.rows == nil {
+		m.rows = map[string]PersistedCounter{}
+	}
+	m.rows[backend+"\x00"+label] = PersistedCounter{Backend: backend, Label: label, Used: used, At: time.UnixMilli(atMS)}
+	return nil
+}
+
+func (m *memCounterStore) LoadQuotaCounters() ([]PersistedCounter, error) {
+	out := make([]PersistedCounter, 0, len(m.rows))
+	for _, r := range m.rows {
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 // A 429 counts against the counter too (providers count failed requests).
 func TestCounterMode_429Counts(t *testing.T) {
 	l := New()

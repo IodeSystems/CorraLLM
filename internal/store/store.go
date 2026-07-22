@@ -200,6 +200,21 @@ CREATE TABLE IF NOT EXISTS lane_samples (
     waiting INTEGER NOT NULL    -- queued requests across backends
 );
 CREATE INDEX IF NOT EXISTS idx_lane_samples_ts ON lane_samples(ts);
+
+-- quota_counter: durable state for a counter-mode backend's falloff counters
+-- (P16 durability). A header-tracked backend needs no persistence — it relearns
+-- its budget from the next response's X-Ratelimit-* headers — but a
+-- locally-counted daily budget (OpenRouter's 1000/day, which sends no headers)
+-- would reset to zero on every restart and over-send against the provider's real
+-- cap. The counter is a leaky bucket, so its whole state is (level, updatedAt):
+-- on load the ledger decays the level for the elapsed downtime.
+CREATE TABLE IF NOT EXISTS quota_counter (
+    backend TEXT NOT NULL,          -- served model name = one key = one budget
+    label   TEXT NOT NULL,          -- "1m" | "1d"
+    used    REAL    NOT NULL DEFAULT 0, -- decaying fill level as of the at column
+    at      INTEGER NOT NULL DEFAULT 0, -- unix millis when used was last updated
+    PRIMARY KEY (backend, label)
+);
 `
 
 // migrations upgrade an activity table created by an earlier schema in place.
@@ -578,6 +593,44 @@ func (s *Store) LaneDepthSeries(sinceMS, bucketMS int64) ([]LaneDepthRow, error)
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// QuotaCounter is one falloff-counter window's persisted state (P16 durability).
+type QuotaCounter struct {
+	Backend string
+	Label   string
+	Used    float64
+	AtMS    int64 // unix millis of the last update
+}
+
+// SaveQuotaCounter upserts one window's decaying usage level. Called on each
+// counter-mode request; the write volume is tiny (free tiers are rate-limited to
+// a handful of requests per minute), so per-request persistence is cheap.
+func (s *Store) SaveQuotaCounter(backend, label string, used float64, atMS int64) error {
+	_, err := s.db.Exec(`
+INSERT INTO quota_counter (backend, label, used, at) VALUES (?,?,?,?)
+ON CONFLICT(backend, label) DO UPDATE SET used=excluded.used, at=excluded.at`,
+		backend, label, used, atMS)
+	return err
+}
+
+// LoadQuotaCounters returns every persisted falloff-counter window, for seeding
+// the ledger on startup so a daily budget survives a restart.
+func (s *Store) LoadQuotaCounters() ([]QuotaCounter, error) {
+	rows, err := s.db.Query(`SELECT backend, label, used, at FROM quota_counter`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []QuotaCounter
+	for rows.Next() {
+		var c QuotaCounter
+		if err := rows.Scan(&c.Backend, &c.Label, &c.Used, &c.AtMS); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

@@ -145,6 +145,12 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true,
 		convertEnabled: true, convertGlobal: config.DefaultConvert(),
 		calib: NewCalibrationState(), quota: quota.New(), roster: freeroster.New()}
+	// Attach durable storage for the falloff counters BEFORE seeding limits, so a
+	// counter-mode window resumes its persisted level across a restart instead of
+	// resetting to zero and over-sending against the provider's real daily cap.
+	if st != nil {
+		p.quota.UseStore(quotaCounterStore{st})
+	}
 	// Seed the ledger from each free-tier backend's config (P16): a self-cap for
 	// header-tracked backends, and the provider limits for counter-mode ones (no
 	// rate-limit headers, so budget is counted locally).
@@ -160,6 +166,26 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 		}
 	}
 	return p
+}
+
+// quotaCounterStore adapts *store.Store to quota.CounterStore, converting the
+// unix-millis timestamps the store persists to the time.Time the ledger uses.
+type quotaCounterStore struct{ st *store.Store }
+
+func (q quotaCounterStore) SaveQuotaCounter(backend, label string, used float64, atMS int64) error {
+	return q.st.SaveQuotaCounter(backend, label, used, atMS)
+}
+
+func (q quotaCounterStore) LoadQuotaCounters() ([]quota.PersistedCounter, error) {
+	rows, err := q.st.LoadQuotaCounters()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]quota.PersistedCounter, len(rows))
+	for i, r := range rows {
+		out[i] = quota.PersistedCounter{Backend: r.Backend, Label: r.Label, Used: r.Used, At: time.UnixMilli(r.AtMS)}
+	}
+	return out, nil
 }
 
 // payloadCap bounds a captured RESPONSE payload (P10b) — enough to see a reply
