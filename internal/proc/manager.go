@@ -1439,6 +1439,7 @@ type ResidentModel struct {
 	Refs       int  // in-flight requests holding it
 	Persistent bool // pinned: exempt from eviction
 	LastUsedMS int64
+	ReadyAtMS  int64  // unix ms the backend became ready (uptime anchor; 0 if unknown)
 	NCtx       int    // parsed context length (spawned backends; 0 if unknown)
 	NSlots     int    // parsed slot count (spawned backends; 0 if unknown)
 	HasUI      string // unknown | yes | no — does the backend serve a web UI at / (P11b)
@@ -1492,6 +1493,9 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 		}
 		if !p.lastUsed.IsZero() {
 			rm.LastUsedMS = p.lastUsed.UnixMilli()
+		}
+		if !p.readyAt.IsZero() {
+			rm.ReadyAtMS = p.readyAt.UnixMilli()
 		}
 		for pool, b := range p.usage {
 			rm.Usage = append(rm.Usage, PoolUsage{Pool: pool, Bytes: b})

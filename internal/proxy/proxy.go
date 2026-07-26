@@ -33,6 +33,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/events"
 	"github.com/iodesystems/corrallm/internal/freeroster"
+	"github.com/iodesystems/corrallm/internal/metrics"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/quota"
 	"github.com/iodesystems/corrallm/internal/sched"
@@ -587,6 +588,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		var u usage
 		var costUSD float64
 		var audioBytes int64
+		var cCost, pCost, gCost float64 // per-class $ (cached, processed, generated)
 		switch {
 		case tts:
 			audioBytes = sc.written
@@ -596,12 +598,57 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			costUSD = p.cost.AudioRequestUSD(backend.Type, len(body))
 		default:
 			u = extractUsage(sc.buf, streaming)
-			costUSD = p.cost.RequestUSD(backend.Type, u.PromptTokens, u.CompletionTokens)
+			proc := u.PromptTokens - u.CachedTokens
+			if proc < 0 {
+				proc = 0
+			}
+			cCost, pCost, gCost = p.cost.RequestUSDByClass(backend.Type, u.CachedTokens, proc, u.CompletionTokens)
+			// Provider-reported cost wins when present (OpenRouter): treat it as
+			// the authoritative total, keeping the table-derived class ratio (or a
+			// token share when the type is unpriced).
+			if u.Cost > 0 {
+				if s := cCost + pCost + gCost; s > 0 {
+					k := u.Cost / s
+					cCost, pCost, gCost = cCost*k, pCost*k, gCost*k
+				} else if tot := float64(u.PromptTokens + u.CompletionTokens); tot > 0 {
+					cCost = u.Cost * float64(u.CachedTokens) / tot
+					pCost = u.Cost * float64(proc) / tot
+					gCost = u.Cost * float64(u.CompletionTokens) / tot
+				} else {
+					gCost = u.Cost
+				}
+			}
+			costUSD = cCost + pCost + gCost
 		}
+		var loadCost float64
 		if loaded && backend.Swap != nil {
-			costUSD += p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
+			loadCost = p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
+			costUSD += loadCost
 		}
 		release(sched.Done{CostUSD: costUSD})
+
+		// Prometheus: meter the served request — provider×model with per-class
+		// token counts and dollar cost. Text routes split cached/processed/
+		// generated; audio carries no token usage (costed by bytes). A cold-load
+		// swap energy cost is reported under the "load" class.
+		prov := backend.Provider()
+		statusStr := strconv.Itoa(status)
+		metrics.Request(prov, name, statusStr)
+		if tts || audio {
+			metrics.Cost(prov, name, "audio", costUSD)
+		} else {
+			proc := u.PromptTokens - u.CachedTokens
+			if proc < 0 {
+				proc = 0
+			}
+			metrics.Tokens(prov, name, "cached", u.CachedTokens)
+			metrics.Tokens(prov, name, "processed", proc)
+			metrics.Tokens(prov, name, "generated", u.CompletionTokens)
+			metrics.Cost(prov, name, "cached", cCost)
+			metrics.Cost(prov, name, "processed", pCost)
+			metrics.Cost(prov, name, "generated", gCost)
+		}
+		metrics.Cost(prov, name, "load", loadCost)
 
 		var respBody string
 		if tts {
@@ -1642,8 +1689,9 @@ func streamFromBody(body []byte) bool {
 // cached prompt tokens and prompt/generation throughput. The throughput and
 // CachedTokens values are backend-reported — corrallm does not compute them.
 type usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	Cost             float64 `json:"cost"` // provider-reported $ (OpenRouter); 0 if absent
 	// PromptTokensDetails is the OpenAI-shape cached-token report nested under
 	// "usage". extractUsage collapses it into CachedTokens.
 	PromptTokensDetails struct {

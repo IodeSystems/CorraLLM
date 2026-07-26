@@ -27,6 +27,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/events"
 	"github.com/iodesystems/corrallm/internal/gpu"
+	"github.com/iodesystems/corrallm/internal/metrics"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/proxy"
 	"github.com/iodesystems/corrallm/internal/sched"
@@ -427,6 +428,11 @@ func serve(ctx context.Context, o serveOpts) error {
 	px.SetRealtimeTimeouts(o.realtimeIdle, o.realtimeMaxSession)
 	px.Mount(router)
 
+	// Prometheus exposition — registered ahead of the SPA catch-all so /metrics
+	// is scraped rather than served the web-UI shell (chi matches the specific
+	// route before the "/*" wildcard).
+	router.Handle("/metrics", metrics.Handler())
+
 	// The SPA is served for everything not claimed above.
 	router.Handle("/*", webui.Handler(o.webRoot))
 
@@ -449,6 +455,11 @@ func serve(ctx context.Context, o serveOpts) error {
 	// Sample instantaneous per-lane queue depth so it's visible before requests
 	// resolve (the activity log is completion-driven). Stops on shutdown.
 	go runQueueSampler(sigCtx, scheduler, st, 5*time.Second, o.activityRetention)
+
+	// Publish per-model residency to Prometheus (corrallm_model_loaded +
+	// load-timestamp → uptime). Sampled rather than event-driven so the gauges
+	// self-heal after any missed load/evict signal.
+	go runResidencySampler(sigCtx, mgr, 10*time.Second)
 
 	// Periodically refresh each opted-in provider's free-model roster (P16e), so a
 	// free model that churns out (goes paid or is removed) is skipped proactively.
@@ -499,6 +510,30 @@ func runRosterRefresh(ctx context.Context, px *proxy.Proxy, interval time.Durati
 // runQueueSampler periodically snapshots the scheduler's per-lane load and
 // persists it (sparse — idle lanes are skipped). It also runs periodic
 // maintenance: pruning old lane samples (48h) and old activity (activityRetention).
+// runResidencySampler publishes per-model residency (loaded + load timestamp)
+// to Prometheus every interval, so corrallm_model_loaded / _load_timestamp track
+// which models are warm and for how long (uptime = now - load timestamp).
+func runResidencySampler(ctx context.Context, mgr *proc.Manager, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		snap := mgr.Snapshot()
+		res := make([]metrics.Resident, 0, len(snap.Models))
+		for _, m := range snap.Models {
+			if m.State != "ready" {
+				continue
+			}
+			res = append(res, metrics.Resident{Model: m.ModelName, LoadedUnix: m.ReadyAtMS / 1000})
+		}
+		metrics.SetResidency(res)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
 func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, interval, activityRetention time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()

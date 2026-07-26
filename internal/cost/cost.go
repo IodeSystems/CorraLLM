@@ -24,6 +24,13 @@ type typeCost struct {
 	procWhPerTok float64 // prompt-token processing energy (Wh/token)
 	costFactor   float64 // paid: $ per token of extracted usage (>0 ⇒ paid type)
 
+	// Per-class paid rates ($/token) for the cached/processed/generated cost
+	// split. Each falls back to costFactor when unset (cached → processed rate),
+	// so a legacy single-factor config is unchanged.
+	genFactor    float64 // paid: $ per generated (completion) token
+	procFactor   float64 // paid: $ per processed (uncached prompt) token
+	cachedFactor float64 // paid: $ per cached prompt token (cache-read)
+
 	// Audio coefficients (P9c). Audio replies carry no token usage, so audio
 	// requests are costed by byte size: a paid type bills audioUSDPerMiB, a local
 	// type bills audioWhPerMiB (processing energy → kWh × costPerKwh).
@@ -42,9 +49,13 @@ func NewModel(c *config.Config) *Model {
 			audioWhPerMiB:  toFloat(params["audioWhPerMiB"]),
 			audioUSDPerMiB: toFloat(params["audioUSDPerMiB"]),
 		}
-		// Paid factor is nested under <type>.extract.costFactor.
+		// Paid factors are nested under <type>.extract. costFactor is the legacy
+		// single rate; the per-class rates enable the cost breakdown.
 		if extract, ok := params["extract"].(map[string]any); ok {
 			tc.costFactor = toFloat(extract["costFactor"])
+			tc.genFactor = toFloat(extract["generateCostFactor"])
+			tc.procFactor = toFloat(extract["processCostFactor"])
+			tc.cachedFactor = toFloat(extract["cachedCostFactor"])
 		}
 		m.byType[typ] = tc
 	}
@@ -56,12 +67,37 @@ func NewModel(c *config.Config) *Model {
 // local types bill energy: (completion·genWh + prompt·procWh) Wh → kWh ×
 // costPerKwh. An unknown/unpriced type costs $0.
 func (m *Model) RequestUSD(typ string, promptTokens, completionTokens int) float64 {
+	c, p, g := m.RequestUSDByClass(typ, 0, promptTokens, completionTokens)
+	return c + p + g
+}
+
+// RequestUSDByClass splits one text request's cost into (cached, processed,
+// generated) dollars. Paid types bill each class at its per-token rate (per-class
+// rates fall back to costFactor; cached falls back to the processed rate). Local
+// types bill energy: processed prompt and generated completion tokens at their
+// Wh/token → kWh × costPerKwh; cached prompt tokens are ~free (served from the KV
+// cache, no recompute). An unpriced type costs $0.
+func (m *Model) RequestUSDByClass(typ string, cached, processed, generated int) (cachedUSD, processedUSD, generatedUSD float64) {
 	tc := m.byType[typ]
-	if tc.costFactor > 0 {
-		return float64(promptTokens+completionTokens) * tc.costFactor
+	paid := tc.costFactor > 0 || tc.genFactor > 0 || tc.procFactor > 0 || tc.cachedFactor > 0
+	if paid {
+		pf := tc.procFactor
+		if pf == 0 {
+			pf = tc.costFactor
+		}
+		gf := tc.genFactor
+		if gf == 0 {
+			gf = tc.costFactor
+		}
+		cf := tc.cachedFactor
+		if cf == 0 {
+			cf = pf // cached defaults to the processed-input rate until a cache rate is set
+		}
+		return float64(cached) * cf, float64(processed) * pf, float64(generated) * gf
 	}
-	wh := float64(completionTokens)*tc.genWhPerTok + float64(promptTokens)*tc.procWhPerTok
-	return wh / 1000 * m.costPerKwh
+	processedUSD = float64(processed) * tc.procWhPerTok / 1000 * m.costPerKwh
+	generatedUSD = float64(generated) * tc.genWhPerTok / 1000 * m.costPerKwh
+	return 0, processedUSD, generatedUSD
 }
 
 // AudioRequestUSD is the dollar cost of one audio request (STT/TTS) on a backend

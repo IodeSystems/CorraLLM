@@ -144,3 +144,33 @@ func expandHeaders(h map[string]string) map[string]string {
 	}
 	return out
 }
+
+// Provider is a coarse vendor label for cost/usage metrics: "local" for a
+// spawned backend, else the upstream inferred from the proxy target host
+// (anthropic|openrouter|openai|groq|google|…), falling back to the bare host.
+func (m Model) Provider() string {
+	if strings.TrimSpace(m.Cmd) != "" {
+		return "local"
+	}
+	t, err := m.ProxyTarget()
+	if err != nil || t == nil || t.URL == nil {
+		return "unknown"
+	}
+	h := strings.ToLower(t.URL.Hostname())
+	switch {
+	case strings.Contains(h, "anthropic"):
+		return "anthropic"
+	case strings.Contains(h, "openrouter"):
+		return "openrouter"
+	case strings.Contains(h, "openai"):
+		return "openai"
+	case strings.Contains(h, "groq"):
+		return "groq"
+	case strings.Contains(h, "google"), strings.Contains(h, "gemini"):
+		return "google"
+	case h == "", h == "localhost", strings.HasPrefix(h, "127."), strings.HasPrefix(h, "192.168."), strings.HasPrefix(h, "10."):
+		return "local"
+	default:
+		return h
+	}
+}
