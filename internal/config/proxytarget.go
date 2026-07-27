@@ -32,17 +32,26 @@ type ProxyTarget struct {
 	// (e.g. "llama-3.3-70b-versatile"); a local llama.cpp backend ignores the
 	// field entirely, so this is empty for them and the body forwards unchanged.
 	Model string
+
+	// AuthTokenCommand, when set, is a command run per-request (result cached
+	// briefly) whose stdout is injected as `Authorization: Bearer <out>`. Used
+	// for short-lived rotating credentials — e.g. reusing Claude Code's OAuth
+	// subscription token, whose own credential store keeps it refreshed:
+	//   authTokenCommand: jq -r .claudeAiOauth.accessToken ~/.claude/.credentials.json
+	// A static `Authorization` in `headers` still wins if both are set.
+	AuthTokenCommand string
 }
 
 // proxyObj is the object form of `proxy:`
 // ({host, port, headers, basePath, model}).
 type proxyObj struct {
-	Host     string            `yaml:"host"`
-	Port     int               `yaml:"port"`
-	Scheme   string            `yaml:"scheme"`
-	Headers  map[string]string `yaml:"headers"`
-	BasePath string            `yaml:"basePath"`
-	Model    string            `yaml:"model"`
+	Host             string            `yaml:"host"`
+	Port             int               `yaml:"port"`
+	Scheme           string            `yaml:"scheme"`
+	Headers          map[string]string `yaml:"headers"`
+	BasePath         string            `yaml:"basePath"`
+	Model            string            `yaml:"model"`
+	AuthTokenCommand string            `yaml:"authTokenCommand"`
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -90,6 +99,7 @@ func (m Model) ProxyTarget() (*ProxyTarget, error) {
 		}
 		t.BasePath = normalizeBasePath(o.BasePath)
 		t.Model = o.Model
+		t.AuthTokenCommand = o.AuthTokenCommand
 		return t, nil
 	default:
 		return nil, fmt.Errorf("unsupported proxy target kind %d", n.Kind)

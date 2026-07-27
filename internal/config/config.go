@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -268,7 +269,49 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	if m, ok := c.Models[served]; ok {
 		return []Candidate{{Name: served, Model: m}}, true
 	}
+	// Template models: a model key containing '*' is a glob pattern. When no
+	// exact model or lane matches, a served name matching a pattern resolves to
+	// that template — but the Candidate keeps the REQUESTED name (so metrics,
+	// residency, and audit log the concrete id), and since a pure-proxy
+	// template leaves ProxyTarget.Model empty, the requested id forwards to the
+	// upstream unchanged and the provider's own model matrix validates it.
+	// e.g. "claude-opus-*" catches every dated Opus variant without enumeration.
+	// Deterministic by sorted pattern key when several could match.
+	patterns := make([]string, 0)
+	for name := range c.Models {
+		if strings.Contains(name, "*") {
+			patterns = append(patterns, name)
+		}
+	}
+	sort.Strings(patterns)
+	for _, p := range patterns {
+		if globMatch(p, served) {
+			return []Candidate{{Name: served, Model: c.Models[p]}}, true
+		}
+	}
 	return nil, false
+}
+
+// globMatch reports whether s matches a '*'-wildcard pattern (each '*' matches
+// any run, including empty). Plain byte matching — no path/slash semantics, so
+// it works on model ids like "claude-opus-5" and "vendor/model-name" alike.
+func globMatch(pattern, s string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == s // no wildcard → exact
+	}
+	if !strings.HasPrefix(s, parts[0]) {
+		return false
+	}
+	s = s[len(parts[0]):]
+	for _, mid := range parts[1 : len(parts)-1] {
+		i := strings.Index(s, mid)
+		if i < 0 {
+			return false
+		}
+		s = s[i+len(mid):]
+	}
+	return strings.HasSuffix(s, parts[len(parts)-1])
 }
 
 // ConvertConfig governs how attached files (currently PDFs) in a chat request are

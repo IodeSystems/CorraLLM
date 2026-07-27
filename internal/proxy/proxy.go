@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -1619,10 +1620,59 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 			for k, v := range t.Headers {
 				req.Header.Set(k, v)
 			}
+			// Dynamic bearer for short-lived rotating credentials (e.g. reusing
+			// Claude Code's OAuth subscription token). A static Authorization
+			// header set above wins; otherwise inject the resolved token.
+			if t.AuthTokenCommand != "" && req.Header.Get("Authorization") == "" {
+				if tok := resolveAuthToken(t.AuthTokenCommand); tok != "" {
+					req.Header.Set("Authorization", "Bearer "+tok)
+				}
+			}
 		},
 		FlushInterval: 100 * time.Millisecond, // stream SSE chunks promptly
 	}
 	return rp
+}
+
+// authTokenCache memoizes AuthTokenCommand output so a per-request bearer isn't
+// re-shelled on every call. Rotating tokens (Claude Code OAuth is good for ~4h
+// and its own store keeps it refreshed) tolerate a short cache.
+var (
+	authTokMu    sync.Mutex
+	authTokCache = map[string]authTokEntry{}
+)
+
+type authTokEntry struct {
+	val string
+	exp time.Time
+}
+
+const authTokenTTL = 60 * time.Second
+
+// resolveAuthToken runs cmd via the shell, caches its trimmed stdout for
+// authTokenTTL, and returns "" on failure — the request then goes out without a
+// bearer, surfacing as a clear upstream 401 rather than a silent hang.
+func resolveAuthToken(cmd string) string {
+	authTokMu.Lock()
+	if e, ok := authTokCache[cmd]; ok && time.Now().Before(e.exp) {
+		authTokMu.Unlock()
+		return e.val
+	}
+	authTokMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sh", "-c", cmd).Output()
+	if err != nil {
+		slog.Warn("authTokenCommand failed", "err", err)
+		return ""
+	}
+	tok := strings.TrimSpace(string(out))
+
+	authTokMu.Lock()
+	authTokCache[cmd] = authTokEntry{val: tok, exp: time.Now().Add(authTokenTTL)}
+	authTokMu.Unlock()
+	return tok
 }
 
 // resolveRequest reads the served model and stream flag from a request. A JSON
