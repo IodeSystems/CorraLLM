@@ -53,8 +53,41 @@ func newRoot() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newServeCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd())
+	root.AddCommand(newServeCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd())
 	return root
+}
+
+// validate parses and validates a config WITHOUT starting anything — no port
+// bound, no backend spawned, no DB opened.
+//
+// It exists because `serve` frees the listen port before it validates, so a
+// config error took the gateway down instead of failing safe: on 2026-07-26 a
+// lane referencing a deleted model exited at startup with :8111 already
+// released, and the edge served 503 until someone noticed. A launcher can now
+// check first and keep the running instance.
+func newValidateCmd() *cobra.Command {
+	var cfgPath string
+	cmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Parse and validate the config; exit non-zero if it would not start",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := config.Load(cfgPath)
+			if err != nil {
+				return err
+			}
+			models := c.AllModels()
+			ext := 0
+			for range c.Extensions {
+				ext++
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "ok: %s — %d models, %d lanes, %d extensions\n",
+				cfgPath, len(models), len(c.Lanes), ext)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&cfgPath, "config", "corrallm.yaml", "path to the config file")
+	return cmd
 }
 
 func newVersionCmd() *cobra.Command {
