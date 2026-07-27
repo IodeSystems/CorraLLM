@@ -1149,6 +1149,80 @@ func (h *Handlers) UnloadModel(_ context.Context, in *ModelActionInput) (*ModelA
 	return out, nil
 }
 
+// ExtensionActionInput addresses an extension by name.
+type ExtensionActionInput struct {
+	Body struct {
+		Extension string `json:"extension" doc:"Extension name (e.g. oidio)"`
+	}
+}
+
+// ExtensionActionOutput reports the result of a load/unload.
+type ExtensionActionOutput struct {
+	Body struct {
+		OK bool `json:"ok"`
+		// Draining is true when an unload is waiting on in-flight requests. The
+		// process is still up and still serving them; it admits nothing new.
+		Draining bool   `json:"draining,omitempty"`
+		Evicted  int    `json:"evicted,omitempty"`
+		Message  string `json:"message"`
+	}
+}
+
+// ExtensionsOutput lists every declared extension and its process state.
+type ExtensionsOutput struct {
+	Body struct {
+		Extensions []proc.ExtensionState `json:"extensions"`
+	}
+}
+
+// LoadExtension warms an extension's process, addressed by the extension rather
+// than by one of the models it provides.
+func (h *Handlers) LoadExtension(ctx context.Context, in *ExtensionActionInput) (*ExtensionActionOutput, error) {
+	out := &ExtensionActionOutput{}
+	name, err := h.Mgr.LoadExtension(ctx, in.Body.Extension)
+	if err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	out.Body.OK = true
+	out.Body.Message = "loaded extension " + name
+	return out, nil
+}
+
+// UnloadExtension stops an extension, taking every model it provides with it.
+// In-flight requests drain rather than being killed, so a reply of "draining"
+// means the process is still up and will go when the last one finishes.
+func (h *Handlers) UnloadExtension(_ context.Context, in *ExtensionActionInput) (*ExtensionActionOutput, error) {
+	out := &ExtensionActionOutput{}
+	n, err := h.Mgr.UnloadExtension(in.Body.Extension)
+	if err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	out.Body.OK = true
+	out.Body.Evicted = n
+	if n == 0 {
+		for _, st := range h.Mgr.ExtensionStates() {
+			if st.Name == in.Body.Extension && st.Draining {
+				out.Body.Draining = true
+				out.Body.Message = fmt.Sprintf("draining %s (%d in flight); it stops when they finish", st.Name, st.InFlight)
+				return out, nil
+			}
+		}
+		out.Body.Message = "extension not resident"
+		return out, nil
+	}
+	out.Body.Message = "stopped extension " + in.Body.Extension
+	return out, nil
+}
+
+// Extensions lists declared extensions and whether each process is up.
+func (h *Handlers) Extensions(_ context.Context, _ *struct{}) (*ExtensionsOutput, error) {
+	out := &ExtensionsOutput{}
+	out.Body.Extensions = h.Mgr.ExtensionStates()
+	return out, nil
+}
+
 // keys returns a map's keys as a slice (GraphQL needs a concrete list shape).
 func keys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))

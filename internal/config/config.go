@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,6 +32,22 @@ type Config struct {
 	// defaults (extract text).
 	Convert ConvertConfig `yaml:"convert,omitempty"`
 
+	// Extensions are integrations that serve SEVERAL model names from ONE
+	// process. oidio is the motivating case: it provides stt, diarized stt, tts
+	// and realtime-stt on a single port.
+	//
+	// Modelling those as four independent models was wrong in a way that only
+	// showed up under failure. Three of them were pure proxies at the fourth's
+	// port, so they had no lifecycle of their own: kill the process and the
+	// three aliases returned 502 forever, because a proxy has no cmd and cannot
+	// spawn the thing it depends on. Only the one privileged member could
+	// revive it. They also each carried separate residency accounting for
+	// memory that is allocated exactly once.
+	//
+	// An extension makes the sharing explicit: one cmd, one process, one
+	// reservation, and every model it provides loads and unloads with it.
+	Extensions map[string]Extension `yaml:"extensions,omitempty"`
+
 	// Models maps a served model name → exactly one serving path (a spawned cmd
 	// or a proxy target) + residency policy. Fallback across models is a lane.
 	Models map[string]Model `yaml:"models,omitempty"`
@@ -49,6 +66,66 @@ type Config struct {
 
 	// Scheduler holds global admission knobs (queue bounds).
 	Scheduler SchedulerConfig `yaml:"scheduler,omitempty"`
+
+	// discovered holds models contributed at runtime by a provider's `discover`
+	// block, keyed by served name. Guarded because the refresh loop writes it
+	// while requests read it. Never populated by Load — the file is the static
+	// truth, this is the live addition to it.
+	mu         sync.RWMutex
+	discovered map[string]Model
+}
+
+// SetDiscovered replaces the models contributed by one provider. Replacing
+// wholesale (rather than merging) is what lets a model that has churned OUT of
+// the provider's free set disappear on the next pass.
+func (c *Config) SetDiscovered(provider string, models map[string]Model) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.discovered == nil {
+		c.discovered = map[string]Model{}
+	}
+	for name, m := range c.discovered {
+		if m.ProviderName == provider {
+			delete(c.discovered, name)
+		}
+	}
+	for name, m := range models {
+		// A declared model always wins: discovery must never silently redefine
+		// something the operator wrote down.
+		if _, static := c.Models[name]; static {
+			continue
+		}
+		c.discovered[name] = m
+	}
+}
+
+// Discovered returns a copy of the runtime-contributed models.
+func (c *Config) Discovered() map[string]Model {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(map[string]Model, len(c.discovered))
+	for k, v := range c.discovered {
+		out[k] = v
+	}
+	return out
+}
+
+// AllModels is the served registry: everything declared in the file plus
+// whatever discovery has contributed. Use this anywhere the full catalog is
+// meant (listings, capability views); c.Models alone omits discovered models.
+func (c *Config) AllModels() map[string]Model {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(map[string]Model, len(c.Models)+len(c.discovered))
+	for k, v := range c.Models {
+		out[k] = v
+	}
+	for k, v := range c.discovered {
+		if _, static := out[k]; !static {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // SchedulerConfig bounds queueing so saturated callers get a fast, informative
@@ -58,6 +135,100 @@ type Config struct {
 type SchedulerConfig struct {
 	MaxWait       string `yaml:"maxWait,omitempty"`       // e.g. "60s": queue wait before a 429
 	MaxQueueDepth int    `yaml:"maxQueueDepth,omitempty"` // reject once this many already wait on a backend
+}
+
+// Extension is an integration corrallm hosts. The concept is deliberately OPEN:
+// today an extension is a process that contributes models (`provides`), but the
+// shape is meant to grow — a request/response listener or transformer, for
+// instance, would be another capability declared on the same block rather than a
+// parallel concept. Keep additions as new optional capability fields; do not
+// narrow the type's meaning to "a process that serves models".
+//
+// It carries exactly the fields that describe a local lifecycle; everything
+// per-model (type, quality, maxConcurrent, modalities) stays on the models it
+// provides.
+//
+// RAMUsage is the whole extension's footprint, counted ONCE no matter how many
+// of its models are in play — which is the honest accounting, since they are the
+// same resident bytes.
+type Extension struct {
+	Cmd        string            `yaml:"cmd,omitempty"`
+	Server     string            `yaml:"server,omitempty"`
+	RAMUsage   map[string]string `yaml:"ramUsage,omitempty"`
+	Swap       *Swap             `yaml:"swap,omitempty"`
+	Proxy      yaml.Node         `yaml:"proxy,omitempty"` // the port every provided model forwards to
+	Persistent bool              `yaml:"persistent,omitempty"`
+	Sticky     *Sticky           `yaml:"sticky,omitempty"`
+
+	// Providers lets ONE extension span several upstreams, each with its own
+	// endpoint and credentials. The free-tier aggregator is the motivating case:
+	// "free" is a single integration, but Groq, Cerebras and OpenRouter are three
+	// hosts with three keys, so they cannot share a proxy target.
+	//
+	// Served names are "<provider>-<key>", so the provider — not the extension —
+	// is the prefix. Mutually exclusive with the extension-level proxy/provides
+	// pair, which is the shorthand for the common single-provider case (oidio,
+	// claude) and behaves exactly as if the extension declared one provider named
+	// after itself.
+	Providers map[string]Provider `yaml:"providers,omitempty"`
+
+	// Provides declares the models this extension serves. The KEY is the id the
+	// backend knows the model by; the SERVED name is "<extension>-<key>", so
+	// oidio's `stt-diarize` is served as `oidio-stt-diarize` and the upstream
+	// rewrite is implied rather than repeated.
+	//
+	// The models are created here because the extension is what creates them —
+	// declaring them separately in `models:` and pointing each back at the
+	// extension duplicated the relationship in both directions and let the two
+	// disagree.
+	//
+	// Values carry only per-model fields (type, quality, maxConcurrent,
+	// modalities …). Lifecycle belongs to the extension.
+	Provides map[string]Model `yaml:"provides,omitempty"`
+}
+
+// Provider is one upstream within an extension: an endpoint, its credentials,
+// and the models reached through it.
+type Provider struct {
+	Proxy    yaml.Node        `yaml:"proxy,omitempty"`
+	Provides map[string]Model `yaml:"provides,omitempty"`
+
+	// Discover contributes models from the provider's own catalog instead of a
+	// hand-written list. `provides` is a static declaration; this is the same
+	// thing enumerated at runtime, for a roster that churns.
+	Discover *Discover `yaml:"discover,omitempty"`
+}
+
+// Discover enumerates a provider's /v1/models and contributes the rows that
+// pass Filter, each shaped by Template.
+//
+// Kept OUT of config load: Load must stay pure and offline, so discovery runs on
+// the roster refresh loop and lands in a dynamic overlay. A provider that
+// declares discover but has never refreshed contributes nothing rather than
+// blocking startup.
+type Discover struct {
+	Filter   DiscoverFilter `yaml:"filter,omitempty"`
+	Template Model          `yaml:"template,omitempty"`
+	// Limit caps how many models one provider may contribute (0 = unlimited),
+	// ordered by context length descending so a cap keeps the largest.
+	Limit int `yaml:"limit,omitempty"`
+}
+
+// DiscoverFilter narrows a provider's catalog. Everything is optional; an empty
+// filter accepts every row, which is almost never what you want from a catalog
+// of hundreds.
+type DiscoverFilter struct {
+	// Free keeps only rows the provider offers at no cost.
+	Free bool `yaml:"free,omitempty"`
+	// InputModality / OutputModality must match exactly when set (e.g. "text").
+	// This is what keeps a music-generation model out of a chat lane: OpenRouter
+	// prices Lyria at zero, so the free test alone would enrol it.
+	InputModality  string `yaml:"inputModality,omitempty"`
+	OutputModality string `yaml:"outputModality,omitempty"`
+	// MinContext drops rows with a smaller advertised window.
+	MinContext int `yaml:"minContext,omitempty"`
+	// Exclude drops any id containing one of these substrings.
+	Exclude []string `yaml:"exclude,omitempty"`
 }
 
 // Server declares a host's capacity as a vector over named memory pools.
@@ -77,6 +248,37 @@ type Model struct {
 	// Convert overrides the global attachment-ingestion config for this model
 	// (e.g. a vision model rasterizes PDFs to images instead of extracting text).
 	Convert *ConvertConfig `yaml:"convert,omitempty"`
+
+	// Extension names the integration that provides this model. Mutually
+	// exclusive with cmd/proxy/server/ramUsage/swap: those are the extension's,
+	// and Resolve copies them down so the rest of the system sees an ordinary
+	// model. What makes the sharing real is ProcKey, which routes every model of
+	// one extension to a single Process.
+	Extension string `yaml:"extension,omitempty"`
+
+	// ProviderName is the upstream WITHIN the extension that serves this model
+	// (the `providers:` key), equal to the extension name when the extension
+	// declares a single implicit provider. Computed, never authored.
+	//
+	// Distinct from the Provider() method, which infers a provider from the proxy
+	// host; this is the declared grouping.
+	ProviderName string `yaml:"-"`
+
+	// ExtensionHosted is computed, never authored: true when the extension runs a
+	// local process. Only a HOSTED extension's models share a ProcKey — a remote
+	// integration (Anthropic, Groq) has no process to share, and forcing them onto
+	// one Process would pool their admission slots for no reason.
+	ExtensionHosted bool `yaml:"-"`
+
+	// Upstream is the model id the BACKEND knows this model by, when that differs
+	// from the served name. corrallm is the naming authority — renaming the four
+	// oidio models to oidio-* is a corrallm decision — but oidio still serves them
+	// as stt/stt-diarize/tts/realtime-stt, so the name is swapped on the way out.
+	//
+	// Same role as a proxy object's `model:` (Groq's id rewrite), expressed on the
+	// model because an extension's provided models share ONE proxy target and each
+	// needs a different upstream id.
+	Upstream string `yaml:"upstream,omitempty"`
 
 	Cmd    string `yaml:"cmd,omitempty"`    // spawn it (local model); empty → pure proxy
 	Server string `yaml:"server,omitempty"` // which server it draws capacity from (cmd only)
@@ -268,6 +470,15 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	}
 	if m, ok := c.Models[served]; ok {
 		return []Candidate{{Name: served, Model: m}}, true
+	}
+	// Discovered models sit between the declared set and the glob templates: a
+	// hand-written model still wins, but a concrete discovered id beats a
+	// wildcard that merely happens to match it.
+	c.mu.RLock()
+	dm, dok := c.discovered[served]
+	c.mu.RUnlock()
+	if dok {
+		return []Candidate{{Name: served, Model: dm}}, true
 	}
 	// Template models: a model key containing '*' is a glob pattern. When no
 	// exact model or lane matches, a served name matching a pattern resolves to
@@ -529,10 +740,221 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	// Before Validate: resolution fills in cmd/server/proxy from the extension,
+	// and the existing model rules ("cmd set but no server") must judge the
+	// resolved model, not the sparse one the author wrote.
+	if err := c.resolveExtensions(); err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// resolveExtensions copies each extension's lifecycle fields onto the models it
+// provides, so everything downstream sees an ordinary spawned model. Sharing is
+// expressed by ProcKey, not by these fields.
+func (c *Config) resolveExtensions() error {
+	for name, ext := range c.Extensions {
+		hosted := ext.Cmd != ""
+		// A hosted extension runs a process here and needs a pool to draw from. A
+		// remote one is a shared endpoint + credentials, with no local lifecycle —
+		// residency knobs on it would describe something that does not exist.
+		if hosted && ext.Server == "" {
+			return fmt.Errorf("extension %q: cmd set but no server", name)
+		}
+		if !hosted {
+			if ext.Server != "" || len(ext.RAMUsage) > 0 || ext.Swap != nil || ext.Persistent || ext.Sticky != nil {
+				return fmt.Errorf("extension %q: server/ramUsage/swap/persistent/sticky need a cmd (they describe a local process)", name)
+			}
+		}
+		if _, clash := c.Models[name]; clash {
+			return fmt.Errorf("extension %q: name collides with a model", name)
+		}
+
+		// Normalize both shapes to a provider list. The extension-level
+		// proxy/provides pair is one provider named after the extension.
+		provs := map[string]Provider{}
+		switch {
+		case len(ext.Providers) > 0:
+			if !ext.Proxy.IsZero() || len(ext.Provides) > 0 {
+				return fmt.Errorf("extension %q: use either providers, or a top-level proxy+provides, not both", name)
+			}
+			if hosted {
+				return fmt.Errorf("extension %q: providers describe several upstreams; a cmd serves exactly one", name)
+			}
+			for pn, pv := range ext.Providers {
+				if pv.Proxy.IsZero() {
+					return fmt.Errorf("extension %q provider %q: needs proxy", name, pn)
+				}
+				// `discover` is the other way to contribute models, so a provider
+				// with only a discover block is complete — it just contributes
+				// nothing until the first refresh.
+				if len(pv.Provides) == 0 && pv.Discover == nil {
+					return fmt.Errorf("extension %q provider %q: contributes no models (needs provides or discover)", name, pn)
+				}
+				provs[pn] = pv
+			}
+		default:
+			if ext.Proxy.IsZero() {
+				return fmt.Errorf("extension %q: needs proxy (the target its models forward to)", name)
+			}
+			if len(ext.Provides) == 0 {
+				// `provides` and `providers` are currently the only capabilities an
+				// extension can declare. When others exist (listeners, transformers),
+				// this accepts an extension that contributes no models.
+				return fmt.Errorf("extension %q: declares no capabilities (provides/providers are currently the only ones)", name)
+			}
+			provs[name] = Provider{Proxy: ext.Proxy, Provides: ext.Provides}
+		}
+
+		if c.Models == nil {
+			c.Models = map[string]Model{}
+		}
+		for pn, pv := range provs {
+			for id, pm := range pv.Provides {
+				if id == "" {
+					return fmt.Errorf("extension %q provider %q: empty model id", name, pn)
+				}
+				if pm.Cmd != "" || !pm.Proxy.IsZero() || pm.Server != "" || len(pm.RAMUsage) > 0 ||
+					pm.Swap != nil || pm.Persistent || pm.Sticky != nil || pm.Extension != "" {
+					return fmt.Errorf("extension %q: model %q sets cmd/proxy/server/ramUsage/swap/persistent/sticky/extension; those belong to the extension", name, id)
+				}
+				served := pn + "-" + id
+				if _, clash := c.Models[served]; clash {
+					return fmt.Errorf("extension %q: provided model %q collides with a declared model", name, served)
+				}
+				pm.Extension, pm.ProviderName, pm.ExtensionHosted = name, pn, hosted
+				pm.Proxy = pv.Proxy
+				if pm.Upstream == "" && hosted {
+					// A hosted backend knows the model by the key. A remote provider's id
+					// is arbitrary (Groq's "llama-3.3-70b-versatile"), so it must be
+					// stated — either here as `upstream:` or on the proxy object.
+					pm.Upstream = id
+				}
+				c.Models[served] = pm
+			}
+		}
+	}
+	for name, m := range c.Models {
+		if m.Extension == "" {
+			continue
+		}
+		if _, ok := c.Extensions[m.Extension]; !ok {
+			return fmt.Errorf("model %q: unknown extension %q", name, m.Extension)
+		}
+	}
+	return nil
+}
+
+// DiscoverTargets lists every (extension, provider, spec) that opted into
+// catalog discovery, with the provider's proxy target resolved. The refresh loop
+// needs the target to know where to fetch and which credentials to send.
+type DiscoverTarget struct {
+	Extension string
+	Provider  string
+	Spec      *Discover
+	Target    *ProxyTarget
+	// ProxyNode is the provider's proxy block as written, so a discovered model
+	// can be given the same target the declared ones get. ProxyTarget is resolved
+	// and cannot round-trip back to YAML.
+	ProxyNode yaml.Node
+}
+
+// DiscoverTargets returns the providers with a `discover` block.
+func (c *Config) DiscoverTargets() []DiscoverTarget {
+	var out []DiscoverTarget
+	names := make([]string, 0, len(c.Extensions))
+	for n := range c.Extensions {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, en := range names {
+		ext := c.Extensions[en]
+		provs := make([]string, 0, len(ext.Providers))
+		for pn := range ext.Providers {
+			provs = append(provs, pn)
+		}
+		sort.Strings(provs)
+		for _, pn := range provs {
+			pv := ext.Providers[pn]
+			if pv.Discover == nil {
+				continue
+			}
+			t, err := (Model{Proxy: pv.Proxy}).ProxyTarget()
+			if err != nil {
+				continue
+			}
+			out = append(out, DiscoverTarget{Extension: en, Provider: pn, Spec: pv.Discover, Target: t, ProxyNode: pv.Proxy})
+		}
+	}
+	return out
+}
+
+// ServedName turns a provider's own model id into a served name under this
+// provider: "nvidia/nemotron-3-super-120b-a12b:free" under provider "openrouter"
+// becomes "openrouter-nvidia-nemotron-3-super-120b-a12b".
+//
+// The ":free" marker is dropped because it is a pricing tier, not part of the
+// identity — and if the model later goes paid, the served name should not have
+// to change. The original id is kept as Upstream, so what reaches the provider
+// is always its own id.
+func ServedName(provider, id string) string {
+	n := strings.TrimSuffix(id, ":free")
+	n = strings.ReplaceAll(n, "/", "-")
+	n = strings.ReplaceAll(n, ":", "-")
+	return provider + "-" + n
+}
+
+// Effective returns a served model as the PROCESS layer must see it: for an
+// extension-provided model, the extension's lifecycle fields overlaid onto it.
+//
+// This overlay exists only at spawn/residency time. The stored model keeps no
+// cmd, so nothing else in the system can mistake it for something it can start
+// or evict on its own.
+func (c *Config) Effective(served string) (Model, bool) {
+	m, ok := c.Models[served]
+	if !ok {
+		return Model{}, false
+	}
+	if m.Extension == "" {
+		return m, true
+	}
+	ext, ok := c.Extensions[m.Extension]
+	if !ok || ext.Cmd == "" {
+		return m, true // remote: nothing to spawn, nothing to reserve
+	}
+	m.Cmd, m.Server, m.RAMUsage = ext.Cmd, ext.Server, ext.RAMUsage
+	m.Swap, m.Persistent, m.Sticky = ext.Swap, ext.Persistent, ext.Sticky
+	return m, true
+}
+
+// ExtensionModels lists the served models an extension provides, sorted so
+// callers that must pick one pick the same one every time.
+func (c *Config) ExtensionModels(ext string) []string {
+	var out []string
+	for name, m := range c.Models {
+		if m.Extension == ext {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ProcKey is the identity of the PROCESS backing a served model. Models of one
+// extension share it, which is what makes them load and unload together; every
+// other model is its own process and keys by its own name.
+//
+// The "extension:" prefix cannot collide with a model name: resolveExtensions
+// rejects a model named after an extension, and a served name containing a colon
+// is not addressable as a model.
+func (m Model) ProcKey(served string) string {
+	if m.Extension != "" && m.ExtensionHosted {
+		return "extension:" + m.Extension
+	}
+	return served
 }
 
 // Validate checks structural invariants that must hold before scheduling can
@@ -604,4 +1026,20 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// LoadBytesForTest parses config from bytes with the same resolution Load does.
+// Exported for tests in other packages that need a fully resolved Config.
+func LoadBytesForTest(b []byte) (*Config, error) {
+	var c Config
+	if err := yaml.Unmarshal(b, &c); err != nil {
+		return nil, err
+	}
+	if err := c.resolveExtensions(); err != nil {
+		return nil, err
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }

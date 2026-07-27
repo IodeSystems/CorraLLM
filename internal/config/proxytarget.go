@@ -66,6 +66,19 @@ var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 // secrets stay out of the committed YAML). A spawned backend (cmd set) that
 // declares just a port proxies to localhost.
 func (m Model) ProxyTarget() (*ProxyTarget, error) {
+	t, err := m.proxyTarget()
+	if err != nil {
+		return nil, err
+	}
+	// A per-model upstream id wins over the proxy object's, so an extension's
+	// shared target can still serve models the backend knows by different names.
+	if m.Upstream != "" {
+		t.Model = m.Upstream
+	}
+	return t, nil
+}
+
+func (m Model) proxyTarget() (*ProxyTarget, error) {
 	n := m.Proxy
 	switch n.Kind {
 	case 0:

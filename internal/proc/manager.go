@@ -111,6 +111,9 @@ const (
 	StateReady    State = "ready"
 	StateFailed   State = "failed"
 	StateEvicting State = "evicting"
+	// StateDraining is an unload that is waiting for in-flight requests. The
+	// process still serves them; it admits nothing new.
+	StateDraining State = "draining"
 )
 
 // Process tracks one backend (spawned or pure-proxy).
@@ -118,6 +121,13 @@ type Process struct {
 	Name      string // "<servedModel>#<backendIndex>"
 	ModelName string
 	Target    *config.ProxyTarget
+
+	// key is this process's identity in Manager.procs. For an ordinary model it
+	// is the served name; for every model of one extension it is the SAME
+	// "extension:<name>", which is what makes them share a process and therefore
+	// load and unload together. ModelName stays whichever model first triggered
+	// the spawn, so config lookups and the residency UI keep working.
+	key string
 
 	server     string           // "" for pure-proxy (consumes no pools)
 	usage      map[string]int64 // reserved bytes per pool
@@ -134,6 +144,7 @@ type Process struct {
 	cmd        *exec.Cmd
 	ready      chan struct{} // closed when load resolves; supports coalescing
 	err        error
+	draining   bool      // unload requested: finish in-flight work, admit nothing new
 	refs       int       // in-flight requests holding this backend
 	readyAt    time.Time // when it became ready (min-residency anchor)
 	lastUsed   time.Time
@@ -229,13 +240,24 @@ func (m *Manager) SetVRAMMargin(mb int) {
 // sticky optionally overrides the model's own residency stickiness (a lane
 // member loaded on the lane's behalf may unload sooner); nil → model's own.
 func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model, sticky *config.Sticky) (proc *Process, release func(), loaded bool, err error) {
+	// A provided model carries no cmd/server/ramUsage — those live on its
+	// extension. Overlay here, at the one door every caller comes through, so
+	// nothing upstream has to know the difference.
+	if mdl.Extension != "" && m.cfg != nil {
+		if eff, ok := m.cfg.Effective(name); ok {
+			mdl = eff
+		}
+	}
+
 	target, err := mdl.ProxyTarget()
 	if err != nil {
 		return nil, nil, false, err
 	}
 
+	key := mdl.ProcKey(name)
+
 	m.mu.Lock()
-	p := m.procs[name]
+	p := m.procs[key]
 	triggered := p == nil
 	if p == nil {
 		usage := m.effectiveUsage(name, mdl)
@@ -259,6 +281,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		p = &Process{
 			Name:       name,
 			ModelName:  name,
+			key:        key,
 			Target:     target,
 			server:     mdl.Server,
 			usage:      usage,
@@ -269,7 +292,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 			state:      StateAbsent,
 			ready:      make(chan struct{}),
 		}
-		m.procs[name] = p
+		m.procs[key] = p
 		m.mu.Unlock()
 		go m.load(name, mdl, p)
 	} else {
@@ -280,6 +303,12 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	case <-p.ready:
 		p.mu.Lock()
 		defer p.mu.Unlock()
+		// A draining backend is finishing what it has and taking nothing new.
+		// Checked before the state test because a drained-and-evicted process
+		// would otherwise report the less useful "not ready".
+		if p.draining {
+			return nil, nil, false, fmt.Errorf("backend %s is draining (unload requested)", name)
+		}
 		if p.state != StateReady {
 			return nil, nil, false, fmt.Errorf("backend %s not ready: %w", name, p.err)
 		}
@@ -291,7 +320,8 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	}
 }
 
-// releaser drops one residency ref (the backend stays warm).
+// releaser drops one residency ref (the backend stays warm), and completes a
+// pending drain when it releases the last one.
 func (m *Manager) releaser(p *Process) func() {
 	var once sync.Once
 	return func() {
@@ -299,7 +329,20 @@ func (m *Manager) releaser(p *Process) func() {
 			p.mu.Lock()
 			p.refs--
 			p.lastUsed = time.Now()
+			drained := p.draining && p.refs == 0
 			p.mu.Unlock()
+			if !drained {
+				return
+			}
+			// The last in-flight request just finished, so the unload that asked
+			// for this drain can now complete. Done here rather than by a poller
+			// so the process goes the instant it is idle.
+			m.mu.Lock()
+			if m.procs[p.key] == p {
+				slog.Info("unload: drain complete, evicting", "key", p.key)
+				m.evictLocked(p)
+			}
+			m.mu.Unlock()
 		})
 	}
 }
@@ -899,7 +942,7 @@ func (m *Manager) TunedSlots(model string, configDefault int) int {
 // 0, never an error.
 func (m *Manager) ModelVRAM(model string) int {
 	m.mu.Lock()
-	p := m.procs[model]
+	p := m.procs[m.procKey(model)]
 	m.mu.Unlock()
 	if p == nil {
 		return 0
@@ -951,8 +994,10 @@ func (m *Manager) TuneProfile(gpuName, model string) (tune.Profile, bool) {
 func (m *Manager) onProcExit(name string, p *Process) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.procs[name] == p {
-		delete(m.procs, name)
+	// Keyed by p.key, not name: an extension's process is registered under
+	// "extension:<n>" while name is whichever model happened to spawn it.
+	if m.procs[p.key] == p {
+		delete(m.procs, p.key)
 		m.freeLocked(p.server, p.usage)
 	}
 }
@@ -1093,7 +1138,7 @@ func (m *Manager) evictLocked(p *Process) {
 	p.state = StateEvicting
 	cmd := p.cmd
 	p.mu.Unlock()
-	delete(m.procs, p.Name)
+	delete(m.procs, p.key)
 	m.freeLocked(p.server, p.usage)
 	if cmd != nil && cmd.Process != nil {
 		slog.Info("evicting backend", "name", p.Name, "pid", cmd.Process.Pid)
@@ -1182,6 +1227,15 @@ func (m *Manager) spawnerFor(name string, mdl config.Model) (string, bool) {
 	return "", false
 }
 
+// procKey resolves a served model name to the identity of the process backing
+// it. Models provided by one extension all resolve to the same key.
+func (m *Manager) procKey(served string) string {
+	if m.cfg == nil {
+		return served
+	}
+	return m.cfg.Models[served].ProcKey(served)
+}
+
 // isLoopback reports whether a host refers to this machine. A hostname we
 // cannot resolve is treated as remote — the conservative direction, since
 // waiting on something that will never come up is worse than not waiting.
@@ -1237,8 +1291,12 @@ func (m *Manager) waitHealthy(t *config.ProxyTarget) error {
 // Preload spawns models marked persistent so they are warm at boot and exempt
 // from eviction. Runs in the background; failures are logged, not fatal.
 func (m *Manager) Preload(ctx context.Context) {
-	for name, model := range m.cfg.Models {
-		if !model.Persistent {
+	for name := range m.cfg.Models {
+		// Effective, not the raw model: an extension's persistence is declared on
+		// the extension, so reading it off the provided model would skip it and
+		// nothing would preload.
+		model, ok := m.cfg.Effective(name)
+		if !ok || !model.Persistent {
 			continue
 		}
 		_, done, _, err := m.EnsureReady(ctx, name, model, nil)
@@ -1324,7 +1382,7 @@ func reapAll(refs []procRef) {
 // name loaded, or an error if the model isn't spawnable or the load fails
 // (e.g. ErrNoCapacity).
 func (m *Manager) LoadModel(ctx context.Context, served string) (string, error) {
-	model, ok := m.cfg.Models[served]
+	model, ok := m.cfg.Effective(served)
 	if !ok {
 		return "", fmt.Errorf("unknown model %q", served)
 	}
@@ -1339,33 +1397,150 @@ func (m *Manager) LoadModel(ctx context.Context, served string) (string, error) 
 	return served, nil
 }
 
-// UnloadModel evicts every resident backend of a served model, freeing its
-// pools. It refuses if a backend is persistent (pinned) or has in-flight
-// requests. Returns the number evicted (0 if the model wasn't resident).
+// UnloadModel evicts the resident backend of a served model, freeing its pools.
+// It refuses a persistent (pinned) backend. Returns the number evicted (0 if the
+// model wasn't resident, or if it went to draining instead).
+//
+// In-flight requests are DRAINED, not broken: the backend stops admitting new
+// work and is evicted once the last one finishes. Unloading an extension takes
+// every model it provides down with it — they are one process, so there is no
+// coherent way to unload half of it. A 44-minute diarization can hold the drain
+// open for minutes; that is the trade for not killing work in progress.
 func (m *Manager) UnloadModel(served string) (int, error) {
+	// Match on the PROCESS key: an extension's process is registered under
+	// "extension:<n>", so matching ModelName would miss it for every provided
+	// model except whichever one happened to spawn it.
+	return m.unloadKey(m.procKey(served), served)
+}
+
+// LoadExtension warms an extension by spawning its process, addressed by the
+// extension's own name rather than by one of the models it happens to provide.
+func (m *Manager) LoadExtension(ctx context.Context, name string) (string, error) {
+	if m.cfg == nil {
+		return "", fmt.Errorf("unknown extension %q", name)
+	}
+	if _, ok := m.cfg.Extensions[name]; !ok {
+		return "", fmt.Errorf("unknown extension %q", name)
+	}
+	provided := m.cfg.ExtensionModels(name)
+	if len(provided) == 0 {
+		return "", fmt.Errorf("extension %q provides no models", name)
+	}
+	// Any provided model reaches the same process; they share a ProcKey. Sorted
+	// by ExtensionModels, so which one is deterministic.
+	served := provided[0]
+	mdl, ok := m.cfg.Effective(served)
+	if !ok {
+		return "", fmt.Errorf("unknown model %q", served)
+	}
+	_, release, _, err := m.EnsureReady(ctx, served, mdl, nil)
+	if err != nil {
+		return "", err
+	}
+	release()
+	return name, nil
+}
+
+// UnloadExtension stops an extension's process, taking every model it provides
+// with it — they are one process, so there is no coherent way to unload half.
+func (m *Manager) UnloadExtension(name string) (int, error) {
+	if m.cfg == nil {
+		return 0, fmt.Errorf("unknown extension %q", name)
+	}
+	if _, ok := m.cfg.Extensions[name]; !ok {
+		return 0, fmt.Errorf("unknown extension %q", name)
+	}
+	return m.unloadKey("extension:"+name, name)
+}
+
+// unloadKey is the shared body of model- and extension-addressed unload. label
+// is what the caller asked for, used only in messages.
+//
+// In-flight requests are DRAINED, not broken: the backend stops admitting new
+// work and is evicted once the last one finishes (see releaser). A 44-minute
+// diarization can hold a drain open for minutes; that is the trade for not
+// killing work in progress.
+func (m *Manager) unloadKey(key, label string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var targets []*Process
-	for _, p := range m.procs {
-		if p.ModelName != served {
-			continue
-		}
-		p.mu.Lock()
-		persistent, refs := p.persistent, p.refs
+	p := m.procs[key]
+	if p == nil {
+		return 0, nil
+	}
+
+	p.mu.Lock()
+	if p.persistent {
 		p.mu.Unlock()
-		if persistent {
-			return 0, fmt.Errorf("model %q is persistent (pinned); cannot unload", served)
-		}
-		if refs > 0 {
-			return 0, fmt.Errorf("model %q has %d in-flight request(s); cannot unload", served, refs)
-		}
-		targets = append(targets, p)
+		return 0, fmt.Errorf("%q is persistent (pinned); cannot unload", label)
 	}
-	for _, p := range targets {
-		m.evictLocked(p)
+	if p.draining {
+		refs := p.refs
+		p.mu.Unlock()
+		return 0, fmt.Errorf("%q is already draining (%d in flight)", label, refs)
 	}
-	return len(targets), nil
+	if p.refs > 0 {
+		p.draining = true
+		p.state = StateDraining
+		refs := p.refs
+		p.mu.Unlock()
+		slog.Info("unload: draining backend", "target", label, "key", key, "inflight", refs)
+		return 0, nil
+	}
+	p.mu.Unlock()
+
+	m.evictLocked(p)
+	return 1, nil
+}
+
+// ExtensionState is one extension's process, for the control plane.
+type ExtensionState struct {
+	Name     string   `json:"name"`
+	Provides []string `json:"provides"`
+	State    State    `json:"state"`
+	Draining bool     `json:"draining"`
+	InFlight int      `json:"in_flight"`
+	Pinned   bool     `json:"pinned"`
+}
+
+// ExtensionStates reports every declared extension and whether its process is up.
+func (m *Manager) ExtensionStates() []ExtensionState {
+	if m.cfg == nil {
+		return nil
+	}
+	names := make([]string, 0, len(m.cfg.Extensions))
+	for n := range m.cfg.Extensions {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	out := make([]ExtensionState, 0, len(names))
+	for _, n := range names {
+		st := ExtensionState{
+			Name:     n,
+			Provides: m.cfg.ExtensionModels(n),
+			State:    StateAbsent,
+			Pinned:   m.cfg.Extensions[n].Persistent,
+		}
+		m.mu.Lock()
+		p := m.procs["extension:"+n]
+		m.mu.Unlock()
+		if p != nil {
+			p.mu.Lock()
+			st.State, st.Draining, st.InFlight = p.state, p.draining, p.refs
+			p.mu.Unlock()
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+// Draining reports whether an unload is waiting on this process's in-flight
+// requests, so the request edge can refuse new work with a 503.
+func (p *Process) Draining() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.draining
 }
 
 // UnloadAll evicts every evictable resident, returning how many went and which
@@ -1450,7 +1625,7 @@ type ResidentModel struct {
 // or nil for an unknown or pure-proxy backend.
 func (m *Manager) Logs(name string) []string {
 	m.mu.Lock()
-	p := m.procs[name]
+	p := m.procs[m.procKey(name)]
 	m.mu.Unlock()
 	if p == nil || p.logs == nil {
 		return nil

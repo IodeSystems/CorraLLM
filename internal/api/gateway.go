@@ -251,6 +251,30 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UnloadModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "loadExtension",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/extensions/load",
+		Summary:     "Start an extension's process (loads every model it provides).",
+		Tags:        []string{"control"},
+	}, h.LoadExtension)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "unloadExtension",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/extensions/unload",
+		Summary:     "Stop an extension (drains in-flight requests; unloads every model it provides).",
+		Tags:        []string{"control"},
+	}, h.UnloadExtension)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "extensions",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/extensions",
+		Summary:     "Declared extensions, the models they provide, and process state.",
+		Tags:        []string{"observability"},
+	}, h.Extensions)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "modelLogs",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/models/logs",
