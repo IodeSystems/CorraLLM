@@ -90,7 +90,11 @@ func (p *Proxy) HasRosterRefresh() bool {
 			return true
 		}
 	}
-	return false
+	// Discovery rides the same loop. Checking only declared models missed the
+	// case where a provider contributes EVERY model by discovery: with nothing
+	// declared there was nothing to refresh, so the loop never started and the
+	// provider silently served nothing.
+	return len(p.cfg.DiscoverTargets()) > 0
 }
 
 // RefreshRoster does one refresh pass: for each refresh-opted backend, pull its
@@ -130,6 +134,73 @@ func (p *Proxy) RefreshRoster(ctx context.Context) {
 			p.quota.SetStale(name, false)
 		}
 	}
+	p.refreshDiscovery(ctx, hc)
+}
+
+// refreshDiscovery pulls each discover-opted provider's catalog and contributes
+// the rows that pass its filter. A fetch error leaves the previous set in place:
+// a transient outage must not deregister every model a provider contributed.
+func (p *Proxy) refreshDiscovery(ctx context.Context, hc *http.Client) {
+	for _, dt := range p.cfg.DiscoverTargets() {
+		modelsURL := strings.TrimRight(dt.Target.URL.String(), "/") + dt.Target.BasePath + "/v1/models"
+		cat, err := freeroster.FetchCatalog(ctx, hc, modelsURL, dt.Target.Headers)
+		if err != nil {
+			slog.Warn("discovery fetch failed", "extension", dt.Extension, "provider", dt.Provider, "err", err)
+			continue
+		}
+		kept := selectDiscovered(cat, dt)
+		p.cfg.SetDiscovered(dt.Provider, kept)
+		slog.Info("discovered models", "extension", dt.Extension, "provider", dt.Provider,
+			"kept", len(kept), "of", len(cat))
+	}
+}
+
+// selectDiscovered applies a provider's filter and template to its catalog. Pure
+// and deterministic, so it is unit-tested without any network.
+func selectDiscovered(cat []freeroster.Entry, dt config.DiscoverTarget) map[string]config.Model {
+	f := dt.Spec.Filter
+	pass := make([]freeroster.Entry, 0, len(cat))
+entries:
+	for _, e := range cat {
+		if f.Free && !e.Free {
+			continue
+		}
+		if f.InputModality != "" && e.InputModality != f.InputModality {
+			continue
+		}
+		if f.OutputModality != "" && e.OutputModality != f.OutputModality {
+			continue
+		}
+		if f.MinContext > 0 && e.ContextLength < f.MinContext {
+			continue
+		}
+		for _, x := range f.Exclude {
+			if x != "" && strings.Contains(e.ID, x) {
+				continue entries
+			}
+		}
+		pass = append(pass, e)
+	}
+	// Largest context first, so a Limit keeps the most useful models and the
+	// result is stable across refreshes regardless of the provider's ordering.
+	sort.SliceStable(pass, func(i, j int) bool {
+		if pass[i].ContextLength != pass[j].ContextLength {
+			return pass[i].ContextLength > pass[j].ContextLength
+		}
+		return pass[i].ID < pass[j].ID
+	})
+	if dt.Spec.Limit > 0 && len(pass) > dt.Spec.Limit {
+		pass = pass[:dt.Spec.Limit]
+	}
+	out := make(map[string]config.Model, len(pass))
+	for _, e := range pass {
+		m := dt.Spec.Template // value copy: the template is never mutated
+		m.Extension, m.ProviderName = dt.Extension, dt.Provider
+		m.Proxy = dt.ProxyNode
+		m.Upstream = e.ID // the provider's own id, never the served name
+		out[config.ServedName(dt.Provider, e.ID)] = m
+	}
+	return out
 }
 
 // QuotaSnapshot returns the current free-tier budget ledger (P16), for the
@@ -517,8 +588,26 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// declares one (P16): corrallm routed on the served name, but the remote
 		// does not know it. A local backend leaves Target.Model empty and the
 		// body forwards unchanged.
-		if pr.Target != nil && pr.Target.Model != "" {
-			outBody = rewriteModelField(outBody, pr.Target.Model)
+		// The REQUESTED model's upstream id, not the process's. An extension's
+		// models share one Process, so pr.Target.Model is whichever of them
+		// happened to spawn it — routing every later request to that one's
+		// upstream. A diarize request answered as `tts` is how this showed up.
+		upstream := backend.Upstream
+		if upstream == "" && pr.Target != nil {
+			upstream = pr.Target.Model
+		}
+		if upstream != "" {
+			// JSON bodies (chat/embeddings) and multipart bodies (audio) carry the
+			// model in different places, and rewriting only the former silently
+			// forwarded the served name upstream on every audio request.
+			if ct := r.Header.Get("Content-Type"); strings.HasPrefix(ct, "multipart/form-data") {
+				if nb, nct, ok := rewriteModelMultipart(outBody, ct, upstream); ok {
+					outBody = nb
+					r.Header.Set("Content-Type", nct)
+				}
+			} else {
+				outBody = rewriteModelField(outBody, upstream)
+			}
 		}
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
@@ -1112,6 +1201,70 @@ func rewriteModelField(body []byte, upstream string) []byte {
 	return body
 }
 
+// rewriteModelMultipart replaces the `model` form field of a multipart body with
+// the upstream's own id, returning the rebuilt body and its new Content-Type
+// (the boundary changes). Reports false and leaves the caller's body alone on
+// any parse failure — forwarding an unmodified body is recoverable, corrupting
+// one is not.
+//
+// The audio routes need this because rewriteModelField is JSON-only: an
+// extension's models are served as oidio-* but oidio knows them as stt,
+// stt-diarize, tts and realtime-stt, and without the swap every transcription
+// got a 404 for a model the backend had never heard of.
+func rewriteModelMultipart(body []byte, contentType, upstream string) ([]byte, string, bool) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, "", false
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		return nil, "", false
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), boundary)
+	var out bytes.Buffer
+	mw := multipart.NewWriter(&out)
+	seen := false
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, "", false
+		}
+		var w io.Writer
+		if fn := part.FileName(); fn != "" {
+			w, err = mw.CreateFormFile(part.FormName(), fn)
+		} else {
+			w, err = mw.CreateFormField(part.FormName())
+		}
+		if err != nil {
+			return nil, "", false
+		}
+		if part.FormName() == "model" {
+			seen = true
+			if _, err := io.WriteString(w, upstream); err != nil {
+				return nil, "", false
+			}
+			// Drain so the reader advances to the next part.
+			if _, err := io.Copy(io.Discard, part); err != nil {
+				return nil, "", false
+			}
+			continue
+		}
+		if _, err := io.Copy(w, part); err != nil {
+			return nil, "", false
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return nil, "", false
+	}
+	if !seen {
+		return nil, "", false
+	}
+	return out.Bytes(), mw.FormDataContentType(), true
+}
+
 func clampMaxTokens(body []byte, b config.Model) []byte {
 	if b.MaxTokens <= 0 {
 		return body
@@ -1215,14 +1368,18 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Data   []model `json:"data"`
 	}{Object: "list"}
 
-	names := make([]string, 0, len(p.cfg.Models))
-	for name := range p.cfg.Models {
+	// AllModels, not cfg.Models: a discovered model is served, so it must be
+	// listed. Omitting it would leave callers unable to find models the gateway
+	// will happily route to.
+	all := p.cfg.AllModels()
+	names := make([]string, 0, len(all))
+	for name := range all {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	for _, name := range names {
-		mc := p.cfg.Models[name]
+		mc := all[name]
 		e := model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",

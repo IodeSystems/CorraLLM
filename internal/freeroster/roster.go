@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -150,4 +151,84 @@ func parseFree(body []byte) ([]string, error) {
 func hasFreeSuffix(id string) bool {
 	const s = ":free"
 	return len(id) >= len(s) && id[len(id)-len(s):] == s
+}
+
+// Entry is one catalog row, carrying the fields discovery needs to decide
+// whether a model belongs in a chat lane. FetchFree answers "is it free"; this
+// answers "what is it".
+type Entry struct {
+	ID             string
+	Free           bool
+	InputModality  string // e.g. "text", "text+image"; empty when unreported
+	OutputModality string
+	ContextLength  int
+}
+
+// FetchCatalog GETs an OpenAI-compatible /v1/models and returns every row with
+// the signals discovery filters on. Separate from FetchFree because staleness
+// checking only needs ids, while discovery must exclude non-chat models: the
+// zero-price test alone admits OpenRouter's music-generation and router
+// pseudo-models, and enrolling a music model as a chat backend is worse than
+// missing a free one.
+func FetchCatalog(ctx context.Context, hc *http.Client, modelsURL string, headers map[string]string) ([]Entry, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("models endpoint returned HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	return parseCatalog(body)
+}
+
+func parseCatalog(body []byte) ([]Entry, error) {
+	var doc struct {
+		Data []struct {
+			ID      string `json:"id"`
+			Pricing struct {
+				Prompt     string `json:"prompt"`
+				Completion string `json:"completion"`
+			} `json:"pricing"`
+			ContextLength int `json:"context_length"`
+			Architecture  struct {
+				InputModalities  []string `json:"input_modalities"`
+				OutputModalities []string `json:"output_modalities"`
+				Modality         string   `json:"modality"` // legacy "text->text"
+			} `json:"architecture"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, fmt.Errorf("parse models: %w", err)
+	}
+	out := make([]Entry, 0, len(doc.Data))
+	for _, m := range doc.Data {
+		e := Entry{
+			ID:            m.ID,
+			Free:          hasFreeSuffix(m.ID) || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0"),
+			ContextLength: m.ContextLength,
+		}
+		e.InputModality = strings.Join(m.Architecture.InputModalities, "+")
+		e.OutputModality = strings.Join(m.Architecture.OutputModalities, "+")
+		// Older payloads report only "text->text"; split it so one filter works
+		// against both shapes.
+		if e.InputModality == "" && m.Architecture.Modality != "" {
+			if in, out, ok := strings.Cut(m.Architecture.Modality, "->"); ok {
+				e.InputModality, e.OutputModality = in, out
+			}
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
