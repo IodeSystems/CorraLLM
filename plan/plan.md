@@ -1190,9 +1190,9 @@ the BackpressureError shape we already validated.
      Ordering (each step shippable with no second machine present): ✅ **step 0** per-server VRAM
      accounting (done) → ✅ **live config reload** (done: `include:` merging, SIGHUP,
      atomic config swap in all four holders; fractional `quality` landed alongside it because
-     the Mac's 4-bit tier sits between two integers) → ◻ `internal/host` Spawner
-     interface with the local impl only, gated on every existing `internal/proc` test passing
-     unmodified → ◻ `Server.Agent` binding + `Config.TargetFor` → ◻ `corrallm agent` → ◻
+     the Mac's 4-bit tier sits between two integers) → ✅ **`internal/host` Spawner interface**
+     (done: Spec/Handle/Host, Local only, platform primitives moved; Process holds a Handle
+     instead of an *exec.Cmd) → ◻ `Server.Agent` binding + `Config.TargetFor` → ◻ `corrallm agent` → ◻
      `host.Remote` (integration-testable by running a second agent on another port on box1) → ◻
      darwin capacity (`gpu.Metal`, `sysmem_darwin`) → ◻ failure semantics → ◻ Agents tab.
      **Agent addressing (USER, 2026-07-28): an agent has SEVERAL addresses, not one.**
