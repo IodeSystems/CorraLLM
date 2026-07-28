@@ -25,6 +25,8 @@ import {
   Typography,
 } from '@mui/material'
 import { BarChart, ScatterChart } from '@mui/x-charts'
+import { Panel, PageHeader } from '@/Panel'
+import { C, SERIES } from '@/theme'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { capLabel, fmtInt } from '@/format'
@@ -236,8 +238,8 @@ function ActiveRun(props: {
           overflow: 'auto',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-all',
-          bgcolor: 'grey.900',
-          color: 'grey.100',
+          bgcolor: C.canvas,
+          color: C.text,
           borderRadius: 1,
         }}
       >
@@ -334,12 +336,12 @@ function BenchPage() {
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <Box>
-        <Typography variant="h5">Bench</Typography>
+      <PageHeader title="Bench">
+        <Chip size="small" variant="outlined" label={`GPU · ${plan?.gpu || 'unknown'}`} />
         <Typography variant="body2" color="text.secondary">
-          Cross-model comparison. GPU: {plan?.gpu || 'unknown'}
+          Cross-model comparison
         </Typography>
-      </Box>
+      </PageHeader>
 
       {running && (
         <ActiveRun
@@ -361,8 +363,7 @@ function BenchPage() {
       ) : (
         <>
           {armMatrix.length > 0 && (
-            <Paper sx={{ p: 2 }}>
-              <Typography variant="subtitle1">A/B arms across models</Typography>
+            <Panel title="A/B arms across models">
               <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1 }}>
                 &ldquo;Did this arm help THIS model&rdquo; is on the model console. This is
                 &ldquo;does it help at all&rdquo;. Comparisons are <b>paired</b>: an arm is credited
@@ -464,7 +465,7 @@ function BenchPage() {
                   ))}
                 </Box>
               ))}
-            </Paper>
+            </Panel>
           )}
 
           {matrix.length === 0 ? (
@@ -491,6 +492,7 @@ function BenchPage() {
                   </Typography>
                   <BarChart
                     height={260}
+                    colors={SERIES}
                     xAxis={[{ scaleType: 'band', data: models.map((m) => m.model) }]}
                     yAxis={[{ min: 0, max: 1 }]}
                     series={[
@@ -511,6 +513,7 @@ function BenchPage() {
                       </Typography>
                       <ScatterChart
                         height={280}
+                        colors={SERIES}
                         xAxis={[{ label: 'resident MiB' }]}
                         yAxis={[{ label: 'pass rate', min: 0, max: 1 }]}
                         series={withVram.map((m) => ({
@@ -563,8 +566,7 @@ function BenchPage() {
             })
           )}
 
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="subtitle1">Tokens — processed vs generated</Typography>
+          <Panel title="Tokens — processed vs generated">
             <Typography variant="caption" color="text.secondary">
               Cache hits are excluded from &ldquo;processed&rdquo;: a model that ran second over the
               same fixtures gets cheap prompt tokens through no merit of its own, so counting
@@ -572,23 +574,23 @@ function BenchPage() {
             </Typography>
             <BarChart
               height={280}
+              colors={SERIES}
               xAxis={[{ scaleType: 'band', data: labels }]}
               series={[
                 { data: ranked.map((r) => n(r.tokensProcessed)), label: 'processed (uncached)', stack: 'a' },
                 { data: ranked.map((r) => n(r.tokensGenerated)), label: 'generated', stack: 'a' },
               ]}
             />
-          </Paper>
+          </Panel>
 
-          <Paper sx={{ p: 2, pb: 0 }}>
-            <Typography variant="subtitle1">Run totals</Typography>
+          <Panel title="Run totals">
             <Typography variant="caption" color="text.secondary">
               Whole-run figures per model. The score column mixes every capability a model was
               measured on, so it is <b>not</b> a ranking — two models rarely run the same probe
               set, and a model that skipped most probes scores high on the few it kept. Compare
               quality in the per-capability sections above; this table is for cost and throughput.
             </Typography>
-          </Paper>
+          </Panel>
           <TableContainer component={Paper}>
             <Table size="small">
               <TableHead>
@@ -628,10 +630,7 @@ function BenchPage() {
         </>
       )}
 
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" gutterBottom>
-          Run a benchmark
-        </Typography>
+      <Panel title="Run a benchmark">
         {!!plan?.newModels && (
           <Alert severity="info" sx={{ mb: 2 }}>
             {plan.newModels} model(s) have never been benched — corrallm is scheduling them on
@@ -699,7 +698,7 @@ function BenchPage() {
             </Button>
           )}
         </Box>
-      </Paper>
+      </Panel>
 
       {/* Finished runs keep their output available; a running one is shown in
           the live panel at the top instead of twice on one page. */}

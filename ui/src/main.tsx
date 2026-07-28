@@ -1,12 +1,12 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { CssBaseline, ThemeProvider, createTheme } from '@mui/material'
+import { CssBaseline, ThemeProvider } from '@mui/material'
 import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { routeTree } from './routeTree.gen'
 import { clearToken, is401 } from './auth'
+import { theme } from './theme'
 
-const theme = createTheme()
 // On a 401 the admin token is stale/missing — drop it and reload to the login
 // screen (no token → gate shows login → no queries → no loop).
 const queryClient = new QueryClient({

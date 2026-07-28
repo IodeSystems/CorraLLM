@@ -32,7 +32,10 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import { Panel, PageHeader } from '@/Panel'
+import { C, seriesColor } from '@/theme'
 import { graphql } from '@/gql'
 import type { ModelBenchQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
@@ -243,7 +246,7 @@ function ModelConsole() {
         <Button onClick={() => navigate({ to: "/" })} size="small">
           ← Overview
         </Button>
-        <Typography variant="h6">{name}</Typography>
+        <PageHeader title={name} />
         {/* A pure-proxy backend (no cmd) has no local process, so it never has a
             residency state — label it "proxy" (colored), not the misleading
             "absent" that reads as a failed local load. */}
@@ -438,7 +441,7 @@ const preSx = {
   m: 0,
   mt: 0.5,
   p: 1,
-  bgcolor: 'action.hover',
+  bgcolor: C.raised,
   borderRadius: 1,
   fontSize: '0.75rem',
   whiteSpace: 'pre-wrap',
@@ -454,14 +457,23 @@ type DiarSegment = { speaker?: string; start: number; end: number; text: string 
 // voiceprint embedding, and cosine similarity to the other speakers.
 type Speaker = { uuid: string; similarity?: Record<string, number> }
 
-// Stable per-speaker colors keyed on the UUID (cycles for >8 speakers).
-const SPEAKER_COLORS = ['#1565c0', '#c62828', '#2e7d32', '#6a1b9a', '#ef6c00', '#00838f', '#ad1457', '#4e342e']
+// Stable per-speaker colors keyed on the UUID, drawn from the validated
+// categorical palette (cycles past its length). Speaker chips are TINTED — the
+// hue as text on a low-alpha wash of itself — rather than solid fills with white
+// text: at mid lightness on a dark surface, white-on-color fails contrast, while
+// the hue as ink passes and still reads as the same identity.
 const hashStr = (s: string) => {
   let h = 0
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
   return Math.abs(h)
 }
-const speakerColor = (s: string) => SPEAKER_COLORS[hashStr(s) % SPEAKER_COLORS.length]
+const speakerColor = (s: string) => seriesColor(hashStr(s))
+const speakerChipSx = (color: string) => ({
+  bgcolor: alpha(color, 0.18),
+  color,
+  border: `1px solid ${alpha(color, 0.45)}`,
+  fontFamily: 'monospace',
+})
 const shortId = (s: string) => s.slice(0, 4)
 const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 
@@ -506,8 +518,8 @@ function LogsTab({ backend, ready }: { backend: string; ready: boolean }) {
           overflow: 'auto',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-all',
-          bgcolor: 'grey.900',
-          color: 'grey.100',
+          bgcolor: C.canvas,
+          color: C.text,
           borderRadius: 1,
         }}
       >
@@ -809,7 +821,7 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
                 size="small"
                 label={shortId(sp.uuid)}
                 title={sp.uuid}
-                sx={{ bgcolor: speakerColor(sp.uuid), color: '#fff', fontFamily: 'monospace' }}
+                sx={speakerChipSx(speakerColor(sp.uuid))}
               />
             ))}
           </Stack>
@@ -821,7 +833,7 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
                 <Chip
                   size="small"
                   label={s.speaker ? shortId(s.speaker) : '—'}
-                  sx={{ bgcolor: s.speaker ? speakerColor(s.speaker) : 'grey.500', color: '#fff', fontFamily: 'monospace', minWidth: 44 }}
+                  sx={{ ...speakerChipSx(s.speaker ? speakerColor(s.speaker) : C.textFaint), minWidth: 44 }}
                 />
                 <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', minWidth: 56 }}>
                   {fmtTime(s.start)}
@@ -1442,7 +1454,7 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
                       borderRadius: 1,
                       p: 1,
                       my: 0.5,
-                      bgcolor: 'action.hover',
+                      bgcolor: C.raised,
                       fontFamily: 'monospace',
                       fontSize: 12,
                       overflowX: 'auto',
@@ -2008,10 +2020,7 @@ function BenchTab({ name }: { name: string }) {
         </Alert>
       )}
 
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" gutterBottom>
-          Run a benchmark on {name}
-        </Typography>
+      <Panel title="Run a benchmark on {name}">
         <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
           {BENCH_KINDS.map((k) => {
             const p = (plan?.probes ?? []).find((x) => x.kind === k)
@@ -2048,7 +2057,7 @@ function BenchTab({ name }: { name: string }) {
             </Button>
           )}
         </Stack>
-      </Paper>
+      </Panel>
 
       {running && (
         <Alert severity="warning">
@@ -2069,10 +2078,7 @@ function BenchTab({ name }: { name: string }) {
 
       <CapabilityBreakdown data={q.data?.corrallm?.benchProbes} model={name} />
 
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" gutterBottom>
-          History
-        </Typography>
+      <Panel title="History">
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
           One pass rate per run, across every probe that ran. Use it to track a model against
           itself over time — not to rank models against each other, since two models rarely run
@@ -2118,7 +2124,7 @@ function BenchTab({ name }: { name: string }) {
             </Table>
           </TableContainer>
         )}
-      </Paper>
+      </Panel>
 
       <Dialog open={confirming} onClose={() => setConfirming(false)}>
         <DialogTitle>Bench {name} in exclusive mode?</DialogTitle>

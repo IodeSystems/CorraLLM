@@ -18,6 +18,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
+import { C } from '@/theme'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtDuration, fmtInt } from '@/format'
@@ -138,7 +139,7 @@ function Mono({ children }: { children: React.ReactNode }) {
         lineHeight: 1.45,
         whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
-        bgcolor: 'action.hover',
+        bgcolor: C.raised,
         borderRadius: 1,
         maxHeight: 320,
         overflow: 'auto',

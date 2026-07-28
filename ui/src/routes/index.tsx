@@ -5,8 +5,6 @@ import {
   Alert,
   Box,
   Button,
-  Card,
-  CardContent,
   Chip,
   CircularProgress,
   Dialog,
@@ -14,19 +12,16 @@ import {
   DialogContent,
   DialogTitle,
   Link as MuiLink,
-  Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   Tooltip,
   Typography,
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { capLabel, fmtBytes, fmtInt } from '@/format'
+import { ActiveRequests } from '@/ActiveRequests'
+import { MemoryPanel } from '@/MemoryPanel'
+import { Panel, PageHeader, Row, Stat } from '@/Panel'
+import { C, seriesColor } from '@/theme'
+import { capLabel, fmtInt } from '@/format'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -92,14 +87,42 @@ const OverviewDoc = graphql(/* GraphQL */ `
         }
       }
       residency {
+        servers {
+          server
+          pools {
+            pool
+            budget
+            used
+          }
+        }
+        gpu {
+          available
+          name
+          totalBytes
+          usedBytes
+          freeBytes
+        }
+        host {
+          available
+          name
+          totalBytes
+          usedBytes
+          freeBytes
+        }
         models {
           name
           modelName
+          server
           state
           refs
           nCtx
           nSlots
           hasUi
+          footprintMiB
+          usage {
+            pool
+            bytes
+          }
         }
       }
     }
@@ -339,12 +362,12 @@ function Home() {
     return Array.from(new Set(pols)).join('/')
   }
 
+  // The group strip rides in the panel HEADER, not above it — it qualifies the
+  // panel's contents (which lanes may use these models, under what policy), so
+  // it belongs inside the panel's boundary.
   const groupStrip = (types: string[]) =>
     groups.length ? (
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
-        <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center', mr: 0.5 }}>
-          groups
-        </Typography>
+      <>
         {groups.map((g) => {
           const ks = keys.filter((k) => k.group === g.name).map((k) => k.key)
           const detail = [
@@ -366,31 +389,40 @@ function Home() {
             </Tooltip>
           )
         })}
-      </Stack>
+      </>
     ) : null
 
-  const modelCard = (m: (typeof models)[number]) => {
+  // One model = one ROW inside its panel, not a card of its own. A page of
+  // twenty cards, each with its own border and its own five-column table for
+  // four numbers, is the "everything runs together" problem: every model looks
+  // structurally identical to its section heading. Here the panel is the object
+  // and the model is a line in it.
+  const modelRow = (m: (typeof models)[number]) => {
     const st = stateByModel.get(m.name)
     return (
-      <Card key={m.name}>
-        <CardContent>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-            <Typography variant="subtitle1">{m.name}</Typography>
-            {/* A pure-proxy backend (not spawnable — no cmd) has no local
-                process, so it never has a residency state. Label it "proxy"
-                (colored) rather than "absent", which reads as a failed local load. */}
-            <Chip
-              size="small"
-              label={st?.state ?? (m.spawnable ? 'absent' : 'proxy')}
-              color={!st?.state && !m.spawnable ? 'secondary' : stateColor(st?.state)}
-            />
-            <Chip size="small" color="info" variant="outlined" label={capLabel(m.capability)} />
-            {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
-            {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
-            {st && Number(st.nCtx) > 0 && <Chip size="small" variant="outlined" label={`ctx ${fmtInt(st.nCtx)}`} />}
-            {st && Number(st.nSlots) > 0 && <Chip size="small" variant="outlined" label={`slots ${fmtInt(st.nSlots)}`} />}
-            <Box sx={{ flexGrow: 1 }} />
-            {m.spawnable && (
+      <Row key={m.name}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+          {/* State first and always with its word — the colored dot alone would
+              encode state in color only. A pure-proxy backend (not spawnable —
+              no cmd) has no local process and so no residency state; it reads
+              "proxy", not "absent", which would look like a failed load. */}
+          <Chip
+            size="small"
+            label={st?.state ?? (m.spawnable ? 'absent' : 'proxy')}
+            color={!st?.state && !m.spawnable ? 'secondary' : stateColor(st?.state)}
+            variant={st?.state ? 'filled' : 'outlined'}
+            sx={{ minWidth: 68 }}
+          />
+          <Typography variant="subtitle2" sx={{ minWidth: 150 }}>
+            {m.name}
+          </Typography>
+          <Chip size="small" color="info" variant="outlined" label={capLabel(m.capability)} />
+          {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
+          {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
+          {st && Number(st.nCtx) > 0 && <Chip size="small" variant="outlined" label={`ctx ${fmtInt(st.nCtx)}`} />}
+          {st && Number(st.nSlots) > 0 && <Chip size="small" variant="outlined" label={`slots ${fmtInt(st.nSlots)}`} />}
+          <Box sx={{ flexGrow: 1 }} />
+          {m.spawnable && (
               <>
                 {/* ONE state-driven action, not two always-on buttons. Load and
                     Unload were both clickable regardless of residency, so half
@@ -446,73 +478,119 @@ function Home() {
                 >
                   Logs
                 </Button>
-                <Button size="small" onClick={() => navigate({ to: '/model', search: { name: m.name } })}>
-                  Console
-                </Button>
-              </>
+              <Button size="small" onClick={() => navigate({ to: '/model', search: { name: m.name } })}>
+                Console
+              </Button>
+            </>
+          )}
+        </Box>
+        {/* Four numbers do not need a table — a table costs a header row, a
+            border box, and a scroll container to say "quality 100". */}
+        <Box sx={{ display: 'flex', gap: 3, mt: 1, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <Stat label="Type" value={m.spawnable ? m.type : `${m.type} · proxy`} />
+          <Stat label="Quality" value={m.quality} />
+          <Stat label="Slots" value={fmtInt(m.maxConcurrent)} />
+          <Stat
+            label="Max tokens"
+            value={Number(m.maxTokens) > 0 ? fmtInt(m.maxTokens) : '—'}
+            title="max_tokens clamp applied when a request degrades onto this model"
+          />
+          <Box sx={{ minWidth: 0 }}>
+            {m.cmd ? (
+              <Button size="small" onClick={() => setCmdView({ title: m.name, cmd: m.cmd })}>
+                View cmd
+              </Button>
+            ) : (
+              <Typography variant="caption" sx={{ wordBreak: 'break-all', color: C.textMuted }}>
+                {m.target || '—'}
+              </Typography>
             )}
           </Box>
-          <TableContainer sx={{ mt: 1 }}>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Type</TableCell>
-                  <TableCell align="right">Quality</TableCell>
-                  <TableCell align="right">Slots</TableCell>
-                  <TableCell align="right">Max tokens</TableCell>
-                  <TableCell>cmd / target</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                <TableRow>
-                  <TableCell>
-                    <Chip size="small" variant="outlined" label={m.spawnable ? m.type : `${m.type} (proxy)`} />
-                  </TableCell>
-                  <TableCell align="right">{m.quality}</TableCell>
-                  <TableCell align="right">{fmtInt(m.maxConcurrent)}</TableCell>
-                  <TableCell align="right">{Number(m.maxTokens) > 0 ? fmtInt(m.maxTokens) : '—'}</TableCell>
-                  <TableCell>
-                    {m.cmd ? (
-                      <Button size="small" onClick={() => setCmdView({ title: m.name, cmd: m.cmd })}>
-                        View cmd
-                      </Button>
-                    ) : (
-                      <Typography variant="caption" sx={{ wordBreak: 'break-all' }}>
-                        {m.target || '—'}
-                      </Typography>
-                    )}
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </CardContent>
-      </Card>
+        </Box>
+      </Row>
     )
   }
 
-  // Assign each model to its capability section; collect leftovers into "Other".
+  // Resident models lead the page: what is occupying VRAM right now is the first
+  // thing anyone opens this dashboard to check. They are pulled OUT of their
+  // capability sections below so no card renders twice — each card already
+  // carries its capability chip, so nothing is lost by the move.
+  const LOAD_RANK: Record<string, number> = { ready: 0, loading: 1, evicting: 2 }
+  const loadRank = (name: string) => LOAD_RANK[stateByModel.get(name)?.state ?? '']
+  const loaded = models
+    .filter((m) => loadRank(m.name) !== undefined)
+    .sort((a, b) => loadRank(a.name)! - loadRank(b.name)! || a.name.localeCompare(b.name))
+  const unloaded = models.filter((m) => loadRank(m.name) === undefined)
+
+  // Assign each remaining model to its capability section; leftovers → "Other".
   const seen = new Set<string>()
   const sections = CAP_SECTIONS.map((s) => {
-    const ms = models.filter((m) => s.caps.includes(m.capability))
+    const ms = unloaded.filter((m) => s.caps.includes(m.capability))
     ms.forEach((m) => seen.add(m.name))
     return { ...s, models: ms }
   }).filter((s) => s.models.length)
-  const other = models.filter((m) => !seen.has(m.name))
+  const other = unloaded.filter((m) => !seen.has(m.name))
   if (other.length) sections.push({ title: 'Other', blurb: '', caps: [], groupTypes: [], models: other })
+
+  // Memory attribution colors follow the MODEL, assigned over the full sorted
+  // model list — never over the subset in one bar. Color must not change when a
+  // model loads or unloads, or every bar repaints and the eye reads a change
+  // that did not happen.
+  const colorIndex = new Map(models.map((m) => m.name).sort().map((n, i) => [n, i]))
+  const colorOf = (name: string) => seriesColor(colorIndex.get(name) ?? 0)
+  const res = c.residency
+  // Declared reserve lives on the config view, live budget/used on residency —
+  // join them so one bar can say both what is spoken for and what is being held
+  // back, instead of a second near-duplicate "capacity" panel saying half of it.
+  const reserveByPool = new Map(
+    (ov?.servers ?? []).flatMap((s) => s.pools.map((p) => [`${s.server}/${p.pool}`, Number(p.reserveBytes)])),
+  )
+  const memPools = (res?.servers ?? []).flatMap((s) =>
+    s.pools.map((p) => ({
+      server: s.server,
+      pool: p.pool,
+      budget: Number(p.budget),
+      used: Number(p.used),
+      reserve: reserveByPool.get(`${s.server}/${p.pool}`) ?? 0,
+    })),
+  )
+  const memModels = (res?.models ?? []).map((m) => ({
+    model: m.modelName,
+    server: m.server,
+    pools: m.usage.map((u) => ({ pool: u.pool, bytes: Number(u.bytes) })),
+    measuredBytes: Number(m.footprintMiB) * 1024 * 1024,
+  }))
+  const dev = (d?: { available: boolean; name: string; totalBytes: string; usedBytes: string; freeBytes: string }) => ({
+    available: !!d?.available,
+    name: d?.name ?? '',
+    totalBytes: Number(d?.totalBytes ?? 0),
+    usedBytes: Number(d?.usedBytes ?? 0),
+    freeBytes: Number(d?.freeBytes ?? 0),
+  })
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-        <Typography variant="h6">Overview</Typography>
+      <PageHeader title="Overview">
         <Chip size="small" color="success" label={`${c.health?.status} · ${c.health?.version}`} />
-      </Box>
+      </PageHeader>
 
       {msg && (
         <Alert severity={msg.ok ? 'success' : 'error'} onClose={() => setMsg(null)}>
           {msg.text}
         </Alert>
       )}
+
+      {/* What the box is doing right now, above what it merely could do. */}
+      <ActiveRequests />
+
+      {/* …and what it is HOLDING right now, with attribution. */}
+      <MemoryPanel
+        pools={memPools}
+        models={memModels}
+        gpu={dev(res?.gpu)}
+        host={dev(res?.host)}
+        colorOf={colorOf}
+      />
 
       {/* A probe is DESTRUCTIVE: it evicts models and locks out other callers.
           Say so before the click, name exactly what this run will learn, and
@@ -585,9 +663,11 @@ function Home() {
                 overflow: 'auto',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-all',
-                bgcolor: 'grey.900',
-                color: 'grey.100',
+                bgcolor: C.canvas,
+                color: C.text,
+                border: `1px solid ${C.border}`,
                 borderRadius: 1,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
               }}
             >
               {cmdView.cmd}
@@ -596,83 +676,79 @@ function Home() {
         </Dialog>
       )}
 
+      {/* Resident models first — see the split above. */}
+      {loaded.length > 0 && (
+        <Panel
+          title="Loaded"
+          badge={<Chip size="small" color="success" label={loaded.length} />}
+          subtitle="Resident or coming up — holding capacity right now"
+          flush
+        >
+          {loaded.map(modelRow)}
+        </Panel>
+      )}
+
       {/* Capability sections: groups (filtered to this capability) over its models. */}
       {sections.map((s) => (
-        <Box key={s.title}>
-          <Typography variant="subtitle1">{s.title}</Typography>
-          {s.blurb && (
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-              {s.blurb}
-            </Typography>
-          )}
-          {groupStrip(s.groupTypes)}
-          <Stack spacing={2}>{s.models.map(modelCard)}</Stack>
-        </Box>
+        <Panel key={s.title} title={s.title} subtitle={s.blurb} actions={groupStrip(s.groupTypes)} flush>
+          {s.models.map(modelRow)}
+        </Panel>
       ))}
 
       {/* Lanes: named ordered fallback lists over models. */}
       {lanes.length > 0 && (
-        <Box>
-          <Typography variant="subtitle1" gutterBottom>
-            Lanes
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-            Requestable as a model id; falls back across members in order.
-          </Typography>
-          <Stack spacing={1}>
-            {lanes.map((l) => (
-              <Card key={l.name}>
-                <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', '&:last-child': { pb: 2 } }}>
-                  <Typography variant="subtitle2" sx={{ mr: 1 }}>
-                    {l.name}
-                  </Typography>
-                  {l.members.map((mem, i) => (
-                    <Box key={mem.model} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      {i > 0 && (
-                        <Typography variant="body2" color="text.secondary">
-                          →
-                        </Typography>
-                      )}
-                      <Tooltip
-                        title={[mem.ttl ? `ttl ${mem.ttl}` : null, mem.evictCost ? `evict ${mem.evictCost}` : null]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      >
-                        <Chip size="small" variant="outlined" label={mem.model} />
-                      </Tooltip>
-                    </Box>
-                  ))}
-                </CardContent>
-              </Card>
-            ))}
-          </Stack>
-        </Box>
+        <Panel
+          title="Lanes"
+          subtitle="Requestable as a model id; falls back across members in order"
+          flush
+        >
+          {lanes.map((l) => (
+            <Row key={l.name}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                <Typography variant="subtitle2" sx={{ minWidth: 150 }}>
+                  {l.name}
+                </Typography>
+                {l.members.map((mem, i) => (
+                  <Box key={mem.model} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    {i > 0 && (
+                      <Typography variant="body2" sx={{ color: C.textFaint }}>
+                        →
+                      </Typography>
+                    )}
+                    <Tooltip
+                      title={[mem.ttl ? `ttl ${mem.ttl}` : null, mem.evictCost ? `evict ${mem.evictCost}` : null]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    >
+                      <Chip size="small" variant="outlined" label={mem.model} />
+                    </Tooltip>
+                  </Box>
+                ))}
+              </Box>
+            </Row>
+          ))}
+        </Panel>
       )}
 
-      {/* System capacity (orthogonal to capability). */}
-      <Box>
-        <Typography variant="subtitle1" gutterBottom>
-          System Capacity
-        </Typography>
-        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-          {(ov?.servers ?? []).map((s) => (
-            <Card key={s.server} sx={{ minWidth: 260 }}>
-              <CardContent>
-                <Typography variant="subtitle2">
-                  {s.server}
-                  {Number(s.maxConcurrent) > 0 ? ` · max ${s.maxConcurrent}` : ''}
-                </Typography>
-                {s.pools.map((p) => (
-                  <Typography key={p.pool} variant="body2" color="text.secondary">
-                    {p.pool}: {fmtBytes(p.totalBytes)}
-                    {Number(p.reserveBytes) > 0 ? ` (reserve ${fmtBytes(p.reserveBytes)})` : ''}
+      {/* Host concurrency caps — the one declared fact the Memory panel above
+          does not already show live. Pools moved there; a second "capacity"
+          panel restating budget/reserve would just be the live one, staler. */}
+      {(ov?.servers ?? []).some((s) => Number(s.maxConcurrent) > 0) && (
+        <Panel title="Host limits" flush>
+          {(ov?.servers ?? [])
+            .filter((s) => Number(s.maxConcurrent) > 0)
+            .map((s) => (
+              <Row key={s.server}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap' }}>
+                  <Typography variant="subtitle2" sx={{ minWidth: 150 }}>
+                    {s.server}
                   </Typography>
-                ))}
-              </CardContent>
-            </Card>
-          ))}
-        </Stack>
-      </Box>
+                  <Stat label="Max concurrent" value={fmtInt(s.maxConcurrent)} />
+                </Box>
+              </Row>
+            ))}
+        </Panel>
+      )}
     </Box>
   )
 }

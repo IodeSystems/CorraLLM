@@ -11,6 +11,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
+import { C } from '@/theme'
 import { useLiveEvents } from '@/useLiveEvents'
 import { getToken } from '@/auth'
 import { Login } from '@/Login'
@@ -121,17 +122,32 @@ function RootLayout() {
   if (!getToken()) return <Login />
   return (
     <>
-      <AppBar position="static">
-        <Toolbar sx={{ gap: 3 }}>
-          <Typography variant="h6">corrallm</Typography>
-          <Box sx={{ display: 'flex', gap: 2 }}>
+      <AppBar position="sticky">
+        <Toolbar variant="dense" sx={{ gap: 3, minHeight: 52 }}>
+          <Typography variant="h6" sx={{ letterSpacing: '-0.02em' }}>
+            corrallm
+          </Typography>
+          {/* The active tab is marked by an underline bar + full-strength ink;
+              inactive tabs sit in muted ink. Bold-vs-normal alone (the old cue)
+              is nearly invisible at 14px. */}
+          <Box sx={{ display: 'flex', gap: 0.5 }}>
             {NAV.map((n) => (
               <Link
                 key={n.to}
                 to={n.to}
                 activeOptions={{ exact: n.to === '/' }}
-                style={{ color: 'inherit', textDecoration: 'none' }}
-                activeProps={{ style: { textDecoration: 'underline', fontWeight: 700 } }}
+                style={{
+                  color: C.textMuted,
+                  textDecoration: 'none',
+                  fontSize: 13.5,
+                  fontWeight: 600,
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  borderBottom: '2px solid transparent',
+                }}
+                activeProps={{
+                  style: { color: C.text, borderBottom: `2px solid ${C.accent}`, borderRadius: 0 },
+                }}
               >
                 {n.label}
               </Link>

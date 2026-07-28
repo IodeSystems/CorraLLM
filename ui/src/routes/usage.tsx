@@ -2,12 +2,9 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import {
   Box,
-  Card,
-  CardContent,
   Chip,
   CircularProgress,
   LinearProgress,
-  Paper,
   Stack,
   Table,
   TableBody,
@@ -19,11 +16,37 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
+import { Panel, PageHeader } from '@/Panel'
+import { C, seriesColor } from '@/theme'
 import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
 
-const KEY_COLORS = ['#1976d2', '#9c27b0', '#2e7d32', '#ed6c02', '#0288d1', '#d32f2f']
-
 type ChartSeries = { key: string; color: string; values: number[] }
+
+// Legend swatch + label. Identity is never carried by the mark color alone —
+// every series is named next to its swatch, and the label wears text ink, not
+// the series color.
+function Legend({ series, dot }: { series: ChartSeries[]; dot?: boolean }) {
+  return (
+    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mt: 1.25 }}>
+      {series.map((s) => (
+        <Box key={s.key} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <Box
+            sx={{
+              width: 10,
+              height: 10,
+              bgcolor: s.color,
+              borderRadius: dot ? '50%' : 0.3,
+              flexShrink: 0,
+            }}
+          />
+          <Typography variant="caption" sx={{ color: C.textMuted }}>
+            {s.key || '(unkeyed)'}
+          </Typography>
+        </Box>
+      ))}
+    </Box>
+  )
+}
 
 // StackedArea draws bands summed bottom-to-top — for priority-group throughput
 // over time, so a shrinking high-priority band signals starvation.
@@ -51,50 +74,55 @@ function StackedArea({
     const bottom = cum.slice()
     const top = cum.map((c, i) => c + (ser.values[i] || 0))
     for (let i = 0; i < n; i++) cum[i] = top[i]
-    const pts = [
-      ...top.map((v, i) => `${x(i)},${y(v)}`),
-      ...bottom.map((v, i) => `${x(i)},${y(v)}`).reverse(),
-    ].join(' ')
-    return { key: ser.key, color: ser.color, pts }
+    const topPts = top.map((v, i) => `${x(i)},${y(v)}`)
+    const pts = [...topPts, ...bottom.map((v, i) => `${x(i)},${y(v)}`).reverse()].join(' ')
+    return { key: ser.key, color: ser.color, pts, top: topPts.join(' ') }
   })
 
   return (
-    <Card>
-      <CardContent>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <Typography variant="subtitle2">{title}</Typography>
-          <Typography variant="caption" color="text.secondary">
-            peak {fmtTotal(max)}
-          </Typography>
-        </Box>
-        <Box
-          component="svg"
-          viewBox={`0 0 ${W} ${H}`}
-          preserveAspectRatio="none"
-          sx={{ width: '100%', height: 180, display: 'block', mt: 1 }}
-        >
-          {bands.map((b) => (
-            <polygon
-              key={b.key}
-              points={b.pts}
-              fill={b.color}
-              fillOpacity={0.55}
-              stroke={b.color}
-              strokeWidth={1}
-              vectorEffect="non-scaling-stroke"
-            />
-          ))}
-        </Box>
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mt: 1 }}>
-          {series.map((s) => (
-            <Box key={s.key} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <Box sx={{ width: 10, height: 10, bgcolor: s.color, borderRadius: 0.3 }} />
-              <Typography variant="caption">{s.key}</Typography>
-            </Box>
-          ))}
-        </Box>
-      </CardContent>
-    </Card>
+    <Panel
+      title={title}
+      actions={
+        <Typography variant="caption" sx={{ color: C.textMuted }}>
+          peak {fmtTotal(max)}
+        </Typography>
+      }
+      dense
+    >
+      <Box
+        component="svg"
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        sx={{ width: '100%', height: 180, display: 'block' }}
+      >
+        {/* Each band is stroked in the SURFACE color, not its own: a 2px gap
+            between adjacent fills is what keeps two similar hues from reading as
+            one shape where they touch. The top edge is then drawn in the series
+            color so the band still has an identity line. */}
+        {bands.map((b) => (
+          <polygon
+            key={b.key}
+            points={b.pts}
+            fill={b.color}
+            fillOpacity={0.45}
+            stroke={C.surface}
+            strokeWidth={2}
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+        {bands.map((b) => (
+          <polyline
+            key={`${b.key}-edge`}
+            points={b.top}
+            fill="none"
+            stroke={b.color}
+            strokeWidth={2}
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+      </Box>
+      <Legend series={series} />
+    </Panel>
   )
 }
 
@@ -116,41 +144,37 @@ function MetricChart({
   const x = (i: number) => (n <= 1 ? pad : (i / (n - 1)) * (W - 2 * pad) + pad)
   const y = (v: number) => (max <= 0 ? H - pad : H - pad - (v / max) * (H - 2 * pad))
   return (
-    <Card sx={{ flex: '1 1 380px', minWidth: 320 }}>
-      <CardContent>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <Typography variant="subtitle2">{title}</Typography>
-          <Typography variant="caption" color="text.secondary">
+    <Box sx={{ flex: '1 1 380px', minWidth: 320 }}>
+      <Panel
+        title={title}
+        actions={
+          <Typography variant="caption" sx={{ color: C.textMuted }}>
             peak {fmt(max)}
           </Typography>
-        </Box>
+        }
+        dense
+      >
         <Box
           component="svg"
           viewBox={`0 0 ${W} ${H}`}
           preserveAspectRatio="none"
-          sx={{ width: '100%', height: 130, display: 'block', mt: 1 }}
+          sx={{ width: '100%', height: 130, display: 'block' }}
         >
           {series.map((s) => (
             <polyline
               key={s.key}
               fill="none"
               stroke={s.color}
-              strokeWidth={1.5}
+              strokeWidth={2}
+              strokeLinejoin="round"
               vectorEffect="non-scaling-stroke"
               points={s.values.map((v, i) => `${x(i)},${y(v)}`).join(' ')}
             />
           ))}
         </Box>
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mt: 1 }}>
-          {series.map((s) => (
-            <Box key={s.key} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <Box sx={{ width: 10, height: 10, bgcolor: s.color, borderRadius: '50%' }} />
-              <Typography variant="caption">{s.key || '(unkeyed)'}</Typography>
-            </Box>
-          ))}
-        </Box>
-      </CardContent>
-    </Card>
+        <Legend series={series} dot />
+      </Panel>
+    </Box>
   )
 }
 
@@ -175,16 +199,17 @@ function BarCell({ value, max, label }: { value: number; max: number; label: str
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+// A headline number is its own kind of panel: the label IS the panel title, so
+// the tile carries one value and nothing competing with it.
+function StatTile({ label, value }: { label: string; value: string }) {
   return (
-    <Card sx={{ minWidth: 160, flex: '1 1 160px' }}>
-      <CardContent>
-        <Typography variant="overline" color="text.secondary">
-          {label}
+    <Box sx={{ minWidth: 160, flex: '1 1 160px' }}>
+      <Panel title={label} dense>
+        <Typography variant="h5" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+          {value}
         </Typography>
-        <Typography variant="h5">{value}</Typography>
-      </CardContent>
-    </Card>
+      </Panel>
+    </Box>
   )
 }
 
@@ -343,7 +368,7 @@ function Usage() {
     !Number.isFinite(k) || k === 0 ? '—' : k < 1 ? `${(k * 1000).toFixed(1)} Wh` : `${k.toFixed(3)} kWh`
 
   const pgroups = q.data?.corrallm.usageSeriesByGroup?.groups ?? []
-  const groupColor = (i: number) => KEY_COLORS[i % KEY_COLORS.length]
+  const groupColor = (i: number) => seriesColor(i)
   const groupSeries: ChartSeries[] = pgroups.map((g, i) => ({
     key: g.group,
     color: groupColor(i),
@@ -382,23 +407,25 @@ function Usage() {
   }) => number): ChartSeries[] =>
     seriesKeys.map((k, i) => ({
       key: k.key,
-      color: KEY_COLORS[i % KEY_COLORS.length],
+      color: seriesColor(i),
       values: k.points.map(sel),
     }))
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <Box>
-        <Typography variant="h6" gutterBottom>
-          Usage — last 24h
-        </Typography>
-        <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
-          <Stat label="Requests" value={fmtInt(total?.requests ?? 0)} />
-          <Stat label="Prompt tokens" value={fmtInt(total?.promptTokens ?? 0)} />
-          <Stat label="Completion tokens" value={fmtInt(total?.completionTokens ?? 0)} />
-          <Stat label="Cost" value={fmtUSD(total?.costUsd ?? 0)} />
-        </Stack>
-        <TableContainer component={Paper}>
+      <PageHeader title="Usage">
+        <Chip size="small" variant="outlined" label="last 24h" />
+      </PageHeader>
+
+      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+        <StatTile label="Requests" value={fmtInt(total?.requests ?? 0)} />
+        <StatTile label="Prompt tokens" value={fmtInt(total?.promptTokens ?? 0)} />
+        <StatTile label="Completion tokens" value={fmtInt(total?.completionTokens ?? 0)} />
+        <StatTile label="Cost" value={fmtUSD(total?.costUsd ?? 0)} />
+      </Stack>
+
+      <Panel title="By model" flush>
+        <TableContainer>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -432,11 +459,11 @@ function Usage() {
             </TableBody>
           </Table>
         </TableContainer>
-      </Box>
+      </Panel>
 
       <Box>
-        <Typography variant="h6" gutterBottom>
-          Priority groups — last 24h
+        <Typography variant="overline" sx={{ color: C.textMuted, display: 'block', mb: 1 }}>
+          Priority groups
         </Typography>
         {groupSeries.length === 0 ? (
           <Typography color="text.secondary">No usage in window.</Typography>
@@ -471,8 +498,8 @@ function Usage() {
       </Box>
 
       <Box>
-        <Typography variant="h6" gutterBottom>
-          By Key over time — last 24h
+        <Typography variant="overline" sx={{ color: C.textMuted, display: 'block', mb: 1 }}>
+          By key over time
         </Typography>
         {seriesKeys.length === 0 ? (
           <Typography color="text.secondary">No usage in window.</Typography>
@@ -490,11 +517,8 @@ function Usage() {
         )}
       </Box>
 
-      <Box>
-        <Typography variant="h6" gutterBottom>
-          By Key — last 24h
-        </Typography>
-        <TableContainer component={Paper}>
+      <Panel title="By key" subtitle="Bars are relative to the column max" flush>
+        <TableContainer>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -526,51 +550,40 @@ function Usage() {
             </TableBody>
           </Table>
         </TableContainer>
-      </Box>
+      </Panel>
 
-      <Box>
-        <Typography variant="h6" gutterBottom>
-          Server Pools
-        </Typography>
-        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-          {servers.length === 0 ? (
-            <Typography color="text.secondary">No servers configured.</Typography>
-          ) : (
-            servers.map((s) => (
-              <Card key={s.server} sx={{ minWidth: 280, flex: '1 1 280px' }}>
-                <CardContent>
-                  <Typography variant="subtitle1" gutterBottom>
-                    {s.server}
-                  </Typography>
-                  <Stack spacing={1.5}>
-                    {s.pools.map((p) => (
-                      <Box key={p.pool}>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <Typography variant="body2">{p.pool}</Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {fmtBytes(p.used)} / {fmtBytes(p.budget)}
-                          </Typography>
-                        </Box>
-                        <LinearProgress
-                          variant="determinate"
-                          value={pct(p.used, p.budget)}
-                          sx={{ height: 8, borderRadius: 1 }}
-                        />
+      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+        {servers.length === 0 ? (
+          <Typography color="text.secondary">No servers configured.</Typography>
+        ) : (
+          servers.map((s) => (
+            <Box key={s.server} sx={{ minWidth: 280, flex: '1 1 280px' }}>
+              <Panel title={s.server} subtitle="pool usage">
+                <Stack spacing={1.5}>
+                  {s.pools.map((p) => (
+                    <Box key={p.pool}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                        <Typography variant="body2">{p.pool}</Typography>
+                        <Typography variant="body2" sx={{ color: C.textMuted }}>
+                          {fmtBytes(p.used)} / {fmtBytes(p.budget)}
+                        </Typography>
                       </Box>
-                    ))}
-                  </Stack>
-                </CardContent>
-              </Card>
-            ))
-          )}
-        </Stack>
-      </Box>
+                      <LinearProgress
+                        variant="determinate"
+                        value={pct(p.used, p.budget)}
+                        sx={{ height: 8, borderRadius: 1 }}
+                      />
+                    </Box>
+                  ))}
+                </Stack>
+              </Panel>
+            </Box>
+          ))
+        )}
+      </Stack>
 
-      <Box>
-        <Typography variant="h6" gutterBottom>
-          Resident Models
-        </Typography>
-        <TableContainer component={Paper}>
+      <Panel title="Resident models" flush>
+        <TableContainer>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -614,7 +627,7 @@ function Usage() {
             </TableBody>
           </Table>
         </TableContainer>
-      </Box>
+      </Panel>
     </Box>
   )
 }

@@ -6,7 +6,6 @@ import {
   Chip,
   CircularProgress,
   LinearProgress,
-  Paper,
   Table,
   TableBody,
   TableCell,
@@ -15,6 +14,7 @@ import {
   TableRow,
   Typography,
 } from '@mui/material'
+import { Panel, PageHeader } from '@/Panel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtInt } from '@/format'
@@ -107,11 +107,10 @@ function Groups() {
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <Box>
-        <Typography variant="h6" gutterBottom>
-          Priority Groups
-        </Typography>
-        <TableContainer component={Paper}>
+      <PageHeader title="Groups" />
+
+      <Panel title="Priority groups" subtitle="Weighted fairshare lanes + live load" flush>
+        <TableContainer>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -151,17 +150,14 @@ function Groups() {
             </TableBody>
           </Table>
         </TableContainer>
-      </Box>
+      </Panel>
 
-      <Box>
-        <Typography variant="h6" gutterBottom>
-          Reservations
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-          Slots held free for a group so interactive work has headroom. Short-lived;
-          renewed by heartbeat, auto-expiring.
-        </Typography>
-        <TableContainer component={Paper}>
+      <Panel
+        title="Reservations"
+        subtitle="Slots held free for a lane's headroom — short-lived, heartbeat-renewed, auto-expiring"
+        flush
+      >
+        <TableContainer>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -193,13 +189,10 @@ function Groups() {
             </TableBody>
           </Table>
         </TableContainer>
-      </Box>
+      </Panel>
 
-      <Box>
-        <Typography variant="h6" gutterBottom>
-          Backend Load
-        </Typography>
-        <TableContainer component={Paper}>
+      <Panel title="Backend load" subtitle="Admission slots in use per backend" flush>
+        <TableContainer>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -250,7 +243,7 @@ function Groups() {
             </TableBody>
           </Table>
         </TableContainer>
-      </Box>
+      </Panel>
     </Box>
   )
 }

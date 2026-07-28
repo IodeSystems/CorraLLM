@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { Box, Button, Card, CardContent, TextField, Typography } from '@mui/material'
+import { Box, Button, TextField, Typography } from '@mui/material'
 import { setToken } from './auth'
+import { Panel } from '@/Panel'
+import { C } from '@/theme'
 
 // Login prompts for the admin token and points the operator at where it lives
 // on the server (home/admin.token). On submit it stores the token + cookie and
@@ -15,15 +17,15 @@ export function Login() {
   }
   return (
     <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', p: 2 }}>
-      <Card sx={{ maxWidth: 460, width: '100%' }}>
-        <CardContent sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <Typography variant="h6">corrallm — admin sign in</Typography>
+      <Box sx={{ maxWidth: 460, width: '100%' }}>
+        <Panel title="corrallm — admin sign in">
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Typography variant="body2" color="text.secondary">
             This instance requires an admin token. On the server, read it from{' '}
-            <Box component="code" sx={{ px: 0.5, bgcolor: 'grey.100', borderRadius: 0.5 }}>
+            <Box component="code" sx={{ px: 0.5, bgcolor: C.canvas, borderRadius: 0.5 }}>
               home/admin.token
             </Box>{' '}
-            (e.g. <Box component="code" sx={{ px: 0.5, bgcolor: 'grey.100', borderRadius: 0.5 }}>cat home/admin.token</Box>) and paste it below.
+            (e.g. <Box component="code" sx={{ px: 0.5, bgcolor: C.canvas, borderRadius: 0.5 }}>cat home/admin.token</Box>) and paste it below.
           </Typography>
           <TextField
             type="password"
@@ -37,8 +39,9 @@ export function Login() {
           <Button variant="contained" onClick={submit} disabled={!val.trim()}>
             Sign in
           </Button>
-        </CardContent>
-      </Card>
+          </Box>
+        </Panel>
+      </Box>
     </Box>
   )
 }

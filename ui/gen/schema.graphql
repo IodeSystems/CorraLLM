@@ -9,6 +9,7 @@ type CorrallmMutationNamespace {
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
+  loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
   publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
@@ -16,11 +17,13 @@ type CorrallmMutationNamespace {
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
+  unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
   v1: CorrallmV1MutationNamespace!
 }
 
 type CorrallmQueryNamespace {
+  activeRequests: corrallm_ActiveRequestsOutputBody @derived(operationId: "activeRequests")
   activityDetail(
     """Activity row id (from recentActivity)."""
     id: Long
@@ -66,6 +69,7 @@ type CorrallmQueryNamespace {
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  extensions: corrallm_ExtensionsOutputBody @derived(operationId: "extensions")
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
@@ -118,6 +122,7 @@ type CorrallmV1MutationNamespace {
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
+  loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
   publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
@@ -125,10 +130,12 @@ type CorrallmV1MutationNamespace {
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
+  unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
 }
 
 type CorrallmV1QueryNamespace {
+  activeRequests: corrallm_ActiveRequestsOutputBody @derived(operationId: "activeRequests")
   activityDetail(
     """Activity row id (from recentActivity)."""
     id: Long
@@ -174,6 +181,7 @@ type CorrallmV1QueryNamespace {
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  extensions: corrallm_ExtensionsOutputBody @derived(operationId: "extensions")
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
@@ -233,6 +241,36 @@ type Mutation {
 
 type Query {
   corrallm: CorrallmQueryNamespace!
+}
+
+type corrallm_ActiveRequestView {
+  """Backend admitted on (empty while still choosing)."""
+  backend: String!
+  """Milliseconds in flight so far."""
+  elapsedMs: Long!
+  """Priority group (lane) the caller resolved to."""
+  group: String!
+  """Process-local id (not the activity row id)."""
+  id: Long!
+  """Caller key (empty = unkeyed/default lane)."""
+  key: String!
+  """Request path."""
+  path: String!
+  """Requested model/lane name."""
+  served: String!
+  """Client IP."""
+  sourceIp: String!
+  """RFC3339 arrival time."""
+  startedAt: String!
+  """queued (awaiting a slot) | loading (awaiting backend) | streaming (proxying)."""
+  state: String!
+  """Client asked for a streamed response."""
+  streaming: Boolean!
+}
+
+type corrallm_ActiveRequestsOutputBody {
+  """In-flight requests, oldest first."""
+  requests: [corrallm_ActiveRequestView!]!
 }
 
 type corrallm_ActivityDetailOutputBody {
@@ -767,6 +805,44 @@ type corrallm_DepthPoint {
   maxWaiting: Long!
 }
 
+type corrallm_DeviceMemView {
+  """False when the probe failed — ignore the other fields."""
+  available: Boolean!
+  """Free right now."""
+  freeBytes: Long!
+  """Device name (GPU model, or "host" for system RAM)."""
+  name: String!
+  """Physical total."""
+  totalBytes: Long!
+  """In use right now."""
+  usedBytes: Long!
+}
+
+input corrallm_ExtensionActionInputBodyInput {
+  """Extension name (e.g. oidio)"""
+  extension: String!
+}
+
+type corrallm_ExtensionActionOutputBody {
+  draining: Boolean
+  evicted: Long
+  message: String!
+  ok: Boolean!
+}
+
+type corrallm_ExtensionState {
+  draining: Boolean!
+  inFlight: Long!
+  name: String!
+  pinned: Boolean!
+  provides: [String!]!
+  state: String!
+}
+
+type corrallm_ExtensionsOutputBody {
+  extensions: [corrallm_ExtensionState!]!
+}
+
 type corrallm_GroupDef {
   """Opts into quality-degrade fall-through."""
   acceptDegrade: Boolean!
@@ -1081,9 +1157,11 @@ type corrallm_ReservationsOutputBody {
 }
 
 type corrallm_ResidencyOutputBody {
+  gpu: corrallm_DeviceMemView!
+  host: corrallm_DeviceMemView!
   """Currently resident backends."""
   models: [corrallm_ResidentModelView!]!
-  """Per-server pool budget/usage."""
+  """Per-server pool budget/usage (the scheduler's accounted ledger)."""
   servers: [corrallm_ServerView!]!
 }
 

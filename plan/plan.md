@@ -914,6 +914,42 @@ the BackpressureError shape we already validated.
   selection; local models stay the floor (remote free is never the sole path). **Full design +
   provider facts + phased build order in [plan/p16-free-aggregator.md](p16-free-aggregator.md).**
 
+- ✅ **P17 — live in-flight visibility.** The activity log only holds FINISHED requests, so a long
+  completion, a cold load, or a request queued behind a saturated backend was invisible in both the
+  Overview and Activity views until it ended. The proxy now keeps an in-flight registry
+  (`internal/proxy/inflight.go`: queued → loading → streaming, registered before admission, cleared
+  on every exit path incl. spills), exposed as `activeRequests` and rendered by a shared
+  `ui/src/ActiveRequests.tsx` at the top of BOTH views; elapsed ticks client-side off `startedAt`
+  so it never looks frozen between refetches. Overview also leads with a **Loaded** section —
+  resident models (ready/loading/evicting) pulled out of their capability sections, so what holds
+  capacity right now is the first thing on the page.
+
+- ✅ **P18 — dark ops theme + the panel vocabulary.** The UI ran on a bare `createTheme()`: every
+  surface `#fff` on `#fff`, so a dozen cards and section headings read as one undifferentiated
+  sheet ("white on white with white sauce"). Now `ui/src/theme.ts` defines three layers
+  (canvas `#0f1115` → surface `#171a21` → raised `#1c2029`) separated by **borders, not shadows**
+  (MUI's dark elevation overlay is explicitly killed), and `ui/src/Panel.tsx` defines what a panel
+  IS: bordered surface + tinted header bar carrying a small uppercase tracked label, with `Row`
+  (hairline-separated items — no card-in-a-card) and `Stat` (label-over-value, replacing one-row
+  tables). Every route was migrated. Chart palette (`SERIES`) is validated by the dataviz six
+  checks against the panel surface — lightness band, chroma floor, adjacent CVD ΔE 8.8, normal
+  vision, contrast all PASS; **re-run the validator before reordering or substituting a hue.**
+  Table heads deliberately keep the body surface (a tinted head under a tinted panel header reads
+  as one confused block). Known gap: charts still have no hover/tooltip layer.
+
+- ✅ **P19 — memory attribution on the Overview (RAM/VRAM, and who holds it).** A stacked bar per
+  pool/device showing occupancy with per-model attribution, colored by model over the FULL sorted
+  model list (never the per-bar subset — a load/unload must not repaint the survivors).
+  **Two truths, deliberately not merged:** *measured* (nvidia-smi VRAM + `/proc/meminfo` host RAM,
+  new `internal/sysmem` with the same fail-safe contract as `internal/gpu` — a failed probe reports
+  `available=false`, never a zeroed bar) and *accounted* (the scheduler's pool ledger, which is what
+  admission and eviction actually decide on). The gap between them IS the signal — a backend that
+  outgrew its declared `ramUsage`, or a stray process squatting on the GPU, appears as
+  "other processes"; averaging them into one bar would erase it. Non-model segments wear a neutral
+  grey, never a categorical hue. Exposed on `residency` as `gpu`/`host`. The old static
+  "System capacity" panel is gone — its live half moved here, its one unique fact
+  (`server.maxConcurrent`) became "Host limits".
+
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
 ---

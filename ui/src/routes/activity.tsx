@@ -10,7 +10,6 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
-  Paper,
   Stack,
   Table,
   TableBody,
@@ -23,6 +22,9 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
+import { ActiveRequests } from '@/ActiveRequests'
+import { Panel, PageHeader } from '@/Panel'
+import { C } from '@/theme'
 import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
 
 const ActivityDoc = graphql(/* GraphQL */ `
@@ -171,8 +173,10 @@ function Payload({ title, body }: { title: string; body: string }) {
         sx={{
           m: 0,
           p: 1,
-          bgcolor: 'action.hover',
+          bgcolor: C.canvas,
+          border: `1px solid ${C.border}`,
           borderRadius: 1,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
           fontSize: '0.75rem',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-all',
@@ -194,29 +198,20 @@ function Activity() {
     refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
   })
 
-  if (q.isLoading) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <CircularProgress />
-      </Box>
-    )
-  }
-  if (q.error) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <Typography color="error">{String(q.error)}</Typography>
-      </Box>
-    )
-  }
-
   const records = q.data?.corrallm.recentActivity?.records ?? []
 
-  return (
-    <Box sx={{ p: 3 }}>
-      <Typography variant="h6" gutterBottom>
-        Recent Activity
-      </Typography>
-      <TableContainer component={Paper}>
+  // The live section renders independently of the history query — a slow or
+  // failed activity fetch must not hide what is running right now.
+  const history = q.isLoading ? (
+    <Box sx={{ p: 2 }}>
+      <CircularProgress />
+    </Box>
+  ) : q.error ? (
+    <Box sx={{ p: 2 }}>
+      <Typography color="error">{String(q.error)}</Typography>
+    </Box>
+  ) : (
+    <TableContainer>
         <Table size="small" stickyHeader>
           <TableHead>
             <TableRow>
@@ -289,6 +284,21 @@ function Activity() {
           </TableBody>
         </Table>
       </TableContainer>
+  )
+
+  return (
+    <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <PageHeader title="Activity" />
+      {/* In-flight first: the table below only ever holds FINISHED requests. */}
+      <ActiveRequests />
+      <Panel
+        title="Recent"
+        subtitle="Completed requests, newest first — click a row for payloads"
+        badge={<Chip size="small" variant="outlined" label={records.length} />}
+        flush
+      >
+        {history}
+      </Panel>
       {selected && <DetailModal id={selected} onClose={() => setSelected(null)} />}
     </Box>
   )

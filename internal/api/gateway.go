@@ -339,6 +339,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.Groups)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "activeRequests",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/active",
+		Summary:     "In-flight requests (queued / loading / streaming).",
+		Tags:        []string{"observability"},
+	}, h.ActiveRequests)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "reservations",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/reservations",

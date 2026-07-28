@@ -21,6 +21,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/proxy"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
+	"github.com/iodesystems/corrallm/internal/sysmem"
 )
 
 // Handlers carries the dependencies every operation needs. It grows as phases
@@ -258,11 +259,30 @@ type ResidentModelView struct {
 	ConfigSlots   int `json:"configSlots" doc:"Model's configured maxConcurrent (default 1)."`
 }
 
+// DeviceMemView is MEASURED memory on a real device, as opposed to the
+// scheduler's accounted pool ledger. The two answer different questions —
+// "what has corrallm promised" vs "what is the box actually holding" — and a
+// divergence between them (another process on the GPU, a backend that outgrew
+// its declared ramUsage) is itself the signal worth seeing.
+//
+// Available=false means the probe FAILED and every number here is meaningless;
+// readers must render nothing rather than a zeroed bar, which would read as an
+// empty machine.
+type DeviceMemView struct {
+	Available  bool   `json:"available" doc:"False when the probe failed — ignore the other fields."`
+	Name       string `json:"name" doc:"Device name (GPU model, or \"host\" for system RAM)."`
+	TotalBytes int64  `json:"totalBytes" doc:"Physical total."`
+	UsedBytes  int64  `json:"usedBytes" doc:"In use right now."`
+	FreeBytes  int64  `json:"freeBytes" doc:"Free right now."`
+}
+
 // ResidencyOutput reports server pool budgets and resident backends.
 type ResidencyOutput struct {
 	Body struct {
-		Servers []ServerView        `json:"servers" doc:"Per-server pool budget/usage."`
+		Servers []ServerView        `json:"servers" doc:"Per-server pool budget/usage (the scheduler's accounted ledger)."`
 		Models  []ResidentModelView `json:"models" doc:"Currently resident backends."`
+		GPU     DeviceMemView       `json:"gpu" doc:"Measured VRAM on the first GPU (single-GPU box); available=false if unprobeable."`
+		Host    DeviceMemView       `json:"host" doc:"Measured host RAM; available=false if unprobeable."`
 	}
 }
 
@@ -283,6 +303,28 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 	// tune-cache lookups below share it. Best-effort — a failed probe just
 	// leaves every model's profile fields at their zero/unmeasured default.
 	stats, gpuErr := gpu.Probe()
+	// Measured device state rides along on the same probe. Both are best-effort:
+	// a box with no nvidia-smi, or a non-Linux host, simply reports
+	// available=false and the dashboard omits that bar.
+	if gpuErr == nil {
+		const mib = 1024 * 1024
+		out.Body.GPU = DeviceMemView{
+			Available:  true,
+			Name:       stats.Name,
+			TotalBytes: int64(stats.TotalMiB) * mib,
+			UsedBytes:  int64(stats.UsedMiB) * mib,
+			FreeBytes:  int64(stats.FreeMiB) * mib,
+		}
+	}
+	if hm, err := sysmem.Probe(); err == nil {
+		out.Body.Host = DeviceMemView{
+			Available:  true,
+			Name:       "host",
+			TotalBytes: hm.TotalBytes,
+			UsedBytes:  hm.UsedBytes,
+			FreeBytes:  hm.AvailableBytes,
+		}
+	}
 	out.Body.Models = make([]ResidentModelView, 0, len(snap.Models))
 	for _, m := range snap.Models {
 		configSlots := h.Cfg.Models[m.ModelName].Slots()
@@ -878,6 +920,55 @@ func (h *Handlers) Reservations(_ context.Context, _ *ReservationsInput) (*Reser
 			Lane:      r.Lane,
 			Slots:     r.Slots,
 			ExpiresAt: r.ExpiresAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return out, nil
+}
+
+// --- active requests: what the proxy is serving RIGHT NOW ---
+
+type ActiveRequestsInput struct{}
+
+// ActiveRequestView is one in-flight request. The activity log only holds
+// FINISHED requests, so a long completion or a cold load is invisible there
+// until it ends; this is the live half.
+type ActiveRequestView struct {
+	ID        int64  `json:"id" doc:"Process-local id (not the activity row id)."`
+	Served    string `json:"served" doc:"Requested model/lane name."`
+	Backend   string `json:"backend" doc:"Backend admitted on (empty while still choosing)."`
+	Group     string `json:"group" doc:"Priority group (lane) the caller resolved to."`
+	Key       string `json:"key" doc:"Caller key (empty = unkeyed/default lane)."`
+	SourceIP  string `json:"sourceIp" doc:"Client IP."`
+	Path      string `json:"path" doc:"Request path."`
+	Streaming bool   `json:"streaming" doc:"Client asked for a streamed response."`
+	State     string `json:"state" doc:"queued (awaiting a slot) | loading (awaiting backend) | streaming (proxying)."`
+	StartedAt string `json:"startedAt" doc:"RFC3339 arrival time."`
+	ElapsedMS int64  `json:"elapsedMs" doc:"Milliseconds in flight so far."`
+}
+
+// ActiveRequestsOutput lists live requests, oldest first.
+type ActiveRequestsOutput struct {
+	Body struct {
+		Requests []ActiveRequestView `json:"requests" doc:"In-flight requests, oldest first."`
+	}
+}
+
+// ActiveRequests returns the proxy's in-flight request registry. A nil Proxy
+// (schema dump, tests) yields an empty list rather than an error.
+func (h *Handlers) ActiveRequests(_ context.Context, _ *ActiveRequestsInput) (*ActiveRequestsOutput, error) {
+	out := &ActiveRequestsOutput{}
+	if h.Proxy == nil {
+		out.Body.Requests = []ActiveRequestView{}
+		return out, nil
+	}
+	live := h.Proxy.Inflight()
+	out.Body.Requests = make([]ActiveRequestView, 0, len(live))
+	for _, r := range live {
+		out.Body.Requests = append(out.Body.Requests, ActiveRequestView{
+			ID: r.ID, Served: r.Served, Backend: r.Backend, Group: r.Group,
+			Key: r.Key, SourceIP: r.SourceIP, Path: r.Path, Streaming: r.Streaming,
+			State: r.State, StartedAt: r.StartedAt.UTC().Format(time.RFC3339),
+			ElapsedMS: r.ElapsedMS,
 		})
 	}
 	return out, nil

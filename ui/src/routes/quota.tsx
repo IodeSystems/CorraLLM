@@ -6,7 +6,6 @@ import {
   Chip,
   CircularProgress,
   LinearProgress,
-  Paper,
   Table,
   TableBody,
   TableCell,
@@ -16,6 +15,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
+import { Panel, PageHeader } from '@/Panel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtInt } from '@/format'
@@ -115,7 +115,7 @@ function QuotaPage() {
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <Typography variant="h5">Free-tier quota</Typography>
+      <PageHeader title="Free-tier quota" />
       <Typography variant="body2" color="text.secondary">
         Per-backend budget learned live from each provider's rate-limit headers. A backend goes{' '}
         <b>unavailable</b> when exhausted or cooling from a 429, and the free lane routes around it.
@@ -128,7 +128,8 @@ function QuotaPage() {
           first response, so it stays empty until traffic flows.
         </Alert>
       ) : (
-        <TableContainer component={Paper}>
+        <Panel title="Backends" subtitle="Budget per provider window" flush>
+        <TableContainer>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -192,6 +193,7 @@ function QuotaPage() {
             </TableBody>
           </Table>
         </TableContainer>
+        </Panel>
       )}
     </Box>
   )

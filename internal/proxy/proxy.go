@@ -66,6 +66,12 @@ type Proxy struct {
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
 
+	// inflight is the live-request registry (see inflight.go): what the box is
+	// doing right now, as opposed to the activity log's finished requests.
+	inflightMu  sync.Mutex
+	inflight    map[int64]*inflightEntry
+	inflightSeq int64
+
 	// quota is the P16 free-tier budget ledger: it learns each remote backend's
 	// remaining rate-limit budget from the X-Ratelimit-* headers on its responses.
 	quota *quota.Ledger
@@ -449,6 +455,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	groupName, group := p.cfg.ResolveGroup(key)
 	weight := group.EffectiveWeight()
 
+	// Register as live BEFORE admission: a request queued behind a saturated
+	// backend, or waiting out a cold load, is precisely the one you want to see
+	// on the dashboard — and it never reaches the activity log until it ends.
+	live := p.beginInflight(r, served, groupName, key, streaming)
+	defer p.endInflight(live)
+
 	// Walk the served name's candidates in order (a lane's members, or the one
 	// pinned model; rr within a cost-equivalent `type`, ordered across types).
 	// For each: take a slot or honor the group's saturation stage for that type —
@@ -518,7 +530,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
 		queuedMS = time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if err == nil {
-			p.publish(events.Event{Type: "changed"}) // a slot was taken — lanes load changed
+			// A slot was taken — lanes load changed. markInflight publishes, so
+			// the two live views (lanes + active requests) refresh together.
+			p.markInflight(live, inflightLoading, name)
 		}
 		if err != nil {
 			var bp *sched.BackpressureError
@@ -570,6 +584,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			slog.Warn("backend unavailable, spilling", "backend", name, "err", err)
+			p.markInflight(live, inflightQueued, "") // back to the walk, no backend held
 			continue
 		}
 		// Drop the residency ref on EVERY exit path, panic included — the same
@@ -611,6 +626,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
+		p.markInflight(live, inflightStreaming, name)
 		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK, streaming: streaming}
 		// Capture the proxy error so the activity log can say WHY a request failed
 		// (P10a) and map it to an honest status: a canceled connection (client or an
@@ -658,6 +674,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(proxyErr, errBackendDown) && !sc.wroteHeader {
 			release()
 			slog.Warn("free-tier backend hard-failed, spilling", "backend", name, "status", hardFailStatus)
+			p.markInflight(live, inflightQueued, "")
 			continue
 		}
 		status := sc.code
@@ -814,6 +831,10 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	}
 	groupName, group := p.cfg.ResolveGroup(key)
 	weight := group.EffectiveWeight()
+	// A realtime session is long-lived by construction — the request that most
+	// deserves to be visible while it runs.
+	live := p.beginInflight(r, served, groupName, key, true)
+	defer p.endInflight(live)
 	topQuality := config.MaxQuality(cands)
 	ordered := orderCandidates(cands, p.nextRR(served))
 	var lastBP *sched.BackpressureError
@@ -848,7 +869,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, Error: "client canceled"})
 			return
 		}
-		p.publish(events.Event{Type: "changed"})
+		p.markInflight(live, inflightLoading, name)
 
 		pr, done, _, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky)
 		if err != nil {
@@ -863,6 +884,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			slog.Warn("realtime backend unavailable, spilling", "backend", name, "err", err)
+			p.markInflight(live, inflightQueued, "")
 			continue
 		}
 		// Same abort-panic guard as the inference path: never leak the residency
@@ -888,6 +910,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 
 		// Proxy the session under reqCtx so a preemption (ErrPreempted) tears down
 		// the upgraded conn. Meter the audio streamed IN (client→backend bytes).
+		p.markInflight(live, inflightStreaming, name)
 		inBytes, reapReason, wsErr := p.proxyWebSocket(w, r, pr.Target, reqCtx)
 		done()
 		status, errReason := 200, ""
