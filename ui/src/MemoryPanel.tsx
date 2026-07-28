@@ -22,6 +22,21 @@ import { fmtBytes } from '@/format'
 // Form: a stacked horizontal bar per pool/device. The question is "what fills
 // this bounded total", which is a composition of a known whole — not a trend
 // (no time axis here) and not a comparison of independent magnitudes.
+//
+// STRUCTURE: server → pools → readings. This nesting is the point.
+//
+// The flat version listed "VRAM", "System RAM", "gpu0" and "system" as four
+// sibling rows, which read as four separate resources. They are two: gpu0 IS
+// the VRAM and system IS the host RAM, each shown once accounted and once
+// measured. Pairing the two readings under the pool they both describe is what
+// makes the accounted-vs-measured gap legible instead of looking like a
+// duplicate row — and the server grouping is what keeps it legible once a
+// second box exists and there are two of everything.
+//
+// A unified-memory host (Apple silicon) has ONE pool that is both its device
+// and its system memory. That is not a special case to paper over: its
+// devicePool names that pool, both readings land on it, and the row says
+// "device + system" rather than pretending there is a GPU pool hiding somewhere.
 
 // Non-model segments (other processes, host usage, mid-load reservations) wear a
 // neutral grey, never a categorical hue: they are not one of the models, and
@@ -89,41 +104,58 @@ function LegendRow({ segments, free, total }: { segments: MemSegment[]; free: nu
   )
 }
 
-function MemRow(props: {
-  label: string
-  sublabel?: string
-  segments: MemSegment[]
-  total: number
-  badge?: React.ReactNode
-}) {
-  const { label, sublabel, segments, total, badge } = props
+// Reading is ONE view of a pool — accounted or measured. Two of them stack
+// under a single pool heading, indented, so the pair reads as one resource seen
+// twice rather than two resources.
+function Reading(props: { kind: string; hint: string; segments: MemSegment[]; total: number }) {
+  const { kind, hint, segments, total } = props
   const used = segments.reduce((s, x) => s + x.bytes, 0)
   const pct = total > 0 ? Math.round((used / total) * 100) : 0
   return (
-    <Row>
-      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 0.75 }}>
-        <Typography variant="subtitle2" sx={{ minWidth: 110 }}>
-          {label}
+    <Box sx={{ mt: 0.75 }}>
+      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 0.5 }}>
+        <Typography variant="caption" sx={{ minWidth: 78, color: C.textMuted }}>
+          {kind}
         </Typography>
-        {sublabel && (
-          <Typography variant="caption" sx={{ color: C.textMuted }}>
-            {sublabel}
-          </Typography>
-        )}
-        {badge}
+        <Typography variant="caption" sx={{ color: C.textFaint }}>
+          {hint}
+        </Typography>
         <Box sx={{ flexGrow: 1 }} />
-        <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+        <Typography variant="caption" sx={{ fontVariantNumeric: 'tabular-nums' }}>
           {fmtBytes(used)} <span style={{ color: C.textFaint }}>/ {fmtBytes(total)}</span>
         </Typography>
         <Typography
-          variant="body2"
-          sx={{ minWidth: 42, textAlign: 'right', color: pct > 90 ? STATUS.warn : C.textMuted }}
+          variant="caption"
+          sx={{ minWidth: 38, textAlign: 'right', color: pct > 90 ? STATUS.warn : C.textMuted }}
         >
           {pct}%
         </Typography>
       </Box>
       <StackedBar segments={segments} total={total} />
       <LegendRow segments={segments} free={total - used} total={total} />
+    </Box>
+  )
+}
+
+// PoolRow is one pool of one server, with every reading available for it.
+//
+// The device NAME belongs here, not on the server header: it identifies the
+// device this pool is, and a box with two cards has two differently-named
+// devices under one server.
+function PoolRow(props: { pool: string; role: string; device?: string; children: React.ReactNode }) {
+  const { pool, role, device, children } = props
+  return (
+    <Row>
+      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
+        <Typography variant="subtitle2">{pool}</Typography>
+        <Chip size="small" variant="outlined" label={role} />
+        {device && (
+          <Typography variant="caption" sx={{ color: C.textMuted }}>
+            {device}
+          </Typography>
+        )}
+      </Box>
+      <Box sx={{ pl: 1.5, borderLeft: `1px solid ${C.border}`, ml: 0.25 }}>{children}</Box>
     </Row>
   )
 }
@@ -131,15 +163,17 @@ function MemRow(props: {
 export type PoolLedger = { server: string; pool: string; budget: number; used: number; reserve: number }
 export type ModelUse = { model: string; server: string; pools: { pool: string; bytes: number }[]; measuredBytes: number }
 export type DeviceMem = { available: boolean; name: string; totalBytes: number; usedBytes: number; freeBytes: number }
+export type ServerShape = { server: string; devicePool: string }
 
 export function MemoryPanel(props: {
   pools: PoolLedger[]
   models: ModelUse[]
+  servers: ServerShape[]
   gpu: DeviceMem
   host: DeviceMem
   colorOf: (model: string) => string
 }) {
-  const { pools, models, gpu, host, colorOf } = props
+  const { pools, models, servers, gpu, host, colorOf } = props
 
   // Accounted: one bar per (server, pool), segmented by the models holding it.
   const accounted = pools.map((p) => {
@@ -180,19 +214,42 @@ export function MemoryPanel(props: {
     })
   }
 
+  // The device probes read THIS machine. Attributing them to a server is only
+  // honest while exactly one server is local, which is the case until a server
+  // can be bound to a remote agent. With several, say nothing rather than pick
+  // one — a measured bar under the wrong box is worse than no measured bar.
+  const soleServer = servers.length === 1 ? servers[0] : undefined
+  const devicePoolOf = (server: string) =>
+    servers.find((s) => s.server === server)?.devicePool ?? 'gpu0'
+
+  const byServer = new Map<string, (typeof accounted)[number][]>()
+  for (const p of accounted) {
+    byServer.set(p.server, [...(byServer.get(p.server) ?? []), p])
+  }
+  // Device pool first: it is the scarce one, and the one eviction fights over.
+  const boxes = [...byServer.entries()]
+    .map(([server, ps]) => {
+      const dp = devicePoolOf(server)
+      return {
+        server,
+        pools: [...ps].sort(
+          (a, b) =>
+            Number(b.pool === dp) - Number(a.pool === dp) || a.pool.localeCompare(b.pool),
+        ),
+      }
+    })
+    .sort((a, b) => a.server.localeCompare(b.server))
+
   const nothing = pools.length === 0 && !gpu.available && !host.available
 
   return (
     <Panel
       title="Memory"
       subtitle="Who is holding RAM and VRAM right now"
-      badge={
-        gpu.available ? (
-          <Chip size="small" variant="outlined" label={gpu.name} />
-        ) : (
-          <Chip size="small" variant="outlined" label="no GPU probe" />
-        )
-      }
+      // No device name here: it names ONE device, and this panel covers every
+      // box. It sits on the pool row it describes. A missing probe is still
+      // panel-scope, because then there is no device reading anywhere below.
+      badge={!gpu.available && <Chip size="small" variant="outlined" label="no GPU probe" />}
       flush
     >
       {nothing ? (
@@ -202,41 +259,81 @@ export function MemoryPanel(props: {
           </Typography>
         </Box>
       ) : (
-        <>
-          {/* Measured first: it is the ground truth about the box. */}
-          {gpu.available && (
-            <MemRow
-              label="VRAM"
-              sublabel="measured on device"
-              segments={gpuSegments}
-              total={gpu.totalBytes}
-            />
-          )}
-          {host.available && (
-            <MemRow
-              label="System RAM"
-              sublabel="measured on host (MemAvailable)"
-              segments={[
-                { key: 'in use', bytes: host.usedBytes, color: NEUTRAL, hint: 'all processes on the box' },
-              ]}
-              total={host.totalBytes}
-            />
-          )}
-          {/* Then the ledger the scheduler actually decides on. */}
-          {accounted.map((p) => (
-            <MemRow
-              key={`${p.server}/${p.pool}`}
-              label={p.pool}
-              sublabel={
-                p.reserve > 0
-                  ? `${p.server} · accounted · ${fmtBytes(p.reserve)} held in reserve`
-                  : `${p.server} · accounted`
-              }
-              segments={p.segments}
-              total={p.budget}
-            />
-          ))}
-        </>
+        boxes.map((box) => {
+          const dp = devicePoolOf(box.server)
+          const local = soleServer?.server === box.server
+          return (
+            <Box key={box.server}>
+              <Box
+                sx={{
+                  px: 2,
+                  py: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  bgcolor: C.raised,
+                  borderTop: `1px solid ${C.border}`,
+                  borderBottom: `1px solid ${C.border}`,
+                }}
+              >
+                <Typography variant="subtitle2">{box.server}</Typography>
+              </Box>
+
+              {box.pools.map((p) => {
+                const isDevice = p.pool === dp
+                // A unified-memory box's single pool IS both, and the label says
+                // so rather than implying a GPU pool that does not exist.
+                const isUnified = isDevice && box.pools.length === 1
+                const role = isUnified ? 'device + system' : isDevice ? 'device' : 'system'
+                return (
+                  <PoolRow
+                    key={`${box.server}/${p.pool}`}
+                    pool={p.pool}
+                    role={role}
+                    device={local && isDevice && gpu.available ? gpu.name : undefined}
+                  >
+                    <Reading
+                      kind="accounted"
+                      hint={
+                        p.reserve > 0
+                          ? `scheduler ledger · ${fmtBytes(p.reserve)} held in reserve`
+                          : 'scheduler ledger'
+                      }
+                      segments={p.segments}
+                      total={p.budget}
+                    />
+                    {/* The measured reading of the SAME pool, nested under it —
+                        this pairing is what stops it reading as a second pool. */}
+                    {local && isDevice && gpu.available && (
+                      <Reading
+                        kind="measured"
+                        hint="on device"
+
+                        segments={gpuSegments}
+                        total={gpu.totalBytes}
+                      />
+                    )}
+                    {local && (!isDevice || isUnified) && p.pool === 'system' && host.available && (
+                      <Reading
+                        kind="measured"
+                        hint="on host · MemAvailable"
+                        segments={[
+                          {
+                            key: 'in use',
+                            bytes: host.usedBytes,
+                            color: NEUTRAL,
+                            hint: 'all processes on the box, not just corrallm',
+                          },
+                        ]}
+                        total={host.totalBytes}
+                      />
+                    )}
+                  </PoolRow>
+                )
+              })}
+            </Box>
+          )
+        })
       )}
     </Panel>
   )

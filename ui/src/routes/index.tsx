@@ -34,6 +34,7 @@ const OverviewDoc = graphql(/* GraphQL */ `
         servers {
           server
           maxConcurrent
+          devicePool
           pools {
             pool
             totalBytes
@@ -579,6 +580,10 @@ function Home() {
     pools: m.usage.map((u) => ({ pool: u.pool, bytes: Number(u.bytes) })),
     measuredBytes: Number(m.footprintMiB) * 1024 * 1024,
   }))
+  const memServers = (ov?.servers ?? []).map((s) => ({
+    server: s.server,
+    devicePool: s.devicePool,
+  }))
   const dev = (d?: { available: boolean; name: string; totalBytes: string; usedBytes: string; freeBytes: string }) => ({
     available: !!d?.available,
     name: d?.name ?? '',
@@ -606,6 +611,7 @@ function Home() {
       <MemoryPanel
         pools={memPools}
         models={memModels}
+        servers={memServers}
         gpu={dev(res?.gpu)}
         host={dev(res?.host)}
         colorOf={colorOf}
