@@ -46,6 +46,8 @@ const OverviewDoc = graphql(/* GraphQL */ `
           ttl
           evictCost
           spawnable
+          remote
+          procKey
           modalities {
             modality
             maxResolution
@@ -112,6 +114,8 @@ const OverviewDoc = graphql(/* GraphQL */ `
         models {
           name
           modelName
+          procKey
+          remote
           server
           state
           refs
@@ -351,7 +355,19 @@ function Home() {
   const lanes = ov?.lanes ?? []
   const groups = ov?.groups ?? []
   const keys = ov?.keys ?? []
-  const stateByModel = new Map((c.residency?.models ?? []).map((m) => [m.modelName, m]))
+  // Residency keyed by the BACKING PROCESS, and remote backends dropped before
+  // the map is built. Two bugs fixed at once:
+  //   - an extension's models share one process, so keying by modelName made
+  //     whichever sibling spawned it read "ready" and the other three "absent"
+  //     off that same live process;
+  //   - a remote model (groq, cerebras, anthropic) has no process at all, yet
+  //     latched to "ready" on its first request and sat in "Loaded" forever.
+  // Nothing downstream can now mistake a proxied model for a resident one.
+  const stateByProc = new Map(
+    (c.residency?.models ?? []).filter((m) => !m.remote).map((m) => [m.procKey, m]),
+  )
+  const stateOf = (m: { procKey: string; remote: boolean }) =>
+    m.remote ? undefined : stateByProc.get(m.procKey)
 
   // A group's effective policy for a capability = its onSaturated stage for that
   // model type, falling back to its `default` stage. Distinct values joined so
@@ -398,18 +414,19 @@ function Home() {
   // structurally identical to its section heading. Here the panel is the object
   // and the model is a line in it.
   const modelRow = (m: (typeof models)[number]) => {
-    const st = stateByModel.get(m.name)
+    const st = stateOf(m)
     return (
       <Row key={m.name}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
           {/* State first and always with its word — the colored dot alone would
-              encode state in color only. A pure-proxy backend (not spawnable —
-              no cmd) has no local process and so no residency state; it reads
-              "proxy", not "absent", which would look like a failed load. */}
+              encode state in color only. A remote backend has no local process
+              and so no residency at all: it reads "proxy" permanently, never
+              "absent" (which looks like a failed load) and never "ready" (which
+              claimed a load that never happened). */}
           <Chip
             size="small"
-            label={st?.state ?? (m.spawnable ? 'absent' : 'proxy')}
-            color={!st?.state && !m.spawnable ? 'secondary' : stateColor(st?.state)}
+            label={m.remote ? 'proxy' : (st?.state ?? 'absent')}
+            color={m.remote ? 'secondary' : stateColor(st?.state)}
             variant={st?.state ? 'filled' : 'outlined'}
             sx={{ minWidth: 68 }}
           />
@@ -516,11 +533,13 @@ function Home() {
   // capability sections below so no card renders twice — each card already
   // carries its capability chip, so nothing is lost by the move.
   const LOAD_RANK: Record<string, number> = { ready: 0, loading: 1, evicting: 2 }
-  const loadRank = (name: string) => LOAD_RANK[stateByModel.get(name)?.state ?? '']
+  // Remote models are excluded by stateOf, so "Loaded" now means what it says:
+  // something is resident on this box holding memory.
+  const loadRank = (m: (typeof models)[number]) => LOAD_RANK[stateOf(m)?.state ?? '']
   const loaded = models
-    .filter((m) => loadRank(m.name) !== undefined)
-    .sort((a, b) => loadRank(a.name)! - loadRank(b.name)! || a.name.localeCompare(b.name))
-  const unloaded = models.filter((m) => loadRank(m.name) === undefined)
+    .filter((m) => loadRank(m) !== undefined)
+    .sort((a, b) => loadRank(a)! - loadRank(b)! || a.name.localeCompare(b.name))
+  const unloaded = models.filter((m) => loadRank(m) === undefined)
 
   // Assign each remaining model to its capability section; leftovers → "Other".
   const seen = new Set<string>()

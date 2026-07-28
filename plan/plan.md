@@ -1096,6 +1096,17 @@ the BackpressureError shape we already validated.
   fallback poll). Store carries dwell/tokens/$ per request + a per-model rollup query.
 - **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
   (benign warning); revisit if it becomes flaky.
+- ✅ ~~Remote models reported as loaded; extension siblings disagreed about one process~~ —
+  resolved 2026-07-28. Two bugs with one root: residency was keyed by served NAME and had no
+  concept of "not ours". A pure-proxy backend latches `StateReady` on first request (manager.go:446
+  — correct, there is nothing to health-check) and is never an eviction victim (`server == ""`), so
+  groq/cerebras sat in the dashboard's "Loaded" panel forever having loaded nothing; meanwhile
+  oidio's four models are ONE process, and whichever sibling spawned it read `ready` while the
+  other three read `absent` off that same live process. Now: `Model.LocalProcess()`/`Model.Remote()`
+  (proxytarget.go) are the predicates, `Process.remote` + `ResidentModel.ProcKey` carry them out of
+  the manager, `/v1/models` reports `remote: true` + `state: "proxy"` (kind stays `model` — clients
+  filter kind to separate models from lanes), and every consumer resolves state through ProcKey.
+  `ModelDef.Spawnable` was `m.Cmd != ""`, which called every extension-hosted model a proxy.
 - ✅ ~~Transient capacity misses reported as 503~~ — resolved: `ErrNoCapacity` now returns a
   `*proc.CapacityError` splitting **permanent** (won't fit even fully evicted → stays 503, a real
   operator fault) from **transient** (a resident is inside its `activeUse`/`minResidency` window →

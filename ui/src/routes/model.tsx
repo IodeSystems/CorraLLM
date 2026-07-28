@@ -64,6 +64,9 @@ const ConsoleDoc = graphql(/* GraphQL */ `
           server
           target
           cmd
+          spawnable
+          remote
+          procKey
           maxConcurrent
         }
       }
@@ -71,6 +74,8 @@ const ConsoleDoc = graphql(/* GraphQL */ `
         models {
           name
           modelName
+          procKey
+          remote
           state
           hasUi
           nCtx
@@ -216,7 +221,13 @@ function ModelConsole() {
   const caps = useCapabilities()
 
   const model = (ov.data?.corrallm.overview?.models ?? []).find((m) => m.name === name)
-  const res = (ov.data?.corrallm.residency?.models ?? []).find((m) => m.modelName === name)
+  // Match on the BACKING PROCESS, not the model name: an extension's models
+  // share one process, so the siblings of whichever model spawned it used to
+  // find nothing and render "absent" against a live process. A remote model has
+  // no residency at all and is deliberately left undefined here.
+  const res = (ov.data?.corrallm.residency?.models ?? []).find(
+    (m) => !m.remote && m.procKey === model?.procKey,
+  )
   // Capability comes from the model data itself (reliable) — NOT the async
   // /v1/capabilities fetch, which would briefly mis-dispatch (e.g. show a chat box
   // for an STT model) until it loaded.
@@ -247,13 +258,14 @@ function ModelConsole() {
           ← Overview
         </Button>
         <PageHeader title={name} />
-        {/* A pure-proxy backend (no cmd) has no local process, so it never has a
-            residency state — label it "proxy" (colored), not the misleading
-            "absent" that reads as a failed local load. */}
+        {/* A remote backend has no local process and so no residency state —
+            label it "proxy" (colored), not the misleading "absent" that reads
+            as a failed local load, nor "ready" which claims a load that never
+            happened. */}
         <Chip
           size="small"
-          label={res?.state ?? (model.cmd ? 'absent' : 'proxy')}
-          color={!res?.state && !model.cmd ? 'secondary' : 'default'}
+          label={model.remote ? 'proxy' : (res?.state ?? 'absent')}
+          color={model.remote ? 'secondary' : 'default'}
         />
         <Chip size="small" color="info" variant="outlined" label={capLabel(capability)} />
         {(model.modalities ?? []).map((md) => (

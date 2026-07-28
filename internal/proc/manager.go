@@ -129,6 +129,12 @@ type Process struct {
 	// the spawn, so config lookups and the residency UI keep working.
 	key string
 
+	// remote marks a backend on a host we do not run: no local process and a
+	// non-loopback target. It has no residency to report — it is never loaded,
+	// never evicted, and consumes no pool — so every read surface reports it as
+	// a proxy rather than folding it into the resident set.
+	remote bool
+
 	server     string           // "" for pure-proxy (consumes no pools)
 	usage      map[string]int64 // reserved bytes per pool
 	persistent bool             // pinned: never evicted
@@ -283,6 +289,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 			ModelName:  name,
 			key:        key,
 			Target:     target,
+			remote:     mdl.Remote(),
 			server:     mdl.Server,
 			usage:      usage,
 			persistent: mdl.Persistent,
@@ -1607,8 +1614,17 @@ type PoolUsage struct {
 
 // ResidentModel is one loaded (or loading) backend for the UI.
 type ResidentModel struct {
-	Name       string // "<servedModel>#<backendIndex>"
-	ModelName  string
+	Name      string // "<servedModel>#<backendIndex>"
+	ModelName string
+	// ProcKey is the identity of the backing process ("extension:<name>" when an
+	// extension hosts it, else the served name). Consumers resolve a model's
+	// state through this, not through ModelName: an extension's sibling models
+	// share one process, and keying by ModelName reported the sibling that
+	// happened to trigger the spawn as ready while the rest read absent.
+	ProcKey string
+	// Remote: no local process, non-loopback target. Holds no residency — State
+	// is not a residency fact for these and must not be counted as loaded.
+	Remote     bool
 	Server     string // "" for pure-proxy (consumes no pools)
 	State      string
 	Refs       int  // in-flight requests holding it
@@ -1661,6 +1677,8 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 		rm := ResidentModel{
 			Name:       p.Name,
 			ModelName:  p.ModelName,
+			ProcKey:    p.key,
+			Remote:     p.remote,
 			Server:     p.server,
 			State:      string(p.state),
 			Refs:       p.refs,

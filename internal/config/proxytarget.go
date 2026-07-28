@@ -168,6 +168,42 @@ func expandHeaders(h map[string]string) map[string]string {
 	return out
 }
 
+// LocalProcess reports whether a process on THIS box backs the model — its own
+// cmd, or the cmd of the extension hosting it. A provided model carries no cmd
+// of its own (that lives on the extension), so the ExtensionHosted flag is what
+// separates oidio-stt (a real local process, shared with its siblings) from
+// groq-llama-70b (nothing to spawn).
+func (m Model) LocalProcess() bool {
+	return strings.TrimSpace(m.Cmd) != "" || (m.Extension != "" && m.ExtensionHosted)
+}
+
+// Remote reports whether the model is served by a host corrallm does not run:
+// no local process, and a forward target that is not this box.
+//
+// This is the predicate for "holds no residency". A remote model is never
+// loaded, never evicted and consumes no pool — so reporting a residency state
+// for it (which used to read "ready" from the first request onward, forever)
+// described nothing real. Note the loopback test: a pure-proxy model can point
+// at a LOCAL port some other model spawns, and that one is not remote.
+func (m Model) Remote() bool {
+	if m.LocalProcess() {
+		return false
+	}
+	t, err := m.ProxyTarget()
+	if err != nil || t == nil || t.URL == nil {
+		return false
+	}
+	return !IsLocalHost(t.URL.Hostname())
+}
+
+// IsLocalHost reports whether a proxy target's host is this machine — loopback
+// or empty. A private-LAN address is deliberately NOT local: another box on the
+// LAN is a host we do not manage, which is exactly what Remote means.
+func IsLocalHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	return h == "" || h == "localhost" || h == "::1" || strings.HasPrefix(h, "127.")
+}
+
 // Provider is a coarse vendor label for cost/usage metrics: "local" for a
 // spawned backend, else the upstream inferred from the proxy target host
 // (anthropic|openrouter|openai|groq|google|…), falling back to the bare host.

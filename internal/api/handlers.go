@@ -238,10 +238,12 @@ type PoolUsageView struct {
 
 // ResidentModelView is one loaded/loading backend.
 type ResidentModelView struct {
-	Name       string          `json:"name" doc:"Backend id (<servedModel>#<index>)."`
-	ModelName  string          `json:"modelName" doc:"Served model name."`
-	Server     string          `json:"server" doc:"Server, empty for pure-proxy."`
-	State      string          `json:"state" doc:"absent|loading|ready|failed|evicting."`
+	Name      string `json:"name" doc:"Backend id (<servedModel>#<index>)."`
+	ModelName string `json:"modelName" doc:"Served model name."`
+	ProcKey   string `json:"procKey" doc:"Backing process identity (extension:<name> when an extension hosts it, else the served name). Resolve a model's state through this — an extension's models share one process."`
+	Remote    bool   `json:"remote" doc:"Served by a host corrallm does not run: no local process, non-loopback target. Holds no residency — never count it as loaded."`
+	Server    string `json:"server" doc:"Server, empty for pure-proxy."`
+	State     string `json:"state" doc:"absent|loading|ready|failed|evicting. Not a residency fact when remote."`
 	Refs       int             `json:"refs" doc:"In-flight requests holding it."`
 	Persistent bool            `json:"persistent" doc:"Pinned: exempt from eviction."`
 	LastUsedMS int64           `json:"lastUsedMs" doc:"Unix millis of last use, 0 if never."`
@@ -329,7 +331,8 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 	for _, m := range snap.Models {
 		configSlots := h.Cfg.Models[m.ModelName].Slots()
 		mv := ResidentModelView{
-			Name: m.Name, ModelName: m.ModelName, Server: m.Server, State: m.State,
+			Name: m.Name, ModelName: m.ModelName, ProcKey: m.ProcKey, Remote: m.Remote,
+			Server: m.Server, State: m.State,
 			Refs: m.Refs, Persistent: m.Persistent, LastUsedMS: m.LastUsedMS,
 			NCtx: m.NCtx, NSlots: m.NSlots, HasUI: m.HasUI,
 			Usage: make([]PoolUsageView, 0, len(m.Usage)),
@@ -998,7 +1001,9 @@ type ModelDef struct {
 	Persistent    bool           `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
 	TTL           string         `json:"ttl" doc:"Idle keep-warm window (sticky)."`
 	EvictCost     string         `json:"evictCost" doc:"Eviction resistance (sticky)."`
-	Spawnable     bool           `json:"spawnable" doc:"True if corrallm spawns it (has a cmd)."`
+	Spawnable     bool           `json:"spawnable" doc:"True if a local process backs it — its own cmd, or its hosting extension's."`
+	Remote        bool           `json:"remote" doc:"True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."`
+	ProcKey       string         `json:"procKey" doc:"Backing process identity; an extension's models share one."`
 	Modalities    []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
 	Capability    string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
 	Type          string         `json:"type" doc:"Cost class (chat | embed | openrouter | …)."`
@@ -1136,7 +1141,11 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		md := ModelDef{
 			Name: name, Persistent: m.Persistent, Capability: config.ModelCapability(m),
 			Modalities: modalityViews(m.EffectiveModalities(costModel.IsAudioType(m.Type))),
-			Type:       m.Type, Quality: m.Quality, Spawnable: m.Cmd != "", Server: m.Server,
+			// Spawnable off m.Cmd alone was wrong for an extension's models: their
+			// cmd lives on the extension, so oidio-stt (a real local process)
+			// reported spawnable:false and the UI labelled it a proxy.
+			Type: m.Type, Quality: m.Quality, Spawnable: m.LocalProcess(), Remote: m.Remote(),
+			ProcKey: m.ProcKey(name), Server: m.Server,
 			MaxConcurrent: m.Slots(), MaxTokens: m.MaxTokens, Cmd: m.Cmd,
 		}
 		if m.Sticky != nil {

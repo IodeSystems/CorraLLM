@@ -1359,11 +1359,14 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 // the residency snapshot. Standard fields (id/object/created/owned_by) keep it
 // drop-in compatible.
 func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
-	// First resident backend per served model → live state + parsed context length.
+	// First resident backend per BACKING PROCESS → live state + parsed context
+	// length. Keyed by ProcKey, not ModelName: oidio's four models are one
+	// process, and keying by name reported whichever one spawned it as ready
+	// while its siblings read "absent" off the same live process.
 	resident := map[string]proc.ResidentModel{}
 	for _, m := range p.mgr.Snapshot().Models {
-		if _, ok := resident[m.ModelName]; !ok {
-			resident[m.ModelName] = m
+		if _, ok := resident[m.ProcKey]; !ok {
+			resident[m.ProcKey] = m
 		}
 	}
 
@@ -1373,10 +1376,14 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Created int64  `json:"created"`
 		OwnedBy string `json:"owned_by"`
 		// corrallm metadata
-		State         string   `json:"state"`                    // absent|loading|ready|idle|evicting
-		Quality       int      `json:"quality,omitempty"`        // quality tier (lane: top tier)
-		Type          string   `json:"type,omitempty"`           // cost class
-		Kind          string   `json:"kind"`                     // model|lane
+		State   string `json:"state"`             // absent|loading|ready|idle|evicting|proxy
+		Quality int    `json:"quality,omitempty"` // quality tier (lane: top tier)
+		Type    string `json:"type,omitempty"`    // cost class
+		Kind    string `json:"kind"`              // model|lane
+		// Remote: served by a host we do not run (no local process, non-loopback
+		// target). Kind stays "model" — it IS a model, and clients filter on
+		// kind to separate models from lanes — so the distinction rides here.
+		Remote        bool     `json:"remote,omitempty"`
 		Members       []string `json:"members,omitempty"`        // lane member model names, in fallback order
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
 		ContextLength int      `json:"context_length,omitempty"` // parsed n_ctx (if resident)
@@ -1411,7 +1418,13 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 			Modalities: mc.EffectiveModalities(p.cost.IsAudioType(mc.Type)),
 			Capability: config.ModelCapability(mc),
 		}
-		if r, ok := resident[name]; ok {
+		// A remote model has no residency to report. It used to inherit the
+		// process state, which latched to "ready" on the first request and never
+		// left — describing an unreachable upstream as loaded. "proxy" is the
+		// honest answer: reachability is per-request, not a residency fact.
+		if mc.Remote() {
+			e.Remote, e.State = true, "proxy"
+		} else if r, ok := resident[mc.ProcKey(name)]; ok {
 			e.State = r.State
 			e.ContextLength = r.NCtx
 		}
@@ -1438,7 +1451,15 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 				capability = config.ModelCapability(c.Model)
 				modalities = c.Model.EffectiveModalities(p.cost.IsAudioType(c.Model.Type))
 			}
-			if r, ok := resident[c.Name]; ok && state == "absent" {
+			// A remote member contributes "proxy", not residency; a real resident
+			// member's state outranks it, since that one is measurably up.
+			if c.Model.Remote() {
+				if state == "absent" {
+					state = "proxy"
+				}
+				continue
+			}
+			if r, ok := resident[c.Model.ProcKey(c.Name)]; ok && (state == "absent" || state == "proxy") {
 				state = r.State
 			}
 		}

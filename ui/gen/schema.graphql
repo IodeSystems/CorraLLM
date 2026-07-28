@@ -1016,11 +1016,15 @@ type corrallm_ModelDef {
   name: String!
   """Pinned (preloaded, never evicted)."""
   persistent: Boolean!
+  """Backing process identity; an extension's models share one."""
+  procKey: String!
   """Relative quality rank."""
   quality: Long!
+  """True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."""
+  remote: Boolean!
   """Server it draws capacity from (spawned only)."""
   server: String!
-  """True if corrallm spawns it (has a cmd)."""
+  """True if a local process backs it — its own cmd, or its hosting extension's."""
   spawnable: Boolean!
   """Forward URL (scheme://host:port; headers redacted)."""
   target: String!
@@ -1192,11 +1196,15 @@ type corrallm_ResidentModelView {
   perSlotMiB: Long!
   """Pinned: exempt from eviction."""
   persistent: Boolean!
+  """Backing process identity (extension:<name> when an extension hosts it, else the served name). Resolve a model's state through this — an extension's models share one process."""
+  procKey: String!
   """In-flight requests holding it."""
   refs: Long!
+  """Served by a host corrallm does not run: no local process, non-loopback target. Holds no residency — never count it as loaded."""
+  remote: Boolean!
   """Server, empty for pure-proxy."""
   server: String!
-  """absent|loading|ready|failed|evicting."""
+  """absent|loading|ready|failed|evicting. Not a residency fact when remote."""
   state: String!
   """Slot count the auto-tuner applied at last spawn, or configSlots if untuned/not resident."""
   tunedSlots: Long!

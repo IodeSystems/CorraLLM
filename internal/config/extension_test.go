@@ -352,3 +352,61 @@ extensions:
 		t.Errorf("template lost: %+v", tg[0].Spec.Template)
 	}
 }
+
+// Residency is a claim about THIS box. The three cases that must not blur:
+// a hosted extension's model has a local process (its extension's), a remote
+// provider has none, and a pure proxy pointing at a local port does — the last
+// is what stops a sidecar on 127.0.0.1 from being classed as somebody else's
+// machine.
+func TestLocalProcessAndRemote(t *testing.T) {
+	const y = `
+servers:
+  box1:
+    pools: { system: 125GB }
+models:
+  local-llm:
+    cmd: "exec llama-server"
+    server: box1
+    proxy: 5801
+  sidecar:
+    proxy: 5806     # no cmd, but the port is ours
+extensions:
+  oidio:
+    cmd: "exec oidio --addr :5806"
+    server: box1
+    proxy: 5806
+    ramUsage: { system: 3GB }
+    provides:
+      stt: { type: stt }
+  free:
+    providers:
+      groq:
+        proxy: { host: api.groq.com, port: 443 }
+        provides:
+          llama-70b: { type: chat, upstream: llama-3.3-70b-versatile }
+`
+	c, err := loadYAML(t, y)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name          string
+		local, remote bool
+	}{
+		{"local-llm", true, false},
+		{"oidio-stt", true, false}, // no cmd of its own; its extension has one
+		{"sidecar", false, false},  // no process, but the target is this box
+		{"groq-llama-70b", false, true},
+	} {
+		m, ok := c.Models[tc.name]
+		if !ok {
+			t.Fatalf("%s: missing", tc.name)
+		}
+		if got := m.LocalProcess(); got != tc.local {
+			t.Errorf("%s: LocalProcess = %v, want %v", tc.name, got, tc.local)
+		}
+		if got := m.Remote(); got != tc.remote {
+			t.Errorf("%s: Remote = %v, want %v", tc.name, got, tc.remote)
+		}
+	}
+}
