@@ -279,3 +279,15 @@ func (c *Config) TargetFor(served string, m Model) (*ProxyTarget, error) {
 	out.URL = &u
 	return &out, nil
 }
+
+// ExpandedToken resolves ${ENV} references in the agent token, the same way
+// proxy headers are expanded — so the secret lives in the environment and never
+// in tracked YAML.
+func (a *AgentBinding) ExpandedToken() string {
+	if a == nil {
+		return ""
+	}
+	return envRef.ReplaceAllStringFunc(a.Token, func(m string) string {
+		return os.Getenv(envRef.FindStringSubmatch(m)[1])
+	})
+}

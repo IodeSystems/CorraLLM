@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/iodesystems/corrallm/internal/agent"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/host"
@@ -216,10 +217,7 @@ func (m *Manager) hostFor(server string) host.Host {
 	var h host.Host = host.NewLocal(server)
 	if cfg := m.cfg.Load(); cfg != nil {
 		if srv, ok := cfg.Servers[server]; ok && srv.Agent != nil {
-			h = host.Unavailable{
-				Server: server,
-				Reason: "bound to a remote agent, but agent support is not built yet — corrallm cannot spawn there",
-			}
+			h = agent.NewRemoteHost(server, srv.Agent.Endpoints, srv.Agent.ExpandedToken())
 		}
 	}
 	if m.hosts == nil {
@@ -1222,7 +1220,6 @@ func (m *Manager) evictLocked(p *Process) {
 	m.freeLocked(p.server, p.usage)
 	if h != nil {
 		slog.Info("evicting backend", "name", p.Name, "id", h.ID())
-		_ = h.Signal(host.SigTerm)
 		// SIGTERM is a REQUEST. A llama-server in CUDA teardown (or still
 		// initialising one) can ignore it for minutes, and by this point the
 		// pool reservation has already been freed and the process dropped from
@@ -1234,7 +1231,15 @@ func (m *Manager) evictLocked(p *Process) {
 		//
 		// So verify, and escalate. Asynchronously: the caller holds m.mu and
 		// blocking eviction on a stuck process would wedge the scheduler.
-		go m.reapGroup(p.Name, h)
+		// Signal INSIDE the goroutine, not here: evictLocked runs with m.mu
+		// held, and against a remote host Signal is a network call. One
+		// unreachable agent would otherwise stall every request for every
+		// model on every host behind a TCP timeout, because m.mu serialises
+		// EnsureReady, Snapshot and onProcExit alike.
+		go func() {
+			_ = h.Signal(host.SigTerm)
+			m.reapGroup(p.Name, h)
+		}()
 	}
 }
 

@@ -34,8 +34,11 @@ models:
 	}
 	m := NewManager(cfg)
 
-	if _, ok := m.hostFor("mac1").(host.Unavailable); !ok {
-		t.Fatalf("hostFor(mac1) = %T, want host.Unavailable — it must never fall through to Local", m.hostFor("mac1"))
+	// The durable invariant: an agent-bound server must NEVER resolve to a
+	// local host. Which remote implementation backs it may change; falling
+	// through to Local must not.
+	if _, isLocal := m.hostFor("mac1").(*host.Local); isLocal {
+		t.Fatal("hostFor(mac1) resolved to *host.Local — a Mac model would be spawned on the primary")
 	}
 	// A server with no agent is still local, unchanged.
 	if _, ok := m.hostFor("box1").(*host.Local); !ok {
@@ -48,8 +51,10 @@ models:
 	if err == nil {
 		t.Fatal("want an error spawning onto an agent-bound server")
 	}
-	if !strings.Contains(err.Error(), "agent") {
-		t.Errorf("err = %v, want it to name the agent binding as the reason", err)
+	// The endpoint is unreachable in this test, so the failure must say so
+	// rather than surfacing as a mystery — and must not have spawned anything.
+	if !strings.Contains(err.Error(), "agent") && !strings.Contains(err.Error(), "192.168.1.42") {
+		t.Errorf("err = %v, want it to name the agent or its endpoint", err)
 	}
 }
 
