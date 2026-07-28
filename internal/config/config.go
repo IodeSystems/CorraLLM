@@ -236,6 +236,39 @@ type Server struct {
 	Pools         map[string]string `yaml:"pools,omitempty"`   // pool → size (e.g. "24GB")
 	Reserve       map[string]string `yaml:"reserve,omitempty"` // headroom kept free per pool
 	MaxConcurrent int               `yaml:"maxConcurrent,omitempty"`
+
+	// DevicePool names the pool that holds DEVICE (accelerator) memory on this
+	// server — the pool a MEASURED footprint is charged against, and the one the
+	// VRAM budget is computed for. Defaults to "gpu0", which is what the whole
+	// manager hardcoded before this existed.
+	//
+	// It is not cosmetic. A measured footprint is written to this pool by name;
+	// point it at a pool the server does not declare and every measured model
+	// there is charged against a budget of zero, which surfaces as a PERMANENT
+	// capacity error — a 503 that reads like a backend fault rather than a
+	// pool-naming one. A unified-memory host (Apple silicon) has no discrete
+	// VRAM and must set this to its single "system" pool.
+	DevicePool string `yaml:"devicePool,omitempty"`
+}
+
+// poolNames lists a pool map's keys, sorted, for error messages.
+func poolNames(pools map[string]string) []string {
+	out := make([]string, 0, len(pools))
+	for k := range pools {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// DevicePoolFor names the pool holding device memory on a server, defaulting to
+// the historical "gpu0". An unknown server also yields the default: callers are
+// on the spawn path, where the server has already been validated.
+func (c *Config) DevicePoolFor(server string) string {
+	if s, ok := c.Servers[server]; ok && strings.TrimSpace(s.DevicePool) != "" {
+		return s.DevicePool
+	}
+	return "gpu0"
 }
 
 // Model is a served name with exactly ONE serving path: either a spawned local
@@ -967,6 +1000,15 @@ func (c *Config) Validate() error {
 		}
 		if _, err := ParseSizes(srv.Reserve); err != nil {
 			return fmt.Errorf("server %q reserve: %w", srvName, err)
+		}
+		// A devicePool naming a pool the server does not declare would charge
+		// every measured footprint against a zero budget, and the model would go
+		// permanently unschedulable with a 503 that looks like a backend fault.
+		// Catch it here, where the message can say what is actually wrong.
+		if dp := strings.TrimSpace(srv.DevicePool); dp != "" {
+			if _, ok := srv.Pools[dp]; !ok {
+				return fmt.Errorf("server %q: devicePool %q is not one of its pools %v", srvName, dp, poolNames(srv.Pools))
+			}
 		}
 	}
 	for name, m := range c.Models {

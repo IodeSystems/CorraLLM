@@ -1096,6 +1096,17 @@ the BackpressureError shape we already validated.
   fallback poll). Store carries dwell/tokens/$ per request + a per-model rollup query.
 - **Test-teardown race**: a held in-flight request can log after `store.Close()` in one test
   (benign warning); revisit if it becomes flaky.
+- ✅ ~~VRAM accounting assumed one server~~ — resolved 2026-07-28, before a second host exists,
+  because both failures are silent. (1) `vramBudget` summed every resident process and every
+  pinned model with no server filter, so two loaded servers each under-counted their own budget by
+  the other's footprint and tuned themselves down to fewer slots. (2) The measured footprint was
+  written to a hardcoded `"gpu0"` (`const vramPool`), so a unified-memory server declaring only
+  `system:` charged it to a pool with no budget — every measured model there goes PERMANENTLY
+  unschedulable, surfacing as a 503 that reads like a backend fault on a model that worked right
+  up until it was first measured. Now `Server.DevicePool` (default `gpu0`, validated to name a
+  pool the server actually declares) and every `vramBudget` term scoped to the model's own server.
+  Regression tests: `TestEffectiveUsage_ChargesMeasuredToServerDevicePool`,
+  `TestVRAMBudget_IgnoresOtherServersPinnedModels`.
 - ✅ ~~Remote models reported as loaded; extension siblings disagreed about one process~~ —
   resolved 2026-07-28. Two bugs with one root: residency was keyed by served NAME and had no
   concept of "not ours". A pure-proxy backend latches `StateReady` on first request (manager.go:446
@@ -1156,6 +1167,39 @@ the BackpressureError shape we already validated.
      history and `plan/plan.md` move or get referenced). Also carries an open bug — the bonsai
      cold-load vision drop (§6 P9d retraction) is unrooted, and its scope on Qwen/gemma is untested.
   4. **Later: multi-node peer awareness** — remote load introspection across corrallm peers.
+     Concrete driver (2026-07-28): attaching a 64 GB Apple-silicon box as a second compute host.
+     **Two shapes, and the cheap one is not a stepping stone to the other:**
+     (a) *proxy peer* — machine 2 runs its own `corrallm serve`, attached to box1 as an ordinary
+     `extensions:` proxy target. **Zero new code, works today.** Buys serving; buys no unified
+     residency, eviction, fairshare or dashboard. Use it to measure whether the second box earns
+     its place before building anything.
+     (b) *managed host* — box1 spawns onto machine 2. Needs `proc.Manager`'s single local
+     `exec.Command("sh","-c",…)` (manager.go:398) behind a Spawner interface, `gpu`/`sysmem`
+     probing per-server instead of per-host, and `config.Server` gaining a real address (today it
+     is a pure local pool budget: pools/reserve/maxConcurrent, no host field).
+     **DECIDED 2026-07-28 — shape (b), full remote control.** Also decided: agent-local config,
+     UI-editable, **synced up into the primary's declared config** (an injected model can never be
+     a lane member — `config.go:1018` validates lane membership against `c.Models` at load time —
+     so agent-contributed models must land in declared config, which is what makes live reload a
+     prerequisite rather than a nicety); one-time enrollment token minted in an Agents tab; the
+     daemon serves cross-compiled binaries for `curl <daemon>/install.sh | bash` (verified:
+     `CGO_ENABLED=0 GOOS=darwin GOARCH=arm64` builds clean, ~37 MB, sqlite is pure-Go modernc).
+     One binary, `corrallm agent` subcommand — satisfies the no-duplication concern while keeping
+     the auth domains separate (`auth.Middleware` gates `/api/*` with the admin token; an agent
+     needs its own credential).
+     Ordering (each step shippable with no second machine present): ✅ **step 0** per-server VRAM
+     accounting (done, see known gaps) → ◻ live config reload → ◻ `internal/host` Spawner
+     interface with the local impl only, gated on every existing `internal/proc` test passing
+     unmodified → ◻ `Server.Agent` binding + `Config.TargetFor` → ◻ `corrallm agent` → ◻
+     `host.Remote` (integration-testable by running a second agent on another port on box1) → ◻
+     darwin capacity (`gpu.Metal`, `sysmem_darwin`) → ◻ failure semantics → ◻ Agents tab.
+     **Still USER-owned, surface before the step that needs it:** agent lease self-reap on/off and
+     its TTL (decides whether the ledger may ever be released after a host is lost — the trade is
+     "a network blip kills an in-progress cold load" vs "a partition strands 48 GB"); transport
+     trust (the agent executes arbitrary shell strings — it is an RCE surface by design);
+     box2's pool shape (one unified pool vs a wired-limit split); whether to spike
+     `proc_pid_rusage`'s `ri_phys_footprint` for real per-process measurement on darwin before
+     accepting "unmeasurable → ramUsage becomes authoritative".
   - OSS follow-ups (not blockers): auth multi-user accounts/roles + token rotation (today is a single
     shared admin token); rename the `WattsPerToken` cost fields to `WhPerToken`.
 - Optional polish in §7 Optional extensions (affinity weighting, context-window clamp on degrade,

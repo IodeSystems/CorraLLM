@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/tune"
 )
 
@@ -142,5 +143,85 @@ func TestEffectiveUsage_MeasuredReplacesUnknown(t *testing.T) {
 	}
 	if got["gpu0"] != 8500*mib {
 		t.Errorf("gpu0 = %d MiB, want the measured 8500", got["gpu0"]/mib)
+	}
+}
+
+// A unified-memory host (Apple silicon) has no discrete VRAM: it declares one
+// `system` pool and names it as its devicePool. The measured footprint must be
+// charged THERE.
+//
+// The bug this fixes was silent and total. The measured footprint went to a
+// hardcoded "gpu0", so on such a server every measured model was charged against
+// a pool the server does not declare — budget zero — and fitsLocked refused it
+// forever with a PERMANENT capacity error. That surfaces as a 503 that reads
+// like a broken backend, not like a pool-naming mistake, on a model that had
+// been working right up until the moment it was first measured.
+func TestEffectiveUsage_ChargesMeasuredToServerDevicePool(t *testing.T) {
+	fakeNvidiaSMI(t, "0, Fake GPU, 60000, 0, 60000", "")
+	m := NewManager(&config.Config{Servers: map[string]config.Server{
+		"mac": {Pools: map[string]string{"system": "64GB"}, DevicePool: "system"},
+	}})
+	c, err := tune.New(t.TempDir() + "/vram-profile.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Update("Fake GPU", "m", tune.Profile{
+		BaseMiB: 20000, PerSlotMiB: 0, PeakMiB: 20000, MeasuredSlots: 1,
+	})
+	m.SetTuneCache(c)
+
+	mdl := config.Model{
+		Server: "mac", MaxConcurrent: 1,
+		RAMUsage: map[string]string{"system": "16GB"},
+	}
+	got := m.effectiveUsage("m", mdl)
+
+	if want := int64(20000) * mib; got["system"] != want {
+		t.Errorf("system = %d, want %d (the measured footprint)", got["system"], want)
+	}
+	if _, ok := got["gpu0"]; ok {
+		t.Errorf("charged %d to gpu0, a pool this server does not declare", got["gpu0"])
+	}
+}
+
+// vramBudget describes ONE device, so every term in it must be scoped to the
+// server that device belongs to.
+//
+// The bug this fixes stayed invisible while there was one server and fires the
+// moment there are two: a pinned model on box2 was subtracted from box1's
+// budget, so box1 sized `--parallel` against memory that was never on its card.
+// Two hosts each under-count by the other's footprint, and the more the second
+// box holds, the fewer slots the first one gives itself.
+func TestVRAMBudget_IgnoresOtherServersPinnedModels(t *testing.T) {
+	fakeNvidiaSMI(t, "0, Fake GPU, 60000, 0, 60000", "")
+	m := NewManager(&config.Config{
+		Servers: map[string]config.Server{
+			"box1": {Pools: map[string]string{"gpu0": "60GB"}},
+			"mac":  {Pools: map[string]string{"system": "64GB"}, DevicePool: "system"},
+		},
+		Models: map[string]config.Model{
+			"target":      {Server: "box1", Cmd: "x"},
+			"pinned-box1": {Server: "box1", Cmd: "x", Persistent: true, RAMUsage: map[string]string{"gpu0": "5GB"}},
+			"pinned-mac":  {Server: "mac", Cmd: "x", Persistent: true, RAMUsage: map[string]string{"system": "40GB"}},
+		},
+	})
+	c, err := tune.New(t.TempDir() + "/vram-profile.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetTuneCache(c)
+
+	got := m.vramBudget(gpu.Stats{Name: "Fake GPU", TotalMiB: 60000, UsedMiB: 0}, "target")
+
+	// Only box1's pinned model counts. Derived rather than hand-written so the
+	// test asserts the scoping, not a unit convention (5GB is 5e9, not 5 GiB).
+	box1Pinned, err := config.ParseSize("5GB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := 60000 - int(box1Pinned/mib) - m.vramMargin
+
+	if got != want {
+		t.Errorf("budget = %d, want %d — the mac's 40GB pinned model was subtracted from box1's card", got, want)
 	}
 }

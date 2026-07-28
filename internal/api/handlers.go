@@ -990,6 +990,7 @@ type PoolDef struct {
 type ServerDef struct {
 	Server        string    `json:"server" doc:"Server name."`
 	MaxConcurrent int       `json:"maxConcurrent" doc:"Optional host concurrency cap (0 = none)."`
+	DevicePool    string    `json:"devicePool" doc:"Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."`
 	Pools         []PoolDef `json:"pools" doc:"Declared memory pools."`
 }
 
@@ -1125,7 +1126,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	out := &OverviewOutput{}
 
 	for name, srv := range h.Cfg.Servers {
-		sd := ServerDef{Server: name, MaxConcurrent: srv.MaxConcurrent}
+		sd := ServerDef{Server: name, MaxConcurrent: srv.MaxConcurrent, DevicePool: h.Cfg.DevicePoolFor(name)}
 		totals, _ := config.ParseSizes(srv.Pools)
 		reserve, _ := config.ParseSizes(srv.Reserve)
 		for pool, total := range totals {

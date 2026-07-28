@@ -506,12 +506,30 @@ func (m *Manager) probeUI(p *Process) {
 //
 // preCrowded is non-corrallm usage (total used minus corrallm's own resident
 // model process groups). nonEvictable is the persistent/pinned models that stay
-// put — by measured footprint (PeakMiB), falling back to config ramUsage.gpu0.
-// Evictable residents are deliberately NOT subtracted. Never negative.
+// put — by measured footprint (PeakMiB), falling back to the config ramUsage of
+// the server's device pool. Evictable residents are deliberately NOT
+// subtracted. Never negative.
+//
+// EVERY term is scoped to forModel's own server. `stats` describes one host's
+// device, so folding in another host's residents would subtract memory that was
+// never on this device: with two servers loaded, each would under-count its own
+// budget by the other's footprint and tune itself down to fewer slots — or, if
+// the arithmetic went far enough, to none.
 func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
+	// The server comes from the model rather than a parameter because every
+	// caller already resolved it, and vramBudget already consults m.cfg.Models
+	// below for the same reason.
+	server := ""
+	if m.cfg != nil {
+		server = m.cfg.Models[forModel].Server
+	}
+
 	m.mu.Lock()
 	procs := make([]*Process, 0, len(m.procs))
 	for _, p := range m.procs {
+		if p.server != server {
+			continue
+		}
 		procs = append(procs, p)
 	}
 	m.mu.Unlock()
@@ -535,14 +553,15 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 		preCrowded = 0
 	}
 
+	devicePool := m.vramPool(server)
 	nonEvictable := 0
 	for name, mc := range m.cfg.Models {
-		if name == forModel || !mc.Persistent {
+		if name == forModel || !mc.Persistent || mc.Server != server {
 			continue
 		}
 		if prof, ok := m.tuneCache.Get(stats.Name, name); ok && prof.PeakMiB > 0 {
 			nonEvictable += prof.PeakMiB
-		} else if b, err := config.ParseSize(mc.RAMUsage["gpu0"]); err == nil && b > 0 {
+		} else if b, err := config.ParseSize(mc.RAMUsage[devicePool]); err == nil && b > 0 {
 			nonEvictable += int(b / (1024 * 1024))
 		}
 	}
@@ -556,11 +575,20 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 	return budget
 }
 
-// vramPool is the pool name treated as GPU memory when reconciling a config
-// declaration against a MEASURED footprint. Matches the existing convention in
-// vramBudget; a multi-GPU or differently-named pool layout would need this
-// generalised rather than hardcoded.
-const vramPool = "gpu0"
+// defaultVRAMPool is the pool treated as device memory when a server does not
+// say otherwise — the value this was hardcoded to before servers could differ.
+const defaultVRAMPool = "gpu0"
+
+// vramPool is the pool on `server` that a MEASURED footprint is charged
+// against. Per-server because hosts differ in shape: a discrete-GPU box has
+// "gpu0", a unified-memory box has only "system", and charging the latter's
+// measurement to "gpu0" would bill it against a pool with no budget.
+func (m *Manager) vramPool(server string) string {
+	if m.cfg == nil {
+		return defaultVRAMPool
+	}
+	return m.cfg.DevicePoolFor(server)
+}
 
 // unknownIfEmpty handles a model whose size is genuinely UNKNOWN: no measured
 // profile and no declared ramUsage.
@@ -638,7 +666,8 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 	}
 	measured := int64(est) * 1024 * 1024
 
-	declared := usage[vramPool]
+	pool := m.vramPool(mdl.Server)
+	declared := usage[pool]
 	if declared == measured {
 		return usage
 	}
@@ -657,7 +686,7 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 	for k, v := range usage {
 		out[k] = v
 	}
-	out[vramPool] = measured
+	out[pool] = measured
 	return out
 }
 
