@@ -63,6 +63,20 @@ type inflightEntry struct {
 	// whatever its group allows. See the header in proxy.go.
 	retryable bool
 
+	// bytesOut and chunks are LIVE response progress, updated per write while
+	// the request runs. Atomics rather than the registry lock: writes happen per
+	// chunk (thousands of times for a long generation) while the lock is sized
+	// for state changes, which happen a handful of times per request.
+	//
+	// They exist because in-flight requests were metadata-only, so a runaway
+	// generation looked exactly like a slow one: same "streaming" state, same
+	// growing elapsed time, nothing to tell them apart. A chunk count answers it
+	// immediately — a reply still going at tens of thousands of chunks is not
+	// slow, it is looping. Counting bytes THROUGH the proxy also keeps this
+	// backend-agnostic: no llama.cpp /slots, no vendor assumption.
+	bytesOut atomic.Int64
+	chunks   atomic.Int64
+
 	// cancel aborts this request wherever it currently is — queued for a slot,
 	// waiting on a cold load, or mid-stream. It is the request's own context
 	// cancel, so every downstream call (admission wait, backend proxying) tears
@@ -85,6 +99,8 @@ type InflightInfo struct {
 	Path      string
 	Streaming bool // client asked for a streamed response
 	Retryable bool // request opted in to being preempted by a higher priority
+	BytesOut  int64 // response bytes relayed so far
+	Chunks    int64 // response writes so far — for a stream, ~tokens
 	State     string
 	StartedAt time.Time
 	ElapsedMS int64
@@ -159,6 +175,7 @@ func (p *Proxy) Inflight() []InflightInfo {
 			ID: e.id, Served: e.served, Backend: e.backend, Group: e.group,
 			Key: e.key, SourceIP: e.sourceIP, Path: e.path, Streaming: e.streaming,
 			Retryable: e.retryable, State: e.state, StartedAt: e.startedAt,
+			BytesOut: e.bytesOut.Load(), Chunks: e.chunks.Load(),
 			ElapsedMS: now.Sub(e.startedAt).Milliseconds(),
 		})
 	}
@@ -199,4 +216,15 @@ func (p *Proxy) CancelInflight(id int64) bool {
 	// invites a self-deadlock.
 	cancel(ErrCanceled)
 	return true
+}
+
+// recordProgress accounts one relayed response write. Called on the hot path,
+// so it does no locking and publishes no event: the dashboard polls, and a
+// per-token event storm would cost far more than the signal is worth.
+func (e *inflightEntry) recordProgress(n int) {
+	if e == nil || n <= 0 {
+		return
+	}
+	e.bytesOut.Add(int64(n))
+	e.chunks.Add(1)
 }

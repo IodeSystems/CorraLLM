@@ -954,6 +954,8 @@ type ActiveRequestView struct {
 	SourceIP  string `json:"sourceIp" doc:"Client IP."`
 	Path      string `json:"path" doc:"Request path."`
 	Streaming bool   `json:"streaming" doc:"Client asked for a streamed response."`
+	BytesOut  int64  `json:"bytesOut" doc:"Response bytes relayed so far. Live — grows while the request runs."`
+	Chunks    int64  `json:"chunks" doc:"Response writes so far; for a streamed reply roughly the token count. A reply still growing at tens of thousands is looping, not slow."`
 	Retryable bool   `json:"retryable" doc:"Caller volunteered this request for preemption (X-Corrallm-Retryable). A request may only widen its interruptibility, never narrow it."`
 	State     string `json:"state" doc:"queued (awaiting a slot) | loading (awaiting backend) | streaming (proxying)."`
 	StartedAt string `json:"startedAt" doc:"RFC3339 arrival time."`
@@ -981,7 +983,7 @@ func (h *Handlers) ActiveRequests(_ context.Context, _ *ActiveRequestsInput) (*A
 		out.Body.Requests = append(out.Body.Requests, ActiveRequestView{
 			ID: r.ID, Served: r.Served, Backend: r.Backend, Group: r.Group,
 			Key: r.Key, SourceIP: r.SourceIP, Path: r.Path, Streaming: r.Streaming,
-			Retryable: r.Retryable,
+			Retryable: r.Retryable, BytesOut: r.BytesOut, Chunks: r.Chunks,
 			State: r.State, StartedAt: r.StartedAt.UTC().Format(time.RFC3339),
 			ElapsedMS: r.ElapsedMS,
 		})

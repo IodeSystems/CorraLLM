@@ -248,6 +248,10 @@ type Query {
 type corrallm_ActiveRequestView {
   """Backend admitted on (empty while still choosing)."""
   backend: String!
+  """Response bytes relayed so far. Live — grows while the request runs."""
+  bytesOut: Long!
+  """Response writes so far; for a streamed reply roughly the token count. A reply still growing at tens of thousands is looping, not slow."""
+  chunks: Long!
   """Milliseconds in flight so far."""
   elapsedMs: Long!
   """Priority group (lane) the caller resolved to."""

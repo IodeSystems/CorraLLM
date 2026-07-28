@@ -640,7 +640,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
 		p.markInflight(live, inflightStreaming, name)
-		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK, streaming: streaming}
+		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK, streaming: streaming, live: live}
 		// Capture the proxy error so the activity log can say WHY a request failed
 		// (P10a) and map it to an honest status: a canceled connection (client or an
 		// upstream front-proxy giving up) is 499, not a backend 502; corrallm's own
@@ -912,7 +912,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 			// WebRTC signaling: reverse-proxy the SDP offer→answer. The slot is held
 			// only for the handshake (the P2P media session isn't tracked here); no
 			// audio traverses corrallm, so AudioBytes stays 0.
-			sc := &statusCapture{ResponseWriter: w}
+			sc := &statusCapture{ResponseWriter: w, live: live}
 			newReverseProxy(pr.Target).ServeHTTP(sc, r.WithContext(reqCtx))
 			done()
 			status := sc.code
@@ -2044,6 +2044,9 @@ const usageCaptureLimit = 1 << 20 // 1 MiB
 // activity logging + usage metering, while preserving streaming.
 type statusCapture struct {
 	http.ResponseWriter
+	// live, when set, receives per-write progress so the dashboard can tell a
+	// long answer from a looping one while it is still running.
+	live        *inflightEntry
 	code        int
 	wroteHeader bool
 	streaming   bool
@@ -2074,6 +2077,7 @@ func (s *statusCapture) Write(b []byte) (int, error) {
 		s.firstWrite = time.Now()
 	}
 	s.written += int64(len(b))
+	s.live.recordProgress(len(b))
 	if s.streaming {
 		// Keep a rolling tail — the final SSE event holds usage. Trim lazily at
 		// 2× the cap so a long stream stays amortized O(n), not O(n²): the tail
