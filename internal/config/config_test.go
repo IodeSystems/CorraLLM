@@ -11,10 +11,10 @@ import (
 // TestMaxQuality returns the top quality (0 when none set).
 func TestMaxQuality(t *testing.T) {
 	if got := MaxQuality([]Candidate{{Model: Model{Quality: 60}}, {Model: Model{Quality: 100}}, {Model: Model{Quality: 40}}}); got != 100 {
-		t.Errorf("MaxQuality = %d, want 100", got)
+		t.Errorf("MaxQuality = %v, want 100", got)
 	}
 	if got := MaxQuality([]Candidate{{}, {}}); got != 0 {
-		t.Errorf("MaxQuality (unset) = %d, want 0", got)
+		t.Errorf("MaxQuality (unset) = %v, want 0", got)
 	}
 }
 

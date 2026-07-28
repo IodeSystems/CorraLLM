@@ -349,7 +349,17 @@ type Model struct {
 	Swap     *Swap             `yaml:"swap,omitempty"`     // measured load cost (cmd only)
 	Proxy    yaml.Node         `yaml:"proxy,omitempty"`    // forward target: number | "host:port" | {host,port,headers}
 	Type     string            `yaml:"type,omitempty"`     // cost class: chat | embed | openrouter | …
-	Quality  int               `yaml:"quality,omitempty"`
+	// Quality is the relative rank used for lane ordering and degrade gating.
+	// FLOAT, not int: a tier often has to be slotted BETWEEN two existing ones —
+	// an MLX 4-bit port of a model that already sits at 2 is better than the 27B
+	// at 1 and worse than the original, and "1.5" is the only honest way to say
+	// so without renumbering the whole ladder. Integers keep working unchanged;
+	// 1 parses as 1.0.
+	//
+	// Before this was a float, yaml silently TRUNCATED `quality: 1.5` to 1 and
+	// validated clean, so the model quietly tied the tier below the one it was
+	// meant to beat.
+	Quality  float64           `yaml:"quality,omitempty"`
 	// MaxConcurrent is the model's admission slots (the fairshare capacity
 	// unit). For a local llama-server this mirrors --parallel. Default 1.
 	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
@@ -649,8 +659,8 @@ type Sticky struct {
 
 // MaxQuality returns the highest Quality among the candidates (0 if none/unset)
 // — the top of a served name's quality ladder (P7).
-func MaxQuality(cands []Candidate) int {
-	top := 0
+func MaxQuality(cands []Candidate) float64 {
+	top := 0.0
 	for _, c := range cands {
 		if c.Model.Quality > top {
 			top = c.Model.Quality
@@ -713,7 +723,7 @@ type PriorityGroup struct {
 	AcceptDegrade bool `yaml:"acceptDegrade,omitempty"`
 	// QualityFloor is the lowest backend quality the group will accept when it
 	// does degrade (0 = no floor). Ignored unless AcceptDegrade is set.
-	QualityFloor int `yaml:"qualityFloor,omitempty"`
+	QualityFloor float64 `yaml:"qualityFloor,omitempty"`
 	// PreferResident makes the group best-effort against what is already loaded:
 	// among the backends it accepts (quality-wise), any that are currently
 	// resident (a warm process) are tried first, in quality order, before any
@@ -728,7 +738,7 @@ type PriorityGroup struct {
 // AcceptsQuality reports whether the group may be served by a backend of quality
 // q, given the model's top-tier quality. A non-degrading group accepts only the
 // top tier; a degrading group accepts down to its QualityFloor (P7).
-func (g PriorityGroup) AcceptsQuality(q, topQuality int) bool {
+func (g PriorityGroup) AcceptsQuality(q, topQuality float64) bool {
 	// A model's own top tier is always acceptable — the floor only gates
 	// degrading BELOW the best when a better tier exists. Without this, a group
 	// with QualityFloor>0 rejects any model whose whole ladder sits under the

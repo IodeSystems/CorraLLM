@@ -205,3 +205,60 @@ models:
 		t.Fatalf("relative include did not resolve against the config's dir: %v", err)
 	}
 }
+
+// Quality is a float so a tier can be slotted BETWEEN two existing ones without
+// renumbering the ladder. The motivating case: an MLX 4-bit port of a 27B that
+// is better than the ternary 27B at quality 1 and worse than the original at 2.
+//
+// The bug this replaces was silent — yaml truncated `quality: 1.5` to 1 and
+// validated clean, so the model tied the tier it was meant to beat and nothing
+// said a word.
+func TestQuality_FractionalTierSurvivesParsing(t *testing.T) {
+	c, err := loadYAML(t, `
+servers:
+  box1: { pools: { gpu0: 30GB } }
+  mac1: { pools: { system: 64GB }, devicePool: system }
+models:
+  bonsai:      { cmd: x, server: box1, proxy: 5801, quality: 1 }
+  mac-4bit:    { cmd: x, server: mac1, proxy: 5810, quality: 1.5 }
+  mtp:         { cmd: x, server: box1, proxy: 5800, quality: 2 }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Models["mac-4bit"].Quality; got != 1.5 {
+		t.Fatalf("quality = %v, want 1.5 (it used to truncate to 1)", got)
+	}
+	lo, hi := c.Models["bonsai"].Quality, c.Models["mtp"].Quality
+	if mid := c.Models["mac-4bit"].Quality; mid <= lo || mid >= hi {
+		t.Errorf("%v did not land strictly between %v and %v", mid, lo, hi)
+	}
+}
+
+// MaxQuality and the degrade gate must both reason in floats, or a fractional
+// top tier would round and change which backends a group accepts.
+func TestQuality_FractionalTopTierGatesDegrade(t *testing.T) {
+	cands := []Candidate{
+		{Name: "lo", Model: Model{Quality: 1}},
+		{Name: "mid", Model: Model{Quality: 1.5}},
+	}
+	if top := MaxQuality(cands); top != 1.5 {
+		t.Fatalf("MaxQuality = %v, want 1.5", top)
+	}
+
+	strict := PriorityGroup{}
+	if strict.AcceptsQuality(1, 1.5) {
+		t.Error("a non-degrading group must reject a tier below the top, even a fractional one")
+	}
+	if !strict.AcceptsQuality(1.5, 1.5) {
+		t.Error("the top tier is always acceptable")
+	}
+
+	degrade := PriorityGroup{AcceptDegrade: true, QualityFloor: 1.25}
+	if degrade.AcceptsQuality(1, 1.5) {
+		t.Error("1 is below a 1.25 floor and must be rejected")
+	}
+	if !degrade.AcceptsQuality(1.5, 2) {
+		t.Error("1.5 clears a 1.25 floor and must be accepted")
+	}
+}

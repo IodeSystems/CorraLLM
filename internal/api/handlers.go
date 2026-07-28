@@ -1008,7 +1008,7 @@ type ModelDef struct {
 	Modalities    []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
 	Capability    string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
 	Type          string         `json:"type" doc:"Cost class (chat | embed | openrouter | …)."`
-	Quality       int            `json:"quality" doc:"Relative quality rank."`
+	Quality       float64        `json:"quality" doc:"Relative quality rank. Fractional tiers are legal — a model that belongs between two existing tiers is 1.5, not a renumbered ladder."`
 	Server        string         `json:"server" doc:"Server it draws capacity from (spawned only)."`
 	Target        string         `json:"target" doc:"Forward URL (scheme://host:port; headers redacted)."`
 	MaxConcurrent int            `json:"maxConcurrent" doc:"Admission slots."`
@@ -1070,7 +1070,7 @@ type GroupDef struct {
 	ShareCurrency string      `json:"shareCurrency" doc:"requests | dwell | cost."`
 	Interruptible bool        `json:"interruptible" doc:"May a higher group preempt it?"`
 	AcceptDegrade bool        `json:"acceptDegrade" doc:"Opts into quality-degrade fall-through."`
-	QualityFloor  int         `json:"qualityFloor" doc:"Lowest accepted quality when degrading."`
+	QualityFloor  float64     `json:"qualityFloor" doc:"Lowest accepted quality when degrading."`
 	Stages        []StageView `json:"stages" doc:"Per-type saturation policy."`
 }
 

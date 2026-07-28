@@ -1154,15 +1154,19 @@ func (p *Proxy) residentBackends() map[string]bool {
 // robin across cost-equivalent peers). Uniform quality → a single tier →
 // list order with type-rr (no regression for lanes that don't use quality).
 func orderCandidates(cands []config.Candidate, rr uint64) []int {
-	tiers := map[int][]int{}
-	var qualities []int
+	// Keyed by float now that a tier can sit between two others (1.5). Exact
+	// equality is the right test here despite these being floats: a tier key
+	// comes from the same parsed config value every time, not from arithmetic,
+	// so two models written `quality: 1.5` produce bit-identical keys.
+	tiers := map[float64][]int{}
+	var qualities []float64
 	for i, c := range cands {
 		if _, seen := tiers[c.Model.Quality]; !seen {
 			qualities = append(qualities, c.Model.Quality)
 		}
 		tiers[c.Model.Quality] = append(tiers[c.Model.Quality], i)
 	}
-	sort.Sort(sort.Reverse(sort.IntSlice(qualities))) // best quality first
+	sort.Sort(sort.Reverse(sort.Float64Slice(qualities))) // best quality first
 	out := make([]int, 0, len(cands))
 	for _, q := range qualities {
 		out = append(out, orderByTypeRR(tiers[q], cands, rr)...)
@@ -1377,7 +1381,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		OwnedBy string `json:"owned_by"`
 		// corrallm metadata
 		State   string `json:"state"`             // absent|loading|ready|idle|evicting|proxy
-		Quality int    `json:"quality,omitempty"` // quality tier (lane: top tier)
+		Quality float64 `json:"quality,omitempty"` // quality tier (lane: top tier); fractional tiers are legal
 		Type    string `json:"type,omitempty"`    // cost class
 		Kind    string `json:"kind"`              // model|lane
 		// Remote: served by a host we do not run (no local process, non-loopback

@@ -312,7 +312,7 @@ type OvModel = {
   capability: string
   persistent: boolean
   type: string
-  quality: string
+  quality: number // Float in the schema: tiers can be fractional (1.5)
   server: string
   target: string
   cmd: string

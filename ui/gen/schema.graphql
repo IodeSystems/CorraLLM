@@ -851,7 +851,7 @@ type corrallm_GroupDef {
   """Group name."""
   name: String!
   """Lowest accepted quality when degrading."""
-  qualityFloor: Long!
+  qualityFloor: Float!
   """requests | dwell | cost."""
   shareCurrency: String!
   """Per-type saturation policy."""
@@ -1018,8 +1018,8 @@ type corrallm_ModelDef {
   persistent: Boolean!
   """Backing process identity; an extension's models share one."""
   procKey: String!
-  """Relative quality rank."""
-  quality: Long!
+  """Relative quality rank. Fractional tiers are legal — a model that belongs between two existing tiers is 1.5, not a renumbered ladder."""
+  quality: Float!
   """True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."""
   remote: Boolean!
   """Server it draws capacity from (spawned only)."""
