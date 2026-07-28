@@ -481,6 +481,13 @@ func serve(ctx context.Context, o serveOpts) error {
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// SIGHUP re-reads the config without dropping the listener or the resident
+	// backends. Config and keys were boot-time-only before this, so every edit
+	// cost a restart — which on this box means evicting a 27B and paying a cold
+	// load, and (until agentkit learned to retry transport errors) failing every
+	// in-flight client request.
+	go watchReload(sigCtx, o.configPath, mgr, scheduler, px, h)
+
 	// Expire stale slot reservations (a keyed caller can lease headroom for its
 	// lane; the lease must be renewed or it auto-frees). Stops on shutdown.
 	scheduler.StartReaper(sigCtx)
@@ -662,4 +669,50 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// watchReload re-reads the config on SIGHUP and installs it in every holder.
+//
+// A bad config NEVER replaces a good one. Load already parses, resolves
+// extensions and validates; if any of that fails the running config stays and
+// the error is logged. This is the same discipline `corrallm validate` exists
+// for — the port must not go down because someone fat-fingered a pool size.
+//
+// Order is deliberate: residency and admission learn about the new config
+// BEFORE the proxy starts routing on it. Each holder swaps its own pointer, so
+// there is a window of a few microseconds where they disagree; updating the
+// request entry point last means that window can only ever have downstream
+// components knowing MORE than the proxy, never less.
+//
+// What this does not do: it will not un-spawn a backend whose model was
+// deleted, and it will not resize a resident backend whose ramUsage changed.
+// Residency is about processes that are already running and holding real
+// memory; the config is a statement of intent for the NEXT spawn. Evicting
+// someone's warm 27B because a file changed is not a reload, it is a restart
+// with extra steps.
+func watchReload(ctx context.Context, path string, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	defer signal.Stop(ch)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ch:
+			cfg, err := config.Load(path)
+			if err != nil {
+				slog.Error("config reload REJECTED; keeping the running config",
+					"path", path, "err", err)
+				continue
+			}
+			mgr.SetConfig(cfg)
+			sc.SetConfig(cfg)
+			h.SetConfig(cfg)
+			px.SetConfig(cfg)
+			slog.Info("config reloaded", "path", path,
+				"servers", len(cfg.Servers), "models", len(cfg.Models),
+				"lanes", len(cfg.Lanes), "groups", len(cfg.PriorityGroups))
+		}
+	}
 }

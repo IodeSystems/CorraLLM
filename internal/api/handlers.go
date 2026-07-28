@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -28,7 +29,16 @@ import (
 // add the scheduler, residency, and cost subsystems.
 type Handlers struct {
 	Version string
-	Cfg     *config.Config
+	// Cfg is the config this Handlers was CONSTRUCTED with. It is written once,
+	// before any request can reach it, and never again — so reading it needs no
+	// synchronization. On reload, SetConfig stores a newer config in `live`
+	// instead, and every read goes through h.config(), which prefers it.
+	//
+	// Two fields rather than one atomic because Handlers is built with a struct
+	// literal in a dozen places; an atomic field would make every one of them a
+	// two-step construction for no gain in a read-only view layer.
+	Cfg  *config.Config
+	live atomic.Pointer[config.Config]
 	Store   *store.Store
 	Mgr     *proc.Manager    // residency introspection (P8)
 	Sched   *sched.Scheduler // live admission load (P8-beyond)
@@ -86,9 +96,9 @@ type ConfigSummaryOutput struct {
 // ConfigSummary returns the names declared in the loaded config.
 func (h *Handlers) ConfigSummary(_ context.Context, _ *ConfigSummaryInput) (*ConfigSummaryOutput, error) {
 	out := &ConfigSummaryOutput{}
-	out.Body.Servers = keys(h.Cfg.Servers)
-	out.Body.Models = keys(h.Cfg.Models)
-	out.Body.PriorityGroups = keys(h.Cfg.PriorityGroups)
+	out.Body.Servers = keys(h.config().Servers)
+	out.Body.Models = keys(h.config().Models)
+	out.Body.PriorityGroups = keys(h.config().PriorityGroups)
 	return out, nil
 }
 
@@ -329,7 +339,7 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 	}
 	out.Body.Models = make([]ResidentModelView, 0, len(snap.Models))
 	for _, m := range snap.Models {
-		configSlots := h.Cfg.Models[m.ModelName].Slots()
+		configSlots := h.config().Models[m.ModelName].Slots()
 		mv := ResidentModelView{
 			Name: m.Name, ModelName: m.ModelName, ProcKey: m.ProcKey, Remote: m.Remote,
 			Server: m.Server, State: m.State,
@@ -448,7 +458,7 @@ func (h *Handlers) UsageByKey(_ context.Context, in *UsageByKeyInput) (*UsageByK
 	if err != nil {
 		return nil, err
 	}
-	rate := h.Cfg.CostPerKwh
+	rate := h.config().CostPerKwh
 	out := &UsageByKeyOutput{}
 	out.Body.WindowHours = in.WindowHours
 	out.Body.Rows = make([]KeyUsageRow, 0, len(rows))
@@ -534,7 +544,7 @@ func (h *Handlers) UsageSeries(_ context.Context, in *UsageSeriesInput) (*UsageS
 		return nil, err
 	}
 
-	rate := h.Cfg.CostPerKwh
+	rate := h.config().CostPerKwh
 	// Per key: a dense slice of points + a running total cost for ordering.
 	type acc struct {
 		points    []SeriesPoint
@@ -679,7 +689,7 @@ func (h *Handlers) UsageSeriesByGroup(_ context.Context, in *UsageSeriesInput) (
 		if !ok {
 			continue
 		}
-		grp, _ := h.Cfg.ResolveGroup(r.Key)
+		grp, _ := h.config().ResolveGroup(r.Key)
 		a := byGroup[grp]
 		if a == nil {
 			a = &acc{points: make([]GroupSeriesPoint, len(buckets))}
@@ -866,7 +876,7 @@ func (h *Handlers) Groups(_ context.Context, _ *GroupsInput) (*GroupsOutput, err
 
 	// Union of configured groups and any group seen live (e.g. synthesized default).
 	names := map[string]struct{}{}
-	for name := range h.Cfg.PriorityGroups {
+	for name := range h.config().PriorityGroups {
 		names[name] = struct{}{}
 	}
 	for name := range agg {
@@ -874,7 +884,7 @@ func (h *Handlers) Groups(_ context.Context, _ *GroupsInput) (*GroupsOutput, err
 	}
 	out.Body.Groups = make([]GroupView, 0, len(names))
 	for name := range names {
-		pg := h.Cfg.PriorityGroups[name] // zero value if unlisted (e.g. default)
+		pg := h.config().PriorityGroups[name] // zero value if unlisted (e.g. default)
 		gv := GroupView{
 			Name:          name,
 			Weight:        pg.EffectiveWeight(),
@@ -1125,8 +1135,8 @@ func stageSummary(s config.Stage) string {
 func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutput, error) {
 	out := &OverviewOutput{}
 
-	for name, srv := range h.Cfg.Servers {
-		sd := ServerDef{Server: name, MaxConcurrent: srv.MaxConcurrent, DevicePool: h.Cfg.DevicePoolFor(name)}
+	for name, srv := range h.config().Servers {
+		sd := ServerDef{Server: name, MaxConcurrent: srv.MaxConcurrent, DevicePool: h.config().DevicePoolFor(name)}
 		totals, _ := config.ParseSizes(srv.Pools)
 		reserve, _ := config.ParseSizes(srv.Reserve)
 		for pool, total := range totals {
@@ -1137,8 +1147,8 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	sort.Slice(out.Body.Servers, func(i, j int) bool { return out.Body.Servers[i].Server < out.Body.Servers[j].Server })
 
-	costModel := cost.NewModel(h.Cfg) // modality inference (P9d): audio cost class ⇒ audio model
-	for name, m := range h.Cfg.Models {
+	costModel := cost.NewModel(h.config()) // modality inference (P9d): audio cost class ⇒ audio model
+	for name, m := range h.config().Models {
 		md := ModelDef{
 			Name: name, Persistent: m.Persistent, Capability: config.ModelCapability(m),
 			Modalities: modalityViews(m.EffectiveModalities(costModel.IsAudioType(m.Type))),
@@ -1159,7 +1169,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	sort.Slice(out.Body.Models, func(i, j int) bool { return out.Body.Models[i].Name < out.Body.Models[j].Name })
 
-	for name, lane := range h.Cfg.Lanes {
+	for name, lane := range h.config().Lanes {
 		ld := LaneDef{Name: name}
 		for _, mem := range lane.Members {
 			lm := LaneMemberDef{Model: mem.Model}
@@ -1172,7 +1182,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	sort.Slice(out.Body.Lanes, func(i, j int) bool { return out.Body.Lanes[i].Name < out.Body.Lanes[j].Name })
 
-	for name, g := range h.Cfg.PriorityGroups {
+	for name, g := range h.config().PriorityGroups {
 		gd := GroupDef{
 			Name: name, Weight: g.EffectiveWeight(), ShareCurrency: shareCurrencyOf(g),
 			Interruptible: g.Interruptible, AcceptDegrade: g.AcceptDegrade, QualityFloor: g.QualityFloor,
@@ -1185,7 +1195,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	sort.Slice(out.Body.Groups, func(i, j int) bool { return out.Body.Groups[i].Name < out.Body.Groups[j].Name })
 
-	for k, grp := range h.Cfg.Keys {
+	for k, grp := range h.config().Keys {
 		out.Body.Keys = append(out.Body.Keys, KeyDef{Key: k, Group: grp})
 	}
 	sort.Slice(out.Body.Keys, func(i, j int) bool { return out.Body.Keys[i].Key < out.Body.Keys[j].Key })
@@ -1331,4 +1341,22 @@ func keys[V any](m map[string]V) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// config returns the newest config this Handlers knows: the one SetConfig
+// installed, else the one it was constructed with. Read through this, never
+// h.Cfg directly, or a reload goes unnoticed here.
+func (h *Handlers) config() *config.Config {
+	if c := h.live.Load(); c != nil {
+		return c
+	}
+	return h.Cfg
+}
+
+// SetConfig installs a reloaded config for every subsequent read.
+func (h *Handlers) SetConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	h.live.Store(cfg)
 }

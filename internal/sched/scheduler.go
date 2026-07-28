@@ -18,6 +18,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
@@ -58,7 +59,9 @@ type Done struct {
 type Scheduler struct {
 	mu       sync.Mutex
 	backends map[string]*backendState
-	cfg      *config.Config         // optional: drives limits + share currency
+	// cfg is swapped wholesale on reload; read via s.config(). Optional (may
+	// hold nil): drives limits + share currency.
+	cfg      atomic.Pointer[config.Config]
 	budgets  map[string][]rateEvent // "scope\x00dim" → sliding-window events
 	now      func() time.Time       // injectable clock (windows, dwell, decay)
 
@@ -99,7 +102,7 @@ func New() *Scheduler {
 // (maxWait / maxQueueDepth) from the scheduler config.
 func NewWithConfig(cfg *config.Config) *Scheduler {
 	s := New()
-	s.cfg = cfg
+	s.cfg.Store(cfg)
 	if cfg != nil {
 		if d, err := time.ParseDuration(cfg.Scheduler.MaxWait); err == nil && d > 0 {
 			s.maxWait = d
@@ -598,10 +601,10 @@ const shareHalfLife = 30 * time.Second
 // shareCurrency returns a group's fairshare currency (requests | dwell | cost),
 // defaulting to requests.
 func (s *Scheduler) shareCurrency(group string) string {
-	if s.cfg == nil {
+	if s.config() == nil {
 		return "requests"
 	}
-	switch c := s.cfg.PriorityGroups[group].ShareCurrency; c {
+	switch c := s.config().PriorityGroups[group].ShareCurrency; c {
 	case "dwell", "cost":
 		return c
 	default:
@@ -637,10 +640,10 @@ func (bs *backendState) addShare(now time.Time, sl *slot, dwell, cost float64) {
 
 // limitsFor returns the per-group and per-(group×type) limit specs. Caller holds s.mu.
 func (s *Scheduler) limitsFor(group, backendType string) (groupLimits, stageLimits map[string]string) {
-	if s.cfg == nil {
+	if s.config() == nil {
 		return nil, nil
 	}
-	g := s.cfg.PriorityGroups[group]
+	g := s.config().PriorityGroups[group]
 	return g.Limits, g.StageFor(backendType).Limits
 }
 
@@ -743,4 +746,29 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// config returns the scheduler's current config (may be nil). Read through this
+// rather than the field: the pointer is swapped on reload.
+func (s *Scheduler) config() *config.Config {
+	return s.cfg.Load()
+}
+
+// SetConfig swaps in a reloaded config and re-reads the queue bounds.
+//
+// Capacity is deliberately NOT lowered here: sched grows capacity within a
+// process but never shrinks it, because in-flight admissions were granted
+// against the old ceiling and revoking them mid-flight would reject work that
+// is already running.
+func (s *Scheduler) SetConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	s.cfg.Store(cfg)
+	if d, err := time.ParseDuration(cfg.Scheduler.MaxWait); err == nil && d > 0 {
+		s.maxWait = d
+	}
+	if cfg.Scheduler.MaxQueueDepth > 0 {
+		s.maxQueueDepth = cfg.Scheduler.MaxQueueDepth
+	}
 }

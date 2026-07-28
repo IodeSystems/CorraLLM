@@ -43,7 +43,9 @@ import (
 
 // Proxy is the inference edge handler.
 type Proxy struct {
-	cfg    *config.Config
+	// cfg is swapped wholesale on reload; read it through p.config(), never as a
+	// bare field, or the atomic is defeated. See proc.Manager.cfg.
+	cfg    atomic.Pointer[config.Config]
 	mgr    *proc.Manager
 	sched  *sched.Scheduler
 	store  *store.Store
@@ -91,7 +93,7 @@ func (p *Proxy) RosterSnapshot() []freeroster.ProviderView {
 // HasRosterRefresh reports whether any backend opted into roster refresh, so the
 // poller is only started when it has work.
 func (p *Proxy) HasRosterRefresh() bool {
-	for _, m := range p.cfg.Models {
+	for _, m := range p.config().Models {
 		if m.FreeTier != nil && m.FreeTier.Refresh {
 			return true
 		}
@@ -100,7 +102,7 @@ func (p *Proxy) HasRosterRefresh() bool {
 	// case where a provider contributes EVERY model by discovery: with nothing
 	// declared there was nothing to refresh, so the loop never started and the
 	// provider silently served nothing.
-	return len(p.cfg.DiscoverTargets()) > 0
+	return len(p.config().DiscoverTargets()) > 0
 }
 
 // RefreshRoster does one refresh pass: for each refresh-opted backend, pull its
@@ -113,7 +115,7 @@ func (p *Proxy) RefreshRoster(ctx context.Context) {
 		return
 	}
 	hc := &http.Client{Timeout: 20 * time.Second}
-	for name, m := range p.cfg.Models {
+	for name, m := range p.config().Models {
 		if m.FreeTier == nil || !m.FreeTier.Refresh {
 			continue
 		}
@@ -147,7 +149,7 @@ func (p *Proxy) RefreshRoster(ctx context.Context) {
 // the rows that pass its filter. A fetch error leaves the previous set in place:
 // a transient outage must not deregister every model a provider contributed.
 func (p *Proxy) refreshDiscovery(ctx context.Context, hc *http.Client) {
-	for _, dt := range p.cfg.DiscoverTargets() {
+	for _, dt := range p.config().DiscoverTargets() {
 		modelsURL := strings.TrimRight(dt.Target.URL.String(), "/") + dt.Target.BasePath + "/v1/models"
 		cat, err := freeroster.FetchCatalog(ctx, hc, modelsURL, dt.Target.Headers)
 		if err != nil {
@@ -155,7 +157,7 @@ func (p *Proxy) refreshDiscovery(ctx context.Context, hc *http.Client) {
 			continue
 		}
 		kept := selectDiscovered(cat, dt)
-		p.cfg.SetDiscovered(dt.Provider, kept)
+		p.config().SetDiscovered(dt.Provider, kept)
 		slog.Info("discovered models", "extension", dt.Extension, "provider", dt.Provider,
 			"kept", len(kept), "of", len(cat))
 	}
@@ -220,10 +222,11 @@ func (p *Proxy) QuotaSnapshot() []quota.Entry {
 
 // New constructs a Proxy.
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
-	p := &Proxy{cfg: cfg, mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
+	p := &Proxy{mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
 		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true,
 		convertEnabled: true, convertGlobal: config.DefaultConvert(),
 		calib: NewCalibrationState(), quota: quota.New(), roster: freeroster.New()}
+	p.cfg.Store(cfg)
 	// Attach durable storage for the falloff counters BEFORE seeding limits, so a
 	// counter-mode window resumes its persisted level across a restart instead of
 	// resetting to zero and over-sending against the provider's real daily cap.
@@ -409,7 +412,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"missing \"model\""}}`, http.StatusBadRequest)
 		return
 	}
-	cands, ok := p.cfg.ResolveServed(served)
+	cands, ok := p.config().ResolveServed(served)
 	if !ok {
 		http.Error(w, `{"error":{"message":"unknown model \"`+served+`\""}}`, http.StatusNotFound)
 		return
@@ -427,7 +430,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// (not per backend in the loop); a no-op when there are no PDFs.
 	if p.convertEnabled && r.URL.Path == "/v1/chat/completions" {
 		// Resolve the per-model ingestion config (global default ← model's override).
-		eff := p.cfg.ConvertFor(p.convertGlobal, served)
+		eff := p.config().ConvertFor(p.convertGlobal, served)
 		if nb, n := convertChatPDFs(r.Context(), body, eff); n > 0 {
 			body = nb
 		}
@@ -452,7 +455,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		writeCalibrationBackpressure(w, remaining, reason)
 		return
 	}
-	groupName, group := p.cfg.ResolveGroup(key)
+	groupName, group := p.config().ResolveGroup(key)
 	weight := group.EffectiveWeight()
 
 	// Register as live BEFORE admission: a request queued behind a saturated
@@ -809,7 +812,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"missing \"model\" query param"}}`, http.StatusBadRequest)
 		return
 	}
-	cands, ok := p.cfg.ResolveServed(served)
+	cands, ok := p.config().ResolveServed(served)
 	if !ok {
 		http.Error(w, `{"error":{"message":"unknown model \"`+served+`\""}}`, http.StatusNotFound)
 		return
@@ -829,7 +832,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		writeCalibrationBackpressure(w, remaining, reason)
 		return
 	}
-	groupName, group := p.cfg.ResolveGroup(key)
+	groupName, group := p.config().ResolveGroup(key)
 	weight := group.EffectiveWeight()
 	// A realtime session is long-lived by construction — the request that most
 	// deserves to be visible while it runs.
@@ -1342,7 +1345,7 @@ func (p *Proxy) nextRR(served string) uint64 {
 func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/upstream/")
 	served, tail, _ := strings.Cut(rest, "/")
-	model, ok := p.cfg.Models[served]
+	model, ok := p.config().Models[served]
 	if !ok {
 		http.Error(w, "unknown model", http.StatusNotFound)
 		return
@@ -1405,7 +1408,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	// AllModels, not cfg.Models: a discovered model is served, so it must be
 	// listed. Omitting it would leave callers unable to find models the gateway
 	// will happily route to.
-	all := p.cfg.AllModels()
+	all := p.config().AllModels()
 	names := make([]string, 0, len(all))
 	for name := range all {
 		names = append(names, name)
@@ -1437,13 +1440,13 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 
 	// Lanes list alongside models: requesting a lane name allows fallback across
 	// its members, so clients can target policy ("chat") instead of a model.
-	laneNames := make([]string, 0, len(p.cfg.Lanes))
-	for name := range p.cfg.Lanes {
+	laneNames := make([]string, 0, len(p.config().Lanes))
+	for name := range p.config().Lanes {
 		laneNames = append(laneNames, name)
 	}
 	sort.Strings(laneNames)
 	for _, name := range laneNames {
-		cands, _ := p.cfg.ResolveServed(name)
+		cands, _ := p.config().ResolveServed(name)
 		members := make([]string, 0, len(cands))
 		// Lane modalities/capability follow the PRIMARY member: a lane advertises
 		// what its first-choice model accepts (a fallback may support less).
@@ -1496,24 +1499,24 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	// Group served names by capability — lanes first (clients should prefer the
 	// policy name; fallback is the point), then pinned models.
 	byCap := map[string][]string{}
-	cfgLanes := make([]string, 0, len(p.cfg.Lanes))
-	for name := range p.cfg.Lanes {
+	cfgLanes := make([]string, 0, len(p.config().Lanes))
+	for name := range p.config().Lanes {
 		cfgLanes = append(cfgLanes, name)
 	}
 	sort.Strings(cfgLanes)
 	for _, name := range cfgLanes {
-		if cands, ok := p.cfg.ResolveServed(name); ok {
+		if cands, ok := p.config().ResolveServed(name); ok {
 			c := config.ModelCapability(cands[0].Model)
 			byCap[c] = append(byCap[c], name)
 		}
 	}
-	names := make([]string, 0, len(p.cfg.Models))
-	for name := range p.cfg.Models {
+	names := make([]string, 0, len(p.config().Models))
+	for name := range p.config().Models {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		c := config.ModelCapability(p.cfg.Models[name])
+		c := config.ModelCapability(p.config().Models[name])
 		byCap[c] = append(byCap[c], name)
 	}
 	pick := func(caps ...string) string {
@@ -1602,14 +1605,14 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			}},
 	}
 
-	lanes := make([]map[string]any, 0, len(p.cfg.PriorityGroups))
-	laneNames := make([]string, 0, len(p.cfg.PriorityGroups))
-	for n := range p.cfg.PriorityGroups {
+	lanes := make([]map[string]any, 0, len(p.config().PriorityGroups))
+	laneNames := make([]string, 0, len(p.config().PriorityGroups))
+	for n := range p.config().PriorityGroups {
 		laneNames = append(laneNames, n)
 	}
 	sort.Strings(laneNames)
 	for _, n := range laneNames {
-		g := p.cfg.PriorityGroups[n]
+		g := p.config().PriorityGroups[n]
 		cur := g.ShareCurrency
 		if cur == "" {
 			cur = "requests"
@@ -2087,3 +2090,19 @@ func (s *statusCapture) Flush() {
 // Calibration exposes the exclusive-calibration lease so the admin API can
 // begin/end it. Never nil for a Proxy built by New.
 func (p *Proxy) Calibration() *CalibrationState { return p.calib }
+
+// config returns the proxy's current config. Always use this rather than a bare
+// field read: the pointer is swapped on reload.
+func (p *Proxy) config() *config.Config {
+	return p.cfg.Load()
+}
+
+// SetConfig swaps in a reloaded config and rebuilds the derived cost model,
+// which caches per-type coefficients read at construction.
+func (p *Proxy) SetConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	p.cfg.Store(cfg)
+	p.cost = cost.NewModel(cfg)
+}

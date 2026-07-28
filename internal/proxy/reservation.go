@@ -36,7 +36,7 @@ func (p *Proxy) handleReservations(w http.ResponseWriter, r *http.Request) {
 // name's first candidate (a lane's top member, or the pinned model itself) —
 // the one interactive requests hit first.
 func (p *Proxy) primaryCandidate(served string) (config.Candidate, bool) {
-	cands, ok := p.cfg.ResolveServed(served)
+	cands, ok := p.config().ResolveServed(served)
 	if !ok {
 		return config.Candidate{}, false
 	}
@@ -72,7 +72,7 @@ func (p *Proxy) reserveCreate(w http.ResponseWriter, r *http.Request) {
 			ttl = d // scheduler caps it at the max
 		}
 	}
-	lane, _ := p.cfg.ResolveGroup(callerKey(r))
+	lane, _ := p.config().ResolveGroup(callerKey(r))
 	exp := p.sched.Reserve(primary.Name, lane, slots, ttl)
 	p.publish(events.Event{Type: "changed"})
 	jsonResp(w, http.StatusOK, map[string]any{
@@ -92,7 +92,7 @@ func (p *Proxy) reserveRelease(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, fmt.Sprintf("unknown model %q", model))
 		return
 	}
-	lane, _ := p.cfg.ResolveGroup(callerKey(r))
+	lane, _ := p.config().ResolveGroup(callerKey(r))
 	p.sched.Release(primary.Name, lane)
 	p.publish(events.Event{Type: "changed"})
 	jsonResp(w, http.StatusOK, map[string]any{"released": true, "model": model, "lane": lane})

@@ -159,7 +159,14 @@ type Process struct {
 
 // Manager owns all processes and the per-server residency ledger.
 type Manager struct {
-	cfg *config.Config
+	// cfg is swapped wholesale on reload rather than mutated. Its maps are read
+	// unlocked from dozens of places, so editing them in place would be a data
+	// race; replacing the pointer atomically means every reader sees one
+	// self-consistent config or the other, never a half-applied one.
+	//
+	// Read it through m.config(), never directly — a bare field read would
+	// defeat the atomic.
+	cfg atomic.Pointer[config.Config]
 
 	mu     sync.Mutex
 	procs  map[string]*Process
@@ -181,7 +188,6 @@ type Manager struct {
 // NewManager constructs a Manager and precomputes each server's pool budgets.
 func NewManager(cfg *config.Config) *Manager {
 	m := &Manager{
-		cfg:           cfg,
 		procs:         map[string]*Process{},
 		used:          map[string]map[string]int64{},
 		budget:        map[string]map[string]int64{},
@@ -190,6 +196,7 @@ func NewManager(cfg *config.Config) *Manager {
 		activeUse:     defaultActiveUse,
 		vramMargin:    defaultVRAMMargin,
 	}
+	m.cfg.Store(cfg)
 	for name, srv := range cfg.Servers {
 		totals, _ := config.ParseSizes(srv.Pools) // validated at config load
 		reserve, _ := config.ParseSizes(srv.Reserve)
@@ -249,8 +256,8 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	// A provided model carries no cmd/server/ramUsage — those live on its
 	// extension. Overlay here, at the one door every caller comes through, so
 	// nothing upstream has to know the difference.
-	if mdl.Extension != "" && m.cfg != nil {
-		if eff, ok := m.cfg.Effective(name); ok {
+	if mdl.Extension != "" && m.config() != nil {
+		if eff, ok := m.config().Effective(name); ok {
 			mdl = eff
 		}
 	}
@@ -378,7 +385,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 	if mdl.Cmd != "" {
 		// A local copy: tuneCmd may rewrite --parallel N in place, and it must
 		// NEVER mutate mdl (config.Model is passed by value into load, but mdl.Cmd
-		// is still the same backing string as m.cfg.Models[name].Cmd until copied).
+		// is still the same backing string as m.config().Models[name].Cmd until copied).
 		cmdStr := mdl.Cmd
 		tunedSlots := m.tuneCmd(name, &cmdStr, mdl.Slots(), mdl.ContextPerRequest)
 		if tunedSlots > 0 {
@@ -517,11 +524,11 @@ func (m *Manager) probeUI(p *Process) {
 // the arithmetic went far enough, to none.
 func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 	// The server comes from the model rather than a parameter because every
-	// caller already resolved it, and vramBudget already consults m.cfg.Models
+	// caller already resolved it, and vramBudget already consults m.config().Models
 	// below for the same reason.
 	server := ""
-	if m.cfg != nil {
-		server = m.cfg.Models[forModel].Server
+	if m.config() != nil {
+		server = m.config().Models[forModel].Server
 	}
 
 	m.mu.Lock()
@@ -555,7 +562,7 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 
 	devicePool := m.vramPool(server)
 	nonEvictable := 0
-	for name, mc := range m.cfg.Models {
+	for name, mc := range m.config().Models {
 		if name == forModel || !mc.Persistent || mc.Server != server {
 			continue
 		}
@@ -584,10 +591,10 @@ const defaultVRAMPool = "gpu0"
 // "gpu0", a unified-memory box has only "system", and charging the latter's
 // measurement to "gpu0" would bill it against a pool with no budget.
 func (m *Manager) vramPool(server string) string {
-	if m.cfg == nil {
+	if m.config() == nil {
 		return defaultVRAMPool
 	}
-	return m.cfg.DevicePoolFor(server)
+	return m.config().DevicePoolFor(server)
 }
 
 // unknownIfEmpty handles a model whose size is genuinely UNKNOWN: no measured
@@ -1248,7 +1255,7 @@ func (m *Manager) spawnerFor(name string, mdl config.Model) (string, bool) {
 	if !isLoopback(target.URL.Hostname()) {
 		return "", false // remote: not ours to wait on
 	}
-	for other, om := range m.cfg.Models {
+	for other, om := range m.config().Models {
 		if other == name || om.Cmd == "" {
 			continue
 		}
@@ -1266,10 +1273,10 @@ func (m *Manager) spawnerFor(name string, mdl config.Model) (string, bool) {
 // procKey resolves a served model name to the identity of the process backing
 // it. Models provided by one extension all resolve to the same key.
 func (m *Manager) procKey(served string) string {
-	if m.cfg == nil {
+	if m.config() == nil {
 		return served
 	}
-	return m.cfg.Models[served].ProcKey(served)
+	return m.config().Models[served].ProcKey(served)
 }
 
 // isLoopback reports whether a host refers to this machine. A hostname we
@@ -1327,11 +1334,11 @@ func (m *Manager) waitHealthy(t *config.ProxyTarget) error {
 // Preload spawns models marked persistent so they are warm at boot and exempt
 // from eviction. Runs in the background; failures are logged, not fatal.
 func (m *Manager) Preload(ctx context.Context) {
-	for name := range m.cfg.Models {
+	for name := range m.config().Models {
 		// Effective, not the raw model: an extension's persistence is declared on
 		// the extension, so reading it off the provided model would skip it and
 		// nothing would preload.
-		model, ok := m.cfg.Effective(name)
+		model, ok := m.config().Effective(name)
 		if !ok || !model.Persistent {
 			continue
 		}
@@ -1418,7 +1425,7 @@ func reapAll(refs []procRef) {
 // name loaded, or an error if the model isn't spawnable or the load fails
 // (e.g. ErrNoCapacity).
 func (m *Manager) LoadModel(ctx context.Context, served string) (string, error) {
-	model, ok := m.cfg.Effective(served)
+	model, ok := m.config().Effective(served)
 	if !ok {
 		return "", fmt.Errorf("unknown model %q", served)
 	}
@@ -1452,20 +1459,20 @@ func (m *Manager) UnloadModel(served string) (int, error) {
 // LoadExtension warms an extension by spawning its process, addressed by the
 // extension's own name rather than by one of the models it happens to provide.
 func (m *Manager) LoadExtension(ctx context.Context, name string) (string, error) {
-	if m.cfg == nil {
+	if m.config() == nil {
 		return "", fmt.Errorf("unknown extension %q", name)
 	}
-	if _, ok := m.cfg.Extensions[name]; !ok {
+	if _, ok := m.config().Extensions[name]; !ok {
 		return "", fmt.Errorf("unknown extension %q", name)
 	}
-	provided := m.cfg.ExtensionModels(name)
+	provided := m.config().ExtensionModels(name)
 	if len(provided) == 0 {
 		return "", fmt.Errorf("extension %q provides no models", name)
 	}
 	// Any provided model reaches the same process; they share a ProcKey. Sorted
 	// by ExtensionModels, so which one is deterministic.
 	served := provided[0]
-	mdl, ok := m.cfg.Effective(served)
+	mdl, ok := m.config().Effective(served)
 	if !ok {
 		return "", fmt.Errorf("unknown model %q", served)
 	}
@@ -1480,10 +1487,10 @@ func (m *Manager) LoadExtension(ctx context.Context, name string) (string, error
 // UnloadExtension stops an extension's process, taking every model it provides
 // with it — they are one process, so there is no coherent way to unload half.
 func (m *Manager) UnloadExtension(name string) (int, error) {
-	if m.cfg == nil {
+	if m.config() == nil {
 		return 0, fmt.Errorf("unknown extension %q", name)
 	}
-	if _, ok := m.cfg.Extensions[name]; !ok {
+	if _, ok := m.config().Extensions[name]; !ok {
 		return 0, fmt.Errorf("unknown extension %q", name)
 	}
 	return m.unloadKey("extension:"+name, name)
@@ -1541,11 +1548,11 @@ type ExtensionState struct {
 
 // ExtensionStates reports every declared extension and whether its process is up.
 func (m *Manager) ExtensionStates() []ExtensionState {
-	if m.cfg == nil {
+	if m.config() == nil {
 		return nil
 	}
-	names := make([]string, 0, len(m.cfg.Extensions))
-	for n := range m.cfg.Extensions {
+	names := make([]string, 0, len(m.config().Extensions))
+	for n := range m.config().Extensions {
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -1554,9 +1561,9 @@ func (m *Manager) ExtensionStates() []ExtensionState {
 	for _, n := range names {
 		st := ExtensionState{
 			Name:     n,
-			Provides: m.cfg.ExtensionModels(n),
+			Provides: m.config().ExtensionModels(n),
 			State:    StateAbsent,
-			Pinned:   m.cfg.Extensions[n].Persistent,
+			Pinned:   m.config().Extensions[n].Persistent,
 		}
 		m.mu.Lock()
 		p := m.procs["extension:"+n]
@@ -1806,5 +1813,49 @@ func evictRank(s *config.Sticky) int {
 		return 2
 	default:
 		return 1
+	}
+}
+
+// config returns the manager's current config. Always use this rather than
+// reading the field: the pointer is swapped on reload, and a direct read would
+// bypass the atomic.
+func (m *Manager) config() *config.Config {
+	return m.cfg.Load()
+}
+
+// SetConfig swaps in a reloaded config.
+//
+// Pool budgets are RECOMPUTED, but reservations already held by resident
+// backends are left exactly as they are. A backend that is resident holds real
+// memory on a real device; forgetting its reservation because the operator
+// edited a file would let the next spawn over-commit the box. Shrinking a pool
+// below what is already reserved is therefore allowed to leave it temporarily
+// over-subscribed — admission simply refuses new work there until something
+// evicts, which is the honest outcome and self-heals.
+//
+// A pool that disappeared from the config keeps its ledger entry for the same
+// reason: something is still holding it.
+func (m *Manager) SetConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg.Store(cfg)
+	for name, srv := range cfg.Servers {
+		totals, _ := config.ParseSizes(srv.Pools) // validated at load
+		reserve, _ := config.ParseSizes(srv.Reserve)
+		b := m.budget[name]
+		if b == nil {
+			b = map[string]int64{}
+			m.budget[name] = b
+		}
+		for pool, total := range totals {
+			v := total - reserve[pool]
+			if v < 0 {
+				v = 0
+			}
+			b[pool] = v
+		}
 	}
 }

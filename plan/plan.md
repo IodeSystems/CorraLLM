@@ -1193,6 +1193,17 @@ the BackpressureError shape we already validated.
      unmodified → ◻ `Server.Agent` binding + `Config.TargetFor` → ◻ `corrallm agent` → ◻
      `host.Remote` (integration-testable by running a second agent on another port on box1) → ◻
      darwin capacity (`gpu.Metal`, `sysmem_darwin`) → ◻ failure semantics → ◻ Agents tab.
+     **Agent addressing (USER, 2026-07-28): an agent has SEVERAL addresses, not one.**
+     A NAT/LAN address on the same network as llm.iodesystems.com, an external host, and a
+     VPN address when both the Mac and the daemon are on the VPN — all valid for the same
+     box at the same time, and which one works depends on where the daemon is sitting.
+     So `Server.Agent` takes a LIST of candidate endpoints (tried in order / by
+     reachability), not a single `url`, and the backend data-plane host is resolved the same
+     way. Two consequences: reachability becomes per-endpoint state, not per-agent; and
+     `config.IsLocalHost`'s "a private-LAN address is not local" doc comment is already
+     wrong under this topology — a 192.168 address may well be a box we manage. The
+     predicate itself stays correct (it short-circuits on LocalProcess), but the comment has
+     to be reworded to say "we run no process for it", or the next reader breaks it.
      **Still USER-owned, surface before the step that needs it:** agent lease self-reap on/off and
      its TTL (decides whether the ledger may ever be released after a host is lost — the trade is
      "a network blip kills an in-progress cold load" vs "a partition strands 48 GB"); transport

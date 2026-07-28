@@ -88,7 +88,7 @@ type BenchPlanOutput struct {
 // BenchPlan reports which models lack measurement data and what to run for them.
 func (h *Handlers) BenchPlan(_ context.Context, _ *BenchPlanInput) (*BenchPlanOutput, error) {
 	out := &BenchPlanOutput{}
-	if h.Cfg == nil {
+	if h.config() == nil {
 		return out, nil
 	}
 	gpuName := ""
@@ -104,9 +104,9 @@ func (h *Handlers) BenchPlan(_ context.Context, _ *BenchPlanInput) (*BenchPlanOu
 	// nothing. Coverage is data, not a hardcoded list, so adding an audio probe
 	// makes audio offerable with no code change here.
 	cov := h.probeCoverage()
-	costModel := cost.NewModel(h.Cfg)
+	costModel := cost.NewModel(h.config())
 
-	for name, m := range h.Cfg.Models {
+	for name, m := range h.config().Models {
 		plan := BenchModelPlan{Model: name}
 
 		// A pure-proxy model consumes no local pools, so a VRAM profile is

@@ -147,7 +147,8 @@ extensions:
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &Proxy{cfg: cfg}
+	p := &Proxy{}
+	p.cfg.Store(cfg) // cfg is an atomic.Pointer now (swapped on reload)
 	if !p.HasRosterRefresh() {
 		t.Fatal("refresh loop would not start; discovery would never run")
 	}
