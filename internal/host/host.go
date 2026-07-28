@@ -18,7 +18,10 @@
 // still owning the GPU. Every method here is defined on the group.
 package host
 
-import "io"
+import (
+	"fmt"
+	"io"
+)
 
 // Sig is the signalling vocabulary the manager needs. Deliberately not
 // syscall.Signal: a remote host receives an intent, not a local signal number.
@@ -80,4 +83,24 @@ type Host interface {
 	// Name is the config `servers:` key this host backs.
 	Name() string
 	Start(Spec) (Handle, error)
+}
+
+// Unavailable is a Host that cannot start anything, used for a server bound to
+// an agent before the remote client exists.
+//
+// It exists because the alternative is catastrophic rather than merely broken.
+// If hostFor fell back to Local for an agent-bound server, a model declared to
+// run on the Mac would be spawned ON THE PRIMARY — competing for the same GPU
+// it was configured to stay off, with a command referencing a binary and model
+// files that may not exist here. A loud refusal is the honest outcome, and the
+// error names the reason rather than surfacing as a mystery spawn failure.
+type Unavailable struct {
+	Server string
+	Reason string
+}
+
+func (u Unavailable) Name() string { return u.Server }
+
+func (u Unavailable) Start(Spec) (Handle, error) {
+	return nil, fmt.Errorf("server %q: %s", u.Server, u.Reason)
 }

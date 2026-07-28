@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -232,4 +233,49 @@ func (m Model) Provider() string {
 	default:
 		return h
 	}
+}
+
+// TargetFor resolves a served model's forward destination, accounting for the
+// machine its server actually runs on.
+//
+// The hazard this removes: a model on an agent-bound server written the normal
+// way — `proxy: 5810`, meaning "the port my backend listens on" — resolves
+// through proxyTarget to http://127.0.0.1:5810, which is the PRIMARY's
+// loopback. On a box where something else happens to hold that port, the
+// daemon would forward a Mac model's traffic to an unrelated local process and
+// return its answers. A confusing 502 would be the good outcome.
+//
+// So for a model whose server has an agent, a loopback host is rewritten to the
+// agent's preferred endpoint host, keeping the model's own port. A host the
+// operator wrote explicitly always wins — this only fills in the host that was
+// never stated.
+//
+// Endpoint choice is first-listed for now; see AgentBinding.Endpoints.
+func (c *Config) TargetFor(served string, m Model) (*ProxyTarget, error) {
+	t, err := m.ProxyTarget()
+	if err != nil || t == nil || t.URL == nil {
+		return t, err
+	}
+	srv, ok := c.Servers[m.Server]
+	if !ok || srv.Agent == nil {
+		return t, nil
+	}
+	if !IsLocalHost(t.URL.Hostname()) {
+		return t, nil // explicitly addressed elsewhere; leave it alone
+	}
+	agentHost := srv.Agent.Host()
+	if agentHost == "" {
+		return t, nil
+	}
+	// Copy: Model values are shared, and rewriting the URL in place would
+	// mutate whatever else holds this target.
+	u := *t.URL
+	if port := u.Port(); port != "" {
+		u.Host = net.JoinHostPort(agentHost, port)
+	} else {
+		u.Host = agentHost
+	}
+	out := *t
+	out.URL = &u
+	return &out, nil
 }

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -267,6 +268,45 @@ type Server struct {
 	// pool-naming one. A unified-memory host (Apple silicon) has no discrete
 	// VRAM and must set this to its single "system" pool.
 	DevicePool string `yaml:"devicePool,omitempty"`
+
+	// Agent binds this server to another machine running `corrallm agent`.
+	// Absent (nil) means this box, spawned locally — byte-identical to the
+	// behavior every existing config already gets.
+	Agent *AgentBinding `yaml:"agent,omitempty"`
+}
+
+// AgentBinding locates the machine backing a server.
+//
+// Endpoints is a LIST because one agent legitimately has several addresses AT
+// THE SAME TIME — a NAT/LAN address on the daemon's own network, a VPN address
+// when both ends are on the VPN, and possibly an external one — and which of
+// them works depends on where the daemon is sitting, not on which is "right".
+// A single `url` would force a config edit every time the topology moved.
+//
+// Order is preference. Selection is first-listed today; per-endpoint
+// reachability (probe, prefer what answers, fall through) arrives with the
+// remote client, and is the reason this is a list of endpoints rather than a
+// list of hostnames — each may need its own scheme and port.
+type AgentBinding struct {
+	Endpoints []string `yaml:"endpoints,omitempty"`
+	// Token authenticates this daemon to the agent. ${ENV} is expanded at load,
+	// like proxy headers — never a literal secret in tracked YAML.
+	Token string `yaml:"token,omitempty"`
+}
+
+// Host returns the preferred endpoint's host[:port], or "" if none parses.
+// Used to point a model's data plane at the agent's machine instead of the
+// primary's loopback.
+func (a *AgentBinding) Host() string {
+	if a == nil {
+		return ""
+	}
+	for _, e := range a.Endpoints {
+		if u, err := url.Parse(strings.TrimSpace(e)); err == nil && u.Host != "" {
+			return u.Hostname()
+		}
+	}
+	return ""
 }
 
 // poolNames lists a pool map's keys, sorted, for error messages.
@@ -1153,6 +1193,20 @@ func (c *Config) Validate() error {
 		if dp := strings.TrimSpace(srv.DevicePool); dp != "" {
 			if _, ok := srv.Pools[dp]; !ok {
 				return fmt.Errorf("server %q: devicePool %q is not one of its pools %v", srvName, dp, poolNames(srv.Pools))
+			}
+		}
+		// An agent binding that cannot be dialled is worse than none: the models
+		// on that server would be admitted and then fail at spawn, one request
+		// at a time. Fail at load instead.
+		if a := srv.Agent; a != nil {
+			if len(a.Endpoints) == 0 {
+				return fmt.Errorf("server %q: agent declared with no endpoints (list at least one, e.g. http://host:6503)", srvName)
+			}
+			for i, e := range a.Endpoints {
+				u, err := url.Parse(strings.TrimSpace(e))
+				if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+					return fmt.Errorf("server %q: agent endpoint %d (%q) must be an absolute http(s) URL with a host", srvName, i, e)
+				}
 			}
 		}
 	}

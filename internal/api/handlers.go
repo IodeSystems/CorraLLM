@@ -37,11 +37,11 @@ type Handlers struct {
 	// Two fields rather than one atomic because Handlers is built with a struct
 	// literal in a dozen places; an atomic field would make every one of them a
 	// two-step construction for no gain in a read-only view layer.
-	Cfg  *config.Config
-	live atomic.Pointer[config.Config]
-	Store   *store.Store
-	Mgr     *proc.Manager    // residency introspection (P8)
-	Sched   *sched.Scheduler // live admission load (P8-beyond)
+	Cfg   *config.Config
+	live  atomic.Pointer[config.Config]
+	Store *store.Store
+	Mgr   *proc.Manager    // residency introspection (P8)
+	Sched *sched.Scheduler // live admission load (P8-beyond)
 	// Verified holds OBSERVED capability verdicts published by llm-bench.
 	// Nil is valid (no bench has run); every reader must tolerate it.
 	Verified *VerifiedStore
@@ -248,12 +248,12 @@ type PoolUsageView struct {
 
 // ResidentModelView is one loaded/loading backend.
 type ResidentModelView struct {
-	Name      string `json:"name" doc:"Backend id (<servedModel>#<index>)."`
-	ModelName string `json:"modelName" doc:"Served model name."`
-	ProcKey   string `json:"procKey" doc:"Backing process identity (extension:<name> when an extension hosts it, else the served name). Resolve a model's state through this — an extension's models share one process."`
-	Remote    bool   `json:"remote" doc:"Served by a host corrallm does not run: no local process, non-loopback target. Holds no residency — never count it as loaded."`
-	Server    string `json:"server" doc:"Server, empty for pure-proxy."`
-	State     string `json:"state" doc:"absent|loading|ready|failed|evicting. Not a residency fact when remote."`
+	Name       string          `json:"name" doc:"Backend id (<servedModel>#<index>)."`
+	ModelName  string          `json:"modelName" doc:"Served model name."`
+	ProcKey    string          `json:"procKey" doc:"Backing process identity (extension:<name> when an extension hosts it, else the served name). Resolve a model's state through this — an extension's models share one process."`
+	Remote     bool            `json:"remote" doc:"Served by a host corrallm does not run: no local process, non-loopback target. Holds no residency — never count it as loaded."`
+	Server     string          `json:"server" doc:"Server, empty for pure-proxy."`
+	State      string          `json:"state" doc:"absent|loading|ready|failed|evicting. Not a residency fact when remote."`
 	Refs       int             `json:"refs" doc:"In-flight requests holding it."`
 	Persistent bool            `json:"persistent" doc:"Pinned: exempt from eviction."`
 	LastUsedMS int64           `json:"lastUsedMs" doc:"Unix millis of last use, 0 if never."`
@@ -998,10 +998,11 @@ type PoolDef struct {
 
 // ServerDef is a server's declared capacity.
 type ServerDef struct {
-	Server        string    `json:"server" doc:"Server name."`
-	MaxConcurrent int       `json:"maxConcurrent" doc:"Optional host concurrency cap (0 = none)."`
-	DevicePool    string    `json:"devicePool" doc:"Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."`
-	Pools         []PoolDef `json:"pools" doc:"Declared memory pools."`
+	Server         string    `json:"server" doc:"Server name."`
+	MaxConcurrent  int       `json:"maxConcurrent" doc:"Optional host concurrency cap (0 = none)."`
+	AgentEndpoints []string  `json:"agentEndpoints" doc:"Candidate addresses of the agent backing this server, preference order. Empty means the server is this machine. Several are normal — a LAN address, a VPN address and an external one can all be valid at once."`
+	DevicePool     string    `json:"devicePool" doc:"Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."`
+	Pools          []PoolDef `json:"pools" doc:"Declared memory pools."`
 }
 
 // ModelDef is a served model's single serving path + residency policy.
@@ -1140,6 +1141,9 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 
 	for name, srv := range h.config().Servers {
 		sd := ServerDef{Server: name, MaxConcurrent: srv.MaxConcurrent, DevicePool: h.config().DevicePoolFor(name)}
+		if srv.Agent != nil {
+			sd.AgentEndpoints = srv.Agent.Endpoints
+		}
 		totals, _ := config.ParseSizes(srv.Pools)
 		reserve, _ := config.ParseSizes(srv.Reserve)
 		for pool, total := range totals {
@@ -1165,7 +1169,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		if m.Sticky != nil {
 			md.TTL, md.EvictCost = m.Sticky.TTL, m.Sticky.EvictCost
 		}
-		if t, err := m.ProxyTarget(); err == nil {
+		if t, err := h.config().TargetFor(name, m); err == nil {
 			md.Target = t.URL.String() // headers (auth) intentionally omitted
 		}
 		out.Body.Models = append(out.Body.Models, md)

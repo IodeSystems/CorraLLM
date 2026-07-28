@@ -1247,6 +1247,8 @@ type corrallm_SeriesPoint {
 }
 
 type corrallm_ServerDef {
+  """Candidate addresses of the agent backing this server, preference order. Empty means the server is this machine. Several are normal — a LAN address, a VPN address and an external one can all be valid at once."""
+  agentEndpoints: [String!]!
   """Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."""
   devicePool: String!
   """Optional host concurrency cap (0 = none)."""

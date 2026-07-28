@@ -209,7 +209,19 @@ func (m *Manager) hostFor(server string) host.Host {
 	if h, ok := m.hosts[server]; ok {
 		return h
 	}
-	h := host.NewLocal(server)
+	// An agent-bound server must NOT fall through to local. Spawning a model
+	// declared for another machine on this one is worse than refusing: it would
+	// take the GPU the model was configured to stay off, running a command
+	// whose binary and weights may not even exist here.
+	var h host.Host = host.NewLocal(server)
+	if cfg := m.cfg.Load(); cfg != nil {
+		if srv, ok := cfg.Servers[server]; ok && srv.Agent != nil {
+			h = host.Unavailable{
+				Server: server,
+				Reason: "bound to a remote agent, but agent support is not built yet — corrallm cannot spawn there",
+			}
+		}
+	}
 	if m.hosts == nil {
 		m.hosts = map[string]host.Host{}
 	}
@@ -294,7 +306,11 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		}
 	}
 
-	target, err := mdl.ProxyTarget()
+	// TargetFor, not ProxyTarget: a model on an agent-bound server writes
+	// `proxy: <port>` meaning "the port MY backend listens on", which resolves
+	// to loopback — this machine. Routing there would forward its traffic to
+	// whatever local process holds that port.
+	target, err := m.config().TargetFor(name, mdl)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -1269,18 +1285,29 @@ func (m *Manager) reapGroup(name string, h host.Handle) {
 // may be a paid API that is legitimately unreachable, and blocking a load on it
 // would turn someone else's outage into a failed spawn here.
 func (m *Manager) spawnerFor(name string, mdl config.Model) (string, bool) {
-	target, err := mdl.ProxyTarget()
+	cfg := m.config()
+	if cfg == nil {
+		return "", false
+	}
+	target, err := cfg.TargetFor(name, mdl)
 	if err != nil || target == nil {
 		return "", false
 	}
-	if !isLoopback(target.URL.Hostname()) {
-		return "", false // remote: not ours to wait on
-	}
-	for other, om := range m.config().Models {
+	for other, om := range cfg.Models {
 		if other == name || om.Cmd == "" {
 			continue
 		}
-		ot, err := om.ProxyTarget()
+		// Matching on the RESOLVED host:port is what keeps this correct once
+		// hosts stop being loopback. TargetFor rewrites an agent-bound model's
+		// loopback port to its agent's host, so two models sharing a port
+		// number on two different machines no longer collide, and a pure proxy
+		// (which cannot declare a server — Validate forbids it) still finds the
+		// sibling that owns the port on THIS box.
+		//
+		// This also replaces the old loopback guard: "not loopback" used to
+		// mean "not a port we own" back when we owned exactly one host, and a
+		// remote target simply matches no owner now.
+		ot, err := cfg.TargetFor(other, om)
 		if err != nil || ot == nil {
 			continue
 		}

@@ -27,6 +27,7 @@ const ConfigDoc = graphql(/* GraphQL */ `
           server
           maxConcurrent
           devicePool
+          agentEndpoints
           pools {
             pool
             totalBytes
@@ -167,6 +168,28 @@ function ConfigPage() {
         badge={<Chip size="small" variant="outlined" color="warning" label="not yet available" />}
         flush
       >
+        {servers
+          .filter((s) => (s.agentEndpoints ?? []).length > 0)
+          .map((s) => (
+            <Row key={s.server}>
+              <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+                <Typography variant="subtitle2">{s.server}</Typography>
+                <Chip size="small" variant="outlined" color="warning" label="declared · cannot spawn yet" />
+              </Box>
+              <Typography variant="caption" sx={{ color: C.textFaint, display: 'block', mt: 0.5 }}>
+                Addresses, in preference order. Several are normal — a LAN address, a VPN address
+                and an external one can all be valid at once; which works depends on where this
+                daemon is sitting.
+              </Typography>
+              <Box sx={{ mt: 0.5 }}>
+                {(s.agentEndpoints ?? []).map((e) => (
+                  <Typography key={e} variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12 }}>
+                    {e}
+                  </Typography>
+                ))}
+              </Box>
+            </Row>
+          ))}
         <Row>
           <Typography variant="body2" sx={{ color: C.textMuted }}>
             No agents enrolled — and none can be yet. <b>Agent mode is not implemented.</b> There
