@@ -1202,7 +1202,8 @@ the BackpressureError shape we already validated.
      (done: agent heartbeats OUTWARD, 3-interval miss window, down refuses spawns before
      reserving pools, config survives the outage, token revocation is how membership ends;
      NO self-reap — per-server ledgers make a stranded reservation harmless to other hosts.
-     Reconnect ADOPTION is still to build) → ◻ darwin capacity (`gpu.Metal`, `sysmem_darwin`)
+     reconnect ADOPTION reconciles on every heartbeat: matching keys adopted, orphans reaped
+     past a 60s grace, vanished backends free their pools) → ◻ darwin capacity (`gpu.Metal`, `sysmem_darwin`)
      → ◻ Agents tab with real enrollment.
      **Agent addressing (USER, 2026-07-28): an agent has SEVERAL addresses, not one.**
      A NAT/LAN address on the same network as llm.iodesystems.com, an external host, and a

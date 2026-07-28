@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -56,6 +57,17 @@ func (h *Handlers) AgentHeartbeat(_ context.Context, in *AgentHeartbeatInput) (*
 	}
 
 	h.Liveness.Beat(in.Body.Server, time.Now())
+
+	// Reconcile on every beat. The heartbeat already carries what the agent is
+	// running, so this costs nothing extra and is a no-op in the steady state;
+	// the case it exists for is the beat right after a reconnect, where the two
+	// sides may disagree about what is alive.
+	if h.Mgr != nil {
+		if a, r, v := h.Mgr.ReconcileAgent(context.Background(), in.Body.Server, in.Body.Backends); r > 0 || v > 0 {
+			slog.Warn("agent reconciliation corrected state",
+				"server", in.Body.Server, "adopted", a, "reaped", r, "vanished", v)
+		}
+	}
 
 	out := &AgentHeartbeatOutput{}
 	out.Body.OK = true

@@ -315,3 +315,15 @@ func (h *remoteHandle) MemoryMiB() (int, error) {
 	}
 	return h.memMiB, nil
 }
+
+// KillBackend stops a backend on the agent by its agent-side id, without a
+// Handle. Used by reconciliation to reap an orphan the primary has no handle
+// for — precisely the case where a Handle does not exist.
+func (r *RemoteHost) KillBackend(ctx context.Context, id string) error {
+	endpoint, err := r.pick(ctx)
+	if err != nil {
+		return err
+	}
+	return r.call(ctx, http.MethodPost,
+		endpoint+"/agent/v1/backends/"+id+"/signal", SignalRequest{Sig: "term"}, nil)
+}
