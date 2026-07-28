@@ -1198,8 +1198,12 @@ the BackpressureError shape we already validated.
      (done: hello/capacity/spawn/list/status/signal + sequenced logs with `from=`; token
      required by default since it executes shell commands; heartbeat+lease deferred to the
      failure-semantics step) → ◻
-     `host.Remote` (integration-testable by running a second agent on another port on box1) → ◻
-     darwin capacity (`gpu.Metal`, `sysmem_darwin`) → ◻ failure semantics → ◻ Agents tab.
+     `host.Remote` (integration-testable by running a second agent on another port on box1) → ✅ **failure semantics**
+     (done: agent heartbeats OUTWARD, 3-interval miss window, down refuses spawns before
+     reserving pools, config survives the outage, token revocation is how membership ends;
+     NO self-reap — per-server ledgers make a stranded reservation harmless to other hosts.
+     Reconnect ADOPTION is still to build) → ◻ darwin capacity (`gpu.Metal`, `sysmem_darwin`)
+     → ◻ Agents tab with real enrollment.
      **Agent addressing (USER, 2026-07-28): an agent has SEVERAL addresses, not one.**
      A NAT/LAN address on the same network as llm.iodesystems.com, an external host, and a
      VPN address when both the Mac and the daemon are on the VPN — all valid for the same
