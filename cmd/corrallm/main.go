@@ -53,7 +53,7 @@ func newRoot() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newServeCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd())
+	root.AddCommand(newServeCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd())
 	return root
 }
 
