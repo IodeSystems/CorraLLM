@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +20,22 @@ import (
 // The schema mirrors ~/doc/plan/corrallm.md §3. Sections not yet consumed are
 // still parsed so configs are forward-compatible and round-trippable.
 type Config struct {
+	// Include names further config files to merge into this one, relative to
+	// THIS file's directory. Earlier entries load first; a later file's entry
+	// wins a collision, and the including file wins over everything it includes
+	// — the operator's own file is always the last word.
+	//
+	// This exists so corrallm can WRITE config without touching a file a human
+	// owns. corrallm.yaml is dense with hard-won commentary; round-tripping it
+	// through a YAML marshaller would silently delete all of it. A generated
+	// file included from here is machine-owned end to end, and the hand-written
+	// file stays hand-written.
+	//
+	// One level only: an included file may not itself include. Nesting buys
+	// nothing here and costs a cycle detector plus an ordering rule nobody can
+	// hold in their head.
+	Include []string `yaml:"include,omitempty"`
+
 	// CostPerKwh converts local energy → $ (cost model, P6).
 	CostPerKwh float64 `yaml:"costPerKwh,omitempty"`
 
@@ -773,6 +791,9 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	if err := c.mergeIncludes(path); err != nil {
+		return nil, err
+	}
 	// Before Validate: resolution fills in cmd/server/proxy from the extension,
 	// and the existing model rules ("cmd set but no server") must judge the
 	// resolved model, not the sparse one the author wrote.
@@ -783,6 +804,120 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// mergeIncludes folds every file named in c.Include into c, resolving relative
+// paths against the including file's directory.
+//
+// Precedence, from weakest to strongest: the first include, later includes,
+// then c itself. The operator's own file always wins, so a generated include
+// can never quietly redefine something a human wrote down — the same rule
+// SetDiscovered follows for runtime-contributed models.
+//
+// Only the map-shaped sections merge. A scalar or struct section in an included
+// file is REJECTED rather than ignored: silently dropping a costPerKwh someone
+// wrote is the kind of thing that is discovered months later via a wrong bill.
+func (c *Config) mergeIncludes(path string) error {
+	if len(c.Include) == 0 {
+		return nil
+	}
+	dir := filepath.Dir(path)
+
+	// Accumulate the includes among themselves first, last-wins, THEN let c win
+	// over the result. Folding straight into c would invert the include order:
+	// c is already populated, so "skip what exists" would make the FIRST include
+	// beat every later one.
+	var acc Config
+	for _, inc := range c.Include {
+		p := inc
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, p)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			// Unlike the top-level config, a named include must exist: the
+			// operator asked for it by name, and booting without it would serve
+			// a silently smaller config.
+			return fmt.Errorf("config %s: include %q: %w", path, inc, err)
+		}
+		var in Config
+		if err := yaml.Unmarshal(b, &in); err != nil {
+			return fmt.Errorf("parse include %s: %w", p, err)
+		}
+		if len(in.Include) > 0 {
+			return fmt.Errorf("include %s: nested include is not supported (one level only)", p)
+		}
+		if err := in.rejectNonMergeable(p); err != nil {
+			return err
+		}
+		overwriteMap(&acc.Servers, in.Servers)
+		overwriteMap(&acc.Extensions, in.Extensions)
+		overwriteMap(&acc.Models, in.Models)
+		overwriteMap(&acc.Lanes, in.Lanes)
+		overwriteMap(&acc.PriorityGroups, in.PriorityGroups)
+		overwriteMap(&acc.Keys, in.Keys)
+		overwriteMap(&acc.CommandCosts, in.CommandCosts)
+	}
+
+	mergeMap(&c.Servers, acc.Servers)
+	mergeMap(&c.Extensions, acc.Extensions)
+	mergeMap(&c.Models, acc.Models)
+	mergeMap(&c.Lanes, acc.Lanes)
+	mergeMap(&c.PriorityGroups, acc.PriorityGroups)
+	mergeMap(&c.Keys, acc.Keys)
+	mergeMap(&c.CommandCosts, acc.CommandCosts)
+	return nil
+}
+
+// rejectNonMergeable fails an included file that sets a section which only the
+// top-level config may set, rather than dropping it on the floor.
+func (c *Config) rejectNonMergeable(p string) error {
+	var bad []string
+	if c.CostPerKwh != 0 {
+		bad = append(bad, "costPerKwh")
+	}
+	if !reflect.DeepEqual(c.Convert, ConvertConfig{}) {
+		bad = append(bad, "convert")
+	}
+	if !reflect.DeepEqual(c.Scheduler, SchedulerConfig{}) {
+		bad = append(bad, "scheduler")
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("include %s: sets %s — only the top-level config may set these (merging is per-model, not global)",
+			p, strings.Join(bad, ", "))
+	}
+	return nil
+}
+
+// mergeMap copies src into *dst for keys *dst does not already hold — dst is
+// the stronger side and keeps what it has.
+func mergeMap[V any](dst *map[string]V, src map[string]V) {
+	if len(src) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = make(map[string]V, len(src))
+	}
+	for k, v := range src {
+		if _, exists := (*dst)[k]; exists {
+			continue
+		}
+		(*dst)[k] = v
+	}
+}
+
+// overwriteMap copies src into *dst, src winning — used between includes, where
+// the later file is the stronger side.
+func overwriteMap[V any](dst *map[string]V, src map[string]V) {
+	if len(src) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = make(map[string]V, len(src))
+	}
+	for k, v := range src {
+		(*dst)[k] = v
+	}
 }
 
 // resolveExtensions copies each extension's lifecycle fields onto the models it
