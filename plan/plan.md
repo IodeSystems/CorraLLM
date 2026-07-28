@@ -1192,7 +1192,9 @@ the BackpressureError shape we already validated.
      atomic config swap in all four holders; fractional `quality` landed alongside it because
      the Mac's 4-bit tier sits between two integers) → ✅ **`internal/host` Spawner interface**
      (done: Spec/Handle/Host, Local only, platform primitives moved; Process holds a Handle
-     instead of an *exec.Cmd) → ◻ `Server.Agent` binding + `Config.TargetFor` → ◻ `corrallm agent` → ◻
+     instead of an *exec.Cmd) → ✅ **`Server.Agent` binding**
+     (done: endpoint LIST per the VPN topology, `TargetFor` so an agent model's loopback port
+     never resolves to the primary's, `host.Unavailable` so it refuses to spawn locally) → ◻ `corrallm agent` → ◻
      `host.Remote` (integration-testable by running a second agent on another port on box1) → ◻
      darwin capacity (`gpu.Metal`, `sysmem_darwin`) → ◻ failure semantics → ◻ Agents tab.
      **Agent addressing (USER, 2026-07-28): an agent has SEVERAL addresses, not one.**
