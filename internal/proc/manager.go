@@ -78,9 +78,17 @@ type CapacityError struct {
 	RetryAfter time.Duration
 	// Blocking names the residents standing in the way, for diagnostics.
 	Blocking []string
+	// Reason, when set, replaces the capacity wording entirely. Used when the
+	// refusal is not about capacity at all — a host that is down has plenty of
+	// room, it simply cannot be reached, and reporting that as "no capacity"
+	// sends the operator looking at pool sizes.
+	Reason string
 }
 
 func (e *CapacityError) Error() string {
+	if e.Reason != "" {
+		return e.Reason
+	}
 	if e.Permanent {
 		return fmt.Sprintf("no capacity: exceeds pool budget (blocking=%v)", e.Blocking)
 	}
@@ -192,11 +200,22 @@ type Manager struct {
 	tuneCache  *tune.Cache
 	vramMargin int // MiB of free VRAM kept back when sizing --parallel (default defaultVRAMMargin)
 
+	// live tracks which agent-backed servers have reported in. Nil for a
+	// single-host deployment, where nothing ever heartbeats.
+	live *agent.Liveness
+
 	// hosts maps a `servers:` name → where its backends actually run. Every
 	// entry is a local host today; a server bound to a remote agent gets a
 	// different implementation here and nothing else in this file changes.
 	// Guarded by mu.
 	hosts map[string]host.Host
+}
+
+// SetLiveness attaches the agent heartbeat tracker.
+func (m *Manager) SetLiveness(l *agent.Liveness) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.live = l
 }
 
 // hostFor returns the host backing a server, defaulting to this machine.
@@ -319,6 +338,22 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	p := m.procs[key]
 	triggered := p == nil
 	if p == nil {
+		// A server whose agent has stopped reporting in cannot be spawned onto.
+		// Refuse BEFORE reserving pools: otherwise every cold load onto a dead
+		// host burns the full health timeout (600s in ml-kit's launcher) while
+		// holding a reservation, and the lane's walk waits on it instead of
+		// spilling to a host that can actually serve.
+		//
+		// Transient, not permanent: the host is expected back, and a permanent
+		// error would turn a network blip into a 503 the caller cannot retry.
+		if mdl.Server != "" && m.live != nil && !m.live.Reachable(mdl.Server, time.Now()) {
+			m.mu.Unlock()
+			return nil, nil, false, &CapacityError{
+				Permanent:  false,
+				RetryAfter: agent.HeartbeatInterval,
+				Reason:     fmt.Sprintf("server %q is down: its agent has not reported in for over %s", mdl.Server, agent.MissWindow),
+			}
+		}
 		usage := m.effectiveUsage(name, mdl)
 		// Residency applies to spawned models bound to a server pool; pure
 		// proxies (remote/paid) consume no local pools.

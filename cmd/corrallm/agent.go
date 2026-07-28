@@ -28,6 +28,8 @@ func newAgentCmd() *cobra.Command {
 		addr       string
 		token      string
 		allowNoTok bool
+		primary    string
+		server     string
 	)
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -49,22 +51,37 @@ func newAgentCmd() *cobra.Command {
 					"unauthenticated exposes a remote shell. Pass --allow-no-token only on an\n" +
 					"isolated network where you accept that.")
 			}
-			return runAgent(cmd.Context(), addr, token)
+			return runAgent(cmd.Context(), addr, token,
+				pick(primary, os.Getenv("CORRALLM_PRIMARY")),
+				pick(server, os.Getenv("CORRALLM_AGENT_SERVER")))
 		},
 	}
 	f := cmd.Flags()
 	f.StringVar(&addr, "addr", envOr("CORRALLM_AGENT_ADDR", ":6503"), "listen address")
 	f.StringVar(&token, "token", "", "shared secret the primary must present (or CORRALLM_AGENT_TOKEN)")
 	f.BoolVar(&allowNoTok, "allow-no-token", false, "run WITHOUT authentication — exposes a remote shell; isolated networks only")
+	f.StringVar(&primary, "primary", "", "base URL of the corrallm to report liveness to, e.g. http://box1:8111 (or CORRALLM_PRIMARY)")
+	f.StringVar(&server, "server", "", "the `servers:` key in the primary's config that this machine backs (or CORRALLM_AGENT_SERVER)")
 	return cmd
 }
 
-func runAgent(ctx context.Context, addr, token string) error {
+func runAgent(ctx context.Context, addr, token, primary, server string) error {
 	a := agent.New(version, token)
 
 	srv := &http.Server{Addr: addr, Handler: a.Routes()}
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Report liveness OUTWARD. The agent knows it is alive, may sit behind NAT,
+	// and may change networks; requiring the primary to reach in would make a
+	// laptop look permanently down even while it is serving.
+	if primary != "" && server != "" {
+		b := &agent.Beacon{Primary: primary, Server: server, Token: token, Srv: a}
+		go b.Run(sigCtx)
+	} else if primary != "" || server != "" {
+		slog.Warn("agent: --primary and --server must BOTH be set to heartbeat; not reporting liveness",
+			"primary", primary, "server", server)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

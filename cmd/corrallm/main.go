@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/spf13/cobra"
 
+	"github.com/iodesystems/corrallm/internal/agent"
 	"github.com/iodesystems/corrallm/internal/api"
 	"github.com/iodesystems/corrallm/internal/auth"
 	"github.com/iodesystems/corrallm/internal/config"
@@ -398,7 +399,12 @@ func serve(ctx context.Context, o serveOpts) error {
 
 	scheduler := sched.NewWithConfig(cfg)
 	scheduler.SetMaxReservationTTL(o.reservationMaxTTL)
-	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler, Verified: api.NewVerifiedStore()}
+	// Shared between the heartbeat endpoint (writes) and the manager (reads):
+	// one view of which agent-backed servers are reporting in.
+	liveness := agent.NewLiveness()
+	mgr.SetLiveness(liveness)
+	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler,
+		Liveness: liveness, Verified: api.NewVerifiedStore()}
 
 	// Admin token gates the management surface (/api/*). Generated into
 	// <home>/admin.token on first run; the dashboard's login screen points there.

@@ -44,12 +44,32 @@ func LoadOrCreateToken(path string) (token string, created bool, err error) {
 	return t, true, nil
 }
 
+// agentPaths are /api/ routes that carry their OWN credential and must not be
+// gated on the admin token.
+//
+// An agent is not an operator. Handing every attached machine the credential
+// that can unload models, cancel requests and start bench runs — just so it can
+// say "I am alive" — would make the blast radius of one compromised agent the
+// whole daemon. These routes authenticate against that server's own agent token
+// inside the handler instead.
+var agentPaths = []string{"/api/v1/agents/heartbeat"}
+
+func selfAuthenticating(path string) bool {
+	for _, p := range agentPaths {
+		if path == p {
+			return true
+		}
+	}
+	return false
+}
+
 // Middleware gates /api/ requests on the admin token (Authorization: Bearer, or
-// the CookieName cookie). All other paths pass through untouched.
+// the CookieName cookie). All other paths pass through untouched, as do the
+// agent routes, which verify their own per-server credential.
 func Middleware(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.URL.Path, "/api/") || authorized(r, token) {
+			if !strings.HasPrefix(r.URL.Path, "/api/") || selfAuthenticating(r.URL.Path) || authorized(r, token) {
 				next.ServeHTTP(w, r)
 				return
 			}

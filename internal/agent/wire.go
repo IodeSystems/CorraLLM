@@ -109,3 +109,29 @@ type LogLine struct {
 	Seq  int64  `json:"seq"`
 	Line string `json:"line"`
 }
+
+// Heartbeat is an agent reporting in to its primary.
+//
+// The agent initiates this, not the primary. The agent is the side that knows
+// it is alive, may sit behind NAT, and may move between networks — so requiring
+// the primary to reach IN for liveness would make the common laptop topology
+// look permanently down.
+type Heartbeat struct {
+	// Server is the `servers:` key this agent believes it backs. The primary
+	// matches it against config, so an agent pointed at the wrong name is
+	// rejected rather than silently accepted as some other host.
+	Server string `json:"server"`
+	Hello  Hello  `json:"hello"`
+	// Backends is what the agent currently supervises, so the primary can
+	// reconcile against what it believes is resident without a second call.
+	Backends []Backend `json:"backends"`
+}
+
+// HeartbeatAck is the primary's reply.
+type HeartbeatAck struct {
+	OK bool `json:"ok"`
+	// IntervalSeconds is how often the primary wants to hear from this agent.
+	// Sent so the cadence is the primary's decision and can change without
+	// redeploying every agent.
+	IntervalSeconds int `json:"intervalSeconds"`
+}

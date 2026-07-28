@@ -57,7 +57,7 @@ func New(version, token string) *Server {
 // Routes returns the agent's HTTP surface.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /agent/v1/hello", s.guard(s.hello))
+	mux.HandleFunc("GET /agent/v1/hello", s.guard(s.helloRoute))
 	mux.HandleFunc("GET /agent/v1/capacity", s.guard(s.capacity))
 	mux.HandleFunc("GET /agent/v1/backends", s.guard(s.list))
 	mux.HandleFunc("POST /agent/v1/backends", s.guard(s.start))
@@ -92,16 +92,32 @@ func (s *Server) guard(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) hello(w http.ResponseWriter, _ *http.Request) {
+// hello is the agent's identity, shared by the HTTP route and the heartbeat.
+func (s *Server) hello() Hello {
 	hn, _ := os.Hostname()
-	writeJSON(w, Hello{
+	return Hello{
 		Protocol: Protocol,
 		Version:  s.version,
 		Hostname: hn,
 		OS:       runtime.GOOS,
 		Arch:     runtime.GOARCH,
 		Booted:   s.booted.UnixMilli(),
-	})
+	}
+}
+
+// snapshot is every supervised backend, for the heartbeat's reconciliation half.
+func (s *Server) snapshot() []Backend {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Backend, 0, len(s.backends))
+	for _, b := range s.backends {
+		out = append(out, s.view(b))
+	}
+	return out
+}
+
+func (s *Server) helloRoute(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, s.hello())
 }
 
 func (s *Server) capacity(w http.ResponseWriter, _ *http.Request) {

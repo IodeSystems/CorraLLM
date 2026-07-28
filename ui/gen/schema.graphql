@@ -6,6 +6,11 @@ schema {
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
 
 type CorrallmMutationNamespace {
+  agentHeartbeat(
+    """Bearer <the server's configured agent token>."""
+    Authorization: String
+    body: corrallm_HeartbeatInput!
+  ): corrallm_HeartbeatAck @derived(operationId: "agentHeartbeat")
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
@@ -120,6 +125,11 @@ type CorrallmQueryNamespace {
 }
 
 type CorrallmV1MutationNamespace {
+  agentHeartbeat(
+    """Bearer <the server's configured agent token>."""
+    Authorization: String
+    body: corrallm_HeartbeatInput!
+  ): corrallm_HeartbeatAck @derived(operationId: "agentHeartbeat")
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
@@ -373,6 +383,19 @@ type corrallm_ActivityRecord {
   ts: Long!
   """Time to first response byte, milliseconds (0 if no body)."""
   ttfbMs: Long!
+}
+
+input corrallm_BackendInput {
+  alive: Boolean!
+  cmd: String!
+  err: String
+  exited: Boolean!
+  id: String!
+  key: String!
+  lastSeq: Long!
+  memoryMiB: Long!
+  model: String!
+  started: Long!
 }
 
 type corrallm_BackendLoadView {
@@ -939,6 +962,26 @@ type corrallm_HealthOutputBody {
   """Always "ok" when the process is serving."""
   status: String!
   """Build version stamp."""
+  version: String!
+}
+
+type corrallm_HeartbeatAck {
+  intervalSeconds: Long!
+  ok: Boolean!
+}
+
+input corrallm_HeartbeatInput {
+  backends: [corrallm_BackendInput!]
+  hello: corrallm_HelloInput!
+  server: String!
+}
+
+input corrallm_HelloInput {
+  arch: String!
+  booted: Long!
+  hostname: String!
+  os: String!
+  protocol: Long!
   version: String!
 }
 

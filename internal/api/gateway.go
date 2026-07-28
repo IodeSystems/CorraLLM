@@ -339,6 +339,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.Groups)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "agentHeartbeat",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/agents/heartbeat",
+		Summary:     "An agent reports that it is alive (authenticated by its own per-server token).",
+		Tags:        []string{"agents"},
+	}, h.AgentHeartbeat)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "cancelRequest",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/requests/cancel",

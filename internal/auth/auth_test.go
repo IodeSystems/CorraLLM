@@ -64,3 +64,30 @@ func TestMiddleware(t *testing.T) {
 		t.Errorf("/api with wrong token = %d, want 401", code)
 	}
 }
+
+// The agent heartbeat carries its OWN per-server credential and must reach its
+// handler without the admin token. Gating it would force every attached machine
+// to hold the credential that can unload models and cancel requests, just to
+// report liveness.
+func TestMiddleware_AgentHeartbeatIsNotAdminGated(t *testing.T) {
+	var reached bool
+	h := Middleware("admin-secret")(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/agents/heartbeat", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if !reached {
+		t.Fatalf("heartbeat was blocked by the admin gate (status %d)", w.Code)
+	}
+
+	// Everything else under /api/ stays gated — the exemption must be exact,
+	// not a prefix that could be widened by a crafted path.
+	reached = false
+	for _, p := range []string{"/api/v1/models/unload", "/api/v1/agents/heartbeat/../models/unload", "/api/v1/agents"} {
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, p, nil))
+		if reached {
+			t.Errorf("%s reached the handler without the admin token", p)
+		}
+	}
+}

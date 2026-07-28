@@ -15,6 +15,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/iodesystems/corrallm/internal/agent"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/gpu"
@@ -42,6 +43,9 @@ type Handlers struct {
 	Store *store.Store
 	Mgr   *proc.Manager    // residency introspection (P8)
 	Sched *sched.Scheduler // live admission load (P8-beyond)
+	// Liveness tracks which agent-backed servers have reported in. Nil is valid
+	// (single-host deployments never see a heartbeat).
+	Liveness *agent.Liveness
 	// Verified holds OBSERVED capability verdicts published by llm-bench.
 	// Nil is valid (no bench has run); every reader must tolerate it.
 	Verified *VerifiedStore
