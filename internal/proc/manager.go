@@ -18,7 +18,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"sort"
 	"sync"
@@ -27,6 +26,7 @@ import (
 
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/gpu"
+	"github.com/iodesystems/corrallm/internal/host"
 	"github.com/iodesystems/corrallm/internal/tune"
 )
 
@@ -145,9 +145,16 @@ type Process struct {
 
 	hasUI atomic.Int32 // 0 unknown · 1 has a web UI · 2 none (probed once when ready, P11b)
 
-	mu         sync.Mutex
-	state      State
-	cmd        *exec.Cmd
+	mu    sync.Mutex
+	state State
+	// handle is the running process GROUP, wherever it runs. Replaces the
+	// *exec.Cmd this used to hold; see internal/host.
+	handle host.Handle
+	// spawnedCmd is the command string ACTUALLY run, after the slot auto-tuner
+	// rewrote --parallel. It differs from the model's configured cmd whenever
+	// tuning fired, and that difference was previously only visible by reading
+	// the live process's argv.
+	spawnedCmd string
 	ready      chan struct{} // closed when load resolves; supports coalescing
 	err        error
 	draining   bool      // unload requested: finish in-flight work, admit nothing new
@@ -183,6 +190,31 @@ type Manager struct {
 	// SetTuneCache before the first EnsureReady/Preload.
 	tuneCache  *tune.Cache
 	vramMargin int // MiB of free VRAM kept back when sizing --parallel (default defaultVRAMMargin)
+
+	// hosts maps a `servers:` name → where its backends actually run. Every
+	// entry is a local host today; a server bound to a remote agent gets a
+	// different implementation here and nothing else in this file changes.
+	// Guarded by mu.
+	hosts map[string]host.Host
+}
+
+// hostFor returns the host backing a server, defaulting to this machine.
+//
+// An unknown server (or the empty one a pure proxy carries) still yields a
+// local host rather than nil: callers are on the spawn path and a nil here
+// would be a panic where a spawn failure is the honest outcome.
+func (m *Manager) hostFor(server string) host.Host {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if h, ok := m.hosts[server]; ok {
+		return h
+	}
+	h := host.NewLocal(server)
+	if m.hosts == nil {
+		m.hosts = map[string]host.Host{}
+	}
+	m.hosts[server] = h
+	return h
 }
 
 // NewManager constructs a Manager and precomputes each server's pool budgets.
@@ -394,34 +426,30 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 			p.mu.Unlock()
 		}
 
-		cmd := exec.Command("sh", "-c", cmdStr)
 		// Tee output to our stdout AND the per-backend ring buffer (for the logs
 		// view + n_ctx/n_slots/KV-size parsing).
 		out := io.Writer(os.Stdout)
 		if p.logs != nil {
 			out = io.MultiWriter(os.Stdout, p.logs)
 		}
-		cmd.Stdout, cmd.Stderr = out, out
-		cmd.SysProcAttr = sysProcAttr()
-		if err := cmd.Start(); err != nil {
-			finish(StateFailed, fmt.Errorf("spawn %q: %w", cmdStr, err))
+		h, err := m.hostFor(mdl.Server).Start(host.Spec{Name: name, Cmd: cmdStr, Out: out})
+		if err != nil {
+			finish(StateFailed, err)
 			return
 		}
 		p.mu.Lock()
-		p.cmd = cmd
+		p.handle, p.spawnedCmd = h, cmdStr
 		p.mu.Unlock()
-		stopped := make(chan struct{}) // closed when cmd.Wait() returns — stops the peak sampler
 		go func() {
-			err := cmd.Wait()
-			close(stopped)
-			slog.Info("backend exited", "name", name, "err", err)
+			<-h.Done()
+			slog.Info("backend exited", "name", name, "err", h.Err())
 			m.onProcExit(name, p) // free pools if it exited on its own (idempotent)
 		}()
 		// Track this process's VRAM footprint over its lifetime so a burst well
 		// after boot (long-context growth, a big batch) still feeds the NEXT
 		// spawn's tuning, not just the boot-time snapshot below.
-		go m.sampleVRAMPeak(name, cmd.Process.Pid, stopped)
-		slog.Info("backend spawned", "name", name, "pid", cmd.Process.Pid, "target", p.Target.URL.String())
+		go m.sampleVRAMPeak(name, h)
+		slog.Info("backend spawned", "name", name, "id", h.ID(), "target", p.Target.URL.String())
 
 		// Wait until the spawned server can actually serve.
 		if err := m.waitHealthy(p.Target); err != nil {
@@ -438,7 +466,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		// Feeds this model's NEXT spawn, never this one. Best-effort: any
 		// gpu/tune failure is logged and skipped, never fatal — the backend is
 		// already StateReady.
-		m.measure(name, mdl, p, cmd.Process.Pid)
+		m.measure(name, mdl, p, h)
 	}
 
 	// A pure-proxy backend (no cmd) usually targets a remote we do not own, and
@@ -544,13 +572,10 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 	ownUsed := 0
 	for _, p := range procs {
 		p.mu.Lock()
-		pid := 0
-		if p.cmd != nil && p.cmd.Process != nil {
-			pid = p.cmd.Process.Pid
-		}
+		h := p.handle
 		p.mu.Unlock()
-		if pid > 0 {
-			if v, err := gpu.GroupVRAM(pid); err == nil {
+		if h != nil {
+			if v, err := h.MemoryMiB(); err == nil {
 				ownUsed += v
 			}
 		}
@@ -851,7 +876,7 @@ func (m *Manager) calibrationProbe(stats gpu.Stats, budget int, model string) (i
 // measure records this spawn's empirical VRAM footprint into the tune cache.
 // Best-effort: any gpu/tune error here just skips the measurement (logged at
 // Debug/Warn) — never fatal, the backend is already StateReady regardless.
-func (m *Manager) measure(model string, mdl config.Model, p *Process, pid int) {
+func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Handle) {
 	if m.tuneCache == nil {
 		return
 	}
@@ -860,16 +885,15 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, pid int) {
 		slog.Debug("gpu probe unavailable; skipping vram measurement", "model", model, "err", err)
 		return
 	}
-	// Attribute by process GROUP: we spawn `sh -c` (Setpgid), and nvidia-smi
-	// reports the llama-server CHILD's pid, not the shell's. pid here is the
-	// shell (== the group's pgid), so sum the whole group.
-	footprint, err := gpu.GroupVRAM(pid)
+	// Attributed by process GROUP — see host.Handle.MemoryMiB: the vendor tool
+	// reports the llama-server CHILD, not the `sh -c` leader we spawned.
+	footprint, err := h.MemoryMiB()
 	if err != nil {
-		slog.Debug("nvidia-smi proc query unavailable; skipping vram measurement", "model", model, "err", err)
+		slog.Debug("per-process memory unavailable; skipping vram measurement", "model", model, "err", err)
 		return
 	}
 	if footprint <= 0 {
-		slog.Debug("no vram usage reported for process group; skipping vram measurement", "model", model, "pgid", pid)
+		slog.Debug("no vram usage reported for process group; skipping vram measurement", "model", model, "id", h.ID())
 		return
 	}
 	nCtx, nSlots, kvMiB := 0, 0, 0
@@ -913,7 +937,7 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, pid int) {
 // (BumpPeak is a no-op otherwise); never synthesizes one. Stops when stopped
 // closes (tied to the process's cmd.Wait() returning) so it never leaks past
 // the process's life or blocks shutdown.
-func (m *Manager) sampleVRAMPeak(model string, pid int, stopped <-chan struct{}) {
+func (m *Manager) sampleVRAMPeak(model string, h host.Handle) {
 	if m.tuneCache == nil {
 		return
 	}
@@ -921,7 +945,7 @@ func (m *Manager) sampleVRAMPeak(model string, pid int, stopped <-chan struct{})
 	defer t.Stop()
 	for {
 		select {
-		case <-stopped:
+		case <-h.Done():
 			return
 		case <-t.C:
 			stats, err := gpu.Probe()
@@ -929,9 +953,9 @@ func (m *Manager) sampleVRAMPeak(model string, pid int, stopped <-chan struct{})
 				slog.Debug("vram peak sample: gpu probe unavailable", "model", model, "err", err)
 				continue
 			}
-			footprint, err := gpu.GroupVRAM(pid) // pid = spawned shell == process-group pgid
+			footprint, err := h.MemoryMiB()
 			if err != nil {
-				slog.Debug("vram peak sample: nvidia-smi proc query unavailable", "model", model, "err", err)
+				slog.Debug("vram peak sample: per-process memory unavailable", "model", model, "err", err)
 				continue
 			}
 			if footprint <= 0 {
@@ -991,15 +1015,12 @@ func (m *Manager) ModelVRAM(model string) int {
 		return 0
 	}
 	p.mu.Lock()
-	pid := 0
-	if p.cmd != nil && p.cmd.Process != nil {
-		pid = p.cmd.Process.Pid
-	}
+	h := p.handle
 	p.mu.Unlock()
-	if pid <= 0 {
+	if h == nil {
 		return 0
 	}
-	v, err := gpu.GroupVRAM(pid)
+	v, err := h.MemoryMiB()
 	if err != nil {
 		return 0
 	}
@@ -1179,13 +1200,13 @@ func (m *Manager) freeLocked(server string, usage map[string]int64) {
 func (m *Manager) evictLocked(p *Process) {
 	p.mu.Lock()
 	p.state = StateEvicting
-	cmd := p.cmd
+	h := p.handle
 	p.mu.Unlock()
 	delete(m.procs, p.key)
 	m.freeLocked(p.server, p.usage)
-	if cmd != nil && cmd.Process != nil {
-		slog.Info("evicting backend", "name", p.Name, "pid", cmd.Process.Pid)
-		_ = killGroup(cmd)
+	if h != nil {
+		slog.Info("evicting backend", "name", p.Name, "id", h.ID())
+		_ = h.Signal(host.SigTerm)
 		// SIGTERM is a REQUEST. A llama-server in CUDA teardown (or still
 		// initialising one) can ignore it for minutes, and by this point the
 		// pool reservation has already been freed and the process dropped from
@@ -1197,7 +1218,7 @@ func (m *Manager) evictLocked(p *Process) {
 		//
 		// So verify, and escalate. Asynchronously: the caller holds m.mu and
 		// blocking eviction on a stuck process would wedge the scheduler.
-		go m.reapGroup(p.Name, cmd.Process.Pid)
+		go m.reapGroup(p.Name, h)
 	}
 }
 
@@ -1212,31 +1233,31 @@ const evictGrace = 15 * time.Second
 // Checking the group rather than the leader is the whole point: the leader is
 // the `sh -c` wrapper, whose exit is what cmd.Wait() reports as "backend
 // exited", while the llama-server grandchild is what owns the GPU memory.
-func (m *Manager) reapGroup(name string, pid int) {
+func (m *Manager) reapGroup(name string, h host.Handle) {
 	deadline := time.Now().Add(evictGrace)
 	for time.Now().Before(deadline) {
-		if !groupAlive(pid) {
+		if !h.Alive() {
 			return // clean exit
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	if !groupAlive(pid) {
+	if !h.Alive() {
 		return
 	}
 	slog.Warn("backend ignored SIGTERM; sending SIGKILL",
-		"name", name, "pid", pid, "grace", evictGrace)
-	if err := killGroupHard(pid); err != nil {
+		"name", name, "id", h.ID(), "grace", evictGrace)
+	if err := h.Signal(host.SigKill); err != nil {
 		slog.Error("SIGKILL failed — process group may still hold VRAM",
-			"name", name, "pid", pid, "err", err)
+			"name", name, "id", h.ID(), "err", err)
 		return
 	}
 	// Confirm rather than assume: an unkillable process (uninterruptible driver
 	// wait) leaves VRAM stranded and corrallm over-committed, and an operator
 	// needs to know that from the log rather than from OOMing spawns.
 	time.Sleep(2 * time.Second)
-	if groupAlive(pid) {
+	if h.Alive() {
 		slog.Error("backend SURVIVED SIGKILL — VRAM is stranded and this server is now over-committed",
-			"name", name, "pid", pid)
+			"name", name, "id", h.ID())
 	}
 }
 
@@ -1359,12 +1380,12 @@ func (m *Manager) Shutdown() {
 	var pending []procRef
 	for name, p := range m.procs {
 		p.mu.Lock()
-		cmd := p.cmd
+		h := p.handle
 		p.mu.Unlock()
-		if cmd != nil && cmd.Process != nil {
-			slog.Info("stopping backend", "name", name, "pid", cmd.Process.Pid)
-			_ = killGroup(cmd)
-			pending = append(pending, procRef{name: name, pid: cmd.Process.Pid})
+		if h != nil {
+			slog.Info("stopping backend", "name", name, "id", h.ID())
+			_ = h.Signal(host.SigTerm)
+			pending = append(pending, procRef{name: name, h: h})
 		}
 	}
 	// Wait for the groups to actually die, escalating if they do not. On
@@ -1383,7 +1404,7 @@ func (m *Manager) Shutdown() {
 // procRef is a backend's identity for reaping after its Process may be gone.
 type procRef struct {
 	name string
-	pid  int
+	h    host.Handle
 }
 
 // reapAll waits for every group to exit, SIGKILLing any that outlive the grace
@@ -1396,7 +1417,7 @@ func reapAll(refs []procRef) {
 	for time.Now().Before(deadline) {
 		alive := refs[:0:0]
 		for _, r := range refs {
-			if groupAlive(r.pid) {
+			if r.h.Alive() {
 				alive = append(alive, r)
 			}
 		}
@@ -1407,12 +1428,12 @@ func reapAll(refs []procRef) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	for _, r := range refs {
-		if !groupAlive(r.pid) {
+		if !r.h.Alive() {
 			continue
 		}
-		slog.Warn("backend ignored SIGTERM on shutdown; sending SIGKILL", "name", r.name, "pid", r.pid)
-		if err := killGroupHard(r.pid); err != nil {
-			slog.Error("SIGKILL failed — VRAM may be stranded after exit", "name", r.name, "pid", r.pid, "err", err)
+		slog.Warn("backend ignored SIGTERM on shutdown; sending SIGKILL", "name", r.name, "id", r.h.ID())
+		if err := r.h.Signal(host.SigKill); err != nil {
+			slog.Error("SIGKILL failed — VRAM may be stranded after exit", "name", r.name, "id", r.h.ID(), "err", err)
 		}
 	}
 }

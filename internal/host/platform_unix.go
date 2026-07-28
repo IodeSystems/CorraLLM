@@ -1,11 +1,8 @@
 //go:build unix
 
-package proc
+package host
 
-import (
-	"os/exec"
-	"syscall"
-)
+import "syscall"
 
 // sysProcAttr starts the backend in its own process group so a kill reaches the
 // whole tree (sh -c → llama-server → children), not just the shell.
@@ -14,16 +11,13 @@ func sysProcAttr() *syscall.SysProcAttr {
 }
 
 // killGroup signals the backend's entire process group.
-func killGroup(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
+func killGroup(pid int) error {
 	// Negative pid → the process group led by pid.
-	return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	return syscall.Kill(-pid, syscall.SIGTERM)
 }
 
 // killGroupHard SIGKILLs the backend's entire process group. Used only after a
-// SIGTERM grace period has expired — see Manager.reapGroup.
+// SIGTERM grace period has expired — see proc.Manager.reapGroup.
 func killGroupHard(pid int) error {
 	return syscall.Kill(-pid, syscall.SIGKILL)
 }

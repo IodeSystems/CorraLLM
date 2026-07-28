@@ -38,7 +38,7 @@ func TestReapGroup_EscalatesToSIGKILL(t *testing.T) {
 	if !groupAlive(pid) {
 		t.Fatal("stub should be alive")
 	}
-	if err := killGroup(cmd); err != nil {
+	if err := killGroup(cmd.Process.Pid); err != nil {
 		t.Fatal(err)
 	}
 	// SIGTERM is trapped, so it must still be alive — this is the precondition
@@ -50,7 +50,7 @@ func TestReapGroup_EscalatesToSIGKILL(t *testing.T) {
 
 	m := &Manager{}
 	done := make(chan struct{})
-	go func() { m.reapGroup("stub", pid); close(done) }()
+	go func() { m.reapGroup("stub", pidHandle{pid: pid}); close(done) }()
 
 	select {
 	case <-done:
@@ -83,7 +83,7 @@ func TestReapGroup_ReturnsImmediatelyOnCleanExit(t *testing.T) {
 
 	m := &Manager{}
 	start := time.Now()
-	m.reapGroup("gone", pid)
+	m.reapGroup("gone", pidHandle{pid: pid})
 	if el := time.Since(start); el > 3*time.Second {
 		t.Errorf("reapGroup took %s for an already-dead group; must not wait out the grace", el)
 	}

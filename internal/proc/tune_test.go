@@ -88,7 +88,7 @@ func TestFailSafeNoTuningWithoutProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
-	if got := p.cmd.Args[2]; got != mdl.Cmd {
+	if got := p.spawnedCmd; got != mdl.Cmd {
 		t.Fatalf("spawned cmd = %q, want byte-identical to configured %q", got, mdl.Cmd)
 	}
 	if p.tunedSlots != 0 {
@@ -120,7 +120,7 @@ func TestFailSafeNoProfileForModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
-	if got := p.cmd.Args[2]; got != mdl.Cmd {
+	if got := p.spawnedCmd; got != mdl.Cmd {
 		t.Fatalf("spawned cmd = %q, want byte-identical to configured %q", got, mdl.Cmd)
 	}
 	if p.tunedSlots != 0 {
@@ -151,7 +151,7 @@ func TestFailSafeGPUProbeUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
-	if got := p.cmd.Args[2]; got != mdl.Cmd {
+	if got := p.spawnedCmd; got != mdl.Cmd {
 		t.Fatalf("spawned cmd = %q, want byte-identical to configured %q", got, mdl.Cmd)
 	}
 	if p.tunedSlots != 0 {
@@ -183,7 +183,7 @@ func TestFailSafeNoParallelFlagLeftUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
-	if got := p.cmd.Args[2]; got != mdl.Cmd {
+	if got := p.spawnedCmd; got != mdl.Cmd {
 		t.Fatalf("spawned cmd = %q, want byte-identical to configured %q (no --parallel to rewrite)", got, mdl.Cmd)
 	}
 	if p.tunedSlots != 0 {
@@ -227,7 +227,7 @@ func TestParallelRewriteWithProfile(t *testing.T) {
 		t.Fatalf("EnsureReady: %v", err)
 	}
 	want := "true --parallel 6 --ctx-size 4096 && exec sleep 30"
-	if got := p.cmd.Args[2]; got != want {
+	if got := p.spawnedCmd; got != want {
 		t.Fatalf("spawned cmd = %q, want %q", got, want)
 	}
 	if p.tunedSlots != 6 {
@@ -272,7 +272,7 @@ func TestParallelRewritePreservesRestOfCmd(t *testing.T) {
 		t.Fatalf("EnsureReady: %v", err)
 	}
 	want := "exec llama-server -m model.gguf -ngl 60 --parallel 5 --host 0.0.0.0"
-	if got := p.cmd.Args[2]; got != want {
+	if got := p.spawnedCmd; got != want {
 		t.Fatalf("spawned cmd = %q, want %q", got, want)
 	}
 }
@@ -397,7 +397,7 @@ func TestCalibrationProbeEndToEnd(t *testing.T) {
 		t.Fatalf("EnsureReady: %v", err)
 	}
 	want := "exec sleep 30 --parallel 3"
-	if got := p.cmd.Args[2]; got != want {
+	if got := p.spawnedCmd; got != want {
 		t.Fatalf("spawned cmd = %q, want %q (calibration probe to k+1)", got, want)
 	}
 	if p.tunedSlots != 3 {
@@ -435,7 +435,7 @@ func TestCalibrationProbeEndToEndUnsafeLeavesCmdUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
-	if got := p.cmd.Args[2]; got != mdl.Cmd {
+	if got := p.spawnedCmd; got != mdl.Cmd {
 		t.Fatalf("spawned cmd = %q, want byte-identical to configured %q (probe unsafe)", got, mdl.Cmd)
 	}
 	if p.tunedSlots != 0 {

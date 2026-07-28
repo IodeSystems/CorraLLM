@@ -40,7 +40,7 @@ func TestMeasureOnLoad(t *testing.T) {
 	p := &Process{logs: lb}
 
 	mdl := config.Model{Cmd: "exec sleep 30", MaxConcurrent: 2}
-	mgr.measure("measured", mdl, p, fakePid)
+	mgr.measure("measured", mdl, p, pidHandle{pid: fakePid})
 
 	want := tune.Profile{
 		BaseMiB: 7000, PerSlotMiB: 1000, PeakMiB: 9000, MeasuredSlots: 2, Ctx: 0,
@@ -99,7 +99,7 @@ func TestMeasureTwoPointSlopeDerivation(t *testing.T) {
 	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 20000, 12000", strconv.Itoa(pid1)+", 8000")
 	lb1 := newLogBuffer(10)
 	_, _ = lb1.Write([]byte("srv  load_model: initializing slots, n_slots = 2\n"))
-	mgr.measure("slope-model", mdl, &Process{logs: lb1}, pid1)
+	mgr.measure("slope-model", mdl, &Process{logs: lb1}, pidHandle{pid: pid1})
 
 	mid, ok := cache.Get("Fake GPU", "slope-model")
 	if !ok {
@@ -118,7 +118,7 @@ func TestMeasureTwoPointSlopeDerivation(t *testing.T) {
 	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 20000, 12000", strconv.Itoa(pid2)+", 5900")
 	lb2 := newLogBuffer(10)
 	_, _ = lb2.Write([]byte("srv  load_model: initializing slots, n_slots = 5\n"))
-	mgr.measure("slope-model", mdl, &Process{logs: lb2}, pid2)
+	mgr.measure("slope-model", mdl, &Process{logs: lb2}, pidHandle{pid: pid2})
 
 	// perSlot = (5900-8000)/(5-2) ... wait: slope uses the two DISTINCT
 	// samples (2,8000) and (5,5900): perSlot=(5900-8000)/(5-2) = -700 —
@@ -162,13 +162,13 @@ func TestMeasureTwoPointSlopePositive(t *testing.T) {
 	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 20000, 12000", strconv.Itoa(pid1)+", 6000")
 	lb1 := newLogBuffer(10)
 	_, _ = lb1.Write([]byte("srv  load_model: initializing slots, n_slots = 1\n"))
-	mgr.measure("slope-up", mdl, &Process{logs: lb1}, pid1)
+	mgr.measure("slope-up", mdl, &Process{logs: lb1}, pidHandle{pid: pid1})
 
 	const pid2 = 444444
 	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 20000, 12000", strconv.Itoa(pid2)+", 9000")
 	lb2 := newLogBuffer(10)
 	_, _ = lb2.Write([]byte("srv  load_model: initializing slots, n_slots = 4\n"))
-	mgr.measure("slope-up", mdl, &Process{logs: lb2}, pid2)
+	mgr.measure("slope-up", mdl, &Process{logs: lb2}, pidHandle{pid: pid2})
 
 	// perSlot = (9000-6000)/(4-1) = 1000, base = 6000 - 1*1000 = 5000.
 	got, ok := cache.Get("Fake GPU", "slope-up")
@@ -214,13 +214,13 @@ func TestMeasureKVLogWinsOverSlope(t *testing.T) {
 	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 20000, 12000", strconv.Itoa(pid1)+", 6000")
 	lb1 := newLogBuffer(10)
 	_, _ = lb1.Write([]byte("srv  load_model: initializing slots, n_slots = 1\n"))
-	mgr.measure("kv-wins", mdl, &Process{logs: lb1}, pid1)
+	mgr.measure("kv-wins", mdl, &Process{logs: lb1}, pidHandle{pid: pid1})
 
 	const pid2 = 555002
 	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 20000, 12000", strconv.Itoa(pid2)+", 8000")
 	lb2 := newLogBuffer(10)
 	_, _ = lb2.Write([]byte("srv  load_model: initializing slots, n_slots = 3\n"))
-	mgr.measure("kv-wins", mdl, &Process{logs: lb2}, pid2)
+	mgr.measure("kv-wins", mdl, &Process{logs: lb2}, pidHandle{pid: pid2})
 
 	mid, _ := cache.Get("Fake GPU", "kv-wins")
 	if mid.PerSlotMiB != 1000 {
@@ -236,7 +236,7 @@ func TestMeasureKVLogWinsOverSlope(t *testing.T) {
 	lb3 := newLogBuffer(10)
 	_, _ = lb3.Write([]byte("srv  load_model: initializing slots, n_slots = 2\n"))
 	_, _ = lb3.Write([]byte("llama_new_context_with_model: KV self size = 1500.00 MiB\n"))
-	mgr.measure("kv-wins", mdl, &Process{logs: lb3}, pid3)
+	mgr.measure("kv-wins", mdl, &Process{logs: lb3}, pidHandle{pid: pid3})
 
 	got, ok := cache.Get("Fake GPU", "kv-wins")
 	if !ok {
@@ -263,7 +263,7 @@ func TestMeasureNoopWithoutTuneCache(t *testing.T) {
 	mgr := NewManager(&config.Config{})
 	p := &Process{logs: newLogBuffer(10)}
 	mdl := config.Model{Cmd: "exec sleep 30"}
-	mgr.measure("no-cache", mdl, p, 1) // must not panic
+	mgr.measure("no-cache", mdl, p, pidHandle{pid: 1}) // must not panic
 }
 
 // TestMeasureSkipsWhenPIDMissingFromProcVRAM: nvidia-smi succeeds but doesn't
@@ -283,7 +283,7 @@ func TestMeasureSkipsWhenPIDMissingFromProcVRAM(t *testing.T) {
 
 	p := &Process{logs: newLogBuffer(10)}
 	mdl := config.Model{Cmd: "exec sleep 30"}
-	mgr.measure("missing-pid", mdl, p, 999999)
+	mgr.measure("missing-pid", mdl, p, pidHandle{pid: 999999})
 
 	if _, ok := cache.Get("Fake GPU", "missing-pid"); ok {
 		t.Error("want no profile recorded when the pid is absent from nvidia-smi's report")
@@ -299,7 +299,7 @@ func TestSampleVRAMPeakStopsOnSignal(t *testing.T) {
 	stopped := make(chan struct{})
 	close(stopped) // already stopped
 	go func() {
-		mgr.sampleVRAMPeak("m", 1, stopped)
+		mgr.sampleVRAMPeak("m", pidHandle{pid: 1, done: stopped})
 		close(done)
 	}()
 	select {

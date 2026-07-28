@@ -48,20 +48,19 @@ func TestSpawnHealthAndProcessGroupKill(t *testing.T) {
 	if p.state != StateReady {
 		t.Fatalf("state = %s, want ready", p.state)
 	}
-	pid := p.cmd.Process.Pid
-	if !alive(pid) {
-		t.Fatalf("spawned process %d not alive", pid)
+	if !p.handle.Alive() {
+		t.Fatal("spawned process group not alive")
 	}
 
 	mgr.Shutdown()
 
 	// The child should die promptly once its group is signalled.
 	deadline := time.Now().Add(3 * time.Second)
-	for alive(pid) && time.Now().Before(deadline) {
+	for p.handle.Alive() && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	if alive(pid) {
-		t.Fatalf("process %d still alive after Shutdown (orphan leak)", pid)
+	if p.handle.Alive() {
+		t.Fatalf("process group %s still alive after Shutdown (orphan leak)", p.handle.ID())
 	}
 }
 
@@ -118,27 +117,27 @@ func TestLoadCoalescing(t *testing.T) {
 	mdl := modelCmd(t, "exec sleep 30", port)
 
 	const n = 8
-	pids := make(chan int, n)
+	ids := make(chan string, n)
 	for range n {
 		go func() {
 			p, _, _, err := mgr.EnsureReady(context.Background(), "shared", mdl, nil)
 			if err != nil {
-				pids <- -1
+				ids <- ""
 				return
 			}
-			pids <- p.cmd.Process.Pid
+			ids <- p.handle.ID()
 		}()
 	}
-	seen := map[int]bool{}
+	seen := map[string]bool{}
 	for range n {
-		pid := <-pids
-		if pid == -1 {
+		id := <-ids
+		if id == "" {
 			t.Fatal("EnsureReady failed")
 		}
-		seen[pid] = true
+		seen[id] = true
 	}
 	if len(seen) != 1 {
-		t.Fatalf("expected 1 spawned pid across %d callers, got %d distinct", n, len(seen))
+		t.Fatalf("expected 1 spawned process across %d callers, got %d distinct", n, len(seen))
 	}
 }
 

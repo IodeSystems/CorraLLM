@@ -72,7 +72,6 @@ func TestEvictIdleToFit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
-	pidA := pA.cmd.Process.Pid
 	doneA() // A is now idle (evictable)
 
 	pB, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil)
@@ -85,11 +84,11 @@ func TestEvictIdleToFit(t *testing.T) {
 
 	// A's process should be gone, and the ledger should account only B.
 	deadline := time.Now().Add(3 * time.Second)
-	for alive(pidA) && time.Now().Before(deadline) {
+	for pA.handle.Alive() && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	if alive(pidA) {
-		t.Errorf("evicted A (pid %d) still alive", pidA)
+	if pA.handle.Alive() {
+		t.Error("evicted A still alive")
 	}
 	mgr.mu.Lock()
 	used := mgr.used["box"]["gpu"]
@@ -286,7 +285,7 @@ func TestFitsAlongside(t *testing.T) {
 	}
 	defer doneB()
 
-	if !alive(pA.cmd.Process.Pid) {
+	if !pA.handle.Alive() {
 		t.Errorf("A should remain resident alongside B")
 	}
 	mgr.mu.Lock()
