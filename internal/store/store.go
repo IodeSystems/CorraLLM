@@ -234,6 +234,7 @@ var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN prompt_per_sec REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN predicted_per_sec REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE activity ADD COLUMN finish_reason TEXT NOT NULL DEFAULT ''`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -325,6 +326,16 @@ type Activity struct {
 	AudioBytes       int64  // metered audio request bytes for STT/TTS routes (P9c); 0 for text
 	Error            string // proxy/backpressure error reason, if any (P10a); "" on success
 	TTFBMs           int64  // time to first response byte (P10b)
+	// FinishReason is the model's own account of why it stopped: "stop" (it
+	// chose to), "length" (it ran into a cap), "tool_calls", "content_filter".
+	// Empty when the backend did not report one, or the reply exceeded the
+	// capture cap.
+	//
+	// The distinction that matters operationally is stop vs length: a reply that
+	// ended because it hit a wall did NOT finish, and a run of them is the
+	// signature of a caller with no max_tokens whose generations are running
+	// away — visible here per request rather than by reading a backend's slots.
+	FinishReason     string
 	ReqBody          string // captured request payload, capped+summarized (P10b)
 	RespBody         string // captured response payload, capped+summarized (P10b)
 }
@@ -334,11 +345,13 @@ func (s *Store) InsertActivity(a Activity) error {
 	_, err := s.db.Exec(
 		`INSERT INTO activity (ts, served, backend, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
-		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
+		                       finish_reason)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Backend, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
+		a.FinishReason,
 	)
 	return err
 }
@@ -351,11 +364,13 @@ func (s *Store) ActivityByID(id int64) (Activity, error) {
 	err := s.db.QueryRow(
 		`SELECT id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
-		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body
+		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
+		        finish_reason
 		 FROM activity WHERE id = ?`, id).Scan(
 		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
-		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody)
+		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody,
+		&a.FinishReason)
 	return a, err
 }
 
@@ -377,7 +392,7 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 func (s *Store) RecentActivity(limit int, served string) ([]Activity, error) {
 	const cols = `id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
-	        cached_tokens, prompt_per_sec, predicted_per_sec`
+	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason`
 	var (
 		rows *sql.Rows
 		err  error
@@ -398,7 +413,7 @@ func (s *Store) RecentActivity(limit int, served string) ([]Activity, error) {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
-			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec); err != nil {
+			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

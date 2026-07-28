@@ -132,6 +132,7 @@ type ActivityRecord struct {
 	AudioBytes       int64   `json:"audioBytes" doc:"Metered audio request bytes (STT/TTS); 0 for text."`
 	Error            string  `json:"error" doc:"Proxy/backpressure failure reason, if any (empty on success)."`
 	TTFBMs           int64   `json:"ttfbMs" doc:"Time to first response byte, milliseconds (0 if no body)."`
+	FinishReason     string  `json:"finishReason" doc:"Why the model stopped: stop (it chose to) | length (it hit a cap and did NOT finish) | tool_calls | content_filter. Empty if the backend reported none or the reply exceeded the capture cap."`
 	QueuedMS         int64   `json:"queuedMs" doc:"Time queued before admission/reject, milliseconds."`
 }
 
@@ -174,6 +175,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			AudioBytes:       a.AudioBytes,
 			Error:            a.Error,
 			TTFBMs:           a.TTFBMs,
+			FinishReason:     a.FinishReason,
 			QueuedMS:         a.QueuedMS,
 		})
 	}
@@ -214,7 +216,7 @@ func (h *Handlers) ActivityDetail(_ context.Context, in *ActivityDetailInput) (*
 			CompletionTokens: a.CompletionTokens, CachedTokens: a.CachedTokens,
 			PromptPerSec: a.PromptPerSec, PredictedPerSec: a.PredictedPerSec,
 			CostUSD: a.CostUSD, AudioBytes: a.AudioBytes,
-			Error: a.Error, TTFBMs: a.TTFBMs, QueuedMS: a.QueuedMS,
+			Error: a.Error, TTFBMs: a.TTFBMs, FinishReason: a.FinishReason, QueuedMS: a.QueuedMS,
 		},
 		ReqBody:  a.ReqBody,
 		RespBody: a.RespBody,

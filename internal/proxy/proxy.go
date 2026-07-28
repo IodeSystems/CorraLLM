@@ -706,6 +706,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// request also bills its swap energy to it. The cost is reported to the
 		// scheduler (limit budgets + cost share currency) at release.
 		var u usage
+		var finishReason string
 		var costUSD float64
 		var audioBytes int64
 		var cCost, pCost, gCost float64 // per-class $ (cached, processed, generated)
@@ -718,6 +719,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			costUSD = p.cost.AudioRequestUSD(backend.Type, len(body))
 		default:
 			u = extractUsage(sc.buf, streaming)
+			finishReason = extractFinishReason(sc.buf, streaming)
 			proc := u.PromptTokens - u.CachedTokens
 			if proc < 0 {
 				proc = 0
@@ -789,7 +791,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			PromptPerSec: u.PromptPerSec, PredictedPerSec: u.PredictedPerSec,
 			CostUSD: costUSD, QueuedMS: queuedMS,
 			AudioBytes: audioBytes, Error: errReason, TTFBMs: ttfbMS,
-			ReqBody: reqBody, RespBody: respBody,
+			ReqBody: reqBody, RespBody: respBody, FinishReason: finishReason,
 		})
 		return
 	}
@@ -2030,6 +2032,56 @@ func extractUsage(buf []byte, streaming bool) usage {
 		}
 		if json.Unmarshal(data, &r) == nil && r.Usage != nil {
 			last = mergeTimings(*r.Usage, r.Timings)
+		}
+	}
+	return last
+}
+
+// extractFinishReason recovers why the model stopped, from the same captured
+// body usage comes from.
+//
+// "stop" means the model chose to end. "length" means it ran into a cap and did
+// NOT finish — the reply is truncated mid-thought, and a run of them is the
+// signature of a caller sending no max_tokens against a model that will happily
+// generate until the context wall.
+//
+// Streaming carries it on the LAST event whose choice has one (the final delta
+// before [DONE]), which is why the streaming capture keeps a tail. Non-streaming
+// carries it in the single JSON object; a reply past the capture cap yields
+// empty, the same limitation usage already has, because the body must be parsed
+// whole and a 1 MiB cap cannot hold an unbounded generation.
+func extractFinishReason(buf []byte, streaming bool) string {
+	if len(buf) == 0 {
+		return ""
+	}
+	type choice struct {
+		FinishReason string `json:"finish_reason"`
+	}
+	if !streaming {
+		var r struct {
+			Choices []choice `json:"choices"`
+		}
+		_ = json.Unmarshal(buf, &r)
+		if len(r.Choices) > 0 {
+			return r.Choices[0].FinishReason
+		}
+		return ""
+	}
+	last := ""
+	for _, line := range bytes.Split(buf, []byte("\n")) {
+		data, ok := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:"))
+		if !ok {
+			continue
+		}
+		data = bytes.TrimSpace(data)
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+			continue
+		}
+		var r struct {
+			Choices []choice `json:"choices"`
+		}
+		if json.Unmarshal(data, &r) == nil && len(r.Choices) > 0 && r.Choices[0].FinishReason != "" {
+			last = r.Choices[0].FinishReason
 		}
 	}
 	return last

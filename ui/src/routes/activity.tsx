@@ -27,6 +27,17 @@ import { Panel, PageHeader } from '@/Panel'
 import { C } from '@/theme'
 import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
 
+// What each finish_reason means for an operator. "length" is the one that
+// matters: the reply is truncated mid-thought, so a run of them says a caller
+// is generating without a max_tokens rather than that anything failed — every
+// one of those requests is still a 200.
+const FINISH_HINT: Record<string, string> = {
+  stop: 'the model chose to stop — a complete reply',
+  length: 'hit a token or context cap and did NOT finish; the reply is truncated',
+  tool_calls: 'stopped to call a tool',
+  content_filter: 'stopped by a content filter',
+}
+
 const ActivityDoc = graphql(/* GraphQL */ `
   query Activity {
     corrallm {
@@ -42,6 +53,7 @@ const ActivityDoc = graphql(/* GraphQL */ `
           status
           dwellMs
           ttfbMs
+          finishReason
           promptTokens
           completionTokens
           cachedTokens
@@ -71,6 +83,7 @@ const ActivityDetailDoc = graphql(/* GraphQL */ `
           status
           dwellMs
           ttfbMs
+          finishReason
           queuedMs
           promptTokens
           completionTokens
@@ -222,6 +235,10 @@ function Activity() {
               <TableCell>Source</TableCell>
               <TableCell>Path</TableCell>
               <TableCell align="right">Status</TableCell>
+              {/* Why the model stopped. "length" means it hit a cap and did NOT
+                  finish — a run of them is a caller generating without a
+                  max_tokens, which is invisible from status alone (all 200). */}
+              <TableCell>Finish</TableCell>
               <TableCell align="right">Dwell</TableCell>
               <TableCell align="right">Prompt</TableCell>
               <TableCell align="right">Completion</TableCell>
@@ -235,7 +252,7 @@ function Activity() {
           <TableBody>
             {records.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={15}>
+                <TableCell colSpan={16}>
                   <Typography color="text.secondary">No activity yet.</Typography>
                 </TableCell>
               </TableRow>
@@ -260,6 +277,20 @@ function Activity() {
                       </Tooltip>
                     ) : (
                       <Chip size="small" label={r.status} color={statusColor(r.status)} />
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {r.finishReason ? (
+                      <Tooltip title={FINISH_HINT[r.finishReason] ?? r.finishReason}>
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          color={r.finishReason === 'length' ? 'warning' : 'default'}
+                          label={r.finishReason}
+                        />
+                      </Tooltip>
+                    ) : (
+                      <span style={{ color: C.textFaint }}>—</span>
                     )}
                   </TableCell>
                   <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>

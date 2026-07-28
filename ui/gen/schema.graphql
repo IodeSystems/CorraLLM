@@ -300,6 +300,8 @@ type corrallm_ActivityDetailRecord {
   dwellMs: Long!
   """Proxy/backpressure failure reason, if any (empty on success)."""
   error: String!
+  """Why the model stopped: stop (it chose to) | length (it hit a cap and did NOT finish) | tool_calls | content_filter. Empty if the backend reported none or the reply exceeded the capture cap."""
+  finishReason: String!
   """Activity row id (for the detail modal)."""
   id: Long!
   """Caller identity."""
@@ -345,6 +347,8 @@ type corrallm_ActivityRecord {
   dwellMs: Long!
   """Proxy/backpressure failure reason, if any (empty on success)."""
   error: String!
+  """Why the model stopped: stop (it chose to) | length (it hit a cap and did NOT finish) | tool_calls | content_filter. Empty if the backend reported none or the reply exceeded the capture cap."""
+  finishReason: String!
   """Activity row id (for the detail modal)."""
   id: Long!
   """Caller identity."""
