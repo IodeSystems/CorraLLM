@@ -458,10 +458,18 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	groupName, group := p.config().ResolveGroup(key)
 	weight := group.EffectiveWeight()
 
+	// A cancellable context wrapping the request's own, so an operator can abort
+	// this request from ANY state. Derived here rather than at admission
+	// because a request wedged in a queue has no slot and no backend to be
+	// addressed by, and is exactly the one worth being able to kill.
+	ctx, cancelReq := context.WithCancelCause(ctx)
+	defer cancelReq(nil)
+
 	// Register as live BEFORE admission: a request queued behind a saturated
 	// backend, or waiting out a cold load, is precisely the one you want to see
 	// on the dashboard — and it never reaches the activity log until it ends.
-	live := p.beginInflight(r, served, groupName, key, streaming)
+	retryable := retryableRequest(r)
+	live := p.beginInflight(r, served, groupName, key, streaming, retryable, cancelReq)
 	defer p.endInflight(live)
 
 	// Walk the served name's candidates in order (a lane's members, or the one
@@ -530,7 +538,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		stage := group.StageFor(backend.Type)
 
 		admitStart := time.Now()
-		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
+		// group.Interruptible OR the request's own opt-in. A caller can only
+		// widen this, never narrow it — see retryableRequest.
+		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS = time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if err == nil {
 			// A slot was taken — lanes load changed. markInflight publishes, so
@@ -835,8 +845,12 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	groupName, group := p.config().ResolveGroup(key)
 	weight := group.EffectiveWeight()
 	// A realtime session is long-lived by construction — the request that most
-	// deserves to be visible while it runs.
-	live := p.beginInflight(r, served, groupName, key, true)
+	// deserves to be visible while it runs, and the one an operator is most
+	// likely to need to end.
+	sessCtx, cancelReq := context.WithCancelCause(r.Context())
+	defer cancelReq(nil)
+	r = r.WithContext(sessCtx)
+	live := p.beginInflight(r, served, groupName, key, true, retryableRequest(r), cancelReq)
 	defer p.endInflight(live)
 	topQuality := config.MaxQuality(cands)
 	ordered := orderCandidates(cands, p.nextRR(served))
@@ -2105,4 +2119,27 @@ func (p *Proxy) SetConfig(cfg *config.Config) {
 	}
 	p.cfg.Store(cfg)
 	p.cost = cost.NewModel(cfg)
+}
+
+// RetryableHeader lets a CALLER volunteer its request for preemption.
+const RetryableHeader = "X-Corrallm-Retryable"
+
+// retryableRequest reports whether the caller marked this request as safe to
+// kick.
+//
+// Deliberately one-directional: a request may only make itself MORE
+// interruptible, never less. Interruptibility is the operator's policy, set per
+// priority group; letting a caller opt OUT would hand every client a way to
+// pin a slot against that policy, and the loudest caller would win. Opting IN
+// is safe because the cost lands on the volunteer.
+//
+// The honest use is a client that can cheaply redo its work — an indexing pass,
+// a batch summarization — telling the scheduler "if something more important
+// arrives, take my slot; I will come back".
+func retryableRequest(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get(RetryableHeader))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }

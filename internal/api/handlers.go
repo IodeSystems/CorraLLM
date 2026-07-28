@@ -954,6 +954,7 @@ type ActiveRequestView struct {
 	SourceIP  string `json:"sourceIp" doc:"Client IP."`
 	Path      string `json:"path" doc:"Request path."`
 	Streaming bool   `json:"streaming" doc:"Client asked for a streamed response."`
+	Retryable bool   `json:"retryable" doc:"Caller volunteered this request for preemption (X-Corrallm-Retryable). A request may only widen its interruptibility, never narrow it."`
 	State     string `json:"state" doc:"queued (awaiting a slot) | loading (awaiting backend) | streaming (proxying)."`
 	StartedAt string `json:"startedAt" doc:"RFC3339 arrival time."`
 	ElapsedMS int64  `json:"elapsedMs" doc:"Milliseconds in flight so far."`
@@ -980,6 +981,7 @@ func (h *Handlers) ActiveRequests(_ context.Context, _ *ActiveRequestsInput) (*A
 		out.Body.Requests = append(out.Body.Requests, ActiveRequestView{
 			ID: r.ID, Served: r.Served, Backend: r.Backend, Group: r.Group,
 			Key: r.Key, SourceIP: r.SourceIP, Path: r.Path, Streaming: r.Streaming,
+			Retryable: r.Retryable,
 			State: r.State, StartedAt: r.StartedAt.UTC().Format(time.RFC3339),
 			ElapsedMS: r.ElapsedMS,
 		})
@@ -1366,4 +1368,48 @@ func (h *Handlers) SetConfig(cfg *config.Config) {
 		return
 	}
 	h.live.Store(cfg)
+}
+
+
+// --- cancel an in-flight request ---
+
+// CancelRequestInput selects one live request by its process-local id.
+type CancelRequestInput struct {
+	Body struct {
+		ID int64 `json:"id" doc:"Live request id, from activeRequests."`
+	}
+}
+
+// CancelRequestOutput reports whether the request was found and cancelled.
+type CancelRequestOutput struct {
+	Body struct {
+		OK      bool   `json:"ok" doc:"Whether a live request with that id was cancelled."`
+		Message string `json:"message" doc:"Human-readable result."`
+	}
+}
+
+// CancelRequest aborts one in-flight request.
+//
+// The operator's only way to stop work already running. Everything else that
+// ends a request needs the CLIENT to go away, and that is not always
+// observable: with an edge proxy in front, corrallm's peer is the proxy, which
+// holds the upstream connection open long after the caller behind it is gone.
+// A greedy decode with no token cap then runs for tens of minutes against a GPU
+// nobody is waiting on, and until now nothing could stop it.
+func (h *Handlers) CancelRequest(_ context.Context, in *CancelRequestInput) (*CancelRequestOutput, error) {
+	out := &CancelRequestOutput{}
+	if h.Proxy == nil {
+		out.Body.Message = "proxy unavailable"
+		return out, nil
+	}
+	if h.Proxy.CancelInflight(in.Body.ID) {
+		out.Body.OK = true
+		out.Body.Message = fmt.Sprintf("cancelled request %d", in.Body.ID)
+		return out, nil
+	}
+	// Not an error: a request that finished on its own between the operator
+	// reading the list and clicking is the common case, and it is the outcome
+	// they wanted anyway.
+	out.Body.Message = fmt.Sprintf("no live request with id %d (it may have just finished)", in.Body.ID)
+	return out, nil
 }

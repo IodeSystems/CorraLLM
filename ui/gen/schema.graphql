@@ -8,6 +8,7 @@ directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJ
 type CorrallmMutationNamespace {
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
+  cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
@@ -121,6 +122,7 @@ type CorrallmQueryNamespace {
 type CorrallmV1MutationNamespace {
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
+  cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
@@ -256,6 +258,8 @@ type corrallm_ActiveRequestView {
   key: String!
   """Request path."""
   path: String!
+  """Caller volunteered this request for preemption (X-Corrallm-Retryable). A request may only widen its interruptibility, never narrow it."""
+  retryable: Boolean!
   """Requested model/lane name."""
   served: String!
   """Client IP."""
@@ -785,6 +789,18 @@ type corrallm_CalibrationStatusOutputBody {
   active: Boolean!
   reason: String
   remainingSeconds: Long
+}
+
+input corrallm_CancelRequestInputBodyInput {
+  """Live request id, from activeRequests."""
+  id: Long!
+}
+
+type corrallm_CancelRequestOutputBody {
+  """Human-readable result."""
+  message: String!
+  """Whether a live request with that id was cancelled."""
+  ok: Boolean!
 }
 
 type corrallm_ConfigSummaryOutputBody {

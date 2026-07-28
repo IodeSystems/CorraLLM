@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"sync/atomic"
@@ -8,6 +10,14 @@ import (
 
 	"github.com/iodesystems/corrallm/internal/events"
 )
+
+// ErrCanceled is the cancellation cause when an OPERATOR cancels a request.
+//
+// Distinct from sched.ErrPreempted (the scheduler took the slot for a
+// higher-priority caller) and from the client going away, because the three
+// want different answers: preemption is retryable and expected, a client
+// disconnect is nobody's fault, and this one was deliberate and should say so.
+var ErrCanceled = errors.New("canceled by operator")
 
 // In-flight request registry.
 //
@@ -48,6 +58,20 @@ type inflightEntry struct {
 	streaming bool
 	state     string
 	startedAt time.Time
+
+	// retryable is the request's own opt-in to being preempted, on top of
+	// whatever its group allows. See the header in proxy.go.
+	retryable bool
+
+	// cancel aborts this request wherever it currently is — queued for a slot,
+	// waiting on a cold load, or mid-stream. It is the request's own context
+	// cancel, so every downstream call (admission wait, backend proxying) tears
+	// down through the paths that already handle cancellation.
+	//
+	// Registered BEFORE admission on purpose: a request wedged in a queue is
+	// exactly one an operator wants to be able to kill, and it has no slot and
+	// no backend to address it by.
+	cancel context.CancelCauseFunc
 }
 
 // InflightInfo is a snapshot of one live request, safe to hand to the API layer.
@@ -60,6 +84,7 @@ type InflightInfo struct {
 	SourceIP  string
 	Path      string
 	Streaming bool // client asked for a streamed response
+	Retryable bool // request opted in to being preempted by a higher priority
 	State     string
 	StartedAt time.Time
 	ElapsedMS int64
@@ -68,8 +93,10 @@ type InflightInfo struct {
 // beginInflight registers a request as live and returns its entry. The caller
 // MUST defer endInflight. Registration happens before admission, so a request
 // queued behind a saturated backend is visible while it waits.
-func (p *Proxy) beginInflight(r *http.Request, served, group, key string, streaming bool) *inflightEntry {
+func (p *Proxy) beginInflight(r *http.Request, served, group, key string, streaming bool, retryable bool, cancel context.CancelCauseFunc) *inflightEntry {
 	e := &inflightEntry{
+		retryable: retryable,
+		cancel:    cancel,
 		id:        atomic.AddInt64(&p.inflightSeq, 1),
 		served:    served,
 		group:     group,
@@ -131,11 +158,45 @@ func (p *Proxy) Inflight() []InflightInfo {
 		out = append(out, InflightInfo{
 			ID: e.id, Served: e.served, Backend: e.backend, Group: e.group,
 			Key: e.key, SourceIP: e.sourceIP, Path: e.path, Streaming: e.streaming,
-			State: e.state, StartedAt: e.startedAt,
+			Retryable: e.retryable, State: e.state, StartedAt: e.startedAt,
 			ElapsedMS: now.Sub(e.startedAt).Milliseconds(),
 		})
 	}
 	p.inflightMu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
 	return out
+}
+
+// CancelInflight aborts a live request by id. Reports whether it was found.
+//
+// This is the operator's only way to stop work that is already running.
+// Everything else that ends a request needs the CLIENT to go away, and a client
+// disconnect is not always observable: with an edge proxy in front, corrallm's
+// peer is the proxy, which happily holds the upstream connection open long
+// after the caller behind it has gone. A greedy decode with no token cap can
+// then generate for tens of minutes against a GPU nobody is waiting on.
+//
+// Cancelling is safe from any state. The entry's cancel is the request's own
+// context cancel, so a queued request leaves the admission queue, a loading one
+// stops waiting on the backend, and a streaming one tears down the upstream
+// connection — which is what makes the backend abort its generation.
+func (p *Proxy) CancelInflight(id int64) bool {
+	if p == nil {
+		return false
+	}
+	p.inflightMu.Lock()
+	e, ok := p.inflight[id]
+	var cancel context.CancelCauseFunc
+	if ok {
+		cancel = e.cancel
+	}
+	p.inflightMu.Unlock()
+	if !ok || cancel == nil {
+		return false
+	}
+	// Outside the lock: cancellation wakes goroutines that may immediately call
+	// back into the registry to deregister, and holding the lock across that
+	// invites a self-deadlock.
+	cancel(ErrCanceled)
+	return true
 }

@@ -339,6 +339,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.Groups)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "cancelRequest",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/requests/cancel",
+		Summary:     "Cancel one in-flight request (queued, loading or streaming).",
+		Tags:        []string{"control"},
+	}, h.CancelRequest)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "activeRequests",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/active",
