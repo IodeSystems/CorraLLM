@@ -1188,7 +1188,9 @@ the BackpressureError shape we already validated.
      the auth domains separate (`auth.Middleware` gates `/api/*` with the admin token; an agent
      needs its own credential).
      Ordering (each step shippable with no second machine present): ✅ **step 0** per-server VRAM
-     accounting (done, see known gaps) → ◻ live config reload → ◻ `internal/host` Spawner
+     accounting (done) → ✅ **live config reload** (done: `include:` merging, SIGHUP,
+     atomic config swap in all four holders; fractional `quality` landed alongside it because
+     the Mac's 4-bit tier sits between two integers) → ◻ `internal/host` Spawner
      interface with the local impl only, gated on every existing `internal/proc` test passing
      unmodified → ◻ `Server.Agent` binding + `Config.TargetFor` → ◻ `corrallm agent` → ◻
      `host.Remote` (integration-testable by running a second agent on another port on box1) → ◻
