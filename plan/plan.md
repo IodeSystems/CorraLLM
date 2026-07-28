@@ -1194,7 +1194,10 @@ the BackpressureError shape we already validated.
      (done: Spec/Handle/Host, Local only, platform primitives moved; Process holds a Handle
      instead of an *exec.Cmd) → ✅ **`Server.Agent` binding**
      (done: endpoint LIST per the VPN topology, `TargetFor` so an agent model's loopback port
-     never resolves to the primary's, `host.Unavailable` so it refuses to spawn locally) → ◻ `corrallm agent` → ◻
+     never resolves to the primary's, `host.Unavailable` so it refuses to spawn locally) → ✅ **`corrallm agent`**
+     (done: hello/capacity/spawn/list/status/signal + sequenced logs with `from=`; token
+     required by default since it executes shell commands; heartbeat+lease deferred to the
+     failure-semantics step) → ◻
      `host.Remote` (integration-testable by running a second agent on another port on box1) → ◻
      darwin capacity (`gpu.Metal`, `sysmem_darwin`) → ◻ failure semantics → ◻ Agents tab.
      **Agent addressing (USER, 2026-07-28): an agent has SEVERAL addresses, not one.**
