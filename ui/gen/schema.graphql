@@ -1032,6 +1032,8 @@ type corrallm_ModelDef {
   ttl: String!
   """Cost class (chat | embed | openrouter | …)."""
   type: String!
+  """The id the BACKEND knows this model by, when it differs from the served name (the alias). Empty means the backend uses the served name."""
+  upstream: String!
 }
 
 type corrallm_ModelLogsOutputBody {
@@ -1044,6 +1046,8 @@ type corrallm_ModelLogsOutputBody {
 type corrallm_OverviewOutputBody {
   """Priority-group policies."""
   groups: [corrallm_GroupDef!]!
+  """Config files merged into the top-level one, weakest first. A generated file (agent-contributed models) lives here so the hand-written config is never rewritten."""
+  include: [String!]!
   """Caller key → group mappings."""
   keys: [corrallm_KeyDef!]!
   """Named fallback lists over models."""

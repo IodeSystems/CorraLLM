@@ -110,6 +110,7 @@ function CalibrationBanner() {
 
 const NAV = [
   { to: '/', label: 'Overview' },
+  { to: '/config', label: 'Config' },
   { to: '/activity', label: 'Activity' },
   { to: '/usage', label: 'Usage' },
   { to: '/groups', label: 'Groups' },

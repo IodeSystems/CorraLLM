@@ -1024,6 +1024,7 @@ type ModelDef struct {
 	MaxConcurrent int            `json:"maxConcurrent" doc:"Admission slots."`
 	MaxTokens     int            `json:"maxTokens" doc:"max_tokens clamp when degraded onto (0 = none)."`
 	Cmd           string         `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
+	Upstream      string         `json:"upstream" doc:"The id the BACKEND knows this model by, when it differs from the served name (the alias). Empty means the backend uses the served name."`
 }
 
 // ModalityView is one accepted input modality plus optional client-facing
@@ -1096,6 +1097,7 @@ type OverviewInput struct{}
 // OverviewOutput is the loaded config rendered for the Overview control plane.
 type OverviewOutput struct {
 	Body struct {
+		Include []string    `json:"include" doc:"Config files merged into the top-level one, weakest first. A generated file (agent-contributed models) lives here so the hand-written config is never rewritten."`
 		Servers []ServerDef `json:"servers" doc:"Declared host capacity."`
 		Models  []ModelDef  `json:"models" doc:"Served models (one serving path each)."`
 		Lanes   []LaneDef   `json:"lanes" doc:"Named fallback lists over models."`
@@ -1134,6 +1136,7 @@ func stageSummary(s config.Stage) string {
 // Overview returns model/lane definitions and declared system capacity.
 func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutput, error) {
 	out := &OverviewOutput{}
+	out.Body.Include = h.config().Include
 
 	for name, srv := range h.config().Servers {
 		sd := ServerDef{Server: name, MaxConcurrent: srv.MaxConcurrent, DevicePool: h.config().DevicePoolFor(name)}
@@ -1156,7 +1159,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 			// cmd lives on the extension, so oidio-stt (a real local process)
 			// reported spawnable:false and the UI labelled it a proxy.
 			Type: m.Type, Quality: m.Quality, Spawnable: m.LocalProcess(), Remote: m.Remote(),
-			ProcKey: m.ProcKey(name), Server: m.Server,
+			ProcKey: m.ProcKey(name), Server: m.Server, Upstream: m.Upstream,
 			MaxConcurrent: m.Slots(), MaxTokens: m.MaxTokens, Cmd: m.Cmd,
 		}
 		if m.Sticky != nil {
