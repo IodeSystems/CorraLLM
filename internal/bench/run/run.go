@@ -1199,12 +1199,16 @@ func wrapDispatch(inner agent.ToolDispatcher, v *agent.SchemaValidator, sc *stag
 		}
 
 		// Stage 1: is the output even a JSON object?
+		//
+		// Unreachable through agent.Session since agentkit v0.3.0, which refuses
+		// unparseable arguments and answers them itself rather than dispatching.
+		// Kept as a guard for any caller that reaches this dispatcher directly —
+		// but WITHOUT counting, because meteredRunner now counts at the model's
+		// output. Counting in both places would double every malformed call the
+		// day agentkit's validation loosens.
 		if args := strings.TrimSpace(tc.Function.Arguments); args != "" && args != "null" {
 			var obj map[string]json.RawMessage
 			if err := json.Unmarshal([]byte(args), &obj); err != nil {
-				sc.mu.Lock()
-				sc.jsonErrors++
-				sc.mu.Unlock()
 				return fmt.Sprintf("MALFORMED tool-call JSON for %s: %v. Emit a valid JSON object of arguments and call %s again.", name, err, name), nil
 			}
 		}
@@ -1296,6 +1300,26 @@ func (m *meteredRunner) ChatStream(ctx context.Context, msgs []llm.Message, tool
 	go func() {
 		defer close(out)
 		for c := range in {
+			// Malformed tool-call arguments are counted HERE, at the model's
+			// output, and not in the dispatcher where they used to be.
+			//
+			// agentkit v0.3.0 validates arguments before dispatching and answers
+			// a bad call with a refusal instead of running it — correct, but it
+			// means the dispatcher never sees the malformed call, so a metric
+			// named "malformed tool-call JSON output from the model" silently
+			// read zero. It was always a property of the model's OUTPUT rather
+			// than of dispatch; the seam that sees every call the model emits,
+			// filtered or not, is this one.
+			if c.ToolCall != nil {
+				if args := strings.TrimSpace(c.ToolCall.Function.Arguments); args != "" && args != "null" {
+					var obj map[string]json.RawMessage
+					if err := json.Unmarshal([]byte(args), &obj); err != nil {
+						m.sc.mu.Lock()
+						m.sc.jsonErrors++
+						m.sc.mu.Unlock()
+					}
+				}
+			}
 			if c.Usage != nil {
 				m.sc.mu.Lock()
 				m.sc.promptTok += c.Usage.PromptTokens

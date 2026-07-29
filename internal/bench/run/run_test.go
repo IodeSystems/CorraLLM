@@ -865,3 +865,38 @@ func TestClassifyErrNamesTheRealLimit(t *testing.T) {
 		}
 	})
 }
+
+// jsonErrors counts MALFORMED TOOL-CALL OUTPUT FROM THE MODEL, and it must be
+// counted where the model's output is observed — not in the dispatcher.
+//
+// This is a regression test for a silent zero. agentkit v0.3.0 began refusing
+// unparseable arguments before dispatching, so the dispatcher (where the
+// counter lived) stopped seeing malformed calls entirely: the metric read 0
+// while the model was still emitting garbage. A metric that reports "no
+// problems" because it was moved out of the path is worse than a missing one.
+func TestJSONErrorsCountedAtTheRunnerNotTheDispatcher(t *testing.T) {
+	sc := &stageCounters{}
+	fake := &fakeRunner{resp: []scriptedResp{
+		{calls: []llm.ToolCall{rawToolCall("bad", "run", "{not valid json")}},
+		{calls: []llm.ToolCall{toolCall("ok", "run", map[string]any{"argv": []string{"true"}})}},
+		{content: "done"},
+	}}
+	m := &meteredRunner{inner: fake, sc: sc}
+
+	// Drain three rounds the way the agent loop would.
+	for i := 0; i < 3; i++ {
+		ch, err := m.ChatStream(context.Background(), nil, []llm.ToolDef{{}}, nil)
+		if err != nil {
+			t.Fatalf("round %d: %v", i, err)
+		}
+		for range ch {
+		}
+	}
+
+	sc.mu.Lock()
+	got := sc.jsonErrors
+	sc.mu.Unlock()
+	if got != 1 {
+		t.Errorf("jsonErrors = %d, want 1 — the malformed call was not counted at the runner", got)
+	}
+}
