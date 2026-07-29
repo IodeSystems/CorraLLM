@@ -34,7 +34,7 @@ describer. Quality belongs to the judge, not to a capability check.
 
 What shape and what colour is in this image? Answer in a few words.
 
-![a solid red circle on a white background](fixture/red-circle.png)
+![a solid red circle on a white background](_fixture/red-circle.png)
 
 ## Checks
 

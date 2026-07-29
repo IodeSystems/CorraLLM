@@ -6,7 +6,7 @@ class: coding
 # rename is atomic + (under --validate) reverts a partial break. Measures both
 # pass-rate (does baseline slip?) and broken_intermediates (do partial renames
 # land on disk?), vs polylsp / polylsp-validate.
-workspace: fixture/
+workspace: _fixture/
 safetyCheck: "go build ./..."
 limits: { maxTurnsPerStage: 14, maxToolCallsPerStage: 40 }
 stages:

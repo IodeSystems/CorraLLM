@@ -1,6 +1,6 @@
 name: multi-file-refactor
 class: coding
-workspace: fixture/
+workspace: _fixture/
 # Favors poly-lsp: `UserID` is defined in types.go and referenced across 4 more
 # files (struct field, func params, map key type, call sites, test). A structural
 # rename (node_references/node_refactor over file#sym) touches every site in one

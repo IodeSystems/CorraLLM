@@ -1,0 +1,245 @@
+package task
+
+import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/iodesystems/corrallm/probes"
+)
+
+// The built-in probe library, and the catalog of what is loadable.
+//
+// Two problems solved here, and they are the same problem seen from either end.
+// A RUNNER needs the built-ins to exist as real files (fixtures are copied into
+// a workspace; the MCP server jails the agent inside a real directory), so the
+// embedded tree is materialized to disk on demand. A CALLER needs to know what
+// probes exist WITHOUT running them — corrallm could report every result a run
+// produced but could not answer "what could I run?", so a probe that was never
+// picked up looked identical to one that ran and passed nothing.
+
+// BuiltinDirName is where MaterializeBuiltins writes, under the given root.
+const BuiltinDirName = "builtin-probes"
+
+// MaterializeBuiltins writes the embedded probe library into root/builtin-probes
+// and returns that path, ready to hand to a loader as a tasks directory.
+//
+// Idempotent by content: a probe directory that already exists with the right
+// bytes is left alone, so repeated runs in a persistent workspace do not churn
+// the tree (and do not disturb a fixture a previous run is still reading).
+func MaterializeBuiltins(root string) (string, error) {
+	dst := filepath.Join(root, BuiltinDirName)
+	err := fs.WalkDir(probes.FS, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// probes.go is the embed declaration, not a probe.
+		if p == "." || p == "probes.go" {
+			return nil
+		}
+		out := filepath.Join(dst, p)
+		if d.IsDir() {
+			return os.MkdirAll(out, 0o755)
+		}
+		b, err := probes.FS.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if cur, err := os.ReadFile(out); err == nil && string(cur) == string(b) {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(out, b, 0o644)
+	})
+	if err != nil {
+		return "", fmt.Errorf("materialize built-in probes: %w", err)
+	}
+	return dst, nil
+}
+
+// BuiltinNames lists the probe directories carried in the binary, without
+// touching the filesystem. Cheap enough to call for a catalog request.
+func BuiltinNames() []string {
+	ents, err := fs.ReadDir(probes.FS, ".")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Source says where a catalog entry came from, because the answer changes what
+// you do about it: a broken built-in is our bug, a broken user probe is theirs,
+// and a user probe that SHADOWS a built-in is neither — it is a deliberate
+// override that should be visible rather than surprising.
+type Source string
+
+const (
+	SourceBuiltin Source = "builtin"
+	SourceUser    Source = "user"
+	// SourceOverride is a user probe whose name matches a built-in. The user
+	// copy wins, exactly as it does at run time.
+	SourceOverride Source = "override"
+)
+
+// CatalogEntry is one loadable probe, described without running it.
+type CatalogEntry struct {
+	// Dir is the directory name — the identity on disk, and therefore what
+	// shadowing is resolved on. Name is what the probe CALLS itself, which is
+	// what results are recorded under. They are usually equal; a catalog that
+	// assumed so would mis-report an override.
+	Dir      string `json:"dir"`
+	Name     string `json:"name"`
+	Class    string `json:"class"`
+	Source   Source `json:"source"`
+	Summary  string `json:"summary,omitempty"`
+	Run      string `json:"run,omitempty"`      // "", "cold", "warm", "both"
+	Requires string `json:"requires,omitempty"` // effective capability, when the probe demands one
+	Checks   int    `json:"checks"`
+	Stages   int    `json:"stages"`
+	// Error is set when the probe FAILED to load. Such an entry is still
+	// returned: a probe that cannot be parsed is precisely what a catalog is
+	// for, and dropping it would reproduce the silence this endpoint exists to
+	// end.
+	Error string `json:"error,omitempty"`
+}
+
+// ProbeRef is one resolved probe directory, before it is parsed.
+type ProbeRef struct {
+	Dir    string // directory name (the identity)
+	Path   string // absolute path to load from
+	Source Source
+}
+
+// ResolveProbes is THE rule for which probes exist, and both the runner and the
+// catalog go through it — a catalog that resolved differently from the runner
+// would be a confident lie about what is about to run.
+//
+// The rule: userDir REPLACES the built-in library when given, and the built-ins
+// are what you get when it is not.
+//
+// Replace, not merge. Merging was tried first and is wrong twice over: a caller
+// who points at three probes of their own means those three, not those three
+// plus twenty of ours; and it makes every built-in a dependency of every run, so
+// one malformed probe in the library fails a run that never asked for it — which
+// is exactly how a latent `capability-tts` bug turned into four failing tests.
+//
+// So `--tasks-dir` is an OVERRIDE, which is what it has always read as. What
+// changed is only that it is no longer REQUIRED: with no flag the library comes
+// from the binary rather than from a directory that happens to be next to the
+// working directory.
+//
+// tmpRoot is where the embedded library is materialized so it can be read.
+func ResolveProbes(userDir, tmpRoot string) ([]ProbeRef, error) {
+	dir, src := userDir, SourceUser
+	if dir == "" {
+		root, err := MaterializeBuiltins(tmpRoot)
+		if err != nil {
+			return nil, err
+		}
+		dir, src = root, SourceBuiltin
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	builtin := map[string]bool{}
+	for _, n := range BuiltinNames() {
+		builtin[n] = true
+	}
+	var out []ProbeRef
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if !isProbeDir(p) {
+			continue
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		s := src
+		// A user probe that reuses a built-in's name is reported as an override,
+		// so "why is this not the probe I wrote?" has a visible answer.
+		if s == SourceUser && builtin[e.Name()] {
+			s = SourceOverride
+		}
+		out = append(out, ProbeRef{Dir: e.Name(), Path: abs, Source: s})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Dir < out[j].Dir })
+	return out, nil
+}
+
+// Catalog describes every probe ResolveProbes finds, without running any.
+func Catalog(userDir, tmpRoot string) ([]CatalogEntry, error) {
+	refs, err := ResolveProbes(userDir, tmpRoot)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CatalogEntry, 0, len(refs))
+	for _, r := range refs {
+		t, err := LoadDir(r.Path)
+		if err != nil {
+			out = append(out, CatalogEntry{Dir: r.Dir, Name: r.Dir, Source: r.Source, Error: err.Error()})
+			continue
+		}
+		out = append(out, describe(t, r.Dir, r.Source))
+	}
+	return out, nil
+}
+
+func isProbeDir(p string) bool {
+	for _, f := range []string{"task.yaml", ProbeFile} {
+		if _, err := os.Stat(filepath.Join(p, f)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func describe(t *Task, name string, src Source) CatalogEntry {
+	e := CatalogEntry{
+		Dir:      name,
+		Name:     name,
+		Class:    t.Class,
+		Source:   src,
+		Run:      t.Run,
+		Requires: t.Requires.EffectiveCapability(),
+		Stages:   len(t.Stages),
+	}
+	if t.Name != "" {
+		e.Name = t.Name
+	}
+	for _, s := range t.Stages {
+		e.Checks += len(s.Checks)
+	}
+	if e.Summary == "" {
+		e.Summary = firstLine(t.Description)
+	}
+	return e
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 160 {
+		s = s[:160]
+	}
+	return strings.TrimSpace(s)
+}

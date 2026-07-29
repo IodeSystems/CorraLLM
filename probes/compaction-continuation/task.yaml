@@ -1,6 +1,6 @@
 name: compaction-continuation
 class: tooluse
-workspace: fixture/
+workspace: _fixture/
 # Facts are established in stage 1, then the session history is DETERMINISTICALLY
 # folded (forceCompact) before stage 2 — so we measure whether the model still
 # recalls pre-compaction facts from the summary, not whether budget pressure

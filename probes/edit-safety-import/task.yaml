@@ -8,7 +8,7 @@ class: coding
 # errors → ErrEmpty breaks. Every miss is a NEW same-file diagnostic — exactly
 # what --validate reverts. The polylsp-vs-polylsp-validate delta is the runs
 # where Qwen slips and validation converts the fail into a guided retry.
-workspace: fixture/
+workspace: _fixture/
 safetyCheck: "go build ./..."
 limits: { maxTurnsPerStage: 10, maxToolCallsPerStage: 30 }
 stages:

@@ -115,6 +115,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.PublishBenchProbeResults)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchProbeCatalog",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/probes/catalog",
+		Summary:     "Which probes EXIST and would run — the library, not results. Includes ones that fail to load.",
+		Tags:        []string{"observability"},
+	}, h.BenchProbeCatalog)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchProbes",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/bench/probes",

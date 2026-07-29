@@ -2,7 +2,7 @@
 name: capability-diarize
 class: capability
 requires: { capability: audio.stt, modality: audio }
-workspace: fixture/
+workspace: _fixture/
 audio:
   transcribe: two-speakers.wav
 ---

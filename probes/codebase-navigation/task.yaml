@@ -1,6 +1,6 @@
 name: codebase-navigation
 class: tooluse
-workspace: fixture/
+workspace: _fixture/
 # Favors poly-lsp: read-only structural questions with exact answers. poly-lsp's
 # node_references answers "who calls Store.Save" precisely; node_query resolves
 # Server.Handle's return type and enumerates structs with a CreatedAt field.

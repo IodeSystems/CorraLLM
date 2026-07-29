@@ -1,6 +1,6 @@
 name: codex-plan-2-cache
 class: tooluse
-workspace: fixture/
+workspace: _fixture/
 # Design-codex planning ladder, L2 (PARTIAL VIOLATION with a clear in-codex
 # path). The tempting fix for a slow endpoint is Redis — which violates
 # principle 1 (no new external service dependency). But the in-codex answer

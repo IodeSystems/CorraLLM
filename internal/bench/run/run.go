@@ -1385,24 +1385,24 @@ func mcpDispatcher(mgr *mcpmgr.Manager, tools []mcpmgr.MCPTool) agent.ToolDispat
 
 // ── task loading + helpers ──────────────────────────────────────────
 
+// loadTasks resolves the probe set through task.ResolveProbes — the built-in
+// library plus, when dir is non-empty, user probes that add to and may shadow
+// it. Going through the shared resolver is what keeps the catalog endpoint
+// honest: it reports exactly what this would run.
 func loadTasks(dir, glob string) ([]*task.Task, error) {
-	ents, err := os.ReadDir(dir)
+	refs, err := task.ResolveProbes(dir, os.TempDir())
 	if err != nil {
 		return nil, err
 	}
 	var tasks []*task.Task
-	for _, e := range ents {
-		if !e.IsDir() {
-			continue
-		}
+	for _, ref := range refs {
 		if glob != "" {
-			ok, _ := filepath.Match(glob, e.Name())
+			ok, _ := filepath.Match(glob, ref.Dir)
 			if !ok {
 				continue
 			}
 		}
-		p := filepath.Join(dir, e.Name())
-		t, err := task.LoadDir(p)
+		t, err := task.LoadDir(ref.Path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue // not a probe dir
 		}

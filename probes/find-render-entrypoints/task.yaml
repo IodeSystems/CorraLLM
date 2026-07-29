@@ -1,6 +1,6 @@
 name: find-render-entrypoints
 class: tooluse
-workspace: fixture/
+workspace: _fixture/
 # A real "where does this phrase come from?" question over a REAL codebase
 # (poly-lsp's own mcp package, ~8.3k lines) rather than a toy fixture.
 #

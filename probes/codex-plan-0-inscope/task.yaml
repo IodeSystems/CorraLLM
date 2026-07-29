@@ -1,6 +1,6 @@
 name: codex-plan-0-inscope
 class: tooluse
-workspace: fixture/
+workspace: _fixture/
 # Design-codex planning ladder, L0 (clearly IN-SCOPE). The feature fits CODEX.md
 # with no tension, so the codex prescribes a clear path: plan it decisively.
 # ask_user_question is BAIT here — nothing is genuinely ambiguous, so asking is

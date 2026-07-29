@@ -1,6 +1,6 @@
 name: fix-failing-test
 class: coding
-workspace: fixture/
+workspace: _fixture/
 limits: { maxTurnsPerStage: 8, maxToolCallsPerStage: 24 }
 stages:
   - prompt: |

@@ -1,6 +1,6 @@
 name: toolchain-config-audit
 class: tooluse
-workspace: fixture/
+workspace: _fixture/
 limits: { maxTurnsPerStage: 8, maxToolCallsPerStage: 24 }
 stages:
   - prompt: |

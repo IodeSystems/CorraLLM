@@ -1,6 +1,6 @@
 name: codex-plan-1-tension
 class: tooluse
-workspace: fixture/
+workspace: _fixture/
 # Design-codex planning ladder, L1 (mostly in-scope, ONE minor tension). The
 # feature-flag ask touches principle 4 (no new config surface without a
 # documented default) — but there IS a clear in-codex resolution: ship it

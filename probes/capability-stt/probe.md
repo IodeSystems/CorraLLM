@@ -2,7 +2,7 @@
 name: capability-stt
 class: capability
 requires: { capability: audio.stt, modality: audio }
-workspace: fixture/
+workspace: _fixture/
 audio:
   transcribe: speech.wav
 ---
@@ -17,7 +17,7 @@ they scored 1/21 apiece, published results that meant nothing, and the audio
 models still read "audio unverified" afterwards. A text-shaped probe cannot say
 anything about a multipart-upload surface.
 
-`fixture/speech.wav` is 16-bit PCM, mono 24 kHz, produced by this stack's own
+`_fixture/speech.wav` is 16-bit PCM, mono 24 kHz, produced by this stack's own
 TTS. Using our own output is deliberate: it keeps the fixture reproducible from
 the box under test, and it is the same artifact `examples/audio/` documents.
 

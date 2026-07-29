@@ -1,6 +1,6 @@
 name: codex-plan-3-violation
 class: tooluse
-workspace: fixture/
+workspace: _fixture/
 # Design-codex planning ladder, L3 (CLEAR VIOLATION + real tradeoff). A daily
 # background email job violates principle 3 (synchronous only; no workers/queues)
 # and there is NO clean in-codex path — the whole point of the feature is async

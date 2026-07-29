@@ -2,7 +2,6 @@
 name: capability-tts
 class: capability
 requires: { capability: audio.tts, modality: audio }
-workspace: fixture/
 audio:
   speak: "The quick brown fox jumps over the lazy dog."
   voice: af_heart

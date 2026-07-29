@@ -9,6 +9,25 @@ import (
 
 // copyDir recursively copies the contents of src into dst (which must exist),
 // preserving file modes. Symlinks are skipped.
+// ProbeGoMod is what a fixture's go.mod is called AT REST, and copyDir renames
+// it back when seeding a workspace.
+//
+// The indirection is forced by `go:embed`, which refuses to descend into a
+// directory containing a go.mod ("cannot embed directory X: in different
+// module") — verified, and not something a pattern can work around. Since the
+// built-in probe library is embedded so the binary works from any directory,
+// fixtures cannot carry a literal go.mod on disk.
+//
+// The fixture directory is also `_`-prefixed, which makes the go tool skip it
+// for package discovery. That is deliberate and independent: several fixtures
+// contain code that is broken ON PURPOSE (a failing test is the point of
+// fix-failing-test), and without the underscore `go build ./...` on this repo
+// would try to compile it.
+//
+// Both renames are undone here, at the single point where a workspace is
+// seeded, so the model always sees an ordinary Go module.
+const ProbeGoMod = "gomod.probe"
+
 func copyDir(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -20,6 +39,9 @@ func copyDir(src, dst string) error {
 		}
 		if rel == "." {
 			return nil
+		}
+		if filepath.Base(rel) == ProbeGoMod {
+			rel = filepath.Join(filepath.Dir(rel), "go.mod")
 		}
 		target := filepath.Join(dst, rel)
 		switch {

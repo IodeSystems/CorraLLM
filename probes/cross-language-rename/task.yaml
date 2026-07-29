@@ -1,6 +1,6 @@
 name: cross-language-rename
 class: tooluse
-workspace: fixture/
+workspace: _fixture/
 # Favors poly-lsp: the SAME logical field appears in three languages with
 # language-appropriate casing — Go `LegacyID` (+ json tag `legacy_id`),
 # TypeScript `legacyId`, YAML `legacy_id`. poly-lsp's cross-language node
