@@ -1,6 +1,21 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { Alert, Box, Chip, CircularProgress, Tooltip, Typography } from '@mui/material'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Stack,
+  TextField,
+  Tooltip,
+  Typography,
+} from '@mui/material'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -36,6 +51,7 @@ const ConfigDoc = graphql(/* GraphQL */ `
         }
         models {
           name
+          notes
           server
           spawnable
           remote
@@ -60,6 +76,28 @@ const ConfigDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const UpsertDoc = graphql(/* GraphQL */ `
+  mutation UpsertModel($name: String!, $body: corrallm_ModelSpecInput!) {
+    corrallm {
+      upsertModel(name: $name, body: $body) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
+const DeleteModelDoc = graphql(/* GraphQL */ `
+  mutation DeleteModel($name: String!) {
+    corrallm {
+      deleteModel(name: $name) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
 // A model's home: the server it draws capacity from, else the fact that it is
 // somebody else's machine. Grouping by this is the question the page answers —
 // "what runs where" — and it is also the grouping the Agents section will slot
@@ -73,6 +111,52 @@ function ConfigPage() {
     queryFn: () => gqlClient.request(ConfigDoc),
     refetchInterval: 30000,
   })
+
+  // Hooks BEFORE the early returns: React counts them per render, and a hook
+  // that only runs on the success path changes that count between renders —
+  // "rendered more hooks than during the previous render" (React #310).
+  const qc = useQueryClient()
+  const [editing, setEditing] = useState<ModelForm | null>(null)
+  const [err, setErr] = useState('')
+
+  const save = useMutation({
+    mutationFn: (f: ModelForm) =>
+      gqlClient.request(UpsertDoc, {
+        name: f.name,
+        body: {
+          name: f.name,
+          cmd: f.cmd,
+          server: f.server,
+          proxy: f.proxy,
+          upstream: f.upstream,
+          type: f.type,
+          quality: Number(f.quality) || 0,
+          // Int maps to a string in this codegen (Long-safe); Float does not.
+          maxConcurrent: String(Number(f.maxConcurrent) || 0),
+          notes: f.notes,
+        },
+      }),
+    onSuccess: () => {
+      setEditing(null)
+      setErr('')
+      qc.invalidateQueries({ queryKey: ['config'] })
+    },
+    // The API rejects an edit that would not load — a lane pointing at a model
+    // that no longer exists, an unknown server. Surfacing that message verbatim
+    // is the difference between a fixable error and "something went wrong".
+    onError: (e: unknown) => setErr(extractMessage(e)),
+  })
+
+  const del = useMutation({
+    mutationFn: (name: string) => gqlClient.request(DeleteModelDoc, { name }),
+    onSuccess: () => {
+      setEditing(null)
+      setErr('')
+      qc.invalidateQueries({ queryKey: ['config'] })
+    },
+    onError: (e: unknown) => setErr(extractMessage(e)),
+  })
+
 
   if (q.isLoading) {
     return (
@@ -115,6 +199,10 @@ function ConfigPage() {
       <PageHeader title="Config">
         <Chip size="small" variant="outlined" label={`${models.length} models`} />
         <Chip size="small" variant="outlined" label={`${servers.length} servers`} />
+        <Box sx={{ flexGrow: 1 }} />
+        <Button size="small" variant="outlined" onClick={() => setEditing(blankModel())}>
+          Add model
+        </Button>
       </PageHeader>
 
       <Panel
@@ -248,7 +336,7 @@ function ConfigPage() {
               .slice()
               .sort((a, b) => Number(b.quality) - Number(a.quality) || a.name.localeCompare(b.name))
               .map((m) => (
-                <Row key={m.name}>
+                <Row key={m.name} onClick={() => setEditing(toForm(m))}>
                   <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
                     <Typography variant="subtitle2">{m.name}</Typography>
                     {/* The alias. corrallm routes on the served name; the backend
@@ -268,6 +356,14 @@ function ConfigPage() {
                     <Stat label="Slots" value={m.maxConcurrent} />
                     <Stat label="Target" value={m.target || '—'} />
                   </Box>
+                  {m.notes && (
+                    <Typography
+                      variant="caption"
+                      sx={{ display: 'block', mt: 0.75, color: C.textMuted, whiteSpace: 'pre-wrap' }}
+                    >
+                      {m.notes.length > 240 ? m.notes.slice(0, 240) + '…' : m.notes}
+                    </Typography>
+                  )}
                   {m.cmd && (
                     <Box
                       component="pre"
@@ -318,6 +414,113 @@ function ConfigPage() {
         )}
       </Panel>
 
+      {editing && (
+        <Dialog open onClose={() => setEditing(null)} maxWidth="md" fullWidth>
+          <DialogTitle>{editing.existing ? `Edit ${editing.name}` : 'Add a model'}</DialogTitle>
+          <DialogContent>
+            {err && (
+              <Alert severity="error" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>
+                {err}
+              </Alert>
+            )}
+            <Stack spacing={2} sx={{ mt: 1 }}>
+              <TextField
+                label="Name"
+                size="small"
+                value={editing.name}
+                disabled={editing.existing}
+                onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                helperText="The name callers request. Renaming means delete + add."
+              />
+              <TextField
+                label="Command"
+                size="small"
+                multiline
+                minRows={2}
+                value={editing.cmd}
+                onChange={(e) => setEditing({ ...editing, cmd: e.target.value })}
+                helperText="Run through sh -c, so VAR=x prefixes work. Leave empty for a pure proxy (a remote model corrallm does not spawn)."
+              />
+              <Stack direction="row" spacing={2}>
+                <TextField
+                  label="Server"
+                  size="small"
+                  fullWidth
+                  value={editing.server}
+                  onChange={(e) => setEditing({ ...editing, server: e.target.value })}
+                  helperText="Required when a command is set."
+                />
+                <TextField
+                  label="Proxy"
+                  size="small"
+                  fullWidth
+                  value={editing.proxy}
+                  onChange={(e) => setEditing({ ...editing, proxy: e.target.value })}
+                  helperText="A port (5810), host:port, or URL."
+                />
+              </Stack>
+              <Stack direction="row" spacing={2}>
+                <TextField
+                  label="Type"
+                  size="small"
+                  fullWidth
+                  value={editing.type}
+                  onChange={(e) => setEditing({ ...editing, type: e.target.value })}
+                  helperText="chat | embed | stt | tts"
+                />
+                <TextField
+                  label="Quality"
+                  size="small"
+                  fullWidth
+                  value={editing.quality}
+                  onChange={(e) => setEditing({ ...editing, quality: e.target.value })}
+                  helperText="Fractional is allowed — 1.5 sits between two tiers."
+                />
+                <TextField
+                  label="Slots"
+                  size="small"
+                  fullWidth
+                  value={editing.maxConcurrent}
+                  onChange={(e) => setEditing({ ...editing, maxConcurrent: e.target.value })}
+                />
+              </Stack>
+              <TextField
+                label="Upstream"
+                size="small"
+                value={editing.upstream}
+                onChange={(e) => setEditing({ ...editing, upstream: e.target.value })}
+                helperText="What the BACKEND calls this model, when it differs from the name above."
+              />
+              <TextField
+                label="Notes"
+                size="small"
+                multiline
+                minRows={4}
+                value={editing.notes}
+                onChange={(e) => setEditing({ ...editing, notes: e.target.value })}
+                helperText="Why it is configured this way. Kept in the config and shown here — this is where the reasoning that used to live in YAML comments goes."
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            {editing.existing && (
+              <Button
+                color="error"
+                disabled={del.isPending}
+                onClick={() => del.mutate(editing.name)}
+                sx={{ mr: 'auto' }}
+              >
+                Delete
+              </Button>
+            )}
+            <Button onClick={() => setEditing(null)}>Cancel</Button>
+            <Button variant="contained" disabled={save.isPending} onClick={() => save.mutate(editing)}>
+              Save
+            </Button>
+          </DialogActions>
+        </Dialog>
+      )}
+
       <Panel
         title="Included files"
         subtitle="Merged into the top-level config, weakest first; the hand-written file always wins"
@@ -344,3 +547,70 @@ function ConfigPage() {
 }
 
 export const Route = createFileRoute('/config')({ component: ConfigPage })
+
+// ModelForm is the dialog's editable shape — all strings, because a form field
+// holds text and coercing on every keystroke fights the user mid-typing.
+type ModelForm = {
+  existing: boolean
+  name: string
+  cmd: string
+  server: string
+  proxy: string
+  upstream: string
+  type: string
+  quality: string
+  maxConcurrent: string
+  notes: string
+}
+
+function blankModel(): ModelForm {
+  return {
+    existing: false,
+    name: '',
+    cmd: '',
+    server: '',
+    proxy: '',
+    upstream: '',
+    type: 'chat',
+    quality: '1',
+    maxConcurrent: '1',
+    notes: '',
+  }
+}
+
+function toForm(m: {
+  name: string
+  cmd: string
+  server: string
+  target: string
+  upstream: string
+  type: string
+  quality: number
+  maxConcurrent: string
+  notes: string
+}): ModelForm {
+  return {
+    existing: true,
+    name: m.name,
+    cmd: m.cmd ?? '',
+    server: m.server ?? '',
+    // The target is the RESOLVED url; the config field is what was written. A
+    // bare port cannot be recovered from it, so the operator re-states it —
+    // better than silently rewriting a port into a full URL on every save.
+    proxy: m.target ?? '',
+    upstream: m.upstream ?? '',
+    type: m.type ?? '',
+    quality: String(m.quality ?? 0),
+    maxConcurrent: String(m.maxConcurrent ?? 1),
+    notes: m.notes ?? '',
+  }
+}
+
+// extractMessage digs the server's actual complaint out of a GraphQL error.
+// The useful text — "lane chat member 0: unknown model" — is nested, and the
+// wrapper alone says nothing actionable.
+function extractMessage(e: unknown): string {
+  const any = e as { response?: { errors?: { message?: string }[] }; message?: string }
+  const first = any?.response?.errors?.[0]?.message
+  return first || any?.message || String(e)
+}

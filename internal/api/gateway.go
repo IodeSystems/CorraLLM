@@ -339,6 +339,30 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.Groups)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "upsertModel",
+		Method:      http.MethodPut,
+		Path:        "/api/v1/config/models/{name}",
+		Summary:     "Create or replace a model; validates, writes and applies it live.",
+		Tags:        []string{"config"},
+	}, h.UpsertModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "deleteModel",
+		Method:      http.MethodDelete,
+		Path:        "/api/v1/config/models/{name}",
+		Summary:     "Remove a model.",
+		Tags:        []string{"config"},
+	}, h.DeleteModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "updateNotes",
+		Method:      http.MethodPut,
+		Path:        "/api/v1/config/notes/{kind}/{name}",
+		Summary:     "Set the notes kept with a model, server or lane.",
+		Tags:        []string{"config"},
+	}, h.UpdateNotes)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "agentEnroll",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/agents/enroll",

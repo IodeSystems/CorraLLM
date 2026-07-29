@@ -19,6 +19,7 @@ type CorrallmMutationNamespace {
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
+  deleteModel(name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteModel")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
@@ -31,6 +32,17 @@ type CorrallmMutationNamespace {
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
+  updateNotes(
+    body: corrallm_UpdateNotesInputBodyInput!
+    """model | server | lane"""
+    kind: String!
+    name: String!
+  ): corrallm_ConfigMutationOutputBody @derived(operationId: "updateNotes")
+  upsertModel(
+    body: corrallm_ModelSpecInput!
+    """Served model name."""
+    name: String!
+  ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
   v1: CorrallmV1MutationNamespace!
 }
 
@@ -144,6 +156,7 @@ type CorrallmV1MutationNamespace {
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
+  deleteModel(name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteModel")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
@@ -156,6 +169,17 @@ type CorrallmV1MutationNamespace {
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
+  updateNotes(
+    body: corrallm_UpdateNotesInputBodyInput!
+    """model | server | lane"""
+    kind: String!
+    name: String!
+  ): corrallm_ConfigMutationOutputBody @derived(operationId: "updateNotes")
+  upsertModel(
+    body: corrallm_ModelSpecInput!
+    """Served model name."""
+    name: String!
+  ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
 }
 
 type CorrallmV1QueryNamespace {
@@ -853,6 +877,11 @@ input corrallm_CapacityInput {
   hostError: String
 }
 
+type corrallm_ConfigMutationOutputBody {
+  message: String!
+  ok: Boolean!
+}
+
 type corrallm_ConfigSummaryOutputBody {
   """Served model names."""
   models: [String!]!
@@ -1142,6 +1171,8 @@ type corrallm_ModelDef {
   modalities: [corrallm_ModalityView!]!
   """Served model name."""
   name: String!
+  """Free text kept with this model — why it is configured the way it is. Carried in config and editable in the dashboard."""
+  notes: String!
   """Pinned (preloaded, never evicted)."""
   persistent: Boolean!
   """Backing process identity; an extension's models share one."""
@@ -1169,6 +1200,33 @@ type corrallm_ModelLogsOutputBody {
   backend: String!
   """Captured lines, oldest first (empty for pure-proxy/absent)."""
   lines: [String!]!
+}
+
+input corrallm_ModelSpecInput {
+  """Spawn command; empty makes it a pure proxy."""
+  cmd: String
+  """Admission slots."""
+  maxConcurrent: Long
+  """max_tokens clamp when degraded onto (0 = none)."""
+  maxTokens: Long
+  """Served model name."""
+  name: String!
+  """Free text kept with the model and shown beside it."""
+  notes: String
+  """Pinned: preloaded and never evicted."""
+  persistent: Boolean
+  """Where to forward: a port (5800), host:port, or a URL."""
+  proxy: String!
+  """Relative rank; fractional tiers are allowed."""
+  quality: Float
+  """Per-pool footprint, e.g. {"gpu0":"16GB"}."""
+  ramUsage: JSON
+  """Server it draws capacity from (required when cmd is set)."""
+  server: String
+  """Cost class: chat | embed | stt | tts | …"""
+  type: String
+  """The id the backend knows it by, when different from the served name."""
+  upstream: String
 }
 
 type corrallm_OverviewOutputBody {
@@ -1381,6 +1439,8 @@ type corrallm_ServerDef {
   devicePool: String!
   """Optional host concurrency cap (0 = none)."""
   maxConcurrent: Long!
+  """Free text kept with this server."""
+  notes: String!
   """Declared memory pools."""
   pools: [corrallm_PoolDef!]!
   """Server name."""
@@ -1447,6 +1507,10 @@ type corrallm_UnloadAllOutputBody {
   ok: Boolean!
   """Residents that could NOT be evicted, and why (pinned / in-flight)."""
   skipped: JSON
+}
+
+input corrallm_UpdateNotesInputBodyInput {
+  notes: String!
 }
 
 type corrallm_UsageByKeyOutputBody {

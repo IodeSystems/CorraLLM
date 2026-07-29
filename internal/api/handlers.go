@@ -1025,6 +1025,7 @@ type ServerDef struct {
 	MaxConcurrent  int       `json:"maxConcurrent" doc:"Optional host concurrency cap (0 = none)."`
 	AgentEndpoints []string  `json:"agentEndpoints" doc:"Candidate addresses of the agent backing this server, preference order. Empty means the server is this machine. Several are normal — a LAN address, a VPN address and an external one can all be valid at once."`
 	DevicePool     string    `json:"devicePool" doc:"Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."`
+	Notes          string    `json:"notes" doc:"Free text kept with this server."`
 	Pools          []PoolDef `json:"pools" doc:"Declared memory pools."`
 }
 
@@ -1048,6 +1049,7 @@ type ModelDef struct {
 	MaxConcurrent int            `json:"maxConcurrent" doc:"Admission slots."`
 	MaxTokens     int            `json:"maxTokens" doc:"max_tokens clamp when degraded onto (0 = none)."`
 	Cmd           string         `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
+	Notes         string         `json:"notes" doc:"Free text kept with this model — why it is configured the way it is. Carried in config and editable in the dashboard."`
 	Upstream      string         `json:"upstream" doc:"The id the BACKEND knows this model by, when it differs from the served name (the alias). Empty means the backend uses the served name."`
 }
 
@@ -1164,6 +1166,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 
 	for name, srv := range h.config().Servers {
 		sd := ServerDef{Server: name, MaxConcurrent: srv.MaxConcurrent, DevicePool: h.config().DevicePoolFor(name)}
+		sd.Notes = srv.Notes
 		if srv.Agent != nil {
 			sd.AgentEndpoints = srv.Agent.Endpoints
 		}
@@ -1186,7 +1189,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 			// cmd lives on the extension, so oidio-stt (a real local process)
 			// reported spawnable:false and the UI labelled it a proxy.
 			Type: m.Type, Quality: m.Quality, Spawnable: m.LocalProcess(), Remote: m.Remote(),
-			ProcKey: m.ProcKey(name), Server: m.Server, Upstream: m.Upstream,
+			ProcKey: m.ProcKey(name), Server: m.Server, Upstream: m.Upstream, Notes: m.Notes,
 			MaxConcurrent: m.Slots(), MaxTokens: m.MaxTokens, Cmd: m.Cmd,
 		}
 		if m.Sticky != nil {
