@@ -179,6 +179,10 @@ type Extension struct {
 	Persistent bool              `yaml:"persistent,omitempty"`
 	Sticky     *Sticky           `yaml:"sticky,omitempty"`
 
+	// Notes is free-text kept ABOUT this entry, carried in config and shown in
+	// the UI beside it. See Model.Notes.
+	Notes string `yaml:"notes,omitempty"`
+
 	// Providers lets ONE extension span several upstreams, each with its own
 	// endpoint and credentials. The free-tier aggregator is the motivating case:
 	// "free" is a single integration, but Groq, Cerebras and OpenRouter are three
@@ -273,6 +277,17 @@ type Server struct {
 	// Absent (nil) means this box, spawned locally — byte-identical to the
 	// behavior every existing config already gets.
 	Agent *AgentBinding `yaml:"agent,omitempty"`
+
+	// Notes is free-text the operator keeps ABOUT this entry, carried in the
+	// config and surfaced in the UI beside it.
+	//
+	// It exists because the hand-written config was half commentary — why a
+	// model is failover rather than a degrade tier, which build trap cost a
+	// day, why a limit is the number it is — and a machine-owned file written
+	// by a marshaller cannot keep YAML comments. Losing that knowledge is the
+	// one irreversible part of letting the GUI own config, so it becomes a
+	// field rather than a comment.
+	Notes string `yaml:"notes,omitempty"`
 }
 
 // AgentBinding locates the machine backing a server.
@@ -400,6 +415,18 @@ type Model struct {
 	// validated clean, so the model quietly tied the tier below the one it was
 	// meant to beat.
 	Quality  float64           `yaml:"quality,omitempty"`
+
+	// Notes is free-text the operator keeps ABOUT this entry, carried in the
+	// config and surfaced in the UI beside it.
+	//
+	// It exists because the hand-written config was half commentary — why a
+	// model is failover rather than a degrade tier, which build trap cost a
+	// day, why a limit is the number it is — and a machine-owned file written
+	// by a marshaller cannot keep YAML comments. Losing that knowledge is the
+	// one irreversible part of letting the GUI own config, so it becomes a
+	// field rather than a comment.
+	Notes string `yaml:"notes,omitempty"`
+
 	// MaxConcurrent is the model's admission slots (the fairshare capacity
 	// unit). For a local llama-server this mirrors --parallel. Default 1.
 	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
@@ -518,6 +545,9 @@ func (m Model) Slots() int {
 // Lane is a named, ordered fallback list over model names.
 type Lane struct {
 	Members []LaneMember `yaml:"members,omitempty"`
+	// Notes is free-text kept ABOUT this lane, carried in config and shown in
+	// the UI beside it. See Model.Notes.
+	Notes string `yaml:"notes,omitempty"`
 }
 
 // LaneMember references a model by name, optionally overriding its residency
