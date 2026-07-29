@@ -717,9 +717,11 @@ the BackpressureError shape we already validated.
     README. No semantic drift.
   - **The MCP helper carried its jailing**, including the 2026-07-16 fix that checks EVERY argv
     element rather than argv[0] (`cmd/llm-bench-mcp/main.go:358`).
-  - **Crucible is retired**, not merely superseded: its last real commit and its last gateway
-    call are both 2026-07-18 (9,247 calls lifetime); corrallm's bench keys have served every
-    run since. See `crucible/README.md`.
+  - **Crucible is deleted**, not merely superseded: its last real commit and its last gateway
+    call were both 2026-07-18 (9,247 calls lifetime), and corrallm's bench keys have served
+    every run since. The repo had no remote, so its plan — the only record of the tool-format
+    axis results, the poly-lsp net-negative measurement, and the run-to-run variance data this
+    item cites — is kept verbatim at `plan/archive/crucible-plan.md`. Everything else went.
 
   **Why fold rather than federate.** The decisive argument is lifecycle access, not tidiness.
   A capability claim can only be falsified by probing a model **cold**, and corrallm is the only
