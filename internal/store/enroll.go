@@ -125,3 +125,26 @@ func (s *Store) ListEnrollmentTokens(limit int) ([]EnrollmentToken, error) {
 	}
 	return out, rows.Err()
 }
+
+// PeekEnrollmentToken reports what a token authorises WITHOUT consuming it.
+//
+// Enrollment has to know the server name a token fixes before it can validate
+// the rest of the request, and validating after consuming means a rejected
+// request burns a single-use credential — the operator then has to mint another
+// to fix a typo. Peek first, claim once everything that can fail has passed.
+func (s *Store) PeekEnrollmentToken(tok string) (EnrollmentToken, error) {
+	var out EnrollmentToken
+	row := s.db.QueryRow(
+		`SELECT server, note, created_ms, expires_ms, used_ms, used_by FROM enrollment_tokens WHERE token_sha = ?`,
+		hashToken(tok))
+	if err := row.Scan(&out.Server, &out.Note, &out.CreatedMS, &out.ExpiresMS, &out.UsedMS, &out.UsedBy); err != nil {
+		return out, fmt.Errorf("enrollment token not recognised")
+	}
+	if out.UsedMS != 0 {
+		return out, fmt.Errorf("enrollment token was already used (by %q)", out.UsedBy)
+	}
+	if time.Now().UnixMilli() > out.ExpiresMS {
+		return out, fmt.Errorf("enrollment token expired")
+	}
+	return out, nil
+}

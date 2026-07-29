@@ -27,6 +27,14 @@ import (
 func Enroll(ctx context.Context, primary, enrollToken, server, addr, version string) (EnrollResponse, error) {
 	var out EnrollResponse
 
+	// Propose a name when nothing else supplies one. The machine knows what it
+	// is called, and requiring the operator to decide a server name before they
+	// can attach a machine is friction for no benefit — they can rename it
+	// later, and an unnamed enrollment is otherwise a hard failure at the last
+	// step of an otherwise one-command setup.
+	if strings.TrimSpace(server) == "" {
+		server = proposedServerName()
+	}
 	req := EnrollRequest{
 		Server:    server,
 		Hello:     helloFor(version),
@@ -63,6 +71,37 @@ func Enroll(ctx context.Context, primary, enrollToken, server, addr, version str
 		return out, fmt.Errorf("primary accepted enrollment but returned no token")
 	}
 	return out, nil
+}
+
+// proposedServerName turns this machine's hostname into a config key.
+//
+// Config keys end up in YAML, logs and URLs, so the name is reduced to
+// lowercase alphanumerics and dashes — "CarlsMacBookPro.local" becomes
+// "carlsmacbookpro". A machine with no usable hostname falls back to a fixed
+// name rather than an empty one, which would create a server called "".
+func proposedServerName() string {
+	hn, _ := os.Hostname()
+	return sanitiseHostname(hn)
+}
+
+// sanitiseHostname is proposedServerName's pure half, so it can be tested.
+func sanitiseHostname(hn string) string {
+	if i := strings.IndexByte(hn, '.'); i > 0 {
+		hn = hn[:i] // drop the .local / domain suffix
+	}
+	var b strings.Builder
+	for _, r := range strings.ToLower(hn) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteByte('-')
+		}
+	}
+	if s := strings.Trim(b.String(), "-"); s != "" {
+		return s
+	}
+	return "agent"
 }
 
 // Probe measures this machine, reporting errors rather than zeros.

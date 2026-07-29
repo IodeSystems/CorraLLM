@@ -59,7 +59,10 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 	if who == "" {
 		who = in.Body.Server
 	}
-	claim, err := h.Store.ClaimEnrollmentToken(bearer(in.Authorization), who)
+	// PEEK, do not claim yet. Everything that can reject the request runs
+	// first, because the token is single-use: consuming it and then failing
+	// means a typo costs a credential and the operator has to mint another.
+	claim, err := h.Store.PeekEnrollmentToken(bearer(in.Authorization))
 	if err != nil {
 		return nil, huma.Error401Unauthorized(err.Error())
 	}
@@ -69,7 +72,11 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 		name = strings.TrimSpace(in.Body.Server)
 	}
 	if name == "" {
-		return nil, huma.Error400BadRequest("no server name: the token did not fix one and the agent did not propose one")
+		// The agent proposes its hostname when nothing else names it, so this
+		// should be unreachable; keep it as a clear message rather than
+		// creating a server called "".
+		return nil, huma.Error400BadRequest(
+			"no server name: mint the token with a server, pass --server, or set `server:` in agent.yml")
 	}
 
 	cfg := h.config()
@@ -123,6 +130,12 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 
 	if err := config.SaveValidated(h.ConfigPath, next); err != nil {
 		return nil, huma.Error400BadRequest("enrollment would produce an invalid config", err)
+	}
+	// Claim LAST: everything that could reject this has passed, so the
+	// single-use token is spent only on an enrollment that actually happened.
+	// The conditional update still settles a race between two agents.
+	if _, err := h.Store.ClaimEnrollmentToken(bearer(in.Authorization), who); err != nil {
+		return nil, huma.Error401Unauthorized(err.Error())
 	}
 	if h.Reload != nil {
 		if err := h.Reload(); err != nil {
