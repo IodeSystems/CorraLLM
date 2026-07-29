@@ -6,6 +6,11 @@ schema {
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
 
 type CorrallmMutationNamespace {
+  agentEnroll(
+    """Bearer <enrollment token>, minted by the operator."""
+    Authorization: String
+    body: corrallm_EnrollRequestInput!
+  ): corrallm_EnrollResponse @derived(operationId: "agentEnroll")
   agentHeartbeat(
     """Bearer <the server's configured agent token>."""
     Authorization: String
@@ -17,6 +22,7 @@ type CorrallmMutationNamespace {
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
   publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
@@ -125,6 +131,11 @@ type CorrallmQueryNamespace {
 }
 
 type CorrallmV1MutationNamespace {
+  agentEnroll(
+    """Bearer <enrollment token>, minted by the operator."""
+    Authorization: String
+    body: corrallm_EnrollRequestInput!
+  ): corrallm_EnrollResponse @derived(operationId: "agentEnroll")
   agentHeartbeat(
     """Bearer <the server's configured agent token>."""
     Authorization: String
@@ -136,6 +147,7 @@ type CorrallmV1MutationNamespace {
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
   publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
@@ -834,6 +846,13 @@ type corrallm_CancelRequestOutputBody {
   ok: Boolean!
 }
 
+input corrallm_CapacityInput {
+  gpu: corrallm_DeviceMemInput
+  gpuError: String
+  host: corrallm_DeviceMemInput
+  hostError: String
+}
+
 type corrallm_ConfigSummaryOutputBody {
   """Served model names."""
   models: [String!]!
@@ -852,6 +871,13 @@ type corrallm_DepthPoint {
   maxWaiting: Long!
 }
 
+input corrallm_DeviceMemInput {
+  freeBytes: Long!
+  name: String!
+  totalBytes: Long!
+  usedBytes: Long!
+}
+
 type corrallm_DeviceMemView {
   """False when the probe failed — ignore the other fields."""
   available: Boolean!
@@ -863,6 +889,19 @@ type corrallm_DeviceMemView {
   totalBytes: Long!
   """In use right now."""
   usedBytes: Long!
+}
+
+input corrallm_EnrollRequestInput {
+  capacity: corrallm_CapacityInput!
+  endpoints: [String!]
+  hello: corrallm_HelloInput!
+  server: String!
+}
+
+type corrallm_EnrollResponse {
+  pools: JSON!
+  server: String!
+  token: String!
 }
 
 input corrallm_ExtensionActionInputBodyInput {
@@ -968,6 +1007,8 @@ type corrallm_HealthOutputBody {
 type corrallm_HeartbeatAck {
   intervalSeconds: Long!
   ok: Boolean!
+  updateUrl: String!
+  version: String!
 }
 
 input corrallm_HeartbeatInput {
@@ -1037,6 +1078,26 @@ type corrallm_LaneMemberDef {
   model: String!
   """Sticky override when loaded via this lane (empty = model's own)."""
   ttl: String!
+}
+
+input corrallm_MintEnrollmentTokenInputBodyInput {
+  """Free text, e.g. what machine this is for."""
+  note: String!
+  """Server name this token may claim. Empty lets the enrolling agent propose one."""
+  server: String!
+  """Validity window; default 60."""
+  ttlMinutes: Long!
+}
+
+type corrallm_MintEnrollmentTokenOutputBody {
+  """The full install command to run on the machine being attached."""
+  command: String!
+  """Unix millis after which it stops working."""
+  expires: Long!
+  """Server it may claim, if fixed."""
+  server: String!
+  """The enrollment token. Shown once — only its hash is stored."""
+  token: String!
 }
 
 type corrallm_ModalityView {

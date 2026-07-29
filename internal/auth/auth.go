@@ -52,7 +52,14 @@ func LoadOrCreateToken(path string) (token string, created bool, err error) {
 // say "I am alive" — would make the blast radius of one compromised agent the
 // whole daemon. These routes authenticate against that server's own agent token
 // inside the handler instead.
-var agentPaths = []string{"/api/v1/agents/heartbeat"}
+var agentPaths = []string{
+	"/api/v1/agents/heartbeat",
+	// Enrollment is how a machine with NO credential attaches. Requiring the
+	// admin token here would defeat the purpose: the enrolling machine would
+	// need the credential that can unload models and cancel requests, and the
+	// one-time token exists precisely so it does not.
+	"/api/v1/agents/enroll",
+}
 
 func selfAuthenticating(path string) bool {
 	for _, p := range agentPaths {

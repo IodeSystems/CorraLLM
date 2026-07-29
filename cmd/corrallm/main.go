@@ -274,7 +274,7 @@ func introspect(cmd *cobra.Command, o introspectOpts) error {
 func newServeCmd() *cobra.Command {
 	var (
 		home, service, webRoot, configPath, dbPath string
-		agentDir                                   string
+		agentDir, publicBase                       string
 		healthTimeout, activityRetention           time.Duration
 		requestTimeout                             time.Duration
 		capturePayloads, convertPDFs, ocrPDFs      bool
@@ -298,6 +298,7 @@ func newServeCmd() *cobra.Command {
 			return serve(cmd.Context(), serveOpts{
 				webRoot:            pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
 				agentDir:           pick(agentDir, envOr("CORRALLM_AGENT_DIR", "./bin/agents")),
+				publicBase:         pick(publicBase, envOr("CORRALLM_PUBLIC_BASE", "")),
 				configPath:         pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
 				dbPath:             dbPathResolved,
 				addr:               envOr("ADDR", ":6502"),
@@ -325,6 +326,7 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&home, "home", envOr("CORRALLM_HOME", "./home"), "config home holding the layered .properties files")
 	f.StringVar(&service, "service", envOr("CORRALLM_SLOT", "dev"), "service/slot selecting override .properties (dev|current|next)")
 	f.StringVar(&webRoot, "web-root", "", "directory to serve the SPA from (default ./ui/dist or WEB_ROOT)")
+	f.StringVar(&publicBase, "public-base", "", "how attached machines reach this daemon, e.g. http://box1:8111 (or CORRALLM_PUBLIC_BASE); used in the install command")
 	f.StringVar(&agentDir, "agent-dir", "", "directory of cross-compiled agent binaries to serve at /install/ (default ./bin/agents or CORRALLM_AGENT_DIR; populate with `make agents`)")
 	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default ./corrallm.yaml or CORRALLM_CONFIG)")
 	f.StringVar(&dbPath, "db", "", "path to the SQLite database (default ./home/var/corrallm.db or CORRALLM_DB)")
@@ -356,7 +358,7 @@ func defaultTuneCachePath(dbPath string) string {
 
 type serveOpts struct {
 	webRoot, configPath, dbPath, addr     string
-	agentDir                              string
+	agentDir, publicBase                  string
 	healthTimeout                         time.Duration
 	tokenPath                             string
 	activityRetention                     time.Duration
@@ -410,7 +412,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	mgr.SetLiveness(liveness)
 	agentDist := &agentdist.Handler{Dir: o.agentDir, Version: version}
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler,
-		Liveness: liveness, AgentDist: agentDist, Verified: api.NewVerifiedStore()}
+		Liveness: liveness, AgentDist: agentDist, Verified: api.NewVerifiedStore(),
+		ConfigPath: o.configPath, PublicBase: o.publicBase,
+	}
 
 	// Admin token gates the management surface (/api/*). Generated into
 	// <home>/admin.token on first run; the dashboard's login screen points there.
@@ -506,6 +510,11 @@ func serve(ctx context.Context, o serveOpts) error {
 	// orphaned (their process groups never get signalled).
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Enrollment writes config; reloading makes the new server usable without a
+	// restart. Set here rather than at construction because it closes over the
+	// proxy, which does not exist yet at that point.
+	h.Reload = func() error { return reloadInto(o.configPath, mgr, scheduler, px, h) }
 
 	// SIGHUP re-reads the config without dropping the listener or the resident
 	// backends. Config and keys were boot-time-only before this, so every edit
@@ -732,13 +741,34 @@ func watchReload(ctx context.Context, path string, mgr *proc.Manager, sc *sched.
 					"path", path, "err", err)
 				continue
 			}
-			mgr.SetConfig(cfg)
-			sc.SetConfig(cfg)
-			h.SetConfig(cfg)
-			px.SetConfig(cfg)
+			applyConfig(cfg, mgr, sc, px, h)
 			slog.Info("config reloaded", "path", path,
 				"servers", len(cfg.Servers), "models", len(cfg.Models),
 				"lanes", len(cfg.Lanes), "groups", len(cfg.PriorityGroups))
 		}
 	}
+}
+
+
+// applyConfig installs a validated config in every holder.
+//
+// Order is deliberate: residency and admission learn about it BEFORE the proxy
+// starts routing on it, so the brief window where holders disagree can only
+// have downstream components knowing more than the entry point, never less.
+func applyConfig(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) {
+	mgr.SetConfig(cfg)
+	sc.SetConfig(cfg)
+	h.SetConfig(cfg)
+	px.SetConfig(cfg)
+}
+
+// reloadInto re-reads path and applies it. Used by enrollment, which writes the
+// config and needs the new server usable without a restart.
+func reloadInto(path string, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) error {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	applyConfig(cfg, mgr, sc, px, h)
+	return nil
 }

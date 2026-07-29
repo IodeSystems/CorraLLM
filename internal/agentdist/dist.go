@@ -83,8 +83,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$SERVER" ] || { echo "--server is required (the servers: key this machine backs)" >&2; exit 2; }
-[ -n "$TOKEN" ]  || { echo "--token is required (this server's agent token)" >&2; exit 2; }
+[ -n "$TOKEN" ] || { echo "--token is required (mint one in the dashboard)" >&2; exit 2; }
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
@@ -107,11 +106,19 @@ mv "$PREFIX/bin/corrallm.new" "$PREFIX/bin/corrallm"
 # The token is a credential: a file only this user can read, not a flag that
 # lands in shell history and process listings.
 umask 077
+# An enrollment token (enr_…) is exchanged on first start for a long-lived
+# credential, which the agent writes back here. Anything else is treated as an
+# already-issued agent token.
+case "$TOKEN" in
+  enr_*) TOKVAR=CORRALLM_ENROLL_TOKEN ;;
+  *)     TOKVAR=CORRALLM_AGENT_TOKEN ;;
+esac
 cat > "$PREFIX/agent.env" <<ENV
 CORRALLM_PRIMARY=$PRIMARY
 CORRALLM_AGENT_SERVER=$SERVER
-CORRALLM_AGENT_TOKEN=$TOKEN
+$TOKVAR=$TOKEN
 CORRALLM_AGENT_ADDR=$ADDR
+CORRALLM_ENV_FILE=$PREFIX/agent.env
 ENV
 
 echo "==> installed $PREFIX/bin/corrallm"
@@ -119,7 +126,9 @@ echo
 echo "Start it with:"
 echo "  set -a; . $PREFIX/agent.env; set +a; $PREFIX/bin/corrallm agent"
 echo
-echo "It will report in to $PRIMARY as server '$SERVER' and self-update when idle."
+echo "On first start it enrols with $PRIMARY, which sizes this machine from its own"
+echo "memory probe and hands back a long-lived credential. After that it heartbeats"
+echo "and self-updates when idle."
 `
 }
 

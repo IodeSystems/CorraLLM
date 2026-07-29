@@ -142,3 +142,31 @@ type HeartbeatAck struct {
 	// redeploying every agent.
 	IntervalSeconds int `json:"intervalSeconds"`
 }
+
+// EnrollRequest is a machine asking to attach itself.
+//
+// It carries what the primary would otherwise have to be told by hand: what the
+// machine is, and how much memory it actually has. Sizing a server from the
+// agent's own probe is the difference between "run this command" and "run this
+// command, then go and write a pools block".
+type EnrollRequest struct {
+	// Server is the name to claim. Ignored when the enrollment token already
+	// names one — a token minted for "mac1" may only become mac1.
+	Server   string   `json:"server"`
+	Hello    Hello    `json:"hello"`
+	Capacity Capacity `json:"capacity"`
+	// Endpoints are the addresses this agent believes it is reachable at. It
+	// knows its own interfaces; the primary knows which of them it can use.
+	Endpoints []string `json:"endpoints"`
+}
+
+// EnrollResponse hands back the long-lived credential.
+type EnrollResponse struct {
+	Server string `json:"server"`
+	// Token is the per-server agent token, from here on presented on every
+	// heartbeat. Shown once; the primary stores it in config.
+	Token string `json:"token"`
+	// Pools is what the primary decided this server offers, echoed so the agent
+	// can log what it was enrolled as.
+	Pools map[string]string `json:"pools"`
+}

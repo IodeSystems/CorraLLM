@@ -44,6 +44,15 @@ type Handlers struct {
 	Store *store.Store
 	Mgr   *proc.Manager    // residency introspection (P8)
 	Sched *sched.Scheduler // live admission load (P8-beyond)
+	// PublicBase is how an attaching machine reaches this daemon, used to build
+	// the copy-pasteable install command.
+	PublicBase string
+	// ConfigPath is the config file corrallm owns and may rewrite. Empty means
+	// this daemon has no writable config and enrollment is unavailable.
+	ConfigPath string
+	// Reload re-reads the config after a write. Nil skips it (the change
+	// applies on the next restart).
+	Reload func() error
 	// AgentDist serves the agent binaries; consulted for the version an agent
 	// would actually install. Nil when no agents are distributed.
 	AgentDist *agentdist.Handler

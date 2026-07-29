@@ -339,6 +339,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.Groups)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "agentEnroll",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/agents/enroll",
+		Summary:     "Attach a machine using a one-time enrollment token; creates its server entry.",
+		Tags:        []string{"agents"},
+	}, h.AgentEnroll)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "mintEnrollmentToken",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/agents/tokens",
+		Summary:     "Mint a one-time enrollment token (admin).",
+		Tags:        []string{"agents"},
+	}, h.MintEnrollmentToken)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "agentHeartbeat",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/agents/heartbeat",
