@@ -72,6 +72,16 @@ func (h *Handlers) AgentHeartbeat(_ context.Context, in *AgentHeartbeatInput) (*
 	out := &AgentHeartbeatOutput{}
 	out.Body.OK = true
 	out.Body.IntervalSeconds = int(agent.HeartbeatInterval / time.Second)
+	// The version of the BINARIES we serve, not this process's own — they are
+	// built by separate targets and routinely differ, and the agent compares
+	// against what it would actually install.
+	out.Body.Version = h.AgentVersion()
+	// Tell the agent where ITS platform's binary is, using the OS/arch it just
+	// reported. The agent needs no knowledge of the primary's layout, and a
+	// mismatched build can never be handed to the wrong machine.
+	if hb := in.Body.Hello; hb.OS != "" && hb.Arch != "" {
+		out.Body.UpdateURL = fmt.Sprintf("/install/corrallm-%s-%s", hb.OS, hb.Arch)
+	}
 	return out, nil
 }
 
@@ -81,4 +91,13 @@ func bearer(h string) string {
 		return h[len(p):]
 	}
 	return h
+}
+
+// AgentVersion is the version stamped into the agent binaries this primary
+// serves, falling back to this process's version when none were built.
+func (h *Handlers) AgentVersion() string {
+	if h.AgentDist != nil {
+		return h.AgentDist.ServedVersion()
+	}
+	return h.Version
 }

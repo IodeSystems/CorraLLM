@@ -16,6 +16,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/iodesystems/corrallm/internal/agent"
+	"github.com/iodesystems/corrallm/internal/agentdist"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/gpu"
@@ -43,6 +44,9 @@ type Handlers struct {
 	Store *store.Store
 	Mgr   *proc.Manager    // residency introspection (P8)
 	Sched *sched.Scheduler // live admission load (P8-beyond)
+	// AgentDist serves the agent binaries; consulted for the version an agent
+	// would actually install. Nil when no agents are distributed.
+	AgentDist *agentdist.Handler
 	// Liveness tracks which agent-backed servers have reported in. Nil is valid
 	// (single-host deployments never see a heartbeat).
 	Liveness *agent.Liveness

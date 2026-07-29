@@ -28,7 +28,11 @@ type Beacon struct {
 	Token    string // this server's agent token
 	Interval time.Duration
 	Srv      *Server
-	cli      *http.Client
+	// SelfUpdate lets the agent replace its own binary with the primary's build
+	// when the versions differ AND nothing is running here. Off unless asked
+	// for: an agent that rewrites itself is a big thing to enable by accident.
+	SelfUpdate bool
+	cli        *http.Client
 }
 
 // Run beats until ctx ends. Blocking; call it in a goroutine.
@@ -50,8 +54,11 @@ func (b *Beacon) Run(ctx context.Context) {
 	t := time.NewTicker(b.Interval)
 	defer t.Stop()
 	for {
-		if err := b.beat(ctx); err != nil {
+		ack, err := b.beat(ctx)
+		if err != nil {
 			slog.Warn("agent: heartbeat failed", "primary", b.Primary, "err", err)
+		} else {
+			b.maybeSelfUpdate(ctx, ack)
 		}
 		select {
 		case <-ctx.Done():
@@ -61,7 +68,8 @@ func (b *Beacon) Run(ctx context.Context) {
 	}
 }
 
-func (b *Beacon) beat(ctx context.Context) error {
+func (b *Beacon) beat(ctx context.Context) (HeartbeatAck, error) {
+	var ack HeartbeatAck
 	hb := Heartbeat{Server: b.Server}
 	if b.Srv != nil {
 		hb.Hello = b.Srv.hello()
@@ -69,12 +77,12 @@ func (b *Beacon) beat(ctx context.Context) error {
 	}
 	body, err := json.Marshal(hb)
 	if err != nil {
-		return err
+		return ack, err
 	}
 	url := strings.TrimRight(b.Primary, "/") + "/api/v1/agents/heartbeat"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return ack, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if b.Token != "" {
@@ -82,7 +90,7 @@ func (b *Beacon) beat(ctx context.Context) error {
 	}
 	resp, err := b.cli.Do(req)
 	if err != nil {
-		return err
+		return ack, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
@@ -91,9 +99,10 @@ func (b *Beacon) beat(ctx context.Context) error {
 		// to detach a machine. Say so plainly rather than as a generic failure,
 		// because the fix is a config change, not a network one.
 		if resp.StatusCode == http.StatusUnauthorized {
-			return fmt.Errorf("token rejected by the primary (revoked?): %s", strings.TrimSpace(string(msg)))
+			return ack, fmt.Errorf("token rejected by the primary (revoked?): %s", strings.TrimSpace(string(msg)))
 		}
-		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return ack, fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
-	return nil
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&ack)
+	return ack, nil
 }

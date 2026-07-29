@@ -30,6 +30,7 @@ func newAgentCmd() *cobra.Command {
 		allowNoTok bool
 		primary    string
 		server     string
+		selfUpdate bool
 	)
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -53,7 +54,7 @@ func newAgentCmd() *cobra.Command {
 			}
 			return runAgent(cmd.Context(), addr, token,
 				pick(primary, os.Getenv("CORRALLM_PRIMARY")),
-				pick(server, os.Getenv("CORRALLM_AGENT_SERVER")))
+				pick(server, os.Getenv("CORRALLM_AGENT_SERVER")), selfUpdate)
 		},
 	}
 	f := cmd.Flags()
@@ -62,10 +63,11 @@ func newAgentCmd() *cobra.Command {
 	f.BoolVar(&allowNoTok, "allow-no-token", false, "run WITHOUT authentication — exposes a remote shell; isolated networks only")
 	f.StringVar(&primary, "primary", "", "base URL of the corrallm to report liveness to, e.g. http://box1:8111 (or CORRALLM_PRIMARY)")
 	f.StringVar(&server, "server", "", "the `servers:` key in the primary's config that this machine backs (or CORRALLM_AGENT_SERVER)")
+	f.BoolVar(&selfUpdate, "self-update", true, "replace this binary with the primary's build when versions differ AND no backends are running here")
 	return cmd
 }
 
-func runAgent(ctx context.Context, addr, token, primary, server string) error {
+func runAgent(ctx context.Context, addr, token, primary, server string, selfUpdate bool) error {
 	a := agent.New(version, token)
 
 	srv := &http.Server{Addr: addr, Handler: a.Routes()}
@@ -76,7 +78,7 @@ func runAgent(ctx context.Context, addr, token, primary, server string) error {
 	// and may change networks; requiring the primary to reach in would make a
 	// laptop look permanently down even while it is serving.
 	if primary != "" && server != "" {
-		b := &agent.Beacon{Primary: primary, Server: server, Token: token, Srv: a}
+		b := &agent.Beacon{Primary: primary, Server: server, Token: token, Srv: a, SelfUpdate: selfUpdate}
 		go b.Run(sigCtx)
 	} else if primary != "" || server != "" {
 		slog.Warn("agent: --primary and --server must BOTH be set to heartbeat; not reporting liveness",

@@ -130,6 +130,13 @@ type Heartbeat struct {
 // HeartbeatAck is the primary's reply.
 type HeartbeatAck struct {
 	OK bool `json:"ok"`
+	// Version is what the primary is running. An agent compares it against its
+	// own and updates itself when they differ AND it is idle — which is what
+	// makes iterating on agent code possible without walking to every machine.
+	Version string `json:"version"`
+	// UpdateURL is where this agent's platform binary lives on the primary.
+	// Sent by the primary so the agent needs no knowledge of the layout.
+	UpdateURL string `json:"updateUrl"`
 	// IntervalSeconds is how often the primary wants to hear from this agent.
 	// Sent so the cadence is the primary's decision and can change without
 	// redeploying every agent.

@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/iodesystems/corrallm/internal/agent"
+	"github.com/iodesystems/corrallm/internal/agentdist"
 	"github.com/iodesystems/corrallm/internal/api"
 	"github.com/iodesystems/corrallm/internal/auth"
 	"github.com/iodesystems/corrallm/internal/config"
@@ -273,6 +274,7 @@ func introspect(cmd *cobra.Command, o introspectOpts) error {
 func newServeCmd() *cobra.Command {
 	var (
 		home, service, webRoot, configPath, dbPath string
+		agentDir                                   string
 		healthTimeout, activityRetention           time.Duration
 		requestTimeout                             time.Duration
 		capturePayloads, convertPDFs, ocrPDFs      bool
@@ -295,6 +297,7 @@ func newServeCmd() *cobra.Command {
 			dbPathResolved := pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db"))
 			return serve(cmd.Context(), serveOpts{
 				webRoot:            pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
+				agentDir:           pick(agentDir, envOr("CORRALLM_AGENT_DIR", "./bin/agents")),
 				configPath:         pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
 				dbPath:             dbPathResolved,
 				addr:               envOr("ADDR", ":6502"),
@@ -322,6 +325,7 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&home, "home", envOr("CORRALLM_HOME", "./home"), "config home holding the layered .properties files")
 	f.StringVar(&service, "service", envOr("CORRALLM_SLOT", "dev"), "service/slot selecting override .properties (dev|current|next)")
 	f.StringVar(&webRoot, "web-root", "", "directory to serve the SPA from (default ./ui/dist or WEB_ROOT)")
+	f.StringVar(&agentDir, "agent-dir", "", "directory of cross-compiled agent binaries to serve at /install/ (default ./bin/agents or CORRALLM_AGENT_DIR; populate with `make agents`)")
 	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default ./corrallm.yaml or CORRALLM_CONFIG)")
 	f.StringVar(&dbPath, "db", "", "path to the SQLite database (default ./home/var/corrallm.db or CORRALLM_DB)")
 	f.DurationVar(&healthTimeout, "health-timeout", 0, "max time a cold backend spawn may take to become healthy (default 120s or CORRALLM_HEALTH_TIMEOUT); raise for large models")
@@ -352,6 +356,7 @@ func defaultTuneCachePath(dbPath string) string {
 
 type serveOpts struct {
 	webRoot, configPath, dbPath, addr     string
+	agentDir                              string
 	healthTimeout                         time.Duration
 	tokenPath                             string
 	activityRetention                     time.Duration
@@ -403,8 +408,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	// one view of which agent-backed servers are reporting in.
 	liveness := agent.NewLiveness()
 	mgr.SetLiveness(liveness)
+	agentDist := &agentdist.Handler{Dir: o.agentDir, Version: version}
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler,
-		Liveness: liveness, Verified: api.NewVerifiedStore()}
+		Liveness: liveness, AgentDist: agentDist, Verified: api.NewVerifiedStore()}
 
 	// Admin token gates the management surface (/api/*). Generated into
 	// <home>/admin.token on first run; the dashboard's login screen points there.
@@ -471,6 +477,20 @@ func serve(ctx context.Context, o serveOpts) error {
 	// is scraped rather than served the web-UI shell (chi matches the specific
 	// route before the "/*" wildcard).
 	router.Handle("/metrics", metrics.Handler())
+
+	// Agent distribution. PUBLIC on purpose, like /v1 and /health: an
+	// unenrolled machine has to be able to fetch the installer and the binary.
+	// Neither is a credential — the binary is what `make agents` builds from
+	// this repo and does nothing until given a token — so the gate is the
+	// enrollment token the installer is handed, not the download.
+	dist := agentDist
+	dist.Mount(router.Get, func(r *http.Request) string {
+		scheme := "http"
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			scheme = "https"
+		}
+		return scheme + "://" + r.Host
+	})
 
 	// The SPA is served for everything not claimed above.
 	router.Handle("/*", webui.Handler(o.webRoot))
