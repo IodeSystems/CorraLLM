@@ -1025,6 +1025,9 @@ type ServerDef struct {
 	MaxConcurrent  int       `json:"maxConcurrent" doc:"Optional host concurrency cap (0 = none)."`
 	AgentEndpoints []string  `json:"agentEndpoints" doc:"Candidate addresses of the agent backing this server, preference order. Empty means the server is this machine. Several are normal — a LAN address, a VPN address and an external one can all be valid at once."`
 	DevicePool     string    `json:"devicePool" doc:"Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."`
+	AgentStatus    string    `json:"agentStatus" doc:"up | down | unknown | local. 'unknown' means an agent is configured but has never reported in; 'down' means it stopped."`
+	AgentLastSeen  int64     `json:"agentLastSeen" doc:"Unix millis of the last heartbeat; 0 if never."`
+	NoProcessMemory bool     `json:"noProcessMemory" doc:"This host cannot attribute memory per process (macOS), so a model's ramUsage is required and authoritative rather than advisory."`
 	Notes          string    `json:"notes" doc:"Free text kept with this server."`
 	Pools          []PoolDef `json:"pools" doc:"Declared memory pools."`
 }
@@ -1167,8 +1170,17 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	for name, srv := range h.config().Servers {
 		sd := ServerDef{Server: name, MaxConcurrent: srv.MaxConcurrent, DevicePool: h.config().DevicePoolFor(name)}
 		sd.Notes = srv.Notes
+		sd.NoProcessMemory = srv.NoProcessMemory
+		sd.AgentStatus = "local"
 		if srv.Agent != nil {
 			sd.AgentEndpoints = srv.Agent.Endpoints
+			// Reachability is what the dashboard actually needs: an agent that
+			// is configured but silent looks identical to one that is working,
+			// and the difference decides whether anything can be spawned there.
+			sd.AgentStatus = string(h.Liveness.Status(name, time.Now()))
+			if t, ok := h.Liveness.LastSeen(name); ok {
+				sd.AgentLastSeen = t.UnixMilli()
+			}
 		}
 		totals, _ := config.ParseSizes(srv.Pools)
 		reserve, _ := config.ParseSizes(srv.Reserve)

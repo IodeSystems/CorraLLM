@@ -43,6 +43,9 @@ const ConfigDoc = graphql(/* GraphQL */ `
           maxConcurrent
           devicePool
           agentEndpoints
+          agentStatus
+          agentLastSeen
+          noProcessMemory
           pools {
             pool
             totalBytes
@@ -76,12 +79,35 @@ const ConfigDoc = graphql(/* GraphQL */ `
   }
 `)
 
-const UpsertDoc = graphql(/* GraphQL */ `
-  mutation UpsertModel($name: String!, $body: corrallm_ModelSpecInput!) {
+const ModelYamlDoc = graphql(/* GraphQL */ `
+  query ModelYaml($name: String!) {
     corrallm {
-      upsertModel(name: $name, body: $body) {
+      modelYaml(name: $name) {
+        name
+        yaml
+      }
+    }
+  }
+`)
+
+const PutYamlDoc = graphql(/* GraphQL */ `
+  mutation PutModelYaml($name: String!, $body: corrallm_PutModelYAMLInputBodyInput!) {
+    corrallm {
+      putModelYaml(name: $name, body: $body) {
         ok
         message
+      }
+    }
+  }
+`)
+
+const MintTokenDoc = graphql(/* GraphQL */ `
+  mutation MintEnrollmentToken($body: corrallm_MintEnrollmentTokenInputBodyInput!) {
+    corrallm {
+      mintEnrollmentToken(body: $body) {
+        token
+        command
+        expires
       }
     }
   }
@@ -116,34 +142,46 @@ function ConfigPage() {
   // that only runs on the success path changes that count between renders —
   // "rendered more hooks than during the previous render" (React #310).
   const qc = useQueryClient()
-  const [editing, setEditing] = useState<ModelForm | null>(null)
+  const [editing, setEditing] = useState<ModelEdit | null>(null)
   const [err, setErr] = useState('')
+  const [minted, setMinted] = useState<{ command: string; expires: string } | null>(null)
 
+  // Editing YAML rather than a form: a model carries far more than fits a form
+  // (ramUsage, sticky, contextPerRequest, modalities, convert, swap, freeTier),
+  // and every field the form omits is one the dashboard cannot set. YAML is the
+  // schema, so the editor is complete the day a field is added.
   const save = useMutation({
-    mutationFn: (f: ModelForm) =>
-      gqlClient.request(UpsertDoc, {
-        name: f.name,
-        body: {
-          name: f.name,
-          cmd: f.cmd,
-          server: f.server,
-          proxy: f.proxy,
-          upstream: f.upstream,
-          type: f.type,
-          quality: Number(f.quality) || 0,
-          // Int maps to a string in this codegen (Long-safe); Float does not.
-          maxConcurrent: String(Number(f.maxConcurrent) || 0),
-          notes: f.notes,
-        },
-      }),
+    mutationFn: (f: ModelEdit) => gqlClient.request(PutYamlDoc, { name: f.name, body: { yaml: f.yaml } }),
     onSuccess: () => {
       setEditing(null)
       setErr('')
       qc.invalidateQueries({ queryKey: ['config'] })
     },
-    // The API rejects an edit that would not load — a lane pointing at a model
-    // that no longer exists, an unknown server. Surfacing that message verbatim
-    // is the difference between a fixable error and "something went wrong".
+    onError: (e: unknown) => setErr(extractMessage(e)),
+  })
+
+  // Fetch the stored YAML rather than re-rendering it from the read view: the
+  // read view is lossy (a resolved target cannot be turned back into the port
+  // that was written), and round-tripping through it would rewrite fields the
+  // operator never touched.
+  const openEditor = async (name: string) => {
+    setErr('')
+    try {
+      const d = await gqlClient.request(ModelYamlDoc, { name })
+      const y = d.corrallm.modelYaml
+      setEditing({ existing: true, name, yaml: y?.yaml ?? '' })
+    } catch (e) {
+      setErr(extractMessage(e))
+    }
+  }
+
+  const mint = useMutation({
+    mutationFn: () =>
+      gqlClient.request(MintTokenDoc, { body: { server: '', note: 'from the dashboard', ttlMinutes: '60' } }),
+    onSuccess: (d) => {
+      const t = d.corrallm.mintEnrollmentToken
+      if (t) setMinted({ command: t.command, expires: String(t.expires) })
+    },
     onError: (e: unknown) => setErr(extractMessage(e)),
   })
 
@@ -178,6 +216,9 @@ function ConfigPage() {
   const models = ov?.models ?? []
   const lanes = ov?.lanes ?? []
   const includes = ov?.include ?? []
+
+  // A server with endpoints is an attached machine; one without is this box.
+  const agents = servers.filter((s) => (s.agentEndpoints ?? []).length > 0)
 
   const homeOf = (m: (typeof models)[number]) =>
     m.remote ? REMOTE : m.server ? m.server : UNBOUND
@@ -246,74 +287,103 @@ function ConfigPage() {
         ))}
       </Panel>
 
-      {/* Agents: deliberately honest. Agent mode is not built, so this section
-          says so plainly rather than showing an enrollment command that would
-          fail. It exists now so the shape of the page is settled and there is
-          one obvious place for a second machine to appear. */}
+      {/* Agents: enrolled machines, and the one command that attaches another. */}
       <Panel
         title="Agents"
         subtitle="Other machines this daemon spawns and evicts on"
-        badge={<Chip size="small" variant="outlined" color="warning" label="not yet available" />}
+        badge={<Chip size="small" variant="outlined" label={`${agents.length}`} />}
+        actions={
+          <Button size="small" variant="outlined" disabled={mint.isPending} onClick={() => mint.mutate()}>
+            Attach a machine
+          </Button>
+        }
         flush
       >
-        {servers
-          .filter((s) => (s.agentEndpoints ?? []).length > 0)
-          .map((s) => (
-            <Row key={s.server}>
-              <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
-                <Typography variant="subtitle2">{s.server}</Typography>
-                <Chip size="small" variant="outlined" color="warning" label="declared · cannot spawn yet" />
-              </Box>
-              <Typography variant="caption" sx={{ color: C.textFaint, display: 'block', mt: 0.5 }}>
-                Addresses, in preference order. Several are normal — a LAN address, a VPN address
-                and an external one can all be valid at once; which works depends on where this
-                daemon is sitting.
+        {minted && (
+          <Row>
+            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+              Run this on the machine you want to attach
+            </Typography>
+            <Box
+              component="pre"
+              sx={{
+                m: 0,
+                p: 1.25,
+                bgcolor: C.raised,
+                border: `1px solid ${C.border}`,
+                borderRadius: 1,
+                fontSize: 12,
+                overflowX: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+              }}
+            >
+              {minted.command}
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+              <Button size="small" onClick={() => navigator.clipboard?.writeText(minted.command)}>
+                Copy
+              </Button>
+              <Typography variant="caption" sx={{ color: C.textFaint }}>
+                {/* Both properties are load-bearing and easy to be surprised by. */}
+                Single use, expires {new Date(Number(minted.expires)).toLocaleTimeString()}. The token is
+                shown once — mint another if you lose it.
               </Typography>
-              <Box sx={{ mt: 0.5 }}>
-                {(s.agentEndpoints ?? []).map((e) => (
-                  <Typography key={e} variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                    {e}
-                  </Typography>
-                ))}
-              </Box>
-            </Row>
-          ))}
-        <Row>
-          <Typography variant="body2" sx={{ color: C.textMuted }}>
-            No agents enrolled — and none can be yet. <b>Agent mode is not implemented.</b> There
-            is no <code>corrallm agent</code> command, no enrollment endpoint, and no installer, so
-            there is nothing to paste into a second machine's terminal today.
-          </Typography>
-          <Typography variant="body2" sx={{ color: C.textMuted, mt: 1.5 }}>
-            What already works, and is what an agent will be built on:
-          </Typography>
-          <Box component="ul" sx={{ color: C.textMuted, mt: 0.5, mb: 0, pl: 3 }}>
-            <li>
-              <Typography variant="body2">
-                A server declares its capacity as pools, and a unified-memory host names its single
-                pool as the <code>devicePool</code> — so an Apple-silicon box is already expressible.
-              </Typography>
-            </li>
-            <li>
-              <Typography variant="body2">
-                Backend process control sits behind a host interface, so a remote implementation
-                slots in beside the local one.
-              </Typography>
-            </li>
-            <li>
-              <Typography variant="body2">
-                Config reloads on SIGHUP, and <code>include:</code> merges a machine-owned file — so
-                an agent's models can be written to disk and served without a restart.
-              </Typography>
-            </li>
-          </Box>
-          <Typography variant="body2" sx={{ color: C.textFaint, mt: 1.5 }}>
-            Still to build: the agent binding on a server (an agent has several addresses — LAN,
-            external, VPN — so it is a list, not one host), the <code>corrallm agent</code> command,
-            the remote host client, per-host capacity probing on macOS, and what happens to
-            residency when an agent goes away mid-flight.
-          </Typography>
-        </Row>
+              <Box sx={{ flexGrow: 1 }} />
+              <Button size="small" onClick={() => setMinted(null)}>
+                Dismiss
+              </Button>
+            </Box>
+          </Row>
+        )}
+
+        {agents.length === 0 && !minted && (
+          <Row>
+            <Typography variant="body2" sx={{ color: C.textMuted }}>
+              No machines attached yet. <b>Attach a machine</b> mints a single-use token and shows the
+              one command to run there — it installs the agent, registers the machine, and sizes it
+              from its own memory probe.
+            </Typography>
+          </Row>
+        )}
+
+        {agents.map((a) => (
+          <Row key={a.server}>
+            <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+              <Typography variant="subtitle2">{a.server}</Typography>
+              <Tooltip title={AGENT_STATUS_HINT[a.agentStatus] ?? a.agentStatus}>
+                <Chip
+                  size="small"
+                  label={a.agentStatus}
+                  color={
+                    a.agentStatus === 'up'
+                      ? 'success'
+                      : a.agentStatus === 'down'
+                        ? 'error'
+                        : 'warning'
+                  }
+                />
+              </Tooltip>
+              {a.noProcessMemory && (
+                <Tooltip title="This host cannot attribute memory to a single process (macOS has no nvidia-smi equivalent). A model here MUST declare ramUsage — nothing can measure it, so a declared size is the only size there is.">
+                  <Chip size="small" variant="outlined" color="warning" label="ramUsage required" />
+                </Tooltip>
+              )}
+              {Number(a.agentLastSeen) > 0 && (
+                <Typography variant="caption" sx={{ color: C.textFaint }}>
+                  last seen {new Date(Number(a.agentLastSeen)).toLocaleTimeString()}
+                </Typography>
+              )}
+            </Box>
+            <Box sx={{ mt: 0.5 }}>
+              {(a.agentEndpoints ?? []).map((e) => (
+                <Typography key={e} variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12 }}>
+                  {e}
+                </Typography>
+              ))}
+            </Box>
+          </Row>
+        ))}
       </Panel>
 
       {homes.map((home) => {
@@ -336,7 +406,7 @@ function ConfigPage() {
               .slice()
               .sort((a, b) => Number(b.quality) - Number(a.quality) || a.name.localeCompare(b.name))
               .map((m) => (
-                <Row key={m.name} onClick={() => setEditing(toForm(m))}>
+                <Row key={m.name} onClick={() => openEditor(m.name)}>
                   <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
                     <Typography variant="subtitle2">{m.name}</Typography>
                     {/* The alias. corrallm routes on the served name; the backend
@@ -419,7 +489,7 @@ function ConfigPage() {
           <DialogTitle>{editing.existing ? `Edit ${editing.name}` : 'Add a model'}</DialogTitle>
           <DialogContent>
             {err && (
-              <Alert severity="error" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>
+              <Alert severity="error" sx={{ mb: 2, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12 }}>
                 {err}
               </Alert>
             )}
@@ -430,75 +500,16 @@ function ConfigPage() {
                 value={editing.name}
                 disabled={editing.existing}
                 onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                helperText="The name callers request. Renaming means delete + add."
+                helperText="The name callers request, and the config key. Renaming means add + delete."
               />
               <TextField
-                label="Command"
-                size="small"
+                label="Configuration (YAML)"
+                value={editing.yaml}
+                onChange={(e) => setEditing({ ...editing, yaml: e.target.value })}
                 multiline
-                minRows={2}
-                value={editing.cmd}
-                onChange={(e) => setEditing({ ...editing, cmd: e.target.value })}
-                helperText="Run through sh -c, so VAR=x prefixes work. Leave empty for a pure proxy (a remote model corrallm does not spawn)."
-              />
-              <Stack direction="row" spacing={2}>
-                <TextField
-                  label="Server"
-                  size="small"
-                  fullWidth
-                  value={editing.server}
-                  onChange={(e) => setEditing({ ...editing, server: e.target.value })}
-                  helperText="Required when a command is set."
-                />
-                <TextField
-                  label="Proxy"
-                  size="small"
-                  fullWidth
-                  value={editing.proxy}
-                  onChange={(e) => setEditing({ ...editing, proxy: e.target.value })}
-                  helperText="A port (5810), host:port, or URL."
-                />
-              </Stack>
-              <Stack direction="row" spacing={2}>
-                <TextField
-                  label="Type"
-                  size="small"
-                  fullWidth
-                  value={editing.type}
-                  onChange={(e) => setEditing({ ...editing, type: e.target.value })}
-                  helperText="chat | embed | stt | tts"
-                />
-                <TextField
-                  label="Quality"
-                  size="small"
-                  fullWidth
-                  value={editing.quality}
-                  onChange={(e) => setEditing({ ...editing, quality: e.target.value })}
-                  helperText="Fractional is allowed — 1.5 sits between two tiers."
-                />
-                <TextField
-                  label="Slots"
-                  size="small"
-                  fullWidth
-                  value={editing.maxConcurrent}
-                  onChange={(e) => setEditing({ ...editing, maxConcurrent: e.target.value })}
-                />
-              </Stack>
-              <TextField
-                label="Upstream"
-                size="small"
-                value={editing.upstream}
-                onChange={(e) => setEditing({ ...editing, upstream: e.target.value })}
-                helperText="What the BACKEND calls this model, when it differs from the name above."
-              />
-              <TextField
-                label="Notes"
-                size="small"
-                multiline
-                minRows={4}
-                value={editing.notes}
-                onChange={(e) => setEditing({ ...editing, notes: e.target.value })}
-                helperText="Why it is configured this way. Kept in the config and shown here — this is where the reasoning that used to live in YAML comments goes."
+                minRows={18}
+                slotProps={{ input: { sx: { fontFamily: 'monospace', fontSize: 12.5 } } }}
+                helperText="The model exactly as it appears in the config file. Checked twice on save: unknown keys are rejected, then the whole config is validated — an unknown server or a lane you would break is caught here, not at the next restart."
               />
             </Stack>
           </DialogContent>
@@ -548,61 +559,29 @@ function ConfigPage() {
 
 export const Route = createFileRoute('/config')({ component: ConfigPage })
 
-// ModelForm is the dialog's editable shape — all strings, because a form field
-// holds text and coercing on every keystroke fights the user mid-typing.
-type ModelForm = {
-  existing: boolean
-  name: string
-  cmd: string
-  server: string
-  proxy: string
-  upstream: string
-  type: string
-  quality: string
-  maxConcurrent: string
-  notes: string
-}
+// ModelEdit is what the dialog holds: the config key, and the YAML for it.
+type ModelEdit = { existing: boolean; name: string; yaml: string }
 
-function blankModel(): ModelForm {
+// blankModel seeds a new entry with the fields every model needs, so the first
+// thing an operator sees is a shape to fill in rather than an empty box.
+function blankModel(): ModelEdit {
   return {
     existing: false,
     name: '',
-    cmd: '',
-    server: '',
-    proxy: '',
-    upstream: '',
-    type: 'chat',
-    quality: '1',
-    maxConcurrent: '1',
-    notes: '',
-  }
-}
+    yaml: `# A model is exactly ONE serving path: a spawned cmd, or a proxy target.
+# Everything the config schema accepts works here.
 
-function toForm(m: {
-  name: string
-  cmd: string
-  server: string
-  target: string
-  upstream: string
-  type: string
-  quality: number
-  maxConcurrent: string
-  notes: string
-}): ModelForm {
-  return {
-    existing: true,
-    name: m.name,
-    cmd: m.cmd ?? '',
-    server: m.server ?? '',
-    // The target is the RESOLVED url; the config field is what was written. A
-    // bare port cannot be recovered from it, so the operator re-states it —
-    // better than silently rewriting a port into a full URL on every save.
-    proxy: m.target ?? '',
-    upstream: m.upstream ?? '',
-    type: m.type ?? '',
-    quality: String(m.quality ?? 0),
-    maxConcurrent: String(m.maxConcurrent ?? 1),
-    notes: m.notes ?? '',
+# cmd: "exec llama-server --port 5800 ..."   # spawned locally; needs a server
+# server: box1
+proxy: 5800            # port, host:port, or {host, port, headers}
+type: chat             # chat | embed | stt | tts
+quality: 1             # fractional is fine — 1.5 sits between two tiers
+maxConcurrent: 1
+# ramUsage: { gpu0: 16GB }   # required on a host that cannot measure itself
+# sticky: { ttl: 300s, evictCost: high }
+# notes: |
+#   Why this model is configured the way it is.
+`,
   }
 }
 
@@ -613,4 +592,12 @@ function extractMessage(e: unknown): string {
   const any = e as { response?: { errors?: { message?: string }[] }; message?: string }
   const first = any?.response?.errors?.[0]?.message
   return first || any?.message || String(e)
+}
+
+// What each agent state means for whether anything can run there.
+const AGENT_STATUS_HINT: Record<string, string> = {
+  up: 'heartbeating; models can be spawned here',
+  down: 'stopped reporting in — new spawns are refused here, but its config and any running backends are left alone',
+  unknown: 'configured but has never reported in; a spawn will be attempted and will say why if it fails',
+  local: 'this machine',
 }

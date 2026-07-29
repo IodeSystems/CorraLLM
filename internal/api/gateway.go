@@ -339,6 +339,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.Groups)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "modelYaml",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/config/models/{name}/yaml",
+		Summary:     "One model's configuration as YAML, for editing.",
+		Tags:        []string{"config"},
+	}, h.ModelYAML)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "putModelYaml",
+		Method:      http.MethodPut,
+		Path:        "/api/v1/config/models/{name}/yaml",
+		Summary:     "Replace a model from YAML; validated against the whole config before it applies.",
+		Tags:        []string{"config"},
+	}, h.PutModelYAML)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "upsertModel",
 		Method:      http.MethodPut,
 		Path:        "/api/v1/config/models/{name}",

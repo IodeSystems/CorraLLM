@@ -28,6 +28,7 @@ type CorrallmMutationNamespace {
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
+  putModelYaml(body: corrallm_PutModelYAMLInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "putModelYaml")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
@@ -103,6 +104,7 @@ type CorrallmQueryNamespace {
     """Max trailing lines."""
     tail: Long
   ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
+  modelYaml(name: String!): corrallm_ModelYAMLOutputBody @derived(operationId: "modelYaml")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   queueDepth(
     """Bucket width in minutes."""
@@ -165,6 +167,7 @@ type CorrallmV1MutationNamespace {
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
+  putModelYaml(body: corrallm_PutModelYAMLInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "putModelYaml")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
@@ -239,6 +242,7 @@ type CorrallmV1QueryNamespace {
     """Max trailing lines."""
     tail: Long
   ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
+  modelYaml(name: String!): corrallm_ModelYAMLOutputBody @derived(operationId: "modelYaml")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   queueDepth(
     """Bucket width in minutes."""
@@ -1230,6 +1234,12 @@ input corrallm_ModelSpecInput {
   upstream: String
 }
 
+type corrallm_ModelYAMLOutputBody {
+  name: String!
+  """The model's configuration, exactly as it is stored."""
+  yaml: String!
+}
+
 type corrallm_OverviewOutputBody {
   """Priority-group policies."""
   groups: [corrallm_GroupDef!]!
@@ -1276,6 +1286,11 @@ type corrallm_ProviderView {
   fetchedAt: Long
   free: [String!]!
   provider: String!
+}
+
+input corrallm_PutModelYAMLInputBodyInput {
+  """The model's configuration as YAML — the same shape it has in the config file."""
+  yaml: String!
 }
 
 type corrallm_QueueDepthOutputBody {
@@ -1436,10 +1451,16 @@ type corrallm_SeriesPoint {
 type corrallm_ServerDef {
   """Candidate addresses of the agent backing this server, preference order. Empty means the server is this machine. Several are normal — a LAN address, a VPN address and an external one can all be valid at once."""
   agentEndpoints: [String!]!
+  """Unix millis of the last heartbeat; 0 if never."""
+  agentLastSeen: Long!
+  """up | down | unknown | local. 'unknown' means an agent is configured but has never reported in; 'down' means it stopped."""
+  agentStatus: String!
   """Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."""
   devicePool: String!
   """Optional host concurrency cap (0 = none)."""
   maxConcurrent: Long!
+  """This host cannot attribute memory per process (macOS), so a model's ramUsage is required and authoritative rather than advisory."""
+  noProcessMemory: Boolean!
   """Free text kept with this server."""
   notes: String!
   """Declared memory pools."""
