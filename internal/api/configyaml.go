@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -24,74 +25,135 @@ import (
 // same guarantees the file on disk has — with the error attached to the edit
 // instead of discovered at the next restart.
 
-// ModelYAMLInput fetches one model's configuration as YAML.
-type ModelYAMLInput struct {
+// redactedToken is what a stored agent token is replaced with on the way out.
+//
+// The dashboard already requires the admin token, so showing it is not an
+// escalation — but a credential that appears on screen gets copied into
+// screenshots and pasted into chats, and there is no reason for it to leave the
+// server. On save the placeholder is swapped back for the stored value, so
+// editing a server's pools cannot silently revoke its agent.
+const redactedToken = "<unchanged>"
+
+// EntryYAMLInput fetches one config entry as YAML.
+type EntryYAMLInput struct {
+	Kind string `path:"kind" doc:"model | server | lane"`
 	Name string `path:"name"`
 }
 
-// ModelYAMLOutput carries the YAML body.
-type ModelYAMLOutput struct {
+// EntryYAMLOutput carries the YAML body.
+type EntryYAMLOutput struct {
 	Body struct {
+		Kind string `json:"kind"`
 		Name string `json:"name"`
-		YAML string `json:"yaml" doc:"The model's configuration, exactly as it is stored."`
+		YAML string `json:"yaml" doc:"The entry exactly as stored, with any secret redacted."`
 	}
 }
 
-// ModelYAML returns one model's config as YAML for editing.
-func (h *Handlers) ModelYAML(_ context.Context, in *ModelYAMLInput) (*ModelYAMLOutput, error) {
+// EntryYAML returns one model, server or lane as YAML for editing.
+func (h *Handlers) EntryYAML(_ context.Context, in *EntryYAMLInput) (*EntryYAMLOutput, error) {
 	cfg := h.config()
 	if cfg == nil {
 		return nil, huma.Error503ServiceUnavailable("config unavailable")
 	}
-	m, ok := cfg.Models[in.Name]
-	if !ok {
-		return nil, huma.Error404NotFound(fmt.Sprintf("no model %q", in.Name))
+	var v any
+	switch in.Kind {
+	case "model":
+		m, ok := cfg.Models[in.Name]
+		if !ok {
+			return nil, huma.Error404NotFound(fmt.Sprintf("no model %q", in.Name))
+		}
+		v = m
+	case "server":
+		srv, ok := cfg.Servers[in.Name]
+		if !ok {
+			return nil, huma.Error404NotFound(fmt.Sprintf("no server %q", in.Name))
+		}
+		if srv.Agent != nil && srv.Agent.Token != "" {
+			// Copy before redacting: Server holds a POINTER to the binding, so
+			// blanking it in place would wipe the live config's token.
+			b := *srv.Agent
+			b.Token = redactedToken
+			srv.Agent = &b
+		}
+		v = srv
+	case "lane":
+		l, ok := cfg.Lanes[in.Name]
+		if !ok {
+			return nil, huma.Error404NotFound(fmt.Sprintf("no lane %q", in.Name))
+		}
+		v = l
+	default:
+		return nil, huma.Error400BadRequest("kind must be model, server or lane")
 	}
-	b, err := yaml.Marshal(m)
+	b, err := yaml.Marshal(v)
 	if err != nil {
-		return nil, huma.Error500InternalServerError("could not render the model", err)
+		return nil, huma.Error500InternalServerError("could not render the entry", err)
 	}
-	out := &ModelYAMLOutput{}
-	out.Body.Name = in.Name
-	out.Body.YAML = string(b)
+	out := &EntryYAMLOutput{}
+	out.Body.Kind, out.Body.Name, out.Body.YAML = in.Kind, in.Name, string(b)
 	return out, nil
 }
 
-// PutModelYAMLInput replaces a model from YAML.
-type PutModelYAMLInput struct {
+// PutEntryYAMLInput replaces one entry from YAML.
+type PutEntryYAMLInput struct {
+	Kind string `path:"kind" doc:"model | server | lane"`
 	Name string `path:"name"`
 	Body struct {
-		YAML string `json:"yaml" doc:"The model's configuration as YAML — the same shape it has in the config file."`
+		YAML string `json:"yaml"`
 	}
 }
 
-// PutModelYAML parses, validates and applies a model written as YAML.
-//
-// Two layers of checking, and they catch different things. Unmarshalling with
-// KnownFields rejects a typo'd key — `contextPerRequst` would otherwise parse
-// into nothing and silently do the opposite of what was intended. The full
-// config validation then catches everything that depends on the rest of the
-// config: an unknown server, a devicePool that is not a pool, a missing
-// ramUsage on a host that cannot measure.
-func (h *Handlers) PutModelYAML(_ context.Context, in *PutModelYAMLInput) (*ConfigMutationOutput, error) {
+// PutEntryYAML parses, validates and applies a model, server or lane.
+func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*ConfigMutationOutput, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
-		return nil, huma.Error400BadRequest("a model needs a name")
+		return nil, huma.Error400BadRequest("an entry needs a name")
 	}
-	var m config.Model
-	dec := yaml.NewDecoder(strings.NewReader(in.Body.YAML))
-	dec.KnownFields(true)
-	if err := dec.Decode(&m); err != nil {
-		// The decoder's message names the line and the offending key, which is
-		// the whole value of showing it verbatim.
-		return nil, huma.Error400BadRequest(fmt.Sprintf("invalid YAML: %v", err))
-	}
-	err := h.mutateConfig(func(c *config.Config) error {
-		if prev, ok := c.Models[name]; ok && prev.Extension != "" {
-			return huma.Error409Conflict(fmt.Sprintf(
-				"%q is provided by extension %q — edit the extension instead", name, prev.Extension))
+	decode := func(v any) error {
+		dec := yaml.NewDecoder(strings.NewReader(in.Body.YAML))
+		dec.KnownFields(true) // a typo'd key must fail, not vanish
+		if err := dec.Decode(v); err != nil {
+			return huma.Error400BadRequest(fmt.Sprintf("invalid YAML: %v", err))
 		}
-		c.Models[name] = m
+		return nil
+	}
+
+	err := h.mutateConfig(func(c *config.Config) error {
+		switch in.Kind {
+		case "model":
+			var m config.Model
+			if err := decode(&m); err != nil {
+				return err
+			}
+			if prev, ok := c.Models[name]; ok && prev.Extension != "" {
+				return huma.Error409Conflict(fmt.Sprintf(
+					"%q is provided by extension %q — edit the extension instead", name, prev.Extension))
+			}
+			c.Models[name] = m
+		case "server":
+			var srv config.Server
+			if err := decode(&srv); err != nil {
+				return err
+			}
+			// Restore a redacted token rather than writing the placeholder,
+			// which would silently revoke the agent on the next heartbeat.
+			if srv.Agent != nil && srv.Agent.Token == redactedToken {
+				if prev, ok := c.Servers[name]; ok && prev.Agent != nil {
+					srv.Agent.Token = prev.Agent.Token
+				} else {
+					srv.Agent.Token = ""
+				}
+			}
+			c.Servers[name] = srv
+		case "lane":
+			var l config.Lane
+			if err := decode(&l); err != nil {
+				return err
+			}
+			c.Lanes[name] = l
+		default:
+			return huma.Error400BadRequest("kind must be model, server or lane")
+		}
 		return nil
 	})
 	if err != nil {
@@ -99,6 +161,79 @@ func (h *Handlers) PutModelYAML(_ context.Context, in *PutModelYAMLInput) (*Conf
 	}
 	out := &ConfigMutationOutput{}
 	out.Body.OK = true
-	out.Body.Message = fmt.Sprintf("saved %s", name)
+	out.Body.Message = fmt.Sprintf("saved %s %s", in.Kind, name)
+	return out, nil
+}
+
+// DeleteEntryInput names what to remove.
+type DeleteEntryInput struct {
+	Kind string `path:"kind" doc:"model | server | lane"`
+	Name string `path:"name"`
+}
+
+// DeleteEntry removes a model, server or lane, refusing when something still
+// depends on it.
+//
+// Validation would catch most of this on save, but naming the dependants is far
+// more useful than "unknown model" — it says what to fix rather than that
+// something is wrong.
+func (h *Handlers) DeleteEntry(_ context.Context, in *DeleteEntryInput) (*ConfigMutationOutput, error) {
+	err := h.mutateConfig(func(c *config.Config) error {
+		switch in.Kind {
+		case "model":
+			if _, ok := c.Models[in.Name]; !ok {
+				return huma.Error404NotFound(fmt.Sprintf("no model %q", in.Name))
+			}
+			var used []string
+			for lane, l := range c.Lanes {
+				for _, mem := range l.Members {
+					if mem.Model == in.Name {
+						used = append(used, lane)
+					}
+				}
+			}
+			if len(used) > 0 {
+				sort.Strings(used)
+				return huma.Error409Conflict(fmt.Sprintf(
+					"%q is a member of lane(s) %s — remove it there first", in.Name, strings.Join(used, ", ")))
+			}
+			delete(c.Models, in.Name)
+		case "server":
+			if _, ok := c.Servers[in.Name]; !ok {
+				return huma.Error404NotFound(fmt.Sprintf("no server %q", in.Name))
+			}
+			var on []string
+			for m, mdl := range c.Models {
+				if mdl.Server == in.Name {
+					on = append(on, m)
+				}
+			}
+			for e, ext := range c.Extensions {
+				if ext.Server == in.Name {
+					on = append(on, "extension "+e)
+				}
+			}
+			if len(on) > 0 {
+				sort.Strings(on)
+				return huma.Error409Conflict(fmt.Sprintf(
+					"%q still hosts %s — move or delete them first", in.Name, strings.Join(on, ", ")))
+			}
+			delete(c.Servers, in.Name)
+		case "lane":
+			if _, ok := c.Lanes[in.Name]; !ok {
+				return huma.Error404NotFound(fmt.Sprintf("no lane %q", in.Name))
+			}
+			delete(c.Lanes, in.Name)
+		default:
+			return huma.Error400BadRequest("kind must be model, server or lane")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &ConfigMutationOutput{}
+	out.Body.OK = true
+	out.Body.Message = fmt.Sprintf("deleted %s %s", in.Kind, in.Name)
 	return out, nil
 }

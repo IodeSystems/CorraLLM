@@ -339,20 +339,28 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.Groups)
 
 	gat.Register(humaAPI, g, huma.Operation{
-		OperationID: "modelYaml",
+		OperationID: "entryYaml",
 		Method:      http.MethodGet,
-		Path:        "/api/v1/config/models/{name}/yaml",
-		Summary:     "One model's configuration as YAML, for editing.",
+		Path:        "/api/v1/config/{kind}/{name}/yaml",
+		Summary:     "One model, server or lane as YAML, for editing.",
 		Tags:        []string{"config"},
-	}, h.ModelYAML)
+	}, h.EntryYAML)
 
 	gat.Register(humaAPI, g, huma.Operation{
-		OperationID: "putModelYaml",
+		OperationID: "putEntryYaml",
 		Method:      http.MethodPut,
-		Path:        "/api/v1/config/models/{name}/yaml",
-		Summary:     "Replace a model from YAML; validated against the whole config before it applies.",
+		Path:        "/api/v1/config/{kind}/{name}/yaml",
+		Summary:     "Replace a model, server or lane from YAML; validated against the whole config.",
 		Tags:        []string{"config"},
-	}, h.PutModelYAML)
+	}, h.PutEntryYAML)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "deleteEntry",
+		Method:      http.MethodDelete,
+		Path:        "/api/v1/config/{kind}/{name}",
+		Summary:     "Remove a model, server or lane.",
+		Tags:        []string{"config"},
+	}, h.DeleteEntry)
 
 	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "upsertModel",
@@ -361,14 +369,6 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Summary:     "Create or replace a model; validates, writes and applies it live.",
 		Tags:        []string{"config"},
 	}, h.UpsertModel)
-
-	gat.Register(humaAPI, g, huma.Operation{
-		OperationID: "deleteModel",
-		Method:      http.MethodDelete,
-		Path:        "/api/v1/config/models/{name}",
-		Summary:     "Remove a model.",
-		Tags:        []string{"config"},
-	}, h.DeleteModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "updateNotes",

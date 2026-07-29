@@ -19,7 +19,11 @@ type CorrallmMutationNamespace {
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
-  deleteModel(name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteModel")
+  deleteEntry(
+    """model | server | lane"""
+    kind: String!
+    name: String!
+  ): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteEntry")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
@@ -28,7 +32,12 @@ type CorrallmMutationNamespace {
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
-  putModelYaml(body: corrallm_PutModelYAMLInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "putModelYaml")
+  putEntryYaml(
+    body: corrallm_PutEntryYAMLInputBodyInput!
+    """model | server | lane"""
+    kind: String!
+    name: String!
+  ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
@@ -94,6 +103,11 @@ type CorrallmQueryNamespace {
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  entryYaml(
+    """model | server | lane"""
+    kind: String!
+    name: String!
+  ): corrallm_EntryYAMLOutputBody @derived(operationId: "entryYaml")
   extensions: corrallm_ExtensionsOutputBody @derived(operationId: "extensions")
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
@@ -104,7 +118,6 @@ type CorrallmQueryNamespace {
     """Max trailing lines."""
     tail: Long
   ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
-  modelYaml(name: String!): corrallm_ModelYAMLOutputBody @derived(operationId: "modelYaml")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   queueDepth(
     """Bucket width in minutes."""
@@ -158,7 +171,11 @@ type CorrallmV1MutationNamespace {
   beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
-  deleteModel(name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteModel")
+  deleteEntry(
+    """model | server | lane"""
+    kind: String!
+    name: String!
+  ): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteEntry")
   endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
@@ -167,7 +184,12 @@ type CorrallmV1MutationNamespace {
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
-  putModelYaml(body: corrallm_PutModelYAMLInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "putModelYaml")
+  putEntryYaml(
+    body: corrallm_PutEntryYAMLInputBodyInput!
+    """model | server | lane"""
+    kind: String!
+    name: String!
+  ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
@@ -232,6 +254,11 @@ type CorrallmV1QueryNamespace {
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
   calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
+  entryYaml(
+    """model | server | lane"""
+    kind: String!
+    name: String!
+  ): corrallm_EntryYAMLOutputBody @derived(operationId: "entryYaml")
   extensions: corrallm_ExtensionsOutputBody @derived(operationId: "extensions")
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
@@ -242,7 +269,6 @@ type CorrallmV1QueryNamespace {
     """Max trailing lines."""
     tail: Long
   ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
-  modelYaml(name: String!): corrallm_ModelYAMLOutputBody @derived(operationId: "modelYaml")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   queueDepth(
     """Bucket width in minutes."""
@@ -938,6 +964,13 @@ type corrallm_EnrollResponse {
   token: String!
 }
 
+type corrallm_EntryYAMLOutputBody {
+  kind: String!
+  name: String!
+  """The entry exactly as stored, with any secret redacted."""
+  yaml: String!
+}
+
 input corrallm_ExtensionActionInputBodyInput {
   """Extension name (e.g. oidio)"""
   extension: String!
@@ -1234,12 +1267,6 @@ input corrallm_ModelSpecInput {
   upstream: String
 }
 
-type corrallm_ModelYAMLOutputBody {
-  name: String!
-  """The model's configuration, exactly as it is stored."""
-  yaml: String!
-}
-
 type corrallm_OverviewOutputBody {
   """Priority-group policies."""
   groups: [corrallm_GroupDef!]!
@@ -1288,8 +1315,7 @@ type corrallm_ProviderView {
   provider: String!
 }
 
-input corrallm_PutModelYAMLInputBodyInput {
-  """The model's configuration as YAML — the same shape it has in the config file."""
+input corrallm_PutEntryYAMLInputBodyInput {
   yaml: String!
 }
 

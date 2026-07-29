@@ -79,10 +79,11 @@ const ConfigDoc = graphql(/* GraphQL */ `
   }
 `)
 
-const ModelYamlDoc = graphql(/* GraphQL */ `
-  query ModelYaml($name: String!) {
+const EntryYamlDoc = graphql(/* GraphQL */ `
+  query EntryYaml($kind: String!, $name: String!) {
     corrallm {
-      modelYaml(name: $name) {
+      entryYaml(kind: $kind, name: $name) {
+        kind
         name
         yaml
       }
@@ -91,9 +92,9 @@ const ModelYamlDoc = graphql(/* GraphQL */ `
 `)
 
 const PutYamlDoc = graphql(/* GraphQL */ `
-  mutation PutModelYaml($name: String!, $body: corrallm_PutModelYAMLInputBodyInput!) {
+  mutation PutEntryYaml($kind: String!, $name: String!, $body: corrallm_PutEntryYAMLInputBodyInput!) {
     corrallm {
-      putModelYaml(name: $name, body: $body) {
+      putEntryYaml(kind: $kind, name: $name, body: $body) {
         ok
         message
       }
@@ -113,10 +114,10 @@ const MintTokenDoc = graphql(/* GraphQL */ `
   }
 `)
 
-const DeleteModelDoc = graphql(/* GraphQL */ `
-  mutation DeleteModel($name: String!) {
+const DeleteEntryDoc = graphql(/* GraphQL */ `
+  mutation DeleteEntry($kind: String!, $name: String!) {
     corrallm {
-      deleteModel(name: $name) {
+      deleteEntry(kind: $kind, name: $name) {
         ok
         message
       }
@@ -142,7 +143,7 @@ function ConfigPage() {
   // that only runs on the success path changes that count between renders —
   // "rendered more hooks than during the previous render" (React #310).
   const qc = useQueryClient()
-  const [editing, setEditing] = useState<ModelEdit | null>(null)
+  const [editing, setEditing] = useState<Edit | null>(null)
   const [err, setErr] = useState('')
   const [minted, setMinted] = useState<{ command: string; expires: string } | null>(null)
 
@@ -151,7 +152,8 @@ function ConfigPage() {
   // and every field the form omits is one the dashboard cannot set. YAML is the
   // schema, so the editor is complete the day a field is added.
   const save = useMutation({
-    mutationFn: (f: ModelEdit) => gqlClient.request(PutYamlDoc, { name: f.name, body: { yaml: f.yaml } }),
+    mutationFn: (f: Edit) =>
+      gqlClient.request(PutYamlDoc, { kind: f.kind, name: f.name, body: { yaml: f.yaml } }),
     onSuccess: () => {
       setEditing(null)
       setErr('')
@@ -164,12 +166,11 @@ function ConfigPage() {
   // read view is lossy (a resolved target cannot be turned back into the port
   // that was written), and round-tripping through it would rewrite fields the
   // operator never touched.
-  const openEditor = async (name: string) => {
+  const openEditor = async (kind: EditKind, name: string) => {
     setErr('')
     try {
-      const d = await gqlClient.request(ModelYamlDoc, { name })
-      const y = d.corrallm.modelYaml
-      setEditing({ existing: true, name, yaml: y?.yaml ?? '' })
+      const d = await gqlClient.request(EntryYamlDoc, { kind, name })
+      setEditing({ kind, existing: true, name, yaml: d.corrallm.entryYaml?.yaml ?? '' })
     } catch (e) {
       setErr(extractMessage(e))
     }
@@ -186,7 +187,7 @@ function ConfigPage() {
   })
 
   const del = useMutation({
-    mutationFn: (name: string) => gqlClient.request(DeleteModelDoc, { name }),
+    mutationFn: (e: Edit) => gqlClient.request(DeleteEntryDoc, { kind: e.kind, name: e.name }),
     onSuccess: () => {
       setEditing(null)
       setErr('')
@@ -249,10 +250,15 @@ function ConfigPage() {
       <Panel
         title="Hosts"
         subtitle="Declared capacity. A budget the scheduler admits against — not a probe."
+        actions={
+          <Button size="small" variant="outlined" onClick={() => setEditing(blankServer())}>
+            Add host
+          </Button>
+        }
         flush
       >
         {servers.map((s) => (
-          <Row key={s.server}>
+          <Row key={s.server} onClick={() => openEditor('server', s.server)}>
             <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
               <Typography variant="subtitle2">{s.server}</Typography>
               {/* No "local" chip: every server IS local until a server can be
@@ -406,7 +412,7 @@ function ConfigPage() {
               .slice()
               .sort((a, b) => Number(b.quality) - Number(a.quality) || a.name.localeCompare(b.name))
               .map((m) => (
-                <Row key={m.name} onClick={() => openEditor(m.name)}>
+                <Row key={m.name} onClick={() => openEditor('model', m.name)}>
                   <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
                     <Typography variant="subtitle2">{m.name}</Typography>
                     {/* The alias. corrallm routes on the served name; the backend
@@ -462,6 +468,11 @@ function ConfigPage() {
       <Panel
         title="Lanes"
         subtitle="Named fallback lists. Requesting a lane allows substitution; requesting a model pins it."
+        actions={
+          <Button size="small" variant="outlined" onClick={() => setEditing(blankLane())}>
+            Add lane
+          </Button>
+        }
         flush
       >
         {lanes.length === 0 ? (
@@ -472,7 +483,7 @@ function ConfigPage() {
           </Row>
         ) : (
           lanes.map((l) => (
-            <Row key={l.name}>
+            <Row key={l.name} onClick={() => openEditor('lane', l.name)}>
               <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
                 <Typography variant="subtitle2">{l.name}</Typography>
                 <Typography variant="caption" sx={{ color: C.textFaint }}>
@@ -486,7 +497,9 @@ function ConfigPage() {
 
       {editing && (
         <Dialog open onClose={() => setEditing(null)} maxWidth="md" fullWidth>
-          <DialogTitle>{editing.existing ? `Edit ${editing.name}` : 'Add a model'}</DialogTitle>
+          <DialogTitle>
+            {editing.existing ? `Edit ${editing.kind} ${editing.name}` : `Add a ${editing.kind}`}
+          </DialogTitle>
           <DialogContent>
             {err && (
               <Alert severity="error" sx={{ mb: 2, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12 }}>
@@ -500,7 +513,11 @@ function ConfigPage() {
                 value={editing.name}
                 disabled={editing.existing}
                 onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                helperText="The name callers request, and the config key. Renaming means add + delete."
+                helperText={
+                  editing.kind === 'model'
+                    ? 'The name callers request, and the config key. Renaming means add + delete.'
+                    : 'The config key. Renaming means add + delete.'
+                }
               />
               <TextField
                 label="Configuration (YAML)"
@@ -509,7 +526,7 @@ function ConfigPage() {
                 multiline
                 minRows={18}
                 slotProps={{ input: { sx: { fontFamily: 'monospace', fontSize: 12.5 } } }}
-                helperText="The model exactly as it appears in the config file. Checked twice on save: unknown keys are rejected, then the whole config is validated — an unknown server or a lane you would break is caught here, not at the next restart."
+                helperText={`The ${editing.kind} exactly as it appears in the config file. Checked twice on save: unknown keys are rejected, then the whole config is validated — an unknown server, or a lane this would break, is caught here rather than at the next restart.`}
               />
             </Stack>
           </DialogContent>
@@ -518,7 +535,7 @@ function ConfigPage() {
               <Button
                 color="error"
                 disabled={del.isPending}
-                onClick={() => del.mutate(editing.name)}
+                onClick={() => del.mutate(editing)}
                 sx={{ mr: 'auto' }}
               >
                 Delete
@@ -559,13 +576,17 @@ function ConfigPage() {
 
 export const Route = createFileRoute('/config')({ component: ConfigPage })
 
-// ModelEdit is what the dialog holds: the config key, and the YAML for it.
-type ModelEdit = { existing: boolean; name: string; yaml: string }
+// Edit is what the dialog holds: which kind of entry, its config key, and the
+// YAML for it. One dialog for models, servers and lanes — they differ only in
+// the schema behind the text, and the server validates that either way.
+type EditKind = 'model' | 'server' | 'lane'
+type Edit = { kind: EditKind; existing: boolean; name: string; yaml: string }
 
 // blankModel seeds a new entry with the fields every model needs, so the first
 // thing an operator sees is a shape to fill in rather than an empty box.
-function blankModel(): ModelEdit {
+function blankModel(): Edit {
   return {
+    kind: 'model',
     existing: false,
     name: '',
     yaml: `# A model is exactly ONE serving path: a spawned cmd, or a proxy target.
@@ -600,4 +621,49 @@ const AGENT_STATUS_HINT: Record<string, string> = {
   down: 'stopped reporting in — new spawns are refused here, but its config and any running backends are left alone',
   unknown: 'configured but has never reported in; a spawn will be attempted and will say why if it fails',
   local: 'this machine',
+}
+
+// blankServer seeds a host. Pools are the part people get wrong, so the
+// template shows both shapes: a discrete card, and unified memory where one
+// pool IS the device.
+function blankServer(): Edit {
+  return {
+    kind: 'server',
+    existing: false,
+    name: '',
+    yaml: `pools:
+  gpu0: 30GB           # a discrete card
+  system: 120GB
+reserve:
+  system: 16GB         # headroom kept free for the OS and everything else
+devicePool: gpu0       # the pool a MEASURED footprint is charged against
+
+# A unified-memory host (Apple silicon) has ONE pool that is both:
+# pools: { system: 64GB }
+# devicePool: system
+
+# notes: |
+#   What this machine is.
+`,
+  }
+}
+
+// blankLane seeds a fallback list. Order is the whole point, so the template
+// says so rather than leaving an empty array.
+function blankLane(): Edit {
+  return {
+    kind: 'lane',
+    existing: false,
+    name: '',
+    yaml: `# Members are walked best-quality-first. Requesting the LANE name allows
+# substitution across them; requesting a model name pins exactly that model.
+members:
+  - model: some-model
+  # - model: a-fallback
+  #   sticky: { ttl: 120s }   # unloads sooner when loaded on the lane's behalf
+
+# notes: |
+#   Why these members, in this order.
+`,
+  }
 }

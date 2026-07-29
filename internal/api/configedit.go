@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -129,45 +128,6 @@ func (h *Handlers) UpsertModel(_ context.Context, in *UpsertModelInput) (*Config
 	out := &ConfigMutationOutput{}
 	out.Body.OK = true
 	out.Body.Message = fmt.Sprintf("saved %s", name)
-	return out, nil
-}
-
-// DeleteModelInput names the model to remove.
-type DeleteModelInput struct {
-	Name string `path:"name"`
-}
-
-// DeleteModel removes a model, refusing if a lane still references it.
-func (h *Handlers) DeleteModel(_ context.Context, in *DeleteModelInput) (*ConfigMutationOutput, error) {
-	name := in.Name
-	err := h.mutateConfig(func(c *config.Config) error {
-		if _, ok := c.Models[name]; !ok {
-			return huma.Error404NotFound(fmt.Sprintf("no model %q", name))
-		}
-		// Validation would catch this on save, but naming the lanes is far more
-		// useful than "unknown model" — it tells the operator what to fix.
-		var used []string
-		for lane, l := range c.Lanes {
-			for _, mem := range l.Members {
-				if mem.Model == name {
-					used = append(used, lane)
-				}
-			}
-		}
-		if len(used) > 0 {
-			sort.Strings(used)
-			return huma.Error409Conflict(fmt.Sprintf(
-				"%q is a member of lane(s) %s — remove it there first", name, strings.Join(used, ", ")))
-		}
-		delete(c.Models, name)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := &ConfigMutationOutput{}
-	out.Body.OK = true
-	out.Body.Message = fmt.Sprintf("deleted %s", name)
 	return out, nil
 }
 
