@@ -74,6 +74,20 @@ const ConfigDoc = graphql(/* GraphQL */ `
             model
           }
         }
+        extensions {
+          name
+          cmd
+          server
+          provides
+          notes
+        }
+        groups {
+          name
+          weight
+          interruptible
+          acceptDegrade
+          qualityFloor
+        }
       }
     }
   }
@@ -216,6 +230,8 @@ function ConfigPage() {
   const servers = ov?.servers ?? []
   const models = ov?.models ?? []
   const lanes = ov?.lanes ?? []
+  const extensions = ov?.extensions ?? []
+  const groups = ov?.groups ?? []
   const includes = ov?.include ?? []
 
   // A server with endpoints is an attached machine; one without is this box.
@@ -550,6 +566,74 @@ function ConfigPage() {
       )}
 
       <Panel
+        title="Extensions"
+        subtitle="One process serving several models — they load, unload and are accounted for together"
+        actions={
+          <Button size="small" variant="outlined" onClick={() => setEditing(blankExtension())}>
+            Add extension
+          </Button>
+        }
+        flush
+      >
+        {extensions.length === 0 ? (
+          <Row>
+            <Typography variant="body2" sx={{ color: C.textFaint }}>
+              None declared.
+            </Typography>
+          </Row>
+        ) : (
+          extensions.map((e) => (
+            <Row key={e.name} onClick={() => openEditor('extension', e.name)}>
+              <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+                <Typography variant="subtitle2">{e.name}</Typography>
+                <Chip size="small" variant="outlined" label={e.cmd ? 'hosted' : 'remote'} />
+                {e.server && <Chip size="small" variant="outlined" label={e.server} />}
+                <Typography variant="caption" sx={{ color: C.textFaint }}>
+                  {(e.provides ?? []).join(', ')}
+                </Typography>
+              </Box>
+              {e.notes && (
+                <Typography
+                  variant="caption"
+                  sx={{ display: 'block', mt: 0.5, color: C.textMuted, whiteSpace: 'pre-wrap' }}
+                >
+                  {e.notes.length > 200 ? e.notes.slice(0, 200) + '…' : e.notes}
+                </Typography>
+              )}
+            </Row>
+          ))
+        )}
+      </Panel>
+
+      <Panel
+        title="Priority groups"
+        subtitle="Who gets served first under load, and what they accept when degraded"
+        actions={
+          <Button size="small" variant="outlined" onClick={() => setEditing(blankGroup())}>
+            Add group
+          </Button>
+        }
+        flush
+      >
+        {groups.map((g) => (
+          <Row key={g.name} onClick={() => openEditor('group', g.name)}>
+            <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+              <Typography variant="subtitle2">{g.name}</Typography>
+              <Chip size="small" variant="outlined" label={`weight ${g.weight}`} />
+              {g.interruptible && (
+                <Tooltip title="Requests from this group may be preempted by a strictly higher-weight one. Equal weights never preempt each other, so there is no kick loop.">
+                  <Chip size="small" variant="outlined" label="interruptible" />
+                </Tooltip>
+              )}
+              {g.acceptDegrade && (
+                <Chip size="small" variant="outlined" label={`degrades to ${g.qualityFloor}`} />
+              )}
+            </Box>
+          </Row>
+        ))}
+      </Panel>
+
+      <Panel
         title="Included files"
         subtitle="Merged into the top-level config, weakest first; the hand-written file always wins"
         flush
@@ -579,7 +663,7 @@ export const Route = createFileRoute('/config')({ component: ConfigPage })
 // Edit is what the dialog holds: which kind of entry, its config key, and the
 // YAML for it. One dialog for models, servers and lanes — they differ only in
 // the schema behind the text, and the server validates that either way.
-type EditKind = 'model' | 'server' | 'lane'
+type EditKind = 'model' | 'server' | 'lane' | 'group' | 'extension'
 type Edit = { kind: EditKind; existing: boolean; name: string; yaml: string }
 
 // blankModel seeds a new entry with the fields every model needs, so the first
@@ -664,6 +748,48 @@ members:
 
 # notes: |
 #   Why these members, in this order.
+`,
+  }
+}
+
+// blankGroup seeds a priority group. The saturation stages are the part that
+// decides behaviour under load, so the template spells them out rather than
+// leaving an empty object.
+function blankGroup(): Edit {
+  return {
+    kind: 'group',
+    existing: false,
+    name: '',
+    yaml: `weight: 5              # relative share; higher is served first
+interruptible: false   # may a strictly HIGHER weight take this group's slot?
+onSaturated:
+  chat: { queue: true }
+  default: reject
+# acceptDegrade: true  # allow a lower-quality model when the top tier is busy
+# qualityFloor: 1      # ...but not below this
+`,
+  }
+}
+
+// blankExtension seeds an integration. The two shapes are genuinely different —
+// a local process versus a remote endpoint — so both are shown.
+function blankExtension(): Edit {
+  return {
+    kind: 'extension',
+    existing: false,
+    name: '',
+    yaml: `# A HOSTED extension: one local process serving several models. They load,
+# unload and are accounted for together, because they are the same bytes.
+# cmd: "exec my-server --addr :5806"
+# server: box1
+# ramUsage: { system: 3GB }     # counted ONCE, not per provided model
+proxy: 5806
+provides:
+  something: { type: chat }
+
+# A REMOTE integration has no cmd and no residency — just an endpoint and
+# credentials:
+# proxy: { host: api.example.com, port: 443, headers: { authorization: "Bearer \${MY_KEY}" } }
 `,
   }
 }

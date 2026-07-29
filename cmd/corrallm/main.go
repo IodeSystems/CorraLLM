@@ -663,11 +663,15 @@ func envOr(key, def string) string {
 	return def
 }
 
-func pick(flagVal, def string) string {
-	if flagVal != "" {
-		return flagVal
+// pick returns the first non-empty value — a precedence chain read left to
+// right, e.g. flag, environment, config file, built-in default.
+func pick(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
 	}
-	return def
+	return ""
 }
 
 // pickDuration prefers a non-zero flag value, else the env-derived default.

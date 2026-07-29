@@ -262,6 +262,8 @@ func (h *Handlers) MintEnrollmentToken(_ context.Context, in *MintEnrollmentToke
 		srvArg = " --server " + in.Body.Server
 	}
 	// The whole point is that this is copy-pasteable onto the machine.
-	out.Body.Command = fmt.Sprintf("curl -fsSL %s/install.sh | bash -s --%s --token %s", base, srvArg, tok)
+	// `sh`, not `bash`: the script is POSIX and the machine being attached may
+	// not have bash at all (or may simply not want it).
+	out.Body.Command = fmt.Sprintf("curl -fsSL %s/install.sh | sh -s --%s --token %s", base, srvArg, tok)
 	return out, nil
 }

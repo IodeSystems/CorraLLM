@@ -82,8 +82,20 @@ func (h *Handlers) EntryYAML(_ context.Context, in *EntryYAMLInput) (*EntryYAMLO
 			return nil, huma.Error404NotFound(fmt.Sprintf("no lane %q", in.Name))
 		}
 		v = l
+	case "group":
+		g, ok := cfg.PriorityGroups[in.Name]
+		if !ok {
+			return nil, huma.Error404NotFound(fmt.Sprintf("no priority group %q", in.Name))
+		}
+		v = g
+	case "extension":
+		e, ok := cfg.Extensions[in.Name]
+		if !ok {
+			return nil, huma.Error404NotFound(fmt.Sprintf("no extension %q", in.Name))
+		}
+		v = e
 	default:
-		return nil, huma.Error400BadRequest("kind must be model, server or lane")
+		return nil, huma.Error400BadRequest("kind must be model, server, lane, group or extension")
 	}
 	b, err := yaml.Marshal(v)
 	if err != nil {
@@ -151,8 +163,35 @@ func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*Conf
 				return err
 			}
 			c.Lanes[name] = l
+		case "group":
+			var g config.PriorityGroup
+			if err := decode(&g); err != nil {
+				return err
+			}
+			if c.PriorityGroups == nil {
+				c.PriorityGroups = map[string]config.PriorityGroup{}
+			}
+			c.PriorityGroups[name] = g
+		case "extension":
+			var e config.Extension
+			if err := decode(&e); err != nil {
+				return err
+			}
+			if c.Extensions == nil {
+				c.Extensions = map[string]config.Extension{}
+			}
+			c.Extensions[name] = e
+			// An extension EXPANDS into models at load. The copy we are editing
+			// still holds the previous expansion, and re-validating with both
+			// present fails as a name collision — so drop them and let the
+			// reload rebuild from the extension, which is their only source.
+			for mn, m := range c.Models {
+				if m.Extension == name {
+					delete(c.Models, mn)
+				}
+			}
 		default:
-			return huma.Error400BadRequest("kind must be model, server or lane")
+			return huma.Error400BadRequest("kind must be model, server, lane, group or extension")
 		}
 		return nil
 	})
@@ -224,8 +263,37 @@ func (h *Handlers) DeleteEntry(_ context.Context, in *DeleteEntryInput) (*Config
 				return huma.Error404NotFound(fmt.Sprintf("no lane %q", in.Name))
 			}
 			delete(c.Lanes, in.Name)
+		case "group":
+			if _, ok := c.PriorityGroups[in.Name]; !ok {
+				return huma.Error404NotFound(fmt.Sprintf("no priority group %q", in.Name))
+			}
+			var keys []string
+			for k, g := range c.Keys {
+				if g == in.Name {
+					keys = append(keys, k)
+				}
+			}
+			if len(keys) > 0 {
+				sort.Strings(keys)
+				return huma.Error409Conflict(fmt.Sprintf(
+					"%q is the group for key(s) %s — those callers would fall back to the default lane",
+					in.Name, strings.Join(keys, ", ")))
+			}
+			delete(c.PriorityGroups, in.Name)
+		case "extension":
+			if _, ok := c.Extensions[in.Name]; !ok {
+				return huma.Error404NotFound(fmt.Sprintf("no extension %q", in.Name))
+			}
+			// Its provided models go with it: they are one process, and an
+			// expansion outliving its extension is a model nothing can spawn.
+			for mn, m := range c.Models {
+				if m.Extension == in.Name {
+					delete(c.Models, mn)
+				}
+			}
+			delete(c.Extensions, in.Name)
 		default:
-			return huma.Error400BadRequest("kind must be model, server or lane")
+			return huma.Error400BadRequest("kind must be model, server, lane, group or extension")
 		}
 		return nil
 	})

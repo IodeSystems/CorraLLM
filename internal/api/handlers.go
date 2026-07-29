@@ -1129,10 +1129,20 @@ type OverviewOutput struct {
 		Include []string    `json:"include" doc:"Config files merged into the top-level one, weakest first. A generated file (agent-contributed models) lives here so the hand-written config is never rewritten."`
 		Servers []ServerDef `json:"servers" doc:"Declared host capacity."`
 		Models  []ModelDef  `json:"models" doc:"Served models (one serving path each)."`
-		Lanes   []LaneDef   `json:"lanes" doc:"Named fallback lists over models."`
+		Lanes      []LaneDef      `json:"lanes" doc:"Named fallback lists over models."`
+		Extensions []ExtensionDef `json:"extensions" doc:"Integrations that serve several models from one process."`
 		Groups  []GroupDef  `json:"groups" doc:"Priority-group policies."`
 		Keys    []KeyDef    `json:"keys" doc:"Caller key → group mappings."`
 	}
+}
+
+// ExtensionDef is an integration that serves several models from one process.
+type ExtensionDef struct {
+	Name     string   `json:"name"`
+	Cmd      string   `json:"cmd" doc:"Spawn command; empty for a remote integration with no local process."`
+	Server   string   `json:"server"`
+	Provides []string `json:"provides" doc:"Served model names it contributes."`
+	Notes    string   `json:"notes"`
 }
 
 // stageSummary renders a saturation Stage as a short human-readable policy.
@@ -1213,6 +1223,14 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		out.Body.Models = append(out.Body.Models, md)
 	}
 	sort.Slice(out.Body.Models, func(i, j int) bool { return out.Body.Models[i].Name < out.Body.Models[j].Name })
+
+	for name, ext := range h.config().Extensions {
+		out.Body.Extensions = append(out.Body.Extensions, ExtensionDef{
+			Name: name, Cmd: ext.Cmd, Server: ext.Server, Notes: ext.Notes,
+			Provides: h.config().ExtensionModels(name),
+		})
+	}
+	sort.Slice(out.Body.Extensions, func(i, j int) bool { return out.Body.Extensions[i].Name < out.Body.Extensions[j].Name })
 
 	for name, lane := range h.config().Lanes {
 		ld := LaneDef{Name: name}

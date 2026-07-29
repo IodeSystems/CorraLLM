@@ -983,6 +983,16 @@ type corrallm_ExtensionActionOutputBody {
   ok: Boolean!
 }
 
+type corrallm_ExtensionDef {
+  """Spawn command; empty for a remote integration with no local process."""
+  cmd: String!
+  name: String!
+  notes: String!
+  """Served model names it contributes."""
+  provides: [String!]!
+  server: String!
+}
+
 type corrallm_ExtensionState {
   draining: Boolean!
   inFlight: Long!
@@ -1268,6 +1278,8 @@ input corrallm_ModelSpecInput {
 }
 
 type corrallm_OverviewOutputBody {
+  """Integrations that serve several models from one process."""
+  extensions: [corrallm_ExtensionDef!]!
   """Priority-group policies."""
   groups: [corrallm_GroupDef!]!
   """Config files merged into the top-level one, weakest first. A generated file (agent-contributed models) lives here so the hand-written config is never rewritten."""

@@ -58,35 +58,47 @@ func (h *Handler) servedVersion() string {
 // the token into a shell history — the token is the membership credential and
 // deserves a file with sane permissions.
 func (h *Handler) InstallScript(base string) string {
-	return `#!/usr/bin/env bash
-# corrallm agent installer. Usage:
-#   curl -fsSL ` + base + `/install.sh | bash -s -- --server <name> --token <token>
+	return `#!/bin/sh
+# corrallm agent installer.
 #
-# Attaches this machine to the corrallm at ` + base + ` as compute. The agent
-# runs shell commands sent by that daemon — install it only on a machine you
-# intend to hand over for that purpose.
-set -euo pipefail
+#   curl -fsSL ` + base + `/install.sh | sh -s -- --token <token>
+#
+# Installs into ./corrallm-agent in the current directory, the way GitHub's
+# runner does: everything the agent needs in one folder you can see, move or
+# delete, rather than scattered through your home directory.
+#
+# POSIX sh, and what it writes is POSIX sh too — no bashisms, nothing that
+# assumes your login shell. The agent reads its own YAML config rather than
+# needing an environment arranged by the caller, because "set -a; . file; set +a"
+# is bash syntax and does not work in fish.
+#
+# The agent runs shell commands sent by the primary. Install it only on a
+# machine you intend to hand over for that purpose.
+set -eu
 
 PRIMARY="` + base + `"
 SERVER=""
 TOKEN=""
-PREFIX="${CORRALLM_PREFIX:-$HOME/.corrallm}"
-ADDR="${CORRALLM_AGENT_ADDR:-:6503}"
+DIR="./corrallm-agent"
+ADDR=":6503"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --server) SERVER="$2"; shift 2 ;;
     --token)  TOKEN="$2";  shift 2 ;;
     --addr)   ADDR="$2";   shift 2 ;;
-    --prefix) PREFIX="$2"; shift 2 ;;
+    --dir)    DIR="$2";    shift 2 ;;
+    -h|--help)
+      echo "usage: install.sh --token <token> [--server <name>] [--addr :6503] [--dir ./corrallm-agent]"
+      exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 [ -n "$TOKEN" ] || { echo "--token is required (mint one in the dashboard)" >&2; exit 2; }
 
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
 case "$ARCH" in
   x86_64|amd64) ARCH=amd64 ;;
   arm64|aarch64) ARCH=arm64 ;;
@@ -97,38 +109,48 @@ case "$OS" in
   *) echo "unsupported OS: $OS (windows is not supported)" >&2; exit 1 ;;
 esac
 
-mkdir -p "$PREFIX/bin"
-echo "==> downloading corrallm-$OS-$ARCH from $PRIMARY"
-curl -fsSL "$PRIMARY/install/corrallm-$OS-$ARCH" -o "$PREFIX/bin/corrallm.new"
-chmod +x "$PREFIX/bin/corrallm.new"
-mv "$PREFIX/bin/corrallm.new" "$PREFIX/bin/corrallm"
+mkdir -p "$DIR"
+echo "==> downloading corrallm-$OS-$ARCH"
+curl -fsSL "$PRIMARY/install/corrallm-$OS-$ARCH" -o "$DIR/corrallm.new"
+chmod +x "$DIR/corrallm.new"
+mv "$DIR/corrallm.new" "$DIR/corrallm"
 
-# The token is a credential: a file only this user can read, not a flag that
-# lands in shell history and process listings.
+# An enrollment token (enr_...) is exchanged on first start for a long-lived
+# credential, which the agent writes back into this same file. Anything else is
+# treated as an already-issued agent token.
 umask 077
-# An enrollment token (enr_…) is exchanged on first start for a long-lived
-# credential, which the agent writes back here. Anything else is treated as an
-# already-issued agent token.
 case "$TOKEN" in
-  enr_*) TOKVAR=CORRALLM_ENROLL_TOKEN ;;
-  *)     TOKVAR=CORRALLM_AGENT_TOKEN ;;
+  enr_*) TOKEN_KEY="enrollToken" ;;
+  *)     TOKEN_KEY="token" ;;
 esac
-cat > "$PREFIX/agent.env" <<ENV
-CORRALLM_PRIMARY=$PRIMARY
-CORRALLM_AGENT_SERVER=$SERVER
-$TOKVAR=$TOKEN
-CORRALLM_AGENT_ADDR=$ADDR
-CORRALLM_ENV_FILE=$PREFIX/agent.env
-ENV
+cat > "$DIR/agent.yml" <<YML
+# corrallm agent. Rewritten by the agent after enrollment.
+primary: $PRIMARY
+server: $SERVER
+$TOKEN_KEY: $TOKEN
+addr: "$ADDR"
+selfUpdate: true
+YML
 
-echo "==> installed $PREFIX/bin/corrallm"
+cat > "$DIR/start.sh" <<'SH'
+#!/bin/sh
+# Start the corrallm agent. POSIX sh — runs the same from bash, zsh or fish.
+cd "$(dirname "$0")" || exit 1
+exec ./corrallm agent --config ./agent.yml "$@"
+SH
+chmod +x "$DIR/start.sh"
+
+echo "==> installed $DIR/"
+echo "      corrallm    the agent binary"
+echo "      agent.yml   its configuration (contains a credential; mode 0600)"
+echo "      start.sh    run this"
 echo
-echo "Start it with:"
-echo "  set -a; . $PREFIX/agent.env; set +a; $PREFIX/bin/corrallm agent"
+echo "Start it:"
+echo "  $DIR/start.sh"
 echo
 echo "On first start it enrols with $PRIMARY, which sizes this machine from its own"
-echo "memory probe and hands back a long-lived credential. After that it heartbeats"
-echo "and self-updates when idle."
+echo "memory probe and writes the long-lived credential back into agent.yml. After"
+echo "that it heartbeats and self-updates while idle."
 `
 }
 

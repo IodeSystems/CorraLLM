@@ -32,6 +32,7 @@ func newAgentCmd() *cobra.Command {
 		primary    string
 		server     string
 		selfUpdate bool
+		cfgPath    string
 	)
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -42,27 +43,41 @@ func newAgentCmd() *cobra.Command {
 			"and put it on a network you trust (LAN or VPN), not the open internet.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			token = pick(token, os.Getenv("CORRALLM_AGENT_TOKEN"))
-			primary = pick(primary, os.Getenv("CORRALLM_PRIMARY"))
-			server = pick(server, os.Getenv("CORRALLM_AGENT_SERVER"))
-			enrollTok := pick(enroll, os.Getenv("CORRALLM_ENROLL_TOKEN"))
+			// Precedence: flags, then environment, then the config file. The
+			// file is the installed default; a flag is someone overriding it
+			// deliberately for one run.
+			fc, err := agent.LoadFileConfig(pick(cfgPath, envOr("CORRALLM_AGENT_CONFIG", "./agent.yml")))
+			if err != nil {
+				return err
+			}
+			token = pick(token, os.Getenv("CORRALLM_AGENT_TOKEN"), fc.Token)
+			primary = pick(primary, os.Getenv("CORRALLM_PRIMARY"), fc.Primary)
+			server = pick(server, os.Getenv("CORRALLM_AGENT_SERVER"), fc.Server)
+			addr = pick(addr, os.Getenv("CORRALLM_AGENT_ADDR"), fc.Addr, ":6503")
+			if fc.SelfUpdate != nil && !cmd.Flags().Changed("self-update") {
+				selfUpdate = *fc.SelfUpdate
+			}
+			enrollTok := pick(enroll, os.Getenv("CORRALLM_ENROLL_TOKEN"), fc.EnrollToken)
 
 			// Enrol FIRST when we have a one-time token and no long-lived one.
 			// This is what makes attaching a machine a single command: the agent
 			// brings its own measurements, the primary writes the server entry
 			// and hands back the credential everything after this uses.
 			if token == "" && enrollTok != "" && primary != "" {
-				res, err := agent.Enroll(cmd.Context(), primary, enrollTok, server,
-					pick(addr, envOr("CORRALLM_AGENT_ADDR", ":6503")), version)
+				res, err := agent.Enroll(cmd.Context(), primary, enrollTok, server, addr, version)
 				if err != nil {
 					return fmt.Errorf("enrollment failed: %w", err)
 				}
 				token, server = res.Token, res.Server
 				slog.Info("enrolled with the primary", "server", res.Server, "pools", res.Pools)
-				// Persist so a restart does not re-enrol with a spent token.
-				if envPath := os.Getenv("CORRALLM_ENV_FILE"); envPath != "" {
-					if err := agent.SaveToken(envPath, server, token); err != nil {
-						slog.Warn("could not persist the agent token; a restart will need re-enrolling", "err", err)
+				// Persist so a restart does not re-enrol with a token that is
+				// already spent — which fails with a confusing "already used".
+				fc.Primary, fc.Server, fc.Token, fc.Addr = primary, server, token, addr
+				fc.EnrollToken = ""
+				if p := pick(cfgPath, envOr("CORRALLM_AGENT_CONFIG", "./agent.yml")); p != "" {
+					if err := agent.SaveFileConfig(p, fc); err != nil {
+						slog.Warn("could not persist the agent config; a restart will need re-enrolling",
+							"path", p, "err", err)
 					}
 				}
 			}
@@ -82,7 +97,8 @@ func newAgentCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&addr, "addr", envOr("CORRALLM_AGENT_ADDR", ":6503"), "listen address")
+	f.StringVar(&cfgPath, "config", "", "agent config file (default ./agent.yml or CORRALLM_AGENT_CONFIG)")
+	f.StringVar(&addr, "addr", "", "listen address (default from the config file, else :6503)")
 	f.StringVar(&token, "token", "", "shared secret the primary must present (or CORRALLM_AGENT_TOKEN)")
 	f.BoolVar(&allowNoTok, "allow-no-token", false, "run WITHOUT authentication — exposes a remote shell; isolated networks only")
 	f.StringVar(&enroll, "enroll-token", "", "one-time enrollment token; attaches this machine and exchanges it for a long-lived credential (or CORRALLM_ENROLL_TOKEN)")
