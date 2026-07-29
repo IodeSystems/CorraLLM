@@ -698,10 +698,28 @@ the BackpressureError shape we already validated.
   persisted `lane_samples` schema untouched. Motivating case: ml-kit's `chat` lane
   (Qwen 27B → gemma-4-12b) replacing a misleading `Qwen3-6-27B-MPT`-serves-gemma proxy row.
 
-- ☐ **P15 — Bench: capability verification, performance profiling & user probes.** Fold the
+- ✅ **P15 — Bench: capability verification, performance profiling & user probes.** Fold the
   crucible eval harness (`github.com/iodesystems/crucible`) INTO this repo as a **second binary**
   (`cmd/corrallm-bench`, plus its MCP helper) so corrallm owns measurement as well as serving.
   One engine, three probe tiers. Depends on nothing in P0–P14; sequence it after P11d.
+
+  **DONE — landed as `cmd/llm-bench` + `cmd/llm-bench-mcp`** (not `cmd/corrallm-bench`; the
+  binary took the name it is invoked by in `serve --bench-bin`). Verified 2026-07-29:
+
+  - **Engine moved whole.** `internal/bench/{check,journal,judge,report,run,task}` mirrors
+    crucible's package-for-package, and has since grown past it: `run/residency.go` (the
+    cold-path control that was this item's entire justification), `run/audio.go`,
+    `check/starlark.go`, `task/markdown.go`.
+  - **All 14 crucible tasks are present** in `probes/`, plus 7 that crucible could never have
+    run: `capability-{vision,stt,tts,diarize}` (need residency control) and
+    `edit-safety-{import,pop,rename}`. Diffed task-by-task: 10 byte-identical, and the 4 that
+    differ are `crucible-mcp`→`llm-bench-mcp` renames in comments, one gofmt space, and the
+    README. No semantic drift.
+  - **The MCP helper carried its jailing**, including the 2026-07-16 fix that checks EVERY argv
+    element rather than argv[0] (`cmd/llm-bench-mcp/main.go:358`).
+  - **Crucible is retired**, not merely superseded: its last real commit and its last gateway
+    call are both 2026-07-18 (9,247 calls lifetime); corrallm's bench keys have served every
+    run since. See `crucible/README.md`.
 
   **Why fold rather than federate.** The decisive argument is lifecycle access, not tidiness.
   A capability claim can only be falsified by probing a model **cold**, and corrallm is the only
