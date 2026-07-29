@@ -41,3 +41,5 @@ home/*.token
 # Cross-compiled agent binaries built by `make agents` and served at /install/.
 # Build artifacts, not source: ~37 MB each, rebuilt per commit.
 bin/agents/
+go.work
+go.work.sum

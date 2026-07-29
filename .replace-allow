@@ -1,0 +1,6 @@
+# See raglit/.replace-allow for the rationale. Permitted local replaces only.
+
+# corrallm already requires gwag v1.1.0-rc.5, so this replace is a local
+# convenience rather than a necessity — it can move to go.work whenever the
+# rc is good enough to build against.
+github.com/iodesystems/gwag
