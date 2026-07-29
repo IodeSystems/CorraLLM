@@ -81,6 +81,11 @@ func Probe() Capacity {
 		c.Host = &DeviceMem{Name: "system", TotalBytes: hm.TotalBytes,
 			UsedBytes: hm.TotalBytes - hm.AvailableBytes, FreeBytes: hm.AvailableBytes}
 	}
+	// Ask the platform directly rather than inferring from GOOS: the answer is
+	// a property of the vendor tooling present, not of the operating system.
+	if _, err := gpu.ProcVRAM(); err == nil {
+		c.PerProcess = true
+	}
 	return c
 }
 

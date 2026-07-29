@@ -696,6 +696,21 @@ func (m *Manager) unknownIfEmpty(name string, mdl config.Model, usage map[string
 	if len(budget) == 0 {
 		return usage
 	}
+	// On a host that cannot attribute memory per process, "reserve everything,
+	// then measure" never reaches the measuring part — there is nothing to
+	// measure with. The reservation would stand forever and the server would
+	// serve exactly one model, silently, with no error anywhere.
+	//
+	// Config validation requires ramUsage on such a server, so reaching here
+	// means the config changed under a running daemon. Say so loudly rather
+	// than quietly becoming single-tenant.
+	if cfg := m.config(); cfg != nil {
+		if srv, ok := cfg.Servers[mdl.Server]; ok && srv.NoProcessMemory {
+			slog.Error("model has no ramUsage on a host that cannot measure per-process memory — "+
+				"it will hold the entire pool and nothing can ever correct that; declare ramUsage",
+				"model", name, "server", mdl.Server)
+		}
+	}
 	out := make(map[string]int64, len(budget))
 	for pool, b := range budget {
 		out[pool] = b

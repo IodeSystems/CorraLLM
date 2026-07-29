@@ -875,6 +875,7 @@ input corrallm_CapacityInput {
   gpuError: String
   host: corrallm_DeviceMemInput
   hostError: String
+  perProcess: Boolean!
 }
 
 type corrallm_ConfigMutationOutputBody {

@@ -278,6 +278,18 @@ type Server struct {
 	// behavior every existing config already gets.
 	Agent *AgentBinding `yaml:"agent,omitempty"`
 
+	// NoProcessMemory marks a host that cannot attribute memory to a single
+	// process — macOS, which has no nvidia-smi equivalent. Set by enrollment
+	// from what the agent reports; settable by hand for a host corrallm has not
+	// met.
+	//
+	// It changes a rule rather than just a measurement: on such a host a model's
+	// declared ramUsage stops being advisory and becomes the ONLY size anyone
+	// has, so Validate requires it. Without that requirement the model gets no
+	// profile, "reserve the whole pool then measure" never measures, and the
+	// host silently serves one model at a time forever.
+	NoProcessMemory bool `yaml:"noProcessMemory,omitempty"`
+
 	// Notes is free-text the operator keeps ABOUT this entry, carried in the
 	// config and surfaced in the UI beside it.
 	//
@@ -1228,6 +1240,7 @@ func (c *Config) Validate() error {
 		// An agent binding that cannot be dialled is worse than none: the models
 		// on that server would be admitted and then fail at spawn, one request
 		// at a time. Fail at load instead.
+		_ = srvName
 		if a := srv.Agent; a != nil {
 			if len(a.Endpoints) == 0 {
 				return fmt.Errorf("server %q: agent declared with no endpoints (list at least one, e.g. http://host:6503)", srvName)
@@ -1257,6 +1270,12 @@ func (c *Config) Validate() error {
 		for k := range m.Modalities {
 			if !KnownModalities[k] {
 				return fmt.Errorf("model %q: unknown modality %q (want text|image|audio)", name, k)
+			}
+		}
+		if m.Server != "" && m.Cmd != "" {
+			if srv, ok := c.Servers[m.Server]; ok && srv.NoProcessMemory && len(m.RAMUsage) == 0 {
+				return fmt.Errorf("model %q: server %q cannot measure per-process memory, so ramUsage is required — "+
+					"without it nothing can ever size this model and the server would serve one model at a time", name, m.Server)
 			}
 		}
 		if m.Server != "" {

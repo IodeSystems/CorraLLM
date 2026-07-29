@@ -159,3 +159,48 @@ models:
 		t.Errorf("TargetFor = %s, want the unchanged loopback target", got.URL)
 	}
 }
+
+// A host that cannot attribute memory per process has no way to ever measure a
+// model, so "reserve the whole pool, then measure" never measures — the server
+// silently serves one model at a time, forever, with no error anywhere. Require
+// the only number anyone can have instead.
+func TestValidate_UnmeasurableHostRequiresRAMUsage(t *testing.T) {
+	body := `
+servers:
+  mac1:
+    pools: { system: 64GB }
+    devicePool: system
+    noProcessMemory: true
+    agent: { endpoints: ["http://mac.lan:6503"] }
+models:
+  m:
+    cmd: "exec rapid-mlx serve"
+    server: mac1
+    proxy: 5810
+`
+	if _, err := loadYAML(t, body); err == nil {
+		t.Fatal("want a load error for a model with no ramUsage on an unmeasurable host")
+	} else if !strings.Contains(err.Error(), "ramUsage is required") {
+		t.Errorf("err = %v, want it to name the missing ramUsage", err)
+	}
+
+	// With ramUsage it loads: the operator has supplied the size that cannot be
+	// measured.
+	withUsage := strings.Replace(body, "    proxy: 5810", "    proxy: 5810\n    ramUsage: { system: 20GB }", 1)
+	if _, err := loadYAML(t, withUsage); err != nil {
+		t.Errorf("declaring ramUsage should satisfy the rule: %v", err)
+	}
+}
+
+// A MEASURABLE host keeps the old behaviour: ramUsage stays advisory, because
+// the tune profile will supersede it.
+func TestValidate_MeasurableHostDoesNotRequireRAMUsage(t *testing.T) {
+	if _, err := loadYAML(t, `
+servers:
+  box1: { pools: { gpu0: 30GB } }
+models:
+  m: { cmd: "exec llama-server", server: box1, proxy: 5800 }
+`); err != nil {
+		t.Errorf("a measurable host must not require ramUsage: %v", err)
+	}
+}

@@ -59,6 +59,15 @@ type Capacity struct {
 	GPUError string     `json:"gpuError,omitempty"`
 	Host     *DeviceMem `json:"host,omitempty"`
 	HostError string    `json:"hostError,omitempty"`
+	// PerProcess reports whether this machine can attribute memory to a single
+	// process group. False on macOS, which has no nvidia-smi equivalent.
+	//
+	// The primary needs to be TOLD this rather than discover it, because the
+	// consequence is silent: with no per-process measurement a model never gets
+	// a tuning profile, so "reserve the whole pool for one spawn, then measure"
+	// never reaches the measuring part and the host quietly becomes a
+	// one-model-at-a-time box.
+	PerProcess bool `json:"perProcess"`
 }
 
 // StartRequest asks the agent to run one backend.

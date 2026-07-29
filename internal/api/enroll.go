@@ -91,6 +91,9 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 	srv := config.Server{
 		Pools:      poolsFrom(in.Body.Capacity),
 		DevicePool: devicePoolFrom(in.Body.Capacity),
+		// Recorded at enrollment because the agent is the only one who knows,
+		// and the consequence of getting it wrong is silent single-tenancy.
+		NoProcessMemory: !in.Body.Capacity.PerProcess,
 		Agent:      &config.AgentBinding{Endpoints: in.Body.Endpoints, Token: tok},
 		Notes: fmt.Sprintf("Enrolled %s from %s (%s/%s), corrallm %s. Pools sized from the agent's own capacity probe.",
 			time.Now().Format(time.RFC3339), in.Body.Hello.Hostname,
