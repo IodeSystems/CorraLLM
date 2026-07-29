@@ -206,6 +206,14 @@ func shallowCopyConfig(c *config.Config) *config.Config {
 
 // MintEnrollmentTokenInput asks for a new one-time token.
 type MintEnrollmentTokenInput struct {
+	// ForwardedHost is how the caller reached this daemon, when something in
+	// front says so. A fallback only.
+	//
+	// Note it is NOT `header:"Host"`: Go moves the Host header out of
+	// r.Header and onto r.Host, so binding it that way silently yields an empty
+	// string and an install command with no address in it. --public-base is the
+	// reliable answer; this covers a reverse proxy that sets the header.
+	ForwardedHost string `header:"X-Forwarded-Host" required:"false"`
 	Body struct {
 		Server     string `json:"server" doc:"Server name this token may claim. Empty lets the enrolling agent propose one."`
 		Note       string `json:"note" doc:"Free text, e.g. what machine this is for."`
@@ -240,11 +248,20 @@ func (h *Handlers) MintEnrollmentToken(_ context.Context, in *MintEnrollmentToke
 	out.Body.Token = tok
 	out.Body.Server = in.Body.Server
 	out.Body.Expires = time.Now().Add(ttl).UnixMilli()
+	base := h.PublicBase
+	if base == "" && in.ForwardedHost != "" {
+		base = "http://" + in.ForwardedHost
+	}
+	if base == "" {
+		// Better a visible placeholder than a command that silently curls
+		// nothing: the operator sees what to fix.
+		base = "<set --public-base on the daemon>"
+	}
 	srvArg := ""
 	if in.Body.Server != "" {
 		srvArg = " --server " + in.Body.Server
 	}
 	// The whole point is that this is copy-pasteable onto the machine.
-	out.Body.Command = fmt.Sprintf("curl -fsSL %s/install.sh | bash -s --%s --token %s", h.PublicBase, srvArg, tok)
+	out.Body.Command = fmt.Sprintf("curl -fsSL %s/install.sh | bash -s --%s --token %s", base, srvArg, tok)
 	return out, nil
 }
