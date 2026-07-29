@@ -1203,8 +1203,13 @@ the BackpressureError shape we already validated.
      reserving pools, config survives the outage, token revocation is how membership ends;
      NO self-reap — per-server ledgers make a stranded reservation harmless to other hosts.
      reconnect ADOPTION reconciles on every heartbeat: matching keys adopted, orphans reaped
-     past a 60s grace, vanished backends free their pools) → ◻ darwin capacity (`gpu.Metal`, `sysmem_darwin`)
-     → ◻ Agents tab with real enrollment.
+     past a 60s grace, vanished backends free their pools) → ✅ **darwin capacity**
+     (done: `gpu.Apple` + `sysmem_darwin`; ProcVRAM errors rather than reporting zero, and a
+     host that cannot measure per-process memory now REQUIRES ramUsage at validate time —
+     otherwise it silently serves one model at a time) → ✅ **enrollment + Agents/Config UI**
+     (done: one-time tokens, self-registration sized from the agent's own probe, GUI model
+     CRUD). Remaining: switch the daemon's default config to the managed one and retire the
+     hand-written file.
      **Agent addressing (USER, 2026-07-28): an agent has SEVERAL addresses, not one.**
      A NAT/LAN address on the same network as llm.iodesystems.com, an external host, and a
      VPN address when both the Mac and the daemon are on the VPN — all valid for the same
