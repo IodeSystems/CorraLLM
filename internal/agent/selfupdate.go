@@ -81,6 +81,41 @@ func (b *Beacon) maybeSelfUpdate(ctx context.Context, ack HeartbeatAck) {
 	}
 }
 
+// updateTempPrefix names the in-flight download. Distinctive and dot-prefixed:
+// it shares a directory with the operator's own files, so it must be obviously
+// ours before anything here deletes by pattern.
+const updateTempPrefix = ".corrallm-update-"
+
+// sweepStaleDownloads removes leftovers from updates that never finished.
+//
+// downloadInto cleans up after itself, but only if it returns — a process killed
+// mid-download (which is precisely what happens on the flaky links this feature
+// exists for) leaves its temp file behind. Each is a partial copy of a ~37 MB
+// binary, so a machine that has been failing to update for months quietly turns
+// gigabytes of its install directory into garbage nothing else will ever remove.
+//
+// Anything matching the prefix is safe to delete: updates are driven serially
+// from the heartbeat and never overlap, and the current attempt's file does not
+// exist yet. Failures are logged, not returned — being unable to tidy up is no
+// reason to refuse an update.
+func sweepStaleDownloads(dir string) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), updateTempPrefix) {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if err := os.Remove(p); err != nil {
+			slog.Warn("agent: could not remove a stale update download", "path", p, "err", err)
+			continue
+		}
+		slog.Info("agent: removed a stale update download", "path", p)
+	}
+}
+
 // downloadInto fetches url into the file at dst, atomically.
 //
 // Written to a sibling temp file and renamed, so an interrupted download can
@@ -107,7 +142,9 @@ func (b *Beacon) downloadInto(ctx context.Context, url, dst string) (string, err
 	}
 	served := resp.Header.Get("X-Corrallm-Version")
 
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".corrallm-update-*")
+	sweepStaleDownloads(filepath.Dir(dst))
+
+	tmp, err := os.CreateTemp(filepath.Dir(dst), updateTempPrefix+"*")
 	if err != nil {
 		return "", err
 	}
