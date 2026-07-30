@@ -29,8 +29,10 @@ type Beacon struct {
 	Interval time.Duration
 	Srv      *Server
 	// SelfUpdate lets the agent replace its own binary with the primary's build
-	// when the versions differ AND nothing is running here. Off unless asked
-	// for: an agent that rewrites itself is a big thing to enable by accident.
+	// when the versions differ AND nothing is running here. On by default: a
+	// fleet of agents pinned to old builds by hand is the failure mode this
+	// exists to avoid, and the idle condition keeps it from costing anyone a
+	// running backend. Set selfUpdate:false (or --self-update=false) to pin.
 	SelfUpdate bool
 	cli        *http.Client
 }
