@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/iodesystems/corrallm/internal/agent"
 )
 
 // Handler serves the installer and the per-platform agent binaries out of dir
@@ -132,18 +134,17 @@ addr: "$ADDR"
 selfUpdate: true
 YML
 
-cat > "$DIR/start.sh" <<'SH'
-#!/bin/sh
-# Start the corrallm agent. POSIX sh — runs the same from bash, zsh or fish.
-cd "$(dirname "$0")" || exit 1
-exec ./corrallm agent --config ./agent.yml "$@"
-SH
-chmod +x "$DIR/start.sh"
+# Quoted heredoc: the launcher is written verbatim, no expansion by this script.
+# The text comes from the agent package so the installer and the agent's own
+# self-update cannot write different launchers.
+cat > "$DIR/` + agent.LauncherName + `" <<'SH'
+` + agent.LauncherScript + `SH
+chmod +x "$DIR/` + agent.LauncherName + `"
 
 echo "==> installed $DIR/"
 echo "      corrallm    the agent binary"
 echo "      agent.yml   its configuration (contains a credential; mode 0600)"
-echo "      start.sh    run this"
+echo "      start.sh    run this — it supervises the agent and restarts it"
 echo
 echo "Start it:"
 echo "  $DIR/start.sh"

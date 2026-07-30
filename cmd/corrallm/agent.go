@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -110,6 +111,20 @@ func newAgentCmd() *cobra.Command {
 
 func runAgent(ctx context.Context, addr, token, primary, server string, selfUpdate bool) error {
 	a := agent.New(version, token)
+
+	// Keep start.sh in step with this build. Self-update replaces the binary and
+	// re-execs, so the NEW image is the only thing that knows the new launcher —
+	// which makes "on every start" the right time to write it. Anchored on the
+	// binary's own directory rather than cwd, so it still finds the install even
+	// when someone runs the binary from elsewhere.
+	//
+	// Non-fatal: a read-only or relocated install directory is no reason to
+	// refuse to serve.
+	if exe, err := os.Executable(); err == nil {
+		if err := agent.ReconcileLauncher(filepath.Dir(exe)); err != nil {
+			slog.Warn("agent: could not update start.sh", "err", err)
+		}
+	}
 
 	srv := &http.Server{Addr: addr, Handler: a.Routes()}
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
