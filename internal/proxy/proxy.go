@@ -529,7 +529,16 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// that frees a slot in 2s is a better answer than a cold one 30s from
 	// resident. Only if EVERY candidate is permanently unusable do we 503.
 	var bestBP *sched.BackpressureError
-	var queuedMS int64 // queue wait on the terminal backend (admit or reject)
+	// Cumulative across the spill walk, not just the terminal backend.
+	//
+	// These were per-candidate assignments, which under-reported whenever a
+	// request queued on one backend, spilled, and queued again: only the last
+	// wait survived. That is wrong in the activity log and actively misleading
+	// in the headers below, where a client subtracts them from its own wall
+	// clock to recover execution time — under-reporting the overhead inflates
+	// the execution time it computes.
+	var queuedMS int64 // time blocked in admission control
+	var loadMS int64   // time waiting for a backend to be spawned/resident
 
 	for _, idx := range walk {
 		cand := cands[idx]
@@ -541,7 +550,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// group.Interruptible OR the request's own opt-in. A caller can only
 		// widen this, never narrow it — see retryableRequest.
 		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
-		queuedMS = time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
+		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if err == nil {
 			// A slot was taken — lanes load changed. markInflight publishes, so
 			// the two live views (lanes + active requests) refresh together.
@@ -580,7 +589,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 		// Proxy under reqCtx so a later preemption (cause ErrPreempted) aborts the
 		// upstream stream and frees this slot.
+		loadStart := time.Now()
 		pr, done, loaded, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky)
+		loadMS += time.Since(loadStart).Milliseconds() // ~0 when already resident
 		if err != nil {
 			release()
 			// Doesn't fit + can't evict, or won't come up → spill to next backend.
@@ -654,7 +665,20 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// to the next candidate rather than returning the error to the caller.
 		isFree := backend.FreeTier != nil
 		hardFailStatus := 0
+		upstreamStart := time.Now()
 		rp.ModifyResponse = func(resp *http.Response) error {
+			// Timing breakdown, so a caller can recover EXECUTION time from its
+			// own wall clock. A benchmark measuring a busy box otherwise reports
+			// scheduler queueing and cold loads as if the model were slow — the
+			// numbers move with the neighbours, not the model.
+			//
+			// Set here rather than after the body: ModifyResponse runs before
+			// anything reaches the client, which is the last point a streaming
+			// response can still take headers. Total execution is therefore not
+			// available (the body has not been streamed yet) and is deliberately
+			// not offered — the client subtracts these from its own total, which
+			// works for streaming and non-streaming alike.
+			setTimingHeaders(resp.Header, queuedMS, loadMS, time.Since(upstreamStart).Milliseconds())
 			p.quota.ObserveResponse(name, resp.StatusCode, resp.Header)
 			if isFree && isHardFail(resp.StatusCode) {
 				hardFailStatus = resp.StatusCode
