@@ -936,6 +936,8 @@ input corrallm_BenchStagePublishInput {
   brokenIntermediates: Long
   compactions: Long
   completionTokens: Long
+  """wallMs − queuedMs: the part of the stage the model was working."""
+  execMs: Long
   invalidArgRetries: Long
   jsonErrors: Long
   limitBreached: Boolean
@@ -945,6 +947,8 @@ input corrallm_BenchStagePublishInput {
   pass: Boolean
   probe: String!
   prompt: String
+  """Time the stage waited on corrallm — 429 backoff plus admission and cold-load waits inside accepted requests."""
+  queuedMs: Long
   repeatedCalls: Long
   runMode: String
   stage: Long
@@ -964,6 +968,8 @@ type corrallm_BenchStageView {
   checks: [corrallm_BenchCheckView!]!
   compactions: Long!
   completionTokens: Long!
+  """wallMs − queuedMs: the part of the stage the model was working."""
+  execMs: Long!
   invalidArgRetries: Long!
   jsonErrors: Long!
   """A turn/tool-call budget was hit. Does not by itself veto passing checks."""
@@ -972,8 +978,10 @@ type corrallm_BenchStageView {
   note: String
   pass: Boolean!
   prompt: String
+  queuedMs: Long!
   repeatedCalls: Long!
   stage: Long!
+  """Tokens per second over EXECUTION, not wall — queueing does not produce tokens."""
   tokPerSec: Float!
   toolCalls: Long!
   turns: Long!

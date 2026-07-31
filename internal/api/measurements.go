@@ -529,6 +529,8 @@ type BenchStagePublish struct {
 	Compactions         int     `json:"compactions,omitempty"`
 	TokPerSec           float64 `json:"tokPerSec,omitempty"`
 	WallMS              int64   `json:"wallMs,omitempty"`
+	QueuedMS            int64   `json:"queuedMs,omitempty" doc:"Time the stage waited on corrallm — 429 backoff plus admission and cold-load waits inside accepted requests."`
+	ExecMS              int64   `json:"execMs,omitempty" doc:"wallMs − queuedMs: the part of the stage the model was working."`
 }
 
 // BenchCheckPublish is one assertion's verdict as published.
@@ -626,6 +628,7 @@ func (h *Handlers) PublishBenchProbeResults(ctx context.Context, in *BenchProbeR
 			RepeatedCalls: s.RepeatedCalls, BaitCalls: s.BaitCalls,
 			BrokenIntermediates: s.BrokenIntermediates, Compactions: s.Compactions,
 			TokPerSec: s.TokPerSec, WallMS: s.WallMS,
+			QueuedMS: s.QueuedMS, ExecMS: s.ExecMS,
 		})
 	}
 	if err := h.Store.SaveBenchProbeStages(ctx, stages); err != nil {

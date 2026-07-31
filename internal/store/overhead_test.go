@@ -94,3 +94,63 @@ func TestLoadMSRoundTrips(t *testing.T) {
 		t.Errorf("LoadMS = %d, want 6705", got[0].LoadMS)
 	}
 }
+
+// The stage timings are the point of the whole shared-bench change, and they
+// travel runner → API → store → dashboard. A column that silently drops them
+// would leave the UI showing wall time — the number that moves with the
+// neighbours — while the honest one sat in a file on disk.
+func TestStageTimingsRoundTrip(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	in := BenchProbeStage{
+		RunID: "r1", Model: "m1", Probe: "p1", Toolset: "baseline", ToolFormat: "json",
+		Stage: 0, WallMS: 29687, QueuedMS: 18664, ExecMS: 11023,
+	}
+	if err := st.SaveBenchProbeStages(ctx, []BenchProbeStage{in}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.BenchProbeStagesFor(ctx, "r1", "m1", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d stages, want 1", len(got))
+	}
+	if got[0].WallMS != 29687 || got[0].QueuedMS != 18664 || got[0].ExecMS != 11023 {
+		t.Errorf("timings did not survive: wall=%d queued=%d exec=%d",
+			got[0].WallMS, got[0].QueuedMS, got[0].ExecMS)
+	}
+}
+
+// Re-publishing a stage must overwrite its timings, not keep the first ones —
+// a retried publish otherwise pins the numbers from a run that was superseded.
+func TestStageTimingsUpsert(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	s := BenchProbeStage{RunID: "r1", Model: "m1", Probe: "p1", Stage: 0,
+		WallMS: 100, QueuedMS: 90, ExecMS: 10}
+	if err := st.SaveBenchProbeStages(ctx, []BenchProbeStage{s}); err != nil {
+		t.Fatal(err)
+	}
+	s.WallMS, s.QueuedMS, s.ExecMS = 200, 20, 180
+	if err := st.SaveBenchProbeStages(ctx, []BenchProbeStage{s}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.BenchProbeStagesFor(ctx, "r1", "m1", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ExecMS != 180 || got[0].QueuedMS != 20 {
+		t.Errorf("upsert did not replace timings: %+v", got)
+	}
+}

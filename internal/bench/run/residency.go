@@ -600,6 +600,8 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID, outDir 
 		Compactions         int     `json:"compactions,omitempty"`
 		TokPerSec           float64 `json:"tokPerSec,omitempty"`
 		WallMS              int64   `json:"wallMs,omitempty"`
+		QueuedMS            int64   `json:"queuedMs,omitempty"`
+		ExecMS              int64   `json:"execMs,omitempty"`
 	}
 	type checkRec struct {
 		Model      string `json:"model"`
@@ -626,6 +628,7 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID, outDir 
 			JSONErrors: r.JSONErrors, RepeatedCalls: r.RepeatedCalls,
 			BaitCalls: r.BaitCalls, BrokenIntermediates: r.BrokenIntermediates,
 			Compactions: r.Compactions, TokPerSec: r.TokPerSec, WallMS: r.WallMs,
+			QueuedMS: r.QueuedMs, ExecMS: r.ExecMs,
 		})
 		for i, ck := range r.Checks {
 			checkRecs = append(checkRecs, checkRec{

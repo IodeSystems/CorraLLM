@@ -162,6 +162,11 @@ CREATE TABLE IF NOT EXISTS bench_probe_stages (
   compactions    INTEGER NOT NULL DEFAULT 0,
   tok_per_sec    REAL    NOT NULL DEFAULT 0,
   wall_ms        INTEGER NOT NULL DEFAULT 0,
+  -- queued_ms/exec_ms split wall_ms into waiting and working. Without them the
+  -- dashboard can only show wall time, which on a shared box is dominated by
+  -- whatever else was queued and moves with the neighbours rather than the model.
+  queued_ms      INTEGER NOT NULL DEFAULT 0,
+  exec_ms        INTEGER NOT NULL DEFAULT 0,
   UNIQUE(run_id, model, probe, run_mode, toolset, tool_format, stage)
 );
 CREATE INDEX IF NOT EXISTS bench_probe_stages_probe
@@ -247,6 +252,11 @@ var migrations = []string{
 	// model to load and then answered in 375ms is not a slow model, and without
 	// this column nothing downstream can tell the two apart.
 	`ALTER TABLE activity ADD COLUMN load_ms INTEGER NOT NULL DEFAULT 0`,
+	// Stage timing split. Rows written before this land at 0/0, which reads as
+	// "no queueing measured" — correct for the exclusive runs that predate the
+	// shared mode, since those held the lease and nothing else could queue.
+	`ALTER TABLE bench_probe_stages ADD COLUMN queued_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE bench_probe_stages ADD COLUMN exec_ms INTEGER NOT NULL DEFAULT 0`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -1002,6 +1012,11 @@ type BenchProbeStage struct {
 	Compactions         int     `json:"compactions"`
 	TokPerSec           float64 `json:"tokPerSec"`
 	WallMS              int64   `json:"wallMs"`
+	// QueuedMS is time the stage waited on corrallm rather than the model:
+	// 429 backoff plus the admission and cold-load waits inside accepted
+	// requests. ExecMS is WallMS minus that.
+	QueuedMS int64 `json:"queuedMs"`
+	ExecMS   int64 `json:"execMs"`
 }
 
 // BenchProbeCheck is one assertion's verdict within a stage.
@@ -1155,8 +1170,8 @@ INSERT INTO bench_probe_stages
   (run_id, model, probe, run_mode, toolset, tool_format, stage, prompt, pass,
    limit_breached, note, turns, tool_calls, new_prompt_tokens, completion_tokens,
    invalid_arg_retries, json_errors, repeated_calls, bait_calls,
-   broken_intermediates, compactions, tok_per_sec, wall_ms)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+   broken_intermediates, compactions, tok_per_sec, wall_ms, queued_ms, exec_ms)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(run_id, model, probe, run_mode, toolset, tool_format, stage) DO UPDATE SET
   prompt=excluded.prompt, pass=excluded.pass, limit_breached=excluded.limit_breached,
   note=excluded.note, turns=excluded.turns, tool_calls=excluded.tool_calls,
@@ -1166,7 +1181,7 @@ ON CONFLICT(run_id, model, probe, run_mode, toolset, tool_format, stage) DO UPDA
   repeated_calls=excluded.repeated_calls, bait_calls=excluded.bait_calls,
   broken_intermediates=excluded.broken_intermediates,
   compactions=excluded.compactions, tok_per_sec=excluded.tok_per_sec,
-  wall_ms=excluded.wall_ms`)
+  wall_ms=excluded.wall_ms, queued_ms=excluded.queued_ms, exec_ms=excluded.exec_ms`)
 	if err != nil {
 		return err
 	}
@@ -1177,7 +1192,7 @@ ON CONFLICT(run_id, model, probe, run_mode, toolset, tool_format, stage) DO UPDA
 			boolInt(r.LimitBreached), r.Note, r.Turns, r.ToolCalls, r.NewPromptTokens,
 			r.CompletionTokens, r.InvalidArgRetries, r.JSONErrors, r.RepeatedCalls,
 			r.BaitCalls, r.BrokenIntermediates, r.Compactions, r.TokPerSec,
-			r.WallMS); err != nil {
+			r.WallMS, r.QueuedMS, r.ExecMS); err != nil {
 			return err
 		}
 	}
@@ -1220,7 +1235,7 @@ func (s *Store) BenchProbeStagesFor(ctx context.Context, runID, model, probe str
 SELECT run_id, model, probe, run_mode, toolset, tool_format, stage, prompt, pass,
        limit_breached, note, turns, tool_calls, new_prompt_tokens, completion_tokens,
        invalid_arg_retries, json_errors, repeated_calls, bait_calls,
-       broken_intermediates, compactions, tok_per_sec, wall_ms
+       broken_intermediates, compactions, tok_per_sec, wall_ms, queued_ms, exec_ms
 FROM bench_probe_stages WHERE run_id = ? AND model = ? AND probe = ?
 ORDER BY toolset, tool_format, run_mode, stage`, runID, model, probe)
 	if err != nil {
@@ -1235,7 +1250,7 @@ ORDER BY toolset, tool_format, run_mode, stage`, runID, model, probe)
 			&r.ToolFormat, &r.Stage, &r.Prompt, &pass, &breached, &r.Note, &r.Turns,
 			&r.ToolCalls, &r.NewPromptTokens, &r.CompletionTokens, &r.InvalidArgRetries,
 			&r.JSONErrors, &r.RepeatedCalls, &r.BaitCalls, &r.BrokenIntermediates,
-			&r.Compactions, &r.TokPerSec, &r.WallMS); err != nil {
+			&r.Compactions, &r.TokPerSec, &r.WallMS, &r.QueuedMS, &r.ExecMS); err != nil {
 			return nil, err
 		}
 		r.Pass, r.LimitBreached = pass != 0, breached != 0

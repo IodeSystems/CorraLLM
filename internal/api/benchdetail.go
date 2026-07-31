@@ -520,8 +520,14 @@ type BenchStageView struct {
 	BaitCalls           int     `json:"baitCalls" doc:"Calls to a declared bait tool — what adversarial probes are scored on."`
 	BrokenIntermediates int     `json:"brokenIntermediates" doc:"Mutating calls that left the workspace failing its safety check."`
 	Compactions         int     `json:"compactions"`
-	TokPerSec           float64 `json:"tokPerSec"`
+	TokPerSec           float64 `json:"tokPerSec" doc:"Tokens per second over EXECUTION, not wall — queueing does not produce tokens."`
 	WallMS              int64   `json:"wallMs"`
+	// QueuedMS is the part of wallMs the stage spent waiting on corrallm rather
+	// than on the model: 429 backoff, admission queueing, and cold loads. On a
+	// shared box it can be most of the wall clock, which is why wallMs alone
+	// cannot be compared between runs taken under different load.
+	QueuedMS int64 `json:"queuedMs"`
+	ExecMS   int64 `json:"execMs" doc:"wallMs − queuedMs: the part of the stage the model was working."`
 }
 
 // BenchArmDetailView is one arm's full stage-by-stage record.
@@ -602,6 +608,7 @@ func (h *Handlers) BenchProbeDetail(ctx context.Context, in *BenchProbeDetailInp
 			JSONErrors: s.JSONErrors, RepeatedCalls: s.RepeatedCalls,
 			BaitCalls: s.BaitCalls, BrokenIntermediates: s.BrokenIntermediates,
 			Compactions: s.Compactions, TokPerSec: s.TokPerSec, WallMS: s.WallMS,
+			QueuedMS: s.QueuedMS, ExecMS: s.ExecMS,
 		})
 	}
 	base := pickBaseline(order)

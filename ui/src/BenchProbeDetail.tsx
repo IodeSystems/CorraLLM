@@ -61,6 +61,8 @@ const ProbeDetailDoc = graphql(/* GraphQL */ `
             compactions
             tokPerSec
             wallMs
+            queuedMs
+            execMs
             checks {
               idx
               kind
@@ -188,7 +190,25 @@ function ChecksAndStages({ runId, model, probe }: Props) {
                 <Typography variant="caption" color="text.secondary">
                   {s.turns} turns · {s.toolCalls} tool calls · {fmtInt(n(s.newPromptTokens))} in ·{' '}
                   {fmtInt(n(s.completionTokens))} out · {n(s.tokPerSec).toFixed(0)} tok/s ·{' '}
-                  {fmtDuration(n(s.wallMs))}
+                  {/* Execution is the honest duration; wall is what a stopwatch
+                      saw. They differ by however long corrallm made the stage
+                      wait, which on a shared box can be most of it — so showing
+                      wall alone invites comparing runs taken under different
+                      load. Only shown split when there was queueing. */}
+                  {n(s.queuedMs) > 0 ? (
+                    <Tooltip
+                      title={`${fmtDuration(n(s.wallMs))} wall − ${fmtDuration(n(s.queuedMs))} waiting on corrallm (429 backoff, admission queueing, cold loads). tok/s is measured over execution.`}
+                    >
+                      <span>
+                        {fmtDuration(n(s.execMs))} exec{' '}
+                        <Box component="span" sx={{ opacity: 0.6 }}>
+                          (+{fmtDuration(n(s.queuedMs))} queued)
+                        </Box>
+                      </span>
+                    </Tooltip>
+                  ) : (
+                    fmtDuration(n(s.wallMs))
+                  )}
                 </Typography>
               </Stack>
               {!!s.note && (
