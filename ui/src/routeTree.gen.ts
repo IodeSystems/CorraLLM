@@ -17,6 +17,9 @@ import { Route as ConfigRouteImport } from './routes/config'
 import { Route as BenchRouteImport } from './routes/bench'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as BenchRunRouteImport } from './routes/bench_.run'
+import { Route as BenchProbeRouteImport } from './routes/bench_.probe'
+import { Route as BenchModelRouteImport } from './routes/bench_.model'
 
 const UsageRoute = UsageRouteImport.update({
   id: '/usage',
@@ -58,6 +61,21 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BenchRunRoute = BenchRunRouteImport.update({
+  id: '/bench_/run',
+  path: '/bench/run',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BenchProbeRoute = BenchProbeRouteImport.update({
+  id: '/bench_/probe',
+  path: '/bench/probe',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BenchModelRoute = BenchModelRouteImport.update({
+  id: '/bench_/model',
+  path: '/bench/model',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -68,6 +86,9 @@ export interface FileRoutesByFullPath {
   '/model': typeof ModelRoute
   '/quota': typeof QuotaRoute
   '/usage': typeof UsageRoute
+  '/bench/model': typeof BenchModelRoute
+  '/bench/probe': typeof BenchProbeRoute
+  '/bench/run': typeof BenchRunRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -78,6 +99,9 @@ export interface FileRoutesByTo {
   '/model': typeof ModelRoute
   '/quota': typeof QuotaRoute
   '/usage': typeof UsageRoute
+  '/bench/model': typeof BenchModelRoute
+  '/bench/probe': typeof BenchProbeRoute
+  '/bench/run': typeof BenchRunRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -89,6 +113,9 @@ export interface FileRoutesById {
   '/model': typeof ModelRoute
   '/quota': typeof QuotaRoute
   '/usage': typeof UsageRoute
+  '/bench_/model': typeof BenchModelRoute
+  '/bench_/probe': typeof BenchProbeRoute
+  '/bench_/run': typeof BenchRunRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -101,6 +128,9 @@ export interface FileRouteTypes {
     | '/model'
     | '/quota'
     | '/usage'
+    | '/bench/model'
+    | '/bench/probe'
+    | '/bench/run'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -111,6 +141,9 @@ export interface FileRouteTypes {
     | '/model'
     | '/quota'
     | '/usage'
+    | '/bench/model'
+    | '/bench/probe'
+    | '/bench/run'
   id:
     | '__root__'
     | '/'
@@ -121,6 +154,9 @@ export interface FileRouteTypes {
     | '/model'
     | '/quota'
     | '/usage'
+    | '/bench_/model'
+    | '/bench_/probe'
+    | '/bench_/run'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -132,6 +168,9 @@ export interface RootRouteChildren {
   ModelRoute: typeof ModelRoute
   QuotaRoute: typeof QuotaRoute
   UsageRoute: typeof UsageRoute
+  BenchModelRoute: typeof BenchModelRoute
+  BenchProbeRoute: typeof BenchProbeRoute
+  BenchRunRoute: typeof BenchRunRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -192,6 +231,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/bench_/run': {
+      id: '/bench_/run'
+      path: '/bench/run'
+      fullPath: '/bench/run'
+      preLoaderRoute: typeof BenchRunRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/bench_/probe': {
+      id: '/bench_/probe'
+      path: '/bench/probe'
+      fullPath: '/bench/probe'
+      preLoaderRoute: typeof BenchProbeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/bench_/model': {
+      id: '/bench_/model'
+      path: '/bench/model'
+      fullPath: '/bench/model'
+      preLoaderRoute: typeof BenchModelRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -204,6 +264,9 @@ const rootRouteChildren: RootRouteChildren = {
   ModelRoute: ModelRoute,
   QuotaRoute: QuotaRoute,
   UsageRoute: UsageRoute,
+  BenchModelRoute: BenchModelRoute,
+  BenchProbeRoute: BenchProbeRoute,
+  BenchRunRoute: BenchRunRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import {
@@ -29,7 +29,7 @@ import { Panel, PageHeader } from '@/Panel'
 import { C, SERIES } from '@/theme'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { capLabel, fmtInt } from '@/format'
+import { capLabel, fmtInt, fmtTime, fmtDuration } from '@/format'
 
 /**
  * Bench is the AGGREGATE view: how do the models compare?
@@ -119,6 +119,37 @@ const BenchDoc = graphql(/* GraphQL */ `
             probes
             skippedProbes
           }
+        }
+      }
+      benchProbeCatalog {
+        source
+        invalid
+        probes {
+          dir
+          name
+          class
+          source
+          summary
+          run
+          requires
+          stages
+          checks
+          error
+        }
+      }
+      benchRuns(limit: 15) {
+        runs {
+          runId
+          at
+          host
+          hasArtifacts
+          models
+          probes
+          rows
+          passed
+          skipped
+          score
+          wallMsSum
         }
       }
       benchStatus {
@@ -265,6 +296,8 @@ function BenchPage() {
 
   const results = data?.corrallm?.benchResults?.results ?? []
   const plan = data?.corrallm?.benchPlan
+  const catalog = data?.corrallm?.benchProbeCatalog
+  const runIndex = data?.corrallm?.benchRuns?.runs ?? []
   const status = data?.corrallm?.benchStatus
   const lease = data?.corrallm?.calibrationStatus
   const running = !!status?.running
@@ -352,6 +385,140 @@ function BenchPage() {
           leaseRemaining={n(lease?.remainingSeconds)}
           onCancel={() => cancel.mutate()}
         />
+      )}
+
+      {/* The suite comes BEFORE the scores. A pass rate is not information until
+          you know what was being asked — and until this existed there was no way
+          to find out from the dashboard at all. */}
+      <Panel
+        title="The suite"
+        subtitle={
+          catalog?.source === 'builtin'
+            ? 'Built into the binary'
+            : `From ${catalog?.source || 'the configured directory'}`
+        }
+      >
+        <Typography variant="caption" color="text.secondary" component="div" sx={{ p: 2, pb: 1 }}>
+          Every probe the runner would resolve — what could run, as opposed to what did. A probe
+          that fails to LOAD is listed here with its error rather than omitted, because a probe
+          silently missing from a run looks exactly like a probe that ran and found nothing.
+          Open one for the full description of what it measures and how to read a failure.
+        </Typography>
+        {!!catalog?.invalid && (
+          <Alert severity="error" sx={{ mx: 2, mb: 1 }}>
+            {catalog.invalid} probe(s) fail to load and will not run.
+          </Alert>
+        )}
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Probe</TableCell>
+                <TableCell>Class</TableCell>
+                <TableCell>What it measures</TableCell>
+                <TableCell align="right">Stages</TableCell>
+                <TableCell align="right">Checks</TableCell>
+                <TableCell>Needs</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {(catalog?.probes ?? []).map((p) => (
+                <TableRow key={p.dir} hover>
+                  <TableCell>
+                    <Link to="/bench/probe" search={{ name: p.name }} style={{ color: C.accent }}>
+                      {p.name}
+                    </Link>
+                    {p.source !== 'builtin' && (
+                      <Chip size="small" variant="outlined" label="user" sx={{ ml: 1 }} />
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Chip size="small" label={capLabel(p.class)} />
+                  </TableCell>
+                  <TableCell>
+                    {p.error ? (
+                      <Typography variant="caption" color="error.main">
+                        fails to load: {p.error}
+                      </Typography>
+                    ) : (
+                      <Typography variant="caption" color="text.secondary">
+                        {p.summary || '—'}
+                      </Typography>
+                    )}
+                  </TableCell>
+                  <TableCell align="right">{p.stages}</TableCell>
+                  <TableCell align="right">{p.checks}</TableCell>
+                  <TableCell>
+                    <Stack direction="row" spacing={0.5}>
+                      {p.requires && p.requires !== 'chat' && (
+                        <Chip size="small" variant="outlined" label={p.requires} />
+                      )}
+                      {p.run && <Chip size="small" variant="outlined" label={p.run} />}
+                    </Stack>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Panel>
+
+      {runIndex.length > 0 && (
+        <Panel title="Runs">
+          <Typography variant="caption" color="text.secondary" component="div" sx={{ p: 2, pb: 1 }}>
+            The comparisons below use each model&rsquo;s LATEST result, which may come from
+            different runs on different days. Open a single run to compare models that actually
+            sat the same exam.
+          </Typography>
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Run</TableCell>
+                  <TableCell>When</TableCell>
+                  <TableCell align="right">Score</TableCell>
+                  <TableCell align="right">Models</TableCell>
+                  <TableCell align="right">Probes</TableCell>
+                  <TableCell align="right">Skipped</TableCell>
+                  <TableCell align="right">Wall</TableCell>
+                  <TableCell>Replay</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {runIndex.map((r) => (
+                  <TableRow key={r.runId} hover>
+                    <TableCell>
+                      <Link to="/bench/run" search={{ id: r.runId }} style={{ color: C.accent }}>
+                        <Typography variant="caption">{r.runId}</Typography>
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="caption">{fmtTime(n(r.at) * 1000)}</Typography>
+                    </TableCell>
+                    <TableCell align="right">{(n(r.score) * 100).toFixed(0)}%</TableCell>
+                    <TableCell align="right">{fmtInt(n(r.models))}</TableCell>
+                    <TableCell align="right">{fmtInt(n(r.probes))}</TableCell>
+                    <TableCell align="right">{fmtInt(n(r.skipped))}</TableCell>
+                    <TableCell align="right">{fmtDuration(n(r.wallMsSum))}</TableCell>
+                    <TableCell>
+                      {r.hasArtifacts ? (
+                        <Chip size="small" variant="outlined" label="available" />
+                      ) : (
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          color="warning"
+                          label="pruned"
+                          title="Scores and check verdicts survive in the database; transcripts and journals are gone."
+                        />
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Panel>
       )}
 
       {results.length === 0 ? (
@@ -544,7 +711,15 @@ function BenchPage() {
                       <TableBody>
                         {models.map((m) => (
                           <TableRow key={m.model} hover>
-                            <TableCell>{m.model}</TableCell>
+                            <TableCell>
+                              <Link
+                                to="/bench/model"
+                                search={{ name: m.model }}
+                                style={{ color: C.accent }}
+                              >
+                                {m.model}
+                              </Link>
+                            </TableCell>
                             <TableCell align="right">{(n(m.score) * 100).toFixed(0)}%</TableCell>
                             <TableCell align="right">
                               {m.stagesPassed}/{m.stages}
@@ -609,7 +784,11 @@ function BenchPage() {
               <TableBody>
                 {ranked.map((r) => (
                   <TableRow key={r.model} hover>
-                    <TableCell>{r.model}</TableCell>
+                    <TableCell>
+                      <Link to="/bench/model" search={{ name: r.model }} style={{ color: C.accent }}>
+                        {r.model}
+                      </Link>
+                    </TableCell>
                     <TableCell align="right">{(n(r.score) * 100).toFixed(0)}%</TableCell>
                     <TableCell align="right">
                       {r.stagesPassed}/{r.stages}
