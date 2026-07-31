@@ -114,6 +114,25 @@ function ProbePage() {
   const cat = h?.catalog
   const runs = h?.runs ?? []
 
+  // A row's stage count should equal the probe's. When it does not, the row is
+  // not describing the probe as it stands and its score is not comparable with
+  // the rows that are — so say so rather than letting it average in silently.
+  //
+  // Two things produce this and the UI cannot tell them apart, so it claims
+  // neither: the probe was edited after the run, or the run folded repeats
+  // (--runs N sums each repeat's stages into one row instead of keeping them as
+  // samples). An exact multiple points at the second.
+  const defStages = n(cat?.stages)
+  const stageMismatch = (rowStages: unknown): boolean =>
+    defStages > 0 && n(rowStages) > 0 && n(rowStages) !== defStages
+  const mismatchHint = (rowStages: unknown): string => {
+    const got = n(rowStages)
+    const base = `This run recorded ${got} stage(s); the probe defines ${defStages}.`
+    return got % defStages === 0
+      ? `${base} Exactly ${got / defStages}× — likely ${got / defStages} repeats folded into one row, not a harder probe.`
+      : `${base} The probe was probably edited after this run.`
+  }
+
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title={name}>
@@ -227,7 +246,22 @@ function ProbePage() {
                       </TableCell>
                       <TableCell align="right">{r.skipped ? '—' : pct(n(r.score))}</TableCell>
                       <TableCell align="right">
-                        {r.skipped ? '—' : `${r.stagesPassed}/${r.stages}`}
+                        {r.skipped ? (
+                          '—'
+                        ) : (
+                          <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
+                            <span>{`${r.stagesPassed}/${r.stages}`}</span>
+                            {stageMismatch(r.stages) && (
+                              <Chip
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                label="?"
+                                title={mismatchHint(r.stages)}
+                              />
+                            )}
+                          </Stack>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Typography variant="caption">
