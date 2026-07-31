@@ -404,9 +404,11 @@ function BenchPage() {
           silently missing from a run looks exactly like a probe that ran and found nothing.
           Open one for the full description of what it measures and how to read a failure.
         </Typography>
-        {!!catalog?.invalid && (
+        {/* n(), not !!: GraphQL renders Long as TEXT, and the string "0" is
+            truthy — so a healthy suite showed a red "0 probe(s) fail to load". */}
+        {n(catalog?.invalid) > 0 && (
           <Alert severity="error" sx={{ mx: 2, mb: 1 }}>
-            {catalog.invalid} probe(s) fail to load and will not run.
+            {catalog?.invalid} probe(s) fail to load and will not run.
           </Alert>
         )}
         <TableContainer>
@@ -810,9 +812,9 @@ function BenchPage() {
       )}
 
       <Panel title="Run a benchmark">
-        {!!plan?.newModels && (
+        {n(plan?.newModels) > 0 && (
           <Alert severity="info" sx={{ mb: 2 }}>
-            {plan.newModels} model(s) have never been benched — corrallm is scheduling them on
+            {plan?.newModels} model(s) have never been benched — corrallm is scheduling them on
             unverified <code>ramUsage</code>.
           </Alert>
         )}
