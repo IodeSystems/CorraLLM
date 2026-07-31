@@ -340,6 +340,43 @@ corrallm pins `agentkit v0.3.0` and a build without the workspace would break.
 The activity route is self-contained and sums correctly across an agent loop's
 many calls, which per-call headers would have needed anyway.
 
+## ✅ G. The agentkit clock bug (found via F, fixed upstream)
+
+`agent/session.go` persisted the assistant reply with `time.Now().UnixNano()`
+while every other Append in the turn loop used the session's injectable `Now`.
+llm-bench supplies a counter clock (`run.go:900`), so assistant entries got
+wall-clock nanoseconds and everything else got 1, 3, 4, 6… — sorting **every
+reply after the entire rest of the conversation**.
+
+The model was shown tool calls with no reasoning in front of them, and the
+replies bunched into a block at the end. Two of them adjacent is a hard error
+from llama.cpp ("Cannot have 2 or more assistant messages at the end of the
+list"), which is how it surfaced — but the crash was the late symptom. The
+reordering had already corrupted every turn before it.
+
+**Every bench run in the database predates the fix**, so `20260719-231824`
+through `20260731-141500` measured models against conversations they never had.
+Their scores are not comparable with anything taken after `agentkit 3471f9f`.
+
+Fixed in agentkit (one line, plus tests at both the entry and rendered-message
+levels that fail without it). Same shared bench, same load, before and after:
+
+| run | stages | passed | aborted | 400s |
+|---|---|---|---|---|
+| 20260731-135841 | 7 | 4 | 6 | 6 |
+| 20260731-141500 | 7 | 4 | 6 | 6 |
+| 20260731-142803 | 7 | **7** | **0** | **0** |
+
+Adjacent assistant pairs in the transcripts went 4 → 0, and tool calls rose
+23 → 41: conversations now run to completion instead of dying mid-probe.
+
+**Correction recorded:** I attributed those aborts to the combo watchdog first,
+reading the `limit breached` chip as a timeout. `classifyErr` returns
+`breached=true` on every error path (`run.go:1209`), so that chip means "an
+error", not "a limit". The watchdog fix in F is still right on its own terms —
+at 75% queueing a wall-clock budget allows ~2.5 min of a 10-min budget — but it
+fixed nothing that was actually failing.
+
 ## Icebox
 
 - **`bin/run` truncates its log on every start** (`>` rather than `>>`), discarding the previous
