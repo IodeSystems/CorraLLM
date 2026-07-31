@@ -350,7 +350,21 @@ function Home() {
     )
   }
 
-  const c = q.data!.corrallm
+  // No non-null assertion. The guards above cover isLoading and error, but a
+  // query can settle with neither — notably the moment a 401 handler calls
+  // clearToken() and reloads, which re-renders once with the cache already
+  // dropped. `q.data!` then threw "Cannot read properties of undefined
+  // (reading 'corrallm')" straight into the error boundary, replacing the whole
+  // dashboard with "Something went wrong!" instead of the login screen it was
+  // one tick away from showing.
+  const c = q.data?.corrallm
+  if (!c) {
+    return (
+      <Box sx={{ p: 3 }}>
+        <CircularProgress />
+      </Box>
+    )
+  }
   const ov = c.overview
   const models = ov?.models ?? []
   const lanes = ov?.lanes ?? []

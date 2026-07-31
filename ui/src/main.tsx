@@ -18,6 +18,21 @@ const queryClient = new QueryClient({
       }
     },
   }),
+  defaultOptions: {
+    queries: {
+      // Never retry a 401. react-query retries three times with backoff by
+      // default, and onError — the hook that drops the token and returns to
+      // the login screen — only fires once retries are exhausted. So a bad or
+      // expired token did not show the login screen; it showed a spinner for
+      // several seconds first, on every query at once, and only then bounced.
+      // That is the "loads, takes my token, then hangs" report.
+      //
+      // A 401 is a verdict, not a hiccup: retrying cannot change the answer.
+      // Everything else keeps the default retry, which is there for the
+      // genuinely transient failures worth a second attempt.
+      retry: (failureCount, err) => !is401(err) && failureCount < 3,
+    },
+  },
 })
 const router = createRouter({ routeTree })
 
