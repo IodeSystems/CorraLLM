@@ -561,6 +561,7 @@ type corrallm_BenchArmView {
   checksPassed: Long!
   checksTotal: Long!
   completionTokens: Long!
+  flaky: Boolean
   """The arm the probe's headline score comes from."""
   isBaseline: Boolean!
   """Display form, e.g. "baseline/json/warm"."""
@@ -569,6 +570,7 @@ type corrallm_BenchArmView {
   newPromptTokens: Long!
   note: String
   pass: Boolean!
+  repeats: Long
   runMode: String!
   score: Float!
   scoreDelta: Float!
@@ -717,6 +719,8 @@ input corrallm_BenchProbePublishInput {
   pass: Boolean
   """Probe (task) name."""
   probe: String!
+  """0-based index of which re-run of this arm the row is (--runs N, or a retried pass). Repeats are independent samples, not one row to be summed."""
+  repeat: Long
   runMode: String
   skipReason: String
   skipped: Boolean
@@ -892,7 +896,7 @@ type corrallm_BenchRunSummaryView {
   models: Long!
   passed: Long!
   probes: Long!
-  """Probe×arm rows recorded; exceeds probes when the run ran A/B arms."""
+  """Probe×arm×repeat rows recorded; exceeds probes when the run ran A/B arms or repeated them."""
   rows: Long!
   runId: String!
   """Passed / (rows - skipped). Skipped rows are excluded, not counted as failures."""

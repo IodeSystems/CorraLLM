@@ -103,6 +103,11 @@ CREATE TABLE IF NOT EXISTS bench_probe_results (
   run_mode      TEXT    NOT NULL DEFAULT '', -- "" | cold | warm
   toolset       TEXT    NOT NULL DEFAULT '', -- A/B arm: tool surface offered
   tool_format   TEXT    NOT NULL DEFAULT '', -- A/B arm: tool-result encoding (json | toon | tight | …)
+  -- repeat: 0-based index of which re-run of the SAME arm this is (--runs N,
+  -- and any pass an agent retried). Part of the identity, because two repeats
+  -- are two independent samples — folding them summed their stages and checks
+  -- and produced rows reporting an exact multiple of the probe's real size.
+  repeat        INTEGER NOT NULL DEFAULT 0,
   stages        INTEGER NOT NULL DEFAULT 0,
   stages_passed INTEGER NOT NULL DEFAULT 0,
   checks_passed INTEGER NOT NULL DEFAULT 0,
@@ -114,7 +119,7 @@ CREATE TABLE IF NOT EXISTS bench_probe_results (
   skipped       INTEGER NOT NULL DEFAULT 0,
   skip_reason   TEXT    NOT NULL DEFAULT '',
   note          TEXT    NOT NULL DEFAULT '', -- first failing check, or combo error
-  UNIQUE(run_id, model, probe, run_mode, toolset, tool_format)
+  UNIQUE(run_id, model, probe, run_mode, toolset, tool_format, repeat)
 );
 CREATE INDEX IF NOT EXISTS bench_probe_results_model_at ON bench_probe_results(model, at DESC);
 CREATE INDEX IF NOT EXISTS bench_probe_results_run ON bench_probe_results(run_id, model);
@@ -273,6 +278,92 @@ func dropStaleProbeTables(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// addProbeResultRepeat widens bench_probe_results' identity to include the
+// repeat index, PRESERVING existing rows.
+//
+// This is the copy-into-new-table migration dropStaleProbeTables said would be
+// required "if it ever ships with real history". It has: the table now holds
+// months of runs on the production box, so dropping is no longer an option, and
+// SQLite still cannot alter a UNIQUE constraint in place.
+//
+// Existing rows land at repeat 0. That is correct for every row written by a
+// single-pass run, and it is the only honest answer for rows that folded
+// repeats: the per-repeat detail was summed away before it was stored and
+// cannot be recovered here. Those rows keep their inflated counts and stay
+// recognisable by disagreeing with their probe's stage count — which is what
+// the dashboard flags — rather than being silently halved into a number nothing
+// measured.
+func addProbeResultRepeat(ctx context.Context, db *sql.DB) error {
+	var ddl string
+	err := db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='bench_probe_results'`).Scan(&ddl)
+	if err == sql.ErrNoRows {
+		return nil // fresh database; the schema creates the current shape
+	}
+	if err != nil {
+		return fmt.Errorf("inspect bench_probe_results: %w", err)
+	}
+	if strings.Contains(ddl, "repeat") {
+		return nil // already widened
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// The new table is created under a temporary name and renamed into place, so
+	// a failure at any point leaves the original untouched rather than half a
+	// schema. The indexes are dropped first because SQLite carries index names
+	// across a rename and they would collide when the schema recreates them.
+	stmts := []string{
+		`DROP INDEX IF EXISTS bench_probe_results_model_at`,
+		`DROP INDEX IF EXISTS bench_probe_results_run`,
+		`CREATE TABLE bench_probe_results_new (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id        TEXT    NOT NULL,
+  model         TEXT    NOT NULL,
+  at            INTEGER NOT NULL,
+  probe         TEXT    NOT NULL,
+  class         TEXT    NOT NULL DEFAULT '',
+  capability    TEXT    NOT NULL DEFAULT '',
+  run_mode      TEXT    NOT NULL DEFAULT '',
+  toolset       TEXT    NOT NULL DEFAULT '',
+  tool_format   TEXT    NOT NULL DEFAULT '',
+  repeat        INTEGER NOT NULL DEFAULT 0,
+  stages        INTEGER NOT NULL DEFAULT 0,
+  stages_passed INTEGER NOT NULL DEFAULT 0,
+  checks_passed INTEGER NOT NULL DEFAULT 0,
+  checks_total  INTEGER NOT NULL DEFAULT 0,
+  pass          INTEGER NOT NULL DEFAULT 0,
+  wall_ms       INTEGER NOT NULL DEFAULT 0,
+  new_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  skipped       INTEGER NOT NULL DEFAULT 0,
+  skip_reason   TEXT    NOT NULL DEFAULT '',
+  note          TEXT    NOT NULL DEFAULT '',
+  UNIQUE(run_id, model, probe, run_mode, toolset, tool_format, repeat)
+)`,
+		`INSERT INTO bench_probe_results_new
+  (id, run_id, model, at, probe, class, capability, run_mode, toolset, tool_format,
+   repeat, stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
+   new_prompt_tokens, completion_tokens, skipped, skip_reason, note)
+ SELECT id, run_id, model, at, probe, class, capability, run_mode, toolset, tool_format,
+   0, stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
+   new_prompt_tokens, completion_tokens, skipped, skip_reason, note
+ FROM bench_probe_results`,
+		`DROP TABLE bench_probe_results`,
+		`ALTER TABLE bench_probe_results_new RENAME TO bench_probe_results`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("widen bench_probe_results: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 // Store wraps the SQLite handle.
 type Store struct {
 	db *sql.DB
@@ -299,6 +390,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	// SQLite is single-writer; one connection avoids "database is locked".
 	db.SetMaxOpenConns(1)
 	if err := dropStaleProbeTables(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// Before the schema below runs: it CREATEs IF NOT EXISTS, so an existing
+	// table keeps its old shape and the widening has to happen first.
+	if err := addProbeResultRepeat(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -775,6 +872,8 @@ type BenchProbeResult struct {
 	RunMode          string `json:"runMode"`
 	Toolset          string `json:"toolset"`
 	ToolFormat       string `json:"toolFormat"`
+	// Repeat is which re-run of this arm the row is (0-based).
+	Repeat           int    `json:"repeat"`
 	Stages           int    `json:"stages"`
 	StagesPassed     int    `json:"stagesPassed"`
 	ChecksPassed     int    `json:"checksPassed"`
@@ -803,10 +902,10 @@ func (s *Store) SaveBenchProbeResults(ctx context.Context, rows []BenchProbeResu
 	stmt, err := tx.PrepareContext(ctx, `
 INSERT INTO bench_probe_results
   (run_id, model, at, probe, class, capability, run_mode, toolset, tool_format,
-   stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
+   repeat, stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
    new_prompt_tokens, completion_tokens, skipped, skip_reason, note)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(run_id, model, probe, run_mode, toolset, tool_format) DO UPDATE SET
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(run_id, model, probe, run_mode, toolset, tool_format, repeat) DO UPDATE SET
   at=excluded.at, class=excluded.class, capability=excluded.capability,
   stages=excluded.stages, stages_passed=excluded.stages_passed,
   checks_passed=excluded.checks_passed, checks_total=excluded.checks_total,
@@ -820,7 +919,7 @@ ON CONFLICT(run_id, model, probe, run_mode, toolset, tool_format) DO UPDATE SET
 	defer func() { _ = stmt.Close() }()
 	for _, r := range rows {
 		if _, err := stmt.ExecContext(ctx, r.RunID, r.Model, r.At, r.Probe, r.Class,
-			r.Capability, r.RunMode, r.Toolset, r.ToolFormat, r.Stages, r.StagesPassed,
+			r.Capability, r.RunMode, r.Toolset, r.ToolFormat, r.Repeat, r.Stages, r.StagesPassed,
 			r.ChecksPassed, r.ChecksTotal, boolInt(r.Pass), r.WallMS,
 			r.NewPromptTokens, r.CompletionTokens, boolInt(r.Skipped),
 			r.SkipReason, r.Note); err != nil {
@@ -842,7 +941,7 @@ func boolInt(b bool) int {
 // that listed them in its own order would not fail, it would silently populate
 // the wrong fields.
 const benchProbeResultCols = `id, run_id, model, at, probe, class, capability, run_mode, toolset,
-       tool_format, stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
+       tool_format, repeat, stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
        new_prompt_tokens, completion_tokens, skipped, skip_reason, note`
 
 // BenchProbeResultsFor returns a model's probe rows. With runID set it scopes to
@@ -857,12 +956,12 @@ func (s *Store) BenchProbeResultsFor(ctx context.Context, model, runID string) (
 	if runID != "" {
 		rows, err = s.db.QueryContext(ctx, `SELECT `+benchProbeResultCols+`
 FROM bench_probe_results WHERE model = ? AND run_id = ?
-ORDER BY capability, class, probe, run_mode, toolset, tool_format`, model, runID)
+ORDER BY capability, class, probe, run_mode, toolset, tool_format, repeat`, model, runID)
 	} else {
 		rows, err = s.db.QueryContext(ctx, `SELECT `+benchProbeResultCols+`
 FROM bench_probe_results
 WHERE model = ? AND run_id = (SELECT run_id FROM bench_probe_results WHERE model = ? ORDER BY at DESC LIMIT 1)
-ORDER BY capability, class, probe, run_mode, toolset, tool_format`, model, model)
+ORDER BY capability, class, probe, run_mode, toolset, tool_format, repeat`, model, model)
 	}
 	if err != nil {
 		return nil, err
@@ -1007,7 +1106,7 @@ LIMIT ?`, limit)
 func (s *Store) BenchProbeResultsForRun(ctx context.Context, runID string) ([]BenchProbeResult, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+benchProbeResultCols+`
 FROM bench_probe_results WHERE run_id = ?
-ORDER BY model, capability, class, probe, run_mode, toolset, tool_format`, runID)
+ORDER BY model, capability, class, probe, run_mode, toolset, tool_format, repeat`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1026,7 +1125,7 @@ func (s *Store) BenchProbeHistory(ctx context.Context, probe string, limit int) 
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+benchProbeResultCols+`
 FROM bench_probe_results WHERE probe = ?
-ORDER BY at DESC, model, run_mode, toolset, tool_format
+ORDER BY at DESC, model, run_mode, toolset, tool_format, repeat
 LIMIT ?`, probe, limit)
 	if err != nil {
 		return nil, err
@@ -1172,13 +1271,13 @@ ORDER BY toolset, tool_format, run_mode, stage, idx`, runID, model, probe)
 func (s *Store) LatestBenchProbeResults(ctx context.Context) ([]BenchProbeResult, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT b.id, b.run_id, b.model, b.at, b.probe, b.class, b.capability, b.run_mode,
-       b.toolset, b.tool_format, b.stages, b.stages_passed, b.checks_passed,
+       b.toolset, b.tool_format, b.repeat, b.stages, b.stages_passed, b.checks_passed,
        b.checks_total, b.pass, b.wall_ms, b.new_prompt_tokens, b.completion_tokens,
        b.skipped, b.skip_reason, b.note
 FROM bench_probe_results b
 JOIN (SELECT model, MAX(at) AS at FROM bench_probe_results GROUP BY model) m
   ON m.model = b.model AND m.at = b.at
-ORDER BY b.capability, b.model, b.probe, b.run_mode, b.toolset, b.tool_format`)
+ORDER BY b.capability, b.model, b.probe, b.run_mode, b.toolset, b.tool_format, b.repeat`)
 	if err != nil {
 		return nil, err
 	}
@@ -1192,7 +1291,7 @@ func scanBenchProbeResults(rows *sql.Rows) ([]BenchProbeResult, error) {
 		var r BenchProbeResult
 		var pass, skipped int
 		if err := rows.Scan(&r.ID, &r.RunID, &r.Model, &r.At, &r.Probe, &r.Class,
-			&r.Capability, &r.RunMode, &r.Toolset, &r.ToolFormat, &r.Stages,
+			&r.Capability, &r.RunMode, &r.Toolset, &r.ToolFormat, &r.Repeat, &r.Stages,
 			&r.StagesPassed, &r.ChecksPassed, &r.ChecksTotal, &pass, &r.WallMS,
 			&r.NewPromptTokens, &r.CompletionTokens, &skipped, &r.SkipReason,
 			&r.Note); err != nil {

@@ -72,6 +72,8 @@ const ProbeDoc = graphql(/* GraphQL */ `
             toolset
             runMode
             isBaseline
+            repeats
+            flaky
             score
             pass
             skipped
@@ -118,18 +120,26 @@ function ProbePage() {
   // not describing the probe as it stands and its score is not comparable with
   // the rows that are — so say so rather than letting it average in silently.
   //
-  // Two things produce this and the UI cannot tell them apart, so it claims
-  // neither: the probe was edited after the run, or the run folded repeats
-  // (--runs N sums each repeat's stages into one row instead of keeping them as
-  // samples). An exact multiple points at the second.
+  // Repeats are divided out first, because they legitimately multiply the stage
+  // count: an arm run twice reports 6/6 of a three-stage probe, and flagging
+  // that would cry wolf on exactly the runs recording repeats was meant to make
+  // readable. What remains is either a probe edited since the run, or — for
+  // rows written before repeats were stored separately — the old fold that
+  // summed them into one row.
   const defStages = n(cat?.stages)
-  const stageMismatch = (rowStages: unknown): boolean =>
-    defStages > 0 && n(rowStages) > 0 && n(rowStages) !== defStages
-  const mismatchHint = (rowStages: unknown): string => {
-    const got = n(rowStages)
-    const base = `This run recorded ${got} stage(s); the probe defines ${defStages}.`
-    return got % defStages === 0
-      ? `${base} Exactly ${got / defStages}× — likely ${got / defStages} repeats folded into one row, not a harder probe.`
+  const repeatsOf = (r: { arms?: readonly { repeats?: unknown }[] | null }): number =>
+    Math.max(1, ...(r.arms ?? []).map((a) => n(a.repeats) || 1))
+  const perRepeat = (rowStages: unknown, reps: number) => n(rowStages) / reps
+  const stageMismatch = (rowStages: unknown, reps: number): boolean =>
+    defStages > 0 && n(rowStages) > 0 && perRepeat(rowStages, reps) !== defStages
+  const mismatchHint = (rowStages: unknown, reps: number): string => {
+    const each = perRepeat(rowStages, reps)
+    const base =
+      reps > 1
+        ? `This row pools ${reps} repeats: ${n(rowStages)} stage(s) in total, ${each} per repeat, against a probe defining ${defStages}.`
+        : `This run recorded ${n(rowStages)} stage(s); the probe defines ${defStages}.`
+    return each % defStages === 0
+      ? `${base} An exact ${each / defStages}x points at repeats summed into one row, from before repeats were recorded separately.`
       : `${base} The probe was probably edited after this run.`
   }
 
@@ -251,13 +261,21 @@ function ProbePage() {
                         ) : (
                           <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
                             <span>{`${r.stagesPassed}/${r.stages}`}</span>
-                            {stageMismatch(r.stages) && (
+                            {repeatsOf(r) > 1 && (
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                label={`x${repeatsOf(r)}`}
+                                title={`Pooled over ${repeatsOf(r)} repeats of the same arm. Totals, not one sample.`}
+                              />
+                            )}
+                            {stageMismatch(r.stages, repeatsOf(r)) && (
                               <Chip
                                 size="small"
                                 color="warning"
                                 variant="outlined"
                                 label="?"
-                                title={mismatchHint(r.stages)}
+                                title={mismatchHint(r.stages, repeatsOf(r))}
                               />
                             )}
                           </Stack>
@@ -277,6 +295,17 @@ function ProbePage() {
                             color="error"
                             label="arms disagree"
                             title="Arms of the same probe reached different verdicts — the finding a pooled score hides."
+                          />
+                        ) : (r.arms ?? []).some((a) => a.flaky) ? (
+                          // Repeats of ONE arm disagreeing is a different finding
+                          // from two arms disagreeing, and a stronger one: same
+                          // arm, same probe, different verdict. It is the reason
+                          // --runs exists, so it outranks a plain pass/fail.
+                          <Chip
+                            size="small"
+                            color="error"
+                            label="flaky"
+                            title="Repeats of the same arm reached different verdicts. The probe is not deterministic for this model."
                           />
                         ) : r.pass ? (
                           <Chip size="small" color="success" label="pass" />

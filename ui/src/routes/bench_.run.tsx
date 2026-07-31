@@ -66,6 +66,10 @@ const RunDoc = graphql(/* GraphQL */ `
             arms {
               label
               isBaseline
+              repeats
+              flaky
+            repeats
+            flaky
               score
               pass
               skipped

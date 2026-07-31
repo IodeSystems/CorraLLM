@@ -133,6 +133,16 @@ type BenchArmView struct {
 	Note             string  `json:"note,omitempty"`
 	Skipped          bool    `json:"skipped,omitempty"`
 	SkipReason       string  `json:"skipReason,omitempty"`
+	// Repeats is how many samples of this arm are pooled here (1 normally,
+	// higher when the run asked for --runs N or a pass was retried). Stages and
+	// the check counts are totals ACROSS those samples, so a reader who does not
+	// know the repeat count would read a three-stage probe run twice as a
+	// six-stage probe.
+	Repeats int `json:"repeats,omitempty"`
+	// Flaky reports that the repeats did not agree on pass/fail — the variance
+	// repeats are asked for in the first place. A pooled percentage hides it,
+	// and it is usually the most interesting thing about the row.
+	Flaky bool `json:"flaky,omitempty"`
 }
 
 // BenchProbeView is one probe across all the arms it was run under.
@@ -158,12 +168,43 @@ type BenchProbeView struct {
 func armsFor(rows []store.BenchProbeResult) []BenchArmView {
 	keys := make([]armKey, 0, len(rows))
 	byKey := map[armKey]store.BenchProbeResult{}
+	// Repeats of the same arm are separate rows now (--runs N, or a pass an
+	// agent retried). They must be POOLED, not overwritten: `byKey[k] = r` kept
+	// only whichever sample happened to be scanned last and discarded the rest,
+	// which is the same class of bug as summing them — it reports one sample as
+	// though it were the measurement.
+	//
+	// Totals, so score stays passed/stages (identical to the mean of the
+	// per-repeat scores while the repeats share a stage count) and the counts
+	// stay integers. Repeats is carried alongside so a reader can tell "6/6" over
+	// two samples from a six-stage probe.
+	repeats := map[armKey]int{}
+	disagree := map[armKey]bool{}
 	for _, r := range rows {
 		k := armKey{r.Toolset, r.ToolFormat, r.RunMode}
-		if _, seen := byKey[k]; !seen {
+		prev, seen := byKey[k]
+		if !seen {
 			keys = append(keys, k)
+			byKey[k], repeats[k] = r, 1
+			continue
 		}
-		byKey[k] = r
+		// A probe that passes on one repeat and fails on another is the variance
+		// --runs exists to find; it must not average into a bare percentage.
+		if prev.Pass != r.Pass {
+			disagree[k] = true
+		}
+		prev.Stages += r.Stages
+		prev.StagesPassed += r.StagesPassed
+		prev.ChecksPassed += r.ChecksPassed
+		prev.ChecksTotal += r.ChecksTotal
+		prev.WallMS += r.WallMS
+		prev.NewPromptTokens += r.NewPromptTokens
+		prev.CompletionTokens += r.CompletionTokens
+		prev.Pass = prev.Pass && r.Pass
+		if prev.Note == "" {
+			prev.Note = r.Note
+		}
+		byKey[k], repeats[k] = prev, repeats[k]+1
 	}
 	base := pickBaseline(keys)
 	baseScore := 0.0
@@ -185,6 +226,7 @@ func armsFor(rows []store.BenchProbeResult) []BenchArmView {
 			WallMS: r.WallMS, NewPromptTokens: r.NewPromptTokens,
 			CompletionTokens: r.CompletionTokens, Note: r.Note,
 			Skipped: r.Skipped, SkipReason: r.SkipReason,
+			Repeats: repeats[k], Flaky: disagree[k],
 		}
 		if !v.IsBaseline && !r.Skipped {
 			v.ScoreDelta = score - baseScore

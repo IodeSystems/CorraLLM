@@ -44,7 +44,7 @@ type BenchRunSummaryView struct {
 
 	Models   int     `json:"models"`
 	Probes   int     `json:"probes"`
-	Rows     int     `json:"rows" doc:"Probe×arm rows recorded; exceeds probes when the run ran A/B arms."`
+	Rows     int     `json:"rows" doc:"Probe×arm×repeat rows recorded; exceeds probes when the run ran A/B arms or repeated them."`
 	Passed   int     `json:"passed"`
 	Skipped  int     `json:"skipped"`
 	Score    float64 `json:"score" doc:"Passed / (rows - skipped). Skipped rows are excluded, not counted as failures."`

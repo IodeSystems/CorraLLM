@@ -478,10 +478,21 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID, outDir 
 	if c == nil || runID == "" {
 		return
 	}
-	// The key is the ARM, not just the probe. Toolset and tool format are the
-	// A/B dimensions a run varies on purpose; folding them together averages
-	// the arms into one number and destroys the comparison they exist to make.
-	type key struct{ model, probe, mode, toolset, format string }
+	// The key is the ARM AND THE REPEAT, not just the probe. Toolset and tool
+	// format are the A/B dimensions a run varies on purpose; folding them
+	// together averages the arms into one number and destroys the comparison
+	// they exist to make.
+	//
+	// The repeat index belongs here for a stronger reason: without it, `stages++`
+	// counts every repeat's stages into one row. A --runs 2 matrix produced rows
+	// claiming exactly twice the probe's stages and checks — a probe of 3 stages
+	// recorded as 6/6 — and the doubled score was not comparable with any
+	// single-pass run. Repeats are independent samples, which is the whole point
+	// of asking for them; summing them measures nothing.
+	type key struct {
+		model, probe, mode, toolset, format string
+		repeat                              int
+	}
 	type agg struct {
 		class, capability         string
 		stages, passed            int
@@ -493,7 +504,7 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID, outDir 
 	byProbe := map[key]*agg{}
 	var order []key
 	for _, r := range rows {
-		k := key{r.Model, r.Task, r.RunMode, r.Toolset, r.ToolFormat}
+		k := key{r.Model, r.Task, r.RunMode, r.Toolset, r.ToolFormat, r.Run}
 		a := byProbe[k]
 		if a == nil {
 			a = &agg{class: r.Class, capability: r.Capability}
@@ -526,6 +537,7 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID, outDir 
 		RunMode          string `json:"runMode,omitempty"`
 		Toolset          string `json:"toolset,omitempty"`
 		ToolFormat       string `json:"toolFormat,omitempty"`
+		Repeat           int    `json:"repeat,omitempty"`
 		Stages           int    `json:"stages"`
 		StagesPassed     int    `json:"stagesPassed"`
 		ChecksPassed     int    `json:"checksPassed"`
@@ -543,7 +555,7 @@ func PublishProbeResults(ctx context.Context, c *residencyClient, runID, outDir 
 		a := byProbe[k]
 		recs = append(recs, record{
 			Model: k.model, Probe: k.probe, Class: a.class, Capability: a.capability,
-			RunMode: k.mode, Toolset: k.toolset, ToolFormat: k.format,
+			RunMode: k.mode, Toolset: k.toolset, ToolFormat: k.format, Repeat: k.repeat,
 			Stages: a.stages, StagesPassed: a.passed,
 			ChecksPassed: a.checksPassed, ChecksTotal: a.checksTotal,
 			Pass: a.stages > 0 && a.passed == a.stages, WallMS: a.wall,

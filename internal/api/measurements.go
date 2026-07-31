@@ -481,6 +481,7 @@ type BenchProbePublish struct {
 	RunMode          string `json:"runMode,omitempty"`
 	Toolset          string `json:"toolset,omitempty" doc:"A/B arm: tool surface offered."`
 	ToolFormat       string `json:"toolFormat,omitempty" doc:"A/B arm: tool-result encoding."`
+	Repeat           int    `json:"repeat,omitempty" doc:"0-based index of which re-run of this arm the row is (--runs N, or a retried pass). Repeats are independent samples, not one row to be summed."`
 	Stages           int    `json:"stages,omitempty"`
 	StagesPassed     int    `json:"stagesPassed,omitempty"`
 	ChecksPassed     int    `json:"checksPassed,omitempty"`
@@ -588,7 +589,7 @@ func (h *Handlers) PublishBenchProbeResults(ctx context.Context, in *BenchProbeR
 		rows = append(rows, store.BenchProbeResult{
 			RunID: in.Body.RunID, Model: r.Model, At: at, Probe: r.Probe,
 			Class: r.Class, Capability: r.Capability, RunMode: r.RunMode,
-			Toolset: r.Toolset, ToolFormat: r.ToolFormat,
+			Toolset: r.Toolset, ToolFormat: r.ToolFormat, Repeat: r.Repeat,
 			Stages: r.Stages, StagesPassed: r.StagesPassed,
 			ChecksPassed: r.ChecksPassed, ChecksTotal: r.ChecksTotal,
 			Pass: r.Pass, WallMS: r.WallMS, NewPromptTokens: r.NewPromptTokens,
