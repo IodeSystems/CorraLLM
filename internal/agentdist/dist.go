@@ -53,6 +53,40 @@ func (h *Handler) servedVersion() string {
 	return h.Version
 }
 
+// hasBinaries reports whether Dir holds at least one built agent artifact.
+//
+// A primary that was downloaded rather than built in-tree has no bin/agents at
+// all, and `make agents` is a separate target even in the repo — so an empty
+// directory is the normal state of a fresh install, not an anomaly.
+func (h *Handler) hasBinaries() bool {
+	entries, err := os.ReadDir(h.Dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "corrallm-") {
+			return true
+		}
+	}
+	return false
+}
+
+// noBinariesScript is what /install.sh serves when nothing has been built.
+//
+// Still a 200 carrying a script that exits 1, rather than an HTTP error: the
+// documented invocation is `curl -fsSL … | sh`, and -f makes curl print NOTHING
+// on a 4xx. The operator would see an empty line and no reason. A script that
+// explains itself and exits non-zero fails just as loudly and says why.
+func noBinariesScript(dir string) string {
+	return `#!/bin/sh
+# corrallm agent installer — UNAVAILABLE on this primary.
+echo "corrallm: this primary has no agent binaries to install." >&2
+echo "  It serves them from: ` + dir + `" >&2
+echo "  Build them there with 'make agents', then retry this command." >&2
+exit 1
+`
+}
+
 // InstallScript renders the bootstrap a machine pipes into bash.
 //
 // It detects the platform itself rather than trusting the caller, refuses
@@ -60,6 +94,9 @@ func (h *Handler) servedVersion() string {
 // the token into a shell history — the token is the membership credential and
 // deserves a file with sane permissions.
 func (h *Handler) InstallScript(base string) string {
+	if !h.hasBinaries() {
+		return noBinariesScript(h.Dir)
+	}
 	return `#!/bin/sh
 # corrallm agent installer.
 #

@@ -1416,10 +1416,14 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Modalities map[string]config.ModalitySpec `json:"modalities"`
 		Capability string                         `json:"capability"` // chat|embeddings|audio.stt|audio.tts|rerank
 	}
+	// Data starts non-nil so an empty config serialises as [] rather than null.
+	// OpenAI clients iterate the list without a nil check, and a fresh install
+	// — the one case where the list IS empty — is exactly when someone is
+	// pointing a client at it for the first time.
 	out := struct {
 		Object string  `json:"object"`
 		Data   []model `json:"data"`
-	}{Object: "list"}
+	}{Object: "list", Data: []model{}}
 
 	// AllModels, not cfg.Models: a discovered model is served, so it must be
 	// listed. Omitting it would leave callers unable to find models the gateway

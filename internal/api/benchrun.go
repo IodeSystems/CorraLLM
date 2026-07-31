@@ -135,6 +135,17 @@ func (b *BenchRunner) Start(
 	if b == nil {
 		return BenchRunStatus{}, fmt.Errorf("bench runner unavailable")
 	}
+	// Resolve the binary BEFORE taking the lock or the lease. --bench-bin
+	// defaults to "llm-bench" on $PATH, which a fresh install does not have, and
+	// discovering that at cmd.Start() means the failure arrives after the
+	// exclusive lease was granted — a lockout that evicts every model in service
+	// of a run that was never going to happen. It also means the operator reads
+	// "executable file not found in $PATH" instead of which flag to set.
+	if _, err := exec.LookPath(opts.Bin); err != nil {
+		return BenchRunStatus{}, fmt.Errorf(
+			"llm-bench is not available: %q could not be resolved. "+
+				"Build it from the corrallm repo and point --bench-bin at it", opts.Bin)
+	}
 	b.mu.Lock()
 	if b.running {
 		b.mu.Unlock()

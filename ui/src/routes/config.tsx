@@ -30,8 +30,11 @@ import { fmtBytes } from '@/format'
  * when something is missing or routed somewhere surprising, and the answer is
  * usually in a file rather than in the runtime.
  *
- * Everything here is read-only. Editing config from a dashboard means writing a
- * file a human owns, and corrallm only writes machine-owned includes.
+ * Editable, but only against the MANAGED config — the one corrallm writes and
+ * owns. A hand-written config is still refused (the server checks for its
+ * header), because rewriting it would silently drop the comments its author
+ * put there. Entries are edited as YAML rather than through a form: see the
+ * note on the mutation below.
  */
 const ConfigDoc = graphql(/* GraphQL */ `
   query Config {
@@ -262,6 +265,30 @@ function ConfigPage() {
           Add model
         </Button>
       </PageHeader>
+
+      {/* First run. Every panel below renders empty on a fresh install, which
+          looks like a page that failed to load rather than one with nothing to
+          show yet — and says nothing about which of the two "Add" buttons to
+          press first. A proxy model needs no host, so it is the shortest path
+          to a working instance. */}
+      {models.length === 0 && servers.length === 0 && (
+        <Panel title="Nothing configured yet">
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            This instance is running but serves no models. The quickest start is{' '}
+            <b>Add model</b> with a <code>proxy:</code> target — an upstream API such as Groq or
+            OpenRouter — which needs no host declared. To run models on this machine instead,{' '}
+            <b>Add host</b> first to declare its memory budget, then add models that name it.
+          </Typography>
+          <Stack direction="row" spacing={1}>
+            <Button size="small" variant="contained" onClick={() => setEditing(blankModel())}>
+              Add model
+            </Button>
+            <Button size="small" variant="outlined" onClick={() => setEditing(blankServer())}>
+              Add host
+            </Button>
+          </Stack>
+        </Panel>
+      )}
 
       <Panel
         title="Hosts"

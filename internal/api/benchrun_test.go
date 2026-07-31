@@ -69,17 +69,25 @@ func TestBenchRunner_ReleasesLeaseOnFailure(t *testing.T) {
 	}
 }
 
-// A binary that does not exist must release the lease too — this is the easiest
-// misconfiguration to hit (wrong --bench-bin) and would otherwise lock the box.
-func TestBenchRunner_ReleasesLeaseWhenBinaryMissing(t *testing.T) {
+// A binary that does not exist must not take the lease in the FIRST place.
+//
+// This is the easiest misconfiguration to hit — --bench-bin defaults to
+// "llm-bench" on $PATH, which a fresh install does not have. Taking the
+// exclusive lease and then discovering the binary is missing evicts every
+// resident model and 429s every caller in service of a run that was never going
+// to start. Resolving the path first means the failure costs nothing.
+func TestBenchRunner_TakesNoLeaseWhenBinaryMissing(t *testing.T) {
 	b := NewBenchRunner()
 	spy := &leaseSpy{}
 	_, err := b.Start(BenchStartOptions{Bin: "/nonexistent/llm-bench-xyz"}, spy.begin, spy.end)
 	if err == nil {
 		t.Fatal("expected a start error")
 	}
-	if len(spy.ended) != 1 {
-		t.Errorf("a failed spawn must release the lease it took: begun=%v ended=%v", spy.begun, spy.ended)
+	if !strings.Contains(err.Error(), "--bench-bin") {
+		t.Errorf("the error must name the flag to fix; got %q", err)
+	}
+	if len(spy.begun) != 0 {
+		t.Errorf("no lease may be taken for a binary that cannot run: begun=%v", spy.begun)
 	}
 	if b.Status().Running {
 		t.Error("runner must not stay marked running after a failed spawn")
