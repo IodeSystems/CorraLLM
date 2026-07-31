@@ -139,18 +139,18 @@ func newIntrospectCmd() *cobra.Command {
 		Use:   "introspect",
 		Short: "Report GPU VRAM and cached slot-tuning profiles (read-only; spawns nothing)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			dbPathResolved := pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db"))
+			p := derivePaths(defaultHome(), configPath, dbPath)
 			return introspect(cmd, introspectOpts{
-				configPath: pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
-				tuneCache:  envOr("CORRALLM_TUNE_CACHE", defaultTuneCachePath(dbPathResolved)),
+				configPath: p.config,
+				tuneCache:  envOr("CORRALLM_TUNE_CACHE", defaultTuneCachePath(p.db)),
 				vramMargin: pickInt(vramMargin, envInt("CORRALLM_VRAM_MARGIN", 512)),
 				json:       asJSON,
 			})
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default ./corrallm.yaml or CORRALLM_CONFIG)")
-	f.StringVar(&dbPath, "db", "", "path used only to resolve the default tune-cache location, <db-dir>/vram-profile.json (default ./home/var/corrallm.db or CORRALLM_DB); introspect never opens the DB itself")
+	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default <home>/config.yml or CORRALLM_CONFIG)")
+	f.StringVar(&dbPath, "db", "", "path used only to resolve the default tune-cache location, <db-dir>/vram-profile.json (default <home>/var/corrallm.db or CORRALLM_DB); introspect never opens the DB itself")
 	f.IntVar(&vramMargin, "vram-margin", 0, "MiB of free VRAM kept back when computing the slot count a model would tune to right now (default 512 or CORRALLM_VRAM_MARGIN; must match serve's setting to predict its behavior)")
 	f.BoolVar(&asJSON, "json", false, "machine-readable JSON output")
 	return cmd
@@ -294,16 +294,19 @@ func newServeCmd() *cobra.Command {
 			} else if n > 0 {
 				slog.Info("properties loaded", "keys", n, "home", home, "service", service)
 			}
-			dbPathResolved := pick(dbPath, envOr("CORRALLM_DB", "./home/var/corrallm.db"))
+			p := derivePaths(home, configPath, dbPath)
+			dbPathResolved := p.db
+			slog.Info("paths resolved", "home", p.home, "config", p.config, "db", p.db)
 			return serve(cmd.Context(), serveOpts{
 				webRoot:            pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
 				agentDir:           pick(agentDir, envOr("CORRALLM_AGENT_DIR", "./bin/agents")),
 				publicBase:         pick(publicBase, envOr("CORRALLM_PUBLIC_BASE", "")),
-				configPath:         pick(configPath, envOr("CORRALLM_CONFIG", "./corrallm.yaml")),
+				configPath:         p.config,
+				configDerived:      p.configDerived,
 				dbPath:             dbPathResolved,
 				addr:               envOr("ADDR", ":6502"),
 				healthTimeout:      pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
-				tokenPath:          filepath.Join(home, "admin.token"),
+				tokenPath:          p.token,
 				activityRetention:  pickDuration(activityRetention, envDuration("CORRALLM_ACTIVITY_RETENTION", 30*24*time.Hour)),
 				requestTimeout:     pickDuration(requestTimeout, envDuration("CORRALLM_REQUEST_TIMEOUT", 0)),
 				capturePayloads:    capturePayloads,
@@ -323,13 +326,13 @@ func newServeCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&home, "home", envOr("CORRALLM_HOME", "./home"), "config home holding the layered .properties files")
+	f.StringVar(&home, "home", defaultHome(), "directory corrallm roots its own state in — config, SQLite store, admin token, layered .properties (or CORRALLM_HOME)")
 	f.StringVar(&service, "service", envOr("CORRALLM_SLOT", "dev"), "service/slot selecting override .properties (dev|current|next)")
 	f.StringVar(&webRoot, "web-root", "", "directory to serve the SPA from (default ./ui/dist or WEB_ROOT)")
 	f.StringVar(&publicBase, "public-base", "", "how attached machines reach this daemon, e.g. http://box1:8111 (or CORRALLM_PUBLIC_BASE); used in the install command")
 	f.StringVar(&agentDir, "agent-dir", "", "directory of cross-compiled agent binaries to serve at /install/ (default ./bin/agents or CORRALLM_AGENT_DIR; populate with `make agents`)")
-	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default ./corrallm.yaml or CORRALLM_CONFIG)")
-	f.StringVar(&dbPath, "db", "", "path to the SQLite database (default ./home/var/corrallm.db or CORRALLM_DB)")
+	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default <home>/config.yml or CORRALLM_CONFIG)")
+	f.StringVar(&dbPath, "db", "", "path to the SQLite database (default <home>/var/corrallm.db or CORRALLM_DB)")
 	f.DurationVar(&healthTimeout, "health-timeout", 0, "max time a cold backend spawn may take to become healthy (default 120s or CORRALLM_HEALTH_TIMEOUT); raise for large models")
 	f.DurationVar(&activityRetention, "activity-retention", 0, "delete activity-log rows older than this (default 720h/30d or CORRALLM_ACTIVITY_RETENTION; 0 disables)")
 	f.DurationVar(&requestTimeout, "request-timeout", 0, "max wall-clock for one proxied request before corrallm cancels it (or CORRALLM_REQUEST_TIMEOUT; 0 = no corrallm deadline, defer to client + backend)")
@@ -358,6 +361,7 @@ func defaultTuneCachePath(dbPath string) string {
 
 type serveOpts struct {
 	webRoot, configPath, dbPath, addr     string
+	configDerived                         bool
 	agentDir, publicBase                  string
 	healthTimeout                         time.Duration
 	tokenPath                             string
@@ -373,6 +377,11 @@ type serveOpts struct {
 }
 
 func serve(ctx context.Context, o serveOpts) error {
+	if o.configDerived {
+		if err := bootstrapConfig(o.configPath); err != nil {
+			return err
+		}
+	}
 	cfg, err := config.Load(o.configPath)
 	if err != nil {
 		return err
