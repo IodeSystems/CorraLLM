@@ -1,5 +1,35 @@
 name: fix-failing-test
 class: coding
+description: |
+  ## What this measures
+
+  The basic debugging loop, in three stages that must happen in order: run the
+  failing suite and report what is wrong, fix the SOURCE (not the test), then
+  verify by re-running.
+
+  Splitting diagnosis from repair is the point. A model that jumps straight to a
+  fix may land it, but stage 1 asks whether it can first observe and describe the
+  failure — which is the part that generalises to bugs it cannot guess.
+
+  ## Guarding the obvious cheat
+
+  The tempting shortcut is to make the test green by editing the test. The check
+  is a git diff against `mathx_test.go`, not a content match, because the runner
+  git-commits every scratch workspace before the run.
+
+  That catches strictly more than inspecting the file would. A prepended
+  `t.Skip()` leaves every assertion textually intact — it would slip past a
+  `file_contains` check while still turning the suite green. It is also stronger
+  than the tool-level check it replaced (`tool_not_called: write_file`), which a
+  model walked around by calling `run sed -i`.
+
+  ## Why the fix check names no tool
+
+  Stage 2 asserts `go test ./...` passes rather than that `write_file` was
+  called. Passing tests is strictly stronger — writing a file proves nothing
+  about its contents — and it stays fair across toolsets, since a model editing
+  through `node_edit` would fail a `write_file` check for using its own
+  vocabulary.
 workspace: _fixture/
 limits: { maxTurnsPerStage: 8, maxToolCallsPerStage: 24 }
 stages:

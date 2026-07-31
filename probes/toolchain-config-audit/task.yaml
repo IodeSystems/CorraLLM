@@ -1,5 +1,30 @@
 name: toolchain-config-audit
 class: tooluse
+description: |
+  ## What this measures
+
+  A short two-stage task: find a disagreement between a server config and a
+  client config that are supposed to agree on the API port, report it, then fix
+  the client side without breaking the file.
+
+  Stage 1 wants the inconsistency written to `findings.txt` naming the field and
+  both values. Stage 2 wants `client.json` edited to match the server's port and
+  to still parse as JSON — verified by actually loading it with Python, not by
+  looking at the text.
+
+  ## Why the checks avoid naming tools
+
+  The stage-1 check asserts `findings.txt` has the right content rather than that
+  `write_file` was called. Content is strictly stronger — calling a write tool
+  proves nothing about what was written — and it stays fair across toolsets: a
+  model editing through poly-lsp's `node_edit` would fail a `write_file` check
+  for using its own vocabulary, which scores dialect instead of capability.
+
+  ## Reading a failure
+
+  A valid-JSON check that fails alongside a correct port means the model got the
+  value right and the syntax wrong — a different defect from not finding the
+  discrepancy at all.
 workspace: _fixture/
 limits: { maxTurnsPerStage: 8, maxToolCallsPerStage: 24 }
 stages:

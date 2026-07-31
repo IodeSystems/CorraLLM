@@ -1,5 +1,33 @@
 name: codebase-navigation
 class: tooluse
+description: |
+  ## What this measures
+
+  Whether a model can answer exact structural questions about a Go codebase and
+  record them. Three questions, answered into `answers.txt` as labeled lines:
+  which functions call `Store.Save`, what `Server.Handle` returns, and every
+  struct with a `CreatedAt` field. Nothing is modified — this is a read-only
+  comprehension task.
+
+  ## Why these three questions
+
+  Each is chosen to punish naive text search:
+
+  - **Call sites** — receiver aliasing hides them. A plain `grep Save` misses the
+    `s.Save` and `store.Save` spellings that actually appear.
+  - **Return type** — has to be resolved, not matched. The answer (`*Response`)
+    is not adjacent to the string you would search for.
+  - **Shared field name** — `CreatedAt` appears on three different structs, and
+    under-counting is the easy failure.
+
+  A symbol index answers all three directly; grep-and-reason has to reconstruct
+  them. That gap is the capability under test.
+
+  ## Reading a failure
+
+  Checks assert each expected symbol appears in `answers.txt`, so a partial
+  answer scores partially. Missing `Register` or `Import` means call sites were
+  under-found; a missing struct name means the field search stopped early.
 workspace: _fixture/
 # Favors poly-lsp: read-only structural questions with exact answers. poly-lsp's
 # node_references answers "who calls Store.Save" precisely; node_query resolves

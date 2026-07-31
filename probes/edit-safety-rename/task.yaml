@@ -1,5 +1,33 @@
 name: edit-safety-rename
 class: coding
+description: |
+  ## What this measures
+
+  The top rung of the edit-safety ladder: a cross-file rename. The type `Config`
+  becomes `Settings`, with 6 usages spread across 4 files.
+
+  This is where hand editing gets error-prone. Grep-and-rewrite has to find every
+  usage and change each one; miss a single site and the package will not compile.
+  A workspace-wide structural rename touches them all in one pass, and under
+  `--validate` a partial break is reverted rather than left on disk.
+
+  ## Two things are being measured at once
+
+  - **Pass rate** — does the unvalidated arm slip and fail outright?
+  - **`brokenIntermediates`** — do partial renames LAND on disk along the way?
+
+  The second is the interesting one. A model can thrash through several
+  compile-broken states and still finish correctly, scoring the same pass as one
+  that never broke anything. The safety check (`go build ./...`) runs after every
+  mutating call, so that difference shows up as a count rather than being
+  averaged away by the final verdict.
+
+  ## Reading a failure
+
+  Build and test enforce a CONSISTENT rename — a partial one cannot compile. The
+  declaration itself is checked directly (`type Settings struct` present, `type
+  Config struct` gone) so a model cannot pass by renaming callers and leaving the
+  type. Comment mentions of `Config` are deliberately ignored.
 # Ladder rung L3: a cross-file rename (type Config → Settings, 6 usages across 4
 # files). This is where grep+sed/write (baseline) gets error-prone — miss a
 # usage and it won't compile — and where poly-lsp's workspace-wide node_edit

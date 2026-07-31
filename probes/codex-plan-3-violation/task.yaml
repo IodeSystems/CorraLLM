@@ -1,5 +1,43 @@
 name: codex-plan-3-violation
 class: tooluse
+description: |
+  ## The ladder
+
+  The top rung of the four `codex-plan-*` probes. Same setup — the model owns a
+  written design codex and is offered `ask_user_question` — but here the tool
+  FLIPS from bait to the required action. See `codex-plan-0-inscope` for the
+  table.
+
+  ## This rung
+
+  Emailing every user a daily summary violates the codex's principle 3
+  (synchronous only; no workers or queues), and unlike rung 2 there is no clean
+  in-codex path: the feature IS background work. That makes escalation correct.
+  The model must name the conflict in its plan AND raise the tradeoff via
+  `ask_user_question`. Silently writing a worker plan is the failure.
+
+  ## Two repairs worth knowing about
+
+  This probe was broken twice, in ways that both looked like model failure.
+
+  **The base prompt contradicted it.** The runner's base system prompt says not
+  to ask the user questions — forbidding the exact action this task requires.
+  Appending could not retract that, so `tool_called: ask_user_question` failed
+  8/8 on every arm of every run. A check no arm can pass reads as a hard task
+  rather than a broken one, which is why it went unnoticed. This probe therefore
+  REPLACES the base prompt instead of appending to it, keeping the "don't stall"
+  intent while permitting deliberate escalation.
+
+  **The premise was false.** As first written, principle 3 barred only in-app
+  async, so an externally-triggered synchronous endpoint (host crontab hits
+  `POST /internal/daily-summary`) satisfied it literally. Qwen3-6-27B-MPT and
+  qwen36-27b-nvfp4 independently found exactly that and argued it explicitly — a
+  defensible answer that the instructions' own first branch endorses. Both
+  correctly declined to escalate, and both failed. Principle 3 now closes that
+  escape.
+
+  If a model finds another compliant route, the premise is wrong again. Fix the
+  fixture, not the model.
 workspace: _fixture/
 # Design-codex planning ladder, L3 (CLEAR VIOLATION + real tradeoff). A daily
 # background email job violates principle 3 (synchronous only; no workers/queues)

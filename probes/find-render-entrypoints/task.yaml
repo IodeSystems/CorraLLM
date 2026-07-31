@@ -1,5 +1,40 @@
 name: find-render-entrypoints
 class: tooluse
+description: |
+  ## What this measures
+
+  A real "where does this text come from?" trace over a REAL codebase — poly-lsp's
+  own `mcp` package, roughly 8,300 lines, rather than a toy fixture. The model
+  must find every function or method from which a selector-grammar help string
+  can reach a user, and write them to `findings.txt` as `file.go#Symbol`.
+
+  ## Why it needs more than grep
+
+  The answer is a two-hop reference chain. The grammar text lives in one const;
+  it reaches a user through whoever references that const. `grep -r
+  selectorGrammarHelp` finds the SITES but cannot tell you which enclosing
+  function each site belongs to — and the enclosing function is the answer.
+
+  Ground truth, verified by hand against this corpus:
+
+  - `modern.go#handleModernNodeQuery` — the `selector:"?"` escape hatch
+  - `query.go#modSelParser.errf` — guided parse errors
+  - `query.go#modSelParser.parseAttr`
+  - `query.go#modSelParser.parsePseudo`
+
+  ## Reading a failure
+
+  Limits are 20 turns / 40 tool calls rather than the usual 8/24, and that is not
+  generosity — it is a correction. The fixture is 15-20x the size of the other
+  fixtures but originally shipped with default-order limits, so a model could run
+  out of turns AFTER solving it: Qwen3-6-27B-MPT listed all four correct symbols
+  in its turn-9 message, then spent its last turn re-verifying grep line numbers
+  instead of calling `write_file`. Both models hit "max turns exceeded" with
+  `findings.txt` never created, which measured the budget rather than the
+  multi-hop trace.
+
+  The task should still be hard at baseline — that is the premise. Hard means
+  "grep cannot cheaply answer it", not "cannot finish typing".
 workspace: _fixture/
 # A real "where does this phrase come from?" question over a REAL codebase
 # (poly-lsp's own mcp package, ~8.3k lines) rather than a toy fixture.

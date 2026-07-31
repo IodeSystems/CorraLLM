@@ -1,5 +1,36 @@
 name: cross-language-rename
 class: tooluse
+description: |
+  ## What this measures
+
+  The same logical field under three different spellings, in three languages,
+  renamed consistently in one pass:
+
+  | File | Before | After |
+  |---|---|---|
+  | `model.go` (Go identifier) | `LegacyID` | `ArchivedID` |
+  | `model.go` (JSON tag) | `legacy_id` | `archived_id` |
+  | `client.ts` (TypeScript) | `legacyId` | `archivedId` |
+  | `config.yaml` (YAML key) | `legacy_id` | `archived_id` |
+
+  Each has to end up in its own language's casing, so this is not a
+  find-and-replace of one string — it is four coordinated edits that a model has
+  to recognise as the same field.
+
+  ## Why it is hard without cross-language addressing
+
+  Nothing links the four representations textually. Searching for any one
+  spelling finds only its own file, so the model has to know the mapping exists
+  and go looking. The characteristic failure is getting three of four and missing
+  a casing — usually the JSON tag, which sits inside the Go file the model
+  already edited and reads as part of a line it thinks it has handled.
+
+  ## Reading a failure
+
+  Every file is checked in both directions: new name present AND old name absent
+  (negations run via `sh -c`). A file passing "present" but failing "absent"
+  means the model added the new spelling without removing the old — a
+  half-applied rename that would leave both fields live.
 workspace: _fixture/
 # Favors poly-lsp: the SAME logical field appears in three languages with
 # language-appropriate casing — Go `LegacyID` (+ json tag `legacy_id`),

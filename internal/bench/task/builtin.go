@@ -104,7 +104,17 @@ type CatalogEntry struct {
 	Name     string `json:"name"`
 	Class    string `json:"class"`
 	Source   Source `json:"source"`
-	Summary  string `json:"summary,omitempty"`
+	// Summary is a one-line gloss for list views.
+	Summary string `json:"summary,omitempty"`
+	// Description is the probe's FULL prose — what it seeds, what it asks, what
+	// the checks assert and how to read a failure. Markdown.
+	//
+	// Separate from Summary because they answer different questions and a
+	// catalog needs both: a list of twenty probes wants one line each, and the
+	// reader who stops on one of them wants the whole thing. Truncating to the
+	// summary was not a display choice, it was data loss — the prose existed in
+	// the probe and had no way to reach a reader.
+	Description string `json:"description,omitempty"`
 	Run      string `json:"run,omitempty"`      // "", "cold", "warm", "both"
 	Requires string `json:"requires,omitempty"` // effective capability, when the probe demands one
 	Checks   int    `json:"checks"`
@@ -227,19 +237,37 @@ func describe(t *Task, name string, src Source) CatalogEntry {
 	for _, s := range t.Stages {
 		e.Checks += len(s.Checks)
 	}
+	e.Description = strings.TrimSpace(t.Description)
 	if e.Summary == "" {
 		e.Summary = firstLine(t.Description)
 	}
 	return e
 }
 
+// firstLine reduces a description to a one-line gloss.
+//
+// It skips MARKDOWN FURNITURE — headings, blank lines, list and table markers,
+// block quotes — and returns the first line of actual prose. A description that
+// opens with "## What this measures" is well-formed, and taking its literal
+// first line would put that heading in every list view as though it were the
+// summary of the probe.
 func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
+	for ln := range strings.SplitSeq(s, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		// Headings, list bullets, table rows/separators, quotes: structure, not
+		// a sentence.
+		if strings.HasPrefix(ln, "#") || strings.HasPrefix(ln, "|") ||
+			strings.HasPrefix(ln, ">") || strings.HasPrefix(ln, "- ") ||
+			strings.HasPrefix(ln, "* ") || strings.HasPrefix(ln, "---") {
+			continue
+		}
+		if len(ln) > 160 {
+			ln = ln[:160]
+		}
+		return strings.TrimSpace(ln)
 	}
-	if len(s) > 160 {
-		s = s[:160]
-	}
-	return strings.TrimSpace(s)
+	return ""
 }

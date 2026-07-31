@@ -1,5 +1,45 @@
 name: compaction-continuation
 class: tooluse
+description: |
+  ## What this measures
+
+  Whether a model still knows what it learned before its context was folded.
+
+  Stage 1 has it survey every file so operational facts — the production port
+  `7443`, the primary region `us-west-2` — enter the conversation history. Stages
+  2 and 3 then set `forceCompact`, which folds the history into a summary BEFORE
+  the prompt runs, and ask the model to use those facts.
+
+  ## Why the fold is forced
+
+  Compaction is triggered deterministically rather than by letting budget
+  pressure trip it. Waiting for a natural fold would make the probe measure
+  whether compaction HAPPENED, which varies with prompt size and model verbosity,
+  instead of whether recall survived it. `compactions_min: 1` guards that the
+  fold actually occurred, so a run where nothing folded cannot quietly pass.
+
+  A moderate `contextBudget` of 8000 keeps level-of-detail truncation in play as
+  well.
+
+  Re-reading files to recover a fact is allowed — that is continuation behaviour,
+  and only failing the task is disallowed. Stage 3 goes further than recall: one
+  service config disagrees with the documented port, and fixing it requires
+  knowing what the documented port was.
+
+  ## About the `compaction_under` bound
+
+  The 4500-token ceiling is a soft lower-is-better gate, and it is looser than it
+  looks. `compactionTokensAfter` measures marker + PRESERVED TAIL, and the
+  harness preserves the last 20 messages / 5 tool-call pairs verbatim, so the
+  stage-1 file survey passes straight through and dominates the number.
+  Qwen3-6-27B-MPT and qwen36-27b-nvfp4 landed at 2950 and 3211 — a 9% spread
+  across two quantizations, meaning the figure barely moves with the model.
+
+  The original bound of 1500 was below anything this configuration can emit, so
+  it failed 100% of the time while the recall checks passed — measuring the
+  preserve policy rather than summary quality. Until agentkit reports summary
+  size separately from the preserved tail, this bound only catches a genuinely
+  bloated fold.
 workspace: _fixture/
 # Facts are established in stage 1, then the session history is DETERMINISTICALLY
 # folded (forceCompact) before stage 2 — so we measure whether the model still

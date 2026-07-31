@@ -1,5 +1,34 @@
 name: edit-safety-import
 class: coding
+description: |
+  ## What this measures
+
+  The edit-safety ladder's hardest single-file rung, tuned so that even a capable
+  model slips some of the time — which is what makes the validated-vs-unvalidated
+  comparison measurable at all.
+
+  Removing the deprecated `Parse` function from `calc/calc.go` orphans ONLY the
+  `strconv` import. The `errors` import must stay, because `ErrEmpty` still uses
+  it. So the narrow-correct edit is "drop `Parse` and `strconv`, keep `errors`".
+
+  ## Why every near-miss is detectable
+
+  The plausible slips all break the build in the same file:
+
+  - drop both imports → `undefined: errors`
+  - drop neither → `strconv imported and not used`
+  - drop `errors` instead → `ErrEmpty` breaks
+
+  There is no way to be *slightly* wrong here and still compile. Every miss is a
+  new same-file diagnostic, which is exactly what revert-on-new-diagnostics acts
+  on — so the gap between the plain and `--validate` arms is the runs where the
+  model slipped and validation converted a failure into a guided retry.
+
+  ## Reading a failure
+
+  `go build` and `go test` must pass, and the test file must be untouched
+  (git-diff checked). A failure with a clean diff is an import mistake; a failure
+  with a dirty diff means the model went after the test instead of the code.
 # Harder edit-safety task, tuned to trip even a capable model on a FIXED strong
 # candidate (Qwen). Removing Parse orphans ONLY the strconv import — errors must
 # stay (ErrEmpty uses it). The narrow-correct edit is "drop Parse + strconv,

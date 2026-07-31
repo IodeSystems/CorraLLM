@@ -1,5 +1,33 @@
 name: multi-file-refactor
 class: coding
+description: |
+  ## What this measures
+
+  A symbol rename that spans a whole module: `UserID` becomes `AccountID`. The
+  type is defined in `types.go` and referenced across four more files as a struct
+  field, function parameters, a map key type, call sites, and a test.
+
+  A structural rename covers every site in one pass. Hand editing has to grep out
+  each site and rewrite each file, and missing one breaks the build — which is
+  what the checks detect.
+
+  ## Why the checks are semantic, not textual
+
+  `go build` passing is the real proof that EVERY code reference was renamed: a
+  leftover `UserID` identifier would be undefined and fail to compile. So the
+  build is the check, rather than a grep for the absence of the old name.
+
+  That distinction matters. A correct symbol rename legitimately leaves a doc
+  COMMENT mentioning `UserID` untouched, and grepping for the bare string would
+  penalise it — rewarding blind text-replace over correct refactoring, which is
+  exactly backwards for what this task exists to measure. Only the type
+  DECLARATION is asserted textually.
+
+  ## Reading a failure
+
+  A build failure means the rename was partial. A build that passes with `type
+  AccountID` missing means nothing was actually renamed. `go test` last, to
+  confirm behaviour survived.
 workspace: _fixture/
 # Favors poly-lsp: `UserID` is defined in types.go and referenced across 4 more
 # files (struct field, func params, map key type, call sites, test). A structural

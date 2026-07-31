@@ -1,5 +1,38 @@
 name: edit-safety-pop
 class: coding
+description: |
+  ## What this measures
+
+  The cheapest rung of the edit-safety ladder: does a single bad edit LAND on
+  disk, and does the toolset catch it?
+
+  The task is one method — implement `Pop` on `IntStack`, returning the top
+  element with `ok=true` or `0, false` when empty. One node, one edit, no
+  multi-site refactor to confound the result.
+
+  ## Why this specific task
+
+  A plausible first attempt trips Go's strict compiler: a missing return, a
+  declared-and-not-used variable, a wrong type. Each is a NEW diagnostic in the
+  same file — precisely the signal that revert-on-new-diagnostics (poly-lsp's
+  `--validate`) acts on.
+
+  Validated editing reverts the broken write and hands the error back for an
+  in-turn retry. Unvalidated editing leaves the file broken until the model
+  happens to re-run the tests, spending turns it may not have. Because the edit
+  is a single node, any gap between the validated and unvalidated arms attributes
+  cleanly to edit safety rather than to refactoring skill.
+
+  ## Reading a failure
+
+  `go test` is the spine signal and requires the file to both compile and be
+  correct; `go build` is asserted separately so "broke the build" is
+  distinguishable from "logic wrong" in the report. The workspace is
+  git-committed before the run, so the diff check catches passing tests by
+  weakening them. Watch `brokenIntermediates` too: it counts edits that left the
+  workspace failing `go build` even if a later edit fixed things, which is the
+  metric that separates validated from unvalidated editing on runs both
+  ultimately pass.
 # Isolates ONE failure mode: compile breakage from a single-node edit — exactly
 # what revert-on-new-diagnostics (poly-lsp `--validate`) catches. Implementing
 # Pop is one node_edit, and a plausible attempt trips Go's strict compiler

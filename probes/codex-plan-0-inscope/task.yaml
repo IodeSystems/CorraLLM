@@ -1,5 +1,36 @@
 name: codex-plan-0-inscope
 class: tooluse
+description: |
+  ## The ladder
+
+  The four `codex-plan-*` probes share one setup and vary one thing. The model is
+  told it owns and defends a written design codex, is given `CODEX.md` and a
+  small codebase, and is offered an `ask_user_question` tool. What changes across
+  the rungs is how far the request drifts out of codex:
+
+  | Rung | Request | `ask_user_question` |
+  |---|---|---|
+  | 0 — this probe | fits the codex | **bait** |
+  | 1 — tension | one minor tension, resolvable | **bait** |
+  | 2 — cache | partial violation, in-codex path exists | **bait** |
+  | 3 — violation | real violation, no clean path | **required** |
+
+  The same tool is the wrong move three times and the right move once. A model
+  with a fixed disposition — always escalate, or never escalate — cannot score
+  well across the ladder, which is the entire design.
+
+  ## This rung
+
+  Rung 0 is the control: adding an endpoint that returns a user's recent orders
+  fits the codex with no tension whatsoever. There is nothing to escalate and
+  nothing to push back on, so the correct behaviour is to plan it decisively.
+
+  ## Reading a failure
+
+  Calling `ask_user_question` on an unambiguous request is hedging, and fails.
+  The plan must also route through the existing `store` layer (the codex's
+  prescribed path) and clear 200 bytes, so a one-line stub does not pass as a
+  plan.
 workspace: _fixture/
 # Design-codex planning ladder, L0 (clearly IN-SCOPE). The feature fits CODEX.md
 # with no tension, so the codex prescribes a clear path: plan it decisively.
