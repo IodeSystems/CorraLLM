@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iodesystems/corrallm/ui"
 )
 
 // TestRawSpinup is the whole point of this work, asserted end to end: a real
@@ -68,14 +70,30 @@ func TestRawSpinup(t *testing.T) {
 		}
 	})
 
+	// Whether a real dashboard is embedded depends on whether pnpm ran before
+	// `go build`: `make dist` builds it first, a bare `go build` (this test, a
+	// clean checkout, CI) embeds only the tracked .gitkeep placeholder. Both are
+	// legitimate, so the assertion is on the property that must hold either way —
+	// the root is never a bare 404, and when there is no UI it says so.
 	t.Run("serves the dashboard", func(t *testing.T) {
 		resp, err := http.Get(base + "/")
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET / = %d, want 200 (embedded UI should serve with no ui/dist on disk)", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+
+		if embeddedUIBuilt() {
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET / = %d, want 200 (embedded UI should serve with no ui/dist on disk)", resp.StatusCode)
+			}
+			return
+		}
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("GET / = %d with no UI embedded, want 503", resp.StatusCode)
+		}
+		if !strings.Contains(string(body), "make dist") {
+			t.Errorf("the not-built page must name how to build a UI; got:\n%s", body)
 		}
 	})
 
@@ -177,4 +195,15 @@ func waitReady(t *testing.T, url string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("server never became ready at %s", url)
+}
+
+// embeddedUIBuilt reports whether the binary carries a real dashboard rather
+// than just the placeholder that keeps //go:embed compiling.
+func embeddedUIBuilt() bool {
+	f, err := ui.DistFS().Open("index.html")
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
 }
