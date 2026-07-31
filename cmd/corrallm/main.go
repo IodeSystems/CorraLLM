@@ -439,6 +439,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 
 	router := chi.NewRouter()
+	// Ahead of RealIP, which OVERWRITES r.RemoteAddr with a client-supplied
+	// header. Anything making a trust decision needs the address the connection
+	// actually came from, not one the caller can set.
+	router.Use(captureConnAddr)
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
 	router.Use(auth.Middleware(adminToken)) // gates /api/*; /v1, /upstream, /health, SPA pass through
@@ -452,8 +456,19 @@ func serve(ctx context.Context, o serveOpts) error {
 	// compatibility). Untracked — bypasses the scheduler — and answered directly
 	// here so it can't fall through to the SPA catch-all (which would 200 with
 	// HTML and mask an unhealthy process). The richer op stays at /api/v1/health.
-	healthz := func(w http.ResponseWriter, _ *http.Request) {
+	//
+	// It also tells a LOCAL caller where the admin token lives. The login screen
+	// needs that to be useful, and it cannot sit behind /api — the whole point is
+	// that the operator has no token yet. It is a path, not a credential, but it
+	// names the server's home directory, so it is withheld from anyone off-box:
+	// whoever installs corrallm has shell access anyway, and a remote visitor to
+	// the fronted dashboard has no business reading server paths.
+	healthz := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if localCaller(r) {
+			fmt.Fprintf(w, `{"status":"ok","version":%q,"tokenPath":%q}`, version, o.tokenPath)
+			return
+		}
 		fmt.Fprintf(w, `{"status":"ok","version":%q}`, version)
 	}
 	router.Get("/health", healthz)
