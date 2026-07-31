@@ -352,9 +352,9 @@ type Activity struct {
 	// ended because it hit a wall did NOT finish, and a run of them is the
 	// signature of a caller with no max_tokens whose generations are running
 	// away — visible here per request rather than by reading a backend's slots.
-	FinishReason     string
-	ReqBody          string // captured request payload, capped+summarized (P10b)
-	RespBody         string // captured response payload, capped+summarized (P10b)
+	FinishReason string
+	ReqBody      string // captured request payload, capped+summarized (P10b)
+	RespBody     string // captured response payload, capped+summarized (P10b)
 }
 
 // InsertActivity appends a request record to the activity log.
@@ -418,7 +418,7 @@ func (s *Store) RecentActivity(limit int, served string) ([]Activity, error) {
 		rows, err = s.db.Query(`SELECT `+cols+`
 		 FROM activity WHERE served = ? ORDER BY ts DESC LIMIT ?`, served, limit)
 	} else {
-		rows, err = s.db.Query(`SELECT ` + cols + `
+		rows, err = s.db.Query(`SELECT `+cols+`
 		 FROM activity ORDER BY ts DESC LIMIT ?`, limit)
 	}
 	if err != nil {
@@ -837,24 +837,29 @@ func boolInt(b bool) int {
 	return 0
 }
 
+// benchProbeResultCols is the column list every bench_probe_results query
+// selects. Shared because scanBenchProbeResults reads them POSITIONALLY: a query
+// that listed them in its own order would not fail, it would silently populate
+// the wrong fields.
+const benchProbeResultCols = `id, run_id, model, at, probe, class, capability, run_mode, toolset,
+       tool_format, stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
+       new_prompt_tokens, completion_tokens, skipped, skip_reason, note`
+
 // BenchProbeResultsFor returns a model's probe rows. With runID set it scopes to
 // that run; empty runID returns the model's most recent run only — the console
 // asks "how did the last bench go", and mixing runs would average away the
 // regression it is there to show.
 func (s *Store) BenchProbeResultsFor(ctx context.Context, model, runID string) ([]BenchProbeResult, error) {
-	const cols = `id, run_id, model, at, probe, class, capability, run_mode, toolset,
-       tool_format, stages, stages_passed, checks_passed, checks_total, pass, wall_ms,
-       new_prompt_tokens, completion_tokens, skipped, skip_reason, note`
 	var (
 		rows *sql.Rows
 		err  error
 	)
 	if runID != "" {
-		rows, err = s.db.QueryContext(ctx, `SELECT `+cols+`
+		rows, err = s.db.QueryContext(ctx, `SELECT `+benchProbeResultCols+`
 FROM bench_probe_results WHERE model = ? AND run_id = ?
 ORDER BY capability, class, probe, run_mode, toolset, tool_format`, model, runID)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT `+cols+`
+		rows, err = s.db.QueryContext(ctx, `SELECT `+benchProbeResultCols+`
 FROM bench_probe_results
 WHERE model = ? AND run_id = (SELECT run_id FROM bench_probe_results WHERE model = ? ORDER BY at DESC LIMIT 1)
 ORDER BY capability, class, probe, run_mode, toolset, tool_format`, model, model)
@@ -938,6 +943,96 @@ func (s *Store) BenchRunFor(ctx context.Context, runID string) (BenchRun, bool, 
 		return r, false, nil
 	}
 	return r, err == nil, err
+}
+
+// BenchRunSummary is one run as a whole: when it happened and how much of it
+// passed, without the caller fetching every row to find out.
+type BenchRunSummary struct {
+	BenchRun
+	Models   int   `json:"models"`
+	Probes   int   `json:"probes"`
+	Rows     int   `json:"rows"`
+	Passed   int   `json:"passed"`
+	Skipped  int   `json:"skipped"`
+	WallMSum int64 `json:"wallMsSum"`
+}
+
+// BenchRuns lists runs newest first.
+//
+// Runs are enumerated from bench_probe_results rather than bench_runs, because
+// the two do not agree: bench_runs records where a run's ARTIFACTS live and is
+// only written when a run has an out/ directory, so a published run whose
+// artifacts were pruned — or that never wrote any — is absent from it while its
+// results sit in the database. Listing from the results means the index shows
+// every run there is evidence for, and the artifact row is a left join that
+// simply tells you whether transcripts are still on disk.
+func (s *Store) BenchRuns(ctx context.Context, limit int) ([]BenchRunSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT r.run_id,
+       COALESCE(b.out_dir, ''), COALESCE(b.host, ''),
+       COALESCE(b.at, MAX(r.at)) AS at,
+       COUNT(DISTINCT r.model), COUNT(DISTINCT r.probe), COUNT(*),
+       SUM(CASE WHEN r.pass = 1 THEN 1 ELSE 0 END),
+       SUM(CASE WHEN r.skipped = 1 THEN 1 ELSE 0 END),
+       COALESCE(SUM(r.wall_ms), 0)
+FROM bench_probe_results r
+LEFT JOIN bench_runs b ON b.run_id = r.run_id
+GROUP BY r.run_id
+ORDER BY at DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BenchRunSummary{}
+	for rows.Next() {
+		var v BenchRunSummary
+		if err := rows.Scan(&v.RunID, &v.OutDir, &v.Host, &v.At,
+			&v.Models, &v.Probes, &v.Rows, &v.Passed, &v.Skipped, &v.WallMSum); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// BenchProbeResultsForRun returns every model's probe rows for one run.
+//
+// The model-scoped query cannot answer "what did this run do": it needs a model
+// up front, so a caller would have to know the participants before it could ask
+// who they were.
+func (s *Store) BenchProbeResultsForRun(ctx context.Context, runID string) ([]BenchProbeResult, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+benchProbeResultCols+`
+FROM bench_probe_results WHERE run_id = ?
+ORDER BY model, capability, class, probe, run_mode, toolset, tool_format`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanBenchProbeResults(rows)
+}
+
+// BenchProbeHistory returns one probe's rows across every model and run.
+//
+// This is the suite-and-test view: a probe that every model fails is evidence
+// about the PROBE, not about the models, and neither the per-model nor the
+// per-run query can show that — both slice the other way.
+func (s *Store) BenchProbeHistory(ctx context.Context, probe string, limit int) ([]BenchProbeResult, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+benchProbeResultCols+`
+FROM bench_probe_results WHERE probe = ?
+ORDER BY at DESC, model, run_mode, toolset, tool_format
+LIMIT ?`, probe, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanBenchProbeResults(rows)
 }
 
 // SaveBenchProbeStages upserts per-stage detail in one transaction.

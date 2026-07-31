@@ -76,7 +76,16 @@ type CorrallmQueryNamespace {
     toolset: String
   ): corrallm_BenchJournalOutputBody @derived(operationId: "benchJournal")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchProbeCatalog(
+    """Probe directory to describe (default: the server's configured one, or the built-in library)"""
+    probesDir: String
+  ): corrallm_BenchCatalogOutputBody @derived(operationId: "benchProbeCatalog")
   benchProbeDetail(model: String!, probe: String!, runId: String!): corrallm_BenchProbeDetailOutputBody @derived(operationId: "benchProbeDetail")
+  benchProbeHistory(
+    """Row cap across all runs (default 500)."""
+    limit: Long
+    probe: String!
+  ): corrallm_BenchProbeHistoryOutputBody @derived(operationId: "benchProbeHistory")
   benchProbes(
     """Model whose probe detail to return."""
     model: String!
@@ -89,6 +98,15 @@ type CorrallmQueryNamespace {
     """Only this model's history; omit for the latest per model."""
     model: String
   ): corrallm_BenchResultsOutputBody @derived(operationId: "benchResults")
+  benchRunDetail(
+    """Narrow to one model; omit for every model in the run."""
+    model: String
+    runId: String!
+  ): corrallm_BenchRunDetailOutputBody @derived(operationId: "benchRunDetail")
+  benchRuns(
+    """How many runs, newest first (default 50)."""
+    limit: Long
+  ): corrallm_BenchRunsOutputBody @derived(operationId: "benchRuns")
   benchStatus: corrallm_BenchRunStatus @derived(operationId: "benchStatus")
   benchTranscript(
     model: String!
@@ -227,7 +245,16 @@ type CorrallmV1QueryNamespace {
     toolset: String
   ): corrallm_BenchJournalOutputBody @derived(operationId: "benchJournal")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
+  benchProbeCatalog(
+    """Probe directory to describe (default: the server's configured one, or the built-in library)"""
+    probesDir: String
+  ): corrallm_BenchCatalogOutputBody @derived(operationId: "benchProbeCatalog")
   benchProbeDetail(model: String!, probe: String!, runId: String!): corrallm_BenchProbeDetailOutputBody @derived(operationId: "benchProbeDetail")
+  benchProbeHistory(
+    """Row cap across all runs (default 500)."""
+    limit: Long
+    probe: String!
+  ): corrallm_BenchProbeHistoryOutputBody @derived(operationId: "benchProbeHistory")
   benchProbes(
     """Model whose probe detail to return."""
     model: String!
@@ -240,6 +267,15 @@ type CorrallmV1QueryNamespace {
     """Only this model's history; omit for the latest per model."""
     model: String
   ): corrallm_BenchResultsOutputBody @derived(operationId: "benchResults")
+  benchRunDetail(
+    """Narrow to one model; omit for every model in the run."""
+    model: String
+    runId: String!
+  ): corrallm_BenchRunDetailOutputBody @derived(operationId: "benchRunDetail")
+  benchRuns(
+    """How many runs, newest first (default 50)."""
+    limit: Long
+  ): corrallm_BenchRunsOutputBody @derived(operationId: "benchRuns")
   benchStatus: corrallm_BenchRunStatus @derived(operationId: "benchStatus")
   benchTranscript(
     model: String!
@@ -583,6 +619,13 @@ type corrallm_BenchCapabilityView {
   stagesPassed: Long!
 }
 
+type corrallm_BenchCatalogOutputBody {
+  classes: JSON!
+  invalid: Long!
+  probes: [corrallm_CatalogEntry!]!
+  source: String!
+}
+
 input corrallm_BenchCheckPublishInput {
   desc: String
   detail: String
@@ -654,6 +697,14 @@ type corrallm_BenchProbeDetailOutputBody {
   runId: String!
 }
 
+type corrallm_BenchProbeHistoryOutputBody {
+  catalog: corrallm_CatalogEntry
+  models: Long!
+  passRate: Float!
+  probe: String!
+  runs: [corrallm_BenchProbeRunView!]!
+}
+
 input corrallm_BenchProbePublishInput {
   capability: String
   checksPassed: Long
@@ -694,6 +745,23 @@ type corrallm_BenchProbeResultsOutputBody {
   saved: Long!
   savedChecks: Long!
   savedStages: Long!
+}
+
+type corrallm_BenchProbeRunView {
+  arms: [corrallm_BenchArmView!]!
+  at: Long!
+  class: String
+  disagreement: Boolean!
+  model: String!
+  note: String
+  pass: Boolean!
+  probe: String!
+  runId: String!
+  score: Float!
+  skipReason: String
+  skipped: Boolean
+  stages: Long!
+  stagesPassed: Long!
 }
 
 type corrallm_BenchProbeSuggestion {
@@ -769,6 +837,14 @@ type corrallm_BenchResultsOutputBody {
   results: [corrallm_BenchResultView!]!
 }
 
+type corrallm_BenchRunDetailOutputBody {
+  at: Long!
+  hasArtifacts: Boolean!
+  host: String
+  models: [corrallm_BenchRunModelView!]!
+  runId: String!
+}
+
 input corrallm_BenchRunInputBodyInput {
   """Probe classes: capability | coding | tooluse | adversarial. Empty = all."""
   classes: [String!]
@@ -778,6 +854,18 @@ input corrallm_BenchRunInputBodyInput {
   reason: String
   """Lease duration; the run is killed and the lease released when it expires."""
   ttlSeconds: Long
+}
+
+type corrallm_BenchRunModelView {
+  detail: [corrallm_BenchProbeView!]!
+  model: String!
+  probes: Long!
+  """Stage pass rate over the probes this model was a candidate for."""
+  score: Float!
+  skipped: Long!
+  stages: Long!
+  stagesPassed: Long!
+  wallMs: Long!
 }
 
 type corrallm_BenchRunOutputBody {
@@ -795,6 +883,26 @@ type corrallm_BenchRunStatus {
   log: [String!]
   running: Boolean!
   startedAt: Long
+}
+
+type corrallm_BenchRunSummaryView {
+  at: Long!
+  hasArtifacts: Boolean!
+  host: String
+  models: Long!
+  passed: Long!
+  probes: Long!
+  """Probe×arm rows recorded; exceeds probes when the run ran A/B arms."""
+  rows: Long!
+  runId: String!
+  """Passed / (rows - skipped). Skipped rows are excluded, not counted as failures."""
+  score: Float!
+  skipped: Long!
+  wallMsSum: Long!
+}
+
+type corrallm_BenchRunsOutputBody {
+  runs: [corrallm_BenchRunSummaryView!]!
 }
 
 input corrallm_BenchStagePublishInput {
@@ -906,6 +1014,20 @@ input corrallm_CapacityInput {
   host: corrallm_DeviceMemInput
   hostError: String
   perProcess: Boolean!
+}
+
+type corrallm_CatalogEntry {
+  checks: Long!
+  class: String!
+  description: String
+  dir: String!
+  error: String
+  name: String!
+  requires: String
+  run: String
+  source: String!
+  stages: Long!
+  summary: String
 }
 
 type corrallm_ConfigMutationOutputBody {

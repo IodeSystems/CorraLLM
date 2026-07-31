@@ -131,6 +131,30 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.BenchProbesByCapability)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchRuns",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/runs",
+		Summary:     "Index of benchmark runs, newest first — what has been measured and when.",
+		Tags:        []string{"observability"},
+	}, h.BenchRuns)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchRunDetail",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/run",
+		Summary:     "What one run did: every model in it, probe by probe (optionally one model).",
+		Tags:        []string{"observability"},
+	}, h.BenchRunDetail)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "benchProbeHistory",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/bench/probe/history",
+		Summary:     "One probe across every model and run that ran it, plus its description.",
+		Tags:        []string{"observability"},
+	}, h.BenchProbeHistory)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "freeRoster",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/free-roster",
