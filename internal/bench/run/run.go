@@ -365,7 +365,13 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 								// LLM retry has no internal deadline and would wedge the
 								// whole matrix silently (observed: 87min hang). Cap each
 								// combo; a timeout aborts it into failed rows.
-								comboCtx, comboCancel := context.WithTimeout(ctx, opts.comboTimeout())
+								//
+								// Budgeted on EXECUTION, not wall clock. A shared run waits
+								// out corrallm's backpressure by design, and a wall-clock cap
+								// spends the budget on that waiting — a measured run queued
+								// for 73% of its wall time, leaving under three minutes of a
+								// ten-minute budget for actual work.
+								comboCtx, comboCancel := execBudgetContext(ctx, opts.comboTimeout(), opts.overhead, model)
 								// Put the model into the residency state this pass
 								// asks for BEFORE the clock starts. residNote records
 								// what actually happened, including failure — a cold
@@ -1188,7 +1194,14 @@ func classifyErr(err error, stageCtx context.Context, loopNote, budgetNote strin
 		// note is evidence. Only call it the combo timeout when the deadline has
 		// actually passed.
 		reason := "parent context cancelled"
-		if dl, ok := stageCtx.Deadline(); ok && !time.Now().Before(dl) {
+		switch {
+		// The watchdog names its own reason, so this reports rather than infers.
+		// It is budgeted on EXECUTION now, so saying "wall clock" here would send
+		// a reader after the wrong number — a stage can burn the budget having
+		// spent far longer than it on the wall, queued.
+		case errors.Is(context.Cause(stageCtx), errExecBudget):
+			reason = "combo exceeded its EXECUTION budget (queue time already excluded), not a model limit"
+		case func() bool { dl, ok := stageCtx.Deadline(); return ok && !time.Now().Before(dl) }():
 			reason = "combo timeout (wall clock), not a model limit"
 		}
 		return true, fmt.Sprintf("stage aborted: %s [ctx=%v; err=%v]", reason, stageCtx.Err(), err)
