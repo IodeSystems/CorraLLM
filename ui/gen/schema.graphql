@@ -150,6 +150,16 @@ type CorrallmQueryNamespace {
     """Filter to one served model; empty returns all models."""
     served: String
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
+  requestOverhead(
+    """Window start, unix millis, inclusive."""
+    from: Long!
+    """Caller key whose requests to sum (the bench's own CORRALLM_BENCH_KEY)."""
+    key: String!
+    """Served model name."""
+    served: String!
+    """Window end, unix millis, inclusive."""
+    to: Long!
+  ): corrallm_RequestOverheadOutputBody @derived(operationId: "requestOverhead")
   reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
   usageByKey(
@@ -319,6 +329,16 @@ type CorrallmV1QueryNamespace {
     """Filter to one served model; empty returns all models."""
     served: String
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
+  requestOverhead(
+    """Window start, unix millis, inclusive."""
+    from: Long!
+    """Caller key whose requests to sum (the bench's own CORRALLM_BENCH_KEY)."""
+    key: String!
+    """Served model name."""
+    served: String!
+    """Window end, unix millis, inclusive."""
+    to: Long!
+  ): corrallm_RequestOverheadOutputBody @derived(operationId: "requestOverhead")
   reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
   usageByKey(
@@ -1514,6 +1534,17 @@ type corrallm_QuotaWindowView {
 type corrallm_RecentActivityOutputBody {
   """Activity rows, newest first."""
   records: [corrallm_ActivityRecord!]!
+}
+
+type corrallm_RequestOverheadOutputBody {
+  """Total time waiting for a backend to become resident."""
+  loadMs: Long!
+  """Total time blocked in admission control."""
+  queuedMs: Long!
+  """Rows summed. 0 means the window matched nothing, which is not the same as matching requests that never waited."""
+  requests: Long!
+  """queuedMs + loadMs — what to subtract from a wall clock to get execution time."""
+  totalMs: Long!
 }
 
 type corrallm_ReservationView {

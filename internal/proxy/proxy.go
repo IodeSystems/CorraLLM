@@ -567,11 +567,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				writeBackpressure(w, bp)
 				p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-					QueuedMS: queuedMS, Error: bp.Reason, ReqBody: reqBody})
+					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, ReqBody: reqBody})
 				return
 			}
 			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
-				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
+				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS,
 				Error: "client canceled", ReqBody: reqBody}) // queued then client gave up
 			return
 		}
@@ -813,7 +813,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			DwellMS: time.Since(start).Milliseconds(), PromptTokens: u.PromptTokens,
 			CompletionTokens: u.CompletionTokens, CachedTokens: u.CachedTokens,
 			PromptPerSec: u.PromptPerSec, PredictedPerSec: u.PredictedPerSec,
-			CostUSD: costUSD, QueuedMS: queuedMS,
+			CostUSD: costUSD, QueuedMS: queuedMS, LoadMS: loadMS,
 			AudioBytes: audioBytes, Error: errReason, TTFBMs: ttfbMS,
 			ReqBody: reqBody, RespBody: respBody, FinishReason: finishReason,
 		})
@@ -826,13 +826,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		writeBackpressure(w, bestBP)
 		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-			QueuedMS: queuedMS, Error: "exhausted", ReqBody: reqBody})
+			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", ReqBody: reqBody})
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
 	p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
-		QueuedMS: queuedMS, Error: "no backend available", ReqBody: reqBody})
+		QueuedMS: queuedMS, LoadMS: loadMS, Error: "no backend available", ReqBody: reqBody})
 }
 
 // handleRealtime is the live-transcription edge (P9e): a WebSocket session that
@@ -881,7 +881,10 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	topQuality := config.MaxQuality(cands)
 	ordered := orderCandidates(cands, p.nextRR(served))
 	var lastBP *sched.BackpressureError
+	// Cumulative across the walk, same as the chat path: a session that queued
+	// on one backend, spilled and queued again must report both waits.
 	var queuedMS int64
+	var loadMS int64
 
 	for _, idx := range ordered {
 		cand := cands[idx]
@@ -894,7 +897,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 
 		admitStart := time.Now()
 		release, reqCtx, err := p.sched.Admit(r.Context(), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
-		queuedMS = time.Since(admitStart).Milliseconds()
+		queuedMS += time.Since(admitStart).Milliseconds()
 		if err != nil {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
@@ -905,16 +908,18 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 				writeBackpressure(w, bp)
 				p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-					QueuedMS: queuedMS, Error: bp.Reason})
+					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason})
 				return
 			}
 			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
-				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, Error: "client canceled"})
+				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS, Error: "client canceled"})
 			return
 		}
 		p.markInflight(live, inflightLoading, name)
 
+		loadStart := time.Now()
 		pr, done, _, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky)
+		loadMS += time.Since(loadStart).Milliseconds()
 		if err != nil {
 			release()
 			// Transient capacity → backpressure, same rationale as the
@@ -947,7 +952,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 			}
 			release(sched.Done{})
 			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
-				Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS})
+				Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS})
 			return
 		}
 
@@ -968,7 +973,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		costUSD := p.cost.AudioRequestUSD(backend.Type, int(inBytes))
 		release(sched.Done{CostUSD: costUSD})
 		p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
-			Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
+			Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS,
 			AudioBytes: inBytes, CostUSD: costUSD, Error: errReason})
 		return
 	}
@@ -978,13 +983,13 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		writeBackpressure(w, lastBP)
 		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-			QueuedMS: queuedMS, Error: "exhausted"})
+			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted"})
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
 	p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
-		QueuedMS: queuedMS, Error: "no backend available"})
+		QueuedMS: queuedMS, LoadMS: loadMS, Error: "no backend available"})
 }
 
 // countingWriter tallies bytes written through it (P9e session metering + idle

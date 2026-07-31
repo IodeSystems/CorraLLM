@@ -131,6 +131,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.BenchProbesByCapability)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "requestOverhead",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/overhead",
+		Summary:     "Queue + load time corrallm added to one caller's requests to one model in a window.",
+		Tags:        []string{"observability"},
+	}, h.RequestOverhead)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchRuns",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/bench/runs",

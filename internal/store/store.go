@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS activity (
     completion_tokens INTEGER NOT NULL DEFAULT 0, -- metered completion tokens (P6)
     cost_usd          REAL    NOT NULL DEFAULT 0, -- resolved request cost in $ (P6)
     queued_ms         INTEGER NOT NULL DEFAULT 0, -- time spent queued before admit/reject (P8-beyond)
+    load_ms           INTEGER NOT NULL DEFAULT 0, -- time waiting for a backend to become resident (cold spawn + health)
     audio_bytes       INTEGER NOT NULL DEFAULT 0, -- metered audio request bytes, STT/TTS (P9c)
     error             TEXT    NOT NULL DEFAULT '', -- proxy/backpressure error reason, if any (P10a)
     ttfb_ms           INTEGER NOT NULL DEFAULT 0, -- time to first response byte (P10b)
@@ -242,6 +243,10 @@ var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN prompt_per_sec REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN predicted_per_sec REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN finish_reason TEXT NOT NULL DEFAULT ''`,
+	// Cold-spawn wait, split out from dwell. A request that waited 6.7s for a
+	// model to load and then answered in 375ms is not a slow model, and without
+	// this column nothing downstream can tell the two apart.
+	`ALTER TABLE activity ADD COLUMN load_ms INTEGER NOT NULL DEFAULT 0`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -437,6 +442,7 @@ type Activity struct {
 	PredictedPerSec  float64 // backend-reported generation speed (tg/s)
 	CostUSD          float64
 	QueuedMS         int64  // time queued before admission/reject (P8-beyond)
+	LoadMS           int64  // time waiting for the backend to become resident
 	AudioBytes       int64  // metered audio request bytes for STT/TTS routes (P9c); 0 for text
 	Error            string // proxy/backpressure error reason, if any (P10a); "" on success
 	TTFBMs           int64  // time to first response byte (P10b)
@@ -460,12 +466,12 @@ func (s *Store) InsertActivity(a Activity) error {
 		`INSERT INTO activity (ts, served, backend, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
-		                       finish_reason)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       finish_reason, load_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Backend, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
-		a.FinishReason,
+		a.FinishReason, a.LoadMS,
 	)
 	return err
 }
@@ -479,12 +485,12 @@ func (s *Store) ActivityByID(id int64) (Activity, error) {
 		`SELECT id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
-		        finish_reason
+		        finish_reason, load_ms
 		 FROM activity WHERE id = ?`, id).Scan(
 		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
 		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody,
-		&a.FinishReason)
+		&a.FinishReason, &a.LoadMS)
 	return a, err
 }
 
@@ -506,7 +512,7 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 func (s *Store) RecentActivity(limit int, served string) ([]Activity, error) {
 	const cols = `id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
-	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason`
+	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms`
 	var (
 		rows *sql.Rows
 		err  error
@@ -527,7 +533,7 @@ func (s *Store) RecentActivity(limit int, served string) ([]Activity, error) {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
-			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason); err != nil {
+			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
