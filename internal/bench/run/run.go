@@ -65,6 +65,12 @@ When the task is done, stop and give a one-line summary.`
 
 // Options configures a Run.
 type Options struct {
+	// overhead asks corrallm what part of a stage was queueing rather than the
+	// model. Built once in Run and carried here rather than rebuilt per stage,
+	// which would re-read the admin token from disk for every probe. nil when
+	// the bench cannot ask (no key, no admin token, not a corrallm).
+	overhead *overheadClient
+
 	Config    Config
 	TasksDir  string   // directory holding task subdirs
 	Out       string   // output root; a timestamped subdir is created under it
@@ -280,6 +286,10 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	modsByModel := fetchModelModalities(opts)
 	capsByModel := fetchModelCapabilities(opts)
 	resid := newResidencyClient(opts.Config)
+	opts.overhead = newOverheadClient(opts.Config)
+	if opts.overhead == nil {
+		log.Printf("llm-bench: corrallm overhead correction unavailable — stage timings will include admission queueing and cold loads")
+	}
 	for _, model := range models {
 		slots := slotsByModel[model]
 		if slots < 1 {
@@ -974,6 +984,26 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		wall := time.Since(start)
 		queued := waited()
 		cancel()
+		// Two different waits, measured from two different sides.
+		//
+		// waited() is the 429 backoff this process slept through — visible only
+		// here, because corrallm never saw those requests. The overhead query is
+		// admission queueing and cold spawns INSIDE the requests it did accept —
+		// visible only there, because from the client they are indistinguishable
+		// from a slow model. Neither sees the other, so both are needed.
+		//
+		// Best-effort: a failure leaves the correction at zero, which reports
+		// the queueing as execution. That is the same answer as before this
+		// existed, and a benchmark that refuses to record a result because it
+		// could not reach an observability endpoint is worse than a slightly
+		// pessimistic one.
+		if opts.overhead != nil {
+			if d, err := opts.overhead.Between(ctx, model, start, time.Now()); err != nil {
+				log.Printf("llm-bench: overhead unavailable for %s/%s (timings include corrallm queueing): %v", model, tsk.Name, err)
+			} else {
+				queued += d
+			}
+		}
 
 		sc.mu.Lock()
 		loopNote := sc.loopNote
