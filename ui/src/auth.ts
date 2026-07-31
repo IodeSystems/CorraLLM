@@ -9,10 +9,21 @@ export function getToken(): string {
   return localStorage.getItem(KEY) ?? ''
 }
 
+// Max-Age matters: without it this is a SESSION cookie, which dies when the
+// browser closes while localStorage survives. The dashboard then loads signed
+// in — Bearer works for every query — but /api/v1/events is cookie-only, so the
+// live stream 401s forever with nothing on screen to explain it. The two stores
+// have to expire together or not at all.
+//
+// The server also re-issues this cookie on any Bearer-authenticated /api call,
+// so a browser that lost it heals on the next request rather than needing a
+// fresh sign-in.
+const COOKIE_MAX_AGE = 365 * 24 * 60 * 60
+
 export function setToken(t: string) {
   localStorage.setItem(KEY, t)
   const secure = window.location.protocol === 'https:' ? '; Secure' : ''
-  document.cookie = `${COOKIE}=${t}; path=/; SameSite=Strict${secure}`
+  document.cookie = `${COOKIE}=${t}; path=/; Max-Age=${COOKIE_MAX_AGE}; SameSite=Strict${secure}`
 }
 
 export function clearToken() {

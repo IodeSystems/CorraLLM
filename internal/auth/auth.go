@@ -76,7 +76,22 @@ func selfAuthenticating(path string) bool {
 func Middleware(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.URL.Path, "/api/") || selfAuthenticating(r.URL.Path) || authorized(r, token) {
+			if !strings.HasPrefix(r.URL.Path, "/api/") || selfAuthenticating(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if authorized(r, token) {
+				// Re-issue the cookie whenever a Bearer request arrives without a
+				// matching one. The dashboard holds the token in localStorage and
+				// MIRRORS it into a cookie, because EventSource cannot set headers
+				// — so /api/v1/events is cookie-only. Those two stores expire
+				// differently: a session cookie dies with the browser while
+				// localStorage does not, leaving a signed-in dashboard whose live
+				// stream 401s forever with no way to notice or recover.
+				//
+				// Refreshing it here means any authenticated call heals the
+				// mismatch, and the client no longer has to keep them in step.
+				refreshCookie(w, r, token)
 				next.ServeHTTP(w, r)
 				return
 			}
