@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/iodesystems/agentkit/agent"
-	"github.com/iodesystems/agentkit/llm"
 
 	"github.com/iodesystems/corrallm/internal/bench/judge"
 	"github.com/iodesystems/corrallm/internal/bench/run"
@@ -162,7 +161,7 @@ func cmdJudge(argv []string) int {
 		jc.Model = *model
 	}
 	newRunner := func(m string) agent.LLMRunner {
-		return llm.NewClient(cfg.LLM.BaseURL, os.Getenv(cfg.LLM.APIKeyEnv), m)
+		return run.NewBenchClient(cfg.LLM.BaseURL, cfg.LLM.APIKeyEnv, m)
 	}
 	results, err := judge.Judge(context.Background(), *runDir, jc, newRunner)
 	if err != nil {

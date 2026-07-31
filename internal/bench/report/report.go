@@ -49,7 +49,7 @@ type StageMetrics struct {
 	// validation (reverts breaks → 0) from plain editing (breaks land → >0) on
 	// tasks a capable model still ultimately passes.
 	BrokenIntermediates int `json:"brokenIntermediates"`
-	Retries429          int `json:"retries429"`  // 429 backpressure retries (not surfaced by agentkit; always 0 in P0)
+	Retries429          int `json:"retries429"` // 429 backpressure retries this stage waited through
 	Compactions         int `json:"compactions"` // agentkit Shaper full-history compactions this stage (LOD truncations are render-time and not reported)
 
 	// CompactionTokensBefore/After are the agentkit CompactionInfo active-window
@@ -59,7 +59,21 @@ type StageMetrics struct {
 	CompactionTokensBefore int `json:"compactionTokensBefore"`
 	CompactionTokensAfter  int `json:"compactionTokensAfter"`
 
-	TokPerSec float64 `json:"tokPerSec"` // Tokens / (WallMs/1000)
+	// QueuedMs is time this stage spent waiting rather than computing: corrallm's
+	// 429 + Retry-After backpressure, plus the admission and cold-load waits it
+	// reports on each accepted request.
+	//
+	// It exists so the bench can run on a box that is also serving real traffic.
+	// Wall time there is dominated by whatever else is queued, so comparing two
+	// models by WallMs compares their neighbours; ExecMs is the number that
+	// survives a busy host.
+	QueuedMs int64 `json:"queuedMs"`
+	// ExecMs is WallMs − QueuedMs: the part of the stage the model was actually
+	// working. Never negative — a clock that says otherwise is clamped, because
+	// a negative duration would silently poison every average downstream.
+	ExecMs int64 `json:"execMs"`
+
+	TokPerSec float64 `json:"tokPerSec"` // Tokens / (ExecMs/1000) — excludes queueing
 	WallMs    int64   `json:"wallMs"`
 }
 

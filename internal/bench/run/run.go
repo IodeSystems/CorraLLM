@@ -220,7 +220,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	if opts.NewRunner == nil {
 		cfg := opts.Config
 		opts.NewRunner = func(model string) agent.LLMRunner {
-			return llm.NewClient(cfg.LLM.BaseURL, os.Getenv(cfg.LLM.APIKeyEnv), model)
+			return NewBenchClient(cfg.LLM.BaseURL, cfg.LLM.APIKeyEnv, model)
 		}
 	}
 
@@ -944,9 +944,14 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 			return nil, err
 		}
 
+		// Backpressure accrued during this stage is measured, not guessed: the
+		// client records how long each 429 parked it (see NewBenchClient), and
+		// the delta across the turn is what this stage waited.
+		waited := stageQueueWait()
 		start := time.Now()
 		turnRes, turnErr := sess.Turn(stageCtx)
 		wall := time.Since(start)
+		queued := waited()
 		cancel()
 
 		sc.mu.Lock()
@@ -975,11 +980,23 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 			CompactionTokensBefore: sc.compTokBef,
 			CompactionTokensAfter:  sc.compTokAft,
 			WallMs:                 wall.Milliseconds(),
+			QueuedMs:               queued.Milliseconds(),
+		}
+		// Clamped at zero: the queue counter is shared across concurrently
+		// running combos, so an overlapping stage can be attributed more wait
+		// than its own wall clock. Better to report "all queue, no execution"
+		// than a negative duration that poisons every average downstream.
+		m.ExecMs = m.WallMs - m.QueuedMs
+		if m.ExecMs < 0 {
+			m.ExecMs = 0
 		}
 		cumulativeCompactions := sc.compTotal
 		sc.mu.Unlock()
-		if m.WallMs > 0 {
-			m.TokPerSec = float64(m.Tokens) / (float64(m.WallMs) / 1000)
+		// Rate against EXECUTION, not wall: tokens do not accrue while a request
+		// is parked behind someone else's, so dividing by wall time on a busy
+		// box reports a model as slower the more popular the box is.
+		if m.ExecMs > 0 {
+			m.TokPerSec = float64(m.Tokens) / (float64(m.ExecMs) / 1000)
 		}
 
 		journ, err := journal.Read(journalPath)
