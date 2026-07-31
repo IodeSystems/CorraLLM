@@ -275,6 +275,51 @@ deleted.
 
 Uncommitted in both repos — nothing has been committed.
 
+## ✅ F. Bench on a busy box without locking it
+
+Every UI-started run took corrallm's calibration lease: every resident model
+evicted, every other caller answered 429 for the duration. An outage with a
+progress bar. Replaced with: wait out the backpressure, and measure the waiting
+so it can be subtracted.
+
+- **F1** ✅ `internal/proxy/timing.go` — every response carries
+  `X-Corrallm-Queued-Ms`, `X-Corrallm-Load-Ms`, `X-Corrallm-Upstream-Ttfb-Ms`.
+  Written from `ModifyResponse`, the last point a streaming response can still
+  take headers; a client subtracts queue+load from its own total. No
+  total-execution header — the body has not streamed yet, and subtraction works
+  for streamed and buffered alike.
+- **F2** ✅ Both counters accumulate across the spill walk. They were
+  per-candidate assignments, so a request that queued, spilled and queued again
+  reported only the last wait — wrong in the activity log, and worse in a header
+  a client subtracts, where under-reported overhead inflates computed execution.
+- **F3** ✅ `run.NewBenchClient` — `RetryBudget = -1` (unbounded on 429; agentkit
+  caps 5xx separately) and an `OnRetry` hook accumulating the backpressure wait.
+- **F4** ✅ `StageMetrics.QueuedMs` / `.ExecMs`; `tokPerSec` divides by ExecMs.
+  `Retries429` stops being hardcoded 0.
+- **F5** ✅ Exclusive is opt-in end to end (API field, dialog offering both).
+  A shared run takes no lease and starts even while someone else holds one.
+- **F6** ✅ Cold probes are **skipped** when shared, and the skip is recorded.
+
+**Decisions (user's):** cold probes dropped entirely on a shared box rather than
+run degraded — a cold pass without eviction rights may hit a resident model and
+stand as evidence for a path it never tested, which is the bonsai failure. And
+429 retry is truly unbounded, no wall-clock cap.
+
+**Measured:** a cold local model reported `Load-Ms: 6705` against
+`Ttfb-Ms: 375`. Wall time would have called that a seven-second model.
+
+**Known imprecision:** the queue counter is process-global while the matrix runs
+combos concurrently, so overlapping stages can each be charged the same wait.
+That over-attributes queueing and under-reports execution — the direction that
+never makes a probe look faster than it was.
+
+**Not done:** the in-request `queued`/`load` the headers report are not yet
+subtracted by the bench. Only the client-side 429 backoff is. Closing that needs
+either an agentkit field carrying response headers out of `llm.Client`, or
+correlating against corrallm's activity log by the run's caller key (`apiKeyEnv:
+CORRALLM_BENCH_KEY`, already keyed per run). The activity route is self-contained
+and also sums correctly across an agent loop's many calls.
+
 ## Icebox
 
 - **`bin/run` truncates its log on every start** (`>` rather than `>>`), discarding the previous
