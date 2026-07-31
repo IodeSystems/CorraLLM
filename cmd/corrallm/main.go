@@ -36,6 +36,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/store"
 	"github.com/iodesystems/corrallm/internal/tune"
 	"github.com/iodesystems/corrallm/internal/webui"
+	"github.com/iodesystems/corrallm/ui"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -506,7 +507,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	})
 
 	// The SPA is served for everything not claimed above.
-	router.Handle("/*", webui.Handler(o.webRoot))
+	router.Handle("/*", webui.Handler(o.webRoot, ui.DistFS()))
 
 	srv := &http.Server{
 		Addr:              o.addr,

@@ -1,5 +1,12 @@
 node_modules
-dist
+# dist/ is a build artifact, but embed.go has a //go:embed on it and an embed
+# pattern matching nothing is a compile error — so the placeholder is tracked,
+# keeping `go build` working on a clean checkout without running pnpm first.
+# vite empties this directory on every build, so the "postbuild" script in
+# package.json puts the placeholder back; without it a `pnpm build` would show
+# up in git as a deletion and the next clean build would not compile.
+dist/*
+!dist/.gitkeep
 # graphql-codegen output (run `pnpm gen`)
 src/gql
 *.tsbuildinfo

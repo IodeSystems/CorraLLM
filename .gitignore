@@ -7,7 +7,9 @@
 
 # UI
 /ui/node_modules/
-/ui/dist/
+# ui/dist is handled by ui/.gitignore: its contents are ignored except a tracked
+# .gitkeep, which keeps ui/embed.go's //go:embed pattern matching on a clean
+# checkout (an embed that matches nothing is a compile error).
 /ui/src/gql/
 # ui/src/routeTree.gen.ts is committed (tsc -b needs it before vite regenerates it)
 

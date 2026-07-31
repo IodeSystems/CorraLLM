@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "postbuild": "mkdir -p dist && touch dist/.gitkeep",
     "preview": "vite preview",
     "gen": "graphql-codegen --config codegen.ts",
     "lint": "eslint ."
