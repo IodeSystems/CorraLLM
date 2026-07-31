@@ -8,6 +8,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -278,7 +280,18 @@ type Store struct {
 
 // Open opens (creating if absent) the SQLite database at path and applies the
 // schema. Use ":memory:" for tests.
+//
+// The parent directory is created first. SQLite creates the FILE but not the
+// directory holding it, so a first run against the default path failed at boot
+// with "unable to open database file (14)" — a message that names neither the
+// path nor the actual problem. Every other component that owns a path on disk
+// (config.Save, the tune cache) already MkdirAlls; this brings the DB in line.
 func Open(ctx context.Context, path string) (*Store, error) {
+	if dir := filepath.Dir(path); dir != "" && dir != "." && !strings.HasPrefix(path, ":") {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create db dir %s: %w", dir, err)
+		}
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
