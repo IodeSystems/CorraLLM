@@ -313,12 +313,32 @@ combos concurrently, so overlapping stages can each be charged the same wait.
 That over-attributes queueing and under-reports execution — the direction that
 never makes a probe look faster than it was.
 
-**Not done:** the in-request `queued`/`load` the headers report are not yet
-subtracted by the bench. Only the client-side 429 backoff is. Closing that needs
-either an agentkit field carrying response headers out of `llm.Client`, or
-correlating against corrallm's activity log by the run's caller key (`apiKeyEnv:
-CORRALLM_BENCH_KEY`, already keyed per run). The activity route is self-contained
-and also sums correctly across an agent loop's many calls.
+- **F7** ✅ Activity-log correlation closes the in-request half. `activity` gains
+  `load_ms` (`queued_ms` was already stored; the cold spawn is the larger term
+  and was not). `/api/v1/overhead` sums both for one caller key and one model
+  between two instants, and each stage folds the result into `QueuedMs`.
+
+  Scoped by key **and** model: the bench holds one key for a whole run, so
+  without the model a stage would be charged for every other combo's queueing.
+  Models are benched sequentially, so the only overlap left is one model's own
+  concurrent probes. Window boundaries are inclusive — a request logged on the
+  edge belongs to the stage that was running, and dropping it under-reports
+  overhead, which inflates computed execution.
+
+  Best-effort by design: no key, no admin token, or an unreachable endpoint
+  leaves the correction at zero and logs it. That reports queueing as execution
+  — exactly the pre-existing behaviour — rather than failing a run over an
+  observability endpoint.
+
+  **Verified live:** `/api/v1/overhead` returned `loadMs: 6601` for the request
+  whose header read `X-Corrallm-Load-Ms: 6601`, and zero for another caller's
+  key or another model. Two independent paths, same number.
+
+**Rejected alternative:** adding a response-headers field to agentkit's
+`llm.Client`. It is in `go.work` so a local change would work immediately, but
+corrallm pins `agentkit v0.3.0` and a build without the workspace would break.
+The activity route is self-contained and sums correctly across an agent loop's
+many calls, which per-call headers would have needed anyway.
 
 ## Icebox
 
