@@ -40,7 +40,7 @@ func waitDone(t *testing.T, b *BenchRunner) BenchRunStatus {
 func TestBenchRunner_ReleasesLeaseOnExit(t *testing.T) {
 	b := NewBenchRunner()
 	spy := &leaseSpy{}
-	if _, err := b.Start(BenchStartOptions{Bin: "true"}, spy.begin, spy.end); err != nil {
+	if _, err := b.Start(BenchStartOptions{Bin: "true", Exclusive: true}, spy.begin, spy.end); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	waitDone(t, b)
@@ -57,7 +57,7 @@ func TestBenchRunner_ReleasesLeaseOnExit(t *testing.T) {
 func TestBenchRunner_ReleasesLeaseOnFailure(t *testing.T) {
 	b := NewBenchRunner()
 	spy := &leaseSpy{}
-	if _, err := b.Start(BenchStartOptions{Bin: "false"}, spy.begin, spy.end); err != nil {
+	if _, err := b.Start(BenchStartOptions{Bin: "false", Exclusive: true}, spy.begin, spy.end); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	st := waitDone(t, b)
@@ -98,11 +98,11 @@ func TestBenchRunner_TakesNoLeaseWhenBinaryMissing(t *testing.T) {
 func TestBenchRunner_RejectsConcurrentRun(t *testing.T) {
 	b := NewBenchRunner()
 	spy := &leaseSpy{}
-	if _, err := b.Start(BenchStartOptions{Bin: "sleep", Models: []string{"1"}}, spy.begin, spy.end); err != nil {
+	if _, err := b.Start(BenchStartOptions{Bin: "sleep", Models: []string{"1"}, Exclusive: true}, spy.begin, spy.end); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer b.Cancel()
-	if _, err := b.Start(BenchStartOptions{Bin: "true"}, spy.begin, spy.end); err == nil {
+	if _, err := b.Start(BenchStartOptions{Bin: "true", Exclusive: true}, spy.begin, spy.end); err == nil {
 		t.Error("a second concurrent run must be refused")
 	}
 }
@@ -112,7 +112,7 @@ func TestBenchRunner_RejectsConcurrentRun(t *testing.T) {
 func TestBenchRunner_NoSpawnWithoutLease(t *testing.T) {
 	b := NewBenchRunner()
 	spy := &leaseSpy{refuse: true}
-	if _, err := b.Start(BenchStartOptions{Bin: "true"}, spy.begin, spy.end); err == nil {
+	if _, err := b.Start(BenchStartOptions{Bin: "true", Exclusive: true}, spy.begin, spy.end); err == nil {
 		t.Error("must refuse to spawn when the lease is unavailable")
 	}
 	if b.Status().Running {
@@ -153,5 +153,49 @@ func TestBenchRunner_NilSafe(t *testing.T) {
 	}
 	if _, err := b.Start(BenchStartOptions{}, nil, nil); err == nil {
 		t.Error("nil runner must refuse to start")
+	}
+}
+
+// The lease IS the lockout: holding it answers every other caller with 429. A
+// shared run must therefore not take one at all — the whole point of making
+// exclusive opt-in is that a benchmark stops being an outage.
+func TestBenchRunner_SharedRunTakesNoLease(t *testing.T) {
+	b := NewBenchRunner()
+	spy := &leaseSpy{}
+	if _, err := b.Start(BenchStartOptions{Bin: "true"}, spy.begin, spy.end); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitDone(t, b)
+	if len(spy.begun) != 0 {
+		t.Errorf("a shared run took the lease: %v", spy.begun)
+	}
+}
+
+// A shared run must start even when someone else holds the lease — it is not
+// competing for it. Refusing here would make an exclusive run block every
+// ordinary one for its whole duration.
+func TestBenchRunner_SharedRunStartsWhileLeaseHeld(t *testing.T) {
+	b := NewBenchRunner()
+	spy := &leaseSpy{refuse: true}
+	if _, err := b.Start(BenchStartOptions{Bin: "true"}, spy.begin, spy.end); err != nil {
+		t.Fatalf("a shared run must not need the lease: %v", err)
+	}
+	waitDone(t, b)
+}
+
+// Exclusive still appears in the recorded invocation only when asked for, since
+// the logged args are the contract for reproducing a run from a shell.
+func TestBenchRunner_ExclusiveFlagIsOptIn(t *testing.T) {
+	for _, tc := range []struct{ exclusive, wantFlag bool }{{false, false}, {true, true}} {
+		b := NewBenchRunner()
+		spy := &leaseSpy{}
+		if _, err := b.Start(BenchStartOptions{Bin: "true", Exclusive: tc.exclusive}, spy.begin, spy.end); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		st := waitDone(t, b)
+		got := strings.Contains(strings.Join(st.Args, " "), "--exclusive")
+		if got != tc.wantFlag {
+			t.Errorf("Exclusive=%v produced --exclusive=%v, want %v", tc.exclusive, got, tc.wantFlag)
+		}
 	}
 }

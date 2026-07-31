@@ -323,6 +323,27 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 						defer wg.Done()
 						defer func() { <-sem }()
 						for _, mode := range RunMode(tsk.Run).Modes() {
+							// A cold pass needs the exclusive lease to mean
+							// anything: without eviction rights the model may
+							// already be resident, and the pass then stands as
+							// evidence for a cold path it never touched. That
+							// is the bonsai failure exactly — every warm probe
+							// passed while the cold path was broken.
+							//
+							// A shared run therefore SKIPS cold rather than
+							// running it degraded. Skipping is recorded, so the
+							// gap is visible; a quietly-warm "cold" result is
+							// not, and is worse than no result.
+							if mode == ModeCold && !opts.Exclusive {
+								mu.Lock()
+								skips = append(skips, Skip{
+									Model: model, Task: tsk.Name, Class: tsk.Class,
+									Capability: tsk.Requires.EffectiveCapability(),
+									Reason:     "cold pass needs --exclusive; skipped on a shared box rather than run possibly-warm",
+								})
+								mu.Unlock()
+								continue
+							}
 							// Capability observations across every repeat of this
 							// probe. Published once after the loop: a single pass is
 							// one sample, and the runner sends no temperature or

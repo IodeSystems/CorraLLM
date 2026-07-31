@@ -852,6 +852,8 @@ type corrallm_BenchRunDetailOutputBody {
 input corrallm_BenchRunInputBodyInput {
   """Probe classes: capability | coding | tooluse | adversarial. Empty = all."""
   classes: [String!]
+  """Hold the calibration lease: evicts models for cold passes and answers every other caller with 429 until the run finishes. Required for cold-mode probes."""
+  exclusive: Boolean
   """Models to bench; empty = every model in the bench config."""
   models: [String!]
   """Shown to turned-away callers."""

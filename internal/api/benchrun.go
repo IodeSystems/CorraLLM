@@ -120,9 +120,14 @@ type BenchStartOptions struct {
 	Classes    []string
 	TTLSeconds int
 	Reason     string
+	// Exclusive takes corrallm's calibration lease for the run: every other
+	// caller gets 429 until it finishes, and cold passes may evict the GPU.
+	// Required for cold-mode probes to measure anything; otherwise a needless
+	// outage.
+	Exclusive bool
 }
 
-// Start spawns llm-bench under an exclusive lease.
+// Start spawns llm-bench, optionally under the exclusive calibration lease.
 //
 // beginLease/endLease are injected so the runner does not import the proxy: the
 // caller wires them to the CalibrationState. endLease is called on EVERY exit
@@ -157,6 +162,18 @@ func (b *BenchRunner) Start(
 		return BenchRunStatus{}, err
 	}
 
+	// The LEASE is the lockout, not the --exclusive flag: holding it is what
+	// turns every other caller away with 429. A shared run must therefore not
+	// take it at all, rather than take it and behave politely.
+	//
+	// Stubbed rather than branched at each call site because endLease runs on
+	// every exit path below, and a lease released on a path that never acquired
+	// one is the kind of asymmetry that later gets "fixed" by removing the
+	// release.
+	if !opts.Exclusive {
+		beginLease = func(string, string, time.Duration) (time.Time, bool) { return time.Time{}, true }
+		endLease = func(string) {}
+	}
 	ttl := time.Duration(opts.TTLSeconds) * time.Second
 	if ttl <= 0 {
 		ttl = defaultCalibrationTTL * time.Second
@@ -179,9 +196,21 @@ func (b *BenchRunner) Start(
 	if len(opts.Classes) > 0 {
 		args = append(args, "--classes", strings.Join(opts.Classes, ","))
 	}
-	// A spawned run always holds the lease, so its cold passes may clear the
-	// whole GPU. A hand-run CLI does not get this by default.
-	args = append(args, "--exclusive")
+	// Exclusive is OPT-IN, not the default it used to be.
+	//
+	// Holding the lease locks every other caller out of the box for the whole
+	// run — 429 + Retry-After to everyone, every resident model evicted — which
+	// is a lot to charge for a benchmark on a machine that is also serving. A
+	// shared run instead waits out the backpressure (llm-bench retries 429
+	// without limit) and subtracts the waiting from its timings, so the numbers
+	// still describe the model rather than the queue.
+	//
+	// The cost is cold passes: they need eviction rights to prove anything, so a
+	// shared run skips them and records the skip. Ask for exclusive when the
+	// cold path is what you came to measure.
+	if opts.Exclusive {
+		args = append(args, "--exclusive")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, opts.Bin, args...)

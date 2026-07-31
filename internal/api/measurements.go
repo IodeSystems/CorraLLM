@@ -274,6 +274,11 @@ type BenchRunInput struct {
 		Classes []string `json:"classes,omitempty" doc:"Probe classes: capability | coding | tooluse | adversarial. Empty = all."`
 		Reason  string   `json:"reason,omitempty" doc:"Shown to turned-away callers."`
 		TTL     int      `json:"ttlSeconds,omitempty" doc:"Lease duration; the run is killed and the lease released when it expires."`
+		// Exclusive defaults FALSE: a benchmark should not take the box down.
+		// A shared run waits out backpressure and subtracts the wait from its
+		// timings; it skips cold passes, which need eviction rights to prove
+		// anything. Ask for exclusive when the cold path is the measurement.
+		Exclusive bool `json:"exclusive,omitempty" doc:"Hold the calibration lease: evicts models for cold passes and answers every other caller with 429 until the run finishes. Required for cold-mode probes."`
 	}
 }
 
@@ -308,6 +313,7 @@ func (h *Handlers) StartBenchRun(_ context.Context, in *BenchRunInput) (*BenchRu
 		Classes:    in.Body.Classes,
 		TTLSeconds: in.Body.TTL,
 		Reason:     in.Body.Reason,
+		Exclusive:  in.Body.Exclusive,
 	}, calib.Begin, calib.End)
 	if err != nil {
 		out.Body.Message = err.Error()
@@ -316,7 +322,11 @@ func (h *Handlers) StartBenchRun(_ context.Context, in *BenchRunInput) (*BenchRu
 	}
 	out.Body.OK = true
 	out.Body.Message = "bench run started"
-	out.Body.Warning = "EXCLUSIVE MODE: models will be EVICTED to take cold measurements, and every caller except this run receives 429 + Retry-After until it finishes."
+	if in.Body.Exclusive {
+		out.Body.Warning = "EXCLUSIVE MODE: models will be EVICTED to take cold measurements, and every caller except this run receives 429 + Retry-After until it finishes."
+	} else {
+		out.Body.Warning = "Shared run: other callers keep serving. Cold-mode probes are SKIPPED — they need eviction rights, and a cold pass on a warm model is evidence for a path it never tested. Re-run with exclusive to measure those."
+	}
 	out.Body.Status = st
 	return out, nil
 }

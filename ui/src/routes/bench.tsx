@@ -339,9 +339,14 @@ function BenchPage() {
   }, [checks])
 
   const start = useMutation({
-    mutationFn: () =>
+    mutationFn: (exclusive: boolean) =>
       gqlClient.request(StartBenchDoc, {
-        body: { models: request.models, classes: request.classes, reason: 'aggregate bench' },
+        body: {
+          models: request.models,
+          classes: request.classes,
+          reason: 'aggregate bench',
+          exclusive,
+        },
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['benchAggregate'] }),
   })
@@ -894,33 +899,46 @@ function BenchPage() {
       {!!status?.error && <Alert severity="error">{status.error}</Alert>}
 
       <Dialog open={confirming} onClose={() => setConfirming(false)}>
-        <DialogTitle>Run bench in exclusive mode?</DialogTitle>
+        <DialogTitle>How should this run share the box?</DialogTitle>
         <DialogContent>
           <DialogContentText component="div">
-            This will <b>evict resident models</b> so measurements are uncontended, and turn
-            away every other caller with <b>429 + Retry-After</b> until it finishes. Clients
-            that honor Retry-After pause and resume rather than fail.
-            <br />
-            <br />
             Models: <b>{request.models.join(', ') || 'none'}</b>
             <br />
             Classes: <b>{request.classes.join(', ') || 'measurement only'}</b>
             <br />
             <br />
-            The lease self-expires, so a crashed run cannot lock the server permanently.
+            <b>Shared</b> leaves everyone else serving. The bench waits out backpressure
+            instead of competing for slots, and subtracts the waiting from its timings, so
+            the numbers describe the model rather than the queue. Cold-mode probes are{' '}
+            <b>skipped</b> — without eviction rights a &ldquo;cold&rdquo; pass may run against
+            an already-resident model, which is evidence for a path it never tested.
+            <br />
+            <br />
+            <b>Exclusive</b> evicts resident models and turns away every other caller with{' '}
+            <b>429 + Retry-After</b> until it finishes. Only worth it when the cold path is
+            what you came to measure. The lease self-expires, so a crashed run cannot lock
+            the server permanently.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setConfirming(false)}>Cancel</Button>
           <Button
             color="warning"
-            variant="contained"
             onClick={() => {
               setConfirming(false)
-              start.mutate()
+              start.mutate(true)
             }}
           >
             Evict and run
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              setConfirming(false)
+              start.mutate(false)
+            }}
+          >
+            Run shared
           </Button>
         </DialogActions>
       </Dialog>
