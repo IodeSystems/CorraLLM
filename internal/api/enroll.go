@@ -230,6 +230,15 @@ type MintEnrollmentTokenInput struct {
 	Body struct {
 		Server     string `json:"server" doc:"Server name this token may claim. Empty lets the enrolling agent propose one."`
 		Note       string `json:"note" doc:"Free text, e.g. what machine this is for."`
+		// Base is where the ATTACHING machine should reach this daemon.
+		//
+		// The dashboard sends its own origin, which is the most reliable answer
+		// available: it is literally the address that just worked, with the
+		// right scheme and port and whatever proxy sits in front. The server
+		// cannot derive this as well — Go moves the Host header onto r.Host and
+		// out of r.Header, so binding it yields nothing, and a configured
+		// --public-base goes stale the moment the daemon is reached another way.
+		Base string `json:"base" required:"false" doc:"Base URL the attaching machine should use. The dashboard sends its own origin; falls back to the daemon's --public-base."`
 		TTLMinutes int    `json:"ttlMinutes" doc:"Validity window; default 60."`
 	}
 }
@@ -261,7 +270,12 @@ func (h *Handlers) MintEnrollmentToken(_ context.Context, in *MintEnrollmentToke
 	out.Body.Token = tok
 	out.Body.Server = in.Body.Server
 	out.Body.Expires = time.Now().Add(ttl).UnixMilli()
-	base := h.PublicBase
+	// Caller-supplied first: the browser knows how it reached us better than we
+	// do. Then a configured base, then a proxy's forwarded host.
+	base := strings.TrimRight(strings.TrimSpace(in.Body.Base), "/")
+	if base == "" {
+		base = h.PublicBase
+	}
 	if base == "" && in.ForwardedHost != "" {
 		base = "http://" + in.ForwardedHost
 	}

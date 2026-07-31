@@ -195,7 +195,18 @@ function ConfigPage() {
 
   const mint = useMutation({
     mutationFn: () =>
-      gqlClient.request(MintTokenDoc, { body: { server: '', note: 'from the dashboard', ttlMinutes: '60' } }),
+      gqlClient.request(MintTokenDoc, {
+        body: {
+          server: '',
+          note: 'from the dashboard',
+          ttlMinutes: '60',
+          // Whatever address this page was loaded from is, by definition, an
+          // address that reaches the daemon — right scheme, right port, through
+          // whatever proxy is in front. Better than anything the server can
+          // infer about itself.
+          base: window.location.origin,
+        },
+      }),
     onSuccess: (d) => {
       const t = d.corrallm.mintEnrollmentToken
       if (t) setMinted({ command: t.command, expires: String(t.expires) })

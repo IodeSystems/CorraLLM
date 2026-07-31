@@ -1280,6 +1280,8 @@ type corrallm_LaneMemberDef {
 }
 
 input corrallm_MintEnrollmentTokenInputBodyInput {
+  """Base URL the attaching machine should use. The dashboard sends its own origin; falls back to the daemon's --public-base."""
+  base: String
   """Free text, e.g. what machine this is for."""
   note: String!
   """Server name this token may claim. Empty lets the enrolling agent propose one."""
