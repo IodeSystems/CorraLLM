@@ -1,8 +1,12 @@
-.PHONY: gen dump-schema lint golangci run build dist agents dev test ui-build clean
+.PHONY: install gen dump-schema lint golangci run build dist agents dev test ui-build clean
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -X main.version=$(VERSION)
+SRCDIR  := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+LDFLAGS := -X main.version=$(VERSION) -X main.srcDir=$(SRCDIR)
+# Agents run on OTHER machines, where this source path does not exist — stamping
+# it would make a remote agent warn about a tree it cannot see.
+AGENT_LDFLAGS := -X main.version=$(VERSION)
 
 ## --- codegen ---
 gen:              ## All codegen: dump SDL + typed TS client + lint (no DB/server)
@@ -20,6 +24,17 @@ golangci:         ## Go lint
 ## --- run ---
 build:            ## Build the server binary
 	go build -ldflags "$(LDFLAGS)" -o bin/corrallm ./cmd/corrallm
+
+GOBIN   := $(shell go env GOBIN)
+ifeq ($(GOBIN),)
+GOBIN   := $(shell go env GOPATH)/bin
+endif
+
+install:          ## Install a source-stamped corrallm to $(GOBIN) (what the systemd unit runs)
+	@mkdir -p $(GOBIN)
+	go build -ldflags "$(LDFLAGS)" -o $(GOBIN)/corrallm ./cmd/corrallm
+	@echo "installed $(GOBIN)/corrallm (warns when it predates $(SRCDIR))"
+	@echo "restart the service to run it: corrallm service restart"
 
 run: build        ## Build + run the server
 	ADDR='$(ADDR)' ./bin/corrallm serve
@@ -40,7 +55,7 @@ agents:           ## Cross-compile agent binaries into bin/agents/ for the daemo
 		os=$${p%/*}; arch=$${p#*/}; \
 		echo "==> $$os/$$arch"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
-		  go build -ldflags "$(LDFLAGS)" -o bin/agents/corrallm-$$os-$$arch ./cmd/corrallm || exit 1; \
+		  go build -ldflags "$(AGENT_LDFLAGS)" -o bin/agents/corrallm-$$os-$$arch ./cmd/corrallm || exit 1; \
 	done
 	@printf '%s' "$(VERSION)" > bin/agents/VERSION
 	@ls -la bin/agents/

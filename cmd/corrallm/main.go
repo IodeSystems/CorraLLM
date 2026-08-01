@@ -295,6 +295,7 @@ func newServeCmd() *cobra.Command {
 			} else if n > 0 {
 				slog.Info("properties loaded", "keys", n, "home", home, "service", service)
 			}
+			warnIfStale()
 			p := derivePaths(home, configPath, dbPath)
 			dbPathResolved := p.db
 			slog.Info("paths resolved", "home", p.home, "config", p.config, "db", p.db)
