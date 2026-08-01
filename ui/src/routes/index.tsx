@@ -12,6 +12,7 @@ import {
   DialogContent,
   DialogTitle,
   Link as MuiLink,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
@@ -21,7 +22,7 @@ import { ActiveRequests } from '@/ActiveRequests'
 import { MemoryPanel } from '@/MemoryPanel'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { C, seriesColor } from '@/theme'
-import { capLabel, fmtInt } from '@/format'
+import { capLabel, fmtInt, fmtTime } from '@/format'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -49,6 +50,11 @@ const OverviewDoc = graphql(/* GraphQL */ `
           spawnable
           remote
           procKey
+          paused
+          pauseScope
+          pausedByExtension
+          pauseReason
+          pauseResumeMs
           modalities {
             modality
             maxResolution
@@ -71,6 +77,20 @@ const OverviewDoc = graphql(/* GraphQL */ `
             ttl
             evictCost
           }
+        }
+        extensions {
+          name
+          cmd
+          server
+          provides
+          notes
+          state
+          draining
+          inFlight
+          pinned
+          paused
+          pauseReason
+          pauseResumeMs
         }
         groups {
           name
@@ -147,13 +167,29 @@ const OverviewDoc = graphql(/* GraphQL */ `
 function ResidencyToggle(props: {
   state: string
   persistent: boolean
+  paused: boolean
   busy: boolean
   onLoad: () => void
   onUnload: () => void
 }) {
-  const { state, persistent, busy, onLoad, onUnload } = props
+  const { state, persistent, paused, busy, onLoad, onUnload } = props
   const inFlight = state === 'loading' || state === 'evicting'
   const resident = state === 'ready'
+
+  // A paused model refuses to load server-side, so offering Load would hand the
+  // operator a button whose only outcome is an error message. Resume is the
+  // action that exists here, and it is the adjacent button.
+  if (paused && !resident && !inFlight) {
+    return (
+      <Tooltip title="Paused — resume it to load">
+        <span>
+          <Button size="small" variant="outlined" disabled>
+            Load
+          </Button>
+        </span>
+      </Tooltip>
+    )
+  }
 
   if (inFlight) {
     return (
@@ -234,6 +270,221 @@ const UnloadDoc = graphql(/* GraphQL */ `
     }
   }
 `)
+
+const ExtLoadDoc = graphql(/* GraphQL */ `
+  mutation LoadExtension($extension: String!) {
+    corrallm {
+      loadExtension(body: { extension: $extension }) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
+const ExtUnloadDoc = graphql(/* GraphQL */ `
+  mutation UnloadExtension($extension: String!) {
+    corrallm {
+      unloadExtension(body: { extension: $extension }) {
+        ok
+        message
+        evicted
+        draining
+      }
+    }
+  }
+`)
+
+const ExtPauseDoc = graphql(/* GraphQL */ `
+  mutation PauseExtension($extension: String!, $resumeAt: String, $reason: String) {
+    corrallm {
+      pauseExtension(body: { extension: $extension, resumeAt: $resumeAt, reason: $reason }) {
+        ok
+        message
+        target
+        affected
+        evicted
+        draining
+      }
+    }
+  }
+`)
+
+const ExtUnpauseDoc = graphql(/* GraphQL */ `
+  mutation UnpauseExtension($extension: String!) {
+    corrallm {
+      unpauseExtension(body: { extension: $extension }) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
+const PauseDoc = graphql(/* GraphQL */ `
+  mutation PauseModel($model: String!, $resumeAt: String, $reason: String) {
+    corrallm {
+      pauseModel(body: { model: $model, resumeAt: $resumeAt, reason: $reason }) {
+        ok
+        message
+        target
+        affected
+        evicted
+        draining
+      }
+    }
+  }
+`)
+
+const UnpauseDoc = graphql(/* GraphQL */ `
+  mutation UnpauseModel($model: String!) {
+    corrallm {
+      unpauseModel(body: { model: $model }) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
+/**
+ * PauseDialog collects the optional resume time and reason for a pause.
+ *
+ * The input is `datetime-local`, whose value is a LOCAL wall-clock string with
+ * no zone ("2026-08-02T09:00"). The server takes RFC3339 and enforces
+ * "in the future", so the conversion has to happen here, through a Date — which
+ * is exactly right: the operator means 9am where they are, not 9am UTC.
+ *
+ * `min` is now, not midnight tonight: "after today" in the sense that matters is
+ * "not in the past", and forbidding a pause that lifts in two hours because it
+ * is still today would be the wrong reading.
+ *
+ * `warning` carries the blast radius when it is wider than the thing named —
+ * pausing one model of an extension pauses all of them, and that must be on the
+ * screen BEFORE the click, not in the result message after it.
+ */
+function PauseDialog(props: {
+  target: string | null
+  warning?: string
+  busy: boolean
+  onClose: () => void
+  onConfirm: (resumeAt: string | null, reason: string) => void
+}) {
+  const { target, warning, busy, onClose, onConfirm } = props
+  const [until, setUntil] = useState('')
+  const [reason, setReason] = useState('')
+
+  // Local-time "now" in the format the input wants, sliced to minutes.
+  const nowLocal = () => {
+    const d = new Date()
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+    return d.toISOString().slice(0, 16)
+  }
+
+  const close = () => {
+    setUntil('')
+    setReason('')
+    onClose()
+  }
+
+  const parsed = until ? new Date(until) : null
+  const invalid = !!parsed && !(parsed.getTime() > Date.now())
+
+  return (
+    <Dialog open={!!target} onClose={close} maxWidth="xs" fullWidth>
+      <DialogTitle>Pause {target}</DialogTitle>
+      <DialogContent>
+        {warning && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            {warning}
+          </Alert>
+        )}
+        <Typography variant="body2" sx={{ mb: 2, color: C.textMuted }}>
+          Unloads it and keeps it unloaded — no request, lane fall-through or preload will
+          start it again until it is resumed. Requests naming an affected model fall through
+          to the rest of their lane, or fail with 503.
+        </Typography>
+        <TextField
+          fullWidth
+          size="small"
+          type="datetime-local"
+          label="Resume automatically at"
+          value={until}
+          onChange={(e) => setUntil(e.target.value)}
+          slotProps={{ inputLabel: { shrink: true }, htmlInput: { min: nowLocal() } }}
+          error={invalid}
+          helperText={invalid ? 'Must be in the future' : 'Leave empty to pause until resumed by hand'}
+          sx={{ mb: 2 }}
+        />
+        <TextField
+          fullWidth
+          size="small"
+          label="Reason (optional)"
+          placeholder="e.g. freeing the GPU for the 70B eval"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={close}>Cancel</Button>
+        <Button
+          variant="contained"
+          color="warning"
+          disabled={busy || invalid}
+          onClick={() => {
+            onConfirm(parsed ? parsed.toISOString() : null, reason.trim())
+            close()
+          }}
+        >
+          Pause
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
+/**
+ * ConfirmDialog is the guard on an action whose blast radius is wider than the
+ * row it was clicked from.
+ *
+ * Unloading an extension-hosted model unloads the whole extension — every model
+ * it provides goes with it. That has always been true and was never said
+ * anywhere: the button sat on the oidio-tts row and silently took down stt,
+ * stt-diarize and realtime-stt too.
+ */
+function ConfirmDialog(props: {
+  open: boolean
+  title: string
+  body: string
+  confirmLabel: string
+  busy: boolean
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const { open, title, body, confirmLabel, busy, onClose, onConfirm } = props
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle>{title}</DialogTitle>
+      <DialogContent>
+        <Alert severity="warning">{body}</Alert>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button
+          variant="contained"
+          color="warning"
+          disabled={busy}
+          onClick={() => {
+            onConfirm()
+            onClose()
+          }}
+        >
+          {confirmLabel}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
 
 // Task-oriented capability sections — "I want to chat / transcribe / synthesize /
 // embed / …". A model lands in the first section whose caps include its
@@ -333,7 +584,61 @@ function Home() {
     },
     onError: (e) => setMsg({ ok: false, text: String(e) }),
   })
-  const busy = load.isPending || unload.isPending
+  // What the pause dialog is collecting a resume time for. `kind` decides which
+  // mutation fires; `warning` is the blast radius shown before the click.
+  const [pauseFor, setPauseFor] = useState<{ kind: 'model' | 'extension'; name: string; warning?: string } | null>(
+    null,
+  )
+  // A pending unload whose blast radius is wider than its row (a hosted model).
+  const [confirmUnload, setConfirmUnload] = useState<{ title: string; body: string; run: () => void } | null>(null)
+
+  const done = (text?: string | null, ok?: boolean | null) => {
+    setMsg({ ok: !!ok, text: text ?? '' })
+    void qc.invalidateQueries({ queryKey: ['overview'] })
+  }
+  const fail = (e: unknown) => setMsg({ ok: false, text: String(e) })
+
+  const pause = useMutation({
+    mutationFn: (v: { model: string; resumeAt: string | null; reason: string }) =>
+      gqlClient.request(PauseDoc, { model: v.model, resumeAt: v.resumeAt, reason: v.reason }),
+    onSuccess: (d) => done(d.corrallm.pauseModel?.message, d.corrallm.pauseModel?.ok),
+    onError: fail,
+  })
+  const unpause = useMutation({
+    mutationFn: (model: string) => gqlClient.request(UnpauseDoc, { model }),
+    onSuccess: (d) => done(d.corrallm.unpauseModel?.message, d.corrallm.unpauseModel?.ok),
+    onError: fail,
+  })
+  const extLoad = useMutation({
+    mutationFn: (extension: string) => gqlClient.request(ExtLoadDoc, { extension }),
+    onSuccess: (d) => done(d.corrallm.loadExtension?.message, d.corrallm.loadExtension?.ok),
+    onError: fail,
+  })
+  const extUnload = useMutation({
+    mutationFn: (extension: string) => gqlClient.request(ExtUnloadDoc, { extension }),
+    onSuccess: (d) => done(d.corrallm.unloadExtension?.message, d.corrallm.unloadExtension?.ok),
+    onError: fail,
+  })
+  const extPause = useMutation({
+    mutationFn: (v: { extension: string; resumeAt: string | null; reason: string }) =>
+      gqlClient.request(ExtPauseDoc, { extension: v.extension, resumeAt: v.resumeAt, reason: v.reason }),
+    onSuccess: (d) => done(d.corrallm.pauseExtension?.message, d.corrallm.pauseExtension?.ok),
+    onError: fail,
+  })
+  const extUnpause = useMutation({
+    mutationFn: (extension: string) => gqlClient.request(ExtUnpauseDoc, { extension }),
+    onSuccess: (d) => done(d.corrallm.unpauseExtension?.message, d.corrallm.unpauseExtension?.ok),
+    onError: fail,
+  })
+  const busy =
+    load.isPending ||
+    unload.isPending ||
+    pause.isPending ||
+    unpause.isPending ||
+    extLoad.isPending ||
+    extUnload.isPending ||
+    extPause.isPending ||
+    extUnpause.isPending
 
   if (q.isLoading) {
     return (
@@ -423,6 +728,36 @@ function Home() {
       </>
     ) : null
 
+  // An extension-hosted model shares ONE process with its siblings, so both
+  // Unload and Pause on its row reach all of them. Build the sentence that says
+  // so; returns undefined for a standalone model, where there is nothing extra
+  // to warn about.
+  const extensions = ov?.extensions ?? []
+  const extensionOf = (model: string) => extensions.find((e) => e.provides.includes(model))
+  const siblingWarning = (model: string, verb: string) => {
+    const ext = extensionOf(model)
+    if (!ext) return undefined
+    const others = ext.provides.filter((n) => n !== model)
+    if (!others.length) return undefined
+    return `${model} is hosted by the "${ext.name}" extension — one process for all of its models. ${verb} it also takes down: ${others.join(', ')}.`
+  }
+
+  // Unload is confirmed only when it reaches past the row it was clicked from.
+  // A plain model unloads immediately; asking every time would train people to
+  // click through the dialog that matters.
+  const askUnload = (model: string) => {
+    const warning = siblingWarning(model, 'Unloading')
+    if (!warning) {
+      unload.mutate(model)
+      return
+    }
+    setConfirmUnload({
+      title: `Unload ${extensionOf(model)?.name}?`,
+      body: warning,
+      run: () => unload.mutate(model),
+    })
+  }
+
   // One model = one ROW inside its panel, not a card of its own. A page of
   // twenty cards, each with its own border and its own five-column table for
   // four numbers, is the "everything runs together" problem: every model looks
@@ -449,6 +784,30 @@ function Home() {
             {m.name}
           </Typography>
           <Chip size="small" color="info" variant="outlined" label={capLabel(m.capability)} />
+          {/* Paused is a decision someone made, so it says who/why it is off and
+              when it comes back — a bare "paused" chip would leave the next
+              operator guessing whether it is safe to resume. It also names the
+              EXTENSION when that is what is paused: otherwise a hosted model
+              reads as individually paused and Resume looks narrower than it is. */}
+          {m.paused && (
+            <Tooltip
+              title={[
+                m.pausedByExtension ? `Paused by its extension "${m.pausedByExtension}"` : null,
+                m.pauseReason || 'No reason given',
+              ]
+                .filter(Boolean)
+                .join(' — ')}
+            >
+              <Chip
+                size="small"
+                color="warning"
+                label={
+                  (m.pausedByExtension ? `paused via ${m.pausedByExtension}` : 'paused') +
+                  (Number(m.pauseResumeMs) > 0 ? ` until ${fmtTime(m.pauseResumeMs)}` : '')
+                }
+              />
+            </Tooltip>
+          )}
           {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
           {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
           {st && Number(st.nCtx) > 0 && <Chip size="small" variant="outlined" label={`ctx ${fmtInt(st.nCtx)}`} />}
@@ -464,10 +823,46 @@ function Home() {
                 <ResidencyToggle
                   state={st?.state ?? 'absent'}
                   persistent={!!m.persistent}
+                  paused={!!m.paused}
                   busy={busy}
                   onLoad={() => load.mutate(m.name)}
-                  onUnload={() => unload.mutate(m.name)}
+                  onUnload={() => askUnload(m.name)}
                 />
+                {/* Pause sits next to Load/Unload because it is the same axis —
+                    is this model running — one step more durable: Unload frees
+                    the GPU until the next request, Pause frees it until someone
+                    says otherwise. */}
+                {m.paused ? (
+                  <Tooltip title={m.pausedByExtension ? `Resumes all of ${m.pausedByExtension}` : ''}>
+                    <span>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="success"
+                        disabled={busy}
+                        onClick={() => unpause.mutate(m.name)}
+                      >
+                        Resume
+                      </Button>
+                    </span>
+                  </Tooltip>
+                ) : (
+                  <Tooltip title="Unload and keep it unloaded until resumed">
+                    <span>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="warning"
+                        disabled={busy}
+                        onClick={() =>
+                          setPauseFor({ kind: 'model', name: m.name, warning: siblingWarning(m.name, 'Pausing') })
+                        }
+                      >
+                        Pause
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )}
                 {needsProbe(m.name) && (
                   <Tooltip title="This model has never been measured or verified">
                     <Button
@@ -631,6 +1026,31 @@ function Home() {
         colorOf={colorOf}
       />
 
+      <PauseDialog
+        target={pauseFor?.name ?? null}
+        warning={pauseFor?.warning}
+        busy={busy}
+        onClose={() => setPauseFor(null)}
+        onConfirm={(resumeAt, reason) => {
+          if (pauseFor?.kind === 'extension') {
+            extPause.mutate({ extension: pauseFor.name, resumeAt, reason })
+          } else if (pauseFor) {
+            pause.mutate({ model: pauseFor.name, resumeAt, reason })
+          }
+          setPauseFor(null)
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!confirmUnload}
+        title={confirmUnload?.title ?? ''}
+        body={confirmUnload?.body ?? ''}
+        confirmLabel="Unload"
+        busy={busy}
+        onClose={() => setConfirmUnload(null)}
+        onConfirm={() => confirmUnload?.run()}
+      />
+
       {/* A probe is DESTRUCTIVE: it evicts models and locks out other callers.
           Say so before the click, name exactly what this run will learn, and
           state that the lease self-expires — "will this wedge my server" is the
@@ -733,6 +1153,104 @@ function Home() {
           {s.models.map(modelRow)}
         </Panel>
       ))}
+
+      {/* Extensions: the PROCESS behind a group of models. It had no surface at
+          all before — you could see oidio-stt and oidio-tts but not the single
+          oidio process serving both, which is the thing that actually loads,
+          unloads and pauses. Controls live here because this is the unit they
+          really act on. */}
+      {extensions.length > 0 && (
+        <Panel
+          title="Extensions"
+          subtitle="One process serving several models — it loads, unloads and pauses as a unit"
+          flush
+        >
+          {extensions.map((e) => {
+            const spawnable = !!e.cmd
+            return (
+              <Row key={e.name}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                  <Chip
+                    size="small"
+                    label={spawnable ? e.state : 'proxy'}
+                    color={spawnable ? stateColor(e.state) : 'secondary'}
+                    variant={e.state !== 'absent' || !spawnable ? 'filled' : 'outlined'}
+                    sx={{ minWidth: 68 }}
+                  />
+                  <Typography variant="subtitle2" sx={{ minWidth: 150 }}>
+                    {e.name}
+                  </Typography>
+                  {e.paused && (
+                    <Tooltip title={e.pauseReason || 'No reason given'}>
+                      <Chip
+                        size="small"
+                        color="warning"
+                        label={
+                          'paused' + (Number(e.pauseResumeMs) > 0 ? ` until ${fmtTime(e.pauseResumeMs)}` : '')
+                        }
+                      />
+                    </Tooltip>
+                  )}
+                  {e.pinned && <Chip size="small" variant="outlined" label="pinned" />}
+                  {Number(e.inFlight) > 0 && (
+                    <Chip size="small" variant="outlined" label={`${fmtInt(e.inFlight)} in flight`} />
+                  )}
+                  {e.draining && <Chip size="small" color="warning" variant="outlined" label="draining" />}
+                  <Tooltip title={`Serves: ${e.provides.join(', ')}`}>
+                    <Chip size="small" variant="outlined" label={`${e.provides.length} models`} />
+                  </Tooltip>
+                  <Box sx={{ flexGrow: 1 }} />
+                  {spawnable && (
+                    <>
+                      <ResidencyToggle
+                        state={e.state}
+                        persistent={!!e.pinned}
+                        paused={!!e.paused}
+                        busy={busy}
+                        onLoad={() => extLoad.mutate(e.name)}
+                        onUnload={() =>
+                          setConfirmUnload({
+                            title: `Unload ${e.name}?`,
+                            body: `This stops the ${e.name} process, taking every model it serves down with it: ${e.provides.join(', ')}.`,
+                            run: () => extUnload.mutate(e.name),
+                          })
+                        }
+                      />
+                      {e.paused ? (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="success"
+                          disabled={busy}
+                          onClick={() => extUnpause.mutate(e.name)}
+                        >
+                          Resume
+                        </Button>
+                      ) : (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="warning"
+                          disabled={busy}
+                          onClick={() =>
+                            setPauseFor({
+                              kind: 'extension',
+                              name: e.name,
+                              warning: `Takes every model ${e.name} serves out of service: ${e.provides.join(', ')}.`,
+                            })
+                          }
+                        >
+                          Pause
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </Box>
+              </Row>
+            )
+          })}
+        </Panel>
+      )}
 
       {/* Lanes: named ordered fallback lists over models. */}
       {lanes.length > 0 && (
