@@ -71,6 +71,40 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 > - ✅ **P14 lanes + single-path models** — schema v2: one serving path per model,
 >   `lanes:` = named fallback lists (per-member sticky override); `config.Backend`
 >   removed; proc keyed by model name; catalog lists lanes; groups-op rename.
+> - ✅ **P17 pause (models + extensions)** — take something out of service: unload it and never
+>   load it again (request, lane fall-through, explicit load, or boot preload) until resumed,
+>   with an optional resume datetime. **A pause keys on the PROCESS (ProcKey), not the name** —
+>   so an extension's models pause and resume as one unit, matching the blast radius unload
+>   always had. Enforced at `Manager.EnsureReady` (the one door every load comes through) plus a
+>   `filterByPaused` pre-filter so a lane skips a paused member instead of queueing for an
+>   admission slot on it. Refusal is a PERMANENT `CapacityError` → 503, not 429: a pause is a
+>   decision, not congestion, so no Retry-After would be honest. Pause overrides `persistent`
+>   (a pin is a scheduling preference; letting it veto would make pausing pinned oidio a no-op).
+>   Durable in `model_pause` keyed by process, restored before Preload. Timed pauses expire
+>   lazily on read, plus a 30s sweeper so a pinned process — which nothing requests by name —
+>   actually comes back and is re-warmed. Ops `pauseModel`/`unpauseModel`/`pauseExtension`/
+>   `unpauseExtension`; pause + scope on `ModelDef`, live state + pause on `ExtensionDef`;
+>   `/v1/models` reports `state: "paused"`. UI: a new **Extensions panel** (the process behind a
+>   model group had no surface at all before) with Load/Unload/Pause/Resume, a `datetime-local`
+>   pause dialog that states the blast radius before the click, and a confirm on unloading an
+>   extension-hosted model — which silently took its siblings down for as long as that button
+>   has existed.
+>   **Two pre-existing bugs surfaced by it and fixed here:** (1) `waitHealthy` polled for the
+>   full `--health-timeout` (600s in prod) even after the process it was waiting for had exited
+>   — a crash-on-start held its pools and read as `loading` for ten minutes; it now aborts on
+>   the handle's `Done()`. (2) a resume that follows a pause closely races the eviction it just
+>   triggered (async SIGTERM + 15s grace), so the respawn can lose a fixed resource — observed
+>   live as `Unit oidio.scope was already loaded` from the config's `systemd-run --unit=oidio`;
+>   `repin` now retries with backoff past `evictGrace`. Only pause can reach this for a pinned
+>   process, since ordinary unload refuses a pin.
+>   **Teardown is now tracked** (`Manager.stopping`, set by `evictLocked`, cleared once the group
+>   is confirmed gone): eviction only REQUESTS an exit and drops the entry from `procs` at once,
+>   so nothing previously remembered a process that was still alive. The two paths differ on
+>   purpose — `EnsureReady` WAITS the teardown out (a request has nobody to ask, and failing on a
+>   200ms window is worse than waiting), while explicit `LoadModel`/`LoadExtension` REFUSE, along
+>   with a load issued while one is already loading or draining: coalescing is right for a
+>   request and wrong for an operator action, where reporting "loaded" for a spawn someone else
+>   started hides which click did the work.
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.

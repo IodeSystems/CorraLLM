@@ -50,6 +50,19 @@ It runs in production today, fronting a mixed embeddings and chat workload.
   admission load; per-key and per-lane usage (cost, requests, energy, and time as
   bars and time series); queue pressure and sampled queue depth; backend logs with
   parsed `n_ctx`/`n_slots`; and on-demand load/unload. Updates stream over SSE.
+- **Pause** — take a model or an extension out of service: it is unloaded and never
+  loaded again — by a request, a lane fall-through, an explicit load, or boot preload
+  — until it is resumed, or until an optional resume time passes. A pause acts on the
+  *process*, so an extension and the models it hosts pause and resume as one unit. A
+  lane falls through to its unpaused members; a lane with none left answers 503 (a
+  pause is a decision, not congestion, so there is no honest Retry-After). Pauses
+  survive a restart. Resuming a pinned model reloads it, retrying past the teardown
+  of the process the pause evicted.
+- **One lifecycle action at a time** — an explicit load is refused while the same
+  process is already loading, draining, or still stopping; requests wait the teardown
+  out instead. Unloading only *requests* an exit, so spawning a replacement before the
+  old process is gone raced it for its port (and, with a fixed `systemd-run --unit=`,
+  its scope name).
 - **Auth** — an auto-generated admin token (`<home>/admin.token`) protects the
   management API (`/api/*`). The inference proxy and `/health` stay open.
 
@@ -137,7 +150,8 @@ callers fall into the `default` group.
   cookie): `POST /api/graphql` and REST at `/api/v1/*` — `overview`, `lanes`,
   `reservations`, `residency`, `activity`,
   `usage/{rollup,by-key,series,series-by-group,queue-depth}`,
-  `models/{load,unload,logs}`, and the `events` SSE stream.
+  `models/{load,unload,pause,unpause,logs}`,
+  `extensions/{load,unload,pause,unpause}`, and the `events` SSE stream.
 
 ## Reservations
 
