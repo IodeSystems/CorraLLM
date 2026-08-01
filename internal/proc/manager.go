@@ -204,6 +204,14 @@ type Manager struct {
 	// single-host deployment, where nothing ever heartbeats.
 	live *agent.Liveness
 
+	// paused holds the operator's out-of-service orders, keyed by served model
+	// name. A paused model is never spawned — not by a request, a lane
+	// fall-through, an explicit load, or boot preload. Entries with a resume
+	// time expire lazily on read (and are swept, so an unrequested pinned model
+	// still comes back); see pause.go. Guarded by mu.
+	paused     map[string]Pause
+	pauseStore PauseStore // durable pauses (nil = memory-only)
+
 	// stopping tracks process keys whose previous process is still being torn
 	// down: eviction only REQUESTS an exit (SIGTERM, then up to evictGrace
 	// before SIGKILL), and it drops the entry from procs immediately — so
@@ -342,6 +350,14 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	}
 
 	key := mdl.ProcKey(name)
+
+	// A paused process is refused at the ONE door every load comes through, so
+	// the request path, boot preload, explicit load and /upstream all obey the
+	// pause without each needing its own check. Keyed on the PROCESS, so an
+	// extension's pause covers every model it provides for free.
+	if p, ok := m.pauseByKey(key); ok {
+		return nil, nil, false, pauseError(name, p)
+	}
 
 	// Never spawn into a teardown: the process this would replace may still be
 	// alive and still holding its port or its systemd unit name.
@@ -1549,6 +1565,13 @@ func (m *Manager) Preload(ctx context.Context) {
 		if !ok || !model.Persistent {
 			continue
 		}
+		// EnsureReady would refuse it anyway; skipping here keeps boot quiet
+		// (a pause is not a "preload failed" warning) and makes the intent
+		// explicit — pinning is what preloads a model, and a pause overrides it.
+		if p, paused := m.PauseOf(name); paused {
+			slog.Info("preload skipped: model is paused", "model", name, "until", p.ResumeAt)
+			continue
+		}
 		_, done, _, err := m.EnsureReady(ctx, name, model, nil)
 		if err != nil {
 			slog.Warn("preload failed", "model", name, "err", err)
@@ -1666,7 +1689,7 @@ func (m *Manager) UnloadModel(served string) (int, error) {
 	// Match on the PROCESS key: an extension's process is registered under
 	// "extension:<n>", so matching ModelName would miss it for every provided
 	// model except whichever one happened to spawn it.
-	return m.unloadKey(m.procKey(served), served)
+	return m.unloadKey(m.procKey(served), served, false)
 }
 
 // LoadExtension warms an extension by spawning its process, addressed by the
@@ -1712,17 +1735,24 @@ func (m *Manager) UnloadExtension(name string) (int, error) {
 	if _, ok := m.config().Extensions[name]; !ok {
 		return 0, fmt.Errorf("unknown extension %q", name)
 	}
-	return m.unloadKey("extension:"+name, name)
+	return m.unloadKey("extension:"+name, name, false)
 }
 
 // unloadKey is the shared body of model- and extension-addressed unload. label
 // is what the caller asked for, used only in messages.
 //
+// force overrides the pinned (persistent) refusal. It exists for pause, where
+// the operator has explicitly ordered the model out of service: a pin is a
+// scheduling preference ("keep this warm under memory pressure"), and letting
+// it veto a pause would make pausing a pinned model a no-op. Nothing else sets
+// it — an ordinary unload of a pinned model is still an error, because there it
+// is almost certainly a mistake.
+//
 // In-flight requests are DRAINED, not broken: the backend stops admitting new
 // work and is evicted once the last one finishes (see releaser). A 44-minute
 // diarization can hold a drain open for minutes; that is the trade for not
 // killing work in progress.
-func (m *Manager) unloadKey(key, label string) (int, error) {
+func (m *Manager) unloadKey(key, label string, force bool) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -1732,7 +1762,7 @@ func (m *Manager) unloadKey(key, label string) (int, error) {
 	}
 
 	p.mu.Lock()
-	if p.persistent {
+	if p.persistent && !force {
 		p.mu.Unlock()
 		return 0, fmt.Errorf("%q is persistent (pinned); cannot unload", label)
 	}
@@ -1763,6 +1793,13 @@ type ExtensionState struct {
 	Draining bool     `json:"draining"`
 	InFlight int      `json:"in_flight"`
 	Pinned   bool     `json:"pinned"`
+	// Paused: out of service by operator order. An extension is the unit a
+	// pause acts on whenever its models are involved, so this is where the
+	// dashboard reads it from.
+	Paused        bool   `json:"paused"`
+	PauseReason   string `json:"pause_reason"`
+	PausedAtMS    int64  `json:"paused_at_ms"`
+	PauseResumeMS int64  `json:"pause_resume_ms"`
 }
 
 // ExtensionStates reports every declared extension and whether its process is up.
@@ -1791,6 +1828,13 @@ func (m *Manager) ExtensionStates() []ExtensionState {
 			p.mu.Lock()
 			st.State, st.Draining, st.InFlight = p.state, p.draining, p.refs
 			p.mu.Unlock()
+		}
+		if pause, ok := m.PauseOfExtension(n); ok {
+			st.Paused, st.PauseReason = true, pause.Reason
+			st.PausedAtMS = pause.At.UnixMilli()
+			if !pause.ResumeAt.IsZero() {
+				st.PauseResumeMS = pause.ResumeAt.UnixMilli()
+			}
 		}
 		out = append(out, st)
 	}

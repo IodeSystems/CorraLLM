@@ -228,6 +228,24 @@ CREATE TABLE IF NOT EXISTS quota_counter (
     at      INTEGER NOT NULL DEFAULT 0, -- unix millis when used was last updated
     PRIMARY KEY (backend, label)
 );
+
+-- model_pause: an operator's "do not run this" order. Operational state, not
+-- config: it lives here rather than in the YAML so pausing a model for an
+-- afternoon does not rewrite the user's configuration file. It MUST be durable
+-- though — an in-memory pause means a restart quietly reloads the very model
+-- the operator was keeping off the box. Rows are deleted on unpause and when
+-- resume_at passes.
+--
+-- The key is a PROCESS, not a name: a served model name, or "extension:<name>"
+-- when an extension hosts the process. That is what gives a pause the same
+-- blast radius as an unload — an extension's models are one process, so they
+-- pause and resume together.
+CREATE TABLE IF NOT EXISTS model_pause (
+    target    TEXT    NOT NULL PRIMARY KEY, -- process key: model name | "extension:<name>"
+    reason    TEXT    NOT NULL DEFAULT '',  -- free text: why it is off
+    at        INTEGER NOT NULL DEFAULT 0,   -- unix millis the pause was set
+    resume_at INTEGER NOT NULL DEFAULT 0    -- unix millis it lifts; 0 = indefinite
+);
 `
 
 // migrations upgrade an activity table created by an earlier schema in place.
@@ -289,6 +307,39 @@ func dropStaleProbeTables(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS `+t); err != nil {
 			return fmt.Errorf("drop stale %s: %w", t, err)
 		}
+	}
+	return nil
+}
+
+// dropStaleModelPause removes a model_pause created before a pause keyed on the
+// PROCESS rather than the model, so the schema can recreate it with the right
+// column.
+//
+// The first cut keyed by served model name (column `model`); an extension's
+// models are one process, so a pause has to key by ProcKey — a model name, or
+// "extension:<name>" — and the column is now `target`. CREATE TABLE IF NOT
+// EXISTS would leave the old shape in place and every query against it would
+// fail on the missing column.
+//
+// Dropping rows is acceptable ONLY because this table has never shipped: it was
+// added and revised in the same unreleased change, and a pause is a live
+// operator decision that is trivially re-made. If it ever ships, this must
+// become a copy-into-new-table migration instead.
+func dropStaleModelPause(ctx context.Context, db *sql.DB) error {
+	var ddl string
+	err := db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='model_pause'`).Scan(&ddl)
+	if err == sql.ErrNoRows {
+		return nil // fresh database; the schema creates the current shape
+	}
+	if err != nil {
+		return fmt.Errorf("inspect model_pause: %w", err)
+	}
+	if strings.Contains(ddl, "target") {
+		return nil // already the process-keyed shape
+	}
+	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS model_pause`); err != nil {
+		return fmt.Errorf("drop stale model_pause: %w", err)
 	}
 	return nil
 }
@@ -405,6 +456,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	// SQLite is single-writer; one connection avoids "database is locked".
 	db.SetMaxOpenConns(1)
 	if err := dropStaleProbeTables(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := dropStaleModelPause(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -787,6 +842,52 @@ func (s *Store) LoadQuotaCounters() ([]QuotaCounter, error) {
 			return nil, err
 		}
 		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ModelPause is one persisted "this is out of service" order. Target is a
+// PROCESS key — a served model name, or "extension:<name>".
+type ModelPause struct {
+	Target     string
+	Reason     string
+	AtMS       int64
+	ResumeAtMS int64 // 0 = indefinite
+}
+
+// SavePause upserts a pause. Written once per operator action, so the volume is
+// negligible.
+func (s *Store) SavePause(target, reason string, atMS, resumeAtMS int64) error {
+	_, err := s.db.Exec(`
+INSERT INTO model_pause (target, reason, at, resume_at) VALUES (?,?,?,?)
+ON CONFLICT(target) DO UPDATE SET reason=excluded.reason, at=excluded.at, resume_at=excluded.resume_at`,
+		target, reason, atMS, resumeAtMS)
+	return err
+}
+
+// DeletePause clears a pause (unpause, or its resume time passing).
+func (s *Store) DeletePause(target string) error {
+	_, err := s.db.Exec(`DELETE FROM model_pause WHERE target = ?`, target)
+	return err
+}
+
+// LoadPauses returns every persisted pause, for restoring them at boot BEFORE
+// preload — otherwise a paused pinned model warms itself back up on restart.
+// Expiry is the caller's job: the manager owns the clock and drops rows whose
+// resume time passed while corrallm was down.
+func (s *Store) LoadPauses() ([]ModelPause, error) {
+	rows, err := s.db.Query(`SELECT target, reason, at, resume_at FROM model_pause`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ModelPause
+	for rows.Next() {
+		var p ModelPause
+		if err := rows.Scan(&p.Target, &p.Reason, &p.AtMS, &p.ResumeAtMS); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

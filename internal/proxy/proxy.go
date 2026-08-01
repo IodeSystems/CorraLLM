@@ -494,6 +494,21 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// gating for the same reason as the quota filter, and with NO keep-all
 	// fallback: a sensitive request must refuse rather than leak, so an empty
 	// result is a real "no privacy-safe backend" answer, not a reason to relax.
+	// Paused models are out of service by operator order — the most absolute of
+	// the filters, so it runs first. A lane falls through to its unpaused
+	// members; a lane (or a directly-named model) with nothing left is a 503,
+	// not backpressure: a pause is a decision, not congestion, and there is no
+	// retry interval that would be honest for one.
+	if paused := p.filterByPaused(cands); len(paused) != len(cands) {
+		cands = paused
+		if len(cands) == 0 {
+			http.Error(w, "model is paused", http.StatusServiceUnavailable)
+			p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+				Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
+				Error: "model paused", ReqBody: reqBody})
+			return
+		}
+	}
 	if isSensitive(r) {
 		cands = filterBySensitive(cands)
 		if len(cands) == 0 {
@@ -868,6 +883,16 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		writeCalibrationBackpressure(w, remaining, reason)
 		return
 	}
+	// Same operator-order filter as the inference path: skip paused members so
+	// the walk never queues for an admission slot on a model that will not
+	// serve, and 503 when the lane has nothing left.
+	if cands = p.filterByPaused(cands); len(cands) == 0 {
+		http.Error(w, `{"error":{"message":"model is paused"}}`, http.StatusServiceUnavailable)
+		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+			Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
+			Error: "model paused"})
+		return
+	}
 	groupName, group := p.config().ResolveGroup(key)
 	weight := group.EffectiveWeight()
 	// A realtime session is long-lived by construction — the request that most
@@ -1150,6 +1175,28 @@ func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config
 // so a lane with a local floor never empties. If the filter WOULD empty the walk
 // (a free-only lane, all spent), the unfiltered walk is kept — trying an
 // exhausted backend for its own honest error beats a blind 503.
+// filterByPaused drops candidates an operator has taken out of service.
+//
+// EnsureReady refuses a paused model on its own, so this is not what enforces a
+// pause — it is what keeps the enforcement from costing anything. Without it a
+// request for a lane whose top member is paused takes an admission slot on that
+// member first, and under a `queue` stage BLOCKS there waiting for a slot on a
+// model that will never serve, before finally spilling. Filtering first makes
+// the walk skip it outright.
+//
+// No keep-all fallback (unlike filterByQuota, deliberately): if every member of
+// a lane is paused there is nothing honest left to try, and the empty result is
+// the correct answer rather than a reason to relax the operator's order.
+func (p *Proxy) filterByPaused(cands []config.Candidate) []config.Candidate {
+	kept := make([]config.Candidate, 0, len(cands))
+	for _, c := range cands {
+		if !p.mgr.IsPaused(c.Name) {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
 func (p *Proxy) filterByQuota(cands []config.Candidate) []config.Candidate {
 	if p.quota == nil {
 		return cands
@@ -1428,7 +1475,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Created int64  `json:"created"`
 		OwnedBy string `json:"owned_by"`
 		// corrallm metadata
-		State   string `json:"state"`             // absent|loading|ready|idle|evicting|proxy
+		State   string `json:"state"`             // absent|loading|ready|idle|evicting|proxy|paused
 		Quality float64 `json:"quality,omitempty"` // quality tier (lane: top tier); fractional tiers are legal
 		Type    string `json:"type,omitempty"`    // cost class
 		Kind    string `json:"kind"`              // model|lane
@@ -1483,6 +1530,14 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		} else if r, ok := resident[mc.ProcKey(name)]; ok {
 			e.State = r.State
 			e.ContextLength = r.NCtx
+		}
+		// Paused outranks everything above: "absent" would say a request could
+		// load it, and an extension's paused model would otherwise inherit its
+		// still-running sibling's "ready". The model stays LISTED — it is still
+		// a configured model, and hiding it would make a paused model look
+		// deleted — but its state says why it will not serve.
+		if p.mgr.IsPaused(name) {
+			e.State = "paused"
 		}
 		out.Data = append(out.Data, e)
 	}

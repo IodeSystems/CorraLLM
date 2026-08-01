@@ -377,6 +377,29 @@ type serveOpts struct {
 	benchBin, benchConfig, benchProbes    string
 }
 
+// pauseStore adapts *store.Store to proc.PauseStore. The manager keeps the
+// interface narrow so it never imports the store package (same reason
+// quota.CounterStore exists); this is the one place the two meet.
+type pauseStore struct{ st *store.Store }
+
+func (p pauseStore) SavePause(target, reason string, atMS, resumeAtMS int64) error {
+	return p.st.SavePause(target, reason, atMS, resumeAtMS)
+}
+
+func (p pauseStore) DeletePause(target string) error { return p.st.DeletePause(target) }
+
+func (p pauseStore) LoadPauses() ([]proc.PersistedPause, error) {
+	rows, err := p.st.LoadPauses()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proc.PersistedPause, len(rows))
+	for i, r := range rows {
+		out[i] = proc.PersistedPause{Target: r.Target, Reason: r.Reason, AtMS: r.AtMS, ResumeAtMS: r.ResumeAtMS}
+	}
+	return out, nil
+}
+
 func serve(ctx context.Context, o serveOpts) error {
 	if o.configDerived {
 		if err := bootstrapConfig(o.configPath); err != nil {
@@ -411,6 +434,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	mgr.SetTuneCache(tuneCache)
 	mgr.SetVRAMMargin(o.vramMargin)
 	defer mgr.Shutdown()
+	// Restore operator pauses BEFORE preload: a paused pinned model must not
+	// warm itself back up just because corrallm restarted.
+	mgr.UsePauseStore(pauseStore{st: st})
 	// Preload pinned (persistent) models in the background so boot isn't blocked.
 	go mgr.Preload(ctx)
 
@@ -551,6 +577,11 @@ func serve(ctx context.Context, o serveOpts) error {
 	// Expire stale slot reservations (a keyed caller can lease headroom for its
 	// lane; the lease must be renewed or it auto-frees). Stops on shutdown.
 	scheduler.StartReaper(sigCtx)
+
+	// Lift timed pauses when they come due. Every read expires a pause lazily,
+	// so this is not what makes a resume correct — it is what makes one happen
+	// for a pinned model, which nothing ever requests by name.
+	mgr.StartPauseSweeper(sigCtx)
 
 	// Sample instantaneous per-lane queue depth so it's visible before requests
 	// resolve (the activity log is completion-driven). Stops on shutdown.
