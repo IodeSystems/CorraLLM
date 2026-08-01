@@ -642,14 +642,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// declares one (P16): corrallm routed on the served name, but the remote
 		// does not know it. A local backend leaves Target.Model empty and the
 		// body forwards unchanged.
-		// The REQUESTED model's upstream id, not the process's. An extension's
-		// models share one Process, so pr.Target.Model is whichever of them
-		// happened to spawn it — routing every later request to that one's
-		// upstream. A diarize request answered as `tts` is how this showed up.
-		upstream := backend.Upstream
-		if upstream == "" && pr.Target != nil {
-			upstream = pr.Target.Model
-		}
+		upstream := upstreamID(backend, pr)
 		if upstream != "" {
 			// JSON bodies (chat/embeddings) and multipart bodies (audio) carry the
 			// model in different places, and rewriting only the former silently
@@ -963,6 +956,20 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		// Same abort-panic guard as the inference path: never leak the residency
 		// ref (done is sync.Once-guarded; inline calls stay no-ops).
 		defer done()
+
+		// Rewrite the model to the id the backend knows, exactly as the
+		// inference path rewrites the body — realtime carries the model in the
+		// QUERY STRING, and that was never rewritten. So corrallm forwarded the
+		// served name to a backend that has never heard of it and every
+		// extension-provided realtime model answered 404 "has no realtime
+		// transcription", while the same model worked over batch STT.
+		// Both transports need it: the WebSocket upgrade and the WebRTC SDP
+		// POST are both proxied straight off r.URL.
+		if upstream := upstreamID(backend, pr); upstream != "" {
+			q := r.URL.Query()
+			q.Set("model", upstream)
+			r.URL.RawQuery = q.Encode()
+		}
 
 		if !ws {
 			// WebRTC signaling: reverse-proxy the SDP offer→answer. The slot is held
@@ -1475,10 +1482,10 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Created int64  `json:"created"`
 		OwnedBy string `json:"owned_by"`
 		// corrallm metadata
-		State   string `json:"state"`             // absent|loading|ready|idle|evicting|proxy|paused
+		State   string  `json:"state"`             // absent|loading|ready|idle|evicting|proxy|paused
 		Quality float64 `json:"quality,omitempty"` // quality tier (lane: top tier); fractional tiers are legal
-		Type    string `json:"type,omitempty"`    // cost class
-		Kind    string `json:"kind"`              // model|lane
+		Type    string  `json:"type,omitempty"`    // cost class
+		Kind    string  `json:"kind"`              // model|lane
 		// Remote: served by a host we do not run (no local process, non-loopback
 		// target). Kind stays "model" — it IS a model, and clients filter on
 		// kind to separate models from lanes — so the distinction rides here.
@@ -1893,6 +1900,23 @@ func isSensitive(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+// upstreamID returns the id the BACKEND knows a model by, or "" when it uses
+// the served name unchanged.
+//
+// The REQUESTED model's upstream id, not the process's. An extension's models
+// share one Process, so pr.Target.Model is whichever of them happened to spawn
+// it — routing every later request to that one's upstream. A diarize request
+// answered as `tts` is how this first showed up.
+func upstreamID(backend config.Model, pr *proc.Process) string {
+	if backend.Upstream != "" {
+		return backend.Upstream
+	}
+	if pr != nil && pr.Target != nil {
+		return pr.Target.Model
+	}
+	return ""
 }
 
 // filterBySensitive keeps only backends safe for sensitive data: local models
