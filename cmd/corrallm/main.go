@@ -56,7 +56,7 @@ func newRoot() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newServeCmd(), newAgentCmd(), newConfigCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd())
+	root.AddCommand(newServeCmd(), newAgentCmd(), newConfigCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd(), newServiceCmd())
 	return root
 }
 
@@ -321,7 +321,7 @@ func newServeCmd() *cobra.Command {
 				tuneCachePath:      pick(tuneCachePath, envOr("CORRALLM_TUNE_CACHE", defaultTuneCachePath(dbPathResolved))),
 				vramMargin:         pickInt(vramMargin, envInt("CORRALLM_VRAM_MARGIN", 512)),
 				benchBin:           benchBin,
-				benchConfig:        benchConfig,
+				benchConfig:        pick(benchConfig, defaultBenchConfig(p.home)),
 				benchProbes:        benchProbes,
 			})
 		},
@@ -351,6 +351,29 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&benchConfig, "bench-config", envOr("CORRALLM_BENCH_CONFIG", ""), "llm-bench config passed to spawned runs (default: llm-bench's own default)")
 	f.StringVar(&benchProbes, "bench-probes", envOr("CORRALLM_BENCH_PROBES", ""), "probe directory passed to spawned runs (default: llm-bench's own default)")
 	return cmd
+}
+
+// defaultBenchConfig points spawned bench runs at <home>/llm-bench.yaml when it
+// exists.
+//
+// The bench config is per-BOX measurement state — which models to probe on this
+// machine, at what concurrency — so it belongs with the rest of corrallm's own
+// state rather than in whatever repo happened to hold the launcher. It lived in
+// a neighbouring checkout and had to be named by absolute path on every start;
+// anyone adopting corrallm inherited a flag pointing at a directory they do not
+// have.
+//
+// Only when the file is there: an absent one keeps llm-bench's own default,
+// which is what a box that never benches wants.
+func defaultBenchConfig(home string) string {
+	if home == "" {
+		return ""
+	}
+	p := filepath.Join(home, "llm-bench.yaml")
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
 }
 
 // defaultTuneCachePath places the VRAM auto-tuner's profile cache next to the
@@ -808,7 +831,6 @@ func watchReload(ctx context.Context, path string, mgr *proc.Manager, sc *sched.
 		}
 	}
 }
-
 
 // applyConfig installs a validated config in every holder.
 //
