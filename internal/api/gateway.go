@@ -291,6 +291,38 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UnloadModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "pauseModel",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/models/pause",
+		Summary:     "Take a model out of service: unload it and never load it again until resumed (or until resumeAt).",
+		Tags:        []string{"control"},
+	}, h.PauseModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "unpauseModel",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/models/unpause",
+		Summary:     "Return a paused model to service (reloading it if it is pinned).",
+		Tags:        []string{"control"},
+	}, h.UnpauseModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "pauseExtension",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/extensions/pause",
+		Summary:     "Take an extension (and every model it provides) out of service until resumed.",
+		Tags:        []string{"control"},
+	}, h.PauseExtension)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "unpauseExtension",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/extensions/unpause",
+		Summary:     "Return a paused extension and all its models to service.",
+		Tags:        []string{"control"},
+	}, h.UnpauseExtension)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "loadExtension",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/extensions/load",

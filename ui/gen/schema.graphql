@@ -28,6 +28,8 @@ type CorrallmMutationNamespace {
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
+  pauseExtension(body: corrallm_PauseExtensionInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseExtension")
+  pauseModel(body: corrallm_PauseModelInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseModel")
   publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
@@ -42,6 +44,8 @@ type CorrallmMutationNamespace {
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
+  unpauseExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unpauseExtension")
+  unpauseModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unpauseModel")
   updateNotes(
     body: corrallm_UpdateNotesInputBodyInput!
     """model | server | lane"""
@@ -208,6 +212,8 @@ type CorrallmV1MutationNamespace {
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
+  pauseExtension(body: corrallm_PauseExtensionInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseExtension")
+  pauseModel(body: corrallm_PauseModelInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseModel")
   publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
@@ -222,6 +228,8 @@ type CorrallmV1MutationNamespace {
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
+  unpauseExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unpauseExtension")
+  unpauseModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unpauseModel")
   updateNotes(
     body: corrallm_UpdateNotesInputBodyInput!
     """model | server | lane"""
@@ -1142,17 +1150,37 @@ type corrallm_ExtensionActionOutputBody {
 type corrallm_ExtensionDef {
   """Spawn command; empty for a remote integration with no local process."""
   cmd: String!
+  """An unload is waiting on in-flight requests."""
+  draining: Boolean!
+  """Requests currently holding the process."""
+  inFlight: Long!
   name: String!
   notes: String!
+  """Why it is paused (operator-supplied)."""
+  pauseReason: String!
+  """Unix millis the pause lifts on its own; 0 = indefinite."""
+  pauseResumeMs: Long!
+  """Out of service by operator order; every model it provides is refused."""
+  paused: Boolean!
+  """Unix millis the pause was set (0 if not paused)."""
+  pausedAtMs: Long!
+  """Persistent: preloaded and exempt from eviction."""
+  pinned: Boolean!
   """Served model names it contributes."""
   provides: [String!]!
   server: String!
+  """absent|loading|ready|failed|evicting|draining."""
+  state: String!
 }
 
 type corrallm_ExtensionState {
   draining: Boolean!
   inFlight: Long!
   name: String!
+  pauseReason: String!
+  pauseResumeMs: Long!
+  paused: Boolean!
+  pausedAtMs: Long!
   pinned: Boolean!
   provides: [String!]!
   state: String!
@@ -1379,6 +1407,18 @@ type corrallm_ModelDef {
   name: String!
   """Free text kept with this model — why it is configured the way it is. Carried in config and editable in the dashboard."""
   notes: String!
+  """Why it is paused (operator-supplied)."""
+  pauseReason: String!
+  """Unix millis the pause lifts on its own; 0 = indefinite."""
+  pauseResumeMs: Long!
+  """model | extension — whether this model was paused on its own or by its hosting extension. Empty when not paused."""
+  pauseScope: String!
+  """Out of service by operator order: never spawned until resumed."""
+  paused: Boolean!
+  """Unix millis the pause was set (0 if not paused)."""
+  pausedAtMs: Long!
+  """The extension whose pause covers this model, when pauseScope is 'extension'."""
+  pausedByExtension: String!
   """Pinned (preloaded, never evicted)."""
   persistent: Boolean!
   """Backing process identity; an extension's models share one."""
@@ -1450,6 +1490,39 @@ type corrallm_OverviewOutputBody {
   models: [corrallm_ModelDef!]!
   """Declared host capacity."""
   servers: [corrallm_ServerDef!]!
+}
+
+input corrallm_PauseExtensionInputBodyInput {
+  """Extension name (e.g. oidio)."""
+  extension: String!
+  """Why it is paused; shown in the dashboard."""
+  reason: String
+  """RFC3339 time the pause lifts on its own. Must be in the future. Empty = indefinite."""
+  resumeAt: String
+}
+
+input corrallm_PauseModelInputBodyInput {
+  """Served model name."""
+  model: String!
+  """Why it is paused; shown in the dashboard."""
+  reason: String
+  """RFC3339 time the pause lifts on its own. Must be in the future. Empty = indefinite."""
+  resumeAt: String
+}
+
+type corrallm_PauseModelOutputBody {
+  """Every served model this pause took out of service."""
+  affected: [String!]!
+  """In-flight requests are finishing before the process goes."""
+  draining: Boolean!
+  """Backends evicted immediately."""
+  evicted: Long!
+  """Human-readable result or error."""
+  message: String!
+  """Whether the pause was applied."""
+  ok: Boolean!
+  """Process key actually paused: a model name, or "extension:<name>"."""
+  target: String!
 }
 
 type corrallm_PoolDef {

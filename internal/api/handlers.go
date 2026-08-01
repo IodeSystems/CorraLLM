@@ -1021,15 +1021,15 @@ type PoolDef struct {
 
 // ServerDef is a server's declared capacity.
 type ServerDef struct {
-	Server         string    `json:"server" doc:"Server name."`
-	MaxConcurrent  int       `json:"maxConcurrent" doc:"Optional host concurrency cap (0 = none)."`
-	AgentEndpoints []string  `json:"agentEndpoints" doc:"Candidate addresses of the agent backing this server, preference order. Empty means the server is this machine. Several are normal — a LAN address, a VPN address and an external one can all be valid at once."`
-	DevicePool     string    `json:"devicePool" doc:"Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."`
-	AgentStatus    string    `json:"agentStatus" doc:"up | down | unknown | local. 'unknown' means an agent is configured but has never reported in; 'down' means it stopped."`
-	AgentLastSeen  int64     `json:"agentLastSeen" doc:"Unix millis of the last heartbeat; 0 if never."`
-	NoProcessMemory bool     `json:"noProcessMemory" doc:"This host cannot attribute memory per process (macOS), so a model's ramUsage is required and authoritative rather than advisory."`
-	Notes          string    `json:"notes" doc:"Free text kept with this server."`
-	Pools          []PoolDef `json:"pools" doc:"Declared memory pools."`
+	Server          string    `json:"server" doc:"Server name."`
+	MaxConcurrent   int       `json:"maxConcurrent" doc:"Optional host concurrency cap (0 = none)."`
+	AgentEndpoints  []string  `json:"agentEndpoints" doc:"Candidate addresses of the agent backing this server, preference order. Empty means the server is this machine. Several are normal — a LAN address, a VPN address and an external one can all be valid at once."`
+	DevicePool      string    `json:"devicePool" doc:"Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."`
+	AgentStatus     string    `json:"agentStatus" doc:"up | down | unknown | local. 'unknown' means an agent is configured but has never reported in; 'down' means it stopped."`
+	AgentLastSeen   int64     `json:"agentLastSeen" doc:"Unix millis of the last heartbeat; 0 if never."`
+	NoProcessMemory bool      `json:"noProcessMemory" doc:"This host cannot attribute memory per process (macOS), so a model's ramUsage is required and authoritative rather than advisory."`
+	Notes           string    `json:"notes" doc:"Free text kept with this server."`
+	Pools           []PoolDef `json:"pools" doc:"Declared memory pools."`
 }
 
 // ModelDef is a served model's single serving path + residency policy.
@@ -1054,6 +1054,15 @@ type ModelDef struct {
 	Cmd           string         `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
 	Notes         string         `json:"notes" doc:"Free text kept with this model — why it is configured the way it is. Carried in config and editable in the dashboard."`
 	Upstream      string         `json:"upstream" doc:"The id the BACKEND knows this model by, when it differs from the served name (the alias). Empty means the backend uses the served name."`
+	// Pause state rides on the model definition rather than on the residency
+	// snapshot because a paused model has no process to snapshot — that is the
+	// whole point of it — and would therefore be invisible there.
+	Paused            bool   `json:"paused" doc:"Out of service by operator order: never spawned until resumed."`
+	PauseScope        string `json:"pauseScope" doc:"model | extension — whether this model was paused on its own or by its hosting extension. Empty when not paused."`
+	PausedByExtension string `json:"pausedByExtension" doc:"The extension whose pause covers this model, when pauseScope is 'extension'."`
+	PauseReason       string `json:"pauseReason" doc:"Why it is paused (operator-supplied)."`
+	PausedAtMS        int64  `json:"pausedAtMs" doc:"Unix millis the pause was set (0 if not paused)."`
+	PauseResumeMS     int64  `json:"pauseResumeMs" doc:"Unix millis the pause lifts on its own; 0 = indefinite."`
 }
 
 // ModalityView is one accepted input modality plus optional client-facing
@@ -1126,13 +1135,13 @@ type OverviewInput struct{}
 // OverviewOutput is the loaded config rendered for the Overview control plane.
 type OverviewOutput struct {
 	Body struct {
-		Include []string    `json:"include" doc:"Config files merged into the top-level one, weakest first. A generated file (agent-contributed models) lives here so the hand-written config is never rewritten."`
-		Servers []ServerDef `json:"servers" doc:"Declared host capacity."`
-		Models  []ModelDef  `json:"models" doc:"Served models (one serving path each)."`
+		Include    []string       `json:"include" doc:"Config files merged into the top-level one, weakest first. A generated file (agent-contributed models) lives here so the hand-written config is never rewritten."`
+		Servers    []ServerDef    `json:"servers" doc:"Declared host capacity."`
+		Models     []ModelDef     `json:"models" doc:"Served models (one serving path each)."`
 		Lanes      []LaneDef      `json:"lanes" doc:"Named fallback lists over models."`
 		Extensions []ExtensionDef `json:"extensions" doc:"Integrations that serve several models from one process."`
-		Groups  []GroupDef  `json:"groups" doc:"Priority-group policies."`
-		Keys    []KeyDef    `json:"keys" doc:"Caller key → group mappings."`
+		Groups     []GroupDef     `json:"groups" doc:"Priority-group policies."`
+		Keys       []KeyDef       `json:"keys" doc:"Caller key → group mappings."`
 	}
 }
 
@@ -1143,6 +1152,17 @@ type ExtensionDef struct {
 	Server   string   `json:"server"`
 	Provides []string `json:"provides" doc:"Served model names it contributes."`
 	Notes    string   `json:"notes"`
+	// Live process state rides along so the dashboard's extension panel needs
+	// one query, not two. An extension IS the process for the models it hosts,
+	// so this is the only place their residency is addressable as one thing.
+	State         string `json:"state" doc:"absent|loading|ready|failed|evicting|draining."`
+	Draining      bool   `json:"draining" doc:"An unload is waiting on in-flight requests."`
+	InFlight      int    `json:"inFlight" doc:"Requests currently holding the process."`
+	Pinned        bool   `json:"pinned" doc:"Persistent: preloaded and exempt from eviction."`
+	Paused        bool   `json:"paused" doc:"Out of service by operator order; every model it provides is refused."`
+	PauseReason   string `json:"pauseReason" doc:"Why it is paused (operator-supplied)."`
+	PausedAtMS    int64  `json:"pausedAtMs" doc:"Unix millis the pause was set (0 if not paused)."`
+	PauseResumeMS int64  `json:"pauseResumeMs" doc:"Unix millis the pause lifts on its own; 0 = indefinite."`
 }
 
 // stageSummary renders a saturation Stage as a short human-readable policy.
@@ -1203,6 +1223,15 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	sort.Slice(out.Body.Servers, func(i, j int) bool { return out.Body.Servers[i].Server < out.Body.Servers[j].Server })
 
 	costModel := cost.NewModel(h.config()) // modality inference (P9d): audio cost class ⇒ audio model
+	// Keyed by PROCESS, matching how the manager holds them: an extension's
+	// models all resolve to the same entry, so every one of them reports paused
+	// when their extension is.
+	pauses := map[string]proc.Pause{}
+	if h.Mgr != nil {
+		for _, p := range h.Mgr.Pauses() {
+			pauses[p.Key] = p
+		}
+	}
 	for name, m := range h.config().Models {
 		md := ModelDef{
 			Name: name, Persistent: m.Persistent, Capability: config.ModelCapability(m),
@@ -1217,6 +1246,19 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		if m.Sticky != nil {
 			md.TTL, md.EvictCost = m.Sticky.TTL, m.Sticky.EvictCost
 		}
+		if p, ok := pauses[md.ProcKey]; ok {
+			md.Paused, md.PauseReason, md.PausedAtMS = true, p.Reason, p.At.UnixMilli()
+			// PauseScope tells the UI whether this model was paused on its own
+			// or swept up by its extension — without it a hosted model reads as
+			// individually paused and "Resume" looks like it affects only it.
+			md.PauseScope = "model"
+			if ext, isExt := p.Extension(); isExt {
+				md.PauseScope, md.PausedByExtension = "extension", ext
+			}
+			if !p.ResumeAt.IsZero() {
+				md.PauseResumeMS = p.ResumeAt.UnixMilli()
+			}
+		}
 		if t, err := h.config().TargetFor(name, m); err == nil {
 			md.Target = t.URL.String() // headers (auth) intentionally omitted
 		}
@@ -1224,11 +1266,24 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	sort.Slice(out.Body.Models, func(i, j int) bool { return out.Body.Models[i].Name < out.Body.Models[j].Name })
 
+	extState := map[string]proc.ExtensionState{}
+	if h.Mgr != nil {
+		for _, st := range h.Mgr.ExtensionStates() {
+			extState[st.Name] = st
+		}
+	}
 	for name, ext := range h.config().Extensions {
-		out.Body.Extensions = append(out.Body.Extensions, ExtensionDef{
+		ed := ExtensionDef{
 			Name: name, Cmd: ext.Cmd, Server: ext.Server, Notes: ext.Notes,
 			Provides: h.config().ExtensionModels(name),
-		})
+			State:    string(proc.StateAbsent), Pinned: ext.Persistent,
+		}
+		if st, ok := extState[name]; ok {
+			ed.State, ed.Draining, ed.InFlight = string(st.State), st.Draining, st.InFlight
+			ed.Paused, ed.PauseReason = st.Paused, st.PauseReason
+			ed.PausedAtMS, ed.PauseResumeMS = st.PausedAtMS, st.PauseResumeMS
+		}
+		out.Body.Extensions = append(out.Body.Extensions, ed)
 	}
 	sort.Slice(out.Body.Extensions, func(i, j int) bool { return out.Body.Extensions[i].Name < out.Body.Extensions[j].Name })
 
@@ -1320,6 +1375,156 @@ func (h *Handlers) UnloadModel(_ context.Context, in *ModelActionInput) (*ModelA
 	out.Body.OK = true
 	out.Body.Evicted = n
 	out.Body.Message = fmt.Sprintf("evicted %d backend(s)", n)
+	return out, nil
+}
+
+// --- pause / resume ---
+
+// PauseModelInput takes a model out of service, optionally until a moment.
+type PauseModelInput struct {
+	Body struct {
+		Model string `json:"model" doc:"Served model name."`
+		// RFC3339 rather than a duration: the operator picks a wall-clock
+		// moment in the dashboard ("back at 09:00 tomorrow"), and translating
+		// that to a duration in the browser would bake in the client's clock
+		// skew. Empty = paused until explicitly resumed.
+		ResumeAt string `json:"resumeAt,omitempty" doc:"RFC3339 time the pause lifts on its own. Must be in the future. Empty = indefinite."`
+		Reason   string `json:"reason,omitempty" doc:"Why it is paused; shown in the dashboard."`
+	}
+}
+
+// PauseExtensionInput takes an extension out of service by its own name.
+type PauseExtensionInput struct {
+	Body struct {
+		Extension string `json:"extension" doc:"Extension name (e.g. oidio)."`
+		ResumeAt  string `json:"resumeAt,omitempty" doc:"RFC3339 time the pause lifts on its own. Must be in the future. Empty = indefinite."`
+		Reason    string `json:"reason,omitempty" doc:"Why it is paused; shown in the dashboard."`
+	}
+}
+
+// PauseModelOutput reports what the pause did to the running process.
+type PauseModelOutput struct {
+	Body struct {
+		OK      bool   `json:"ok" doc:"Whether the pause was applied."`
+		Message string `json:"message" doc:"Human-readable result or error."`
+		// Target and Affected exist because a pause on an extension-hosted
+		// model does NOT stop at that model: it is one process, so it pauses
+		// the extension and every sibling. Saying so is the difference between
+		// a control the operator can trust and one that surprises them.
+		Target   string   `json:"target" doc:"Process key actually paused: a model name, or \"extension:<name>\"."`
+		Affected []string `json:"affected" doc:"Every served model this pause took out of service."`
+		Evicted  int      `json:"evicted" doc:"Backends evicted immediately."`
+		Draining bool     `json:"draining" doc:"In-flight requests are finishing before the process goes."`
+	}
+}
+
+// parseResumeAt reads the optional RFC3339 resume time shared by both pause ops.
+func parseResumeAt(raw string) (time.Time, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("bad resumeAt %q: %w", s, err)
+	}
+	return t, nil
+}
+
+// describePause renders a PauseResult for a human, naming the blast radius when
+// it is wider than the thing that was asked for.
+func describePause(asked string, res proc.PauseResult) string {
+	msg := "paused"
+	if ext, ok := strings.CutPrefix(res.Target, "extension:"); ok && asked != ext {
+		msg = fmt.Sprintf("paused extension %q (%s is hosted by it) — %d model(s) out of service: %v",
+			ext, asked, len(res.Affected), res.Affected)
+	}
+	switch {
+	case res.Skipped != "":
+		return msg + "; " + res.Skipped
+	case res.Draining:
+		return msg + "; draining in-flight requests before unload"
+	default:
+		return fmt.Sprintf("%s; evicted %d backend(s)", msg, res.Evicted)
+	}
+}
+
+func pauseOutput(asked string, res proc.PauseResult) *PauseModelOutput {
+	out := &PauseModelOutput{}
+	out.Body.OK = true
+	out.Body.Target, out.Body.Affected = res.Target, res.Affected
+	out.Body.Evicted, out.Body.Draining = res.Evicted, res.Draining
+	out.Body.Message = describePause(asked, res)
+	return out
+}
+
+// PauseModel unloads a model and keeps it unloaded until it is resumed. An
+// extension-hosted model pauses its whole extension — one process, one pause.
+func (h *Handlers) PauseModel(_ context.Context, in *PauseModelInput) (*PauseModelOutput, error) {
+	resumeAt, err := parseResumeAt(in.Body.ResumeAt)
+	if err != nil {
+		out := &PauseModelOutput{}
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	res, err := h.Mgr.PauseModel(in.Body.Model, in.Body.Reason, resumeAt)
+	if err != nil {
+		out := &PauseModelOutput{}
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	return pauseOutput(in.Body.Model, res), nil
+}
+
+// PauseExtension takes an extension and every model it provides out of service.
+func (h *Handlers) PauseExtension(_ context.Context, in *PauseExtensionInput) (*PauseModelOutput, error) {
+	resumeAt, err := parseResumeAt(in.Body.ResumeAt)
+	if err != nil {
+		out := &PauseModelOutput{}
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	res, err := h.Mgr.PauseExtension(in.Body.Extension, in.Body.Reason, resumeAt)
+	if err != nil {
+		out := &PauseModelOutput{}
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	return pauseOutput(in.Body.Extension, res), nil
+}
+
+// UnpauseModel returns a model to service (reloading it if it is pinned). For a
+// hosted model that resumes its whole extension.
+func (h *Handlers) UnpauseModel(ctx context.Context, in *ModelActionInput) (*ModelActionOutput, error) {
+	out := &ModelActionOutput{}
+	was, err := h.Mgr.UnpauseModel(ctx, in.Body.Model)
+	if err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	out.Body.OK = true
+	if was {
+		out.Body.Message = "resumed " + in.Body.Model
+	} else {
+		out.Body.Message = in.Body.Model + " was not paused"
+	}
+	return out, nil
+}
+
+// UnpauseExtension returns an extension and all its models to service.
+func (h *Handlers) UnpauseExtension(ctx context.Context, in *ExtensionActionInput) (*ExtensionActionOutput, error) {
+	out := &ExtensionActionOutput{}
+	was, err := h.Mgr.UnpauseExtension(ctx, in.Body.Extension)
+	if err != nil {
+		out.Body.Message = err.Error()
+		return out, nil
+	}
+	out.Body.OK = true
+	if was {
+		out.Body.Message = "resumed " + in.Body.Extension
+	} else {
+		out.Body.Message = in.Body.Extension + " was not paused"
+	}
 	return out, nil
 }
 
@@ -1423,7 +1628,6 @@ func (h *Handlers) SetConfig(cfg *config.Config) {
 	}
 	h.live.Store(cfg)
 }
-
 
 // --- cancel an in-flight request ---
 
