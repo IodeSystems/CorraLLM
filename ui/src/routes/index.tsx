@@ -110,6 +110,7 @@ const OverviewDoc = graphql(/* GraphQL */ `
         }
       }
       residency {
+        stopping
         servers {
           server
           pools {
@@ -168,13 +169,30 @@ function ResidencyToggle(props: {
   state: string
   persistent: boolean
   paused: boolean
+  stopping: boolean
   busy: boolean
   onLoad: () => void
   onUnload: () => void
 }) {
-  const { state, persistent, paused, busy, onLoad, onUnload } = props
+  const { state, persistent, paused, stopping, busy, onLoad, onUnload } = props
   const inFlight = state === 'loading' || state === 'evicting'
   const resident = state === 'ready'
+
+  // Mid-teardown: the process is gone from the residency ledger (its pools are
+  // already freed) but has not actually exited, and a load aimed at it is
+  // refused until it does. Offering Load here handed out a button whose only
+  // outcome was an error message.
+  if (stopping) {
+    return (
+      <Tooltip title="Still stopping — wait for it to exit before loading it again">
+        <span>
+          <Button size="small" variant="outlined" disabled>
+            Stopping
+          </Button>
+        </span>
+      </Tooltip>
+    )
+  }
 
   // A paused model refuses to load server-side, so offering Load would hand the
   // operator a button whose only outcome is an error message. Resume is the
@@ -689,6 +707,10 @@ function Home() {
   const stateOf = (m: { procKey: string; remote: boolean }) =>
     m.remote ? undefined : stateByProc.get(m.procKey)
 
+  // Keyed by procKey like stateByProc, so one lookup covers a model and the
+  // extension that hosts it — they are the same process.
+  const stoppingProcs = new Set(c.residency?.stopping ?? [])
+
   // A group's effective policy for a capability = its onSaturated stage for that
   // model type, falling back to its `default` stage. Distinct values joined so
   // e.g. "queue/reject" when batch queues but realtime has no stage.
@@ -775,9 +797,9 @@ function Home() {
               claimed a load that never happened). */}
           <Chip
             size="small"
-            label={m.remote ? 'proxy' : (st?.state ?? 'absent')}
-            color={m.remote ? 'secondary' : stateColor(st?.state)}
-            variant={st?.state ? 'filled' : 'outlined'}
+            label={m.remote ? 'proxy' : stoppingProcs.has(m.procKey) ? 'stopping' : (st?.state ?? 'absent')}
+            color={m.remote ? 'secondary' : stoppingProcs.has(m.procKey) ? 'warning' : stateColor(st?.state)}
+            variant={st?.state || stoppingProcs.has(m.procKey) ? 'filled' : 'outlined'}
             sx={{ minWidth: 68 }}
           />
           <Typography variant="subtitle2" sx={{ minWidth: 150 }}>
@@ -824,6 +846,7 @@ function Home() {
                   state={st?.state ?? 'absent'}
                   persistent={!!m.persistent}
                   paused={!!m.paused}
+                  stopping={stoppingProcs.has(m.procKey)}
                   busy={busy}
                   onLoad={() => load.mutate(m.name)}
                   onUnload={() => askUnload(m.name)}
@@ -1167,14 +1190,15 @@ function Home() {
         >
           {extensions.map((e) => {
             const spawnable = !!e.cmd
+            const stopping = stoppingProcs.has(`extension:${e.name}`)
             return (
               <Row key={e.name}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                   <Chip
                     size="small"
-                    label={spawnable ? e.state : 'proxy'}
-                    color={spawnable ? stateColor(e.state) : 'secondary'}
-                    variant={e.state !== 'absent' || !spawnable ? 'filled' : 'outlined'}
+                    label={!spawnable ? 'proxy' : stopping ? 'stopping' : e.state}
+                    color={!spawnable ? 'secondary' : stopping ? 'warning' : stateColor(e.state)}
+                    variant={e.state !== 'absent' || !spawnable || stopping ? 'filled' : 'outlined'}
                     sx={{ minWidth: 68 }}
                   />
                   <Typography variant="subtitle2" sx={{ minWidth: 150 }}>
@@ -1206,6 +1230,7 @@ function Home() {
                         state={e.state}
                         persistent={!!e.pinned}
                         paused={!!e.paused}
+                        stopping={stopping}
                         busy={busy}
                         onLoad={() => extLoad.mutate(e.name)}
                         onUnload={() =>

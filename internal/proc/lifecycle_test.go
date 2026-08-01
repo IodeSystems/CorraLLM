@@ -263,3 +263,43 @@ func TestHealthWaitAbortsOnProcessExit(t *testing.T) {
 		t.Errorf("dead backend still holds residency: %+v", got.Models)
 	}
 }
+
+// TestSnapshotReportsStopping: a process mid-teardown is reported as stopping
+// rather than silently vanishing.
+//
+// Eviction frees the pool reservation before the process exits, so a stopping
+// process correctly holds no residency and must NOT appear in Models — listing
+// it would double-count capacity that is already available. But reporting
+// nothing at all made it indistinguishable from absent, and the dashboard
+// offered a Load button whose only outcome was "still stopping".
+func TestSnapshotReportsStopping(t *testing.T) {
+	cfg := resConfig(t, "10", "6", listenTCP(t), listenTCP(t))
+	mgr := NewManager(cfg)
+	defer mgr.Shutdown()
+
+	if got := mgr.Snapshot(); len(got.Stopping) != 0 {
+		t.Fatalf("fresh manager reports stopping: %v", got.Stopping)
+	}
+
+	stop := make(chan struct{})
+	mgr.mu.Lock()
+	mgr.stopping = map[string]chan struct{}{"A": stop, "extension:ext": stop}
+	mgr.mu.Unlock()
+
+	snap := mgr.Snapshot()
+	if len(snap.Stopping) != 2 || snap.Stopping[0] != "A" || snap.Stopping[1] != "extension:ext" {
+		t.Errorf("Stopping = %v, want [A extension:ext] sorted", snap.Stopping)
+	}
+	// It holds no residency — that is why it is a separate list.
+	if len(snap.Models) != 0 {
+		t.Errorf("a stopping process must not be reported as resident: %+v", snap.Models)
+	}
+
+	mgr.mu.Lock()
+	mgr.stopping = map[string]chan struct{}{}
+	mgr.mu.Unlock()
+	close(stop)
+	if got := mgr.Snapshot(); len(got.Stopping) != 0 {
+		t.Errorf("Stopping not cleared: %v", got.Stopping)
+	}
+}

@@ -314,6 +314,11 @@ type ResidencyOutput struct {
 		Models  []ResidentModelView `json:"models" doc:"Currently resident backends."`
 		GPU     DeviceMemView       `json:"gpu" doc:"Measured VRAM on the first GPU (single-GPU box); available=false if unprobeable."`
 		Host    DeviceMemView       `json:"host" doc:"Measured host RAM; available=false if unprobeable."`
+		// Stopping holds process keys mid-teardown. They are NOT in Models —
+		// their pools are already freed, so they hold no residency — but they
+		// are not loadable either: an explicit load is refused until the
+		// process is gone. Join on procKey to render it.
+		Stopping []string `json:"stopping" doc:"Process keys whose process is still stopping; a load aimed at one is refused until it exits."`
 	}
 }
 
@@ -321,6 +326,7 @@ type ResidencyOutput struct {
 func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOutput, error) {
 	snap := h.Mgr.Snapshot()
 	out := &ResidencyOutput{}
+	out.Body.Stopping = snap.Stopping
 	out.Body.Servers = make([]ServerView, 0, len(snap.Servers))
 	for _, s := range snap.Servers {
 		sv := ServerView{Server: s.Server, Pools: make([]PoolView, 0, len(s.Pools))}

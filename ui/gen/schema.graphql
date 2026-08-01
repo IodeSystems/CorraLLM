@@ -1653,6 +1653,8 @@ type corrallm_ResidencyOutputBody {
   models: [corrallm_ResidentModelView!]!
   """Per-server pool budget/usage (the scheduler's accounted ledger)."""
   servers: [corrallm_ServerView!]!
+  """Process keys whose process is still stopping; a load aimed at one is refused until it exits."""
+  stopping: [String!]!
 }
 
 type corrallm_ResidentModelView {

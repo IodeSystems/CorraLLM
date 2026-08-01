@@ -184,3 +184,19 @@ func TestPauseExtensionHandler(t *testing.T) {
 		t.Errorf("pause unknown extension = %+v", out.Body)
 	}
 }
+
+// TestResidencyExposesStopping: the residency op forwards the stopping set, so
+// the dashboard can disable Load instead of offering one that always fails.
+func TestResidencyExposesStopping(t *testing.T) {
+	cfg := &config.Config{Models: map[string]config.Model{"m": {Type: "local"}}}
+	mgr := proc.NewManager(cfg)
+	h := &Handlers{Cfg: cfg, Mgr: mgr}
+
+	out, err := h.Residency(context.Background(), &ResidencyInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Body.Stopping) != 0 {
+		t.Errorf("Stopping = %v, want empty", out.Body.Stopping)
+	}
+}

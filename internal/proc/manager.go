@@ -1952,6 +1952,15 @@ func (m *Manager) Logs(name string) []string {
 type ResidencySnapshot struct {
 	Servers []ServerResidency
 	Models  []ResidentModel
+	// Stopping lists PROCESS KEYS whose process is still being torn down.
+	//
+	// These deliberately are not Models entries: eviction frees the pool
+	// reservation before the process actually exits, so a stopping process
+	// holds no residency and listing it as resident would double-count
+	// capacity that is already available. But it is not absent either — a load
+	// aimed at it is refused until it goes — and reporting it as absent is what
+	// let the dashboard offer a Load button whose only outcome was an error.
+	Stopping []string
 }
 
 // Snapshot returns a stable (sorted) view of server pool budgets/usage and the
@@ -2009,6 +2018,11 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 		snap.Models = append(snap.Models, rm)
 	}
 	sort.Slice(snap.Models, func(i, j int) bool { return snap.Models[i].Name < snap.Models[j].Name })
+
+	for key := range m.stopping {
+		snap.Stopping = append(snap.Stopping, key)
+	}
+	sort.Strings(snap.Stopping)
 	return snap
 }
 
