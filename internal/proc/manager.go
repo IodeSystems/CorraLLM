@@ -204,6 +204,15 @@ type Manager struct {
 	// single-host deployment, where nothing ever heartbeats.
 	live *agent.Liveness
 
+	// stopping tracks process keys whose previous process is still being torn
+	// down: eviction only REQUESTS an exit (SIGTERM, then up to evictGrace
+	// before SIGKILL), and it drops the entry from procs immediately — so
+	// without this the manager has no memory of a process that is still alive
+	// and still holding whatever it holds. A spawn into that window collides
+	// with the dying process over a port or a fixed systemd unit name.
+	// The channel closes once the old process group is confirmed gone.
+	stopping map[string]chan struct{}
+
 	// hosts maps a `servers:` name → where its backends actually run. Every
 	// entry is a local host today; a server bound to a remote agent gets a
 	// different implementation here and nothing else in this file changes.
@@ -333,6 +342,12 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	}
 
 	key := mdl.ProcKey(name)
+
+	// Never spawn into a teardown: the process this would replace may still be
+	// alive and still holding its port or its systemd unit name.
+	if err := m.awaitStop(ctx, key); err != nil {
+		return nil, nil, false, err
+	}
 
 	m.mu.Lock()
 	p := m.procs[key]
@@ -501,7 +516,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		slog.Info("backend spawned", "name", name, "id", h.ID(), "target", p.Target.URL.String())
 
 		// Wait until the spawned server can actually serve.
-		if err := m.waitHealthy(p.Target); err != nil {
+		if err := m.waitHealthy(p.Target, h.Done()); err != nil {
 			finish(StateFailed, err)
 			return
 		}
@@ -538,7 +553,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		if owner, ok := m.spawnerFor(name, mdl); ok {
 			slog.Info("proxy backend waits for the model that owns its port",
 				"name", name, "owner", owner, "target", p.Target.URL.String())
-			if err := m.waitHealthy(p.Target); err != nil {
+			if err := m.waitHealthy(p.Target, nil); err != nil {
 				finish(StateFailed, fmt.Errorf("%s: port owned by %q never became ready: %w", name, owner, err))
 				return
 			}
@@ -1261,6 +1276,63 @@ func (m *Manager) freeLocked(server string, usage map[string]int64) {
 }
 
 // evictLocked stops a resident backend and frees its pools. Caller holds m.mu.
+// awaitStop blocks until any in-flight teardown of key has finished.
+//
+// This is what makes "unload then load" safe rather than lucky. Eviction is
+// asynchronous, so a spawn issued right after one races the process it just
+// asked to exit; the loser dies on whatever the winner still holds. Waiting is
+// the right answer on the automatic paths (a request, a lane fall-through, a
+// resume): the wait is bounded by evictGrace and ends the moment the old group
+// is confirmed gone, which is almost always immediate. The explicit control
+// ops refuse instead — see loadableLocked.
+//
+// The channel is always closed by the reaper's defer, so this cannot hang past
+// the teardown itself.
+func (m *Manager) awaitStop(ctx context.Context, key string) error {
+	for {
+		m.mu.Lock()
+		ch, stopping := m.stopping[key]
+		m.mu.Unlock()
+		if !stopping {
+			return nil
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// loadableLocked reports why an EXPLICIT load of key must be refused, or nil.
+//
+// Coalescing onto an in-flight load is right for a request — two callers wanting
+// the same model should share one spawn — but wrong for an operator action: a
+// second Load while the first is still running is not a request to wait, it is a
+// mistake, and reporting "loaded" for a load someone else started hides which
+// action actually did the work. Caller holds m.mu.
+func (m *Manager) loadableLocked(key, label string) error {
+	if _, ok := m.stopping[key]; ok {
+		return fmt.Errorf("%q is still stopping; wait for it to exit before loading it again", label)
+	}
+	p := m.procs[key]
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	st, draining := p.state, p.draining
+	p.mu.Unlock()
+	switch {
+	case draining:
+		return fmt.Errorf("%q is draining (an unload is finishing its in-flight requests)", label)
+	case st == StateLoading:
+		return fmt.Errorf("%q is already loading", label)
+	case st == StateEvicting:
+		return fmt.Errorf("%q is being evicted", label)
+	}
+	return nil
+}
+
 func (m *Manager) evictLocked(p *Process) {
 	p.mu.Lock()
 	p.state = StateEvicting
@@ -1286,7 +1358,22 @@ func (m *Manager) evictLocked(p *Process) {
 		// unreachable agent would otherwise stall every request for every
 		// model on every host behind a TCP timeout, because m.mu serialises
 		// EnsureReady, Snapshot and onProcExit alike.
+		// Remember the teardown until the group is actually gone, so nothing
+		// spawns into the window where the old process still exists.
+		done := make(chan struct{})
+		if m.stopping == nil {
+			m.stopping = map[string]chan struct{}{}
+		}
+		m.stopping[p.key] = done
 		go func() {
+			defer func() {
+				m.mu.Lock()
+				if m.stopping[p.key] == done {
+					delete(m.stopping, p.key)
+				}
+				m.mu.Unlock()
+				close(done)
+			}()
 			_ = h.Signal(host.SigTerm)
 			m.reapGroup(p.Name, h)
 		}()
@@ -1394,7 +1481,18 @@ func isLoopback(host string) bool {
 }
 
 // waitHealthy polls the target until it accepts connections, or healthTimeout.
-func (m *Manager) waitHealthy(t *config.ProxyTarget) error {
+//
+// exited, when non-nil, is the spawned process's Done channel: a backend that
+// dies during startup is a failure NOW, not in healthTimeout. Without this a
+// crash-on-start burned the whole window (600s on the production box) while
+// polling a port whose owner was already gone — during which the model reads
+// as loading, its pools stay reserved, and anything waiting on the load waits
+// with it. Observed: a spawn that lost a race for its systemd unit name exited
+// 1 within a second and still held the slot for ten minutes.
+//
+// Pure-proxy waits pass nil: there is no process of ours to watch, and the port
+// belongs to whichever model owns it.
+func (m *Manager) waitHealthy(t *config.ProxyTarget, exited <-chan struct{}) error {
 	deadline := time.Now().Add(m.healthTimeout)
 	addr := t.URL.Host
 	if t.URL.Port() == "" {
@@ -1407,6 +1505,12 @@ func (m *Manager) waitHealthy(t *config.ProxyTarget) error {
 	url := t.URL.String() + "/health"
 	var lastErr error
 	for time.Now().Before(deadline) {
+		select {
+		case <-exited:
+			// A nil channel never fires, so a pure-proxy wait is unaffected.
+			return fmt.Errorf("backend exited during startup (%s): %v", addr, lastErr)
+		default:
+		}
 		conn, err := net.DialTimeout("tcp", addr, time.Second)
 		if err != nil {
 			lastErr = err
@@ -1535,6 +1639,12 @@ func (m *Manager) LoadModel(ctx context.Context, served string) (string, error) 
 	if model.Cmd == "" {
 		return "", fmt.Errorf("model %q has no cmd (pure proxy); nothing to load", served)
 	}
+	m.mu.Lock()
+	err := m.loadableLocked(model.ProcKey(served), served)
+	m.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
 	_, release, _, err := m.EnsureReady(ctx, served, model, nil)
 	if err != nil {
 		return "", err
@@ -1578,6 +1688,12 @@ func (m *Manager) LoadExtension(ctx context.Context, name string) (string, error
 	mdl, ok := m.config().Effective(served)
 	if !ok {
 		return "", fmt.Errorf("unknown model %q", served)
+	}
+	m.mu.Lock()
+	err := m.loadableLocked("extension:"+name, name)
+	m.mu.Unlock()
+	if err != nil {
+		return "", err
 	}
 	_, release, _, err := m.EnsureReady(ctx, served, mdl, nil)
 	if err != nil {
