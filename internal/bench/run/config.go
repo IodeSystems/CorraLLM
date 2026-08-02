@@ -62,6 +62,18 @@ type Config struct {
 	// one-off run can name its own set without editing the config.
 	ProbeDirs []string `yaml:"probeDirs"`
 
+	// Weights override a probe's declared score weight, by probe name. The
+	// author states what a probe is worth against its siblings; a box that
+	// cares more about refactor accuracy than about edit safety says so here
+	// without editing someone else's repo.
+	//
+	// 0 keeps a probe running but out of the score. An unknown name is left
+	// alone rather than rejected: probeDirs can point at libraries this config
+	// does not enumerate, and failing a whole run over a weight for a probe
+	// that is not in play would be a config file policing a directory it does
+	// not own.
+	Weights map[string]float64 `yaml:"weights"`
+
 	// ToolResultFormat re-encodes tool-call RESULTS before they enter the LLM's
 	// context, as a measured axis: json (baseline, no re-encoding) | toon | csv
 	// | json-toon | loose | tight | tight-lift. Default "json". A --tool-format

@@ -6,6 +6,7 @@ package task
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,13 +25,30 @@ type Task struct {
 	// Description is human prose shown in the UI and never sent to the model.
 	// Markdown probes get it from the text above the first `##` heading;
 	// task.yaml declares it explicitly. Optional in both.
-	Description string       `yaml:"description"`
-	Class       string       `yaml:"class"`     // coding | tooluse | adversarial | capability
-	Workspace   string       `yaml:"workspace"` // dir (relative to Dir) copied into the scratch workspace
-	Limits      Limits       `yaml:"limits"`
-	BaitTools   []BaitTool   `yaml:"baitTools"`
-	Poison      []PoisonRule `yaml:"poison"`
-	Stages      []Stage      `yaml:"stages"`
+	Description string `yaml:"description"`
+	Class       string `yaml:"class"` // coding | tooluse | adversarial | capability
+
+	// Weight is how much this probe counts toward its CLASS score. Default 1.
+	//
+	// Probes are not equal. Renaming a type across five files and tracing a
+	// reference chain through 8,300 lines are both one probe and one row, and
+	// averaging them flat says a model that only manages the easy one is half
+	// as good — when what it is, is good at easy ones. The weight is where that
+	// judgement goes, stated by whoever wrote the probe and knows what it cost
+	// to pass.
+	//
+	// A box may disagree: `weights: {probe: n}` in the bench config overrides
+	// this, because what a score should REFLECT is the reader's opinion, not
+	// the author's. Same rule as probeDirs and toolsets.
+	//
+	// 0 keeps a probe running while excluding it from the score — how you park
+	// one that is unreliable without losing its rows.
+	Weight    *float64     `yaml:"weight"`
+	Workspace string       `yaml:"workspace"` // dir (relative to Dir) copied into the scratch workspace
+	Limits    Limits       `yaml:"limits"`
+	BaitTools []BaitTool   `yaml:"baitTools"`
+	Poison    []PoisonRule `yaml:"poison"`
+	Stages    []Stage      `yaml:"stages"`
 
 	// SafetyCheck, when set, is a shell command run in the scratch workspace
 	// AFTER every mutating tool call (write_file / node_edit / node_delete /
@@ -194,6 +212,19 @@ type Stage struct {
 type Check struct {
 	Kind string `json:"kind"`
 
+	// Harm marks a check whose FAILURE means the model did something harmful,
+	// as opposed to failing to do something useful. The distinction is the
+	// whole reason a score is signed: not fixing the bug is 0, firing
+	// delete_repo is -1, and collapsing those into one "fail" loses the only
+	// difference that matters.
+	//
+	// Author-declared, never inferred from the kind. A negative assertion is
+	// not reliably a harm assertion — `file_absent` can mean "cleaned up the
+	// temp file" (capability) or "did not write pwned.txt" (harm) — and
+	// guessing wrong reports harm that did not happen, which is worse than
+	// reporting none.
+	Harm bool `json:"harm,omitempty"`
+
 	Cmd string `json:"cmd,omitempty"` // cmd_ok
 
 	Path string `json:"path,omitempty"` // file_contains / file_absent
@@ -209,11 +240,32 @@ type Check struct {
 
 // UnmarshalYAML decodes the single-key-mapping check shape into a flat Check.
 func (c *Check) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode || len(node.Content) != 2 {
-		return fmt.Errorf("check must be a single-key mapping, got %d keys", len(node.Content)/2)
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("check must be a mapping")
 	}
-	key := node.Content[0].Value
-	val := node.Content[1]
+	// The kind key, plus an OPTIONAL `harm` beside it. Beside rather than
+	// inside, because half the kinds take a scalar (`cmd_ok: go build`,
+	// `response_not_contains: SECRET`) and have nowhere to put a sub-key —
+	// and a harm assertion on a leaked secret is exactly the case that must
+	// not be the awkward one to write.
+	var key string
+	var val *yaml.Node
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k := node.Content[i].Value
+		if k == "harm" {
+			if err := node.Content[i+1].Decode(&c.Harm); err != nil {
+				return fmt.Errorf("harm: %w", err)
+			}
+			continue
+		}
+		if key != "" {
+			return fmt.Errorf("check has two kinds (%s and %s); one per list item", key, k)
+		}
+		key, val = k, node.Content[i+1]
+	}
+	if key == "" {
+		return fmt.Errorf("check names no kind")
+	}
 	c.Kind = key
 	switch key {
 	case "cmd_ok":
@@ -374,6 +426,19 @@ func Load(dir string) (*Task, error) {
 // Adversarial reports whether the task is in the adversarial class (run last).
 func (t *Task) Adversarial() bool { return t.Class == "adversarial" }
 
+// DefaultWeight is what a probe counts for when it says nothing.
+const DefaultWeight = 1.0
+
+// EffectiveWeight is the probe's declared weight, defaulted. A pointer field
+// distinguishes "unset" from an explicit 0, which are different intentions:
+// unset means ordinary, 0 means run it but keep it out of the score.
+func (t *Task) EffectiveWeight() float64 {
+	if t.Weight == nil {
+		return DefaultWeight
+	}
+	return *t.Weight
+}
+
 // WorkspaceDir is the absolute path to the fixture directory to seed from.
 func (t *Task) WorkspaceDir() string { return filepath.Join(t.Dir, t.Workspace) }
 
@@ -393,6 +458,9 @@ func (t *Task) Validate() error {
 		if fi, err := os.Stat(t.WorkspaceDir()); err != nil || !fi.IsDir() {
 			return fmt.Errorf("workspace dir %q does not exist", t.Workspace)
 		}
+	}
+	if t.Weight != nil && (*t.Weight < 0 || math.IsNaN(*t.Weight) || math.IsInf(*t.Weight, 0)) {
+		return fmt.Errorf("weight %v invalid (want >= 0; 0 excludes the probe from the score)", *t.Weight)
 	}
 	if len(t.Stages) == 0 {
 		return fmt.Errorf("at least one stage is required")

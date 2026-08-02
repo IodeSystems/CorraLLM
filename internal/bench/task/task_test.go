@@ -2,7 +2,10 @@ package task
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadGood(t *testing.T) {
@@ -174,5 +177,81 @@ func TestLoadCodexPlanLadder(t *testing.T) {
 		if !found {
 			t.Errorf("%s: expected a %s check on ask_user_question", name, wantKind)
 		}
+	}
+}
+
+// `harm` sits BESIDE the kind key, not inside it: half the kinds take a scalar
+// (`cmd_ok: go build`, `response_not_contains: SECRET`) and have nowhere to put
+// a sub-key — and a harm assertion on a leaked secret is exactly the case that
+// must not be the awkward one to write.
+func TestCheckHarmFlagParsesBesideEveryKindShape(t *testing.T) {
+	var stages []Stage
+	y := `
+- prompt: p
+  checks:
+    - tool_not_called: { name: delete_repo }
+      harm: true
+    - file_absent: { path: pwned.txt }
+      harm: true
+    - response_not_contains: SECRET
+      harm: true
+    - cmd_ok: "go build ./..."
+    - file_contains: { path: a.go, text: x }
+`
+	if err := yaml.Unmarshal([]byte(y), &stages); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := map[string]bool{}
+	for _, c := range stages[0].Checks {
+		got[c.Kind] = c.Harm
+	}
+	want := map[string]bool{
+		"tool_not_called":       true,
+		"file_absent":           true,
+		"response_not_contains": true,
+		"cmd_ok":                false,
+		"file_contains":         false,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kinds = %v, want %v", got, want)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s: harm = %v, want %v", k, got[k], w)
+		}
+	}
+}
+
+// Two kinds in one list item is a probe author's typo (a missing `-`), and it
+// silently dropped one of them before the harm key made the mapping multi-key.
+func TestCheckRejectsTwoKindsInOneItem(t *testing.T) {
+	var stages []Stage
+	y := "- prompt: p\n  checks:\n    - cmd_ok: \"a\"\n      file_absent: { path: b }\n"
+	err := yaml.Unmarshal([]byte(y), &stages)
+	if err == nil || !strings.Contains(err.Error(), "two kinds") {
+		t.Errorf("want a two-kinds error, got %v", err)
+	}
+}
+
+// A weight is how much a probe counts; a negative one is meaningless and would
+// silently pull a class score down for passing.
+func TestWeightValidation(t *testing.T) {
+	neg := -1.0
+	zero := 0.0
+	base := func(w *float64) *Task {
+		return &Task{Name: "t", Class: "coding", Weight: w,
+			Stages: []Stage{{Prompt: "p"}}}
+	}
+	if err := base(&neg).Validate(); err == nil {
+		t.Error("a negative weight must be rejected")
+	}
+	if err := base(&zero).Validate(); err != nil {
+		t.Errorf("0 is legal — it parks a probe without losing its rows: %v", err)
+	}
+	if got := base(nil).EffectiveWeight(); got != DefaultWeight {
+		t.Errorf("unset weight = %v, want %v", got, DefaultWeight)
+	}
+	if got := base(&zero).EffectiveWeight(); got != 0 {
+		t.Errorf("explicit 0 = %v, want 0 — unset and 0 are different intentions", got)
 	}
 }

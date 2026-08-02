@@ -25,6 +25,11 @@ type Result struct {
 	Desc   string `json:"desc"`
 	Pass   bool   `json:"pass"`
 	Detail string `json:"detail,omitempty"`
+	// Harm carries the check's declared harm flag through to the row, so a
+	// score computed later from persisted results can still tell "did harm"
+	// from "did not do it". Recomputing it would mean re-reading the probe,
+	// which a report of a finished run has no reason to have.
+	Harm bool `json:"harm,omitempty"`
 }
 
 // Metrics carries run-derived values a check may assert against — things not
@@ -69,6 +74,14 @@ type AudioSegment struct {
 // Evaluate runs one check against the workspace dir, journal entries, and
 // run metrics.
 func Evaluate(ctx context.Context, c task.Check, workspace string, journ []journal.Entry, m Metrics) Result {
+	r := evaluate(ctx, c, workspace, journ, m)
+	r.Harm = c.Harm
+	return r
+}
+
+// evaluate is Evaluate's body; the wrapper stamps the declared harm flag onto
+// whatever it returns, so no kind can forget to carry it.
+func evaluate(ctx context.Context, c task.Check, workspace string, journ []journal.Entry, m Metrics) Result {
 	switch c.Kind {
 	case "cmd_ok":
 		return cmdOK(ctx, c, workspace)

@@ -446,8 +446,8 @@ func failedRows(tsk *task.Task, model, toolset, ts, note string) []Row {
 		out = append(out, Row{
 			TS: ts, Model: model, Toolset: toolset, Task: tsk.Name, Class: tsk.Class,
 			Stage: i, Prompt: stage.Prompt,
-			ChecksTotal: len(stage.Checks),
-			Pass:        false, Note: note,
+			ChecksTotal: len(stage.Checks), Weight: tsk.EffectiveWeight(),
+			Pass: false, Note: note,
 			Judge: nil, JudgeQuality: nil,
 		})
 	}
@@ -715,6 +715,13 @@ func buildSystemPrompt(tsk *task.Task) string {
 
 // runOne runs every stage of one task under one model + toolset.
 func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *task.Task, ts, outDir, runMode string, runIdx int) ([]Row, error) {
+	// The probe author states what it is worth; this box may disagree, and the
+	// box wins. What a score should REFLECT is the reader's opinion — same rule
+	// probeDirs and toolsets follow.
+	weight := tsk.EffectiveWeight()
+	if w, ok := opts.Config.Weights[tsk.Name]; ok {
+		weight = w
+	}
 	scratch, err := os.MkdirTemp("", "llm-bench-ws-")
 	if err != nil {
 		return nil, err
@@ -937,7 +944,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 			rows = append(rows, Row{
 				TS: ts, Model: model, Toolset: tset.Name, Task: tsk.Name, Class: tsk.Class,
 				Stage: i, Prompt: stage.Prompt, StageMetrics: m, Checks: results,
-				ChecksPassed: passed, ChecksTotal: len(results),
+				ChecksPassed: passed, ChecksTotal: len(results), Weight: weight,
 				Pass: allPass, Note: note,
 			})
 			cancel()
@@ -1079,7 +1086,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		rows = append(rows, Row{
 			TS: ts, Model: model, Toolset: tset.Name, Task: tsk.Name, Class: tsk.Class,
 			Stage: i, Prompt: stage.Prompt, StageMetrics: m, Checks: results,
-			ChecksPassed: passed, ChecksTotal: len(results),
+			ChecksPassed: passed, ChecksTotal: len(results), Weight: weight,
 			Pass: allPass && !pathological, LimitBreached: limitBreached, Note: note,
 			Judge: nil, JudgeQuality: nil,
 		})

@@ -117,6 +117,12 @@ type Row struct {
 
 	StageMetrics // inline: turns, toolCalls, promptTokens, … as top-level fields
 
+	// Weight is the probe's declared score weight, carried per row so a report
+	// built from runs.jsonl alone can compute a weighted class score without
+	// re-reading the probe library the run used (which may have changed, or be
+	// on another machine entirely).
+	Weight float64 `json:"weight"`
+
 	Checks        []check.Result `json:"checks"`
 	ChecksPassed  int            `json:"checksPassed"`
 	ChecksTotal   int            `json:"checksTotal"`
@@ -323,6 +329,11 @@ func WriteSummaryCSV(path string, rows []Row, judge map[string]JudgeScores) erro
 func writeReportMD(path, ts string, rows []Row) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# llm-bench report — %s\n\n", ts)
+
+	// Scores first: the signed class score is the headline, and a pass rate
+	// that cannot tell harm from incapacity should not be what a reader sees
+	// before it.
+	writeScoresMD(&b, rows)
 
 	// Per model×toolset rollup.
 	type key struct{ model, toolset string }
