@@ -208,6 +208,17 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	if err := validateToolsetBins(toolsets, opts.BinDir); err != nil {
 		return nil, "", err
 	}
+	// WHICH binaries this run measures, before it measures anything. First
+	// thing in the log, because "which build was that" is the first question
+	// asked of a surprising number.
+	prov := collectProvenance(toolsets, opts.BinDir, opts.McpBin)
+	for _, l := range prov.Lines() {
+		log.Println(l)
+	}
+	if prov.Dirty() {
+		log.Println("llm-bench: ⚠ at least one measured binary was built from an " +
+			"UNCOMMITTED tree — these numbers cannot be reproduced from any commit")
+	}
 	tasks, err := loadTasks(opts.TasksDirs, opts.TasksGlob)
 	if err == nil {
 		tasks = filterClasses(tasks, opts.Classes)
@@ -229,6 +240,12 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	outDir := filepath.Join(opts.Out, ts)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, "", err
+	}
+	// Beside the results, so a run directory is self-describing after the log
+	// has scrolled away. Not fatal: losing the stamp is worse than losing the
+	// run, but only just.
+	if err := prov.Write(outDir); err != nil {
+		log.Printf("llm-bench: could not write provenance.json: %v", err)
 	}
 
 	// Incremental flush: append each combo's rows to runs.jsonl as they complete
