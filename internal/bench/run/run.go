@@ -1524,7 +1524,17 @@ func loadTasks(dirs []string, glob string) ([]*task.Task, error) {
 			continue // not a probe dir
 		}
 		if err != nil {
-			return nil, err
+			// SKIP the broken one, do not fail the run. The library is always
+			// present now, so a fatal load would make every probe in it a
+			// dependency of every run — which is exactly how a latent
+			// capability-tts bug once turned into four failing tests that had
+			// nothing to do with it.
+			//
+			// Loudly: an unreadable probe is silently not running, and that is
+			// indistinguishable in a results view from one that ran and found
+			// nothing. `llm-bench validate` and the catalog report it too.
+			log.Printf("llm-bench: SKIPPING probe %s — it failed to load: %v", ref.Dir, err)
+			continue
 		}
 		tasks = append(tasks, t)
 	}

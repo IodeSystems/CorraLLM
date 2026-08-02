@@ -196,8 +196,14 @@ the `polylsp*` toolsets they need. They were a statement about poly-lsp's
 behaviour reviewed by people with no reason to care about it, and one of them
 carried a snapshot of poly-lsp's source as its fixture.
 
-Point `probeDirs` (or `--tasks-dir`) at such a directory to run them here. The
-library above is what corrallm owns: probes that measure MODELS, which is a
+Point `probeDirs` (or `--tasks-dir`) at such a directory and it is OVERLAID on
+this library — the built-ins are always present. A directory reusing a
+built-in's name shadows just that one, reported as an override. A probe that
+fails to load is skipped and logged, never fatal: the library is a dependency
+of every run now, and one malformed probe must not fail a run that never asked
+for it.
+
+The library above is what corrallm owns: probes that measure MODELS, which is a
 gateway's own business.
 
 ## Markdown probes (`probe.md`)

@@ -185,42 +185,29 @@ type ProbeRef struct {
 // catalog go through it — a catalog that resolved differently from the runner
 // would be a confident lie about what is about to run.
 //
-// The rule: userDirs REPLACE the built-in library when given, and the built-ins
-// are what you get when none are.
+// The rule: the built-in library is ALWAYS present, and userDirs are overlaid
+// on top of it. A directory naming a probe the library already has shadows it,
+// and later dirs shadow earlier ones — matching the order the caller wrote.
 //
-// Replace, not merge. Merging was tried first and is wrong twice over: a caller
-// who points at three probes of their own means those three, not those three
-// plus twenty of ours; and it makes every built-in a dependency of every run, so
-// one malformed probe in the library fails a run that never asked for it — which
-// is exactly how a latent `capability-tts` bug turned into four failing tests.
+// This used to be replace-not-merge, for two reasons. The first — "a caller who
+// points at three probes of their own means those three" — turned out to be
+// answered better by `--tasks` and `--classes`, which narrow WHAT RUNS without
+// deciding what exists. The second was real and is now fixed at the source:
+// merging made every built-in a dependency of every run, so one malformed probe
+// failed runs that never asked for it. A malformed probe is now skipped and
+// reported (see loadTasks) rather than fatal, which is what that concern
+// actually wanted.
 //
-// So `--tasks-dir` is an OVERRIDE, which is what it has always read as. What
-// changed is only that it is no longer REQUIRED: with no flag the library comes
-// from the binary rather than from a directory that happens to be next to the
-// working directory.
-//
-// SEVERAL dirs, because a probe belongs to whatever it measures, not to this
-// repo. A tool with its own probes keeps them in its own tree and REFERENCES
-// the directory here; changing them there changes what runs here, with nothing
-// to copy and nothing to keep in sync. Union across the named dirs — that is
-// still "those probes and no others", just sourced from more than one place, so
-// neither reason above is weakened.
-//
-// Later dirs win a name collision, matching the flag order the caller wrote,
-// and the winner is labelled an override so a shadowed probe is visible rather
-// than surprising. A name that also exists in the built-in library is labelled
-// the same way even though the built-ins are not in play: the caller who reads
-// it is asking "why is this not the probe I wrote", and the answer is the same.
+// Always-present matters most for the case that made the old default wrong: a
+// box hosting three teams' probe libraries still needs the capability probes,
+// and silently losing them — along with the UI checkbox they drive — because
+// someone added a directory is not a default anyone would choose.
 //
 // tmpRoot is where the embedded library is materialized so it can be read.
 func ResolveProbes(userDirs []string, tmpRoot string) ([]ProbeRef, error) {
-	dirs, src := userDirs, SourceUser
-	if len(dirs) == 0 {
-		root, err := MaterializeBuiltins(tmpRoot)
-		if err != nil {
-			return nil, err
-		}
-		dirs, src = []string{root}, SourceBuiltin
+	root, err := MaterializeBuiltins(tmpRoot)
+	if err != nil {
+		return nil, err
 	}
 	builtin := map[string]bool{}
 	for _, n := range BuiltinNames() {
@@ -230,7 +217,11 @@ func ResolveProbes(userDirs []string, tmpRoot string) ([]ProbeRef, error) {
 	// one; order is restored by the sort below, so map iteration never leaks
 	// into the result.
 	byDir := map[string]ProbeRef{}
-	for _, dir := range dirs {
+	for i, dir := range append([]string{root}, userDirs...) {
+		src := SourceUser
+		if i == 0 {
+			src = SourceBuiltin
+		}
 		ents, err := os.ReadDir(dir)
 		if err != nil {
 			return nil, err
@@ -248,8 +239,9 @@ func ResolveProbes(userDirs []string, tmpRoot string) ([]ProbeRef, error) {
 				continue
 			}
 			s := src
-			// A user probe that reuses a built-in's name, or one already
-			// claimed by an earlier dir, is reported as an override.
+			// A user probe standing where a built-in (or an earlier dir's
+			// probe) stood is an override, and says so — silent shadowing is
+			// what this labelling exists to prevent.
 			if s == SourceUser {
 				if _, shadowed := byDir[e.Name()]; shadowed || builtin[e.Name()] {
 					s = SourceOverride

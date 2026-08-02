@@ -149,13 +149,16 @@ func TestBenchPlan_ProxyModelHasNoMeasureProbe(t *testing.T) {
 //
 // Modality alone cannot prevent that: an STT backend declares text too. The
 // plan now asks whether a probe exists for the model's SERVING SURFACE.
-func TestBenchPlan_NoCapabilityProbeForAudioWhenOnlyChatProbesExist(t *testing.T) {
+func TestBenchPlan_NoCapabilityProbeForAnUncoveredSurface(t *testing.T) {
+	// embeddings: no built-in probe exercises it. Audio no longer works as the
+	// example — the built-in library is always resolved, so capability-stt and
+	// capability-tts are present on every box and an audio surface IS covered.
+	// That is the correct answer; the scenario worth protecting is a surface
+	// nothing can exercise at all.
 	h := testHandlers(t, map[string]config.Model{
-		"stt": {Server: "box", Cmd: "run me", Type: "stt", Modalities: map[string]config.ModalitySpec{
-			"audio": {},
-		}},
-	}, "capability-vision") // a CHAT probe; nothing covers audio.stt
-	p := planFor(t, h, "stt")
+		"embed": {Server: "box", Cmd: "run me", Type: "embeddings"},
+	}, "capability-vision")
+	p := planFor(t, h, "embed")
 	byKind := map[string]BenchProbeSuggestion{}
 	for _, pr := range p.Probes {
 		byKind[pr.Kind] = pr

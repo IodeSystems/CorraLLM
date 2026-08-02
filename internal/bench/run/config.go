@@ -58,8 +58,9 @@ type Config struct {
 	// depending on who started the run is the defect `probes` was embedded to
 	// end (see probes/probes.go).
 	//
-	// Empty = the built-in library. --tasks-dir overrides this entirely, so a
-	// one-off run can name its own set without editing the config.
+	// The built-in library is always present; these are overlaid on top of it.
+	// --tasks-dir replaces this list (not the library), so a one-off run can
+	// name its own directories without editing the config.
 	ProbeDirs []string `yaml:"probeDirs"`
 
 	// Profile names the toolset whose numbers ARE the score — the

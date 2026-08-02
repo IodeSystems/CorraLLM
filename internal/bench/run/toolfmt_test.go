@@ -74,6 +74,9 @@ func TestRunUnknownToolFormatErrors(t *testing.T) {
 			ToolResultFormat: "bogus",
 		},
 		TasksDirs: []string{tasksDir},
+		// Scope to THIS probe: the built-in library is always resolved too, so an
+		// unscoped run would spawn a server for all sixteen of them as well.
+		TasksGlob: "smoke",
 		Out:       out,
 		McpBin:    "/does/not/matter",
 		NewRunner: func(string) agent.LLMRunner { return &fakeRunner{} },
@@ -112,6 +115,9 @@ func TestRunToolFormatRecordedOnRows(t *testing.T) {
 			ToolResultFormat: "tightc",
 		},
 		TasksDirs: []string{tasksDir},
+		// Scope to THIS probe: the built-in library is always resolved too, so an
+		// unscoped run would spawn a server for all sixteen of them as well.
+		TasksGlob: "smoke",
 		Out:       out,
 		McpBin:    mcpBin,
 		NewRunner: func(string) agent.LLMRunner { return fake },

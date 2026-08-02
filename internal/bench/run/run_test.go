@@ -173,6 +173,9 @@ func TestRunSmoke(t *testing.T) {
 			Toolsets: OrderedToolsets{{Name: "baseline"}},
 		},
 		TasksDirs: []string{tasksDir},
+		// Scope to THIS probe: the built-in library is always resolved too, so an
+		// unscoped run would spawn a server for all sixteen of them as well.
+		TasksGlob: "smoke",
 		Out:       t.TempDir(),
 		McpBin:    mcpBin,
 		NewRunner: func(string) agent.LLMRunner { return fake },
@@ -299,6 +302,9 @@ func TestChecksAreScopedToTheirStage(t *testing.T) {
 			Toolsets: OrderedToolsets{{Name: "baseline"}},
 		},
 		TasksDirs: []string{tasksDir},
+		// Scope to THIS probe: the built-in library is always resolved too, so an
+		// unscoped run would spawn a server for all sixteen of them as well.
+		TasksGlob: "scoped",
 		Out:       t.TempDir(),
 		McpBin:    mcpBin,
 		NewRunner: func(string) agent.LLMRunner { return fake },
@@ -363,6 +369,9 @@ func TestRunStartupValidationFailsFast(t *testing.T) {
 			},
 		},
 		TasksDirs: []string{tasksDir},
+		// Scope to THIS probe: the built-in library is always resolved too, so an
+		// unscoped run would spawn a server for all sixteen of them as well.
+		TasksGlob: "smoke",
 		Out:       out,
 		McpBin:    "/does/not/matter",
 		NewRunner: func(string) agent.LLMRunner { return &fakeRunner{} },
@@ -422,6 +431,9 @@ func TestComboFailureContinuesAndFlushes(t *testing.T) {
 			Toolsets: OrderedToolsets{{Name: "baseline"}},
 		},
 		TasksDirs: []string{tasksDir},
+		// Scope to THIS probe: the built-in library is always resolved too, so an
+		// unscoped run would spawn a server for all sixteen of them as well.
+		TasksGlob: "task-*",
 		Out:       out,
 		// Missing binary → every combo's MCP spawn fails → runOne errors, but the
 		// matrix must complete with synthesized failed rows.
@@ -540,6 +552,9 @@ func TestCompactionMetric(t *testing.T) {
 			Toolsets: OrderedToolsets{{Name: "baseline"}},
 		},
 		TasksDirs: []string{tasksDir},
+		// Scope to THIS probe: the built-in library is always resolved too, so an
+		// unscoped run would spawn a server for all sixteen of them as well.
+		TasksGlob: "compact",
 		Out:       t.TempDir(),
 		McpBin:    mcpBin,
 		NewRunner: func(string) agent.LLMRunner { return fake },
@@ -632,6 +647,9 @@ func idLoopOpts(t *testing.T, fake *fakeRunner) Options {
 			Toolsets: OrderedToolsets{{Name: "baseline"}},
 		},
 		TasksDirs: []string{writeIdLoopTask(t)},
+		// Scope to THIS probe: the built-in library is always resolved too, so an
+		// unscoped run would spawn a server for all sixteen of them as well.
+		TasksGlob: "idloop",
 		Out:       t.TempDir(),
 		McpBin:    mcpBin,
 		NewRunner: func(string) agent.LLMRunner { return fake },

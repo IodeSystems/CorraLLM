@@ -98,11 +98,21 @@ func TestCatalogReportsUnloadableProbes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Catalog: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("got %d entries, want just the broken one (a user dir REPLACES the built-ins)", len(entries))
+	var broken *CatalogEntry
+	for i := range entries {
+		if entries[i].Dir == "broken-probe" {
+			broken = &entries[i]
+		}
 	}
-	if entries[0].Error == "" {
+	if broken == nil {
+		t.Fatalf("the broken probe is missing from %d entries", len(entries))
+	}
+	if broken.Error == "" {
 		t.Fatal("the unparseable probe was reported as healthy")
+	}
+	// And it did not take the library down with it.
+	if len(entries) != len(BuiltinNames())+1 {
+		t.Errorf("got %d entries, want %d builtins + the broken one", len(entries), len(BuiltinNames()))
 	}
 }
 
@@ -122,11 +132,22 @@ func TestUserProbeShadowingABuiltinIsLabelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveProbes: %v", err)
 	}
-	if len(refs) != 1 || refs[0].Source != SourceOverride {
-		t.Fatalf("refs = %+v, want one entry marked %q", refs, SourceOverride)
+	var got *ProbeRef
+	for i := range refs {
+		if refs[i].Dir == name {
+			got = &refs[i]
+		}
 	}
-	if !strings.Contains(refs[0].Path, dir) {
-		t.Errorf("resolved to %q, want the user copy", refs[0].Path)
+	if got == nil || got.Source != SourceOverride {
+		t.Fatalf("%s = %+v, want it marked %q", name, got, SourceOverride)
+	}
+	if !strings.Contains(got.Path, dir) {
+		t.Errorf("resolved to %q, want the user copy", got.Path)
+	}
+	// Shadowing ONE built-in must not displace the rest.
+	if len(refs) != len(BuiltinNames()) {
+		t.Errorf("resolved %d, want %d — an override replaces one probe, not the library",
+			len(refs), len(BuiltinNames()))
 	}
 }
 
@@ -147,10 +168,11 @@ func probeDir(t *testing.T, root, name, body string) {
 // keeps its probes in its own tree and the box references the directory, so
 // editing them there changes what runs here with nothing to copy.
 //
-// Replace-not-merge is unchanged and deliberate (see ResolveProbes): naming
-// directories still means those probes and no others — the built-in library
-// stays out of a run that did not ask for it.
-func TestResolveProbesUnionsSeveralDirs(t *testing.T) {
+// The built-in library is ALWAYS present underneath. It used to be replaced by
+// any named directory, which meant a box hosting three teams' libraries
+// silently lost the capability probes — and the UI checkbox they drive — for
+// adding a directory.
+func TestResolveProbesOverlaysDirsOnTheBuiltins(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
 	probeDir(t, a, "alpha", "name: alpha\n")
 	probeDir(t, b, "beta", "name: beta\n")
@@ -159,21 +181,21 @@ func TestResolveProbesUnionsSeveralDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveProbes: %v", err)
 	}
-	var got []string
+	got := map[string]Source{}
 	for _, r := range refs {
-		got = append(got, r.Dir)
-		if r.Source != SourceUser {
-			t.Errorf("%s: source = %q, want %q", r.Dir, r.Source, SourceUser)
+		got[r.Dir] = r.Source
+	}
+	if got["alpha"] != SourceUser || got["beta"] != SourceUser {
+		t.Errorf("user probes = %v/%v, want both %q", got["alpha"], got["beta"], SourceUser)
+	}
+	// Every built-in survived.
+	for _, n := range BuiltinNames() {
+		if _, ok := got[n]; !ok {
+			t.Errorf("built-in %s vanished when directories were named", n)
 		}
 	}
-	if len(got) != 2 || got[0] != "alpha" || got[1] != "beta" {
-		t.Fatalf("dirs = %v, want [alpha beta]", got)
-	}
-	// And no built-in came along for the ride.
-	for _, r := range refs {
-		if r.Source == SourceBuiltin {
-			t.Fatalf("naming dirs must not pull in the built-in library: %+v", r)
-		}
+	if len(refs) != len(BuiltinNames())+2 {
+		t.Errorf("resolved %d, want %d builtins + 2", len(refs), len(BuiltinNames()))
 	}
 }
 
@@ -190,14 +212,20 @@ func TestResolveProbesLaterDirShadowsEarlier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveProbes: %v", err)
 	}
-	if len(refs) != 1 {
-		t.Fatalf("refs = %+v, want one entry", refs)
+	var dup *ProbeRef
+	for i := range refs {
+		if refs[i].Dir == "dup" {
+			dup = &refs[i]
+		}
 	}
-	if !strings.HasPrefix(refs[0].Path, b) {
-		t.Errorf("resolved to %q, want the LATER dir %q", refs[0].Path, b)
+	if dup == nil {
+		t.Fatalf("refs = %+v, want a dup entry", refs)
 	}
-	if refs[0].Source != SourceOverride {
-		t.Errorf("source = %q, want %q — a shadowed probe must be visible", refs[0].Source, SourceOverride)
+	if !strings.HasPrefix(dup.Path, b) {
+		t.Errorf("resolved to %q, want the LATER dir %q", dup.Path, b)
+	}
+	if dup.Source != SourceOverride {
+		t.Errorf("source = %q, want %q — a shadowed probe must be visible", dup.Source, SourceOverride)
 	}
 }
 
