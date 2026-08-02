@@ -18,10 +18,10 @@ toolsets:
   mcpshell:
     - cmd: mcpshell
       args: ["mcp"]
-  polylsp:
+  codetool:
     cedeFileTools: true
     servers:
-      - cmd: poly-lsp-mcp
+      - cmd: codetool-mcp
         args: ["mcp", "--root", "{{workspace}}"]
 `
 	c, err := loadConfigBytes([]byte(y))
@@ -32,7 +32,7 @@ toolsets:
 		name string
 		cede bool
 		nsrv int
-	}{{"baseline", false, 0}, {"mcpshell", false, 1}, {"polylsp", true, 1}}
+	}{{"baseline", false, 0}, {"mcpshell", false, 1}, {"codetool", true, 1}}
 	if len(c.Toolsets) != len(want) {
 		t.Fatalf("got %d toolsets, want %d", len(c.Toolsets), len(want))
 	}

@@ -140,7 +140,7 @@ type OrderedToolsets []Toolset
 
 // UnmarshalYAML decodes the toolsets mapping node in declaration order. A value
 // may be a bare server list (`mcpshell: [{cmd: …}]`, cedeFileTools=false) or an
-// object (`polylsp: {servers: [{cmd: …}], cedeFileTools: true}`).
+// object (`codetool: {servers: [{cmd: …}], cedeFileTools: true}`).
 func (o *OrderedToolsets) UnmarshalYAML(n *yaml.Node) error {
 	if n.Kind != yaml.MappingNode {
 		return fmt.Errorf("toolsets must be a mapping")

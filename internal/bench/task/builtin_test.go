@@ -229,3 +229,62 @@ func TestSplitProbeDirs(t *testing.T) {
 		}
 	}
 }
+
+// A probe DELETED from the library must stop running.
+//
+// The extraction is long-lived — an OS temp dir shared by every run on the box
+// — and MaterializeBuiltins used to write without pruning, so a removed probe
+// stayed on disk and kept resolving as a built-in. It was immortal on every
+// machine that had ever benched, and invisible: the library said 16, the runner
+// ran 20. Found while moving four probes to the repo that owns them.
+func TestMaterializeBuiltinsPrunesWhatIsNoLongerEmbedded(t *testing.T) {
+	root := t.TempDir()
+	dst, err := MaterializeBuiltins(root)
+	if err != nil {
+		t.Fatalf("MaterializeBuiltins: %v", err)
+	}
+	fresh := len(BuiltinNames())
+	if fresh == 0 {
+		t.Fatal("no built-in probes to test against")
+	}
+
+	// A probe from a previous version of the library, left behind by an
+	// extraction that predates its removal.
+	ghost := filepath.Join(dst, "ghost-probe")
+	if err := os.MkdirAll(filepath.Join(ghost, "_fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"task.yaml", "_fixture/seed.go"} {
+		if err := os.WriteFile(filepath.Join(ghost, f), []byte("name: ghost\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// And a stray file directly under the extraction root.
+	if err := os.WriteFile(filepath.Join(dst, "leftover.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := MaterializeBuiltins(root); err != nil {
+		t.Fatalf("re-materialize: %v", err)
+	}
+	if _, err := os.Stat(ghost); !os.IsNotExist(err) {
+		t.Errorf("a probe no longer embedded survived re-materialization (%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "leftover.txt")); !os.IsNotExist(err) {
+		t.Error("a stray file under the extraction root survived")
+	}
+
+	// Pruning must not take the real library with it.
+	refs, err := ResolveProbes(nil, root)
+	if err != nil {
+		t.Fatalf("ResolveProbes: %v", err)
+	}
+	if len(refs) != fresh {
+		t.Errorf("resolved %d probes after pruning, want the %d embedded", len(refs), fresh)
+	}
+	for _, r := range refs {
+		if r.Dir == "ghost-probe" {
+			t.Error("the ghost is still resolvable")
+		}
+	}
+}

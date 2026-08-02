@@ -58,84 +58,18 @@ judge:
 # Toolsets are the second experiment axis: each is a list of EXTRA MCP servers
 # spawned alongside llm-bench-mcp. "{{workspace}}" in an arg is replaced with the
 # run's scratch workspace path. Verified invocations (2026-07-15):
-#   mcpshell:     `mcpshell mcp`                       (github.com/iodesystems/mcpshell/cmd/mcpshell)
-#   poly-lsp-mcp: `poly-lsp-mcp mcp --root <workspace>` (github.com/iodesystems/poly-lsp-mcp)
-# bin/llm-bench builds both into local/bin/, which should be on $PATH when running.
+#   mcpshell: `mcpshell mcp`   (github.com/iodesystems/mcpshell/cmd/mcpshell)
+# bin/llm-bench builds it into local/bin/, which should be on $PATH when running.
 toolsets:
   baseline: []
   mcpshell:
     - cmd: mcpshell
       args: ["mcp"]
-  # poly-lsp owns read/edit/navigate (node_read + node_edit + `structure` dir
-  # tours) — cede llm-bench-mcp's read_file/write_file/list_dir so the model sees
-  # ONE convention, not near-matching duplicates (write_file{path,content} vs
-  # node_edit{file,newText}). Only `run` stays: executing is poly-lsp's one gap.
-  polylsp:
-    cedeFileTools: true
-    servers:
-      - cmd: poly-lsp-mcp
-        args: ["mcp", "--root", "{{workspace}}"]
-  # Read-only poly-lsp: navigation + reading, no mutating tools registered.
-  # 2 tools (~620 tok) vs 3 (~990). For exploration/review, a tool the model
-  # cannot see is a tool it cannot call — enforcement, not an instruction.
-  #
-  # cedeFileTools is FALSE here, unlike the other poly-lsp sets: read-only has no
-  # node_edit, so ceding write_file too would leave nothing able to write at all.
-  # This is also the ADD-ON shape nothing else covers — poly-lsp alongside the
-  # normal file tools rather than replacing them: explore semantically, write
-  # with write_file.
-  polylsp-ro:
-    cedeFileTools: false
-    servers:
-      - cmd: poly-lsp-mcp
-        args: ["mcp", "--root", "{{workspace}}", "--read-only"]
-  # polylsp + edit validation. node_edit runs the child LSP after each write and
-  # REVERTS any edit that introduces a NEW error (revert-on-new-diagnostics).
-  # Byte-identical to `polylsp` except the --validate flag, so a
-  # polylsp-vs-polylsp-validate diff isolates EDIT SAFETY as the single variable
-  # (the `edit-safety` group). Requires poly-lsp-mcp's --validate build.
-  polylsp-validate:
-    cedeFileTools: true
-    servers:
-      - cmd: poly-lsp-mcp
-        args: ["mcp", "--root", "{{workspace}}", "--validate"]
-  # No-run variants: withdraw llm-bench-mcp's `run` tool via baseArgs, so the
-  # model CANNOT build/test itself. This isolates edit validation's value — with
-  # no self-check, a broken edit either lands (polylsp-norun → the external
-  # check fails) or is reverted at edit-time (…-validate → passes). The
-  # polylsp-norun vs polylsp-norun-validate delta is what --validate is worth
-  # when the model can't self-diagnose (the case a capable model+run washes out).
-  polylsp-norun:
-    cedeFileTools: true
-    baseArgs: ["--run-tool=false"]
-    servers:
-      - cmd: poly-lsp-mcp
-        args: ["mcp", "--root", "{{workspace}}"]
-  polylsp-norun-validate:
-    cedeFileTools: true
-    baseArgs: ["--run-tool=false"]
-    servers:
-      - cmd: poly-lsp-mcp
-        args: ["mcp", "--root", "{{workspace}}", "--validate"]
-  # The 9-tool surface the 3-tool one replaced. Identical to `polylsp` in
-  # every other respect, so a polylsp-vs-polylsp-legacy diff isolates the
-  # SURFACE — which is the thing under test. The 9 tools bill ~4327
-  # tokens of definitions on every single turn against the 3 tools' ~900,
-  # and 55% of that bought 4% of actual usage.
-  polylsp-legacy:
-    cedeFileTools: true
-    servers:
-      - cmd: poly-lsp-mcp
-        args: ["mcp", "--root", "{{workspace}}", "--legacy-tools"]
-  # full = mcpshell (eval, distinct interface — keeps file tools) + poly-lsp.
-  # Cede too: poly-lsp's node_edit is the near-match that confuses the model.
-  full:
-    cedeFileTools: true
-    servers:
-      - cmd: mcpshell
-        args: ["mcp"]
-      - cmd: poly-lsp-mcp
-        args: ["mcp", "--root", "{{workspace}}"]
+  # A tool with its own probes keeps its TOOLSETS with them too — a toolset is
+  # the tool's own invocation, and splitting it from the probes that use it
+  # means two repos have to agree on a flag. poly-lsp's live in
+  # poly-lsp-mcp/bench/llm-bench.yaml; point probeDirs at bench/probes and run
+  # with that config. What stays here is what any probe can use.
 
 # experiments: the A/B layer over (task x toolset). Each renders tasks x variants
 # into individual bench cases TAGGED {group, name(=task), variant(=id), label},

@@ -104,15 +104,18 @@ Absolute paths and any path escaping the workspace are rejected.
 - `compaction-continuation` (tooluse, 3 stages, `contextBudget: 8000`) — survey files → recall post-fold facts (port 7443, region us-west-2) → fix the one mismatched config; `compactions_min` + `compaction_under` (soft size gate) guard the fold.
 - `codex-plan-{0-inscope,1-tension,2-cache,3-violation}` (tooluse) — the design-codex planning ladder: write `plan.md` for a feature against a fixed `CODEX.md`. `ask_user_question` is BAIT at L0-L2 (a clear in-codex path exists → asking is cowardice) but the REQUIRED action at L3 (a genuine out-of-codex tradeoff → escalating is correct). Uses `systemAppend` to install the codex-owner persona; plan.md content checks are the primary cowardice signal.
 
-### poly-lsp net-benefit tasks
+### Probes that live elsewhere
 
-These reward structure/reference/refactor power: baseline read_file/write_file/run must find and edit every site by hand (miss-prone), while poly-lsp's node_references/node_refactor/node_query do it structurally. Deterministic checks are objective (compiles / all sites updated / correct answers), so the bench measures poly-lsp as a net benefit — not only where it's overhead — plus the already-metered tool-call/turn cost. All fixtures are real compiling Go modules.
+A probe belongs to whatever it MEASURES. The four that measured poly-lsp —
+`multi-file-refactor`, `cross-language-rename`, `codebase-navigation`,
+`find-render-entrypoints` — moved to that repo's own `bench/probes`, along with
+the `polylsp*` toolsets they need. They were a statement about poly-lsp's
+behaviour reviewed by people with no reason to care about it, and one of them
+carried a snapshot of poly-lsp's source as its fixture.
 
-- `multi-file-refactor` (coding, 1 stage) — rename the `UserID` type to `AccountID` across 5 files (definition, struct field, func params, map key type, call sites, test). `go build ./...` + `go test ./...` + `! grep -rn UserID` + `grep -rq AccountID`; miss a site → build fails.
-- `cross-language-rename` (tooluse, 1 stage) — the same field in three languages (`LegacyID`+json tag `legacy_id` in model.go, `legacyId` in client.ts, `legacy_id` in config.yaml) renamed to the `archived_id`/`ArchivedID`/`archivedId` family. Per-file greps assert the new name present AND the old name gone in each of the three files.
-- `codebase-navigation` (tooluse, 1 stage, read-only) — write `answers.txt`: which functions call `Store.Save` (Register, Import), the return type of `Server.Handle` (`*Response`), and every struct with a `CreatedAt` field (Record, Session, AuditEntry). `file_contains` on each expected token.
-- `find-render-entrypoints` (tooluse, 1 stage, read-only) — over a REAL ~8.3k-line corpus (poly-lsp's own `mcp` package), not a toy fixture: trace every function from which the selector-grammar help text can reach a user, and write `file.go#Symbol` lines to `findings.txt`. Ground truth is a two-hop reference chain (`handleModernNodeQuery`, `errf`, `parseAttr`, `parsePseudo`) — grep finds the *sites* but not the enclosing function, which is what a symbol index knows. `file_contains` on each expected symbol. Carries raised limits (20 turns / 40 tool calls) proportional to the corpus.
-
+Point `probeDirs` (or `--tasks-dir`) at such a directory to run them here. The
+library above is what corrallm owns: probes that measure MODELS, which is a
+gateway's own business.
 
 ## Markdown probes (`probe.md`)
 

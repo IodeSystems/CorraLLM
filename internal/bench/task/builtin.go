@@ -30,8 +30,16 @@ const BuiltinDirName = "builtin-probes"
 // Idempotent by content: a probe directory that already exists with the right
 // bytes is left alone, so repeated runs in a persistent workspace do not churn
 // the tree (and do not disturb a fixture a previous run is still reading).
+//
+// It also PRUNES what is no longer embedded. Writing without pruning made a
+// deleted probe immortal: the extraction is long-lived (an OS temp dir that
+// survives every run on the box), so a probe removed from the library kept
+// being resolved as a built-in and kept running, on every machine that had ever
+// benched. Found by deleting four probes and watching them still execute — the
+// library is only the source of truth if removal propagates too.
 func MaterializeBuiltins(root string) (string, error) {
 	dst := filepath.Join(root, BuiltinDirName)
+	want := map[string]bool{}
 	err := fs.WalkDir(probes.FS, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -41,6 +49,7 @@ func MaterializeBuiltins(root string) (string, error) {
 			return nil
 		}
 		out := filepath.Join(dst, p)
+		want[filepath.Clean(out)] = true
 		if d.IsDir() {
 			return os.MkdirAll(out, 0o755)
 		}
@@ -59,7 +68,46 @@ func MaterializeBuiltins(root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("materialize built-in probes: %w", err)
 	}
+	if err := pruneUnembedded(dst, want); err != nil {
+		return "", fmt.Errorf("materialize built-in probes: %w", err)
+	}
 	return dst, nil
+}
+
+// pruneUnembedded deletes anything under dst that the embedded library no
+// longer contains. Scoped to dst, which MaterializeBuiltins owns outright —
+// nothing else writes there, so a path that is not embedded is a leftover.
+//
+// Deepest-first, so a directory is considered only after its contents are gone.
+// A prune failure is reported rather than swallowed: silently keeping a stale
+// probe is the exact failure this exists to end.
+func pruneUnembedded(dst string, want map[string]bool) error {
+	var stale []string
+	err := filepath.WalkDir(dst, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // nothing materialized yet
+			}
+			return err
+		}
+		if filepath.Clean(p) == filepath.Clean(dst) || want[filepath.Clean(p)] {
+			return nil
+		}
+		stale = append(stale, p)
+		if d.IsDir() {
+			return fs.SkipDir // its contents go with it
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for i := len(stale) - 1; i >= 0; i-- {
+		if err := os.RemoveAll(stale[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // BuiltinNames lists the probe directories carried in the binary, without
