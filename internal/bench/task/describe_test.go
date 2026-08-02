@@ -44,7 +44,7 @@ func TestFirstLineCaps160(t *testing.T) {
 // that kind of silence. This is the check that stops a new probe shipping
 // undocumented.
 func TestBuiltinProbesAreDescribed(t *testing.T) {
-	entries, err := Catalog("", os.TempDir())
+	entries, err := Catalog(nil, os.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

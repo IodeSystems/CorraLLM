@@ -19,6 +19,25 @@ llm:
   baseURL: "http://192.168.1.76:8111"
   apiKeyEnv: LLM_BENCH_LLM_KEY
 
+# probeDirs: directory REFERENCES to probe libraries this box should run.
+#
+# A probe belongs to whatever it MEASURES, not to this repo. A tool that wants
+# to measure itself keeps its probes in its own tree and is named here once;
+# editing them there changes what runs here, with nothing to copy and nothing
+# to keep in sync. Resolved fresh on every run and every catalog read, so a
+# change is picked up without restarting corrallm.
+#
+# Relative entries resolve against THIS FILE, not the process's working
+# directory — the bench is spawned by a daemon whose cwd is its deployment
+# directory. "~" is expanded.
+#
+# Naming any directory REPLACES the built-in library (same rule --tasks-dir has
+# always had): you get those probes and no others, so one malformed built-in
+# cannot fail a run that never asked for it. --tasks-dir overrides this list.
+#
+# probeDirs:
+#   - ~/local/src/iodesystems/poly-lsp-mcp/bench/probes
+
 # Models under test (candidates). Qwen3-6-27B-MPT is intentionally excluded as
 # a candidate (fills the 5090) — it is only a P1 judge.
 # Default candidate set, in run order. Qwen last: its 29.5GB admission evicts

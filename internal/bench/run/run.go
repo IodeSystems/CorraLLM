@@ -72,7 +72,7 @@ type Options struct {
 	overhead *overheadClient
 
 	Config    Config
-	TasksDir  string   // directory holding task subdirs
+	TasksDirs []string // directories holding task subdirs (empty = the built-in library)
 	Out       string   // output root; a timestamped subdir is created under it
 	Models    []string // filter (empty = all configured)
 	Toolsets  []string // filter (empty = all configured)
@@ -208,7 +208,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	if err := validateToolsetBins(toolsets, opts.BinDir); err != nil {
 		return nil, "", err
 	}
-	tasks, err := loadTasks(opts.TasksDir, opts.TasksGlob)
+	tasks, err := loadTasks(opts.TasksDirs, opts.TasksGlob)
 	if err == nil {
 		tasks = filterClasses(tasks, opts.Classes)
 	}
@@ -216,7 +216,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 		return nil, "", err
 	}
 	if len(tasks) == 0 {
-		return nil, "", fmt.Errorf("no tasks found under %s", opts.TasksDir)
+		return nil, "", fmt.Errorf("no tasks found under %s", strings.Join(opts.TasksDirs, ", "))
 	}
 	if opts.NewRunner == nil {
 		cfg := opts.Config
@@ -1468,8 +1468,8 @@ func mcpDispatcher(mgr *mcpmgr.Manager, tools []mcpmgr.MCPTool) agent.ToolDispat
 // library plus, when dir is non-empty, user probes that add to and may shadow
 // it. Going through the shared resolver is what keeps the catalog endpoint
 // honest: it reports exactly what this would run.
-func loadTasks(dir, glob string) ([]*task.Task, error) {
-	refs, err := task.ResolveProbes(dir, os.TempDir())
+func loadTasks(dirs []string, glob string) ([]*task.Task, error) {
+	refs, err := task.ResolveProbes(dirs, os.TempDir())
 	if err != nil {
 		return nil, err
 	}

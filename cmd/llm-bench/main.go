@@ -1,7 +1,7 @@
 // Command llm-bench is the benchmark runner CLI.
 //
 //	llm-bench run [--models a,b] [--toolsets baseline,..] [--tasks glob] [--out dir] [--config f] [--mcp-bin p] [--judge]
-//	llm-bench validate [--tasks-dir user-probes]   — load + validate every task, nonzero exit if any is invalid
+//	llm-bench validate [--tasks-dir dir1,dir2]   — load + validate every task, nonzero exit if any is invalid
 //	llm-bench judge -run out/<ts> [--config f] [--model override]   — P1 judge phase over a completed run
 package main
 
@@ -42,15 +42,15 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: llm-bench <run|validate|judge> [flags]")
-	fmt.Fprintln(os.Stderr, "  llm-bench run      [--config llm-bench.yaml] [--tasks-dir user-probes] [--models a,b] [--toolsets baseline,..] [--tasks glob] [--out out] [--mcp-bin path] [--tool-format json|tightc] [--judge]")
-	fmt.Fprintln(os.Stderr, "  llm-bench validate [--tasks-dir user-probes]")
+	fmt.Fprintln(os.Stderr, "  llm-bench run      [--config llm-bench.yaml] [--tasks-dir dir1,dir2] [--models a,b] [--toolsets baseline,..] [--tasks glob] [--out out] [--mcp-bin path] [--tool-format json|tightc] [--judge]")
+	fmt.Fprintln(os.Stderr, "  llm-bench validate [--tasks-dir dir1,dir2]")
 	fmt.Fprintln(os.Stderr, "  llm-bench judge    -run out/<ts> [--config llm-bench.yaml] [--model override]")
 }
 
 func cmdRun(argv []string) int {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	config := fs.String("config", "llm-bench.yaml", "path to llm-bench.yaml")
-	tasksDir := fs.String("tasks-dir", "", "extra directory of user probe subdirs (added to the built-in library)")
+	tasksDir := fs.String("tasks-dir", "", "comma-separated probe directories; REPLACES the built-in library (later dirs win a name collision)")
 	models := fs.String("models", "", "comma-separated model filter (default: all in config)")
 	toolsets := fs.String("toolsets", "", "comma-separated toolset filter (default: all in config)")
 	tasksGlob := fs.String("tasks", "", "glob on task dir names (default: all)")
@@ -71,6 +71,13 @@ func cmdRun(argv []string) int {
 	if *toolFormat != "" {
 		cfg.ToolResultFormat = *toolFormat
 	}
+	// --tasks-dir overrides probeDirs OUTRIGHT rather than adding to it: a
+	// caller who names directories means those, which is the same rule
+	// ResolveProbes applies to the built-in library.
+	probeDirs := task.SplitProbeDirs(*tasksDir)
+	if len(probeDirs) == 0 {
+		probeDirs = cfg.ProbeDirs
+	}
 	bin, err := resolveMcpBin(*mcpBin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -79,7 +86,7 @@ func cmdRun(argv []string) int {
 
 	opts := run.Options{
 		Config:    cfg,
-		TasksDir:  *tasksDir,
+		TasksDirs: probeDirs,
 		Out:       *out,
 		Models:    splitCSV(*models),
 		Toolsets:  splitCSV(*toolsets),
@@ -107,10 +114,10 @@ func cmdRun(argv []string) int {
 
 func cmdValidate(argv []string) int {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
-	tasksDir := fs.String("tasks-dir", "", "extra directory of user probe subdirs (added to the built-in library)")
+	tasksDir := fs.String("tasks-dir", "", "comma-separated probe directories; REPLACES the built-in library (later dirs win a name collision)")
 	_ = fs.Parse(argv)
 
-	refs, err := task.ResolveProbes(*tasksDir, os.TempDir())
+	refs, err := task.ResolveProbes(task.SplitProbeDirs(*tasksDir), os.TempDir())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "validate:", err)
 		return 1

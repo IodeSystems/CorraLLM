@@ -199,7 +199,7 @@ func (h *Handlers) StartBenchRun(_ context.Context, in *BenchRunInput) (*BenchRu
 	st, err := h.Bench.Start(BenchStartOptions{
 		Bin:        h.BenchBin,
 		ConfigPath: h.BenchConfig,
-		ProbesDir:  h.BenchProbes,
+		ProbeDirs:  h.BenchProbeDirs,
 		Models:     in.Body.Models,
 		Classes:    in.Body.Classes,
 		TTLSeconds: in.Body.TTL,

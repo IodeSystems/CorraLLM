@@ -100,10 +100,10 @@ type CatalogEntry struct {
 	// shadowing is resolved on. Name is what the probe CALLS itself, which is
 	// what results are recorded under. They are usually equal; a catalog that
 	// assumed so would mis-report an override.
-	Dir      string `json:"dir"`
-	Name     string `json:"name"`
-	Class    string `json:"class"`
-	Source   Source `json:"source"`
+	Dir    string `json:"dir"`
+	Name   string `json:"name"`
+	Class  string `json:"class"`
+	Source Source `json:"source"`
 	// Summary is a one-line gloss for list views.
 	Summary string `json:"summary,omitempty"`
 	// Description is the probe's FULL prose — what it seeds, what it asks, what
@@ -115,10 +115,10 @@ type CatalogEntry struct {
 	// summary was not a display choice, it was data loss — the prose existed in
 	// the probe and had no way to reach a reader.
 	Description string `json:"description,omitempty"`
-	Run      string `json:"run,omitempty"`      // "", "warm"
-	Requires string `json:"requires,omitempty"` // effective capability, when the probe demands one
-	Checks   int    `json:"checks"`
-	Stages   int    `json:"stages"`
+	Run         string `json:"run,omitempty"`      // "", "warm"
+	Requires    string `json:"requires,omitempty"` // effective capability, when the probe demands one
+	Checks      int    `json:"checks"`
+	Stages      int    `json:"stages"`
 	// Error is set when the probe FAILED to load. Such an entry is still
 	// returned: a probe that cannot be parsed is precisely what a catalog is
 	// for, and dropping it would reproduce the silence this endpoint exists to
@@ -137,8 +137,8 @@ type ProbeRef struct {
 // catalog go through it — a catalog that resolved differently from the runner
 // would be a confident lie about what is about to run.
 //
-// The rule: userDir REPLACES the built-in library when given, and the built-ins
-// are what you get when it is not.
+// The rule: userDirs REPLACE the built-in library when given, and the built-ins
+// are what you get when none are.
 //
 // Replace, not merge. Merging was tried first and is wrong twice over: a caller
 // who points at three probes of their own means those three, not those three
@@ -151,52 +151,91 @@ type ProbeRef struct {
 // from the binary rather than from a directory that happens to be next to the
 // working directory.
 //
+// SEVERAL dirs, because a probe belongs to whatever it measures, not to this
+// repo. A tool with its own probes keeps them in its own tree and REFERENCES
+// the directory here; changing them there changes what runs here, with nothing
+// to copy and nothing to keep in sync. Union across the named dirs — that is
+// still "those probes and no others", just sourced from more than one place, so
+// neither reason above is weakened.
+//
+// Later dirs win a name collision, matching the flag order the caller wrote,
+// and the winner is labelled an override so a shadowed probe is visible rather
+// than surprising. A name that also exists in the built-in library is labelled
+// the same way even though the built-ins are not in play: the caller who reads
+// it is asking "why is this not the probe I wrote", and the answer is the same.
+//
 // tmpRoot is where the embedded library is materialized so it can be read.
-func ResolveProbes(userDir, tmpRoot string) ([]ProbeRef, error) {
-	dir, src := userDir, SourceUser
-	if dir == "" {
+func ResolveProbes(userDirs []string, tmpRoot string) ([]ProbeRef, error) {
+	dirs, src := userDirs, SourceUser
+	if len(dirs) == 0 {
 		root, err := MaterializeBuiltins(tmpRoot)
 		if err != nil {
 			return nil, err
 		}
-		dir, src = root, SourceBuiltin
-	}
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
+		dirs, src = []string{root}, SourceBuiltin
 	}
 	builtin := map[string]bool{}
 	for _, n := range BuiltinNames() {
 		builtin[n] = true
 	}
-	var out []ProbeRef
-	for _, e := range ents {
-		if !e.IsDir() {
-			continue
-		}
-		p := filepath.Join(dir, e.Name())
-		if !isProbeDir(p) {
-			continue
-		}
-		abs, err := filepath.Abs(p)
+	// byDir keeps ONE ref per probe name so a later dir can shadow an earlier
+	// one; order is restored by the sort below, so map iteration never leaks
+	// into the result.
+	byDir := map[string]ProbeRef{}
+	for _, dir := range dirs {
+		ents, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		s := src
-		// A user probe that reuses a built-in's name is reported as an override,
-		// so "why is this not the probe I wrote?" has a visible answer.
-		if s == SourceUser && builtin[e.Name()] {
-			s = SourceOverride
+		for _, e := range ents {
+			if !e.IsDir() {
+				continue
+			}
+			p := filepath.Join(dir, e.Name())
+			if !isProbeDir(p) {
+				continue
+			}
+			abs, err := filepath.Abs(p)
+			if err != nil {
+				continue
+			}
+			s := src
+			// A user probe that reuses a built-in's name, or one already
+			// claimed by an earlier dir, is reported as an override.
+			if s == SourceUser {
+				if _, shadowed := byDir[e.Name()]; shadowed || builtin[e.Name()] {
+					s = SourceOverride
+				}
+			}
+			byDir[e.Name()] = ProbeRef{Dir: e.Name(), Path: abs, Source: s}
 		}
-		out = append(out, ProbeRef{Dir: e.Name(), Path: abs, Source: s})
+	}
+	out := make([]ProbeRef, 0, len(byDir))
+	for _, r := range byDir {
+		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Dir < out[j].Dir })
 	return out, nil
 }
 
+// SplitProbeDirs parses a comma-separated probe-directory list — the form a
+// flag, an env var and a YAML scalar can all carry unchanged. Blank entries are
+// dropped so a trailing comma or an unset segment is not read as "the current
+// directory", which would silently pull in whatever the process happens to be
+// sitting in.
+func SplitProbeDirs(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // Catalog describes every probe ResolveProbes finds, without running any.
-func Catalog(userDir, tmpRoot string) ([]CatalogEntry, error) {
-	refs, err := ResolveProbes(userDir, tmpRoot)
+func Catalog(userDirs []string, tmpRoot string) ([]CatalogEntry, error) {
+	refs, err := ResolveProbes(userDirs, tmpRoot)
 	if err != nil {
 		return nil, err
 	}

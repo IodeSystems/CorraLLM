@@ -26,6 +26,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/agentdist"
 	"github.com/iodesystems/corrallm/internal/api"
 	"github.com/iodesystems/corrallm/internal/auth"
+	"github.com/iodesystems/corrallm/internal/bench/task"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/events"
 	"github.com/iodesystems/corrallm/internal/gpu"
@@ -350,7 +351,7 @@ func newServeCmd() *cobra.Command {
 	f.IntVar(&vramMargin, "vram-margin", 0, "MiB of free VRAM kept back when sizing --parallel from a cached profile (default 512 or CORRALLM_VRAM_MARGIN)")
 	f.StringVar(&benchBin, "bench-bin", envOr("CORRALLM_BENCH_BIN", "llm-bench"), "llm-bench binary spawned by UI-driven bench runs (same binary you run from a shell)")
 	f.StringVar(&benchConfig, "bench-config", envOr("CORRALLM_BENCH_CONFIG", ""), "llm-bench config passed to spawned runs (default: llm-bench's own default)")
-	f.StringVar(&benchProbes, "bench-probes", envOr("CORRALLM_BENCH_PROBES", ""), "probe directory passed to spawned runs (default: llm-bench's own default)")
+	f.StringVar(&benchProbes, "bench-probes", envOr("CORRALLM_BENCH_PROBES", ""), "comma-separated probe directories passed to spawned runs; overrides the config's probeDirs (default: llm-bench's own default)")
 	return cmd
 }
 
@@ -540,7 +541,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	h.Bench = api.NewBenchRunner()
 	h.BenchBin = o.benchBin
 	h.BenchConfig = o.benchConfig
-	h.BenchProbes = o.benchProbes
+	h.BenchProbeDirs = task.SplitProbeDirs(o.benchProbes)
 	px.SetBroker(broker)
 	px.SetRequestTimeout(o.requestTimeout)
 	px.SetCapturePayloads(o.capturePayloads)

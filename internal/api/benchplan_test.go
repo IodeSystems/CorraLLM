@@ -45,9 +45,9 @@ func testHandlers(t *testing.T, models map[string]config.Model, probes ...string
 		}
 	}
 	return &Handlers{
-		Cfg:         &config.Config{Models: models, Servers: map[string]config.Server{"box": {}}},
-		Verified:    NewVerifiedStore(),
-		BenchProbes: dir,
+		Cfg:            &config.Config{Models: models, Servers: map[string]config.Server{"box": {}}},
+		Verified:       NewVerifiedStore(),
+		BenchProbeDirs: []string{dir},
 	}
 }
 

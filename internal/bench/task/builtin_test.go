@@ -13,7 +13,7 @@ import (
 // wrong for the only caller that mattered and had to be papered over with an
 // absolute --bench-probes path.
 func TestBuiltinsResolveWithNoDirectory(t *testing.T) {
-	refs, err := ResolveProbes("", t.TempDir())
+	refs, err := ResolveProbes(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("ResolveProbes: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestBuiltinFixturesMaterializeWholly(t *testing.T) {
 // Every built-in must load. A library shipped inside the binary cannot be
 // fixed by editing a file next to the deployment.
 func TestEveryBuiltinProbeLoads(t *testing.T) {
-	entries, err := Catalog("", t.TempDir())
+	entries, err := Catalog(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("Catalog: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestCatalogReportsUnloadableProbes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bad, "task.yaml"), []byte("name: [unclosed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := Catalog(dir, t.TempDir())
+	entries, err := Catalog([]string{dir}, t.TempDir())
 	if err != nil {
 		t.Fatalf("Catalog: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestUserProbeShadowingABuiltinIsLabelled(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "task.yaml"), []byte("name: mine\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	refs, err := ResolveProbes(dir, t.TempDir())
+	refs, err := ResolveProbes([]string{dir}, t.TempDir())
 	if err != nil {
 		t.Fatalf("ResolveProbes: %v", err)
 	}
@@ -127,5 +127,105 @@ func TestUserProbeShadowingABuiltinIsLabelled(t *testing.T) {
 	}
 	if !strings.Contains(refs[0].Path, dir) {
 		t.Errorf("resolved to %q, want the user copy", refs[0].Path)
+	}
+}
+
+// probeDir writes a minimal loadable probe and returns nothing — the caller
+// already knows where it put it.
+func probeDir(t *testing.T, root, name, body string) {
+	t.Helper()
+	d := filepath.Join(root, name)
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "task.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// SEVERAL directories, because a probe belongs to whatever it measures. A tool
+// keeps its probes in its own tree and the box references the directory, so
+// editing them there changes what runs here with nothing to copy.
+//
+// Replace-not-merge is unchanged and deliberate (see ResolveProbes): naming
+// directories still means those probes and no others — the built-in library
+// stays out of a run that did not ask for it.
+func TestResolveProbesUnionsSeveralDirs(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	probeDir(t, a, "alpha", "name: alpha\n")
+	probeDir(t, b, "beta", "name: beta\n")
+
+	refs, err := ResolveProbes([]string{a, b}, t.TempDir())
+	if err != nil {
+		t.Fatalf("ResolveProbes: %v", err)
+	}
+	var got []string
+	for _, r := range refs {
+		got = append(got, r.Dir)
+		if r.Source != SourceUser {
+			t.Errorf("%s: source = %q, want %q", r.Dir, r.Source, SourceUser)
+		}
+	}
+	if len(got) != 2 || got[0] != "alpha" || got[1] != "beta" {
+		t.Fatalf("dirs = %v, want [alpha beta]", got)
+	}
+	// And no built-in came along for the ride.
+	for _, r := range refs {
+		if r.Source == SourceBuiltin {
+			t.Fatalf("naming dirs must not pull in the built-in library: %+v", r)
+		}
+	}
+}
+
+// A name in two referenced dirs: the LATER one wins, matching the order the
+// caller wrote, and says so. Silent shadowing is the failure this labelling
+// exists to prevent — it is the same question ("why am I not running the probe
+// I wrote?") whether the thing shadowed is a built-in or another directory.
+func TestResolveProbesLaterDirShadowsEarlier(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	probeDir(t, a, "dup", "name: from-a\n")
+	probeDir(t, b, "dup", "name: from-b\n")
+
+	refs, err := ResolveProbes([]string{a, b}, t.TempDir())
+	if err != nil {
+		t.Fatalf("ResolveProbes: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("refs = %+v, want one entry", refs)
+	}
+	if !strings.HasPrefix(refs[0].Path, b) {
+		t.Errorf("resolved to %q, want the LATER dir %q", refs[0].Path, b)
+	}
+	if refs[0].Source != SourceOverride {
+		t.Errorf("source = %q, want %q — a shadowed probe must be visible", refs[0].Source, SourceOverride)
+	}
+}
+
+// The list form a flag, an env var and a YAML scalar all carry. A blank entry
+// must not become ".", which would silently pull in whatever directory the
+// process happens to be sitting in.
+func TestSplitProbeDirs(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"   ", nil},
+		{",,", nil},
+		{"a", []string{"a"}},
+		{" a , b ", []string{"a", "b"}},
+		{"a,,b,", []string{"a", "b"}},
+	} {
+		got := SplitProbeDirs(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("SplitProbeDirs(%q) = %v, want %v", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("SplitProbeDirs(%q) = %v, want %v", c.in, got, c.want)
+				break
+			}
+		}
 	}
 }

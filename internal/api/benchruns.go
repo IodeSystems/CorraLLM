@@ -323,7 +323,7 @@ func (h *Handlers) BenchProbeHistory(ctx context.Context, in *BenchProbeHistoryI
 // may predate the current library. A missing entry means the description is
 // unavailable, never that the results are invalid.
 func (h *Handlers) catalogEntry(probe string) (task.CatalogEntry, bool) {
-	entries, err := task.Catalog(h.BenchProbes, os.TempDir())
+	entries, err := task.Catalog(h.BenchProbeDirs, os.TempDir())
 	if err != nil {
 		return task.CatalogEntry{}, false
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/iodesystems/corrallm/internal/bench/task"
@@ -240,23 +239,23 @@ func (p probeSet) covers(capability string, modalities []string) bool {
 	return false
 }
 
-// probeCoverage scans the probe directory. A missing or unreadable directory
-// yields empty coverage, which suppresses the capability checkbox everywhere
-// rather than offering runs that cannot happen.
+// probeCoverage reports which capability probes exist. A missing or unreadable
+// directory yields empty coverage, which suppresses the capability checkbox
+// everywhere rather than offering runs that cannot happen.
+//
+// Through ResolveProbes, like the runner and the catalog: this used to ReadDir
+// the configured directory itself, so it saw nothing at all on a box using the
+// built-in library — the checkbox was suppressed for probes that would have run
+// perfectly well. Resolving differently from the runner is the one thing this
+// must not do.
 func (h *Handlers) probeCoverage() probeSet {
 	set := probeSet{byCapability: map[string]map[string]bool{}}
-	if h.BenchProbes == "" {
-		return set
-	}
-	ents, err := os.ReadDir(h.BenchProbes)
+	refs, err := task.ResolveProbes(h.BenchProbeDirs, os.TempDir())
 	if err != nil {
 		return set
 	}
-	for _, e := range ents {
-		if !e.IsDir() {
-			continue
-		}
-		t, err := task.LoadDir(filepath.Join(h.BenchProbes, e.Name()))
+	for _, ref := range refs {
+		t, err := task.LoadDir(ref.Path)
 		if err != nil || t.Class != "capability" {
 			continue
 		}

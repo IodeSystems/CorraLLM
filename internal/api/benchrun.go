@@ -120,7 +120,7 @@ func randomKey() (string, error) {
 type BenchStartOptions struct {
 	Bin        string
 	ConfigPath string
-	ProbesDir  string
+	ProbeDirs  []string
 	Models     []string
 	Classes    []string
 	TTLSeconds int
@@ -161,8 +161,8 @@ func (b *BenchRunner) Start(opts BenchStartOptions) (BenchRunStatus, error) {
 	if opts.ConfigPath != "" {
 		args = append(args, "--config", opts.ConfigPath)
 	}
-	if opts.ProbesDir != "" {
-		args = append(args, "--tasks-dir", opts.ProbesDir)
+	if len(opts.ProbeDirs) > 0 {
+		args = append(args, "--tasks-dir", strings.Join(opts.ProbeDirs, ","))
 	}
 	if len(opts.Models) > 0 {
 		args = append(args, "--models", strings.Join(opts.Models, ","))

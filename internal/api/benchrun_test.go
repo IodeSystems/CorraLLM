@@ -82,7 +82,7 @@ func TestBenchRunner_RecordsReproducibleInvocation(t *testing.T) {
 	b := NewBenchRunner()
 	_, err := b.Start(BenchStartOptions{
 		Bin: "true", Models: []string{"a", "b"}, Classes: []string{"capability"},
-		ProbesDir: "probes", ConfigPath: "llm-bench.yaml",
+		ProbeDirs: []string{"probes"}, ConfigPath: "llm-bench.yaml",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

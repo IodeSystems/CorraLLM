@@ -3,6 +3,8 @@ package run
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/iodesystems/agentkit/agent/toolfmt"
 	"gopkg.in/yaml.v3"
@@ -42,6 +44,23 @@ type Config struct {
 	Models   []string        `yaml:"models"`
 	Toolsets OrderedToolsets `yaml:"toolsets"`
 	Judge    JudgeConfig     `yaml:"judge"`
+
+	// ProbeDirs are directory REFERENCES to probe libraries this box should
+	// run. A probe belongs to whatever it measures, not to this repo: a tool
+	// keeps its probes in its own tree, names the directory here once, and
+	// editing them there changes what runs here — nothing to copy, nothing to
+	// keep in sync. Resolved fresh on every run and every catalog read, so a
+	// change is picked up without restarting corrallm.
+	//
+	// Relative entries resolve against THIS FILE's directory, not the process's
+	// working directory. The bench is spawned by a daemon whose cwd is its
+	// deployment directory, and a path that silently means something different
+	// depending on who started the run is the defect `probes` was embedded to
+	// end (see probes/probes.go).
+	//
+	// Empty = the built-in library. --tasks-dir overrides this entirely, so a
+	// one-off run can name its own set without editing the config.
+	ProbeDirs []string `yaml:"probeDirs"`
 
 	// ToolResultFormat re-encodes tool-call RESULTS before they enter the LLM's
 	// context, as a measured axis: json (baseline, no re-encoding) | toon | csv
@@ -165,7 +184,37 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return loadConfigBytes(b)
+	c, err := loadConfigBytes(b)
+	if err != nil {
+		return c, err
+	}
+	c.ProbeDirs = resolveProbeDirs(c.ProbeDirs, filepath.Dir(path))
+	return c, nil
+}
+
+// resolveProbeDirs anchors relative probeDirs to the config file's directory.
+// "~" is expanded first: a home-directory config is written by a person, and a
+// literal "~" directory is never what they meant.
+func resolveProbeDirs(dirs []string, base string) []string {
+	if len(dirs) == 0 {
+		return nil
+	}
+	home, _ := os.UserHomeDir()
+	out := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if home != "" {
+			if d == "~" {
+				d = home
+			} else if strings.HasPrefix(d, "~/") {
+				d = filepath.Join(home, d[2:])
+			}
+		}
+		if !filepath.IsAbs(d) {
+			d = filepath.Join(base, d)
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // loadConfigBytes parses + validates config YAML (the LoadConfig core, sans I/O).

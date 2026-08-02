@@ -67,11 +67,16 @@ type Handlers struct {
 	Proxy *proxy.Proxy
 	// Bench spawns llm-bench for UI-driven runs. Nil disables the endpoints.
 	Bench *BenchRunner
-	// BenchBin/BenchConfig/BenchProbes locate the llm-bench binary and its
+	// BenchBin/BenchConfig/BenchProbeDirs locate the llm-bench binary and its
 	// inputs. The binary is the same one a human runs from a shell.
-	BenchBin    string
-	BenchConfig string
-	BenchProbes string
+	//
+	// BenchProbeDirs is a LIST because a probe belongs to whatever it measures:
+	// a tool keeps its probes in its own tree and this references the directory,
+	// so editing them there changes what this box runs, with nothing to copy.
+	// Empty = llm-bench's built-in library.
+	BenchBin       string
+	BenchConfig    string
+	BenchProbeDirs []string
 }
 
 // --- health ---
