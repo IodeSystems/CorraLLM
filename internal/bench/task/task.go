@@ -310,6 +310,15 @@ func (c *Check) UnmarshalYAML(node *yaml.Node) error {
 		if err := val.Decode(&c.Text); err != nil {
 			return err
 		}
+	case "judge":
+		// A rubric sentence, graded by the P1 judge model rather than computed
+		// here. The only kind whose verdict is an OPINION, which is why it is
+		// author-declared per assertion instead of a blanket quality score: the
+		// probe says exactly what it wants judged, and the judge answers that
+		// question and no other.
+		if err := val.Decode(&c.Text); err != nil {
+			return err
+		}
 	case "response_contains", "response_not_contains":
 		// Scalar string: `response_contains: red`. Asserts on the model's
 		// VISIBLE reply text — the only check kind that does, which is what
@@ -548,6 +557,10 @@ func (c *Check) validate() error {
 	case "python":
 		if strings.TrimSpace(c.Text) == "" {
 			return fmt.Errorf("python: script is required")
+		}
+	case "judge":
+		if strings.TrimSpace(c.Text) == "" {
+			return fmt.Errorf("judge: an assertion to grade is required")
 		}
 	case "response_contains", "response_not_contains":
 		if c.Text == "" {

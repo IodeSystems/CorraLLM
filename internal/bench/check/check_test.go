@@ -193,3 +193,32 @@ func TestResponseContainsEmptyDetailNamesTheCause(t *testing.T) {
 		t.Errorf("detail should point at the reasoning/max_tokens cause, got %q", r.Detail)
 	}
 }
+
+// A deferred check has not failed — it has not been decided. Counting it
+// against the stage reported every probe with a judged assertion as a failure
+// the moment it ran, before the judge had seen anything.
+func TestDeferredCheckDoesNotFailTheStage(t *testing.T) {
+	checks := []task.Check{
+		{Kind: "judge", Text: "the plan names the tradeoff"},
+	}
+	results, all := EvaluateAll(context.Background(), checks, t.TempDir(), nil, Metrics{})
+	if len(results) != 1 || !results[0].Deferred {
+		t.Fatalf("results = %+v, want one deferred", results)
+	}
+	if results[0].Assertion != "the plan names the tradeoff" {
+		t.Errorf("assertion = %q, must be carried for the judge phase", results[0].Assertion)
+	}
+	if !all {
+		t.Error("an undecided check must not fail the stage")
+	}
+
+	// A real failure alongside it still fails.
+	mixed := []task.Check{
+		{Kind: "judge", Text: "x"},
+		{Kind: "file_absent", Path: "definitely-missing-nope"},
+		{Kind: "file_contains", Path: "nope.txt", Text: "x"},
+	}
+	if _, allMixed := EvaluateAll(context.Background(), mixed, t.TempDir(), nil, Metrics{}); allMixed {
+		t.Error("a genuine failure beside a deferred check must still fail the stage")
+	}
+}

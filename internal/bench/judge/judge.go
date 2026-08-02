@@ -51,6 +51,13 @@ type Result struct {
 	JudgedAt   string `json:"judged_at"`
 	JudgeModel string `json:"judge_model"`
 	Err        string `json:"error,omitempty"`
+
+	// Verdicts are the probe's own `judge:` assertions, graded on the signed
+	// scale. Unlike the rubric above, these DECIDE — the probe asked for them
+	// by name. Asserted counts how many were written back to the rows.
+	Verdicts  []verdict `json:"verdicts,omitempty"`
+	Asserted  int       `json:"asserted,omitempty"`
+	AssertErr string    `json:"assert_error,omitempty"`
 }
 
 // stageInfo is one stage's prompt + deterministic check outcomes.
@@ -88,6 +95,7 @@ func Judge(ctx context.Context, runDir string, cfg Config, newRunner func(model 
 
 	runner := newRunner(cfg.Model)
 	var results []Result
+	assertionsFilled := 0
 	for _, g := range groups {
 		body, source := loadContext(runDir, g, cfg.MaxTranscriptBytes)
 		prompt := buildPrompt(g, body, source)
@@ -105,7 +113,34 @@ func Judge(ctx context.Context, runDir string, cfg Config, newRunner func(model 
 			}
 			res.Score = sc
 		}
+
+		// Judged CHECKS, if this probe declared any. Separate call from the
+		// rubric on purpose: the rubric is an impression of the whole run and
+		// annotates, these are specific claims the probe asked about and they
+		// DECIDE. Mixing them into one schema would have the same model answer
+		// both in one breath, and the narrow question is the one that must not
+		// drift toward a general impression.
+		if as := collectAssertions(rows, g.model, g.toolset, g.task); len(as) > 0 {
+			vs, aerr := gradeAssertions(ctx, runner, buildAssertPrompt(g, body, source, as), len(as))
+			if aerr != nil {
+				res.AssertErr = aerr.Error()
+			} else {
+				res.Verdicts = vs
+				res.Asserted = applyVerdicts(rows, as, vs)
+				assertionsFilled += res.Asserted
+			}
+		}
 		results = append(results, res)
+	}
+
+	// Verdicts live on the rows, so runs.jsonl stays the ONE thing a score is
+	// computed from. Rewritten only when something was actually graded: a run
+	// with no judged checks must come out of the judge phase byte-identical, or
+	// re-judging would look like a data change every time.
+	if assertionsFilled > 0 {
+		if err := report.WriteRunsJSONL(filepath.Join(runDir, "runs.jsonl"), rows); err != nil {
+			return results, fmt.Errorf("rewrite runs.jsonl with judged verdicts: %w", err)
+		}
 	}
 
 	if err := writeJudgeJSONL(filepath.Join(runDir, "judge.jsonl"), results); err != nil {

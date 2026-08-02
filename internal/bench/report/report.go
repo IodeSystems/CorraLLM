@@ -49,7 +49,7 @@ type StageMetrics struct {
 	// validation (reverts breaks → 0) from plain editing (breaks land → >0) on
 	// tasks a capable model still ultimately passes.
 	BrokenIntermediates int `json:"brokenIntermediates"`
-	Retries429          int `json:"retries429"` // 429 backpressure retries this stage waited through
+	Retries429          int `json:"retries429"`  // 429 backpressure retries this stage waited through
 	Compactions         int `json:"compactions"` // agentkit Shaper full-history compactions this stage (LOD truncations are render-time and not reported)
 
 	// CompactionTokensBefore/After are the agentkit CompactionInfo active-window
@@ -154,7 +154,7 @@ func SummaryKey(model, toolset, task string) string {
 // WriteAll writes runs.jsonl, summary.csv, and report.md into outDir. The judge
 // columns in summary.csv are left empty (P1 fills them via WriteSummaryCSV).
 func WriteAll(outDir, ts string, rows []Row) error {
-	if err := writeRunsJSONL(filepath.Join(outDir, "runs.jsonl"), rows); err != nil {
+	if err := WriteRunsJSONL(filepath.Join(outDir, "runs.jsonl"), rows); err != nil {
 		return err
 	}
 	if err := WriteSummaryCSV(filepath.Join(outDir, "summary.csv"), rows, nil); err != nil {
@@ -163,7 +163,10 @@ func WriteAll(outDir, ts string, rows []Row) error {
 	return writeReportMD(filepath.Join(outDir, "report.md"), ts, rows)
 }
 
-func writeRunsJSONL(path string, rows []Row) error {
+// WriteRunsJSONL rewrites the run's rows. Exported for the judge phase, which
+// fills graded assertions back onto them so runs.jsonl remains the single
+// source a score is computed from.
+func WriteRunsJSONL(path string, rows []Row) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
