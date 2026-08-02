@@ -16,7 +16,6 @@ type CorrallmMutationNamespace {
     Authorization: String
     body: corrallm_HeartbeatInput!
   ): corrallm_HeartbeatAck @derived(operationId: "agentHeartbeat")
-  beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
   deleteEntry(
@@ -24,7 +23,6 @@ type CorrallmMutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteEntry")
-  endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
@@ -123,7 +121,6 @@ type CorrallmQueryNamespace {
     """Arm's toolset; defaults to "baseline"."""
     toolset: String
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
-  calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   entryYaml(
     """model | server | lane"""
@@ -200,7 +197,6 @@ type CorrallmV1MutationNamespace {
     Authorization: String
     body: corrallm_HeartbeatInput!
   ): corrallm_HeartbeatAck @derived(operationId: "agentHeartbeat")
-  beginCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "beginCalibration")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
   deleteEntry(
@@ -208,7 +204,6 @@ type CorrallmV1MutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteEntry")
-  endCalibration(body: corrallm_CalibrateInputBodyInput!): corrallm_CalibrateOutputBody @derived(operationId: "endCalibration")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
@@ -306,7 +301,6 @@ type CorrallmV1QueryNamespace {
     """Arm's toolset; defaults to "baseline"."""
     toolset: String
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
-  calibrationStatus: corrallm_CalibrationStatusOutputBody @derived(operationId: "calibrationStatus")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   entryYaml(
     """model | server | lane"""
@@ -880,13 +874,11 @@ type corrallm_BenchRunDetailOutputBody {
 input corrallm_BenchRunInputBodyInput {
   """Probe classes: capability | coding | tooluse | adversarial. Empty = all."""
   classes: [String!]
-  """Hold the calibration lease: evicts models for cold passes and answers every other caller with 429 until the run finishes. Required for cold-mode probes."""
-  exclusive: Boolean
   """Models to bench; empty = every model in the bench config."""
   models: [String!]
-  """Shown to turned-away callers."""
+  """Shown in the dashboard alongside the run."""
   reason: String
-  """Lease duration; the run is killed and the lease released when it expires."""
+  """Run duration cap; the run is killed when it expires."""
   ttlSeconds: Long
 }
 
@@ -1013,29 +1005,6 @@ type corrallm_BenchTranscriptOutputBody {
   reason: String
   runId: String!
   truncated: Boolean
-}
-
-input corrallm_CalibrateInputBodyInput {
-  """The caller key llm-bench will present; only this key is served while the lease holds."""
-  key: String!
-  """Shown to turned-away callers and in the dashboard."""
-  reason: String
-  """Lease duration in seconds (default 900, max 7200). The lease self-expires: a crashed bench cannot lock the box."""
-  ttlSeconds: Long
-}
-
-type corrallm_CalibrateOutputBody {
-  """Unix seconds the lease self-expires."""
-  expiresAt: Long
-  message: String!
-  ok: Boolean!
-  warning: String
-}
-
-type corrallm_CalibrationStatusOutputBody {
-  active: Boolean!
-  reason: String
-  remainingSeconds: Long
 }
 
 input corrallm_CancelRequestInputBodyInput {

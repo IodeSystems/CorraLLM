@@ -183,35 +183,46 @@ it to decide who to skip is sound; using it to decide who passes would be
 circular. If the catalog is unreachable nothing is skipped, so an outage yields
 real runs rather than an empty matrix that reads as a clean sweep.
 
-### `run:` — cold / warm / both
+### `run:` — warm
 
 | value | behavior |
 |---|---|
 | omitted (default) | residency untouched: the model may be warm, cold, or mid-swap depending on what ran before |
-| `cold` | evict the model first, so the probe's first request pays the cold load |
 | `warm` | ensure the model is resident first, so no load latency lands in the numbers |
-| `both` | run the probe twice, **cold then warm** — a disagreement between the passes is the finding |
-
-`both` expands cold-first deliberately: running warm first would leave the model
-resident and make the "cold" pass a lie.
 
 Each row records `runMode` and a `residencyNote` describing what residency
-control *actually did*. That note is not cosmetic. corrallm refuses to evict
-pinned, persistent, or in-flight models, so `cold` is a **request, not a
-guarantee** — a persistent model can never go cold. When eviction is refused, or
-no admin token is configured, the note carries a loud `WARNING` and the pass is
-still recorded. A cold pass that silently ran warm would otherwise stand as
-evidence for a path it never tested, which is precisely how the bug below stayed
-hidden.
+control *actually did*. When no admin token is configured the note carries a
+loud `WARNING` and the pass is still recorded, so a first request that quietly
+paid a cold load is not silently attributed to the model.
 
-Cold/warm needs corrallm's admin token (`llm.adminTokenFile` or
+`warm` needs corrallm's admin token (`llm.adminTokenFile` or
 `llm.adminTokenEnv`). Probes that do not declare `run:` never need one.
 
-### Probes must run COLD to be meaningful
+**`cold` and `both` were removed.** Arranging a cold model means EVICTING one,
+and eviction is a cost every other caller on the box pays. The bench is an
+ordinary caller now: it holds no lease, evicts nothing, and turns nobody away.
+A probe still declaring `run: cold` or `run: both` fails validation with an
+explanation rather than a bare "invalid".
 
-A capability probe against a warm model proves much less than it appears to. The
-bug that motivated this whole tier — `ternary-bonsai-27b` silently dropping an
+Warming survives because a `Load` takes nothing from anyone. corrallm still
+exposes `/api/v1/models/{load,unload,unload-all}` for operators — the bench
+just does not call the evicting ones.
+
+### What losing cold mode costs
+
+A capability probe against a warm model proves less than it appears to. The bug
+that motivated this whole tier — `ternary-bonsai-27b` silently dropping an
 attached image on the first request after a cold load, while `/props` still
 reported `vision: true` — is invisible to a warm probe, and the config claimed
 the modality was "verified end-to-end" precisely because the one manual check
 anyone ran happened to hit a warm model.
+
+That class of bug is now **undetectable by the bench**, and this section stays
+so nobody re-derives the gap and assumes it was never considered. Cold coverage
+was traded for not taking the box down: the lease that made a cold pass
+meaningful answered every other caller with 429 for the duration of a run, which
+is too much to charge for a benchmark on a machine that is also serving.
+
+If the cold path needs testing again, it needs a mechanism that does not evict
+on a shared box — measuring the first request after a load that happened for
+some other reason, rather than arranging one.

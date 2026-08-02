@@ -15,11 +15,7 @@ func TestRunModeModes(t *testing.T) {
 		want []RunMode
 	}{
 		{ModeAny, []RunMode{ModeAny}},
-		{ModeCold, []RunMode{ModeCold}},
 		{ModeWarm, []RunMode{ModeWarm}},
-		// `both` must expand COLD FIRST: running warm first would leave the
-		// model resident and make the "cold" pass a lie.
-		{ModeBoth, []RunMode{ModeCold, ModeWarm}},
 	}
 	for _, tc := range cases {
 		got := tc.in.Modes()
@@ -57,61 +53,46 @@ func cfgFor(base string) Config {
 	return c
 }
 
-func TestPrepareResidency_ColdEvicts(t *testing.T) {
-	var calls []string
-	srv := stubCorrallm(t, true, "evicted 1 backend(s)", &calls)
-	t.Setenv("TEST_ADMIN_TOKEN", "tok")
-	c := newResidencyClient(cfgFor(srv.URL))
-	if c == nil {
-		t.Fatal("client should exist when a token is configured")
-	}
-	note := prepareResidency(context.Background(), c, ModeCold, "m", false)
-	if len(calls) != 1 || calls[0] != "/api/v1/models/unload" {
-		t.Errorf("cold should call unload, got %v", calls)
-	}
-	if strings.Contains(note, "WARNING") {
-		t.Errorf("successful eviction should not warn: %q", note)
-	}
-}
-
 func TestPrepareResidency_WarmLoads(t *testing.T) {
 	var calls []string
 	srv := stubCorrallm(t, true, "loaded", &calls)
 	t.Setenv("TEST_ADMIN_TOKEN", "tok")
 	c := newResidencyClient(cfgFor(srv.URL))
-	prepareResidency(context.Background(), c, ModeWarm, "m", false)
+	prepareResidency(context.Background(), c, ModeWarm, "m")
 	if len(calls) != 1 || calls[0] != "/api/v1/models/load" {
 		t.Errorf("warm should call load, got %v", calls)
 	}
 }
 
-// corrallm refuses to evict pinned / in-flight models, so "cold" is a REQUEST,
-// not a guarantee. A pass that silently ran warm while claiming cold would be
-// evidence for a path it never tested — the exact failure that let the bonsai
-// vision bug hide behind a "verified end-to-end" comment.
-func TestPrepareResidency_RefusedEvictionWarnsLoudly(t *testing.T) {
+// The bench must never EVICT. Eviction is a cost other callers pay, and it was
+// removed along with the exclusive lease; corrallm still exposes the endpoints
+// for operators. This is a guard, not a behavior test: the only way it fails is
+// if someone reintroduces an unload call inside prepareResidency.
+func TestPrepareResidency_NeverEvicts(t *testing.T) {
 	var calls []string
-	srv := stubCorrallm(t, false, "model is persistent", &calls)
+	srv := stubCorrallm(t, true, "", &calls)
 	t.Setenv("TEST_ADMIN_TOKEN", "tok")
 	c := newResidencyClient(cfgFor(srv.URL))
-	note := prepareResidency(context.Background(), c, ModeCold, "m", false)
-	if !strings.Contains(note, "WARNING") || !strings.Contains(note, "NOT evicted") {
-		t.Errorf("a refused eviction must warn loudly, got %q", note)
+	for _, m := range ValidRunModes {
+		prepareResidency(context.Background(), c, m, "m")
 	}
-	if !strings.Contains(note, "persistent") {
-		t.Errorf("note should carry corrallm's reason, got %q", note)
+	for _, path := range calls {
+		if strings.Contains(path, "unload") {
+			t.Errorf("the bench called %s — eviction was removed with the exclusive lease", path)
+		}
 	}
 }
 
-// No admin token: cold/warm cannot be honored. Warn rather than pretend.
+// No admin token: warm cannot be honored. Warn rather than pretend, so a load
+// latency nobody arranged is not silently attributed to the model.
 func TestPrepareResidency_NoTokenWarns(t *testing.T) {
 	t.Setenv("TEST_ADMIN_TOKEN", "")
 	if c := newResidencyClient(cfgFor("http://x")); c != nil {
 		t.Fatal("no token should yield a nil client")
 	}
-	note := prepareResidency(context.Background(), nil, ModeCold, "m", false)
-	if !strings.Contains(note, "WARNING") || !strings.Contains(note, "does not prove") {
-		t.Errorf("missing token must warn that the result proves nothing: %q", note)
+	note := prepareResidency(context.Background(), nil, ModeWarm, "m")
+	if !strings.Contains(note, "WARNING") || !strings.Contains(note, "cold load") {
+		t.Errorf("missing token must warn the first request may pay a load: %q", note)
 	}
 }
 
@@ -122,39 +103,10 @@ func TestPrepareResidency_AnyIsNoOp(t *testing.T) {
 	srv := stubCorrallm(t, true, "", &calls)
 	t.Setenv("TEST_ADMIN_TOKEN", "tok")
 	c := newResidencyClient(cfgFor(srv.URL))
-	if note := prepareResidency(context.Background(), c, ModeAny, "m", false); note != "" {
+	if note := prepareResidency(context.Background(), c, ModeAny, "m"); note != "" {
 		t.Errorf("ModeAny should produce no note, got %q", note)
 	}
 	if len(calls) != 0 {
 		t.Errorf("ModeAny must not call the admin API, got %v", calls)
-	}
-}
-
-// Under an exclusive lease a cold pass clears the WHOLE GPU: a footprint read
-// with a neighbour still resident measures the neighbour too.
-func TestPrepareResidency_ExclusiveColdEvictsEverything(t *testing.T) {
-	var calls []string
-	srv := stubCorrallm(t, true, "evicted 3 backend(s)", &calls)
-	t.Setenv("TEST_ADMIN_TOKEN", "tok")
-	c := newResidencyClient(cfgFor(srv.URL))
-	note := prepareResidency(context.Background(), c, ModeCold, "m", true)
-	if len(calls) != 1 || calls[0] != "/api/v1/models/unload-all" {
-		t.Errorf("exclusive cold should call unload-all, got %v", calls)
-	}
-	if !strings.Contains(note, "exclusive") {
-		t.Errorf("note should record that the whole GPU was cleared: %q", note)
-	}
-}
-
-// A hand-run CLI must NOT evict a colleague's model as a side effect of
-// measuring one of its own — exclusive is opt-in.
-func TestPrepareResidency_NonExclusiveColdEvictsOnlyTarget(t *testing.T) {
-	var calls []string
-	srv := stubCorrallm(t, true, "evicted 1", &calls)
-	t.Setenv("TEST_ADMIN_TOKEN", "tok")
-	c := newResidencyClient(cfgFor(srv.URL))
-	prepareResidency(context.Background(), c, ModeCold, "m", false)
-	if len(calls) != 1 || calls[0] != "/api/v1/models/unload" {
-		t.Errorf("non-exclusive cold must evict only its own model, got %v", calls)
 	}
 }

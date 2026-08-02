@@ -82,14 +82,9 @@ type Options struct {
 	// checkboxes: "measure + capability" is a fast new-model pass, while the
 	// quality classes are the slow opt-in.
 	Classes []string
-	// Exclusive says this run holds corrallm's calibration lease, so a cold
-	// pass may clear the ENTIRE GPU rather than just its own model. Off by
-	// default: a hand-run CLI must not evict a colleague's model as a side
-	// effect of measuring one of its own.
-	Exclusive bool
-	McpBin    string // path to the llm-bench-mcp binary
-	BinDir    string // dir searched for toolset server binaries (e.g. local/bin); "" = $PATH only
-	Judge     bool   // run the P1 judge phase after candidates finish
+	McpBin  string // path to the llm-bench-mcp binary
+	BinDir  string // dir searched for toolset server binaries (e.g. local/bin); "" = $PATH only
+	Judge   bool   // run the P1 judge phase after candidates finish
 
 	// NewRunner builds the LLM runner for a model. Injectable for tests; nil
 	// uses a corrallm llm.Client from Config. Also used for the judge model.
@@ -333,27 +328,6 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 						defer wg.Done()
 						defer func() { <-sem }()
 						for _, mode := range RunMode(tsk.Run).Modes() {
-							// A cold pass needs the exclusive lease to mean
-							// anything: without eviction rights the model may
-							// already be resident, and the pass then stands as
-							// evidence for a cold path it never touched. That
-							// is the bonsai failure exactly — every warm probe
-							// passed while the cold path was broken.
-							//
-							// A shared run therefore SKIPS cold rather than
-							// running it degraded. Skipping is recorded, so the
-							// gap is visible; a quietly-warm "cold" result is
-							// not, and is worse than no result.
-							if mode == ModeCold && !opts.Exclusive {
-								mu.Lock()
-								skips = append(skips, Skip{
-									Model: model, Task: tsk.Name, Class: tsk.Class,
-									Capability: tsk.Requires.EffectiveCapability(),
-									Reason:     "cold pass needs --exclusive; skipped on a shared box rather than run possibly-warm",
-								})
-								mu.Unlock()
-								continue
-							}
 							// Capability observations across every repeat of this
 							// probe. Published once after the loop: a single pass is
 							// one sample, and the runner sends no temperature or
@@ -377,7 +351,7 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 								// what actually happened, including failure — a cold
 								// pass that silently ran warm must not stand as
 								// evidence for a path it never tested.
-								residNote := prepareResidency(comboCtx, resid, mode, model, opts.Exclusive)
+								residNote := prepareResidency(comboCtx, resid, mode, model)
 								r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir, string(mode), runIdx)
 								comboCancel()
 								if err != nil {

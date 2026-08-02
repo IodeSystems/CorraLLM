@@ -18,19 +18,14 @@ import { Login } from '@/Login'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 
-// Polled globally, not per-page. A held lease turns EVERY request into a 429,
-// so someone staring at Activity or Usage during a throughput collapse needs to
-// see the cause without first knowing that a Bench page exists. Surfacing it
-// only where it is started would explain the outage exclusively to the person
-// who already knew.
+// Polled globally, not per-page. A bench run consumes GPU time everyone else is
+// also queueing for, so someone watching Activity or Usage slow down needs to
+// see the cause without first knowing that a Bench page exists. (It no longer
+// LOCKS anyone out — the exclusive lease was removed — but contention still
+// shows up as latency, and an unexplained slowdown sends people hunting.)
 const CalibrationBannerDoc = graphql(/* GraphQL */ `
   query CalibrationBanner {
     corrallm {
-      calibrationStatus {
-        active
-        reason
-        remainingSeconds
-      }
       benchStatus {
         running
         startedAt
@@ -45,29 +40,23 @@ function useRunState() {
     queryKey: ['calibrationBanner'],
     queryFn: () => gqlClient.request(CalibrationBannerDoc),
     // Cheap poll: this must appear promptly when a run starts, and disappear
-    // promptly when it ends — a stale "locked" banner would send someone
-    // hunting a lockout that already ended.
+    // promptly when it ends — a stale banner would send someone hunting
+    // contention that already cleared.
     refetchInterval: 5000,
   })
-  return {
-    lease: data?.corrallm?.calibrationStatus,
-    bench: data?.corrallm?.benchStatus,
-  }
+  return { bench: data?.corrallm?.benchStatus }
 }
 
 /**
  * A persistent indicator in the app bar, visible from EVERY page.
  *
- * The banner below explains the situation, but a banner is easy to scroll past
- * and its wording leads with "calibration lease", which does not read as "a
- * benchmark is running" to someone who did not start it. A spinner in the
- * chrome answers "is something running right now?" at a glance, and clicking it
- * goes to where the live output is.
+ * The banner below explains the situation, but a banner is easy to scroll past.
+ * A spinner in the chrome answers "is something running right now?" at a
+ * glance, and clicking it goes to where the live output is.
  */
 function RunIndicator() {
-  const { lease, bench } = useRunState()
-  const running = !!bench?.running || !!lease?.active
-  if (!running) return null
+  const { bench } = useRunState()
+  if (!bench?.running) return null
   const started = Number(bench?.startedAt ?? 0)
   const secs = started > 0 ? Math.max(0, Math.floor(Date.now() / 1000 - started)) : 0
   const mins = Math.floor(secs / 60)
@@ -89,21 +78,15 @@ function RunIndicator() {
 }
 
 function CalibrationBanner() {
-  const { lease: st, bench } = useRunState()
-  if (!st?.active && !bench?.running) return null
-  // remainingSeconds arrives as a string (codegen maps int64 -> string for a
-  // uniform id contract), so coerce before arithmetic.
-  const mins = Math.max(1, Math.ceil(Number(st?.remainingSeconds ?? 0) / 60))
+  const { bench } = useRunState()
+  if (!bench?.running) return null
   return (
-    <Alert severity="warning" square sx={{ borderRadius: 0 }}>
-      <AlertTitle>
-        Benchmark running — all other traffic is being turned away
-      </AlertTitle>
-      Every caller except the bench run is receiving <b>429 + Retry-After</b>, and models
-      are being evicted for cold measurements. Expect zero throughput and a wall of 429s
-      in Activity until this clears.{' '}
-      {st?.reason ? <>Reason: <b>{st.reason}</b>. </> : null}
-      Self-expires in ~{mins} min. <Link to="/bench">Watch it →</Link>
+    <Alert severity="info" square sx={{ borderRadius: 0 }}>
+      <AlertTitle>Benchmark running</AlertTitle>
+      A bench run is competing for slots like any other caller — nothing is being
+      evicted and no one is being turned away, but expect added latency and some{' '}
+      <b>429 + Retry-After</b> backpressure in Activity until it finishes.{' '}
+      <Link to="/bench">Watch it →</Link>
     </Alert>
   )
 }

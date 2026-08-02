@@ -38,19 +38,19 @@ const (
 	// the pre-existing behavior, but note that it makes a probe's result depend
 	// on execution order, which is how the bonsai bug hid for so long.
 	ModeAny RunMode = ""
-	// ModeCold evicts the model first, so the probe's first request pays the
-	// cold load. The only mode that can catch a cold-path bug.
-	ModeCold RunMode = "cold"
 	// ModeWarm ensures the model is resident first, so the probe measures
 	// steady-state behavior with no load latency in the numbers.
+	//
+	// Warming is a Load, never an evict: it takes nothing away from another
+	// caller. Cold mode used to sit alongside this and was removed with the
+	// exclusive lease — arranging a cold model means evicting one, and the
+	// bench is not privileged enough to do that to a shared box. The cost is
+	// recorded honestly: no probe can catch a cold-path bug any more.
 	ModeWarm RunMode = "warm"
-	// ModeBoth runs the probe twice, cold then warm. A DISAGREEMENT between the
-	// two is the finding — it is exactly the bonsai signature.
-	ModeBoth RunMode = "both"
 )
 
 // ValidRunModes lists the accepted values for error messages and validation.
-var ValidRunModes = []RunMode{ModeAny, ModeCold, ModeWarm, ModeBoth}
+var ValidRunModes = []RunMode{ModeAny, ModeWarm}
 
 // Valid reports whether m is a known mode.
 func (m RunMode) Valid() bool {
@@ -62,13 +62,10 @@ func (m RunMode) Valid() bool {
 	return false
 }
 
-// Modes expands a mode into the concrete passes to run. ModeBoth becomes two.
-func (m RunMode) Modes() []RunMode {
-	if m == ModeBoth {
-		return []RunMode{ModeCold, ModeWarm}
-	}
-	return []RunMode{m}
-}
+// Modes expands a mode into the concrete passes to run. One mode, one pass
+// since cold was removed; kept as a seam so a future multi-pass mode does not
+// have to reshape the caller.
+func (m RunMode) Modes() []RunMode { return []RunMode{m} }
 
 // residencyClient drives corrallm's admin control surface
 // (POST /api/v1/models/{load,unload}), which is gated by the admin token.
@@ -135,17 +132,11 @@ func (c *residencyClient) post(ctx context.Context, path, model string) (residen
 	return out, nil
 }
 
-// UnloadAll evicts every evictable resident, freeing the GPU entirely.
-func (c *residencyClient) UnloadAll(ctx context.Context) (residencyResult, error) {
-	return c.post(ctx, "/api/v1/models/unload-all", "")
-}
-
-// Unload evicts a model's resident backends.
-func (c *residencyClient) Unload(ctx context.Context, model string) (residencyResult, error) {
-	return c.post(ctx, "/api/v1/models/unload", model)
-}
-
 // Load spawns/warms a model.
+//
+// The only residency op the bench drives. corrallm still exposes
+// /api/v1/models/{unload,unload-all} for operators; the bench no longer calls
+// them, because evicting on a shared box is a cost other callers pay.
 func (c *residencyClient) Load(ctx context.Context, model string) (residencyResult, error) {
 	return c.post(ctx, "/api/v1/models/load", model)
 }
@@ -154,54 +145,24 @@ func (c *residencyClient) Load(ctx context.Context, model string) (residencyResu
 // what actually happened.
 //
 // The returned note is recorded on every row of the pass. It is NOT cosmetic: a
-// cold probe that silently ran warm is worse than one that failed, because its
-// pass is then evidence for a claim it never tested. corrallm refuses to evict
-// pinned or in-flight models, so "cold" is a request, not a guarantee — persistent
-// models can never go cold and this is where that surfaces.
-func prepareResidency(ctx context.Context, c *residencyClient, mode RunMode, model string, exclusive bool) string {
-	if mode == ModeAny {
+// warm probe that silently ran cold pays a load latency the numbers then
+// attribute to the model.
+func prepareResidency(ctx context.Context, c *residencyClient, mode RunMode, model string) string {
+	if mode != ModeWarm {
 		return ""
 	}
 	if c == nil {
-		return fmt.Sprintf("WARNING: %s requested but no admin token configured — residency NOT controlled, result does not prove the %s path", mode, mode)
+		return "WARNING: warm requested but no admin token configured — residency NOT controlled, the first request may pay a cold load"
 	}
-	switch mode {
-	case ModeCold:
-		if exclusive {
-			// Under an exclusive lease, clear the whole GPU. A footprint read
-			// with a neighbour still resident measures the neighbour too, and
-			// a "cold" load that had to evict someone mid-request is not the
-			// clean cold path we meant to test.
-			res, err := c.UnloadAll(ctx)
-			if err != nil {
-				return fmt.Sprintf("WARNING: exclusive cold requested but unload-all failed (%v) — other models may still be resident", err)
-			}
-			log.Printf("llm-bench: exclusive cold pass — evicted %d backend(s)", res.Evicted)
-			return fmt.Sprintf("cold (exclusive): evicted %d backend(s)", res.Evicted)
-		}
-		res, err := c.Unload(ctx, model)
-		if err != nil {
-			return fmt.Sprintf("WARNING: cold requested but unload failed (%v) — model may still be resident", err)
-		}
-		if !res.OK {
-			// Pinned/persistent/in-flight. Say so plainly rather than letting a
-			// warm run masquerade as a cold one.
-			return fmt.Sprintf("WARNING: cold requested but NOT evicted (%s) — this pass ran against a possibly-warm model", res.Message)
-		}
-		log.Printf("llm-bench: cold pass — evicted %d backend(s) of %s", res.Evicted, model)
-		return fmt.Sprintf("cold: evicted %d backend(s)", res.Evicted)
-	case ModeWarm:
-		res, err := c.Load(ctx, model)
-		if err != nil {
-			return fmt.Sprintf("WARNING: warm requested but load failed (%v) — first request will pay the cold load", err)
-		}
-		if !res.OK {
-			return fmt.Sprintf("WARNING: warm requested but load reported: %s", res.Message)
-		}
-		log.Printf("llm-bench: warm pass — %s resident", model)
-		return "warm: model resident before the probe"
+	res, err := c.Load(ctx, model)
+	if err != nil {
+		return fmt.Sprintf("WARNING: warm requested but load failed (%v) — first request will pay the cold load", err)
 	}
-	return ""
+	if !res.OK {
+		return fmt.Sprintf("WARNING: warm requested but load reported: %s", res.Message)
+	}
+	log.Printf("llm-bench: warm pass — %s resident", model)
+	return "warm: model resident before the probe"
 }
 
 // --- measurement publishing -------------------------------------------------
