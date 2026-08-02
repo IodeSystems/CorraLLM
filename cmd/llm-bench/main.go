@@ -1,7 +1,7 @@
 // Command llm-bench is the benchmark runner CLI.
 //
 //	llm-bench run [--models a,b] [--toolsets baseline,..] [--tasks glob] [--out dir] [--config f] [--mcp-bin p] [--judge]
-//	llm-bench validate [--tasks-dir dir1,dir2]   — load + validate every task, nonzero exit if any is invalid
+//	llm-bench validate [--config llm-bench.yaml] [--tasks-dir dir1,dir2]   — load + validate every task, nonzero exit if any is invalid
 //	llm-bench judge -run out/<ts> [--config f] [--model override]   — P1 judge phase over a completed run
 package main
 
@@ -43,14 +43,14 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: llm-bench <run|validate|judge> [flags]")
 	fmt.Fprintln(os.Stderr, "  llm-bench run      [--config llm-bench.yaml] [--tasks-dir dir1,dir2] [--models a,b] [--toolsets baseline,..] [--tasks glob] [--out out] [--mcp-bin path] [--tool-format json|tightc] [--judge]")
-	fmt.Fprintln(os.Stderr, "  llm-bench validate [--tasks-dir dir1,dir2]")
+	fmt.Fprintln(os.Stderr, "  llm-bench validate [--config llm-bench.yaml] [--tasks-dir dir1,dir2]")
 	fmt.Fprintln(os.Stderr, "  llm-bench judge    -run out/<ts> [--config llm-bench.yaml] [--model override]")
 }
 
 func cmdRun(argv []string) int {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	config := fs.String("config", "llm-bench.yaml", "path to llm-bench.yaml")
-	tasksDir := fs.String("tasks-dir", "", "comma-separated probe directories; REPLACES the built-in library (later dirs win a name collision)")
+	tasksDir := fs.String("tasks-dir", "", "comma-separated probe directories, overlaid on the always-present built-in library (later dirs win a name collision); overrides the config's probeDirs")
 	models := fs.String("models", "", "comma-separated model filter (default: all in config)")
 	toolsets := fs.String("toolsets", "", "comma-separated toolset filter (default: all in config)")
 	tasksGlob := fs.String("tasks", "", "glob on task dir names (default: all)")
@@ -114,10 +114,24 @@ func cmdRun(argv []string) int {
 
 func cmdValidate(argv []string) int {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
-	tasksDir := fs.String("tasks-dir", "", "comma-separated probe directories; REPLACES the built-in library (later dirs win a name collision)")
+	// --config, because "is my setup sound" is the question this command is
+	// actually asked, and after probeDirs the answer lives in a config file.
+	// Without it, validate could only check directories named on the command
+	// line — never the set a box would really resolve.
+	config := fs.String("config", "", "read probeDirs from this llm-bench.yaml (default: none)")
+	tasksDir := fs.String("tasks-dir", "", "comma-separated probe directories, overlaid on the always-present built-in library (later dirs win a name collision); overrides the config's probeDirs")
 	_ = fs.Parse(argv)
 
-	refs, err := task.ResolveProbes(task.SplitProbeDirs(*tasksDir), os.TempDir())
+	dirs := task.SplitProbeDirs(*tasksDir)
+	if len(dirs) == 0 && *config != "" {
+		cfg, err := run.LoadConfig(*config)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "validate:", err)
+			return 1
+		}
+		dirs = cfg.ProbeDirs
+	}
+	refs, err := task.ResolveProbes(dirs, os.TempDir())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "validate:", err)
 		return 1
