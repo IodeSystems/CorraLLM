@@ -129,6 +129,49 @@ type (
 // runner update for the current stage. Token counters (prompt/completion) come
 // from the metered runner observing StreamChunk.Usage each round; the rest come
 // from the dispatcher.
+// heartbeat is the model's proof of life for ONE combo.
+//
+// Scoped to the combo, not the stage, because that is what the watchdog bounds
+// — and a stall between stages is as real as one inside a stage.
+//
+// It records the last moment the model produced ANYTHING: a stream chunk, a
+// token, a tool call. That is the only signal separating a request still
+// working from one that has wedged, since turns and tokens move only when a
+// turn COMPLETES — so a combo hung inside its first request is otherwise
+// indistinguishable from one that has barely started.
+type heartbeat struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+// mark records that the model just produced something.
+//
+// Nil-safe: a runner built without a heartbeat loses stall detection, which is
+// a degraded measurement. Panicking mid-bench instead would lose the run.
+func (h *heartbeat) mark() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.last = time.Now()
+	h.mu.Unlock()
+}
+
+// idleFor reports how long the model has been silent. A zero `last` means no
+// request has opened yet — setup, not silence — so it reports zero rather than
+// "forever", which would cancel every combo before it began.
+func (h *heartbeat) idleFor(now time.Time) time.Duration {
+	if h == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.last.IsZero() {
+		return 0
+	}
+	return now.Sub(h.last)
+}
+
 type stageCounters struct {
 	mu           sync.Mutex
 	toolCalls    int
@@ -316,6 +359,18 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 					if tsk.Adversarial() != adv {
 						continue
 					}
+					// A MODEL-axis probe runs on the baseline arm only: no
+					// toolset can change its answer, so the extra arms cost
+					// time and emit identical rows into a table meant to show
+					// differences. Logged, not silent — a probe that quietly
+					// did not run on an arm is indistinguishable from one that
+					// ran and agreed, which is the confusion this exists to
+					// remove.
+					if !tsk.RunsOnToolset(tset.Name) {
+						log.Printf("llm-bench: %s/%s/%s — model-axis probe, baseline arm only",
+							model, tset.Name, tsk.Name)
+						continue
+					}
 					// A probe the model cannot satisfy is SKIPPED, not failed —
 					// and skipping is LOGGED, because a probe that quietly never
 					// ran looks identical to one that passed when you read the
@@ -362,14 +417,15 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 								// spends the budget on that waiting — a measured run queued
 								// for 73% of its wall time, leaving under three minutes of a
 								// ten-minute budget for actual work.
-								comboCtx, comboCancel := execBudgetContext(ctx, opts.comboTimeout(), opts.overhead, model)
+								hb := &heartbeat{}
+								comboCtx, comboCancel := execBudgetContext(ctx, opts.comboTimeout(), opts.overhead, model, hb.idleFor)
 								// Put the model into the residency state this pass
 								// asks for BEFORE the clock starts. residNote records
 								// what actually happened, including failure — a cold
 								// pass that silently ran warm must not stand as
 								// evidence for a path it never tested.
 								residNote := prepareResidency(comboCtx, resid, mode, model)
-								r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir, string(mode), runIdx)
+								r, err := runOne(comboCtx, opts, model, tset, tsk, ts, outDir, string(mode), runIdx, hb)
 								comboCancel()
 								if err != nil {
 									// A combo failure is DATA, not fatal: log it, synthesize
@@ -731,7 +787,7 @@ func buildSystemPrompt(tsk *task.Task) string {
 }
 
 // runOne runs every stage of one task under one model + toolset.
-func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *task.Task, ts, outDir, runMode string, runIdx int) ([]Row, error) {
+func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *task.Task, ts, outDir, runMode string, runIdx int, hb *heartbeat) ([]Row, error) {
 	// The probe author states what it is worth; this box may disagree, and the
 	// box wins. What a score should REFLECT is the reader's opinion — same rule
 	// probeDirs and toolsets follow.
@@ -847,7 +903,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 	var clock int64
 	now := func() int64 { clock++; return clock }
 
-	runner := &meteredRunner{inner: opts.NewRunner(model), sc: sc}
+	runner := &meteredRunner{inner: opts.NewRunner(model), sc: sc, hb: hb}
 	// Pin sampling for capability probes. A capability check asks a yes/no
 	// question about the backend — did the pixels arrive, did the audio decode —
 	// and its answer must not depend on a sampler. corrallm.yaml launches
@@ -1207,6 +1263,13 @@ func classifyErr(err error, stageCtx context.Context, loopNote, budgetNote strin
 		// It is budgeted on EXECUTION now, so saying "wall clock" here would send
 		// a reader after the wrong number — a stage can burn the budget having
 		// spent far longer than it on the wall, queued.
+		// Silence is a DIFFERENT failure from spending the budget, and the fix
+		// differs too: a stalled combo never produced a byte, which points at
+		// the prompt or the backend, not at a model that worked slowly and ran
+		// out of time.
+		case errors.Is(context.Cause(stageCtx), errStalled):
+			reason = fmt.Sprintf("model produced NOTHING for %s — the request never streamed a "+
+				"token or tool call, so this is a hang, not a slow answer", stallTimeout)
 		case errors.Is(context.Cause(stageCtx), errExecBudget):
 			reason = "combo exceeded its EXECUTION budget (queue time already excluded), not a model limit"
 		case func() bool { dl, ok := stageCtx.Deadline(); return ok && !time.Now().Before(dl) }():
@@ -1356,6 +1419,9 @@ var (
 )
 
 type meteredRunner struct {
+	// hb is the combo's proof of life, marked on every stream chunk — the
+	// watchdog's only way to tell a working request from a wedged one.
+	hb    *heartbeat
 	inner agent.LLMRunner
 	sc    *stageCounters
 	// temperature/seed, when set, override whatever the agent asked for. nil
@@ -1385,10 +1451,12 @@ func (m *meteredRunner) ChatStream(ctx context.Context, msgs []llm.Message, tool
 	if err != nil {
 		return nil, err
 	}
+	m.hb.mark() // the request is open; the stall clock starts here, not at turn end
 	out := make(chan llm.StreamChunk, 64)
 	go func() {
 		defer close(out)
 		for c := range in {
+			m.hb.mark()
 			// Malformed tool-call arguments are counted HERE, at the model's
 			// output, and not in the dispatcher where they used to be.
 			//

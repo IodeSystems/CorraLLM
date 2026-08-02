@@ -12,6 +12,27 @@ import (
 // guessing from a bare context.Canceled.
 var errExecBudget = errors.New("combo exceeded its execution budget")
 
+// errStalled cancels a combo whose model has gone SILENT — no stream chunk,
+// token or tool call for stallTimeout.
+//
+// The execution budget alone could not catch this cheaply. A combo hung inside
+// its very first request looks exactly like one still working: turns and tokens
+// only move when a turn completes, so nothing distinguishes them until the full
+// budget is spent. Measured: ocr-survey-corners burned the entire 10-minute
+// budget in all three arms with turns=0 and tokens=0 — 30 minutes of a
+// 46-minute run, producing nothing at all.
+//
+// Silence is the right signal rather than "no completed turns": a model that
+// is streaming slowly is working and must not be killed, and a stream that
+// wedges mid-generation is a hang the budget would otherwise sit through.
+var errStalled = errors.New("model produced nothing for the stall timeout")
+
+// stallTimeout is how long the model may produce NOTHING before the combo is
+// abandoned. Generous on purpose — time-to-first-token on a large image prompt
+// against a resident 27B is minutes, and killing a slow prompt would be worse
+// than the waste it prevents. A var so tests can shrink it.
+var stallTimeout = 4 * time.Minute
+
 // watchdogTick bounds how stale the queue correction may be. Small enough that
 // a genuinely hung combo is not held open much past its budget, large enough
 // that polling corrallm costs nothing next to a 10-minute budget.
@@ -40,7 +61,7 @@ var watchdogTick = 10 * time.Second
 // watchdog too lenient rather than too strict, which is the right way to be
 // wrong: the run's own context still bounds everything, so the cost is a late
 // cancellation, not a lost one.
-func execBudgetContext(parent context.Context, budget time.Duration, oh *overheadClient, model string) (context.Context, context.CancelFunc) {
+func execBudgetContext(parent context.Context, budget time.Duration, oh *overheadClient, model string, idleFor func(time.Time) time.Duration) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancelCause(parent)
 	start := time.Now()
 	sinceStart := stageQueueWait()
@@ -61,6 +82,13 @@ func execBudgetContext(parent context.Context, budget time.Duration, oh *overhea
 					if d, err := oh.Between(ctx, model, start, time.Now()); err == nil {
 						serverWait = d
 					}
+				}
+				// Silence first: it is the cheaper and more specific
+				// diagnosis, and a stalled combo would otherwise sit here
+				// until the whole budget drained.
+				if idleFor != nil && idleFor(time.Now()) > stallTimeout {
+					cancel(errStalled)
+					return
 				}
 				if time.Since(start)-(sinceStart()+serverWait) > budget {
 					cancel(errExecBudget)

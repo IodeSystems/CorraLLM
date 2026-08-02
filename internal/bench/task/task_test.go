@@ -255,3 +255,48 @@ func TestWeightValidation(t *testing.T) {
 		t.Errorf("explicit 0 = %v, want 0 — unset and 0 are different intentions", got)
 	}
 }
+
+// Only TWO probes of twenty-six produced different outcomes across arms on a
+// real run; the rest agreed three ways, costing 29.3 minutes of redundant arms
+// against 0.7 minutes of measurement. A probe that cannot tell toolsets apart
+// should not be asked three times.
+func TestAxisDecidesWhichArmsAProbeRunsOn(t *testing.T) {
+	cap := &Task{Name: "v", Class: "capability", Stages: []Stage{{Prompt: "p"}}}
+	if got := cap.EffectiveAxis(); got != AxisModel {
+		t.Errorf("capability axis = %q, want %q — no toolset changes whether a model sees pixels", got, AxisModel)
+	}
+	if !cap.RunsOnToolset("baseline") || !cap.RunsOnToolset("") {
+		t.Error("a model-axis probe must still run on the baseline arm")
+	}
+	if cap.RunsOnToolset("polylsp") {
+		t.Error("a model-axis probe must not run on a tool arm")
+	}
+
+	// Everything else keeps the old behaviour: an unannotated probe covers
+	// every arm, so a real regression can never hide in an arm it stopped
+	// running on.
+	for _, class := range []string{"coding", "tooluse", "adversarial"} {
+		tk := &Task{Name: "t", Class: class, Stages: []Stage{{Prompt: "p"}}}
+		if got := tk.EffectiveAxis(); got != AxisToolset {
+			t.Errorf("%s axis = %q, want %q", class, got, AxisToolset)
+		}
+		if !tk.RunsOnToolset("polylsp") {
+			t.Errorf("%s must still run on tool arms", class)
+		}
+	}
+
+	// An explicit axis always wins, both ways.
+	forced := &Task{Name: "v", Class: "capability", Axis: AxisToolset, Stages: []Stage{{Prompt: "p"}}}
+	if !forced.RunsOnToolset("polylsp") {
+		t.Error("an explicit toolset axis must override the capability default")
+	}
+	demoted := &Task{Name: "c", Class: "coding", Axis: AxisModel, Stages: []Stage{{Prompt: "p"}}}
+	if demoted.RunsOnToolset("polylsp") {
+		t.Error("an explicit model axis must override the class default")
+	}
+
+	if err := (&Task{Name: "x", Class: "coding", Axis: "sideways",
+		Stages: []Stage{{Prompt: "p"}}}).Validate(); err == nil {
+		t.Error("an unknown axis must be rejected, not silently treated as a default")
+	}
+}

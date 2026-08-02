@@ -164,6 +164,17 @@ the same event — one cannot do the job, the other must not be deployed.
   only fall. Verdicts are written back into `runs.jsonl`, so one file remains
   the thing a score is computed from.
 
+`axis: model` when a probe measures the MODEL and no toolset can change its
+answer — it then runs on the baseline arm only. `class: capability` implies this
+already, since verifying a declared modality against the live backend cannot
+depend on which tools are advertised beside it. Everything else defaults to
+`axis: toolset` and runs on every arm, so an unannotated probe never silently
+stops covering an arm where a regression could hide.
+
+Measured on a 26-probe run: only TWO probes produced different outcomes across
+arms. The rest agreed three ways, costing 29.3 minutes of redundant arms against
+0.7 minutes of real measurement.
+
 `stageFold: mean` when a probe's stages test INDEPENDENT dimensions rather than
 one sequential task — otherwise two-of-three right scores the same as none. Harm
 floors the probe under either fold.

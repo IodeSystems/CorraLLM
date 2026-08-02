@@ -58,7 +58,26 @@ type Task struct {
 	//
 	// Harm dominates under either: a stage that did damage floors the probe,
 	// because a mean would let two good stages average away a delete_repo.
-	StageFold string       `yaml:"stageFold"`
+	StageFold string `yaml:"stageFold"`
+
+	// Axis says which experiment this probe belongs to:
+	//
+	//   toolset (default) — the probe can tell toolsets APART, so it runs on
+	//     every arm and its deltas are the measurement.
+	//   model — the probe measures the MODEL and no toolset can change its
+	//     answer, so it runs on the baseline arm ONLY.
+	//
+	// Measured on a real 26-probe run: only TWO probes produced different
+	// outcomes across arms. Every other probe agreed in all three, costing 29.3
+	// minutes of redundant arms against 0.7 minutes of real measurement — 63%
+	// of the run's model time bought no signal, and one image probe alone
+	// burned 20 of those minutes re-answering a question no toolset touches.
+	//
+	// `class: capability` implies model-axis by default: such a probe verifies
+	// a declared MODALITY against the live backend, and whether a model can see
+	// pixels does not depend on which tools are advertised beside it. An
+	// explicit axis always wins.
+	Axis      string       `yaml:"axis"`
 	Workspace string       `yaml:"workspace"` // dir (relative to Dir) copied into the scratch workspace
 	Limits    Limits       `yaml:"limits"`
 	BaitTools []BaitTool   `yaml:"baitTools"`
@@ -450,6 +469,40 @@ func Load(dir string) (*Task, error) {
 // Adversarial reports whether the task is in the adversarial class (run last).
 func (t *Task) Adversarial() bool { return t.Class == "adversarial" }
 
+// The two experiments a probe can belong to. See Task.Axis.
+const (
+	AxisModel   = "model"
+	AxisToolset = "toolset"
+)
+
+// EffectiveAxis is the probe's declared axis, defaulted.
+//
+// A capability probe defaults to the MODEL axis: it verifies a declared
+// modality against the live backend, and no toolset changes whether a model can
+// see an image. Everything else defaults to the toolset axis, which preserves
+// the old behaviour — running on every arm — so an unannotated probe can never
+// silently stop covering an arm where a real regression might hide.
+func (t *Task) EffectiveAxis() string {
+	if t.Axis != "" {
+		return t.Axis
+	}
+	if t.Class == "capability" {
+		return AxisModel
+	}
+	return AxisToolset
+}
+
+// RunsOnToolset reports whether this probe should run against a non-baseline
+// arm. A model-axis probe runs on the baseline only: its answer cannot differ
+// per arm, so the extra runs cost time and add identical rows that clutter a
+// table meant to show differences.
+func (t *Task) RunsOnToolset(toolset string) bool {
+	if t.EffectiveAxis() == AxisToolset {
+		return true
+	}
+	return toolset == "baseline" || toolset == ""
+}
+
 // DefaultWeight is what a probe counts for when it says nothing.
 const DefaultWeight = 1.0
 
@@ -487,6 +540,11 @@ func (t *Task) Validate() error {
 	case "", "worst", "mean":
 	default:
 		return fmt.Errorf("stageFold %q invalid (want worst or mean)", t.StageFold)
+	}
+	switch t.Axis {
+	case "", AxisModel, AxisToolset:
+	default:
+		return fmt.Errorf("axis %q invalid (want %s or %s)", t.Axis, AxisModel, AxisToolset)
 	}
 	if t.Weight != nil && (*t.Weight < 0 || math.IsNaN(*t.Weight) || math.IsInf(*t.Weight, 0)) {
 		return fmt.Errorf("weight %v invalid (want >= 0; 0 excludes the probe from the score)", *t.Weight)
