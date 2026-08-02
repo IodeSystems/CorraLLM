@@ -161,7 +161,7 @@ func cmdJudge(argv []string) int {
 		fmt.Fprintln(os.Stderr, "config:", err)
 		return 1
 	}
-	jc := judge.Config{Model: cfg.Judge.Model, MaxTranscriptBytes: cfg.Judge.MaxTranscriptBytes}
+	jc := judge.Config{Model: cfg.Judge.Model, MaxTranscriptBytes: cfg.Judge.MaxTranscriptBytes, Profile: cfg.Profile}
 	if *model != "" {
 		jc.Model = *model
 	}

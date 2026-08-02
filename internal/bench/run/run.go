@@ -421,11 +421,11 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	// which probe produced it.
 	PublishProbeResults(ctx, resid, ts, outDir, rows, skips)
 
-	if err := report.WriteAll(outDir, ts, rows); err != nil {
+	if err := report.WriteAll(outDir, ts, rows, opts.Config.Profile); err != nil {
 		return rows, outDir, err
 	}
 	if opts.Judge {
-		jc := judge.Config{Model: opts.Config.Judge.Model, MaxTranscriptBytes: opts.Config.Judge.MaxTranscriptBytes}
+		jc := judge.Config{Model: opts.Config.Judge.Model, MaxTranscriptBytes: opts.Config.Judge.MaxTranscriptBytes, Profile: opts.Config.Profile}
 		if _, err := judge.Judge(ctx, outDir, jc, opts.NewRunner); err != nil {
 			return rows, outDir, fmt.Errorf("judge phase: %w", err)
 		}
@@ -446,7 +446,7 @@ func failedRows(tsk *task.Task, model, toolset, ts, note string) []Row {
 		out = append(out, Row{
 			TS: ts, Model: model, Toolset: toolset, Task: tsk.Name, Class: tsk.Class,
 			Stage: i, Prompt: stage.Prompt,
-			ChecksTotal: len(stage.Checks), Weight: tsk.EffectiveWeight(),
+			ChecksTotal: len(stage.Checks), Weight: tsk.EffectiveWeight(), StageFold: tsk.StageFold,
 			Pass: false, Note: note,
 			Judge: nil, JudgeQuality: nil,
 		})
@@ -748,6 +748,16 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		return nil, err
 	}
 	journalPath := filepath.Join(meta, "journal.jsonl")
+	// A second writer on the same file, for toolset servers. llm-bench-mcp
+	// journals its own calls from its own process; toolset tools dispatch here
+	// and were never recorded at all. Both append O_APPEND line-at-a-time, and
+	// the two never interleave within a call because the model issues them
+	// sequentially.
+	tsJourn, tsJournErr := journal.NewWriter(journalPath)
+	if tsJournErr != nil {
+		return nil, fmt.Errorf("open toolset journal: %w", tsJournErr)
+	}
+	defer tsJourn.Close()
 
 	mgr := mcpmgr.NewManager()
 	defer mgr.Close()
@@ -862,7 +872,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		Runner:   runner,
 		Build:    shaper.Build,
 		Tools:    defs,
-		Dispatch: wrapDispatch(mcpDispatcher(mgr, tools), validator, sc, scratch, tsk.SafetyCheck),
+		Dispatch: wrapDispatch(mcpDispatcher(mgr, tools, tsJourn), validator, sc, scratch, tsk.SafetyCheck),
 		OnUsage:  func(u agent.TokenUsage) { sc.mu.Lock(); sc.turns++; sc.mu.Unlock() },
 		// OnCompaction fires once per Shaper full-history compaction (LOD
 		// truncation is render-time and NOT reported — agentkit's CompactionInfo
@@ -944,7 +954,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 			rows = append(rows, Row{
 				TS: ts, Model: model, Toolset: tset.Name, Task: tsk.Name, Class: tsk.Class,
 				Stage: i, Prompt: stage.Prompt, StageMetrics: m, Checks: results,
-				ChecksPassed: passed, ChecksTotal: len(results), Weight: weight,
+				ChecksPassed: passed, ChecksTotal: len(results), Weight: weight, StageFold: tsk.StageFold,
 				Pass: allPass, Note: note,
 			})
 			cancel()
@@ -1086,7 +1096,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		rows = append(rows, Row{
 			TS: ts, Model: model, Toolset: tset.Name, Task: tsk.Name, Class: tsk.Class,
 			Stage: i, Prompt: stage.Prompt, StageMetrics: m, Checks: results,
-			ChecksPassed: passed, ChecksTotal: len(results), Weight: weight,
+			ChecksPassed: passed, ChecksTotal: len(results), Weight: weight, StageFold: tsk.StageFold,
 			Pass: allPass && !pathological, LimitBreached: limitBreached, Note: note,
 			Judge: nil, JudgeQuality: nil,
 		})
@@ -1445,7 +1455,11 @@ func mcpToolDefs(tools []mcpmgr.MCPTool) []llm.ToolDef {
 	return out
 }
 
-func mcpDispatcher(mgr *mcpmgr.Manager, tools []mcpmgr.MCPTool) agent.ToolDispatcher {
+// baseServerID is the llm-bench-mcp server. It journals its OWN calls, so the
+// dispatcher must not record them a second time.
+const baseServerID = "llm-bench"
+
+func mcpDispatcher(mgr *mcpmgr.Manager, tools []mcpmgr.MCPTool, journ *journal.Writer) agent.ToolDispatcher {
 	serverOf := make(map[string]string, len(tools))
 	for _, t := range tools {
 		serverOf[t.Name] = t.ServerID
@@ -1464,6 +1478,23 @@ func mcpDispatcher(mgr *mcpmgr.Manager, tools []mcpmgr.MCPTool) agent.ToolDispat
 		res, err := mgr.CallTool(ctx, serverID, tc.Function.Name, args)
 		if err != nil {
 			return fmt.Sprintf("ERROR: %v", err), nil
+		}
+		// Journal every TOOLSET call. Only llm-bench-mcp used to write the
+		// journal, and it can only see its own tools — so every
+		// tool_called / tool_not_called / no_repeat_calls assertion about a
+		// toolset's tools reported "called 0 time(s)" no matter what the model
+		// did. That is silent and total: the checks did not error, they just
+		// answered a question about a journal the tool was never in.
+		//
+		// It matters most for exactly the thing toolsets exist to measure —
+		// "did the model reach for the tool at all" — which is unanswerable
+		// while the reach is invisible.
+		if journ != nil && serverID != baseServerID {
+			raw, _ := json.Marshal(args)
+			_ = journ.Append(journal.Entry{
+				TS: time.Now().UnixNano(), Tool: tc.Function.Name,
+				Args: raw, ResultBytes: len(res),
+			})
 		}
 		return res, nil
 	}

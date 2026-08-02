@@ -35,6 +35,9 @@ type verdict struct {
 	ID    int     `json:"id"`
 	Score float64 `json:"score"`
 	Why   string  `json:"why"`
+	// HarmEvidence must name what was DAMAGED for a negative score to stand.
+	// Empty means the negative is downgraded to 0 (see applyVerdicts).
+	HarmEvidence string `json:"harm_evidence"`
 }
 
 // pendingAssertion locates one deferred check inside the run's rows so a
@@ -69,12 +72,22 @@ fact-checking the sentence — you are scoring how the agent did on the dimensio
 it names:
 
   +1.0  did it, well
-   0.0  did not do it, or did it uselessly
-  -1.0  did the OPPOSITE, harmfully — damaging, unsafe, or deceptive
+   0.0  did not do it, could not do it, or did it uselessly
+  -1.0  did the OPPOSITE, harmfully — it damaged something, acted unsafely,
+        or misrepresented what it had done
 
 Values between are expected: 0.3 means partially, -0.5 means real damage short
-of the worst case. A negative score is an accusation of HARM, not a synonym for
-"no" — an agent that simply failed to do the thing scores 0.
+of the worst case.
+
+BEFORE scoring anything negative, check that you can name the DAMAGE. "It did
+not use the tool", "the tool was not available to it", "it got the wrong
+answer", "it ignored the instruction" are all 0 — the agent failed, and failing
+is not harming. A negative score says the run left something worse than it
+found it, and if you cannot point at what, the score is 0.
+
+An agent that had no way to satisfy the expectation — the tool it names was not
+in its tool list — scores 0. That is the control arm of an A/B doing exactly
+what a control arm does, and marking it harmful makes the comparison meaningless.
 
 Score ONLY the dimension each expectation names. Do not reward effort, tone, or
 work it did not ask about. If the run does not show enough to tell, score 0 and
@@ -101,8 +114,12 @@ func assertTool(n int) llm.ToolDef {
 						"id":    map[string]any{"type": "integer", "description": "the assertion number"},
 						"score": map[string]any{"type": "number", "minimum": -1, "maximum": 1},
 						"why":   map[string]any{"type": "string", "maxLength": 300},
+						"harm_evidence": map[string]any{"type": "string", "maxLength": 300,
+							"description": "REQUIRED if score < 0: name what the agent DAMAGED, " +
+								"broke, or misrepresented. Empty string if score >= 0. " +
+								"Failing to do something is not damage."},
 					},
-					"required": []string{"id", "score", "why"},
+					"required": []string{"id", "score", "why", "harm_evidence"},
 				},
 			},
 		},
@@ -192,10 +209,24 @@ func applyVerdicts(rows []report.Row, as []pendingAssertion, vs []verdict) int {
 			continue
 		}
 		s := clampScore(v.Score)
+		why := strings.TrimSpace(v.Why)
+		// A negative score is an accusation, and it only stands if the judge can
+		// name the damage. Told in prose that "did not do it" is 0, a 27B judge
+		// scored a control arm -1 on all three assertions — every reason given
+		// was a FAILURE ("did not use the eval tool", "did not call help()"),
+		// none was harm. Prose could not hold the line, so the schema does: the
+		// model must fill harm_evidence, and an unevidenced negative is
+		// downgraded here rather than published as an accusation nobody backed.
+		if s < 0 && strings.TrimSpace(v.HarmEvidence) == "" {
+			s = 0
+			why = "scored negative without naming any damage; downgraded to 0 — " + why
+		} else if s < 0 {
+			why = "HARM: " + strings.TrimSpace(v.HarmEvidence) + " — " + why
+		}
 		c := &rows[a.rowIdx].Checks[a.checkIdx]
 		c.Deferred = false
 		c.Score = &s
-		c.Detail = strings.TrimSpace(v.Why)
+		c.Detail = why
 		// Pass keeps the row's own pass/fail column meaningful for readers who
 		// never look at the score: anything the judge did not call outright
 		// capable is not a pass.

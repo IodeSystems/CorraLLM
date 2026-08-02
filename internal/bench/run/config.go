@@ -62,6 +62,22 @@ type Config struct {
 	// one-off run can name its own set without editing the config.
 	ProbeDirs []string `yaml:"probeDirs"`
 
+	// Profile names the toolset whose numbers ARE the score — the
+	// configuration actually deployed. Every other toolset in the run is a
+	// COMPARISON ARM: recorded, deltas reported, never scored.
+	//
+	// Without this every arm is scored as if it were a claim about the model,
+	// which is wrong in the one direction that matters. A control arm exists to
+	// be worse: `baseline` has no tool, so on a probe about using that tool it
+	// scores 0 by construction, and publishing that as the model's coding score
+	// is publishing an artifact of the experiment design. Measured the day this
+	// was added: an mcpshell A/B reported two class rows, both negative, and
+	// neither was the model's score.
+	//
+	// Empty scores every toolset separately, which is right when the toolsets
+	// are not an A/B but genuinely different configurations you want ranked.
+	Profile string `yaml:"profile"`
+
 	// Weights override a probe's declared score weight, by probe name. The
 	// author states what a probe is worth against its siblings; a box that
 	// cares more about refactor accuracy than about edit safety says so here

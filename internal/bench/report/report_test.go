@@ -54,7 +54,7 @@ func TestRowFlatJSON(t *testing.T) {
 
 func TestWriteAll(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteAll(dir, "ts", sampleRows()); err != nil {
+	if err := WriteAll(dir, "ts", sampleRows(), ""); err != nil {
 		t.Fatal(err)
 	}
 	// summary.csv: one aggregated row per model×toolset×task, with judge_quality reserved.
