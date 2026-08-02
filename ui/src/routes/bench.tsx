@@ -160,11 +160,6 @@ const BenchDoc = graphql(/* GraphQL */ `
         done
         error
       }
-      calibrationStatus {
-        active
-        reason
-        remainingSeconds
-      }
     }
   }
 `)
@@ -221,11 +216,9 @@ function ActiveRun(props: {
   args: readonly string[]
   log: readonly string[]
   startedAt: number
-  leaseReason?: string | null
-  leaseRemaining: number
   onCancel: () => void
 }) {
-  const { args, log, startedAt, leaseReason, leaseRemaining, onCancel } = props
+  const { args, log, startedAt, onCancel } = props
   // Tail, not head: the interesting line during a run is the newest one.
   const tail = log.slice(-200)
   return (
@@ -234,15 +227,6 @@ function ActiveRun(props: {
         <CircularProgress size={20} />
         <Typography variant="subtitle1">Bench running</Typography>
         {startedAt > 0 && <Chip size="small" label={`elapsed ${elapsed(startedAt)}`} />}
-        {leaseRemaining > 0 && (
-          <Chip
-            size="small"
-            color="warning"
-            label={`lease expires in ~${Math.ceil(leaseRemaining / 60)}m`}
-            title="The lease self-expires, so a crashed run cannot lock the server permanently."
-          />
-        )}
-        {leaseReason && <Chip size="small" variant="outlined" label={leaseReason} />}
         <Box sx={{ flexGrow: 1 }} />
         <Button size="small" variant="outlined" color="error" onClick={onCancel}>
           Cancel run
@@ -299,7 +283,6 @@ function BenchPage() {
   const catalog = data?.corrallm?.benchProbeCatalog
   const runIndex = data?.corrallm?.benchRuns?.runs ?? []
   const status = data?.corrallm?.benchStatus
-  const lease = data?.corrallm?.calibrationStatus
   const running = !!status?.running
 
   const checks = useMemo(() => {
@@ -339,13 +322,12 @@ function BenchPage() {
   }, [checks])
 
   const start = useMutation({
-    mutationFn: (exclusive: boolean) =>
+    mutationFn: () =>
       gqlClient.request(StartBenchDoc, {
         body: {
           models: request.models,
           classes: request.classes,
           reason: 'aggregate bench',
-          exclusive,
         },
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['benchAggregate'] }),
@@ -386,8 +368,6 @@ function BenchPage() {
           args={status?.args ?? []}
           log={status?.log ?? []}
           startedAt={n(status?.startedAt)}
-          leaseReason={lease?.reason}
-          leaseRemaining={n(lease?.remainingSeconds)}
           onCancel={() => cancel.mutate()}
         />
       )}
@@ -899,7 +879,7 @@ function BenchPage() {
       {!!status?.error && <Alert severity="error">{status.error}</Alert>}
 
       <Dialog open={confirming} onClose={() => setConfirming(false)}>
-        <DialogTitle>How should this run share the box?</DialogTitle>
+        <DialogTitle>Start this bench run?</DialogTitle>
         <DialogContent>
           <DialogContentText component="div">
             Models: <b>{request.models.join(', ') || 'none'}</b>
@@ -907,38 +887,26 @@ function BenchPage() {
             Classes: <b>{request.classes.join(', ') || 'measurement only'}</b>
             <br />
             <br />
-            <b>Shared</b> leaves everyone else serving. The bench waits out backpressure
-            instead of competing for slots, and subtracts the waiting from its timings, so
-            the numbers describe the model rather than the queue. Cold-mode probes are{' '}
-            <b>skipped</b> — without eviction rights a &ldquo;cold&rdquo; pass may run against
-            an already-resident model, which is evidence for a path it never tested.
+            The run shares the box. It queues for slots like any other caller and
+            evicts nothing, so everyone else keeps serving. It waits out{' '}
+            <b>429 + Retry-After</b> backpressure rather than competing, and subtracts
+            that waiting from its timings — so the numbers describe the model rather
+            than the queue.
             <br />
             <br />
-            <b>Exclusive</b> evicts resident models and turns away every other caller with{' '}
-            <b>429 + Retry-After</b> until it finishes. Only worth it when the cold path is
-            what you came to measure. The lease self-expires, so a crashed run cannot lock
-            the server permanently.
+            It will still take GPU time and can slow other traffic down.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setConfirming(false)}>Cancel</Button>
           <Button
-            color="warning"
-            onClick={() => {
-              setConfirming(false)
-              start.mutate(true)
-            }}
-          >
-            Evict and run
-          </Button>
-          <Button
             variant="contained"
             onClick={() => {
               setConfirming(false)
-              start.mutate(false)
+              start.mutate()
             }}
           >
-            Run shared
+            Run
           </Button>
         </DialogActions>
       </Dialog>

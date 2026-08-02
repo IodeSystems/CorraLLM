@@ -115,7 +115,7 @@ type CatalogEntry struct {
 	// summary was not a display choice, it was data loss — the prose existed in
 	// the probe and had no way to reach a reader.
 	Description string `json:"description,omitempty"`
-	Run      string `json:"run,omitempty"`      // "", "cold", "warm", "both"
+	Run      string `json:"run,omitempty"`      // "", "warm"
 	Requires string `json:"requires,omitempty"` // effective capability, when the probe demands one
 	Checks   int    `json:"checks"`
 	Stages   int    `json:"stages"`

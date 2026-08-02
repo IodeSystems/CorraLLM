@@ -1,8 +1,8 @@
 # llm-bench benchmark config. The runner reads this from the repo root (or --config).
 #
 # llm:
-  # Admin token for corrallm's control surface (/api/v1/models/{load,unload}).
-  # ONLY needed by probes declaring `run: cold|warm|both` — a plain quality
+  # Admin token for corrallm's control surface (/api/v1/models/load).
+  # ONLY needed by probes declaring `run: warm` — a plain quality
   # benchmark runs without it. Without a token those probes still run, but each
   # row is stamped with a warning that residency was not controlled, so a cold
   # claim is never made on evidence that does not support it.

@@ -74,8 +74,10 @@ type Task struct {
 	Audio *AudioProbe `yaml:"audio"`
 
 	// Run selects the residency state this probe runs against:
-	// "" (any, the default -- residency untouched) | cold | warm | both.
-	// A capability probe is usually only meaningful COLD; see probes/README.md.
+	// "" (any, the default -- residency untouched) | warm.
+	// Cold mode was removed with the exclusive lease: arranging a cold model
+	// means EVICTING one, which is a cost every other caller on the box pays.
+	// See probes/README.md for what that gives up.
 	Run string `yaml:"run"`
 
 	// Requires declares what a model must ALREADY claim for this probe to be
@@ -408,9 +410,13 @@ func (t *Task) Validate() error {
 		}
 	}
 	switch t.Run {
-	case "", "cold", "warm", "both":
+	case "", "warm":
+	case "cold", "both":
+		// Named explicitly so an existing probe gets an explanation rather than
+		// a bare "invalid" for a value that used to be correct.
+		return fmt.Errorf("run %q is no longer supported: cold mode needed eviction rights, which were removed with the exclusive lease (want warm, or omit)", t.Run)
 	default:
-		return fmt.Errorf("run %q invalid (want cold|warm|both, or omit)", t.Run)
+		return fmt.Errorf("run %q invalid (want warm, or omit)", t.Run)
 	}
 	if t.ContextBudget != 0 && t.ContextBudget < 2000 {
 		return fmt.Errorf("contextBudget %d is too small (must be >= 2000 when set)", t.ContextBudget)

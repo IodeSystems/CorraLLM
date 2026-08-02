@@ -54,10 +54,6 @@ type Proxy struct {
 
 	started int64 // unix seconds at construction — the catalog's "created"
 
-	// calib holds the exclusive calibration lease, if any. Nil is valid and
-	// means calibration mode is unavailable — every reader tolerates it.
-	calib *CalibrationState
-
 	requestTimeout     time.Duration        // 0 = no corrallm-imposed deadline (defer to client + backend)
 	capturePayloads    bool                 // capture req/resp payloads onto the activity row (P10b)
 	realtimeIdle       time.Duration        // 0 = no idle reap of a realtime ws session (P9e)
@@ -225,7 +221,7 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 	p := &Proxy{mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),
 		started: time.Now().Unix(), rr: map[string]uint64{}, capturePayloads: true,
 		convertEnabled: true, convertGlobal: config.DefaultConvert(),
-		calib: NewCalibrationState(), quota: quota.New(), roster: freeroster.New()}
+		quota: quota.New(), roster: freeroster.New()}
 	p.cfg.Store(cfg)
 	// Attach durable storage for the falloff counters BEFORE seeding limits, so a
 	// counter-mode window resumes its persisted level across a restart instead of
@@ -446,15 +442,6 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	key := callerKey(r)
-	// A calibration run owns the box: its measurements are meaningless under
-	// contention, and its evictions would fight live traffic. 429 (not 503) so
-	// clients PAUSE rather than fail — see calibration.go.
-	if blocked, remaining := p.calib.Blocks(key); blocked {
-		active, reason, _ := p.calib.Status()
-		_ = active
-		writeCalibrationBackpressure(w, remaining, reason)
-		return
-	}
 	groupName, group := p.config().ResolveGroup(key)
 	weight := group.EffectiveWeight()
 
@@ -871,11 +858,6 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	key := callerKey(r)
-	if blocked, remaining := p.calib.Blocks(key); blocked {
-		_, reason, _ := p.calib.Status()
-		writeCalibrationBackpressure(w, remaining, reason)
-		return
-	}
 	// Same operator-order filter as the inference path: skip paused members so
 	// the walk never queues for an admission slot on a model that will not
 	// serve, and 503 when the lane has nothing left.
@@ -2268,10 +2250,6 @@ func (s *statusCapture) Flush() {
 		f.Flush()
 	}
 }
-
-// Calibration exposes the exclusive-calibration lease so the admin API can
-// begin/end it. Never nil for a Proxy built by New.
-func (p *Proxy) Calibration() *CalibrationState { return p.calib }
 
 // config returns the proxy's current config. Always use this rather than a bare
 // field read: the pointer is swapped on reload.

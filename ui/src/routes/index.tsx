@@ -1074,10 +1074,10 @@ function Home() {
         onConfirm={() => confirmUnload?.run()}
       />
 
-      {/* A probe is DESTRUCTIVE: it evicts models and locks out other callers.
-          Say so before the click, name exactly what this run will learn, and
-          state that the lease self-expires — "will this wedge my server" is the
-          first thing anyone sane wants to know. */}
+      {/* A probe is no longer destructive — it evicts nothing and locks nobody
+          out — but it does consume GPU time on a box other people are using.
+          Name exactly what the run will learn before the click, and be honest
+          about the cost that remains. */}
       {probeFor && (
         <Dialog open onClose={() => setProbeFor(null)} maxWidth="sm" fullWidth>
           <DialogTitle>Probe {probeFor}?</DialogTitle>
@@ -1102,23 +1102,24 @@ function Home() {
               )}
               {!!planByModel.get(probeFor)?.disagreements?.length && (
                 <li>
-                  <b>Cold/warm disagreement</b> — this modality worked in one residency state
-                  and failed in the other. Re-running confirms whether it persists.
+                  <b>Cold/warm disagreement</b> — recorded when cold probing still existed:
+                  this modality worked in one residency state and failed in the other. A
+                  re-run can no longer confirm it, since arranging a cold model meant
+                  evicting one.
                 </li>
               )}
             </ul>
-            <Alert severity="warning" sx={{ mt: 1 }}>
-              While it runs, models are <b>evicted</b> so measurements are uncontended, and
-              every other caller receives <b>429 + Retry-After</b>. Clients that honor
-              Retry-After pause and resume rather than fail. The lease self-expires, so a
-              crashed run cannot lock the server permanently.
+            <Alert severity="info" sx={{ mt: 1 }}>
+              The run shares the box: nothing is evicted and no caller is turned away. It
+              queues for slots like any other client and waits out <b>429 + Retry-After</b>
+              backpressure, subtracting that wait from its timings. It will still use GPU
+              time, so expect added latency while it runs.
             </Alert>
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setProbeFor(null)}>Cancel</Button>
             <Button
               variant="contained"
-              color="warning"
               onClick={() => {
                 probe.mutate(probeFor)
                 setProbeFor(null)

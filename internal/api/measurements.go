@@ -156,115 +156,6 @@ func (h *Handlers) PublishVerifiedCapability(_ context.Context, in *VerifiedCapa
 	return out, nil
 }
 
-// --- exclusive calibration lease --------------------------------------------
-
-// CalibrateInput starts or extends an exclusive calibration lease.
-type CalibrateInput struct {
-	Body struct {
-		Key string `json:"key" doc:"The caller key llm-bench will present; only this key is served while the lease holds."`
-		// TTLSeconds bounds the lease. A calibration run that crashes must not
-		// leave the box refusing every caller forever, so this is REQUIRED to be
-		// finite and is clamped below.
-		TTLSeconds int    `json:"ttlSeconds,omitempty" doc:"Lease duration in seconds (default 900, max 7200). The lease self-expires: a crashed bench cannot lock the box."`
-		Reason     string `json:"reason,omitempty" doc:"Shown to turned-away callers and in the dashboard."`
-	}
-}
-
-// CalibrateOutput reports the lease.
-type CalibrateOutput struct {
-	Body struct {
-		OK        bool   `json:"ok"`
-		ExpiresAt int64  `json:"expiresAt,omitempty" doc:"Unix seconds the lease self-expires."`
-		Message   string `json:"message"`
-		// Warning is always populated on success. Starting a lease EVICTS
-		// models and turns away every other caller; a client that fires this
-		// without surfacing that has misled its user.
-		Warning string `json:"warning,omitempty"`
-	}
-}
-
-const (
-	defaultCalibrationTTL = 900  // 15m
-	maxCalibrationTTL     = 7200 // 2h
-)
-
-// BeginCalibration claims the box for a measurement run.
-//
-// While the lease holds, every caller except Key gets 429 + Retry-After. This is
-// a real outage for other traffic and is deliberately not silent: the response
-// carries an explicit warning, and the lease always self-expires so a crashed
-// bench heals the box on its own.
-func (h *Handlers) BeginCalibration(_ context.Context, in *CalibrateInput) (*CalibrateOutput, error) {
-	out := &CalibrateOutput{}
-	if h.Proxy == nil {
-		out.Body.Message = "calibration unavailable (no proxy wired)"
-		return out, nil
-	}
-	if in.Body.Key == "" {
-		// Without a key the lease would turn away EVERYONE including the bench,
-		// which is a self-inflicted outage with no upside.
-		out.Body.Message = "key is required (the lease would otherwise block the calibration run itself)"
-		return out, nil
-	}
-	ttl := in.Body.TTLSeconds
-	if ttl <= 0 {
-		ttl = defaultCalibrationTTL
-	}
-	if ttl > maxCalibrationTTL {
-		ttl = maxCalibrationTTL
-	}
-	deadline, ok := h.Proxy.Calibration().Begin(in.Body.Key, in.Body.Reason, time.Duration(ttl)*time.Second)
-	if !ok {
-		out.Body.Message = fmt.Sprintf("a calibration lease is already held by another key until %s", deadline.UTC().Format(time.RFC3339))
-		return out, nil
-	}
-	out.Body.OK = true
-	out.Body.ExpiresAt = deadline.Unix()
-	out.Body.Message = fmt.Sprintf("calibration lease held until %s", deadline.UTC().Format(time.RFC3339))
-	out.Body.Warning = "EXCLUSIVE MODE: every caller except the calibration key now receives 429 + Retry-After, and the run will EVICT resident models to take cold measurements. The lease self-expires at expiresAt even if the run dies."
-	return out, nil
-}
-
-// EndCalibration releases the lease early. Idempotent, so a bench can always
-// call it from a defer without checking whether it still holds one.
-func (h *Handlers) EndCalibration(_ context.Context, in *CalibrateInput) (*CalibrateOutput, error) {
-	out := &CalibrateOutput{}
-	if h.Proxy == nil {
-		out.Body.Message = "calibration unavailable (no proxy wired)"
-		return out, nil
-	}
-	h.Proxy.Calibration().End(in.Body.Key)
-	out.Body.OK = true
-	out.Body.Message = "calibration lease released; normal traffic resumes"
-	return out, nil
-}
-
-// CalibrationStatusInput has no parameters.
-type CalibrationStatusInput struct{}
-
-// CalibrationStatusOutput reports whether a lease is held.
-type CalibrationStatusOutput struct {
-	Body struct {
-		Active           bool   `json:"active"`
-		Reason           string `json:"reason,omitempty"`
-		RemainingSeconds int    `json:"remainingSeconds,omitempty"`
-	}
-}
-
-// CalibrationStatus lets the dashboard show that the box is in exclusive mode —
-// otherwise a user seeing every request 429 has no way to tell why.
-func (h *Handlers) CalibrationStatus(_ context.Context, _ *CalibrationStatusInput) (*CalibrationStatusOutput, error) {
-	out := &CalibrationStatusOutput{}
-	if h.Proxy == nil {
-		return out, nil
-	}
-	active, reason, remaining := h.Proxy.Calibration().Status()
-	out.Body.Active = active
-	out.Body.Reason = reason
-	out.Body.RemainingSeconds = int(remaining.Seconds())
-	return out, nil
-}
-
 // --- bench run (corrallm spawns llm-bench) -----------------------------------
 
 // BenchRunInput selects what to run.
@@ -272,13 +163,8 @@ type BenchRunInput struct {
 	Body struct {
 		Models  []string `json:"models,omitempty" doc:"Models to bench; empty = every model in the bench config."`
 		Classes []string `json:"classes,omitempty" doc:"Probe classes: capability | coding | tooluse | adversarial. Empty = all."`
-		Reason  string   `json:"reason,omitempty" doc:"Shown to turned-away callers."`
-		TTL     int      `json:"ttlSeconds,omitempty" doc:"Lease duration; the run is killed and the lease released when it expires."`
-		// Exclusive defaults FALSE: a benchmark should not take the box down.
-		// A shared run waits out backpressure and subtracts the wait from its
-		// timings; it skips cold passes, which need eviction rights to prove
-		// anything. Ask for exclusive when the cold path is the measurement.
-		Exclusive bool `json:"exclusive,omitempty" doc:"Hold the calibration lease: evicts models for cold passes and answers every other caller with 429 until the run finishes. Required for cold-mode probes."`
+		Reason  string   `json:"reason,omitempty" doc:"Shown in the dashboard alongside the run."`
+		TTL     int      `json:"ttlSeconds,omitempty" doc:"Run duration cap; the run is killed when it expires."`
 	}
 }
 
@@ -292,19 +178,24 @@ type BenchRunOutput struct {
 	}
 }
 
-// StartBenchRun spawns llm-bench under an exclusive lease.
+// StartBenchRun spawns llm-bench as an ordinary caller.
 //
 // It runs the SAME binary with the same flags a human would type — the Args in
 // the status are the literal invocation, so any run started here is
 // reproducible from a shell, and llm-bench stays a first-class CLI rather than
 // an implementation detail of the dashboard.
+//
+// A run never takes the box. It competes for slots like any other caller, waits
+// out 429 backpressure (llm-bench retries it without limit) and subtracts that
+// wait from its timings, so the numbers describe the model rather than the
+// queue. Isolating model time from queue time is what the exclusive lease used
+// to buy, and measuring the queue directly buys it without an outage.
 func (h *Handlers) StartBenchRun(_ context.Context, in *BenchRunInput) (*BenchRunOutput, error) {
 	out := &BenchRunOutput{}
-	if h.Bench == nil || h.Proxy == nil {
-		out.Body.Message = "bench runs unavailable (runner or proxy not wired)"
+	if h.Bench == nil {
+		out.Body.Message = "bench runs unavailable (runner not wired)"
 		return out, nil
 	}
-	calib := h.Proxy.Calibration()
 	st, err := h.Bench.Start(BenchStartOptions{
 		Bin:        h.BenchBin,
 		ConfigPath: h.BenchConfig,
@@ -313,8 +204,7 @@ func (h *Handlers) StartBenchRun(_ context.Context, in *BenchRunInput) (*BenchRu
 		Classes:    in.Body.Classes,
 		TTLSeconds: in.Body.TTL,
 		Reason:     in.Body.Reason,
-		Exclusive:  in.Body.Exclusive,
-	}, calib.Begin, calib.End)
+	})
 	if err != nil {
 		out.Body.Message = err.Error()
 		out.Body.Status = st
@@ -322,11 +212,6 @@ func (h *Handlers) StartBenchRun(_ context.Context, in *BenchRunInput) (*BenchRu
 	}
 	out.Body.OK = true
 	out.Body.Message = "bench run started"
-	if in.Body.Exclusive {
-		out.Body.Warning = "EXCLUSIVE MODE: models will be EVICTED to take cold measurements, and every caller except this run receives 429 + Retry-After until it finishes."
-	} else {
-		out.Body.Warning = "Shared run: other callers keep serving. Cold-mode probes are SKIPPED — they need eviction rights, and a cold pass on a warm model is evidence for a path it never tested. Re-run with exclusive to measure those."
-	}
 	out.Body.Status = st
 	return out, nil
 }
@@ -375,12 +260,12 @@ type UnloadAllOutput struct {
 	}
 }
 
-// UnloadAllModels frees the GPU for a calibration run.
+// UnloadAllModels frees the GPU on demand.
 //
 // Skipped residents are reported rather than treated as failure: a pinned
 // embedder cannot be evicted, and refusing the whole call because of it would
-// make calibration impossible on any box with a preloaded model. The caller
-// decides whether the remaining occupancy invalidates its measurement.
+// make the operation useless on any box with a preloaded model. The caller
+// decides whether the remaining occupancy matters.
 func (h *Handlers) UnloadAllModels(_ context.Context, _ *UnloadAllInput) (*UnloadAllOutput, error) {
 	out := &UnloadAllOutput{}
 	if h.Mgr == nil {

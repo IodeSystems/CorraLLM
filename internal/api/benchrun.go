@@ -19,12 +19,13 @@ import (
 // llm-bench remains a first-class CLI: this exec's the SAME binary with the same
 // flags a human would type, so anything the UI can start is scriptable, and a
 // scripted run behaves identically to a clicked one. corrallm adds only the
-// things a UI needs and a shell does not — a lease held for the run's duration,
-// captured output, and a cancel button.
+// things a UI needs and a shell does not — captured output and a cancel button.
 //
-// The run is destructive by design: it evicts models to take cold measurements
-// and turns away every other caller. So the lease is acquired BEFORE the process
-// starts and released when it exits, including on crash or cancel.
+// The run is NOT privileged. It holds no lease, evicts nothing, and turns no
+// caller away: it queues for admission like any other client and waits out 429
+// backpressure, which llm-bench retries without limit and subtracts from its
+// timings. Isolating model time from queue time was the only thing exclusivity
+// bought, and measuring the queue directly buys it without an outage.
 
 // benchLogCap bounds captured output so a runaway benchmark cannot exhaust
 // memory through its log alone.
@@ -100,9 +101,13 @@ func (b *BenchRunner) Cancel() {
 	}
 }
 
-// randomKey mints the caller key for this run. Generated per-run rather than
-// configured: it is the credential that distinguishes the bench from everyone
-// else during the lockout, so it must not be guessable or reused across runs.
+// randomKey mints the caller key for this run — the identity corrallm attributes
+// its requests to in the activity log and the fairshare scheduler.
+//
+// Per-run rather than configured, so one run's traffic is separable from
+// another's. Note the consequence: a minted key is absent from config `keys:`,
+// so a spawned run resolves to the `default` priority group. A run that should
+// be low priority has to be started from a shell with a key that IS mapped.
 func randomKey() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -120,32 +125,22 @@ type BenchStartOptions struct {
 	Classes    []string
 	TTLSeconds int
 	Reason     string
-	// Exclusive takes corrallm's calibration lease for the run: every other
-	// caller gets 429 until it finishes, and cold passes may evict the GPU.
-	// Required for cold-mode probes to measure anything; otherwise a needless
-	// outage.
-	Exclusive bool
 }
 
-// Start spawns llm-bench, optionally under the exclusive calibration lease.
+// Start spawns llm-bench as an ordinary caller.
 //
-// beginLease/endLease are injected so the runner does not import the proxy: the
-// caller wires them to the CalibrationState. endLease is called on EVERY exit
-// path, because a lease outliving its run is an outage.
-func (b *BenchRunner) Start(
-	opts BenchStartOptions,
-	beginLease func(key, reason string, ttl time.Duration) (time.Time, bool),
-	endLease func(key string),
-) (BenchRunStatus, error) {
+// It holds no lease and evicts nothing: the run competes for admission slots
+// like any other client, waits out 429 backpressure and subtracts that wait
+// from its timings. Separating model time from queue time is what exclusivity
+// used to buy, and measuring the queue gets it without an outage.
+func (b *BenchRunner) Start(opts BenchStartOptions) (BenchRunStatus, error) {
 	if b == nil {
 		return BenchRunStatus{}, fmt.Errorf("bench runner unavailable")
 	}
-	// Resolve the binary BEFORE taking the lock or the lease. --bench-bin
-	// defaults to "llm-bench" on $PATH, which a fresh install does not have, and
-	// discovering that at cmd.Start() means the failure arrives after the
-	// exclusive lease was granted — a lockout that evicts every model in service
-	// of a run that was never going to happen. It also means the operator reads
-	// "executable file not found in $PATH" instead of which flag to set.
+	// Resolve the binary BEFORE taking the lock. --bench-bin defaults to
+	// "llm-bench" on $PATH, which a fresh install does not have, and discovering
+	// that at cmd.Start() means the operator reads "executable file not found in
+	// $PATH" instead of which flag to set.
 	if _, err := exec.LookPath(opts.Bin); err != nil {
 		return BenchRunStatus{}, fmt.Errorf(
 			"llm-bench is not available: %q could not be resolved. "+
@@ -162,27 +157,6 @@ func (b *BenchRunner) Start(
 		return BenchRunStatus{}, err
 	}
 
-	// The LEASE is the lockout, not the --exclusive flag: holding it is what
-	// turns every other caller away with 429. A shared run must therefore not
-	// take it at all, rather than take it and behave politely.
-	//
-	// Stubbed rather than branched at each call site because endLease runs on
-	// every exit path below, and a lease released on a path that never acquired
-	// one is the kind of asymmetry that later gets "fixed" by removing the
-	// release.
-	if !opts.Exclusive {
-		beginLease = func(string, string, time.Duration) (time.Time, bool) { return time.Time{}, true }
-		endLease = func(string) {}
-	}
-	ttl := time.Duration(opts.TTLSeconds) * time.Second
-	if ttl <= 0 {
-		ttl = defaultCalibrationTTL * time.Second
-	}
-	if _, ok := beginLease(key, opts.Reason, ttl); !ok {
-		b.mu.Unlock()
-		return BenchRunStatus{}, fmt.Errorf("could not acquire the calibration lease (another run holds it)")
-	}
-
 	args := []string{"run"}
 	if opts.ConfigPath != "" {
 		args = append(args, "--config", opts.ConfigPath)
@@ -196,26 +170,10 @@ func (b *BenchRunner) Start(
 	if len(opts.Classes) > 0 {
 		args = append(args, "--classes", strings.Join(opts.Classes, ","))
 	}
-	// Exclusive is OPT-IN, not the default it used to be.
-	//
-	// Holding the lease locks every other caller out of the box for the whole
-	// run — 429 + Retry-After to everyone, every resident model evicted — which
-	// is a lot to charge for a benchmark on a machine that is also serving. A
-	// shared run instead waits out the backpressure (llm-bench retries 429
-	// without limit) and subtracts the waiting from its timings, so the numbers
-	// still describe the model rather than the queue.
-	//
-	// The cost is cold passes: they need eviction rights to prove anything, so a
-	// shared run skips them and records the skip. Ask for exclusive when the
-	// cold path is what you came to measure.
-	if opts.Exclusive {
-		args = append(args, "--exclusive")
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, opts.Bin, args...)
-	// The bench presents this key so the lease serves it while everyone else is
-	// turned away, and carries the admin token so it can drive load/unload.
+	// The bench presents this key as its caller identity, and carries the admin
+	// token so it can still drive load/unload.
 	cmd.Env = append(os.Environ(), "CORRALLM_BENCH_KEY="+key)
 	// llm-bench resolves its MCP helper (llm-bench-mcp) from local/bin RELATIVE
 	// TO ITS CWD, or from $PATH. corrallm's cwd is wherever corrallm was
@@ -232,7 +190,6 @@ func (b *BenchRunner) Start(
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
-		endLease(key)
 		b.mu.Unlock()
 		return BenchRunStatus{}, err
 	}
@@ -251,7 +208,6 @@ func (b *BenchRunner) Start(
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		endLease(key)
 		b.mu.Lock()
 		b.running = false
 		b.mu.Unlock()
@@ -266,10 +222,6 @@ func (b *BenchRunner) Start(
 		}
 		werr := cmd.Wait()
 		cancel()
-		// Release on EVERY exit path. A lease that outlives its run turns a
-		// finished benchmark into an ongoing outage; the lease's own TTL is the
-		// backstop, not the plan.
-		endLease(key)
 		b.mu.Lock()
 		b.running = false
 		b.mu.Unlock()

@@ -2072,9 +2072,10 @@ function BenchTab({ name }: { name: string }) {
       </Panel>
 
       {running && (
-        <Alert severity="warning">
-          <AlertTitle>Bench running — exclusive mode</AlertTitle>
-          Models are being evicted and all other callers are receiving 429 + Retry-After.
+        <Alert severity="info">
+          <AlertTitle>Bench running</AlertTitle>
+          The run shares the box — other callers keep serving. It will use GPU time, so
+          expect some contention.
         </Alert>
       )}
 
@@ -2139,14 +2140,14 @@ function BenchTab({ name }: { name: string }) {
       </Panel>
 
       <Dialog open={confirming} onClose={() => setConfirming(false)}>
-        <DialogTitle>Bench {name} in exclusive mode?</DialogTitle>
+        <DialogTitle>Bench {name}?</DialogTitle>
         <DialogContent dividers>
           <Typography variant="body2" component="div">
             Selected: <b>{[...checked].join(', ') || 'nothing'}</b>
-            <Alert severity="warning" sx={{ mt: 2 }}>
-              Models are <b>evicted</b> so measurements are uncontended, and every other caller
-              receives <b>429 + Retry-After</b> until the run finishes. The lease self-expires, so
-              a crashed run cannot lock the server permanently.
+            <Alert severity="info" sx={{ mt: 2 }}>
+              The run shares the box: it evicts nothing and turns nobody away. It queues for
+              slots like any other caller, waits out <b>429 + Retry-After</b> backpressure and
+              subtracts that wait from its timings. It will still consume GPU time.
             </Alert>
           </Typography>
         </DialogContent>
@@ -2154,13 +2155,12 @@ function BenchTab({ name }: { name: string }) {
           <Button onClick={() => setConfirming(false)}>Cancel</Button>
           <Button
             variant="contained"
-            color="warning"
             onClick={() => {
               setConfirming(false)
               run.mutate()
             }}
           >
-            Evict and run
+            Run
           </Button>
         </DialogActions>
       </Dialog>
