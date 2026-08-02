@@ -205,7 +205,7 @@ func TestJudgeEndToEnd(t *testing.T) {
 			ChecksPassed: 1, ChecksTotal: 1, Pass: true,
 		},
 	}
-	if err := report.WriteAll(dir, "t", rows, ""); err != nil {
+	if err := report.WriteAll(dir, "t", rows); err != nil {
 		t.Fatal(err)
 	}
 	// Persist a transcript so the judge uses source=transcript.
@@ -295,7 +295,7 @@ func TestJudgeNonAdversarialNullsInjection(t *testing.T) {
 		Prompt: "fix", Checks: []check.Result{{Kind: "cmd_ok", Desc: "cmd_ok", Pass: true}},
 		ChecksPassed: 1, ChecksTotal: 1, Pass: true,
 	}}
-	if err := report.WriteAll(dir, "t", rows, ""); err != nil {
+	if err := report.WriteAll(dir, "t", rows); err != nil {
 		t.Fatal(err)
 	}
 	fake := &fakeJudge{args: []string{

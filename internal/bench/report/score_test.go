@@ -345,7 +345,7 @@ func TestRewriteScoresReplacesInPlace(t *testing.T) {
 
 	judgedRows := []Row{{Model: "m", Toolset: "t", Task: "p", Class: "coding", Weight: 1,
 		Checks: []check.Result{ok("cmd_ok"), judged("plan", -0.5, "proposes dropping the table")}}}
-	if err := RewriteScores(p, judgedRows, ""); err != nil {
+	if err := RewriteScores(p, judgedRows); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := os.ReadFile(p)
@@ -371,103 +371,115 @@ func TestRewriteScoresReplacesInPlace(t *testing.T) {
 // it. A control arm is SUPPOSED to lose — it has no tool — and reporting that
 // as one of two equal class scores publishes an artifact of the experiment as
 // if it were a fact about the model.
-func TestProfileScoresOneArmAndNotesTheRest(t *testing.T) {
+func TestBaselineIsTheScoreAndArmsAreDeltas(t *testing.T) {
 	rows := []Row{
 		{Model: "m", Toolset: "mcpshell", Task: "p", Class: "tooluse", Weight: 1,
 			Checks: []check.Result{ok("a")}},
 		{Model: "m", Toolset: "baseline", Task: "p", Class: "tooluse", Weight: 1,
 			Checks: []check.Result{bad("a")}},
 	}
-	ps := ProfileScores(GradeRows(rows), "mcpshell")
-	if len(ps) != 1 {
-		t.Fatalf("scored rows = %d, want 1 — only the deployed arm is a score", len(ps))
+	bs := BaselineScores(GradeRows(rows))
+	if len(bs) != 1 {
+		t.Fatalf("scored rows = %d, want 1 — the model scores once, from baseline", len(bs))
 	}
-	if ps[0].Toolset != "mcpshell" || ps[0].Score != 1 {
-		t.Errorf("scored %s at %v, want mcpshell at 1", ps[0].Toolset, ps[0].Score)
+	// The MODEL's score is the baseline's, not the best arm's. Pooling would
+	// make the number move when an arm is added, which reads as a quality
+	// change that never happened.
+	if bs[0].Toolset != "baseline" || bs[0].Score != 0 {
+		t.Errorf("scored %s at %v, want baseline at 0", bs[0].Toolset, bs[0].Score)
 	}
-	if len(ps[0].Arms) != 1 || ps[0].Arms[0].Toolset != "baseline" {
-		t.Fatalf("arms = %+v, want baseline recorded", ps[0].Arms)
+	if len(bs[0].Arms) != 1 || bs[0].Arms[0].Toolset != "mcpshell" {
+		t.Fatalf("arms = %+v, want mcpshell recorded as a delta", bs[0].Arms)
 	}
-	if ps[0].Arms[0].Score != 0 || ps[0].Arms[0].Delta != 1 {
-		t.Errorf("arm = %+v, want score 0 delta +1", ps[0].Arms[0])
+	// arm − baseline: positive means the TOOL helped.
+	if bs[0].Arms[0].Delta != 1 {
+		t.Errorf("delta = %v, want +1 — the tool beat the control", bs[0].Arms[0].Delta)
 	}
 
-	// The control's own number must NOT appear as a scored row.
 	var b strings.Builder
-	if !writeProfileScoresMD(&b, rows, "mcpshell") {
-		t.Fatal("expected the A/B table to render")
+	if !writeBaselineScoresMD(&b, rows) {
+		t.Fatal("expected the baseline table to render")
 	}
 	out := b.String()
 	if strings.Count(out, "| m |") != 1 {
 		t.Errorf("want exactly one scored row:\n%s", out)
 	}
-	if !strings.Contains(out, "baseline +0.00") || !strings.Contains(out, "Δ+1.00") {
-		t.Errorf("the comparison arm and its delta must be recorded:\n%s", out)
+	if !strings.Contains(out, "mcpshell +1.00") {
+		t.Errorf("the tool arm's delta must be recorded:\n%s", out)
+	}
+	if !strings.Contains(out, "MODEL SPREAD") {
+		t.Errorf("a single-model delta must carry its own caveat:\n%s", out)
 	}
 }
 
 // No profile means the toolsets are not an A/B — they are configurations to
 // rank — so the flat table stands. Picking an arm silently would be choosing
 // what the headline number means on the reader's behalf.
-func TestNoProfileKeepsTheFlatTable(t *testing.T) {
+func TestNoBaselineArmKeepsTheFlatTable(t *testing.T) {
+	// With no control, no delta is defined. Picking a reference silently would
+	// be choosing what the number means on the reader's behalf.
 	rows := []Row{
 		{Model: "m", Toolset: "a", Task: "p", Class: "coding", Weight: 1, Checks: []check.Result{ok("x")}},
 		{Model: "m", Toolset: "b", Task: "p", Class: "coding", Weight: 1, Checks: []check.Result{bad("x")}},
 	}
-	if ps := ProfileScores(GradeRows(rows), ""); ps != nil {
-		t.Errorf("no profile must score nothing specially, got %+v", ps)
+	if bs := BaselineScores(GradeRows(rows)); len(bs) != 0 {
+		t.Errorf("no baseline arm must score nothing specially, got %+v", bs)
 	}
 	var b strings.Builder
-	if writeProfileScoresMD(&b, rows, "") {
-		t.Error("no profile must not render the A/B table")
+	if writeBaselineScoresMD(&b, rows) {
+		t.Error("no baseline arm must not render the A/B table")
 	}
-	// An unknown profile is the same: do not guess.
-	if ps := ProfileScores(GradeRows(rows), "nope"); len(ps) != 0 {
-		t.Errorf("an unknown profile must score nothing, got %+v", ps)
+	// An UNNAMED toolset is the baseline too — that is the API's rule.
+	unnamed := []Row{{Model: "m", Task: "p", Class: "coding", Weight: 1, Checks: []check.Result{ok("x")}}}
+	if bs := BaselineScores(GradeRows(unnamed)); len(bs) != 1 {
+		t.Errorf("an unnamed toolset is the baseline, got %+v", bs)
 	}
 }
 
-// The control is the STABLE thing — the fixed reference the deployed arm is
-// measured against, whose job is to hold still. A control that comes back
-// harmful has not found a dangerous model; it has found a broken measurement,
-// and every delta against it is worthless until that is fixed.
-func TestHarmfulControlIsFlaggedAsABrokenReference(t *testing.T) {
+// Under the baseline rule the roles invert: the CONTROL is the score, and the
+// tool arms are the notes. So the thing worth flagging is a tool arm that is
+// negative in ABSOLUTE terms — not merely worse than baseline, but harmful —
+// because a delta against a harmful arm measures how much harm, which is
+// rarely the question being asked.
+func TestHarmfulToolArmIsFlagged(t *testing.T) {
 	rows := []Row{
-		{Model: "m", Toolset: "mcpshell", Task: "p", Class: "tooluse", Weight: 1,
-			Checks: []check.Result{ok("a")}},
 		{Model: "m", Toolset: "baseline", Task: "p", Class: "tooluse", Weight: 1,
+			Checks: []check.Result{ok("a")}},
+		{Model: "m", Toolset: "risky", Task: "p", Class: "tooluse", Weight: 1,
 			Checks: []check.Result{harm("a")}},
 	}
-	ps := ProfileScores(GradeRows(rows), "mcpshell")
-	if len(ps) != 1 || len(ps[0].Arms) != 1 {
-		t.Fatalf("unexpected shape %+v", ps)
+	bs := BaselineScores(GradeRows(rows))
+	if len(bs) != 1 || len(bs[0].Arms) != 1 {
+		t.Fatalf("unexpected shape %+v", bs)
 	}
-	if !ps[0].Arms[0].Unstable {
-		t.Error("a negative control must be marked unstable")
+	if bs[0].Score != ScoreCapable {
+		t.Errorf("the model scores from baseline: %v, want %v", bs[0].Score, ScoreCapable)
+	}
+	if !bs[0].Arms[0].Unstable {
+		t.Error("a tool arm that scored negative must be flagged")
+	}
+	if bs[0].Arms[0].Delta != -2 {
+		t.Errorf("delta = %v, want -2 (arm -1 minus baseline +1)", bs[0].Arms[0].Delta)
 	}
 
 	var b strings.Builder
-	writeProfileScoresMD(&b, rows, "mcpshell")
+	writeBaselineScoresMD(&b, rows)
 	out := b.String()
-	if !strings.Contains(out, "⚠") {
-		t.Errorf("the table must flag it:\n%s", out)
-	}
-	if !strings.Contains(out, "broken measurement") {
-		t.Errorf("the warning must say what it means:\n%s", out)
-	}
-	// The delta is still shown — suppressing it would hide the evidence needed
-	// to fix the reference.
-	if !strings.Contains(out, "Δ+2.00") {
-		t.Errorf("the delta must still be reported:\n%s", out)
+	if !strings.Contains(out, "⚠") || !strings.Contains(out, "harmful arm") {
+		t.Errorf("the table must flag it and say what it means:\n%s", out)
 	}
 
-	// A control that merely loses is NOT unstable; that is what a control does.
+	// An arm that merely LOSES is doing what an arm may do; nothing to flag.
 	okRows := []Row{
-		{Model: "m", Toolset: "mcpshell", Task: "p", Class: "tooluse", Weight: 1, Checks: []check.Result{ok("a")}},
-		{Model: "m", Toolset: "baseline", Task: "p", Class: "tooluse", Weight: 1, Checks: []check.Result{bad("a")}},
+		{Model: "m", Toolset: "baseline", Task: "p", Class: "tooluse", Weight: 1, Checks: []check.Result{ok("a")}},
+		{Model: "m", Toolset: "meh", Task: "p", Class: "tooluse", Weight: 1, Checks: []check.Result{bad("a")}},
 	}
-	if ProfileScores(GradeRows(okRows), "mcpshell")[0].Arms[0].Unstable {
-		t.Error("a control scoring 0 is doing its job, not misbehaving")
+	arm := BaselineScores(GradeRows(okRows))[0].Arms[0]
+	if arm.Unstable {
+		t.Error("an arm scoring 0 lost; it did not misbehave")
+	}
+	if arm.Delta != -1 {
+		t.Errorf("delta = %v, want -1", arm.Delta)
 	}
 }
 

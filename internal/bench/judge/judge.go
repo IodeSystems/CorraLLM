@@ -25,12 +25,8 @@ import (
 
 // Config controls the judge phase.
 type Config struct {
-	Model string // judge model (corrallm lane), e.g. "chat"
-	// Profile is the scored toolset, carried so a re-rendered score table keeps
-	// the A/B shape the run was written with rather than silently flattening to
-	// one row per arm.
-	Profile            string
-	MaxTranscriptBytes int // truncate transcript/journal body to this (middle-out)
+	Model              string // judge model (corrallm lane), e.g. "chat"
+	MaxTranscriptBytes int    // truncate transcript/journal body to this (middle-out)
 }
 
 const defaultMaxTranscriptBytes = 65536
@@ -150,7 +146,7 @@ func Judge(ctx context.Context, runDir string, cfg Config, newRunner func(model 
 		// the deterministic-only upper bound, and it stayed that way after
 		// judging. A report whose headline number silently predates the verdicts
 		// in the same directory is worse than no table.
-		if err := report.RewriteScores(filepath.Join(runDir, "report.md"), rows, cfg.Profile); err != nil {
+		if err := report.RewriteScores(filepath.Join(runDir, "report.md"), rows); err != nil {
 			return results, fmt.Errorf("refresh report.md class scores: %w", err)
 		}
 	}

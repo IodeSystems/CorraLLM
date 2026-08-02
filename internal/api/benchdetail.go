@@ -283,6 +283,26 @@ type BenchArmComparisonView struct {
 	Losses           int     `json:"losses"`
 	Ties             int     `json:"ties"`
 
+	// ModelsHelped/Hurt/Unmoved count MODELS by the sign of their own mean
+	// delta — a different question from Wins/Losses, which count probes.
+	//
+	// An arm can win most probes and still hurt a model, if the probes it wins
+	// are concentrated in the models it suits. That is the finding a mean
+	// hides: whether a tool generalises, or whether it helped the models it
+	// happened to meet.
+	ModelsHelped  int `json:"modelsHelped"`
+	ModelsHurt    int `json:"modelsHurt"`
+	ModelsUnmoved int `json:"modelsUnmoved"`
+	// MixedAcrossModels is set when the per-model deltas do not share a sign:
+	// this arm helped at least one model and hurt at least one other. The mean
+	// is then an average of disagreeing evidence and should not be read as a
+	// verdict — the per-model rows are the result.
+	//
+	// It needs a model SPREAD to ever be true. One model can never disagree
+	// with itself, so a single-model run reports false here and means nothing
+	// by it.
+	MixedAcrossModels bool `json:"mixedAcrossModels"`
+
 	ByModel []BenchArmModelView `json:"byModel"`
 }
 
@@ -474,8 +494,21 @@ func (h *Handlers) BenchArmMatrix(ctx context.Context, _ *struct{}) (*BenchArmMa
 				m.ScoreDelta /= float64(m.Probes)
 				m.TokenDelta /= m.Probes
 				m.WallDeltaMS /= int64(m.Probes)
+				switch {
+				case m.ScoreDelta > 0:
+					v.ModelsHelped++
+				case m.ScoreDelta < 0:
+					v.ModelsHurt++
+				default:
+					v.ModelsUnmoved++
+				}
 				v.ByModel = append(v.ByModel, *m)
 			}
+			// Does this arm help GENERALLY, or did it help the models it
+			// happened to meet? A mean cannot answer that: +0.3/+0.4/-0.5 and
+			// +0.1/+0.1/+0.0 land in the same place while telling opposite
+			// stories, and only one of them is a tool you would ship.
+			v.MixedAcrossModels = v.ModelsHelped > 0 && v.ModelsHurt > 0
 			entry.Arms = append(entry.Arms, v)
 		}
 		if len(entry.Arms) == 0 {

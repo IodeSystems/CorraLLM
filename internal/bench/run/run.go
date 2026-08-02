@@ -438,11 +438,11 @@ func Run(ctx context.Context, opts Options) ([]Row, string, error) {
 	// which probe produced it.
 	PublishProbeResults(ctx, resid, ts, outDir, rows, skips)
 
-	if err := report.WriteAll(outDir, ts, rows, opts.Config.Profile); err != nil {
+	if err := report.WriteAll(outDir, ts, rows); err != nil {
 		return rows, outDir, err
 	}
 	if opts.Judge {
-		jc := judge.Config{Model: opts.Config.Judge.Model, MaxTranscriptBytes: opts.Config.Judge.MaxTranscriptBytes, Profile: opts.Config.Profile}
+		jc := judge.Config{Model: opts.Config.Judge.Model, MaxTranscriptBytes: opts.Config.Judge.MaxTranscriptBytes}
 		if _, err := judge.Judge(ctx, outDir, jc, opts.NewRunner); err != nil {
 			return rows, outDir, fmt.Errorf("judge phase: %w", err)
 		}

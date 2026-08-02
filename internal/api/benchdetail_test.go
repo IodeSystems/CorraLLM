@@ -394,3 +394,88 @@ func TestBenchArmMatrix_NoStoreIsEmptyNotNil(t *testing.T) {
 		t.Error("capabilities must serialize as [] not null")
 	}
 }
+
+// "Helps model 1 and 2 but regresses on 3" is a finding, and a mean cannot
+// state it: +0.3/+0.4/-0.5 and +0.1/+0.1/+0.0 land in nearly the same place
+// while telling opposite stories, and only one of them is a tool you ship.
+func TestBenchArmMatrix_FlagsDisagreementAcrossModels(t *testing.T) {
+	h, ctx := probeHandlers(t)
+	publish(t, h, ctx, "r1",
+		// a: the arm helps.
+		BenchProbePublish{Model: "a", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "json", RunMode: "warm", Stages: 10, StagesPassed: 6},
+		BenchProbePublish{Model: "a", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "toon", RunMode: "warm", Stages: 10, StagesPassed: 9},
+		// b: the arm helps.
+		BenchProbePublish{Model: "b", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "json", RunMode: "warm", Stages: 10, StagesPassed: 6},
+		BenchProbePublish{Model: "b", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "toon", RunMode: "warm", Stages: 10, StagesPassed: 10},
+		// c: the arm HURTS. This is the row the mean buries.
+		BenchProbePublish{Model: "c", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "json", RunMode: "warm", Stages: 10, StagesPassed: 9},
+		BenchProbePublish{Model: "c", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "toon", RunMode: "warm", Stages: 10, StagesPassed: 4},
+	)
+	out, err := h.BenchArmMatrix(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := out.Body.Capabilities[0].Arms[0]
+	if a.ModelsHelped != 2 || a.ModelsHurt != 1 || a.ModelsUnmoved != 0 {
+		t.Errorf("models helped/hurt/unmoved = %d/%d/%d, want 2/1/0",
+			a.ModelsHelped, a.ModelsHurt, a.ModelsUnmoved)
+	}
+	if !a.MixedAcrossModels {
+		t.Error("an arm that helped two models and hurt a third must be flagged mixed")
+	}
+	// The mean is genuinely positive — which is exactly why the flag has to
+	// exist rather than the reader being expected to notice.
+	if a.MeanScoreDelta <= 0 {
+		t.Errorf("mean = %v; the point is that it looks like a win", a.MeanScoreDelta)
+	}
+}
+
+// An arm that helps everywhere is not mixed. Counting models is a different
+// question from counting probes, and the two must not be conflated.
+func TestBenchArmMatrix_ConsistentArmIsNotFlagged(t *testing.T) {
+	h, ctx := probeHandlers(t)
+	publish(t, h, ctx, "r1",
+		BenchProbePublish{Model: "a", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "json", RunMode: "warm", Stages: 10, StagesPassed: 5},
+		BenchProbePublish{Model: "a", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "toon", RunMode: "warm", Stages: 10, StagesPassed: 7},
+		BenchProbePublish{Model: "b", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "json", RunMode: "warm", Stages: 10, StagesPassed: 5},
+		BenchProbePublish{Model: "b", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "toon", RunMode: "warm", Stages: 10, StagesPassed: 6},
+	)
+	out, err := h.BenchArmMatrix(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := out.Body.Capabilities[0].Arms[0]
+	if a.MixedAcrossModels {
+		t.Error("an arm that helped both models is not mixed")
+	}
+	if a.ModelsHelped != 2 || a.ModelsHurt != 0 {
+		t.Errorf("helped/hurt = %d/%d, want 2/0", a.ModelsHelped, a.ModelsHurt)
+	}
+
+	// One model can never disagree with itself: a single-model run must not
+	// report mixed, and must not be read as evidence that a tool generalises.
+	h2, ctx2 := probeHandlers(t)
+	publish(t, h2, ctx2, "r1",
+		BenchProbePublish{Model: "solo", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "json", RunMode: "warm", Stages: 10, StagesPassed: 5},
+		BenchProbePublish{Model: "solo", Probe: "p1", Capability: "chat", Toolset: "baseline",
+			ToolFormat: "toon", RunMode: "warm", Stages: 10, StagesPassed: 9},
+	)
+	out2, err := h2.BenchArmMatrix(ctx2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out2.Body.Capabilities[0].Arms[0].MixedAcrossModels {
+		t.Error("a single-model run cannot be mixed")
+	}
+}

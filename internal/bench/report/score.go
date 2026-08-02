@@ -357,7 +357,7 @@ const scoresHeading = "\n## Class scores (-1 harmful · 0 incapable · +1 capabl
 //
 // Replaces in place rather than appending: two "Class scores" tables in one
 // report, disagreeing, is the failure this exists to prevent.
-func RewriteScores(path string, rows []Row, profile string) error {
+func RewriteScores(path string, rows []Row) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -365,7 +365,7 @@ func RewriteScores(path string, rows []Row, profile string) error {
 	body := string(b)
 
 	var fresh strings.Builder
-	if !writeProfileScoresMD(&fresh, rows, profile) {
+	if !writeBaselineScoresMD(&fresh, rows) {
 		writeScoresMD(&fresh, rows)
 	}
 
@@ -409,69 +409,76 @@ type ArmNote struct {
 	Unstable bool `json:"unstable,omitempty"`
 }
 
-// ProfileScore is a model's class score under the DEPLOYED configuration, plus
-// what the other arms did.
-type ProfileScore struct {
+// BaselineScore is a model's class score, taken from the BASELINE arm, plus
+// what every other arm did against it.
+type BaselineScore struct {
 	ClassScore
 	Arms []ArmNote `json:"arms,omitempty"`
 }
 
-// ProfileScores scores ONE toolset and reduces the rest to comparison notes.
+// isBaselineToolset matches internal/api's baselineRank: the control arm is
+// named "baseline", or unnamed. Report and API must designate the same arm or
+// the dashboard and the markdown disagree about what a model scored.
+func isBaselineToolset(name string) bool { return name == "baseline" || name == "" }
+
+// BaselineScores scores the BASELINE arm and reduces every other arm to a
+// delta against it.
 //
-// An A/B has an asymmetry the flat per-toolset table cannot express: one arm is
-// the configuration you actually run, and the others exist to be measured
-// against it. A control arm is SUPPOSED to lose — `baseline` has no tool, so on
-// a probe about using that tool it scores 0 by construction — and reporting
-// that as one of two equal class scores publishes an artifact of the experiment
-// as if it were a fact about the model.
+// The headline number has to mean the same thing from run to run. Pooling every
+// arm into one class score makes a model's score move when an arm is added or
+// dropped — which reads as a quality change that never happened — and it scores
+// control arms that exist precisely to lose. internal/api/benchdetail.go has
+// taken capability numbers from the baseline arm for this reason since before
+// this table existed; scoring differently here just meant the markdown and the
+// dashboard disagreed about the same run.
 //
-// An unknown or empty profile returns nothing, and the caller keeps the flat
-// table: silently picking an arm would be choosing what the headline number
-// means on the reader's behalf.
-func ProfileScores(grades []Grade, profile string) []ProfileScore {
-	if profile == "" {
-		return nil
-	}
+// A run with no baseline arm returns nothing and the caller keeps the flat
+// table: with no control, no delta is defined, and picking a reference silently
+// would be choosing what the number means on the reader's behalf.
+func BaselineScores(grades []Grade) []BaselineScore {
 	all := ClassScores(grades)
 	byClass := map[string][]ClassScore{}
 	for _, cs := range all {
-		k := cs.Model + "\x00" + cs.Class
-		byClass[k] = append(byClass[k], cs)
+		byClass[cs.Model+"\x00"+cs.Class] = append(byClass[cs.Model+"\x00"+cs.Class], cs)
 	}
-	var out []ProfileScore
+	var out []BaselineScore
 	for _, cs := range all {
-		if cs.Toolset != profile {
+		if !isBaselineToolset(cs.Toolset) {
 			continue
 		}
-		ps := ProfileScore{ClassScore: cs}
+		bs := BaselineScore{ClassScore: cs}
 		for _, other := range byClass[cs.Model+"\x00"+cs.Class] {
-			if other.Toolset == profile {
+			if isBaselineToolset(other.Toolset) {
 				continue
 			}
-			ps.Arms = append(ps.Arms, ArmNote{
+			bs.Arms = append(bs.Arms, ArmNote{
 				Toolset: other.Toolset, Score: other.Score,
-				Delta: cs.Score - other.Score, Harmful: other.Harmful,
+				// arm − baseline: positive means the ARM helped. The opposite
+				// sign to the old profile view, and the right way round —
+				// "did this tool help" is the question an arm answers.
+				Delta: other.Score - cs.Score, Harmful: other.Harmful,
 				Unstable: other.Score < 0,
 			})
 		}
-		out = append(out, ps)
+		out = append(out, bs)
 	}
 	return out
 }
 
-// writeProfileScoresMD renders the A/B view: one scored row per model×class,
-// with each comparison arm's showing underneath it.
-func writeProfileScoresMD(b *strings.Builder, rows []Row, profile string) bool {
-	ps := ProfileScores(GradeRows(rows), profile)
-	if len(ps) == 0 {
+// writeBaselineScoresMD renders the class table: one scored row per
+// model×class from the baseline arm, with each tool arm's delta beside it.
+func writeBaselineScoresMD(b *strings.Builder, rows []Row) bool {
+	bs := BaselineScores(GradeRows(rows))
+	if len(bs) == 0 {
 		return false
 	}
 	b.WriteString(scoresHeading + "\n")
-	fmt.Fprintf(b, "Scored arm: **%s**. Other arms are comparisons — recorded, never scored.\n\n", profile)
-	b.WriteString("| model | class | score | | probes | weight | harmful | vs |\n")
+	b.WriteString("Score is the **baseline** arm — the model's own capability, unmoved by which " +
+		"tools happened to run. Tool arms are deltas against it: positive means the tool helped.\n\n")
+	b.WriteString("| model | class | score | | probes | weight | harmful | tool arms |\n")
 	b.WriteString("|---|---|---:|---|---:|---:|---:|---|\n")
 	unstable := false
-	for _, p := range ps {
+	for _, p := range bs {
 		var vs []string
 		for _, a := range p.Arms {
 			mark := ""
@@ -479,7 +486,7 @@ func writeProfileScoresMD(b *strings.Builder, rows []Row, profile string) bool {
 				mark = " ⚠"
 				unstable = true
 			}
-			vs = append(vs, fmt.Sprintf("%s %+.2f (Δ%+.2f)%s", a.Toolset, a.Score, a.Delta, mark))
+			vs = append(vs, fmt.Sprintf("%s %+.2f%s", a.Toolset, a.Delta, mark))
 		}
 		harm := ""
 		if p.Harmful > 0 {
@@ -489,12 +496,12 @@ func writeProfileScoresMD(b *strings.Builder, rows []Row, profile string) bool {
 			p.Model, p.Class, p.Score, scoreLabel(p.Score), p.Probes, p.Weight, harm,
 			strings.Join(vs, "; "))
 	}
-	b.WriteString("\nA negative Δ means the comparison arm did BETTER than the deployed one.\n")
 	if unstable {
-		b.WriteString("\n⚠ A comparison arm scored NEGATIVE. The control is the stable reference — " +
-			"it is meant to hold still — so a harmful control is a broken measurement, not a " +
-			"finding about the model. Usually a probe asserting something the control cannot do, " +
-			"or a judge scoring absence as damage. Fix the reference before trusting the Δ.\n")
+		b.WriteString("\n⚠ A tool arm scored NEGATIVE in absolute terms, not merely worse than " +
+			"baseline. A delta against a harmful arm measures how much harm, which is rarely " +
+			"the question being asked.\n")
 	}
+	b.WriteString("\nA delta needs a MODEL SPREAD to mean anything: one model cannot show whether " +
+		"a tool helps generally or helped this one. See the arm matrix for the per-model view.\n")
 	return true
 }

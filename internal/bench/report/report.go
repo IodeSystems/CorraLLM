@@ -158,14 +158,14 @@ func SummaryKey(model, toolset, task string) string {
 
 // WriteAll writes runs.jsonl, summary.csv, and report.md into outDir. The judge
 // columns in summary.csv are left empty (P1 fills them via WriteSummaryCSV).
-func WriteAll(outDir, ts string, rows []Row, profile string) error {
+func WriteAll(outDir, ts string, rows []Row) error {
 	if err := WriteRunsJSONL(filepath.Join(outDir, "runs.jsonl"), rows); err != nil {
 		return err
 	}
 	if err := WriteSummaryCSV(filepath.Join(outDir, "summary.csv"), rows, nil); err != nil {
 		return err
 	}
-	return writeReportMD(filepath.Join(outDir, "report.md"), ts, rows, profile)
+	return writeReportMD(filepath.Join(outDir, "report.md"), ts, rows)
 }
 
 // WriteRunsJSONL rewrites the run's rows. Exported for the judge phase, which
@@ -334,15 +334,15 @@ func WriteSummaryCSV(path string, rows []Row, judge map[string]JudgeScores) erro
 
 // ── report.md ───────────────────────────────────────────────────────
 
-func writeReportMD(path, ts string, rows []Row, profile string) error {
+func writeReportMD(path, ts string, rows []Row) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# llm-bench report — %s\n\n", ts)
 
 	// Scores first: the signed class score is the headline, and a pass rate
 	// that cannot tell harm from incapacity should not be what a reader sees
-	// before it. With a profile set the run is an A/B — one arm scored, the
-	// rest recorded as deltas.
-	if !writeProfileScoresMD(&b, rows, profile) {
+	// before it. With a baseline arm present the run is an A/B — the baseline
+	// is the score, the tool arms are deltas.
+	if !writeBaselineScoresMD(&b, rows) {
 		writeScoresMD(&b, rows)
 	}
 
