@@ -140,14 +140,40 @@ type (
 // turn COMPLETES — so a combo hung inside its first request is otherwise
 // indistinguishable from one that has barely started.
 type heartbeat struct {
-	mu   sync.Mutex
-	last time.Time
+	mu sync.Mutex
+	// started is when the FIRST request opened; last is when the model last
+	// sent a chunk. Both, because neither alone is enough.
+	//
+	// Marking on every open was wrong and shipped that way: agentkit retries a
+	// failed request, so open/fail/reopen refreshed the clock forever and a
+	// combo making no progress at all looked healthy. Marking only on chunks
+	// is also wrong — with no chunk ever, there is no timestamp to measure
+	// silence from, and the guard never arms.
+	//
+	// So silence runs from whichever came later: the first request opening, or
+	// the last byte received.
+	started time.Time
+	last    time.Time
 }
 
-// mark records that the model just produced something.
+// open records that a request has been issued. Only the FIRST is recorded — a
+// retry is not progress, and treating it as such is what let a retry loop
+// defeat the stall guard.
 //
 // Nil-safe: a runner built without a heartbeat loses stall detection, which is
 // a degraded measurement. Panicking mid-bench instead would lose the run.
+func (h *heartbeat) open() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.started.IsZero() {
+		h.started = time.Now()
+	}
+	h.mu.Unlock()
+}
+
+// mark records that the model just produced something. This IS progress.
 func (h *heartbeat) mark() {
 	if h == nil {
 		return
@@ -166,10 +192,14 @@ func (h *heartbeat) idleFor(now time.Time) time.Duration {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.last.IsZero() {
-		return 0
+	from := h.started
+	if h.last.After(from) {
+		from = h.last
 	}
-	return now.Sub(h.last)
+	if from.IsZero() {
+		return 0 // no request yet: setup, not silence
+	}
+	return now.Sub(from)
 }
 
 type stageCounters struct {
@@ -1447,11 +1477,16 @@ func (m *meteredRunner) ChatStream(ctx context.Context, msgs []llm.Message, tool
 		}
 		opts = &o
 	}
+	// BEFORE the call, not after. The hang this guard exists to catch is inside
+	// ChatStream itself — the request goes out and the stream never opens — so
+	// arming afterwards meant the clock never started for exactly the failure
+	// it was written for. Observed: ocr-survey-corners sat 10 minutes with
+	// turns=0 and the guard silent, because `open` was one line too late.
+	m.hb.open() // a RETRY must not re-arm it; see heartbeat.open
 	in, err := m.inner.ChatStream(ctx, msgs, tools, opts)
 	if err != nil {
 		return nil, err
 	}
-	m.hb.mark() // the request is open; the stall clock starts here, not at turn end
 	out := make(chan llm.StreamChunk, 64)
 	go func() {
 		defer close(out)

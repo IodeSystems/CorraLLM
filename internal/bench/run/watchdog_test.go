@@ -174,3 +174,85 @@ func TestWatchdogIgnoresSetupBeforeTheFirstRequest(t *testing.T) {
 		t.Fatalf("setup was mistaken for a stall: %v", context.Cause(ctx))
 	}
 }
+
+// The hole the first version shipped with: agentkit RETRIES a failed request,
+// so marking the heartbeat on every stream open meant open/fail/reopen
+// refreshed the clock forever. A combo making no progress at all looked
+// perfectly healthy, and the guard that exists to catch exactly that sat
+// through it.
+func TestWatchdogCatchesARetryLoopThatNeverProduces(t *testing.T) {
+	old, oldStall := watchdogTick, stallTimeout
+	watchdogTick, stallTimeout = 10*time.Millisecond, 80*time.Millisecond
+	defer func() { watchdogTick, stallTimeout = old, oldStall }()
+
+	hb := &heartbeat{}
+	ctx, cancel := execBudgetContext(context.Background(), time.Hour, nil, "m", hb.idleFor)
+	defer cancel()
+
+	// A request that opens, fails, and is reopened — forever, producing nothing.
+	go func() {
+		for i := 0; i < 200; i++ {
+			hb.open()
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("a retry loop that never produces a chunk must still be caught")
+	}
+	if !errors.Is(context.Cause(ctx), errStalled) {
+		t.Errorf("cause = %v, want errStalled", context.Cause(ctx))
+	}
+}
+
+// And the converse: a request that opens once and then streams is progress,
+// however long the whole answer takes.
+func TestWatchdogTreatsChunksAsProgressNotOpens(t *testing.T) {
+	old, oldStall := watchdogTick, stallTimeout
+	watchdogTick, stallTimeout = 10*time.Millisecond, 80*time.Millisecond
+	defer func() { watchdogTick, stallTimeout = old, oldStall }()
+
+	hb := &heartbeat{}
+	ctx, cancel := execBudgetContext(context.Background(), time.Hour, nil, "m", hb.idleFor)
+	defer cancel()
+
+	hb.open()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 30; i++ {
+			hb.mark()
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	<-done
+	if ctx.Err() != nil {
+		t.Fatalf("a streaming request was cancelled: %v", context.Cause(ctx))
+	}
+}
+
+// The guard's whole purpose is a request that never comes back — and the first
+// two versions could not see it, because the clock was armed AFTER
+// ChatStream returned. A call that blocks inside never reached the arming line,
+// so `started` stayed zero, idleFor reported 0 forever, and the combo sat out
+// its entire 10-minute budget in silence. Arm on ISSUE, not on acceptance.
+func TestHeartbeatArmsWhenTheRequestIsIssued(t *testing.T) {
+	hb := &heartbeat{}
+	// Nothing issued yet: setup, not silence.
+	if d := hb.idleFor(time.Now()); d != 0 {
+		t.Errorf("idle before any request = %v, want 0", d)
+	}
+	// Issue a request that never returns a chunk.
+	hb.open()
+	if d := hb.idleFor(time.Now().Add(time.Minute)); d < time.Minute {
+		t.Errorf("idle a minute after issuing = %v, want >= 1m — the clock must run "+
+			"from the request going out, not from a reply that never came", d)
+	}
+	// A chunk resets it.
+	hb.mark()
+	if d := hb.idleFor(time.Now()); d > time.Second {
+		t.Errorf("idle right after a chunk = %v, want ~0", d)
+	}
+}
