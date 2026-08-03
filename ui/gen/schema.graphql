@@ -79,7 +79,7 @@ type CorrallmQueryNamespace {
   ): corrallm_BenchJournalOutputBody @derived(operationId: "benchJournal")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
   benchProbeCatalog(
-    """Probe directory to describe (default: the server's configured one, or the built-in library)"""
+    """Comma-separated probe directories to describe (default: the server's configured ones, or the built-in library)"""
     probesDir: String
   ): corrallm_BenchCatalogOutputBody @derived(operationId: "benchProbeCatalog")
   benchProbeDetail(model: String!, probe: String!, runId: String!): corrallm_BenchProbeDetailOutputBody @derived(operationId: "benchProbeDetail")
@@ -131,6 +131,10 @@ type CorrallmQueryNamespace {
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
+  keys(
+    """Look back this far for keys seen in traffic (0 = all recorded usage)."""
+    windowHours: Long
+  ): corrallm_KeysOutputBody @derived(operationId: "keys")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -259,7 +263,7 @@ type CorrallmV1QueryNamespace {
   ): corrallm_BenchJournalOutputBody @derived(operationId: "benchJournal")
   benchPlan: corrallm_BenchPlanOutputBody @derived(operationId: "benchPlan")
   benchProbeCatalog(
-    """Probe directory to describe (default: the server's configured one, or the built-in library)"""
+    """Comma-separated probe directories to describe (default: the server's configured ones, or the built-in library)"""
     probesDir: String
   ): corrallm_BenchCatalogOutputBody @derived(operationId: "benchProbeCatalog")
   benchProbeDetail(model: String!, probe: String!, runId: String!): corrallm_BenchProbeDetailOutputBody @derived(operationId: "benchProbeDetail")
@@ -311,6 +315,10 @@ type CorrallmV1QueryNamespace {
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
+  keys(
+    """Look back this far for keys seen in traffic (0 = all recorded usage)."""
+    windowHours: Long
+  ): corrallm_KeysOutputBody @derived(operationId: "keys")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -543,7 +551,11 @@ type corrallm_BenchArmComparisonView {
   meanTokenDelta: Long!
   """Robust to one pathological probe dominating the mean."""
   medianScoreDelta: Float!
+  mixedAcrossModels: Boolean!
   models: Long!
+  modelsHelped: Long!
+  modelsHurt: Long!
+  modelsUnmoved: Long!
   probes: Long!
   runMode: String!
   ties: Long!
@@ -1263,6 +1275,16 @@ type corrallm_KeyDef {
   key: String!
 }
 
+type corrallm_KeyRow {
+  group: String!
+  hash: String!
+  key: String!
+  recognized: Boolean!
+  requests: Long!
+  """The group's fairshare weight, which is what actually schedules this caller."""
+  weight: Long!
+}
+
 type corrallm_KeySeries {
   """Caller key (empty = unkeyed)."""
   key: String!
@@ -1285,6 +1307,12 @@ type corrallm_KeyUsageRow {
   promptTokens: Long!
   """Request count."""
   requests: Long!
+}
+
+type corrallm_KeysOutputBody {
+  keys: [corrallm_KeyRow!]!
+  unknownAllowed: Boolean!
+  unknownGroup: String!
 }
 
 type corrallm_LaneDef {

@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as UsageRouteImport } from './routes/usage'
 import { Route as QuotaRouteImport } from './routes/quota'
 import { Route as ModelRouteImport } from './routes/model'
+import { Route as KeysRouteImport } from './routes/keys'
 import { Route as GroupsRouteImport } from './routes/groups'
 import { Route as ConfigRouteImport } from './routes/config'
 import { Route as BenchRouteImport } from './routes/bench'
@@ -34,6 +35,11 @@ const QuotaRoute = QuotaRouteImport.update({
 const ModelRoute = ModelRouteImport.update({
   id: '/model',
   path: '/model',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const KeysRoute = KeysRouteImport.update({
+  id: '/keys',
+  path: '/keys',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GroupsRoute = GroupsRouteImport.update({
@@ -83,6 +89,7 @@ export interface FileRoutesByFullPath {
   '/bench': typeof BenchRoute
   '/config': typeof ConfigRoute
   '/groups': typeof GroupsRoute
+  '/keys': typeof KeysRoute
   '/model': typeof ModelRoute
   '/quota': typeof QuotaRoute
   '/usage': typeof UsageRoute
@@ -96,6 +103,7 @@ export interface FileRoutesByTo {
   '/bench': typeof BenchRoute
   '/config': typeof ConfigRoute
   '/groups': typeof GroupsRoute
+  '/keys': typeof KeysRoute
   '/model': typeof ModelRoute
   '/quota': typeof QuotaRoute
   '/usage': typeof UsageRoute
@@ -110,6 +118,7 @@ export interface FileRoutesById {
   '/bench': typeof BenchRoute
   '/config': typeof ConfigRoute
   '/groups': typeof GroupsRoute
+  '/keys': typeof KeysRoute
   '/model': typeof ModelRoute
   '/quota': typeof QuotaRoute
   '/usage': typeof UsageRoute
@@ -125,6 +134,7 @@ export interface FileRouteTypes {
     | '/bench'
     | '/config'
     | '/groups'
+    | '/keys'
     | '/model'
     | '/quota'
     | '/usage'
@@ -138,6 +148,7 @@ export interface FileRouteTypes {
     | '/bench'
     | '/config'
     | '/groups'
+    | '/keys'
     | '/model'
     | '/quota'
     | '/usage'
@@ -151,6 +162,7 @@ export interface FileRouteTypes {
     | '/bench'
     | '/config'
     | '/groups'
+    | '/keys'
     | '/model'
     | '/quota'
     | '/usage'
@@ -165,6 +177,7 @@ export interface RootRouteChildren {
   BenchRoute: typeof BenchRoute
   ConfigRoute: typeof ConfigRoute
   GroupsRoute: typeof GroupsRoute
+  KeysRoute: typeof KeysRoute
   ModelRoute: typeof ModelRoute
   QuotaRoute: typeof QuotaRoute
   UsageRoute: typeof UsageRoute
@@ -194,6 +207,13 @@ declare module '@tanstack/react-router' {
       path: '/model'
       fullPath: '/model'
       preLoaderRoute: typeof ModelRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/keys': {
+      id: '/keys'
+      path: '/keys'
+      fullPath: '/keys'
+      preLoaderRoute: typeof KeysRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/groups': {
@@ -261,6 +281,7 @@ const rootRouteChildren: RootRouteChildren = {
   BenchRoute: BenchRoute,
   ConfigRoute: ConfigRoute,
   GroupsRoute: GroupsRoute,
+  KeysRoute: KeysRoute,
   ModelRoute: ModelRoute,
   QuotaRoute: QuotaRoute,
   UsageRoute: UsageRoute,

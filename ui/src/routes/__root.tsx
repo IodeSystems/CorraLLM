@@ -97,6 +97,7 @@ const NAV = [
   { to: '/activity', label: 'Activity' },
   { to: '/usage', label: 'Usage' },
   { to: '/groups', label: 'Groups' },
+  { to: '/keys', label: 'Keys' },
   { to: '/bench', label: 'Bench' },
   { to: '/quota', label: 'Quota' },
 ] as const
