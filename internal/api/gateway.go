@@ -379,6 +379,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UsageByKey)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "keys",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/keys",
+		Summary:     "Caller keys: configured lanes plus keys seen in traffic but never assigned.",
+		Tags:        []string{"observability"},
+	}, h.Keys)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "groups",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/groups",

@@ -442,7 +442,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	key := callerKey(r)
-	groupName, group := p.config().ResolveGroup(key)
+	groupName, group, recognized := p.config().ResolveGroupRecognized(key)
+	if !recognized && !p.config().UnknownKeys.Allowed() {
+		// Refusing a stranger is a POLICY, off by default: corrallm has always
+		// served any key, and an operator who turns this on is choosing to.
+		// 401 rather than 429 — this is not backpressure and no amount of
+		// retrying fixes it; the caller needs an operator, and the message
+		// says so rather than leaving them to retry into a wall.
+		http.Error(w, "unrecognized caller key: this corrallm requires keys to be "+
+			"assigned a priority group before it will serve them", http.StatusUnauthorized)
+		return
+	}
 	weight := group.EffectiveWeight()
 
 	// A cancellable context wrapping the request's own, so an operator can abort

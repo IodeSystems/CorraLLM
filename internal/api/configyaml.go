@@ -94,8 +94,24 @@ func (h *Handlers) EntryYAML(_ context.Context, in *EntryYAMLInput) (*EntryYAMLO
 			return nil, huma.Error404NotFound(fmt.Sprintf("no extension %q", in.Name))
 		}
 		v = e
+	case "key":
+		// A caller key's whole entry is the GROUP it belongs to, so its YAML is
+		// a bare string. Keys are the one part of the scheduling model with no
+		// management surface at all — every other kind is editable here while
+		// key→group needed a hand-edit and a restart, and it is the part that
+		// changes most, because keys are minted freely.
+		//
+		// Addressed by KEY, not by hash: the hash exists to give the UI a
+		// stable display identifier, and resolving it back would make this
+		// endpoint depend on a lookup that only holds while the key is
+		// configured — useless for ASSIGNING a key that is not yet in the map.
+		g, ok := cfg.Keys[in.Name]
+		if !ok {
+			return nil, huma.Error404NotFound(fmt.Sprintf("no caller key %q", in.Name))
+		}
+		v = g
 	default:
-		return nil, huma.Error400BadRequest("kind must be model, server, lane, group or extension")
+		return nil, huma.Error400BadRequest("kind must be model, server, lane, group, extension or key")
 	}
 	b, err := yaml.Marshal(v)
 	if err != nil {
@@ -190,8 +206,30 @@ func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*Conf
 					delete(c.Models, mn)
 				}
 			}
+		case "key":
+			var group string
+			if err := decode(&group); err != nil {
+				return err
+			}
+			group = strings.TrimSpace(group)
+			if group == "" {
+				return huma.Error400BadRequest("a key entry is the GROUP name it belongs to")
+			}
+			// Reject an unknown group rather than accepting it: ResolveGroup
+			// falls back silently, so a typo would look like a successful
+			// assignment and quietly leave the caller in the fallback lane at
+			// weight 1 — the failure this endpoint exists to end.
+			if _, ok := c.PriorityGroups[group]; !ok && group != c.UnknownKeys.FallbackGroup() {
+				return huma.Error400BadRequest(fmt.Sprintf(
+					"no priority group %q; assigning it would silently resolve to %q",
+					group, c.UnknownKeys.FallbackGroup()))
+			}
+			if c.Keys == nil {
+				c.Keys = map[string]string{}
+			}
+			c.Keys[name] = group
 		default:
-			return huma.Error400BadRequest("kind must be model, server, lane, group or extension")
+			return huma.Error400BadRequest("kind must be model, server, lane, group, extension or key")
 		}
 		return nil
 	})
@@ -292,8 +330,17 @@ func (h *Handlers) DeleteEntry(_ context.Context, in *DeleteEntryInput) (*Config
 				}
 			}
 			delete(c.Extensions, in.Name)
+		case "key":
+			if _, ok := c.Keys[in.Name]; !ok {
+				return huma.Error404NotFound(fmt.Sprintf("no caller key %q", in.Name))
+			}
+			// Unassigning, not revoking. corrallm accepts any key and resolves
+			// an unknown one to "default", so a deleted key keeps working at
+			// weight 1 — this drops its lane assignment, it does not lock the
+			// caller out, and nothing here should imply otherwise.
+			delete(c.Keys, in.Name)
 		default:
-			return huma.Error400BadRequest("kind must be model, server, lane, group or extension")
+			return huma.Error400BadRequest("kind must be model, server, lane, group, extension or key")
 		}
 		return nil
 	})

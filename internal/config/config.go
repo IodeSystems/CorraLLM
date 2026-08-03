@@ -83,6 +83,15 @@ type Config struct {
 	// Keys maps a caller identity → priorityGroup name.
 	Keys map[string]string `yaml:"keys,omitempty"`
 
+	// UnknownKeys is the policy for callers this config has never heard of.
+	//
+	// It was implicit and therefore unstateable: an unrecognized key silently
+	// resolved to "default", which is a POLICY (accept anyone at weight 1)
+	// wearing the clothes of a fallback. Writing it down makes it reviewable,
+	// and makes "should a stranger be served at all" a question the operator
+	// answers rather than one the code answers by omission.
+	UnknownKeys UnknownKeyPolicy `yaml:"unknownKeys,omitempty"`
+
 	// Scheduler holds global admission knobs (queue bounds).
 	Scheduler SchedulerConfig `yaml:"scheduler,omitempty"`
 
@@ -865,18 +874,56 @@ func (g PriorityGroup) StageFor(backendType string) Stage {
 	return Stage{Reject: true}
 }
 
+// UnknownKeyPolicy governs callers whose key is not in Keys.
+type UnknownKeyPolicy struct {
+	// Allow, when explicitly false, refuses an unrecognized key outright
+	// instead of serving it in the fallback group. Default TRUE: corrallm has
+	// always accepted any key, and flipping that by omission would lock out
+	// every caller on an upgrade.
+	Allow *bool `yaml:"allow,omitempty"`
+	// Group is where an unrecognized caller lands. Empty = "default".
+	Group string `yaml:"group,omitempty"`
+}
+
+// Allowed reports whether an unrecognized key may be served.
+func (p UnknownKeyPolicy) Allowed() bool { return p.Allow == nil || *p.Allow }
+
+// FallbackGroup is the group an unrecognized caller resolves to.
+func (p UnknownKeyPolicy) FallbackGroup() string {
+	if p.Group != "" {
+		return p.Group
+	}
+	return "default"
+}
+
 // ResolveGroup maps a caller key to its priority group. An empty/unknown key, or
-// a key whose group is absent, resolves to the "default" group (synthesized as
-// weight-1 reject-on-saturation if the config omits it).
+// a key whose group is absent, resolves to the UnknownKeys fallback group
+// ("default" unless configured), synthesized as weight-1 reject-on-saturation
+// if the config omits it.
+//
+// Recognized reports whether the key was actually in Keys, so a caller can tell
+// "assigned to this group" from "fell through to it" — the distinction the
+// enrolment UI is built on, and one this function used to erase.
 func (c *Config) ResolveGroup(key string) (name string, g PriorityGroup) {
+	name, g, _ = c.resolveGroup(key)
+	return name, g
+}
+
+// ResolveGroupRecognized is ResolveGroup plus whether the key was configured.
+func (c *Config) ResolveGroupRecognized(key string) (string, PriorityGroup, bool) {
+	return c.resolveGroup(key)
+}
+
+func (c *Config) resolveGroup(key string) (name string, g PriorityGroup, recognized bool) {
 	name = c.Keys[key]
 	if name == "" {
-		name = "default"
+		name = c.UnknownKeys.FallbackGroup()
 	}
+	_, recognized = c.Keys[key]
 	if grp, ok := c.PriorityGroups[name]; ok {
-		return name, grp
+		return name, grp, recognized
 	}
-	return "default", PriorityGroup{Weight: 1}
+	return c.UnknownKeys.FallbackGroup(), PriorityGroup{Weight: 1}, recognized
 }
 
 // Load reads and parses the corrallm YAML config at path. A missing file yields
