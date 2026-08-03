@@ -87,22 +87,19 @@ func execBudgetContext(parent context.Context, budget time.Duration, oh *overhea
 				// diagnosis, and a stalled combo would otherwise sit here
 				// until the whole budget drained.
 				//
-				// Corrected by the SAME waits the budget excludes. A request
-				// backing off behind 429s is silent for exactly the reason a
-				// hung one is — no bytes arrive — and a bench whose job is to
-				// wait rather than compete must not kill a caller for being
-				// polite. That regression already happened once to the plain
-				// deadline this replaced: stages died "limit breached" for
-				// queueing, and the fix was to stop counting waiting as work.
-				// A stall guard that counted it again would be the same bug in
-				// a new place.
+				// idleFor already excludes the 429 backoff slept through
+				// during THIS silence — per gap, not cumulative. A bench whose
+				// job is to wait rather than compete must not kill a caller
+				// for being polite; that regression already happened once to
+				// the plain deadline this replaced, when stages died "limit
+				// breached" for queueing.
 				//
-				// Cumulative wait against per-gap silence makes this too
-				// LENIENT after a long queue — the right way to be wrong, and
-				// the same trade the budget makes: the budget still bounds
-				// everything, so the cost is a late cancellation, not a lost
-				// one.
-				if idleFor != nil && idleFor(time.Now()) > stallTimeout+sinceStart()+serverWait {
+				// Correcting by the whole combo's queueing instead made the
+				// guard forgiving in proportion to history: a combo that
+				// queued early and then wedged got a grace as long as
+				// everything it had ever waited for, so on a contended box the
+				// guard would rarely fire at all.
+				if idleFor != nil && idleFor(time.Now()) > stallTimeout {
 					cancel(errStalled)
 					return
 				}

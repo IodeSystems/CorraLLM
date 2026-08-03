@@ -261,45 +261,44 @@ func TestHeartbeatArmsWhenTheRequestIsIssued(t *testing.T) {
 // being polite. corrallm answers 429 + Retry-After when the box is busy, and a
 // request backing off is silent for exactly the reason a hung one is — no bytes
 // arrive. The plain deadline this watchdog replaced already made that mistake
-// once: stages died "limit breached" for queueing. A stall guard that counted
-// backoff as silence would be the same bug in a new place.
+// once: stages died "limit breached" for queueing.
+//
+// PER GAP: only the backoff inside this silence counts. Correcting by the whole
+// combo's queueing made the guard forgiving in proportion to history, so on a
+// contended box it would rarely fire at all.
 func TestStallGuardForgivesBackpressureSilence(t *testing.T) {
-	oldTick, oldStall := watchdogTick, stallTimeout
-	watchdogTick, stallTimeout = 10*time.Millisecond, 100*time.Millisecond
-	defer func() { watchdogTick, stallTimeout = oldTick, oldStall }()
-
-	// A combo that has been silent well past the stall timeout, but every bit
-	// of that silence was 429 backoff the client slept through.
 	base := queueWaitNS.Load()
 	defer queueWaitNS.Store(base)
 
 	hb := &heartbeat{}
 	hb.open()
-	ctx, cancel := execBudgetContext(context.Background(), time.Hour, nil, "m", hb.idleFor)
-	defer cancel()
+	from, _ := hb.silentSince()
 
-	// Accrue backoff faster than the silence accumulates.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := 0; i < 40; i++ {
-			queueWaitNS.Add(int64(20 * time.Millisecond))
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
-	<-done
-	if ctx.Err() != nil {
-		t.Fatalf("a combo waiting out backpressure was killed: %v", context.Cause(ctx))
+	// Ten minutes of silence, every second of it 429 backoff: not a stall.
+	queueWaitNS.Add(int64(10 * time.Minute))
+	if d := hb.idleFor(from.Add(10 * time.Minute)); d != 0 {
+		t.Errorf("idle = %v, want 0 — all of that silence was backoff", d)
 	}
 
-	// Once the backoff stops accruing, real silence is still caught.
-	select {
-	case <-ctx.Done():
-	case <-time.After(3 * time.Second):
-		t.Fatal("silence that is NOT backoff must still be caught")
+	// Ten minutes of silence with only one minute of backoff: nine minutes of
+	// real silence, and a stall.
+	queueWaitNS.Store(base)
+	hb.mark()
+	from, _ = hb.silentSince()
+	queueWaitNS.Add(int64(time.Minute))
+	if d := hb.idleFor(from.Add(10 * time.Minute)); d < 8*time.Minute {
+		t.Errorf("idle = %v, want ~9m — only the backoff is forgiven", d)
 	}
-	if !errors.Is(context.Cause(ctx), errStalled) {
-		t.Errorf("cause = %v, want errStalled", context.Cause(ctx))
+
+	// PER GAP, not cumulative: backoff accrued BEFORE this silence began must
+	// not excuse it. This is the case that made the cumulative version go quiet
+	// under load.
+	queueWaitNS.Store(base)
+	queueWaitNS.Add(int64(time.Hour)) // an hour of queueing earlier in the combo
+	hb.mark()                         // then a chunk arrived: a new gap starts here
+	from, _ = hb.silentSince()
+	if d := hb.idleFor(from.Add(5 * time.Minute)); d < 4*time.Minute {
+		t.Errorf("idle = %v, want ~5m — an hour queued EARLIER excuses nothing now", d)
 	}
 }
 

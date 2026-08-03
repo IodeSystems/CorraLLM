@@ -146,14 +146,23 @@ type heartbeat struct {
 	//
 	// Marking on every open was wrong and shipped that way: agentkit retries a
 	// failed request, so open/fail/reopen refreshed the clock forever and a
-	// combo making no progress at all looked healthy. Marking only on chunks
-	// is also wrong — with no chunk ever, there is no timestamp to measure
-	// silence from, and the guard never arms.
+	// combo making no progress at all looked healthy. Marking only on chunks is
+	// also wrong — with no chunk ever, there is no timestamp to measure silence
+	// from, and the guard never arms.
 	//
 	// So silence runs from whichever came later: the first request opening, or
 	// the last byte received.
 	started time.Time
 	last    time.Time
+	// queueAt is the cumulative 429 backoff at the moment silence began, so the
+	// wait can be subtracted PER GAP.
+	//
+	// Correcting by the cumulative wait instead made the guard forgiving in
+	// proportion to everything the combo had ever queued for: a combo that
+	// queued heavily early and then wedged got a grace as long as its whole
+	// queueing history, so on a contended box the guard would rarely fire at
+	// all. Only the backoff inside THIS silence is evidence about THIS silence.
+	queueAt int64
 }
 
 // open records that a request has been issued. Only the FIRST is recorded — a
@@ -169,26 +178,29 @@ func (h *heartbeat) open() {
 	h.mu.Lock()
 	if h.started.IsZero() {
 		h.started = time.Now()
+		h.queueAt = queueWaitNS.Load()
 	}
 	h.mu.Unlock()
 }
 
-// mark records that the model just produced something. This IS progress.
+// mark records that the model just produced something. This IS progress, so it
+// restarts both the clock and the backoff baseline.
 func (h *heartbeat) mark() {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	h.last = time.Now()
+	h.queueAt = queueWaitNS.Load()
 	h.mu.Unlock()
 }
 
-// idleFor reports how long the model has been silent. A zero `last` means no
-// request has opened yet — setup, not silence — so it reports zero rather than
-// "forever", which would cancel every combo before it began.
-func (h *heartbeat) idleFor(now time.Time) time.Duration {
+// silentSince reports when the current silence began and the 429 backoff
+// already accrued at that moment. A zero time means no request has been issued
+// yet — setup, not silence.
+func (h *heartbeat) silentSince() (time.Time, int64) {
 	if h == nil {
-		return 0
+		return time.Time{}, 0
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -196,10 +208,22 @@ func (h *heartbeat) idleFor(now time.Time) time.Duration {
 	if h.last.After(from) {
 		from = h.last
 	}
+	return from, h.queueAt
+}
+
+// idleFor reports how long the model has been silent, EXCLUDING the 429 backoff
+// slept through during that silence. A bench whose job is to wait rather than
+// compete must not count patience as a hang.
+func (h *heartbeat) idleFor(now time.Time) time.Duration {
+	from, queueAt := h.silentSince()
 	if from.IsZero() {
-		return 0 // no request yet: setup, not silence
+		return 0
 	}
-	return now.Sub(from)
+	gap := now.Sub(from) - time.Duration(queueWaitNS.Load()-queueAt)
+	if gap < 0 {
+		return 0
+	}
+	return gap
 }
 
 type stageCounters struct {
