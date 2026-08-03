@@ -324,3 +324,35 @@ func TestRetry429CountIsObservable(t *testing.T) {
 		t.Errorf("later=%d all=%d, want 2 and 5", got, all)
 	}
 }
+
+// The relationship that makes the stall guard safe, asserted rather than
+// remembered.
+//
+// Legitimate silence inside ONE request is bounded by scheduler.maxWait: a
+// waiter not granted within it is handed a 429 instead of being held. If
+// maxWait ever exceeds stallTimeout, the bench starts killing requests that are
+// merely queued — the "stages died for being polite" regression, again, and
+// invisible until a busy box makes it fire.
+//
+// The box's maxWait is operator config and not readable from here, so this pins
+// the contract in the direction that matters: stallTimeout must clear the
+// documented bound with room for time-to-first-token (measured ~11s on a large
+// image against a resident 27B).
+func TestStallTimeoutClearsTheQueueBound(t *testing.T) {
+	const (
+		documentedMaxWait = 15 * time.Second // scheduler.maxWait
+		measuredTTFT      = 11 * time.Second // 3400x4400 page, resident 27B
+	)
+	floor := documentedMaxWait + measuredTTFT
+	if stallTimeout <= floor {
+		t.Fatalf("stallTimeout %s must exceed maxWait+TTFT (%s), or a queued request "+
+			"is indistinguishable from a hung one and gets killed for waiting",
+			stallTimeout, floor)
+	}
+	// And not so large it stops being a guard: the execution budget is the
+	// backstop, and a stall the operator waits minutes for is the failure this
+	// replaced.
+	if stallTimeout > 2*time.Minute {
+		t.Errorf("stallTimeout %s is long enough that a hang looks like a slow run", stallTimeout)
+	}
+}

@@ -61,9 +61,9 @@ type Scheduler struct {
 	backends map[string]*backendState
 	// cfg is swapped wholesale on reload; read via s.config(). Optional (may
 	// hold nil): drives limits + share currency.
-	cfg      atomic.Pointer[config.Config]
-	budgets  map[string][]rateEvent // "scope\x00dim" → sliding-window events
-	now      func() time.Time       // injectable clock (windows, dwell, decay)
+	cfg     atomic.Pointer[config.Config]
+	budgets map[string][]rateEvent // "scope\x00dim" → sliding-window events
+	now     func() time.Time       // injectable clock (windows, dwell, decay)
 
 	maxWait       time.Duration // queue wait before a 429 (0 = bounded only by req ctx)
 	maxQueueDepth int           // reject once this many already wait on a backend (0 = unbounded)
@@ -147,6 +147,17 @@ type waiter struct {
 	slot    *slot
 	preempt bool          // jumps the queue (it freed a slot by preempting)
 	ready   chan struct{} // signaled when this waiter is granted a slot
+	// bumped is closed when a MORE deserving arrival takes this waiter's queue
+	// slot. The queue is a scarce resource, so admission to it follows the same
+	// fairshare rule as admission to a slot; without that, arrival order
+	// silently outranks priority.
+	//
+	// bumpErr is built by the displacing arrival, which holds the lock and can
+	// therefore price Retry-After off the real queue state. Computing it later
+	// from the bumped goroutine would need the lock again and would read a
+	// queue that has already moved on.
+	bumped  chan struct{}
+	bumpErr *BackpressureError
 }
 
 // Admit acquires a slot on the named backend for a request in group (with
@@ -253,13 +264,32 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	// informative 429 so the caller can shape, rather than block (the fork's
 	// maxQueueDepth contract). Preempt waiters above bypass this — they freed a slot.
 	if s.maxQueueDepth > 0 && len(bs.waiters) >= s.maxQueueDepth {
-		be := bs.backpressure("rejected")
-		s.mu.Unlock()
-		cancel(nil)
-		return nil, nil, be
+		// A full queue used to reject the NEWCOMER unconditionally, so a queue
+		// held by low-priority waiters blocked a higher-priority arrival purely
+		// because they got there first. Arrival order outranking fairshare is
+		// the one thing a fairshare scheduler must not do.
+		//
+		// Compare on the same ratio that grants slots. If the arrival is
+		// strictly more deserving than the least deserving waiter, that waiter
+		// is bumped — it gets a 429 with a real Retry-After, exactly as if it
+		// had timed out. Otherwise the arrival is rejected as before.
+		//
+		// Within a group the numerator is identical, so a newcomer is never
+		// strictly better than its own peers: bumping only ever happens ACROSS
+		// groups, and "which of my peers do I evict" never arises.
+		victim := bs.pickBumpable(s.now(), sl.group, sl.weight)
+		if victim == nil {
+			be := bs.backpressure("rejected")
+			s.mu.Unlock()
+			cancel(nil)
+			return nil, nil, be
+		}
+		bs.removeWaiter(victim)
+		victim.bumpErr = bs.backpressure("bumped")
+		close(victim.bumped)
 	}
 
-	w := &waiter{slot: sl, ready: make(chan struct{})}
+	w := &waiter{slot: sl, ready: make(chan struct{}), bumped: make(chan struct{})}
 	bs.waiters = append(bs.waiters, w)
 	s.mu.Unlock()
 	return s.wait(ctx, backend, w, reqCtx)
@@ -278,6 +308,13 @@ func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx 
 	select {
 	case <-w.ready:
 		return s.releaser(backend, w.slot), reqCtx, nil
+	case <-w.bumped:
+		// Already removed from the queue by the arrival that displaced it, so
+		// this reports rather than removes. A distinct reason: "bumped" says a
+		// more deserving caller took the place, which is a different thing for
+		// an operator to read than "the box never got to you".
+		w.slot.cancel(nil)
+		return nil, nil, w.bumpErr
 	case <-maxWaitC:
 		return s.giveUp(backend, w, "queue-timeout")
 	case <-ctx.Done():
@@ -452,6 +489,35 @@ func (s *Scheduler) pickGrantableWaiter(bs *backendState, backend string, now ti
 		}
 	}
 	return bestIdx
+}
+
+// pickBumpable returns the queued waiter a new arrival should displace, or nil
+// if the arrival is not more deserving than anyone waiting.
+//
+// Same ratio the grant path uses (numerator/weight, lower is better), so queue
+// admission and slot admission cannot disagree about who deserves what.
+//
+// Never bumps a preempt waiter: it freed a slot by being preempted and is owed
+// the place. Strictly-greater comparison means ties never bump, which is what
+// keeps same-group arrivals from displacing their own peers.
+func (bs *backendState) pickBumpable(now time.Time, group string, weight int) *waiter {
+	if weight <= 0 {
+		weight = 1
+	}
+	currency := bs.queueCurrency()
+	mine := bs.numerator(now, currency, group) / float64(weight)
+	var victim *waiter
+	worst := mine
+	for _, w := range bs.waiters {
+		if w.preempt {
+			continue
+		}
+		r := bs.numerator(now, currency, w.slot.group) / float64(w.slot.weight)
+		if r > worst {
+			worst, victim = r, w
+		}
+	}
+	return victim
 }
 
 // pickWaiter is the reservation-agnostic fairshare pick (preempt FIFO, then min

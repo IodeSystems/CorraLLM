@@ -500,3 +500,185 @@ func TestPreemptSkipsEqualWeight(t *testing.T) {
 		t.Fatalf("equal-weight must not be preempted; want rejected, got %v", err)
 	}
 }
+
+// A full queue used to reject the NEWCOMER unconditionally, so a queue held by
+// low-priority waiters blocked a higher-priority arrival purely because they
+// got there first. Arrival order outranking fairshare is the one thing a
+// fairshare scheduler must not do.
+func TestQueueBumpsTheLeastDeservingWaiter(t *testing.T) {
+	s := NewWithConfig(&config.Config{Scheduler: config.SchedulerConfig{
+		MaxQueueDepth: 1, MaxWait: "5s",
+	}})
+	ctx := context.Background()
+
+	// batch holds the only slot AND is in-flight, so its group numerator is
+	// high — it is the least deserving thing that could be waiting.
+	r1, _, err := s.Admit(ctx, "b", "local", 1, "batch", 1, false, queueStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1()
+
+	// A second batch request fills the one queue slot.
+	queued := make(chan error, 1)
+	go func() {
+		_, _, e := s.Admit(ctx, "b", "local", 1, "batch", 1, false, queueStage)
+		queued <- e
+	}()
+	waitForWaiters(t, s, "b", 1)
+
+	// interactive arrives to a FULL queue. Its group holds nothing, so it is
+	// strictly more deserving and must take the place.
+	go func() {
+		_, _, _ = s.Admit(ctx, "b", "local", 1, "interactive", 10, false, queueStage)
+	}()
+
+	select {
+	case e := <-queued:
+		var bp *BackpressureError
+		if !errors.As(e, &bp) {
+			t.Fatalf("bumped waiter should get backpressure, got %v", e)
+		}
+		if bp.Reason != "bumped" {
+			t.Errorf("reason = %q, want \"bumped\" — an operator must be able to tell "+
+				"\"someone took your place\" from \"the box never got to you\"", bp.Reason)
+		}
+		if bp.RetryAfter <= 0 {
+			t.Error("a bumped caller needs a real Retry-After, not a bare rejection")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the less deserving waiter was never bumped")
+	}
+}
+
+// Within a group the numerator is identical, so a newcomer is never STRICTLY
+// more deserving than its own peers. Bumping must therefore only happen across
+// groups — otherwise peers would evict each other in arrival order, which is
+// the inversion this exists to remove, wearing a different hat.
+func TestQueueDoesNotBumpItsOwnPeers(t *testing.T) {
+	s := NewWithConfig(&config.Config{Scheduler: config.SchedulerConfig{
+		MaxQueueDepth: 1, MaxWait: "5s",
+	}})
+	ctx := context.Background()
+
+	r1, _, err := s.Admit(ctx, "b", "local", 1, "batch", 1, false, queueStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1()
+
+	queued := make(chan error, 1)
+	go func() {
+		_, _, e := s.Admit(ctx, "b", "local", 1, "batch", 1, false, queueStage)
+		queued <- e
+	}()
+	waitForWaiters(t, s, "b", 1)
+
+	// Same group, same weight: not strictly better, so it must be rejected
+	// rather than displacing an equal.
+	_, _, err = s.Admit(ctx, "b", "local", 1, "batch", 1, false, queueStage)
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "rejected" {
+		t.Fatalf("a peer must be rejected, not admitted by eviction: %v", err)
+	}
+	select {
+	case e := <-queued:
+		t.Fatalf("the queued peer was evicted by an equal: %v", e)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// waitForWaiters blocks until a backend has n queued waiters.
+func waitForWaiters(t *testing.T, s *Scheduler, backend string, n int) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		s.mu.Lock()
+		got := 0
+		if bs := s.backends[backend]; bs != nil {
+			got = len(bs.waiters)
+		}
+		s.mu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("backend %s never reached %d waiters", backend, n)
+}
+
+// Bumping is decided on FAIRSHARE — consumption over weight — not on weight.
+// The distinction only shows up once the heavy group has spent something.
+//
+// Weight 9 and weight 1 both idle: 9 has the better ratio (0/9 vs 0/1 both
+// zero, and 9 wins the grant), so 1 ends up queued. Now ANOTHER 9 arrives. It
+// must NOT bump the 1: the 1 has consumed nothing (0/1 = 0) while 9's group is
+// already holding a slot (1/9 = 0.11), so the 1 is now the more deserving of
+// the two. Bumping on weight would have evicted it and starved the light group
+// completely; bumping on ratio is what makes the 9:1 share come out as 9:1
+// over the window instead of 1:0.
+func TestBumpingUsesFairshareRatioNotWeight(t *testing.T) {
+	s := NewWithConfig(&config.Config{Scheduler: config.SchedulerConfig{
+		MaxQueueDepth: 1, MaxWait: "5s",
+	}})
+	ctx := context.Background()
+
+	// The heavy group takes the only slot: its group numerator is now 1.
+	r1, _, err := s.Admit(ctx, "b", "local", 1, "nine", 9, false, queueStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1()
+
+	// The light group queues, having consumed nothing.
+	queued := make(chan error, 1)
+	go func() {
+		_, _, e := s.Admit(ctx, "b", "local", 1, "one", 1, false, queueStage)
+		queued <- e
+	}()
+	waitForWaiters(t, s, "b", 1)
+
+	// A second heavy request arrives to a full queue.
+	//   arrival  "nine": 1/9 = 0.111
+	//   queued   "one" : 0/1 = 0     <- more deserving
+	// so the arrival is rejected and the light group keeps its place.
+	_, _, err = s.Admit(ctx, "b", "local", 1, "nine", 9, false, queueStage)
+	var bp *BackpressureError
+	if !errors.As(err, &bp) || bp.Reason != "rejected" {
+		t.Fatalf("a heavy arrival that has ALREADY consumed must not bump an idle "+
+			"light waiter; got %v", err)
+	}
+	select {
+	case e := <-queued:
+		t.Fatalf("the light waiter was evicted by a group that already holds a slot: %v", e)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// And the converse, to show the ratio is really what decides: once the
+	// light group is the one holding a slot, a fresh heavy arrival IS more
+	// deserving and takes the queue place.
+	s2 := NewWithConfig(&config.Config{Scheduler: config.SchedulerConfig{
+		MaxQueueDepth: 1, MaxWait: "5s",
+	}})
+	r2, _, err := s2.Admit(ctx, "b", "local", 1, "one", 1, false, queueStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2()
+	light := make(chan error, 1)
+	go func() {
+		_, _, e := s2.Admit(ctx, "b", "local", 1, "one", 1, false, queueStage)
+		light <- e
+	}()
+	waitForWaiters(t, s2, "b", 1)
+
+	go func() { _, _, _ = s2.Admit(ctx, "b", "local", 1, "nine", 9, false, queueStage) }()
+	select {
+	case e := <-light:
+		var bp2 *BackpressureError
+		if !errors.As(e, &bp2) || bp2.Reason != "bumped" {
+			t.Fatalf("want the over-consuming light waiter bumped, got %v", e)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a heavy arrival at 0/9 should outrank a light waiter whose group holds the slot")
+	}
+}

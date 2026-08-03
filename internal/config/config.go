@@ -152,7 +152,17 @@ func (c *Config) AllModels() map[string]Model {
 // maxWait / maxQueueDepth contract). Zero values keep the prior behavior:
 // MaxWait 0 → bounded only by the request context; MaxQueueDepth 0 → unbounded.
 type SchedulerConfig struct {
-	MaxWait       string `yaml:"maxWait,omitempty"`       // e.g. "60s": queue wait before a 429
+	// MaxWait bounds how long a caller may sit in the queue before being handed
+	// a 429 with a real Retry-After.
+	//
+	// It is not only a fairness knob: it is what makes "queued" distinguishable
+	// from "hung" to a CLIENT. In-queue time inside an accepted request is
+	// invisible from outside — it just looks like a slow response — so without
+	// a bound, silence has no ceiling and no caller-side stall detection can
+	// work. llm-bench's stall guard is derived from this value
+	// (TestStallTimeoutClearsTheQueueBound); raising it without raising that
+	// makes the bench kill healthy queued requests.
+	MaxWait       string `yaml:"maxWait,omitempty"`       // e.g. "15s": queue wait before a 429
 	MaxQueueDepth int    `yaml:"maxQueueDepth,omitempty"` // reject once this many already wait on a backend
 }
 
@@ -426,7 +436,7 @@ type Model struct {
 	// Before this was a float, yaml silently TRUNCATED `quality: 1.5` to 1 and
 	// validated clean, so the model quietly tied the tier below the one it was
 	// meant to beat.
-	Quality  float64           `yaml:"quality,omitempty"`
+	Quality float64 `yaml:"quality,omitempty"`
 
 	// Notes is free-text the operator keeps ABOUT this entry, carried in the
 	// config and surfaced in the UI beside it.

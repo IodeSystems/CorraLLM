@@ -28,10 +28,29 @@ var errExecBudget = errors.New("combo exceeded its execution budget")
 var errStalled = errors.New("model produced nothing for the stall timeout")
 
 // stallTimeout is how long the model may produce NOTHING before the combo is
-// abandoned. Generous on purpose — time-to-first-token on a large image prompt
-// against a resident 27B is minutes, and killing a slow prompt would be worse
-// than the waste it prevents. A var so tests can shrink it.
-var stallTimeout = 4 * time.Minute
+// abandoned.
+//
+// It is derived, not chosen. Legitimate silence inside one request has exactly
+// two parts, and only one is visible to the client:
+//
+//   - Retry-After sleeps BETWEEN attempts, which the client performs itself.
+//     OnRetry counts them and idleFor subtracts them per gap, so they never
+//     count as silence.
+//   - Queue time INSIDE an accepted request, which the client cannot see at
+//     all — it just looks like a slow response. corrallm bounds this with
+//     scheduler.maxWait: a waiter that is not granted within maxWait is handed
+//     a 429 rather than held. That bound is the ONLY reason a stall guard can
+//     work; without it, queued and hung are the same observation.
+//
+// So the floor is maxWait + time-to-first-token. Measured TTFT on a 3400x4400
+// page against a resident 27B is ~11s, and maxWait is 15s on this box, giving
+// a floor near 26s. 60s is that with room for a colder model, not a number
+// picked for feel.
+//
+// RAISING scheduler.maxWait without raising this will make the bench kill
+// healthy queued requests — the "stages died for being polite" regression,
+// again. TestStallTimeoutClearsTheQueueBound pins the relationship.
+var stallTimeout = 60 * time.Second
 
 // watchdogTick bounds how stale the queue correction may be. Small enough that
 // a genuinely hung combo is not held open much past its budget, large enough
