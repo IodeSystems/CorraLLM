@@ -555,11 +555,6 @@ function ConfigPage() {
             {editing.existing ? `Edit ${editing.kind} ${editing.name}` : `Add a ${editing.kind}`}
           </DialogTitle>
           <DialogContent>
-            {err && (
-              <Alert severity="error" sx={{ mb: 2, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12 }}>
-                {err}
-              </Alert>
-            )}
             <Stack spacing={2} sx={{ mt: 1 }}>
               <TextField
                 label="Name"
@@ -584,6 +579,26 @@ function ConfigPage() {
               />
             </Stack>
           </DialogContent>
+          {/* OUTSIDE DialogContent on purpose. This lived at the top of the
+              scrolling content, which made a rejected Delete look like a dead
+              button: the YAML is long, so you are scrolled to the bottom when
+              you reach Delete, and the server's reason ("member of lane(s)
+              chat — remove it there first") rendered somewhere above the fold.
+              The error has to sit next to the control that produced it. */}
+          {err && (
+            <Alert
+              severity="error"
+              sx={{
+                mx: 3,
+                mb: 1,
+                whiteSpace: 'pre-wrap',
+                fontFamily: 'monospace',
+                fontSize: 12,
+              }}
+            >
+              {err}
+            </Alert>
+          )}
           <DialogActions>
             {editing.existing && (
               <Button
