@@ -16,7 +16,12 @@ import (
 // through agent.LLMRunner, which is agentkit's interface and knows nothing about
 // benchmarking. The matrix runs combos concurrently, so a caller reads the delta
 // across its own stage rather than the absolute (see stageQueueWait).
-var queueWaitNS atomic.Int64
+var (
+	queueWaitNS atomic.Int64
+	// retry429N counts backpressure retries, so a busy box is visible and not
+	// merely subtracted out of the timings.
+	retry429N atomic.Int64
+)
 
 // stageQueueWait returns a function that reports the backpressure wait accrued
 // since it was called. Deltas, not absolutes: concurrent combos share the
@@ -26,6 +31,18 @@ var queueWaitNS atomic.Int64
 // both waits. That is the honest direction to be wrong in: it under-reports
 // execution time rather than inflating it, so a probe never looks faster than
 // it was.
+// stageRetry429 mirrors stageQueueWait for the COUNT of backpressure retries.
+//
+// The count and the duration answer different questions: how hard the box
+// pushed back, and how long that cost. Only the second was recorded, and the
+// row's Retries429 was a hardcoded 0 — so "was the box busy during this run"
+// had no answer at all, on the one axis where a busy box is the likeliest
+// explanation for a slow or dead-looking stage.
+func stageRetry429() func() int {
+	start := retry429N.Load()
+	return func() int { return int(retry429N.Load() - start) }
+}
+
 func stageQueueWait() func() time.Duration {
 	start := queueWaitNS.Load()
 	return func() time.Duration {
@@ -57,6 +74,7 @@ func NewBenchClient(baseURL, apiKeyEnv, model string) *llm.Client {
 		// flapping backend behind a healthy-looking number.
 		if e.Status == 429 && e.Delay > 0 {
 			queueWaitNS.Add(int64(e.Delay))
+			retry429N.Add(1)
 		}
 	}
 	return c

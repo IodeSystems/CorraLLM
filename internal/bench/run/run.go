@@ -1079,6 +1079,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		// client records how long each 429 parked it (see NewBenchClient), and
 		// the delta across the turn is what this stage waited.
 		waited := stageQueueWait()
+		retried := stageRetry429()
 		start := time.Now()
 		turnRes, turnErr := sess.Turn(stageCtx)
 		wall := time.Since(start)
@@ -1126,7 +1127,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 			PromptTokens: sc.promptTok, CompletionTokens: sc.complTok, Tokens: tokens,
 			CachedTokens: sc.cachedTok, NewPromptTokens: sc.newPromptTok,
 			InvalidArgRetries: sc.invalid, JSONErrors: sc.jsonErrors,
-			RepeatedCalls: sc.repeated, BaitCalls: sc.bait, BrokenIntermediates: sc.brokenStates, Retries429: 0,
+			RepeatedCalls: sc.repeated, BaitCalls: sc.bait, BrokenIntermediates: sc.brokenStates, Retries429: retried(),
 			Compactions:            sc.compactions,
 			CompactionTokensBefore: sc.compTokBef,
 			CompactionTokensAfter:  sc.compTokAft,

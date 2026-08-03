@@ -256,3 +256,72 @@ func TestHeartbeatArmsWhenTheRequestIsIssued(t *testing.T) {
 		t.Errorf("idle right after a chunk = %v, want ~0", d)
 	}
 }
+
+// A bench whose job is to WAIT rather than compete must not kill a caller for
+// being polite. corrallm answers 429 + Retry-After when the box is busy, and a
+// request backing off is silent for exactly the reason a hung one is — no bytes
+// arrive. The plain deadline this watchdog replaced already made that mistake
+// once: stages died "limit breached" for queueing. A stall guard that counted
+// backoff as silence would be the same bug in a new place.
+func TestStallGuardForgivesBackpressureSilence(t *testing.T) {
+	oldTick, oldStall := watchdogTick, stallTimeout
+	watchdogTick, stallTimeout = 10*time.Millisecond, 100*time.Millisecond
+	defer func() { watchdogTick, stallTimeout = oldTick, oldStall }()
+
+	// A combo that has been silent well past the stall timeout, but every bit
+	// of that silence was 429 backoff the client slept through.
+	base := queueWaitNS.Load()
+	defer queueWaitNS.Store(base)
+
+	hb := &heartbeat{}
+	hb.open()
+	ctx, cancel := execBudgetContext(context.Background(), time.Hour, nil, "m", hb.idleFor)
+	defer cancel()
+
+	// Accrue backoff faster than the silence accumulates.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 40; i++ {
+			queueWaitNS.Add(int64(20 * time.Millisecond))
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	<-done
+	if ctx.Err() != nil {
+		t.Fatalf("a combo waiting out backpressure was killed: %v", context.Cause(ctx))
+	}
+
+	// Once the backoff stops accruing, real silence is still caught.
+	select {
+	case <-ctx.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("silence that is NOT backoff must still be caught")
+	}
+	if !errors.Is(context.Cause(ctx), errStalled) {
+		t.Errorf("cause = %v, want errStalled", context.Cause(ctx))
+	}
+}
+
+// "Was the box busy during this run" had no answer: the row's Retries429 was a
+// hardcoded 0, on the one axis where a busy box is the likeliest explanation
+// for a stage that looks slow or dead.
+func TestRetry429CountIsObservable(t *testing.T) {
+	base := retry429N.Load()
+	defer retry429N.Store(base)
+
+	since := stageRetry429()
+	if since() != 0 {
+		t.Fatalf("a fresh delta should start at 0, got %d", since())
+	}
+	retry429N.Add(3)
+	if got := since(); got != 3 {
+		t.Errorf("retries = %d, want 3", got)
+	}
+	// Deltas, not absolutes: a later stage sees only its own.
+	later := stageRetry429()
+	retry429N.Add(2)
+	if got, all := later(), since(); got != 2 || all != 5 {
+		t.Errorf("later=%d all=%d, want 2 and 5", got, all)
+	}
+}

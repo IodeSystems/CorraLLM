@@ -86,7 +86,23 @@ func execBudgetContext(parent context.Context, budget time.Duration, oh *overhea
 				// Silence first: it is the cheaper and more specific
 				// diagnosis, and a stalled combo would otherwise sit here
 				// until the whole budget drained.
-				if idleFor != nil && idleFor(time.Now()) > stallTimeout {
+				//
+				// Corrected by the SAME waits the budget excludes. A request
+				// backing off behind 429s is silent for exactly the reason a
+				// hung one is — no bytes arrive — and a bench whose job is to
+				// wait rather than compete must not kill a caller for being
+				// polite. That regression already happened once to the plain
+				// deadline this replaced: stages died "limit breached" for
+				// queueing, and the fix was to stop counting waiting as work.
+				// A stall guard that counted it again would be the same bug in
+				// a new place.
+				//
+				// Cumulative wait against per-gap silence makes this too
+				// LENIENT after a long queue — the right way to be wrong, and
+				// the same trade the budget makes: the budget still bounds
+				// everything, so the cost is a late cancellation, not a lost
+				// one.
+				if idleFor != nil && idleFor(time.Now()) > stallTimeout+sinceStart()+serverWait {
 					cancel(errStalled)
 					return
 				}
