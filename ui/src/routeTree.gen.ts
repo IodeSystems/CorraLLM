@@ -18,6 +18,7 @@ import { Route as ConfigRouteImport } from './routes/config'
 import { Route as BenchRouteImport } from './routes/bench'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as KeysKeyRouteImport } from './routes/keys_.$key'
 import { Route as BenchRunRouteImport } from './routes/bench_.run'
 import { Route as BenchProbeRouteImport } from './routes/bench_.probe'
 import { Route as BenchModelRouteImport } from './routes/bench_.model'
@@ -67,6 +68,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const KeysKeyRoute = KeysKeyRouteImport.update({
+  id: '/keys_/$key',
+  path: '/keys/$key',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BenchRunRoute = BenchRunRouteImport.update({
   id: '/bench_/run',
   path: '/bench/run',
@@ -96,6 +102,7 @@ export interface FileRoutesByFullPath {
   '/bench/model': typeof BenchModelRoute
   '/bench/probe': typeof BenchProbeRoute
   '/bench/run': typeof BenchRunRoute
+  '/keys/$key': typeof KeysKeyRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -110,6 +117,7 @@ export interface FileRoutesByTo {
   '/bench/model': typeof BenchModelRoute
   '/bench/probe': typeof BenchProbeRoute
   '/bench/run': typeof BenchRunRoute
+  '/keys/$key': typeof KeysKeyRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -125,6 +133,7 @@ export interface FileRoutesById {
   '/bench_/model': typeof BenchModelRoute
   '/bench_/probe': typeof BenchProbeRoute
   '/bench_/run': typeof BenchRunRoute
+  '/keys_/$key': typeof KeysKeyRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -141,6 +150,7 @@ export interface FileRouteTypes {
     | '/bench/model'
     | '/bench/probe'
     | '/bench/run'
+    | '/keys/$key'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -155,6 +165,7 @@ export interface FileRouteTypes {
     | '/bench/model'
     | '/bench/probe'
     | '/bench/run'
+    | '/keys/$key'
   id:
     | '__root__'
     | '/'
@@ -169,6 +180,7 @@ export interface FileRouteTypes {
     | '/bench_/model'
     | '/bench_/probe'
     | '/bench_/run'
+    | '/keys_/$key'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -184,6 +196,7 @@ export interface RootRouteChildren {
   BenchModelRoute: typeof BenchModelRoute
   BenchProbeRoute: typeof BenchProbeRoute
   BenchRunRoute: typeof BenchRunRoute
+  KeysKeyRoute: typeof KeysKeyRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -251,6 +264,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/keys_/$key': {
+      id: '/keys_/$key'
+      path: '/keys/$key'
+      fullPath: '/keys/$key'
+      preLoaderRoute: typeof KeysKeyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/bench_/run': {
       id: '/bench_/run'
       path: '/bench/run'
@@ -288,6 +308,7 @@ const rootRouteChildren: RootRouteChildren = {
   BenchModelRoute: BenchModelRoute,
   BenchProbeRoute: BenchProbeRoute,
   BenchRunRoute: BenchRunRoute,
+  KeysKeyRoute: KeysKeyRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

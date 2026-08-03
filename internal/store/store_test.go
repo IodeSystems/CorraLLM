@@ -22,7 +22,7 @@ func TestActivityRoundTrip(t *testing.T) {
 	if err := st.InsertActivity(in); err != nil {
 		t.Fatal(err)
 	}
-	got, err := st.RecentActivity(10, "")
+	got, err := st.RecentActivity(10, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,10 +57,10 @@ func TestActivityRoundTrip(t *testing.T) {
 	if err := st.InsertActivity(Activity{TS: 3, Served: "other", Backend: "other#0", Status: 200}); err != nil {
 		t.Fatal(err)
 	}
-	if all, _ := st.RecentActivity(10, ""); len(all) != 3 {
+	if all, _ := st.RecentActivity(10, "", ""); len(all) != 3 {
 		t.Fatalf("unfiltered should see all models, got %d", len(all))
 	}
-	only, _ := st.RecentActivity(10, "m")
+	only, _ := st.RecentActivity(10, "m", "")
 	if len(only) != 2 {
 		t.Fatalf("served=m should return only model m's rows, got %d", len(only))
 	}
@@ -152,6 +152,65 @@ func TestRollupByKey(t *testing.T) {
 		if r.Key == "ragtag" && (r.Requests != 2 || r.DwellMS != 10) {
 			t.Errorf("ragtag rollup = %+v", r)
 		}
+		// Last-seen is the NEWEST row, not the first or the sum. A key with a
+		// large historical count and nothing recent is a different problem from
+		// one that is busy now, and the count alone cannot tell them apart.
+		if r.Key == "ragtag" && r.LastSeenMS != 300 {
+			t.Errorf("ragtag last seen = %d, want 300 (newest of 200/300)", r.LastSeenMS)
+		}
+		if r.Key == "aw3" && r.LastSeenMS != 100 {
+			t.Errorf("aw3 last seen = %d, want 100", r.LastSeenMS)
+		}
+	}
+}
+
+// The key filter is what makes the roster actionable: "this key did 9,971
+// requests" is only useful if you can then ask what they were.
+func TestRecentActivityKeyFilter(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	rows := []Activity{
+		{TS: 100, Served: "m", Key: "aw3", Status: 200},
+		{TS: 200, Served: "m", Key: "ragtag", Status: 200},
+		{TS: 300, Served: "other", Key: "ragtag", Status: 200},
+		{TS: 400, Served: "other", Key: "", Status: 200},
+	}
+	for _, a := range rows {
+		if err := st.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := st.RecentActivity(10, "", "ragtag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("key=ragtag should return 2 rows, got %d", len(got))
+	}
+	for _, r := range got {
+		if r.Key != "ragtag" {
+			t.Errorf("key filter leaked a %q row", r.Key)
+		}
+	}
+
+	// Both filters compose — the alternative was a branch per combination, and
+	// the pair that nobody wired is exactly the one an operator reaches for
+	// ("what did this caller do ON THIS MODEL").
+	both, _ := st.RecentActivity(10, "other", "ragtag")
+	if len(both) != 1 || both[0].TS != 300 {
+		t.Fatalf("served+key should intersect, got %+v", both)
+	}
+
+	// An empty key means "no filter", not "unkeyed traffic only" — the roster
+	// never asks for the latter, and treating "" as a value would silently
+	// return one row where the caller expected every row.
+	if all, _ := st.RecentActivity(10, "", ""); len(all) != 4 {
+		t.Fatalf("empty key must not filter, got %d rows", len(all))
 	}
 }
 
@@ -246,7 +305,7 @@ func TestPruneActivity(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("pruned %d, want 2", n)
 	}
-	got, _ := st.RecentActivity(10, "")
+	got, _ := st.RecentActivity(10, "", "")
 	if len(got) != 2 {
 		t.Errorf("remaining %d rows, want 2", len(got))
 	}

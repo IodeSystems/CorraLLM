@@ -50,14 +50,20 @@ type KeyRow struct {
 	// nobody can tell those apart.
 	Recognized bool `json:"recognized"`
 
-	// Requests comes from usage and is zero for a configured key that has never
-	// called. A key assigned a lane months ago and silent since is a different
-	// thing from one hammering the box right now.
-	//
-	// No last-seen: store.KeyRollup does not carry one, and inventing it would
-	// mean a schema change for a nicety. Requests is enough to sort by urgency,
-	// which is what the roster is for.
-	Requests int64 `json:"requests"`
+	// Requests and LastSeen come from usage and are zero/empty for a configured
+	// key that has never called. Both are needed, not just the count: a key
+	// assigned a lane months ago and silent since is a different thing from one
+	// hammering the box right now, and a request total alone cannot tell them
+	// apart — a big number may be entirely historical.
+	Requests int64  `json:"requests"`
+	LastSeen string `json:"lastSeen,omitempty" doc:"RFC3339 timestamp of this key's most recent request; empty if never seen."`
+
+	// CostUSD and DwellMS are what the key actually consumed, which is the other
+	// half of deciding a lane. Request count says how noisy a caller is; cost
+	// says how expensive, and they diverge — a few long generations outweigh
+	// thousands of embeddings.
+	CostUSD float64 `json:"costUSD"`
+	DwellMS int64   `json:"dwellMS"`
 }
 
 // KeysInput scopes the observed half of the roster.
@@ -120,6 +126,11 @@ func (h *Handlers) Keys(_ context.Context, in *KeysInput) (*KeysOutput, error) {
 				}
 				r := add(u.Key)
 				r.Requests = u.Requests
+				r.CostUSD = u.CostUSD
+				r.DwellMS = u.DwellMS
+				if u.LastSeenMS > 0 {
+					r.LastSeen = time.UnixMilli(u.LastSeenMS).UTC().Format(time.RFC3339)
+				}
 			}
 		}
 	}

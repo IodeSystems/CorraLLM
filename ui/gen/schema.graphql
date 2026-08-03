@@ -150,6 +150,8 @@ type CorrallmQueryNamespace {
   ): corrallm_QueueDepthOutputBody @derived(operationId: "queueDepth")
   quotaLedger: corrallm_QuotaOutputBody @derived(operationId: "quotaLedger")
   recentActivity(
+    """Filter to one caller key; empty returns all callers."""
+    key: String
     """Max records, newest first."""
     limit: Long
     """Filter to one served model; empty returns all models."""
@@ -334,6 +336,8 @@ type CorrallmV1QueryNamespace {
   ): corrallm_QueueDepthOutputBody @derived(operationId: "queueDepth")
   quotaLedger: corrallm_QuotaOutputBody @derived(operationId: "quotaLedger")
   recentActivity(
+    """Filter to one caller key; empty returns all callers."""
+    key: String
     """Max records, newest first."""
     limit: Long
     """Filter to one served model; empty returns all models."""
@@ -1276,9 +1280,13 @@ type corrallm_KeyDef {
 }
 
 type corrallm_KeyRow {
+  costUSD: Float!
+  dwellMS: Long!
   group: String!
   hash: String!
   key: String!
+  """RFC3339 timestamp of this key's most recent request; empty if never seen."""
+  lastSeen: String
   recognized: Boolean!
   requests: Long!
   """The group's fairshare weight, which is what actually schedules this caller."""

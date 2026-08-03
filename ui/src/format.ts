@@ -7,6 +7,24 @@ export function fmtTime(msStr: string | number): string {
   return new Date(ms).toLocaleString()
 }
 
+/**
+ * "How long since", from an RFC3339 timestamp — the form a roster is read in.
+ *
+ * A wall-clock date answers "when" and leaves the reader doing arithmetic to
+ * get "is this caller still around", which is the actual question a last-seen
+ * column is asked. The absolute time stays available as a tooltip.
+ */
+export function fmtAgo(iso?: string | null): string {
+  if (!iso) return 'never'
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return '—'
+  const s = Math.max(0, (Date.now() - t) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
+}
+
 export function fmtDuration(msStr: string | number): string {
   const ms = typeof msStr === 'string' ? Number(msStr) : msStr
   if (!Number.isFinite(ms) || ms < 0) return '—'

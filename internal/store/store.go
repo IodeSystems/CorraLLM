@@ -574,21 +574,36 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 // RecentActivity returns the most recent records, newest first. A non-empty
 // served filters to one model's requests (the per-model console usage tab);
 // empty returns every model's activity (the global activity page).
-func (s *Store) RecentActivity(limit int, served string) ([]Activity, error) {
+// RecentActivity returns the newest rows, optionally narrowed to one served
+// model and/or one caller key.
+//
+// The key filter is what turns the caller roster from a list into something you
+// can act on: "this key did 9,971 requests" invites the question "doing what",
+// and without it the only answer was to read every row and squint.
+//
+// Built by composition rather than by another if/else pair — two independent
+// filters are four branches, and the next one is eight.
+func (s *Store) RecentActivity(limit int, served, key string) ([]Activity, error) {
 	const cols = `id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
 	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms`
-	var (
-		rows *sql.Rows
-		err  error
-	)
+	q := `SELECT ` + cols + ` FROM activity`
+	var args []any
+	var where []string
 	if served != "" {
-		rows, err = s.db.Query(`SELECT `+cols+`
-		 FROM activity WHERE served = ? ORDER BY ts DESC LIMIT ?`, served, limit)
-	} else {
-		rows, err = s.db.Query(`SELECT `+cols+`
-		 FROM activity ORDER BY ts DESC LIMIT ?`, limit)
+		where = append(where, "served = ?")
+		args = append(args, served)
 	}
+	if key != "" {
+		where = append(where, "key = ?")
+		args = append(args, key)
+	}
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += " ORDER BY ts DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -648,8 +663,13 @@ func (s *Store) RollupByModel(sinceMS int64) ([]Rollup, error) {
 
 // KeyRollup is aggregated activity for one caller key over a window (P8).
 type KeyRollup struct {
-	Key              string
-	Requests         int64
+	Key      string
+	Requests int64
+	// LastSeenMS is the most recent request from this key. A key assigned a
+	// lane months ago and silent since is a different thing from one hammering
+	// the box right now, and a roster that cannot tell them apart makes you
+	// chase ghosts.
+	LastSeenMS       int64
 	PromptTokens     int64
 	CompletionTokens int64
 	DwellMS          int64
@@ -663,6 +683,7 @@ func (s *Store) RollupByKey(sinceMS int64) ([]KeyRollup, error) {
 	rows, err := s.db.Query(
 		`SELECT key,
 		        COUNT(*),
+		        COALESCE(MAX(ts), 0),
 		        COALESCE(SUM(prompt_tokens), 0),
 		        COALESCE(SUM(completion_tokens), 0),
 		        COALESCE(SUM(dwell_ms), 0),
@@ -677,8 +698,8 @@ func (s *Store) RollupByKey(sinceMS int64) ([]KeyRollup, error) {
 	var out []KeyRollup
 	for rows.Next() {
 		var r KeyRollup
-		if err := rows.Scan(&r.Key, &r.Requests, &r.PromptTokens, &r.CompletionTokens,
-			&r.DwellMS, &r.CostUSD); err != nil {
+		if err := rows.Scan(&r.Key, &r.Requests, &r.LastSeenMS, &r.PromptTokens,
+			&r.CompletionTokens, &r.DwellMS, &r.CostUSD); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -979,16 +1000,16 @@ FROM bench_results WHERE model = ? ORDER BY at DESC LIMIT ?`, model, limit)
 // candidate (wrong capability or undeclared modality), which is a configuration
 // fact and must not read as a capability gap.
 type BenchProbeResult struct {
-	ID               int64  `json:"id"`
-	RunID            string `json:"runId"`
-	Model            string `json:"model"`
-	At               int64  `json:"at"`
-	Probe            string `json:"probe"`
-	Class            string `json:"class"`
-	Capability       string `json:"capability"`
-	RunMode          string `json:"runMode"`
-	Toolset          string `json:"toolset"`
-	ToolFormat       string `json:"toolFormat"`
+	ID         int64  `json:"id"`
+	RunID      string `json:"runId"`
+	Model      string `json:"model"`
+	At         int64  `json:"at"`
+	Probe      string `json:"probe"`
+	Class      string `json:"class"`
+	Capability string `json:"capability"`
+	RunMode    string `json:"runMode"`
+	Toolset    string `json:"toolset"`
+	ToolFormat string `json:"toolFormat"`
 	// Repeat is which re-run of this arm the row is (0-based).
 	Repeat           int    `json:"repeat"`
 	Stages           int    `json:"stages"`

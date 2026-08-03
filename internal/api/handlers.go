@@ -131,6 +131,7 @@ func (h *Handlers) ConfigSummary(_ context.Context, _ *ConfigSummaryInput) (*Con
 type RecentActivityInput struct {
 	Limit  int    `query:"limit" default:"50" minimum:"1" maximum:"500" doc:"Max records, newest first."`
 	Served string `query:"served" doc:"Filter to one served model; empty returns all models."`
+	Key    string `query:"key" doc:"Filter to one caller key; empty returns all callers."`
 }
 
 // ActivityRecord is one proxied-request row surfaced to the UI. Mirrors
@@ -171,7 +172,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := h.Store.RecentActivity(limit, in.Served)
+	rows, err := h.Store.RecentActivity(limit, in.Served, in.Key)
 	if err != nil {
 		return nil, err
 	}

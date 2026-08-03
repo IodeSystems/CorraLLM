@@ -1,32 +1,25 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { createFileRoute, Link } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
   Alert,
   Box,
-  Button,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  MenuItem,
-  Stack,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
   TableRow,
-  TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
 import { Panel, PageHeader } from '@/Panel'
+import { KeyLaneActions } from '@/KeyLane'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { fmtInt } from '@/format'
+import { fmtAgo, fmtInt, fmtUSD } from '@/format'
 
 /**
  * Keys: who is talking to this box, and whether anybody decided what they get.
@@ -44,8 +37,10 @@ import { fmtInt } from '@/format'
  * only way to manage keys on a box that mints them freely.
  *
  * Unrecognized rows sort first because they are the ones that need a decision.
+ * Requests and Last seen are both shown because either alone misleads: a big
+ * total may be entirely historical, and a recent call may be a one-off.
  */
-const KeysDoc = graphql(/* GraphQL */ `
+export const KeysDoc = graphql(/* GraphQL */ `
   query Keys {
     corrallm {
       keys(windowHours: "0") {
@@ -56,6 +51,9 @@ const KeysDoc = graphql(/* GraphQL */ `
           weight
           recognized
           requests
+          lastSeen
+          costUSD
+          dwellMS
         }
         unknownAllowed
         unknownGroup
@@ -70,77 +68,13 @@ const KeysDoc = graphql(/* GraphQL */ `
   }
 `)
 
-/**
- * Assignment goes through the same config-entry editor every other kind uses,
- * so persistence, validation and reload are shared rather than reimplemented
- * here. A key entry's whole YAML is the group name, which is why this is a
- * dropdown and not a text editor: unlike a model, there is exactly one field,
- * and offering free text would only invite the typo the server already rejects.
- */
-const PutKeyDoc = graphql(/* GraphQL */ `
-  mutation PutKeyGroup($name: String!, $body: corrallm_PutEntryYAMLInputBodyInput!) {
-    corrallm {
-      putEntryYaml(kind: "key", name: $name, body: $body) {
-        ok
-        message
-      }
-    }
-  }
-`)
-
-const DeleteKeyDoc = graphql(/* GraphQL */ `
-  mutation DeleteKeyAssignment($name: String!) {
-    corrallm {
-      deleteEntry(kind: "key", name: $name) {
-        ok
-        message
-      }
-    }
-  }
-`)
-
-// The server's own error text is the useful part — "no priority group", "config
-// is hand-written and will not be rewritten". A transport wrapper says nothing
-// actionable.
-function extractMessage(e: unknown): string {
-  const any = e as { response?: { errors?: { message?: string }[] }; message?: string }
-  return any?.response?.errors?.[0]?.message || any?.message || String(e)
-}
-
 function Keys() {
-  const qc = useQueryClient()
   const [err, setErr] = useState('')
-  const [assigning, setAssigning] = useState<{ key: string; group: string } | null>(null)
 
   const q = useQuery({
     queryKey: ['keys'],
     queryFn: () => gqlClient.request(KeysDoc),
     refetchInterval: 30000,
-  })
-
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ['keys'] })
-    qc.invalidateQueries({ queryKey: ['config'] })
-  }
-
-  const assign = useMutation({
-    mutationFn: (v: { key: string; group: string }) =>
-      gqlClient.request(PutKeyDoc, { name: v.key, body: { yaml: `${v.group}\n` } }),
-    onSuccess: () => {
-      setAssigning(null)
-      setErr('')
-      invalidate()
-    },
-    onError: (e: unknown) => setErr(extractMessage(e)),
-  })
-
-  const unassign = useMutation({
-    mutationFn: (key: string) => gqlClient.request(DeleteKeyDoc, { name: key }),
-    onSuccess: () => {
-      setErr('')
-      invalidate()
-    },
-    onError: (e: unknown) => setErr(extractMessage(e)),
   })
 
   if (q.isLoading) {
@@ -210,13 +144,15 @@ function Keys() {
                 <TableCell>Group</TableCell>
                 <TableCell align="right">Weight</TableCell>
                 <TableCell align="right">Requests</TableCell>
+                <TableCell align="right">Last seen</TableCell>
+                <TableCell align="right">Cost</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {keys.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6}>
+                  <TableCell colSpan={8}>
                     <Typography color="text.secondary">
                       No keys configured, and none seen in traffic yet.
                     </Typography>
@@ -225,7 +161,11 @@ function Keys() {
               ) : (
                 keys.map((k) => (
                   <TableRow key={k.hash} hover>
-                    <TableCell sx={{ fontFamily: 'monospace' }}>{k.key}</TableCell>
+                    <TableCell sx={{ fontFamily: 'monospace' }}>
+                      <Link to="/keys/$key" params={{ key: k.key }}>
+                        {k.key}
+                      </Link>
+                    </TableCell>
                     <TableCell sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
                       {k.hash}
                     </TableCell>
@@ -241,32 +181,27 @@ function Keys() {
                     <TableCell align="right">{fmtInt(Number(k.weight))}</TableCell>
                     <TableCell align="right">{fmtInt(Number(k.requests))}</TableCell>
                     <TableCell align="right">
-                      <Stack direction="row" spacing={1} justifyContent="flex-end">
-                        <Button
-                          size="small"
-                          variant={k.recognized ? 'text' : 'contained'}
-                          onClick={() => setAssigning({ key: k.key, group: k.group })}
+                      {/* Relative, with the exact time a hover away: the question
+                          this column answers is "is this caller still around". */}
+                      <Tooltip title={k.lastSeen || 'never seen in recorded traffic'}>
+                        <span
+                          style={{
+                            color: k.lastSeen ? undefined : 'var(--mui-palette-text-disabled)',
+                          }}
                         >
-                          {k.recognized ? 'Change' : 'Enrol'}
-                        </Button>
-                        {k.recognized && (
-                          // "Unassign", never "revoke": corrallm accepts any
-                          // key, so removing the entry drops the lane
-                          // assignment and the caller keeps working at the
-                          // fallback weight. A button labelled Delete would
-                          // promise a lockout it cannot deliver.
-                          <Tooltip title="Drop the lane assignment. The caller keeps working, in the fallback lane — this does not lock anyone out.">
-                            <Button
-                              size="small"
-                              color="warning"
-                              disabled={unassign.isPending}
-                              onClick={() => unassign.mutate(k.key)}
-                            >
-                              Unassign
-                            </Button>
-                          </Tooltip>
-                        )}
-                      </Stack>
+                          {fmtAgo(k.lastSeen)}
+                        </span>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell align="right">{fmtUSD(k.costUSD)}</TableCell>
+                    <TableCell align="right">
+                      <KeyLaneActions
+                        keyName={k.key}
+                        group={k.group}
+                        recognized={k.recognized}
+                        groups={groups}
+                        onError={setErr}
+                      />
                     </TableCell>
                   </TableRow>
                 ))
@@ -275,43 +210,6 @@ function Keys() {
           </Table>
         </TableContainer>
       </Panel>
-
-      <Dialog open={!!assigning} onClose={() => setAssigning(null)} fullWidth maxWidth="sm">
-        <DialogTitle>Assign a lane</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <Typography variant="body2" color="text.secondary">
-              Weight lives on the group, not the key — this chooses which lane{' '}
-              <code>{assigning?.key}</code> is scheduled in.
-            </Typography>
-            <TextField
-              select
-              label="Group"
-              value={assigning?.group ?? ''}
-              onChange={(e) =>
-                setAssigning((a) => (a ? { ...a, group: e.target.value } : a))
-              }
-              helperText="Only configured groups. Assigning an unknown one is refused: it would resolve to the fallback lane and look like it worked."
-            >
-              {groups.map((g) => (
-                <MenuItem key={g.name} value={g.name}>
-                  {g.name} (weight {fmtInt(Number(g.weight))})
-                </MenuItem>
-              ))}
-            </TextField>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setAssigning(null)}>Cancel</Button>
-          <Button
-            variant="contained"
-            disabled={!assigning?.group || assign.isPending}
-            onClick={() => assigning && assign.mutate(assigning)}
-          >
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   )
 }

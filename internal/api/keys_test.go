@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/store"
 )
 
 func boolp(b bool) *bool { return &b }
@@ -94,5 +95,47 @@ func TestKeysSortsUnrecognizedFirst(t *testing.T) {
 	if rows[0].Key != "stranger-busy" || rows[1].Key != "stranger-quiet" {
 		t.Errorf("order = %v; unrecognized first, then busiest",
 			[]string{rows[0].Key, rows[1].Key, rows[2].Key})
+	}
+}
+
+// The roster's usage half must arrive INTACT. It shipped once with only the
+// request count copied out of the rollup — cost, dwell and last-seen were on the
+// wire as zeros, which reads as "this caller costs nothing and has never
+// called" rather than as a missing field. A count-only assertion passed the
+// whole time.
+func TestKeysCopiesEveryRollupField(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	for _, a := range []store.Activity{
+		{TS: 1_700_000_000_000, Served: "m", Key: "aw3", Status: 200, CostUSD: 0.25, DwellMS: 40},
+		{TS: 1_700_000_060_000, Served: "m", Key: "aw3", Status: 200, CostUSD: 0.25, DwellMS: 60},
+	} {
+		if err := st.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h := &Handlers{Store: st}
+	h.SetConfig(&config.Config{
+		PriorityGroups: map[string]config.PriorityGroup{"default": {Weight: 1}},
+	})
+	out, err := h.Keys(context.Background(), &KeysInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Body.Keys) != 1 {
+		t.Fatalf("keys = %+v, want the one key seen in traffic", out.Body.Keys)
+	}
+	k := out.Body.Keys[0]
+	if k.Requests != 2 || k.CostUSD != 0.5 || k.DwellMS != 100 {
+		t.Errorf("usage = %d req / $%v / %dms, want 2 / 0.5 / 100", k.Requests, k.CostUSD, k.DwellMS)
+	}
+	// The NEWEST row, in RFC3339 — the question is "is this caller still
+	// around", which a first-seen or a sum cannot answer.
+	if k.LastSeen != "2023-11-14T22:14:20Z" {
+		t.Errorf("lastSeen = %q, want the newest row's timestamp", k.LastSeen)
 	}
 }
