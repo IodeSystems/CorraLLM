@@ -38,6 +38,13 @@ type Hello struct {
 	// Booted is when this agent process started, unix millis. A change means
 	// the agent restarted and anything it was supervising is gone.
 	Booted int64 `json:"booted"`
+	// BuildID is the content hash of this agent's own executable, computed the
+	// same way the primary computes it for the binary it serves. It is what
+	// self-update actually compares; Version is for humans.
+	//
+	// Empty when the agent cannot read its own binary, which falls back to the
+	// version-string comparison.
+	BuildID string `json:"buildId,omitempty"`
 }
 
 // DeviceMem is one memory device's measurement.
@@ -68,6 +75,20 @@ type Capacity struct {
 	// never reaches the measuring part and the host quietly becomes a
 	// one-model-at-a-time box.
 	PerProcess bool `json:"perProcess"`
+	// Unified reports that GPU and Host above describe the SAME physical memory
+	// (Apple silicon), not two independent devices.
+	//
+	// Also told rather than inferred, and for the same reason: the primary sees
+	// two non-zero measurements either way, and treating a shared pool as two
+	// declares the machine's memory twice. Pool budgets are checked
+	// independently, so nothing downstream can notice the overcount — it
+	// surfaces as an OOM on a host that, being macOS, also cannot measure the
+	// footprint that would have shown the drift.
+	//
+	// Absent on an agent older than this field, which yields false and the
+	// previous two-pool behavior — wrong on a Mac, but no worse than the
+	// version that agent was enrolled by.
+	Unified bool `json:"unified,omitempty"`
 }
 
 // StartRequest asks the agent to run one backend.
@@ -150,6 +171,19 @@ type HeartbeatAck struct {
 	// Sent so the cadence is the primary's decision and can change without
 	// redeploying every agent.
 	IntervalSeconds int `json:"intervalSeconds"`
+	// BuildID identifies the BINARY the primary would hand this agent — a short
+	// content hash of the file at UpdateURL.
+	//
+	// Version alone cannot drive self-update, because an untagged build stamps
+	// "dev" on both sides and the comparison says "already current" no matter
+	// how far apart they are. That is the normal state during development, when
+	// shipping a change to an attached machine matters most. A content hash
+	// differs whenever the bytes differ and matches whenever they do not, so it
+	// both triggers and terminates correctly.
+	//
+	// Empty when the primary serves no binary for this agent's platform, which
+	// falls back to the version-string comparison.
+	BuildID string `json:"buildId,omitempty"`
 }
 
 // EnrollRequest is a machine asking to attach itself.

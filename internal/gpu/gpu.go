@@ -33,6 +33,17 @@ type Prober interface {
 	Probe() (Stats, error)
 	// ProcVRAM maps each compute process's pid → VRAM MiB.
 	ProcVRAM() (map[int]int, error)
+	// Unified reports whether Probe describes memory the GPU SHARES with the
+	// host rather than a device's own.
+	//
+	// It cannot be inferred from GOOS by whoever consumes the reading. An Intel
+	// Mac with a discrete AMD card is darwin and genuinely has two pools; an
+	// Apple-silicon Mac is darwin and has one. Only the prober knows which
+	// thing it just measured, so it has to say.
+	//
+	// A consumer that gets this wrong declares the same bytes twice — see
+	// api.sizeFrom, where doing exactly that gave a 64 GiB Mac a 119 GB budget.
+	Unified() bool
 }
 
 // Default is the prober used for this host. NVIDIA is the default because its
@@ -41,9 +52,11 @@ type Prober interface {
 // (or add PATH-based detection) to support non-NVIDIA hardware.
 var Default Prober = NVIDIA{}
 
-// Probe / ProcVRAM delegate to Default so callers stay backend-agnostic.
+// Probe / ProcVRAM / Unified delegate to Default so callers stay
+// backend-agnostic.
 func Probe() (Stats, error)          { return Default.Probe() }
 func ProcVRAM() (map[int]int, error) { return Default.ProcVRAM() }
+func Unified() bool                  { return Default.Unified() }
 
 // GroupVRAM sums the VRAM (MiB) of every compute process in process group pgid.
 // corrallm spawns each backend via `sh -c` with Setpgid, so the vendor tool
@@ -102,6 +115,10 @@ var runCmd = func(name string, args ...string) ([]byte, error) {
 type NVIDIA struct{}
 
 func (NVIDIA) Name() string { return "nvidia-smi" }
+
+// Unified is false: a discrete card's VRAM is its own, separate from host RAM,
+// so the two are independent budgets.
+func (NVIDIA) Unified() bool { return false }
 
 // Probe reads the first GPU's memory stats. corrallm targets a single-GPU box;
 // multi-GPU CSV rows parse fine (see parseGPUCSV) but only the first is reported.

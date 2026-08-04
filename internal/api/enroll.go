@@ -95,9 +95,11 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 		return nil, huma.Error500InternalServerError("could not mint an agent token", err)
 	}
 
+	pools, reserve, devicePool := sizeFrom(in.Body.Capacity)
 	srv := config.Server{
-		Pools:      poolsFrom(in.Body.Capacity),
-		DevicePool: devicePoolFrom(in.Body.Capacity),
+		Pools:      pools,
+		Reserve:    reserve,
+		DevicePool: devicePool,
 		// Recorded at enrollment because the agent is the only one who knows,
 		// and the consequence of getting it wrong is silent single-tenancy.
 		NoProcessMemory: !in.Body.Capacity.PerProcess,
@@ -111,20 +113,8 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 	if next.Servers == nil {
 		next.Servers = map[string]config.Server{}
 	}
-	// Preserve anything the operator already set on this server (a hand-tuned
-	// pool, a note) — enrollment fills in what is missing, it does not reset.
 	if prev, ok := next.Servers[name]; ok {
-		if len(prev.Pools) > 0 {
-			srv.Pools = prev.Pools
-		}
-		if prev.DevicePool != "" {
-			srv.DevicePool = prev.DevicePool
-		}
-		if prev.Notes != "" {
-			srv.Notes = prev.Notes + "\n\n" + srv.Notes
-		}
-		srv.MaxConcurrent = prev.MaxConcurrent
-		srv.Reserve = prev.Reserve
+		srv = mergeEnrollment(prev, srv)
 	}
 	next.Servers[name] = srv
 
@@ -171,40 +161,138 @@ func newAgentToken() (string, error) {
 	return "agt_" + hex.EncodeToString(raw), nil
 }
 
-// poolsFrom sizes a server from what the machine measured about itself.
+// sizeFrom turns a machine's own measurements into a capacity declaration: the
+// pools it offers, the headroom kept off-limits, and which pool a measured
+// device footprint is charged against.
 //
-// A unified-memory host reports one pool because it HAS one; a discrete-GPU box
-// reports its card separately from host RAM. Deriving this beats asking the
-// operator to type it, which is where the wrong number usually comes from.
-func poolsFrom(c agent.Capacity) map[string]string {
-	pools := map[string]string{}
-	if c.Host != nil && c.Host.TotalBytes > 0 {
-		pools["system"] = bytesToGB(c.Host.TotalBytes)
+// Deriving this beats asking the operator to type it, which is where the wrong
+// number usually comes from.
+//
+// One function rather than three because the three answers are ONE decision,
+// and when they were separate they disagreed. Pools were declared from both
+// measurements while the device pool was picked from "is there a GPU" — so on
+// Apple silicon, where the GPU probe reports a slice of the same RAM sysmem
+// reports, a 64 GiB Mac enrolled as `{system: 68GB, gpu0: 51GB}`: 119 GB across
+// two ledgers backed by 68 GB. fitsLocked checks each pool independently and
+// nothing relates them, so the overcommit is undetectable until a spawn OOMs —
+// on the one class of host that also cannot measure per-process memory, and so
+// cannot produce the profile that would have shown the drift.
+func sizeFrom(c agent.Capacity) (pools, reserve map[string]string, devicePool string) {
+	host, gpuMem := int64(0), int64(0)
+	if c.Host != nil {
+		host = c.Host.TotalBytes
 	}
-	if c.GPU != nil && c.GPU.TotalBytes > 0 {
-		pools["gpu0"] = bytesToGB(c.GPU.TotalBytes)
+	if c.GPU != nil {
+		gpuMem = c.GPU.TotalBytes
 	}
-	if len(pools) == 0 {
-		// The agent could not measure anything (macOS today). Leave it unsized
-		// rather than inventing a number: an invented pool is a budget the
-		// scheduler will admit against, and being wrong there means OOM.
-		pools["system"] = "0"
+
+	if !c.Unified {
+		pools = map[string]string{}
+		if host > 0 {
+			pools["system"] = bytesToGB(host)
+		}
+		if gpuMem > 0 {
+			pools["gpu0"] = bytesToGB(gpuMem)
+			devicePool = "gpu0"
+		}
+		if len(pools) == 0 {
+			// Nothing measured. Leave it unsized rather than inventing a
+			// number: an invented pool is a budget the scheduler will admit
+			// against, and being wrong there means OOM.
+			pools["system"] = "0"
+		}
+		if devicePool == "" {
+			devicePool = "system" // no discrete device to charge against
+		}
+		return pools, nil, devicePool
 	}
-	return pools
+
+	// Unified memory: ONE pool, because there is one. Prefer the host figure —
+	// hw.memsize is the machine, while the GPU reading is a ceiling within it.
+	total := host
+	if total <= 0 {
+		total = gpuMem // host probe failed; the wired limit is all we know
+	}
+	if total <= 0 {
+		return map[string]string{"system": "0"}, nil, "system"
+	}
+
+	// The wired limit is not a second pool; it is a CEILING on the one pool, so
+	// it becomes reserve. Budget (total − reserve) then lands at or just under
+	// the wired limit, and the memory macOS will not let a backend wire is
+	// described as what it is: headroom, visible and adjustable, rather than a
+	// phantom budget the scheduler would happily fill.
+	//
+	// The floor covers an operator who raised iogpu.wired_limit_mb to (or past)
+	// physical memory. Their machine still needs to run macOS, and a reserve of
+	// zero would let corrallm admit against every byte the box has.
+	res := total - gpuMem
+	if floor := total / 8; res < floor {
+		res = floor
+	}
+	// Asymmetric rounding, deliberately: a pool floors so it never claims more
+	// memory than exists, and reserve ceils so headroom is never understated.
+	// The two compound, so the budget can sit up to 2 GB below the wired limit
+	// — both errors are in the safe direction, and readable GB in a file the
+	// operator edits by hand is worth more than that last gigabyte.
+	return map[string]string{"system": bytesToGB(total)},
+		map[string]string{"system": bytesToGBUp(res)},
+		"system"
 }
 
-// devicePoolFrom names the pool a measured footprint is charged against.
-func devicePoolFrom(c agent.Capacity) string {
-	if c.GPU != nil && c.GPU.TotalBytes > 0 {
-		return "gpu0"
+// mergeEnrollment settles a fresh enrollment against an existing server entry.
+//
+// RE-ENROLLING RE-DERIVES THE SIZING. Pools, reserve and devicePool come from
+// the measurement the agent just sent, overwriting whatever was there.
+//
+// This used to preserve them, which sounds protective and is not: sizing is
+// DERIVED, so preserving it pinned a server to whatever its FIRST enrollment
+// computed — including, for every Mac enrolled before sizeFrom was fixed, a
+// pool shape that counted unified memory twice. Nothing could correct that short
+// of hand-editing YAML, while the operator who re-ran the install command
+// reasonably expected that to be the fix. Re-measuring a machine is the entire
+// purpose of enrollment; declining to apply the new measurement made the
+// operation a no-op precisely when it was needed.
+//
+// Safe because re-enrolling cannot happen by accident. It requires a one-time
+// token the operator just minted and a command they just ran on the machine —
+// a deliberate "measure this box again", and the only path to here.
+//
+// What survives is what the agent CANNOT know: notes, and maxConcurrent, which
+// is operator policy about how hard to drive the host rather than a fact about
+// it. A resize is appended to the notes so an operator who HAD hand-tuned a pool
+// can see that it changed, and to what.
+func mergeEnrollment(prev, fresh config.Server) config.Server {
+	fresh.MaxConcurrent = prev.MaxConcurrent
+	if prev.Notes != "" {
+		fresh.Notes = prev.Notes + "\n\n" + fresh.Notes
 	}
-	return "system" // unified memory, or no discrete device
+	if len(prev.Pools) > 0 && !sameSizes(prev.Pools, fresh.Pools) {
+		fresh.Notes += fmt.Sprintf("\nRe-enrollment resized this server: pools %v → %v, devicePool %q → %q.",
+			prev.Pools, fresh.Pools, prev.DevicePool, fresh.DevicePool)
+	}
+	return fresh
 }
 
-func bytesToGB(b int64) string {
-	const gb = 1000 * 1000 * 1000
-	return fmt.Sprintf("%dGB", b/gb)
+// sameSizes compares two pool declarations by VALUE, so "68GB" and "68GB"
+// written by two different enrollments are the same and do not produce a note
+// about a change that did not happen.
+func sameSizes(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
+
+const gb = 1000 * 1000 * 1000
+
+func bytesToGB(b int64) string   { return fmt.Sprintf("%dGB", b/gb) }
+func bytesToGBUp(b int64) string { return fmt.Sprintf("%dGB", (b+gb-1)/gb) }
 
 // shallowCopyConfig copies the maps that enrollment touches, so a failed
 // validation never leaves the LIVE config mutated.

@@ -27,16 +27,10 @@ import (
 // primary should not be replacing its own binary on the strength of stale
 // information.
 func (b *Beacon) maybeSelfUpdate(ctx context.Context, ack HeartbeatAck) {
-	if !b.SelfUpdate || ack.Version == "" || ack.UpdateURL == "" {
+	if !b.SelfUpdate || ack.UpdateURL == "" || b.Srv == nil {
 		return
 	}
-	if b.Srv == nil || b.Srv.version == ack.Version {
-		return
-	}
-	// "dev" on both sides is the normal state of an untagged build and would
-	// otherwise never match; the primary changing while both are "dev" is not
-	// something we can detect from a version string alone.
-	if ack.Version == "dev" && b.Srv.version == "dev" {
+	if !outOfDate(OwnBuildID(), b.Srv.version, ack) {
 		return
 	}
 	if busy := b.Srv.busy(); busy > 0 {
@@ -51,24 +45,22 @@ func (b *Beacon) maybeSelfUpdate(ctx context.Context, ack HeartbeatAck) {
 		return
 	}
 	slog.Info("agent: idle and out of date — updating",
-		"have", b.Srv.version, "want", ack.Version, "path", exe)
+		"have", b.Srv.version, "haveBuild", OwnBuildID(),
+		"want", ack.Version, "wantBuild", ack.BuildID, "path", exe)
 
-	served, err := b.downloadInto(ctx, ack.UpdateURL, exe)
+	downloaded, err := b.downloadInto(ctx, ack.UpdateURL, exe)
 	if err != nil {
 		slog.Error("agent: self-update failed; staying on the current build", "err", err)
 		return
 	}
-	// The primary reports ITS version, but serves binaries built separately
-	// (`make agents`), and the two can disagree — a primary built without the
-	// version ldflag says "dev" while the served binary is stamped with a
-	// commit. Believing the primary alone would re-exec into the same build,
-	// find the versions still differ on the next beat, and update forever.
-	//
-	// The served binary's own version is the authority. If it matches what is
-	// already running, there is nothing to restart into.
-	if served != "" && served == b.Srv.version {
-		slog.Info("agent: primary reports a different version but serves the build we already run; not restarting",
-			"running", b.Srv.version, "primaryReports", ack.Version)
+	// Last word goes to the bytes that actually landed, hashed before the
+	// rename. Anything decided earlier was based on what the primary SAID it
+	// would serve; this is what it served. If it is the build already running,
+	// restarting would change nothing and the next beat would try again — the
+	// update loop this guard exists to break.
+	if downloaded != "" && downloaded == OwnBuildID() {
+		slog.Info("agent: primary advertised a change but served the build we already run; not restarting",
+			"build", downloaded, "primaryReports", ack.Version)
 		return
 	}
 
@@ -79,6 +71,29 @@ func (b *Beacon) maybeSelfUpdate(ctx context.Context, ack HeartbeatAck) {
 	if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
 		slog.Error("agent: exec into the new build FAILED — still running the old one", "err", err)
 	}
+}
+
+// outOfDate decides whether the primary is offering a build we are not running.
+//
+// Build ids win whenever both sides have one: they compare BYTES, so they are
+// right in the case version strings get wrong — two "dev" builds a week apart —
+// and equally right in the case they get correct. A machine that answers "same
+// bytes" needs no update no matter what the version strings say, and one that
+// answers "different bytes" needs one for the same reason.
+//
+// The version comparison survives only as a fallback for when an id is missing
+// on either side: an agent that cannot read its own executable, or a primary
+// with no binary built for that platform. Its old "both dev → do nothing" rule
+// stays with it, because without ids there is still no way to tell two dev
+// builds apart, and updating on every beat would be worse than not updating.
+func outOfDate(ownBuild, ownVersion string, ack HeartbeatAck) bool {
+	if ownBuild != "" && ack.BuildID != "" {
+		return ownBuild != ack.BuildID
+	}
+	if ack.Version == "" || ack.Version == ownVersion {
+		return false
+	}
+	return !(ack.Version == "dev" && ownVersion == "dev")
 }
 
 // updateTempPrefix names the in-flight download. Distinctive and dot-prefixed:
@@ -140,8 +155,6 @@ func (b *Beacon) downloadInto(ctx context.Context, url, dst string) (string, err
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
 		return "", fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
-	served := resp.Header.Get("X-Corrallm-Version")
-
 	sweepStaleDownloads(filepath.Dir(dst))
 
 	tmp, err := os.CreateTemp(filepath.Dir(dst), updateTempPrefix+"*")
@@ -167,7 +180,15 @@ func (b *Beacon) downloadInto(ctx context.Context, url, dst string) (string, err
 	if err := os.Chmod(tmpName, 0o755); err != nil {
 		return "", err
 	}
-	return served, os.Rename(tmpName, dst)
+	// Hash the file we are about to install, not the header describing it. The
+	// caller compares this against its own build id to decide whether restarting
+	// would change anything, and that comparison is only sound if both numbers
+	// are computed the same way from the same kind of thing: actual bytes.
+	id, err := HashFile(tmpName)
+	if err != nil {
+		return "", err
+	}
+	return id, os.Rename(tmpName, dst)
 }
 
 // busy reports how many backends this agent is currently supervising that have

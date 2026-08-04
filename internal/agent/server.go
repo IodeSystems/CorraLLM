@@ -102,6 +102,7 @@ func (s *Server) hello() Hello {
 		OS:       runtime.GOOS,
 		Arch:     runtime.GOARCH,
 		Booted:   s.booted.UnixMilli(),
+		BuildID:  OwnBuildID(),
 	}
 }
 

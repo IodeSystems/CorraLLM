@@ -125,6 +125,10 @@ func Probe() Capacity {
 	if _, err := gpu.ProcVRAM(); err == nil {
 		c.PerProcess = true
 	}
+	// Likewise for unified memory, and here GOOS would be actively wrong: an
+	// Intel Mac with a discrete card is darwin and has two real pools. The
+	// prober knows what it just measured; nothing else does.
+	c.Unified = gpu.Unified()
 	return c
 }
 

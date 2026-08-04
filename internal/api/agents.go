@@ -81,6 +81,13 @@ func (h *Handlers) AgentHeartbeat(_ context.Context, in *AgentHeartbeatInput) (*
 	// mismatched build can never be handed to the wrong machine.
 	if hb := in.Body.Hello; hb.OS != "" && hb.Arch != "" {
 		out.Body.UpdateURL = fmt.Sprintf("/install/corrallm-%s-%s", hb.OS, hb.Arch)
+		// The identity of the binary at that URL, which is what self-update
+		// actually compares. Without it two untagged "dev" builds look
+		// identical and an agent never picks up a change — the state that
+		// matters most while iterating on agent code.
+		if h.AgentDist != nil {
+			out.Body.BuildID = h.AgentDist.BuildID(hb.OS, hb.Arch)
+		}
 	}
 	return out, nil
 }

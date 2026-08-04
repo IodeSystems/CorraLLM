@@ -20,6 +20,11 @@ type Apple struct{}
 
 func (Apple) Name() string { return "apple" }
 
+// Unified is true, and it is the defining fact about this prober: Probe's
+// "total" is a slice of the SAME memory sysmem.Probe reports, not a second
+// device. Anything that adds the two together has counted the machine twice.
+func (Apple) Unified() bool { return true }
+
 // Probe reports the unified-memory budget as if it were a device.
 //
 // Total is the wired limit — what the GPU may hold. Used is WIRED memory, which
