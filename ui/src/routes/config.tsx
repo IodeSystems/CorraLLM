@@ -12,11 +12,14 @@ import {
   DialogContent,
   DialogTitle,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
+import { ModelForm, blankSpec, type ModelSpec, type ServerOption } from '@/ModelForm'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
@@ -33,8 +36,11 @@ import { fmtBytes } from '@/format'
  * Editable, but only against the MANAGED config — the one corrallm writes and
  * owns. A hand-written config is still refused (the server checks for its
  * header), because rewriting it would silently drop the comments its author
- * put there. Entries are edited as YAML rather than through a form: see the
- * note on the mutation below.
+ * put there.
+ *
+ * Models are edited through a form; everything else, and any model field the
+ * form does not cover, through YAML. See the note on the save mutation for why
+ * that split is now safe when it previously was not.
  */
 const ConfigDoc = graphql(/* GraphQL */ `
   query Config {
@@ -119,6 +125,42 @@ const PutYamlDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const ModelSpecDoc = graphql(/* GraphQL */ `
+  query ModelSpec($name: String!) {
+    corrallm {
+      modelSpec(name: $name) {
+        exists
+        advanced
+        spec {
+          name
+          cmd
+          server
+          proxy
+          upstream
+          type
+          quality
+          maxConcurrent
+          maxTokens
+          persistent
+          ramUsage
+          notes
+        }
+      }
+    }
+  }
+`)
+
+const UpsertModelDoc = graphql(/* GraphQL */ `
+  mutation UpsertModel($name: String!, $body: corrallm_ModelSpecInput!) {
+    corrallm {
+      upsertModel(name: $name, body: $body) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
 const MintTokenDoc = graphql(/* GraphQL */ `
   mutation MintEnrollmentToken($body: corrallm_MintEnrollmentTokenInputBodyInput!) {
     corrallm {
@@ -164,10 +206,15 @@ function ConfigPage() {
   const [err, setErr] = useState('')
   const [minted, setMinted] = useState<{ command: string; expires: string } | null>(null)
 
-  // Editing YAML rather than a form: a model carries far more than fits a form
-  // (ramUsage, sticky, contextPerRequest, modalities, convert, swap, freeTier),
-  // and every field the form omits is one the dashboard cannot set. YAML is the
-  // schema, so the editor is complete the day a field is added.
+  // A model is edited through a FORM by default and YAML when it needs to be.
+  //
+  // The form used to be impossible for a good reason: a model carries far more
+  // than fits one (sticky, contextPerRequest, modalities, convert, swap,
+  // freeTier), and an upsert that replaced the model would delete every field
+  // the form omitted. That is fixed on the server — upsertModel now merges the
+  // spec onto the stored model — so the form can cover the common fields
+  // without being able to destroy the rest, and YAML remains the complete
+  // editor for everything else.
   const save = useMutation({
     mutationFn: (f: Edit) =>
       gqlClient.request(PutYamlDoc, { kind: f.kind, name: f.name, body: { yaml: f.yaml } }),
@@ -187,11 +234,67 @@ function ConfigPage() {
     setErr('')
     try {
       const d = await gqlClient.request(EntryYamlDoc, { kind, name })
-      setEditing({ kind, existing: true, name, yaml: d.corrallm.entryYaml?.yaml ?? '' })
+      const base: Edit = {
+        kind,
+        existing: true,
+        name,
+        yaml: d.corrallm.entryYaml?.yaml ?? '',
+        mode: 'yaml',
+        spec: blankSpec(),
+        advanced: [],
+      }
+      if (kind !== 'model') {
+        setEditing(base)
+        return
+      }
+      // Both shapes are loaded up front so the Form/YAML toggle is instant and
+      // cannot fail halfway through an edit. An extension-provided model has no
+      // editable spec of its own, so it stays on YAML where the server's
+      // rejection message can explain why.
+      const s = await gqlClient.request(ModelSpecDoc, { name })
+      const spec = s.corrallm.modelSpec?.spec
+      const advanced = (s.corrallm.modelSpec?.advanced ?? []) as string[]
+      setEditing({
+        ...base,
+        mode: advanced.includes('extension') ? 'yaml' : 'form',
+        advanced,
+        spec: spec ? specFromGql(spec) : blankSpec(),
+      })
     } catch (e) {
       setErr(extractMessage(e))
     }
   }
+
+  // Saving depends on which editor is open: the form sends the spec it owns and
+  // the server merges it; YAML replaces the entry wholesale, as it always has.
+  const saveModelSpec = useMutation({
+    mutationFn: (f: Edit) =>
+      gqlClient.request(UpsertModelDoc, {
+        name: f.name,
+        body: {
+          name: f.name,
+          cmd: f.spec.cmd,
+          server: f.spec.server,
+          proxy: f.spec.proxy,
+          upstream: f.spec.upstream,
+          type: f.spec.type,
+          quality: f.spec.quality,
+          // Long crosses the wire as a string (64-bit safety in JS); the form
+          // holds them as numbers because that is what a number input edits.
+          maxConcurrent: String(f.spec.maxConcurrent),
+          maxTokens: String(f.spec.maxTokens),
+          persistent: f.spec.persistent,
+          ramUsage: f.spec.ramUsage,
+          notes: f.spec.notes,
+        },
+      }),
+    onSuccess: () => {
+      setEditing(null)
+      setErr('')
+      qc.invalidateQueries({ queryKey: ['config'] })
+    },
+    onError: (e: unknown) => setErr(extractMessage(e)),
+  })
 
   const mint = useMutation({
     mutationFn: () =>
@@ -250,6 +353,15 @@ function ConfigPage() {
 
   // A server with endpoints is an attached machine; one without is this box.
   const agents = servers.filter((s) => (s.agentEndpoints ?? []).length > 0)
+
+  // What the form needs to keep an operator from writing an unspellable
+  // footprint: each server's OWN pool names, and whether it can measure itself.
+  const serverOptions: ServerOption[] = servers.map((s) => ({
+    server: s.server,
+    pools: (s.pools ?? []).map((p) => p.pool),
+    noProcessMemory: !!s.noProcessMemory,
+    agentStatus: s.agentStatus,
+  }))
 
   const homeOf = (m: (typeof models)[number]) =>
     m.remote ? REMOTE : m.server ? m.server : UNBOUND
@@ -554,30 +666,50 @@ function ConfigPage() {
           <DialogTitle>
             {editing.existing ? `Edit ${editing.kind} ${editing.name}` : `Add a ${editing.kind}`}
           </DialogTitle>
+          {editing.kind === 'model' && (
+            <Tabs
+              value={editing.mode}
+              onChange={(_, mode) => setEditing({ ...editing, mode })}
+              sx={{ px: 3, borderBottom: `1px solid ${C.border}`, minHeight: 36 }}
+            >
+              <Tab value="form" label="Form" sx={{ minHeight: 36 }} />
+              <Tab value="yaml" label="YAML" sx={{ minHeight: 36 }} />
+            </Tabs>
+          )}
           <DialogContent>
-            <Stack spacing={2} sx={{ mt: 1 }}>
-              <TextField
-                label="Name"
-                size="small"
-                value={editing.name}
-                disabled={editing.existing}
-                onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                helperText={
-                  editing.kind === 'model'
-                    ? 'The name callers request, and the config key. Renaming means add + delete.'
-                    : 'The config key. Renaming means add + delete.'
-                }
+            {editing.kind === 'model' && editing.mode === 'form' ? (
+              <ModelForm
+                spec={editing.spec}
+                onChange={(spec) => setEditing({ ...editing, spec })}
+                servers={serverOptions}
+                advanced={editing.advanced}
+                existing={editing.existing}
               />
-              <TextField
-                label="Configuration (YAML)"
-                value={editing.yaml}
-                onChange={(e) => setEditing({ ...editing, yaml: e.target.value })}
-                multiline
-                minRows={18}
-                slotProps={{ input: { sx: { fontFamily: 'monospace', fontSize: 12.5 } } }}
-                helperText={`The ${editing.kind} exactly as it appears in the config file. Checked twice on save: unknown keys are rejected, then the whole config is validated — an unknown server, or a lane this would break, is caught here rather than at the next restart.`}
-              />
-            </Stack>
+            ) : (
+              <Stack spacing={2} sx={{ mt: 1 }}>
+                <TextField
+                  label="Name"
+                  size="small"
+                  value={editing.name}
+                  disabled={editing.existing}
+                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                  helperText={
+                    editing.kind === 'model'
+                      ? 'The name callers request, and the config key. Renaming means add + delete.'
+                      : 'The config key. Renaming means add + delete.'
+                  }
+                />
+                <TextField
+                  label="Configuration (YAML)"
+                  value={editing.yaml}
+                  onChange={(e) => setEditing({ ...editing, yaml: e.target.value })}
+                  multiline
+                  minRows={18}
+                  slotProps={{ input: { sx: { fontFamily: 'monospace', fontSize: 12.5 } } }}
+                  helperText={`The ${editing.kind} exactly as it appears in the config file. Checked twice on save: unknown keys are rejected, then the whole config is validated — an unknown server, or a lane this would break, is caught here rather than at the next restart.`}
+                />
+              </Stack>
+            )}
           </DialogContent>
           {/* OUTSIDE DialogContent on purpose. This lived at the top of the
               scrolling content, which made a rejected Delete look like a dead
@@ -611,7 +743,15 @@ function ConfigPage() {
               </Button>
             )}
             <Button onClick={() => setEditing(null)}>Cancel</Button>
-            <Button variant="contained" disabled={save.isPending} onClick={() => save.mutate(editing)}>
+            <Button
+              variant="contained"
+              disabled={save.isPending || saveModelSpec.isPending || !saveable(editing)}
+              onClick={() =>
+                editing.kind === 'model' && editing.mode === 'form'
+                  ? saveModelSpec.mutate(editing)
+                  : save.mutate(editing)
+              }
+            >
               Save
             </Button>
           </DialogActions>
@@ -717,7 +857,62 @@ export const Route = createFileRoute('/config')({ component: ConfigPage })
 // YAML for it. One dialog for models, servers and lanes — they differ only in
 // the schema behind the text, and the server validates that either way.
 type EditKind = 'model' | 'server' | 'lane' | 'group' | 'extension'
-type Edit = { kind: EditKind; existing: boolean; name: string; yaml: string }
+type Edit = {
+  kind: EditKind
+  existing: boolean
+  name: string
+  yaml: string
+  // Which editor is showing. Only ever 'form' for a model; every other kind has
+  // no form and stays on YAML.
+  mode: 'form' | 'yaml'
+  spec: ModelSpec
+  // Fields this model has that the form does not edit, so it can say so rather
+  // than looking complete.
+  advanced: string[]
+}
+
+// specFromGql fills the gaps a nullable schema leaves, so the form always has a
+// value to render. A null quality is 0, not "unset" — the form has to put
+// SOMETHING in the box, and 0 is what the config means by absent.
+function specFromGql(s: {
+  name?: string | null
+  cmd?: string | null
+  server?: string | null
+  proxy?: string | null
+  upstream?: string | null
+  type?: string | null
+  quality?: number | null
+  maxConcurrent?: string | number | null
+  maxTokens?: string | number | null
+  persistent?: boolean | null
+  ramUsage?: unknown
+  notes?: string | null
+}): ModelSpec {
+  return {
+    name: s.name ?? '',
+    cmd: s.cmd ?? '',
+    server: s.server ?? '',
+    proxy: s.proxy ?? '',
+    upstream: s.upstream ?? '',
+    type: s.type ?? '',
+    quality: s.quality ?? 0,
+    maxConcurrent: Number(s.maxConcurrent ?? 0),
+    maxTokens: Number(s.maxTokens ?? 0),
+    persistent: s.persistent ?? false,
+    ramUsage: (s.ramUsage as Record<string, string> | null) ?? {},
+    notes: s.notes ?? '',
+  }
+}
+
+// saveable gates the button on what the server would reject anyway, so a
+// missing required field is visible before the round trip rather than after it.
+// YAML is never gated here: its errors are the server's to explain.
+function saveable(e: Edit): boolean {
+  if (e.kind !== 'model' || e.mode !== 'form') return true
+  if (!e.name.trim() || !e.spec.proxy.trim()) return false
+  // A spawned model must name a server — config validation refuses it.
+  return !(e.spec.cmd.trim() !== '' && !e.spec.server)
+}
 
 // blankModel seeds a new entry with the fields every model needs, so the first
 // thing an operator sees is a shape to fill in rather than an empty box.
@@ -726,6 +921,11 @@ function blankModel(): Edit {
     kind: 'model',
     existing: false,
     name: '',
+    // A new model opens on the FORM: it is the shape most models need, and the
+    // YAML tab is one click away for the ones that need more.
+    mode: 'form',
+    spec: blankSpec(),
+    advanced: [],
     yaml: `# A model is exactly ONE serving path: a spawned cmd, or a proxy target.
 # Everything the config schema accepts works here.
 
@@ -768,6 +968,9 @@ function blankServer(): Edit {
     kind: 'server',
     existing: false,
     name: '',
+    mode: 'yaml',
+    spec: blankSpec(),
+    advanced: [],
     yaml: `pools:
   gpu0: 30GB           # a discrete card
   system: 120GB
@@ -792,6 +995,9 @@ function blankLane(): Edit {
     kind: 'lane',
     existing: false,
     name: '',
+    mode: 'yaml',
+    spec: blankSpec(),
+    advanced: [],
     yaml: `# Members are walked best-quality-first. Requesting the LANE name allows
 # substitution across them; requesting a model name pins exactly that model.
 members:
@@ -813,6 +1019,9 @@ function blankGroup(): Edit {
     kind: 'group',
     existing: false,
     name: '',
+    mode: 'yaml',
+    spec: blankSpec(),
+    advanced: [],
     yaml: `weight: 5              # relative share; higher is served first
 interruptible: false   # may a strictly HIGHER weight take this group's slot?
 onSaturated:
@@ -831,6 +1040,9 @@ function blankExtension(): Edit {
     kind: 'extension',
     existing: false,
     name: '',
+    mode: 'yaml',
+    spec: blankSpec(),
+    advanced: [],
     yaml: `# A HOSTED extension: one local process serving several models. They load,
 # unload and are accounted for together, because they are the same bytes.
 # cmd: "exec my-server --addr :5806"

@@ -427,6 +427,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UpsertModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "modelSpec",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/config/models/{name}/spec",
+		Summary:     "One model in the shape the form edits, plus the fields the form does not cover.",
+		Tags:        []string{"config"},
+	}, h.GetModelSpec)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "trialModel",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/config/models/trial",
+		Summary:     "Spawn an uncommitted cmd, report every stage and log line, then tear it down. Writes nothing.",
+		Tags:        []string{"config"},
+	}, h.TrialModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "updateNotes",
 		Method:      http.MethodPut,
 		Path:        "/api/v1/config/notes/{kind}/{name}",

@@ -101,7 +101,18 @@ type ConfigMutationOutput struct {
 	}
 }
 
-// UpsertModel creates or replaces a model and applies it live.
+// UpsertModel writes the spec's fields onto a model and applies it live.
+//
+// It MERGES rather than replaces. ModelSpec is the subset worth a form, and a
+// model carries much more — sticky, swap, contextPerRequest, modalities,
+// convert, freeTier. Replacing wholesale meant that saving a model from a form
+// silently deleted every one of those, with no error and nothing in the diff to
+// notice, which is the reason the dashboard edited raw YAML instead.
+//
+// So the spec's fields are applied to whatever is already there. A field the
+// form does not model cannot be destroyed by the form, and the two editors can
+// coexist on the same model: change the port in the form, change the sticky
+// policy in YAML, neither undoes the other.
 func (h *Handlers) UpsertModel(_ context.Context, in *UpsertModelInput) (*ConfigMutationOutput, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
@@ -118,6 +129,9 @@ func (h *Handlers) UpsertModel(_ context.Context, in *UpsertModelInput) (*Config
 		m, err := specToModel(in.Body)
 		if err != nil {
 			return huma.Error400BadRequest(err.Error())
+		}
+		if existed {
+			m = applySpec(prev, m)
 		}
 		c.Models[name] = m
 		return nil
@@ -209,6 +223,123 @@ func specToModel(s ModelSpec) (config.Model, error) {
 	}
 	m.Proxy = n
 	return m, nil
+}
+
+// applySpec overlays the form-owned fields of `next` onto `prev`, returning the
+// model to store.
+//
+// The field list here IS the form's contract: exactly the fields ModelSpec
+// carries, and nothing else. Everything absent from it survives untouched,
+// which is what makes saving from a form non-destructive.
+//
+// Note the asymmetry with a PUT's usual semantics: this is closer to PATCH, and
+// deliberately so. The alternative — replace, and let the form re-send every
+// field — requires the form to model every field, which is precisely the
+// requirement that kept this editor on raw YAML.
+func applySpec(prev, next config.Model) config.Model {
+	prev.Cmd = next.Cmd
+	prev.Server = next.Server
+	prev.Proxy = next.Proxy
+	prev.Upstream = next.Upstream
+	prev.Type = next.Type
+	prev.Quality = next.Quality
+	prev.MaxConcurrent = next.MaxConcurrent
+	prev.MaxTokens = next.MaxTokens
+	prev.Persistent = next.Persistent
+	prev.RAMUsage = next.RAMUsage
+	prev.Notes = next.Notes
+	return prev
+}
+
+// ModelSpecInput asks for one model in the shape the form edits.
+type ModelSpecInput struct {
+	Name string `path:"name" doc:"Served model name."`
+}
+
+// ModelSpecOutput is the form's view of a model, plus what the form cannot show.
+type ModelSpecOutput struct {
+	Body struct {
+		Spec ModelSpec `json:"spec"`
+		// Advanced names the fields this model has that the form does not model.
+		//
+		// Surfaced rather than hidden because the honest statement to an operator
+		// is "this form edits part of this model". Without it, a form showing
+		// eleven fields on a model that has fifteen looks complete, and the
+		// operator has no way to learn otherwise short of reading the file.
+		Advanced []string `json:"advanced"`
+		Exists   bool     `json:"exists"`
+	}
+}
+
+// GetModelSpec returns a model in the form's own shape.
+//
+// The read view cannot serve this: it reports a RESOLVED proxy target, and a
+// resolved target cannot be turned back into the `proxy: 5800` that was
+// written. Round-tripping through it would rewrite the field on every save.
+func (h *Handlers) GetModelSpec(_ context.Context, in *ModelSpecInput) (*ModelSpecOutput, error) {
+	cfg := h.config()
+	if cfg == nil {
+		return nil, huma.Error503ServiceUnavailable("config unavailable")
+	}
+	out := &ModelSpecOutput{}
+	m, ok := cfg.Models[in.Name]
+	if !ok {
+		out.Body.Advanced = []string{}
+		return out, nil // a new model: an empty spec is the right answer, not a 404
+	}
+	out.Body.Exists = true
+	out.Body.Spec = modelToSpec(in.Name, m)
+	out.Body.Advanced = advancedFields(m)
+	return out, nil
+}
+
+func modelToSpec(name string, m config.Model) ModelSpec {
+	return ModelSpec{
+		Name: name, Cmd: m.Cmd, Server: m.Server,
+		Proxy:    proxyToString(m.Proxy),
+		Upstream: m.Upstream, Type: m.Type, Quality: m.Quality,
+		MaxConcurrent: m.MaxConcurrent, MaxTokens: m.MaxTokens,
+		Persistent: m.Persistent, RAMUsage: m.RAMUsage, Notes: m.Notes,
+	}
+}
+
+// proxyToString renders the `proxy:` node back as the operator wrote it.
+//
+// The node is a port, a "host:port", or a mapping. The first two are what a
+// form can edit and are returned verbatim; a mapping (host + port + headers) is
+// not, and returning a mangled rendering of one would invite the form to save
+// it back flattened. Returning "" instead makes it show as empty, which is why
+// `proxy` is also listed in advancedFields when it is a mapping.
+func proxyToString(n yaml.Node) string {
+	if n.IsZero() {
+		return ""
+	}
+	if n.Kind == yaml.ScalarNode {
+		return n.Value
+	}
+	return ""
+}
+
+// advancedFields lists what this model carries that the form does not edit.
+func advancedFields(m config.Model) []string {
+	var out []string
+	add := func(cond bool, name string) {
+		if cond {
+			out = append(out, name)
+		}
+	}
+	add(m.Sticky != nil, "sticky")
+	add(m.Swap != nil, "swap")
+	add(m.ContextPerRequest > 0, "contextPerRequest")
+	add(len(m.Modalities) > 0, "modalities")
+	add(m.Convert != nil, "convert")
+	add(m.FreeTier != nil, "freeTier")
+	add(m.Extension != "", "extension")
+	add(!m.Proxy.IsZero() && m.Proxy.Kind != yaml.ScalarNode, "proxy (host/port/headers form)")
+	if out == nil {
+		out = []string{}
+	}
+	return out
 }
 
 func isAllDigits(s string) bool {
