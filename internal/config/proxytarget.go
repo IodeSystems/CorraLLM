@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -41,6 +40,20 @@ type ProxyTarget struct {
 	//   authTokenCommand: jq -r .claudeAiOauth.accessToken ~/.claude/.credentials.json
 	// A static `Authorization` in `headers` still wins if both are set.
 	AuthTokenCommand string
+}
+
+// BaseURLString is the full prefix a caller should hang a path off: the target
+// URL plus its base path.
+//
+// It exists because those two were routinely combined by hand, and the ones that
+// forgot were only correct while BasePath was empty. Routing agent-hosted
+// backends through the agent gave every one of them a base path, which turned
+// "/health" into a probe of the AGENT's root instead of the backend's.
+func (t *ProxyTarget) BaseURLString() string {
+	if t == nil || t.URL == nil {
+		return ""
+	}
+	return strings.TrimRight(t.URL.String(), "/") + t.BasePath
 }
 
 // proxyObj is the object form of `proxy:`
@@ -263,21 +276,60 @@ func (c *Config) TargetFor(served string, m Model) (*ProxyTarget, error) {
 	if !IsLocalHost(t.URL.Hostname()) {
 		return t, nil // explicitly addressed elsewhere; leave it alone
 	}
-	agentHost := srv.Agent.Host()
-	if agentHost == "" {
+	agentBase := srv.Agent.BaseURL()
+	if agentBase == nil {
 		return t, nil
 	}
-	// Copy: Model values are shared, and rewriting the URL in place would
-	// mutate whatever else holds this target.
-	u := *t.URL
-	if port := u.Port(); port != "" {
-		u.Host = net.JoinHostPort(agentHost, port)
-	} else {
-		u.Host = agentHost
+	backendPort := t.URL.Port()
+	if backendPort == "" {
+		// Nothing to forward to: without a port there is no local service to
+		// name. Leave the target alone rather than inventing one.
+		return t, nil
 	}
+
+	// Route through the AGENT rather than at the backend directly.
+	//
+	// This used to swap the host and keep the backend's port, so the primary
+	// dialled <mac>:5810 itself. That required every backend port to be
+	// reachable across the network — and llama-server has no authentication, so
+	// reaching it meant binding a non-loopback interface, at which point anyone
+	// on that network could use the model with no key, no quota, no accounting
+	// and no admission control. The control plane was effectively optional.
+	//
+	// Now the backend's port becomes a path segment on the agent's own port. One
+	// reachable port per machine instead of N, every request carries the agent
+	// token, and backends can bind loopback where nothing else can reach them.
+	u := *agentBase
 	out := *t
 	out.URL = &u
+	// BasePath rather than a path on the URL: the proxy prepends it to the
+	// CLIENT's path, so /v1/chat/completions arrives at the backend unchanged
+	// after the agent strips the prefix.
+	out.BasePath = joinBasePath(t.BasePath, "/agent/v1/proxy/"+backendPort)
+	// Copy before writing: Model values are shared, and mutating the map would
+	// reach whatever else holds this target.
+	hdr := make(map[string]string, len(t.Headers)+1)
+	for k, v := range t.Headers {
+		hdr[k] = v
+	}
+	// The agent gates its data plane with the same token as its control plane.
+	hdr["Authorization"] = "Bearer " + srv.Agent.ExpandedToken()
+	out.Headers = hdr
 	return &out, nil
+}
+
+// joinBasePath puts the agent's proxy prefix in FRONT of any base path the model
+// already had.
+//
+// Order matters and is easy to get backwards: the agent has to see its own
+// prefix first to know which backend to forward to, and the model's own prefix
+// is part of the path the BACKEND expects. Reversed, the agent would not
+// recognise the route at all.
+func joinBasePath(modelBase, agentPrefix string) string {
+	if modelBase == "" {
+		return agentPrefix
+	}
+	return agentPrefix + modelBase
 }
 
 // ExpandedToken resolves ${ENV} references in the agent token, the same way

@@ -128,8 +128,8 @@ func (m *Manager) Trial(ctx context.Context, id string, mdl config.Model, emit f
 	if target == nil || target.URL == nil {
 		return fail(TrialResolve, fmt.Errorf("proxy did not resolve to a URL"))
 	}
-	emit(TrialEvent{Stage: TrialResolve, OK: true, Msg: target.URL.String(),
-		Data: map[string]any{"url": target.URL.String(), "server": mdl.Server}})
+	emit(TrialEvent{Stage: TrialResolve, OK: true, Msg: target.BaseURLString(),
+		Data: map[string]any{"url": target.BaseURLString(), "server": mdl.Server}})
 
 	// --- admit -------------------------------------------------------------
 	key := TrialKeyPrefix + id
@@ -300,7 +300,7 @@ func (m *Manager) endTrial(key string, p *Process) string {
 
 // probeUpstream asks the backend what model id it actually serves.
 func (m *Manager) probeUpstream(ctx context.Context, t *config.ProxyTarget) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL.String()+"/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.BaseURLString()+"/v1/models", nil)
 	if err != nil {
 		return "", err
 	}
@@ -368,4 +368,3 @@ func (s *trialSink) Write(b []byte) (int, error) {
 	}
 	return len(b), nil
 }
-

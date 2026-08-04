@@ -606,9 +606,11 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 // probeUI records whether the backend answers a non-error status at its root, so
 // the UI knows if "Open UI" (/upstream/<model>/) would 404 (P11b).
 func (m *Manager) probeUI(p *Process) {
-	u := *p.Target.URL
-	u.Path, u.RawQuery = "/", ""
-	resp, err := m.healthCli.Get(u.String())
+	// BaseURLString, not the bare URL: an agent-hosted backend is reached through
+	// the agent's proxy prefix, and dropping it would probe the AGENT's root and
+	// report the agent's 404 as the backend having no UI.
+	root := p.Target.BaseURLString() + "/"
+	resp, err := m.healthCli.Get(root)
 	if err != nil {
 		p.hasUI.Store(2)
 		return
@@ -1535,7 +1537,7 @@ func (m *Manager) waitHealthy(t *config.ProxyTarget, exited <-chan struct{}) err
 			addr += ":80"
 		}
 	}
-	url := t.URL.String() + "/health"
+	url := t.BaseURLString() + "/health"
 	var lastErr error
 	for time.Now().Before(deadline) {
 		select {

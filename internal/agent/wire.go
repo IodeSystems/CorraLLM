@@ -62,10 +62,10 @@ type DeviceMem struct {
 // treats capacity as a declared budget anyway — this only auto-fills and
 // drift-guards, so an honest absence is strictly better than a confident lie.
 type Capacity struct {
-	GPU      *DeviceMem `json:"gpu,omitempty"`
-	GPUError string     `json:"gpuError,omitempty"`
-	Host     *DeviceMem `json:"host,omitempty"`
-	HostError string    `json:"hostError,omitempty"`
+	GPU       *DeviceMem `json:"gpu,omitempty"`
+	GPUError  string     `json:"gpuError,omitempty"`
+	Host      *DeviceMem `json:"host,omitempty"`
+	HostError string     `json:"hostError,omitempty"`
 	// PerProcess reports whether this machine can attribute memory to a single
 	// process group. False on macOS, which has no nvidia-smi equivalent.
 	//

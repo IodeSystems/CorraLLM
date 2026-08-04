@@ -85,8 +85,9 @@ models:
 	if config.IsLocalHost(got.URL.Hostname()) {
 		t.Fatalf("target = %s — traffic for another machine's model would go to this one", got.URL)
 	}
-	if want := "http://192.168.1.42:5810"; got.URL.String() != want {
-		t.Errorf("target = %s, want %s", got.URL, want)
+	// Through the agent's port, with the backend's port as a path segment.
+	if want := "http://192.168.1.42:6503/agent/v1/proxy/5810"; got.BaseURLString() != want {
+		t.Errorf("target = %s, want %s", got.BaseURLString(), want)
 	}
 }
 

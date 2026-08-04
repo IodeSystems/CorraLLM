@@ -103,7 +103,7 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 		// Recorded at enrollment because the agent is the only one who knows,
 		// and the consequence of getting it wrong is silent single-tenancy.
 		NoProcessMemory: !in.Body.Capacity.PerProcess,
-		Agent:      &config.AgentBinding{Endpoints: in.Body.Endpoints, Token: tok},
+		Agent:           &config.AgentBinding{Endpoints: in.Body.Endpoints, Token: tok},
 		Notes: fmt.Sprintf("Enrolled %s from %s (%s/%s), corrallm %s. Pools sized from the agent's own capacity probe.",
 			time.Now().Format(time.RFC3339), in.Body.Hello.Hostname,
 			in.Body.Hello.OS, in.Body.Hello.Arch, in.Body.Hello.Version),
@@ -315,9 +315,9 @@ type MintEnrollmentTokenInput struct {
 	// string and an install command with no address in it. --public-base is the
 	// reliable answer; this covers a reverse proxy that sets the header.
 	ForwardedHost string `header:"X-Forwarded-Host" required:"false"`
-	Body struct {
-		Server     string `json:"server" doc:"Server name this token may claim. Empty lets the enrolling agent propose one."`
-		Note       string `json:"note" doc:"Free text, e.g. what machine this is for."`
+	Body          struct {
+		Server string `json:"server" doc:"Server name this token may claim. Empty lets the enrolling agent propose one."`
+		Note   string `json:"note" doc:"Free text, e.g. what machine this is for."`
 		// Base is where the ATTACHING machine should reach this daemon.
 		//
 		// The dashboard sends its own origin, which is the most reliable answer
@@ -326,7 +326,7 @@ type MintEnrollmentTokenInput struct {
 		// cannot derive this as well — Go moves the Host header onto r.Host and
 		// out of r.Header, so binding it yields nothing, and a configured
 		// --public-base goes stale the moment the daemon is reached another way.
-		Base string `json:"base" required:"false" doc:"Base URL the attaching machine should use. The dashboard sends its own origin; falls back to the daemon's --public-base."`
+		Base       string `json:"base" required:"false" doc:"Base URL the attaching machine should use. The dashboard sends its own origin; falls back to the daemon's --public-base."`
 		TTLMinutes int    `json:"ttlMinutes" doc:"Validity window; default 60."`
 	}
 }

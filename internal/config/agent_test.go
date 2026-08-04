@@ -70,8 +70,24 @@ func TestAgent_TargetForDoesNotResolveToThePrimarysLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "http://192.168.1.42:5810"; got.URL.String() != want {
-		t.Errorf("TargetFor = %s, want %s (agent host, model's own port)", got.URL, want)
+	// Traffic goes to the AGENT's port and names the backend's port in the path,
+	// rather than dialling the backend directly — see TargetFor for why that
+	// stopped being acceptable (an unauthenticated backend on a reachable
+	// interface). The durable invariant is unchanged: never the primary.
+	if want := "http://192.168.1.42:6503"; got.URL.String() != want {
+		t.Errorf("TargetFor URL = %s, want the agent's own address %s", got.URL, want)
+	}
+	if want := "/agent/v1/proxy/5810"; got.BasePath != want {
+		t.Errorf("BasePath = %q, want %q (the backend's port, forwarded by the agent)", got.BasePath, want)
+	}
+	// The agent gates its data plane with the same token as its control plane,
+	// so the request has to carry it or every completion 401s.
+	if got.Headers["Authorization"] == "" {
+		t.Error("no Authorization header: the agent would reject every request")
+	}
+	// The composed prefix is what callers actually hang a path off.
+	if want := "http://192.168.1.42:6503/agent/v1/proxy/5810"; got.BaseURLString() != want {
+		t.Errorf("BaseURLString = %q, want %q", got.BaseURLString(), want)
 	}
 
 	// A model on a normal server is untouched: this must not change any

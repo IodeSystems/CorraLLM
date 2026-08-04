@@ -343,6 +343,32 @@ type AgentBinding struct {
 // Host returns the preferred endpoint's host[:port], or "" if none parses.
 // Used to point a model's data plane at the agent's machine instead of the
 // primary's loopback.
+// BaseURL is the agent's own address — host AND port — which is where data-plane
+// traffic is now sent, as opposed to Host() which answers only "which machine".
+//
+// Returns the first endpoint that parses, matching Host()'s existing choice. The
+// control plane probes the full list and remembers what worked; this does not,
+// so a machine whose first-listed endpoint is unreachable serves traffic through
+// an address the spawner already knows is dead. Pre-existing (Host() picked the
+// same way), and worth fixing by having the data plane consult the same
+// reachability the RemoteHost already discovered.
+func (a *AgentBinding) BaseURL() *url.URL {
+	if a == nil {
+		return nil
+	}
+	for _, e := range a.Endpoints {
+		if u, err := url.Parse(strings.TrimSpace(e)); err == nil && u.Host != "" {
+			c := *u
+			c.Path, c.RawQuery, c.Fragment = "", "", ""
+			if c.Scheme == "" {
+				c.Scheme = "http"
+			}
+			return &c
+		}
+	}
+	return nil
+}
+
 func (a *AgentBinding) Host() string {
 	if a == nil {
 		return ""

@@ -64,6 +64,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /agent/v1/backends/{id}", s.guard(s.status))
 	mux.HandleFunc("POST /agent/v1/backends/{id}/signal", s.guard(s.signal))
 	mux.HandleFunc("GET /agent/v1/backends/{id}/logs", s.guard(s.logs))
+	// Data plane. No method filter: this carries whatever the client sent —
+	// POST completions, GET /v1/models, a websocket upgrade for realtime audio.
+	mux.HandleFunc(proxyPrefix+"{port}/", s.guard(s.proxyBackend))
 	return mux
 }
 
