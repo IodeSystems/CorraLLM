@@ -1004,6 +1004,142 @@ the BackpressureError shape we already validated.
   "System capacity" panel is gone — its live half moved here, its one unique fact
   (`server.maxConcurrent`) became "Host limits".
 
+- ✅ **P15a — record the promise (who we told to come back, and when).** A 429 is an appointment,
+  not just a rejection: the caller is handed a `Retry-After` and, if they honor it, returns at a
+  time we chose. That number was computed from live scheduler state, written to the wire, and
+  forgotten — the activity log could say "we refused this key at 14:03" but never "…and told them
+  4s". Now `writeBackpressure` RETURNS the promise it made (so the logged value cannot drift from
+  the header — it is the same number, not a second rounding of the estimate) and every 429 site
+  stamps it onto the activity row as `retry_after_ms`. New `retryPromises` op + "Come back later"
+  panel on Activity lists who is due back and correlates each promise with the caller's next
+  request: **waiting** (due in the future, not back) · **honored** (returned at or after) ·
+  **early** (jumped the gun — ignoring Retry-After) · **gone** (never came back). Caller identity
+  for the correlation is the key, falling back to source IP for unkeyed callers.
+  - **next:** watch a week of real traffic — the promised-vs-actual column is the evidence P15b needs.
+  - **risks:** the correlation subquery is per-promise (indexed on `activity(key, ts)`, bounded by
+    limit + retention, but it is a correlated scan for the unkeyed arm). Two hosts sharing one key
+    collapse into one caller — conservative (can report a return sooner than the promised caller
+    made it, never later).
+  - **assumption:** the caller's next request of ANY kind counts as "coming back". A caller that
+    returns for a different model still reads as honored.
+
+- ✅ **P15a.2 — utilization (per-model pressure).** Row per served model: in use / capacity, queue
+  depth, promises outstanding, not-honored, early, and **both halves of the wait** — `est` (the
+  scheduler's own live projection, via `BackendLoad.EstWait`, which calls `backpressure()` rather
+  than restating its arithmetic — the moment a read view computes the estimate its own way, the
+  number an operator sees stops being the number callers are given) beside `real` (measured mean
+  `queued_ms` of requests that queued and were then admitted). Per-model, not box-wide: capacity
+  is not fungible, and a saturated 27B summed with an idle embedder into "1/6 in use" describes
+  neither. Row set = models ASKED FOR in the window ∪ anything busy right now (a model under load
+  with no COMPLETED request yet has no activity row, and would vanish exactly when it matters).
+  Measured wait excludes instant admissions (else a quiet hour drags the mean to zero) and
+  rejections (whose `queued_ms` is time spent before being turned AWAY — a different quantity).
+
+- ✅ **P15a.3 — service-time distribution (measurement only; no behavior change).** The scheduler
+  carries ONE dwell EWMA per backend, so every caller of a model is predicted by the same scalar.
+  Measured what that scalar averages over, on 24h of real traffic on `Qwen3-6-27B-MPT`:
+
+  | key | n | mean | CV | max | (1+CV²)/2 |
+  |---|---|---|---|---|---|
+  | `dun` | 1634 | 3.2s | 1.31 | 40.7s | 1.36× |
+  | `probe` | 671 | 13.7s | 1.35 | 110.3s | 1.41× |
+  | `life-raglit` | 470 | 8.2s | 3.77 | 398.4s | **7.59×** |
+
+  Means differ **4.3× across callers on one model**. `store.ServiceStats` computes mean/stddev over
+  SERVICE time (`dwell − queued − load`; feeding queue delay back into a wait estimate would be
+  circular). `utilization` gained CV, ρ, and a Pollaczek–Khinchine `pkWaitMs` —
+  `ρ/(1−ρ)·E[S]·(1+CV²)/2` — as a third opinion beside est and real, derived from the distribution
+  rather than from either mechanism. New `serviceProfiles` op + panel breaks it down per caller,
+  with statistics **blended toward the model prior** (pseudo-count 30, raw and blended both shown so
+  the adjustment is auditable) — `life-raglit`'s CV of 3.77 is driven largely by one 398s request,
+  and a handful of samples must not set policy.
+  - **Dead config found and surfaced:** `maxQueueDepth: 8` against `maxWait: 15s` at
+    `maxConcurrent: 1` and ~8s mean service allows **1–2** reachable waiters. The depth bound can
+    never bind — which is exactly why 18/18 observed rejections were `queue-timeout` and none was
+    `rejected`. The row now flags `depthUnreachable` rather than leaving the two settings to
+    contradict each other silently.
+  - **risks:** ρ over a window assumes steady state, which a bursty hour is not — `pkWaitMs` is an
+    order-of-magnitude read, not a promise. Per-key stats are recomputed from the log per request;
+    fine at this row count, not free forever.
+  - **⚠ `realWaitMs` is CENSORED, and this is structural, not a bug to fix in the query.** It
+    averages requests that queued *and were then admitted* — but anyone who waited past `maxWait`
+    became a `queue-timeout` and is excluded. The longest waits are precisely the ones removed from
+    the sample, so the measured mean is biased LOW and can never exceed `maxWait` (15s) no matter
+    how bad the queue gets. First live reading: est 2.0s · real 4.6s · theory 3m49s. The truth sits
+    above `real`; how far above is not observable while `maxWait` truncates the distribution.
+    **`maxWait` does not only bound the wait, it bounds what can be MEASURED about the wait** —
+    which is its own argument for deriving the setting rather than fixing it, and a trap for anyone
+    who later "validates" a new estimator against this column.
+
+- ◻ **P15b — fix the estimate.** *(reframed 2026-08-03 by the first 30 min of P15a data —
+  the original premise was WRONG and is recorded here so it is not re-derived)*
+  - **What I predicted:** N callers rejected in the same second all get the SAME number, all return
+    in the same instant — a self-inflicted thundering herd — fixed by a promise ledger of phantom
+    waiters plus staggering.
+  - **What 18 real promises showed:** no clustering (told-values ranged 2s–14s, since `ewmaDwell`
+    tracks prompt size on a single-slot 27B); **no bursts at all** — every one was `queue-timeout`,
+    not a single `rejected`, so `maxQueueDepth` is never reached on this box and the constant-promise
+    path the herd argument rested on is not exercised; **zero `early`**, one `gone`. And the estimate
+    was **short every single time** — 1.7×–11.6×, median ~4×. The caller (`dun`) retries, is refused
+    again, and backs off more patiently than we asked.
+  - **So the defect is accuracy, not collision.** `rounds × ewmaDwell` badly under-models a queue
+    whose dwell varies by prompt size, and the caller's own backoff absorbs the error. Phantom-waiter
+    counting addresses a problem this deployment does not have.
+  - **next:** watch the utilization panel's est-vs-real gap across a wider traffic mix before
+    changing the formula — one caller against one single-slot model is not a sample.
+  - **blocking decision (USER owns):** whether an honest estimate is even wanted. A truthful 25s may
+    drive callers off (`gone`) where an optimistic 4s keeps them retrying into a slot that does open.
+    That is a product call about what a 429 is FOR, not an arithmetic fix.
+  - **risks:** dwell EWMA is prompt-size-blind, so any recalibration on this box's traffic may not
+    generalize; `keepSoonest` takes the min across a lane walk, so a lane's promise is not
+    attributable to one backend.
+
+- ✅ **P20 — keys-page charts (who spent it, and on what).** Two stacked areas over a shared time
+  axis: requests/cost/**dwell** by caller, and the same by model — neither derives from the other
+  ("dun is 60% of cost" and "the 27B is 90% of cost" are both true and answer different questions).
+  New `usageSeriesByModel` op (+ `store.RollupSeriesByModel`, optional key filter) is the "on what"
+  axis to `usageSeries`'s "by whom"; the key-detail page reuses it scoped to one caller. One metric
+  selector drives both charts so they are always read on the same measure — **separate charts, never
+  a dual axis**. `seriesAxis` is shared by both series ops so the two charts cannot land on subtly
+  different axes.
+  - **Chart primitives extracted** from `usage.tsx` into `ui/src/Charts.tsx` (one implementation;
+    a second copy is how two charts of the same data start disagreeing about gaps and stacking).
+    Added a **crosshair + hover tooltip** (timestamp, per-band values, stack total) — bands below the
+    top one are read as thicknesses, which the eye cannot measure, so exact values must be reachable
+    some other way. That tooltip is also what lets the legend collapse without identity becoming
+    color-only. Legend is **collapsed by default** (as requested) and absent entirely for one series.
+  - **Unbounded series are folded, not cycled:** top 6 by window total keep the validated `SERIES`
+    hues; the rest sum into a neutral grey "other" band — grey because "other" is an aggregate, not
+    an entity. Palette re-validated unchanged against the panel surface (all six checks PASS).
+  - **Window control (6h/24h/7d), not an axis trick.** A single 6,524-request embedding burst
+    flattened the other 23 hours to a hairline. Log/clipping/broken scales all misrepresent a
+    stacked area, which is additive by construction — the bands would stop summing to the total the
+    reader sees. Narrowing the window leaves every mark honestly scaled to its own period (6h peak
+    127 shows real structure where 24h showed a flat line).
+  - **known gap:** no x-axis tick labels — time is carried by the hover tooltip only, matching the
+    existing sparkline-style panels. Fine for "when did this spike" via hover; not for reading a
+    time off the page.
+
+- ✅ **P21 — cache visibility (is the prompt cache actually working?).** `cached_tokens` was captured
+  per request but never summed anywhere, so the one number that says whether prompt caching earns its
+  keep did not exist. Added `cachedTokens` + `cacheHitRate` to `usageRollup` and `usageByKey`
+  (per model AND per caller — hit rate is a property of how a caller PROMPTS: a stable system prefix
+  reuses cache, a shuffled one never does), plus `cachedSecondsSaved`, an estimate of the
+  prompt-processing time avoided at the observed tokens/sec. Live at 7d: **72.3% box-wide,
+  Qwen3-6-27B-MPT at 79.1%, 231.6M tokens served from cache ≈ 52h of prompt processing avoided.**
+  - **The correctness question here is `cacheReports`, not the rate.** A zero in `cached_tokens` has
+    two incompatible meanings — a backend with no prompt cache (every embedding model, every remote
+    provider) versus one that genuinely missed. Reporting both as "0%" invents a caching problem for
+    half the catalog. `cacheReports` counts requests that reported ANY hit; at zero the UI shows
+    **`n/r`**, never a measured-looking 0%. Pinned by `internal/api/cache_test.go`.
+  - **Still ambiguous, deliberately not hidden:** `cacheReports == 0` cannot separate "does not
+    report" from "never hits". The tooltip says so. Separating them would need the capture to record
+    whether the backend emitted the field at all, not just its value.
+  - The grand-total rate is recomputed from summed tokens, NOT averaged across model rows — a model
+    with 12 requests must not weigh the same as one with 14,000.
+  - **known gap:** `chat` sits at ~19–22% against Qwen's 79–88%. Unexplained; it is a lane, so the
+    member it lands on may be resetting cache between calls. Worth a look, not yet looked at.
+
 - **Later.** Multi-node peer awareness (remote load introspection across corrallm peers).
 
 ---
@@ -1275,13 +1411,69 @@ the BackpressureError shape we already validated.
      wrong under this topology — a 192.168 address may well be a box we manage. The
      predicate itself stays correct (it short-circuits on LocalProcess), but the comment has
      to be reworded to say "we run no process for it", or the next reader breaks it.
+     ✅ **box2's pool shape — DECIDED (USER, 2026-08-04): ONE unified pool.** `pools: {system:
+     <hw.memsize>}`, `devicePool: system`, and the wired limit expressed as `reserve` rather than
+     as a second pool, so budget = total − reserve lands at (or just under) what the GPU may
+     actually wire. This was not merely undecided — enrollment was shipping the *wrong* shape:
+     `poolsFrom` declared `system` from hw.memsize AND `gpu0` from the wired limit, while
+     `devicePoolFrom` picked `gpu0` whenever a GPU reported anything, so a 64 GiB Mac enrolled as
+     119 GB across two ledgers `fitsLocked` checks independently. Undetectable by construction, on
+     the one class of host that also cannot measure per-process memory. Fixed by making the three
+     answers one function (`api.sizeFrom`) fed by a new `Capacity.Unified` the agent reports —
+     GOOS cannot answer it, since an Intel Mac with a discrete card is darwin with two real pools.
+     ✅ **Repair path: RE-ENROL.** Enrollment used to preserve `pools`/`reserve`/`devicePool`, which
+     pinned a server to whatever its FIRST enrollment computed — so the one operation that exists to
+     re-measure a machine was a no-op precisely when it was needed. `mergeEnrollment` now re-derives
+     all three from the fresh probe and keeps only what the agent cannot know (`notes`,
+     `maxConcurrent`), appending a note when a resize actually moved the numbers. Safe because
+     re-enrolling needs a one-time token the operator just minted — it cannot happen by accident.
      **Still USER-owned, surface before the step that needs it:** agent lease self-reap on/off and
      its TTL (decides whether the ledger may ever be released after a host is lost — the trade is
      "a network blip kills an in-progress cold load" vs "a partition strands 48 GB"); transport
      trust (the agent executes arbitrary shell strings — it is an RCE surface by design);
-     box2's pool shape (one unified pool vs a wired-limit split); whether to spike
-     `proc_pid_rusage`'s `ri_phys_footprint` for real per-process measurement on darwin before
-     accepting "unmeasurable → ramUsage becomes authoritative".
+     whether to spike `proc_pid_rusage`'s `ri_phys_footprint` for real per-process measurement on
+     darwin before accepting "unmeasurable → ramUsage becomes authoritative".
+  5. ◐ **P16: trial spawn + add-model form** — authoring a model is currently "type a cmd string into
+     a YAML box, save it, load it, read the logs, guess again". Every iteration mutates live config.
+     ✅ **API slice done** — `POST /api/v1/config/models/trial` (`internal/proc/trial.go`,
+     `internal/api/trial.go`): spawns an UNCOMMITTED cmd on a chosen server and tears it down,
+     writing nothing to config whatever happens. Stages reuse what existed: `TargetFor` (resolve,
+     incl. the agent-endpoint rewrite) → admit → `hostFor(server).Start` (local or remote, one
+     interface) → line-buffered log events → `waitHealthy` → `GET /v1/models` → `probeUI` →
+     `handle.MemoryMiB()` → term/grace/kill. Reuses `specToModel`, so a trial and the save that
+     follows interpret `proxy: 5800` identically. A failed command returns **200 with the
+     transcript**, not a 4xx — the failure IS the answer, and an error status would discard the
+     logs saying why. 6 tests cover the admission invariants.
+     **next:** stream the transcript (today it returns as one document when the run ends — fine for
+     curl, poor for a 90 s cold load being watched); then the add-model form itself, with
+     "Trial" beside "Save" and the result prefilling `ramUsage`/`upstream`/`maxConcurrent`.
+     **assumption made:** a trial is registered `persistent: true` so unrelated traffic cannot kill
+     a run halfway. Safe only because it reserves nothing but FREE memory (never evicts), so it
+     displaces nothing by holding it; `trialTTL` (10 min) is what bounds the harm. Revisit if
+     trials start being left open.
+     **DECIDED (USER, 2026-08-04): a trial reserves only if it FITS — never evicts.** On a full box
+     it refuses with "unload something first". A trial is an experiment; it must not be able to
+     take down a warm production backend.
+     **risks:** ✅ (1) registered in `m.procs` under `trial:<id>` so `ReconcileAgent` adopts rather
+     than reaping it past the 60s grace (`reconcile.go:71`); ✅ (2) `trialTTL` + a deferred teardown
+     on every exit path, so a closed tab cannot strand the reservation; ✅ (3) one trial per server,
+     enforced in `admitTrial`; ◻ (4) it widens the existing RCE surface from config-authoring to a
+     dashboard button — same admin-token gate, unchanged, but stated rather than discovered.
+     **blocking decisions (USER):** none outstanding.
+     **optional extensions (out of scope):** re-probe/resize an already-enrolled server from a live
+     `GET /agent/v1/capacity` (would have auto-repaired the osx double-count, and would track a
+     `iogpu.wired_limit_mb` the operator changes later); trial an A/B pair of cmd strings and diff
+     their banners.
+  6. ✅ **P17: heartbeat-driven self-update actually fires** — `maybeSelfUpdate` always ran from the
+     heartbeat, but could not DECIDE: it compared version strings, and `make agents` without a tag
+     stamps "dev" on both sides, so `ack.Version == "dev" && own == "dev"` skipped every update.
+     That is the normal state while iterating on agent code — the exact case the feature exists for.
+     Now both sides exchange a **build id** (short sha256 of the binary; `agent.HashFile` is the one
+     definition, `agentdist.BuildID` caches by size+mtime since every agent asks every beat). Bytes
+     differ → update; bytes match → don't, which is also what terminates the loop. Version strings
+     survive only as the fallback when either side lacks an id, keeping their old dev/dev rule.
+     Post-download the installed FILE is hashed (not the `X-Corrallm-Version` header) before the
+     rename, so the restart guard compares like with like. 5 tests.
   - OSS follow-ups (not blockers): auth multi-user accounts/roles + token rotation (today is a single
     shared admin token); rename the `WattsPerToken` cost fields to `WhPerToken`.
 - Optional polish in §7 Optional extensions (affinity weighting, context-window clamp on degrade,
@@ -1316,3 +1508,175 @@ the **ml-kit** ops repo (sibling), not this code repo:
   (`--activity-retention`); `lane_samples` to 48h. After the cost calibration, historical `cost_usd`
   was recomputed in place from stored tokens × the new `chat`/`embed` coefficients (one-time backfill,
   stop → backup → `UPDATE` → restart) so the 24h dashboard wasn't stuck on pre-calibration totals.
+
+## 8. Capacity-parked (relocated from `~/inflight` 2026-08-04)
+
+Two items that were sitting on the global shelf because they wait on a machine,
+not on a decision. They belong here — the work and the config are both corrallm's.
+Resume conditions are kept verbatim so nothing has to be re-derived.
+
+### ⏸ Deploy the hardened Qwen chat template
+**waits-on:** systems — the llm host must be quiet.
+**check:** `curl -sf -m5 http://127.0.0.1:5800/slots | python3 -c "import json,sys; sys.exit(0 if not any(s.get('is_processing') for s in json.load(sys.stdin)) else 1)" 2>/dev/null`
+(exit 0 = ready. Samples ONE instant — observed flipping ready→busy within minutes.)
+
+The served template renders untrusted tool-result content raw, so bytes from any
+file an agent reads can inject a chat turn. **Not deployed:** no
+`chat-template-file` in `corrallm.yaml` or `local/corrallm.yaml` as of 2026-08-04.
+
+**Evidence (verified, do not re-derive):**
+- `<|im_start|>` in content is **1 token**, not 6 — a real frame break, not a lookalike.
+- Through **minja** (llama.cpp's own engine, `build/bin/test-chat-template`): stock
+  yields turns `[user, assistant, user, SYSTEM, user, assistant]`; hardened yields
+  `[user, assistant, user, assistant]`.
+- The stock template is byte-identical to the live server's `/props` output — it is
+  what actually runs.
+- Hardened is a 4-line functional derivative; every structural literal preserved.
+
+**canonical source:** `~/local/src/iodesystems/tool-call-lightly/templates/`, with an
+offline suite (`./render-test`) that proves the fix through minja with no model. The
+ml-kit copies are a stale duplicate — prefer the project.
+
+**next:** 1) `corrallm features Qwen3-6-27B-MPT` for a baseline · 2) add
+`--chat-template-file .../qwen3-27b-heredoc.jinja` to the Qwen entry in
+`corrallm.yaml`, restart · 3) `corrallm features` again — **if round-trip fidelity
+moved, the swap broke the autoparser: revert** · 4) `probe.py render`.
+
+**risks:** llama.cpp's autoparser derives its parser FROM the template, so a template
+change can silently break tool-call parsing. Step 3 is the guard, not a formality.
+
+**UPDATE 2026-08-04 — llama.cpp rebuilt from master (b10273 / `4308a4f03`), and this
+changes the risk.** `f5919bf45 chat : add qwen3 specialized parser (#26252)` (2026-08-02)
+adds `common_chat_params_init_qwen3_coder`, selected by SNIFFING the template source for
+all three of `<tool_call>`, `<function=`, `<parameter=`.
+
+- **No Qwen template file changed upstream** — `models/templates/*Qwen*` is untouched
+  across the whole 260-commit range. The change is parse-side, not render-side.
+- **All four of our templates match all three literals** — `qwen3-stock`,
+  `qwen3-hardened`, `qwen3-27b-stock`, `qwen3-27b-heredoc`. So stock and hardened now
+  select the SAME specialized parser. **The risk above shrinks**: swapping templates no
+  longer moves you onto a differently-derived parser. Step 3 stays the guard, but the
+  failure mode is narrower than when this was written.
+- **Every fidelity baseline is now stale as a comparison point.** The
+  `corrallm features Qwen3-6-27B-MPT` numbers predate this parser. Re-baseline in
+  step 1 rather than comparing against anything recorded earlier.
+- **Open question:** the parser is labelled "Qwen3-Coder XML tool calls". Qwen3-6-27B-MPT
+  is not a Coder model — it is selected purely by literal sniffing, so this may be a
+  MISDETECTION. Its grammar is deliberately lenient in ways that matter (accepts required
+  arguments in any order; "Qwen3-Coder models may occasionally omit the `<tool_call>`
+  token"). Worth confirming the detection is intended for this model before deploying.
+
+### ◐ Second compute host: 64 GB MacBook Pro — ENROLLED 2026-08-04
+**waits-on:** yours — name the chip. Everything else is unblocked.
+**check:** manual.
+
+**The box is on the LAN and enrolled.** From `~/.corrallm/config.yml`:
+
+    carlsmacbookpro:
+      pools:   { system: 68GB }      # budget = 68 - 18 reserve = 50GB usable
+      reserve: { system: 18GB }
+      devicePool: system
+      noProcessMemory: true
+      agent.endpoints: [192.168.1.249, 192.168.252.1, 192.168.1.58]:6503
+
+Three things this confirms in the field rather than in theory:
+- **The unified-pool decision was right and the repair path WORKS.** The notes
+  record the second enrollment resizing it: `pools map[gpu0:51GB system:68GB] →
+  map[system:68GB], devicePool "gpu0" → "system"`. That is exactly the
+  two-ledger bug §7 #4 called "undetectable by construction", corrected by
+  re-enrolment on first contact with real hardware.
+- **`noProcessMemory: true`** — the predicted macOS limitation. `ramUsage` is
+  authoritative on this host, so **a model entry omitting it is a validate-time
+  error**. Check that before adding the A3B model.
+- The endpoint LIST (LAN / VPN / alt) is populated, as designed.
+
+**Chip named (USER, 2026-08-04): M1 Max, 64 GB — ~400 GB/s.** The LOW end of
+the range this entry was written to resolve, and the reason it insisted on
+naming the chip first. Against box1's RTX 5090 at ~1.79 TB/s that is **~22% of
+the bandwidth**, with more usable memory (50GB vs ~31GB). Capacity is the axis
+box2 wins on; bandwidth and compute are the axes it loses on.
+
+Roofline at Q5_K_M (~0.6875 bytes/param), decode:
+
+| model | bytes read/token | M1 Max ceiling | 5090 ceiling |
+|---|---:|---:|---:|
+| dense 27B | 18.6 GB | **~22 tok/s** | ~96 tok/s |
+| 35B-A3B (~3B active) | 2.1 GB | ~194 tok/s | ~868 tok/s |
+
+Ceilings, so real numbers land well below — but the ~9× gap is why dense 27B
+feels slow here and why A3B is not merely preferable on this host, it is close
+to mandatory.
+
+**The M1-generation twist, and it matters more than the bandwidth.** Token
+generation tracks bandwidth; **prefill is compute-bound**, and M1 is compute-weak
+relative to its own memory bandwidth versus M3/M4 — the Max has a 32-core GPU.
+At 180k context, prefill is the likely wall on this host — and speculative
+decoding does **nothing** for prefill. Optimizing decode here may be optimizing
+the half that is not the problem.
+
+**Consequence worth deciding explicitly: 180k may be a BOX1 constraint, not a
+fleet constraint.** corrallm can serve a different context per model/server.
+box2 running A3B at a smaller context (fast decode, tolerable prefill) may be
+worth far more than box2 struggling to match box1's window. Do not port the
+180k floor to box2 by default.
+
+**And MoE does not fix prefill.** A3B's ~9× decode advantage comes from
+activating ~3B of 35B per token. Prefill batches many tokens at once, so across
+a batch effectively all experts are hit and prefill FLOPs approach the FULL
+35B — meaning **35B-A3B may prefill SLOWER than dense 27B while decoding far
+faster.** For long-prompt agent sessions that trade could go either way, and it
+is measurable: `bench/spec-sweep.sh` records `prompt_per_second` alongside
+tok/s for exactly this reason. Measure prefill before committing.
+
+**Model sizing — DECIDED (USER, 2026-08-04): Qwen3.6-35B-A3B, not the dense
+27B.** Decode on unified memory is bandwidth-bound: dense 27B reads all 27B
+params per token, the A3B reads ~3B active. Capacity is the cheap axis here
+(50GB usable), bandwidth is the scarce one. Even on a compute-rich RTX 6000 the
+published gap is 160 → 240 tok/s; on Apple silicon it should widen.
+`unsloth/Qwen3.6-35B-A3B-MTP-GGUF` is a direct sibling of the 27B entry, so the
+model config is nearly a copy.
+
+**Before committing to it, three unmeasured things:**
+
+1. ✅ **The wired limit is NOT a problem — checked 2026-08-04, and the design
+   worked.** `sysctl iogpu.wired_limit_mb` returns `0`, so macOS is on default
+   policy and `gpu/apple.go:wiredLimitMiB` falls through to
+   `defaultWiredLimitBytes`: `memBytes >= 36GiB → memBytes * 3/4`. On 64 GiB
+   that is **48 GiB = 51.5 GB**, against a budget of 68 − 18 = **50.0 GB**.
+   Fits, with 1.5 GB of headroom. This is exactly what §7 #4 intended by
+   "the wired limit expressed as `reserve` … so budget = total − reserve lands
+   at (or just under) what the GPU may actually wire" — it landed just under,
+   on real hardware, without anyone tuning it.
+   **Residual, worth one read not a fix:** `defaultWiredLimitBytes` is by its
+   own comment an *approximation* of macOS's policy. The authoritative number is
+   Metal's `recommendedMaxWorkingSetSize`, which llama.cpp prints at Metal init
+   (`ggml-metal-device.m:946`: `recommendedMaxWorkingSetSize = %8.2f MB`). If the
+   real value is below 51.5 GB the 1.5 GB margin evaporates, so read that line
+   once from any llama.cpp start on the Mac and confirm.
+2. **Does it fit at all?** 35B-A3B Q5_K_M ≈ 24GB of weights leaves ~26GB for KV
+   plus compute buffers. A 180k KV cache is plausibly a double-digit number of
+   GB even quantized, so this is tight rather than comfortable — and it
+   interacts with (1). Compute it from the model's real layer/KV-head counts,
+   or measure it, before declaring the context.
+3. **Whether speculative decoding pays on a MoE at all** — reported ~1.35×
+   there vs ~1.75× dense, with enormous spread. `ml-kit bench/spec-sweep.sh
+   PROFILE=box2`, run ON the Mac (corrallm owns spawning there through the
+   token-gated agent). Read `prompt_per_second` first; if prefill dominates,
+   the lever is prompt caching / KV reuse, not draft methods.
+
+Everything that does NOT need the hardware is §7 next-steps #4 above, which now
+carries the decided design (one unified pool, re-enrol repair path, endpoint lists).
+This is only what cannot be done until the box is on the LAN.
+
+**Evidence (measured, do not re-derive):**
+- corrallm cross-compiles clean to darwin/arm64 with `CGO_ENABLED=0` (~37 MB; sqlite
+  is `modernc.org/sqlite`, pure Go). No release pipeline needed — the daemon can serve
+  the agent binary itself.
+- Box1 baseline to compare against: RTX 5090, 32 GB, Qwen3-6-27B-MPT resident
+  ~15.9 GB / 1 slot, 220k ctx/request, ~1.79 TB/s.
+
+**next (needs the hardware):** 1) **name the chip first** — M4 Max ~546 GB/s vs M4 Pro
+~273 swings the answer 2×, and every later number depends on it · 2) measure tok/s AND
+prefill against box1 before trusting any of it; token generation tracks bandwidth,
+prefill is compute-bound and further behind · 3) confirm the decided unified-pool shape
+against what the measurement actually shows.
