@@ -155,6 +155,23 @@ type Heartbeat struct {
 	// Backends is what the agent currently supervises, so the primary can
 	// reconcile against what it believes is resident without a second call.
 	Backends []Backend `json:"backends"`
+	// Endpoints is where this agent is reachable RIGHT NOW, recomputed every
+	// beat rather than remembered from enrollment.
+	//
+	// Enrollment used to be the only time these were reported, which froze a
+	// machine at whatever addresses it had the moment it attached. A laptop is
+	// the case that breaks: join a VPN, move to another network, take a new
+	// DHCP lease, and the primary is left dialling addresses that no longer
+	// exist with nothing able to correct it. The agent is the only party that
+	// can see its own interfaces, and it already sends a message every ten
+	// seconds, so the address list belongs in that message.
+	//
+	// It also makes a dynamic port work: bind :0, and the port the OS actually
+	// chose arrives here instead of having to be agreed in advance.
+	//
+	// Empty from an agent older than this field, which the primary treats as
+	// "nothing to say" and leaves the stored endpoints alone.
+	Endpoints []string `json:"endpoints,omitempty"`
 }
 
 // HeartbeatAck is the primary's reply.

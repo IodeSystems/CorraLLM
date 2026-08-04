@@ -263,6 +263,23 @@ func (m *Manager) hostFor(server string) host.Host {
 	return h
 }
 
+// InvalidateHost drops the cached client for a server, so the next spawn rebuilds
+// it from current config.
+//
+// hostFor memoises a RemoteHost per server, and a RemoteHost captures its
+// endpoint list at construction. Without this, an agent that moved networks
+// stayed unreachable for the life of the daemon even after config was corrected
+// — the cache outlived the facts it was built from, and nothing invalidated it,
+// not even a config reload.
+func (m *Manager) InvalidateHost(server string) {
+	if server == "" {
+		return
+	}
+	m.mu.Lock()
+	delete(m.hosts, server)
+	m.mu.Unlock()
+}
+
 // NewManager constructs a Manager and precomputes each server's pool budgets.
 func NewManager(cfg *config.Config) *Manager {
 	m := &Manager{

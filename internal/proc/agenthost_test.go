@@ -89,3 +89,36 @@ models:
 		t.Errorf("target = %s, want %s", got.URL, want)
 	}
 }
+
+// A RemoteHost captures its endpoint list at construction and hostFor memoises
+// it, so an agent that moved networks stayed unreachable for the life of the
+// daemon — the cache outlived the facts it was built from, and not even a
+// config reload cleared it.
+func TestInvalidateHostRebuildsFromCurrentConfig(t *testing.T) {
+	cfg, err := config.LoadBytesForTest([]byte(`
+servers:
+  mac1:
+    pools: { system: 64GB }
+    devicePool: system
+    agent: { endpoints: ["http://192.168.1.42:6503"] }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(cfg)
+
+	first := m.hostFor("mac1")
+	if first != m.hostFor("mac1") {
+		t.Fatal("hostFor should memoise; a fresh client per spawn would re-probe every endpoint")
+	}
+
+	m.InvalidateHost("mac1")
+	if second := m.hostFor("mac1"); second == first {
+		t.Error("InvalidateHost did not drop the cached client — a moved agent stays unreachable")
+	}
+	// Still remote: invalidation must not degrade an agent-bound server into a
+	// local one, which would spawn a Mac's model on the primary.
+	if _, isLocal := m.hostFor("mac1").(*host.Local); isLocal {
+		t.Error("rebuilt host is *host.Local — the model would run on the wrong machine")
+	}
+}

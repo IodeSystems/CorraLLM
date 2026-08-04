@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -126,7 +127,18 @@ func runAgent(ctx context.Context, addr, token, primary, server string, selfUpda
 		}
 	}
 
-	srv := &http.Server{Addr: addr, Handler: a.Routes()}
+	// Listen BEFORE the beacon starts, because the beacon has to advertise the
+	// port that was actually bound. With `addr: ":0"` the OS picks one, and the
+	// only way anyone learns it is from the listener — which is the point:
+	// a dynamically chosen port removes the standing conflict where a stale
+	// agent holds :6503 and its replacement cannot start.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	boundAddr := ln.Addr().String()
+
+	srv := &http.Server{Handler: a.Routes()}
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -134,7 +146,8 @@ func runAgent(ctx context.Context, addr, token, primary, server string, selfUpda
 	// and may change networks; requiring the primary to reach in would make a
 	// laptop look permanently down even while it is serving.
 	if primary != "" && server != "" {
-		b := &agent.Beacon{Primary: primary, Server: server, Token: token, Srv: a, SelfUpdate: selfUpdate}
+		b := &agent.Beacon{Primary: primary, Server: server, Token: token, Srv: a,
+			SelfUpdate: selfUpdate, Addr: boundAddr}
 		go b.Run(sigCtx)
 	} else if primary != "" || server != "" {
 		slog.Warn("agent: --primary and --server must BOTH be set to heartbeat; not reporting liveness",
@@ -143,12 +156,12 @@ func runAgent(ctx context.Context, addr, token, primary, server string, selfUpda
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("corrallm agent listening", "addr", addr, "version", version,
-			"protocol", agent.Protocol, "authenticated", token != "")
+		slog.Info("corrallm agent listening", "addr", boundAddr, "configured", addr,
+			"version", version, "protocol", agent.Protocol, "authenticated", token != "")
 		if token == "" {
 			slog.Warn("agent is UNAUTHENTICATED — anyone who can reach this port can run commands here")
 		}
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()

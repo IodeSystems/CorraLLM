@@ -28,6 +28,10 @@ type Beacon struct {
 	Token    string // this server's agent token
 	Interval time.Duration
 	Srv      *Server
+	// Addr is the address the agent ACTUALLY bound, which is not necessarily the
+	// one it was configured with — `:0` means the OS chose. Endpoints are
+	// derived from it on every beat.
+	Addr string
 	// SelfUpdate lets the agent replace its own binary with the primary's build
 	// when the versions differ AND nothing is running here. On by default: a
 	// fleet of agents pinned to old builds by hand is the failure mode this
@@ -77,6 +81,10 @@ func (b *Beacon) beat(ctx context.Context) (HeartbeatAck, error) {
 		hb.Hello = b.Srv.hello()
 		hb.Backends = b.Srv.snapshot()
 	}
+	// Recomputed per beat, not cached: the point is to notice that this machine
+	// moved. Walking the interface list is cheap next to the round trip it rides
+	// along with.
+	hb.Endpoints = localEndpoints(b.Addr)
 	body, err := json.Marshal(hb)
 	if err != nil {
 		return ack, err
