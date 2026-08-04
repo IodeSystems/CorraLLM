@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+
 // Admin-token handling for the dashboard. The token is stored in localStorage
 // (sent as a Bearer header on GraphQL requests) AND mirrored into a cookie so
 // the SSE EventSource — which can't set headers — is authorized too.
@@ -36,4 +38,35 @@ export function clearToken() {
 export function is401(err: unknown): boolean {
   const e = err as { response?: { status?: number }; status?: number }
   return e?.response?.status === 401 || e?.status === 401
+}
+
+// Whether this instance requires a token at all.
+//
+// A server started with --insecure has no gate, so prompting for a token would
+// be asking for a credential nothing checks — the login screen would be a wall
+// in front of an unlocked door. /health says which it is, and is reachable
+// unauthenticated precisely because the client may have no token yet.
+export type Gate = 'checking' | 'open' | 'needs-token'
+
+export function useAuthGate(): Gate {
+  // A token in hand short-circuits: it works in both modes, so there is nothing
+  // to ask the server and no reason to make the app wait on a round trip.
+  const [gate, setGate] = useState<Gate>(() => (getToken() ? 'open' : 'checking'))
+
+  useEffect(() => {
+    if (gate !== 'checking') return
+    let alive = true
+    fetch('/health')
+      .then((r) => r.json())
+      .then((d) => alive && setGate(d?.insecure === true ? 'open' : 'needs-token'))
+      // Unreachable or unparseable: fall back to asking for a token. Assuming
+      // "open" on a failed probe would blank the login screen on a server that
+      // does want one, leaving no way in.
+      .catch(() => alive && setGate('needs-token'))
+    return () => {
+      alive = false
+    }
+  }, [gate])
+
+  return gate
 }

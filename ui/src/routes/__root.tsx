@@ -13,7 +13,7 @@ import {
 } from '@mui/material'
 import { C } from '@/theme'
 import { useLiveEvents } from '@/useLiveEvents'
-import { getToken } from '@/auth'
+import { useAuthGate } from '@/auth'
 import { Login } from '@/Login'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -104,7 +104,11 @@ const NAV = [
 
 function RootLayout() {
   useLiveEvents() // push-based refresh for the live views (no-op until signed in)
-  if (!getToken()) return <Login />
+  const gate = useAuthGate()
+  // Render nothing for the one frame the probe takes. A spinner would flash on
+  // every load, and a login screen shown then hidden is worse than a blank.
+  if (gate === 'checking') return null
+  if (gate === 'needs-token') return <Login />
   return (
     <>
       <AppBar position="sticky">

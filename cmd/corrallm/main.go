@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -280,6 +282,7 @@ func newServeCmd() *cobra.Command {
 		healthTimeout, activityRetention           time.Duration
 		requestTimeout                             time.Duration
 		capturePayloads, convertPDFs, ocrPDFs      bool
+		insecure                                   bool
 		pdfMaxChars, ocrMaxPages                   int
 		realtimeIdle, realtimeMaxSession           time.Duration
 		reservationMaxTTL                          time.Duration
@@ -310,6 +313,7 @@ func newServeCmd() *cobra.Command {
 				addr:               envOr("ADDR", ":6502"),
 				healthTimeout:      pickDuration(healthTimeout, envDuration("CORRALLM_HEALTH_TIMEOUT", 0)),
 				tokenPath:          p.token,
+				insecure:           insecure,
 				activityRetention:  pickDuration(activityRetention, envDuration("CORRALLM_ACTIVITY_RETENTION", 30*24*time.Hour)),
 				requestTimeout:     pickDuration(requestTimeout, envDuration("CORRALLM_REQUEST_TIMEOUT", 0)),
 				capturePayloads:    capturePayloads,
@@ -339,6 +343,7 @@ func newServeCmd() *cobra.Command {
 	f.DurationVar(&healthTimeout, "health-timeout", 0, "max time a cold backend spawn may take to become healthy (default 120s or CORRALLM_HEALTH_TIMEOUT); raise for large models")
 	f.DurationVar(&activityRetention, "activity-retention", 0, "delete activity-log rows older than this (default 720h/30d or CORRALLM_ACTIVITY_RETENTION; 0 disables)")
 	f.DurationVar(&requestTimeout, "request-timeout", 0, "max wall-clock for one proxied request before corrallm cancels it (or CORRALLM_REQUEST_TIMEOUT; 0 = no corrallm deadline, defer to client + backend)")
+	f.BoolVar(&insecure, "insecure", envBool("CORRALLM_INSECURE"), "serve the management API and dashboard with NO admin token — anyone who can reach the port is an operator. For a trusted single-user box or a first look; never on a shared or reachable network.")
 	f.BoolVar(&capturePayloads, "capture-payloads", true, "capture per-request request/response payloads onto the activity log (capped; binary audio summarized; pruned with --activity-retention)")
 	f.BoolVar(&convertPDFs, "convert-pdfs", true, "auto-extract PDF attachments in chat requests into injected text (via pdftotext) so text models can read them")
 	f.IntVar(&pdfMaxChars, "pdf-max-chars", 400000, "cap on extracted text per PDF injected into the prompt")
@@ -391,6 +396,7 @@ type serveOpts struct {
 	agentDir, publicBase                  string
 	healthTimeout                         time.Duration
 	tokenPath                             string
+	insecure                              bool
 	activityRetention                     time.Duration
 	requestTimeout                        time.Duration
 	capturePayloads, convertPDFs, ocrPDFs bool
@@ -479,6 +485,17 @@ func serve(ctx context.Context, o serveOpts) error {
 
 	// Admin token gates the management surface (/api/*). Generated into
 	// <home>/admin.token on first run; the dashboard's login screen points there.
+	//
+	// --insecure removes that gate entirely. It exists because the first thing
+	// someone evaluating corrallm wants is to SEE it, and "find a token file on
+	// the server" is a real wall in front of that — one people route around in
+	// worse ways than a documented flag. The trade is stated plainly rather than
+	// hidden: with no gate, anyone who can reach the port can unload models,
+	// rewrite config, and start bench runs.
+	//
+	// The token is still created and loaded, so turning the flag off restores
+	// the same credential rather than minting a new one and invalidating every
+	// client that had it.
 	adminToken, created, err := auth.LoadOrCreateToken(o.tokenPath)
 	if err != nil {
 		return err
@@ -488,6 +505,21 @@ func serve(ctx context.Context, o serveOpts) error {
 	} else {
 		slog.Info("loaded admin token", "path", o.tokenPath)
 	}
+	if o.insecure {
+		// WARN, and louder when the address is one other machines can reach.
+		// "Insecure on localhost" is a defensible choice on a single-user box;
+		// "insecure on 0.0.0.0" is an unauthenticated control plane on the
+		// network, and the log is the only place that distinction gets made.
+		if exposedAddr(o.addr) {
+			slog.Warn("INSECURE MODE ON A NON-LOOPBACK ADDRESS — the management API and dashboard "+
+				"are open to anyone who can reach this port: unload models, rewrite config, run benches. "+
+				"Bind to 127.0.0.1 or drop --insecure",
+				"addr", o.addr)
+		} else {
+			slog.Warn("insecure mode: no admin token required for /api/* — anyone who can reach this port is an operator",
+				"addr", o.addr)
+		}
+	}
 
 	router := chi.NewRouter()
 	// Ahead of RealIP, which OVERWRITES r.RemoteAddr with a client-supplied
@@ -496,7 +528,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	router.Use(captureConnAddr)
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
-	router.Use(auth.Middleware(adminToken)) // gates /api/*; /v1, /upstream, /health, SPA pass through
+	if !o.insecure {
+		router.Use(auth.Middleware(adminToken)) // gates /api/*; /v1, /upstream, /health, SPA pass through
+	}
 
 	// BuildGateway mounts REST + GraphQL (/api/graphql) + schema views onto router.
 	if _, err := api.BuildGateway(router, h); err != nil {
@@ -516,11 +550,16 @@ func serve(ctx context.Context, o serveOpts) error {
 	// the fronted dashboard has no business reading server paths.
 	healthz := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// `insecure` is advertised to EVERYONE, not just a local caller. It is
+		// not a secret — it is observable by making one unauthenticated /api
+		// call — and the dashboard needs it to know not to render a login for a
+		// gate that is not there. tokenPath stays local-only: it is a path, and
+		// it names the server's home directory.
 		if localCaller(r) {
-			fmt.Fprintf(w, `{"status":"ok","version":%q,"tokenPath":%q}`, version, o.tokenPath)
+			fmt.Fprintf(w, `{"status":"ok","version":%q,"tokenPath":%q,"insecure":%t}`, version, o.tokenPath, o.insecure)
 			return
 		}
-		fmt.Fprintf(w, `{"status":"ok","version":%q}`, version)
+		fmt.Fprintf(w, `{"status":"ok","version":%q,"insecure":%t}`, version, o.insecure)
 	}
 	router.Get("/health", healthz)
 	router.Get("/healthz", healthz)
@@ -735,6 +774,47 @@ func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, 
 			}
 		}
 	}
+}
+
+// envBool reads a boolean environment variable, accepting the spellings people
+// actually type. Anything unrecognised is false: a security-relevant switch must
+// not turn ON because of a typo in a value.
+// exposedAddr reports whether a listen address is reachable from another
+// machine, which is what decides how loud the insecure-mode warning should be.
+//
+// Unknown shapes are treated as EXPOSED. The failure directions are not
+// symmetric: an over-loud warning on a loopback bind is noise, while a missing
+// one on a public bind is an unauthenticated control plane nobody was told
+// about.
+func exposedAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		// A bare ":8111" fails to split on some inputs but is the common
+		// "all interfaces" spelling, so treat it as exposed too.
+		host = strings.TrimSpace(addr)
+		if i := strings.LastIndex(host, ":"); i >= 0 {
+			host = host[:i]
+		}
+	}
+	switch host {
+	case "localhost":
+		return false
+	case "":
+		return true // ":8111" — every interface
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true
+	}
+	return !ip.IsLoopback()
+}
+
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func envOr(key, def string) string {
