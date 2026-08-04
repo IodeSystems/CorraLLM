@@ -17,7 +17,7 @@ import { gqlClient } from '@/gqlClient'
 import { fmtInt } from '@/format'
 
 /**
- * Enrol / change / unassign a key's lane.
+ * Enroll / change / unassign a key's lane.
  *
  * Self-contained because two pages need it — the roster row and the per-key
  * page — and the interesting part is not the buttons but the invariants they
@@ -116,7 +116,7 @@ export function KeyLaneActions({
           variant={recognized ? 'text' : 'contained'}
           onClick={() => setDraft(group)}
         >
-          {recognized ? 'Change' : 'Enrol'}
+          {recognized ? 'Change' : 'Enroll'}
         </Button>
         {recognized && (
           <Tooltip title="Drop the lane assignment. The caller keeps working, in the fallback lane — this does not lock anyone out.">

@@ -20,7 +20,7 @@ import (
 // mints them freely.
 //
 // So this joins two sources that were never joined: the configured map, and the
-// keys actually observed in traffic. The second is what makes enrolment a click
+// keys actually observed in traffic. The second is what makes enrollment a click
 // — a stranger shows up in the roster with recognized=false, and assigning it a
 // group is a PUT to the config-entry editor.
 
@@ -122,7 +122,7 @@ func (h *Handlers) Keys(_ context.Context, in *KeysInput) (*KeysOutput, error) {
 		if used, err := h.Store.RollupByKey(sinceMS); err == nil {
 			for _, u := range used {
 				if u.Key == "" {
-					continue // unkeyed traffic is not a key to enrol
+					continue // unkeyed traffic is not a key to enroll
 				}
 				r := add(u.Key)
 				r.Requests = u.Requests

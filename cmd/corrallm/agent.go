@@ -60,7 +60,7 @@ func newAgentCmd() *cobra.Command {
 			}
 			enrollTok := pick(enroll, os.Getenv("CORRALLM_ENROLL_TOKEN"), fc.EnrollToken)
 
-			// Enrol FIRST when we have a one-time token and no long-lived one.
+			// Enroll FIRST when we have a one-time token and no long-lived one.
 			// This is what makes attaching a machine a single command: the agent
 			// brings its own measurements, the primary writes the server entry
 			// and hands back the credential everything after this uses.
@@ -71,7 +71,7 @@ func newAgentCmd() *cobra.Command {
 				}
 				token, server = res.Token, res.Server
 				slog.Info("enrolled with the primary", "server", res.Server, "pools", res.Pools)
-				// Persist so a restart does not re-enrol with a token that is
+				// Persist so a restart does not re-enroll with a token that is
 				// already spent — which fails with a confusing "already used".
 				fc.Primary, fc.Server, fc.Token, fc.Addr = primary, server, token, addr
 				fc.EnrollToken = ""

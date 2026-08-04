@@ -264,7 +264,7 @@ type DiscoverFilter struct {
 	Free bool `yaml:"free,omitempty"`
 	// InputModality / OutputModality must match exactly when set (e.g. "text").
 	// This is what keeps a music-generation model out of a chat lane: OpenRouter
-	// prices Lyria at zero, so the free test alone would enrol it.
+	// prices Lyria at zero, so the free test alone would enroll it.
 	InputModality  string `yaml:"inputModality,omitempty"`
 	OutputModality string `yaml:"outputModality,omitempty"`
 	// MinContext drops rows with a smaller advertised window.
@@ -903,7 +903,7 @@ func (p UnknownKeyPolicy) FallbackGroup() string {
 //
 // Recognized reports whether the key was actually in Keys, so a caller can tell
 // "assigned to this group" from "fell through to it" — the distinction the
-// enrolment UI is built on, and one this function used to erase.
+// enrollment UI is built on, and one this function used to erase.
 func (c *Config) ResolveGroup(key string) (name string, g PriorityGroup) {
 	name, g, _ = c.resolveGroup(key)
 	return name, g

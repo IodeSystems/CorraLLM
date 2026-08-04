@@ -30,7 +30,7 @@ func putYAML(t *testing.T, h *Handlers, kind, name, yaml string) error {
 	return err
 }
 
-// Enrolment: a key seen in traffic becomes a managed key by being assigned a
+// Enrollment: a key seen in traffic becomes a managed key by being assigned a
 // group. This is the write half of the roster — without it, key→group was
 // hand-edited YAML and a restart, the only part of the scheduling model with no
 // management surface.

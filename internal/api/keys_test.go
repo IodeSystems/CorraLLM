@@ -65,7 +65,7 @@ func TestUnknownKeyPolicyIsExplicitAndDefaultsToAccepting(t *testing.T) {
 		t.Errorf("fallback = %q, want quarantine", denied.FallbackGroup())
 	}
 
-	// And the resolver reports recognition, which is what enrolment keys on.
+	// And the resolver reports recognition, which is what enrollment keys on.
 	cfg := &config.Config{
 		Keys:           map[string]string{"known": "batch"},
 		PriorityGroups: map[string]config.PriorityGroup{"batch": {Weight: 1}},
