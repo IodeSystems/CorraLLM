@@ -610,7 +610,7 @@ func (m *Manager) probeUI(p *Process) {
 	// the agent's proxy prefix, and dropping it would probe the AGENT's root and
 	// report the agent's 404 as the backend having no UI.
 	root := p.Target.BaseURLString() + "/"
-	resp, err := m.healthCli.Get(root)
+	resp, err := m.getWithTarget(root, p.Target)
 	if err != nil {
 		p.hasUI.Store(2)
 		return
@@ -704,6 +704,27 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 	slog.Debug("vram budget (post-eviction)", "model", forModel, "budgetMiB", budget,
 		"totalMiB", stats.TotalMiB, "preCrowdedMiB", preCrowded, "nonEvictableMiB", nonEvictable, "marginMiB", m.vramMargin)
 	return budget
+}
+
+// getWithTarget GETs url carrying whatever headers the target requires.
+//
+// Every probe here used to be a bare Get, which was correct only while local
+// backends needed no credential. Routing agent-hosted backends through the
+// agent put an authenticated hop in front of them, and a bare Get then gets a
+// 401 that reads like the BACKEND rejecting us — it took a trial transcript
+// showing "model loaded / listening" three lines above "/health returned 401"
+// to see that the backend was fine and the probe was the problem.
+func (m *Manager) getWithTarget(url string, t *config.ProxyTarget) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if t != nil {
+		for k, v := range t.Headers {
+			req.Header.Set(k, v)
+		}
+	}
+	return m.healthCli.Do(req)
 }
 
 // defaultVRAMPool is the pool treated as device memory when a server does not
@@ -1556,7 +1577,7 @@ func (m *Manager) waitHealthy(t *config.ProxyTarget, exited <-chan struct{}) err
 		// Listening is not enough: llama-server binds its port early and returns
 		// 503 "Loading model" until weights + KV cache are fully loaded. Only a
 		// 2xx /health means it can actually serve a request.
-		resp, herr := m.healthCli.Get(url)
+		resp, herr := m.getWithTarget(url, t)
 		if herr != nil {
 			lastErr = herr
 			time.Sleep(300 * time.Millisecond)
