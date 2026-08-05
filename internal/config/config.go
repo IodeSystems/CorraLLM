@@ -983,6 +983,7 @@ func Load(path string) (*Config, error) {
 	// Before Validate: resolution fills in cmd/server/proxy from the extension,
 	// and the existing model rules ("cmd set but no server") must judge the
 	// resolved model, not the sparse one the author wrote.
+	c.projectFirstPlacement()
 	if err := c.resolveExtensions(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
@@ -1109,6 +1110,44 @@ func overwriteMap[V any](dst *map[string]V, src map[string]V) {
 // resolveExtensions copies each extension's lifecycle fields onto the models it
 // provides, so everything downstream sees an ordinary spawned model. Sharing is
 // expressed by ProcKey, not by these fields.
+// projectFirstPlacement mirrors placement[0] onto the legacy model fields.
+//
+// Ninety-odd call sites still read Model.Cmd/Server/Proxy/RAMUsage, and they
+// are the whole runtime: admission, residency, target resolution,
+// reconciliation. Until those are placement-aware, a model written with a
+// placements: list would validate and then fail to serve — Server would be
+// empty, so it would be treated as a pure proxy with no local process.
+//
+// Projecting the first placement makes the new syntax work TODAY for the
+// single-placement case, which is every existing config re-expressed. More than
+// one placement is refused in Validate rather than silently serving only the
+// first, because a config that says two boxes and quietly uses one is worse
+// than a config that will not load.
+func (c *Config) projectFirstPlacement() {
+	for name, m := range c.Models {
+		if len(m.Placements) == 0 {
+			continue
+		}
+		p := m.PlacementList()[0]
+		m.Server = p.Server
+		m.Cmd = p.Cmd
+		m.Proxy = p.Proxy
+		if len(p.RAMUsage) > 0 {
+			m.RAMUsage = p.RAMUsage
+		}
+		if p.MaxConcurrent > 0 {
+			m.MaxConcurrent = p.MaxConcurrent
+		}
+		if p.ContextPerRequest > 0 {
+			m.ContextPerRequest = p.ContextPerRequest
+		}
+		if p.Swap != nil {
+			m.Swap = p.Swap
+		}
+		c.Models[name] = m
+	}
+}
+
 func (c *Config) resolveExtensions() error {
 	for name, ext := range c.Extensions {
 		hosted := ext.Cmd != ""
@@ -1375,6 +1414,17 @@ func (c *Config) Validate() error {
 		if err := m.ValidatePlacements(name); err != nil {
 			return err
 		}
+		// The SCHEMA supports several; the runtime does not yet. Admission,
+		// residency and target resolution still key by a single server, so a
+		// second placement would be accepted and never served. Refusing is the
+		// honest half-step — silently using the first would be a config that
+		// says two boxes and means one.
+		if len(m.Placements) > 1 {
+			return fmt.Errorf("model %q declares %d placements; the runtime serves one per model "+
+				"today, so this would silently use only %q. Split them into separate models "+
+				"and compose a lane, until multi-placement scheduling lands",
+				name, len(m.Placements), m.PlacementList()[0].Name)
+		}
 		for _, pl := range m.PlacementList() {
 			if pl.Server == "" {
 				continue
@@ -1457,6 +1507,7 @@ func LoadBytesForTest(b []byte) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, err
 	}
+	c.projectFirstPlacement()
 	if err := c.resolveExtensions(); err != nil {
 		return nil, err
 	}

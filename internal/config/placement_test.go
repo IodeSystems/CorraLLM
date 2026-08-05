@@ -47,33 +47,18 @@ models:
 }
 
 // The case the whole change exists for: one model, two boxes, different cmds.
+//
+// Built directly rather than loaded, because Validate deliberately refuses more
+// than one placement until the runtime can schedule them (see
+// TestMultiPlacementIsRefusedUntilTheRuntimeCanServeIt). The SCHEMA is what is
+// under test here.
 func TestModelOnTwoBoxesKeepsThemDistinct(t *testing.T) {
-	c, err := loadYAML(t, `
-servers:
-  box1:
-    pools: { gpu0: 30GB }
-  mac1:
-    pools: { system: 64GB }
-    devicePool: system
-models:
-  qwen:
-    type: chat
-    quality: 2
-    placements:
-      - server: box1
-        cmd: "exec llama-server -m qwen-q6.gguf --port 5800"
-        proxy: 5800
-        ramUsage: { gpu0: 20GB }
-        maxConcurrent: 4
-      - server: mac1
-        cmd: "exec llama-server -m qwen-q4.gguf --port 5810"
-        proxy: 5810
-        maxConcurrent: 1
-`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := c.Models["qwen"]
+	m := Model{Type: "chat", Quality: 2, Placements: []Placement{
+		{Server: "box1", Cmd: "exec llama-server -m qwen-q6.gguf --port 5800",
+			RAMUsage: map[string]string{"gpu0": "20GB"}, MaxConcurrent: 4},
+		{Server: "mac1", Cmd: "exec llama-server -m qwen-q4.gguf --port 5810",
+			MaxConcurrent: 1},
+	}}
 	ps := m.PlacementList()
 	if len(ps) != 2 {
 		t.Fatalf("got %d placements, want 2", len(ps))
@@ -84,17 +69,15 @@ models:
 	// Distinct process keys. Sharing one would make loading the Mac's copy look
 	// like loading box1's, and unloading either would free a reservation the
 	// other still held.
-	k1 := m.PlacementProcKey("qwen", ps[0])
-	k2 := m.PlacementProcKey("qwen", ps[1])
-	if k1 == k2 {
+	if k1, k2 := m.PlacementProcKey("qwen", ps[0]), m.PlacementProcKey("qwen", ps[1]); k1 == k2 {
 		t.Errorf("both placements key to %q — they would share a process slot", k1)
 	}
-	// Per-placement sizing is preserved, which is the reason these cannot be
-	// one entry: a 5090 serves four where a laptop serves one.
 	byServer := map[string]Placement{}
 	for _, p := range ps {
 		byServer[p.Server] = p
 	}
+	// Per-placement sizing is the reason these cannot be one entry: a 5090
+	// serves four where a laptop serves one.
 	if byServer["box1"].MaxConcurrent != 4 || byServer["mac1"].MaxConcurrent != 1 {
 		t.Errorf("per-placement slots collapsed: %+v", byServer)
 	}
@@ -103,8 +86,56 @@ models:
 	}
 }
 
-// The same box twice — two quantisations — is legal and must not collide.
+// The same box twice — two quantisations — must not collide.
 func TestTwoPlacementsOnOneBoxGetDistinctNames(t *testing.T) {
+	m := Model{Type: "chat", Placements: []Placement{
+		{Server: "box1", Cmd: "exec llama-server -m qwen-q4.gguf --port 5800"},
+		{Server: "box1", Cmd: "exec llama-server -m qwen-q6.gguf --port 5801"},
+	}}
+	ps := m.PlacementList()
+	if ps[0].Name == ps[1].Name {
+		t.Fatalf("both named %q — profile, capabilities and process key would collide", ps[0].Name)
+	}
+	if m.PlacementProcKey("qwen", ps[0]) == m.PlacementProcKey("qwen", ps[1]) {
+		t.Error("same-box placements share a process key")
+	}
+}
+
+// The schema runs ahead of the runtime, and that gap must fail LOUDLY.
+// Admission, residency and target resolution still key by one server, so a
+// second placement would be accepted and never served — a config that says two
+// boxes and means one.
+func TestMultiPlacementIsRefusedUntilTheRuntimeCanServeIt(t *testing.T) {
+	_, err := loadYAML(t, `
+servers:
+  box1:
+    pools: { gpu0: 30GB }
+  mac1:
+    pools: { system: 64GB }
+    devicePool: system
+models:
+  qwen:
+    type: chat
+    placements:
+      - server: box1
+        cmd: "exec a --port 5800"
+        proxy: 5800
+      - server: mac1
+        cmd: "exec b --port 5810"
+        proxy: 5810
+`)
+	if err == nil {
+		t.Fatal("two placements loaded, but nothing can schedule the second")
+	}
+	if !strings.Contains(err.Error(), "serves one per model") {
+		t.Errorf("error should say why, got: %v", err)
+	}
+}
+
+// A model written the NEW way with one placement must serve exactly as the old
+// shape did — that is what makes the syntax usable before the runtime catches
+// up.
+func TestSinglePlacementProjectsOntoTheRuntimeFields(t *testing.T) {
 	c, err := loadYAML(t, `
 servers:
   box1:
@@ -114,22 +145,23 @@ models:
     type: chat
     placements:
       - server: box1
-        cmd: "exec llama-server -m qwen-q4.gguf --port 5800"
+        cmd: "exec llama-server --port 5800"
         proxy: 5800
-      - server: box1
-        cmd: "exec llama-server -m qwen-q6.gguf --port 5801"
-        proxy: 5801
+        ramUsage: { gpu0: 20GB }
+        maxConcurrent: 4
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := c.Models["qwen"]
-	ps := m.PlacementList()
-	if ps[0].Name == ps[1].Name {
-		t.Fatalf("both placements named %q — profile, capabilities and process key would collide", ps[0].Name)
+	if m.Server != "box1" || m.Cmd == "" {
+		t.Errorf("placement did not project onto the runtime fields: server=%q cmd=%q", m.Server, m.Cmd)
 	}
-	if m.PlacementProcKey("qwen", ps[0]) == m.PlacementProcKey("qwen", ps[1]) {
-		t.Error("same-box placements share a process key")
+	if m.RAMUsage["gpu0"] != "20GB" || m.MaxConcurrent != 4 {
+		t.Errorf("sizing did not project: %+v %d", m.RAMUsage, m.MaxConcurrent)
+	}
+	if tgt, err := m.ProxyTarget(); err != nil || tgt == nil {
+		t.Errorf("proxy did not project, so nothing could route to it: %v", err)
 	}
 }
 
