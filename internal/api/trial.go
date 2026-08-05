@@ -8,7 +8,9 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/proc"
+	"strings"
 )
 
 // TrialModelInput is a command the operator wants to SEE run before committing
@@ -100,7 +102,8 @@ func randomID() string {
 
 // ProbeModelInput asks about a model that already exists.
 type ProbeModelInput struct {
-	Name string `path:"name" doc:"Served model name."`
+	Name  string `path:"name" doc:"Served model name."`
+	Apply bool   `query:"apply" doc:"Write what was discovered back onto the model: modalities, slots, context. Off by default — a probe reads unless told to write."`
 }
 
 // ProbeModel interrogates a CONFIGURED model, as opposed to TrialModel, which
@@ -133,6 +136,65 @@ func (h *Handlers) ProbeModel(ctx context.Context, in *ProbeModelInput) (*TrialM
 		// failure is the answer that was asked for, and an error status would
 		// discard the stages and logs that say why.
 		out.Body.Error = runErr.Error()
+		return out, nil
+	}
+	if in.Apply {
+		if err := h.applyProbe(in.Name, res); err != nil {
+			out.Body.Error = "probed, but could not record it: " + err.Error()
+		} else {
+			out.Body.Events = append(out.Body.Events, proc.TrialEvent{
+				Stage: "apply", OK: true,
+				Msg: "recorded modalities, slots and context on the model"})
+		}
 	}
 	return out, nil
+}
+
+// applyProbe writes what the backend said about itself onto the model.
+//
+// The point is to stop capabilities being a thing an operator asserts. A model
+// that did not DECLARE vision was treated as not having it — so the capability
+// routing skipped it and llm-bench would not run a vision probe against it,
+// which meant the one mechanism that could have proved the capability was gated
+// on someone having already claimed it. The backend knows; asking it settles it.
+//
+// Deliberately does NOT write ramUsage. Footprint is measured continuously and
+// the peak governs; writing a declaration would re-introduce the stale
+// hand-typed number this all exists to remove.
+func (h *Handlers) applyProbe(name string, res proc.TrialResult) error {
+	return h.mutateConfig(func(c *config.Config) error {
+		m, ok := c.Models[name]
+		if !ok {
+			return huma.Error404NotFound("no such model")
+		}
+		if len(res.Modalities) > 0 {
+			mods := map[string]config.ModalitySpec{"text": {}}
+			for _, r := range res.Modalities {
+				// llama.cpp's vocabulary is not corrallm's: it reports
+				// vision/video/audio, the config accepts text/image/audio. An
+				// unmapped one is dropped rather than written and rejected by
+				// Validate, which would fail the whole save.
+				switch r {
+				case "vision", "video", "image":
+					mods["image"] = config.ModalitySpec{}
+				case "audio":
+					mods["audio"] = config.ModalitySpec{}
+				}
+			}
+			m.Modalities = mods
+		}
+		if res.Slots > 0 {
+			m.MaxConcurrent = res.Slots
+		}
+		if res.ContextLength > 0 {
+			// The window it ACTUALLY got, which is what must survive a future
+			// maxConcurrent change rather than being silently divided.
+			m.ContextPerRequest = res.ContextLength
+		}
+		if res.Upstream != "" && !strings.HasPrefix(res.Upstream, "/") {
+			m.Upstream = res.Upstream
+		}
+		c.Models[name] = m
+		return nil
+	})
 }

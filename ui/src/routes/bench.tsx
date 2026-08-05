@@ -232,9 +232,14 @@ function ActiveRun(props: {
           Cancel run
         </Button>
       </Stack>
+      {/* This described the exclusive lease, which was REMOVED — a bench run
+          holds nothing, evicts nothing and locks nobody out. Left as-is it told
+          operators their fleet was being taken down for a measurement that is
+          in fact queueing politely alongside everyone else. */}
       <Typography variant="caption" color="text.secondary">
-        Models are being evicted for uncontended measurement; every other caller is receiving 429
-        + Retry-After.
+        The run queues for admission like any other caller — nothing is evicted and no one is
+        locked out. It competes for slots, so a single-slot model will make both the bench and
+        other traffic wait on each other.
       </Typography>
       {args.length > 0 && (
         <Box component="pre" sx={{ m: 0, mt: 1, fontSize: 11, opacity: 0.75, overflowX: 'auto' }}>

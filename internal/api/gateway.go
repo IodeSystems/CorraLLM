@@ -102,7 +102,7 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		OperationID: "startBenchRun",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/bench/run",
-		Summary:     "Spawn llm-bench under an exclusive lease (EVICTS models; other callers get 429).",
+		Summary:     "Spawn llm-bench. Queues for admission like any other caller: holds no lease, evicts nothing, locks nobody out.",
 		Tags:        []string{"control"},
 	}, h.StartBenchRun)
 
@@ -118,7 +118,7 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		OperationID: "cancelBenchRun",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/bench/cancel",
-		Summary:     "Stop an in-flight bench run and release the lease.",
+		Summary:     "Stop an in-flight bench run.",
 		Tags:        []string{"control"},
 	}, h.CancelBenchRun)
 
