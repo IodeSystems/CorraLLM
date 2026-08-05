@@ -83,7 +83,7 @@ func TestLoadMSRoundTrips(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	seedActivity(t, st, []Activity{{TS: 1, Served: "m1", Key: "k", QueuedMS: 7, LoadMS: 6705}})
-	got, err := st.RecentActivity(10, "m1", "")
+	got, err := st.RecentActivity(10, "m1", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

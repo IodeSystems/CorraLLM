@@ -22,7 +22,7 @@ func TestActivityRoundTrip(t *testing.T) {
 	if err := st.InsertActivity(in); err != nil {
 		t.Fatal(err)
 	}
-	got, err := st.RecentActivity(10, "", "")
+	got, err := st.RecentActivity(10, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,10 +57,10 @@ func TestActivityRoundTrip(t *testing.T) {
 	if err := st.InsertActivity(Activity{TS: 3, Served: "other", Backend: "other#0", Status: 200}); err != nil {
 		t.Fatal(err)
 	}
-	if all, _ := st.RecentActivity(10, "", ""); len(all) != 3 {
+	if all, _ := st.RecentActivity(10, "", "", ""); len(all) != 3 {
 		t.Fatalf("unfiltered should see all models, got %d", len(all))
 	}
-	only, _ := st.RecentActivity(10, "m", "")
+	only, _ := st.RecentActivity(10, "m", "", "")
 	if len(only) != 2 {
 		t.Fatalf("served=m should return only model m's rows, got %d", len(only))
 	}
@@ -185,7 +185,7 @@ func TestRecentActivityKeyFilter(t *testing.T) {
 		}
 	}
 
-	got, err := st.RecentActivity(10, "", "ragtag")
+	got, err := st.RecentActivity(10, "", "ragtag", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestRecentActivityKeyFilter(t *testing.T) {
 	// Both filters compose — the alternative was a branch per combination, and
 	// the pair that nobody wired is exactly the one an operator reaches for
 	// ("what did this caller do ON THIS MODEL").
-	both, _ := st.RecentActivity(10, "other", "ragtag")
+	both, _ := st.RecentActivity(10, "other", "ragtag", "")
 	if len(both) != 1 || both[0].TS != 300 {
 		t.Fatalf("served+key should intersect, got %+v", both)
 	}
@@ -209,7 +209,7 @@ func TestRecentActivityKeyFilter(t *testing.T) {
 	// An empty key means "no filter", not "unkeyed traffic only" — the roster
 	// never asks for the latter, and treating "" as a value would silently
 	// return one row where the caller expected every row.
-	if all, _ := st.RecentActivity(10, "", ""); len(all) != 4 {
+	if all, _ := st.RecentActivity(10, "", "", ""); len(all) != 4 {
 		t.Fatalf("empty key must not filter, got %d rows", len(all))
 	}
 }
@@ -305,7 +305,7 @@ func TestPruneActivity(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("pruned %d, want 2", n)
 	}
-	got, _ := st.RecentActivity(10, "", "")
+	got, _ := st.RecentActivity(10, "", "", "")
 	if len(got) != 2 {
 		t.Errorf("remaining %d rows, want 2", len(got))
 	}

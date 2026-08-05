@@ -52,9 +52,9 @@ const FINISH_HINT: Record<string, string> = {
 }
 
 const ActivityDoc = graphql(/* GraphQL */ `
-  query Activity($limit: Long!, $key: String, $served: String) {
+  query Activity($limit: Long!, $key: String, $served: String, $placement: String) {
     corrallm {
-      recentActivity(limit: $limit, key: $key, served: $served) {
+      recentActivity(limit: $limit, key: $key, served: $served, placement: $placement) {
         records {
           id
           ts
@@ -226,6 +226,7 @@ function Payload({ title, body }: { title: string; body: string }) {
 export function ActivityLog({
   filterKey,
   filterModel,
+  filterPlacement,
   hideModel = false,
   limit = 100,
   title = 'Recent',
@@ -239,6 +240,11 @@ export function ActivityLog({
   // the other gains a formatter — so this is one component with a narrower
   // question rather than a second implementation of the same rows.
   filterModel?: string
+  // filterPlacement narrows to ONE way of serving the model. Separate from
+  // filterModel because "how does this model behave" and "how does it behave on
+  // that box" are different questions, and with two placements an answer to the
+  // first describes neither.
+  filterPlacement?: string
   hideModel?: boolean
   limit?: number
   title?: string
@@ -249,12 +255,13 @@ export function ActivityLog({
   const q = useQuery({
     // filterKey is part of the cache key, or switching callers would show the
     // previous one's rows until the refetch landed.
-    queryKey: ['activity', filterKey ?? '', filterModel ?? '', limit],
+    queryKey: ['activity', filterKey ?? '', filterModel ?? '', filterPlacement ?? '', limit],
     queryFn: () =>
       gqlClient.request(ActivityDoc, {
         limit: String(limit),
         key: filterKey || undefined,
         served: filterModel || undefined,
+        placement: filterPlacement || undefined,
       }),
     refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
   })

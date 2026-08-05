@@ -86,7 +86,7 @@ func TestInferencePassthroughAndActivityLog(t *testing.T) {
 	}
 
 	// Activity was logged.
-	acts, err := st.RecentActivity(10, "", "")
+	acts, err := st.RecentActivity(10, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestBackpressure429(t *testing.T) {
 	// The promise is RECORDED, not just sent. The row must carry exactly the
 	// Retry-After the caller received — a second, independent rounding of the
 	// estimate would drift from the wire and make the log a plausible lie.
-	acts, err := st.RecentActivity(10, "", "")
+	acts, err := st.RecentActivity(10, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,7 +607,7 @@ func TestMeterNonStreaming(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 {
 		t.Fatalf("want 1 activity, got %d", len(acts))
 	}
@@ -660,7 +660,7 @@ func TestMeterStreaming(t *testing.T) {
 		t.Errorf("stream did not reach client: %s", rec.Body.String())
 	}
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 || acts[0].PromptTokens != 3 || acts[0].CompletionTokens != 7 {
 		t.Fatalf("streaming usage = %+v, want 3/7", acts)
 	}
@@ -700,7 +700,7 @@ func TestMeterSwapCost(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 {
 		t.Fatalf("want 1 activity, got %d", len(acts))
 	}
@@ -745,7 +745,7 @@ func TestMeterStreamingLargeTail(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 || acts[0].PromptTokens != 11 || acts[0].CompletionTokens != 22 {
 		t.Fatalf("large-stream usage = %+v, want 11/22", acts)
 	}
@@ -789,7 +789,7 @@ func TestMeterGzippedUpstream(t *testing.T) {
 		t.Fatalf("status %d", rec.Code)
 	}
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 || acts[0].PromptTokens != 8 || acts[0].CompletionTokens != 4 {
 		t.Fatalf("gzipped upstream usage = %+v, want 8/4", acts)
 	}
@@ -921,7 +921,7 @@ func TestAudioTranscriptionMultipart(t *testing.T) {
 		t.Errorf("unexpected transcription body: %s", rec.Body.String())
 	}
 
-	acts, err := st.RecentActivity(10, "", "")
+	acts, err := st.RecentActivity(10, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1059,7 +1059,7 @@ func TestAudioTranscriptionStreaming(t *testing.T) {
 		t.Errorf("no Flush propagated — SSE was buffered, not streamed")
 	}
 
-	acts, err := st.RecentActivity(10, "", "")
+	acts, err := st.RecentActivity(10, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,7 +1113,7 @@ func TestAudioTranscriptionMetering(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 {
 		t.Fatalf("want 1 activity, got %d", len(acts))
 	}
@@ -1192,7 +1192,7 @@ func TestAudioSpeechTTS(t *testing.T) {
 		t.Errorf("content-type = %q, want audio/mpeg", ct)
 	}
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 {
 		t.Fatalf("want 1 activity, got %d", len(acts))
 	}
@@ -1245,7 +1245,7 @@ func TestClientCancelLogged499(t *testing.T) {
 	cancel()  // client/front-proxy drops the connection
 	<-done
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 {
 		t.Fatalf("want 1 activity, got %d", len(acts))
 	}
@@ -1285,7 +1285,7 @@ func TestRequestTimeout504(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"mock"}`)))
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 || acts[0].Status != http.StatusGatewayTimeout {
 		t.Fatalf("status = %v, want 504", acts)
 	}
@@ -1321,7 +1321,7 @@ func TestPayloadCapture(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d", rec.Code)
 	}
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	if len(acts) != 1 || acts[0].ID == 0 {
 		t.Fatalf("no row/id: %+v", acts)
 	}
@@ -1345,7 +1345,7 @@ func TestPayloadCapture(t *testing.T) {
 	p2.Mount(r2)
 	r2.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"mock"}`)))
-	a2, _ := st2.RecentActivity(1, "", "")
+	a2, _ := st2.RecentActivity(1, "", "", "")
 	if len(a2) == 1 {
 		if d, _ := st2.ActivityByID(a2[0].ID); d.ReqBody != "" || d.RespBody != "" {
 			t.Errorf("capture disabled but stored: %q / %q", d.ReqBody, d.RespBody)
@@ -1382,7 +1382,7 @@ func TestReqBodyCapAllowsLargeReplay(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d", rec.Code)
 	}
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	full, err := st.ActivityByID(acts[0].ID)
 	if err != nil {
 		t.Fatal(err)
@@ -1426,7 +1426,7 @@ func TestPayloadCaptureBinaryAudio(t *testing.T) {
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	r.ServeHTTP(httptest.NewRecorder(), req)
 
-	acts, _ := st.RecentActivity(1, "", "")
+	acts, _ := st.RecentActivity(1, "", "", "")
 	full, _ := st.ActivityByID(acts[0].ID)
 	if !strings.HasPrefix(full.ReqBody, "<multipart/form-data,") {
 		t.Errorf("STT req body should be summarized, got: %q", full.ReqBody)
@@ -1518,7 +1518,7 @@ func TestRealtimeWebSocketPassthrough(t *testing.T) {
 	// The session is metered on close (poll — logging follows the copy returning).
 	var a store.Activity
 	for i := 0; i < 50; i++ {
-		if acts, _ := st.RecentActivity(1, "", ""); len(acts) == 1 {
+		if acts, _ := st.RecentActivity(1, "", "", ""); len(acts) == 1 {
 			a = acts[0]
 			break
 		}
@@ -1606,7 +1606,7 @@ func TestRealtimePreemptAbortsSession(t *testing.T) {
 	// The aborted realtime session logs 499/preempted.
 	var rt store.Activity
 	for i := 0; i < 100; i++ {
-		acts, _ := st.RecentActivity(10, "", "")
+		acts, _ := st.RecentActivity(10, "", "", "")
 		for _, a := range acts {
 			if a.Path == "/v1/realtime" {
 				rt = a
@@ -1672,7 +1672,7 @@ func TestRealtimeIdleReaper(t *testing.T) {
 
 	var a store.Activity
 	for i := 0; i < 100; i++ {
-		if acts, _ := st.RecentActivity(1, "", ""); len(acts) == 1 && acts[0].Path == "/v1/realtime" {
+		if acts, _ := st.RecentActivity(1, "", "", ""); len(acts) == 1 && acts[0].Path == "/v1/realtime" {
 			a = acts[0]
 			break
 		}

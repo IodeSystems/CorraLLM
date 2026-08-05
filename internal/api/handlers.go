@@ -132,6 +132,9 @@ type RecentActivityInput struct {
 	Limit  int    `query:"limit" default:"50" minimum:"1" maximum:"500" doc:"Max records, newest first."`
 	Served string `query:"served" doc:"Filter to one served model; empty returns all models."`
 	Key    string `query:"key" doc:"Filter to one caller key; empty returns all callers."`
+	// Placement narrows to ONE way of serving the model. With a model on two
+	// boxes, a figure averaged across both describes neither of them.
+	Placement string `query:"placement" doc:"Filter to one placement (box + cmd); empty returns every placement."`
 }
 
 // ActivityRecord is one proxied-request row surfaced to the UI. Mirrors
@@ -174,7 +177,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := h.Store.RecentActivity(limit, in.Served, in.Key)
+	rows, err := h.Store.RecentActivity(limit, in.Served, in.Key, in.Placement)
 	if err != nil {
 		return nil, err
 	}

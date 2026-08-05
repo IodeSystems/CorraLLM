@@ -114,3 +114,54 @@ func TestRetryPromisesUnkeyed(t *testing.T) {
 			got[0].ReturnedMS, base+6000)
 	}
 }
+
+// The question the placement thread was built toward: not "how does this model
+// behave" but "how does it behave ON THAT BOX". With one model served from two
+// machines, a figure averaged across both describes neither.
+func TestRecentActivityFiltersByPlacement(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	seedActivity(t, st, []Activity{
+		{TS: 1, Served: "qwen", Backend: "qwen", Placement: "box1", DwellMS: 100},
+		{TS: 2, Served: "qwen", Backend: "qwen", Placement: "mac1", DwellMS: 900},
+		{TS: 3, Served: "qwen", Backend: "qwen", Placement: "box1", DwellMS: 120},
+		// Written before the column existed: belongs to no placement, and must
+		// not be swept into either one's numbers.
+		{TS: 4, Served: "qwen", Backend: "qwen", Placement: "", DwellMS: 50},
+	})
+
+	box, err := st.RecentActivity(10, "qwen", "", "box1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(box) != 2 {
+		t.Fatalf("box1 rows = %d, want 2", len(box))
+	}
+	for _, r := range box {
+		if r.Placement != "box1" {
+			t.Errorf("box1 filter returned a %q row", r.Placement)
+		}
+	}
+
+	mac, err := st.RecentActivity(10, "qwen", "", "mac1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mac) != 1 || mac[0].DwellMS != 900 {
+		t.Errorf("mac1 rows = %+v, want the single 900ms row", mac)
+	}
+
+	// Unfiltered still returns everything, including the pre-column row —
+	// narrowing is opt-in, and a missing placement is not a reason to hide
+	// history.
+	all, err := st.RecentActivity(10, "qwen", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 4 {
+		t.Errorf("unfiltered rows = %d, want all 4", len(all))
+	}
+}

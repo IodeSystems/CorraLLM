@@ -619,7 +619,11 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 //
 // Built by composition rather than by another if/else pair — two independent
 // filters are four branches, and the next one is eight.
-func (s *Store) RecentActivity(limit int, served, key string) ([]Activity, error) {
+// A placement filter answers the question the whole placement thread was built
+// toward: not "how does this model behave" but "how does it behave ON THAT
+// BOX". With one model served from two machines, a mean across both describes
+// neither.
+func (s *Store) RecentActivity(limit int, served, key, placement string) ([]Activity, error) {
 	const cols = `id, ts, served, backend, placement, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
 	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms`
@@ -633,6 +637,10 @@ func (s *Store) RecentActivity(limit int, served, key string) ([]Activity, error
 	if key != "" {
 		where = append(where, "key = ?")
 		args = append(args, key)
+	}
+	if placement != "" {
+		where = append(where, "placement = ?")
+		args = append(args, placement)
 	}
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
