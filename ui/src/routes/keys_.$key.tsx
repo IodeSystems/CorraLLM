@@ -13,6 +13,7 @@ import {
 import { Panel, PageHeader } from '@/Panel'
 import { ActivityLog } from '@/ActivityLog'
 import { KeyLaneActions } from '@/KeyLane'
+import { KeyCharts } from '@/KeyCharts'
 import { KeysDoc } from './keys'
 import { gqlClient } from '@/gqlClient'
 import { fmtAgo, fmtDuration, fmtInt, fmtUSD } from '@/format'
@@ -67,7 +68,7 @@ function KeyDetail() {
 
       {/* A key can be reached by URL before it has ever called and without being
           configured — that is not an error, it is the state every stranger is in
-          before enrolment, so say so instead of rendering an empty page. */}
+          before enrollment, so say so instead of rendering an empty page. */}
       {!row ? (
         <Alert severity="info">
           This key is neither configured nor present in recorded traffic. It would still be served
@@ -124,6 +125,11 @@ function KeyDetail() {
           </Stack>
         </Panel>
       )}
+
+      {/* What this caller actually spends it on. The totals above say how much;
+          only the model split says whether it is loud-and-cheap or the reverse,
+          which is the distinction that decides a lane. */}
+      <KeyCharts filterKey={key} />
 
       <ActivityLog
         filterKey={key}

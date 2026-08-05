@@ -75,6 +75,7 @@ const ActivityDoc = graphql(/* GraphQL */ `
           audioBytes
           costUsd
           error
+          retryAfterMs
         }
       }
     }
@@ -106,6 +107,7 @@ const ActivityDetailDoc = graphql(/* GraphQL */ `
           audioBytes
           costUsd
           error
+          retryAfterMs
           reqBody
           respBody
         }
@@ -298,7 +300,17 @@ export function ActivityLog({
                 <TableCell>{r.path}</TableCell>
                 <TableCell align="right">
                   {r.error ? (
-                    <Tooltip title={r.error}>
+                    // The promise rides in the tooltip rather than its own
+                    // column: it is set on 429s only, so a column would be a
+                    // stripe of em-dashes. The "Come back later" panel is where
+                    // it earns a table of its own.
+                    <Tooltip
+                      title={
+                        Number(r.retryAfterMs) > 0
+                          ? `${r.error} — told to come back in ${fmtDuration(r.retryAfterMs)}`
+                          : r.error
+                      }
+                    >
                       <Chip size="small" label={r.status} color={statusColor(r.status)} />
                     </Tooltip>
                   ) : (

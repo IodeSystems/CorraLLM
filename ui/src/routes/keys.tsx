@@ -17,6 +17,7 @@ import {
 } from '@mui/material'
 import { Panel, PageHeader } from '@/Panel'
 import { KeyLaneActions } from '@/KeyLane'
+import { KeyCharts } from '@/KeyCharts'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtAgo, fmtInt, fmtUSD } from '@/format'
@@ -129,6 +130,10 @@ function Keys() {
           </>
         )}
       </Alert>
+
+      {/* Shape before roster: the table ranks callers by total, which cannot show
+          that one of them arrived yesterday and another runs all night. */}
+      <KeyCharts />
 
       <Panel
         title="Caller keys"

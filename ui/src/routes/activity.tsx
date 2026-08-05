@@ -2,6 +2,9 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { Box, Button, Chip } from '@mui/material'
 import { ActiveRequests } from '@/ActiveRequests'
 import { ActivityLog } from '@/ActivityLog'
+import { RetryPromises } from '@/RetryPromises'
+import { Utilization } from '@/Utilization'
+import { ServiceProfiles } from '@/ServiceProfiles'
 import { PageHeader } from '@/Panel'
 
 /**
@@ -21,8 +24,17 @@ function Activity() {
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title="Activity" />
+      {/* The summary line for everything below it: which models are under
+          pressure, and what that pressure has cost callers. */}
+      <Utilization />
       {/* In-flight first: the table below only ever holds FINISHED requests. */}
       <ActiveRequests />
+      {/* Then the ones we sent away. Both are traffic the completed-request log
+          cannot show: one hasn't finished, the other never started. */}
+      <RetryPromises filterKey={key} />
+      {/* Why the estimates above run short: one dwell EWMA per backend, averaging
+          over callers whose work differs several-fold in cost and variability. */}
+      <ServiceProfiles />
       <ActivityLog
         filterKey={key}
         subtitle={

@@ -40,9 +40,13 @@ CREATE TABLE IF NOT EXISTS activity (
     prompt_per_sec    REAL    NOT NULL DEFAULT 0, -- backend-reported prompt-processing speed (tp/s)
     predicted_per_sec REAL    NOT NULL DEFAULT 0, -- backend-reported generation speed (tg/s)
     req_body          TEXT    NOT NULL DEFAULT '', -- captured request payload, capped (P10b)
-    resp_body         TEXT    NOT NULL DEFAULT '' -- captured response payload, capped (P10b)
+    resp_body         TEXT    NOT NULL DEFAULT '', -- captured response payload, capped (P10b)
+    retry_after_ms    INTEGER NOT NULL DEFAULT 0  -- the Retry-After we PROMISED this caller on a 429 (P15)
 );
 CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
+-- Correlating a promise with the caller's next request ("did they come back,
+-- and when") is a per-key lookup by time, which the ts-only index can't serve.
+CREATE INDEX IF NOT EXISTS idx_activity_key_ts ON activity(key, ts);
 
 -- Periodic snapshots of instantaneous per-lane admission load (P8-beyond), so
 -- queue depth is visible even before requests resolve. Sparse: only non-idle
@@ -270,6 +274,13 @@ var migrations = []string{
 	// model to load and then answered in 375ms is not a slow model, and without
 	// this column nothing downstream can tell the two apart.
 	`ALTER TABLE activity ADD COLUMN load_ms INTEGER NOT NULL DEFAULT 0`,
+	// The retry hint we handed a rejected caller. Until this column the promise
+	// was written to the wire and forgotten: the log could say "we rejected this
+	// key at 14:03" but never "…and told them to come back in 4s", so nothing
+	// could check whether the estimate was honest or who was already scheduled
+	// to return. Rows written before this land at 0, which reads as "no promise
+	// recorded" — correct, since none was.
+	`ALTER TABLE activity ADD COLUMN retry_after_ms INTEGER NOT NULL DEFAULT 0`,
 	// Stage timing split. Rows written before this land at 0/0, which reads as
 	// "no queueing measured" — correct for the exclusive runs that predate the
 	// shared mode, since those held the lease and nothing else could queue.
@@ -523,6 +534,16 @@ type Activity struct {
 	FinishReason string
 	ReqBody      string // captured request payload, capped+summarized (P10b)
 	RespBody     string // captured response payload, capped+summarized (P10b)
+	// RetryAfterMS is the backoff we PROMISED this caller when we turned them
+	// away — exactly the value that went out on the Retry-After header, not a
+	// re-derivation. Zero on anything that wasn't a 429 (and on 429 rows written
+	// before the column existed).
+	//
+	// Recorded because a promise is a scheduled future arrival: TS+RetryAfterMS
+	// is when we said to come back, so the log can answer "who is due back, and
+	// when" and — by comparing against the caller's next request — whether the
+	// estimate was honest.
+	RetryAfterMS int64
 }
 
 // InsertActivity appends a request record to the activity log.
@@ -531,12 +552,12 @@ func (s *Store) InsertActivity(a Activity) error {
 		`INSERT INTO activity (ts, served, backend, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
-		                       finish_reason, load_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       finish_reason, load_ms, retry_after_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Backend, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
-		a.FinishReason, a.LoadMS,
+		a.FinishReason, a.LoadMS, a.RetryAfterMS,
 	)
 	return err
 }
@@ -550,12 +571,12 @@ func (s *Store) ActivityByID(id int64) (Activity, error) {
 		`SELECT id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
-		        finish_reason, load_ms
+		        finish_reason, load_ms, retry_after_ms
 		 FROM activity WHERE id = ?`, id).Scan(
 		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
 		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody,
-		&a.FinishReason, &a.LoadMS)
+		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS)
 	return a, err
 }
 
@@ -586,7 +607,7 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 func (s *Store) RecentActivity(limit int, served, key string) ([]Activity, error) {
 	const cols = `id, ts, served, backend, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
-	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms`
+	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms`
 	q := `SELECT ` + cols + ` FROM activity`
 	var args []any
 	var where []string
@@ -613,10 +634,203 @@ func (s *Store) RecentActivity(limit int, served, key string) ([]Activity, error
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
-			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS); err != nil {
+			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS,
+			&a.RetryAfterMS); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// RetryPromise is one "come back later" we handed a caller: who we turned away,
+// when, how long we told them to wait — and when they actually came back.
+//
+// A 429 is not just a rejection, it is an appointment. The caller was told a
+// time and (if they honor Retry-After) will return at it, so every outstanding
+// promise is a scheduled future arrival that the queue's own waiter count cannot
+// see. Surfacing them makes two things checkable that were previously invisible:
+// who is due back, and whether the number we gave them was honest.
+type RetryPromise struct {
+	ID           int64
+	TS           int64  // unix millis the promise was made
+	Key          string // caller identity; empty for an unkeyed caller
+	SourceIP     string
+	Served       string
+	Reason       string // backpressure reason: rejected | queue-timeout | exhausted | bumped
+	RetryAfterMS int64  // what we promised
+	// ReturnedMS is the caller's next request of any kind after TS, or 0 if they
+	// have not been back. Compared against TS+RetryAfterMS it says whether the
+	// caller honored the hint (returned at or after it), jumped the gun, or gave
+	// up entirely.
+	ReturnedMS int64
+}
+
+// RetryPromises returns the "come back later" hints handed out at or after
+// sinceMS, newest first, optionally narrowed to one caller key.
+//
+// Caller identity for the return correlation is the key, falling back to the
+// source IP for unkeyed callers — without the fallback every anonymous caller
+// would share one bucket and the first unrelated anonymous request would look
+// like an instant return. Two hosts sharing one key still collapse into one
+// caller (the return is then the earliest of either), which is conservative: it
+// can report a return sooner than the promised caller made it, never later.
+func (s *Store) RetryPromises(sinceMS int64, limit int, key string) ([]RetryPromise, error) {
+	q := `SELECT a.id, a.ts, a.key, a.source_ip, a.served, a.error, a.retry_after_ms,
+	             COALESCE((SELECT MIN(b.ts) FROM activity b
+	                        WHERE b.ts > a.ts
+	                          AND CASE WHEN a.key <> '' THEN b.key = a.key
+	                                   ELSE b.key = '' AND b.source_ip = a.source_ip END), 0)
+	      FROM activity a
+	      WHERE a.status = 429 AND a.retry_after_ms > 0 AND a.ts >= ?`
+	args := []any{sinceMS}
+	if key != "" {
+		q += " AND a.key = ?"
+		args = append(args, key)
+	}
+	q += " ORDER BY a.ts DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []RetryPromise
+	for rows.Next() {
+		var p RetryPromise
+		if err := rows.Scan(&p.ID, &p.TS, &p.Key, &p.SourceIP, &p.Served, &p.Reason,
+			&p.RetryAfterMS, &p.ReturnedMS); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// QueueWait is the measured cost of arriving at a served model: how long
+// requests that HAD to wait actually waited before getting a slot.
+type QueueWait struct {
+	Served  string
+	MeanMS  int64 // mean queued_ms across the samples
+	MaxMS   int64
+	Samples int64 // how many requests queued at all — a mean of 1 is not a trend
+}
+
+// QueueWaitByModel returns the measured queue wait per served model since
+// sinceMS, over requests that were ADMITTED after queueing.
+//
+// Two exclusions carry the meaning. Requests that never queued (queued_ms = 0)
+// are left out: averaging in every instant admission drives the mean toward
+// zero during quiet periods and makes the scheduler's estimate look wildly
+// pessimistic, when the honest question is "when callers had to wait, how long
+// was it". And rejections are left out because their queued_ms measures how long
+// someone waited before being turned AWAY, which is a different quantity from
+// how long it takes to get in — mixing them would let a maxWait timeout masquerade
+// as a service time.
+func (s *Store) QueueWaitByModel(sinceMS int64) ([]QueueWait, error) {
+	rows, err := s.db.Query(
+		`SELECT served, AVG(queued_ms), MAX(queued_ms), COUNT(*)
+		   FROM activity
+		  WHERE ts >= ? AND queued_ms > 0 AND status < 400
+		  GROUP BY served`, sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []QueueWait
+	for rows.Next() {
+		var q QueueWait
+		var mean float64
+		if err := rows.Scan(&q.Served, &mean, &q.MaxMS, &q.Samples); err != nil {
+			return nil, err
+		}
+		q.MeanMS = int64(mean)
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
+// ServiceStat is the distribution of SERVICE time — how long a request actually
+// occupied a slot — for one served model, optionally narrowed to one caller.
+//
+// Service, not dwell: `dwell_ms` includes queueing and cold-load, both of which
+// are consequences of contention rather than properties of the work. Feeding
+// them back into a wait estimate would be circular — the queue's own delay would
+// inflate the prediction of the queue's delay.
+type ServiceStat struct {
+	Served  string
+	Key     string // "" when this is the model-level aggregate
+	N       int64
+	MeanMS  float64
+	StdMS   float64
+	MaxMS   int64
+	TotalMS int64 // summed service time — the numerator of a utilization figure
+}
+
+// CV is the coefficient of variation (stddev/mean), the shape parameter that
+// decides how badly a mean alone describes a queue. A CV near 0 means every
+// request costs the same and position×mean is a fair estimate; a CV above 1
+// means the mean is dominated by a tail, and queueing behind one of those costs
+// far more than the average suggests.
+func (s ServiceStat) CV() float64 {
+	if s.MeanMS <= 0 {
+		return 0
+	}
+	return s.StdMS / s.MeanMS
+}
+
+// ServiceStats returns per-model (byKey=false) or per-model-per-caller
+// (byKey=true) service-time distributions since sinceMS.
+//
+// Only requests that were actually served count. A 429 never occupied a slot,
+// and a failed request's duration describes the failure, not the work.
+func (s *Store) ServiceStats(sinceMS int64, byKey bool) ([]ServiceStat, error) {
+	group, keyCol := "served", "''"
+	if byKey {
+		group, keyCol = "served, key", "key"
+	}
+	// SQLite has no STDDEV; E[x²]−E[x]² is computed inline. MAX(...,0) guards the
+	// floating-point case where the two terms cancel to a tiny negative.
+	rows, err := s.db.Query(`
+		SELECT served, `+keyCol+`, COUNT(*), AVG(svc),
+		       SQRT(MAX(AVG(svc*svc) - AVG(svc)*AVG(svc), 0)), MAX(svc), SUM(svc)
+		  FROM (SELECT served, key, (dwell_ms - queued_ms - load_ms) AS svc
+		          FROM activity
+		         WHERE ts >= ? AND status < 400 AND (dwell_ms - queued_ms - load_ms) > 0)
+		 GROUP BY `+group, sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ServiceStat
+	for rows.Next() {
+		var st ServiceStat
+		if err := rows.Scan(&st.Served, &st.Key, &st.N, &st.MeanMS, &st.StdMS, &st.MaxMS, &st.TotalMS); err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// ModelsSeenSince returns the served names with any activity at or after
+// sinceMS. The row set for a utilization view: what the box has actually been
+// asked for lately, not the whole declared catalog (a model nobody called is not
+// "0% utilized", it is absent).
+func (s *Store) ModelsSeenSince(sinceMS int64) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT DISTINCT served FROM activity WHERE ts >= ? AND served <> ''`, sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
 	}
 	return out, rows.Err()
 }
@@ -629,6 +843,23 @@ type Rollup struct {
 	CompletionTokens int64
 	DwellMS          int64
 	CostUSD          float64
+	// CachedTokens is the part of PromptTokens the backend served from its
+	// prompt cache instead of reprocessing — the whole point of caching, and
+	// invisible until it is summed somewhere.
+	CachedTokens int64
+	// CacheReports counts requests that reported ANY cache hit.
+	//
+	// It exists because a zero in CachedTokens has two incompatible meanings: a
+	// backend that has no prompt cache (or does not report one) and a backend
+	// that genuinely missed. Reporting both as "0% hit rate" would invent a
+	// cache-performance problem for every embedding model and every remote
+	// provider on the box. When this is 0, the honest reading is "nothing has
+	// ever reported a hit here" — which still cannot separate "does not report"
+	// from "never hits", and must not be shown as a measured 0%.
+	CacheReports int64
+	// PromptPerSec is the mean backend-reported prompt-processing speed over the
+	// requests that reported one, for estimating the time cache hits avoided.
+	PromptPerSec float64
 }
 
 // RollupByModel aggregates activity at or after sinceMS, grouped by served
@@ -641,7 +872,10 @@ func (s *Store) RollupByModel(sinceMS int64) ([]Rollup, error) {
 		        COALESCE(SUM(prompt_tokens), 0),
 		        COALESCE(SUM(completion_tokens), 0),
 		        COALESCE(SUM(dwell_ms), 0),
-		        COALESCE(SUM(cost_usd), 0)
+		        COALESCE(SUM(cost_usd), 0),
+		        COALESCE(SUM(cached_tokens), 0),
+		        SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END),
+		        COALESCE(AVG(NULLIF(prompt_per_sec, 0)), 0)
 		 FROM activity WHERE ts >= ?
 		 GROUP BY served
 		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, sinceMS)
@@ -653,7 +887,7 @@ func (s *Store) RollupByModel(sinceMS int64) ([]Rollup, error) {
 	for rows.Next() {
 		var r Rollup
 		if err := rows.Scan(&r.Served, &r.Requests, &r.PromptTokens, &r.CompletionTokens,
-			&r.DwellMS, &r.CostUSD); err != nil {
+			&r.DwellMS, &r.CostUSD, &r.CachedTokens, &r.CacheReports, &r.PromptPerSec); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -674,6 +908,11 @@ type KeyRollup struct {
 	CompletionTokens int64
 	DwellMS          int64
 	CostUSD          float64
+	// CachedTokens/CacheReports mirror Rollup — a caller's cache hit rate is a
+	// property of how it prompts (a stable system prefix reuses cache; a shuffled
+	// one never does), so it belongs per caller and not only per model.
+	CachedTokens int64
+	CacheReports int64
 }
 
 // RollupByKey aggregates activity at or after sinceMS, grouped by caller key,
@@ -687,7 +926,9 @@ func (s *Store) RollupByKey(sinceMS int64) ([]KeyRollup, error) {
 		        COALESCE(SUM(prompt_tokens), 0),
 		        COALESCE(SUM(completion_tokens), 0),
 		        COALESCE(SUM(dwell_ms), 0),
-		        COALESCE(SUM(cost_usd), 0)
+		        COALESCE(SUM(cost_usd), 0),
+		        COALESCE(SUM(cached_tokens), 0),
+		        SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END)
 		 FROM activity WHERE ts >= ?
 		 GROUP BY key
 		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, sinceMS)
@@ -699,7 +940,7 @@ func (s *Store) RollupByKey(sinceMS int64) ([]KeyRollup, error) {
 	for rows.Next() {
 		var r KeyRollup
 		if err := rows.Scan(&r.Key, &r.Requests, &r.LastSeenMS, &r.PromptTokens,
-			&r.CompletionTokens, &r.DwellMS, &r.CostUSD); err != nil {
+			&r.CompletionTokens, &r.DwellMS, &r.CostUSD, &r.CachedTokens, &r.CacheReports); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -749,6 +990,49 @@ func (s *Store) RollupSeries(sinceMS, bucketMS int64) ([]SeriesRow, error) {
 		var r SeriesRow
 		if err := rows.Scan(&r.BucketTS, &r.Key, &r.Requests, &r.PromptTokens,
 			&r.CompletionTokens, &r.DwellMS, &r.CostUSD, &r.QueuedMS, &r.Rejected); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SeriesByModelRow is one (served model, time-bucket) aggregate — the other axis
+// of the same traffic RollupSeries slices by caller. Answering "who is spending"
+// and "on what" needs both, and a chart cannot derive one from the other.
+type SeriesByModelRow struct {
+	BucketTS int64 // bucket start, unix millis
+	Served   string
+	Requests int64
+	DwellMS  int64
+	CostUSD  float64
+}
+
+// RollupSeriesByModel aggregates activity into time buckets grouped by served
+// model. A non-empty key narrows to one caller — the same chart then answers
+// "what does THIS caller spend it on".
+func (s *Store) RollupSeriesByModel(sinceMS, bucketMS int64, key string) ([]SeriesByModelRow, error) {
+	if bucketMS <= 0 {
+		bucketMS = 3600_000
+	}
+	q := `SELECT (ts / ?) * ? AS bucket, served, COUNT(*),
+	             COALESCE(SUM(dwell_ms), 0), COALESCE(SUM(cost_usd), 0)
+	        FROM activity WHERE ts >= ?`
+	args := []any{bucketMS, bucketMS, sinceMS}
+	if key != "" {
+		q += " AND key = ?"
+		args = append(args, key)
+	}
+	q += " GROUP BY bucket, served ORDER BY bucket, served"
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SeriesByModelRow
+	for rows.Next() {
+		var r SeriesByModelRow
+		if err := rows.Scan(&r.BucketTS, &r.Served, &r.Requests, &r.DwellMS, &r.CostUSD); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

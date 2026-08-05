@@ -12,171 +12,16 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Tooltip,
   Typography,
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { Panel, PageHeader } from '@/Panel'
+import { MetricChart, StackedArea } from '@/Charts'
+import type { ChartSeries } from '@/Charts'
 import { C, seriesColor } from '@/theme'
 import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
-
-type ChartSeries = { key: string; color: string; values: number[] }
-
-// Legend swatch + label. Identity is never carried by the mark color alone —
-// every series is named next to its swatch, and the label wears text ink, not
-// the series color.
-function Legend({ series, dot }: { series: ChartSeries[]; dot?: boolean }) {
-  return (
-    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mt: 1.25 }}>
-      {series.map((s) => (
-        <Box key={s.key} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-          <Box
-            sx={{
-              width: 10,
-              height: 10,
-              bgcolor: s.color,
-              borderRadius: dot ? '50%' : 0.3,
-              flexShrink: 0,
-            }}
-          />
-          <Typography variant="caption" sx={{ color: C.textMuted }}>
-            {s.key || '(unkeyed)'}
-          </Typography>
-        </Box>
-      ))}
-    </Box>
-  )
-}
-
-// StackedArea draws bands summed bottom-to-top — for priority-group throughput
-// over time, so a shrinking high-priority band signals starvation.
-function StackedArea({
-  title,
-  series,
-  fmtTotal,
-}: {
-  title: string
-  series: ChartSeries[]
-  fmtTotal: (n: number) => string
-}) {
-  const W = 600
-  const H = 160
-  const pad = 4
-  const n = series[0]?.values.length ?? 0
-  if (n === 0) return null
-  const totals = Array.from({ length: n }, (_, i) => series.reduce((s, ser) => s + (ser.values[i] || 0), 0))
-  const max = Math.max(0, ...totals)
-  const x = (i: number) => (n <= 1 ? pad : (i / (n - 1)) * (W - 2 * pad) + pad)
-  const y = (v: number) => (max <= 0 ? H - pad : H - pad - (v / max) * (H - 2 * pad))
-
-  const cum = new Array<number>(n).fill(0)
-  const bands = series.map((ser) => {
-    const bottom = cum.slice()
-    const top = cum.map((c, i) => c + (ser.values[i] || 0))
-    for (let i = 0; i < n; i++) cum[i] = top[i]
-    const topPts = top.map((v, i) => `${x(i)},${y(v)}`)
-    const pts = [...topPts, ...bottom.map((v, i) => `${x(i)},${y(v)}`).reverse()].join(' ')
-    return { key: ser.key, color: ser.color, pts, top: topPts.join(' ') }
-  })
-
-  return (
-    <Panel
-      title={title}
-      actions={
-        <Typography variant="caption" sx={{ color: C.textMuted }}>
-          peak {fmtTotal(max)}
-        </Typography>
-      }
-      dense
-    >
-      <Box
-        component="svg"
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        sx={{ width: '100%', height: 180, display: 'block' }}
-      >
-        {/* Each band is stroked in the SURFACE color, not its own: a 2px gap
-            between adjacent fills is what keeps two similar hues from reading as
-            one shape where they touch. The top edge is then drawn in the series
-            color so the band still has an identity line. */}
-        {bands.map((b) => (
-          <polygon
-            key={b.key}
-            points={b.pts}
-            fill={b.color}
-            fillOpacity={0.45}
-            stroke={C.surface}
-            strokeWidth={2}
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-        {bands.map((b) => (
-          <polyline
-            key={`${b.key}-edge`}
-            points={b.top}
-            fill="none"
-            stroke={b.color}
-            strokeWidth={2}
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-      </Box>
-      <Legend series={series} />
-    </Panel>
-  )
-}
-
-// MetricChart draws one metric over time, one line per key (dependency-free SVG).
-function MetricChart({
-  title,
-  series,
-  fmt,
-}: {
-  title: string
-  series: ChartSeries[]
-  fmt: (n: number) => string
-}) {
-  const W = 600
-  const H = 120
-  const pad = 4
-  const n = series[0]?.values.length ?? 0
-  const max = Math.max(0, ...series.flatMap((s) => s.values))
-  const x = (i: number) => (n <= 1 ? pad : (i / (n - 1)) * (W - 2 * pad) + pad)
-  const y = (v: number) => (max <= 0 ? H - pad : H - pad - (v / max) * (H - 2 * pad))
-  return (
-    <Box sx={{ flex: '1 1 380px', minWidth: 320 }}>
-      <Panel
-        title={title}
-        actions={
-          <Typography variant="caption" sx={{ color: C.textMuted }}>
-            peak {fmt(max)}
-          </Typography>
-        }
-        dense
-      >
-        <Box
-          component="svg"
-          viewBox={`0 0 ${W} ${H}`}
-          preserveAspectRatio="none"
-          sx={{ width: '100%', height: 130, display: 'block' }}
-        >
-          {series.map((s) => (
-            <polyline
-              key={s.key}
-              fill="none"
-              stroke={s.color}
-              strokeWidth={2}
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-              points={s.values.map((v, i) => `${x(i)},${y(v)}`).join(' ')}
-            />
-          ))}
-        </Box>
-        <Legend series={series} dot />
-      </Panel>
-    </Box>
-  )
-}
 
 // BarCell renders a value with a proportional background bar (value / columnMax).
 function BarCell({ value, max, label }: { value: number; max: number; label: string }) {
@@ -201,16 +46,85 @@ function BarCell({ value, max, label }: { value: number; max: number; label: str
 
 // A headline number is its own kind of panel: the label IS the panel title, so
 // the tile carries one value and nothing competing with it.
-function StatTile({ label, value }: { label: string; value: string }) {
+function StatTile({
+  label,
+  value,
+  sub,
+  hint,
+}: {
+  label: string
+  value: string
+  sub?: string
+  hint?: string
+}) {
+  const body = (
+    <Panel title={label} dense>
+      <Typography variant="h5" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+        {value}
+      </Typography>
+      {sub && (
+        <Typography variant="caption" sx={{ color: C.textMuted }}>
+          {sub}
+        </Typography>
+      )}
+    </Panel>
+  )
   return (
     <Box sx={{ minWidth: 160, flex: '1 1 160px' }}>
-      <Panel title={label} dense>
-        <Typography variant="h5" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
-          {value}
-        </Typography>
-      </Panel>
+      {hint ? <Tooltip title={hint}>{body}</Tooltip> : body}
     </Box>
   )
+}
+
+/**
+ * A cache hit rate, rendered so "we never heard" cannot be mistaken for "0%".
+ *
+ * `cacheReports` counts requests that reported ANY hit. At zero the backend has
+ * no prompt cache or does not report one — embeddings and most remote providers
+ * — and printing a measured-looking 0% there invents a caching problem that does
+ * not exist. It also cannot be separated from a cache that genuinely never hits,
+ * which the tooltip says outright rather than papering over.
+ */
+function CacheCell({
+  rate,
+  reports,
+  cached,
+}: {
+  rate: number
+  reports: number
+  cached: number
+}) {
+  if (!reports) {
+    return (
+      <TableCell align="right">
+        <Tooltip title="No request here reported cached tokens — either this backend has no prompt cache (embeddings, most remote providers) or it does not report one. Not a measured 0%.">
+          <span style={{ color: C.textFaint }}>n/r</span>
+        </Tooltip>
+      </TableCell>
+    )
+  }
+  return (
+    <TableCell align="right">
+      <Tooltip title={`${fmtInt(cached)} prompt tokens served from cache instead of reprocessed, across ${fmtInt(reports)} requests that hit`}>
+        <span style={{ color: rate >= 0.5 ? C.ok : rate > 0 ? undefined : C.warn }}>
+          {(rate * 100).toFixed(1)}%
+        </span>
+      </Tooltip>
+    </TableCell>
+  )
+}
+
+// fmtDuration tops out at minutes, which is right for a request but unreadable
+// for an accumulated total — "1282m 34s" is a number you have to do arithmetic
+// on before it means anything. Headline savings get hours.
+function fmtLongDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ${m % 60}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
 }
 
 const UsageDoc = graphql(/* GraphQL */ `
@@ -225,6 +139,10 @@ const UsageDoc = graphql(/* GraphQL */ `
           completionTokens
           dwellMs
           costUsd
+          cachedTokens
+          cacheReports
+          cacheHitRate
+          cachedSecondsSaved
         }
         total {
           requests
@@ -232,6 +150,10 @@ const UsageDoc = graphql(/* GraphQL */ `
           completionTokens
           dwellMs
           costUsd
+          cachedTokens
+          cacheReports
+          cacheHitRate
+          cachedSecondsSaved
         }
       }
       queueDepth(windowHours: "24", bucketMinutes: "60") {
@@ -278,6 +200,9 @@ const UsageDoc = graphql(/* GraphQL */ `
           dwellMs
           costUsd
           energyKwh
+          cachedTokens
+          cacheReports
+          cacheHitRate
         }
       }
       residency {
@@ -422,6 +347,22 @@ function Usage() {
         <StatTile label="Prompt tokens" value={fmtInt(total?.promptTokens ?? 0)} />
         <StatTile label="Completion tokens" value={fmtInt(total?.completionTokens ?? 0)} />
         <StatTile label="Cost" value={fmtUSD(total?.costUsd ?? 0)} />
+        <StatTile
+          label="Cache hit"
+          value={
+            Number(total?.cacheReports ?? 0) > 0
+              ? `${((total?.cacheHitRate ?? 0) * 100).toFixed(1)}%`
+              : 'n/r'
+          }
+          sub={
+            Number(total?.cacheReports ?? 0) > 0
+              ? `${fmtInt(total?.cachedTokens ?? 0)} tok, ~${fmtLongDuration(
+                  (total?.cachedSecondsSaved ?? 0) * 1000,
+                )} saved`
+              : 'nothing reported a cache'
+          }
+          hint="Share of prompt tokens the backends served from cache instead of reprocessing, weighted by tokens across every model — not an average of per-model rates. The saved figure estimates the prompt-processing time avoided at the observed tokens/sec, so it moves with batch size and context."
+        />
       </Stack>
 
       <Panel title="By model" flush>
@@ -434,13 +375,18 @@ function Usage() {
                 <TableCell align="right">Prompt</TableCell>
                 <TableCell align="right">Completion</TableCell>
                 <TableCell align="right">Dwell</TableCell>
+                <TableCell align="right">
+                  <Tooltip title="Prompt tokens served from cache as a share of all prompt tokens. 'n/r' means nothing reported a cache here — not a measured zero.">
+                    <span>Cached</span>
+                  </Tooltip>
+                </TableCell>
                 <TableCell align="right">Cost</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {rollupRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6}>
+                  <TableCell colSpan={7}>
                     <Typography color="text.secondary">No usage in window.</Typography>
                   </TableCell>
                 </TableRow>
@@ -452,6 +398,11 @@ function Usage() {
                     <TableCell align="right">{fmtInt(r.promptTokens)}</TableCell>
                     <TableCell align="right">{fmtInt(r.completionTokens)}</TableCell>
                     <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>
+                    <CacheCell
+                      rate={r.cacheHitRate}
+                      reports={Number(r.cacheReports)}
+                      cached={Number(r.cachedTokens)}
+                    />
                     <TableCell align="right">{fmtUSD(r.costUsd)}</TableCell>
                   </TableRow>
                 ))
@@ -527,12 +478,17 @@ function Usage() {
                 <TableCell align="right">Requests</TableCell>
                 <TableCell align="right">Energy</TableCell>
                 <TableCell align="right">Time</TableCell>
+                <TableCell align="right">
+                  <Tooltip title="How much of this caller's prompt was served from cache — a property of how it prompts. A stable system prefix reuses cache; a shuffled one never does.">
+                    <span>Cached</span>
+                  </Tooltip>
+                </TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {byKey.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5}>
+                  <TableCell colSpan={6}>
                     <Typography color="text.secondary">No keyed usage in window.</Typography>
                   </TableCell>
                 </TableRow>
@@ -544,6 +500,11 @@ function Usage() {
                     <BarCell value={Number(r.requests)} max={kMax.req} label={fmtInt(r.requests)} />
                     <BarCell value={r.energyKwh} max={kMax.energy} label={fmtKwh(r.energyKwh)} />
                     <BarCell value={Number(r.dwellMs)} max={kMax.dwell} label={fmtDuration(r.dwellMs)} />
+                    <CacheCell
+                      rate={r.cacheHitRate}
+                      reports={Number(r.cacheReports)}
+                      cached={Number(r.cachedTokens)}
+                    />
                   </TableRow>
                 ))
               )}

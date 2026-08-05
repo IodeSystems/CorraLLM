@@ -358,6 +358,12 @@ type BackendLoad struct {
 	Active   int
 	Waiting  int
 	Groups   []GroupLoad
+	// EstWait is what a caller arriving RIGHT NOW would be told to wait if we
+	// refused them — the same estimate `backpressure` puts on the wire, not a
+	// second model of it. Reported whether or not the backend is saturated, so a
+	// utilization view can show the cost of arriving before anyone is turned
+	// away. Zero only when no request has ever completed here (no dwell sample).
+	EstWait time.Duration
 }
 
 // SchedSnapshot is the live admission state across all touched backends.
@@ -373,7 +379,13 @@ func (s *Scheduler) Snapshot() SchedSnapshot {
 	defer s.mu.Unlock()
 	var snap SchedSnapshot
 	for name, bs := range s.backends {
-		bl := BackendLoad{Backend: name, Capacity: bs.capacity, Active: bs.active, Waiting: len(bs.waiters)}
+		bl := BackendLoad{
+			Backend: name, Capacity: bs.capacity, Active: bs.active, Waiting: len(bs.waiters),
+			// Reuses backpressure's own arithmetic rather than restating it here:
+			// the moment a read view computes the estimate its own way, the number
+			// an operator sees stops being the number callers are given.
+			EstWait: bs.backpressure("").RetryAfter,
+		}
 		waitByGroup := map[string]int{}
 		for _, w := range bs.waiters {
 			waitByGroup[w.slot.group]++
