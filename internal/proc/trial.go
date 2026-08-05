@@ -15,6 +15,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/agent"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/host"
+	"github.com/iodesystems/corrallm/internal/tune"
 )
 
 // A trial is a model spawned to be LOOKED AT, then thrown away.
@@ -420,6 +421,107 @@ func (m *Manager) probeUpstream(ctx context.Context, t *config.ProxyTarget) (str
 	return body.Data[0].ID, nil
 }
 
+// recordCapabilities files what a probe found against the placement that was
+// probed, so nothing has to be declared for it to be known.
+//
+// Modalities are translated here rather than at the edge: llama.cpp says
+// vision/video/audio, corrallm's vocabulary is text/image/audio, and storing
+// the backend's spelling would push that mismatch onto every reader.
+func (m *Manager) recordCapabilities(name string, mdl config.Model, res TrialResult) {
+	if m.tuneCache == nil {
+		return
+	}
+	pl, ok := mdl.PlacementOn(mdl.Server)
+	if !ok {
+		if ps := mdl.PlacementList(); len(ps) > 0 {
+			pl = ps[0]
+		} else {
+			return // a pure proxy: nothing placed, nothing to key against
+		}
+	}
+	mods := []string{"text"}
+	for _, r := range res.Modalities {
+		switch r {
+		case "vision", "video", "image":
+			if !containsFold(mods, "image") {
+				mods = append(mods, "image")
+			}
+		case "audio":
+			if !containsFold(mods, "audio") {
+				mods = append(mods, "audio")
+			}
+		}
+	}
+	m.tuneCache.PutCapabilities(pl.Name, name, tune.Capabilities{
+		ContextLength: res.ContextLength, Slots: res.Slots,
+		Modalities: mods, Tools: res.SupportsTools,
+		Upstream: res.Upstream, HasUI: res.HasUI,
+		ProbedAt: time.Now(), ProbedCmd: pl.Cmd,
+	})
+}
+
+func containsFold(all []string, want string) bool {
+	for _, s := range all {
+		if strings.EqualFold(s, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// InstallProbedModalities makes probed capabilities the answer everything gets
+// when it asks what a model accepts.
+//
+// It is a hook rather than a lookup at each site because the question is asked
+// from the proxy's catalog, the bench planner and the overview, and every one
+// of them wants the same answer. The catalog is the important one: llm-bench
+// reads modalities from /v1/models, so pointing that at probed data makes bench
+// gate on what a backend DOES rather than on what someone declared — without
+// bench changing at all.
+//
+// Falls through to the declaration when a model has never been probed, so
+// nothing changes for a fleet that has not adopted probing.
+func (m *Manager) InstallProbedModalities() {
+	config.ProbedModalities = func(served string) (map[string]config.ModalitySpec, bool) {
+		cfg := m.config()
+		if cfg == nil || m.tuneCache == nil {
+			return nil, false
+		}
+		mdl, ok := cfg.Models[served]
+		if !ok {
+			return nil, false
+		}
+		// Union across placements: a model is capable of a thing if ANY way of
+		// serving it is. Which placement a given request lands on is the
+		// scheduler's business, and a catalog that changed shape depending on
+		// what happened to be warm would be worse than useless.
+		out := map[string]config.ModalitySpec{}
+		found := false
+		for _, pl := range mdl.PlacementList() {
+			caps, ok := m.tuneCache.CapabilitiesFor(pl.Name, served)
+			if !ok {
+				continue
+			}
+			found = true
+			for _, mod := range caps.Modalities {
+				out[mod] = config.ModalitySpec{}
+			}
+		}
+		if !found || len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	}
+}
+
+// Capabilities returns what a placement was probed to do.
+func (m *Manager) Capabilities(placement, model string) (tune.Capabilities, bool) {
+	if m.tuneCache == nil {
+		return tune.Capabilities{}, false
+	}
+	return m.tuneCache.CapabilitiesFor(placement, model)
+}
+
 // backendProps is the subset of llama.cpp's /props worth acting on.
 type backendProps struct {
 	NCtx       int
@@ -584,6 +686,10 @@ func (m *Manager) Probe(ctx context.Context, name string, emit func(TrialEvent))
 				"modalities": pr.Modalities, "supportsTools": pr.Tools}})
 	}
 	res.HasUI = p.hasUI.Load() == 1
+	// Record against the PLACEMENT that was probed. Two placements of one model
+	// are the case this exists for, so a per-model record would have the second
+	// silently overwrite the first.
+	m.recordCapabilities(name, mdl, res)
 
 	p.mu.Lock()
 	h := p.handle

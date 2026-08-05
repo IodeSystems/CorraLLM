@@ -187,9 +187,25 @@ func SlopeFromSamples(samples []Sample) (perSlot, base int, ok bool) {
 // concrete, computable profile or reports ok=false.
 type Cache struct {
 	path string
+	// capsPath sits BESIDE the profile file rather than inside it. The profile
+	// file is a flat map[string]Profile and every existing one on disk is that
+	// shape; nesting capabilities in would make old files unparseable for a
+	// gain of one fewer file. Different lifetime too — a profile is re-measured
+	// on every spawn, capabilities only when something probes.
+	capsPath string
 
 	mu   sync.Mutex
 	data map[string]Profile
+	caps map[string]Capabilities
+}
+
+// persist writes both halves, ignoring errors the way every other write here
+// does: a cache that cannot be saved degrades tuning, it does not fail a spawn.
+func (c *Cache) persist() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_ = c.saveLocked()
+	_ = c.saveCapsLocked()
 }
 
 func key(gpuName, model string) string {
@@ -200,7 +216,13 @@ func key(gpuName, model string) string {
 // — not an error — so a fresh box (no profiles measured yet) boots exactly
 // like introspection is disabled.
 func New(path string) (*Cache, error) {
-	c := &Cache{path: path, data: map[string]Profile{}}
+	c := &Cache{
+		path:     path,
+		capsPath: capsPathFor(path),
+		data:     map[string]Profile{},
+		caps:     map[string]Capabilities{},
+	}
+	c.loadCaps()
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return c, nil
@@ -215,6 +237,47 @@ func New(path string) (*Cache, error) {
 		return nil, fmt.Errorf("parse tune cache %s: %w", path, err)
 	}
 	return c, nil
+}
+
+// capsPathFor names the capability file beside the profile one.
+func capsPathFor(profilePath string) string {
+	if profilePath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(profilePath), "capabilities.json")
+}
+
+// loadCaps reads the capability file. Absent or unparseable is not an error:
+// capabilities are re-established by probing, so the worst case is that a
+// placement looks unprobed until someone probes it again.
+func (c *Cache) loadCaps() {
+	if c.capsPath == "" {
+		return
+	}
+	b, err := os.ReadFile(c.capsPath)
+	if err != nil || len(b) == 0 {
+		return
+	}
+	var got map[string]Capabilities
+	if json.Unmarshal(b, &got) == nil && got != nil {
+		c.caps = got
+	}
+}
+
+func (c *Cache) saveCapsLocked() error {
+	if c.capsPath == "" || len(c.caps) == 0 {
+		return nil
+	}
+	if dir := filepath.Dir(c.capsPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	b, err := json.MarshalIndent(c.caps, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(c.capsPath, b, 0o644)
 }
 
 // Save persists the cache as JSON, creating the parent directory if needed. A

@@ -1787,7 +1787,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		md := ModelDef{
 			Name: name, Persistent: m.Persistent, Capability: config.ModelCapability(m),
 			ContextPerRequest: m.ContextPerRequest,
-			Modalities:        modalityViews(m.EffectiveModalities(costModel.IsAudioType(m.Type))),
+			Modalities:        modalityViews(m.EffectiveModalities(name, costModel.IsAudioType(m.Type))),
 			// Spawnable off m.Cmd alone was wrong for an extension's models: their
 			// cmd lives on the extension, so oidio-stt (a real local process)
 			// reported spawnable:false and the UI labelled it a proxy.

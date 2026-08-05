@@ -123,7 +123,7 @@ func (h *Handlers) BenchPlan(_ context.Context, _ *BenchPlanInput) (*BenchPlanOu
 			}
 		}
 
-		declared := m.EffectiveModalities(costModel.IsAudioType(m.Type))
+		declared := m.EffectiveModalities(name, costModel.IsAudioType(m.Type))
 		for k := range declared {
 			plan.DeclaredModalities = append(plan.DeclaredModalities, k)
 		}

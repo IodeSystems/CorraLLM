@@ -463,6 +463,11 @@ func serve(ctx context.Context, o serveOpts) error {
 		return fmt.Errorf("tune cache: %w", err)
 	}
 	mgr.SetTuneCache(tuneCache)
+	// Probed capabilities become the answer to "what does this model accept",
+	// ahead of anything declared. The catalog is what makes this matter: bench
+	// reads modalities from /v1/models, so this is what stops a vision-capable
+	// model being skipped for vision probes because nobody wrote it down.
+	mgr.InstallProbedModalities()
 	mgr.SetVRAMMargin(o.vramMargin)
 	defer mgr.Shutdown()
 	// Restore operator pauses BEFORE preload: a paused pinned model must not

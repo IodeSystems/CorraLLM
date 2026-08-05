@@ -144,6 +144,30 @@ func TestBackpressure429(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"reason":"rejected"`) {
 		t.Errorf("body lacks reason: %s", rec.Body.String())
 	}
+
+	// The promise is RECORDED, not just sent. The row must carry exactly the
+	// Retry-After the caller received — a second, independent rounding of the
+	// estimate would drift from the wire and make the log a plausible lie.
+	acts, err := st.RecentActivity(10, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rejected *store.Activity
+	for i := range acts {
+		if acts[i].Status == http.StatusTooManyRequests {
+			rejected = &acts[i]
+			break
+		}
+	}
+	if rejected == nil {
+		t.Fatalf("no 429 row logged: %+v", acts)
+	}
+	if rejected.RetryAfterMS <= 0 {
+		t.Errorf("promise not recorded: retryAfterMs = %d", rejected.RetryAfterMS)
+	}
+	if got, want := strconv.FormatInt(rejected.RetryAfterMS/1000, 10), rec.Header().Get("Retry-After"); got != want {
+		t.Errorf("logged promise %ss != Retry-After header %ss", got, want)
+	}
 }
 
 func modelTo(t *testing.T, urlStr, typ string) config.Model {

@@ -576,10 +576,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 					continue // advance to the next backend
 				}
 				// rejected or queue-timeout → terminal backoff.
-				writeBackpressure(w, bp)
+				promised := writeBackpressure(w, bp)
 				p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, ReqBody: reqBody})
+					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, ReqBody: reqBody,
+					RetryAfterMS: promised})
 				return
 			}
 			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
@@ -828,10 +829,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// Exhausted the list without serving.
 	if bestBP != nil {
 		bestBP.Reason = "exhausted"
-		writeBackpressure(w, bestBP)
+		promised := writeBackpressure(w, bestBP)
 		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", ReqBody: reqBody})
+			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", ReqBody: reqBody,
+			RetryAfterMS: promised})
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
@@ -915,10 +917,10 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 					lastBP = keepSoonest(lastBP, bp)
 					continue
 				}
-				writeBackpressure(w, bp)
+				promised := writeBackpressure(w, bp)
 				p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason})
+					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, RetryAfterMS: promised})
 				return
 			}
 			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
@@ -1004,10 +1006,10 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
-		writeBackpressure(w, lastBP)
+		promised := writeBackpressure(w, lastBP)
 		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted"})
+			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", RetryAfterMS: promised})
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
@@ -1517,7 +1519,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",
 			Persistent: mc.Persistent,
 			Slots:      p.mgr.TunedSlots(name, mc.Slots()),
-			Modalities: mc.EffectiveModalities(p.cost.IsAudioType(mc.Type)),
+			Modalities: mc.EffectiveModalities(name, p.cost.IsAudioType(mc.Type)),
 			Capability: config.ModelCapability(mc),
 		}
 		// A remote model has no residency to report. It used to inherit the
@@ -1559,7 +1561,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 			members = append(members, c.Name)
 			if i == 0 {
 				capability = config.ModelCapability(c.Model)
-				modalities = c.Model.EffectiveModalities(p.cost.IsAudioType(c.Model.Type))
+				modalities = c.Model.EffectiveModalities(c.Name, p.cost.IsAudioType(c.Model.Type))
 			}
 			// A remote member contributes "proxy", not residency; a real resident
 			// member's state outranks it, since that one is measurably up.
@@ -1825,7 +1827,11 @@ func keepSoonest(cur, next *sched.BackpressureError) *sched.BackpressureError {
 
 // writeBackpressure renders a BackpressureError as 429 + informative headers and
 // a JSON hint — always actionable (Retry-After + capacity/inflight/waiting).
-func writeBackpressure(w http.ResponseWriter, bp *sched.BackpressureError) {
+//
+// Returns the promise it actually made, in milliseconds, so the activity row
+// records the number the caller received rather than a second rounding of
+// bp.RetryAfter. The two would drift: this floors sub-second estimates to 1s.
+func writeBackpressure(w http.ResponseWriter, bp *sched.BackpressureError) int64 {
 	secs := int(bp.RetryAfter.Round(time.Second) / time.Second)
 	if secs < 1 {
 		secs = 1
@@ -1848,6 +1854,7 @@ func writeBackpressure(w http.ResponseWriter, bp *sched.BackpressureError) {
 			"waiting":     bp.Waiting,
 		},
 	})
+	return int64(secs) * 1000
 }
 
 // newReverseProxy builds a single-target reverse proxy that injects the

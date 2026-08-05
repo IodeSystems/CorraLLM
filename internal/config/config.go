@@ -591,7 +591,31 @@ var KnownModalities = map[string]bool{"text": true, "image": true, "audio": true
 // inferred default when none are configured: "audio" when audioDefault (an audio
 // cost type), else "text". Callers pass audioDefault because audio-ness lives in
 // the cost model, not config.
-func (m Model) EffectiveModalities(audioDefault bool) map[string]ModalitySpec {
+// ProbedModalities, when set, overrides what the config declares.
+//
+// A package-level hook rather than a parameter because EffectiveModalities is
+// called from five places across three packages, all of which want the same
+// answer and none of which should have to know where it comes from. Set once at
+// startup by whatever owns the probe records; nil leaves behaviour exactly as
+// it was.
+//
+// Probed BEATS declared deliberately. A declaration is what somebody thought to
+// write; a probe is what the backend said when asked. Where they disagree the
+// backend is right, and treating the absence of a declaration as a negative is
+// what caused vision-capable models to be skipped for vision probes — the one
+// mechanism that could have established the capability was gated on someone
+// having already claimed it.
+var ProbedModalities func(served string) (map[string]ModalitySpec, bool)
+
+func (m Model) EffectiveModalities(served string, audioDefault bool) map[string]ModalitySpec {
+	// The served name is passed rather than stored on the Model because a Model
+	// is a map VALUE — it genuinely does not know what it is called, and every
+	// caller here already does.
+	if ProbedModalities != nil && served != "" {
+		if got, ok := ProbedModalities(served); ok && len(got) > 0 {
+			return got
+		}
+	}
 	if len(m.Modalities) > 0 {
 		return m.Modalities
 	}

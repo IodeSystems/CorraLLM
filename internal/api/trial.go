@@ -144,7 +144,7 @@ func (h *Handlers) ProbeModel(ctx context.Context, in *ProbeModelInput) (*TrialM
 		} else {
 			out.Body.Events = append(out.Body.Events, proc.TrialEvent{
 				Stage: "apply", OK: true,
-				Msg: "recorded modalities, slots and context on the model"})
+				Msg: "recorded against this placement; upstream written to the model"})
 		}
 	}
 	return out, nil
@@ -167,34 +167,19 @@ func (h *Handlers) applyProbe(name string, res proc.TrialResult) error {
 		if !ok {
 			return huma.Error404NotFound("no such model")
 		}
-		if len(res.Modalities) > 0 {
-			mods := map[string]config.ModalitySpec{"text": {}}
-			for _, r := range res.Modalities {
-				// llama.cpp's vocabulary is not corrallm's: it reports
-				// vision/video/audio, the config accepts text/image/audio. An
-				// unmapped one is dropped rather than written and rejected by
-				// Validate, which would fail the whole save.
-				switch r {
-				case "vision", "video", "image":
-					mods["image"] = config.ModalitySpec{}
-				case "audio":
-					mods["audio"] = config.ModalitySpec{}
-				}
-			}
-			m.Modalities = mods
-		}
-		if res.Slots > 0 {
-			m.MaxConcurrent = res.Slots
-		}
-		if res.ContextLength > 0 {
-			// The window it ACTUALLY got, which is what must survive a future
-			// maxConcurrent change rather than being silently divided.
-			m.ContextPerRequest = res.ContextLength
-		}
+		// Modalities, slots and context are NOT written here any more: the probe
+		// records them against the placement it probed (proc.recordCapabilities),
+		// which is the only place they are true. Writing them onto the model
+		// would flatten two placements into one claim — the exact error this
+		// whole change removes.
+		//
+		// Upstream stays, because it is a property of the NAME rather than of
+		// the placement: it is what callers' requests get rewritten to, and it
+		// is the same wherever the model runs.
 		if res.Upstream != "" && !strings.HasPrefix(res.Upstream, "/") {
 			m.Upstream = res.Upstream
+			c.Models[name] = m
 		}
-		c.Models[name] = m
 		return nil
 	})
 }
