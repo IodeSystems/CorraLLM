@@ -445,6 +445,17 @@ type Model struct {
 
 	Cmd    string `yaml:"cmd,omitempty"`    // spawn it (local model); empty → pure proxy
 	Server string `yaml:"server,omitempty"` // which server it draws capacity from (cmd only)
+
+	// Placements are the ways this model can be RUN: a box plus the command
+	// that runs it there. Empty means the legacy shape — cmd/server/proxy on
+	// the model itself — which normalises to exactly one placement, so an
+	// existing config means what it always did. See placement.go.
+	//
+	// The model stays the routing identity (name, quality, cost class); how it
+	// gets served is separate, and there can be more than one way. Two boxes,
+	// or one box running two quantisations: not interchangeable, and differing
+	// in footprint, context and capability.
+	Placements []Placement `yaml:"placements,omitempty"`
 	// RAMUsage is an ADVISORY bootstrap hint, not a fact anything relies on.
 	//
 	// A measured profile supersedes it the moment one exists (see
@@ -1337,8 +1348,12 @@ func (c *Config) Validate() error {
 		}
 	}
 	for name, m := range c.Models {
-		if m.Cmd == "" && m.Proxy.IsZero() {
-			return fmt.Errorf("model %q: needs cmd (spawned) or proxy (standalone proxy model); legacy backends: lists are no longer supported — flatten to one path per model and compose fallbacks as a lane", name)
+		// A serving path can now live on a PLACEMENT rather than on the model
+		// itself, which is the whole point of placements: the model is the
+		// routing identity and the placement says how it is served. A model
+		// with placements has as many paths as it has placements.
+		if m.Cmd == "" && m.Proxy.IsZero() && len(m.Placements) == 0 {
+			return fmt.Errorf("model %q: needs cmd (spawned) or proxy (standalone proxy model), or a placements: list; legacy backends: lists are no longer supported — flatten to one path per model and compose fallbacks as a lane", name)
 		}
 		if m.Cmd != "" && m.Server == "" {
 			return fmt.Errorf("model %q: cmd set but no server", name)
@@ -1353,6 +1368,26 @@ func (c *Config) Validate() error {
 		for k := range m.Modalities {
 			if !KnownModalities[k] {
 				return fmt.Errorf("model %q: unknown modality %q (want text|image|audio)", name, k)
+			}
+		}
+		// Placement rules first: a badly-shaped placement list makes every
+		// downstream check ambiguous about which placement it is complaining of.
+		if err := m.ValidatePlacements(name); err != nil {
+			return err
+		}
+		for _, pl := range m.PlacementList() {
+			if pl.Server == "" {
+				continue
+			}
+			srv, ok := c.Servers[pl.Server]
+			if !ok {
+				return fmt.Errorf("model %q placement %q: unknown server %q", name, pl.Name, pl.Server)
+			}
+			for pool := range pl.RAMUsage {
+				if _, ok := srv.Pools[pool]; !ok {
+					return fmt.Errorf("model %q placement %q: ramUsage pool %q not declared on server %q",
+						name, pl.Name, pool, pl.Server)
+				}
 			}
 		}
 		if m.Server != "" && m.Cmd != "" {
