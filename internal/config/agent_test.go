@@ -180,7 +180,20 @@ models:
 // model, so "reserve the whole pool, then measure" never measures — the server
 // silently serves one model at a time, forever, with no error anywhere. Require
 // the only number anyone can have instead.
-func TestValidate_UnmeasurableHostRequiresRAMUsage(t *testing.T) {
+// ramUsage is NOT required, on any host.
+//
+// It used to be mandatory wherever per-process memory could not be measured,
+// because the fallback ("reserve the whole pool, then measure") never reached
+// the measuring part there and the server silently became one-model-at-a-time.
+// That was a workaround for a missing implementation: unified-memory hosts can
+// attribute memory to a process group — the resident set IS the footprint — so
+// measurement governs there like everywhere else.
+//
+// It matters that this is not merely relaxed but INVERTED: every declaration
+// observed in production was wrong (16GB declared against 33.7GB measured), and
+// a wrong declaration is worse than an absent one, because absence is honest
+// and takes the conservative path.
+func TestValidate_RAMUsageIsNeverRequired(t *testing.T) {
 	body := `
 servers:
   mac1:
@@ -194,17 +207,15 @@ models:
     server: mac1
     proxy: 5810
 `
-	if _, err := loadYAML(t, body); err == nil {
-		t.Fatal("want a load error for a model with no ramUsage on an unmeasurable host")
-	} else if !strings.Contains(err.Error(), "ramUsage is required") {
-		t.Errorf("err = %v, want it to name the missing ramUsage", err)
+	if _, err := loadYAML(t, body); err != nil {
+		t.Fatalf("a model with no ramUsage must load and be measured, not refused: %v", err)
 	}
 
-	// With ramUsage it loads: the operator has supplied the size that cannot be
-	// measured.
+	// Declaring one is still allowed — it is a bootstrap hint that saves the
+	// first heavy-handed eviction, and measurement supersedes it either way.
 	withUsage := strings.Replace(body, "    proxy: 5810", "    proxy: 5810\n    ramUsage: { system: 20GB }", 1)
 	if _, err := loadYAML(t, withUsage); err != nil {
-		t.Errorf("declaring ramUsage should satisfy the rule: %v", err)
+		t.Errorf("declaring ramUsage must still be accepted: %v", err)
 	}
 }
 

@@ -172,6 +172,19 @@ type Heartbeat struct {
 	// Empty from an agent older than this field, which the primary treats as
 	// "nothing to say" and leaves the stored endpoints alone.
 	Endpoints []string `json:"endpoints,omitempty"`
+	// Capacity is what this machine has RIGHT NOW, not what it had when it
+	// enrolled.
+	//
+	// The agent has always measured this and exposed it at /agent/v1/capacity,
+	// and nothing ever called that route — so the primary's picture of an
+	// attached host was frozen at enrolment-time totals with no live usage at
+	// all. That is how a Mac can sit at 39 GB wired while the scheduler believes
+	// the only thing consuming memory there is what it placed itself.
+	//
+	// It matters most where corrallm is NOT the only tenant: a laptop runs a
+	// browser and an IDE, and a budget derived purely from a static reserve
+	// over-commits by however much the rest of the machine happens to be using.
+	Capacity *Capacity `json:"capacity,omitempty"`
 }
 
 // HeartbeatAck is the primary's reply.

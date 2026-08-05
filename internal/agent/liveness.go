@@ -44,10 +44,43 @@ const MissWindow = 3 * HeartbeatInterval
 type Liveness struct {
 	mu   sync.Mutex
 	seen map[string]time.Time
+	cap  map[string]Capacity
 }
 
 // NewLiveness returns an empty tracker.
-func NewLiveness() *Liveness { return &Liveness{seen: map[string]time.Time{}} }
+func NewLiveness() *Liveness {
+	return &Liveness{seen: map[string]time.Time{}, cap: map[string]Capacity{}}
+}
+
+// RecordCapacity stores what an agent last measured about its machine.
+//
+// Kept beside liveness because it has the same lifetime and the same source: it
+// arrives on the heartbeat, it is only meaningful while the agent is up, and it
+// is lost on restart — which is correct, since a stale capacity reading is
+// worse than none. It is deliberately NOT persisted to config: this is an
+// observation, not a declaration.
+func (l *Liveness) RecordCapacity(server string, c Capacity) {
+	if l == nil || server == "" {
+		return
+	}
+	l.mu.Lock()
+	if l.cap == nil {
+		l.cap = map[string]Capacity{}
+	}
+	l.cap[server] = c
+	l.mu.Unlock()
+}
+
+// Capacity returns the last measurement from server's agent.
+func (l *Liveness) Capacity(server string) (Capacity, bool) {
+	if l == nil {
+		return Capacity{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	c, ok := l.cap[server]
+	return c, ok
+}
 
 // Beat records that server's agent just reported in.
 func (l *Liveness) Beat(server string, at time.Time) {

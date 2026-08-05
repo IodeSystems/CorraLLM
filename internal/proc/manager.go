@@ -777,8 +777,10 @@ func (m *Manager) unknownIfEmpty(name string, mdl config.Model, usage map[string
 	// than quietly becoming single-tenant.
 	if cfg := m.config(); cfg != nil {
 		if srv, ok := cfg.Servers[mdl.Server]; ok && srv.NoProcessMemory {
-			slog.Error("model has no ramUsage on a host that cannot measure per-process memory — "+
-				"it will hold the entire pool and nothing can ever correct that; declare ramUsage",
+			slog.Warn("model has no ramUsage on a host that reports it cannot measure per-process "+
+				"memory — it will hold the entire pool until something corrects that. If this is an "+
+				"Apple-silicon host, re-enrol it: newer agents measure the resident set, and this "+
+				"stops being true",
 				"model", name, "server", mdl.Server)
 		}
 	}
@@ -1298,6 +1300,56 @@ func (m *Manager) capacityErrorLocked(server string, usage map[string]int64, now
 	return &CapacityError{RetryAfter: soonest, Blocking: blocking}
 }
 
+// foreignUsedLocked is memory on server that corrallm did not place.
+//
+// A declared pool minus corrallm's own reservations is NOT what is free: the
+// machine has other tenants. A laptop runs a browser, an IDE and a compositor,
+// and on unified memory those compete for the very same bytes a model needs to
+// wire. Measured on carlsmacbookpro: 39.3 GB wired of a ~51.5 GB ceiling, of
+// which 5.8 GB was nothing to do with corrallm — enough that filling the
+// declared budget would have overrun the ceiling by 4.3 GB and started failing
+// Metal allocations.
+//
+// Zero when the agent has not reported capacity (an older agent, or a local
+// server), which restores the previous declaration-only arithmetic exactly.
+//
+// Caller holds m.mu.
+func (m *Manager) foreignUsedLocked(server, pool string) int64 {
+	if m.live == nil {
+		return 0
+	}
+	cap, ok := m.live.Capacity(server)
+	if !ok {
+		return 0
+	}
+	cfg := m.config()
+	if cfg == nil || cfg.DevicePoolFor(server) != pool {
+		// Only the device pool has a live reading behind it. Other pools keep
+		// their declared arithmetic rather than borrowing an unrelated number.
+		return 0
+	}
+	var measuredUsed int64
+	switch {
+	case cap.GPU != nil && cap.GPU.UsedBytes > 0:
+		measuredUsed = cap.GPU.UsedBytes
+	case cap.Host != nil && cap.Host.UsedBytes > 0:
+		measuredUsed = cap.Host.UsedBytes
+	default:
+		return 0
+	}
+	// Everything we believe we placed here. The remainder is somebody else's.
+	var ours int64
+	for _, p := range m.procs {
+		if p.server == server {
+			ours += p.usage[pool]
+		}
+	}
+	if foreign := measuredUsed - ours; foreign > 0 {
+		return foreign
+	}
+	return 0
+}
+
 // fitsLocked reports whether usage fits on server, pretending the processes in
 // `ignore` (eviction candidates) are already gone. Caller holds m.mu.
 func (m *Manager) fitsLocked(server string, usage map[string]int64, ignore map[string]*Process) bool {
@@ -1306,6 +1358,9 @@ func (m *Manager) fitsLocked(server string, usage map[string]int64, ignore map[s
 		for _, e := range ignore {
 			used -= e.usage[pool]
 		}
+		// Other tenants count against the budget too. Without this the ledger
+		// measures only its own footprint and calls the rest free.
+		used += m.foreignUsedLocked(server, pool)
 		if want > m.budget[server][pool]-used {
 			return false
 		}

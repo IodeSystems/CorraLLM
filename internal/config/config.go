@@ -1356,10 +1356,24 @@ func (c *Config) Validate() error {
 			}
 		}
 		if m.Server != "" && m.Cmd != "" {
-			if srv, ok := c.Servers[m.Server]; ok && srv.NoProcessMemory && len(m.RAMUsage) == 0 {
-				return fmt.Errorf("model %q: server %q cannot measure per-process memory, so ramUsage is required — "+
-					"without it nothing can ever size this model and the server would serve one model at a time", name, m.Server)
-			}
+			// NO ramUsage REQUIREMENT. It used to be mandatory on a host that
+			// could not measure per-process memory, because "reserve the whole
+			// pool, then measure" never reached the measuring part there and the
+			// server silently became one-model-at-a-time.
+			//
+			// That was a workaround for a missing implementation, not a rule
+			// worth keeping. Unified-memory hosts CAN attribute memory to a
+			// process group — the resident set is the footprint — so the
+			// measure-and-govern path works there like everywhere else, and
+			// sampleVRAMPeak records the MAXIMUM observed rather than a spot
+			// reading, which is what catches a backend that loads and frees an
+			// mmproj mid-life.
+			//
+			// Requiring a hand-written number bought nothing that measurement
+			// does not do better: every declaration observed in this config was
+			// wrong (16GB declared against 33.7GB measured; 16GB against 23GB on
+			// bonsai), and a wrong declaration is worse than an absent one
+			// because absence is honest and triggers the conservative path.
 		}
 		if m.Server != "" {
 			srv, ok := c.Servers[m.Server]

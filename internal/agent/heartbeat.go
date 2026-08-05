@@ -85,6 +85,10 @@ func (b *Beacon) beat(ctx context.Context) (HeartbeatAck, error) {
 	// moved. Walking the interface list is cheap next to the round trip it rides
 	// along with.
 	hb.Endpoints = localEndpoints(b.Addr)
+	// Measured per beat: the point is what the machine is doing NOW, including
+	// whatever is running on it that corrallm did not start.
+	cap := Probe()
+	hb.Capacity = &cap
 	body, err := json.Marshal(hb)
 	if err != nil {
 		return ack, err

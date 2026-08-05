@@ -121,10 +121,11 @@ func Probe() Capacity {
 			UsedBytes: hm.TotalBytes - hm.AvailableBytes, FreeBytes: hm.AvailableBytes}
 	}
 	// Ask the platform directly rather than inferring from GOOS: the answer is
-	// a property of the vendor tooling present, not of the operating system.
-	if _, err := gpu.ProcVRAM(); err == nil {
-		c.PerProcess = true
-	}
+	// a property of what this machine can actually measure, not of the operating
+	// system. Deliberately NOT `ProcVRAM() == nil` any more — that asked whether
+	// a vendor GPU tool exists, and answered "unmeasurable" on unified-memory
+	// hosts where the resident set is the footprint and is readily available.
+	c.PerProcess = gpu.PerProcessAvailable()
 	// Likewise for unified memory, and here GOOS would be actively wrong: an
 	// Intel Mac with a discrete card is darwin and has two real pools. The
 	// prober knows what it just measured; nothing else does.

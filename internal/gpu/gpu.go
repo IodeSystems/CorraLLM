@@ -52,6 +52,19 @@ type Prober interface {
 // (or add PATH-based detection) to support non-NVIDIA hardware.
 var Default Prober = NVIDIA{}
 
+// PerProcessAvailable reports whether this host can attribute memory to one
+// process group at all — by vendor tool, or by resident set on unified memory.
+//
+// It is what decides whether a model's declared size is a hint or the only
+// number anyone will ever have, so it must answer for the WHOLE mechanism
+// rather than for nvidia-smi alone.
+func PerProcessAvailable() bool {
+	if _, err := Default.ProcVRAM(); err == nil {
+		return true
+	}
+	return Default.Unified() && perProcessAvailable()
+}
+
 // Probe / ProcVRAM / Unified delegate to Default so callers stay
 // backend-agnostic.
 func Probe() (Stats, error)          { return Default.Probe() }
@@ -67,6 +80,14 @@ func Unified() bool                  { return Default.Unified() }
 func GroupVRAM(pgid int) (int, error) {
 	procs, err := Default.ProcVRAM()
 	if err != nil {
+		// No vendor tool. On UNIFIED memory that is not the end of the story:
+		// there is no separate VRAM, so the process group's resident set is the
+		// device footprint, and the OS will say what it is. Treating the missing
+		// vendor tool as "unmeasurable" is what made a knowable number into a
+		// field humans had to type — and then never learn they had typed wrong.
+		if Default.Unified() {
+			return groupResidentMiB(pgid)
+		}
 		return 0, err
 	}
 	total := 0

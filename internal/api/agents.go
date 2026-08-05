@@ -58,6 +58,9 @@ func (h *Handlers) AgentHeartbeat(_ context.Context, in *AgentHeartbeatInput) (*
 	}
 
 	h.Liveness.Beat(in.Body.Server, time.Now())
+	if in.Body.Capacity != nil {
+		h.Liveness.RecordCapacity(in.Body.Server, *in.Body.Capacity)
+	}
 
 	// Reconcile on every beat. The heartbeat already carries what the agent is
 	// running, so this costs nothing extra and is a no-op in the steady state;
