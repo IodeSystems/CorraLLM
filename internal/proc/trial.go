@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +70,16 @@ type TrialResult struct {
 	MemoryMiB int    `json:"memoryMiB,omitempty"`
 	HasUI     bool   `json:"hasUI,omitempty"`
 	Failed    string `json:"failedStage,omitempty"`
+
+	// What the backend says about ITSELF. Every one of these was previously
+	// something the operator had to know before they could save a model — the
+	// context it ended up with, how many concurrent requests it will take, what
+	// inputs it accepts. The backend knows all of it and will say so if asked,
+	// which makes asking the operator a design mistake rather than a limitation.
+	ContextLength int      `json:"contextLength,omitempty"`
+	Slots         int      `json:"slots,omitempty"`
+	Modalities    []string `json:"modalities,omitempty"`
+	SupportsTools bool     `json:"supportsTools,omitempty"`
 }
 
 // trialTTL bounds a trial that nobody is watching any more.
@@ -77,7 +88,17 @@ type TrialResult struct {
 // browser tab must not be the difference between that being returned and it
 // being held until the daemon restarts, so the run is bounded on its own clock
 // as well as by the caller's context.
-const trialTTL = 10 * time.Minute
+// Long enough to sit through a first-time model download. `-hf` fetches on the
+// first spawn, and tens of GB at LAN speed is tens of minutes — during which
+// the backend is working exactly as intended and has simply not bound its port
+// yet. A short budget here reports "unhealthy" for a model that is fine, which
+// is the least useful answer a probe can give.
+//
+// It is not the real safety net: waitHealthy watches the process and returns
+// the moment it EXITS, so a genuinely broken command fails in seconds rather
+// than waiting this out. This only bounds the case where nothing is wrong and
+// nothing is finished.
+const trialTTL = 90 * time.Minute
 
 // trialGrace is how long a trial's process group gets to exit on SIGTERM before
 // it is killed. Shorter than eviction's: a trial has no in-flight requests to
@@ -146,7 +167,9 @@ func (m *Manager) Trial(ctx context.Context, id string, mdl config.Model, emit f
 
 	// --- spawn -------------------------------------------------------------
 	h, err := m.hostFor(mdl.Server).Start(host.Spec{
-		Name: id, Cmd: mdl.Cmd, Out: &trialSink{emit: emit},
+		// Key, not just Name: reconciliation matches on it, and a mismatch gets
+		// the backend reaped as an orphan while this process is still starting.
+		Name: id, Key: key, Cmd: mdl.Cmd, Out: &trialSink{emit: emit},
 	})
 	if err != nil {
 		return fail(TrialSpawn, err)
@@ -163,8 +186,31 @@ func (m *Manager) Trial(ctx context.Context, id string, mdl config.Model, emit f
 	// model" until the weights and KV cache are in. waitHealthy already knows
 	// that, and watching Done() means a backend that dies during startup is
 	// reported as the crash it is rather than as a timeout.
-	if err := m.waitHealthy(target, h.Done()); err != nil {
-		return fail(TrialHealth, err)
+	// Report progress while waiting. A first-time `-hf` fetch can be tens of
+	// minutes of apparent silence, and an operator watching a spinner cannot
+	// tell "downloading 30 GB" from "hung". waitHealthyFor returns immediately
+	// if the process exits, so a broken command still fails fast.
+	healthErr := make(chan error, 1)
+	go func() { healthErr <- m.waitHealthyFor(target, h.Done(), trialTTL) }()
+	waited := 0
+	tick := time.NewTicker(20 * time.Second)
+	defer tick.Stop()
+waiting:
+	for {
+		select {
+		case err := <-healthErr:
+			if err != nil {
+				return fail(TrialHealth, err)
+			}
+			break waiting
+		case <-tick.C:
+			waited += 20
+			emit(TrialEvent{Stage: TrialHealth, OK: true,
+				Msg: fmt.Sprintf("still starting (%ds) — a first run downloads the model before it binds its port", waited),
+				Data: map[string]any{"waitedSeconds": waited, "state": "loading"}})
+		case <-ctx.Done():
+			return fail(TrialHealth, ctx.Err())
+		}
 	}
 	p.mu.Lock()
 	p.state = StateReady
@@ -185,6 +231,22 @@ func (m *Manager) Trial(ctx context.Context, id string, mdl config.Model, emit f
 	}
 	m.probeUI(p)
 	res.HasUI = p.hasUI.Load() == 1
+
+	// Ask the backend what it became. `-c 200000` is a REQUEST; the number it
+	// actually got is what matters for contextPerRequest, and slot count is
+	// maxConcurrent. Best-effort: a backend without /props is still a usable
+	// model, it just cannot describe itself.
+	if pr, err := m.probeProps(ctx, target); err != nil {
+		emit(TrialEvent{Stage: TrialProbe, Msg: "no /props: " + err.Error()})
+	} else {
+		res.ContextLength, res.Slots = pr.NCtx, pr.Slots
+		res.Modalities, res.SupportsTools = pr.Modalities, pr.Tools
+		emit(TrialEvent{Stage: TrialProbe, OK: true,
+			Msg: fmt.Sprintf("context %d, %d slot(s), modalities %v, tools %v",
+				pr.NCtx, pr.Slots, pr.Modalities, pr.Tools),
+			Data: map[string]any{"contextLength": pr.NCtx, "slots": pr.Slots,
+				"modalities": pr.Modalities, "supportsTools": pr.Tools}})
+	}
 
 	// --- measure -----------------------------------------------------------
 	// The payoff. On a host with per-process accounting this number is the
@@ -237,14 +299,10 @@ func (m *Manager) admitTrial(key, id string, mdl config.Model, target *config.Pr
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// One trial per server: two experiments would usually race the same port,
-	// and the second failure would look like a bad command rather than a
-	// collision the operator caused.
-	for k, other := range m.procs {
-		if IsTrial(k) && other.server == mdl.Server {
-			return nil, fmt.Errorf("a trial is already running on %q; wait for it or cancel it", mdl.Server)
-		}
-	}
+	// No one-trial-per-server rule. It was justified by two experiments racing a
+	// port, but the operator chooses the port and capacity already gates whether
+	// a second run has room — so the rule blocked legitimate parallel work to
+	// prevent a collision its victim had already avoided.
 	if _, taken := m.procs[key]; taken {
 		return nil, fmt.Errorf("trial %q is already running", id)
 	}
@@ -327,6 +385,64 @@ func (m *Manager) probeUpstream(ctx context.Context, t *config.ProxyTarget) (str
 		return "", fmt.Errorf("/v1/models listed nothing")
 	}
 	return body.Data[0].ID, nil
+}
+
+// backendProps is the subset of llama.cpp's /props worth acting on.
+type backendProps struct {
+	NCtx       int
+	Slots      int
+	Modalities []string
+	Tools      bool
+}
+
+// probeProps asks the backend to describe itself.
+//
+// The chat template is inspected rather than trusted from a flag: whether a
+// model can call tools is a property of the template it was built with, and a
+// model configured as tool-capable that silently never emits a tool call is a
+// failure that surfaces as bad answers rather than as an error.
+func (m *Manager) probeProps(ctx context.Context, t *config.ProxyTarget) (backendProps, error) {
+	var out backendProps
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.BaseURLString()+"/props", nil)
+	if err != nil {
+		return out, err
+	}
+	for k, v := range t.Headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := m.healthCli.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return out, fmt.Errorf("/props returned %d", resp.StatusCode)
+	}
+	var body struct {
+		TotalSlots int `json:"total_slots"`
+		NCtx       int `json:"n_ctx"`
+		DefaultGen struct {
+			NCtx int `json:"n_ctx"`
+		} `json:"default_generation_settings"`
+		Modalities   map[string]bool `json:"modalities"`
+		ChatTemplate string          `json:"chat_template"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); err != nil {
+		return out, err
+	}
+	out.NCtx = body.NCtx
+	if out.NCtx == 0 {
+		out.NCtx = body.DefaultGen.NCtx
+	}
+	out.Slots = body.TotalSlots
+	for k, on := range body.Modalities {
+		if on {
+			out.Modalities = append(out.Modalities, k)
+		}
+	}
+	sort.Strings(out.Modalities) // map order is random; a shuffling list reads as a change
+	out.Tools = strings.Contains(strings.ToLower(body.ChatTemplate), "tool_call")
+	return out, nil
 }
 
 func admitMsg(usage map[string]int64) string {

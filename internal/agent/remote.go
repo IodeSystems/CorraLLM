@@ -158,7 +158,7 @@ func (r *RemoteHost) Start(s host.Spec) (host.Handle, error) {
 	}
 	var b Backend
 	if err := r.call(ctx, http.MethodPost, endpoint+"/agent/v1/backends",
-		StartRequest{Key: s.Name, Model: s.Name, Cmd: s.Cmd}, &b); err != nil {
+		StartRequest{Key: specKey(s), Model: s.Name, Cmd: s.Cmd}, &b); err != nil {
 		return nil, fmt.Errorf("agent start on %s: %w", endpoint, err)
 	}
 
@@ -169,6 +169,15 @@ func (r *RemoteHost) Start(s host.Spec) (host.Handle, error) {
 	}
 	go h.watch()
 	return h, nil
+}
+
+// specKey is the identity reconciliation will match on, defaulting to the
+// served name for an ordinary model.
+func specKey(s host.Spec) string {
+	if s.Key != "" {
+		return s.Key
+	}
+	return s.Name
 }
 
 // remoteHandle mirrors one backend running on the agent.

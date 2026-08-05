@@ -39,6 +39,19 @@ const (
 type Spec struct {
 	// Name is the served model name, for diagnostics only.
 	Name string
+	// Key is the PRIMARY's identity for this backend, stored verbatim by a
+	// remote host and handed back in its listing. Reconciliation matches on it.
+	//
+	// It is not the same as Name and must not be defaulted from it. An
+	// extension-hosted model is tracked as "extension:<ext>" while its Name is
+	// the served model, and a trial is tracked as "trial:<id>" — in both cases a
+	// key derived from Name means the agent reports something the primary does
+	// not recognise, which reconciliation treats as an orphan and KILLS, while
+	// simultaneously deciding the primary's own process has vanished and freeing
+	// its pools. Observed doing exactly that to a trial mid-download.
+	//
+	// Empty falls back to Name, which is correct for an ordinary model.
+	Key string
 	// Cmd is the shell string to run. It is ALREADY tuned — the slot
 	// auto-tuner rewrites --parallel before this point, because tuning needs
 	// the tune cache and the local VRAM budget, neither of which belongs on

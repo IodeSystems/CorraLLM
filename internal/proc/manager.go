@@ -529,7 +529,8 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		if p.logs != nil {
 			out = io.MultiWriter(os.Stdout, p.logs)
 		}
-		h, err := m.hostFor(mdl.Server).Start(host.Spec{Name: name, Cmd: cmdStr, Out: out})
+		h, err := m.hostFor(mdl.Server).Start(host.Spec{
+			Name: name, Key: p.key, Cmd: cmdStr, Out: out})
 		if err != nil {
 			finish(StateFailed, err)
 			return
@@ -1604,7 +1605,17 @@ func isLoopback(host string) bool {
 // Pure-proxy waits pass nil: there is no process of ours to watch, and the port
 // belongs to whichever model owns it.
 func (m *Manager) waitHealthy(t *config.ProxyTarget, exited <-chan struct{}) error {
-	deadline := time.Now().Add(m.healthTimeout)
+	return m.waitHealthyFor(t, exited, m.healthTimeout)
+}
+
+// waitHealthyFor is waitHealthy with an explicit budget, for callers whose
+// notion of "too long" differs from a serving spawn's.
+//
+// A probe of a never-before-run model may sit through a multi-gigabyte download
+// before the port is even bound; a production spawn of a cached model should
+// not wait nearly that long. Same polling, different patience.
+func (m *Manager) waitHealthyFor(t *config.ProxyTarget, exited <-chan struct{}, budget time.Duration) error {
+	deadline := time.Now().Add(budget)
 	addr := t.URL.Host
 	if t.URL.Port() == "" {
 		if t.URL.Scheme == "https" {
@@ -1646,7 +1657,7 @@ func (m *Manager) waitHealthy(t *config.ProxyTarget, exited <-chan struct{}) err
 		lastErr = fmt.Errorf("/health returned %d", code)
 		time.Sleep(300 * time.Millisecond)
 	}
-	return fmt.Errorf("backend not healthy within %s (%s): %v", m.healthTimeout, addr, lastErr)
+	return fmt.Errorf("backend not healthy within %s (%s): %v", budget, addr, lastErr)
 }
 
 // Preload spawns models marked persistent so they are warm at boot and exempt

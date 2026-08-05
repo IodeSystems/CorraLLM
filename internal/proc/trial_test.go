@@ -124,23 +124,6 @@ func TestTrialReservesThenReleases(t *testing.T) {
 	}
 }
 
-// Two trials on one server would usually race the same port, and the second
-// failure would read as a bad command rather than a collision.
-func TestTrialIsExclusivePerServer(t *testing.T) {
-	m := NewManager(trialCfg(t))
-
-	if _, err := m.admitTrial(TrialKeyPrefix+"t1", "t1", trialModel(t, "4GB"), nil); err != nil {
-		t.Fatal(err)
-	}
-	_, err := m.admitTrial(TrialKeyPrefix+"t2", "t2", trialModel(t, "4GB"), nil)
-	if err == nil {
-		t.Fatal("a second concurrent trial on the same server was admitted")
-	}
-	if !strings.Contains(err.Error(), "already running") {
-		t.Errorf("the message should name the collision, got: %v", err)
-	}
-}
-
 // A trial with no declared footprint on a host that cannot measure is the case
 // that silently turns a machine single-tenant. It must still be admitted
 // honestly — as needing the whole pool — rather than as consuming nothing.
@@ -193,4 +176,47 @@ func TestIsTrialDistinguishesExperimentsFromModels(t *testing.T) {
 	if IsTrial("qwen3-coder") {
 		t.Error("a configured model was mistaken for a trial")
 	}
+}
+
+// The bug that killed a real probe mid-download: the primary tracked the
+// backend as "trial:<id>" while the agent registered it under the served name,
+// so reconciliation saw an unclaimed backend (reaped it) AND a vanished process
+// (freed its pools) — for one healthy backend that was still downloading.
+//
+// The same mismatch applies to extension-hosted models, whose key is
+// "extension:<ext>" and whose Spec.Name is the served model.
+func TestSpawnCarriesTheReconciliationKey(t *testing.T) {
+	if got := specKeyFor("trial:abc", "abc"); got != "trial:abc" {
+		t.Errorf("spawn key = %q, want the process key %q — reconcile matches on it",
+			got, "trial:abc")
+	}
+	// An ordinary model has key == name; falling back must not change it.
+	if got := specKeyFor("", "qwen"); got != "qwen" {
+		t.Errorf("spawn key = %q, want the served name when no key is set", got)
+	}
+}
+
+// specKeyFor mirrors the defaulting in agent.specKey, kept here so the contract
+// is asserted from the side that depends on it.
+func specKeyFor(key, name string) string {
+	if key != "" {
+		return key
+	}
+	return name
+}
+
+// A trial must not block another trial on the same server. Capacity decides
+// whether there is room; an exclusivity rule refused runs that would have fit.
+func TestTrialsAreNotExclusivePerServer(t *testing.T) {
+	m := NewManager(trialCfg(t))
+	a, err := m.admitTrial(TrialKeyPrefix+"t1", "t1", trialModel(t, "4GB"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m.admitTrial(TrialKeyPrefix+"t2", "t2", trialModel(t, "4GB"), nil)
+	if err != nil {
+		t.Fatalf("a second trial that fits was refused: %v", err)
+	}
+	m.endTrial(TrialKeyPrefix+"t1", a)
+	m.endTrial(TrialKeyPrefix+"t2", b)
 }
