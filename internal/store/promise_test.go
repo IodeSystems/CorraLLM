@@ -125,12 +125,12 @@ func TestRecentActivityFiltersByPlacement(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	seedActivity(t, st, []Activity{
-		{TS: 1, Served: "qwen", Backend: "qwen", Placement: "box1", DwellMS: 100},
-		{TS: 2, Served: "qwen", Backend: "qwen", Placement: "mac1", DwellMS: 900},
-		{TS: 3, Served: "qwen", Backend: "qwen", Placement: "box1", DwellMS: 120},
+		{TS: 1, Served: "qwen", Placement: "box1", DwellMS: 100},
+		{TS: 2, Served: "qwen", Placement: "mac1", DwellMS: 900},
+		{TS: 3, Served: "qwen", Placement: "box1", DwellMS: 120},
 		// Written before the column existed: belongs to no placement, and must
 		// not be swept into either one's numbers.
-		{TS: 4, Served: "qwen", Backend: "qwen", Placement: "", DwellMS: 50},
+		{TS: 4, Served: "qwen", Placement: "", DwellMS: 50},
 	})
 
 	box, err := st.RecentActivity(10, "qwen", "", "box1")

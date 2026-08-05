@@ -508,8 +508,6 @@ type corrallm_ActivityDetailOutputBody {
 type corrallm_ActivityDetailRecord {
   """Metered audio request bytes (STT/TTS); 0 for text."""
   audioBytes: Long!
-  """Backend that handled it."""
-  backend: String!
   """Backend-reported cached prompt tokens (0 if none)."""
   cachedTokens: Long!
   """Metered completion tokens."""
@@ -559,8 +557,6 @@ type corrallm_ActivityDetailRecord {
 type corrallm_ActivityRecord {
   """Metered audio request bytes (STT/TTS); 0 for text."""
   audioBytes: Long!
-  """Backend that handled it."""
-  backend: String!
   """Backend-reported cached prompt tokens (0 if none)."""
   cachedTokens: Long!
   """Metered completion tokens."""

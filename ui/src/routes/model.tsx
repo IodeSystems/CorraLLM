@@ -160,7 +160,7 @@ const ConsoleActivityDoc = graphql(/* GraphQL */ `
         records {
           id
           ts
-          backend
+          placement
           path
           status
           dwellMs
@@ -789,7 +789,7 @@ function UsageTab({ name }: { name: string }) {
                     }
                   >
                     <TableCell>{fmtTs(Number(r.ts))}</TableCell>
-                    <TableCell>{r.backend}</TableCell>
+                    <TableCell>{r.placement || '—'}</TableCell>
                     <TableCell align="right">
                       <Chip size="small" label={r.status} color={statusColor(r.status)} />
                     </TableCell>

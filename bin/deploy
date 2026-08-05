@@ -76,8 +76,11 @@ make install >/dev/null
 say "restarting $SERVICE"
 systemctl --user restart "$SERVICE"
 
-say "waiting for health"
-for _ in $(seq 1 30); do
+# Generous, because a restart PRELOADS persistent models before it serves — a
+# 30s window reported a healthy daemon as dead while it was loading 30 GB of
+# weights, and then correctly-but-needlessly refused to publish the UI.
+say "waiting for health (a restart preloads persistent models first)"
+for _ in $(seq 1 180); do
     if curl -fsS -m 2 "$BASE/health" >/dev/null 2>&1; then
         version=$(curl -fsS -m 2 "$BASE/health" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version","?"))')
         echo "    up: $version"
@@ -86,7 +89,7 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 if ! curl -fsS -m 2 "$BASE/health" >/dev/null 2>&1; then
-    echo "!! $SERVICE did not come back; UI NOT published (old one still serving)" >&2
+    echo "!! $SERVICE did not answer within 3 minutes; UI NOT published (old one still serving)" >&2
     echo "   journalctl --user -u $SERVICE -n 50" >&2
     exit 1
 fi

@@ -15,7 +15,7 @@ import (
 // inflated by queue and load, which the stats must subtract back out.
 func svcRow(ts int64, served, key string, svcMS int64) store.Activity {
 	return store.Activity{
-		TS: ts, Served: served, Key: key, Backend: served, Status: 200,
+		TS: ts, Served: served, Key: key, Status: 200,
 		QueuedMS: 1000, LoadMS: 500, DwellMS: svcMS + 1500,
 	}
 }

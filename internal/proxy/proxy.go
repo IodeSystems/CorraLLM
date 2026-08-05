@@ -500,7 +500,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		cands = paused
 		if len(cands) == 0 {
 			http.Error(w, "model is paused", http.StatusServiceUnavailable)
-			p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+			p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 				Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
 				Error: "model paused", ReqBody: reqBody})
 			return
@@ -510,7 +510,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		cands = filterBySensitive(cands)
 		if len(cands) == 0 {
 			http.Error(w, "no privacy-safe backend available for a sensitive request", http.StatusServiceUnavailable)
-			p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+			p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 				Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
 				Error: "no private backend for sensitive request", ReqBody: reqBody})
 			return
@@ -577,13 +577,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				}
 				// rejected or queue-timeout → terminal backoff.
 				promised := writeBackpressure(w, bp)
-				p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+				p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, ReqBody: reqBody,
 					RetryAfterMS: promised})
 				return
 			}
-			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+			p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS,
 				Error: "client canceled", ReqBody: reqBody}) // queued then client gave up
 			return
@@ -820,7 +820,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			ttfbMS = sc.firstWrite.Sub(start).Milliseconds()
 		}
 		p.logReq(r, store.Activity{
-			Served: served, Backend: name, Placement: placement, Key: key, Path: r.URL.Path, Status: status,
+			Served: served, Placement: placement, Key: key, Path: r.URL.Path, Status: status,
 			DwellMS: time.Since(start).Milliseconds(), PromptTokens: u.PromptTokens,
 			CompletionTokens: u.CompletionTokens, CachedTokens: u.CachedTokens,
 			PromptPerSec: u.PromptPerSec, PredictedPerSec: u.PredictedPerSec,
@@ -835,14 +835,14 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if bestBP != nil {
 		bestBP.Reason = "exhausted"
 		promised := writeBackpressure(w, bestBP)
-		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+		p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", ReqBody: reqBody,
 			RetryAfterMS: promised})
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
-	p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+	p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
 		QueuedMS: queuedMS, LoadMS: loadMS, Error: "no backend available", ReqBody: reqBody})
 }
@@ -880,7 +880,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	// serve, and 503 when the lane has nothing left.
 	if cands = p.filterByPaused(cands); len(cands) == 0 {
 		http.Error(w, `{"error":{"message":"model is paused"}}`, http.StatusServiceUnavailable)
-		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+		p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 			Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
 			Error: "model paused"})
 		return
@@ -923,12 +923,12 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				promised := writeBackpressure(w, bp)
-				p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+				p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, RetryAfterMS: promised})
 				return
 			}
-			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+			p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS, Error: "client canceled"})
 			return
 		}
@@ -982,7 +982,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusOK
 			}
 			release(sched.Done{})
-			p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+			p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 				Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS})
 			return
 		}
@@ -1003,7 +1003,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		}
 		costUSD := p.cost.AudioRequestUSD(backend.Type, int(inBytes))
 		release(sched.Done{CostUSD: costUSD})
-		p.logReq(r, store.Activity{Served: served, Backend: name, Key: key, Path: r.URL.Path,
+		p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 			Status: status, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS,
 			AudioBytes: inBytes, CostUSD: costUSD, Error: errReason})
 		return
@@ -1012,13 +1012,13 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
 		promised := writeBackpressure(w, lastBP)
-		p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+		p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", RetryAfterMS: promised})
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
-	p.logReq(r, store.Activity{Served: served, Backend: "-", Key: key, Path: r.URL.Path,
+	p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
 		QueuedMS: queuedMS, LoadMS: loadMS, Error: "no backend available"})
 }

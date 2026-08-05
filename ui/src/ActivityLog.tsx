@@ -60,7 +60,6 @@ const ActivityDoc = graphql(/* GraphQL */ `
           ts
           placement
           served
-          backend
           key
           sourceIp
           path
@@ -91,7 +90,7 @@ const ActivityDetailDoc = graphql(/* GraphQL */ `
           id
           ts
           served
-          backend
+          placement
           key
           sourceIp
           path
@@ -164,7 +163,7 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
           <Stack spacing={1.5}>
             <Box>
               <Typography variant="body2" color="text.secondary">
-                {rec.served} · {rec.backend} · {rec.path} · {fmtTime(rec.ts)}
+                {rec.served} · {rec.placement || '—'} · {rec.path} · {fmtTime(rec.ts)}
                 {rec.sourceIp && <> · from {rec.sourceIp}</>}
               </Typography>
               <Typography variant="body2" color="text.secondary">
@@ -285,7 +284,6 @@ export function ActivityLog({
             {/* Dropped when the page is already ABOUT one model — the column
                 would repeat the title on every row. */}
             {!hideModel && <TableCell>Served</TableCell>}
-            <TableCell>Backend</TableCell>
             {/* WHERE it ran. With a model placed on more than one box, backend
                 no longer says which machine, quant or context served it. */}
             <TableCell>Placement</TableCell>
@@ -325,7 +323,6 @@ export function ActivityLog({
               <TableRow key={i} hover sx={{ cursor: 'pointer' }} onClick={() => setSelected(r.id)}>
                 <TableCell>{fmtTime(r.ts)}</TableCell>
                 {!hideModel && <TableCell>{r.served}</TableCell>}
-                <TableCell>{r.backend}</TableCell>
                 <TableCell>{r.placement || '—'}</TableCell>
                 <TableCell>{r.key || '—'}</TableCell>
                 <TableCell sx={{ fontFamily: 'monospace' }}>{r.sourceIp || '—'}</TableCell>

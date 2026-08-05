@@ -23,20 +23,20 @@ func TestUtilization(t *testing.T) {
 	now := time.Now().UnixMilli()
 	rows := []store.Activity{
 		// big: two queued-then-admitted requests (200ms, 800ms) → mean 500ms.
-		{TS: now - 300_000, Served: "big", Backend: "big", Status: 200, QueuedMS: 200},
-		{TS: now - 290_000, Served: "big", Backend: "big", Status: 200, QueuedMS: 800},
+		{TS: now - 300_000, Served: "big", Status: 200, QueuedMS: 200},
+		{TS: now - 290_000, Served: "big", Status: 200, QueuedMS: 800},
 		// Admitted instantly: excluded, or a quiet hour drags the mean to zero.
-		{TS: now - 280_000, Served: "big", Backend: "big", Status: 200, QueuedMS: 0},
+		{TS: now - 280_000, Served: "big", Status: 200, QueuedMS: 0},
 		// A rejection's queued_ms measures waiting before being turned AWAY —
 		// a different quantity, and huge. Must not pollute the mean.
-		{TS: now - 270_000, Served: "big", Backend: "big", Status: 429,
+		{TS: now - 270_000, Served: "big", Status: 429,
 			Error: "queue-timeout", QueuedMS: 60_000, RetryAfterMS: 5000},
-		{TS: now - 265_000, Served: "big", Backend: "big", Status: 200}, // the return → honored
+		{TS: now - 265_000, Served: "big", Status: 200}, // the return → honored
 		// gone: promised 3s long ago, never returned.
-		{TS: now - 200_000, Served: "big", Backend: "big", Key: "ghost", Status: 429,
+		{TS: now - 200_000, Served: "big", Key: "ghost", Status: 429,
 			Error: "exhausted", RetryAfterMS: 3000},
 		// small: called, never queued, never refused.
-		{TS: now - 100_000, Served: "small", Backend: "small", Status: 200, QueuedMS: 0},
+		{TS: now - 100_000, Served: "small", Status: 200, QueuedMS: 0},
 	}
 	for _, a := range rows {
 		if err := st.InsertActivity(a); err != nil {

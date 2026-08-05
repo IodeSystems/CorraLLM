@@ -23,7 +23,7 @@ func TestRecentActivity(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		if err := st.InsertActivity(store.Activity{
-			TS: int64(i), Served: "m", Backend: "m", Key: "k",
+			TS: int64(i), Served: "m", Key: "k",
 			Path: "/v1/chat/completions", Status: 200,
 			DwellMS: int64(i * 10), PromptTokens: i, CompletionTokens: i, CostUSD: float64(i) * 0.001,
 			AudioBytes:   int64(i * 1000),

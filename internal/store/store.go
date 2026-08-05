@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS activity (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     ts                INTEGER NOT NULL,          -- unix millis
     served            TEXT    NOT NULL,          -- served model name
-    backend           TEXT    NOT NULL,          -- backend that handled it
     placement         TEXT    NOT NULL DEFAULT '', -- WHICH placement served it (box + cmd); '' predates the column
     key               TEXT    NOT NULL DEFAULT '', -- caller identity
     source_ip         TEXT    NOT NULL DEFAULT '', -- client IP (via middleware.RealIP / X-Forwarded-For)
@@ -254,8 +253,16 @@ CREATE TABLE IF NOT EXISTS model_pause (
 `
 
 // migrations upgrade an activity table created by an earlier schema in place.
-// Each is run once on Open; a "duplicate column" error means it already applied
-// (SQLite has no ADD COLUMN IF NOT EXISTS), so it is swallowed.
+//
+// Each runs once on Open, and two errors mean "already applied" rather than
+// failure, because SQLite has neither ADD COLUMN IF NOT EXISTS nor DROP COLUMN
+// IF EXISTS:
+//
+//   - "duplicate column" — an ADD whose column is already there.
+//   - "no such column"  — a DROP on a database created FRESH from the current
+//     schema, which never had the column to begin with. Without this a new
+//     install fails to open at all, which is a worse outcome than the tidiness
+//     the DROP was for.
 var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`,
@@ -281,6 +288,15 @@ var migrations = []string{
 	// not derivable from the model, and guessing the only placement that exists
 	// today would silently mislabel history the moment a second one is added.
 	`ALTER TABLE activity ADD COLUMN placement TEXT NOT NULL DEFAULT ''`,
+	// And `backend` goes. It held the SERVED MODEL NAME — identical to `served`
+	// on every row ever written — which identified where work happened only
+	// while a model had one home. `placement` is that answer now, and keeping a
+	// duplicate of `served` beside it invites reading one as the machine.
+	//
+	// Dropped rather than deprecated: a column nothing writes and nothing reads
+	// is a question every future reader has to answer again. Data loss is nil —
+	// it duplicated `served`, which stays.
+	`ALTER TABLE activity DROP COLUMN backend`,
 	// Cold-spawn wait, split out from dwell. A request that waited 6.7s for a
 	// model to load and then answered in 375ms is not a slow model, and without
 	// this column nothing downstream can tell the two apart.
@@ -500,7 +516,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	for _, m := range migrations {
-		if _, err := db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		if _, err := db.ExecContext(ctx, m); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column") &&
+			!strings.Contains(err.Error(), "no such column") {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate: %w", err)
 		}
@@ -513,10 +531,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 // 499) record them as zero. A request preempted mid-serve still records the cost
 // actually consumed before the abort (partial tokens + any swap energy spent).
 type Activity struct {
-	ID      int64 // row id (P10b; 0 until persisted, set on read)
-	TS      int64 // unix millis
-	Served  string
-	Backend string
+	ID     int64 // row id (P10b; 0 until persisted, set on read)
+	TS     int64 // unix millis
+	Served string
 	// Placement is which way of serving Served handled this request: the box
 	// and the cmd. Empty on rows written before the column existed, and on any
 	// request served by something corrallm does not place (a pure proxy).
@@ -564,12 +581,12 @@ type Activity struct {
 // InsertActivity appends a request record to the activity log.
 func (s *Store) InsertActivity(a Activity) error {
 	_, err := s.db.Exec(
-		`INSERT INTO activity (ts, served, backend, placement, key, source_ip, path, status, dwell_ms,
+		`INSERT INTO activity (ts, served, placement, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
 		                       finish_reason, load_ms, retry_after_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.TS, a.Served, a.Backend, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.TS, a.Served, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
 		a.FinishReason, a.LoadMS, a.RetryAfterMS,
@@ -583,12 +600,12 @@ func (s *Store) InsertActivity(a Activity) error {
 func (s *Store) ActivityByID(id int64) (Activity, error) {
 	var a Activity
 	err := s.db.QueryRow(
-		`SELECT id, ts, served, backend, placement, key, source_ip, path, status, dwell_ms,
+		`SELECT id, ts, served, placement, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
 		        finish_reason, load_ms, retry_after_ms
 		 FROM activity WHERE id = ?`, id).Scan(
-		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
+		&a.ID, &a.TS, &a.Served, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
 		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody,
 		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS)
@@ -624,7 +641,7 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 // BOX". With one model served from two machines, a mean across both describes
 // neither.
 func (s *Store) RecentActivity(limit int, served, key, placement string) ([]Activity, error) {
-	const cols = `id, ts, served, backend, placement, key, source_ip, path, status, dwell_ms,
+	const cols = `id, ts, served, placement, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
 	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms`
 	q := `SELECT ` + cols + ` FROM activity`
@@ -655,7 +672,7 @@ func (s *Store) RecentActivity(limit int, served, key, placement string) ([]Acti
 	var out []Activity
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
+		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
 			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS,
 			&a.RetryAfterMS); err != nil {

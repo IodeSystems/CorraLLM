@@ -15,7 +15,7 @@ func TestActivityRoundTrip(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	in := Activity{
-		TS: 1, Served: "m", Backend: "m#0", Key: "k", SourceIP: "192.168.1.160", Path: "/v1/chat/completions",
+		TS: 1, Served: "m", Key: "k", SourceIP: "192.168.1.160", Path: "/v1/chat/completions",
 		Status: 200, DwellMS: 42, PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.00105,
 		CachedTokens: 7, PromptPerSec: 123.5, PredictedPerSec: 45.25,
 	}
@@ -35,7 +35,7 @@ func TestActivityRoundTrip(t *testing.T) {
 	}
 
 	// ActivityByID returns the full row including captured payloads.
-	full := Activity{TS: 2, Served: "m", Backend: "m#0", Status: 200, SourceIP: "10.0.0.5",
+	full := Activity{TS: 2, Served: "m", Status: 200, SourceIP: "10.0.0.5",
 		ReqBody: `{"model":"m"}`, RespBody: "hi", TTFBMs: 12,
 		CachedTokens: 3, PromptPerSec: 200.0, PredictedPerSec: 60.5}
 	if err := st.InsertActivity(full); err != nil {
@@ -54,7 +54,7 @@ func TestActivityRoundTrip(t *testing.T) {
 
 	// The served filter scopes RecentActivity to one model (per-model console
 	// usage tab); empty served returns every model. Two "m" rows + one "other".
-	if err := st.InsertActivity(Activity{TS: 3, Served: "other", Backend: "other#0", Status: 200}); err != nil {
+	if err := st.InsertActivity(Activity{TS: 3, Served: "other", Status: 200}); err != nil {
 		t.Fatal(err)
 	}
 	if all, _ := st.RecentActivity(10, "", "", ""); len(all) != 3 {
