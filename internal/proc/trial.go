@@ -295,7 +295,6 @@ func (m *Manager) admitTrial(key, id string, mdl config.Model, target *config.Pr
 	if err != nil {
 		return nil, fmt.Errorf("ramUsage: %w", err)
 	}
-	usage = m.unknownIfEmpty(id, mdl, usage)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -306,9 +305,29 @@ func (m *Manager) admitTrial(key, id string, mdl config.Model, target *config.Pr
 	if _, taken := m.procs[key]; taken {
 		return nil, fmt.Errorf("trial %q is already running", id)
 	}
+	// An unsized probe takes WHAT IS FREE, not the whole pool.
+	//
+	// unknownIfEmpty reserves the entire pool for an unknown model, which is the
+	// right call for a production spawn: it evicts everything, runs alone, and
+	// the measurement governs from then on. For a probe it is a dead end — a
+	// probe never evicts, so "reserve everything" means it can only ever run on
+	// an empty machine, and the first thing anyone wants to probe is a second
+	// model on a box that already has one.
+	//
+	// Reserving the free remainder keeps the property that matters (nothing else
+	// is admitted while an unmeasured thing is running) without inventing a
+	// per-model number. If it needs more than the machine has, that IS the
+	// probe's answer.
+	if len(usage) == 0 {
+		usage = m.freeRemainderLocked(mdl.Server)
+		if len(usage) == 0 {
+			return nil, fmt.Errorf("no free capacity on %q to probe into — unload something first",
+				mdl.Server)
+		}
+	}
 	if !m.fitsLocked(mdl.Server, usage, nil) {
 		return nil, fmt.Errorf("not enough free capacity on %q for %s — unload something first "+
-			"(a trial never evicts a running model)", mdl.Server, admitMsg(usage))
+			"(a probe never evicts a running model)", mdl.Server, admitMsg(usage))
 	}
 	m.reserveLocked(mdl.Server, usage)
 
@@ -323,6 +342,20 @@ func (m *Manager) admitTrial(key, id string, mdl config.Model, target *config.Pr
 	close(p.ready) // nothing waits on a trial the way requests wait on a model
 	m.procs[key] = p
 	return p, nil
+}
+
+// freeRemainderLocked is what is actually unspoken-for on server right now:
+// budget, minus corrallm's own reservations, minus what other tenants are
+// using. Caller holds m.mu.
+func (m *Manager) freeRemainderLocked(server string) map[string]int64 {
+	out := map[string]int64{}
+	for pool, budget := range m.budget[server] {
+		free := budget - m.used[server][pool] - m.foreignUsedLocked(server, pool)
+		if free > 0 {
+			out[pool] = free
+		}
+	}
+	return out
 }
 
 // endTrial stops the process group and returns the reservation, whatever

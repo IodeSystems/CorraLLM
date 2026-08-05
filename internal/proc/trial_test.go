@@ -124,24 +124,64 @@ func TestTrialReservesThenReleases(t *testing.T) {
 	}
 }
 
-// A trial with no declared footprint on a host that cannot measure is the case
-// that silently turns a machine single-tenant. It must still be admitted
-// honestly — as needing the whole pool — rather than as consuming nothing.
-func TestTrialWithNoDeclaredSizeReservesTheWholePool(t *testing.T) {
+// An unsized probe takes what is FREE, not the whole pool.
+//
+// Reserving everything is right for a production spawn (it evicts, runs alone,
+// and the measurement governs afterwards) and a dead end for a probe, which
+// never evicts: it could then only run on an empty machine, while the first
+// thing anyone wants to probe is a second model beside an existing one.
+func TestUnsizedProbeTakesTheFreeRemainder(t *testing.T) {
 	m := NewManager(trialCfg(t))
 
+	// A resident model holds 24GB of the 30GB pool.
+	resident := m.config().Models["resident"]
+	usage, err := config.ParseSizes(resident.RAMUsage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.reserveLocked("box1", usage)
+	m.procs["resident"] = &Process{
+		Name: "resident", key: "resident", server: "box1", usage: usage,
+		state: StateReady, ready: make(chan struct{}),
+	}
+	m.mu.Unlock()
+
 	mdl := trialModel(t, "4GB")
-	mdl.RAMUsage = nil
+	mdl.RAMUsage = nil // nothing declared: the whole point
 
 	p, err := m.admitTrial(TrialKeyPrefix+"t1", "t1", mdl, nil)
 	if err != nil {
-		t.Fatalf("an unsized trial on an empty box should fit: %v", err)
+		t.Fatalf("an unsized probe must be able to use the free remainder: %v", err)
 	}
-	if p.usage["gpu0"] != m.budget["box1"]["gpu0"] {
-		t.Errorf("unsized trial reserved %d, want the whole pool %d — anything less is a guess",
-			p.usage["gpu0"], m.budget["box1"]["gpu0"])
+	want := m.budget["box1"]["gpu0"] - usage["gpu0"]
+	if p.usage["gpu0"] != want {
+		t.Errorf("reserved %d, want the free remainder %d", p.usage["gpu0"], want)
+	}
+	// Still exclusive against the unknown: nothing else may be admitted while an
+	// unmeasured model is running, because its real size is not yet known.
+	m.mu.Lock()
+	fits := m.fitsLocked("box1", map[string]int64{"gpu0": 1}, nil)
+	m.mu.Unlock()
+	if fits {
+		t.Error("something else was admitted alongside an unmeasured probe")
 	}
 	m.endTrial(TrialKeyPrefix+"t1", p)
+}
+
+// A full machine has no room to probe into, and must say so rather than
+// reserving zero and pretending the model is free.
+func TestUnsizedProbeRefusesWhenNothingIsFree(t *testing.T) {
+	m := NewManager(trialCfg(t))
+	m.mu.Lock()
+	m.reserveLocked("box1", map[string]int64{"gpu0": m.budget["box1"]["gpu0"]})
+	m.mu.Unlock()
+
+	mdl := trialModel(t, "4GB")
+	mdl.RAMUsage = nil
+	if _, err := m.admitTrial(TrialKeyPrefix+"t1", "t1", mdl, nil); err == nil {
+		t.Error("probe admitted onto a full machine with no size and no room")
+	}
 }
 
 // A trial must run somewhere and have something to run; both failures are the
