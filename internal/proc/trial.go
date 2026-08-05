@@ -206,7 +206,7 @@ waiting:
 		case <-tick.C:
 			waited += 20
 			emit(TrialEvent{Stage: TrialHealth, OK: true,
-				Msg: fmt.Sprintf("still starting (%ds) — a first run downloads the model before it binds its port", waited),
+				Msg:  fmt.Sprintf("still starting (%ds) — a first run downloads the model before it binds its port", waited),
 				Data: map[string]any{"waitedSeconds": waited, "state": "loading"}})
 		case <-ctx.Done():
 			return fail(TrialHealth, ctx.Err())
@@ -516,4 +516,115 @@ func (s *trialSink) Write(b []byte) (int, error) {
 		}
 	}
 	return len(b), nil
+}
+
+// Probe interrogates a model that ALREADY EXISTS, as opposed to Trial, which
+// spawns an ephemeral one that exists nowhere.
+//
+// The distinction is the whole difference in behaviour. A trial is an
+// experiment: it is admitted only into free memory, never evicts, and is torn
+// down whatever happens, because nothing is supposed to survive it. A probe is
+// a question about a declared model, so it goes through the ordinary load path
+// — normal admission, normal eviction, normal residency — and LEAVES THE MODEL
+// AS IT FOUND IT. If it was already warm it stays warm; if this call loaded it,
+// it stays loaded under its own sticky/TTL rules rather than being killed by
+// the act of asking about it.
+//
+// What it reports is identical, and deliberately so: capability discovery
+// should not depend on whether the thing has been written down yet.
+func (m *Manager) Probe(ctx context.Context, name string, emit func(TrialEvent)) (TrialResult, error) {
+	var res TrialResult
+	fail := func(stage TrialStage, err error) (TrialResult, error) {
+		res.Failed = string(stage)
+		emit(TrialEvent{Stage: stage, Msg: err.Error()})
+		return res, err
+	}
+
+	cfg := m.config()
+	if cfg == nil {
+		return fail(TrialResolve, fmt.Errorf("no config loaded"))
+	}
+	mdl, ok := cfg.Models[name]
+	if !ok {
+		return fail(TrialResolve, fmt.Errorf("no model %q — to try a command that is not "+
+			"configured yet, use a trial instead", name))
+	}
+	target, err := cfg.TargetFor(name, mdl)
+	if err != nil {
+		return fail(TrialResolve, err)
+	}
+	emit(TrialEvent{Stage: TrialResolve, OK: true, Msg: target.BaseURLString(),
+		Data: map[string]any{"url": target.BaseURLString(), "server": mdl.Server}})
+
+	// The ordinary door. Everything a real request would face — pause, capacity,
+	// eviction, a down agent — applies here too, so a probe reports the model as
+	// it actually is rather than as a private copy would be.
+	p, release, loaded, err := m.EnsureReady(ctx, name, mdl, nil)
+	if err != nil {
+		return fail(TrialHealth, err)
+	}
+	defer release()
+	emit(TrialEvent{Stage: TrialHealth, OK: true,
+		Msg:  map[bool]string{true: "loaded for this probe", false: "already resident"}[loaded],
+		Data: map[string]any{"triggeredLoad": loaded}})
+
+	if up, err := m.probeUpstream(ctx, target); err == nil {
+		res.Upstream = up
+		emit(TrialEvent{Stage: TrialProbe, OK: true, Msg: up})
+	}
+	if pr, err := m.probeProps(ctx, target); err != nil {
+		emit(TrialEvent{Stage: TrialProbe, Msg: "no /props: " + err.Error()})
+	} else {
+		res.ContextLength, res.Slots = pr.NCtx, pr.Slots
+		res.Modalities, res.SupportsTools = pr.Modalities, pr.Tools
+		emit(TrialEvent{Stage: TrialProbe, OK: true,
+			Msg: fmt.Sprintf("context %d, %d slot(s), modalities %v, tools %v",
+				pr.NCtx, pr.Slots, pr.Modalities, pr.Tools),
+			Data: map[string]any{"contextLength": pr.NCtx, "slots": pr.Slots,
+				"modalities": pr.Modalities, "supportsTools": pr.Tools}})
+	}
+	res.HasUI = p.hasUI.Load() == 1
+
+	p.mu.Lock()
+	h := p.handle
+	p.mu.Unlock()
+	if h == nil {
+		// A pure proxy has no local process, so there is nothing to weigh.
+		emit(TrialEvent{Stage: TrialMeasure, Msg: "no local process: this model is proxied, not spawned"})
+	} else {
+		// The MAXIMUM ever observed, not a spot reading.
+		//
+		// A live sample is whatever the process happens to hold at this instant,
+		// which is misleading in both directions: a backend that has just
+		// started has faulted in almost nothing (observed: 16 MiB for a model
+		// that settles at 34 GB), and one that has released a transient buffer —
+		// an mmproj loaded and freed, a large batch retired — reads below the
+		// peak it will reach again. Admission has to reserve the high-water
+		// mark, so that is what a probe reports.
+		//
+		// sampleVRAMPeak feeds this on a ticker for the life of the process;
+		// the live reading is the fallback for a model too new to have been
+		// sampled yet.
+		peak := m.TuneProfilePeak(name)
+		live, liveErr := h.MemoryMiB()
+		switch {
+		case peak > 0 && peak >= live:
+			res.MemoryMiB = peak
+			emit(TrialEvent{Stage: TrialMeasure, OK: true,
+				Msg: fmt.Sprintf("%d MiB (peak observed; %d MiB right now)", peak, live),
+				Data: map[string]any{"memoryMiB": peak, "liveMiB": live,
+					"ramUsage": fmt.Sprintf("%dMiB", peak)}})
+		case liveErr != nil:
+			emit(TrialEvent{Stage: TrialMeasure, Msg: liveErr.Error()})
+		default:
+			res.MemoryMiB = live
+			emit(TrialEvent{Stage: TrialMeasure, OK: true,
+				Msg:  fmt.Sprintf("%d MiB (live; no peak recorded yet, so this is a floor)", live),
+				Data: map[string]any{"memoryMiB": live, "ramUsage": fmt.Sprintf("%dMiB", live)}})
+		}
+	}
+
+	// No teardown. The model was here before the question and stays after it.
+	res.OK = true
+	return res, nil
 }

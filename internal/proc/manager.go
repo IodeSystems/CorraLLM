@@ -785,12 +785,26 @@ func (m *Manager) unknownIfEmpty(name string, mdl config.Model, usage map[string
 				"model", name, "server", mdl.Server)
 		}
 	}
+	// The whole pool MINUS what other tenants hold.
+	//
+	// Reserving the literal pool deadlocks on a shared machine: the budget is
+	// never entirely available, so the reservation never fits, so the model
+	// never spawns, so it is never measured — and it stays unknown forever. The
+	// intent was "evict our own residents and run alone", and running alone
+	// still does not hand you memory somebody else is using.
+	//
+	// Evictable residents are deliberately not subtracted; makeRoomLocked
+	// clears those, which is the eviction this path is willing to pay for.
 	out := make(map[string]int64, len(budget))
 	for pool, b := range budget {
-		out[pool] = b
+		if avail := b - m.foreignUsedLocked(mdl.Server, pool); avail > 0 {
+			out[pool] = avail
+		} else {
+			out[pool] = b
+		}
 	}
-	slog.Info("model size unknown (no measured profile, no ramUsage) — reserving the whole pool for one spawn, then measuring",
-		"model", name, "server", mdl.Server)
+	slog.Info("model size unknown (no measured profile, no ramUsage) — reserving what the machine can offer for one spawn, then measuring",
+		"model", name, "server", mdl.Server, "reserving", out)
 	return out
 }
 
@@ -817,11 +831,13 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 	if m.tuneCache == nil || mdl.Server == "" {
 		return m.unknownIfEmpty(name, mdl, usage)
 	}
-	stats, err := gpu.Probe()
-	if err != nil {
+	// Keyed by the device that RAN it, not the primary's own card — a model on
+	// an attached machine was previously filed under the primary's GPU.
+	dev := m.deviceNameFor(mdl.Server)
+	if dev == "" {
 		return m.unknownIfEmpty(name, mdl, usage)
 	}
-	prof, ok := m.tuneCache.Get(stats.Name, name)
+	prof, ok := m.tuneCache.Get(dev, name)
 	if !ok || prof.PeakMiB <= 0 {
 		return m.unknownIfEmpty(name, mdl, usage)
 	}
@@ -1018,9 +1034,11 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 	if m.tuneCache == nil {
 		return
 	}
-	stats, err := gpu.Probe()
-	if err != nil {
-		slog.Debug("gpu probe unavailable; skipping vram measurement", "model", model, "err", err)
+	// The device that ran it names the profile. On an agent-backed server that
+	// is the agent's hardware, reported on its heartbeat — not this machine's.
+	dev := m.deviceNameFor(mdl.Server)
+	if dev == "" {
+		slog.Debug("no device name; skipping vram measurement", "model", model)
 		return
 	}
 	// Attributed by process GROUP — see host.Handle.MemoryMiB: the vendor tool
@@ -1045,7 +1063,7 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 	// Record this spawn's (slots, footprint) sample every time, regardless of
 	// whether the KV-log fast path below is available this run — it's the
 	// data the two-point slope fallback needs, and costs nothing to keep.
-	existing, _ := m.tuneCache.Get(stats.Name, model)
+	existing, _ := m.tuneCache.Get(dev, model)
 	// Shared derivation — the SAME code llm-bench's published measurement runs
 	// through. Two implementations of "what is this model's per-slot cost"
 	// would drift.
@@ -1055,7 +1073,7 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 
 	// Update applies precedence: this serving measurement will NOT overwrite a
 	// bench-published profile's shape, only contribute its sample and peak.
-	m.tuneCache.Update(stats.Name, model, prof)
+	m.tuneCache.Update(dev, model, prof)
 	if err := m.tuneCache.Save(); err != nil {
 		slog.Warn("save tune cache", "model", model, "err", err)
 		return
@@ -1079,6 +1097,10 @@ func (m *Manager) sampleVRAMPeak(model string, h host.Handle) {
 	if m.tuneCache == nil {
 		return
 	}
+	server := ""
+	if cfg := m.config(); cfg != nil {
+		server = cfg.Models[model].Server
+	}
 	t := time.NewTicker(vramSampleInterval)
 	defer t.Stop()
 	for {
@@ -1086,9 +1108,9 @@ func (m *Manager) sampleVRAMPeak(model string, h host.Handle) {
 		case <-h.Done():
 			return
 		case <-t.C:
-			stats, err := gpu.Probe()
-			if err != nil {
-				slog.Debug("vram peak sample: gpu probe unavailable", "model", model, "err", err)
+			dev := m.deviceNameFor(server)
+			if dev == "" {
+				slog.Debug("vram peak sample: no device name", "model", model)
 				continue
 			}
 			footprint, err := h.MemoryMiB()
@@ -1099,7 +1121,10 @@ func (m *Manager) sampleVRAMPeak(model string, h host.Handle) {
 			if footprint <= 0 {
 				continue
 			}
-			m.tuneCache.BumpPeak(stats.Name, model, footprint)
+			// Filed under the device that ran it. This is the write that keeps
+			// the running high-water mark, so a wrong key here means one host's
+			// peak silently overwrites another's for the same model name.
+			m.tuneCache.BumpPeak(dev, model, footprint)
 		}
 	}
 }
@@ -1139,6 +1164,60 @@ func (m *Manager) TunedSlots(model string, configDefault int) int {
 		}
 	}
 	return configDefault
+}
+
+// deviceNameFor is the name a measurement should be FILED under: the device of
+// the machine that actually ran the model.
+//
+// gpu.Probe() answers for the process calling it, which on the primary is the
+// primary's own card — so every profile measured on an attached machine was
+// keyed to box1's RTX 5090, including one taken on an Apple M-series Mac. Two
+// hosts running the same model overwrite each other, and their footprints are
+// genuinely different numbers: the same weights cost differently on different
+// hardware, which is the entire reason the cache is keyed by device at all.
+//
+// The agent reports its device name on every heartbeat, so for an agent-backed
+// server that is the authority. Falls back to the local probe for a local
+// server, which is what it always was.
+func (m *Manager) deviceNameFor(server string) string {
+	if m.live != nil && server != "" {
+		if cap, ok := m.live.Capacity(server); ok {
+			if cap.GPU != nil && cap.GPU.Name != "" {
+				return cap.GPU.Name
+			}
+			if cap.Host != nil && cap.Host.Name != "" {
+				return cap.Host.Name
+			}
+		}
+	}
+	if stats, err := gpu.Probe(); err == nil {
+		return stats.Name
+	}
+	return ""
+}
+
+// TuneProfilePeak is the largest footprint ever measured for a model on this
+// host's device, or 0 if it has never been sampled.
+//
+// Exposed because a spot reading is not the number anyone wants: admission
+// reserves the high-water mark, and a probe that reported "16 MiB" for a model
+// still faulting in its weights would be worse than reporting nothing.
+func (m *Manager) TuneProfilePeak(model string) int {
+	if m.tuneCache == nil {
+		return 0
+	}
+	server := ""
+	if cfg := m.config(); cfg != nil {
+		server = cfg.Models[model].Server
+	}
+	dev := m.deviceNameFor(server)
+	if dev == "" {
+		return 0
+	}
+	if prof, ok := m.tuneCache.Get(dev, model); ok {
+		return prof.PeakMiB
+	}
+	return 0
 }
 
 // ModelVRAM returns the live VRAM footprint (MiB) of model's resident process

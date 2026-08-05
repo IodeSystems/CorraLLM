@@ -15,9 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/host"
-	"github.com/iodesystems/corrallm/internal/sysmem"
 )
 
 // Server supervises backends on this machine for a remote primary.
@@ -124,30 +122,14 @@ func (s *Server) helloRoute(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.hello())
 }
 
+// capacity answers the same measurement the heartbeat carries.
+//
+// It delegates to Probe rather than rebuilding it: the inline copy that used to
+// live here omitted PerProcess and Unified entirely, so this route reported a
+// unified-memory Mac as unable to attribute per-process memory while the
+// heartbeat — from the same binary, seconds apart — reported the opposite.
 func (s *Server) capacity(w http.ResponseWriter, _ *http.Request) {
-	var c Capacity
-	if st, err := gpu.Probe(); err != nil {
-		c.GPUError = err.Error()
-	} else {
-		const mib = 1024 * 1024
-		c.GPU = &DeviceMem{
-			Name:       st.Name,
-			TotalBytes: int64(st.TotalMiB) * mib,
-			UsedBytes:  int64(st.UsedMiB) * mib,
-			FreeBytes:  int64(st.FreeMiB) * mib,
-		}
-	}
-	if hm, err := sysmem.Probe(); err != nil {
-		c.HostError = err.Error()
-	} else {
-		c.Host = &DeviceMem{
-			Name:       "system",
-			TotalBytes: hm.TotalBytes,
-			UsedBytes:  hm.TotalBytes - hm.AvailableBytes,
-			FreeBytes:  hm.AvailableBytes,
-		}
-	}
-	writeJSON(w, c)
+	writeJSON(w, Probe())
 }
 
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {

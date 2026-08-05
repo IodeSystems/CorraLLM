@@ -59,6 +59,30 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.ActivityDetail)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "utilization",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/utilization",
+		Summary:     "Per-model pressure: slots in use, queue, promises made, and estimated vs measured wait.",
+		Tags:        []string{"observability"},
+	}, h.Utilization)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "serviceProfiles",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/utilization/profiles",
+		Summary:     "Per-caller service-time distribution: how long each caller's work occupies a slot, and how variable.",
+		Tags:        []string{"observability"},
+	}, h.ServiceProfiles)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "retryPromises",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/activity/promises",
+		Summary:     "Callers we told to come back later, when they are due, and whether they returned.",
+		Tags:        []string{"observability"},
+	}, h.RetryPromises)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "overview",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/overview",
@@ -355,6 +379,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UsageSeries)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "usageSeriesByModel",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/usage/series-by-model",
+		Summary:     "Per-served-model usage time-series, optionally scoped to one caller key.",
+		Tags:        []string{"observability"},
+	}, h.UsageSeriesByModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "queueDepth",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/usage/queue-depth",
@@ -433,6 +465,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Summary:     "One model in the shape the form edits, plus the fields the form does not cover.",
 		Tags:        []string{"config"},
 	}, h.GetModelSpec)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "probeModel",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/config/models/{name}/probe",
+		Summary:     "Ask a CONFIGURED model what it can do — context, slots, modalities, tools, measured footprint. Leaves it as it found it.",
+		Tags:        []string{"config"},
+	}, h.ProbeModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "trialModel",

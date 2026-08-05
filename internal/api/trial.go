@@ -97,3 +97,42 @@ func randomID() string {
 	}
 	return hex.EncodeToString(b)
 }
+
+// ProbeModelInput asks about a model that already exists.
+type ProbeModelInput struct {
+	Name string `path:"name" doc:"Served model name."`
+}
+
+// ProbeModel interrogates a CONFIGURED model, as opposed to TrialModel, which
+// runs a command that exists nowhere.
+//
+// Same report, different contract. A trial is an experiment on something not
+// yet written down: free memory only, never evicts, always torn down. A probe
+// asks about a declared model through the ordinary load path and leaves it
+// exactly as it found it — warm if it was warm, and resident under its own
+// rules if this call loaded it. Asking a model what it can do should not be
+// able to unload it.
+func (h *Handlers) ProbeModel(ctx context.Context, in *ProbeModelInput) (*TrialModelOutput, error) {
+	if h.Mgr == nil {
+		return nil, huma.Error503ServiceUnavailable("no process manager: probes unavailable")
+	}
+	var mu sync.Mutex
+	events := []proc.TrialEvent{}
+	res, runErr := h.Mgr.Probe(ctx, in.Name, func(e proc.TrialEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	})
+
+	out := &TrialModelOutput{}
+	out.Body.Events = events
+	out.Body.Result = res
+	out.Body.OK = runErr == nil
+	if runErr != nil {
+		// A 200 with the transcript, for the same reason a trial does it: the
+		// failure is the answer that was asked for, and an error status would
+		// discard the stages and logs that say why.
+		out.Body.Error = runErr.Error()
+	}
+	return out, nil
+}
