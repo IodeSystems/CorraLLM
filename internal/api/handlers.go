@@ -157,6 +157,7 @@ type ActivityRecord struct {
 	TTFBMs           int64   `json:"ttfbMs" doc:"Time to first response byte, milliseconds (0 if no body)."`
 	FinishReason     string  `json:"finishReason" doc:"Why the model stopped: stop (it chose to) | length (it hit a cap and did NOT finish) | tool_calls | content_filter. Empty if the backend reported none or the reply exceeded the capture cap."`
 	QueuedMS         int64   `json:"queuedMs" doc:"Time queued before admission/reject, milliseconds."`
+	RetryAfterMS     int64   `json:"retryAfterMs" doc:"The Retry-After we promised this caller on a 429, milliseconds; 0 when no promise was made. ts + retryAfterMs is when we told them to come back."`
 }
 
 // RecentActivityOutput is the newest-first activity list.
@@ -200,6 +201,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			TTFBMs:           a.TTFBMs,
 			FinishReason:     a.FinishReason,
 			QueuedMS:         a.QueuedMS,
+			RetryAfterMS:     a.RetryAfterMS,
 		})
 	}
 	return out, nil
@@ -240,10 +242,442 @@ func (h *Handlers) ActivityDetail(_ context.Context, in *ActivityDetailInput) (*
 			PromptPerSec: a.PromptPerSec, PredictedPerSec: a.PredictedPerSec,
 			CostUSD: a.CostUSD, AudioBytes: a.AudioBytes,
 			Error: a.Error, TTFBMs: a.TTFBMs, FinishReason: a.FinishReason, QueuedMS: a.QueuedMS,
+			RetryAfterMS: a.RetryAfterMS,
 		},
 		ReqBody:  a.ReqBody,
 		RespBody: a.RespBody,
 	}
+	return out, nil
+}
+
+// --- retry promises (P15) ---
+
+// RetryPromisesInput bounds the window, the row count, and optionally the caller.
+type RetryPromisesInput struct {
+	Limit   int    `query:"limit" default:"50" minimum:"1" maximum:"500" doc:"Max promises, newest first."`
+	Minutes int    `query:"minutes" default:"60" minimum:"1" maximum:"10080" doc:"Look back this many minutes."`
+	Key     string `query:"key" doc:"Filter to one caller key; empty returns all callers."`
+}
+
+// RetryPromiseRecord is one "come back later" we handed out, with the verdict on
+// what the caller did about it.
+type RetryPromiseRecord struct {
+	ID           int64  `json:"id" doc:"Activity row the promise was made on."`
+	TS           int64  `json:"ts" doc:"Unix millis we made the promise."`
+	Key          string `json:"key" doc:"Caller identity; empty for an unkeyed caller."`
+	SourceIP     string `json:"sourceIp" doc:"Client IP."`
+	Served       string `json:"served" doc:"Model they were asking for."`
+	Reason       string `json:"reason" doc:"Why we turned them away: rejected | queue-timeout | exhausted | bumped."`
+	RetryAfterMS int64  `json:"retryAfterMs" doc:"What we promised, milliseconds."`
+	DueMS        int64  `json:"dueMs" doc:"Unix millis we told them to come back (ts + retryAfterMs)."`
+	ReturnedMS   int64  `json:"returnedMs" doc:"Unix millis of the caller's next request; 0 if they have not been back."`
+	WaitedMS     int64  `json:"waitedMs" doc:"How long they actually waited before returning; 0 if they have not been back. Compare against retryAfterMs to judge the estimate."`
+	State        string `json:"state" doc:"waiting (due in the future, not back yet) | honored (returned at or after the promise) | early (returned before it) | gone (due passed, never returned)."`
+}
+
+// RetryPromisesOutput is the newest-first promise list.
+type RetryPromisesOutput struct {
+	Body struct {
+		Promises []RetryPromiseRecord `json:"promises" doc:"Promises, newest first."`
+		Waiting  int                  `json:"waiting" doc:"How many are still owed a slot — due in the future and not back yet."`
+	}
+}
+
+// classifyPromise is the ONE definition of what became of a "come back later".
+// Shared by the promises list and the utilization row so the two can never
+// report different counts of the same hour.
+func classifyPromise(now, dueMS, returnedMS int64) string {
+	switch {
+	case returnedMS == 0 && now < dueMS:
+		return "waiting" // due in the future, still owed a slot
+	case returnedMS == 0:
+		return "gone" // due passed, never came back
+	case returnedMS < dueMS:
+		return "early" // came back before we said to
+	default:
+		return "honored"
+	}
+}
+
+// RetryPromises lists the backoffs we handed out and what became of them.
+//
+// The list is the answer to "who did we tell to come back, and when" — a
+// question the activity log could not answer before the promise was recorded,
+// because a 429 row said only that a caller was refused. The state verdict is
+// the second half: a run of `early` means callers are ignoring Retry-After, and
+// a run of `gone` means we drove them off. Both are invisible from the 429 count
+// alone.
+func (h *Handlers) RetryPromises(_ context.Context, in *RetryPromisesInput) (*RetryPromisesOutput, error) {
+	limit, minutes := in.Limit, in.Minutes
+	if limit <= 0 {
+		limit = 50
+	}
+	if minutes <= 0 {
+		minutes = 60
+	}
+	now := time.Now().UnixMilli()
+	rows, err := h.Store.RetryPromises(now-int64(minutes)*60_000, limit, in.Key)
+	if err != nil {
+		return nil, err
+	}
+	out := &RetryPromisesOutput{}
+	out.Body.Promises = make([]RetryPromiseRecord, 0, len(rows))
+	for _, p := range rows {
+		due := p.TS + p.RetryAfterMS
+		rec := RetryPromiseRecord{
+			ID: p.ID, TS: p.TS, Key: p.Key, SourceIP: p.SourceIP, Served: p.Served,
+			Reason: p.Reason, RetryAfterMS: p.RetryAfterMS, DueMS: due, ReturnedMS: p.ReturnedMS,
+		}
+		rec.State = classifyPromise(now, due, p.ReturnedMS)
+		if rec.State == "waiting" {
+			out.Body.Waiting++
+		}
+		if p.ReturnedMS > 0 {
+			rec.WaitedMS = p.ReturnedMS - p.TS
+		}
+		out.Body.Promises = append(out.Body.Promises, rec)
+	}
+	return out, nil
+}
+
+// --- utilization (P15a) ---
+
+// UtilizationInput bounds the window the windowed columns are measured over.
+type UtilizationInput struct {
+	Minutes int `query:"minutes" default:"60" minimum:"1" maximum:"10080" doc:"Window for the promise and queue-wait columns."`
+}
+
+// UtilizationRow is one served model's pressure: what it is doing right now, and
+// what arriving at it has cost over the window.
+//
+// Deliberately per-model rather than one box-wide number. Capacity is not
+// fungible — a saturated 27B and an idle embedder summed into "1/6 in use" says
+// nothing true about either, and hides the only fact that matters (which thing
+// is full).
+type UtilizationRow struct {
+	Served string `json:"served" doc:"Served model or lane name."`
+	// Live, instantaneous — from the scheduler, summed over the backends this
+	// served name resolves to.
+	Capacity int `json:"capacity" doc:"Admission slots across this name's backends; 0 if none has been touched since start."`
+	Active   int `json:"active" doc:"Slots in use right now."`
+	Waiting  int `json:"waiting" doc:"Callers queued right now."`
+	// Windowed — from the activity log.
+	Promised   int `json:"promised" doc:"Promises made in the window that are still outstanding (due in the future, not back yet)."`
+	NotHonored int `json:"notHonored" doc:"Promises whose due time passed with no return — we told them to come back and they never did."`
+	Early      int `json:"early" doc:"Callers who came back BEFORE the time we gave them (ignoring Retry-After)."`
+	Turned     int `json:"turnedAway" doc:"Total promises made in the window, whatever became of them."`
+	// The two halves of "time to the back of the queue".
+	EstWaitMS     int64 `json:"estWaitMs" doc:"What we would tell a caller arriving right now to wait — the scheduler's own estimate, live. 0 if no dwell sample yet."`
+	RealWaitMS    int64 `json:"realWaitMs" doc:"Measured mean wait of requests that actually queued and were then admitted, over the window. 0 if nothing queued."`
+	MaxWaitMS     int64 `json:"maxWaitMs" doc:"Longest measured queue wait in the window."`
+	QueuedSamples int64 `json:"queuedSamples" doc:"How many requests queued at all — realWaitMs over 1 or 2 samples is not a trend."`
+
+	// Service-time shape, and what queueing theory makes of it.
+	ServiceMeanMS  int64   `json:"serviceMeanMs" doc:"Mean time a request actually occupied a slot (queue and cold-load excluded)."`
+	ServiceCV      float64 `json:"serviceCv" doc:"Coefficient of variation of service time. Above 1 means the mean is tail-dominated and position×mean badly under-estimates a queue."`
+	ServiceSamples int64   `json:"serviceSamples" doc:"Requests behind the service-time stats."`
+	Rho            float64 `json:"rho" doc:"Utilization over the window: total service time / (capacity × window). 0 if capacity is unknown."`
+	PKWaitMS       int64   `json:"pkWaitMs" doc:"Queueing-theory expected wait, ρ/(1−ρ)·E[S]·(1+CV²)/2 — what the measured distribution implies, versus what the scheduler estimates. 0 when not computable; see pkSaturated."`
+	PKSaturated    bool    `json:"pkSaturated" doc:"Utilization reached or passed 1 over the window: arrivals outpaced service and no finite steady-state wait exists."`
+
+	// Whether the configured queue bound can ever actually bind here.
+	ConfiguredDepth  int  `json:"configuredDepth" doc:"scheduler.maxQueueDepth as configured (0 = unbounded)."`
+	ReachableDepth   int  `json:"reachableDepth" doc:"How deep the queue can get before maxWait times the front waiter out: capacity × maxWait / meanService. 0 if not computable."`
+	DepthUnreachable bool `json:"depthUnreachable" doc:"Configured depth exceeds what maxWait allows — the depth bound is dead config, callers always time out first."`
+}
+
+// UtilizationOutput is the per-model pressure table.
+type UtilizationOutput struct {
+	Body struct {
+		Rows    []UtilizationRow `json:"rows" doc:"One row per served model seen in the window (or busy right now), busiest first."`
+		Minutes int              `json:"minutes" doc:"The window the windowed columns cover."`
+	}
+}
+
+// Utilization reports per-model pressure: slots in use, queue depth, what we
+// promised callers we turned away, and both halves of the wait — what we
+// ESTIMATE a new arrival faces versus what arrivals measurably faced.
+//
+// The estimate/measured pair is the point. They are produced by different
+// machinery (a live EWMA projection vs. recorded queue time) and a persistent
+// gap between them means the number we hand callers does not describe the box
+// they are calling.
+func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*UtilizationOutput, error) {
+	minutes := in.Minutes
+	if minutes <= 0 {
+		minutes = 60
+	}
+	now := time.Now().UnixMilli()
+	since := now - int64(minutes)*60_000
+
+	rows := map[string]*UtilizationRow{}
+	row := func(served string) *UtilizationRow {
+		r := rows[served]
+		if r == nil {
+			r = &UtilizationRow{Served: served}
+			rows[served] = r
+		}
+		return r
+	}
+
+	// Row set: everything asked for in the window. A model nobody called is not
+	// "0% utilized", it is absent.
+	seen, err := h.Store.ModelsSeenSince(since)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range seen {
+		row(s)
+	}
+
+	// Live load, keyed by BACKEND, folded onto the served names that resolve to
+	// it. A lane's members each contribute their own slots.
+	byBackend := map[string]sched.BackendLoad{}
+	for _, b := range h.Sched.Snapshot().Backends {
+		byBackend[b.Backend] = b
+	}
+	attach := func(served string) {
+		cands, ok := h.config().ResolveServed(served)
+		if !ok {
+			return
+		}
+		r := row(served)
+		for _, c := range cands {
+			b, ok := byBackend[c.Name]
+			if !ok {
+				continue // never admitted here since start; no live state to report
+			}
+			r.Capacity += b.Capacity
+			r.Active += b.Active
+			r.Waiting += b.Waiting
+			// Min across candidates, matching how a spill walk reports backpressure
+			// (keepSoonest): the earliest moment ANY path could take the caller.
+			ms := b.EstWait.Milliseconds()
+			if ms > 0 && (r.EstWaitMS == 0 || ms < r.EstWaitMS) {
+				r.EstWaitMS = ms
+			}
+		}
+	}
+	for s := range rows {
+		attach(s)
+	}
+	// A model busy RIGHT NOW but with no completed request in the window has no
+	// activity row yet — it would vanish from a log-only row set precisely when
+	// it is under load. Pull it in from the live snapshot.
+	for name, b := range byBackend {
+		if b.Active == 0 && b.Waiting == 0 {
+			continue
+		}
+		if _, ok := rows[name]; !ok {
+			row(name)
+			attach(name)
+		}
+	}
+
+	// Measured queue wait.
+	waits, err := h.Store.QueueWaitByModel(since)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range waits {
+		if r, ok := rows[w.Served]; ok {
+			r.RealWaitMS, r.MaxWaitMS, r.QueuedSamples = w.MeanMS, w.MaxMS, w.Samples
+		}
+	}
+
+	// Service-time shape, and what a queueing model makes of it. This is the
+	// theoretical third opinion beside est (what the scheduler predicts) and real
+	// (what callers measured) — produced from the distribution rather than from
+	// either mechanism, so agreement between any two of them means something.
+	svc, err := h.Store.ServiceStats(since, false)
+	if err != nil {
+		return nil, err
+	}
+	windowMS := float64(minutes) * 60_000
+	maxWait, _ := time.ParseDuration(h.config().Scheduler.MaxWait)
+	depth := h.config().Scheduler.MaxQueueDepth
+	for _, s := range svc {
+		r, ok := rows[s.Served]
+		if !ok {
+			continue
+		}
+		cv := s.CV()
+		r.ServiceMeanMS, r.ServiceCV, r.ServiceSamples = int64(s.MeanMS), cv, s.N
+		r.ConfiguredDepth = depth
+		if r.Capacity > 0 {
+			// Utilization measured over the window rather than from an instantaneous
+			// active/capacity read: a snapshot of a bursty hour is mostly noise, and
+			// ρ is the term the wait is most sensitive to near saturation.
+			r.Rho = float64(s.TotalMS) / (float64(r.Capacity) * windowMS)
+			if r.Rho >= 1 {
+				r.PKSaturated = true
+			} else if r.Rho > 0 {
+				// Pollaczek–Khinchine. Assumes steady state, which a bursty hour is
+				// not — this is an order-of-magnitude read, not a promise.
+				r.PKWaitMS = int64(r.Rho / (1 - r.Rho) * s.MeanMS * (1 + cv*cv) / 2)
+			}
+			if maxWait > 0 && s.MeanMS > 0 {
+				r.ReachableDepth = int(float64(r.Capacity) * float64(maxWait.Milliseconds()) / s.MeanMS)
+				// Dead config: the depth bound can never bind because maxWait always
+				// evicts the front of the queue first. Every rejection will be a
+				// timeout, and the configured number is describing a queue that
+				// cannot exist.
+				r.DepthUnreachable = depth > 0 && depth > r.ReachableDepth
+			}
+		}
+	}
+
+	// Promise outcomes, classified by the same function the promises panel uses.
+	promises, err := h.Store.RetryPromises(since, 2000, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range promises {
+		r, ok := rows[p.Served]
+		if !ok {
+			r = row(p.Served)
+		}
+		r.Turned++
+		switch classifyPromise(now, p.TS+p.RetryAfterMS, p.ReturnedMS) {
+		case "waiting":
+			r.Promised++
+		case "gone":
+			r.NotHonored++
+		case "early":
+			r.Early++
+		}
+	}
+
+	out := &UtilizationOutput{}
+	out.Body.Minutes = minutes
+	out.Body.Rows = make([]UtilizationRow, 0, len(rows))
+	for _, r := range rows {
+		out.Body.Rows = append(out.Body.Rows, *r)
+	}
+	// Busiest first: queued callers, then slots in use, then how many were turned
+	// away — the order an operator scans for "what is under pressure".
+	sort.Slice(out.Body.Rows, func(i, j int) bool {
+		a, b := out.Body.Rows[i], out.Body.Rows[j]
+		if a.Waiting != b.Waiting {
+			return a.Waiting > b.Waiting
+		}
+		if a.Active != b.Active {
+			return a.Active > b.Active
+		}
+		if a.Turned != b.Turned {
+			return a.Turned > b.Turned
+		}
+		return a.Served < b.Served
+	})
+	return out, nil
+}
+
+// --- caller service profiles (P15a) ---
+
+// shrinkPseudoCount is the weight given to the model-level prior when blending a
+// caller's own statistics with it.
+//
+// A caller with 20 requests does not have a reliable variance — one 400-second
+// outlier can triple its CV — and letting that number stand alone means a fluke
+// sets policy. Blending toward the model's aggregate with a pseudo-count of 30
+// makes a small sample say roughly "mostly the model, nudged by what I've seen",
+// converging to the caller's own numbers as evidence accumulates. Both the raw
+// and blended figures are reported: the adjustment must be auditable, not
+// silently applied.
+const shrinkPseudoCount = 30.0
+
+// shrink blends a caller's statistic toward the model-level prior by sample count.
+func shrink(sample float64, n int64, prior float64) float64 {
+	return (float64(n)*sample + shrinkPseudoCount*prior) / (float64(n) + shrinkPseudoCount)
+}
+
+// ServiceProfilesInput bounds the window.
+type ServiceProfilesInput struct {
+	Minutes int `query:"minutes" default:"1440" minimum:"1" maximum:"43200" doc:"Window to profile over. Wider than the utilization window by default — a distribution needs samples."`
+}
+
+// ServiceProfileRow is one caller's service-time profile on one model, next to
+// that model's overall profile.
+type ServiceProfileRow struct {
+	Served  string  `json:"served" doc:"Served model name."`
+	Key     string  `json:"key" doc:"Caller identity; empty for unkeyed callers."`
+	N       int64   `json:"n" doc:"Requests behind these numbers."`
+	MeanMS  int64   `json:"meanMs" doc:"This caller's mean service time on this model."`
+	StdMS   int64   `json:"stdMs" doc:"Standard deviation of service time."`
+	MaxMS   int64   `json:"maxMs" doc:"Longest single request."`
+	CV      float64 `json:"cv" doc:"Coefficient of variation, stddev/mean."`
+	ShareMS int64   `json:"shareMs" doc:"Total slot time this caller consumed — who the model is actually working for."`
+	// Blended toward the model prior by sample count.
+	ShrunkMeanMS int64   `json:"shrunkMeanMs" doc:"Mean blended toward the model-level prior by sample count — what an estimator should use instead of a small sample."`
+	ShrunkCV     float64 `json:"shrunkCv" doc:"CV blended toward the model-level prior."`
+	// The prior itself, so the blend is auditable.
+	ModelMeanMS int64   `json:"modelMeanMs" doc:"The model's overall mean service time (the prior)."`
+	ModelCV     float64 `json:"modelCv" doc:"The model's overall CV (the prior)."`
+	// VarianceFactor is the (1+CV²)/2 term from Pollaczek–Khinchine: the multiple
+	// by which this caller's variability alone inflates the wait of anyone queued
+	// behind them, over what a mean-only estimate predicts.
+	VarianceFactor float64 `json:"varianceFactor" doc:"(1+CV²)/2 — how much this caller's variability alone inflates the wait of whoever is behind them, versus a mean-only estimate. 1.0 means constant-time requests."`
+}
+
+// ServiceProfilesOutput is the per-caller profile table.
+type ServiceProfilesOutput struct {
+	Body struct {
+		Rows    []ServiceProfileRow `json:"rows" doc:"One row per (model, caller), heaviest consumer first."`
+		Minutes int                 `json:"minutes" doc:"The window profiled."`
+	}
+}
+
+// ServiceProfiles reports how long each caller's requests actually occupy a slot,
+// and how variable that is.
+//
+// The scheduler carries ONE dwell EWMA per backend, so every caller of a model is
+// predicted by the same scalar. This shows what that scalar averages over: on one
+// model, callers can differ several-fold in mean and several-fold again in
+// variability, which is precisely the information a position×mean estimate throws
+// away.
+//
+// Read-only. Nothing here feeds admission or the Retry-After a caller receives.
+func (h *Handlers) ServiceProfiles(_ context.Context, in *ServiceProfilesInput) (*ServiceProfilesOutput, error) {
+	minutes := in.Minutes
+	if minutes <= 0 {
+		minutes = 1440
+	}
+	since := time.Now().UnixMilli() - int64(minutes)*60_000
+
+	priors, err := h.Store.ServiceStats(since, false)
+	if err != nil {
+		return nil, err
+	}
+	prior := map[string]store.ServiceStat{}
+	for _, p := range priors {
+		prior[p.Served] = p
+	}
+	perKey, err := h.Store.ServiceStats(since, true)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &ServiceProfilesOutput{}
+	out.Body.Minutes = minutes
+	out.Body.Rows = make([]ServiceProfileRow, 0, len(perKey))
+	for _, s := range perKey {
+		p := prior[s.Served]
+		cv := s.CV()
+		row := ServiceProfileRow{
+			Served: s.Served, Key: s.Key, N: s.N,
+			MeanMS: int64(s.MeanMS), StdMS: int64(s.StdMS), MaxMS: s.MaxMS, CV: cv,
+			ShareMS:      s.TotalMS,
+			ShrunkMeanMS: int64(shrink(s.MeanMS, s.N, p.MeanMS)),
+			ShrunkCV:     shrink(cv, s.N, p.CV()),
+			ModelMeanMS:  int64(p.MeanMS), ModelCV: p.CV(),
+			VarianceFactor: (1 + cv*cv) / 2,
+		}
+		out.Body.Rows = append(out.Body.Rows, row)
+	}
+	// Heaviest consumer first: whose work the box actually spent its time on.
+	sort.Slice(out.Body.Rows, func(i, j int) bool {
+		return out.Body.Rows[i].ShareMS > out.Body.Rows[j].ShareMS
+	})
 	return out, nil
 }
 
@@ -404,12 +838,16 @@ type UsageRollupInput struct {
 
 // RollupRow is aggregated usage for one served model.
 type RollupRow struct {
-	Served           string  `json:"served" doc:"Served model name."`
-	Requests         int64   `json:"requests" doc:"Request count."`
-	PromptTokens     int64   `json:"promptTokens" doc:"Total prompt tokens."`
-	CompletionTokens int64   `json:"completionTokens" doc:"Total completion tokens."`
-	DwellMS          int64   `json:"dwellMs" doc:"Total dwell, milliseconds."`
-	CostUSD          float64 `json:"costUsd" doc:"Total cost, USD."`
+	Served             string  `json:"served" doc:"Served model name."`
+	Requests           int64   `json:"requests" doc:"Request count."`
+	PromptTokens       int64   `json:"promptTokens" doc:"Total prompt tokens."`
+	CompletionTokens   int64   `json:"completionTokens" doc:"Total completion tokens."`
+	DwellMS            int64   `json:"dwellMs" doc:"Total dwell, milliseconds."`
+	CostUSD            float64 `json:"costUsd" doc:"Total cost, USD."`
+	CachedTokens       int64   `json:"cachedTokens" doc:"Prompt tokens the backend served from cache instead of reprocessing."`
+	CacheReports       int64   `json:"cacheReports" doc:"Requests that reported any cache hit. ZERO MEANS UNKNOWN, NOT 0% — a backend with no prompt cache (embeddings, most remote providers) never reports, and showing that as a measured miss rate invents a problem."`
+	CacheHitRate       float64 `json:"cacheHitRate" doc:"cachedTokens / promptTokens, 0..1. Only meaningful when cacheReports > 0."`
+	CachedSecondsSaved float64 `json:"cachedSecondsSaved" doc:"Estimated prompt-processing time avoided: cachedTokens / mean observed prompt tokens-per-second. An estimate — the speed varies with batch and context."`
 }
 
 // UsageRollupOutput is per-model usage plus a grand total over the window.
@@ -439,6 +877,13 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 			Served: r.Served, Requests: r.Requests,
 			PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens,
 			DwellMS: r.DwellMS, CostUSD: r.CostUSD,
+			CachedTokens: r.CachedTokens, CacheReports: r.CacheReports,
+		}
+		if r.PromptTokens > 0 {
+			row.CacheHitRate = float64(r.CachedTokens) / float64(r.PromptTokens)
+		}
+		if r.PromptPerSec > 0 {
+			row.CachedSecondsSaved = float64(r.CachedTokens) / r.PromptPerSec
 		}
 		out.Body.Rows = append(out.Body.Rows, row)
 		out.Body.Total.Requests += row.Requests
@@ -446,6 +891,15 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		out.Body.Total.CompletionTokens += row.CompletionTokens
 		out.Body.Total.DwellMS += row.DwellMS
 		out.Body.Total.CostUSD += row.CostUSD
+		out.Body.Total.CachedTokens += row.CachedTokens
+		out.Body.Total.CacheReports += row.CacheReports
+		out.Body.Total.CachedSecondsSaved += row.CachedSecondsSaved
+	}
+	// The grand total's rate is recomputed from the totals, not averaged across
+	// rows: a model with 12 requests must not weigh as much as one with 14,000.
+	if out.Body.Total.PromptTokens > 0 {
+		out.Body.Total.CacheHitRate =
+			float64(out.Body.Total.CachedTokens) / float64(out.Body.Total.PromptTokens)
 	}
 	return out, nil
 }
@@ -468,6 +922,9 @@ type KeyUsageRow struct {
 	DwellMS          int64   `json:"dwellMs" doc:"Total time in request, milliseconds."`
 	CostUSD          float64 `json:"costUsd" doc:"Total cost, USD."`
 	EnergyKwh        float64 `json:"energyKwh" doc:"Energy in kWh (cost / costPerKwh; 0 if rate unset)."`
+	CachedTokens     int64   `json:"cachedTokens" doc:"Prompt tokens served from cache rather than reprocessed."`
+	CacheReports     int64   `json:"cacheReports" doc:"Requests that reported any cache hit. Zero means unknown, not 0%."`
+	CacheHitRate     float64 `json:"cacheHitRate" doc:"cachedTokens / promptTokens, 0..1. Only meaningful when cacheReports > 0. A property of how the caller prompts: a stable system prefix reuses cache, a shuffled one never does."`
 }
 
 // UsageByKeyOutput is per-key usage over the window, costliest first.
@@ -498,6 +955,10 @@ func (h *Handlers) UsageByKey(_ context.Context, in *UsageByKeyInput) (*UsageByK
 			Key: r.Key, Requests: r.Requests,
 			PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens,
 			DwellMS: r.DwellMS, CostUSD: r.CostUSD,
+			CachedTokens: r.CachedTokens, CacheReports: r.CacheReports,
+		}
+		if r.PromptTokens > 0 {
+			row.CacheHitRate = float64(r.CachedTokens) / float64(r.PromptTokens)
 		}
 		if rate > 0 {
 			row.EnergyKwh = r.CostUSD / rate
@@ -540,37 +1001,111 @@ type UsageSeriesOutput struct {
 
 const maxSeriesBuckets = 600
 
-// UsageSeries returns per-key time series (requests/cost/energy/dwell) over a
-// window, bucketed for charting. Buckets are dense (0-filled) so every key's
-// Points align to the shared Buckets axis.
-func (h *Handlers) UsageSeries(_ context.Context, in *UsageSeriesInput) (*UsageSeriesOutput, error) {
-	windowHours := in.WindowHours
+// seriesAxis builds the dense, shared time axis every series chart plots against:
+// bucket starts ascending, plus the position index used to place a row.
+//
+// Shared by the per-key and per-model series so the two charts on a page cannot
+// end up on subtly different axes — same coarsening rule, same alignment, same
+// number of points, so they can be read against each other.
+func seriesAxis(windowHours, bucketMinutes int, now int64) (buckets []int64, index map[int64]int, bucketMS, sinceMS int64) {
 	if windowHours <= 0 {
 		windowHours = 24
 	}
-	bucketMin := in.BucketMinutes
-	if bucketMin <= 0 {
-		bucketMin = 60
+	if bucketMinutes <= 0 {
+		bucketMinutes = 60
 	}
 	windowMS := int64(windowHours) * 3600_000
-	bucketMS := int64(bucketMin) * 60_000
-	// Coarsen so the axis never exceeds maxSeriesBuckets points.
+	bucketMS = int64(bucketMinutes) * 60_000
 	for windowMS/bucketMS > maxSeriesBuckets {
 		bucketMS *= 2
 	}
-
-	now := time.Now().UnixMilli()
 	end := (now / bucketMS) * bucketMS
 	start := ((now - windowMS) / bucketMS) * bucketMS
-
-	var buckets []int64
-	index := map[int64]int{} // bucket start → position in buckets
+	index = map[int64]int{}
 	for b := start; b <= end; b += bucketMS {
 		index[b] = len(buckets)
 		buckets = append(buckets, b)
 	}
+	return buckets, index, bucketMS, now - windowMS
+}
 
-	rows, err := h.Store.RollupSeries(now-windowMS, bucketMS)
+// --- per-model usage series (P20) ---
+
+// UsageSeriesByModelInput sets the window, granularity, and optional caller scope.
+type UsageSeriesByModelInput struct {
+	WindowHours   int    `query:"windowHours" default:"24" minimum:"1" maximum:"8760" doc:"Trailing window in hours."`
+	BucketMinutes int    `query:"bucketMinutes" default:"60" minimum:"1" maximum:"1440" doc:"Bucket width in minutes."`
+	Key           string `query:"key" doc:"Narrow to one caller key; empty covers all callers."`
+}
+
+// ModelSeries is one served model's dense time series.
+type ModelSeries struct {
+	Served string        `json:"served" doc:"Served model name."`
+	Points []SeriesPoint `json:"points" doc:"One point per bucket, aligned to Buckets."`
+}
+
+// UsageSeriesByModelOutput is a shared time axis plus one dense series per model.
+type UsageSeriesByModelOutput struct {
+	Body struct {
+		BucketMinutes int           `json:"bucketMinutes" doc:"Effective bucket width (may be coarsened)."`
+		Buckets       []int64       `json:"buckets" doc:"Bucket start times, unix millis, ascending."`
+		Models        []ModelSeries `json:"models" doc:"Per-model dense series, costliest first."`
+	}
+}
+
+// UsageSeriesByModel returns per-model time series over a window, optionally
+// scoped to one caller — the "on what" axis to UsageSeries's "by whom".
+func (h *Handlers) UsageSeriesByModel(_ context.Context, in *UsageSeriesByModelInput) (*UsageSeriesByModelOutput, error) {
+	buckets, index, bucketMS, sinceMS := seriesAxis(in.WindowHours, in.BucketMinutes, time.Now().UnixMilli())
+	rows, err := h.Store.RollupSeriesByModel(sinceMS, bucketMS, in.Key)
+	if err != nil {
+		return nil, err
+	}
+	rate := h.config().CostPerKwh
+	type acc struct {
+		points    []SeriesPoint
+		totalCost float64
+	}
+	byModel := map[string]*acc{}
+	for _, r := range rows {
+		pos, ok := index[r.BucketTS]
+		if !ok {
+			continue // outside the dense axis (clock skew); skip
+		}
+		a := byModel[r.Served]
+		if a == nil {
+			a = &acc{points: make([]SeriesPoint, len(buckets))}
+			byModel[r.Served] = a
+		}
+		energy := 0.0
+		if rate > 0 {
+			energy = r.CostUSD / rate
+		}
+		a.points[pos] = SeriesPoint{
+			Requests: r.Requests, CostUSD: r.CostUSD, EnergyKwh: energy, DwellMS: r.DwellMS,
+		}
+		a.totalCost += r.CostUSD
+	}
+
+	out := &UsageSeriesByModelOutput{}
+	out.Body.BucketMinutes = int(bucketMS / 60_000)
+	out.Body.Buckets = buckets
+	out.Body.Models = make([]ModelSeries, 0, len(byModel))
+	for m, a := range byModel {
+		out.Body.Models = append(out.Body.Models, ModelSeries{Served: m, Points: a.points})
+	}
+	sort.Slice(out.Body.Models, func(i, j int) bool {
+		return byModel[out.Body.Models[i].Served].totalCost > byModel[out.Body.Models[j].Served].totalCost
+	})
+	return out, nil
+}
+
+// UsageSeries returns per-key time series (requests/cost/energy/dwell) over a
+// window, bucketed for charting. Buckets are dense (0-filled) so every key's
+// Points align to the shared Buckets axis.
+func (h *Handlers) UsageSeries(_ context.Context, in *UsageSeriesInput) (*UsageSeriesOutput, error) {
+	buckets, index, bucketMS, sinceMS := seriesAxis(in.WindowHours, in.BucketMinutes, time.Now().UnixMilli())
+	rows, err := h.Store.RollupSeries(sinceMS, bucketMS)
 	if err != nil {
 		return nil, err
 	}
@@ -1048,24 +1583,28 @@ type ServerDef struct {
 // Spawnable models carry their cmd; pure-proxy models have an empty cmd and
 // forward to Target. Auth headers on remote targets are NOT exposed.
 type ModelDef struct {
-	Name          string         `json:"name" doc:"Served model name."`
-	Persistent    bool           `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
-	TTL           string         `json:"ttl" doc:"Idle keep-warm window (sticky)."`
-	EvictCost     string         `json:"evictCost" doc:"Eviction resistance (sticky)."`
-	Spawnable     bool           `json:"spawnable" doc:"True if a local process backs it — its own cmd, or its hosting extension's."`
-	Remote        bool           `json:"remote" doc:"True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."`
-	ProcKey       string         `json:"procKey" doc:"Backing process identity; an extension's models share one."`
-	Modalities    []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
-	Capability    string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
-	Type          string         `json:"type" doc:"Cost class (chat | embed | openrouter | …)."`
-	Quality       float64        `json:"quality" doc:"Relative quality rank. Fractional tiers are legal — a model that belongs between two existing tiers is 1.5, not a renumbered ladder."`
-	Server        string         `json:"server" doc:"Server it draws capacity from (spawned only)."`
-	Target        string         `json:"target" doc:"Forward URL (scheme://host:port; headers redacted)."`
-	MaxConcurrent int            `json:"maxConcurrent" doc:"Admission slots."`
-	MaxTokens     int            `json:"maxTokens" doc:"max_tokens clamp when degraded onto (0 = none)."`
-	Cmd           string         `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
-	Notes         string         `json:"notes" doc:"Free text kept with this model — why it is configured the way it is. Carried in config and editable in the dashboard."`
-	Upstream      string         `json:"upstream" doc:"The id the BACKEND knows this model by, when it differs from the served name (the alias). Empty means the backend uses the served name."`
+	Name       string         `json:"name" doc:"Served model name."`
+	Persistent bool           `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
+	TTL        string         `json:"ttl" doc:"Idle keep-warm window (sticky)."`
+	EvictCost  string         `json:"evictCost" doc:"Eviction resistance (sticky)."`
+	Spawnable  bool           `json:"spawnable" doc:"True if a local process backs it — its own cmd, or its hosting extension's."`
+	Remote     bool           `json:"remote" doc:"True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."`
+	ProcKey    string         `json:"procKey" doc:"Backing process identity; an extension's models share one."`
+	Modalities []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
+	Capability string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
+	// ContextPerRequest is the window one request may use. Surfaced because it
+	// is the difference between a model that can read a document and one that
+	// cannot, and it was previously invisible outside the config file.
+	ContextPerRequest int     `json:"contextPerRequest" doc:"Context window guaranteed per request (0 = whatever the backend was launched with, undivided)."`
+	Type              string  `json:"type" doc:"Cost class (chat | embed | openrouter | …)."`
+	Quality           float64 `json:"quality" doc:"Relative quality rank. Fractional tiers are legal — a model that belongs between two existing tiers is 1.5, not a renumbered ladder."`
+	Server            string  `json:"server" doc:"Server it draws capacity from (spawned only)."`
+	Target            string  `json:"target" doc:"Forward URL (scheme://host:port; headers redacted)."`
+	MaxConcurrent     int     `json:"maxConcurrent" doc:"Admission slots."`
+	MaxTokens         int     `json:"maxTokens" doc:"max_tokens clamp when degraded onto (0 = none)."`
+	Cmd               string  `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
+	Notes             string  `json:"notes" doc:"Free text kept with this model — why it is configured the way it is. Carried in config and editable in the dashboard."`
+	Upstream          string  `json:"upstream" doc:"The id the BACKEND knows this model by, when it differs from the served name (the alias). Empty means the backend uses the served name."`
 	// Pause state rides on the model definition rather than on the residency
 	// snapshot because a paused model has no process to snapshot — that is the
 	// whole point of it — and would therefore be invisible there.
@@ -1247,7 +1786,8 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	for name, m := range h.config().Models {
 		md := ModelDef{
 			Name: name, Persistent: m.Persistent, Capability: config.ModelCapability(m),
-			Modalities: modalityViews(m.EffectiveModalities(costModel.IsAudioType(m.Type))),
+			ContextPerRequest: m.ContextPerRequest,
+			Modalities:        modalityViews(m.EffectiveModalities(costModel.IsAudioType(m.Type))),
 			// Spawnable off m.Cmd alone was wrong for an extension's models: their
 			// cmd lives on the extension, so oidio-stt (a real local process)
 			// reported spawnable:false and the UI labelled it a proxy.

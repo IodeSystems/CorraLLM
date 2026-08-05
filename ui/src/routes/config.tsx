@@ -76,6 +76,10 @@ const ConfigDoc = graphql(/* GraphQL */ `
           maxConcurrent
           persistent
           ttl
+          modalities {
+            modality
+          }
+          contextPerRequest
         }
         lanes {
           name
@@ -161,6 +165,32 @@ const UpsertModelDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const TrialModelDoc = graphql(/* GraphQL */ `
+  mutation TrialModel($body: corrallm_TrialModelInputBodyInput!) {
+    corrallm {
+      trialModel(body: $body) {
+        ok
+        error
+        result {
+          upstream
+          memoryMiB
+          hasUI
+          failedStage
+          contextLength
+          slots
+          modalities
+          supportsTools
+        }
+        events {
+          stage
+          ok
+          msg
+        }
+      }
+    }
+  }
+`)
+
 const MintTokenDoc = graphql(/* GraphQL */ `
   mutation MintEnrollmentToken($body: corrallm_MintEnrollmentTokenInputBodyInput!) {
     corrallm {
@@ -205,6 +235,7 @@ function ConfigPage() {
   const [editing, setEditing] = useState<Edit | null>(null)
   const [err, setErr] = useState('')
   const [minted, setMinted] = useState<{ command: string; expires: string } | null>(null)
+  const [trial, setTrial] = useState<TrialReport | null>(null)
 
   // A model is edited through a FORM by default and YAML when it needs to be.
   //
@@ -222,6 +253,51 @@ function ConfigPage() {
       setEditing(null)
       setErr('')
       qc.invalidateQueries({ queryKey: ['config'] })
+    },
+    onError: (e: unknown) => setErr(extractMessage(e)),
+  })
+
+  // Trial: spawn the form's CURRENT contents, ask the backend what it became,
+  // and fold the answers back into the form. It writes nothing to config.
+  //
+  // This is what stops the form asking for things the model already knows.
+  // contextPerRequest, maxConcurrent, the upstream id and the footprint were
+  // all fields an operator had to discover elsewhere and type in; the backend
+  // reports every one of them on request.
+  const runTrial = useMutation({
+    mutationFn: (f: Edit) =>
+      gqlClient.request(TrialModelDoc, {
+        body: {
+          name: f.name || 'trial',
+          cmd: f.spec.cmd,
+          server: f.spec.server,
+          proxy: f.spec.proxy,
+          ramUsage: f.spec.ramUsage,
+        },
+      }),
+    onSuccess: (d) => {
+      const t = d.corrallm.trialModel
+      if (!t) return
+      const r = t.result
+      setTrial({
+        ok: !!t.ok,
+        error: t.error ?? '',
+        failedStage: r?.failedStage ?? '',
+        // Long crosses the wire as a string; the report holds numbers.
+        contextLength: Number(r?.contextLength ?? 0),
+        slots: Number(r?.slots ?? 0),
+        memoryMiB: Number(r?.memoryMiB ?? 0),
+        upstream: r?.upstream ?? '',
+        modalities: (r?.modalities ?? []) as string[],
+        supportsTools: !!r?.supportsTools,
+        hasUI: !!r?.hasUI,
+        events: (t.events ?? []).map((e) => ({
+          stage: e?.stage ?? '',
+          ok: !!e?.ok,
+          msg: e?.msg ?? '',
+        })),
+      })
+      setErr('')
     },
     onError: (e: unknown) => setErr(extractMessage(e)),
   })
@@ -589,6 +665,17 @@ function ConfigPage() {
                       </Tooltip>
                     )}
                     <Chip size="small" color="info" variant="outlined" label={m.capability} />
+                    {/* What it can actually TAKE. A model that accepts images
+                        looked identical to one that does not, so the only way
+                        to find out was to send one and see. */}
+                    {(m.modalities ?? [])
+                      .map((x) => x?.modality)
+                      .filter((x): x is string => !!x && x !== 'text')
+                      .map((mod) => (
+                        <Tooltip key={mod} title={`Accepts ${mod} input`}>
+                          <Chip size="small" color="success" variant="outlined" label={mod} />
+                        </Tooltip>
+                      ))}
                     {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
                     {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
                   </Box>
@@ -596,6 +683,10 @@ function ConfigPage() {
                     <Stat label="Quality" value={m.quality} />
                     <Stat label="Type" value={m.type} />
                     <Stat label="Slots" value={m.maxConcurrent} />
+                    <Stat
+                      label="Context"
+                      value={m.contextPerRequest ? Number(m.contextPerRequest).toLocaleString() : '—'}
+                    />
                     <Stat label="Target" value={m.target || '—'} />
                   </Box>
                   {m.notes && (
@@ -677,10 +768,95 @@ function ConfigPage() {
             </Tabs>
           )}
           <DialogContent>
+            {trial && editing.kind === 'model' && (
+              <Alert
+                severity={trial.ok ? 'success' : 'error'}
+                sx={{ mb: 2 }}
+                action={
+                  trial.ok ? (
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        // Only fields the backend actually reported. A zero
+                        // here means "it did not say", and overwriting a typed
+                        // value with a zero would be worse than leaving it.
+                        const spec = { ...editing.spec }
+                        if (trial.slots > 0) spec.maxConcurrent = trial.slots
+                        if (trial.upstream && !trial.upstream.startsWith('/')) {
+                          spec.upstream = trial.upstream
+                        }
+                        if (trial.memoryMiB > 0) {
+                          const pool = servers.find((s) => s.server === spec.server)?.devicePool
+                          if (pool) {
+                            spec.ramUsage = {
+                              ...spec.ramUsage,
+                              [pool]: `${Math.ceil((trial.memoryMiB * 1.15) / 1024)}GB`,
+                            }
+                          }
+                        }
+                        setEditing({ ...editing, spec })
+                      }}
+                    >
+                      Use these
+                    </Button>
+                  ) : undefined
+                }
+              >
+                {trial.ok ? (
+                  <>
+                    <strong>It runs.</strong>{' '}
+                    {trial.contextLength > 0 && `context ${trial.contextLength.toLocaleString()}`}
+                    {trial.slots > 0 && ` · ${trial.slots} slot${trial.slots > 1 ? 's' : ''}`}
+                    {trial.memoryMiB > 0 && ` · ${(trial.memoryMiB / 1024).toFixed(1)} GB measured`}
+                    {trial.modalities.length > 0 && ` · ${trial.modalities.join(', ')}`}
+                    {trial.supportsTools && ' · tools'}
+                    {trial.hasUI && ' · web UI'}
+                    {trial.memoryMiB === 0 && (
+                      <Typography variant="caption" sx={{ display: 'block', mt: 0.5 }}>
+                        This host cannot measure a process footprint, so ramUsage still has to be
+                        declared by hand — that is the one number the trial cannot supply here.
+                      </Typography>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <strong>Failed at {trial.failedStage || 'startup'}.</strong> {trial.error}
+                    {trial.events.filter((e) => e.stage === 'log').length > 0 && (
+                      <Box
+                        sx={{
+                          mt: 1,
+                          maxHeight: 180,
+                          overflow: 'auto',
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        {trial.events
+                          .filter((e) => e.stage === 'log')
+                          .slice(-14)
+                          .map((e) => e.msg)
+                          .join('\n')}
+                      </Box>
+                    )}
+                  </>
+                )}
+              </Alert>
+            )}
             {editing.kind === 'model' && editing.mode === 'form' ? (
               <ModelForm
                 spec={editing.spec}
-                onChange={(spec) => setEditing({ ...editing, spec })}
+                // The form edits spec.name, but the ENTRY's name is what the
+                // save is keyed on. Two fields for one value: typing a name
+                // filled one and left the other empty, so a fully-filled form
+                // could never save. Mirror it while the name is still editable.
+                onChange={(spec) =>
+                  setEditing({
+                    ...editing,
+                    spec,
+                    name: editing.existing ? editing.name : spec.name,
+                  })
+                }
                 servers={serverOptions}
                 advanced={editing.advanced}
                 existing={editing.existing}
@@ -742,15 +918,43 @@ function ConfigPage() {
                 Delete
               </Button>
             )}
+            {editing.kind === 'model' && editing.mode === 'form' && (
+              <Button
+                disabled={runTrial.isPending}
+                onClick={() => {
+                  const why = whyNotTriable(editing)
+                  if (why) {
+                    setErr(why)
+                    return
+                  }
+                  setTrial(null)
+                  setErr('')
+                  runTrial.mutate(editing)
+                }}
+              >
+                {runTrial.isPending ? 'Trying…' : 'Trial'}
+              </Button>
+            )}
             <Button onClick={() => setEditing(null)}>Cancel</Button>
+            {/* Enabled even when the form is incomplete. A disabled Save
+                cannot explain itself, and "the button does nothing" is the
+                report that follows — the same failure a rejected Delete had.
+                Pressing it names what is missing. */}
             <Button
               variant="contained"
-              disabled={save.isPending || saveModelSpec.isPending || !saveable(editing)}
-              onClick={() =>
-                editing.kind === 'model' && editing.mode === 'form'
-                  ? saveModelSpec.mutate(editing)
-                  : save.mutate(editing)
-              }
+              disabled={save.isPending || saveModelSpec.isPending}
+              onClick={() => {
+                const why = whyNotSaveable(editing)
+                if (why) {
+                  setErr(why)
+                  return
+                }
+                if (editing.kind === 'model' && editing.mode === 'form') {
+                  saveModelSpec.mutate(editing)
+                } else {
+                  save.mutate(editing)
+                }
+              }}
             >
               Save
             </Button>
@@ -904,14 +1108,51 @@ function specFromGql(s: {
   }
 }
 
-// saveable gates the button on what the server would reject anyway, so a
-// missing required field is visible before the round trip rather than after it.
-// YAML is never gated here: its errors are the server's to explain.
-function saveable(e: Edit): boolean {
-  if (e.kind !== 'model' || e.mode !== 'form') return true
-  if (!e.name.trim() || !e.spec.proxy.trim()) return false
-  // A spawned model must name a server — config validation refuses it.
-  return !(e.spec.cmd.trim() !== '' && !e.spec.server)
+// TrialReport is what a trial told us, flattened for rendering.
+type TrialReport = {
+  ok: boolean
+  error: string
+  failedStage: string
+  contextLength: number
+  slots: number
+  memoryMiB: number
+  upstream: string
+  modalities: string[]
+  supportsTools: boolean
+  hasUI: boolean
+  events: { stage: string; ok: boolean; msg: string }[]
+}
+
+// whyNotTriable is deliberately laxer than whyNotSaveable: a trial needs only
+// enough to RUN, and the whole point is to discover the rest. Requiring a name
+// or a ramUsage before you may press it would recreate the problem it solves.
+function whyNotTriable(e: Edit): string {
+  const missing: string[] = []
+  if (!e.spec.cmd.trim()) missing.push('a spawn command')
+  if (!e.spec.server) missing.push('a server to run it on')
+  if (!e.spec.proxy.trim()) missing.push('the port it will listen on')
+  return missing.length ? 'Cannot trial yet — needs ' + missing.join(', and ') + '.' : ''
+}
+
+// whyNotSaveable returns the reason this form cannot be submitted, or "" when
+// it can. A STRING rather than a boolean, deliberately: the caller has to be
+// able to show it. Everything here is something the server would reject anyway;
+// catching it in the client only saves a round trip, so the wording matches what
+// the server would have said.
+//
+// YAML is never gated — its errors are the server's to explain, and it can
+// express things this form cannot check.
+function whyNotSaveable(e: Edit): string {
+  if (e.kind !== 'model' || e.mode !== 'form') return ''
+  const missing: string[] = []
+  if (!e.name.trim()) missing.push('a name (the id callers request)')
+  if (!e.spec.proxy.trim()) missing.push('a proxy target (a port, host:port, or URL)')
+  // A spawned model must name a server; config validation refuses it outright.
+  if (e.spec.cmd.trim() !== '' && !e.spec.server) {
+    missing.push('a server (a model with a spawn command has to run somewhere)')
+  }
+  if (missing.length === 0) return ''
+  return 'Cannot save yet — this model still needs ' + missing.join(', and ') + '.'
 }
 
 // blankModel seeds a new entry with the fields every model needs, so the first
