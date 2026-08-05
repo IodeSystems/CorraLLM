@@ -819,6 +819,36 @@ func (m *Manager) vramPool(server string) string {
 	return m.config().DevicePoolFor(server)
 }
 
+// devicePoolForModel is vramPool narrowed to ONE model: the pool whose card
+// actually holds this model's weights.
+//
+// ok=false ONLY when the model spans several device pools — a multi-GPU split,
+// where one measured total cannot be divided back across cards and charging it
+// to either would over-commit that card by whatever the other holds.
+//
+// A model naming no device pool keeps the server-wide answer it has always had.
+// That case is not ambiguity, it is silence, and declining it would be a
+// regression with teeth: a model with a measured profile but no declared
+// ramUsage would come back holding nothing at all, and the scheduler would
+// happily place another model on top of it.
+func (m *Manager) devicePoolForModel(mdl config.Model) (string, bool) {
+	cfg := m.config()
+	if cfg == nil {
+		return defaultVRAMPool, true
+	}
+	named := cfg.DevicePoolsNamedBy(mdl.Server, mdl.RAMUsage)
+	switch len(named) {
+	case 1:
+		return named[0], true
+	case 0:
+		return cfg.DevicePoolFor(mdl.Server), true
+	default:
+		slog.Debug("model spans several device pools; keeping declared ramUsage",
+			"server", mdl.Server, "pools", named)
+		return "", false
+	}
+}
+
 // unknownIfEmpty handles a model whose size is genuinely UNKNOWN: no measured
 // profile and no declared ramUsage.
 //
@@ -909,7 +939,7 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 	}
 	// Keyed by the device that RAN it, not the primary's own card — a model on
 	// an attached machine was previously filed under the primary's GPU.
-	dev := m.deviceNameFor(mdl.Server)
+	dev := m.deviceNameFor(mdl.Server, mdl.RAMUsage)
 	if dev == "" {
 		return m.unknownIfEmpty(name, mdl, usage)
 	}
@@ -928,7 +958,19 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 	}
 	measured := int64(est) * 1024 * 1024
 
-	pool := m.vramPool(mdl.Server)
+	// The pool the measurement is charged against must be the one whose CARD
+	// gave up the bytes. On a multi-GPU server the server-wide device pool is no
+	// longer that answer: charging a model running on gpu1 to gpu0 would inflate
+	// one budget while leaving the other looking free, and the scheduler would
+	// then place a second model onto memory that is already spoken for.
+	//
+	// A model that spans several device pools is deliberately left alone — see
+	// DevicePoolForModel. One measured total cannot be split back across cards,
+	// and guessing the split is how a pool gets over-committed silently.
+	pool, ok := m.devicePoolForModel(mdl)
+	if !ok {
+		return usage
+	}
 	declared := usage[pool]
 	if declared == measured {
 		return usage
@@ -952,6 +994,30 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 	return out
 }
 
+// modelDevice is the card a model's VRAM arithmetic must be done against.
+//
+// It matters most here, in slot tuning, because that arithmetic ends up in the
+// spawned command line: sizing slots against a 10 GiB card when the model runs
+// on a 32 GiB one throttles it to a fraction of the slots it can hold, and
+// sizing the other way round OOMs the spawn. Both are reachable from a bare
+// "first GPU" probe once a box has two cards, and which one you get depends on
+// the PCI bus order of hardware nobody thought was relevant.
+//
+// Falls back to the first-GPU probe when the model names no device-bound pool —
+// the single-GPU case, where "first" and "the one" are the same card.
+func (m *Manager) modelDevice(model string) (gpu.Stats, error) {
+	server := ""
+	var ramUsage map[string]string
+	if cfg := m.config(); cfg != nil {
+		server = cfg.Models[model].Server
+		ramUsage = cfg.Models[model].RAMUsage
+	}
+	if st, ok := m.localDeviceFor(server, ramUsage); ok {
+		return st, nil
+	}
+	return gpu.Probe()
+}
+
 // tuneCmd rewrites `--parallel N` in *cmdStr to the cached tuned slot count
 // for model on the current GPU, if a profile exists and the GPU is
 // probeable. Fail-safe by construction: any error (no tune cache, no GPU, no
@@ -969,7 +1035,7 @@ func (m *Manager) tuneCmd(model string, cmdStr *string, maxConcurrent, perReq in
 	if m.tuneCache == nil {
 		return 0
 	}
-	stats, err := gpu.Probe()
+	stats, err := m.modelDevice(model)
 	if err != nil {
 		slog.Debug("gpu probe unavailable; spawning with configured cmd", "model", model, "err", err)
 		return 0
@@ -1112,7 +1178,7 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 	}
 	// The device that ran it names the profile. On an agent-backed server that
 	// is the agent's hardware, reported on its heartbeat — not this machine's.
-	dev := m.deviceNameFor(mdl.Server)
+	dev := m.deviceNameFor(mdl.Server, mdl.RAMUsage)
 	if dev == "" {
 		slog.Debug("no device name; skipping vram measurement", "model", model)
 		return
@@ -1174,8 +1240,10 @@ func (m *Manager) sampleVRAMPeak(model string, h host.Handle) {
 		return
 	}
 	server := ""
+	var ramUsage map[string]string
 	if cfg := m.config(); cfg != nil {
 		server = cfg.Models[model].Server
+		ramUsage = cfg.Models[model].RAMUsage
 	}
 	t := time.NewTicker(vramSampleInterval)
 	defer t.Stop()
@@ -1184,7 +1252,7 @@ func (m *Manager) sampleVRAMPeak(model string, h host.Handle) {
 		case <-h.Done():
 			return
 		case <-t.C:
-			dev := m.deviceNameFor(server)
+			dev := m.deviceNameFor(server, ramUsage)
 			if dev == "" {
 				slog.Debug("vram peak sample: no device name", "model", model)
 				continue
@@ -1243,7 +1311,7 @@ func (m *Manager) TunedSlots(model string, configDefault int) int {
 }
 
 // deviceNameFor is the name a measurement should be FILED under: the device of
-// the machine that actually ran the model.
+// the machine — and now the CARD — that actually ran the model.
 //
 // gpu.Probe() answers for the process calling it, which on the primary is the
 // primary's own card — so every profile measured on an attached machine was
@@ -1252,10 +1320,19 @@ func (m *Manager) TunedSlots(model string, configDefault int) int {
 // genuinely different numbers: the same weights cost differently on different
 // hardware, which is the entire reason the cache is keyed by device at all.
 //
+// The same argument runs one level down once a host has two GPUs, and there it
+// bites harder because a bare Probe() reports whichever card holds nvidia-smi's
+// index 0 — a position that MOVED when a second card was installed. Profiles
+// measured on a 32 GiB card would start being filed under a 10 GiB one, and the
+// slot auto-tuner would then size slots against VRAM that belongs to different
+// hardware. So a model whose ramUsage names a device-bound pool is resolved
+// through that pool's declared card, by UUID, not by position.
+//
 // The agent reports its device name on every heartbeat, so for an agent-backed
 // server that is the authority. Falls back to the local probe for a local
-// server, which is what it always was.
-func (m *Manager) deviceNameFor(server string) string {
+// server, which is what it always was — and stays exactly that on a single-GPU
+// box, where no pool declares a device.
+func (m *Manager) deviceNameFor(server string, ramUsage map[string]string) string {
 	if m.live != nil && server != "" {
 		if cap, ok := m.live.Capacity(server); ok {
 			if cap.GPU != nil && cap.GPU.Name != "" {
@@ -1266,10 +1343,54 @@ func (m *Manager) deviceNameFor(server string) string {
 			}
 		}
 	}
+	if st, ok := m.localDeviceFor(server, ramUsage); ok {
+		return st.Name
+	}
 	if stats, err := gpu.Probe(); err == nil {
 		return stats.Name
 	}
 	return ""
+}
+
+// localDeviceFor resolves the physical card a model draws from on a LOCAL
+// server, via the pool its ramUsage names and that pool's declared selector.
+//
+// ok=false whenever the answer is not knowable with certainty — no config, no
+// `devices:` declaration, a CPU-only model, a model split across two cards, a
+// selector that matches nothing. Every one of those falls back to the caller's
+// previous behavior rather than picking a card, because the failure this exists
+// to prevent is precisely a confident answer about the wrong GPU.
+func (m *Manager) localDeviceFor(server string, ramUsage map[string]string) (gpu.Stats, bool) {
+	cfg := m.config()
+	if cfg == nil || server == "" || len(ramUsage) == 0 {
+		return gpu.Stats{}, false
+	}
+	// Exactly one, unlike devicePoolForModel's charging rule: naming the card a
+	// profile is filed under requires a card, and a model spanning two of them
+	// has no single answer to give.
+	named := cfg.DevicePoolsNamedBy(server, ramUsage)
+	if len(named) != 1 {
+		return gpu.Stats{}, false
+	}
+	sel := cfg.DeviceSelectorFor(server, named[0])
+	if sel == "" {
+		return gpu.Stats{}, false
+	}
+	devs, err := gpu.ProbeAll()
+	if err != nil {
+		return gpu.Stats{}, false
+	}
+	st, err := gpu.Select(devs, sel)
+	if err != nil {
+		// A selector that resolves to nothing is an operator error worth
+		// saying out loud: the pool is budgeting a card that is not in the box
+		// (pulled, failed, renamed), and every number derived from it is now
+		// describing hardware that is not there.
+		slog.Warn("pool names a device that is not present",
+			"server", server, "pool", named[0], "selector", sel, "err", err)
+		return gpu.Stats{}, false
+	}
+	return st, true
 }
 
 // TuneProfilePeak is the largest footprint ever measured for a model on this
@@ -1283,10 +1404,12 @@ func (m *Manager) TuneProfilePeak(model string) int {
 		return 0
 	}
 	server := ""
+	var ramUsage map[string]string
 	if cfg := m.config(); cfg != nil {
 		server = cfg.Models[model].Server
+		ramUsage = cfg.Models[model].RAMUsage
 	}
-	dev := m.deviceNameFor(server)
+	dev := m.deviceNameFor(server, ramUsage)
 	if dev == "" {
 		return 0
 	}
@@ -1344,6 +1467,45 @@ func (m *Manager) TuneProfile(gpuName, model string) (tune.Profile, bool) {
 		return tune.Profile{}, false
 	}
 	return m.tuneCache.Get(gpuName, model)
+}
+
+// DeviceNameForModel names the card a model runs on — the key its tune profile
+// is filed under. "" when no device can be resolved.
+//
+// Exported because anything WRITING a profile needs the same answer the
+// scheduler will later read by, and a publish filed under the wrong card is a
+// measurement nobody ever finds again.
+func (m *Manager) DeviceNameForModel(model string) string {
+	server := ""
+	var ramUsage map[string]string
+	if cfg := m.config(); cfg != nil {
+		server = cfg.Models[model].Server
+		ramUsage = cfg.Models[model].RAMUsage
+	}
+	return m.deviceNameFor(server, ramUsage)
+}
+
+// TuneProfileForModel is TuneProfile with the device resolved for you — the
+// card THIS model runs on, rather than a name the caller had to guess.
+//
+// The guess was the bug: callers probed once per snapshot and reused "the first
+// GPU" for every model, so on a two-card box every profile lookup asked about
+// the wrong hardware and quietly missed.
+func (m *Manager) TuneProfileForModel(model string) (tune.Profile, bool) {
+	if m.tuneCache == nil {
+		return tune.Profile{}, false
+	}
+	server := ""
+	var ramUsage map[string]string
+	if cfg := m.config(); cfg != nil {
+		server = cfg.Models[model].Server
+		ramUsage = cfg.Models[model].RAMUsage
+	}
+	dev := m.deviceNameFor(server, ramUsage)
+	if dev == "" {
+		return tune.Profile{}, false
+	}
+	return m.tuneCache.Get(dev, model)
 }
 
 // onProcExit removes p from the ledger and frees its pools, but only if p is

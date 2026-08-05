@@ -105,6 +105,61 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   with a load issued while one is already loading or draining: coalescing is right for a
 >   request and wrong for an operator action, where reporting "loaded" for a spawn someone else
 >   started hides which click did the work.
+> - ◐ **P18 multi-GPU capacity** (hardware-driven; UNCOMMITTED as of 2026-08-05) — a second
+>   card (RTX 3080) went into box1 and corrallm could not see it. Capacity was single-device by
+>   construction: `defaultVRAMPool = "gpu0"`, one `DevicePool` per server, and `sizeFrom` emitting
+>   exactly one gpu key. Worse, every probe called `gpu.Probe()` = **nvidia-smi index 0**, and that
+>   index MOVED onto the new card — the dashboard began reporting a 10 GiB device under a pool
+>   budgeted for 32 GiB, and the slot auto-tuner started sizing against the wrong hardware.
+>   **Root cause worth keeping: the two orderings a host offers disagree.** nvidia-smi enumerates by
+>   PCI bus id (the BIOS scans the chipset uplink before the CPU slot port, so the card FARTHER from
+>   the CPU takes the lower number); CUDA/llama.cpp order FASTEST_FIRST. Index is a fine label and a
+>   terrible identity. Shipped: `gpu.ProbeAll`/`Select`/`Matches` binding pools to cards by **UUID or
+>   PCI bus id, never position** (bare indices are REJECTED, and ambiguity is an error);
+>   `ProcVRAMByDevice` so a footprint charges the card that gave up the bytes; `Server.Devices`
+>   (pool → selector) + validation; per-model device resolution through `DevicePoolsNamedBy` for the
+>   tune cache, the auto-tuner and measurement publish; residency reports `gpus[]` each tagged with
+>   its pool; `introspect` prints every card with pool/budget/UUID and flags cards no pool claims.
+>   Prod: box1 declares gpu0=5090 / gpu1=3080 by UUID, nomic + chandra-ocr-2 moved to gpu1,
+>   Qwen + deepseek PINNED to gpu0 with `CUDA_VISIBLE_DEVICES=<uuid>` — without that pin llama.cpp
+>   enumerates both cards and splits across them, which would have made the whole ledger fiction.
+>   **Placement is NOT enforced by pools** (deliberate, operator's call): corrallm accounts, the cmd
+>   decides. Verified live: all three local models resident simultaneously on the right cards, and
+>   two tune profiles resolving to two DIFFERENT cards in one `introspect` — the lookup that was
+>   silently broken.
+>   **next:** commit it (14 files); `ui/gen/schema.graphql` regenerated.
+>   **open decision (user-owned, agreed but unbuilt):** ramUsage should stop carrying two jobs. Size
+>   is measurable (`sampleVRAMPeak` already does it), but the multi-GPU work made ramUsage's KEYS the
+>   only statement of WHICH card a model uses. Split it: an explicit `pool:` for placement, measurement
+>   for size. Decided with it: an unmeasured model claims **NOTHING** rather than the whole pool, and a
+>   failed spawn is the fit signal — the first run is the operator's problem. **Caveat recorded:** that
+>   is safe on device pools (a CUDA OOM kills only the allocator) and is exactly the rule that already
+>   bit this box on the `system` pool, where oidio reached 119G anon-rss and took corrallm down with it.
+>   What saved that was the `MemoryMax` cgroup, not the ledger.
+> - ◐ **P19 thermal envelope** (box1, 2026-08-05) — the 3080 hit **88°C at 186W with the fan pegged
+>   and `0x20 SW Thermal Slowdown` active** during an OCR sweep, while the 5090 sat at 54°C/0%.
+>   Measured its thermal response under sustained load rather than guessing: **dT/dP = 0.239 °C/W,
+>   intercept 25.8°C** (the intercept recovering intake-air temperature is what says the fit is real).
+>   A healthy 3080 is 0.15–0.18 °C/W, so this card's die-to-air path is ~35–60% worse — consistent with
+>   five-year-old paste or a packed fin stack, NOT airflow: an airflow/heat-soak problem rises and falls
+>   slowly, and this one fell 88→65°C in 30s. The card's own target is 83°C, which the slope puts at
+>   ~239W — hence the throttling at a 250W cap. **200W validated over 7 minutes sustained: 71.7°C
+>   steady-state (model predicted 73.6), fan 83% not pegged, throttle `0x0004 SW Power Cap` on 193/207
+>   samples and ZERO thermal.** At 200W the card is power-limited rather than thermally limited, which
+>   is the correct operating point on this cooling. History is persistent in Prometheus —
+>   `nvidia_gpu_exporter` on :9835 labels by **GPU UUID**, the same identity the pools bind to, so
+>   Grafana joins to pool names for free.
+>   **Pulled from Prometheus afterwards, and it corrected the account:** the exposure was not the
+>   brief spike a spot `nvidia-smi` reading suggested. Six load episodes, **15.5 cumulative minutes
+>   >=80C**, and the two that mattered were a 2.5 min chandra 400 DPI run at a MEAN of 84.9C (during
+>   OCR comparison, half an hour before the bench was blamed for it) and the 10.5 min bench sweep at a
+>   MEAN of 86.6C. Lesson for any future thermal claim here: query the exporter, do not spot-read.
+>   **Do NOT fit the slope across pooled Prometheus episodes** — mixing power caps and soak states
+>   gives 0.194 C/W with a 39.6C intercept, and an intercept that is not plausibly intake air is the
+>   tell that the fit is contaminated. It predicts 78.4C at 200W against 70.5C actual, where the
+>   single continuous ramp (0.239, 25.8C) predicts 73.6C against 71.7C.
+>   **consequence for placement:** gpu1 is the thermally-limited card behind the chipset at x4. Bursty
+>   OCR there is fine; a sustained sweep is not — bench on gpu0, which idles while gpu1 cooks.
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.

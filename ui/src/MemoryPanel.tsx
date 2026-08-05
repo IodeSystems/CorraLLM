@@ -163,17 +163,19 @@ function PoolRow(props: { pool: string; role: string; device?: string; children:
 export type PoolLedger = { server: string; pool: string; budget: number; used: number; reserve: number }
 export type ModelUse = { model: string; server: string; pools: { pool: string; bytes: number }[]; measuredBytes: number }
 export type DeviceMem = { available: boolean; name: string; totalBytes: number; usedBytes: number; freeBytes: number }
+/** A device reading plus the pool that budgets it ('' when nothing claims it). */
+export type GpuMem = DeviceMem & { uuid: string; pool: string }
 export type ServerShape = { server: string; devicePool: string }
 
 export function MemoryPanel(props: {
   pools: PoolLedger[]
   models: ModelUse[]
   servers: ServerShape[]
-  gpu: DeviceMem
+  gpus: GpuMem[]
   host: DeviceMem
   colorOf: (model: string) => string
 }) {
-  const { pools, models, servers, gpu, host, colorOf } = props
+  const { pools, models, servers, gpus, host, colorOf } = props
 
   // Accounted: one bar per (server, pool), segmented by the models holding it.
   const accounted = pools.map((p) => {
@@ -197,22 +199,41 @@ export function MemoryPanel(props: {
     return { ...p, segments }
   })
 
-  // Measured GPU: attribute the device's own number to models by their measured
-  // footprint, and label the remainder honestly — it is not corrallm's.
-  const gpuSegments: MemSegment[] = models
-    .filter((m) => m.measuredBytes > 0)
-    .map((m) => ({ key: m.model, bytes: m.measuredBytes, color: colorOf(m.model), hint: 'measured process VRAM' }))
-    .sort((a, b) => b.bytes - a.bytes)
-  const attributed = gpuSegments.reduce((s, x) => s + x.bytes, 0)
-  const otherVram = Math.max(0, gpu.usedBytes - attributed)
-  if (gpu.available && otherVram > 0) {
-    gpuSegments.push({
-      key: 'other processes',
-      bytes: otherVram,
-      color: NEUTRAL,
-      hint: 'on the GPU but not spawned by corrallm',
-    })
+  // Measured VRAM, PER CARD: attribute a device's own number to the models that
+  // draw from the pool it backs, and label the remainder honestly — it is not
+  // corrallm's.
+  //
+  // Per card rather than one pooled bar because the readings are no longer
+  // interchangeable. Summing a 32 GB card and a 10 GB one into a single total
+  // would hide the only thing this panel is for: whether the card a model
+  // actually sits on has room left.
+  const gpuByPool = new Map<string, GpuMem>()
+  for (const g of gpus) {
+    if (g.pool) gpuByPool.set(g.pool, g)
   }
+  const segmentsForDevice = (g: GpuMem, pool: string): MemSegment[] => {
+    const segs: MemSegment[] = models
+      .filter((m) => m.measuredBytes > 0 && m.pools.some((p) => p.pool === pool && p.bytes > 0))
+      .map((m) => ({ key: m.model, bytes: m.measuredBytes, color: colorOf(m.model), hint: 'measured process VRAM' }))
+      .sort((a, b) => b.bytes - a.bytes)
+    const attributed = segs.reduce((s, x) => s + x.bytes, 0)
+    const other = Math.max(0, g.usedBytes - attributed)
+    if (other > 0) {
+      segs.push({
+        key: 'other processes',
+        bytes: other,
+        color: NEUTRAL,
+        hint: 'on the GPU but not spawned by corrallm',
+      })
+    }
+    return segs
+  }
+
+  // Cards present in the machine that no pool budgets. The scheduler cannot see
+  // them at all, which is the state a freshly installed GPU is in — worth
+  // saying out loud rather than omitting.
+  const unclaimed = gpus.filter((g) => g.available && !g.pool)
+  const anyGpu = gpus.some((g) => g.available)
 
   // The device probes read THIS machine. Attributing them to a server is only
   // honest while exactly one server is local, which is the case until a server
@@ -240,7 +261,7 @@ export function MemoryPanel(props: {
     })
     .sort((a, b) => a.server.localeCompare(b.server))
 
-  const nothing = pools.length === 0 && !gpu.available && !host.available
+  const nothing = pools.length === 0 && !anyGpu && !host.available
 
   return (
     <Panel
@@ -249,7 +270,29 @@ export function MemoryPanel(props: {
       // No device name here: it names ONE device, and this panel covers every
       // box. It sits on the pool row it describes. A missing probe is still
       // panel-scope, because then there is no device reading anywhere below.
-      badge={!gpu.available && <Chip size="small" variant="outlined" label="no GPU probe" />}
+      //
+      // An unclaimed card is panel-scope for the opposite reason: it has no
+      // pool row to sit on, so if it is not surfaced here it is not surfaced
+      // anywhere — and a GPU the scheduler cannot see looks exactly like a GPU
+      // that is not installed.
+      badge={
+        !anyGpu ? (
+          <Chip size="small" variant="outlined" label="no GPU probe" />
+        ) : unclaimed.length > 0 ? (
+          <Tooltip
+            title={`Present but no pool budgets ${unclaimed.length === 1 ? 'it' : 'them'}: ${unclaimed
+              .map((g) => `${g.name} (${fmtBytes(g.totalBytes)})`)
+              .join(', ')}. Declare a pool and a devices: entry to let the scheduler use it.`}
+          >
+            <Chip
+              size="small"
+              variant="outlined"
+              color="warning"
+              label={`${unclaimed.length} unclaimed GPU${unclaimed.length === 1 ? '' : 's'}`}
+            />
+          </Tooltip>
+        ) : undefined
+      }
       flush
     >
       {nothing ? (
@@ -280,17 +323,27 @@ export function MemoryPanel(props: {
               </Box>
 
               {box.pools.map((p) => {
-                const isDevice = p.pool === dp
+                // A pool is a device pool if a card declares itself its backing
+                // (multi-GPU), or — for a config that never declared `devices:`
+                // — if it is the server's single devicePool.
+                const card = gpuByPool.get(p.pool)
+                const isDevice = !!card || p.pool === dp
                 // A unified-memory box's single pool IS both, and the label says
                 // so rather than implying a GPU pool that does not exist.
                 const isUnified = isDevice && box.pools.length === 1
                 const role = isUnified ? 'device + system' : isDevice ? 'device' : 'system'
+                // With several cards, the reading paired to this row is the one
+                // BOUND to it. Falling back to "the only card" is right only
+                // when there is one — the assumption that broke when a second
+                // GPU arrived and every reading silently described the new card.
+                const soleCard = gpus.length === 1 && gpus[0].available ? gpus[0] : undefined
+                const dev = card ?? (p.pool === dp ? soleCard : undefined)
                 return (
                   <PoolRow
                     key={`${box.server}/${p.pool}`}
                     pool={p.pool}
                     role={role}
-                    device={local && isDevice && gpu.available ? gpu.name : undefined}
+                    device={local && dev?.available ? dev.name : undefined}
                   >
                     <Reading
                       kind="accounted"
@@ -304,13 +357,12 @@ export function MemoryPanel(props: {
                     />
                     {/* The measured reading of the SAME pool, nested under it —
                         this pairing is what stops it reading as a second pool. */}
-                    {local && isDevice && gpu.available && (
+                    {local && dev?.available && (
                       <Reading
                         kind="measured"
                         hint="on device"
-
-                        segments={gpuSegments}
-                        total={gpu.totalBytes}
+                        segments={segmentsForDevice(dev, p.pool)}
+                        total={dev.totalBytes}
                       />
                     )}
                     {local && (!isDevice || isUnified) && p.pool === 'system' && host.available && (

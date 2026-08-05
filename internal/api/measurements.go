@@ -63,15 +63,20 @@ func (h *Handlers) PublishTuneProfile(_ context.Context, in *TuneProfileInput) (
 	}
 	gpuName := in.Body.GPU
 	if gpuName == "" {
-		// Default to this host's GPU rather than a blank key: a profile stored
-		// under "" would never be found by the scheduler, which always looks up
-		// by the probed GPU name, and the publish would silently do nothing.
-		st, err := gpu.Probe()
-		if err != nil {
-			out.Body.Message = fmt.Sprintf("gpu not specified and probe failed: %v", err)
-			return out, nil
+		// Default to the card THIS MODEL runs on, rather than a blank key or
+		// the host's first GPU. A profile stored under "" would never be found
+		// by the scheduler, which always looks up by device name, and the
+		// publish would silently do nothing; a profile stored under the wrong
+		// card is the same silence with a plausible-looking row to explain it.
+		gpuName = h.Mgr.DeviceNameForModel(in.Body.Model)
+		if gpuName == "" {
+			st, err := gpu.Probe()
+			if err != nil {
+				out.Body.Message = fmt.Sprintf("gpu not specified and probe failed: %v", err)
+				return out, nil
+			}
+			gpuName = st.Name
 		}
-		gpuName = st.Name
 	}
 	existing, _ := h.Mgr.TuneProfile(gpuName, in.Body.Model)
 	// Run through the SAME derivation the serving path uses — one

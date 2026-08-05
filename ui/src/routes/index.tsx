@@ -123,9 +123,11 @@ const OverviewDoc = graphql(/* GraphQL */ `
             used
           }
         }
-        gpu {
+        gpus {
           available
           name
+          uuid
+          pool
           totalBytes
           usedBytes
           freeBytes
@@ -854,6 +856,22 @@ function Home() {
     freeBytes: Number(d?.freeBytes ?? 0),
   })
 
+  // Device readings carry the pool they back, which is what pairs each card
+  // with the right ledger row. A card no pool claims keeps pool='' and is shown
+  // as unclaimed rather than dropped — a freshly installed GPU nothing budgets
+  // is precisely the state worth seeing.
+  const devs = (
+    list?: readonly {
+      available: boolean
+      name: string
+      uuid?: string | null
+      pool?: string | null
+      totalBytes: string
+      usedBytes: string
+      freeBytes: string
+    }[],
+  ) => (list ?? []).map((d) => ({ ...dev(d), uuid: d.uuid ?? '', pool: d.pool ?? '' }))
+
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title="Overview">
@@ -874,7 +892,7 @@ function Home() {
         pools={memPools}
         models={memModels}
         servers={memServers}
-        gpu={dev(res?.gpu)}
+        gpus={devs(res?.gpus)}
         host={dev(res?.host)}
         colorOf={colorOf}
       />

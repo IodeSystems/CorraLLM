@@ -292,6 +292,28 @@ type Server struct {
 	// VRAM and must set this to its single "system" pool.
 	DevicePool string `yaml:"devicePool,omitempty"`
 
+	// Devices binds a pool to the PHYSICAL card whose memory it budgets:
+	// pool name → device selector (a GPU UUID, a unique prefix of one, or a PCI
+	// bus id). Absent means this server has at most one device pool and needs no
+	// disambiguation — every single-GPU config keeps working untouched.
+	//
+	// A selector rather than an index, because the two orderings a host offers
+	// disagree and BOTH move when hardware changes. Adding a slower second card
+	// to this box put it at nvidia-smi index 0 (lowest PCI bus — it sits behind
+	// the chipset) while CUDA, and so llama.cpp, kept the original card as
+	// device 0. Everything that probed "the first GPU" silently switched to
+	// describing the new card: the dashboard reported a 10 GiB device under a
+	// pool budgeted for 32 GiB, and the slot auto-tuner began sizing against
+	// VRAM that belonged to a different piece of hardware. A UUID cannot do
+	// that.
+	//
+	// Note what this does NOT do: it is bookkeeping, not placement. corrallm
+	// does not rewrite a cmd to pin it to a card — the cmd's own device flag
+	// decides where the process actually lands, and a cmd that disagrees with
+	// its declared pool will be charged to the wrong ledger. Declaring the pool
+	// is how you tell corrallm where you already sent it.
+	Devices map[string]string `yaml:"devices,omitempty"`
+
 	// Agent binds this server to another machine running `corrallm agent`.
 	// Absent (nil) means this box, spawned locally — byte-identical to the
 	// behavior every existing config already gets.
@@ -399,6 +421,59 @@ func (c *Config) DevicePoolFor(server string) string {
 		return s.DevicePool
 	}
 	return "gpu0"
+}
+
+// DeviceSelectorFor names the physical card backing one pool on a server, or ""
+// when the pool is not bound to a device. "" is the answer for a plain `system`
+// pool and for every single-GPU config that never declared `devices:` — both
+// are correct states, not missing data, so callers fall back rather than fail.
+func (c *Config) DeviceSelectorFor(server, pool string) string {
+	s, ok := c.Servers[server]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s.Devices[pool])
+}
+
+// DevicePoolsFor lists the pools on a server that hold device memory, sorted.
+//
+// It is the `devices:` keys when the operator declared them, and otherwise the
+// single DevicePoolFor answer — so a config that predates multi-GPU support
+// reports exactly the one pool it always had.
+func (c *Config) DevicePoolsFor(server string) []string {
+	if s, ok := c.Servers[server]; ok && len(s.Devices) > 0 {
+		return poolNames(s.Devices)
+	}
+	return []string{c.DevicePoolFor(server)}
+}
+
+// DevicePoolsNamedBy lists the DEVICE pools a ramUsage vector actually draws
+// from on a server, sorted. Pools that are not device-backed (`system`) are not
+// included, and neither are pools the server does not declare.
+//
+// The three answers mean three different things, and the caller must
+// distinguish them rather than take the first element:
+//
+//   - one pool — the card that holds this model; the only case where a measured
+//     footprint can be attributed;
+//   - none — the model draws no device memory it declared (a CPU-only backend
+//     such as oidio), or declares nothing at all;
+//   - several — a multi-GPU split. A measurement is one number, and how it
+//     divides between cards is not recoverable from it, so charging the total
+//     to either pool over-commits that card by whatever the other holds.
+func (c *Config) DevicePoolsNamedBy(server string, ramUsage map[string]string) []string {
+	devPools := map[string]bool{}
+	for _, p := range c.DevicePoolsFor(server) {
+		devPools[p] = true
+	}
+	var out []string
+	for pool := range ramUsage {
+		if devPools[pool] {
+			out = append(out, pool)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Model is a served name with exactly ONE serving path: either a spawned local
@@ -1397,6 +1472,25 @@ func (c *Config) Validate() error {
 			if _, ok := srv.Pools[dp]; !ok {
 				return fmt.Errorf("server %q: devicePool %q is not one of its pools %v", srvName, dp, poolNames(srv.Pools))
 			}
+		}
+		// A devices entry has the same failure mode as devicePool one level
+		// down: it names the card a pool's budget describes, so a key that is
+		// not a pool binds a real GPU to a ledger nobody charges against, and
+		// two pools sharing a selector double-count one card's VRAM.
+		seenSel := map[string]string{}
+		for pool, sel := range srv.Devices {
+			if _, ok := srv.Pools[pool]; !ok {
+				return fmt.Errorf("server %q: devices key %q is not one of its pools %v", srvName, pool, poolNames(srv.Pools))
+			}
+			sel = strings.TrimSpace(sel)
+			if sel == "" {
+				return fmt.Errorf("server %q: devices[%q] is empty — name the card by UUID or PCI bus id", srvName, pool)
+			}
+			if prev, dup := seenSel[strings.ToLower(sel)]; dup {
+				return fmt.Errorf("server %q: pools %q and %q both claim device %q — one card cannot back two budgets",
+					srvName, prev, pool, sel)
+			}
+			seenSel[strings.ToLower(sel)] = pool
 		}
 		// An agent binding that cannot be dialled is worse than none: the models
 		// on that server would be admitted and then fail at spawn, one request

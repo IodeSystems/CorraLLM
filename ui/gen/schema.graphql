@@ -1173,10 +1173,14 @@ type corrallm_DeviceMemView {
   freeBytes: Long!
   """Device name (GPU model, or "host" for system RAM)."""
   name: String!
+  """Pool this device backs, or empty when no pool declares it."""
+  pool: String
   """Physical total."""
   totalBytes: Long!
   """In use right now."""
   usedBytes: Long!
+  """Vendor device UUID — the identity a pool binds to."""
+  uuid: String
 }
 
 input corrallm_EnrollRequestInput {
@@ -1816,7 +1820,8 @@ type corrallm_ReservationsOutputBody {
 }
 
 type corrallm_ResidencyOutputBody {
-  gpu: corrallm_DeviceMemView!
+  """Measured VRAM per GPU on the local machine; empty if unprobeable."""
+  gpus: [corrallm_DeviceMemView!]!
   host: corrallm_DeviceMemView!
   """Currently resident backends."""
   models: [corrallm_ResidentModelView!]!

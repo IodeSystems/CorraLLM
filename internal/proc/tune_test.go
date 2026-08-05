@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,13 +44,58 @@ func TestVramBudgetPostEviction(t *testing.T) {
 // `load()` needs still resolves) — gpu.Probe/gpu.ProcVRAM shell out via
 // os/exec + PATH lookup, so this makes their output deterministic regardless
 // of whether the test host actually has an NVIDIA GPU.
+//
+// Callers write the SHORT forms — "idx, name, total, used, free" and
+// "pid, mib" — and this expands them to the identity-carrying rows the queries
+// actually ask for. The expansion lives here rather than at 20 call sites
+// because a UUID is noise in a test about slot arithmetic; the tests that are
+// genuinely ABOUT device identity use fakeNvidiaSMIDevices and write it out.
 func fakeNvidiaSMI(t *testing.T, gpuLine, procLine string) {
+	t.Helper()
+	var gpus, procs []string
+	for _, l := range strings.Split(gpuLine, "\n") {
+		if f := splitCSV(l); len(f) == 5 {
+			// index, uuid, pci.bus_id, name, total, used, free
+			gpus = append(gpus, strings.Join([]string{
+				f[0], fakeUUID(f[0]), "00000000:0" + f[0] + ":00.0", f[1], f[2], f[3], f[4],
+			}, ", "))
+		}
+	}
+	for _, l := range strings.Split(procLine, "\n") {
+		if f := splitCSV(l); len(f) == 2 {
+			// gpu_uuid, pid, used_memory — attributed to the first fake card,
+			// which is the only one these fixtures declare.
+			procs = append(procs, strings.Join([]string{fakeUUID("0"), f[0], f[1]}, ", "))
+		}
+	}
+	fakeNvidiaSMIDevices(t, strings.Join(gpus, "\n"), strings.Join(procs, "\n"))
+}
+
+// fakeUUID is a stable synthetic UUID per index, shaped like the real thing so
+// selector matching (prefix, case) behaves as it does in production.
+func fakeUUID(idx string) string { return "GPU-fake0000-0000-0000-0000-00000000000" + idx }
+
+func splitCSV(line string) []string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil
+	}
+	f := strings.Split(line, ",")
+	for i := range f {
+		f[i] = strings.TrimSpace(f[i])
+	}
+	return f
+}
+
+// fakeNvidiaSMIDevices is fakeNvidiaSMI with the rows written out in full —
+// for tests where WHICH card answers is the thing under test.
+func fakeNvidiaSMIDevices(t *testing.T, gpuRows, procRows string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
 		"case \"$1\" in\n" +
-		"  --query-gpu=*) echo '" + gpuLine + "' ;;\n" +
-		"  --query-compute-apps=*) echo '" + procLine + "' ;;\n" +
+		"  --query-gpu=*) echo '" + gpuRows + "' ;;\n" +
+		"  --query-compute-apps=*) echo '" + procRows + "' ;;\n" +
 		"esac\n"
 	if err := os.WriteFile(filepath.Join(dir, "nvidia-smi"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)

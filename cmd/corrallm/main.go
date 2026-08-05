@@ -168,16 +168,25 @@ type introspectOpts struct {
 
 // introspectReport is the `corrallm introspect` output shape (JSON or table).
 type introspectReport struct {
-	GPU      *introspectGPU    `json:"gpu,omitempty"`
+	// GPUs is every card in the box, each with the pool that budgets it. A list
+	// because this command's whole job is telling an operator what the machine
+	// looks like, and reporting one card on a two-card box is how a wrong
+	// assumption survives the check meant to catch it.
+	GPUs     []introspectGPU   `json:"gpus,omitempty"`
 	GPUError string            `json:"gpu_error,omitempty"` // set (only) when nvidia-smi is unavailable
 	Models   []introspectModel `json:"models"`
 }
 
 type introspectGPU struct {
-	Name     string `json:"name"`
-	TotalMiB int    `json:"total_mib"`
-	UsedMiB  int    `json:"used_mib"`
-	FreeMiB  int    `json:"free_mib"`
+	Name      string `json:"name"`
+	UUID      string `json:"uuid,omitempty"`
+	BusID     string `json:"pci_bus_id,omitempty"`
+	Pool      string `json:"pool,omitempty"`   // the pool that budgets this card, if any
+	Server    string `json:"server,omitempty"` // and the server that pool belongs to
+	TotalMiB  int    `json:"total_mib"`
+	UsedMiB   int    `json:"used_mib"`
+	FreeMiB   int    `json:"free_mib"`
+	BudgetMiB int    `json:"budget_mib"` // post-eviction budget on THIS card
 }
 
 type introspectModel struct {
@@ -190,6 +199,8 @@ type introspectModel struct {
 	MeasuredSlots int    `json:"measured_slots,omitempty"`
 	Ctx           int    `json:"ctx,omitempty"`
 	TunedSlots    int    `json:"tuned_slots,omitempty"` // what SlotsFor picks against CURRENT free VRAM; 0 = would not tune
+	Device        string `json:"device,omitempty"`      // the card these numbers were measured on
+	Pool          string `json:"pool,omitempty"`        // and the pool it draws from
 }
 
 func introspect(cmd *cobra.Command, o introspectOpts) error {
@@ -204,31 +215,87 @@ func introspect(cmd *cobra.Command, o introspectOpts) error {
 		return err
 	}
 
-	stats, gpuErr := gpu.Probe()
+	devs, gpuErr := gpu.ProbeAll()
 	report := introspectReport{}
-	budget := 0
 	if gpuErr != nil {
 		report.GPUError = gpuErr.Error()
-	} else {
-		report.GPU = &introspectGPU{Name: stats.Name, TotalMiB: stats.TotalMiB, UsedMiB: stats.UsedMiB, FreeMiB: stats.FreeMiB}
-		// Post-eviction budget: a loading model gets the whole card minus what
-		// won't move (persistent/pinned models) and the margin. This CLI can't
-		// attribute live pre-crowded (non-corrallm) usage without the running
-		// server's process list, so it assumes ~0; the serve path subtracts it.
-		budget = stats.TotalMiB - o.vramMargin
+	}
+
+	// placementOf resolves a model to the card it runs on and the pool that
+	// budgets it — the pair every number below has to be computed against.
+	//
+	// A model naming no device-bound pool falls back to the first card, which
+	// is what this command always did and is still right on a single-GPU box.
+	// It is only wrong when there are two, which is exactly when `devices:`
+	// exists to say so.
+	placementOf := func(mc config.Model) (gpu.Stats, string, bool) {
+		if len(devs) == 0 {
+			return gpu.Stats{}, "", false
+		}
+		if named := cfg.DevicePoolsNamedBy(mc.Server, mc.RAMUsage); len(named) == 1 {
+			if sel := cfg.DeviceSelectorFor(mc.Server, named[0]); sel != "" {
+				if st, err := gpu.Select(devs, sel); err == nil {
+					return st, named[0], true
+				}
+			}
+			return devs[0], named[0], true
+		}
+		return devs[0], cfg.DevicePoolFor(mc.Server), true
+	}
+
+	// Post-eviction budget, PER CARD: a loading model gets its own card minus
+	// what won't move there (persistent/pinned models placed on it) and the
+	// margin. Summing across cards — or charging every pinned model to one —
+	// was harmless while a box had one GPU and is a fabrication once it has
+	// two. This CLI can't attribute live pre-crowded (non-corrallm) usage
+	// without the running server's process list, so it assumes ~0; the serve
+	// path subtracts it.
+	budgets := make(map[string]int, len(devs))
+	for _, d := range devs {
+		b := d.TotalMiB - o.vramMargin
 		for name, mc := range cfg.Models {
 			if !mc.Persistent {
 				continue
 			}
-			if prof, ok := cache.Get(stats.Name, name); ok && prof.PeakMiB > 0 {
-				budget -= prof.PeakMiB
-			} else if b, err := config.ParseSize(mc.RAMUsage["gpu0"]); err == nil && b > 0 {
-				budget -= int(b / (1024 * 1024))
+			st, pool, ok := placementOf(mc)
+			if !ok || st.UUID != d.UUID {
+				continue
+			}
+			if prof, ok := cache.Get(st.Name, name); ok && prof.PeakMiB > 0 {
+				b -= prof.PeakMiB
+			} else if sz, err := config.ParseSize(mc.RAMUsage[pool]); err == nil && sz > 0 {
+				b -= int(sz / (1024 * 1024))
 			}
 		}
-		if budget < 0 {
-			budget = 0
+		if b < 0 {
+			b = 0
 		}
+		budgets[d.UUID] = b
+	}
+
+	// Which pool claims which card, so the operator can see a card that NOTHING
+	// budgets — the state a freshly installed GPU is in.
+	poolOwner := map[string][2]string{} // uuid → {server, pool}
+	for srvName, srv := range cfg.Servers {
+		if srv.Agent != nil {
+			continue // its cards are in another box; this probe cannot see them
+		}
+		for pool, sel := range srv.Devices {
+			if st, err := gpu.Select(devs, sel); err == nil {
+				poolOwner[st.UUID] = [2]string{srvName, pool}
+			}
+		}
+	}
+	for _, d := range devs {
+		g := introspectGPU{
+			Name: d.Name, UUID: d.UUID, BusID: d.PCIBusID,
+			TotalMiB: d.TotalMiB, UsedMiB: d.UsedMiB, FreeMiB: d.FreeMiB,
+			BudgetMiB: budgets[d.UUID],
+		}
+		if o, ok := poolOwner[d.UUID]; ok {
+			g.Server, g.Pool = o[0], o[1]
+		}
+		report.GPUs = append(report.GPUs, g)
 	}
 
 	names := make([]string, 0, len(cfg.Models))
@@ -239,11 +306,12 @@ func introspect(cmd *cobra.Command, o introspectOpts) error {
 	for _, name := range names {
 		mc := cfg.Models[name]
 		im := introspectModel{Name: name, ConfigSlots: mc.Slots()}
-		if gpuErr == nil {
-			if p, ok := cache.Get(stats.Name, name); ok {
+		if st, pool, ok := placementOf(mc); ok {
+			im.Device, im.Pool = st.Name, pool
+			if p, ok := cache.Get(st.Name, name); ok {
 				im.HasProfile = true
 				im.BaseMiB, im.PerSlotMiB, im.PeakMiB, im.MeasuredSlots, im.Ctx = p.BaseMiB, p.PerSlotMiB, p.PeakMiB, p.MeasuredSlots, p.Ctx
-				if n, ok := cache.SlotsFor(stats.Name, name, budget); ok {
+				if n, ok := cache.SlotsFor(st.Name, name, budgets[st.UUID]); ok {
 					im.TunedSlots = n
 				}
 			}
@@ -261,8 +329,20 @@ func introspect(cmd *cobra.Command, o introspectOpts) error {
 		fmt.Fprintf(out, "GPU introspection unavailable: %s\n", report.GPUError)
 		fmt.Fprintf(out, "(model profiles below are as last cached; live tuned-slot counts can't be computed without a GPU read)\n\n")
 	} else {
-		fmt.Fprintf(out, "GPU: %s  total=%dMiB used=%dMiB free=%dMiB  (margin=%dMiB post-eviction budget=%dMiB)\n\n",
-			report.GPU.Name, report.GPU.TotalMiB, report.GPU.UsedMiB, report.GPU.FreeMiB, o.vramMargin, budget)
+		for _, g := range report.GPUs {
+			// The pool is printed even when absent, and said out loud: a card
+			// no pool claims is invisible to the scheduler, which is a real and
+			// easily-missed state right after one is installed.
+			owner := "no pool declares it"
+			if g.Pool != "" {
+				owner = g.Server + "/" + g.Pool
+			}
+			fmt.Fprintf(out, "GPU: %s  %s  [%s]\n", g.Name, g.BusID, owner)
+			fmt.Fprintf(out, "     total=%dMiB used=%dMiB free=%dMiB  (margin=%dMiB post-eviction budget=%dMiB)\n",
+				g.TotalMiB, g.UsedMiB, g.FreeMiB, o.vramMargin, g.BudgetMiB)
+			fmt.Fprintf(out, "     %s\n", g.UUID)
+		}
+		fmt.Fprintln(out)
 	}
 	for _, m := range report.Models {
 		if !m.HasProfile {

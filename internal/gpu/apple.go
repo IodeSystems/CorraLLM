@@ -56,6 +56,18 @@ func (a Apple) Probe() (Stats, error) {
 	return Stats{Name: a.deviceName(), TotalMiB: limitMiB, UsedMiB: usedMiB, FreeMiB: free}, nil
 }
 
+// ProbeAll reports the single device Probe describes. Apple silicon has one GPU
+// sharing one pool of memory, so "all of them" and "the first one" are the same
+// answer — but it must still be given as a list, because the caller asking is
+// the one that no longer assumes how many cards a host has.
+func (a Apple) ProbeAll() ([]Stats, error) {
+	st, err := a.Probe()
+	if err != nil {
+		return nil, err
+	}
+	return []Stats{st}, nil
+}
+
 // ProcVRAM is unavailable on macOS.
 //
 // There is no equivalent of `nvidia-smi --query-compute-apps`: the OS does not

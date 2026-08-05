@@ -749,6 +749,14 @@ type DeviceMemView struct {
 	TotalBytes int64  `json:"totalBytes" doc:"Physical total."`
 	UsedBytes  int64  `json:"usedBytes" doc:"In use right now."`
 	FreeBytes  int64  `json:"freeBytes" doc:"Free right now."`
+	// Pool is the budget this card backs, from the server's `devices:` map, or
+	// "" when nothing claims it. Without it a multi-GPU reading cannot be
+	// rendered against the right ledger — which is how a 10 GiB card came to be
+	// drawn under a pool budgeted for 32 GiB.
+	Pool string `json:"pool,omitempty" doc:"Pool this device backs, or empty when no pool declares it."`
+	// UUID is the card's stable identity, shown so an operator can copy it into
+	// a `devices:` entry without going to look it up.
+	UUID string `json:"uuid,omitempty" doc:"Vendor device UUID — the identity a pool binds to."`
 }
 
 // ResidencyOutput reports server pool budgets and resident backends.
@@ -756,8 +764,13 @@ type ResidencyOutput struct {
 	Body struct {
 		Servers []ServerView        `json:"servers" doc:"Per-server pool budget/usage (the scheduler's accounted ledger)."`
 		Models  []ResidentModelView `json:"models" doc:"Currently resident backends."`
-		GPU     DeviceMemView       `json:"gpu" doc:"Measured VRAM on the first GPU (single-GPU box); available=false if unprobeable."`
-		Host    DeviceMemView       `json:"host" doc:"Measured host RAM; available=false if unprobeable."`
+		// GPUs is EVERY card this machine can see, each tagged with the pool it
+		// backs. A list rather than one reading because "the GPU" stopped being
+		// a well-defined phrase the moment this box had two — and the field it
+		// replaces reported nvidia-smi's index 0, a position that silently
+		// moved onto the newly installed card.
+		GPUs []DeviceMemView `json:"gpus" doc:"Measured VRAM per GPU on the local machine; empty if unprobeable."`
+		Host DeviceMemView   `json:"host" doc:"Measured host RAM; available=false if unprobeable."`
 		// Stopping holds process keys mid-teardown. They are NOT in Models —
 		// their pools are already freed, so they hold no residency — but they
 		// are not loadable either: an explicit load is refused until the
@@ -779,22 +792,30 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 		}
 		out.Body.Servers = append(out.Body.Servers, sv)
 	}
-	// Post-eviction budget can't be attributed per query cheaply, but the raw
-	// GPU name is: probe once for the whole snapshot (not per model) so the
-	// tune-cache lookups below share it. Best-effort — a failed probe just
-	// leaves every model's profile fields at their zero/unmeasured default.
-	stats, gpuErr := gpu.Probe()
-	// Measured device state rides along on the same probe. Both are best-effort:
-	// a box with no nvidia-smi, or a non-Linux host, simply reports
-	// available=false and the dashboard omits that bar.
-	if gpuErr == nil {
+	// Measured device state for every card on this machine. Best-effort: a box
+	// with no nvidia-smi, or a non-Linux host, reports an empty list and the
+	// dashboard omits those bars.
+	//
+	// Each reading is tagged with the pool it backs, resolved through the
+	// server's `devices:` selectors. That tag is what lets the UI draw a
+	// measured bar under the RIGHT ledger — the field this replaced reported
+	// nvidia-smi's index 0 with no way to tell which card that was, and after a
+	// second GPU was installed it was no longer the card the pool budgeted.
+	if devs, err := gpu.ProbeAll(); err == nil {
 		const mib = 1024 * 1024
-		out.Body.GPU = DeviceMemView{
-			Available:  true,
-			Name:       stats.Name,
-			TotalBytes: int64(stats.TotalMiB) * mib,
-			UsedBytes:  int64(stats.UsedMiB) * mib,
-			FreeBytes:  int64(stats.FreeMiB) * mib,
+		// The device probe reads THIS machine, so only a local server's pools
+		// can claim one. Remote servers report their own capacity by heartbeat.
+		poolOf := h.localDevicePools(devs)
+		for _, d := range devs {
+			out.Body.GPUs = append(out.Body.GPUs, DeviceMemView{
+				Available:  true,
+				Name:       d.Name,
+				UUID:       d.UUID,
+				Pool:       poolOf[d.UUID],
+				TotalBytes: int64(d.TotalMiB) * mib,
+				UsedBytes:  int64(d.UsedMiB) * mib,
+				FreeBytes:  int64(d.FreeMiB) * mib,
+			})
 		}
 	}
 	if hm, err := sysmem.Probe(); err == nil {
@@ -820,10 +841,11 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 			TunedSlots:   h.Mgr.TunedSlots(m.ModelName, configSlots),
 			ConfigSlots:  configSlots,
 		}
-		if gpuErr == nil {
-			if p, ok := h.Mgr.TuneProfile(stats.Name, m.ModelName); ok {
-				mv.BaseMiB, mv.PerSlotMiB, mv.PeakMiB, mv.MeasuredSlots = p.BaseMiB, p.PerSlotMiB, p.PeakMiB, p.MeasuredSlots
-			}
+		// Resolved per model rather than from one snapshot-wide probe: on a
+		// two-card box "the first GPU" is not the card this model ran on, and a
+		// profile filed under the other one would simply never be found.
+		if p, ok := h.Mgr.TuneProfileForModel(m.ModelName); ok {
+			mv.BaseMiB, mv.PerSlotMiB, mv.PeakMiB, mv.MeasuredSlots = p.BaseMiB, p.PerSlotMiB, p.PeakMiB, p.MeasuredSlots
 		}
 		for _, u := range m.Usage {
 			mv.Usage = append(mv.Usage, PoolUsageView{Pool: u.Pool, Bytes: u.Bytes})
@@ -2236,6 +2258,37 @@ func keys[V any](m map[string]V) []string {
 // config returns the newest config this Handlers knows: the one SetConfig
 // installed, else the one it was constructed with. Read through this, never
 // h.Cfg directly, or a reload goes unnoticed here.
+// localDevicePools maps a card's UUID to the pool that budgets it, across every
+// LOCAL server — the machines whose cards this process's probe can actually see.
+//
+// Agent-backed servers are excluded on purpose. Their pools describe hardware in
+// another box, and matching one of their selectors against a card in THIS one
+// would draw a remote budget under a local device reading.
+//
+// Absent from the map means no pool claims that card: it is in the machine and
+// nothing budgets it, which the dashboard should show as exactly that rather
+// than hiding.
+func (h *Handlers) localDevicePools(devs []gpu.Stats) map[string]string {
+	out := map[string]string{}
+	cfg := h.config()
+	if cfg == nil {
+		return out
+	}
+	for _, srv := range cfg.Servers {
+		if srv.Agent != nil {
+			continue
+		}
+		for pool, sel := range srv.Devices {
+			st, err := gpu.Select(devs, sel)
+			if err != nil {
+				continue
+			}
+			out[st.UUID] = pool
+		}
+	}
+	return out
+}
+
 func (h *Handlers) config() *config.Config {
 	if c := h.live.Load(); c != nil {
 		return c

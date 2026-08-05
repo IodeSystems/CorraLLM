@@ -9,6 +9,7 @@ type unifiedNoVendorTool struct{}
 
 func (unifiedNoVendorTool) Name() string                   { return "test-unified" }
 func (unifiedNoVendorTool) Probe() (Stats, error)          { return Stats{TotalMiB: 49152}, nil }
+func (unifiedNoVendorTool) ProbeAll() ([]Stats, error)     { return []Stats{{TotalMiB: 49152}}, nil }
 func (unifiedNoVendorTool) ProcVRAM() (map[int]int, error) { return nil, errNoVendorTool }
 func (unifiedNoVendorTool) Unified() bool                  { return true }
 
