@@ -18,10 +18,12 @@ import { Route as ConfigRouteImport } from './routes/config'
 import { Route as BenchRouteImport } from './routes/bench'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as MNameRouteImport } from './routes/m.$name'
 import { Route as KeysKeyRouteImport } from './routes/keys_.$key'
 import { Route as BenchRunRouteImport } from './routes/bench_.run'
 import { Route as BenchProbeRouteImport } from './routes/bench_.probe'
 import { Route as BenchModelRouteImport } from './routes/bench_.model'
+import { Route as MNameActivityRouteImport } from './routes/m.$name.activity'
 
 const UsageRoute = UsageRouteImport.update({
   id: '/usage',
@@ -68,6 +70,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MNameRoute = MNameRouteImport.update({
+  id: '/m/$name',
+  path: '/m/$name',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const KeysKeyRoute = KeysKeyRouteImport.update({
   id: '/keys_/$key',
   path: '/keys/$key',
@@ -88,6 +95,11 @@ const BenchModelRoute = BenchModelRouteImport.update({
   path: '/bench/model',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MNameActivityRoute = MNameActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
+  getParentRoute: () => MNameRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -103,6 +115,8 @@ export interface FileRoutesByFullPath {
   '/bench/probe': typeof BenchProbeRoute
   '/bench/run': typeof BenchRunRoute
   '/keys/$key': typeof KeysKeyRoute
+  '/m/$name': typeof MNameRouteWithChildren
+  '/m/$name/activity': typeof MNameActivityRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -118,6 +132,8 @@ export interface FileRoutesByTo {
   '/bench/probe': typeof BenchProbeRoute
   '/bench/run': typeof BenchRunRoute
   '/keys/$key': typeof KeysKeyRoute
+  '/m/$name': typeof MNameRouteWithChildren
+  '/m/$name/activity': typeof MNameActivityRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -134,6 +150,8 @@ export interface FileRoutesById {
   '/bench_/probe': typeof BenchProbeRoute
   '/bench_/run': typeof BenchRunRoute
   '/keys_/$key': typeof KeysKeyRoute
+  '/m/$name': typeof MNameRouteWithChildren
+  '/m/$name/activity': typeof MNameActivityRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -151,6 +169,8 @@ export interface FileRouteTypes {
     | '/bench/probe'
     | '/bench/run'
     | '/keys/$key'
+    | '/m/$name'
+    | '/m/$name/activity'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -166,6 +186,8 @@ export interface FileRouteTypes {
     | '/bench/probe'
     | '/bench/run'
     | '/keys/$key'
+    | '/m/$name'
+    | '/m/$name/activity'
   id:
     | '__root__'
     | '/'
@@ -181,6 +203,8 @@ export interface FileRouteTypes {
     | '/bench_/probe'
     | '/bench_/run'
     | '/keys_/$key'
+    | '/m/$name'
+    | '/m/$name/activity'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -197,6 +221,7 @@ export interface RootRouteChildren {
   BenchProbeRoute: typeof BenchProbeRoute
   BenchRunRoute: typeof BenchRunRoute
   KeysKeyRoute: typeof KeysKeyRoute
+  MNameRoute: typeof MNameRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -264,6 +289,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/m/$name': {
+      id: '/m/$name'
+      path: '/m/$name'
+      fullPath: '/m/$name'
+      preLoaderRoute: typeof MNameRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/keys_/$key': {
       id: '/keys_/$key'
       path: '/keys/$key'
@@ -292,8 +324,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BenchModelRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/m/$name/activity': {
+      id: '/m/$name/activity'
+      path: '/activity'
+      fullPath: '/m/$name/activity'
+      preLoaderRoute: typeof MNameActivityRouteImport
+      parentRoute: typeof MNameRoute
+    }
   }
 }
+
+interface MNameRouteChildren {
+  MNameActivityRoute: typeof MNameActivityRoute
+}
+
+const MNameRouteChildren: MNameRouteChildren = {
+  MNameActivityRoute: MNameActivityRoute,
+}
+
+const MNameRouteWithChildren = MNameRoute._addFileChildren(MNameRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
@@ -309,6 +358,7 @@ const rootRouteChildren: RootRouteChildren = {
   BenchProbeRoute: BenchProbeRoute,
   BenchRunRoute: BenchRunRoute,
   KeysKeyRoute: KeysKeyRoute,
+  MNameRoute: MNameRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

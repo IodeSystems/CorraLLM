@@ -220,8 +220,11 @@ function modalityLabel(md: Modality): string {
 
 // --- console ------------------------------------------------------------
 
-function ModelConsole() {
-  const { name, replay, tab: tabParam } = Route.useSearch()
+// Exported and parameterised so /m/$name can render it from PATH params while
+// the legacy /model?name= route keeps working from search params. One page, two
+// addresses, rather than a copy that drifts.
+export function ModelConsole(props: { name: string; tab?: string; replay?: string }) {
+  const { name, replay, tab: tabParam } = props
   const navigate = useNavigate()
   // Deep-linkable tabs: the Overview's Logs button now navigates HERE rather
   // than opening its own dialog, so the console is the single place a model's
@@ -782,7 +785,7 @@ function UsageTab({ name }: { name: string }) {
                     hover
                     sx={{ cursor: 'pointer' }}
                     onClick={() =>
-                      navigate({ to: '/model', search: { name, tab: 'test', replay: r.id } })
+                      navigate({ to: '/m/$name', params: { name }, search: { tab: 'test', replay: r.id } })
                     }
                   >
                     <TableCell>{fmtTs(Number(r.ts))}</TableCell>
@@ -1733,8 +1736,15 @@ export const Route = createFileRoute('/model')({
     tab: s.tab ? String(s.tab) : undefined,
     replay: s.replay ? String(s.replay) : undefined,
   }),
-  component: ModelConsole,
+  component: ModelBySearch,
 })
+
+// The legacy address. Bookmarks, notes and chat history point at it, and
+// breaking them buys nothing — it renders the same page from search params.
+function ModelBySearch() {
+  const { name, tab, replay } = Route.useSearch()
+  return <ModelConsole name={name} tab={tab} replay={replay} />
+}
 
 // --- Bench --------------------------------------------------------------
 

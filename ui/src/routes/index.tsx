@@ -762,7 +762,7 @@ function Home() {
       // served from more than one, so a per-model button had to pick a box
       // silently and hope it was the one you meant. They live on the model page
       // now, one set per placement.
-      <Row key={m.name} onClick={() => navigate({ to: '/model', search: { name: m.name } })}>
+      <Row key={m.name} onClick={() => navigate({ to: '/m/$name', params: { name: m.name } })}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
           <Chip
             size="small"

@@ -52,9 +52,9 @@ const FINISH_HINT: Record<string, string> = {
 }
 
 const ActivityDoc = graphql(/* GraphQL */ `
-  query Activity($limit: Long!, $key: String) {
+  query Activity($limit: Long!, $key: String, $served: String) {
     corrallm {
-      recentActivity(limit: $limit, key: $key) {
+      recentActivity(limit: $limit, key: $key, served: $served) {
         records {
           id
           ts
@@ -147,8 +147,9 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
             variant="outlined"
             onClick={() => {
               navigate({
-                to: '/model',
-                search: { name: rec.served, replay: chatReplayable ? rec.id : undefined },
+                to: '/m/$name',
+                params: { name: rec.served },
+                search: { replay: chatReplayable ? rec.id : undefined },
               })
             }}
           >
@@ -223,12 +224,21 @@ function Payload({ title, body }: { title: string; body: string }) {
 
 export function ActivityLog({
   filterKey,
+  filterModel,
+  hideModel = false,
   limit = 100,
   title = 'Recent',
   subtitle = 'Completed requests, newest first — click a row for payloads',
   action,
 }: {
   filterKey?: string
+  // filterModel scopes to one served model. Paired with hideModel it gives the
+  // per-model view: the SAME table, minus the column whose value is now in the
+  // page title. Two tables that merely look alike drift — one gains a column,
+  // the other gains a formatter — so this is one component with a narrower
+  // question rather than a second implementation of the same rows.
+  filterModel?: string
+  hideModel?: boolean
   limit?: number
   title?: string
   subtitle?: string
@@ -238,9 +248,13 @@ export function ActivityLog({
   const q = useQuery({
     // filterKey is part of the cache key, or switching callers would show the
     // previous one's rows until the refetch landed.
-    queryKey: ['activity', filterKey ?? '', limit],
+    queryKey: ['activity', filterKey ?? '', filterModel ?? '', limit],
     queryFn: () =>
-      gqlClient.request(ActivityDoc, { limit: String(limit), key: filterKey || undefined }),
+      gqlClient.request(ActivityDoc, {
+        limit: String(limit),
+        key: filterKey || undefined,
+        served: filterModel || undefined,
+      }),
     refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
   })
 
@@ -260,7 +274,9 @@ export function ActivityLog({
         <TableHead>
           <TableRow>
             <TableCell>Time</TableCell>
-            <TableCell>Served</TableCell>
+            {/* Dropped when the page is already ABOUT one model — the column
+                would repeat the title on every row. */}
+            {!hideModel && <TableCell>Served</TableCell>}
             <TableCell>Backend</TableCell>
             <TableCell>Key</TableCell>
             <TableCell>Source</TableCell>
@@ -285,7 +301,11 @@ export function ActivityLog({
             <TableRow>
               <TableCell colSpan={16}>
                 <Typography color="text.secondary">
-                  {filterKey ? 'No activity recorded for this key.' : 'No activity yet.'}
+                  {filterKey
+                    ? 'No activity recorded for this key.'
+                    : filterModel
+                      ? 'No activity recorded for this model.'
+                      : 'No activity yet.'}
                 </Typography>
               </TableCell>
             </TableRow>
@@ -293,7 +313,7 @@ export function ActivityLog({
             records.map((r, i) => (
               <TableRow key={i} hover sx={{ cursor: 'pointer' }} onClick={() => setSelected(r.id)}>
                 <TableCell>{fmtTime(r.ts)}</TableCell>
-                <TableCell>{r.served}</TableCell>
+                {!hideModel && <TableCell>{r.served}</TableCell>}
                 <TableCell>{r.backend}</TableCell>
                 <TableCell>{r.key || '—'}</TableCell>
                 <TableCell sx={{ fontFamily: 'monospace' }}>{r.sourceIp || '—'}</TableCell>
