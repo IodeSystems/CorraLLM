@@ -24,6 +24,10 @@ type Server struct {
 	token   string
 	booted  time.Time
 	host    host.Host
+	// stateDir is where the agent notes which process groups it supervises, so
+	// a RESTARTED agent can kill what the previous one left running. Empty
+	// disables it (tests, and any install with nowhere to write).
+	stateDir string
 
 	mu       sync.Mutex
 	backends map[string]*supervised
@@ -38,6 +42,15 @@ type supervised struct {
 	started time.Time
 	handle  host.Handle
 	logs    *logRing
+}
+
+// SetStateDir enables crash-recovery bookkeeping and reaps anything a previous
+// agent left behind. Call before serving.
+func (s *Server) SetStateDir(dir string) {
+	s.stateDir = dir
+	if n := ReapStale(dir); n > 0 {
+		slog.Warn("agent: reaped backends left by a previous agent", "count", n)
+	}
 }
 
 // New builds an agent. An empty token means no authentication — only reachable
@@ -169,6 +182,12 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	s.backends[id] = b
 	s.mu.Unlock()
 
+	if pgid := pgidOf(h.ID()); pgid > 0 {
+		RecordSupervised(s.stateDir, pgid, req.Cmd)
+		// Drop the note when it exits, so startup only ever kills things that
+		// are genuinely still running.
+		go func() { <-h.Done(); ForgetSupervised(s.stateDir, pgid) }()
+	}
 	slog.Info("agent: backend started", "id", id, "key", req.Key, "model", req.Model, "handle", h.ID())
 	writeJSON(w, s.view(b))
 }
@@ -306,6 +325,21 @@ func (s *Server) Shutdown() {
 		slog.Warn("agent: backend ignored SIGTERM; sending SIGKILL", "id", b.id)
 		_ = b.handle.Signal(host.SigKill)
 	}
+}
+
+// pgidOf parses host.Local's opaque handle id ("pgid:12345"). It is opaque by
+// contract, so a parse failure just disables the bookkeeping rather than
+// guessing — the id format is allowed to change.
+func pgidOf(id string) int {
+	rest, ok := strings.CutPrefix(id, "pgid:")
+	if !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

@@ -125,6 +125,11 @@ func runAgent(ctx context.Context, addr, token, primary, server string, selfUpda
 		if err := agent.ReconcileLauncher(filepath.Dir(exe)); err != nil {
 			slog.Warn("agent: could not update start.sh", "err", err)
 		}
+		// Before anything is spawned: kill backends a previous agent left
+		// running. start.sh restarts this process on every crash and every
+		// manual stop, and each restart used to strand whatever it supervised
+		// as a process nothing could account for or reap.
+		a.SetStateDir(filepath.Dir(exe))
 	}
 
 	// Listen BEFORE the beacon starts, because the beacon has to advertise the
