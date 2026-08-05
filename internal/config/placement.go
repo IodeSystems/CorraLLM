@@ -214,3 +214,36 @@ func contains(all []string, want string) bool {
 	}
 	return false
 }
+
+// ForPlacement returns this model as it is when served BY that placement.
+//
+// The alternative was threading a Placement through three dozen call sites that
+// already read Model.Server/Cmd/Proxy — admission, residency, target
+// resolution, tuning, reconciliation. Resolving once at the entry point makes
+// every one of those reads mean "the placement we chose" with no change to any
+// of them, which is both less churn and less opportunity to migrate one site
+// and forget its neighbour.
+//
+// The returned Model is a COPY. Config values are shared across goroutines and
+// requests, so mutating in place would rewrite the model every other caller
+// sees.
+func (m Model) ForPlacement(p Placement) Model {
+	m.Server = p.Server
+	m.Cmd = p.Cmd
+	if !p.Proxy.IsZero() {
+		m.Proxy = p.Proxy
+	}
+	if len(p.RAMUsage) > 0 {
+		m.RAMUsage = p.RAMUsage
+	}
+	if p.MaxConcurrent > 0 {
+		m.MaxConcurrent = p.MaxConcurrent
+	}
+	if p.ContextPerRequest > 0 {
+		m.ContextPerRequest = p.ContextPerRequest
+	}
+	if p.Swap != nil {
+		m.Swap = p.Swap
+	}
+	return m
+}

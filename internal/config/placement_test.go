@@ -101,12 +101,10 @@ func TestTwoPlacementsOnOneBoxGetDistinctNames(t *testing.T) {
 	}
 }
 
-// The schema runs ahead of the runtime, and that gap must fail LOUDLY.
-// Admission, residency and target resolution still key by one server, so a
-// second placement would be accepted and never served — a config that says two
-// boxes and means one.
-func TestMultiPlacementIsRefusedUntilTheRuntimeCanServeIt(t *testing.T) {
-	_, err := loadYAML(t, `
+// Multi-placement now LOADS: the runtime chooses per request
+// (proc.selectPlacement), so the config no longer has to be refused.
+func TestMultiPlacementLoads(t *testing.T) {
+	c, err := loadYAML(t, `
 servers:
   box1:
     pools: { gpu0: 30GB }
@@ -124,11 +122,29 @@ models:
         cmd: "exec b --port 5810"
         proxy: 5810
 `)
-	if err == nil {
-		t.Fatal("two placements loaded, but nothing can schedule the second")
+	if err != nil {
+		t.Fatalf("multi-placement model should load: %v", err)
 	}
-	if !strings.Contains(err.Error(), "serves one per model") {
-		t.Errorf("error should say why, got: %v", err)
+	m := c.Models["qwen"]
+	if len(m.PlacementList()) != 2 {
+		t.Fatalf("got %d placements, want 2", len(m.PlacementList()))
+	}
+	// NOT projected onto the model. With several placements the runtime picks
+	// one per load, so a projected Server would name a box a given request may
+	// never have used.
+	if m.Server != "" {
+		t.Errorf("Server = %q; a multi-placement model must not pretend to have one home", m.Server)
+	}
+	// Each placement still resolves to its own target and its own process.
+	for _, p := range m.PlacementList() {
+		rm := m.ForPlacement(p)
+		tgt, err := rm.ProxyTarget()
+		if err != nil || tgt == nil {
+			t.Errorf("placement %q did not resolve a target: %v", p.Name, err)
+		}
+		if rm.Server != p.Server || rm.Cmd != p.Cmd {
+			t.Errorf("ForPlacement(%q) did not apply the placement: %+v", p.Name, rm)
+		}
 	}
 }
 

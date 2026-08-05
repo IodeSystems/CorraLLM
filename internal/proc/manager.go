@@ -366,7 +366,16 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		return nil, nil, false, err
 	}
 
-	key := mdl.ProcKey(name)
+	// Choose WHERE before anything else: the placement decides the cmd, the
+	// port, the pool it draws on and the process it keys to, so every step
+	// below depends on it. ForPlacement resolves it into the model once, which
+	// is why nothing downstream had to learn about placements.
+	pl, err := m.selectPlacement(name, mdl)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	mdl = mdl.ForPlacement(pl)
+	key := mdl.PlacementProcKey(name, pl)
 
 	// A paused process is refused at the ONE door every load comes through, so
 	// the request path, boot preload, explicit load and /upstream all obey the
@@ -461,6 +470,71 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	case <-ctx.Done():
 		return nil, nil, false, ctx.Err()
 	}
+}
+
+// selectPlacement picks which way to serve this model.
+//
+// Preference order, and each step exists for a reason:
+//
+//  1. one that is ALREADY LOADED — serving from a warm process beats a cold
+//     load somewhere else, and it is also what keeps repeat requests on one
+//     placement instead of oscillating between boxes.
+//  2. one whose server is reachable AND has room — a placement on a box that is
+//     down, or full, is not a way to serve anything right now.
+//  3. one whose server is merely reachable — capacity may free up by the time
+//     admission runs, and refusing here would turn a queueable request into a
+//     hard failure.
+//  4. the first — so a single-placement model behaves exactly as before, and a
+//     model whose boxes are all down still produces the specific "server is
+//     down" error rather than a vague one about placement.
+//
+// A pure proxy has no placements and resolves to the zero value, which
+// ForPlacement leaves alone.
+func (m *Manager) selectPlacement(name string, mdl config.Model) (config.Placement, error) {
+	ps := mdl.PlacementList()
+	switch len(ps) {
+	case 0:
+		return config.Placement{}, nil
+	case 1:
+		return ps[0], nil
+	}
+
+	m.mu.Lock()
+	for _, p := range ps {
+		if proc := m.procs[mdl.PlacementProcKey(name, p)]; proc != nil {
+			proc.mu.Lock()
+			ready := proc.state == StateReady && !proc.draining
+			proc.mu.Unlock()
+			if ready {
+				m.mu.Unlock()
+				return p, nil
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	now := time.Now()
+	var reachable []config.Placement
+	for _, p := range ps {
+		if p.Server == "" || m.live == nil || m.live.Reachable(p.Server, now) {
+			reachable = append(reachable, p)
+		}
+	}
+	if len(reachable) == 0 {
+		// Every box is down. Fall through to the first so the caller gets the
+		// existing, specific down-server error.
+		return ps[0], nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range reachable {
+		usage := m.effectiveUsage(name, mdl.ForPlacement(p))
+		if len(usage) == 0 || m.fitsLocked(p.Server, usage, nil) {
+			return p, nil
+		}
+	}
+	return reachable[0], nil
 }
 
 // releaser drops one residency ref (the backend stays warm), and completes a

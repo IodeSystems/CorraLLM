@@ -1125,7 +1125,11 @@ func overwriteMap[V any](dst *map[string]V, src map[string]V) {
 // than a config that will not load.
 func (c *Config) projectFirstPlacement() {
 	for name, m := range c.Models {
-		if len(m.Placements) == 0 {
+		// Only a single-placement model projects. With several, the runtime
+		// CHOOSES per load (proc.selectPlacement) and projecting one of them
+		// onto the model would make read surfaces claim a placement that a
+		// given request never used.
+		if len(m.Placements) != 1 {
 			continue
 		}
 		p := m.PlacementList()[0]
@@ -1414,17 +1418,7 @@ func (c *Config) Validate() error {
 		if err := m.ValidatePlacements(name); err != nil {
 			return err
 		}
-		// The SCHEMA supports several; the runtime does not yet. Admission,
-		// residency and target resolution still key by a single server, so a
-		// second placement would be accepted and never served. Refusing is the
-		// honest half-step — silently using the first would be a config that
-		// says two boxes and means one.
-		if len(m.Placements) > 1 {
-			return fmt.Errorf("model %q declares %d placements; the runtime serves one per model "+
-				"today, so this would silently use only %q. Split them into separate models "+
-				"and compose a lane, until multi-placement scheduling lands",
-				name, len(m.Placements), m.PlacementList()[0].Name)
-		}
+
 		for _, pl := range m.PlacementList() {
 			if pl.Server == "" {
 				continue
