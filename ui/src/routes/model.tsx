@@ -68,6 +68,22 @@ const ConsoleDoc = graphql(/* GraphQL */ `
           remote
           procKey
           maxConcurrent
+          placements {
+            name
+            server
+            cmd
+            target
+            state
+            hasUI
+            probed
+            probedStale
+            modalities
+            tools
+            contextLength
+            slots
+            memoryMiB
+            upstream
+          }
         }
       }
       residency {
@@ -306,8 +322,28 @@ type Modality = {
   formats?: string[] | null
   maxTokens?: string | null
 }
+// One way of serving this model. Capabilities live here rather than on the
+// model because they differ per placement — the same weights expose vision on a
+// cmd that loaded a projector and not on one that did not.
+type Placement = {
+  name: string
+  server: string
+  cmd: string
+  target: string
+  state: string
+  hasUI: boolean
+  probed: boolean
+  probedStale: boolean
+  modalities: string[]
+  tools: boolean
+  contextLength: string
+  slots: string
+  memoryMiB: string
+  upstream: string
+}
 type OvModel = {
   name: string
+  placements: Placement[]
   modalities: Modality[]
   capability: string
   persistent: boolean
@@ -355,6 +391,29 @@ function InfoTab({
   const prof = (profQ.data?.corrallm?.benchPlan?.models ?? []).find((m) => m.model === name)?.profile
   const examples = (caps?.endpoints ?? []).filter((e) => (e.models ?? []).includes(name))
   const noUI = res?.hasUi === 'no'
+
+  // Controls act on a PLACEMENT's process. They live beside the placement they
+  // affect rather than on the model, because with two boxes a model-level
+  // button has to choose one silently — and "Unload" choosing wrong stops a
+  // backend nobody was looking at.
+  const qcp = useQueryClient()
+  const refresh = () => {
+    qcp.invalidateQueries({ queryKey: ['modelConsole'] })
+    qcp.invalidateQueries({ queryKey: ['modelProfile'] })
+  }
+  const probePlacement = useMutation({
+    mutationFn: (model: string) =>
+      gqlClient.request(ProbePlacementDoc, { name: model, apply: true }),
+    onSuccess: refresh,
+  })
+  const loadPlacement = useMutation({
+    mutationFn: (model: string) => gqlClient.request(LoadModelDoc, { body: { model } }),
+    onSuccess: refresh,
+  })
+  const unloadPlacement = useMutation({
+    mutationFn: (model: string) => gqlClient.request(UnloadModelDoc, { body: { model } }),
+    onSuccess: refresh,
+  })
   return (
     <Stack spacing={2}>
       <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
@@ -370,31 +429,136 @@ function InfoTab({
       </Stack>
 
       <Box>
+        {/* What is true of the MODEL — the routing identity. Anything that
+            differs per box lives in Placements below, because it genuinely
+            differs and a single row would have to pick one and call it the
+            answer. */}
         <Typography variant="subtitle2">Serving</Typography>
         <Table size="small">
           <TableHead>
             <TableRow>
               <TableCell>type</TableCell>
               <TableCell>quality</TableCell>
-              <TableCell>server</TableCell>
-              <TableCell>target</TableCell>
-              <TableCell>slots</TableCell>
+              <TableCell>capability</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             <TableRow>
               <TableCell>{model.type}</TableCell>
               <TableCell>{model.quality}</TableCell>
-              <TableCell>{model.server || '—'}</TableCell>
-              <TableCell>{model.target || '—'}</TableCell>
-              <TableCell>{model.maxConcurrent}</TableCell>
+              <TableCell>{model.capability}</TableCell>
             </TableRow>
           </TableBody>
         </Table>
-        {model.cmd && (
-          <Box component="pre" sx={preSx}>
-            {model.cmd}
-          </Box>
+      </Box>
+
+      <Box>
+        <Typography variant="subtitle2">
+          Placements
+          <Typography component="span" variant="caption" sx={{ ml: 1, color: C.textFaint }}>
+            one per (box, cmd) — capabilities are probed per placement, because two
+            boxes are not assumed to agree
+          </Typography>
+        </Typography>
+        {(model.placements ?? []).length === 0 ? (
+          <Typography variant="body2" sx={{ color: C.textFaint, mt: 1 }}>
+            None — this model is proxied, not run here.
+          </Typography>
+        ) : (
+          (model.placements ?? []).map((pl) => (
+            <Box
+              key={pl?.name}
+              sx={{ mt: 1.5, p: 1.5, border: `1px solid ${C.border}`, borderRadius: 1 }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                <Chip size="small" label={pl?.state || 'absent'} />
+                <Typography variant="subtitle2">{pl?.server}</Typography>
+                {pl?.name !== pl?.server && (
+                  <Chip size="small" variant="outlined" label={pl?.name} />
+                )}
+                {pl?.probed ? (
+                  <>
+                    {(pl?.modalities ?? [])
+                      .filter((x): x is string => !!x && x !== 'text')
+                      .map((mod) => (
+                        <Chip key={mod} size="small" color="success" variant="outlined" label={mod} />
+                      ))}
+                    {pl?.tools && <Chip size="small" color="success" variant="outlined" label="tools" />}
+                    {!!pl?.contextLength && (
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={`ctx ${Number(pl.contextLength).toLocaleString()}`}
+                      />
+                    )}
+                    {!!pl?.slots && <Chip size="small" variant="outlined" label={`${pl.slots} slot`} />}
+                  </>
+                ) : (
+                  // Not "no capabilities" — NOT ASKED. Treating the absence as a
+                  // negative is what skipped vision probes on a vision model.
+                  <Tooltip title="Nothing has asked this backend what it can do. Probe it and the answer is recorded against this placement.">
+                    <Chip size="small" color="warning" variant="outlined" label="not probed" />
+                  </Tooltip>
+                )}
+                {pl?.probedStale && (
+                  <Tooltip title="These capabilities were recorded from a DIFFERENT cmd than the one configured now — re-probe to refresh them.">
+                    <Chip size="small" color="warning" variant="outlined" label="stale" />
+                  </Tooltip>
+                )}
+                {!!pl?.memoryMiB && (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={`${(Number(pl.memoryMiB) / 1024).toFixed(1)} GB measured`}
+                  />
+                )}
+              </Box>
+
+              {/* Controls act on THIS placement's process, which is why they are
+                  here and not on the model. */}
+              <Box sx={{ display: 'flex', gap: 1, mt: 1, flexWrap: 'wrap' }}>
+                <Button size="small" variant="outlined" onClick={() => probePlacement.mutate(name)}>
+                  {probePlacement.isPending ? 'Probing…' : pl?.probed ? 'Re-probe' : 'Probe'}
+                </Button>
+                {pl?.state === 'ready' ? (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="warning"
+                    onClick={() => unloadPlacement.mutate(name)}
+                  >
+                    Unload
+                  </Button>
+                ) : (
+                  <Button size="small" variant="outlined" onClick={() => loadPlacement.mutate(name)}>
+                    Load
+                  </Button>
+                )}
+                {pl?.hasUI && (
+                  <Button
+                    size="small"
+                    component="a"
+                    href={`/upstream/${encodeURIComponent(name)}/`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open UI
+                  </Button>
+                )}
+              </Box>
+
+              {pl?.target && (
+                <Typography variant="caption" sx={{ display: 'block', mt: 1, color: C.textFaint }}>
+                  {pl.target}
+                </Typography>
+              )}
+              {pl?.cmd && (
+                <Box component="pre" sx={preSx}>
+                  {pl.cmd}
+                </Box>
+              )}
+            </Box>
+          ))
         )}
       </Box>
 
@@ -1666,6 +1830,39 @@ const ModelBenchDoc = graphql(/* GraphQL */ `
 
 // The measured profile, queried on the INFO tab so the Memory table has numbers
 // even when the model is not resident.
+const ProbePlacementDoc = graphql(/* GraphQL */ `
+  mutation ProbePlacement($name: String!, $apply: Boolean) {
+    corrallm {
+      probeModel(name: $name, apply: $apply) {
+        ok
+        error
+      }
+    }
+  }
+`)
+
+const LoadModelDoc = graphql(/* GraphQL */ `
+  mutation LoadModelFromPlacement($body: corrallm_ModelActionInputBodyInput!) {
+    corrallm {
+      loadModel(body: $body) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
+const UnloadModelDoc = graphql(/* GraphQL */ `
+  mutation UnloadModelFromPlacement($body: corrallm_ModelActionInputBodyInput!) {
+    corrallm {
+      unloadModel(body: $body) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
 const ModelProfileDoc = graphql(/* GraphQL */ `
   query ModelProfile {
     corrallm {
