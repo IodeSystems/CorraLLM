@@ -1,4 +1,4 @@
-.PHONY: install gen dump-schema lint golangci run build dist agents dev test ui-build clean
+.PHONY: install gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -62,6 +62,9 @@ agents:           ## Cross-compile agent binaries into bin/agents/ for the daemo
 
 ui-build:         ## Typecheck + production-build the UI
 	cd ui && pnpm install && pnpm build
+
+deploy:           ## Build, restart the service, then publish the UI (delegates to bin/deploy)
+	@./bin/deploy $(ARGS)
 
 dev:              ## Frees :6502/:6503, runs air (Go hot-reload) + Vite (delegates to bin/dev)
 	@ADDR='$(ADDR)' ./bin/dev

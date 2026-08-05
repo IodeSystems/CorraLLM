@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Deploy corrallm: build, restart the service, then publish the UI.
+#
+# ORDER IS THE WHOLE POINT. ui/dist is the LIVE web root — the running daemon
+# serves that directory directly via --web-root, so building the UI is a deploy
+# the instant it finishes, with no further step. If the UI ships first, a query
+# that gained a field hits the old schema, the server answers
+# `Cannot query field "X"`, and the dashboard renders its error state instead of
+# loading. A new server with an old UI is harmless; the reverse is an outage.
+#
+# So: binary, restart, verify, THEN the UI.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+SERVICE="${CORRALLM_SERVICE:-corrallm}"
+BASE="${CORRALLM_BASE:-http://127.0.0.1:8111}"
+WITH_AGENTS=false
+SKIP_UI=false
+YES=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --agents) WITH_AGENTS=true ;;
+        --no-ui)  SKIP_UI=true ;;
+        -y|--yes) YES=true ;;
+        -h|--help)
+            cat <<EOF
+Usage: $0 [--agents] [--no-ui] [-y]
+
+  --agents   Also cross-compile agent binaries into bin/agents/.
+             Attached machines self-update to whatever is there, so this
+             changes every agent in the fleet, not just this box.
+  --no-ui    Server only; leave ui/dist as it is.
+  -y         Do not prompt before restarting.
+
+A restart EVICTS every resident model and drops in-flight requests, so it is
+asked about unless -y. Env: CORRALLM_SERVICE, CORRALLM_BASE.
+EOF
+            exit 0 ;;
+        *) echo "Unknown argument: $arg" >&2; exit 2 ;;
+    esac
+done
+
+say() { printf '\n==> %s\n' "$1"; }
+
+say "go build + tests"
+go build ./...
+go test ./... >/dev/null
+
+if $WITH_AGENTS; then
+    say "cross-compiling agents (attached machines will self-update to these)"
+    make agents >/dev/null
+fi
+
+# What a restart costs, BEFORE asking. "Nothing is loaded" and "four models and
+# a live stream" deserve different answers, and only the operator can weigh it.
+if ! $YES; then
+    inflight="?"
+    if tok=$(cat "${CORRALLM_TOKEN_FILE:-$HOME/.corrallm/admin.token}" 2>/dev/null); then
+        inflight=$(curl -fsS -m 5 -H "Authorization: Bearer $tok" "$BASE/api/v1/active" 2>/dev/null \
+            | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("requests",[])))' 2>/dev/null || echo "?")
+    fi
+    printf '\nRestarting %s evicts every resident model and drops in-flight requests.\n' "$SERVICE"
+    printf 'In flight right now: %s\n' "$inflight"
+    read -r -p "Continue? [y/N] " reply
+    [[ "$reply" =~ ^[Yy]$ ]] || { echo "aborted"; exit 1; }
+fi
+
+# `install`, not `build`: the systemd unit runs $GOBIN/corrallm, and building to
+# ./bin/corrallm would deploy nothing while looking like it had.
+say "installing the binary to \$GOBIN (what the unit runs)"
+make install >/dev/null
+
+say "restarting $SERVICE"
+systemctl --user restart "$SERVICE"
+
+say "waiting for health"
+for _ in $(seq 1 30); do
+    if curl -fsS -m 2 "$BASE/health" >/dev/null 2>&1; then
+        version=$(curl -fsS -m 2 "$BASE/health" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version","?"))')
+        echo "    up: $version"
+        break
+    fi
+    sleep 1
+done
+if ! curl -fsS -m 2 "$BASE/health" >/dev/null 2>&1; then
+    echo "!! $SERVICE did not come back; UI NOT published (old one still serving)" >&2
+    echo "   journalctl --user -u $SERVICE -n 50" >&2
+    exit 1
+fi
+
+if $SKIP_UI; then
+    say "done (UI skipped)"
+    exit 0
+fi
+
+# Only now: the server can answer whatever the new UI asks.
+say "building the UI (this IS the deploy — ui/dist is the live web root)"
+(cd ui && npx vite build >/dev/null)
+
+# vite empties outDir, which removes a tracked file. Restoring it here rather
+# than leaving a spurious deletion in every deploy's git status.
+if git -C "$root" ls-files --error-unmatch ui/dist/.gitkeep >/dev/null 2>&1; then
+    git -C "$root" checkout -- ui/dist/.gitkeep 2>/dev/null || true
+fi
+
+say "deployed"
+curl -fsS -m 5 "$BASE/health" | python3 -m json.tool 2>/dev/null || true
