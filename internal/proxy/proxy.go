@@ -604,6 +604,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// upstream stream and frees this slot.
 		loadStart := time.Now()
 		pr, done, loaded, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky)
+		// WHERE this was served. A model can be placed on more than one box, so
+		// the served name no longer says which machine, quantisation or context
+		// window handled the request — and a latency figure that could have come
+		// from either of two placements is not a measurement of anything.
+		placement := pr.Placement()
 		loadMS += time.Since(loadStart).Milliseconds() // ~0 when already resident
 		if err != nil {
 			release()
@@ -815,7 +820,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			ttfbMS = sc.firstWrite.Sub(start).Milliseconds()
 		}
 		p.logReq(r, store.Activity{
-			Served: served, Backend: name, Key: key, Path: r.URL.Path, Status: status,
+			Served: served, Backend: name, Placement: placement, Key: key, Path: r.URL.Path, Status: status,
 			DwellMS: time.Since(start).Milliseconds(), PromptTokens: u.PromptTokens,
 			CompletionTokens: u.CompletionTokens, CachedTokens: u.CachedTokens,
 			PromptPerSec: u.PromptPerSec, PredictedPerSec: u.PredictedPerSec,

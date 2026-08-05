@@ -145,6 +145,7 @@ type Process struct {
 	remote bool
 
 	server     string           // "" for pure-proxy (consumes no pools)
+	placement  string           // which way of serving the model this process IS
 	usage      map[string]int64 // reserved bytes per pool
 	persistent bool             // pinned: never evicted
 	evictRank  int              // 0 low … 2 high (resistance to eviction)
@@ -433,6 +434,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 			Name:       name,
 			ModelName:  name,
 			key:        key,
+			placement:  pl.Name,
 			Target:     target,
 			remote:     mdl.Remote(),
 			server:     mdl.Server,
@@ -2102,6 +2104,22 @@ func (m *Manager) ExtensionStates() []ExtensionState {
 
 // Draining reports whether an unload is waiting on this process's in-flight
 // requests, so the request edge can refuse new work with a 503.
+// Placement is which way of serving the model this process is — the box and
+// the cmd, by its stable name.
+//
+// Exposed so a request record can say WHERE it was served. With a model able to
+// run in more than one place, the served name no longer identifies that, and a
+// latency number that could have come from either of two machines is not a
+// measurement of anything.
+func (p *Process) Placement() string {
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.placement
+}
+
 func (p *Process) Draining() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()

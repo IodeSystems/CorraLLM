@@ -58,6 +58,7 @@ const ActivityDoc = graphql(/* GraphQL */ `
         records {
           id
           ts
+          placement
           served
           backend
           key
@@ -278,6 +279,9 @@ export function ActivityLog({
                 would repeat the title on every row. */}
             {!hideModel && <TableCell>Served</TableCell>}
             <TableCell>Backend</TableCell>
+            {/* WHERE it ran. With a model placed on more than one box, backend
+                no longer says which machine, quant or context served it. */}
+            <TableCell>Placement</TableCell>
             <TableCell>Key</TableCell>
             <TableCell>Source</TableCell>
             <TableCell>Path</TableCell>
@@ -315,6 +319,7 @@ export function ActivityLog({
                 <TableCell>{fmtTime(r.ts)}</TableCell>
                 {!hideModel && <TableCell>{r.served}</TableCell>}
                 <TableCell>{r.backend}</TableCell>
+                <TableCell>{r.placement || '—'}</TableCell>
                 <TableCell>{r.key || '—'}</TableCell>
                 <TableCell sx={{ fontFamily: 'monospace' }}>{r.sourceIp || '—'}</TableCell>
                 <TableCell>{r.path}</TableCell>

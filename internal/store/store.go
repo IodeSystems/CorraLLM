@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS activity (
     ts                INTEGER NOT NULL,          -- unix millis
     served            TEXT    NOT NULL,          -- served model name
     backend           TEXT    NOT NULL,          -- backend that handled it
+    placement         TEXT    NOT NULL DEFAULT '', -- WHICH placement served it (box + cmd); '' predates the column
     key               TEXT    NOT NULL DEFAULT '', -- caller identity
     source_ip         TEXT    NOT NULL DEFAULT '', -- client IP (via middleware.RealIP / X-Forwarded-For)
     path              TEXT    NOT NULL,          -- request path
@@ -270,6 +271,16 @@ var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN prompt_per_sec REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN predicted_per_sec REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN finish_reason TEXT NOT NULL DEFAULT ''`,
+	// WHERE the request was served. A model can be placed on more than one box,
+	// so `backend` — the served model name — stopped identifying where the work
+	// actually happened. Two requests to one model can now differ by machine,
+	// quantisation and context window, and nothing in this table could say so.
+	//
+	// Old rows keep '' rather than being backfilled. There is no honest value to
+	// backfill WITH: the whole reason the column exists is that the placement is
+	// not derivable from the model, and guessing the only placement that exists
+	// today would silently mislabel history the moment a second one is added.
+	`ALTER TABLE activity ADD COLUMN placement TEXT NOT NULL DEFAULT ''`,
 	// Cold-spawn wait, split out from dwell. A request that waited 6.7s for a
 	// model to load and then answered in 375ms is not a slow model, and without
 	// this column nothing downstream can tell the two apart.
@@ -502,10 +513,14 @@ func Open(ctx context.Context, path string) (*Store, error) {
 // 499) record them as zero. A request preempted mid-serve still records the cost
 // actually consumed before the abort (partial tokens + any swap energy spent).
 type Activity struct {
-	ID               int64 // row id (P10b; 0 until persisted, set on read)
-	TS               int64 // unix millis
-	Served           string
-	Backend          string
+	ID      int64 // row id (P10b; 0 until persisted, set on read)
+	TS      int64 // unix millis
+	Served  string
+	Backend string
+	// Placement is which way of serving Served handled this request: the box
+	// and the cmd. Empty on rows written before the column existed, and on any
+	// request served by something corrallm does not place (a pure proxy).
+	Placement        string
 	Key              string
 	SourceIP         string // client IP resolved via middleware.RealIP (X-Forwarded-For), "" if unknown
 	Path             string
@@ -549,12 +564,12 @@ type Activity struct {
 // InsertActivity appends a request record to the activity log.
 func (s *Store) InsertActivity(a Activity) error {
 	_, err := s.db.Exec(
-		`INSERT INTO activity (ts, served, backend, key, source_ip, path, status, dwell_ms,
+		`INSERT INTO activity (ts, served, backend, placement, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
 		                       finish_reason, load_ms, retry_after_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.TS, a.Served, a.Backend, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.TS, a.Served, a.Backend, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
 		a.FinishReason, a.LoadMS, a.RetryAfterMS,
@@ -568,12 +583,12 @@ func (s *Store) InsertActivity(a Activity) error {
 func (s *Store) ActivityByID(id int64) (Activity, error) {
 	var a Activity
 	err := s.db.QueryRow(
-		`SELECT id, ts, served, backend, key, source_ip, path, status, dwell_ms,
+		`SELECT id, ts, served, backend, placement, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
 		        finish_reason, load_ms, retry_after_ms
 		 FROM activity WHERE id = ?`, id).Scan(
-		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
+		&a.ID, &a.TS, &a.Served, &a.Backend, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
 		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody,
 		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS)
@@ -605,7 +620,7 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 // Built by composition rather than by another if/else pair — two independent
 // filters are four branches, and the next one is eight.
 func (s *Store) RecentActivity(limit int, served, key string) ([]Activity, error) {
-	const cols = `id, ts, served, backend, key, source_ip, path, status, dwell_ms,
+	const cols = `id, ts, served, backend, placement, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
 	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms`
 	q := `SELECT ` + cols + ` FROM activity`
@@ -632,7 +647,7 @@ func (s *Store) RecentActivity(limit int, served, key string) ([]Activity, error
 	var out []Activity
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
+		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Backend, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
 			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS,
 			&a.RetryAfterMS); err != nil {

@@ -524,6 +524,8 @@ type corrallm_ActivityDetailRecord {
   key: String!
   """Request path."""
   path: String!
+  """WHICH placement served it (box + cmd). Empty on rows written before this was tracked, and on pure proxies corrallm does not place."""
+  placement: String!
   """Backend-reported generation speed, tokens/sec (tg/s); 0 if unavailable."""
   predictedPerSec: Float!
   """Backend-reported prompt-processing speed, tokens/sec (tp/s); 0 if unavailable."""
@@ -573,6 +575,8 @@ type corrallm_ActivityRecord {
   key: String!
   """Request path."""
   path: String!
+  """WHICH placement served it (box + cmd). Empty on rows written before this was tracked, and on pure proxies corrallm does not place."""
+  placement: String!
   """Backend-reported generation speed, tokens/sec (tg/s); 0 if unavailable."""
   predictedPerSec: Float!
   """Backend-reported prompt-processing speed, tokens/sec (tp/s); 0 if unavailable."""

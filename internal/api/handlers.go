@@ -141,6 +141,7 @@ type ActivityRecord struct {
 	TS               int64   `json:"ts" doc:"Unix millis when the request was logged."`
 	Served           string  `json:"served" doc:"Served model name."`
 	Backend          string  `json:"backend" doc:"Backend that handled it."`
+	Placement        string  `json:"placement" doc:"WHICH placement served it (box + cmd). Empty on rows written before this was tracked, and on pure proxies corrallm does not place."`
 	Key              string  `json:"key" doc:"Caller identity."`
 	SourceIP         string  `json:"sourceIp" doc:"Client IP (via X-Forwarded-For); empty if unknown."`
 	Path             string  `json:"path" doc:"Request path."`
@@ -185,6 +186,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			TS:               a.TS,
 			Served:           a.Served,
 			Backend:          a.Backend,
+			Placement:        a.Placement,
 			Key:              a.Key,
 			SourceIP:         a.SourceIP,
 			Path:             a.Path,
@@ -236,7 +238,8 @@ func (h *Handlers) ActivityDetail(_ context.Context, in *ActivityDetailInput) (*
 	out := &ActivityDetailOutput{}
 	out.Body.Record = ActivityDetailRecord{
 		ActivityRecord: ActivityRecord{
-			ID: a.ID, TS: a.TS, Served: a.Served, Backend: a.Backend, Key: a.Key, SourceIP: a.SourceIP, Path: a.Path,
+			ID: a.ID, TS: a.TS, Served: a.Served, Backend: a.Backend, Placement: a.Placement,
+			Key: a.Key, SourceIP: a.SourceIP, Path: a.Path,
 			Status: a.Status, DwellMS: a.DwellMS, PromptTokens: a.PromptTokens,
 			CompletionTokens: a.CompletionTokens, CachedTokens: a.CachedTokens,
 			PromptPerSec: a.PromptPerSec, PredictedPerSec: a.PredictedPerSec,
