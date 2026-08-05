@@ -775,7 +775,15 @@ func skipReason(tsk *task.Task, model string, mods map[string]map[string]bool, c
 	if declared[want] {
 		return ""
 	}
-	return fmt.Sprintf("model does not declare modality %q", want)
+	// Name the remedy. This gate is reached by models that HAVE the modality and
+	// have simply never been asked — corrallm only knew what the config
+	// declared, and a declaration is something someone has to have thought to
+	// write. The skip then reads as "this model cannot do images" when it means
+	// "nobody has established whether it can", and the one mechanism that would
+	// settle it is the thing being skipped.
+	return fmt.Sprintf("model does not declare modality %q — if it supports it, "+
+		"probe the model (POST /api/v1/config/models/%s/probe?apply=true) and re-run; "+
+		"the probe asks the backend and records the answer", want, model)
 }
 
 func validateToolsetBins(toolsets []Toolset, binDir string) error {
