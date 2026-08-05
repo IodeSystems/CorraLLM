@@ -28,6 +28,12 @@ type CorrallmMutationNamespace {
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
   pauseExtension(body: corrallm_PauseExtensionInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseExtension")
   pauseModel(body: corrallm_PauseModelInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseModel")
+  probeModel(
+    """Write what was discovered back onto the model: modalities, slots, context. Off by default — a probe reads unless told to write."""
+    apply: Boolean
+    """Served model name."""
+    name: String!
+  ): corrallm_TrialModelOutputBody @derived(operationId: "probeModel")
   publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
@@ -39,6 +45,7 @@ type CorrallmMutationNamespace {
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
@@ -141,6 +148,10 @@ type CorrallmQueryNamespace {
     """Max trailing lines."""
     tail: Long
   ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
+  modelSpec(
+    """Served model name."""
+    name: String!
+  ): corrallm_ModelSpecOutputBody @derived(operationId: "modelSpec")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   queueDepth(
     """Bucket width in minutes."""
@@ -169,6 +180,18 @@ type CorrallmQueryNamespace {
   ): corrallm_RequestOverheadOutputBody @derived(operationId: "requestOverhead")
   reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
+  retryPromises(
+    """Filter to one caller key; empty returns all callers."""
+    key: String
+    """Max promises, newest first."""
+    limit: Long
+    """Look back this many minutes."""
+    minutes: Long
+  ): corrallm_RetryPromisesOutputBody @derived(operationId: "retryPromises")
+  serviceProfiles(
+    """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
+    minutes: Long
+  ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
   usageByKey(
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
@@ -189,6 +212,18 @@ type CorrallmQueryNamespace {
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesByGroupOutputBody @derived(operationId: "usageSeriesByGroup")
+  usageSeriesByModel(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Narrow to one caller key; empty covers all callers."""
+    key: String
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_UsageSeriesByModelOutputBody @derived(operationId: "usageSeriesByModel")
+  utilization(
+    """Window for the promise and queue-wait columns."""
+    minutes: Long
+  ): corrallm_UtilizationOutputBody @derived(operationId: "utilization")
   v1: CorrallmV1QueryNamespace!
 }
 
@@ -215,6 +250,12 @@ type CorrallmV1MutationNamespace {
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
   pauseExtension(body: corrallm_PauseExtensionInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseExtension")
   pauseModel(body: corrallm_PauseModelInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseModel")
+  probeModel(
+    """Write what was discovered back onto the model: modalities, slots, context. Off by default — a probe reads unless told to write."""
+    apply: Boolean
+    """Served model name."""
+    name: String!
+  ): corrallm_TrialModelOutputBody @derived(operationId: "probeModel")
   publishBenchProbeResults(body: corrallm_BenchProbeResultsInputBodyInput!): corrallm_BenchProbeResultsOutputBody @derived(operationId: "publishBenchProbeResults")
   publishBenchResult(body: corrallm_BenchResultInputBodyInput!): corrallm_BenchResultOutputBody @derived(operationId: "publishBenchResult")
   publishTuneProfile(body: corrallm_TuneProfileInputBodyInput!): corrallm_TuneProfileOutputBody @derived(operationId: "publishTuneProfile")
@@ -226,6 +267,7 @@ type CorrallmV1MutationNamespace {
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
   unloadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unloadExtension")
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
@@ -327,6 +369,10 @@ type CorrallmV1QueryNamespace {
     """Max trailing lines."""
     tail: Long
   ): corrallm_ModelLogsOutputBody @derived(operationId: "modelLogs")
+  modelSpec(
+    """Served model name."""
+    name: String!
+  ): corrallm_ModelSpecOutputBody @derived(operationId: "modelSpec")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
   queueDepth(
     """Bucket width in minutes."""
@@ -355,6 +401,18 @@ type CorrallmV1QueryNamespace {
   ): corrallm_RequestOverheadOutputBody @derived(operationId: "requestOverhead")
   reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
+  retryPromises(
+    """Filter to one caller key; empty returns all callers."""
+    key: String
+    """Max promises, newest first."""
+    limit: Long
+    """Look back this many minutes."""
+    minutes: Long
+  ): corrallm_RetryPromisesOutputBody @derived(operationId: "retryPromises")
+  serviceProfiles(
+    """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
+    minutes: Long
+  ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
   usageByKey(
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
@@ -375,6 +433,18 @@ type CorrallmV1QueryNamespace {
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesByGroupOutputBody @derived(operationId: "usageSeriesByGroup")
+  usageSeriesByModel(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Narrow to one caller key; empty covers all callers."""
+    key: String
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_UsageSeriesByModelOutputBody @derived(operationId: "usageSeriesByModel")
+  utilization(
+    """Window for the promise and queue-wait columns."""
+    minutes: Long
+  ): corrallm_UtilizationOutputBody @derived(operationId: "utilization")
 }
 
 """Untyped JSON value (used as a fallback for OpenAPI schemas that can't be mapped exactly)."""
@@ -466,6 +536,8 @@ type corrallm_ActivityDetailRecord {
   reqBody: String!
   """Captured response payload (capped; binary audio summarized)."""
   respBody: String!
+  """The Retry-After we promised this caller on a 429, milliseconds; 0 when no promise was made. ts + retryAfterMs is when we told them to come back."""
+  retryAfterMs: Long!
   """Served model name."""
   served: String!
   """Client IP (via X-Forwarded-For); empty if unknown."""
@@ -509,6 +581,8 @@ type corrallm_ActivityRecord {
   promptTokens: Long!
   """Time queued before admission/reject, milliseconds."""
   queuedMs: Long!
+  """The Retry-After we promised this caller on a 429, milliseconds; 0 when no promise was made. ts + retryAfterMs is when we told them to come back."""
+  retryAfterMs: Long!
   """Served model name."""
   served: String!
   """Client IP (via X-Forwarded-For); empty if unknown."""
@@ -1041,6 +1115,7 @@ input corrallm_CapacityInput {
   host: corrallm_DeviceMemInput
   hostError: String
   perProcess: Boolean!
+  unified: Boolean
 }
 
 type corrallm_CatalogEntry {
@@ -1251,6 +1326,7 @@ type corrallm_HealthOutputBody {
 }
 
 type corrallm_HeartbeatAck {
+  buildId: String
   intervalSeconds: Long!
   ok: Boolean!
   updateUrl: String!
@@ -1259,6 +1335,8 @@ type corrallm_HeartbeatAck {
 
 input corrallm_HeartbeatInput {
   backends: [corrallm_BackendInput!]
+  capacity: corrallm_CapacityInput
+  endpoints: [String!]
   hello: corrallm_HelloInput!
   server: String!
 }
@@ -1266,6 +1344,7 @@ input corrallm_HeartbeatInput {
 input corrallm_HelloInput {
   arch: String!
   booted: Long!
+  buildId: String
   hostname: String!
   os: String!
   protocol: Long!
@@ -1301,6 +1380,12 @@ type corrallm_KeySeries {
 }
 
 type corrallm_KeyUsageRow {
+  """cachedTokens / promptTokens, 0..1. Only meaningful when cacheReports > 0. A property of how the caller prompts: a stable system prefix reuses cache, a shuffled one never does."""
+  cacheHitRate: Float!
+  """Requests that reported any cache hit. Zero means unknown, not 0%."""
+  cacheReports: Long!
+  """Prompt tokens served from cache rather than reprocessed."""
+  cachedTokens: Long!
   """Total completion tokens."""
   completionTokens: Long!
   """Total cost, USD."""
@@ -1400,6 +1485,8 @@ type corrallm_ModelDef {
   capability: String!
   """Spawn command (empty for pure-proxy)."""
   cmd: String!
+  """Context window guaranteed per request (0 = whatever the backend was launched with, undivided)."""
+  contextPerRequest: Long!
   """Eviction resistance (sticky)."""
   evictCost: String!
   """Admission slots."""
@@ -1426,6 +1513,8 @@ type corrallm_ModelDef {
   pausedByExtension: String!
   """Pinned (preloaded, never evicted)."""
   persistent: Boolean!
+  """Ways this model can be served: one per (box, cmd)."""
+  placements: [corrallm_PlacementView!]!
   """Backing process identity; an extension's models share one."""
   procKey: String!
   """Relative quality rank. Fractional tiers are legal — a model that belongs between two existing tiers is 1.5, not a renumbered ladder."""
@@ -1453,6 +1542,40 @@ type corrallm_ModelLogsOutputBody {
   lines: [String!]!
 }
 
+type corrallm_ModelSeries {
+  """One point per bucket, aligned to Buckets."""
+  points: [corrallm_SeriesPoint!]!
+  """Served model name."""
+  served: String!
+}
+
+type corrallm_ModelSpec {
+  """Spawn command; empty makes it a pure proxy."""
+  cmd: String
+  """Admission slots."""
+  maxConcurrent: Long
+  """max_tokens clamp when degraded onto (0 = none)."""
+  maxTokens: Long
+  """Served model name."""
+  name: String!
+  """Free text kept with the model and shown beside it."""
+  notes: String
+  """Pinned: preloaded and never evicted."""
+  persistent: Boolean
+  """Where to forward: a port (5800), host:port, or a URL."""
+  proxy: String!
+  """Relative rank; fractional tiers are allowed."""
+  quality: Float
+  """Per-pool footprint, e.g. {"gpu0":"16GB"}."""
+  ramUsage: JSON
+  """Server it draws capacity from (required when cmd is set)."""
+  server: String
+  """Cost class: chat | embed | stt | tts | …"""
+  type: String
+  """The id the backend knows it by, when different from the served name."""
+  upstream: String
+}
+
 input corrallm_ModelSpecInput {
   """Spawn command; empty makes it a pure proxy."""
   cmd: String
@@ -1478,6 +1601,12 @@ input corrallm_ModelSpecInput {
   type: String
   """The id the backend knows it by, when different from the served name."""
   upstream: String
+}
+
+type corrallm_ModelSpecOutputBody {
+  advanced: [String!]!
+  exists: Boolean!
+  spec: corrallm_ModelSpec!
 }
 
 type corrallm_OverviewOutputBody {
@@ -1528,6 +1657,37 @@ type corrallm_PauseModelOutputBody {
   ok: Boolean!
   """Process key actually paused: a model name, or "extension:<name>"."""
   target: String!
+}
+
+type corrallm_PlacementView {
+  """What runs there."""
+  cmd: String!
+  """Context this placement actually got when probed."""
+  contextLength: Long!
+  """Whether this backend serves a web UI (probed)."""
+  hasUI: Boolean!
+  """Peak measured footprint on this placement."""
+  memoryMiB: Long!
+  """Probed input modalities for this placement."""
+  modalities: [String!]!
+  """Stable id: what the process, profile and capability record are filed under."""
+  name: String!
+  """Whether this placement has ever been probed."""
+  probed: Boolean!
+  """The recorded capabilities were taken from a DIFFERENT cmd than the one configured now."""
+  probedStale: Boolean!
+  """The box."""
+  server: String!
+  """Concurrency this placement reported."""
+  slots: Long!
+  """absent|loading|ready|failed|evicting|draining for THIS placement's process."""
+  state: String!
+  """Resolved forward destination for this placement."""
+  target: String!
+  """Probed tool-calling support."""
+  tools: Boolean!
+  """Id the backend answers to."""
+  upstream: String!
 }
 
 type corrallm_PoolDef {
@@ -1705,7 +1865,47 @@ type corrallm_ResidentModelView {
   usage: [corrallm_PoolUsageView!]!
 }
 
+type corrallm_RetryPromiseRecord {
+  """Unix millis we told them to come back (ts + retryAfterMs)."""
+  dueMs: Long!
+  """Activity row the promise was made on."""
+  id: Long!
+  """Caller identity; empty for an unkeyed caller."""
+  key: String!
+  """Why we turned them away: rejected | queue-timeout | exhausted | bumped."""
+  reason: String!
+  """What we promised, milliseconds."""
+  retryAfterMs: Long!
+  """Unix millis of the caller's next request; 0 if they have not been back."""
+  returnedMs: Long!
+  """Model they were asking for."""
+  served: String!
+  """Client IP."""
+  sourceIp: String!
+  """waiting (due in the future, not back yet) | honored (returned at or after the promise) | early (returned before it) | gone (due passed, never returned)."""
+  state: String!
+  """Unix millis we made the promise."""
+  ts: Long!
+  """How long they actually waited before returning; 0 if they have not been back. Compare against retryAfterMs to judge the estimate."""
+  waitedMs: Long!
+}
+
+type corrallm_RetryPromisesOutputBody {
+  """Promises, newest first."""
+  promises: [corrallm_RetryPromiseRecord!]!
+  """How many are still owed a slot — due in the future and not back yet."""
+  waiting: Long!
+}
+
 type corrallm_RollupRow {
+  """cachedTokens / promptTokens, 0..1. Only meaningful when cacheReports > 0."""
+  cacheHitRate: Float!
+  """Requests that reported any cache hit. ZERO MEANS UNKNOWN, NOT 0% — a backend with no prompt cache (embeddings, most remote providers) never reports, and showing that as a measured miss rate invents a problem."""
+  cacheReports: Long!
+  """Estimated prompt-processing time avoided: cachedTokens / mean observed prompt tokens-per-second. An estimate — the speed varies with batch and context."""
+  cachedSecondsSaved: Float!
+  """Prompt tokens the backend served from cache instead of reprocessing."""
+  cachedTokens: Long!
   """Total completion tokens."""
   completionTokens: Long!
   """Total cost, USD."""
@@ -1763,11 +1963,87 @@ type corrallm_ServerView {
   server: String!
 }
 
+type corrallm_ServiceProfileRow {
+  """Coefficient of variation, stddev/mean."""
+  cv: Float!
+  """Caller identity; empty for unkeyed callers."""
+  key: String!
+  """Longest single request."""
+  maxMs: Long!
+  """This caller's mean service time on this model."""
+  meanMs: Long!
+  """The model's overall CV (the prior)."""
+  modelCv: Float!
+  """The model's overall mean service time (the prior)."""
+  modelMeanMs: Long!
+  """Requests behind these numbers."""
+  n: Long!
+  """Served model name."""
+  served: String!
+  """Total slot time this caller consumed — who the model is actually working for."""
+  shareMs: Long!
+  """CV blended toward the model-level prior."""
+  shrunkCv: Float!
+  """Mean blended toward the model-level prior by sample count — what an estimator should use instead of a small sample."""
+  shrunkMeanMs: Long!
+  """Standard deviation of service time."""
+  stdMs: Long!
+  """(1+CV²)/2 — how much this caller's variability alone inflates the wait of whoever is behind them, versus a mean-only estimate. 1.0 means constant-time requests."""
+  varianceFactor: Float!
+}
+
+type corrallm_ServiceProfilesOutputBody {
+  """The window profiled."""
+  minutes: Long!
+  """One row per (model, caller), heaviest consumer first."""
+  rows: [corrallm_ServiceProfileRow!]!
+}
+
 type corrallm_StageView {
   """Human-readable stage summary."""
   policy: String!
   """Backend type (or "default")."""
   type: String!
+}
+
+type corrallm_TrialEvent {
+  data: JSON
+  msg: String
+  ok: Boolean!
+  stage: String!
+}
+
+input corrallm_TrialModelInputBodyInput {
+  """The spawn command to try."""
+  cmd: String!
+  """Label for the run. Generated when empty; a trial is never written to config, so this names nothing permanent."""
+  name: String
+  """Where it will listen: a port (5800), host:port, or a URL."""
+  proxy: String!
+  """Declared footprint. Required on a host that cannot measure per process; elsewhere the trial measures it for you."""
+  ramUsage: JSON
+  """Which machine to run it on."""
+  server: String!
+}
+
+type corrallm_TrialModelOutputBody {
+  error: String
+  """Every stage and log line, in the order they happened."""
+  events: [corrallm_TrialEvent!]!
+  ok: Boolean!
+  result: corrallm_TrialResult!
+}
+
+type corrallm_TrialResult {
+  contextLength: Long
+  failedStage: String
+  hasUI: Boolean
+  memoryMiB: Long
+  modalities: [String!]
+  ok: Boolean!
+  slots: Long
+  supportsTools: Boolean
+  upstream: String
 }
 
 input corrallm_TuneProfileInputBodyInput {
@@ -1846,6 +2122,15 @@ type corrallm_UsageSeriesByGroupOutputBody {
   groups: [corrallm_GroupSeries!]!
 }
 
+type corrallm_UsageSeriesByModelOutputBody {
+  """Effective bucket width (may be coarsened)."""
+  bucketMinutes: Long!
+  """Bucket start times, unix millis, ascending."""
+  buckets: [Long!]!
+  """Per-model dense series, costliest first."""
+  models: [corrallm_ModelSeries!]!
+}
+
 type corrallm_UsageSeriesOutputBody {
   """Effective bucket width (may be coarsened)."""
   bucketMinutes: Long!
@@ -1853,6 +2138,58 @@ type corrallm_UsageSeriesOutputBody {
   buckets: [Long!]!
   """Per-key dense series, costliest first."""
   keys: [corrallm_KeySeries!]!
+}
+
+type corrallm_UtilizationOutputBody {
+  """The window the windowed columns cover."""
+  minutes: Long!
+  """One row per served model seen in the window (or busy right now), busiest first."""
+  rows: [corrallm_UtilizationRow!]!
+}
+
+type corrallm_UtilizationRow {
+  """Slots in use right now."""
+  active: Long!
+  """Admission slots across this name's backends; 0 if none has been touched since start."""
+  capacity: Long!
+  """scheduler.maxQueueDepth as configured (0 = unbounded)."""
+  configuredDepth: Long!
+  """Configured depth exceeds what maxWait allows — the depth bound is dead config, callers always time out first."""
+  depthUnreachable: Boolean!
+  """Callers who came back BEFORE the time we gave them (ignoring Retry-After)."""
+  early: Long!
+  """What we would tell a caller arriving right now to wait — the scheduler's own estimate, live. 0 if no dwell sample yet."""
+  estWaitMs: Long!
+  """Longest measured queue wait in the window."""
+  maxWaitMs: Long!
+  """Promises whose due time passed with no return — we told them to come back and they never did."""
+  notHonored: Long!
+  """Utilization reached or passed 1 over the window: arrivals outpaced service and no finite steady-state wait exists."""
+  pkSaturated: Boolean!
+  """Queueing-theory expected wait, ρ/(1−ρ)·E[S]·(1+CV²)/2 — what the measured distribution implies, versus what the scheduler estimates. 0 when not computable; see pkSaturated."""
+  pkWaitMs: Long!
+  """Promises made in the window that are still outstanding (due in the future, not back yet)."""
+  promised: Long!
+  """How many requests queued at all — realWaitMs over 1 or 2 samples is not a trend."""
+  queuedSamples: Long!
+  """How deep the queue can get before maxWait times the front waiter out: capacity × maxWait / meanService. 0 if not computable."""
+  reachableDepth: Long!
+  """Measured mean wait of requests that actually queued and were then admitted, over the window. 0 if nothing queued."""
+  realWaitMs: Long!
+  """Utilization over the window: total service time / (capacity × window). 0 if capacity is unknown."""
+  rho: Float!
+  """Served model or lane name."""
+  served: String!
+  """Coefficient of variation of service time. Above 1 means the mean is tail-dominated and position×mean badly under-estimates a queue."""
+  serviceCv: Float!
+  """Mean time a request actually occupied a slot (queue and cold-load excluded)."""
+  serviceMeanMs: Long!
+  """Requests behind the service-time stats."""
+  serviceSamples: Long!
+  """Total promises made in the window, whatever became of them."""
+  turnedAway: Long!
+  """Callers queued right now."""
+  waiting: Long!
 }
 
 type corrallm_Verdict {

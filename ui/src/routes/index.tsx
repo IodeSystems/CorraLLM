@@ -11,7 +11,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Link as MuiLink,
   TextField,
   Tooltip,
   Typography,
@@ -22,7 +21,7 @@ import { ActiveRequests } from '@/ActiveRequests'
 import { MemoryPanel } from '@/MemoryPanel'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { C, seriesColor } from '@/theme'
-import { capLabel, fmtInt, fmtTime } from '@/format'
+import { fmtInt, fmtTime } from '@/format'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -55,6 +54,11 @@ const OverviewDoc = graphql(/* GraphQL */ `
           pausedByExtension
           pauseReason
           pauseResumeMs
+          placements {
+            name
+            server
+            state
+          }
           modalities {
             modality
             maxResolution
@@ -565,11 +569,6 @@ function Home() {
   // declared modality nothing has exercised, or a cold/warm disagreement. A
   // fully-covered model gets no button — an always-present Probe would train
   // people to ignore it.
-  const needsProbe = (name: string) => {
-    const p = planByModel.get(name)
-    if (!p) return false
-    return !p.hasTuneProfile || !!p.unverifiedModalities?.length || !!p.disagreements?.length
-  }
 
   const probe = useMutation({
     mutationFn: (model: string) =>
@@ -750,212 +749,43 @@ function Home() {
       </>
     ) : null
 
-  // An extension-hosted model shares ONE process with its siblings, so both
-  // Unload and Pause on its row reach all of them. Build the sentence that says
-  // so; returns undefined for a standalone model, where there is nothing extra
-  // to warn about.
   const extensions = ov?.extensions ?? []
-  const extensionOf = (model: string) => extensions.find((e) => e.provides.includes(model))
-  const siblingWarning = (model: string, verb: string) => {
-    const ext = extensionOf(model)
-    if (!ext) return undefined
-    const others = ext.provides.filter((n) => n !== model)
-    if (!others.length) return undefined
-    return `${model} is hosted by the "${ext.name}" extension — one process for all of its models. ${verb} it also takes down: ${others.join(', ')}.`
-  }
 
-  // Unload is confirmed only when it reaches past the row it was clicked from.
-  // A plain model unloads immediately; asking every time would train people to
-  // click through the dialog that matters.
-  const askUnload = (model: string) => {
-    const warning = siblingWarning(model, 'Unloading')
-    if (!warning) {
-      unload.mutate(model)
-      return
-    }
-    setConfirmUnload({
-      title: `Unload ${extensionOf(model)?.name}?`,
-      body: warning,
-      run: () => unload.mutate(model),
-    })
-  }
-
-  // One model = one ROW inside its panel, not a card of its own. A page of
-  // twenty cards, each with its own border and its own five-column table for
-  // four numbers, is the "everything runs together" problem: every model looks
-  // structurally identical to its section heading. Here the panel is the object
-  // and the model is a line in it.
   const modelRow = (m: (typeof models)[number]) => {
     const st = stateOf(m)
+    const places = m.placements ?? []
     return (
-      <Row key={m.name}>
+      // The whole row navigates, and carries no controls.
+      //
+      // Every control that used to live here — load, unload, pause, probe, the
+      // backend's UI, its logs — acts on ONE process on ONE box. A model can be
+      // served from more than one, so a per-model button had to pick a box
+      // silently and hope it was the one you meant. They live on the model page
+      // now, one set per placement.
+      <Row key={m.name} onClick={() => navigate({ to: '/model', search: { name: m.name } })}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-          {/* State first and always with its word — the colored dot alone would
-              encode state in color only. A remote backend has no local process
-              and so no residency at all: it reads "proxy" permanently, never
-              "absent" (which looks like a failed load) and never "ready" (which
-              claimed a load that never happened). */}
           <Chip
             size="small"
             label={m.remote ? 'proxy' : stoppingProcs.has(m.procKey) ? 'stopping' : (st?.state ?? 'absent')}
-            color={m.remote ? 'secondary' : stoppingProcs.has(m.procKey) ? 'warning' : stateColor(st?.state)}
-            variant={st?.state || stoppingProcs.has(m.procKey) ? 'filled' : 'outlined'}
-            sx={{ minWidth: 68 }}
+            color={stateColor(m.remote ? 'proxy' : (st?.state ?? 'absent'))}
           />
-          <Typography variant="subtitle2" sx={{ minWidth: 150 }}>
-            {m.name}
-          </Typography>
-          <Chip size="small" color="info" variant="outlined" label={capLabel(m.capability)} />
-          {/* Paused is a decision someone made, so it says who/why it is off and
-              when it comes back — a bare "paused" chip would leave the next
-              operator guessing whether it is safe to resume. It also names the
-              EXTENSION when that is what is paused: otherwise a hosted model
-              reads as individually paused and Resume looks narrower than it is. */}
-          {m.paused && (
-            <Tooltip
-              title={[
-                m.pausedByExtension ? `Paused by its extension "${m.pausedByExtension}"` : null,
-                m.pauseReason || 'No reason given',
-              ]
-                .filter(Boolean)
-                .join(' — ')}
-            >
-              <Chip
-                size="small"
-                color="warning"
-                label={
-                  (m.pausedByExtension ? `paused via ${m.pausedByExtension}` : 'paused') +
-                  (Number(m.pauseResumeMs) > 0 ? ` until ${fmtTime(m.pauseResumeMs)}` : '')
-                }
-              />
+          <Typography variant="subtitle2">{m.name}</Typography>
+          {places.length > 1 && (
+            <Tooltip title={`Served from ${places.length} boxes — open the model to act on one`}>
+              <Chip size="small" variant="outlined" label={`${places.length} placements`} />
             </Tooltip>
           )}
-          {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
-          {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
-          {st && Number(st.nCtx) > 0 && <Chip size="small" variant="outlined" label={`ctx ${fmtInt(st.nCtx)}`} />}
-          {st && Number(st.nSlots) > 0 && <Chip size="small" variant="outlined" label={`slots ${fmtInt(st.nSlots)}`} />}
-          <Box sx={{ flexGrow: 1 }} />
-          {m.spawnable && (
-              <>
-                {/* ONE state-driven action, not two always-on buttons. Load and
-                    Unload were both clickable regardless of residency, so half
-                    of every pair was a no-op you could not tell apart from a
-                    working one. While loading it becomes Cancel — the only
-                    useful action mid-spawn. */}
-                <ResidencyToggle
-                  state={st?.state ?? 'absent'}
-                  persistent={!!m.persistent}
-                  paused={!!m.paused}
-                  stopping={stoppingProcs.has(m.procKey)}
-                  busy={busy}
-                  onLoad={() => load.mutate(m.name)}
-                  onUnload={() => askUnload(m.name)}
-                />
-                {/* Pause sits next to Load/Unload because it is the same axis —
-                    is this model running — one step more durable: Unload frees
-                    the GPU until the next request, Pause frees it until someone
-                    says otherwise. */}
-                {m.paused ? (
-                  <Tooltip title={m.pausedByExtension ? `Resumes all of ${m.pausedByExtension}` : ''}>
-                    <span>
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        color="success"
-                        disabled={busy}
-                        onClick={() => unpause.mutate(m.name)}
-                      >
-                        Resume
-                      </Button>
-                    </span>
-                  </Tooltip>
-                ) : (
-                  <Tooltip title="Unload and keep it unloaded until resumed">
-                    <span>
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        color="warning"
-                        disabled={busy}
-                        onClick={() =>
-                          setPauseFor({ kind: 'model', name: m.name, warning: siblingWarning(m.name, 'Pausing') })
-                        }
-                      >
-                        Pause
-                      </Button>
-                    </span>
-                  </Tooltip>
-                )}
-                {needsProbe(m.name) && (
-                  <Tooltip title="This model has never been measured or verified">
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      color="info"
-                      disabled={busy}
-                      onClick={() => setProbeFor(m.name)}
-                    >
-                      Probe
-                    </Button>
-                  </Tooltip>
-                )}
-                {st?.hasUi === 'no' ? (
-                  <Tooltip title="This backend serves no web UI">
-                    <span>
-                      <Button size="small" disabled>
-                        Open UI
-                      </Button>
-                    </span>
-                  </Tooltip>
-                ) : (
-                  <Button
-                    size="small"
-                    component={MuiLink}
-                    href={`/upstream/${encodeURIComponent(m.name)}/`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open UI
-                  </Button>
-                )}
-                {/* Logs live in the CONSOLE, not a second dialog here. Two
-                    half-views of one model is how a detail page and a popup
-                    drift apart; deep-link into the console instead. */}
-                <Button
-                  size="small"
-                  disabled={!st}
-                  onClick={() => navigate({ to: '/model', search: { name: m.name, tab: 'logs' } })}
-                >
-                  Logs
-                </Button>
-              <Button size="small" onClick={() => navigate({ to: '/model', search: { name: m.name } })}>
-                Console
-              </Button>
-            </>
+          {places.length === 1 && places[0]?.server && (
+            <Chip size="small" variant="outlined" label={places[0].server} />
           )}
-        </Box>
-        {/* Four numbers do not need a table — a table costs a header row, a
-            border box, and a scroll container to say "quality 100". */}
-        <Box sx={{ display: 'flex', gap: 3, mt: 1, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <Stat label="Type" value={m.spawnable ? m.type : `${m.type} · proxy`} />
-          <Stat label="Quality" value={m.quality} />
-          <Stat label="Slots" value={fmtInt(m.maxConcurrent)} />
-          <Stat
-            label="Max tokens"
-            value={Number(m.maxTokens) > 0 ? fmtInt(m.maxTokens) : '—'}
-            title="max_tokens clamp applied when a request degrades onto this model"
-          />
-          <Box sx={{ minWidth: 0 }}>
-            {m.cmd ? (
-              <Button size="small" onClick={() => setCmdView({ title: m.name, cmd: m.cmd })}>
-                View cmd
-              </Button>
-            ) : (
-              <Typography variant="caption" sx={{ wordBreak: 'break-all', color: C.textMuted }}>
-                {m.target || '—'}
-              </Typography>
-            )}
-          </Box>
+          {(m.modalities ?? [])
+            .map((x) => x?.modality)
+            .filter((x): x is string => !!x && x !== 'text')
+            .map((mod) => (
+              <Chip key={mod} size="small" color="success" variant="outlined" label={mod} />
+            ))}
+          {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
+          {m.paused && <Chip size="small" color="warning" variant="outlined" label="paused" />}
         </Box>
       </Row>
     )

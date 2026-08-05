@@ -734,3 +734,42 @@ func (m *Manager) Probe(ctx context.Context, name string, emit func(TrialEvent))
 	res.OK = true
 	return res, nil
 }
+
+// StateOf reports the lifecycle state of one placement's process.
+//
+// Keyed by process key rather than by served name, because two placements of a
+// model are two processes: reporting the model's state would make loading one
+// look like loading both.
+func (m *Manager) StateOf(key string) State {
+	m.mu.Lock()
+	p := m.procs[key]
+	m.mu.Unlock()
+	if p == nil {
+		return StateAbsent
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.draining {
+		return StateDraining
+	}
+	return p.state
+}
+
+// PlacementPeak is the largest footprint measured for a model ON one placement.
+//
+// Profiles are keyed by DEVICE, so this resolves the placement's server to its
+// device first — the same model on two boxes has two peaks, and reporting one
+// against the other is how a laptop's 34 GB ended up filed under an RTX 5090.
+func (m *Manager) PlacementPeak(model string, pl config.Placement) int {
+	if m.tuneCache == nil {
+		return 0
+	}
+	dev := m.deviceNameFor(pl.Server)
+	if dev == "" {
+		return 0
+	}
+	if prof, ok := m.tuneCache.Get(dev, model); ok {
+		return prof.PeakMiB
+	}
+	return 0
+}

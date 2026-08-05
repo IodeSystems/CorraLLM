@@ -1592,6 +1592,11 @@ type ModelDef struct {
 	ProcKey    string         `json:"procKey" doc:"Backing process identity; an extension's models share one."`
 	Modalities []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
 	Capability string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
+	// Placements are the ways this model can be served: a box and the command
+	// that runs it there. Controls belong on THESE rather than on the model —
+	// loading, pausing, logs and the backend's own UI are all properties of one
+	// process on one box, and a model with two placements has two of each.
+	Placements []PlacementView `json:"placements" doc:"Ways this model can be served: one per (box, cmd)."`
 	// ContextPerRequest is the window one request may use. Surfaced because it
 	// is the difference between a model that can read a document and one that
 	// cannot, and it was previously invisible outside the config file.
@@ -1620,6 +1625,30 @@ type ModelDef struct {
 // metadata — the GraphQL-friendly list form of the config's modalities map
 // (GraphQL has no map type). Metadata fields are per-modality: image sets
 // maxResolution/formats, audio sets formats, text may set maxTokens.
+// PlacementView is one way of serving a model, with what was PROBED about it
+// rather than what was declared.
+//
+// Capabilities sit here and not on the model because they differ per placement:
+// the same weights expose vision on a cmd that loaded a projector and not on
+// one that did not. Two boxes are not assumed to agree, which is why each is
+// probed separately.
+type PlacementView struct {
+	Name          string   `json:"name" doc:"Stable id: what the process, profile and capability record are filed under."`
+	Server        string   `json:"server" doc:"The box."`
+	Cmd           string   `json:"cmd" doc:"What runs there."`
+	Target        string   `json:"target" doc:"Resolved forward destination for this placement."`
+	State         string   `json:"state" doc:"absent|loading|ready|failed|evicting|draining for THIS placement's process."`
+	HasUI         bool     `json:"hasUI" doc:"Whether this backend serves a web UI (probed)."`
+	Probed        bool     `json:"probed" doc:"Whether this placement has ever been probed."`
+	ProbedStale   bool     `json:"probedStale" doc:"The recorded capabilities were taken from a DIFFERENT cmd than the one configured now."`
+	Modalities    []string `json:"modalities" doc:"Probed input modalities for this placement."`
+	Tools         bool     `json:"tools" doc:"Probed tool-calling support."`
+	ContextLength int      `json:"contextLength" doc:"Context this placement actually got when probed."`
+	Slots         int      `json:"slots" doc:"Concurrency this placement reported."`
+	MemoryMiB     int      `json:"memoryMiB" doc:"Peak measured footprint on this placement."`
+	Upstream      string   `json:"upstream" doc:"Id the backend answers to."`
+}
+
 type ModalityView struct {
 	Modality      string   `json:"modality" doc:"text|image|audio."`
 	MaxResolution int      `json:"maxResolution,omitempty" doc:"image: longest-edge pixel cap."`
@@ -1629,6 +1658,42 @@ type ModalityView struct {
 
 // modalityViews converts a config modalities map to a stable, key-sorted list
 // for the GraphQL surface.
+// placementViews describes each way a model can be served, with what was
+// probed about that way.
+//
+// Built here rather than on the client because it joins three sources the UI
+// has no business knowing about: the config's placement list, the live process
+// table, and the probe/measurement records keyed by placement name.
+func (h *Handlers) placementViews(name string, m config.Model) []PlacementView {
+	out := []PlacementView{}
+	for _, pl := range m.PlacementList() {
+		v := PlacementView{Name: pl.Name, Server: pl.Server, Cmd: pl.Cmd}
+		if t, err := h.config().TargetFor(name, m.ForPlacement(pl)); err == nil && t != nil {
+			v.Target = t.BaseURLString()
+		}
+		if h.Mgr != nil {
+			key := m.PlacementProcKey(name, pl)
+			v.State = string(h.Mgr.StateOf(key))
+			v.MemoryMiB = h.Mgr.PlacementPeak(name, pl)
+			if caps, ok := h.Mgr.Capabilities(pl.Name, name); ok {
+				v.Probed = true
+				// The recorded capabilities describe the cmd they were taken
+				// from. If that has since changed, saying so beats presenting a
+				// stale answer as current.
+				v.ProbedStale = caps.StaleFor(pl.Cmd)
+				v.Modalities = caps.Modalities
+				v.Tools = caps.Tools
+				v.ContextLength = caps.ContextLength
+				v.Slots = caps.Slots
+				v.HasUI = caps.HasUI
+				v.Upstream = caps.Upstream
+			}
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 func modalityViews(m map[string]config.ModalitySpec) []ModalityView {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -1787,6 +1852,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		md := ModelDef{
 			Name: name, Persistent: m.Persistent, Capability: config.ModelCapability(m),
 			ContextPerRequest: m.ContextPerRequest,
+			Placements:        h.placementViews(name, m),
 			Modalities:        modalityViews(m.EffectiveModalities(name, costModel.IsAudioType(m.Type))),
 			// Spawnable off m.Cmd alone was wrong for an extension's models: their
 			// cmd lives on the extension, so oidio-stt (a real local process)
