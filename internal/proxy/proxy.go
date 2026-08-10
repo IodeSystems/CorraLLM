@@ -1515,11 +1515,22 @@ func (p *Proxy) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 			http.StatusBadRequest)
 		return
 	}
-	target, err := cands[0].Model.ProxyTarget()
-	if err != nil || target == nil || target.URL == nil {
-		http.Error(w, "model "+req.Model+" is served by a local backend, which has no "+
+	// Remote() is the predicate, NOT "has a proxy target". Every locally-spawned
+	// backend also has one — a loopback address is how corrallm reaches the
+	// llama.cpp process it started — so testing for a target merely forwards
+	// this to a local server that has no such route, and the caller gets a 502
+	// from a dead port instead of an answer. Remote() means no local process AND
+	// a non-loopback host: a provider we do not run, which is the only kind that
+	// can answer this.
+	if !cands[0].Model.Remote() {
+		http.Error(w, "model "+req.Model+" is served locally, and a local backend has no "+
 			"count_tokens route; use POST /upstream/"+req.Model+"/tokenize to count a raw string",
 			http.StatusNotFound)
+		return
+	}
+	target, err := cands[0].Model.ProxyTarget()
+	if err != nil || target == nil || target.URL == nil {
+		http.Error(w, "model "+req.Model+" has no reachable proxy target", http.StatusNotFound)
 		return
 	}
 	if target.Model != "" {

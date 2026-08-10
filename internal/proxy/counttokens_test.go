@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,6 +39,44 @@ func itoa(n int) string {
 	return string(b)
 }
 
+// remoteTestServer starts an upstream on a NON-LOOPBACK local address.
+//
+// It has to: the handler gates on Model.Remote(), which is false for anything on
+// 127.0.0.0/8, and httptest.NewServer binds loopback by default. A test server on
+// 127.0.0.1 is therefore indistinguishable from the llama.cpp process corrallm
+// spawned — which is precisely the distinction under test, so the fixture cannot
+// paper over it.
+func remoteTestServer(t *testing.T, h http.Handler) (srv *httptest.Server, host string, port int) {
+	t.Helper()
+	ip := nonLoopbackIPv4(t)
+	ln, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
+	if err != nil {
+		t.Skipf("cannot listen on a non-loopback address (%s): %v", ip, err)
+	}
+	srv = &httptest.Server{Listener: ln, Config: &http.Server{Handler: h}}
+	srv.Start()
+	return srv, ip, ln.Addr().(*net.TCPAddr).Port
+}
+
+func nonLoopbackIPv4(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Skipf("no interface addresses: %v", err)
+	}
+	for _, a := range addrs {
+		n, ok := a.(*net.IPNet)
+		if !ok || n.IP.IsLoopback() {
+			continue
+		}
+		if v4 := n.IP.To4(); v4 != nil {
+			return v4.String()
+		}
+	}
+	t.Skip("host has no non-loopback IPv4; cannot represent a remote provider")
+	return ""
+}
+
 func countTokensProxy(t *testing.T, models map[string]config.Model) *Proxy {
 	t.Helper()
 	p := &Proxy{}
@@ -51,7 +90,7 @@ func countTokensProxy(t *testing.T, models map[string]config.Model) *Proxy {
 // a concrete dated id a caller legitimately asks for.
 func TestCountTokensMatchesAGlobTemplate(t *testing.T) {
 	var gotPath, gotBody string
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up, host, port := remoteTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		b := make([]byte, r.ContentLength)
 		_, _ = r.Body.Read(b)
@@ -60,7 +99,6 @@ func TestCountTokensMatchesAGlobTemplate(t *testing.T) {
 		_, _ = w.Write([]byte(`{"input_tokens":9}`))
 	}))
 	defer up.Close()
-	host, port := splitHostPort(t, up.URL)
 
 	p := countTokensProxy(t, map[string]config.Model{
 		"claude-haiku-*": {Proxy: proxyNode(t, host, port)},
@@ -95,8 +133,12 @@ func TestCountTokensMatchesAGlobTemplate(t *testing.T) {
 // and the caller's fix is a different URL, not a different model. A blank 404
 // sends them looking for the model instead.
 func TestCountTokensRefusesALocalBackend(t *testing.T) {
+	// A locally-spawned backend DOES have a proxy target — a loopback port is how
+	// corrallm reaches the llama.cpp process it started. The first version of
+	// this fixture used an empty Model, so "has a proxy target" looked like a
+	// valid discriminator and the test passed while the live route 502'd.
 	p := countTokensProxy(t, map[string]config.Model{
-		"Qwen3-6-27B-MPT": {}, // no proxy: a locally-spawned backend
+		"Qwen3-6-27B-MPT": {Proxy: proxyNode(t, "127.0.0.1", 5800)},
 	})
 	rec := httptest.NewRecorder()
 	body := `{"model":"Qwen3-6-27B-MPT","messages":[]}`
@@ -108,6 +150,24 @@ func TestCountTokensRefusesALocalBackend(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "/upstream/Qwen3-6-27B-MPT/tokenize") {
 		t.Errorf("refusal must name the route that does work here, got: %s", rec.Body.String())
+	}
+}
+
+// TestCountTokensRefusesAProxyPointingAtThisBox — the subtle half of the same
+// rule. A pure-proxy model with no cmd of its own can still point at a LOCAL
+// port another model spawns; it holds no residency but it is not a remote
+// provider, and it cannot answer count_tokens either.
+func TestCountTokensRefusesAProxyPointingAtThisBox(t *testing.T) {
+	p := countTokensProxy(t, map[string]config.Model{
+		"local-alias": {Proxy: proxyNode(t, "localhost", 5801)},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens",
+		strings.NewReader(`{"model":"local-alias","messages":[]}`))
+	p.handleCountTokens(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d, want 404 for a loopback target", rec.Code)
 	}
 }
 
@@ -147,18 +207,4 @@ func TestCountTokensRejectsABodyWithNoModel(t *testing.T) {
 			t.Errorf("body %q: status %d, want 400", body, rec.Code)
 		}
 	}
-}
-
-func splitHostPort(t *testing.T, rawURL string) (string, int) {
-	t.Helper()
-	s := strings.TrimPrefix(rawURL, "http://")
-	host, portStr, ok := strings.Cut(s, ":")
-	if !ok {
-		t.Fatalf("test server URL has no port: %s", rawURL)
-	}
-	port := 0
-	for _, c := range portStr {
-		port = port*10 + int(c-'0')
-	}
-	return host, port
 }
