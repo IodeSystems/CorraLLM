@@ -366,6 +366,10 @@ func (p *Proxy) Mount(mux interface {
 	mux.Handle("/v1/realtime", http.HandlerFunc(p.handleRealtime))
 	// /v1/models is a catalog response synthesized from config, not proxied.
 	mux.Handle("/v1/models", http.HandlerFunc(p.handleModels))
+	// /v1/messages/count_tokens (Anthropic's shape) is metadata, not inference —
+	// mounted outside handleInference so it never takes an admission slot. See
+	// handleCountTokens.
+	mux.Handle("/v1/messages/count_tokens", http.HandlerFunc(p.handleCountTokens))
 	// /v1/capabilities is a public, self-describing manifest (endpoints + models by
 	// capability + lanes + examples) — point an LLM/client at it to build a
 	// compatible client. Synthesized from config; never exposes API keys.
@@ -1456,6 +1460,74 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	defer done()
 	r.URL.Path = "/" + tail
 	newReverseProxy(pr.Target).ServeHTTP(w, r)
+}
+
+// handleCountTokens proxies POST /v1/messages/count_tokens to a proxied
+// provider that answers it — today that is Anthropic, behind the `claude`
+// extension.
+//
+// UNTRACKED, and that is the design. Counting tokens runs no inference, holds no
+// GPU, and costs nothing; putting it through handleInference would make it take
+// an admission slot and queue behind saturated work. A caller that sizes a
+// prompt BEFORE deciding whether to send it would then be blocked by exactly the
+// backlog it was trying to measure against. Same reasoning that makes
+// handleUpstream untracked.
+//
+// PROXY-ONLY, on purpose. A local llama.cpp backend has no such route — its
+// equivalent is /upstream/<model>/tokenize, which counts a raw string. The
+// refusal says so rather than 404ing blankly, because the two are easy to
+// confuse and the fix is a different URL, not a different model.
+//
+// The model is resolved through ResolveServed, so a glob template
+// (`claude-haiku-*`) matches the concrete dated id a caller asks for. The body
+// is forwarded UNCHANGED unless the target names an explicit upstream id — for
+// the Anthropic passthrough `upstream` is deliberately unset so the provider's
+// own model matrix validates the id, and rewriting it here would break every
+// dated variant.
+func (p *Proxy) handleCountTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "unreadable body", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || strings.TrimSpace(req.Model) == "" {
+		http.Error(w, `body must be JSON with a "model" field`, http.StatusBadRequest)
+		return
+	}
+	cands, ok := p.config().ResolveServed(req.Model)
+	if !ok || len(cands) == 0 {
+		http.Error(w, "unknown model: "+req.Model, http.StatusNotFound)
+		return
+	}
+	// A lane resolves to several candidates; token counts are a property of one
+	// tokenizer, so answering off the lane's first member would attribute a
+	// count to a model the caller never named. Require a concrete model.
+	if len(cands) > 1 {
+		http.Error(w, "count_tokens needs a model, not a lane: "+req.Model+
+			" resolves to "+strconv.Itoa(len(cands))+" members with different tokenizers",
+			http.StatusBadRequest)
+		return
+	}
+	target, err := cands[0].Model.ProxyTarget()
+	if err != nil || target == nil || target.URL == nil {
+		http.Error(w, "model "+req.Model+" is served by a local backend, which has no "+
+			"count_tokens route; use POST /upstream/"+req.Model+"/tokenize to count a raw string",
+			http.StatusNotFound)
+		return
+	}
+	if target.Model != "" {
+		body = rewriteModelField(body, target.Model)
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	newReverseProxy(target).ServeHTTP(w, r)
 }
 
 // handleModels returns an OpenAI-style catalog of served models, enriched with
