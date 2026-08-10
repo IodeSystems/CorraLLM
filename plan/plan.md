@@ -1564,16 +1564,56 @@ the **ml-kit** ops repo (sibling), not this code repo:
   was recomputed in place from stored tokens × the new `chat`/`embed` coefficients (one-time backfill,
   stop → backup → `UPDATE` → restart) so the 24h dashboard wasn't stuck on pre-calibration totals.
 
-## 8. Capacity-parked (relocated from `~/inflight` 2026-08-04)
+### ◻ P20 — no token-count surface, and the backend already has one
 
-Two items that were sitting on the global shelf because they wait on a machine,
+corrallm proxies exactly three inference routes: `/v1/chat/completions`,
+`/v1/completions`, `/v1/embeddings`. There is no way to ask what a prompt COSTS
+without generating from it. `/api/v1/agents/tokens` is auth tokens, unrelated.
+
+**llama-server already exposes `POST /tokenize`**, verified live on 5801
+2026-08-10: `{"content":"hello world"}` returned `{"tokens":[7592,2088]}`. Its
+contract carries `add_special` (BOS, default false), `parse_special` (special
+tokens as tokens rather than plaintext, default true), and `with_pieces`, which
+returns `{id, piece}` per token — and `piece` is a BYTE ARRAY when the fragment
+is not valid UTF-8 on its own, e.g. `á` on a small tokenizer splits into
+`[195]` and `[161]`. Any consumer must handle both shapes.
+
+**Why this is not a nicety.** The OCR work budgets tokens constantly and does it
+by ESTIMATE: "one token per 32x32 px", "~14.6k tokens against a 32k context",
+"reserve 15% of the budget for the prompt", a page "re-sampled by the SERVER to
+~4000 tokens whatever DPI". Deriving the render DPI turned the E-size probe 5/6
+into 6/6 by getting that accounting right. Every one of those numbers is
+currently reasoned rather than measured, and a `/tokenize` passthrough makes
+them checkable.
+
+**next** — decide whether it is a proxied passthrough (per model, so the answer
+comes from the tokenizer that will actually run) or a corrallm-level count.
+Passthrough is the honest one: a token count is a property of a MODEL, and a
+single number across models would be wrong in exactly the cases that matter.
+
+**risks** — it is a new route on the proxy and needs the same admission and
+auth treatment as the others; it must not become a way to keep a model resident.
+
+
+## 8. Capacity-parked (relocated from `~/inflight` 2026-08-04, and again 2026-08-10)
+
+Three items that were sitting on the global shelf because they wait on a machine,
 not on a decision. They belong here — the work and the config are both corrallm's.
 Resume conditions are kept verbatim so nothing has to be re-derived.
 
 ### ⏸ Deploy the hardened Qwen chat template
 **waits-on:** systems — the llm host must be quiet.
-**check:** `curl -sf -m5 http://127.0.0.1:5800/slots | python3 -c "import json,sys; sys.exit(0 if not any(s.get('is_processing') for s in json.load(sys.stdin)) else 1)" 2>/dev/null`
+**check:** `[ "$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits -i 1)" -lt 20 ]`
 (exit 0 = ready. Samples ONE instant — observed flipping ready→busy within minutes.)
+
+**Check replaced 2026-08-10, because the old one failed CLOSED.** It polled
+`http://127.0.0.1:5800/slots`. The port is right — corrallm spawns llama-server
+on fixed slots 5800/5801 — but when nothing is bound there, `curl -sf` exits
+non-zero on a refused connection and the pipeline reports NOT READY. The idlest
+state, no model loaded at all, read as blocked. Observed that day: 5801 held an
+embeddings model, 5800 was unbound. corrallm's own `/api/v1/active` on 8111 is
+not a substitute — it answers 401, admin token required, and a token does not
+belong in a versioned plan.
 
 The served template renders untrusted tool-result content raw, so bytes from any
 file an agent reads can inject a chat turn. **Not deployed:** no
@@ -1620,6 +1660,74 @@ all three of `<tool_call>`, `<function=`, `<parameter=`.
   MISDETECTION. Its grammar is deliberately lenient in ways that matter (accepts required
   arguments in any order; "Qwen3-Coder models may occasionally omit the `<tool_call>`
   token"). Worth confirming the detection is intended for this model before deploying.
+
+### ◻ Muse Glimmer 30B vs Qwen3-6-27B-MPT — the probe suite (relocated 2026-08-10)
+
+**waits-on:** systems — the 5090's one slot. Running it evicts interactive chat.
+**check:** `[ "$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits -i 1)" -lt 20 ]`
+
+**NOTHING IS UNDECIDED, and the shelf said otherwise for days.** It carried
+`waits-on: you (a decision)` with the prose condition "you say to run it", so
+`./check` could not evaluate it and a reader went looking for a decision that had
+already been made. The model is committed, serving and measured; the command is
+written; the spec body is beside this file. What it costs is the 5090 for the
+duration of repeated 20-31 GB swaps, which is the box's single interactive-chat
+slot — a green light on disrupting shared hardware, not a design call.
+
+It is here rather than on the global shelf for the reason §8 exists: the work,
+the config, the bench binary and the spec are all corrallm's. Waiting on a
+machine does not make an item cross-repo.
+
+`muse-glimmer-30b` is COMMITTED to the running corrallm at native 131k ctx and
+verified serving. Only the probe suite is left; it was deferred because it needs
+repeated 20–31 GB swaps (Glimmer 23.3 GB and Qwen 31 GB cannot co-reside).
+
+**To resume:** `llm-bench --models muse-glimmer-30b,Qwen3-6-27B-MPT`. Callers
+MUST pass `chat_template_kwargs {"reasoning_effort":"low"}` or scoring breaks
+(see traps). Model is in NO lane on purpose — it takes no live traffic until
+someone adds it. Spec body kept at `plan/muse-glimmer-trial.json`.
+
+**Served, end to end (2026-08-10):** through corrallm on key `aw3`, a correct
+one-sentence answer at **91.8 tok/s with DFlash accepting 147/297 drafts
+(49.5%)**. Single prompt, one rep — a working-wiring data point, NOT a benchmark.
+Meta's 233.4 tok/s is for the *17gb* build; this is *dynamic*, so the two are
+not comparable and neither is confirmed.
+
+**Evidence (measured 2026-08-10 — do not re-derive):**
+- `POST /api/v1/config/models/trial` returned `ok:true` twice, WITH mmproj +
+  dflash resident: **`memoryMiB: 22866` at `-c 65536`**, **`23336` at `-c 0`
+  (= 131072, the trained max)**. Doubling context cost **+470 MiB**, leaving
+  ~8.2 GB spare on the 5090 — deep-context efficiency confirmed by measurement,
+  and the mechanism is sliding-window 2048 on 3 of every 4 layers plus GQA 16:1,
+  so only 13 of 52 layers carry full-context KV. Run it at `-c 0`; a 26 GB
+  ramUsage guess was 3.6 GB high, declare **24GB**.
+- `modalities: [video, vision]`, `supportsTools: true`, `slots: 1`.
+- ml-kit llama.cpp rebuilt to `dd1ea5243` (`b10355`, archs 86;120). The old pin
+  `f9e832c10` predated the model by 4 days. Arch landed upstream in `62bf73d25`
+  (PR #26841, merged 2026-08-10) — `src/models/muse-glimmer.cpp`.
+- `--spec-type draft-dflash` and `LLM_ARCH_DFLASH` are fully implemented; the
+  drafter attaches via `-md <snapshot>/dflash-kquant.gguf` + `-ngld 99`. There is
+  no `--hf-file-draft`, and `-hfd repo:kquant` is AMBIGUOUS (three files match).
+- Files (HF hub cache, snapshot `93769bc7…`): dynamic 19.65 GB, mmproj 1.4 GB,
+  dflash 1.63 GB. `--mmproj-auto` does NOT fire when `--hf-file` is explicit —
+  mmproj must be pulled and passed by hand.
+- Meta's own claim, unverified here: 74.9 → 233.4 tok/s (3.1x) with DFlash on a
+  5090, using the *17gb* build (we hold *dynamic*).
+
+**risks / traps:**
+- **SIGFPE in `--fit`.** The new auto-sizing pass divides by zero when a GPU is
+  nearly full, and it enumerates CUDA devices EVEN AT `-ngl 0`. Crashed twice
+  before `--fit off`. This threatens every corrallm spawn onto a busy card with
+  this binary, not just Glimmer.
+- **Reasoning defaults to high** and llama.cpp's `--reasoning off` does NOT lower
+  it — strength lives in the harmony template ("Reasoning strength: high").
+  Control per-request with `chat_template_kwargs: {"reasoning_effort": "low"}`.
+  Without it, short-budget requests return EMPTY `content` with everything in
+  `reasoning_content` — which would silently score as failure across the probes.
+- Probes are agentic/coding; Glimmer is agentic-multimodal and Qwen3-6-27B-MPT is
+  the box's chat model. `capability-vision` has no Qwen-side comparison.
+- corrallm refuses to evict for a trial ("a probe never evicts a running model"),
+  so the suite must unload deliberately between candidates.
 
 ### ◐ Second compute host: 64 GB MacBook Pro — ENROLLED 2026-08-04
 **waits-on:** yours — name the chip. Everything else is unblocked.
