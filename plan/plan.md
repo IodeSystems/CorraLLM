@@ -1586,7 +1586,28 @@ agentkit already consumes exactly this: `llm/tokenize.go` lists
 `root + "/upstream/" + model + "/tokenize"` among its candidates, beside bare
 llama.cpp's `/tokenize` and vLLM's `/v1/tokenize`.
 
-**The remaining gap is dun, not corrallm.** See `dun/plan/`.
+**Anthropic count_tokens: BUILT 2026-08-10, `dc01410`.** The llama.cpp half was
+already there; the Claude half was not, and the reason was subtle. The `claude`
+extension is a passthrough to `api.anthropic.com` that already injects
+`anthropic-version` and Claude Code's OAuth bearer — but its models are GLOB
+TEMPLATES (`claude-haiku-*`), and `/upstream` resolves with an exact
+`Models[served]` lookup, so `/upstream/claude-haiku-4-5/...` answers "unknown
+model" for an id the chat path serves fine.
+
+`POST /v1/messages/count_tokens` resolves through `ResolveServed` (glob-aware)
+and forwards the path unchanged. Mounted OUTSIDE `handleInference`: counting runs
+no inference and holds no GPU, and a caller sizing a prompt before deciding
+whether to send it must not queue behind the backlog it is measuring against.
+
+**Still open — needs a restart to verify live.** The route is unit-tested against
+a fake upstream but has never spoken to Anthropic, because proving it means
+restarting corrallm and evicting the resident models.
+
+**The remaining gap is then dun, and one API-shape decision.** agentkit's
+`CountTokens(ctx, text string)` counts a raw string, which is llama.cpp's and
+vLLM's model. Anthropic counts a MESSAGES ARRAY, with `system` and `tools` as
+first-class fields — better for dun's actual breakdown, which measures exactly
+those, but not expressible through the current signature. See `dun/plan/`.
 
 ## 8. Capacity-parked (relocated from `~/inflight` 2026-08-04, and again 2026-08-10)
 
