@@ -1,0 +1,10 @@
+{
+ "name": "muse-glimmer-30b",
+ "server": "box1",
+ "proxy": "5812",
+ "ramUsage": {
+  "gpu0": "24GB",
+  "system": "4GB"
+ },
+ "cmd": "CUDA_VISIBLE_DEVICES=GPU-ee90af07-0882-d325-182e-87137ec6d47b \\\n/home/nthalk/local/src/ml-kit/local/bin/llama.cpp/llama-server \\\n  -hf meta-models/Muse-Glimmer-30B-GGUF \\\n  --hf-file muse-glimmer-30B-kquant-dynamic.gguf \\\n  --mmproj /home/nthalk/.cache/huggingface/hub/models--meta-models--Muse-Glimmer-30B-GGUF/snapshots/93769bc7ab5ad1e9cd22d857e3138cf5d977ae81/mmproj-kquant.gguf \\\n  -md /home/nthalk/.cache/huggingface/hub/models--meta-models--Muse-Glimmer-30B-GGUF/snapshots/93769bc7ab5ad1e9cd22d857e3138cf5d977ae81/dflash-kquant.gguf \\\n  --spec-type draft-dflash \\\n  -ngld 99 \\\n  --jinja \\\n  --fit off \\\n  -fa on \\\n  --cache-type-k q8_0 \\\n  --cache-type-v q5_1 \\\n  --parallel 1 \\\n  --batch-size 2048 --ubatch-size 512 \\\n  --timeout 600 \\\n  -c 0 \\\n  --temp 0 -ngl 99 \\\n  --port 5812"
+}
