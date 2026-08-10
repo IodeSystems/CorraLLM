@@ -1635,11 +1635,14 @@ the overhead as its own row. dun's `SystemBreakdown` already asserts parts-sum-
 to-total, so this would have surfaced as a failing test rather than a wrong
 number — but only after the work was built.
 
-**The remaining gap is then dun, and one API-shape decision.** agentkit's
-`CountTokens(ctx, text string)` counts a raw string, which is llama.cpp's and
-vLLM's model. Anthropic counts a MESSAGES ARRAY, with `system` and `tools` as
-first-class fields — better for dun's actual breakdown, which measures exactly
-those, but not expressible through the current signature. See `dun/plan/`.
+**CONSUMED, end to end 2026-08-10.** agentkit gained `CountPrompt(system, tools)`
+(`284ec36`) — Anthropic's shape where the endpoint speaks it, the concatenation
+otherwise — and dun's `/context` now reports MARGINAL per-part costs
+(`75c165f`), because the preamble makes independent counting wrong. Live through
+this route on `claude-haiku-4-5`:
+
+    total 638  prompt 11  shared 497
+    built-in tools 44 · mcp: chrome 43 · mcp: raglit 43   (sums exactly)
 
 ## 8. Capacity-parked (relocated from `~/inflight` 2026-08-04, and again 2026-08-10)
 
