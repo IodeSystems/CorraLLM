@@ -1564,36 +1564,29 @@ the **ml-kit** ops repo (sibling), not this code repo:
   was recomputed in place from stored tokens × the new `chat`/`embed` coefficients (one-time backfill,
   stop → backup → `UPDATE` → restart) so the 24h dashboard wasn't stuck on pre-calibration totals.
 
-### ◻ P20 — no token-count surface, and the backend already has one
+### ✅ P20 — token counting already works end to end (verified 2026-08-10)
 
-corrallm proxies exactly three inference routes: `/v1/chat/completions`,
-`/v1/completions`, `/v1/embeddings`. There is no way to ask what a prompt COSTS
-without generating from it. `/api/v1/agents/tokens` is auth tokens, unrelated.
+**This item was WRONG when written and is kept as a correction.** It claimed
+corrallm had no token-count surface, on the strength of a route grep truncated at
+25 alphabetical lines — the listing stopped at `/api/v1/config/...` and never
+reached the entry that mattered. There are 67 routes.
 
-**llama-server already exposes `POST /tokenize`**, verified live on 5801
-2026-08-10: `{"content":"hello world"}` returned `{"tokens":[7592,2088]}`. Its
-contract carries `add_special` (BOS, default false), `parse_special` (special
-tokens as tokens rather than plaintext, default true), and `with_pieces`, which
-returns `{id, piece}` per token — and `piece` is a BYTE ARRAY when the fragment
-is not valid UTF-8 on its own, e.g. `á` on a small tokenizer splits into
-`[195]` and `[161]`. Any consumer must handle both shapes.
+`/upstream/<model>/tokenize` resolves the model, ensures the backend is resident
+and forwards the path. Verified live:
 
-**Why this is not a nicety.** The OCR work budgets tokens constantly and does it
-by ESTIMATE: "one token per 32x32 px", "~14.6k tokens against a 32k context",
-"reserve 15% of the budget for the prompt", a page "re-sampled by the SERVER to
-~4000 tokens whatever DPI". Deriving the render DPI turned the E-size probe 5/6
-into 6/6 by getting that accounting right. Every one of those numbers is
-currently reasoned rather than measured, and a `/tokenize` passthrough makes
-them checkable.
+    POST /upstream/Qwen3-6-27B-MPT/tokenize  {"content":"hello world"}
+    -> 200 {"tokens":[14556,1814]}
 
-**next** — decide whether it is a proxied passthrough (per model, so the answer
-comes from the tokenizer that will actually run) or a corrallm-level count.
-Passthrough is the honest one: a token count is a property of a MODEL, and a
-single number across models would be wrong in exactly the cases that matter.
+Ungated by design (`/upstream/m/` is in auth's ungated list beside
+`/v1/chat/completions`), so a caller needs no admin token. Note the shape is
+`/upstream/<model>/`, NOT `/upstream/m/<model>/` — the latter 404s "unknown
+model" even for a registered id, which is what sent the first probe wrong.
 
-**risks** — it is a new route on the proxy and needs the same admission and
-auth treatment as the others; it must not become a way to keep a model resident.
+agentkit already consumes exactly this: `llm/tokenize.go` lists
+`root + "/upstream/" + model + "/tokenize"` among its candidates, beside bare
+llama.cpp's `/tokenize` and vLLM's `/v1/tokenize`.
 
+**The remaining gap is dun, not corrallm.** See `dun/plan/`.
 
 ## 8. Capacity-parked (relocated from `~/inflight` 2026-08-04, and again 2026-08-10)
 
