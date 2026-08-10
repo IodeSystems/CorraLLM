@@ -1599,9 +1599,41 @@ and forwards the path unchanged. Mounted OUTSIDE `handleInference`: counting run
 no inference and holds no GPU, and a caller sizing a prompt before deciding
 whether to send it must not queue behind the backlog it is measuring against.
 
-**Still open — needs a restart to verify live.** The route is unit-tested against
-a fake upstream but has never spoken to Anthropic, because proving it means
-restarting corrallm and evicting the resident models.
+**VERIFIED LIVE 2026-08-10** against real Anthropic, after `bin/deploy --no-ui`:
+
+    messages only                 200  {"input_tokens":9}
+    + system                      200  20
+    + system + tools              200  563
+    claude-opus-4-8 (other glob)  200  9
+    local backend                 404  names /upstream/<model>/tokenize
+    unknown model                 404
+
+**The live run found a bug the unit test could not, and the FIXTURE was why.**
+The first cut gated on "has a proxy target". Every locally-spawned backend has
+one — a loopback port is how corrallm reaches the llama.cpp process it started —
+so the route forwarded to a local server with no such path and returned **502**
+from a dead port. The fixture had given the local model an empty `Model{}`, which
+made the wrong predicate look valid. Now gated on `Model.Remote()` (no local
+process AND non-loopback), the fixture carries a loopback proxy the way real
+config does, and the fake upstream binds a NON-loopback address — a test server
+on 127.0.0.1 is indistinguishable from the backend corrallm spawned, which is
+the distinction under test. Fixed at `502bfe3`; reverting the predicate now
+fails two tests, one with the same 502.
+
+**Measured, and it constrains the dun design (2026-08-10):**
+
+    no tools   9        fixed tool-use overhead   497 tokens
+    1 tool     551      per small tool             45 tokens
+    2 tools    596      9 + 497 + 45 + 45 = 596 — exact
+
+Enabling tools at all costs ~497 tokens of Anthropic's own tool-use preamble.
+**So per-server tool costs CANNOT be counted independently and summed** — the
+fixed overhead would be charged once per MCP server, overstating a four-server
+session by ~1.5k and breaking the property that the parts add up to the total.
+The Anthropic path has to measure incrementally (N servers minus N-1), or carry
+the overhead as its own row. dun's `SystemBreakdown` already asserts parts-sum-
+to-total, so this would have surfaced as a failing test rather than a wrong
+number — but only after the work was built.
 
 **The remaining gap is then dun, and one API-shape decision.** agentkit's
 `CountTokens(ctx, text string)` counts a raw string, which is llama.cpp's and
