@@ -1392,6 +1392,66 @@ the BackpressureError shape we already validated.
   (4) **`queued_ms` is forward-only** — rows predating the column read 0; queue *wait* populates as new
   queued-then-served requests accumulate (rejections + sampled depth are already live).
 
+### ◻ P21 — provider credentials (multi-key providers, scoped budgets, key ACLs)
+
+Design doc: **`plan/p21-provider-credentials.md`**. Not started.
+
+Completes the P16 insight the implementation shortcut — *"free quota is enforced
+per ACCOUNT ... across multiple accounts of the same provider"* — by making
+`credentials` a list under a provider instead of one `proxy.headers`. Unblocks
+four things at once: pooling several keys of one provider, budgets keyed where
+the provider actually meters (per API key, not per served model), an ACL of
+which corrallm keys may use which credential, and a UI with an object to render.
+
+Deliberately NOT an OpenRouter extension: discovery, roster, quota, cooldown and
+cost normalisation are already generic and already work. The missing primitive
+is credentials, and Anthropic/Groq need it at the second key.
+
+**next** P21a (schema + implicit-default back-compat) — unblocked, config only.
+**blocking decision (USER)** where secrets live (§7). corrallm persists no secret
+today and `/api/v1/config/*` serves config as YAML, so a key-management UI turns
+that endpoint into a disclosure surface. Recommend a `0600` secrets file, never
+served. P21f/g wait on this.
+**note** P20's per-model `usd` budget is the wrong granularity — a `usd` cap on a
+discovery template becomes N independent caps (12 models × $200 = $2,400, not
+$200). P21c fixes it. The live openrouter template carries such a cap today.
+
+### ✅ VRAM measurement: per-device attribution + peak decay (2026-08-12, UNCOMMITTED)
+
+Two fixes to `internal/tune` + `internal/proc`, both found by measuring rather than reading:
+
+1. **Multi-GPU footprints were charged to one card.** `measure()` took the whole process
+   group's footprint (`h.MemoryMiB()`, every card summed) and filed it under a single device
+   name — and for a two-card model `deviceNameFor` falls through `localDeviceFor` (which
+   deliberately refuses to name one card) all the way to `gpu.Probe()`. Live effect: DeepSeek-V4
+   split 29.9/6.3 GiB across the 5090 and the 3080 was recorded as **37,094 MiB on the 3080**, a
+   figure ~4× that card. Fixed by measuring per device via the already-existing
+   `gpu.GroupVRAMOn(pgid, uuid)` — whose doc comment describes this exact bug — behind a new
+   `host.Handle.MemoryOnMiB(uuid)`. Falls back to the old whole-host path when a host cannot
+   attribute per device (remote agent, macOS). `kvMiB` is deliberately not passed through: the
+   KV total is per-process and splitting it would need the per-card layer distribution that
+   `-ts` decides and nothing observes. Regression test verified to FAIL without the fix.
+   The corrupt live entry was purged; it repopulates per-device on deepseek's next load.
+2. **`PeakMiB` is monotonic forever, which is wrong for input-driven footprints.** Correct when
+   footprint is a function of slot count; chandra-ocr-2's is a function of its *input*
+   (`--image-max-tokens 16384`) — 6196 base / 8240 peak on gpu1, 10706 on the M1 Max. One
+   400-dpi page reserved its peak permanently. Added `RecentPeaks` (bounded ring, `RecentWindow`
+   = 8) + `EffectivePeakMiB()`: all-time peak until the window fills, then max-of-window.
+   Chose max-of-window over the p95 originally proposed — at 8 samples p95 *is* the max, and
+   making a percentile meaningful needs ~40 retained observations to buy the privilege of
+   under-reserving on 5% of spawns, where under-reserving VRAM is an OOM, not a slowdown.
+   Applied at both reservation sites; `PeakMiB` is retained for diagnostics.
+
+**Not verified live.** The regression tests cover both, and the rebuilt binary is deployed, but
+the end-to-end check (load deepseek, confirm two per-device profiles) was abandoned — a live
+`life-raglit` OCR batch was hammering chandra every few seconds and admission kept refusing on
+gpu1. Do it in a quiet window; it is one `models/load` and a read of `vram-profile.json`.
+
+**Related, still open:** gpu1 (10GB 3080, 9,877 MiB usable after driver reserve) now has four
+claimants — nomic 816 (persistent), chandra 8,240 (sticky, input-variable), deepseek 6,676,
+and any Qwen drafter. They do not fit; a resident deepseek evicts chandra. Policy call is the
+user's.
+
 ### Next steps
 - The full P0–P8 + P7 roadmap is shipped and live (§8). `/api` auth landed (`3e83001`) and cost
   coefficients are calibrated (per-backend `chat`/`embed` Wh/token, verified live). Open work:
