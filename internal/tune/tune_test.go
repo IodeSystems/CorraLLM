@@ -276,3 +276,117 @@ func TestMergeSampleCapsAtTwoMostRecentDistinct(t *testing.T) {
 		t.Errorf("base = %d, want 4200", base)
 	}
 }
+
+// TestEffectivePeakHoldsUntilWindowFills: a profile with fewer than
+// RecentWindow observations must keep reserving the all-time peak. Deciding an
+// outlier has expired on two data points is how a model gets admitted against
+// VRAM it will immediately take back.
+func TestEffectivePeakHoldsUntilWindowFills(t *testing.T) {
+	p := Profile{PeakMiB: 10706}
+	for i := 0; i < RecentWindow-1; i++ {
+		p.RecentPeaks = append(p.RecentPeaks, 6196)
+		if got := p.EffectivePeakMiB(); got != 10706 {
+			t.Fatalf("with %d samples EffectivePeakMiB = %d, want the all-time 10706", i+1, got)
+		}
+	}
+}
+
+// TestEffectivePeakExpiresOutlier: chandra's case. One 400 dpi page peaks at
+// 10706; every later spawn sits near 6196. Once the window is full of the
+// smaller readings the reservation must come back down, or the card is
+// budgeted forever for a page it saw once.
+func TestEffectivePeakExpiresOutlier(t *testing.T) {
+	p := Derive(Profile{}, SourceServing, 10706, 0, 1, 0, 1)
+	if got := p.EffectivePeakMiB(); got != 10706 {
+		t.Fatalf("first observation should stand: %d", got)
+	}
+	for i := 0; i < RecentWindow; i++ {
+		p = Derive(p, SourceServing, 6196, 0, 1, 0, int64(i+2))
+	}
+	if p.PeakMiB != 10706 {
+		t.Errorf("all-time PeakMiB must be preserved for diagnostics, got %d", p.PeakMiB)
+	}
+	if got := p.EffectivePeakMiB(); got != 6196 {
+		t.Errorf("EffectivePeakMiB = %d, want 6196 once the outlier aged out", got)
+	}
+}
+
+// TestEffectivePeakNeverBelowRecentObservation: the window expires history, it
+// does not discount the present. Anything seen inside the window is still
+// reserved in full.
+func TestEffectivePeakNeverBelowRecentObservation(t *testing.T) {
+	p := Profile{}
+	for i := 0; i < RecentWindow; i++ {
+		p = Derive(p, SourceServing, 5000, 0, 1, 0, int64(i+1))
+	}
+	p = Derive(p, SourceServing, 9000, 0, 1, 0, 99) // a big page, just now
+	if got := p.EffectivePeakMiB(); got != 9000 {
+		t.Errorf("EffectivePeakMiB = %d, want 9000 — a reading inside the window is never discounted", got)
+	}
+}
+
+// TestWithPeakAtLeastRaisesWindowToo: raising the all-time mark without raising
+// the current window entry would let a deliberately-published peak decay away.
+func TestWithPeakAtLeastRaisesWindowToo(t *testing.T) {
+	p := Derive(Profile{}, SourceBench, 5000, 0, 1, 0, 1)
+	p = p.WithPeakAtLeast(12000)
+	if p.PeakMiB != 12000 {
+		t.Errorf("PeakMiB = %d, want 12000", p.PeakMiB)
+	}
+	if n := len(p.RecentPeaks); n == 0 || p.RecentPeaks[n-1] != 12000 {
+		t.Errorf("RecentPeaks tail = %v, want it raised to 12000", p.RecentPeaks)
+	}
+	// Fill the window with smaller readings; the raised value must survive
+	// exactly as long as any other observation would, then expire.
+	for i := 0; i < RecentWindow-1; i++ {
+		p = Derive(p, SourceServing, 5000, 0, 1, 0, int64(i+2))
+	}
+	if got := p.EffectivePeakMiB(); got != 12000 {
+		t.Errorf("EffectivePeakMiB = %d, want 12000 while still inside the window", got)
+	}
+	p = Derive(p, SourceServing, 5000, 0, 1, 0, 100)
+	if got := p.EffectivePeakMiB(); got != 5000 {
+		t.Errorf("EffectivePeakMiB = %d, want 5000 once it aged out", got)
+	}
+}
+
+// TestRecentWindowBounded: the ring must not grow without limit — it is
+// persisted on every spawn.
+func TestRecentWindowBounded(t *testing.T) {
+	p := Profile{}
+	for i := 0; i < RecentWindow*3; i++ {
+		p = Derive(p, SourceServing, 1000+i, 0, 1, 0, int64(i))
+	}
+	if len(p.RecentPeaks) != RecentWindow {
+		t.Errorf("len(RecentPeaks) = %d, want %d", len(p.RecentPeaks), RecentWindow)
+	}
+}
+
+// TestServingSampleKeepsWindowOnBenchProfile: the bench-precedence merge keeps
+// the bench profile's SHAPE but must still carry the serving window forward.
+// If it dropped it, a bench-measured model's window would never fill and the
+// decay would never engage at all.
+func TestServingSampleKeepsWindowOnBenchProfile(t *testing.T) {
+	dir := t.TempDir()
+	c, err := New(filepath.Join(dir, "p.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bench := Derive(Profile{}, SourceBench, 9000, 0, 1, 0, 1)
+	bench.BaseMiB, bench.PerSlotMiB = 8000, 500
+	c.Update("GPU", "m", bench)
+	for i := 0; i < RecentWindow; i++ {
+		existing, _ := c.Get("GPU", "m")
+		c.Update("GPU", "m", Derive(existing, SourceServing, 6000, 0, 1, 0, int64(i+2)))
+	}
+	got, _ := c.Get("GPU", "m")
+	if got.BaseMiB != 8000 || got.PerSlotMiB != 500 {
+		t.Errorf("serving overwrote bench shape: base %d perSlot %d", got.BaseMiB, got.PerSlotMiB)
+	}
+	if len(got.RecentPeaks) != RecentWindow {
+		t.Fatalf("window did not accumulate across the merge: %v", got.RecentPeaks)
+	}
+	if e := got.EffectivePeakMiB(); e != 6000 {
+		t.Errorf("EffectivePeakMiB = %d, want 6000", e)
+	}
+}

@@ -39,6 +39,8 @@ func (h pidHandle) Alive() bool { return syscall.Kill(-h.pid, 0) == nil }
 
 func (h pidHandle) MemoryMiB() (int, error) { return gpu.GroupVRAM(h.pid) }
 
+func (h pidHandle) MemoryOnMiB(uuid string) (int, error) { return gpu.GroupVRAMOn(h.pid, uuid) }
+
 // sysProcAttr mirrors the primitive that moved to internal/host, so these tests
 // can start their own process groups to reap.
 func sysProcAttr() *syscall.SysProcAttr { return &syscall.SysProcAttr{Setpgid: true} }

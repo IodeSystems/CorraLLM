@@ -325,6 +325,15 @@ func (h *remoteHandle) MemoryMiB() (int, error) {
 	return h.memMiB, nil
 }
 
+// MemoryOnMiB always reports "cannot attribute": the heartbeat carries ONE
+// aggregate per backend, with no per-device breakdown, so there is no honest
+// per-card answer to give. Returning the aggregate here would be the exact
+// cross-card over-charge this method exists to prevent — the caller falls back
+// to MemoryMiB and the single-device path instead.
+func (h *remoteHandle) MemoryOnMiB(string) (int, error) {
+	return 0, fmt.Errorf("agent reports no per-device memory breakdown")
+}
+
 // KillBackend stops a backend on the agent by its agent-side id, without a
 // Handle. Used by reconciliation to reap an orphan the primary has no handle
 // for — precisely the case where a Handle does not exist.

@@ -82,3 +82,13 @@ func (h *localHandle) MemoryMiB() (int, error) {
 	}
 	return gpu.GroupVRAM(h.pid)
 }
+
+// MemoryOnMiB restricts the same group sum to one card. gpu.GroupVRAMOn errors
+// when the prober cannot attribute per device, which is the caller's signal to
+// fall back — not something to paper over with the whole-host figure.
+func (h *localHandle) MemoryOnMiB(uuid string) (int, error) {
+	if h.pid == 0 {
+		return 0, fmt.Errorf("no process")
+	}
+	return gpu.GroupVRAMOn(h.pid, uuid)
+}

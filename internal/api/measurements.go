@@ -95,9 +95,7 @@ func (h *Handlers) PublishTuneProfile(_ context.Context, in *TuneProfileInput) (
 	if in.Body.PerSlotMiB > 0 {
 		p.PerSlotMiB = in.Body.PerSlotMiB
 	}
-	if in.Body.PeakMiB > p.PeakMiB {
-		p.PeakMiB = in.Body.PeakMiB
-	}
+	p = p.WithPeakAtLeast(in.Body.PeakMiB)
 	if err := h.Mgr.PublishTuneProfile(gpuName, in.Body.Model, p); err != nil {
 		out.Body.Message = err.Error()
 		return out, nil

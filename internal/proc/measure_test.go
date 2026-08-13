@@ -44,8 +44,9 @@ func TestMeasureOnLoad(t *testing.T) {
 
 	want := tune.Profile{
 		BaseMiB: 7000, PerSlotMiB: 1000, PeakMiB: 9000, MeasuredSlots: 2, Ctx: 0,
-		Samples: []tune.Sample{{Slots: 2, FootprintMiB: 9000}}, // every spawn records a sample, KV-log fast path or not
-		Source:  tune.SourceServing,                            // an in-spawn measurement, NOT a bench one
+		Samples:     []tune.Sample{{Slots: 2, FootprintMiB: 9000}}, // every spawn records a sample, KV-log fast path or not
+		RecentPeaks: []int{9000},                                   // this spawn's entry in the decay window
+		Source:      tune.SourceServing,                            // an in-spawn measurement, NOT a bench one
 	}
 	got, ok := cache.Get("Fake GPU", "measured")
 	if !ok {
@@ -343,5 +344,104 @@ func TestBumpPeakViaSampler(t *testing.T) {
 	p, _ := cache.Get("Fake GPU", "bump")
 	if p.PeakMiB != 15000 {
 		t.Errorf("PeakMiB = %d, want 15000", p.PeakMiB)
+	}
+}
+
+// TestMeasurePerDeviceSplitsAcrossCards is the regression for a model that
+// spans two GPUs.
+//
+// Before this, measure() asked the handle for the process group's WHOLE
+// footprint and filed that one number under a single device name — chosen by
+// deviceNameFor, which for a two-card model falls all the way through to
+// gpu.Probe() and returns whichever card that reports first. Live, a 36 GiB
+// DeepSeek-V4 split 29.9/6.3 across a 5090 and a 3080 was recorded as
+// 37094 MiB on the *3080*: a figure ~4x the card, on the wrong card.
+//
+// Each pool is a card's ledger, so each card gets its own profile with only
+// what the process holds there.
+func TestMeasurePerDeviceSplitsAcrossCards(t *testing.T) {
+	const fakePid = 515151
+	fakeNvidiaSMIDevices(t,
+		"0, "+fakeUUID("0")+", 00000000:00:00.0, Big GPU, 32000, 30000, 2000\n"+
+			"1, "+fakeUUID("1")+", 00000000:01:00.0, Small GPU, 10240, 6000, 4240",
+		fakeUUID("0")+", "+strconv.Itoa(fakePid)+", 30000\n"+
+			fakeUUID("1")+", "+strconv.Itoa(fakePid)+", 6000")
+	origPGID := gpu.PGIDFn
+	gpu.PGIDFn = func(pid int) (int, error) { return pid, nil }
+	t.Cleanup(func() { gpu.PGIDFn = origPGID })
+
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Servers: map[string]config.Server{"box": {
+			Pools:   map[string]string{"gpu0": "32000MiB", "gpu1": "10240MiB"},
+			Devices: map[string]string{"gpu0": fakeUUID("0"), "gpu1": fakeUUID("1")},
+		}},
+	}
+	mgr := NewManager(cfg)
+	mgr.SetTuneCache(cache)
+
+	mdl := config.Model{
+		Cmd: "exec sleep 30", Server: "box", MaxConcurrent: 1,
+		RAMUsage: map[string]string{"gpu0": "30GB", "gpu1": "7GB"},
+	}
+	mgr.measure("split", mdl, &Process{logs: newLogBuffer(10)}, pidHandle{pid: fakePid})
+
+	big, ok := cache.Get("Big GPU", "split")
+	if !ok {
+		t.Fatal("no profile for the big card")
+	}
+	if big.PeakMiB != 30000 {
+		t.Errorf("Big GPU PeakMiB = %d, want 30000 (only what it holds there)", big.PeakMiB)
+	}
+	small, ok := cache.Get("Small GPU", "split")
+	if !ok {
+		t.Fatal("no profile for the small card")
+	}
+	if small.PeakMiB != 6000 {
+		t.Errorf("Small GPU PeakMiB = %d, want 6000", small.PeakMiB)
+	}
+	// The bug in one assertion: neither card may be charged the cross-card sum.
+	for _, name := range []string{"Big GPU", "Small GPU"} {
+		if p, _ := cache.Get(name, "split"); p.PeakMiB >= 36000 {
+			t.Errorf("%s charged the whole-host total (%d MiB) — the cross-card sum is back", name, p.PeakMiB)
+		}
+	}
+}
+
+// TestMeasureSingleDeviceUnaffected: the per-device path must not disturb the
+// ordinary one-card model, which still takes the whole-group figure.
+func TestMeasureSingleDeviceUnaffected(t *testing.T) {
+	const fakePid = 616161
+	fakeNvidiaSMIDevices(t,
+		"0, "+fakeUUID("0")+", 00000000:00:00.0, Solo GPU, 32000, 12000, 20000",
+		fakeUUID("0")+", "+strconv.Itoa(fakePid)+", 12000")
+	origPGID := gpu.PGIDFn
+	gpu.PGIDFn = func(pid int) (int, error) { return pid, nil }
+	t.Cleanup(func() { gpu.PGIDFn = origPGID })
+
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Servers: map[string]config.Server{"box": {
+			Pools:   map[string]string{"gpu0": "32000MiB"},
+			Devices: map[string]string{"gpu0": fakeUUID("0")},
+		}},
+	}
+	mgr := NewManager(cfg)
+	mgr.SetTuneCache(cache)
+	mdl := config.Model{
+		Cmd: "exec sleep 30", Server: "box", MaxConcurrent: 1,
+		RAMUsage: map[string]string{"gpu0": "12GB"},
+	}
+	mgr.measure("solo", mdl, &Process{logs: newLogBuffer(10)}, pidHandle{pid: fakePid})
+
+	got, ok := cache.Get("Solo GPU", "solo")
+	if !ok || got.PeakMiB != 12000 {
+		t.Errorf("profile = %+v ok=%v, want PeakMiB 12000", got, ok)
 	}
 }

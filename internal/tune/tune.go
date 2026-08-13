@@ -42,6 +42,22 @@ type Profile struct {
 	// NEWER bench measurement supersede an older one.
 	MeasuredAt int64
 
+	// RecentPeaks is a bounded ring of the highest footprint observed during
+	// each of the last RecentWindow spawns, oldest first. It exists because
+	// PeakMiB alone is monotonic FOREVER, and that is only correct when a
+	// model's footprint is a function of its SLOT COUNT.
+	//
+	// A vision model's is a function of its INPUT — chandra-ocr-2 measures
+	// 6196 MiB base and 8240 MiB peak on one card and 10706 MiB on another,
+	// because --image-max-tokens lets one 400 dpi page cost several GB more
+	// than a small one. Under a permanent max, that single page reserves its
+	// peak on every subsequent spawn for the life of the cache, and the card is
+	// budgeted forever for the worst thing it ever saw.
+	//
+	// A window lets that expire without ever under-reserving for something
+	// recently observed: see EffectivePeakMiB.
+	RecentPeaks []int
+
 	// Samples holds up to the two most-recent-DISTINCT (slots, footprint)
 	// spawn measurements. It exists for hosts where llama.cpp logs no KV
 	// cache size, so BaseMiB/PerSlotMiB can't be split out of a single
@@ -101,8 +117,76 @@ func Derive(existing Profile, source string, footprintMiB, kvMiB, nSlots, nCtx i
 		BaseMiB: base, PerSlotMiB: perSlot, PeakMiB: peak,
 		MeasuredSlots: nSlots, Ctx: nCtx,
 		Source: source, MeasuredAt: at,
-		Samples: samples,
+		Samples:     samples,
+		RecentPeaks: mergeRecent(existing.RecentPeaks, footprintMiB),
 	}
+}
+
+// RecentWindow is how many spawns a peak stays authoritative for. Eight is a
+// compromise between forgetting an outlier reasonably soon and not thrashing
+// the reservation on a model that is spawned constantly.
+const RecentWindow = 8
+
+// EffectivePeakMiB is the peak an estimate should reserve: the largest
+// footprint seen in the recent window once that window is FULL, and the
+// all-time PeakMiB until then.
+//
+// Deliberately max-of-window rather than the p95 that first suggests itself.
+// At a window of 8 the 95th percentile IS the maximum, so a percentile only
+// starts to differ once you retain ~40 observations per (gpu, model) — a lot
+// of persisted state for the privilege of deliberately under-reserving on 5%
+// of spawns. Under-reserving VRAM is not a slow request, it is an OOM that
+// takes a neighbour down with it, so the asymmetry argues for the max.
+//
+// What the window buys is expiry, not tolerance: nothing observed in the last
+// RecentWindow spawns is ever discounted, but a one-off from a hundred spawns
+// ago stops being charged. Until the window fills, PeakMiB stands — a profile
+// with two observations has no business concluding the third will be smaller.
+func (p Profile) EffectivePeakMiB() int {
+	if len(p.RecentPeaks) < RecentWindow {
+		return p.PeakMiB
+	}
+	hi := 0
+	for _, v := range p.RecentPeaks {
+		if v > hi {
+			hi = v
+		}
+	}
+	return hi
+}
+
+// WithPeakAtLeast raises both the all-time mark and THIS spawn's window entry
+// to mib, returning the updated profile. A lower mib changes nothing.
+//
+// The two must move together. Raising PeakMiB alone records a peak that
+// EffectivePeakMiB will discard as soon as the window fills, which would turn
+// a deliberately-published high-water mark into a reservation that quietly
+// decays out from under the model that needs it.
+func (p Profile) WithPeakAtLeast(mib int) Profile {
+	if mib <= p.PeakMiB {
+		return p
+	}
+	p.PeakMiB = mib
+	if n := len(p.RecentPeaks); n > 0 && mib > p.RecentPeaks[n-1] {
+		updated := make([]int, n)
+		copy(updated, p.RecentPeaks)
+		updated[n-1] = mib
+		p.RecentPeaks = updated
+	}
+	return p
+}
+
+// mergeRecent appends this spawn's footprint, dropping the oldest beyond
+// RecentWindow. Always returns a new slice, for the same reason MergeSample
+// does: a caller may be holding a Profile read from the cache.
+func mergeRecent(recent []int, footprintMiB int) []int {
+	out := make([]int, 0, RecentWindow)
+	if n := len(recent); n >= RecentWindow {
+		out = append(out, recent[n-RecentWindow+1:]...)
+	} else {
+		out = append(out, recent...)
+	}
+	return append(out, footprintMiB)
 }
 
 // Sample is one spawn's empirical VRAM measurement: total observed process
@@ -383,6 +467,13 @@ func (c *Cache) Update(gpuName, model string, p Profile) {
 	if ok && existing.Source == SourceBench && p.Source != SourceBench {
 		merged := existing
 		merged.PeakMiB = p.PeakMiB
+		// The recent window is OBSERVATION, not shape, so it crosses the
+		// precedence boundary that BaseMiB/PerSlotMiB do not. p's window was
+		// already derived from existing's, so this carries the append forward
+		// rather than replacing a history with a single point — and without it
+		// a bench-measured model's window would never fill, pinning it to
+		// PeakMiB forever and undoing the decay entirely.
+		merged.RecentPeaks = p.RecentPeaks
 		for _, sm := range p.Samples {
 			merged.Samples = MergeSample(merged.Samples, sm)
 		}
@@ -405,8 +496,10 @@ func (c *Cache) BumpPeak(gpuName, model string, footprintMiB int) {
 	if !ok || footprintMiB <= p.PeakMiB {
 		return
 	}
-	p.PeakMiB = footprintMiB
-	c.data[k] = p
+	// A burst observed mid-spawn belongs to THIS spawn's window entry as well
+	// as to the all-time mark — see WithPeakAtLeast. Without that, growth under
+	// load would expire out of a window it never entered.
+	c.data[k] = p.WithPeakAtLeast(footprintMiB)
 }
 
 // KVMiBPerToken derives the KV-cache cost of ONE token from a profile, or 0 when

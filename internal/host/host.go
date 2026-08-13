@@ -89,6 +89,19 @@ type Handle interface {
 	// accounting comparable to nvidia-smi — and every caller treats it as
 	// "measurement unavailable" and carries on unmodified.
 	MemoryMiB() (int, error)
+
+	// MemoryOnMiB is the group's footprint on ONE card, named by its vendor
+	// uuid. It exists because MemoryMiB sums every card the group touches, and
+	// a model spread across two GPUs then reports a number that is true of the
+	// host and false of every individual pool — which is exactly what a
+	// per-card ledger must not be told.
+	//
+	// The error is the same supported "cannot attribute" state as MemoryMiB,
+	// and additionally covers hosts that can attribute per PROCESS but not per
+	// DEVICE (a remote agent reporting one aggregate). Callers fall back to
+	// MemoryMiB and the single-device path, i.e. to the behavior that existed
+	// before this method — never to a guess about which card holds what.
+	MemoryOnMiB(uuid string) (int, error)
 }
 
 // Host starts backends somewhere.

@@ -768,7 +768,10 @@ func (m *Manager) vramBudget(stats gpu.Stats, forModel string) int {
 			continue
 		}
 		if prof, ok := m.tuneCache.Get(stats.Name, name); ok && prof.PeakMiB > 0 {
-			nonEvictable += prof.PeakMiB
+			// EffectivePeakMiB, not PeakMiB: a persistent model whose footprint
+			// tracks its input (a vision backend) would otherwise hold the
+			// whole card hostage to the single largest page it ever saw.
+			nonEvictable += prof.EffectivePeakMiB()
 		} else if b, err := config.ParseSize(mc.RAMUsage[devicePool]); err == nil && b > 0 {
 			nonEvictable += int(b / (1024 * 1024))
 		}
@@ -950,8 +953,11 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 
 	slots := mdl.Slots()
 	est := prof.BaseMiB + slots*prof.PerSlotMiB
-	if prof.PeakMiB > est {
-		est = prof.PeakMiB
+	// The peak is a FLOOR on the estimate, never a discount: base+slots stands
+	// whenever it is larger. EffectivePeakMiB lets an expired outlier stop
+	// inflating that floor without ever dropping below the modelled cost.
+	if peak := prof.EffectivePeakMiB(); peak > est {
+		est = peak
 	}
 	if est <= 0 {
 		return usage
@@ -1176,6 +1182,25 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 	if m.tuneCache == nil {
 		return
 	}
+	nCtx, nSlots, kvMiB := 0, 0, 0
+	if p.logs != nil {
+		nCtx, nSlots, kvMiB = p.logs.Stats()
+	}
+	if nSlots <= 0 {
+		nSlots = mdl.Slots() // banner not parsed yet (or --slots omitted): fall back to config
+	}
+
+	// A model spread across several cards is measured per card FIRST. The
+	// whole-host path below sums every device the process touches and files
+	// that total under one device name, which for a two-card model is a figure
+	// true of the host and false of both pools — and it is the pool that
+	// admission reads. Falls through when the host cannot attribute per device.
+	if devs, ok := m.localDevicesFor(mdl.Server, mdl.RAMUsage); ok && len(devs) > 1 {
+		if m.measurePerDevice(model, h, devs, nCtx, nSlots, time.Now().Unix()) {
+			return
+		}
+	}
+
 	// The device that ran it names the profile. On an agent-backed server that
 	// is the agent's hardware, reported on its heartbeat — not this machine's.
 	dev := m.deviceNameFor(mdl.Server, mdl.RAMUsage)
@@ -1193,13 +1218,6 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 	if footprint <= 0 {
 		slog.Debug("no vram usage reported for process group; skipping vram measurement", "model", model, "id", h.ID())
 		return
-	}
-	nCtx, nSlots, kvMiB := 0, 0, 0
-	if p.logs != nil {
-		nCtx, nSlots, kvMiB = p.logs.Stats()
-	}
-	if nSlots <= 0 {
-		nSlots = mdl.Slots() // banner not parsed yet (or --slots omitted): fall back to config
 	}
 
 	// Record this spawn's (slots, footprint) sample every time, regardless of
@@ -1391,6 +1409,101 @@ func (m *Manager) localDeviceFor(server string, ramUsage map[string]string) (gpu
 		return gpu.Stats{}, false
 	}
 	return st, true
+}
+
+// localDevicesFor resolves EVERY physical card a model draws from on a LOCAL
+// server — the plural of localDeviceFor, and the reason it exists.
+//
+// localDeviceFor deliberately gives up on a model spanning two cards, because
+// naming the ONE card a profile is filed under has no answer then. That was the
+// right call for naming and the wrong one for measuring: the model still has a
+// footprint on each card, each of those is knowable, and refusing to look meant
+// a two-card model's whole-host total got filed against a single pool.
+//
+// Returns ok=false whenever any named pool fails to resolve, rather than a
+// partial list: measuring three cards out of four and charging the sum to those
+// three is a worse lie than not measuring.
+func (m *Manager) localDevicesFor(server string, ramUsage map[string]string) ([]gpu.Stats, bool) {
+	cfg := m.config()
+	if cfg == nil || server == "" || len(ramUsage) == 0 {
+		return nil, false
+	}
+	named := cfg.DevicePoolsNamedBy(server, ramUsage)
+	if len(named) == 0 {
+		return nil, false
+	}
+	devs, err := gpu.ProbeAll()
+	if err != nil {
+		return nil, false
+	}
+	out := make([]gpu.Stats, 0, len(named))
+	for _, pool := range named {
+		sel := cfg.DeviceSelectorFor(server, pool)
+		if sel == "" {
+			return nil, false // an unselectable pool makes the whole set untrustworthy
+		}
+		st, err := gpu.Select(devs, sel)
+		if err != nil {
+			slog.Warn("pool names a device that is not present",
+				"server", server, "pool", pool, "selector", sel, "err", err)
+			return nil, false
+		}
+		out = append(out, st)
+	}
+	return out, true
+}
+
+// measurePerDevice records one profile per card for a model that spans several,
+// charging each pool only what the process actually holds on that card.
+//
+// Reports false — measure() then falls back to the whole-host path — when the
+// host cannot attribute per device (a remote agent, macOS), or when any single
+// card reads back an error. Partial success is treated as failure for the same
+// reason localDevicesFor refuses partial lists.
+//
+// kvMiB is deliberately NOT passed through. llama.cpp logs ONE KV total for the
+// process; splitting it across cards would require knowing the per-card layer
+// distribution, which -ts decides and nothing here observes. Passing 0 leaves
+// PerSlotMiB at its fail-safe zero (SlotsFor then reports ok=false and the
+// configured cmd is left alone) rather than inventing a split.
+func (m *Manager) measurePerDevice(model string, h host.Handle, devs []gpu.Stats, nCtx, nSlots int, at int64) bool {
+	type reading struct {
+		dev  gpu.Stats
+		mib  int
+		prof tune.Profile
+	}
+	readings := make([]reading, 0, len(devs))
+	for _, d := range devs {
+		mib, err := h.MemoryOnMiB(d.UUID)
+		if err != nil {
+			slog.Debug("per-device memory unavailable; falling back to whole-host measurement",
+				"model", model, "device", d.Name, "err", err)
+			return false
+		}
+		if mib <= 0 {
+			// A card the model was declared on but holds nothing at the moment
+			// of measurement. Recording 0 would clobber a real prior reading
+			// with a floor, so treat the whole set as unmeasurable this spawn.
+			slog.Debug("no vram on a declared device; skipping per-device measurement",
+				"model", model, "device", d.Name)
+			return false
+		}
+		existing, _ := m.tuneCache.Get(d.Name, model)
+		readings = append(readings, reading{
+			dev:  d,
+			mib:  mib,
+			prof: tune.Derive(existing, tune.SourceServing, mib, 0, nSlots, nCtx, at),
+		})
+	}
+	for _, r := range readings {
+		m.tuneCache.Update(r.dev.Name, model, r.prof)
+		slog.Info("vram measured per device", "model", model, "device", r.dev.Name,
+			"footprintMiB", r.mib, "peakMiB", r.prof.PeakMiB, "slots", nSlots, "ctx", nCtx)
+	}
+	if err := m.tuneCache.Save(); err != nil {
+		slog.Warn("save tune cache", "model", model, "err", err)
+	}
+	return true
 }
 
 // TuneProfilePeak is the largest footprint ever measured for a model on this
