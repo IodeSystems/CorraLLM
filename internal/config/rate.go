@@ -20,6 +20,13 @@ var windowUnits = map[string]time.Duration{
 	"m": time.Minute, "min": time.Minute, "minute": time.Minute,
 	"h": time.Hour, "hr": time.Hour, "hour": time.Hour,
 	"d": 24 * time.Hour, "day": 24 * time.Hour,
+	// A month is 30 DAYS SLIDING, not a calendar month. The budgets underneath
+	// are falloff counters with no reset boundary, so "month" names a rate
+	// ($200 per 30 days, leaking continuously) rather than a billing cycle that
+	// latches at zero on the 1st. Calendar semantics would need a different
+	// mechanism; naming this "month" is the honest approximation, and the one
+	// that avoids a month-end cliff followed by a thundering burst.
+	"mo": 30 * 24 * time.Hour, "month": 30 * 24 * time.Hour,
 }
 
 // ParseRate parses a limits spec "<amount>/<window>" for the given dimension

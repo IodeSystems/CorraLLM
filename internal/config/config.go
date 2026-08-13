@@ -623,11 +623,23 @@ type FreeTier struct {
 	// is min(provider-remaining, cap-minus-used). Header-tracked backends only.
 	Cap FreeCap `yaml:"cap,omitempty"`
 
-	// Limits declares the provider's own rate limits for a COUNTER-MODE backend —
-	// one that returns no X-Ratelimit-* headers (OpenRouter), so budget is tracked
-	// by counting OUR requests against these instead of learning from a response.
-	// Setting either field makes the backend counter-mode. 0 = untracked.
-	Limits FreeLimits `yaml:"limits,omitempty"`
+	// Limits declares this backend's own budgets, counted locally rather than
+	// learned from a response — for a COUNTER-MODE backend that returns no
+	// X-Ratelimit-* headers (OpenRouter), and for any spend cap at all, which no
+	// provider reports.
+	//
+	//	limits:
+	//	  - {req: 20,  per: minute}
+	//	  - {req: 1000, per: day}
+	//	  - {usd: 200, per: month}
+	//
+	// The pre-list shape ({rpm: 20, rpd: 1000}) still parses — see LimitSet.
+	// Any entry makes the backend counter-mode. Empty = untracked.
+	//
+	// This is the ONE scope keyed by BACKEND rather than by caller, which is what
+	// makes "this provider never exceeds $200/month, whoever calls it" sayable;
+	// a priorityGroup limit bounds a caller across every backend instead.
+	Limits LimitSet `yaml:"limits,omitempty"`
 
 	// Refresh opts this backend into P16e roster refresh: corrallm periodically
 	// pulls the provider's /v1/models, and if this backend's model has churned out
@@ -643,7 +655,9 @@ type FreeCap struct {
 	Tokens   int `yaml:"tokens,omitempty"`   // e.g. 10000 of a provider's 12000/min
 }
 
-// FreeLimits are a counter-mode backend's request-rate limits, counted locally.
+// FreeLimits was the pre-list shape of FreeTier.Limits. Retained only so an
+// existing config parses; LimitSet.UnmarshalYAML translates it. New config
+// should use the list form.
 type FreeLimits struct {
 	RPM int `yaml:"rpm,omitempty"` // requests per minute (e.g. OpenRouter :free = 20)
 	RPD int `yaml:"rpd,omitempty"` // requests per day (50 under $10 lifetime, else 1000)

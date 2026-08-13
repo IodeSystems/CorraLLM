@@ -239,8 +239,8 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 		if m.FreeTier.Cap.Requests > 0 || m.FreeTier.Cap.Tokens > 0 {
 			p.quota.SetCap(name, m.FreeTier.Cap.Requests, m.FreeTier.Cap.Tokens)
 		}
-		if m.FreeTier.Limits.RPM > 0 || m.FreeTier.Limits.RPD > 0 {
-			p.quota.SetLimits(name, m.FreeTier.Limits.RPM, m.FreeTier.Limits.RPD)
+		if len(m.FreeTier.Limits) > 0 {
+			p.quota.SetLimits(name, m.FreeTier.Limits)
 		}
 	}
 	return p
@@ -787,6 +787,14 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			costUSD += loadCost
 		}
 		release(sched.Done{CostUSD: costUSD})
+
+		// Charge the metered cost against this backend's declared spend windows.
+		// Here rather than in ObserveResponse because cost is only knowable now:
+		// the response has been read, its tokens counted and priced. A backend
+		// with no usd window is a no-op, so this runs unconditionally.
+		if p.quota != nil && costUSD > 0 {
+			p.quota.Charge(name, config.DimUSD, costUSD)
+		}
 
 		// Prometheus: meter the served request — provider×model with per-class
 		// token counts and dollar cost. Text routes split cached/processed/

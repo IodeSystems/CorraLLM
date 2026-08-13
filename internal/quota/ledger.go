@@ -14,8 +14,11 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/iodesystems/corrallm/internal/config"
 )
 
 // Bucket is one rate-limit window (requests or tokens): the ceiling, what's
@@ -68,7 +71,10 @@ type cap struct{ requests, tokens int }
 // columns and a restart resumes by decaying the level for the elapsed downtime.
 type counterWindow struct {
 	label string
-	limit int
+	// limit is a float because a window may budget DOLLARS, not just requests:
+	// "usd/month 200" leaks 200 per 30 days exactly as "req/day 1000" leaks
+	// 1000 per day. The leaky-bucket arithmetic is dimensionless.
+	limit float64
 	dur   time.Duration
 	used  float64   // fill level as of `at`
 	at    time.Time // when `used` was last computed
@@ -85,7 +91,7 @@ func (w *counterWindow) levelAt(now time.Time) float64 {
 	if elapsed <= 0 {
 		return w.used
 	}
-	lv := w.used - float64(w.limit)*(float64(elapsed)/float64(w.dur))
+	lv := w.used - w.limit*(float64(elapsed)/float64(w.dur))
 	if lv < 0 {
 		return 0
 	}
@@ -93,10 +99,16 @@ func (w *counterWindow) levelAt(now time.Time) float64 {
 }
 
 // add decays to now, then adds one unit of usage.
-func (w *counterWindow) add(now time.Time) {
+// add charges amt against the window. A request window passes 1; a spend
+// window passes the request's cost in dollars. Charging happens AFTER the fact,
+// which can overshoot a budget by at most one request's cost — measured on this
+// box, the largest single request in 30 days was $0.032, i.e. 0.6% of a $5/hour
+// budget and 0.016% of a $200/month one. Pre-charging an estimate would buy
+// that back at the price of needing an estimate to be wrong about.
+func (w *counterWindow) add(now time.Time, amt float64) {
 	w.used = w.levelAt(now)
 	w.at = now
-	w.used++
+	w.used += amt
 }
 
 // drainAt is when the current level would fully leak back to zero (the display
@@ -106,7 +118,7 @@ func (w *counterWindow) drainAt(now time.Time) time.Time {
 	if lv <= 0 {
 		return time.Time{}
 	}
-	return now.Add(time.Duration(lv / float64(w.limit) * float64(w.dur)))
+	return now.Add(time.Duration(lv / w.limit * float64(w.dur)))
 }
 
 // counterState is a counter-mode backend's windows (per-minute, per-day).
@@ -214,21 +226,25 @@ const (
 // rate-limit headers, so budget is tracked by counting our requests against
 // these limits. Either window may be 0 to skip it. Called at construction from
 // the backend's freeTier.limits config.
-func (l *Ledger) SetLimits(backend string, rpm, rpd int) {
+func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if rpm <= 0 && rpd <= 0 {
+	var windows []*counterWindow
+	for _, lim := range limits {
+		dur, ok := lim.Window()
+		if !ok || lim.Amount() <= 0 || lim.Dimension() == "" {
+			continue // validated at config load; skip defensively rather than panic
+		}
+		// Label is dimension+window ("req/day", "usd/month"), so several windows
+		// on ONE dimension keep independent counters — and the label is the
+		// persistence key, so it must stay stable across restarts.
+		windows = append(windows, l.seedWindow(backend, lim.Label(), lim.Amount(), dur))
+	}
+	if len(windows) == 0 {
 		delete(l.counters, backend)
 		return
 	}
-	cs := &counterState{}
-	if rpm > 0 {
-		cs.windows = append(cs.windows, l.seedWindow(backend, "1m", rpm, time.Minute))
-	}
-	if rpd > 0 {
-		cs.windows = append(cs.windows, l.seedWindow(backend, "1d", rpd, 24*time.Hour))
-	}
-	l.counters[backend] = cs
+	l.counters[backend] = &counterState{windows: windows}
 	// Create the entry now so a counter-mode backend shows its declared budget in
 	// the ledger before its first call (header-mode backends are discovered on
 	// first response; counter-mode is declared, so surface it up front).
@@ -239,12 +255,36 @@ func (l *Ledger) SetLimits(backend string, rpm, rpd int) {
 
 // seedWindow builds a fresh falloff window, restoring its level from persisted
 // state (UseStore) when present so the count survives a restart.
-func (l *Ledger) seedWindow(backend, label string, limit int, dur time.Duration) *counterWindow {
+func (l *Ledger) seedWindow(backend, label string, limit float64, dur time.Duration) *counterWindow {
 	w := &counterWindow{label: label, limit: limit, dur: dur}
 	if lc, ok := l.loaded[counterKey(backend, label)]; ok {
 		w.used, w.at = lc.used, lc.at
+		return w
+	}
+	// Labels used to be duration-only ("1m", "1d") because every window counted
+	// requests. Once a window can count dollars, the dimension has to be in the
+	// key or "usd/month" and "req/month" would share one row. Rows written under
+	// the old scheme are adopted here rather than ignored: silently starting a
+	// restored budget at zero is the one failure mode a persisted cap must not
+	// have. Drop this once no deployment predates the change.
+	if legacy, ok := legacyLabel(label); ok {
+		if lc, ok := l.loaded[counterKey(backend, legacy)]; ok {
+			w.used, w.at = lc.used, lc.at
+		}
 	}
 	return w
+}
+
+// legacyLabel maps a request window's new label to the duration-only one it had
+// before dimensions existed. Only request windows ever had legacy rows.
+func legacyLabel(label string) (string, bool) {
+	switch label {
+	case "req/minute":
+		return "1m", true
+	case "req/day":
+		return "1d", true
+	}
+	return "", false
 }
 
 // SetCap self-throttles a backend below the provider's limit: budget is treated
@@ -302,15 +342,11 @@ func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	updateBucket(&e.Tokens, h, "Tokens", now)
 	// Counter-mode: this completed request counts, INCLUDING a 429 — providers
 	// count failed requests against the quota too (verified in the research).
-	var saves []PersistedCounter
-	if cs := l.counters[backend]; cs != nil {
-		for _, w := range cs.windows {
-			w.add(now)
-			if l.store != nil {
-				saves = append(saves, PersistedCounter{Backend: backend, Label: w.label, Used: w.used, At: w.at})
-			}
-		}
-	}
+	//
+	// Only the REQUEST windows are charged here. A spend window cannot be: cost
+	// is not known until the response has been metered, which happens later and
+	// elsewhere — see Charge.
+	saves := l.chargeLocked(backend, config.DimRequests, 1, now)
 	if is429 {
 		e.CoolingUntil = coolUntil(h, e, now)
 	}
@@ -319,6 +355,47 @@ func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	// Persist the updated levels OUTSIDE the lock — SQLite I/O must not block
 	// other ledger readers, and the in-memory ledger is already authoritative;
 	// the write is best-effort durability, so a failure is swallowed.
+	for _, s := range saves {
+		_ = store.SaveQuotaCounter(s.Backend, s.Label, s.Used, s.At.UnixMilli())
+	}
+}
+
+// chargeLocked adds amt to every window of one dimension and returns the rows
+// to persist. Caller holds l.mu; the returned rows are written outside it.
+func (l *Ledger) chargeLocked(backend, dim string, amt float64, now time.Time) []PersistedCounter {
+	cs := l.counters[backend]
+	if cs == nil {
+		return nil
+	}
+	var saves []PersistedCounter
+	for _, w := range cs.windows {
+		if !strings.HasPrefix(w.label, dim+"/") {
+			continue
+		}
+		w.add(now, amt)
+		if l.store != nil {
+			saves = append(saves, PersistedCounter{Backend: backend, Label: w.label, Used: w.used, At: w.at})
+		}
+	}
+	return saves
+}
+
+// Charge records consumption in a dimension whose amount is only known after
+// the fact — dollars spent, seconds dwelt. Requests are charged by
+// ObserveResponse instead, because a request is countable the moment it
+// completes while its cost is not.
+//
+// A no-op for a backend with no window in that dimension, so callers may charge
+// unconditionally rather than checking configuration first.
+func (l *Ledger) Charge(backend, dim string, amt float64) {
+	if amt <= 0 {
+		return
+	}
+	l.mu.Lock()
+	saves := l.chargeLocked(backend, dim, amt, l.now())
+	store := l.store
+	l.mu.Unlock()
+	// Same discipline as ObserveResponse: I/O outside the lock, best-effort.
 	for _, s := range saves {
 		_ = store.SaveQuotaCounter(s.Backend, s.Label, s.Used, s.At.UnixMilli())
 	}
@@ -432,7 +509,7 @@ func (l *Ledger) Available(backend string) bool {
 	// Counter-mode windows: exhausted while the decayed fill is at the limit.
 	if cs := l.counters[backend]; cs != nil {
 		for _, cw := range cs.windows {
-			if cw.levelAt(now) >= float64(cw.limit) {
+			if cw.levelAt(now) >= cw.limit {
 				return false
 			}
 		}
@@ -458,9 +535,9 @@ func (l *Ledger) Snapshot() []Entry {
 				lv := cw.levelAt(now)
 				w := Window{
 					Label:   cw.label,
-					Limit:   cw.limit,
+					Limit:   int(cw.limit),
 					Used:    int(math.Round(lv)),
-					Blocked: lv >= float64(cw.limit),
+					Blocked: lv >= cw.limit,
 				}
 				if d := cw.drainAt(now); !d.IsZero() {
 					w.ResetsAt = d

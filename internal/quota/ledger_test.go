@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/iodesystems/corrallm/internal/config"
 )
 
 // A fixed clock so ResetsAt/CoolingUntil are assertable.
@@ -181,7 +183,7 @@ func TestCounterMode(t *testing.T) {
 	l := New()
 	t0 := time.Unix(1_800_000_000, 0)
 	fixed(l, t0)
-	l.SetLimits("or", 20, 1000) // 20/min, 1000/day
+	l.SetLimits("or", []config.Limit{lim("req", 20, "minute"), lim("req", 1000, "day")}) // 20/min, 1000/day
 
 	// Registered but uncalled → visible with declared limits, available.
 	snap := l.Snapshot()
@@ -202,7 +204,7 @@ func TestCounterMode(t *testing.T) {
 	w := l.Snapshot()[0].Windows
 	var minute Window
 	for _, x := range w {
-		if x.Label == "1m" {
+		if x.Label == "req/minute" {
 			minute = x
 		}
 	}
@@ -219,7 +221,7 @@ func TestCounterMode(t *testing.T) {
 	// One more call rolls the 1m window to used=1.
 	l.ObserveResponse("or", 200, http.Header{})
 	for _, x := range l.Snapshot()[0].Windows {
-		if x.Label == "1m" && x.Used != 1 {
+		if x.Label == "req/minute" && x.Used != 1 {
 			t.Errorf("per-minute should have rolled to 1, got %d", x.Used)
 		}
 	}
@@ -232,7 +234,7 @@ func TestCounterMode_Falloff(t *testing.T) {
 	l := New()
 	t0 := time.Unix(1_800_000_000, 0)
 	fixed(l, t0)
-	l.SetLimits("or", 10, 0) // 10/min, no daily
+	l.SetLimits("or", []config.Limit{lim("req", 10, "minute")}) // 10/min, no daily
 	for i := 0; i < 10; i++ {
 		l.ObserveResponse("or", 200, http.Header{})
 	}
@@ -261,7 +263,7 @@ func TestCounterMode_DurableAcrossRestart(t *testing.T) {
 	l1 := New()
 	fixed(l1, t0)
 	l1.UseStore(st)
-	l1.SetLimits("or", 0, 1000)
+	l1.SetLimits("or", []config.Limit{lim("req", 1000, "day")})
 	for i := 0; i < 800; i++ {
 		l1.ObserveResponse("or", 200, http.Header{})
 	}
@@ -275,7 +277,7 @@ func TestCounterMode_DurableAcrossRestart(t *testing.T) {
 	l2 := New()
 	l2.now = func() time.Time { return t0.Add(time.Minute) }
 	l2.UseStore(st)
-	l2.SetLimits("or", 0, 1000)
+	l2.SetLimits("or", []config.Limit{lim("req", 1000, "day")})
 	if u := l2.Snapshot()[0].Windows[0].Used; u < 798 || u > 800 {
 		t.Errorf("after restart used = %d, want ~800 (survived), not 0", u)
 	}
@@ -306,7 +308,7 @@ func (m *memCounterStore) LoadQuotaCounters() ([]PersistedCounter, error) {
 func TestCounterMode_429Counts(t *testing.T) {
 	l := New()
 	fixed(l, time.Unix(1_800_000_000, 0))
-	l.SetLimits("or", 2, 0)
+	l.SetLimits("or", []config.Limit{lim("req", 2, "minute")})
 	l.ObserveResponse("or", 200, http.Header{})
 	l.ObserveResponse("or", 429, http.Header{}) // failed, but still counts
 	if l.Available("or") {
@@ -367,5 +369,129 @@ func TestSetStale(t *testing.T) {
 	l.SetStale("or", false)
 	if !l.Available("or") {
 		t.Error("clearing stale should restore availability")
+	}
+}
+
+// lim is a terse Limit constructor for the tests below.
+func lim(dim string, amt float64, per string) config.Limit {
+	l := config.Limit{Per: per}
+	switch dim {
+	case "req":
+		l.Req = amt
+	case "usd":
+		l.USD = amt
+	case "sec":
+		l.Sec = amt
+	}
+	return l
+}
+
+// TestSpendWindowBlocksWhenExhausted: the point of the whole feature — a
+// backend with a dollar budget stops being available once it is spent, with no
+// provider header involved (nobody reports spend).
+func TestSpendWindowBlocksWhenExhausted(t *testing.T) {
+	l := New()
+	l.SetLimits("openrouter-paid", []config.Limit{lim("usd", 200, "month")})
+	if !l.Available("openrouter-paid") {
+		t.Fatal("a fresh budget must be available")
+	}
+	l.Charge("openrouter-paid", config.DimUSD, 199.5)
+	if !l.Available("openrouter-paid") {
+		t.Error("under budget must still be available")
+	}
+	l.Charge("openrouter-paid", config.DimUSD, 1.0) // 200.5 > 200
+	if l.Available("openrouter-paid") {
+		t.Error("over budget must be unavailable")
+	}
+}
+
+// TestDimensionsAreIndependent: charging requests must not consume the dollar
+// budget, and vice versa — they are separate windows keyed by label.
+func TestDimensionsAreIndependent(t *testing.T) {
+	l := New()
+	l.SetLimits("b", []config.Limit{lim("req", 10, "day"), lim("usd", 5, "hour")})
+	for i := 0; i < 9; i++ {
+		l.ObserveResponse("b", 200, hdr())
+	}
+	if !l.Available("b") {
+		t.Fatal("9 of 10 requests should not exhaust anything")
+	}
+	l.Charge("b", config.DimUSD, 4.0) // under the $5 window
+	if !l.Available("b") {
+		t.Error("$4 of $5 must not block")
+	}
+	l.Charge("b", config.DimUSD, 2.0) // now $6 > $5
+	if l.Available("b") {
+		t.Error("the spend window must block independently of the request window")
+	}
+}
+
+// TestTwoWindowsOneDimension: 20/minute AND 1000/day, the shape a map keyed by
+// dimension could not express. The tighter window must bind first.
+func TestTwoWindowsOneDimension(t *testing.T) {
+	l := New()
+	l.SetLimits("b", []config.Limit{lim("req", 20, "minute"), lim("req", 1000, "day")})
+	for i := 0; i < 21; i++ {
+		l.ObserveResponse("b", 200, hdr())
+	}
+	if l.Available("b") {
+		t.Error("21 requests must exhaust the 20/minute window even though 1000/day is untouched")
+	}
+}
+
+// TestSpendSurvivesRestart is why this lives in the ledger and not the
+// scheduler's in-memory budgets: a monthly cap that forgets itself on restart
+// is not a cap. Simulates a restart by building a second Ledger over the same
+// store, as UseStore does at boot.
+func TestSpendSurvivesRestart(t *testing.T) {
+	st := &memCounterStore{}
+	l1 := New()
+	l1.UseStore(st)
+	l1.SetLimits("b", []config.Limit{lim("usd", 100, "month")})
+	l1.Charge("b", config.DimUSD, 99.9)
+	if !l1.Available("b") {
+		t.Fatal("99.9 of 100 should still be available")
+	}
+
+	l2 := New() // "restart"
+	l2.UseStore(st)
+	l2.SetLimits("b", []config.Limit{lim("usd", 100, "month")})
+	if !l2.Available("b") {
+		t.Fatal("restored budget should still have headroom")
+	}
+	l2.Charge("b", config.DimUSD, 1.0) // 100.9 > 100, only if the 99.9 was restored
+	if l2.Available("b") {
+		t.Error("spend did not survive the restart — the restored level was lost")
+	}
+}
+
+// TestLegacyCounterLabelsAdopted: rows persisted under the old duration-only
+// labels ("1m"/"1d") must be picked up by the dimension-qualified windows that
+// replaced them. Without this, upgrading silently resets every live budget to
+// zero — which for a spend cap means one free month.
+func TestLegacyCounterLabelsAdopted(t *testing.T) {
+	st := &memCounterStore{}
+	// Persisted ABOVE the limit, so "adopted" and "ignored" give opposite
+	// answers immediately and no decay arithmetic is involved.
+	_ = st.SaveQuotaCounter("or", "1d", 1500, time.Now().UnixMilli())
+	l := New()
+	l.UseStore(st)
+	l.SetLimits("or", []config.Limit{lim("req", 1000, "day")})
+	if l.Available("or") {
+		t.Error("legacy persisted level was not adopted; the budget restarted from zero")
+	}
+}
+
+// TestLegacyLabelDoesNotLeakAcrossDimensions: a spend window must NOT adopt an
+// old request row. They were never the same budget, and "1d" only ever meant
+// requests.
+func TestLegacyLabelDoesNotLeakAcrossDimensions(t *testing.T) {
+	st := &memCounterStore{}
+	_ = st.SaveQuotaCounter("or", "1d", 1500, time.Now().UnixMilli())
+	l := New()
+	l.UseStore(st)
+	l.SetLimits("or", []config.Limit{lim("usd", 10, "day")})
+	if !l.Available("or") {
+		t.Error("a usd window adopted a legacy request count")
 	}
 }
