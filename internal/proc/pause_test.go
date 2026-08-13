@@ -114,7 +114,7 @@ func TestPauseUnloadsAndRefusesLoad(t *testing.T) {
 	}
 	// ...and so is the request path, permanently (so a lane 503s rather than
 	// telling the caller to retry into an operator decision).
-	_, _, _, err = mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	_, _, _, err = mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil, nil)
 	var ce *CapacityError
 	if !errors.As(err, &ce) {
 		t.Fatalf("EnsureReady err = %v, want *CapacityError", err)
@@ -364,7 +364,7 @@ func TestPauseHostedModelPausesExtension(t *testing.T) {
 		if !mgr.IsPaused(name) {
 			t.Errorf("%s should be paused via its extension", name)
 		}
-		if _, _, _, err := mgr.EnsureReady(ctx, name, cfg.Models[name], nil); err == nil {
+		if _, _, _, err := mgr.EnsureReady(ctx, name, cfg.Models[name], nil, nil); err == nil {
 			t.Errorf("%s should be refused", name)
 		}
 	}

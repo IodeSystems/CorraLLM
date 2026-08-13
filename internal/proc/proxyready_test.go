@@ -97,7 +97,7 @@ func TestProxyWaitsForOwnedPort(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, done, _, err := m.EnsureReady(context.Background(), "proxy", cfg.Models["proxy"], nil)
+	_, done, _, err := m.EnsureReady(context.Background(), "proxy", cfg.Models["proxy"], nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}

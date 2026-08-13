@@ -349,7 +349,7 @@ func (m *Manager) SetVRAMMargin(mb int) {
 // the load's swap cost to the request that triggered it (P6).
 // sticky optionally overrides the model's own residency stickiness (a lane
 // member loaded on the lane's behalf may unload sooner); nil → model's own.
-func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model, sticky *config.Sticky) (proc *Process, release func(), loaded bool, err error) {
+func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model, sticky *config.Sticky, cred *config.Credential) (proc *Process, release func(), loaded bool, err error) {
 	// A provided model carries no cmd/server/ramUsage — those live on its
 	// extension. Overlay here, at the one door every caller comes through, so
 	// nothing upstream has to know the difference.
@@ -367,6 +367,19 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	if err != nil {
 		return nil, nil, false, err
 	}
+	// A credential forwards to the same endpoint with different auth. Merge
+	// here rather than at the call site so every door — inference, realtime,
+	// upstream passthrough — gets it, and copy first: writing back into the
+	// resolved target would leak one account's key into the next request that
+	// resolved the same model.
+	if cred != nil && target != nil {
+		merged := *target
+		merged.Headers = cred.MergedHeaders(target.Headers)
+		if c := cred.AuthTokenCommand; c != "" {
+			merged.AuthTokenCommand = c
+		}
+		target = &merged
+	}
 
 	// Choose WHERE before anything else: the placement decides the cmd, the
 	// port, the pool it draws on and the process it keys to, so every step
@@ -378,6 +391,14 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	}
 	mdl = mdl.ForPlacement(pl)
 	key := mdl.PlacementProcKey(name, pl)
+	// Two accounts of one provider are distinct upstreams: distinct auth,
+	// distinct budget. Sharing a process would make the second reuse the
+	// first's connection and quota, and residency would count one where two
+	// exist. A nil credential leaves the historical key untouched, so nothing
+	// that persisted it is orphaned.
+	if cred != nil {
+		key += "@" + cred.Name
+	}
 
 	// A paused process is refused at the ONE door every load comes through, so
 	// the request path, boot preload, explicit load and /upstream all obey the
@@ -2110,7 +2131,7 @@ func (m *Manager) Preload(ctx context.Context) {
 			slog.Info("preload skipped: model is paused", "model", name, "until", p.ResumeAt)
 			continue
 		}
-		_, done, _, err := m.EnsureReady(ctx, name, model, nil)
+		_, done, _, err := m.EnsureReady(ctx, name, model, nil, nil)
 		if err != nil {
 			slog.Warn("preload failed", "model", name, "err", err)
 			continue
@@ -2206,7 +2227,7 @@ func (m *Manager) LoadModel(ctx context.Context, served string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	_, release, _, err := m.EnsureReady(ctx, served, model, nil)
+	_, release, _, err := m.EnsureReady(ctx, served, model, nil, nil)
 	if err != nil {
 		return "", err
 	}
@@ -2256,7 +2277,7 @@ func (m *Manager) LoadExtension(ctx context.Context, name string) (string, error
 	if err != nil {
 		return "", err
 	}
-	_, release, _, err := m.EnsureReady(ctx, served, mdl, nil)
+	_, release, _, err := m.EnsureReady(ctx, served, mdl, nil, nil)
 	if err != nil {
 		return "", err
 	}

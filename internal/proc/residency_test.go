@@ -68,13 +68,13 @@ func TestEvictIdleToFit(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	pA, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	pA, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil, nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	doneA() // A is now idle (evictable)
 
-	pB, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil)
+	pB, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil, nil)
 	if err != nil {
 		t.Fatalf("load B should evict A and succeed, got: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestSnapshot(t *testing.T) {
 		t.Fatalf("want no resident models, got %+v", snap.Models)
 	}
 
-	if _, _, _, err := mgr.EnsureReady(context.Background(), "A", cfg.Models["A"], nil); err != nil {
+	if _, _, _, err := mgr.EnsureReady(context.Background(), "A", cfg.Models["A"], nil, nil); err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 
@@ -228,13 +228,13 @@ func TestNoCapacityWhenBusy(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil, nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	defer doneA() // keep A busy (ref held) across the B attempt
 
-	_, _, _, err = mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil)
+	_, _, _, err = mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil, nil)
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("want ErrNoCapacity (A busy), got: %v", err)
 	}
@@ -254,13 +254,13 @@ func TestPersistentNotEvicted(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil, nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	doneA() // idle but pinned
 
-	if _, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil); !errors.Is(err, ErrNoCapacity) {
+	if _, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil, nil); !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("want ErrNoCapacity (A pinned), got: %v", err)
 	}
 }
@@ -274,12 +274,12 @@ func TestFitsAlongside(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	pA, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	pA, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil, nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	defer doneA()
-	_, doneB, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil)
+	_, doneB, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil, nil)
 	if err != nil {
 		t.Fatalf("load B alongside A: %v", err)
 	}
@@ -310,13 +310,13 @@ func TestActiveUseBlocksEviction(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	pA, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	pA, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil, nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	doneA() // refs → 0, but lastUsed is NOW: A is between turns, not idle
 
-	if _, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil); !errors.Is(err, ErrNoCapacity) {
+	if _, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil, nil); !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("load B during A's active-use window: want ErrNoCapacity, got %v", err)
 	}
 	if pA.state != StateReady {
@@ -327,7 +327,7 @@ func TestActiveUseBlocksEviction(t *testing.T) {
 	pA.mu.Lock()
 	pA.lastUsed = time.Now().Add(-defaultActiveUse - time.Second)
 	pA.mu.Unlock()
-	if _, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil); err != nil {
+	if _, _, _, err := mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil, nil); err != nil {
 		t.Fatalf("load B after A idled past the window: %v", err)
 	}
 }

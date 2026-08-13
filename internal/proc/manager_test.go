@@ -41,7 +41,7 @@ func TestSpawnHealthAndProcessGroupKill(t *testing.T) {
 	// contains it; killGroup(-pgid) must reach it.
 	mdl := modelCmd(t, "exec sleep 30", port)
 
-	p, _, _, err := mgr.EnsureReady(context.Background(), "sleeper", mdl, nil)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "sleeper", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestEnsureReadyLoadedFlag(t *testing.T) {
 	}
 	mdl := config.Model{Proxy: pn, Type: "local"}
 
-	_, done1, loaded1, err := mgr.EnsureReady(context.Background(), "warm", mdl, nil)
+	_, done1, loaded1, err := mgr.EnsureReady(context.Background(), "warm", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("first EnsureReady: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestEnsureReadyLoadedFlag(t *testing.T) {
 		t.Errorf("first call loaded = false, want true (it triggered the load)")
 	}
 
-	_, done2, loaded2, err := mgr.EnsureReady(context.Background(), "warm", mdl, nil)
+	_, done2, loaded2, err := mgr.EnsureReady(context.Background(), "warm", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("second EnsureReady: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestLoadCoalescing(t *testing.T) {
 	ids := make(chan string, n)
 	for range n {
 		go func() {
-			p, _, _, err := mgr.EnsureReady(context.Background(), "shared", mdl, nil)
+			p, _, _, err := mgr.EnsureReady(context.Background(), "shared", mdl, nil, nil)
 			if err != nil {
 				ids <- ""
 				return

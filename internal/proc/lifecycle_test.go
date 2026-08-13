@@ -126,7 +126,7 @@ func TestEnsureReadyWaitsForTeardown(t *testing.T) {
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		_, release, _, err := mgr.EnsureReady(context.Background(), "A", cfg.Models["A"], nil)
+		_, release, _, err := mgr.EnsureReady(context.Background(), "A", cfg.Models["A"], nil, nil)
 		if release != nil {
 			release()
 		}
@@ -174,7 +174,7 @@ func TestEnsureReadyTeardownWaitRespectsContext(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, _, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	_, _, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil, nil)
 	if err == nil {
 		t.Fatal("expected the wait to end with the context")
 	}
@@ -249,7 +249,7 @@ func TestHealthWaitAbortsOnProcessExit(t *testing.T) {
 	defer mgr.Shutdown()
 
 	start := time.Now()
-	_, _, _, err = mgr.EnsureReady(context.Background(), "A", cfg.Models["A"], nil)
+	_, _, _, err = mgr.EnsureReady(context.Background(), "A", cfg.Models["A"], nil, nil)
 	elapsed := time.Since(start)
 
 	if err == nil {

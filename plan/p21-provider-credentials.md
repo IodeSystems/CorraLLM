@@ -1,6 +1,6 @@
 # P21 — Provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Status: **P21a shipped, P21b half-shipped (config layer); P21c–g not started.** Pointer from §6 roadmap in plan.md.
+Status: **P21a + P21b shipped; P21c–g not started.** Pointer from §6 roadmap in plan.md.
 Supersedes the single-credential assumption in `p16-free-aggregator.md` §4.
 
 > This is a design doc, not a changelog. It states the problem, the shape of the
@@ -365,11 +365,21 @@ Plumbing exists; the provider-shaped view does not.
     make the second reuse the first's connection and quota. A provider with no
     declared credentials yields exactly one Candidate with a nil Credential, so
     every existing config resolves as before.
-  - ◻ *routing wire-up.* The proxy still acquires by served name, so the extra
-    candidates are not yet distinct backends: `Process.Target` is set from the
-    model, not the candidate, and `proc.Manager` keys on the served name rather
-    than `Candidate.ProcKey()`. Until that is threaded, expansion is inert at
-    runtime. **next**: thread ProcKey/Target through Acquire.
+  - ✅ *routing wire-up.* `EnsureReady` takes the credential — it is the ONE
+    door every load comes through, so merging there covers inference, realtime
+    and passthrough alike. The process key gains `@<credential>` and the target
+    gets the credential's headers merged over the provider's (copied first: a
+    write-back would leak one account's key into the next request resolving the
+    same model). A nil credential leaves both untouched, so nothing that
+    persisted the historical key is orphaned.
+    Budget keying moved with it: `Candidate.QuotaKey()` returns the credential
+    scope, and gating, `ObserveResponse` and `Charge` all use it. Verified live —
+    two credentials on the real openrouter provider registered as
+    `cred:openrouter/personal [req/minute 20]` and `cred:openrouter/work
+    [usd/month 200]`, two independent budgets.
+    KNOWN: `SetLimits` runs at proxy construction only, so a credential added by
+    a live config edit needs a restart to register. Pre-existing — per-model
+    freeTier limits behave the same way.
 - **P21c** Scope cascade (§4) — charge/gate over model+credential+provider+global.
   Deletes the per-model-only assumption P20 shipped.
 - **P21d** ACL (§5) in the candidate filter.

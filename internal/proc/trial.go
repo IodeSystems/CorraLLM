@@ -661,7 +661,7 @@ func (m *Manager) Probe(ctx context.Context, name string, emit func(TrialEvent))
 	// The ordinary door. Everything a real request would face — pause, capacity,
 	// eviction, a down agent — applies here too, so a probe reports the model as
 	// it actually is rather than as a private copy would be.
-	p, release, loaded, err := m.EnsureReady(ctx, name, mdl, nil)
+	p, release, loaded, err := m.EnsureReady(ctx, name, mdl, nil, nil)
 	if err != nil {
 		return fail(TrialHealth, err)
 	}

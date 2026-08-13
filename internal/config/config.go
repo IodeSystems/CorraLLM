@@ -791,6 +791,20 @@ func (c Candidate) ProcKey() string {
 	return c.Name + "@" + c.Credential.Name
 }
 
+// QuotaKey is the budget identity to gate and charge this candidate against.
+//
+// A credential-backed candidate keys on its CREDENTIAL, because that is the
+// level a provider actually meters: one API key's spend is one budget, however
+// many of its models you route to. Keying on the served model instead splits a
+// single key's quota across N discovered models and lets a per-model cap
+// multiply — 12 models x $200 is a $2,400 ceiling, not a $200 one.
+func (c Candidate) QuotaKey() string {
+	if c.Credential == nil {
+		return c.Name
+	}
+	return c.Credential.ScopeKey(c.Model.ProviderName)
+}
+
 // Target resolves where this candidate forwards, with its credential's headers
 // merged over the provider's shared ones.
 func (c Candidate) Target() (*ProxyTarget, error) {

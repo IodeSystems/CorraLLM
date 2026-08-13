@@ -23,13 +23,13 @@ func TestCapacityTransientCarriesRetryAfter(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil, nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	doneA() // refs → 0, but lastUsed is NOW: protected by activeUse
 
-	_, _, _, err = mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil)
+	_, _, _, err = mgr.EnsureReady(ctx, "B", cfg.Models["B"], nil, nil)
 	var ce *CapacityError
 	if !errors.As(err, &ce) {
 		t.Fatalf("want *CapacityError, got %T: %v", err, err)
@@ -66,7 +66,7 @@ func TestCapacityPermanentWhenOversized(t *testing.T) {
 	mgr.healthTimeout = 5 * time.Second
 	defer mgr.Shutdown()
 
-	_, _, _, err := mgr.EnsureReady(context.Background(), "big", cfg.Models["big"], nil)
+	_, _, _, err := mgr.EnsureReady(context.Background(), "big", cfg.Models["big"], nil, nil)
 	var ce *CapacityError
 	if !errors.As(err, &ce) {
 		t.Fatalf("want *CapacityError, got %T: %v", err, err)
@@ -98,13 +98,13 @@ func TestCapacityPermanentEvenIfEverythingEvicted(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil)
+	_, doneA, _, err := mgr.EnsureReady(ctx, "A", cfg.Models["A"], nil, nil)
 	if err != nil {
 		t.Fatalf("load A: %v", err)
 	}
 	doneA()
 
-	_, _, _, err = mgr.EnsureReady(ctx, "big", cfg.Models["big"], nil)
+	_, _, _, err = mgr.EnsureReady(ctx, "big", cfg.Models["big"], nil, nil)
 	var ce *CapacityError
 	if !errors.As(err, &ce) {
 		t.Fatalf("want *CapacityError, got %T: %v", err, err)

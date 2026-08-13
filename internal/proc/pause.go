@@ -464,7 +464,7 @@ func (m *Manager) repin(ctx context.Context, key string) {
 		// says so once rather than looping.
 		delay := time.Second
 		for attempt := 1; ; attempt++ {
-			_, done, _, err := m.EnsureReady(ctx, name, mdl, nil)
+			_, done, _, err := m.EnsureReady(ctx, name, mdl, nil, nil)
 			if err == nil {
 				done()
 				slog.Info("pause: pinned process reloaded after resume", "target", key, "attempts", attempt)

@@ -243,6 +243,17 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 			p.quota.SetLimits(name, m.FreeTier.Limits)
 		}
 	}
+	// Credential budgets are registered per (provider, credential) rather than
+	// per model: one key is one budget however many of its models get routed to.
+	for _, ext := range cfg.Extensions {
+		for pn, pv := range ext.Providers {
+			for _, cr := range pv.Credentials {
+				if len(cr.Limits) > 0 {
+					p.quota.SetLimits(cr.ScopeKey(pn), cr.Limits)
+				}
+			}
+		}
+	}
 	return p
 }
 
@@ -607,7 +618,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// Proxy under reqCtx so a later preemption (cause ErrPreempted) aborts the
 		// upstream stream and frees this slot.
 		loadStart := time.Now()
-		pr, done, loaded, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky)
+		pr, done, loaded, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky, cand.Credential)
 		// WHERE this was served. A model can be placed on more than one box, so
 		// the served name no longer says which machine, quantisation or context
 		// window handled the request — and a latency figure that could have come
@@ -694,7 +705,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			// not offered — the client subtracts these from its own total, which
 			// works for streaming and non-streaming alike.
 			setTimingHeaders(resp.Header, queuedMS, loadMS, time.Since(upstreamStart).Milliseconds())
-			p.quota.ObserveResponse(name, resp.StatusCode, resp.Header)
+			p.quota.ObserveResponse(cand.QuotaKey(), resp.StatusCode, resp.Header)
 			if isFree && isHardFail(resp.StatusCode) {
 				hardFailStatus = resp.StatusCode
 				p.quota.MarkDown(name) // exponential backoff lives in the ledger
@@ -793,7 +804,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// the response has been read, its tokens counted and priced. A backend
 		// with no usd window is a no-op, so this runs unconditionally.
 		if p.quota != nil && costUSD > 0 {
-			p.quota.Charge(name, config.DimUSD, costUSD)
+			// cand.QuotaKey(), not name: spend belongs to the ACCOUNT that paid
+			// for it. Charging the served model would split one key's spend
+			// across every model routed through it.
+			p.quota.Charge(cand.QuotaKey(), config.DimUSD, costUSD)
 		}
 
 		// Prometheus: meter the served request — provider×model with per-class
@@ -946,7 +960,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		p.markInflight(live, inflightLoading, name)
 
 		loadStart := time.Now()
-		pr, done, _, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky)
+		pr, done, _, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky, cand.Credential)
 		loadMS += time.Since(loadStart).Milliseconds()
 		if err != nil {
 			release()
@@ -1283,7 +1297,7 @@ func (p *Proxy) filterByQuota(cands []config.Candidate) []config.Candidate {
 	}
 	kept := make([]config.Candidate, 0, len(cands))
 	for _, c := range cands {
-		if p.quota.Available(c.Name) {
+		if p.quota.Available(c.QuotaKey()) {
 			kept = append(kept, c)
 		}
 	}
@@ -1522,7 +1536,7 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown model", http.StatusNotFound)
 		return
 	}
-	pr, done, _, err := p.mgr.EnsureReady(r.Context(), served, model, nil)
+	pr, done, _, err := p.mgr.EnsureReady(r.Context(), served, model, nil, nil)
 	if err != nil {
 		http.Error(w, "backend unavailable", http.StatusServiceUnavailable)
 		return

@@ -310,3 +310,40 @@ func TestCredentialAuthTokenCommandOverrides(t *testing.T) {
 		t.Errorf("authTokenCommand = %q", tgt.AuthTokenCommand)
 	}
 }
+
+// TestQuotaKeyIsTheCredential: a budget belongs to the ACCOUNT, not the model.
+// Keying on the served model splits one key's quota across every model routed
+// through it, and lets a per-model cap multiply — the exact defect P20 shipped
+// and this replaces.
+func TestQuotaKeyIsTheCredential(t *testing.T) {
+	c := cfgWithCredentials(t, `
+        credentials:
+          - name: personal
+            headers: {authorization: "Bearer P"}
+          - name: work
+            headers: {authorization: "Bearer W"}
+`)
+	cands, _ := c.ResolveServed("openrouter-m")
+	if cands[0].QuotaKey() == cands[1].QuotaKey() {
+		t.Fatalf("both accounts share budget key %q", cands[0].QuotaKey())
+	}
+	for _, cd := range cands {
+		if cd.QuotaKey() == cd.Name {
+			t.Errorf("%s keyed on the served model, not its credential", cd.Credential.Name)
+		}
+	}
+	// Namespaced by provider, so two providers may each have a "personal".
+	if got := cands[0].QuotaKey(); got != "cred:openrouter/personal" {
+		t.Errorf("QuotaKey = %q", got)
+	}
+}
+
+// TestQuotaKeyFallsBackToModel: without credentials the budget stays where it
+// has always been, so existing counters keep their identity across the upgrade.
+func TestQuotaKeyFallsBackToModel(t *testing.T) {
+	c := cfgWithCredentials(t, "")
+	cands, _ := c.ResolveServed("openrouter-m")
+	if got := cands[0].QuotaKey(); got != "openrouter-m" {
+		t.Errorf("QuotaKey = %q, want the served name — persisted counters key on it", got)
+	}
+}

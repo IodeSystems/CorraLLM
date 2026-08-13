@@ -130,7 +130,7 @@ func TestFailSafeNoTuningWithoutProfile(t *testing.T) {
 	// mgr.tuneCache is nil (zero value) — introspection never wired up.
 
 	mdl := modelCmd(t, "exec sleep 30 --parallel 2", port)
-	p, _, _, err := mgr.EnsureReady(context.Background(), "untuned-nocache", mdl, nil)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "untuned-nocache", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestFailSafeNoProfileForModel(t *testing.T) {
 	mgr.SetTuneCache(cache) // empty: no profile for any model
 
 	mdl := modelCmd(t, "exec sleep 30 --parallel 2", port)
-	p, _, _, err := mgr.EnsureReady(context.Background(), "untuned-empty-cache", mdl, nil)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "untuned-empty-cache", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestFailSafeGPUProbeUnavailable(t *testing.T) {
 	mgr.SetTuneCache(cache)
 
 	mdl := modelCmd(t, "exec sleep 30 --parallel 2", port)
-	p, _, _, err := mgr.EnsureReady(context.Background(), "untuned-nogpu", mdl, nil)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "untuned-nogpu", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestFailSafeNoParallelFlagLeftUntouched(t *testing.T) {
 	mgr.SetTuneCache(cache)
 
 	mdl := modelCmd(t, "exec sleep 30 --ctx-size 4096", port) // no --parallel at all
-	p, _, _, err := mgr.EnsureReady(context.Background(), "no-parallel-flag", mdl, nil)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "no-parallel-flag", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestParallelRewriteWithProfile(t *testing.T) {
 	// exercises the VRAM math, so it must declare enough admission capacity for
 	// the computed 6 to be legal.
 	mdl.MaxConcurrent = 8
-	p, _, _, err := mgr.EnsureReady(context.Background(), "tuned", mdl, nil)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "tuned", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestParallelRewritePreservesRestOfCmd(t *testing.T) {
 
 	mdl := modelCmd(t, "exec llama-server -m model.gguf -ngl 60 --parallel 2 --host 0.0.0.0", port)
 	mdl.MaxConcurrent = 8 // headroom: the tuner may not exceed maxConcurrent
-	p, _, _, err := mgr.EnsureReady(context.Background(), "wrapped", mdl, nil)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "wrapped", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestCalibrationProbeEndToEnd(t *testing.T) {
 	// The calibration probe deliberately spawns ONE slot higher to gather a
 	// second data point, so the ceiling must leave room for k+1.
 	mdl.MaxConcurrent = 4
-	p, _, _, err := mgr.EnsureReady(context.Background(), "calibrate", mdl, nil)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "calibrate", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestCalibrationProbeEndToEndUnsafeLeavesCmdUntouched(t *testing.T) {
 	mgr.SetTuneCache(cache)
 
 	mdl := modelCmd(t, "exec sleep 30 --parallel 2", port)
-	p, _, _, err := mgr.EnsureReady(context.Background(), "calibrate-unsafe", mdl, nil)
+	p, _, _, err := mgr.EnsureReady(context.Background(), "calibrate-unsafe", mdl, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}

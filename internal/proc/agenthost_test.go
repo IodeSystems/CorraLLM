@@ -47,7 +47,7 @@ models:
 
 	// And the refusal reaches the caller as a spawn failure that says why,
 	// rather than a mystery.
-	_, _, _, err = m.EnsureReady(context.Background(), "mac-qwen", cfg.Models["mac-qwen"], nil)
+	_, _, _, err = m.EnsureReady(context.Background(), "mac-qwen", cfg.Models["mac-qwen"], nil, nil)
 	if err == nil {
 		t.Fatal("want an error spawning onto an agent-bound server")
 	}
