@@ -15,8 +15,8 @@ import { C } from '@/theme'
 /**
  * The fields of a model worth a form.
  *
- * Deliberately not every field. A model also carries sticky, swap,
- * contextPerRequest, modalities, convert and freeTier, and modelling those here
+ * Deliberately not every field. A model also carries swap, contextPerRequest,
+ * modalities, convert and freeTier, and modelling those here
  * would be a worse YAML editor rather than a better form. The server MERGES
  * this spec onto the stored model instead of replacing it, so a field absent
  * from this shape survives being saved from here — which is what makes a
@@ -33,6 +33,9 @@ export type ModelSpec = {
   maxConcurrent: number
   maxTokens: number
   persistent: boolean
+  stickyTtl: string
+  stickyIdleUnload: string
+  stickyEvictCost: string
   ramUsage: Record<string, string>
   notes: string
 }
@@ -49,6 +52,9 @@ export function blankSpec(): ModelSpec {
     maxConcurrent: 1,
     maxTokens: 0,
     persistent: false,
+    stickyTtl: '',
+    stickyIdleUnload: '',
+    stickyEvictCost: '',
     ramUsage: {},
     notes: '',
   }
@@ -241,6 +247,48 @@ export function ModelForm({
           </Typography>
         }
       />
+
+      <Box>
+        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+          Residency
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+          <TextField
+            size="small"
+            label="Idle unload"
+            value={spec.stickyIdleUnload}
+            onChange={(e) => set('stickyIdleUnload', e.target.value)}
+            disabled={spec.persistent}
+            placeholder="5m"
+            helperText="Quiet period, then it unloads itself. Empty = never."
+          />
+          <TextField
+            size="small"
+            label="Evict after"
+            value={spec.stickyTtl}
+            onChange={(e) => set('stickyTtl', e.target.value)}
+            disabled={spec.persistent}
+            placeholder="2m"
+            helperText="Idle this long → first in line as a victim. Never unloads on its own."
+          />
+          <TextField
+            size="small"
+            select
+            label="Evict cost"
+            value={spec.stickyEvictCost}
+            onChange={(e) => set('stickyEvictCost', e.target.value)}
+            disabled={spec.persistent}
+            sx={{ minWidth: 140 }}
+            helperText="Resistance once a victim"
+          >
+            {['', 'low', 'medium', 'high'].map((v) => (
+              <MenuItem key={v || 'unset'} value={v}>
+                {v || '(unset)'}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Box>
+      </Box>
 
       {showRAM && (
         <Box>

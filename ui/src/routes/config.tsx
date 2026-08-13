@@ -147,6 +147,9 @@ const ModelSpecDoc = graphql(/* GraphQL */ `
           maxConcurrent
           maxTokens
           persistent
+          stickyTtl
+          stickyIdleUnload
+          stickyEvictCost
           ramUsage
           notes
         }
@@ -1093,6 +1096,9 @@ function specFromGql(s: {
   maxConcurrent?: string | number | null
   maxTokens?: string | number | null
   persistent?: boolean | null
+  stickyTtl?: string | null
+  stickyIdleUnload?: string | null
+  stickyEvictCost?: string | null
   ramUsage?: unknown
   notes?: string | null
 }): ModelSpec {
@@ -1107,6 +1113,9 @@ function specFromGql(s: {
     maxConcurrent: Number(s.maxConcurrent ?? 0),
     maxTokens: Number(s.maxTokens ?? 0),
     persistent: s.persistent ?? false,
+    stickyTtl: s.stickyTtl ?? '',
+    stickyIdleUnload: s.stickyIdleUnload ?? '',
+    stickyEvictCost: s.stickyEvictCost ?? '',
     ramUsage: (s.ramUsage as Record<string, string> | null) ?? {},
     notes: s.notes ?? '',
   }

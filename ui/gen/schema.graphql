@@ -1572,7 +1572,7 @@ type corrallm_ModelSpec {
   name: String!
   """Free text kept with the model and shown beside it."""
   notes: String
-  """Pinned: preloaded and never evicted."""
+  """Pinned: preloaded and never evicted. Overrides the sticky fields below — a pinned model is never a victim and never idle-unloads."""
   persistent: Boolean
   """Where to forward: a port (5800), host:port, or a URL."""
   proxy: String!
@@ -1582,6 +1582,12 @@ type corrallm_ModelSpec {
   ramUsage: JSON
   """Server it draws capacity from (required when cmd is set)."""
   server: String
+  """Eviction resistance: low | medium | high. The tiebreak once TTL ordering is applied."""
+  stickyEvictCost: String
+  """Quiet period after which the backend unloads itself with nothing else needing its memory. Counts only while no request is in flight. Empty = never."""
+  stickyIdleUnload: String
+  """Eviction PRIORITY: once idle this long the model sorts ahead of warmer ones as a victim. Never unloads anything by itself. Empty = never prioritised."""
+  stickyTtl: String
   """Cost class: chat | embed | stt | tts | …"""
   type: String
   """The id the backend knows it by, when different from the served name."""
@@ -1599,7 +1605,7 @@ input corrallm_ModelSpecInput {
   name: String!
   """Free text kept with the model and shown beside it."""
   notes: String
-  """Pinned: preloaded and never evicted."""
+  """Pinned: preloaded and never evicted. Overrides the sticky fields below — a pinned model is never a victim and never idle-unloads."""
   persistent: Boolean
   """Where to forward: a port (5800), host:port, or a URL."""
   proxy: String!
@@ -1609,6 +1615,12 @@ input corrallm_ModelSpecInput {
   ramUsage: JSON
   """Server it draws capacity from (required when cmd is set)."""
   server: String
+  """Eviction resistance: low | medium | high. The tiebreak once TTL ordering is applied."""
+  stickyEvictCost: String
+  """Quiet period after which the backend unloads itself with nothing else needing its memory. Counts only while no request is in flight. Empty = never."""
+  stickyIdleUnload: String
+  """Eviction PRIORITY: once idle this long the model sorts ahead of warmer ones as a victim. Never unloads anything by itself. Empty = never prioritised."""
+  stickyTtl: String
   """Cost class: chat | embed | stt | tts | …"""
   type: String
   """The id the backend knows it by, when different from the served name."""

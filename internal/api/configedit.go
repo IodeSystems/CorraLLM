@@ -73,18 +73,24 @@ func copyForEdit(c *config.Config) *config.Config {
 // hand. This is the subset worth a form, with proxy as the string a human
 // actually types.
 type ModelSpec struct {
-	Name          string            `json:"name" doc:"Served model name."`
-	Cmd           string            `json:"cmd" required:"false" doc:"Spawn command; empty makes it a pure proxy."`
-	Server        string            `json:"server" required:"false" doc:"Server it draws capacity from (required when cmd is set)."`
-	Proxy         string            `json:"proxy" doc:"Where to forward: a port (5800), host:port, or a URL."`
-	Upstream      string            `json:"upstream" required:"false" doc:"The id the backend knows it by, when different from the served name."`
-	Type          string            `json:"type" required:"false" doc:"Cost class: chat | embed | stt | tts | …"`
-	Quality       float64           `json:"quality" required:"false" doc:"Relative rank; fractional tiers are allowed."`
-	MaxConcurrent int               `json:"maxConcurrent" required:"false" doc:"Admission slots."`
-	MaxTokens     int               `json:"maxTokens" required:"false" doc:"max_tokens clamp when degraded onto (0 = none)."`
-	Persistent    bool              `json:"persistent" required:"false" doc:"Pinned: preloaded and never evicted."`
-	RAMUsage      map[string]string `json:"ramUsage" required:"false" doc:"Per-pool footprint, e.g. {\"gpu0\":\"16GB\"}."`
-	Notes         string            `json:"notes" required:"false" doc:"Free text kept with the model and shown beside it."`
+	Name          string  `json:"name" doc:"Served model name."`
+	Cmd           string  `json:"cmd" required:"false" doc:"Spawn command; empty makes it a pure proxy."`
+	Server        string  `json:"server" required:"false" doc:"Server it draws capacity from (required when cmd is set)."`
+	Proxy         string  `json:"proxy" doc:"Where to forward: a port (5800), host:port, or a URL."`
+	Upstream      string  `json:"upstream" required:"false" doc:"The id the backend knows it by, when different from the served name."`
+	Type          string  `json:"type" required:"false" doc:"Cost class: chat | embed | stt | tts | …"`
+	Quality       float64 `json:"quality" required:"false" doc:"Relative rank; fractional tiers are allowed."`
+	MaxConcurrent int     `json:"maxConcurrent" required:"false" doc:"Admission slots."`
+	MaxTokens     int     `json:"maxTokens" required:"false" doc:"max_tokens clamp when degraded onto (0 = none)."`
+	Persistent    bool    `json:"persistent" required:"false" doc:"Pinned: preloaded and never evicted. Overrides the sticky fields below — a pinned model is never a victim and never idle-unloads."`
+	// Sticky is flattened into three scalars rather than nested, because that is
+	// what a form edits: three text inputs, each independently clearable. All
+	// three empty means no sticky block at all.
+	StickyTTL        string            `json:"stickyTtl" required:"false" doc:"Eviction PRIORITY: once idle this long the model sorts ahead of warmer ones as a victim. Never unloads anything by itself. Empty = never prioritised."`
+	StickyIdleUnload string            `json:"stickyIdleUnload" required:"false" doc:"Quiet period after which the backend unloads itself with nothing else needing its memory. Counts only while no request is in flight. Empty = never."`
+	StickyEvictCost  string            `json:"stickyEvictCost" required:"false" doc:"Eviction resistance: low | medium | high. The tiebreak once TTL ordering is applied."`
+	RAMUsage         map[string]string `json:"ramUsage" required:"false" doc:"Per-pool footprint, e.g. {\"gpu0\":\"16GB\"}."`
+	Notes            string            `json:"notes" required:"false" doc:"Free text kept with the model and shown beside it."`
 }
 
 // UpsertModelInput creates or replaces one model.
@@ -205,6 +211,7 @@ func specToModel(s ModelSpec) (config.Model, error) {
 		Upstream: strings.TrimSpace(s.Upstream), Type: strings.TrimSpace(s.Type),
 		Quality: s.Quality, MaxConcurrent: s.MaxConcurrent, MaxTokens: s.MaxTokens,
 		Persistent: s.Persistent, RAMUsage: s.RAMUsage, Notes: s.Notes,
+		Sticky: specSticky(s),
 	}
 	p := strings.TrimSpace(s.Proxy)
 	if p == "" {
@@ -248,6 +255,15 @@ func applySpec(prev, next config.Model) config.Model {
 	prev.Persistent = next.Persistent
 	prev.RAMUsage = next.RAMUsage
 	prev.Notes = next.Notes
+	// All three cleared means the operator removed the sticky block, not that
+	// the form declined to model it — so drop it rather than leaving a stale
+	// one behind. Anything set rebuilds it wholesale, which is safe because the
+	// form always sends all three.
+	if next.Sticky == nil {
+		prev.Sticky = nil
+	} else {
+		prev.Sticky = next.Sticky
+	}
 	return prev
 }
 
@@ -300,6 +316,31 @@ func modelToSpec(name string, m config.Model) ModelSpec {
 		Upstream: m.Upstream, Type: m.Type, Quality: m.Quality,
 		MaxConcurrent: m.MaxConcurrent, MaxTokens: m.MaxTokens,
 		Persistent: m.Persistent, RAMUsage: m.RAMUsage, Notes: m.Notes,
+		StickyTTL:        stickyField(m.Sticky, func(s config.Sticky) string { return s.TTL }),
+		StickyIdleUnload: stickyField(m.Sticky, func(s config.Sticky) string { return s.IdleUnload }),
+		StickyEvictCost:  stickyField(m.Sticky, func(s config.Sticky) string { return s.EvictCost }),
+	}
+}
+
+// stickyField reads one field of an optional sticky block, "" when absent.
+func stickyField(s *config.Sticky, get func(config.Sticky) string) string {
+	if s == nil {
+		return ""
+	}
+	return get(*s)
+}
+
+// specSticky rebuilds the sticky block from the form's three scalars, or nil
+// when the operator cleared all of them.
+func specSticky(in ModelSpec) *config.Sticky {
+	if strings.TrimSpace(in.StickyTTL) == "" && strings.TrimSpace(in.StickyIdleUnload) == "" &&
+		strings.TrimSpace(in.StickyEvictCost) == "" {
+		return nil
+	}
+	return &config.Sticky{
+		TTL:        strings.TrimSpace(in.StickyTTL),
+		IdleUnload: strings.TrimSpace(in.StickyIdleUnload),
+		EvictCost:  strings.TrimSpace(in.StickyEvictCost),
 	}
 }
 
@@ -328,7 +369,6 @@ func advancedFields(m config.Model) []string {
 			out = append(out, name)
 		}
 	}
-	add(m.Sticky != nil, "sticky")
 	add(m.Swap != nil, "swap")
 	add(m.ContextPerRequest > 0, "contextPerRequest")
 	add(len(m.Modalities) > 0, "modalities")
