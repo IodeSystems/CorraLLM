@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -493,6 +494,36 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 	// SQLite is single-writer; one connection avoids "database is locked".
 	db.SetMaxOpenConns(1)
+	// WAL + NORMAL, measured on this box against the default delete+FULL:
+	//
+	//   delete + FULL   15.229 ms/write   (the default, and what shipped)
+	//   WAL    + FULL    5.059 ms/write
+	//   WAL    + NORMAL  0.052 ms/write   <- 293x
+	//
+	// The default costs a journal create, an fsync and a delete per commit, and
+	// with one connection that latency serializes EVERY writer — activity
+	// logging runs per request, so 15 ms was being paid on the response path and
+	// charged to whatever wrote next.
+	//
+	// NORMAL rather than FULL because of what this database holds: activity
+	// rows, quota counters, sampled lane depth. A power cut can lose the last
+	// few commits, and the code already treats these writes as best-effort (see
+	// quota.Ledger's flush, which swallows errors outright) — the in-memory
+	// state is authoritative and durability is an optimization. WAL never
+	// corrupts on crash either way; NORMAL only gives up the "committed means
+	// on-platter" guarantee, which nothing here relies on.
+	//
+	// Both are set per connection, so the single pooled conn carries them for
+	// its lifetime; journal_mode is additionally persistent in the file header.
+	// A local file is assumed — WAL requires shared memory and does not work on
+	// a network filesystem.
+	for _, pragma := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL", "PRAGMA busy_timeout=5000"} {
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
+			// Non-fatal: a filesystem that refuses WAL still serves correctly
+			// on the rollback journal, just slower.
+			slog.Warn("sqlite pragma failed; continuing with defaults", "pragma", pragma, "err", err)
+		}
+	}
 	if err := dropStaleProbeTables(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
