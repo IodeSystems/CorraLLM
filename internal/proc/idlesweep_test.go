@@ -103,17 +103,19 @@ func TestIdleSweepSkipsNotReady(t *testing.T) {
 	}
 }
 
-// TestIdleUnloadRefusedBelowTTL: idleUnload <= ttl means the two settings
-// disagree about the same model — one calls it warm, the other unloads it.
-// Refused (0 = never) rather than silently clamped, so the mistake is visible.
-func TestIdleUnloadRefusedBelowTTL(t *testing.T) {
+// TestIdleUnloadHonouredBelowTTL: idleUnload at or below ttl is honoured, not
+// refused. Every TTL on this box is minutes, so refusing would turn the most
+// natural setting an operator could write ("unload after 5m quiet") into a
+// silent no-op. The ttl merely becomes moot — the process is gone before the
+// eviction ordering consults it.
+func TestIdleUnloadHonouredBelowTTL(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		s    *config.Sticky
 		want time.Duration
 	}{
-		{"below ttl", &config.Sticky{TTL: "10m", IdleUnload: "5m"}, 0},
-		{"equal to ttl", &config.Sticky{TTL: "10m", IdleUnload: "10m"}, 0},
+		{"below ttl", &config.Sticky{TTL: "10m", IdleUnload: "5m"}, 5 * time.Minute},
+		{"equal to ttl", &config.Sticky{TTL: "10m", IdleUnload: "10m"}, 10 * time.Minute},
 		{"above ttl", &config.Sticky{TTL: "10m", IdleUnload: "30m"}, 30 * time.Minute},
 		{"no ttl", &config.Sticky{IdleUnload: "5m"}, 5 * time.Minute},
 		{"unset", &config.Sticky{TTL: "10m"}, 0},
@@ -123,5 +125,50 @@ func TestIdleUnloadRefusedBelowTTL(t *testing.T) {
 		if got := stickyIdleUnload(tc.s); got != tc.want {
 			t.Errorf("%s: stickyIdleUnload = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestIdleClockRestartsOnRelease pins the invariant the refs guard depends on:
+// the quiet period counts only while NO request is running.
+//
+// lastUsed is stamped on acquire AND on release (manager.go, refs++/refs--), so
+// a long generation cannot age its own backend out. Were it stamped only on
+// acquire, a 20-minute completion would release with lastUsed 20 minutes old
+// and be unloaded on the very next sweep — instantly, having just finished
+// serving. This asserts the release-side stamp, which is easy to drop in a
+// refactor and silent when it goes.
+func TestIdleClockRestartsOnRelease(t *testing.T) {
+	m := NewManager(&config.Config{})
+	p := mkResident(m, "long", 5*time.Minute, 0)
+
+	// A 20-minute request: acquired long ago, still in flight.
+	p.mu.Lock()
+	p.refs = 1
+	p.lastUsed = time.Now().Add(-20 * time.Minute)
+	p.mu.Unlock()
+
+	m.sweepIdle()
+	if !stillResident(m, "long") {
+		t.Fatal("in-flight request was unloaded mid-generation")
+	}
+
+	// Release: refs drops and the clock restarts from now.
+	p.mu.Lock()
+	p.refs = 0
+	p.lastUsed = time.Now()
+	p.mu.Unlock()
+
+	m.sweepIdle()
+	if !stillResident(m, "long") {
+		t.Error("unloaded immediately after release; the idle clock did not restart")
+	}
+
+	// And it does go, once genuinely quiet for the whole period.
+	p.mu.Lock()
+	p.lastUsed = time.Now().Add(-6 * time.Minute)
+	p.mu.Unlock()
+	m.sweepIdle()
+	if stillResident(m, "long") {
+		t.Error("should unload after a full quiet period with no request running")
 	}
 }

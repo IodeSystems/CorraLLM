@@ -2691,9 +2691,19 @@ func touchesAny(a, b map[string]int64) bool {
 }
 
 // stickyIdleUnload is the quiet period after which a backend unloads itself, or
-// 0 for never. Values at or below the TTL are REFUSED rather than clamped: the
-// two settings would be fighting (one says "still warm", the other "unload"),
-// and silently picking a winner hides an operator mistake.
+// 0 for never.
+//
+// A value at or below the TTL is HONOURED, with a warning. The first cut refused
+// it on the theory that the two settings were fighting — one calling the backend
+// warm while the other unloaded it. They are not: unloading at 5m simply makes a
+// 10m TTL moot, because the process is gone before the eviction ordering ever
+// consults it. That is redundant config, not a contradiction.
+//
+// Refusing it was the worse failure. TTLs here are minutes (600s, 900s), so
+// "unload after 5 minutes quiet" — the most natural thing an operator would
+// write — silently became "never", with nothing but a log line to say so. A
+// setting that quietly does nothing is harder to debug than one that does what
+// it says and warns that a neighbour is now dead weight.
 func stickyIdleUnload(s *config.Sticky) time.Duration {
 	if s == nil || s.IdleUnload == "" {
 		return 0
@@ -2703,9 +2713,8 @@ func stickyIdleUnload(s *config.Sticky) time.Duration {
 		return 0
 	}
 	if ttl := stickyTTL(s); ttl > 0 && d <= ttl {
-		slog.Warn("sticky.idleUnload must exceed sticky.ttl; ignoring",
+		slog.Warn("sticky.idleUnload is at or below sticky.ttl, so the ttl never applies — the backend unloads before it is ever an eviction candidate",
 			"idleUnload", s.IdleUnload, "ttl", s.TTL)
-		return 0
 	}
 	return d
 }

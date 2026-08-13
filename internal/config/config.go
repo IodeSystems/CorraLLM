@@ -921,8 +921,9 @@ type Sticky struct {
 	// the card, its first request pays eviction plus cold load serially. Setting
 	// idleUnload moves the eviction to a moment when nobody is waiting.
 	//
-	// Empty = never (the pre-existing behaviour). Must exceed TTL: a value below
-	// it would unload processes the eviction ordering still considers warm.
+	// Empty = never (the pre-existing behaviour). A value at or below TTL is
+	// honoured with a warning: the backend unloads before the eviction ordering
+	// ever consults its TTL, which makes the TTL moot rather than wrong.
 	IdleUnload string `yaml:"idleUnload,omitempty"`
 }
 
