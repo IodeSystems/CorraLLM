@@ -45,6 +45,7 @@ const OverviewDoc = graphql(/* GraphQL */ `
           name
           persistent
           ttl
+          idleUnload
           evictCost
           spawnable
           remote
@@ -79,6 +80,7 @@ const OverviewDoc = graphql(/* GraphQL */ `
           members {
             model
             ttl
+            idleUnload
             evictCost
           }
         }
@@ -1147,7 +1149,7 @@ function Home() {
                       </Typography>
                     )}
                     <Tooltip
-                      title={[mem.ttl ? `ttl ${mem.ttl}` : null, mem.evictCost ? `evict ${mem.evictCost}` : null]
+                      title={[mem.ttl ? `ttl ${mem.ttl}` : null, mem.idleUnload ? `idle-unload ${mem.idleUnload}` : null, mem.evictCost ? `evict ${mem.evictCost}` : null]
                         .filter(Boolean)
                         .join(' · ')}
                     >

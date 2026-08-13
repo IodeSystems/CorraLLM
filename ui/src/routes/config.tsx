@@ -76,6 +76,7 @@ const ConfigDoc = graphql(/* GraphQL */ `
           maxConcurrent
           persistent
           ttl
+          idleUnload
           modalities {
             modality
           }
@@ -678,6 +679,9 @@ function ConfigPage() {
                       ))}
                     {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
                     {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
+                    {m.idleUnload && (
+                      <Chip size="small" variant="outlined" label={`idle-unload ${m.idleUnload}`} />
+                    )}
                   </Box>
                   <Box sx={{ display: 'flex', gap: 3, mt: 0.75, flexWrap: 'wrap' }}>
                     <Stat label="Quality" value={m.quality} />
