@@ -172,3 +172,141 @@ provides: {m: {type: chat}}
 		t.Error("authTokenCommand was dropped")
 	}
 }
+
+// cfgWithCredentials builds a loaded config whose openrouter provider holds two
+// accounts, via the real Validate() path that materialises provided models.
+func cfgWithCredentials(t *testing.T, creds string) *Config {
+	t.Helper()
+	src := `
+extensions:
+  free:
+    providers:
+      openrouter:
+        proxy: {host: openrouter.ai, port: 443, basePath: /api, headers: {x-shared: "1"}}
+        provides:
+          m: {type: chat, upstream: vendor/m}
+` + creds
+	var c Config
+	if err := yaml.Unmarshal([]byte(src), &c); err != nil {
+		t.Fatal(err)
+	}
+	// resolveExtensions is what materialises provided models into c.Models;
+	// Validate alone leaves the map empty, which is a subtle way to write a
+	// test that asserts nothing.
+	if err := c.resolveExtensions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Models) == 0 {
+		t.Fatal("no models materialised — the fixture would assert nothing")
+	}
+	return &c
+}
+
+// TestResolveServedExpandsAcrossCredentials is P21b's core: ONE served name
+// becomes one candidate per account, which is what turns several keys of one
+// provider into a fallback ladder instead of several served names.
+func TestResolveServedExpandsAcrossCredentials(t *testing.T) {
+	c := cfgWithCredentials(t, `
+        credentials:
+          - name: personal
+            headers: {authorization: "Bearer P"}
+          - name: work
+            headers: {authorization: "Bearer W"}
+`)
+	cands, ok := c.ResolveServed("openrouter-m")
+	if !ok {
+		t.Fatal("served name did not resolve")
+	}
+	if len(cands) != 2 {
+		t.Fatalf("want one candidate per credential, got %d: %+v", len(cands), cands)
+	}
+	if cands[0].Credential.Name != "personal" || cands[1].Credential.Name != "work" {
+		t.Errorf("order should follow config: %q, %q", cands[0].Credential.Name, cands[1].Credential.Name)
+	}
+	// Same served name throughout — the expansion is invisible to callers.
+	for _, cd := range cands {
+		if cd.Name != "openrouter-m" {
+			t.Errorf("served name changed to %q; expansion must not create new names", cd.Name)
+		}
+	}
+	// Distinct process identities, or the second would reuse the first's
+	// connection and budget.
+	if cands[0].ProcKey() == cands[1].ProcKey() {
+		t.Errorf("both credentials share procKey %q", cands[0].ProcKey())
+	}
+}
+
+// TestCandidateTargetMergesCredentialHeaders: shared headers survive, auth is
+// per account.
+func TestCandidateTargetMergesCredentialHeaders(t *testing.T) {
+	c := cfgWithCredentials(t, `
+        credentials:
+          - name: personal
+            headers: {authorization: "Bearer P"}
+          - name: work
+            headers: {authorization: "Bearer W"}
+`)
+	cands, _ := c.ResolveServed("openrouter-m")
+	for i, want := range []string{"Bearer P", "Bearer W"} {
+		tgt, err := cands[i].Target()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := tgt.Headers["authorization"]; got != want {
+			t.Errorf("credential %q authorization = %q, want %q", cands[i].Credential.Name, got, want)
+		}
+		if tgt.Headers["x-shared"] != "1" {
+			t.Errorf("credential %q lost the provider's shared header: %+v", cands[i].Credential.Name, tgt.Headers)
+		}
+	}
+	// The provider's own target must be untouched by the merge.
+	base, _ := c.Models["openrouter-m"].ProxyTarget()
+	if base.Headers["authorization"] != "" {
+		t.Errorf("merging wrote back into the provider's headers: %+v", base.Headers)
+	}
+}
+
+// TestNoCredentialsLeavesCandidatesUntouched is the back-compat half: a config
+// that declares none must resolve exactly as it did before, with a nil
+// Credential so Target() returns the model's proxy unchanged.
+func TestNoCredentialsLeavesCandidatesUntouched(t *testing.T) {
+	c := cfgWithCredentials(t, "")
+	cands, ok := c.ResolveServed("openrouter-m")
+	if !ok || len(cands) != 1 {
+		t.Fatalf("want exactly one candidate, got %d", len(cands))
+	}
+	if cands[0].Credential != nil {
+		t.Errorf("no credentials declared, so the candidate must carry none: %+v", cands[0].Credential)
+	}
+	if cands[0].ProcKey() != "openrouter-m" {
+		t.Errorf("procKey changed to %q for an unmodified model", cands[0].ProcKey())
+	}
+	tgt, err := cands[0].Target()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.Headers["x-shared"] != "1" {
+		t.Errorf("shared headers lost: %+v", tgt.Headers)
+	}
+}
+
+// TestCredentialAuthTokenCommandOverrides: one account may use a rotating
+// credential store while a sibling uses a static key.
+func TestCredentialAuthTokenCommandOverrides(t *testing.T) {
+	c := cfgWithCredentials(t, `
+        credentials:
+          - name: rotating
+            authTokenCommand: jq -r .tok /tmp/c.json
+`)
+	cands, _ := c.ResolveServed("openrouter-m")
+	tgt, err := cands[0].Target()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.AuthTokenCommand != "jq -r .tok /tmp/c.json" {
+		t.Errorf("authTokenCommand = %q", tgt.AuthTokenCommand)
+	}
+}

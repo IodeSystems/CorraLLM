@@ -767,6 +767,69 @@ type Candidate struct {
 	Name   string
 	Model  Model
 	Sticky *Sticky // nil → the model's own sticky applies
+
+	// Credential is the account this candidate forwards with, when its provider
+	// declares more than the implicit one. nil means "the model's proxy as
+	// written" — every model that predates credentials, and every provider that
+	// declares none.
+	//
+	// One served name expands to one candidate PER credential, which is what
+	// makes several accounts of one provider a fallback ladder rather than
+	// several served names: the walk already skips a candidate with no budget,
+	// so the selector picks whichever account can still pay.
+	Credential *Credential
+}
+
+// ProcKey is this candidate's process identity. Credential-backed candidates
+// must not share one: they are distinct upstreams (different auth, different
+// budget), and collapsing them would make the second one reuse the first's
+// connection and quota.
+func (c Candidate) ProcKey() string {
+	if c.Credential == nil {
+		return c.Name
+	}
+	return c.Name + "@" + c.Credential.Name
+}
+
+// Target resolves where this candidate forwards, with its credential's headers
+// merged over the provider's shared ones.
+func (c Candidate) Target() (*ProxyTarget, error) {
+	t, err := c.Model.ProxyTarget()
+	if err != nil || c.Credential == nil {
+		return t, err
+	}
+	merged := *t
+	merged.Headers = c.Credential.MergedHeaders(t.Headers)
+	if cmd := c.Credential.AuthTokenCommand; cmd != "" {
+		merged.AuthTokenCommand = cmd
+	}
+	return &merged, nil
+}
+
+// expandCredentials turns one candidate into one per declared credential,
+// leaving it untouched when its provider declares none. Order follows the
+// config so the walk is deterministic.
+func (c *Config) expandCredentials(in []Candidate) []Candidate {
+	out := make([]Candidate, 0, len(in))
+	for _, cand := range in {
+		ext, ok := c.Extensions[cand.Model.Extension]
+		if !ok || cand.Model.ProviderName == "" {
+			out = append(out, cand)
+			continue
+		}
+		pv, ok := ext.Providers[cand.Model.ProviderName]
+		if !ok || len(pv.Credentials) == 0 {
+			out = append(out, cand)
+			continue
+		}
+		for i := range pv.Credentials {
+			cr := pv.Credentials[i]
+			dup := cand
+			dup.Credential = &cr
+			out = append(out, dup)
+		}
+	}
+	return out
 }
 
 // ResolveServed maps a request's served name to its ordered candidates: a lane
@@ -783,10 +846,10 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 			}
 			cands = append(cands, Candidate{Name: mem.Model, Model: m, Sticky: mem.Sticky})
 		}
-		return cands, len(cands) > 0
+		return c.expandCredentials(cands), len(cands) > 0
 	}
 	if m, ok := c.Models[served]; ok {
-		return []Candidate{{Name: served, Model: m}}, true
+		return c.expandCredentials([]Candidate{{Name: served, Model: m}}), true
 	}
 	// Discovered models sit between the declared set and the glob templates: a
 	// hand-written model still wins, but a concrete discovered id beats a
@@ -795,7 +858,7 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	dm, dok := c.discovered[served]
 	c.mu.RUnlock()
 	if dok {
-		return []Candidate{{Name: served, Model: dm}}, true
+		return c.expandCredentials([]Candidate{{Name: served, Model: dm}}), true
 	}
 	// Template models: a model key containing '*' is a glob pattern. When no
 	// exact model or lane matches, a served name matching a pattern resolves to

@@ -1,6 +1,6 @@
 # P21 — Provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Status: **P21a shipped; P21b–g not started.** Pointer from §6 roadmap in plan.md.
+Status: **P21a shipped, P21b half-shipped (config layer); P21c–g not started.** Pointer from §6 roadmap in plan.md.
 Supersedes the single-credential assumption in `p16-free-aggregator.md` §4.
 
 > This is a design doc, not a changelog. It states the problem, the shape of the
@@ -353,8 +353,23 @@ Plumbing exists; the provider-shaped view does not.
   unit test, and live against the running managed marshaller, which rewrites
   the file on every edit and would otherwise delete a field it could parse but
   not re-emit. `${ENV}` references stay literal through both.
-- **P21b** Credential as a routing target: one served name, N credential-backed
+- ◐ **P21b** Credential as a routing target: one served name, N credential-backed
   backends; selector picks by budget. Closes the P16 insight.
+  - ✅ *config layer.* `ResolveServed` expands one served name into one
+    Candidate per declared credential (order follows config, so the walk is
+    deterministic). `Candidate.Target()` merges the credential's headers OVER
+    the provider's shared ones and overrides authTokenCommand; the provider's
+    own target is never written back into. `Candidate.ProcKey()` appends
+    `@<credential>` so two accounts cannot share a process — they are distinct
+    upstreams with distinct auth and distinct budgets, and collapsing them would
+    make the second reuse the first's connection and quota. A provider with no
+    declared credentials yields exactly one Candidate with a nil Credential, so
+    every existing config resolves as before.
+  - ◻ *routing wire-up.* The proxy still acquires by served name, so the extra
+    candidates are not yet distinct backends: `Process.Target` is set from the
+    model, not the candidate, and `proc.Manager` keys on the served name rather
+    than `Candidate.ProcKey()`. Until that is threaded, expansion is inert at
+    runtime. **next**: thread ProcKey/Target through Acquire.
 - **P21c** Scope cascade (§4) — charge/gate over model+credential+provider+global.
   Deletes the per-model-only assumption P20 shipped.
 - **P21d** ACL (§5) in the candidate filter.
