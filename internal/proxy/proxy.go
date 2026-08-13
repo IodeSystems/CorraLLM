@@ -500,15 +500,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// members; a lane (or a directly-named model) with nothing left is a 503,
 	// not backpressure: a pause is a decision, not congestion, and there is no
 	// retry interval that would be honest for one.
-	if paused := p.filterByPaused(cands); len(paused) != len(cands) {
-		cands = paused
-		if len(cands) == 0 {
-			http.Error(w, "model is paused", http.StatusServiceUnavailable)
-			p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
-				Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
-				Error: "model paused", ReqBody: reqBody})
+	if kept := p.filterByPaused(cands); len(kept) != len(cands) {
+		if len(kept) == 0 {
+			// cands, NOT kept: the pauses that produced this 503 are the ones
+			// on the candidates just filtered OUT, so the resume time has to be
+			// read before the list is narrowed.
+			p.writePaused(w, r, served, key, cands, start, reqBody, "model is paused")
 			return
 		}
+		cands = kept
 	}
 	if isSensitive(r) {
 		cands = filterBySensitive(cands)
@@ -882,12 +882,11 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	// Same operator-order filter as the inference path: skip paused members so
 	// the walk never queues for an admission slot on a model that will not
 	// serve, and 503 when the lane has nothing left.
-	if cands = p.filterByPaused(cands); len(cands) == 0 {
-		http.Error(w, `{"error":{"message":"model is paused"}}`, http.StatusServiceUnavailable)
-		p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
-			Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
-			Error: "model paused"})
+	if kept := p.filterByPaused(cands); len(kept) == 0 {
+		p.writePaused(w, r, served, key, cands, start, "", `{"error":{"message":"model is paused"}}`)
 		return
+	} else {
+		cands = kept
 	}
 	groupName, group := p.config().ResolveGroup(key)
 	weight := group.EffectiveWeight()
@@ -1197,6 +1196,69 @@ func (p *Proxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, t *config
 // No keep-all fallback (unlike filterByQuota, deliberately): if every member of
 // a lane is paused there is nothing honest left to try, and the empty result is
 // the correct answer rather than a reason to relax the operator's order.
+// pauseResumeIn reports how long until the SOONEST of these candidates' pauses
+// lifts on its own, and whether any of them has a scheduled resume at all.
+//
+// The soonest, matching soonestRetryAfter's rule for the contention path: with
+// a lane, service returns the moment ANY member does. A candidate paused
+// indefinitely contributes nothing — it has no resume time to offer — but it
+// does not veto a sibling that has one, so a lane holding both still answers
+// with the sibling's.
+//
+// ok=false means "no honest interval exists", which is the original state:
+// nothing paused, or everything paused indefinitely.
+func (p *Proxy) pauseResumeIn(cands []config.Candidate, now time.Time) (time.Duration, bool) {
+	var soonest time.Time
+	for _, c := range cands {
+		pz, ok := p.mgr.PauseOf(c.Name)
+		if !ok || pz.ResumeAt.IsZero() {
+			continue
+		}
+		if soonest.IsZero() || pz.ResumeAt.Before(soonest) {
+			soonest = pz.ResumeAt
+		}
+	}
+	if soonest.IsZero() {
+		return 0, false
+	}
+	// Floor at a second: a pause in its final milliseconds would otherwise
+	// advertise 0 and invite a hot retry loop, which is the behavior this
+	// header exists to prevent.
+	if d := soonest.Sub(now); d > time.Second {
+		return d, true
+	}
+	return time.Second, true
+}
+
+// writePaused answers a request whose every candidate is paused.
+//
+// 503, not 429: a pause is an operator decision, not the caller's fault, and
+// 429 would additionally be read as congestion by anything watching queue
+// pressure. Retry-After is valid on a 503 and is the honest way to say "come
+// back then" — but ONLY for a timed pause. An indefinite pause keeps the bare
+// 503 it always had, because nothing but a human knows when it lifts.
+//
+// Deliberately NOT routed through writeBackpressure: that path is EWMA
+// guesswork about congestion, and a scheduled resume is a fact. It also emits
+// the X-RateLimit-* family, which would be a lie here — no rate limit is
+// involved.
+func (p *Proxy) writePaused(w http.ResponseWriter, r *http.Request, served, key string,
+	cands []config.Candidate, start time.Time, reqBody, body string) {
+	retryMS := int64(0)
+	if d, ok := p.pauseResumeIn(cands, time.Now()); ok {
+		secs := int(d.Round(time.Second) / time.Second)
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		retryMS = int64(secs) * 1000
+	}
+	http.Error(w, body, http.StatusServiceUnavailable)
+	p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
+		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
+		Error: "model paused", ReqBody: reqBody, RetryAfterMS: retryMS})
+}
+
 func (p *Proxy) filterByPaused(cands []config.Candidate) []config.Candidate {
 	kept := make([]config.Candidate, 0, len(cands))
 	for _, c := range cands {

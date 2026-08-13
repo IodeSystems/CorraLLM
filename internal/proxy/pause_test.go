@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -173,5 +174,101 @@ func TestResumeRestoresRouting(t *testing.T) {
 	rec := sendToLane(t, r, "m")
 	if !strings.Contains(rec.Body.String(), `"served_by":"up1"`) {
 		t.Errorf("expected m-1 back in service, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// postChat drives one inference request through the mounted router.
+func postChat(t *testing.T, r *chi.Mux, model string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer k")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestPausedIndefiniteHasNoRetryAfter: the original behavior, and the case the
+// "no retry interval would be honest" comment was written for. Nothing but a
+// human knows when an indefinite pause lifts, so promising a time would lie.
+func TestPausedIndefiniteHasNoRetryAfter(t *testing.T) {
+	r, mgr := pauseLaneFixture(t)
+	for _, m := range []string{"m-1", "m-2"} {
+		if _, err := mgr.PauseModel(m, "", time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := postChat(t, r, "m")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	if ra := w.Header().Get("Retry-After"); ra != "" {
+		t.Errorf("Retry-After = %q, want absent for an indefinite pause", ra)
+	}
+}
+
+// TestPausedTimedAdvertisesRetryAfter: a pause with a known ResumeAt DOES have
+// an honest interval — the most honest one in the system, since it is a fact
+// rather than the EWMA estimate the contention path emits.
+func TestPausedTimedAdvertisesRetryAfter(t *testing.T) {
+	r, mgr := pauseLaneFixture(t)
+	resume := time.Now().Add(time.Hour)
+	for _, m := range []string{"m-1", "m-2"} {
+		if _, err := mgr.PauseModel(m, "gpu needed elsewhere", resume); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := postChat(t, r, "m")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (a pause is not the caller's fault, so not 429)", w.Code)
+	}
+	secs, err := strconv.Atoi(w.Header().Get("Retry-After"))
+	if err != nil {
+		t.Fatalf("Retry-After = %q, want an integer second count: %v", w.Header().Get("Retry-After"), err)
+	}
+	if secs < 3500 || secs > 3600 {
+		t.Errorf("Retry-After = %ds, want ~3600 (the hour the operator asked for)", secs)
+	}
+}
+
+// TestPausedLaneUsesSoonestResume: service returns when ANY member does, so a
+// lane answers with the soonest resume, not the last one looked at.
+func TestPausedLaneUsesSoonestResume(t *testing.T) {
+	r, mgr := pauseLaneFixture(t)
+	if _, err := mgr.PauseModel("m-1", "", time.Now().Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	w := postChat(t, r, "m")
+	secs, err := strconv.Atoi(w.Header().Get("Retry-After"))
+	if err != nil {
+		t.Fatalf("Retry-After = %q: %v", w.Header().Get("Retry-After"), err)
+	}
+	if secs < 500 || secs > 600 {
+		t.Errorf("Retry-After = %ds, want ~600 — the SOONEST member, not the 2h one", secs)
+	}
+}
+
+// TestPausedMixedIndefiniteAndTimed: an indefinitely-paused member has no
+// resume time to contribute, but it must not veto a sibling that does — the
+// lane still comes back when the timed one lifts.
+func TestPausedMixedIndefiniteAndTimed(t *testing.T) {
+	r, mgr := pauseLaneFixture(t)
+	if _, err := mgr.PauseModel("m-1", "", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	w := postChat(t, r, "m")
+	secs, err := strconv.Atoi(w.Header().Get("Retry-After"))
+	if err != nil {
+		t.Fatalf("Retry-After = %q, want the timed sibling's interval: %v", w.Header().Get("Retry-After"), err)
+	}
+	if secs < 1700 || secs > 1800 {
+		t.Errorf("Retry-After = %ds, want ~1800", secs)
 	}
 }
