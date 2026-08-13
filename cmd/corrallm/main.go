@@ -731,6 +731,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// so this is not what makes a resume correct — it is what makes one happen
 	// for a pinned model, which nothing ever requests by name.
 	mgr.StartPauseSweeper(sigCtx)
+	mgr.StartIdleSweeper(sigCtx)
 
 	// Sample instantaneous per-lane queue depth so it's visible before requests
 	// resolve (the activity log is completion-driven). Stops on shutdown.

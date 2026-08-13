@@ -149,7 +149,8 @@ type Process struct {
 	usage      map[string]int64 // reserved bytes per pool
 	persistent bool             // pinned: never evicted
 	evictRank  int              // 0 low … 2 high (resistance to eviction)
-	ttl        time.Duration    // idle keep-warm window
+	ttl        time.Duration // idle keep-warm window (eviction PRIORITY, not a timer)
+	idleUnload time.Duration // quiet period before self-unload (0 = never)
 
 	logs *logBuffer // captured stdout/stderr (spawned backends only; nil for pure-proxy)
 
@@ -442,6 +443,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 			persistent: mdl.Persistent,
 			evictRank:  evictRank(st),
 			ttl:        stickyTTL(st),
+			idleUnload: stickyIdleUnload(st),
 			logs:       lb,
 			state:      StateAbsent,
 			ready:      make(chan struct{}),
@@ -2578,6 +2580,74 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 	return snap
 }
 
+// idleSweepInterval is how often the idle sweeper looks. Coarse on purpose:
+// idleUnload is a quiet-period policy measured in minutes, so checking every
+// few seconds would burn a lock acquisition per model for no extra fidelity.
+const idleSweepInterval = 30 * time.Second
+
+// StartIdleSweeper unloads backends that have gone quiet past their
+// sticky.idleUnload, until ctx is done.
+//
+// This is the ONLY place residency shrinks without something else asking for
+// the memory. Everything else in this file evicts reactively, under admission
+// pressure, which means the request that triggers it pays eviction plus cold
+// load serially. A quiet-period unload moves that cost to a moment when nobody
+// is waiting.
+func (m *Manager) StartIdleSweeper(ctx context.Context) {
+	go func() {
+		t := time.NewTicker(idleSweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				m.sweepIdle()
+			}
+		}
+	}()
+}
+
+// sweepIdle evicts every resident backend whose quiet period has elapsed.
+//
+// Four guards, each protecting against a different way this could go wrong:
+//
+//   - persistent is never touched. A pinned model is pinned; that is the whole
+//     meaning of the flag, and reactive eviction already honours it.
+//   - refs > 0 is never touched. A backend serving a request is not idle no
+//     matter what lastUsed says — and lastUsed is only stamped on release, so a
+//     long generation would otherwise look increasingly idle the longer it ran.
+//   - protected() (min-residency) is never touched, so a backend cannot be
+//     unloaded moments after it finished loading. Without this a misconfigured
+//     idleUnload shorter than a cold load would thrash forever.
+//   - idleUnload == 0 means never, which is every model that has not opted in.
+//     This feature is off unless asked for.
+func (m *Manager) sweepIdle() {
+	now := time.Now()
+	m.mu.Lock()
+	var due []*Process
+	for _, p := range m.procs {
+		if p.persistent || p.idleUnload <= 0 {
+			continue
+		}
+		p.mu.Lock()
+		idle := now.Sub(p.lastUsed)
+		busy := p.refs > 0
+		ready := p.state == StateReady
+		p.mu.Unlock()
+		if busy || !ready || idle < p.idleUnload || p.protected(now) {
+			continue
+		}
+		due = append(due, p)
+	}
+	for _, p := range due {
+		slog.Info("idle unload: quiet past idleUnload, releasing",
+			"name", p.Name, "idle", now.Sub(p.lastUsed).Round(time.Second), "idleUnload", p.idleUnload)
+		m.evictLocked(p)
+	}
+	m.mu.Unlock()
+}
+
 // --- victim ordering ---
 
 // sortVictims orders eviction candidates best-first: ttl-expired before warm,
@@ -2618,6 +2688,26 @@ func touchesAny(a, b map[string]int64) bool {
 		}
 	}
 	return false
+}
+
+// stickyIdleUnload is the quiet period after which a backend unloads itself, or
+// 0 for never. Values at or below the TTL are REFUSED rather than clamped: the
+// two settings would be fighting (one says "still warm", the other "unload"),
+// and silently picking a winner hides an operator mistake.
+func stickyIdleUnload(s *config.Sticky) time.Duration {
+	if s == nil || s.IdleUnload == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s.IdleUnload)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	if ttl := stickyTTL(s); ttl > 0 && d <= ttl {
+		slog.Warn("sticky.idleUnload must exceed sticky.ttl; ignoring",
+			"idleUnload", s.IdleUnload, "ttl", s.TTL)
+		return 0
+	}
+	return d
 }
 
 func stickyTTL(s *config.Sticky) time.Duration {

@@ -906,6 +906,24 @@ func (c *Config) ConvertFor(global ConvertConfig, served string) ConvertConfig {
 type Sticky struct {
 	TTL       string `yaml:"ttl,omitempty"`
 	EvictCost string `yaml:"evictCost,omitempty"` // low | medium | high
+
+	// IdleUnload unloads a backend that has gone quiet for this long, without
+	// waiting for anything else to want its memory.
+	//
+	// TTL alone does NOT do this. TTL is an eviction PRIORITY — sortVictims
+	// puts ttl-expired processes at the front of the queue — so a model whose
+	// TTL lapsed hours ago stays resident until some other model needs the
+	// card. That is deliberate and mostly right: holding weights in VRAM costs
+	// a couple of watts, and unloading a model that is requested again a minute
+	// later pays an unload AND a cold load for nothing.
+	//
+	// What it costs is LATENCY PLACEMENT. When the next model finally does need
+	// the card, its first request pays eviction plus cold load serially. Setting
+	// idleUnload moves the eviction to a moment when nobody is waiting.
+	//
+	// Empty = never (the pre-existing behaviour). Must exceed TTL: a value below
+	// it would unload processes the eviction ordering still considers warm.
+	IdleUnload string `yaml:"idleUnload,omitempty"`
 }
 
 // MaxQuality returns the highest Quality among the candidates (0 if none/unset)
