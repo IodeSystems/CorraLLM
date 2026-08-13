@@ -1,6 +1,6 @@
 # P21 — Provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Status: **design, not started.** Pointer from §6 roadmap in plan.md.
+Status: **P21a shipped; P21b–g not started.** Pointer from §6 roadmap in plan.md.
 Supersedes the single-credential assumption in `p16-free-aggregator.md` §4.
 
 > This is a design doc, not a changelog. It states the problem, the shape of the
@@ -342,8 +342,17 @@ Plumbing exists; the provider-shaped view does not.
 
 ## 11. Phased build order (each a green, tested sub-unit per §0)
 
-- **P21a** `credentials` schema + implicit-`default` back-compat. Config-only,
-  no behaviour change. Validates round-trip through the managed marshaller.
+- ✅ **P21a** `credentials` schema + implicit-`default` back-compat. Config-only,
+  no behaviour change. `Provider.CredentialList()` always returns at least one,
+  so callers never branch on "does this provider have credentials"; a provider
+  declaring none gets a synthesised `default` and every pre-existing config is
+  untouched. Credential headers MERGE over the provider's, so shared ones
+  (`anthropic-version`) stay declared once and only auth repeats. Validation
+  refuses an unnamed or duplicated name — names key persisted budget counters,
+  so a duplicate would silently share a budget. Round-trip verified twice: in a
+  unit test, and live against the running managed marshaller, which rewrites
+  the file on every edit and would otherwise delete a field it could parse but
+  not re-emit. `${ENV}` references stay literal through both.
 - **P21b** Credential as a routing target: one served name, N credential-backed
   backends; selector picks by budget. Closes the P16 insight.
 - **P21c** Scope cascade (§4) — charge/gate over model+credential+provider+global.

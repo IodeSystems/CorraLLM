@@ -235,6 +235,11 @@ type Provider struct {
 	Proxy    yaml.Node        `yaml:"proxy,omitempty"`
 	Provides map[string]Model `yaml:"provides,omitempty"`
 
+	// Credentials are the accounts held against this endpoint. Empty means one
+	// implicit credential using the provider's own proxy headers, which is
+	// every config written before this existed — see CredentialList.
+	Credentials []Credential `yaml:"credentials,omitempty"`
+
 	// Discover contributes models from the provider's own catalog instead of a
 	// hand-written list. `provides` is a static declaration; this is the same
 	// thing enumerated at runtime, for a roster that churns.
@@ -1322,6 +1327,9 @@ func (c *Config) resolveExtensions() error {
 				// nothing until the first refresh.
 				if len(pv.Provides) == 0 && pv.Discover == nil {
 					return fmt.Errorf("extension %q provider %q: contributes no models (needs provides or discover)", name, pn)
+				}
+				if err := validateCredentials(name, pn, pv); err != nil {
+					return err
 				}
 				provs[pn] = pv
 			}
