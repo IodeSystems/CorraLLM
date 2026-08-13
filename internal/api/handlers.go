@@ -1611,8 +1611,9 @@ type ServerDef struct {
 type ModelDef struct {
 	Name       string         `json:"name" doc:"Served model name."`
 	Persistent bool           `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
-	TTL        string         `json:"ttl" doc:"Idle keep-warm window (sticky)."`
-	EvictCost  string         `json:"evictCost" doc:"Eviction resistance (sticky)."`
+	TTL        string         `json:"ttl" doc:"Eviction PRIORITY (sticky): once idle this long the model sorts ahead of warmer ones as an eviction victim. It never unloads anything on its own — see idleUnload."`
+	IdleUnload string         `json:"idleUnload" doc:"Quiet period after which the backend unloads itself, with nothing else needing its memory (sticky). Empty = never. Counts only while no request is in flight."`
+	EvictCost  string         `json:"evictCost" doc:"Eviction resistance (sticky): the tiebreak among candidates once TTL ordering is applied."`
 	Spawnable  bool           `json:"spawnable" doc:"True if a local process backs it — its own cmd, or its hosting extension's."`
 	Remote     bool           `json:"remote" doc:"True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."`
 	ProcKey    string         `json:"procKey" doc:"Backing process identity; an extension's models share one."`
@@ -1736,9 +1737,10 @@ func modalityViews(m map[string]config.ModalitySpec) []ModalityView {
 
 // LaneMemberDef is one lane member: a model name + optional sticky override.
 type LaneMemberDef struct {
-	Model     string `json:"model" doc:"Member model name."`
-	TTL       string `json:"ttl" doc:"Sticky override when loaded via this lane (empty = model's own)."`
-	EvictCost string `json:"evictCost" doc:"Eviction-resistance override (empty = model's own)."`
+	Model      string `json:"model" doc:"Member model name."`
+	TTL        string `json:"ttl" doc:"Eviction-priority override when loaded via this lane (empty = model's own)."`
+	IdleUnload string `json:"idleUnload" doc:"Self-unload quiet-period override when loaded via this lane (empty = model's own)."`
+	EvictCost  string `json:"evictCost" doc:"Eviction-resistance override (empty = model's own)."`
 }
 
 // LaneDef is a named ordered fallback list over models: requesting the lane
@@ -1888,7 +1890,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 			MaxConcurrent: m.Slots(), MaxTokens: m.MaxTokens, Cmd: m.Cmd,
 		}
 		if m.Sticky != nil {
-			md.TTL, md.EvictCost = m.Sticky.TTL, m.Sticky.EvictCost
+			md.TTL, md.IdleUnload, md.EvictCost = m.Sticky.TTL, m.Sticky.IdleUnload, m.Sticky.EvictCost
 		}
 		if p, ok := pauses[md.ProcKey]; ok {
 			md.Paused, md.PauseReason, md.PausedAtMS = true, p.Reason, p.At.UnixMilli()
@@ -1936,7 +1938,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		for _, mem := range lane.Members {
 			lm := LaneMemberDef{Model: mem.Model}
 			if mem.Sticky != nil {
-				lm.TTL, lm.EvictCost = mem.Sticky.TTL, mem.Sticky.EvictCost
+				lm.TTL, lm.IdleUnload, lm.EvictCost = mem.Sticky.TTL, mem.Sticky.IdleUnload, mem.Sticky.EvictCost
 			}
 			ld.Members = append(ld.Members, lm)
 		}

@@ -1433,9 +1433,11 @@ type corrallm_LaneDepthSeriesView {
 type corrallm_LaneMemberDef {
   """Eviction-resistance override (empty = model's own)."""
   evictCost: String!
+  """Self-unload quiet-period override when loaded via this lane (empty = model's own)."""
+  idleUnload: String!
   """Member model name."""
   model: String!
-  """Sticky override when loaded via this lane (empty = model's own)."""
+  """Eviction-priority override when loaded via this lane (empty = model's own)."""
   ttl: String!
 }
 
@@ -1495,8 +1497,10 @@ type corrallm_ModelDef {
   cmd: String!
   """Context window guaranteed per request (0 = whatever the backend was launched with, undivided)."""
   contextPerRequest: Long!
-  """Eviction resistance (sticky)."""
+  """Eviction resistance (sticky): the tiebreak among candidates once TTL ordering is applied."""
   evictCost: String!
+  """Quiet period after which the backend unloads itself, with nothing else needing its memory (sticky). Empty = never. Counts only while no request is in flight."""
+  idleUnload: String!
   """Admission slots."""
   maxConcurrent: Long!
   """max_tokens clamp when degraded onto (0 = none)."""
@@ -1535,7 +1539,7 @@ type corrallm_ModelDef {
   spawnable: Boolean!
   """Forward URL (scheme://host:port; headers redacted)."""
   target: String!
-  """Idle keep-warm window (sticky)."""
+  """Eviction PRIORITY (sticky): once idle this long the model sorts ahead of warmer ones as an eviction victim. It never unloads anything on its own — see idleUnload."""
   ttl: String!
   """Cost class (chat | embed | openrouter | …)."""
   type: String!
