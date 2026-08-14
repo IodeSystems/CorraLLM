@@ -1627,16 +1627,29 @@ So the swap was decided on VRAM headroom, stability and speed, NOT on quality,
 and no clean head-to-head was ever completed. 3.8 did finish all 90 stages
 without crashing, which 3.6 did not.
 
-**No judge scores exist**: `--judge` was passed and correctly no-op'd, because
-the judge scores quality-class probes and this set has none. Every number is a
-deterministic check — which is the trustworthy half, and it sidesteps the
-self-preference problem that self-judging would have had.
+**The judge DID run** (correcting an earlier note here): per-check `judge:`
+assertions execute inline with scores in -0.5..1, and they are the most
+informative part of the output. The null top-level `judge` field in runs.jsonl
+is a per-run summary, not evidence that no judging happened. Self-judging did
+therefore apply to those checks, with the self-preference caveat intact.
 
-**Failures cluster, they do not scatter.** `mcpshell-instructions` is 6 of 13,
-failing on all three toolsets; `find-render-entrypoints` fails both arms (3.6
-passed one); OCR is 3/6. `adversarial-poisoned-readme` fails the polylsp arm
-(2/3) while passing baseline and mcpshell — worth watching, since
-prompt-injection resistance is exactly what sank the 35B-A3B.
+**Failures cluster.** `mcpshell-instructions` is 7 of 13 (not 6). Transcripts
+read — 4 of those 7 are INVALID: the probe asserts `tool_called: eval` but the
+baseline/polylsp arms have no mcpshell, so they cannot pass. **Excluding them,
+77/86 = 89.5%.** The probe wants arm-scoping like the ocr-* ones have.
+
+The 3 real failures are one root cause: `export path = ...` where mcpshell
+documents `export let x = 10`. Verified against the live binary. The keeper is
+the RETRY BEHAVIOUR — the error names the fix ("declare it first — `let path =
+...`") and 3.8 changed the variable NAME four times instead of adding `let`,
+until its 4-turn budget expired with no answer. Not acting on explicit
+corrective feedback is the production-relevant weakness, and the pass/fail
+number does not surface it.
+
+`find-render-entrypoints` fails both arms (3.6 passed one); OCR is 3/6.
+`adversarial-poisoned-readme` fails the polylsp arm (2/3) while passing baseline
+and mcpshell — worth watching, since prompt-injection resistance is exactly what
+sank the 35B-A3B.
 
 **still open**
 - **KLD baseline** — owed before ANY sub-Q5 discussion. Blocked on a choice: the
@@ -1645,8 +1658,10 @@ prompt-injection resistance is exactly what sank the 35B-A3B.
 - **A clean head-to-head** — only obtainable now by restoring 3.6 from the
   pre-cutover backup. `out/20260814-112505` stays VOID as a standalone result,
   though its 57 completed stages were good enough for the overlap comparison.
-- **`mcpshell-instructions`** — 6 failures on one probe across every toolset is a
-  pattern, not bad luck. Unread so far; the transcripts are in the run dir.
+- **Probe scoping bug (mcpshell-instructions)** — it runs on arms that lack
+  mcpshell and fails there by construction, costing 4 spurious failures. Fix is
+  in the mcpshell repo (`bench/probes/mcpshell-instructions/task.yaml`), not
+  here. Until then, subtract 4 from any headline failure count.
 
 **optional extensions** (not in scope) — surface aliases in the Overview model
 form rather than only in `advancedFields`; 3.8 past 188k needs one of the priced
