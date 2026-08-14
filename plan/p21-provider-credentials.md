@@ -1,6 +1,6 @@
 # P21 — Provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Status: **P21a + P21b shipped; P21c–g not started.** Pointer from §6 roadmap in plan.md.
+Status: **P21a, P21b, P21f shipped; P21c–e, P21g not started.** Pointer from §6 roadmap in plan.md.
 Supersedes the single-credential assumption in `p16-free-aggregator.md` §4.
 
 > This is a design doc, not a changelog. It states the problem, the shape of the
@@ -303,7 +303,7 @@ ones, so the two mechanisms do not compete. **Close this before P21e2** — the
 approval UI's usefulness depends on it, and picking wrong means either a weakened
 validator or a churning config file.
 
-## 9. ❓ BLOCKING DECISION (user owns): where do secrets live?
+## 9. ✅ RESOLVED: secrets live in ~/.corrallm/credentials
 
 corrallm **currently never persists a secret**. Config holds references only —
 `${OPENROUTER_API_KEY}`, or `authTokenCommand` running a shell command
@@ -321,10 +321,29 @@ and every time a human pastes config into a chat window.
 | SQLite | good | DB (unencrypted, but not `cat`-ed or pasted) | acceptable |
 | inline in managed YAML | best | **served by the admin API** | argue against |
 
-Recommendation: **secrets file.** Config holds `credentialRef: work`; the file
-holds `work: sk-or-…`. Keeps "config is safe to read, back up and share" true —
-a property that would have been violated three times in one session on
-2026-08-12 alone, by pasting config into a conversation.
+**DECIDED (2026-08-14): the secrets file**, at `~/.corrallm/credentials`,
+`key=value` in the same properties-lite format the operator knobs use.
+
+Simpler than the `credentialRef` indirection sketched above, because config
+already references secrets and always has:
+
+    headers: {authorization: "Bearer ${OPENROUTER_KEY_WORK}"}
+
+`${...}` expansion now consults the store first and the process environment
+second, so there is NO schema change, nothing to migrate, and the document
+`/api/v1/config/*` serves still contains only references. A credential added by
+a UI is a line in this file rather than an edit to the thing the API hands out.
+
+File-first precedence, because the store is the deliberate managed source — a
+value someone just typed must take effect, and env-first would let an ambient
+variable win silently. Shadowing is warned about by name at load, so the
+precedence is discoverable rather than folklore.
+
+A group- or world-readable file is REFUSED at startup, the way ssh refuses a
+private key, rather than loaded with a warning nobody reads: failing is loud and
+fixable (the error names `chmod 600`), loading is silent and permanent. Verified
+live — 0644 aborts startup with that message, 0600 loads, missing is a no-op so
+every deployment predating this keeps resolving from the environment.
 
 ## 10. UI
 
@@ -388,10 +407,12 @@ Plumbing exists; the provider-shaped view does not.
   because approval is per credential and needs the per-credential roster.
 - **P21e3** Lane membership for discovered models (§8). BLOCKED on the §8 shape
   decision; approval UI is of limited use without it.
-- **P21f** Secrets store, per the §9 decision. **Gated on that decision.**
+- ✅ **P21f** Secrets store: `~/.corrallm/credentials`, file-first `${...}`
+  resolution, 0600 enforced. No schema change — config keeps holding references.
 - **P21g** UI: provider view, credential CRUD, model picker, spend-vs-budget.
 
-P21a–c are independently useful and unblocked. P21f blocks P21g.
+P21a–c are independently useful and unblocked. P21f is done, so P21g is
+unblocked on the secrets side (it still needs a UI to write the file).
 
 ## 12. Risks & non-goals
 

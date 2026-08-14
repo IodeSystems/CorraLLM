@@ -517,6 +517,12 @@ func serve(ctx context.Context, o serveOpts) error {
 			return err
 		}
 	}
+	// Before the config: ${...} references in it resolve through this store, so
+	// it has to be installed first or a credential-backed provider silently
+	// resolves to an empty header on the very first load.
+	if err := config.LoadCredentials(filepath.Dir(o.configPath)); err != nil {
+		return err
+	}
 	cfg, err := config.Load(o.configPath)
 	if err != nil {
 		return err

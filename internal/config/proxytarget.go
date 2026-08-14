@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -176,7 +175,7 @@ func expandHeaders(h map[string]string) map[string]string {
 	for k, v := range h {
 		out[k] = envRef.ReplaceAllStringFunc(v, func(m string) string {
 			name := envRef.FindStringSubmatch(m)[1]
-			return os.Getenv(name)
+			return lookupSecret(name)
 		})
 	}
 	return out
@@ -340,6 +339,6 @@ func (a *AgentBinding) ExpandedToken() string {
 		return ""
 	}
 	return envRef.ReplaceAllStringFunc(a.Token, func(m string) string {
-		return os.Getenv(envRef.FindStringSubmatch(m)[1])
+		return lookupSecret(envRef.FindStringSubmatch(m)[1])
 	})
 }
