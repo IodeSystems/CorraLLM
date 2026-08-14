@@ -1437,8 +1437,50 @@ name — no lane, no alias — so 3.6 and 3.8 can be compared without one of the
 silently serving `chat`. It runs on 5802 against the same 220k window as 3.6, so
 a comparison measures the model and not the context.
 
-**next** finish the ~19GB pull, load it alone on gpu0, and read back the real VRAM
-figure + a throughput number against 3.6.
+**✅ MEASURED 2026-08-14 (live, via corrallm after `bin/deploy --no-ui`).** It
+loads, serves correct output, and vision survives (mmproj-BF16 auto-pulled).
+
+    Q5_K_M + Q5_K_M draft @220k   30322 MiB  ->  1473 MiB free
+    Qwen3-6-27B-MPT       @220k   28952 MiB  ->  3655 MiB free   (config.yml:381)
+
+**That gap is a REGRESSION, not spare room.** config.yml:383 spends 3.6's 3655 MiB
+explicitly: "what a 400 DPI page's image-encoder activations have to fit inside …
+treat the headroom as spoken for, not spare." 3.8 as first configured more than
+halves it, on a model carrying `convert: pdf: vision`.
+
+**The hybrid saved memory; the draft spent 3× it.** Backing out the 2130 MiB
+draft, 3.8's own footprint is ~28192 MiB against 3.6's 28952 — ~760 MiB less,
+consistent with DeltaNet layers holding recurrent state rather than KV. The
+prediction that the arch changes the KV picture held, but not enough to matter.
+
+**The third-party MTP draft works:** `draft acceptance = 0.889` (48/54), mean
+accepted len 3.67. Materially de-risks the a4lg dependency.
+
+**→ Moving to `UD-Q4_K_XL`** (16.69 vs 18.47 GiB): −1823 MiB predicts ~28499 MiB
+and ~4108 MiB free — MORE headroom than 3.6 has now, keeping the draft. It is
+also unsloth's own balanced pick and Dynamic V3.0 against 3.6's *plain* Q5_K_M,
+so the quality delta is narrower than 5-bit→4-bit implies. Pulling; re-measure
+on arrival.
+
+**Sampling is a DEFAULT, not a policy** (settled 2026-08-14). llama.cpp reads
+`chat_template_kwargs.enable_thinking` per request and overrides `--reasoning`
+with it (`server-common.cpp:1079`), and corrallm forwards bodies untouched — so
+both the sampler and the thinking toggle are per-request. CLI carries the card's
+non-thinking numbers; a thinking caller must send the thinking sampler itself,
+because one set of defaults cannot serve both modes and the mismatch degrades
+output silently rather than erroring.
+
+**next** re-measure on UD-Q4_K_XL, then bench head-to-head.
+
+**throughput is NOT yet comparable.** A single ad-hoc prompt gave 3.8 91.2 tok/s
+against the 136 tok/s recorded for 3.6 in `ml-kit/docs/model-evals.md` — but that
+figure came from the llm-bench harness over 2 runs at 180k ctx, while this one was
+one prompt at 220k taken while a 17GB download saturated I/O. The two numbers do
+not belong in the same table. The real comparison is the harness that rejected
+the 35B-A3B: `llm-bench run --models Qwen3-6-27B-MPT,Qwen3.8-27B`. Note its judge
+runs on the `chat` LANE, which holds only 3.6 — a judged head-to-head puts judge
+and candidate on the same card. The 35B rejection turned on DETERMINISTIC probes,
+not judge-scored ones, so a first pass can skip `--judge` and avoid the thrash.
 
 **risks**
 - **VRAM is the live one.** 31GB is copied from the 3.6 entry plus an unmeasured
