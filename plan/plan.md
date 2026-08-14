@@ -1416,7 +1416,7 @@ served. P21f/g wait on this.
 discovery template becomes N independent caps (12 models × $200 = $2,400, not
 $200). P21c fixes it. The live openrouter template carries such a cap today.
 
-### ◐ P22 — Qwen3.8-27B cutover (model aliases) — 2026-08-14
+### ◐ P22 — Qwen3.8-27B cutover (model aliases) — 2026-08-14 (cutover ✅; KLD + bench open)
 
 Qwen3.8 shipped 2026-08-03; open weights are **Max (2.4T MoE)** and **27B** only,
 so 27B is both the intended target and the only one that fits the 5090.
@@ -1574,17 +1574,39 @@ not judge-scored ones, so a first pass can skip `--judge` and avoid the thrash.
   table and the built `llama-server` is 10380 (`0b1bad14f`, 2026-08-11). No
   llama.cpp rebuild needed.
 
-**blocking decision (USER)** the cutover itself — three config edits, no code:
-rename `Qwen3-6-27B-MPT` → `Qwen3.6-27B-MTP` (also fixing the MPT/MTP
-transposition it has carried since it was written), add `aliases:
-[Qwen3-6-27B-MPT]` to the 3.8 entry, and repoint the `chat` and `free` lane
-members. Rollback is moving the alias line back. The rename is deferred on
-purpose: it costs the measured profile (filed under the placement name) and
-forces a re-measure, so it is worth paying once, after the decision.
+**✅ CUTOVER DONE 2026-08-14 — 3.8 is the daily driver.** Three config edits, no
+code, exactly as designed: renamed the 3.6 key to `Qwen3.6-27B-MTP` (fixing the
+MPT/MTP transposition), added `aliases: [Qwen3-6-27B-MPT]` to 3.8, repointed the
+`chat` and `free` lane members. 3.6 is KEPT and still pinnable — a reversible
+swap, not a deletion. Verified live:
+
+    legacy Qwen3-6-27B-MPT  -> unsloth/Qwen3.8-27B-GGUF:Q5_K_M
+    chat lane               -> unsloth/Qwen3.8-27B-GGUF:Q5_K_M
+    residency                  name=Qwen3.8-27B procKey=Qwen3.8-27B  (not split)
+    /v1/models                 legacy id ABSENT (alias, not a model); 3.6 present
+
+The residency line is the one that mattered: the alias resolves to the CANONICAL
+name, so one process holding one reservation is filed under one id. Had it kept
+the requested name, the old and new ids would each have accrued their own
+residency and metrics for memory allocated exactly once.
+
+`~/.corrallm/llm-bench.yaml` was updated to the new name too, or the bench would
+have failed on an unknown model.
+
+**ROLLBACK** is deleting the alias block and putting the two lane members back to
+`Qwen3.6-27B-MTP`. Config backed up at `~/.corrallm/config.yml.bak-pre-cutover-*`.
+
+**still open**
+- **KLD baseline** — owed before ANY sub-Q5 discussion. Blocked on a choice: the
+  proper reference is BF16 (46.55 GiB, does not fit the 5090) so it is CPU-slow,
+  or a Q8_0 baseline that makes every number relative to Q8_0 rather than truth.
+- **Head-to-head re-run** — `out/20260814-112505` is VOID (stopped mid-flight,
+  3.6's half collected while crash-looping).
+- **3.6's OOM + ratcheted profile** — see the section above; both still live.
 
 **optional extensions** (not in scope) — surface aliases in the Overview model
-form rather than only in `advancedFields`; raise 3.8 past 220k toward its native
-262144 once the footprint is known.
+form rather than only in `advancedFields`; 3.8 past 188k needs one of the priced
+levers, not more window.
 
 ### ✅ VRAM measurement: per-device attribution + peak decay (2026-08-12, UNCOMMITTED)
 
