@@ -1519,7 +1519,7 @@ non-thinking numbers; a thinking caller must send the thinking sampler itself,
 because one set of defaults cannot serve both modes and the mismatch degrades
 output silently rather than erroring.
 
-### ❗ Qwen3-6-27B-MPT CUDA-OOM'd in production (2026-08-14) — needs its own decision
+### ✅ Qwen3-6-27B-MPT CUDA-OOM'd in production (2026-08-14) — resolved by retiring it
 
 While llm-bench ran the vision probe, the INCUMBENT crashed:
 
@@ -1539,10 +1539,12 @@ at cap 16384) is out and 1624 MiB (3.8 @188k) is the floor being accepted.
    the 31583 MiB pool budget. It will effectively refuse to co-reside with
    anything from here on — including 3.8 — until that profile is reset.
 
-**blocking decision (USER)** whether to give 3.6 the same 8192 image cap (the
-one-line fix, and the same lever that bought 3.8 its context) and whether to
-clear the ratcheted profile. Not done unilaterally: it changes the incumbent's
-vision fidelity, and the crash is evidence the operator should see first.
+**RESOLVED by retirement, not by fixing it.** 3.6 was removed from the config in
+the same session, so neither consequence is live: nothing serves it, and its
+stranded profile holds none of gpu0's budget. The 8192-image-cap fix was never
+applied to it and no longer needs to be. Kept here because the crash is the
+calibration for every margin in P22 — 1483 MiB was not enough, which is why
+3.8 @176k/16384 (1073 MiB) was rejected and 1624 MiB is the accepted floor.
 
 **next** re-run the head-to-head (the 2026-08-14 run was stopped mid-flight, and
 3.6's half of it was collected while crash-looping — treat `out/20260814-112505`
@@ -1574,27 +1576,43 @@ not judge-scored ones, so a first pass can skip `--judge` and avoid the thrash.
   table and the built `llama-server` is 10380 (`0b1bad14f`, 2026-08-11). No
   llama.cpp rebuild needed.
 
-**✅ CUTOVER DONE 2026-08-14 — 3.8 is the daily driver.** Three config edits, no
-code, exactly as designed: renamed the 3.6 key to `Qwen3.6-27B-MTP` (fixing the
-MPT/MTP transposition), added `aliases: [Qwen3-6-27B-MPT]` to 3.8, repointed the
-`chat` and `free` lane members. 3.6 is KEPT and still pinnable — a reversible
-swap, not a deletion. Verified live:
+**✅ CUTOVER DONE 2026-08-14 — 3.8 is the daily driver; 3.6 is RETIRED.** Config
+only, no code. The first pass demoted 3.6 to a pinnable fallback under a
+corrected name; the operator's intent was retirement, so the entry was then
+removed outright (90 lines). Final state:
+
+    1. Qwen3-6-27B-MPT entry DELETED
+    2. aliases: [Qwen3-6-27B-MPT] on Qwen3.8-27B  (legacy callers unchanged)
+    3. chat + free lane members repointed to Qwen3.8-27B
+    4. dropped from ~/.corrallm/llm-bench.yaml (else the bench fails on it)
+
+Verified live, twice — once on the demote, once after the retirement:
 
     legacy Qwen3-6-27B-MPT  -> unsloth/Qwen3.8-27B-GGUF:Q5_K_M
     chat lane               -> unsloth/Qwen3.8-27B-GGUF:Q5_K_M
     residency                  name=Qwen3.8-27B procKey=Qwen3.8-27B  (not split)
-    /v1/models                 legacy id ABSENT (alias, not a model); 3.6 present
+    /v1/models                 no 3.6 under either spelling; 15 models, was 16
 
 The residency line is the one that mattered: the alias resolves to the CANONICAL
 name, so one process holding one reservation is filed under one id. Had it kept
 the requested name, the old and new ids would each have accrued their own
 residency and metrics for memory allocated exactly once.
 
-`~/.corrallm/llm-bench.yaml` was updated to the new name too, or the bench would
-have failed on an unknown model.
+**ROLLBACK IS NO LONGER ONE LINE** — that is the deliberate cost of retiring
+rather than demoting. The entry must come back from
+`~/.corrallm/config.yml.bak-pre-cutover-*` before the alias and lanes can be
+repointed. The weights are still cached
+(`models--unsloth--Qwen3.6-27B-MTP-GGUF`), so it is minutes, not a re-download.
 
-**ROLLBACK** is deleting the alias block and putting the two lane members back to
-`Qwen3.6-27B-MTP`. Config backed up at `~/.corrallm/config.yml.bak-pre-cutover-*`.
+**THE SWAP WAS NEVER QUALITY-TESTED.** It was decided on VRAM, capability and
+speed. No head-to-head completed — the only run was stopped mid-flight with
+3.6's half collected while it crash-looped on a CUDA OOM. With 3.6 retired that
+comparison is now harder to obtain, and it does not exist to appeal to.
+
+Side effect worth knowing: 3.6's ratcheted 31124 MiB profile is stranded in the
+tune cache under a placement name nothing references, so it no longer holds any
+of gpu0's budget. The OOM section above is now historical rather than an open
+production risk — nothing serves 3.6.
 
 **still open**
 - **KLD baseline** — owed before ANY sub-Q5 discussion. Blocked on a choice: the
