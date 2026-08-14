@@ -1456,11 +1456,36 @@ prediction that the arch changes the KV picture held, but not enough to matter.
 **The third-party MTP draft works:** `draft acceptance = 0.889` (48/54), mean
 accepted len 3.67. Materially de-risks the a4lg dependency.
 
-**→ Moving to `UD-Q4_K_XL`** (16.69 vs 18.47 GiB): −1823 MiB predicts ~28499 MiB
-and ~4108 MiB free — MORE headroom than 3.6 has now, keeping the draft. It is
-also unsloth's own balanced pick and Dynamic V3.0 against 3.6's *plain* Q5_K_M,
-so the quality delta is narrower than 5-bit→4-bit implies. Pulling; re-measure
-on arrival.
+**✅ SETTLED: Q5_K_M at `-c 160000`.** The operator cut the window to 160k, which
+freed 2290 MiB and is what made the higher quant affordable — the context cut
+bought the quant, not the reverse. Full measured set on this card (32607 MiB):
+
+    quant / ctx                     idle    vision peak   free at peak
+    Q5_K_M @220k + draft           30322         —            1473   rejected
+    UD-Q4_K_XL @160k + draft       27070       29148          3459
+    Q5_K_M @160k + draft  <- live  28804       30914          1693
+    (Qwen3-6-27B-MPT @220k)        28952         —            3655
+
+**The vision spike is 2078 MiB, measured** — an 8.5×11in page at 400 DPI
+(3400×4400), read correctly, 14652 image tokens against the 16384 cap. That is
+well under the ~3.6GB the 3.6 note conservatively reserves.
+
+**Peak is context-INDEPENDENT once loaded**, which is what made 1693 MiB
+acceptable rather than alarming. Worst case actually run — 128063 prompt tokens
+(a 128k distractor log) WITH the same 400 DPI page — peaked at 30932 MiB, 1675
+MiB free: 18 MiB below the small-prompt peak, i.e. noise. KV is preallocated at
+n_ctx and compute buffers are sized by `--batch-size`, so a long prompt does not
+raise the ceiling; it is paid at load. It read the invoice correctly with 128k of
+noise in front of the image.
+
+**ramUsage stays 31GB and that is correct** — admission charges PeakMiB (box1's
+"QUOTE PEAKS, NOT BASES"), and measured peak is 30932 MiB ≈ 30.2GB. Comparing it
+to the 28804 idle would be the exact error that note exists to prevent.
+
+**A correction worth keeping:** the UD-Q4_K_XL move was predicted to leave *more*
+headroom than 3.6. It did not — 3459 vs 3655 MiB. The process-size prediction was
+near-exact (28499 vs 28548 actual); the headroom claim was wrong because ~810 MiB
+of card overhead sits outside the process and was folded into the wrong side.
 
 **Sampling is a DEFAULT, not a policy** (settled 2026-08-14). llama.cpp reads
 `chat_template_kwargs.enable_thinking` per request and overrides `--reasoning`
