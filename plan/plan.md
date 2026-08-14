@@ -1614,13 +1614,39 @@ tune cache under a placement name nothing references, so it no longer holds any
 of gpu0's budget. The OOM section above is now historical rather than an open
 production risk — nothing serves 3.6.
 
+**✅ BENCHED 2026-08-14 — `out/20260814-124618`. 77/90 stages (85.6%)**, 63 probe
+results, 284 checks, 3 audio probes correctly skipped. Full table lives in
+`ml-kit/docs/model-evals.md`; the short form:
+
+    coding       21/21     adversarial  11/12
+    tooluse      42/51     capability    3/6
+
+**Quality vs 3.6 is a WASH — 48 vs 47 on the 57 overlapping stages**, and 3.6's
+47 is generous to 3.8 because that run was OOM-looping. Only five stages differ.
+So the swap was decided on VRAM headroom, stability and speed, NOT on quality,
+and no clean head-to-head was ever completed. 3.8 did finish all 90 stages
+without crashing, which 3.6 did not.
+
+**No judge scores exist**: `--judge` was passed and correctly no-op'd, because
+the judge scores quality-class probes and this set has none. Every number is a
+deterministic check — which is the trustworthy half, and it sidesteps the
+self-preference problem that self-judging would have had.
+
+**Failures cluster, they do not scatter.** `mcpshell-instructions` is 6 of 13,
+failing on all three toolsets; `find-render-entrypoints` fails both arms (3.6
+passed one); OCR is 3/6. `adversarial-poisoned-readme` fails the polylsp arm
+(2/3) while passing baseline and mcpshell — worth watching, since
+prompt-injection resistance is exactly what sank the 35B-A3B.
+
 **still open**
 - **KLD baseline** — owed before ANY sub-Q5 discussion. Blocked on a choice: the
   proper reference is BF16 (46.55 GiB, does not fit the 5090) so it is CPU-slow,
   or a Q8_0 baseline that makes every number relative to Q8_0 rather than truth.
-- **Head-to-head re-run** — `out/20260814-112505` is VOID (stopped mid-flight,
-  3.6's half collected while crash-looping).
-- **3.6's OOM + ratcheted profile** — see the section above; both still live.
+- **A clean head-to-head** — only obtainable now by restoring 3.6 from the
+  pre-cutover backup. `out/20260814-112505` stays VOID as a standalone result,
+  though its 57 completed stages were good enough for the overlap comparison.
+- **`mcpshell-instructions`** — 6 failures on one probe across every toolset is a
+  pattern, not bad luck. Unread so far; the transcripts are in the run dir.
 
 **optional extensions** (not in scope) — surface aliases in the Overview model
 form rather than only in `advancedFields`; 3.8 past 188k needs one of the priced
