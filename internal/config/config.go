@@ -40,6 +40,13 @@ type Config struct {
 	// CostPerKwh converts local energy → $ (cost model, P6).
 	CostPerKwh float64 `yaml:"costPerKwh,omitempty"`
 
+	// Limits budget the WHOLE box, whatever the caller or backend. The
+	// blast-radius guard: "this machine never spends more than $50/day
+	// regardless of what is misconfigured below". Every narrower scope can be
+	// got wrong — a template that multiplies, a provider added without a cap —
+	// and this is the one that cannot be routed around.
+	Limits LimitSet `yaml:"limits,omitempty"`
+
 	// CommandCosts maps a backend `type` to its cost parameters.
 	CommandCosts map[string]map[string]any `yaml:"commandCosts,omitempty"`
 
@@ -239,6 +246,11 @@ type Provider struct {
 	// implicit credential using the provider's own proxy headers, which is
 	// every config written before this existed — see CredentialList.
 	Credentials []Credential `yaml:"credentials,omitempty"`
+
+	// Limits budget every credential of this provider TOGETHER: "all my
+	// OpenRouter keys combined stay under $X". A per-credential budget cannot
+	// express that, and N per-credential budgets multiply instead of capping.
+	Limits LimitSet `yaml:"limits,omitempty"`
 
 	// Discover contributes models from the provider's own catalog instead of a
 	// hand-written list. `provides` is a static declaration; this is the same
@@ -803,6 +815,40 @@ func (c Candidate) QuotaKey() string {
 		return c.Name
 	}
 	return c.Credential.ScopeKey(c.Model.ProviderName)
+}
+
+// GlobalScopeKey is the budget identity of the whole box.
+const GlobalScopeKey = "*"
+
+// ProviderScopeKey is a provider's joint budget across all its credentials.
+func ProviderScopeKey(provider string) string { return "prov:" + provider }
+
+// QuotaScopes lists every budget this candidate is charged against and gated
+// on, narrowest first.
+//
+// A request consumes from ALL of them and is refused if ANY is exhausted,
+// which is what makes the cascade a cascade rather than four independent
+// counters: a credential under its own cap still cannot spend past its
+// provider's, and nothing can spend past the box's.
+//
+// Only scopes that EXIST are returned — a config declaring no global limit does
+// not get a global counter — so the cost is proportional to what was asked for.
+func (c Candidate) QuotaScopes(cfg *Config) []string {
+	out := []string{c.Name} // the model's own budget, which predates all of this
+	if c.Credential != nil {
+		out = append(out, c.Credential.ScopeKey(c.Model.ProviderName))
+		if cfg != nil && c.Model.ProviderName != "" {
+			if ext, ok := cfg.Extensions[c.Model.Extension]; ok {
+				if pv, ok := ext.Providers[c.Model.ProviderName]; ok && len(pv.Limits) > 0 {
+					out = append(out, ProviderScopeKey(c.Model.ProviderName))
+				}
+			}
+		}
+	}
+	if cfg != nil && len(cfg.Limits) > 0 {
+		out = append(out, GlobalScopeKey)
+	}
+	return out
 }
 
 // Target resolves where this candidate forwards, with its credential's headers

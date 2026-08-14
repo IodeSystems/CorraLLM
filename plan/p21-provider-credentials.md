@@ -1,6 +1,6 @@
 # P21 — Provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Status: **P21a, P21b, P21f shipped; P21c–e, P21g not started.** Pointer from §6 roadmap in plan.md.
+Status: **P21a–d + P21f shipped; P21e/e2/e3 + P21g not started.** Pointer from §6 roadmap in plan.md.
 Supersedes the single-credential assumption in `p16-free-aggregator.md` §4.
 
 > This is a design doc, not a changelog. It states the problem, the shape of the
@@ -399,9 +399,20 @@ Plumbing exists; the provider-shaped view does not.
     KNOWN: `SetLimits` runs at proxy construction only, so a credential added by
     a live config edit needs a restart to register. Pre-existing — per-model
     freeTier limits behave the same way.
-- **P21c** Scope cascade (§4) — charge/gate over model+credential+provider+global.
-  Deletes the per-model-only assumption P20 shipped.
-- **P21d** ACL (§5) in the candidate filter.
+- ✅ **P21c** Scope cascade (§4). `Candidate.QuotaScopes(cfg)` returns the
+  budgets a request answers to, narrowest first; it is charged against ALL of
+  them and refused if ANY is exhausted. Only DECLARED scopes appear, so cost is
+  proportional to what was configured. Provider limits (`providers.<p>.limits`)
+  and a box-wide guard (top-level `limits:`) are new; the ledger keys on strings
+  and did not change. Verified live: two credentials at $10/$50 bounded jointly
+  by their provider at $100 — which per-credential budgets alone cannot express,
+  and N of them multiply rather than cap.
+- ✅ **P21d** ACL (§5): `filterByCredential` sits beside filterByPaused/
+  filterByQuota so it composes with the walk. Unlike filterByQuota it does NOT
+  fall back to the unfiltered list when everything is dropped — an exhausted
+  budget is temporary and serving anyway is arguable, a permission is not.
+  Applied BEFORE the budget filter, so an exhausted-but-permitted account cannot
+  mask a forbidden one.
 - **P21e** Per-credential discovery + roster keying (§6).
 - **P21e2** Model approval state + `approvalRequired` policy (§7). Follows P21e
   because approval is per credential and needs the per-credential roster.

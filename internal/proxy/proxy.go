@@ -245,6 +245,8 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 	}
 	// Credential budgets are registered per (provider, credential) rather than
 	// per model: one key is one budget however many of its models get routed to.
+	// Provider and global budgets sit above them in the same ledger — it does
+	// not care what a key means, so the cascade is a loop, not a new mechanism.
 	for _, ext := range cfg.Extensions {
 		for pn, pv := range ext.Providers {
 			for _, cr := range pv.Credentials {
@@ -252,7 +254,13 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 					p.quota.SetLimits(cr.ScopeKey(pn), cr.Limits)
 				}
 			}
+			if len(pv.Limits) > 0 {
+				p.quota.SetLimits(config.ProviderScopeKey(pn), pv.Limits)
+			}
 		}
+	}
+	if len(cfg.Limits) > 0 {
+		p.quota.SetLimits(config.GlobalScopeKey, cfg.Limits)
 	}
 	return p
 }
@@ -531,6 +539,18 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Permission before budget: refusing a caller a credential it may not use is
+	// not a capacity question, and gating on budget first would let an
+	// exhausted-but-permitted account mask a forbidden one.
+	if kept := p.filterByCredential(cands, key); len(kept) == 0 {
+		http.Error(w, "no permitted credential for this key", http.StatusServiceUnavailable)
+		p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
+			Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
+			Error: "no permitted credential", ReqBody: reqBody})
+		return
+	} else {
+		cands = kept
+	}
 	cands = p.filterByQuota(cands)
 	topQuality := config.MaxQuality(cands)
 	ordered := orderCandidates(cands, p.nextRR(served))
@@ -705,7 +725,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			// not offered — the client subtracts these from its own total, which
 			// works for streaming and non-streaming alike.
 			setTimingHeaders(resp.Header, queuedMS, loadMS, time.Since(upstreamStart).Milliseconds())
-			p.quota.ObserveResponse(cand.QuotaKey(), resp.StatusCode, resp.Header)
+			for _, sc := range cand.QuotaScopes(p.config()) {
+				p.quota.ObserveResponse(sc, resp.StatusCode, resp.Header)
+			}
 			if isFree && isHardFail(resp.StatusCode) {
 				hardFailStatus = resp.StatusCode
 				p.quota.MarkDown(name) // exponential backoff lives in the ledger
@@ -804,10 +826,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// the response has been read, its tokens counted and priced. A backend
 		// with no usd window is a no-op, so this runs unconditionally.
 		if p.quota != nil && costUSD > 0 {
-			// cand.QuotaKey(), not name: spend belongs to the ACCOUNT that paid
-			// for it. Charging the served model would split one key's spend
-			// across every model routed through it.
-			p.quota.Charge(cand.QuotaKey(), config.DimUSD, costUSD)
+			// Every scope the candidate answers to: the model, its credential,
+			// that credential's provider, and the box. Spend belongs to the
+			// account that paid for it AND counts against everything above it.
+			for _, sc := range cand.QuotaScopes(p.config()) {
+				p.quota.Charge(sc, config.DimUSD, costUSD)
+			}
 		}
 
 		// Prometheus: meter the served request — provider×model with per-class
@@ -1291,13 +1315,43 @@ func (p *Proxy) filterByPaused(cands []config.Candidate) []config.Candidate {
 	return kept
 }
 
+// filterByCredential drops candidates whose credential this caller may not use.
+//
+// Beside filterByPaused/filterByQuota rather than a new exit, so it composes
+// with the existing walk: a caller with no permitted credential on one provider
+// falls through to the next backend exactly as an exhausted budget does.
+//
+// Unlike filterByQuota this does NOT fall back to the unfiltered list when
+// everything is dropped. An exhausted budget is a temporary state where serving
+// anyway is arguably better than failing; a permission is not. If nothing is
+// permitted the walk ends and the caller gets the same "no backend" answer as
+// any other empty candidate set.
+func (p *Proxy) filterByCredential(cands []config.Candidate, key string) []config.Candidate {
+	kept := make([]config.Candidate, 0, len(cands))
+	for _, c := range cands {
+		if c.Credential == nil || c.Credential.AllowsKey(key) {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
 func (p *Proxy) filterByQuota(cands []config.Candidate) []config.Candidate {
 	if p.quota == nil {
 		return cands
 	}
 	kept := make([]config.Candidate, 0, len(cands))
 	for _, c := range cands {
-		if p.quota.Available(c.QuotaKey()) {
+		// Every scope must have room. A credential under its own cap still
+		// cannot spend past its provider's, and nothing past the box's.
+		ok := true
+		for _, sc := range c.QuotaScopes(p.config()) {
+			if !p.quota.Available(sc) {
+				ok = false
+				break
+			}
+		}
+		if ok {
 			kept = append(kept, c)
 		}
 	}

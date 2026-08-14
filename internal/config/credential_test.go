@@ -347,3 +347,119 @@ func TestQuotaKeyFallsBackToModel(t *testing.T) {
 		t.Errorf("QuotaKey = %q, want the served name — persisted counters key on it", got)
 	}
 }
+
+// cfgCascade builds a config with budgets at several scopes at once.
+func cfgCascade(t *testing.T, providerLimits, globalLimits string) *Config {
+	t.Helper()
+	src := `
+` + globalLimits + `
+extensions:
+  free:
+    providers:
+      openrouter:
+        proxy: {host: openrouter.ai, port: 443}
+        provides:
+          m: {type: chat, upstream: vendor/m}
+` + providerLimits + `
+        credentials:
+          - name: personal
+            limits: [{usd: 10, per: month}]
+`
+	var c Config
+	if err := yaml.Unmarshal([]byte(src), &c); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.resolveExtensions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return &c
+}
+
+// TestQuotaScopesCascade: a request answers to its model, its credential, that
+// credential's provider, and the box — narrowest first.
+func TestQuotaScopesCascade(t *testing.T) {
+	c := cfgCascade(t, "        limits: [{usd: 100, per: month}]", "limits: [{usd: 500, per: day}]")
+	cands, ok := c.ResolveServed("openrouter-m")
+	if !ok || len(cands) != 1 {
+		t.Fatalf("resolve failed: %d candidates", len(cands))
+	}
+	got := cands[0].QuotaScopes(c)
+	want := []string{"openrouter-m", "cred:openrouter/personal", "prov:openrouter", "*"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("QuotaScopes = %v, want %v", got, want)
+	}
+}
+
+// TestQuotaScopesOnlyWhatExists: a scope with no declared budget gets no
+// counter, so the cost is proportional to what was actually asked for.
+func TestQuotaScopesOnlyWhatExists(t *testing.T) {
+	c := cfgCascade(t, "", "") // no provider limit, no global limit
+	cands, _ := c.ResolveServed("openrouter-m")
+	got := cands[0].QuotaScopes(c)
+	want := []string{"openrouter-m", "cred:openrouter/personal"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("QuotaScopes = %v, want %v — undeclared scopes must not appear", got, want)
+	}
+}
+
+// TestQuotaScopesWithoutCredentials: the pre-P21 shape still charges its model,
+// plus the global guard when one is declared.
+func TestQuotaScopesWithoutCredentials(t *testing.T) {
+	var c Config
+	if err := yaml.Unmarshal([]byte(`
+limits: [{usd: 50, per: day}]
+models:
+  plain: {proxy: 9000, type: chat}
+`), &c); err != nil {
+		t.Fatal(err)
+	}
+	cands, _ := c.ResolveServed("plain")
+	got := cands[0].QuotaScopes(&c)
+	want := []string{"plain", "*"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("QuotaScopes = %v, want %v", got, want)
+	}
+}
+
+// TestGlobalScopeIsUnroutable-around: the box-wide guard exists precisely
+// because every narrower scope can be got wrong. It must appear for a
+// credential-backed candidate too, not just a plain model.
+func TestGlobalScopeAppliesToCredentialCandidates(t *testing.T) {
+	c := cfgCascade(t, "", "limits: [{usd: 50, per: day}]")
+	cands, _ := c.ResolveServed("openrouter-m")
+	scopes := cands[0].QuotaScopes(c)
+	if scopes[len(scopes)-1] != GlobalScopeKey {
+		t.Errorf("global scope missing from %v", scopes)
+	}
+}
+
+// TestACLAllowlistSemantics: absent allow = open, present = allowlist only.
+// Verified on the resolved candidates, since that is where the filter reads it.
+func TestACLAllowlistSemantics(t *testing.T) {
+	c := cfgWithCredentials(t, `
+        credentials:
+          - name: open
+          - name: gated
+            allow: [aw3]
+`)
+	cands, _ := c.ResolveServed("openrouter-m")
+	if len(cands) != 2 {
+		t.Fatalf("want 2 candidates, got %d", len(cands))
+	}
+	byName := map[string]Credential{}
+	for _, cd := range cands {
+		byName[cd.Credential.Name] = *cd.Credential
+	}
+	if !byName["open"].AllowsKey("anyone") {
+		t.Error("a credential with no allow list must serve every caller")
+	}
+	if !byName["gated"].AllowsKey("aw3") {
+		t.Error("listed caller must be permitted")
+	}
+	if byName["gated"].AllowsKey("life-raglit") {
+		t.Error("unlisted caller must be refused — allowlist, not denylist")
+	}
+}
