@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -525,6 +526,27 @@ type Model struct {
 	// one Process would pool their admission slots for no reason.
 	ExtensionHosted bool `yaml:"-"`
 
+	// Aliases are ADDITIONAL served names that resolve to this model. They exist
+	// for version cutovers: a caller that hardcodes last quarter's model id keeps
+	// working while the id it names starts meaning the new model.
+	//
+	// An alias resolves to the CANONICAL name, unlike a glob template which keeps
+	// the requested id. The difference is not cosmetic. A glob's members are
+	// distinct remote models that merely share a spelling, so each deserves its
+	// own metrics row; an alias is a second name for one process holding one
+	// reservation, and letting it carry the requested name would split residency
+	// and pool accounting across two ids for memory allocated exactly once —
+	// the same mistake the Extensions comment above was written about.
+	//
+	// Aliases may not shadow a model or lane name (Validate rejects it). That is
+	// not a limitation so much as the reason the feature is coherent: resolution
+	// returns on an exact Models hit, so an alias colliding with a live model
+	// would never fire, and a silently dead alias during a cutover is worse than
+	// a load error. To hand an old id to a new model, RENAME the old entry — the
+	// old model stays pinnable under its new name, and rollback is moving one
+	// alias line between two entries.
+	Aliases []string `yaml:"aliases,omitempty"`
+
 	// Upstream is the model id the BACKEND knows this model by, when that differs
 	// from the served name. corrallm is the naming authority — renaming the four
 	// oidio models to oidio-* is a corrallm decision — but oidio still serves them
@@ -976,6 +998,19 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	}
 	if m, ok := c.Models[served]; ok {
 		return c.expandCredentials([]Candidate{{Name: served, Model: m}}), true
+	}
+	// An alias is a declared, exact, hand-written name, so it outranks both a
+	// discovered id and a glob. It yields the CANONICAL name, not the requested
+	// one, so residency and metrics stay on one id — see Model.Aliases.
+	//
+	// Linear over Models rather than a prebuilt index: Validate guarantees at
+	// most one model claims any given alias, the map is small and static after
+	// load, and the glob branch below already walks it. An index here would need
+	// invalidating against discovery for no measurable gain.
+	for canonical, m := range c.Models {
+		if slices.Contains(m.Aliases, served) {
+			return c.expandCredentials([]Candidate{{Name: canonical, Model: m}}), true
+		}
 	}
 	// Discovered models sit between the declared set and the glob templates: a
 	// hand-written model still wins, but a concrete discovered id beats a
@@ -1840,6 +1875,40 @@ func (c *Config) Validate() error {
 			if _, ok := c.Models[mem.Model]; !ok {
 				return fmt.Errorf("lane %q member %d: unknown model %q", name, i, mem.Model)
 			}
+		}
+	}
+	// Aliases are checked after models AND lanes, because an alias can collide
+	// with either. Sorted so a config with two faults always reports the same
+	// one — map order would otherwise make the error flap between loads and
+	// send an operator chasing a moving target mid-cutover.
+	claimedBy := make(map[string]string, len(c.Models))
+	modelNames := make([]string, 0, len(c.Models))
+	for name := range c.Models {
+		modelNames = append(modelNames, name)
+	}
+	sort.Strings(modelNames)
+	for _, name := range modelNames {
+		for _, a := range c.Models[name].Aliases {
+			switch {
+			case a == "":
+				return fmt.Errorf("model %q: empty alias", name)
+			case strings.Contains(a, "*"):
+				// Only a MODEL KEY may glob; alias matching is exact, so a
+				// starred alias would load clean and silently never match.
+				return fmt.Errorf("model %q: alias %q may not contain '*' (only a model key can be a glob template)", name, a)
+			case a == name:
+				return fmt.Errorf("model %q: alias %q repeats the model's own name", name, a)
+			}
+			if _, clash := c.Models[a]; clash {
+				return fmt.Errorf("model %q: alias %q collides with a model (rename that model; resolution returns on an exact model hit, so the alias would never fire)", name, a)
+			}
+			if _, clash := c.Lanes[a]; clash {
+				return fmt.Errorf("model %q: alias %q collides with a lane (a lane is resolved first, so the alias would never fire)", name, a)
+			}
+			if prev, dup := claimedBy[a]; dup {
+				return fmt.Errorf("model %q: alias %q already claimed by model %q", name, a, prev)
+			}
+			claimedBy[a] = name
 		}
 	}
 	for key, grp := range c.Keys {

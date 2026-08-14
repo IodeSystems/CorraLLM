@@ -1636,7 +1636,7 @@ type ModelDef struct {
 	MaxTokens         int     `json:"maxTokens" doc:"max_tokens clamp when degraded onto (0 = none)."`
 	Cmd               string  `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
 	Notes             string  `json:"notes" doc:"Free text kept with this model — why it is configured the way it is. Carried in config and editable in the dashboard."`
-	Upstream          string  `json:"upstream" doc:"The id the BACKEND knows this model by, when it differs from the served name (the alias). Empty means the backend uses the served name."`
+	Upstream          string  `json:"upstream" doc:"The id the BACKEND knows this model by, when it differs from the served name. Empty means the backend uses the served name. Outbound only — the inbound counterpart is 'aliases', which are extra names CALLERS may use for this model."`
 	// Pause state rides on the model definition rather than on the residency
 	// snapshot because a paused model has no process to snapshot — that is the
 	// whole point of it — and would therefore be invisible there.

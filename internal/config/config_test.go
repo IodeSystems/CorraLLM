@@ -50,6 +50,81 @@ func TestResolveServed(t *testing.T) {
 	}
 }
 
+// TestResolveServedAlias: an alias resolves to the CANONICAL name (not the
+// requested one, unlike a glob), and outranks a glob template that also matches.
+func TestResolveServedAlias(t *testing.T) {
+	c := &Config{
+		Models: map[string]Model{
+			"new":    {Quality: 2, Cmd: "x", Server: "s", Aliases: []string{"legacy-id", "older-id"}},
+			"qwen-*": {Quality: 1},
+		},
+	}
+	for _, served := range []string{"legacy-id", "older-id"} {
+		cands, ok := c.ResolveServed(served)
+		if !ok || len(cands) != 1 {
+			t.Fatalf("alias %q: ok=%v n=%d, want 1 candidate", served, ok, len(cands))
+		}
+		// The whole point: residency and metrics must land on one id. Carrying
+		// the requested name here would split accounting for one reservation.
+		if cands[0].Name != "new" {
+			t.Errorf("alias %q resolved to %q, want canonical %q", served, cands[0].Name, "new")
+		}
+	}
+	// A hand-written alias beats a wildcard that merely happens to match.
+	c.Models["new"] = Model{Quality: 2, Cmd: "x", Server: "s", Aliases: []string{"qwen-legacy"}}
+	cands, ok := c.ResolveServed("qwen-legacy")
+	if !ok || len(cands) != 1 || cands[0].Name != "new" {
+		t.Errorf("alias vs glob = %+v ok=%v; want canonical new, not the glob", cands, ok)
+	}
+	// An id only the glob matches still reaches the glob, keeping its own name.
+	cands, ok = c.ResolveServed("qwen-other")
+	if !ok || len(cands) != 1 || cands[0].Name != "qwen-other" {
+		t.Errorf("glob fallthrough = %+v ok=%v; want requested name qwen-other", cands, ok)
+	}
+	if _, ok := c.ResolveServed("ghost"); ok {
+		t.Error("unknown served name must not resolve")
+	}
+}
+
+// TestValidateAliases: an alias may not be empty, globbed, self-referential, or
+// shadow a model, a lane, or another model's alias — each case would load clean
+// and then silently never fire.
+func TestValidateAliases(t *testing.T) {
+	base := func(aliases ...string) *Config {
+		return &Config{
+			Models: map[string]Model{
+				"m":     {Proxy: portNode(1234), Aliases: aliases},
+				"other": {Proxy: portNode(1235)},
+			},
+			Lanes: map[string]Lane{"l": {Members: []LaneMember{{Model: "m"}}}},
+		}
+	}
+	if err := base("legacy-id").Validate(); err != nil {
+		t.Fatalf("valid alias rejected: %v", err)
+	}
+	if err := base().Validate(); err != nil {
+		t.Fatalf("absent aliases rejected: %v", err)
+	}
+	for name, alias := range map[string]string{
+		"empty":           "",
+		"glob":            "qwen-*",
+		"self":            "m",
+		"shadows a model": "other",
+		"shadows a lane":  "l",
+	} {
+		if err := base(alias).Validate(); err == nil {
+			t.Errorf("alias %s (%q) must be rejected", name, alias)
+		}
+	}
+	// Two models claiming one alias: only one could ever win, and which one
+	// would depend on map order.
+	c := base("dup")
+	c.Models["other"] = Model{Proxy: portNode(1235), Aliases: []string{"dup"}}
+	if err := c.Validate(); err == nil {
+		t.Error("alias claimed by two models must be rejected")
+	}
+}
+
 // TestLaneMemberScalarYAML: members accept plain string or object form.
 func TestLaneMemberScalarYAML(t *testing.T) {
 	var lane Lane
