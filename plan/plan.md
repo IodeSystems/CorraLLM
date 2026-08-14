@@ -1456,15 +1456,39 @@ prediction that the arch changes the KV picture held, but not enough to matter.
 **The third-party MTP draft works:** `draft acceptance = 0.889` (48/54), mean
 accepted len 3.67. Materially de-risks the a4lg dependency.
 
-**✅ SETTLED: Q5_K_M at `-c 160000`.** The operator cut the window to 160k, which
-freed 2290 MiB and is what made the higher quant affordable — the context cut
-bought the quant, not the reverse. Full measured set on this card (32607 MiB):
+**✅ SETTLED: Q5_K_M at `-c 188000`, vision + MTP draft both kept, 88.8 tok/s.**
+Full measured set on this card (32607 MiB):
 
-    quant / ctx                     idle    vision peak   free at peak
-    Q5_K_M @220k + draft           30322         —            1473   rejected
-    UD-Q4_K_XL @160k + draft       27070       29148          3459
-    Q5_K_M @160k + draft  <- live  28804       30914          1693
-    (Qwen3-6-27B-MPT @220k)        28952         —            3655
+    quant / ctx / img-cap            idle   vision peak  free at peak
+    Q5_K_M @220k  draft  16384      30322        —           1473   rejected
+    UD-Q4_K_XL @160k draft 16384    27070      29148         3459
+    Q5_K_M @160k  draft  16384      28804      30914         1693
+    Q5_K_M @176k  draft  16384      29423      31534         1073   UNSAFE
+    Q5_K_M @176k  draft   8192      29423      30526         2081
+    Q5_K_M @188k  draft   8192 <-   29881      30983         1624   LIVE
+    Q5_K_M @200k  NO draft 16384    27239      29318         3289
+    (Qwen3-6-27B-MPT @220k)         28952        —           3655
+
+**KV costs 38.5 MiB per 1k tokens**, consistent across four load points and both
+quants — cache types are fixed (`k q8_0 / v q5_1`), so weight quant does not
+move it. Every derived number here comes off that constant.
+
+**The image cap — not the quant — was the context lever.** `--image-max-tokens`
+sizes the vision spike near-linearly (16384 → 2111 MiB; 8192 → 1103 MiB).
+Halving it bought **28k of context, 160k → 188k, at the same safety margin**,
+keeping Q5_K_M, vision and the draft. No quant drop was needed, and none was
+made — the operator wants KLD numbers before anything below Q5, which is the
+right test and is NOT yet run.
+
+8192 suits the actual workload: `convert.pdf` renders at dpi 200 (~4–5k image
+tokens), so the cap only binds on a directly-attached oversize image, and the
+400 DPI worst case still read its invoice correctly at 8082 tokens. 3.6 keeps
+16384 — per-model choice, not policy.
+
+**`--no-mmproj-offload` tried and REJECTED.** Memory-wise it is perfect — the
+spike leaves VRAM entirely (peak 29200 vs 29199 idle, 3407 MiB free at 200k) —
+but one 400 DPI page did not finish encoding in TEN MINUTES and was cancelled.
+Unusable interactively.
 
 **The vision spike is 2078 MiB, measured** — an 8.5×11in page at 400 DPI
 (3400×4400), read correctly, 14652 image tokens against the 16384 cap. That is
@@ -1495,7 +1519,34 @@ non-thinking numbers; a thinking caller must send the thinking sampler itself,
 because one set of defaults cannot serve both modes and the mismatch degrades
 output silently rather than erroring.
 
-**next** re-measure on UD-Q4_K_XL, then bench head-to-head.
+### ❗ Qwen3-6-27B-MPT CUDA-OOM'd in production (2026-08-14) — needs its own decision
+
+While llm-bench ran the vision probe, the INCUMBENT crashed:
+
+    CUDA error: out of memory   (ggml_cuda_flash_attn_ext_tile_case<72,72>)
+    Aborted (core dumped) — backend exited err="exit status 134"
+
+Its measured footprint ratcheted 29180 → 30898 → **31124 MiB** as the probe ran,
+i.e. ~1483 MiB free on a 32607 MiB card. The config's cold "28952 / 3655 MiB
+free" is simply not what it uses under a 400 DPI page. This is the calibration
+point for every margin above: 1483 MiB was not enough, so 1073 MiB (3.8 @176k
+at cap 16384) is out and 1624 MiB (3.8 @188k) is the floor being accepted.
+
+**Two live consequences, neither yet addressed:**
+1. 3.6 at 220k with `--image-max-tokens 16384` can OOM on a vision request in
+   production. It crash-recovers, but it drops in-flight work when it does.
+2. `PeakMiB` is monotonic BY DESIGN, so 3.6 now permanently claims 31124 MiB of
+   the 31583 MiB pool budget. It will effectively refuse to co-reside with
+   anything from here on — including 3.8 — until that profile is reset.
+
+**blocking decision (USER)** whether to give 3.6 the same 8192 image cap (the
+one-line fix, and the same lever that bought 3.8 its context) and whether to
+clear the ratcheted profile. Not done unilaterally: it changes the incumbent's
+vision fidelity, and the crash is evidence the operator should see first.
+
+**next** re-run the head-to-head (the 2026-08-14 run was stopped mid-flight, and
+3.6's half of it was collected while crash-looping — treat `out/20260814-112505`
+as void), then the KLD baseline before any sub-Q5 discussion.
 
 **throughput is NOT yet comparable.** A single ad-hoc prompt gave 3.8 91.2 tok/s
 against the 136 tok/s recorded for 3.6 in `ml-kit/docs/model-evals.md` — but that
