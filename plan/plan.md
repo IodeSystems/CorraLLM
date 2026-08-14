@@ -1416,6 +1416,58 @@ served. P21f/g wait on this.
 discovery template becomes N independent caps (12 models × $200 = $2,400, not
 $200). P21c fixes it. The live openrouter template carries such a cap today.
 
+### ◐ P22 — Qwen3.8-27B cutover (model aliases) — 2026-08-14
+
+Qwen3.8 shipped 2026-08-03; open weights are **Max (2.4T MoE)** and **27B** only,
+so 27B is both the intended target and the only one that fits the 5090.
+
+**✅ Shipped: `aliases` on a model** (`d4f69ee`). Resolution is now lane → model →
+**alias** → discovered → glob. An alias yields the CANONICAL name, unlike a glob
+which keeps the requested id — a glob's members are distinct models sharing a
+spelling and each earns its own metrics row, but an alias is a second name for
+ONE process holding ONE reservation, and carrying the requested name would split
+residency across two ids for memory allocated once. Validate rejects an alias
+that is empty, globbed, self-referential, or that collides with a model, lane, or
+another alias. The model-collision rule is load-bearing: resolution returns on an
+exact `Models` hit, so a colliding alias could never fire, and a silently dead
+alias mid-cutover is worse than a load error.
+
+**◐ In flight: the model itself.** `Qwen3.8-27B` is in the live config, opt-in by
+name — no lane, no alias — so 3.6 and 3.8 can be compared without one of them
+silently serving `chat`. It runs on 5802 against the same 220k window as 3.6, so
+a comparison measures the model and not the context.
+
+**next** finish the ~19GB pull, load it alone on gpu0, and read back the real VRAM
+figure + a throughput number against 3.6.
+
+**risks**
+- **VRAM is the live one.** 31GB is copied from the 3.6 entry plus an unmeasured
+  MTP head, on a card where 3.6 already sits within ~3.6GB of the ceiling. 3.8 is
+  a hybrid (gated DeltaNet + gated attention, GGUF arch `qwen35`) and DeltaNet
+  layers hold recurrent state rather than KV, so the 220k footprint may not
+  resemble 3.6's in either direction.
+- **Only one 27B can be resident** (31GB reserved of 32.6GB). Any A/B is serial
+  swaps, ~30s declared / ~66s cold — never split traffic.
+- **The MTP draft is third-party.** unsloth published no MTP GGUF for 3.8, so
+  `--spec-draft-hf` points at `a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, unverified beyond
+  loading. Any throughput number is provisional until ml-kit's spec-sweep runs it;
+  dropping the three spec flags leaves a correct, slower model.
+- Arch support was CHECKED, not assumed: `qwen35` is in the pinned tree's arch
+  table and the built `llama-server` is 10380 (`0b1bad14f`, 2026-08-11). No
+  llama.cpp rebuild needed.
+
+**blocking decision (USER)** the cutover itself — three config edits, no code:
+rename `Qwen3-6-27B-MPT` → `Qwen3.6-27B-MTP` (also fixing the MPT/MTP
+transposition it has carried since it was written), add `aliases:
+[Qwen3-6-27B-MPT]` to the 3.8 entry, and repoint the `chat` and `free` lane
+members. Rollback is moving the alias line back. The rename is deferred on
+purpose: it costs the measured profile (filed under the placement name) and
+forces a re-measure, so it is worth paying once, after the decision.
+
+**optional extensions** (not in scope) — surface aliases in the Overview model
+form rather than only in `advancedFields`; raise 3.8 past 220k toward its native
+262144 once the footprint is known.
+
 ### ✅ VRAM measurement: per-device attribution + peak decay (2026-08-12, UNCOMMITTED)
 
 Two fixes to `internal/tune` + `internal/proc`, both found by measuring rather than reading:
@@ -1599,9 +1651,16 @@ user's.
 
 ## 8. Deployment (production cutover)
 
-corrallm **replaced the llama-swap fork on `:8111`** for the live workload. The deployment lives in
-the **ml-kit** ops repo (sibling), not this code repo:
-- **`ml-kit/corrallm.yaml`** — the production config, translated from `ml-kit/llama-swap.yaml`:
+corrallm **replaced the llama-swap fork on `:8111`** for the live workload.
+
+> **CORRECTION (2026-08-14).** The live config is **`~/.corrallm/config.yml`**, not
+> `ml-kit/corrallm.yaml`. ml-kit was refactored to "the llama.cpp builder, nothing else"
+> (`b72e7f0`) and no longer holds the deployment. The running command is authority:
+> `corrallm serve --config ~/.corrallm/config.yml --web-root <repo>/ui/dist ...`.
+> Everything below still describes the deployment correctly except that path.
+
+The deployment lives outside this code repo:
+- **the production config** — translated from `ml-kit/llama-swap.yaml`:
   two models (`nomic-embed-text` persistent/preloaded; `Qwen3-6-27B-MPT` sticky), absolute
   llama-server paths, fixed ports (5800/5801), fairshare groups (`aw3`→interactive=10,
   `ragtag`→batch=1, default=5), `scheduler.maxWait 60s`/`maxQueueDepth 8`. Pool budget reflects the
