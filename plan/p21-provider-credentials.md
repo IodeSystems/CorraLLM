@@ -262,7 +262,7 @@ backends, because they have different credential access. That is the feature, no
 a bug, but it means "which model answered?" must stay visible per request — see
 the attribution risk in §12.
 
-### ❓ The hard half: discovered models cannot be lane members at all
+### ✅ RESOLVED: membership by selector (option 2)
 
 `config.go:1617` rejects a lane member naming an unknown model:
 
@@ -298,10 +298,34 @@ Three candidate shapes, in ascending order of work:
    requires no engine change — but it churns the managed YAML on every roster
    change, which is exactly what `Pause` refused to do for operational state.
 
-Leaning (2) for discovered models and keeping (1)'s explicit list for pinned
-ones, so the two mechanisms do not compete. **Close this before P21e2** — the
-approval UI's usefulness depends on it, and picking wrong means either a weakened
-validator or a churning config file.
+**DECIDED (2026-08-14): (2), keeping named membership for pinned models**, so
+the two forms do not compete.
+
+    lanes:
+      free:
+        members:
+          - groq-llama-70b            # explicit: keeps its declared position
+          - {provider: openrouter}    # selector: resolves against the live roster
+          - {provider: openrouter, minQuality: 3}   # or a filtered slice
+
+Why not the other two: both make membership a NAME, and a name is exactly what
+keeps disappearing on a roster with `refresh: true`. Tolerating unknown names
+handles churn by going quiet, which is indistinguishable from a typo; having the
+UI rewrite `lanes:` on every refresh puts operational state in the document,
+which is what Pause refused to do. A selector says what is WANTED, so churn
+stops being an event to handle.
+
+A selector expands IN PLACE, so explicit members keep their exact declared
+position and the two forms compose into one ordered ladder. Expansion orders by
+quality descending then name — map iteration order would reshuffle the fallback
+ladder on every restart. Validation skips selectors (the roster is empty at load,
+which is the whole point) but still REJECTS an unknown named member, so the typo
+check the first alternative would have weakened is intact.
+
+STILL TO BUILD (P21e2): per-model lane choice and ordering at approval time. The
+selector is blanket — every model a provider contributes joins. Choosing *which*
+lanes a model joins, and where in the ladder, needs the approval record to hang
+that state on.
 
 ## 9. ✅ RESOLVED: secrets live in ~/.corrallm/credentials
 

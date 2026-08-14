@@ -755,6 +755,65 @@ type Lane struct {
 type LaneMember struct {
 	Model  string  `yaml:"model"`
 	Sticky *Sticky `yaml:"sticky,omitempty"`
+
+	// Provider makes this member a SELECTOR rather than a name: every model
+	// contributed by that provider joins the lane, resolved against the live
+	// roster instead of the set that happened to exist at config load.
+	//
+	// Named membership cannot express a DISCOVERED model at all. Membership is
+	// validated at load; discovery runs later on the refresh loop, so a
+	// discovered id is always "unknown" when the check runs — which is why the
+	// live config carries the note "OpenRouter's discovered models are not [lane
+	// members] ... pin those by name".
+	//
+	// The two alternatives both make membership a NAME, and a name is exactly
+	// what keeps disappearing on a roster with `refresh: true`. Tolerating
+	// unknown names handles churn by going quiet, which is indistinguishable
+	// from a typo; having the UI rewrite `lanes:` on every refresh puts
+	// operational state in the document, which is what Pause refused to do. A
+	// selector says what is WANTED, so churn stops being an event to handle.
+	Provider string `yaml:"provider,omitempty"`
+
+	// MinQuality drops contributed models below this rank, so a selector does
+	// not have to accept everything a provider happens to publish.
+	MinQuality float64 `yaml:"minQuality,omitempty"`
+}
+
+// IsSelector reports whether this member resolves against the roster rather
+// than naming one model.
+func (lm LaneMember) IsSelector() bool { return lm.Model == "" && lm.Provider != "" }
+
+// selectorMembers expands one selector into concrete candidates.
+//
+// Ordered by quality descending, then name, so the lane's walk is deterministic
+// across restarts and across a roster that gained or lost entries — an
+// expansion whose order depended on map iteration would reshuffle the fallback
+// ladder on every boot.
+func (c *Config) selectorMembers(lm LaneMember) []Candidate {
+	var out []Candidate
+	add := func(name string, m Model) {
+		if m.ProviderName != lm.Provider || m.Quality < lm.MinQuality {
+			return
+		}
+		out = append(out, Candidate{Name: name, Model: m, Sticky: lm.Sticky})
+	}
+	for name, m := range c.Models {
+		add(name, m)
+	}
+	c.mu.RLock()
+	for name, m := range c.discovered {
+		if _, declared := c.Models[name]; !declared {
+			add(name, m)
+		}
+	}
+	c.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Model.Quality != out[j].Model.Quality {
+			return out[i].Model.Quality > out[j].Model.Quality
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 // UnmarshalYAML lets a member be a scalar model name or the object form.
@@ -900,6 +959,13 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	if lane, ok := c.Lanes[served]; ok {
 		cands := make([]Candidate, 0, len(lane.Members))
 		for _, mem := range lane.Members {
+			if mem.IsSelector() {
+				// Explicit members keep their exact declared position; a
+				// selector expands in place, so the two forms compose in one
+				// ordered ladder rather than competing.
+				cands = append(cands, c.selectorMembers(mem)...)
+				continue
+			}
 			m, ok := c.Models[mem.Model]
 			if !ok {
 				continue
@@ -1760,8 +1826,16 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("lane %q: no members", name)
 		}
 		for i, mem := range lane.Members {
+			if mem.IsSelector() {
+				// Deliberately NOT checked against the roster: the roster is
+				// empty at load and fills on the refresh loop, which is the
+				// whole reason this form exists. A selector matching nothing
+				// contributes nothing, exactly like a provider that has not
+				// refreshed yet.
+				continue
+			}
 			if mem.Model == "" {
-				return fmt.Errorf("lane %q member %d: empty model name", name, i)
+				return fmt.Errorf("lane %q member %d: needs a model name or a provider selector", name, i)
 			}
 			if _, ok := c.Models[mem.Model]; !ok {
 				return fmt.Errorf("lane %q member %d: unknown model %q", name, i, mem.Model)
