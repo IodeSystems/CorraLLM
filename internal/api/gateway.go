@@ -331,20 +331,28 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.SetSecret)
 
 	gat.Register(humaAPI, g, huma.Operation{
-		OperationID: "listApprovals",
+		OperationID: "listSelections",
 		Method:      http.MethodGet,
-		Path:        "/api/v1/approvals",
-		Summary:     "Every approval decision, plus the discovered models still awaiting one.",
+		Path:        "/api/v1/selections",
+		Summary:     "Every model assigned off a provider's directory, with its lane and priority.",
 		Tags:        []string{"config"},
-	}, h.ListApprovals)
+	}, h.ListSelections)
 
 	gat.Register(humaAPI, g, huma.Operation{
-		OperationID: "decideApproval",
+		OperationID: "assignModel",
 		Method:      http.MethodPost,
-		Path:        "/api/v1/approvals/decide",
-		Summary:     "Approve or reject a discovered model on one credential, with the lanes and position it should take.",
+		Path:        "/api/v1/selections",
+		Summary:     "Select a model off a provider's directory, optionally into a lane at a priority. Idempotent — re-assigning moves it.",
 		Tags:        []string{"config"},
-	}, h.DecideApproval)
+	}, h.AssignModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "unassignModel",
+		Method:      http.MethodDelete,
+		Path:        "/api/v1/selections",
+		Summary:     "Drop a selection. For a directory-chosen model this takes it out of service; for a placement-only row it drops the lane placement.",
+		Tags:        []string{"config"},
+	}, h.UnassignModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "pauseModel",

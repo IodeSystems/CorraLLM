@@ -1394,11 +1394,13 @@ the BackpressureError shape we already validated.
 
 ### ◐ P21 — provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Design doc: **`plan/p21-provider-credentials.md`**. **P21a–h shipped** (this
+Design doc: **`plan/p21-provider-credentials.md`**. **P21a–i shipped** (this
 heading said "Not started" long after they were; the design doc's status list is
-the accurate one). Latest: **P21h** (2026-08-15) — provider presets, an
-add-provider modal with a typeahead, live catalogue browsing per credential, and
-models picked off a catalogue by hand rather than admitted by a filter.
+the accurate one). Latest: **P21i** (2026-08-15) — **approvals are gone**. One
+concept now: you browse a provider's directory and ASSIGN models, optionally
+into a lane at a priority. No queue, no pending/approved/rejected, no
+`approvalRequired`. A discover filter still exists for the bulk case, but the
+large-catalogue presets default to choosing by hand.
 
 **next** P21c (budget granularity — the `usd` note below is still live).
 **risks** the preset table's basePaths were probed once, on 2026-08-15; a vendor
@@ -1408,6 +1410,11 @@ browser prints the URL it tried, which is the intended cure.
 discovery loop does; a credential using `authTokenCommand` reports that it
 cannot be browsed rather than sending an unauthenticated request and blaming the
 endpoint.
+**open (USER)** the live `openrouter` provider still auto-imports its top 12 free
+models by filter. Left as-is deliberately: switching it to hand-picked
+un-serves those 12 (they are the `free` lane's members) until models are chosen
+to replace them. Do it from Providers → Edit → "Pick models by hand" once the
+replacements are assigned.
 
 Completes the P16 insight the implementation shortcut — *"free quota is enforced
 per ACCOUNT ... across multiple accounts of the same provider"* — by making

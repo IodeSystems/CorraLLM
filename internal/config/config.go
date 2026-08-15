@@ -116,13 +116,16 @@ type Config struct {
 	// offer a model on a credential that cannot serve it, and every request
 	// routed there would 404. model → set of credential names.
 	discoveredBy map[string]map[string]bool
-	// approvals gates which DISCOVERED models may serve, and carries the lane
-	// placement chosen when each was approved. Keyed by ApprovalKey.
-	approvals map[string]ApprovalView
-	// picks are models chosen by hand from a provider's catalogue, re-applied
-	// into `discovered` after every refresh replaces it. See pick.go for why
-	// they share that overlay rather than living beside it.
-	picks []Pick
+	// selections are the models an operator chose off a provider's directory,
+	// with where they put them. See selection.go for why they share the
+	// discovered overlay rather than living beside it.
+	selections []Selection
+	// fetched is what each refresh last contributed, keyed
+	// provider\x00credential. Kept SEPARATELY from `discovered` because
+	// `discovered` is a derived union of this and the selections, and a union
+	// cannot be un-merged: without the inputs there was no way to withdraw one
+	// contributor without also withdrawing the other's.
+	fetched map[string]map[string]Model
 }
 
 // SetDiscovered replaces the models contributed by one provider. Replacing
@@ -147,47 +150,51 @@ func (c *Config) SetDiscovered(provider string, models map[string]Model) {
 func (c *Config) SetDiscoveredFor(provider, credential string, models map[string]Model) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.discovered == nil {
-		c.discovered = map[string]Model{}
+	if c.fetched == nil {
+		c.fetched = map[string]map[string]Model{}
 	}
-	if c.discoveredBy == nil {
-		c.discoveredBy = map[string]map[string]bool{}
-	}
-	// Retract only what THIS credential previously contributed. A sibling's
-	// entry must survive, or two credentials refreshing in turn would each
-	// erase the other's models.
-	for name, m := range c.discovered {
-		if m.ProviderName != provider {
-			continue
-		}
-		if by := c.discoveredBy[name]; by != nil {
-			delete(by, credential)
-			if len(by) == 0 {
-				delete(c.discoveredBy, name)
-				delete(c.discovered, name)
-			}
-		}
-	}
-	for name, m := range models {
-		// A declared model always wins: discovery must never silently redefine
-		// something the operator wrote down.
-		if _, static := c.Models[name]; static {
-			continue
-		}
-		c.discovered[name] = m
-		if c.discoveredBy[name] == nil {
-			c.discoveredBy[name] = map[string]bool{}
-		}
-		c.discoveredBy[name][credential] = true
-	}
-	// Hand-picked models are contributed by the same overlay this just
-	// replaced, so they have to be put back. Without this a model approved off
-	// the catalogue would disappear at the next refresh — within minutes, and
-	// looking exactly like the provider had dropped it.
-	c.applyPicksLocked(provider, credential)
+	c.fetched[provider+"\x00"+credential] = models
+	c.rebuildDiscoveredLocked()
 }
 
-// DiscoveredServableBy is the exported form, for the approval queue.
+// rebuildDiscoveredLocked recomputes the runtime overlay from its two inputs:
+// what refreshes fetched, and what the operator selected.
+//
+// A full rebuild rather than an incremental patch, because `discovered` is a
+// UNION and a union cannot be un-merged. Withdrawing one contributor
+// incrementally means knowing which of them put each entry there, and getting
+// that bookkeeping subtly wrong is invisible — it looks like a model that
+// stayed a bit too long, or vanished a bit too early. Recomputing is a few
+// hundred map writes on a path that runs at refresh interval, and it is
+// obviously correct.
+//
+// Requires c.mu held for writing.
+func (c *Config) rebuildDiscoveredLocked() {
+	c.discovered = make(map[string]Model, len(c.discovered))
+	c.discoveredBy = make(map[string]map[string]bool, len(c.discoveredBy))
+	for key, models := range c.fetched {
+		credential := key[strings.Index(key, "\x00")+1:]
+		for name, m := range models {
+			// A declared model always wins: discovery must never silently
+			// redefine something the operator wrote down.
+			if _, static := c.Models[name]; static {
+				continue
+			}
+			c.discovered[name] = m
+			if c.discoveredBy[name] == nil {
+				c.discoveredBy[name] = map[string]bool{}
+			}
+			c.discoveredBy[name][credential] = true
+		}
+	}
+	// Selections go on top: a chosen model outranks the same name arriving from
+	// a filter, because the operator named an exact upstream id and the filter
+	// only matched a pattern.
+	c.applySelectionsLocked()
+}
+
+// DiscoveredServableBy reports whether a discovered model is reachable with the
+// named credential.
 func (c *Config) DiscoveredServableBy(model, credential string) bool {
 	return c.discoveredServableBy(model, credential)
 }
@@ -329,15 +336,18 @@ type Provider struct {
 	Discover *Discover `yaml:"discover,omitempty"`
 
 	// Manual declares that this provider's models are chosen ONE AT A TIME from
-	// its catalogue (see pick.go) rather than admitted by a filter or written
-	// out in `provides`.
+	// its directory (see selection.go) rather than admitted by a filter or
+	// written out in `provides`.
+	//
+	// This is the right setting for a provider with a large catalogue — nobody
+	// wants OpenRouter's four hundred models enrolled by a filter that guessed.
 	//
 	// It is a flag rather than an inference because the alternative is to stop
 	// rejecting providers that contribute nothing, and "contributes no models"
 	// catches a real class of typo — a provider block that was half-written.
 	// Writing the intent down keeps that check while making the third way of
-	// contributing legal. Nothing reads it at runtime: the picks do the work,
-	// and this only says they are expected.
+	// contributing legal. Nothing reads it at runtime: the selections do the
+	// work, and this only says they are expected.
 	Manual bool `yaml:"manual,omitempty"`
 }
 
@@ -1129,11 +1139,12 @@ func (c *Config) expandCredentials(in []Candidate) []Candidate {
 			}
 			dup := cand
 			dup.Credential = &cr
-			// A credential requiring approval serves a discovered model only
-			// once someone has said yes to it ON THAT ACCOUNT.
-			if !c.servesUnderApproval(dup) {
-				continue
-			}
+			// No second gate here. There used to be one — a discovered model on
+			// an approvalRequired credential needed a recorded yes — and it is
+			// gone with the approval queue: a model is contributed by a filter
+			// the operator wrote or by a selection the operator made, and both
+			// are already the decision. Asking again afterwards was asking
+			// twice.
 			out = append(out, dup)
 		}
 	}
@@ -1161,11 +1172,12 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 			}
 			cands = append(cands, Candidate{Name: mem.Model, Model: m, Sticky: mem.Sticky})
 		}
-		// Models approved INTO this lane join after its declared members, in the
-		// order chosen at approval. Declared membership is an operator's
-		// explicit ladder and keeps the front of it; an approval is a later,
-		// per-model addition rather than a reordering of what was written down.
-		cands = append(cands, c.approvedLaneMembers(served)...)
+		// Models placed INTO this lane by a selection join after its declared
+		// members, at the priority chosen when they were placed. Declared
+		// membership is an operator's explicit ladder and keeps the front of
+		// it; a selection is a later, per-model addition rather than a
+		// reordering of what was written down.
+		cands = append(cands, c.selectedLaneMembers(served)...)
 		return c.expandCredentials(cands), len(cands) > 0
 	}
 	if m, ok := c.Models[served]; ok {

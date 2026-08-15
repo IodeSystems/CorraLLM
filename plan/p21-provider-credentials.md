@@ -526,6 +526,37 @@ Plumbing exists; the provider-shaped view does not.
     passing the filter; picking the paid, filter-excluded `x-ai/grok-4.20` put it
     in `/v1/models`, and it survived a config write, a discovery refresh and a
     restart.
+- ✅ **P21i — approvals removed; one concept, SELECTION** (2026-08-15). P21h left
+  two vocabularies in place: an approval queue (pending/approved/rejected, gated
+  per credential by `approvalRequired`) and a hand-pick that rode on top of it.
+  Against OpenRouter's four hundred models a queue of questions is not a control,
+  it is a chore, and the second concept was only ever there to serve the first.
+  Both collapse into: **you look at a provider's directory and assign models,
+  optionally into a lane at a priority.**
+  - `model_approval` → `model_selection`, with **no state column**. Presence is
+    the predicate; "reject" and "change your mind" are the same DELETE. Approved
+    rows migrate across, pending/rejected are dropped (with the gate gone a
+    rejection holds nothing back). Migration + a second open past the dropped
+    table are unit-tested; the runner now tolerates "no such table" for exactly
+    this shape.
+  - The `servesUnderApproval` gate and `Credential.ApprovalRequired` are gone. An
+    old config carrying the field still loads and it is ignored.
+  - API: `listApprovals`/`decideApproval` → `listSelections` / `assignModel` /
+    `unassignModel`. UI: the Approvals page and its nav entry are deleted; the
+    directory dialog is Add/Remove; Providers grows an **Assigned models** panel.
+  - **Bug found by a new test**: contributions were applied ADDITIVELY, so
+    unselecting a model left it serving — `discovered` is a union of the fetch
+    and the selections, and a union cannot be un-merged. Inputs are now kept
+    separately (`Config.fetched`) and `discovered` is REBUILT from both on every
+    change. Also fixes the symmetric case nobody had hit: a model dropped from a
+    filter while another credential still saw it.
+  - Presets gain `PickByHand`, true for the large-catalogue providers
+    (openrouter, together, fireworks, deepinfra, nebius, hyperbolic, openai): the
+    add form starts them on "choose them yourself", and their suggested filter is
+    what the DIRECTORY opens pre-filtered to, not an import rule.
+  - Verified end to end on an isolated daemon and in the UI: assign with
+    lane+priority → serves; survives config write and restart; unassign →
+    out of service immediately, with the filter's own 10 models untouched.
 
 All phases shipped. What is deliberately NOT built:
   - Provider-level spend rollup in the UI. The budgets exist and are enforced;

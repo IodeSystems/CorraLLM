@@ -51,15 +51,13 @@ type Credential struct {
 	// models; a per-provider budget cannot tell two accounts apart.
 	Limits LimitSet `yaml:"limits,omitempty" json:"limits,omitempty"`
 
-	// ApprovalRequired gates DISCOVERED models behind an explicit decision
-	// before they serve.
-	//
-	// Off by default, and per credential rather than global: while every
-	// discovered model was free, auto-enrolment risked a bad answer. A paid key
-	// changes the stakes — auto-enrolling a discovered model there starts
-	// spending on something nobody chose. Turning it on for the paid credential
-	// leaves a free roster working untouched.
-	ApprovalRequired bool `yaml:"approvalRequired,omitempty" json:"approvalRequired,omitempty"`
+	// NOTE: `approvalRequired` used to live here, gating discovered models
+	// behind a recorded yes. It is gone along with the approval queue. The
+	// concern it addressed — a paid key auto-enrolling models nobody chose — is
+	// answered better by not pointing a filter at a paid key: drop the
+	// provider's `discover` block, set `manual: true`, and choose models off
+	// its directory. An old config still carrying the key loads fine and the
+	// field is ignored.
 
 	// Allow lists the corrallm keys permitted to use this credential. Empty
 	// means every caller may. An ALLOWlist rather than a denylist: the failure

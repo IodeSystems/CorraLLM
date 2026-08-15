@@ -78,7 +78,13 @@ type ProviderPreset struct {
 	Catalog     string
 	Docs        string
 	Notes       string
-	Filter      PresetFilter
+	// PickByHand says this provider's catalogue is too large to enrol by
+	// filter. A filter over four hundred models is a guess, and the ones it
+	// guesses wrong are billable — so the add form starts these on "choose them
+	// yourself" and the suggested filter below is only what the DIRECTORY
+	// pre-filters to, not what gets imported.
+	PickByHand bool
+	Filter     PresetFilter
 }
 
 // presets is the table. Ordered by group then label at read time, never here —
@@ -87,14 +93,14 @@ var presets = []ProviderPreset{
 	// --- Aggregators and inference clouds: large catalogues, the best fit for
 	// browse-and-approve.
 	{
-		ID: "openrouter", Label: "OpenRouter", Group: "aggregator",
+		ID: "openrouter", PickByHand: true, Label: "OpenRouter", Group: "aggregator",
 		Host: "openrouter.ai", Port: 443, BasePath: "/api",
 		SecretRef: "OPENROUTER_API_KEY", Catalog: CatalogPublic,
 		Docs:  "https://openrouter.ai/docs",
 		Notes: "300+ models with pricing and a churning free tier. Catalogue is public — browse it before storing a key.",
-		// Free-only by default because that is the roster this proxy was built
-		// against, and a paid OpenRouter key with no filter enrols hundreds of
-		// billable models in one save.
+		// Free + a minimum window as the DIRECTORY's opening filter. Not an
+		// import rule: enrolling by filter here means a guess over hundreds of
+		// models, several of which bill.
 		Filter: PresetFilter{Free: true, MinContext: 8192, Limit: 12},
 	},
 	{
@@ -113,14 +119,14 @@ var presets = []ProviderPreset{
 		Filter: PresetFilter{MinContext: 8192, Limit: 12},
 	},
 	{
-		ID: "together", Label: "Together AI", Group: "aggregator",
+		ID: "together", PickByHand: true, Label: "Together AI", Group: "aggregator",
 		Host: "api.together.xyz", Port: 443,
 		SecretRef: "TOGETHER_API_KEY", Catalog: CatalogAuthed,
 		Docs:   "https://docs.together.ai",
 		Filter: PresetFilter{MinContext: 8192, Limit: 12},
 	},
 	{
-		ID: "fireworks", Label: "Fireworks AI", Group: "aggregator",
+		ID: "fireworks", PickByHand: true, Label: "Fireworks AI", Group: "aggregator",
 		Host: "api.fireworks.ai", Port: 443, BasePath: "/inference",
 		SecretRef: "FIREWORKS_API_KEY", Catalog: CatalogAuthed,
 		Docs:  "https://docs.fireworks.ai",
@@ -128,7 +134,7 @@ var presets = []ProviderPreset{
 		Filter: PresetFilter{MinContext: 8192, Limit: 12},
 	},
 	{
-		ID: "deepinfra", Label: "DeepInfra", Group: "aggregator",
+		ID: "deepinfra", PickByHand: true, Label: "DeepInfra", Group: "aggregator",
 		Host: "api.deepinfra.com", Port: 443,
 		SecretRef: "DEEPINFRA_API_KEY", Catalog: CatalogPublic,
 		Docs:  "https://deepinfra.com/docs",
@@ -136,14 +142,14 @@ var presets = []ProviderPreset{
 		Filter: PresetFilter{MinContext: 8192, Limit: 12},
 	},
 	{
-		ID: "nebius", Label: "Nebius AI Studio", Group: "aggregator",
+		ID: "nebius", PickByHand: true, Label: "Nebius AI Studio", Group: "aggregator",
 		Host: "api.studio.nebius.com", Port: 443,
 		SecretRef: "NEBIUS_API_KEY", Catalog: CatalogAuthed,
 		Docs:   "https://docs.nebius.com/studio/inference",
 		Filter: PresetFilter{MinContext: 8192, Limit: 12},
 	},
 	{
-		ID: "hyperbolic", Label: "Hyperbolic", Group: "aggregator",
+		ID: "hyperbolic", PickByHand: true, Label: "Hyperbolic", Group: "aggregator",
 		Host: "api.hyperbolic.xyz", Port: 443,
 		SecretRef: "HYPERBOLIC_API_KEY", Catalog: CatalogAuthed,
 		Docs:   "https://docs.hyperbolic.xyz",
@@ -152,7 +158,7 @@ var presets = []ProviderPreset{
 
 	// --- First-party labs: small catalogues, real money.
 	{
-		ID: "openai", Label: "OpenAI", Group: "lab",
+		ID: "openai", PickByHand: true, Label: "OpenAI", Group: "lab",
 		Host: "api.openai.com", Port: 443,
 		SecretRef: "OPENAI_API_KEY", Catalog: CatalogAuthed,
 		Docs:  "https://platform.openai.com/docs",

@@ -24,7 +24,6 @@ import BarChartOutlined from '@mui/icons-material/BarChartOutlined'
 import CloudOutlined from '@mui/icons-material/CloudOutlined'
 import DashboardOutlined from '@mui/icons-material/DashboardOutlined'
 import DataUsageOutlined from '@mui/icons-material/DataUsageOutlined'
-import FactCheckOutlined from '@mui/icons-material/FactCheckOutlined'
 import GroupsOutlined from '@mui/icons-material/GroupsOutlined'
 import MenuIcon from '@mui/icons-material/Menu'
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined'
@@ -120,8 +119,10 @@ const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/keys', label: 'Keys', icon: VpnKeyOutlined },
   { to: '/bench', label: 'Bench', icon: SpeedOutlined },
   { to: '/quota', label: 'Quota', icon: DataUsageOutlined },
+  // No Approvals entry: models are chosen on the provider that offers them
+  // (Providers → Browse), so a separate page for deciding about them was a
+  // second place to look for one thing.
   { to: '/providers', label: 'Providers', icon: CloudOutlined },
-  { to: '/approvals', label: 'Approvals', icon: FactCheckOutlined },
 ]
 
 const BAR_H = 52

@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
   Alert,
@@ -66,7 +66,6 @@ const ProvidersDoc = graphql(/* GraphQL */ `
             name
             secretRef
             headerName
-            approvalRequired
             allow
             hasSecret
             limits {
@@ -85,6 +84,122 @@ const ProvidersDoc = graphql(/* GraphQL */ `
 type ProviderRow = NonNullable<
   NonNullable<ProvidersQuery['corrallm']>['listProviders']
 >['providers'][number]
+
+const SelectionsDoc = graphql(/* GraphQL */ `
+  query Selections {
+    corrallm {
+      listSelections {
+        selections {
+          provider
+          credential
+          model
+          upstream
+          quality
+          serving
+          lanes {
+            lane
+            order
+          }
+        }
+      }
+    }
+  }
+`)
+
+const UnassignDoc = graphql(/* GraphQL */ `
+  mutation UnassignFromList($body: corrallm_UnassignModelInputBodyInput!) {
+    corrallm {
+      unassignModel(body: $body) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
+/**
+ * Everything chosen off a directory, in one list.
+ *
+ * The per-provider dialog is where you CHOOSE; this is where you see what you
+ * chose across all of them and where each one landed. Both write the same rows
+ * — there is no separate approvals page any more, because there is nothing to
+ * approve: a model is selected or it is not.
+ */
+function AssignedModels() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['selections'],
+    queryFn: () => gqlClient.request(SelectionsDoc),
+  })
+  const unassign = useMutation({
+    mutationFn: (body: { provider: string; credential: string; model: string }) =>
+      gqlClient.request(UnassignDoc, { body }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['selections'] })
+      qc.invalidateQueries({ queryKey: ['catalog'] })
+    },
+  })
+  const rows = data?.corrallm?.listSelections?.selections ?? []
+
+  return (
+    <Panel title={`Assigned models (${rows.length})`} flush>
+      {rows.length === 0 ? (
+        <Typography variant="body2" sx={{ p: 2, color: C.textFaint }}>
+          None yet. <strong>Browse</strong> a provider above and add the models you want — with a
+          lane and priority if they should join one.
+        </Typography>
+      ) : (
+        rows.map((r) => (
+          <Row key={`${r.provider}/${r.credential}/${r.model}`}>
+            <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Box sx={{ minWidth: 220, flex: 1 }}>
+                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12.5 }}>
+                  {r.model}
+                </Typography>
+                <Typography variant="caption" sx={{ color: C.textFaint }}>
+                  {r.provider} / {r.credential}
+                  {r.upstream ? ` · ${r.upstream}` : ' · placement only'}
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                {r.lanes.map((l) => (
+                  <Chip key={l.lane} size="small" label={`${l.lane} @ ${l.order}`} />
+                ))}
+                {r.lanes.length === 0 && (
+                  <Tooltip title="Servable by name, but in no lane — nothing routes to it automatically.">
+                    <Chip size="small" variant="outlined" label="no lane" />
+                  </Tooltip>
+                )}
+                {Number(r.quality ?? 0) > 0 && (
+                  <Chip size="small" variant="outlined" label={`q${r.quality}`} />
+                )}
+                {!r.serving && (
+                  <Tooltip title="On record, but not in the served registry — the provider or its id may have gone away.">
+                    <Chip size="small" color="warning" label="not serving" />
+                  </Tooltip>
+                )}
+              </Stack>
+              <Button
+                size="small"
+                color="error"
+                disabled={unassign.isPending}
+                onClick={() =>
+                  unassign.mutate({
+                    provider: r.provider,
+                    credential: r.credential,
+                    model: r.model,
+                  })
+                }
+              >
+                Remove
+              </Button>
+            </Stack>
+          </Row>
+        ))
+      )}
+    </Panel>
+  )
+}
 
 function ProvidersPage() {
   const [addOpen, setAddOpen] = useState(false)
@@ -216,7 +331,7 @@ function ProvidersPage() {
                       size="small"
                       color={c.hasSecret ? 'success' : 'warning'}
                       variant="outlined"
-                      label={`${c.name}${c.approvalRequired ? ' · approval' : ''}${
+                      label={`${c.name}${
                         c.hasSecret ? '' : ` · ${c.secretRef || 'no secret'} missing`
                       }`}
                     />
@@ -240,6 +355,8 @@ function ProvidersPage() {
           )
         })}
       </Panel>
+
+      <AssignedModels />
 
       <Panel title={`Credential store (${secrets.length})`}>
         <Typography variant="body2" sx={{ opacity: 0.75, mb: 1 }}>

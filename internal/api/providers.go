@@ -18,12 +18,11 @@ import (
 // /api/v1/config/* serves. Set the value through SetSecret instead — write
 // only, never read back.
 type CredentialSpec struct {
-	Name             string   `json:"name" doc:"Account name; also the budget key, stable across restarts."`
-	SecretRef        string   `json:"secretRef" required:"false" doc:"Name of the credential-store entry holding this account's token. Referenced as ${NAME}; the value never enters config."`
-	HeaderName       string   `json:"headerName" required:"false" doc:"Header to carry it in (default authorization, as 'Bearer <value>')."`
-	ApprovalRequired bool     `json:"approvalRequired" required:"false" doc:"Gate DISCOVERED models behind an explicit decision before they serve."`
-	Allow            []string `json:"allow" required:"false" doc:"corrallm keys permitted to use this account. Empty = all."`
-	Limits           []Limit  `json:"limits" required:"false" doc:"Budgets for this account alone."`
+	Name       string   `json:"name" doc:"Account name; also the budget key, stable across restarts."`
+	SecretRef  string   `json:"secretRef" required:"false" doc:"Name of the credential-store entry holding this account's token. Referenced as ${NAME}; the value never enters config."`
+	HeaderName string   `json:"headerName" required:"false" doc:"Header to carry it in (default authorization, as 'Bearer <value>')."`
+	Allow      []string `json:"allow" required:"false" doc:"corrallm keys permitted to use this account. Empty = all."`
+	Limits     []Limit  `json:"limits" required:"false" doc:"Budgets for this account alone."`
 	// Output-only: reported so a form can show which refs resolve, ignored on
 	// input. Marked optional or every write would have to echo it back.
 	HasSecret bool `json:"hasSecret" required:"false" doc:"Whether the referenced entry exists in the store. The value itself is never returned."`
@@ -131,8 +130,8 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 				ref, header := secretRefOf(cr)
 				ps.Credentials = append(ps.Credentials, CredentialSpec{
 					Name: cr.Name, SecretRef: ref, HeaderName: header,
-					ApprovalRequired: cr.ApprovalRequired, Allow: cr.Allow,
-					Limits: toWireLimits(cr.Limits), HasSecret: ref != "" && have[ref],
+					Allow: cr.Allow, Limits: toWireLimits(cr.Limits),
+					HasSecret: ref != "" && have[ref],
 				})
 			}
 			out.Body.Providers = append(out.Body.Providers, ps)
@@ -255,8 +254,7 @@ func (h *Handlers) UpsertProvider(_ context.Context, in *UpsertProviderInput) (*
 		creds := make([]config.Credential, 0, len(b.Credentials))
 		for _, cs := range b.Credentials {
 			cc := config.Credential{
-				Name: cs.Name, ApprovalRequired: cs.ApprovalRequired,
-				Allow: cs.Allow, Limits: toConfigLimits(cs.Limits),
+				Name: cs.Name, Allow: cs.Allow, Limits: toConfigLimits(cs.Limits),
 			}
 			if cs.SecretRef != "" {
 				header := cs.HeaderName

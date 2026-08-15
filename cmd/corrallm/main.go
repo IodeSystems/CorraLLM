@@ -536,17 +536,15 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	// Approval decisions gate which DISCOVERED models serve, and carry the
-	// hand-picked models that exist for no other reason. Loaded before the
-	// first refresh: a rejection that arrived late would let the model serve in
-	// the gap, and a decision that did not survive a restart would put the same
-	// question back in the queue on every pass.
+	// The models chosen off provider directories, and where they were placed.
+	// Loaded before the first refresh: a selection is the only record that a
+	// hand-chosen model exists, so a gap here is a gap in what corrallm serves.
 	if st != nil {
-		if rows, err := st.LoadApprovals(); err != nil {
-			slog.Warn("load approvals", "err", err)
+		if rows, err := st.LoadSelections(); err != nil {
+			slog.Warn("load selections", "err", err)
 		} else if len(rows) > 0 {
-			api.InstallApprovals(cfg, rows)
-			slog.Info("model approvals loaded", "count", len(rows))
+			api.InstallSelections(cfg, rows)
+			slog.Info("model selections loaded", "count", len(rows))
 		}
 	}
 
@@ -1068,17 +1066,16 @@ func reloadInto(path string, st *store.Store, mgr *proc.Manager, sc *sched.Sched
 	if err != nil {
 		return err
 	}
-	// Approvals and hand-picked models live on the CONFIG OBJECT, and a reload
-	// builds a new one — so without this they silently reset to "no decisions
-	// on record" until the next decide or the next restart. That drops every
-	// hand-picked model and un-rejects every rejected one, on any config write
-	// at all (adding a provider, saving the YAML editor). Reinstalled from the
-	// store, which is where the durable truth is.
+	// Selections live on the CONFIG OBJECT, and a reload builds a new one — so
+	// without this every hand-chosen model silently vanishes on any config
+	// write at all (adding a provider, saving the YAML editor) until the next
+	// selection change or restart. Reinstalled from the store, which is where
+	// the durable truth is.
 	if st != nil {
-		if rows, err := st.LoadApprovals(); err != nil {
-			slog.Warn("reload: load approvals", "err", err)
+		if rows, err := st.LoadSelections(); err != nil {
+			slog.Warn("reload: load selections", "err", err)
 		} else {
-			api.InstallApprovals(cfg, rows)
+			api.InstallSelections(cfg, rows)
 		}
 	}
 	applyConfig(cfg, mgr, sc, px, h)

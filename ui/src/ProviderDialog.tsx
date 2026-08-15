@@ -136,7 +136,6 @@ type Draft = {
   basePath: string
   secretRef: string
   secretValue: string
-  approvalRequired: boolean
   monthlyUSD: string
   rpm: string
   // 'filter' contributes models automatically; 'manual' contributes none until
@@ -157,7 +156,6 @@ const BLANK: Draft = {
   basePath: '',
   secretRef: '',
   secretValue: '',
-  approvalRequired: true,
   monthlyUSD: '',
   rpm: '',
   source: 'filter',
@@ -244,10 +242,10 @@ export function ProviderDialog(props: {
       freeOnly: p.freeOnly,
       minContext: String(p.minContext),
       limit: String(p.limit),
-      // A local endpoint holds a handful of models and no billing surface;
-      // gating them behind approval is ceremony. A hosted key is the opposite.
-      approvalRequired: p.needsSecret,
-      source: p.group === 'local' ? 'manual' : s.source,
+      // A big catalogue is not something to enrol by filter — that is a guess
+      // over hundreds of models. Presets that suggest no cap say "choose them
+      // yourself", and the radio starts there.
+      source: p.group === 'local' || p.limit === '0' ? 'manual' : s.source,
     }))
   }
 
@@ -292,7 +290,6 @@ export function ProviderDialog(props: {
               {
                 name: 'main',
                 secretRef: d.secretRef,
-                approvalRequired: d.approvalRequired,
                 limits: d.rpm ? [{ req: Number(d.rpm), per: 'minute' }] : [],
               },
             ]
@@ -482,24 +479,6 @@ export function ProviderDialog(props: {
               helperText="Across all its accounts"
             />
           </Stack>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={d.approvalRequired}
-                onChange={(e) => set({ approvalRequired: e.target.checked })}
-              />
-            }
-            label={
-              <Typography variant="body2">
-                Require approval before a discovered model serves
-                <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
-                  Recommended on any account that can spend money. Hand-picked models are never
-                  gated by this — picking one IS the decision.
-                </Typography>
-              </Typography>
-            }
-          />
-
           <Divider textAlign="left">
             <Typography variant="caption">Where its models come from</Typography>
           </Divider>

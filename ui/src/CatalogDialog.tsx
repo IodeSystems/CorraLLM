@@ -27,22 +27,27 @@ import {
 } from '@mui/material'
 import { theme } from '@/theme'
 import { graphql } from '@/gql'
-import type { Corrallm_DecideApprovalInputBodyInput } from '@/gql/graphql'
+import type {
+  Corrallm_AssignModelInputBodyInput,
+  Corrallm_UnassignModelInputBodyInput,
+} from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
 import { fmtInt } from '@/format'
 
 /**
- * Browse one credential's catalogue and enrol models from it.
+ * One provider's directory: what it offers on this account, and which of it you
+ * want.
  *
- * This is the answer to "go to the provider and pick the models I want", which
- * discovery cannot be: discovery is a FILTER, and everything it rejects is
- * dropped with no record it existed. Reaching one excluded model used to mean
- * loosening the filter and admitting a hundred others with it.
+ * This is the primary way models get in. A discover filter is the bulk
+ * shortcut, but against four hundred OpenRouter models a filter is a guess and
+ * everything it rejects is dropped with no record it existed.
  *
- * Picking here writes an APPROVAL carrying the provider's own model id, which
- * is what makes the model exist at all — nothing else knows the id to put on
- * the wire, and the served name cannot be turned back into it.
+ * There is no approval step and no queue. Ticking a row and pressing Add writes
+ * a SELECTION carrying the provider's own model id — which is what makes the
+ * model exist, since nothing else knows the id to put on the wire — plus the
+ * lane and priority you chose. Remove deletes that row. Those two operations
+ * are the entire vocabulary.
  */
 const CatalogDoc = graphql(/* GraphQL */ `
   query BrowseCatalog($provider: String!, $credential: String) {
@@ -63,7 +68,11 @@ const CatalogDoc = graphql(/* GraphQL */ `
           completionUsd
           inputModality
           outputModality
-          state
+          assigned
+          lanes {
+            lane
+            order
+          }
           enrolled
           passesFilter
           declared
@@ -79,10 +88,21 @@ const CatalogDoc = graphql(/* GraphQL */ `
   }
 `)
 
-const DecideDoc = graphql(/* GraphQL */ `
-  mutation DecideCatalogPick($body: corrallm_DecideApprovalInputBodyInput!) {
+const AssignDoc = graphql(/* GraphQL */ `
+  mutation AssignModel($body: corrallm_AssignModelInputBodyInput!) {
     corrallm {
-      decideApproval(body: $body) {
+      assignModel(body: $body) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
+const UnassignDoc = graphql(/* GraphQL */ `
+  mutation UnassignModel($body: corrallm_UnassignModelInputBodyInput!) {
+    corrallm {
+      unassignModel(body: $body) {
         ok
         message
       }
@@ -118,7 +138,7 @@ export function CatalogDialog(props: {
   const wide = useMediaQuery(theme.breakpoints.up('md'))
   const [q, setQ] = useState('')
   const [freeOnly, setFreeOnly] = useState(false)
-  const [undecidedOnly, setUndecidedOnly] = useState(false)
+  const [unassignedOnly, setUnassignedOnly] = useState(false)
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [lane, setLane] = useState('')
   const [order, setOrder] = useState('50')
@@ -133,9 +153,13 @@ export function CatalogDialog(props: {
     staleTime: 5 * 60 * 1000,
   })
 
-  const decide = useMutation({
-    mutationFn: (body: Corrallm_DecideApprovalInputBodyInput) =>
-      gqlClient.request(DecideDoc, { body }),
+  const assign = useMutation({
+    mutationFn: (body: Corrallm_AssignModelInputBodyInput) =>
+      gqlClient.request(AssignDoc, { body }),
+  })
+  const unassign = useMutation({
+    mutationFn: (body: Corrallm_UnassignModelInputBodyInput) =>
+      gqlClient.request(UnassignDoc, { body }),
   })
 
   const cat = data?.corrallm?.browseCatalog
@@ -146,7 +170,7 @@ export function CatalogDialog(props: {
     const needle = q.trim().toLowerCase()
     return entries.filter((e) => {
       if (freeOnly && !e.free) return false
-      if (undecidedOnly && (e.state || e.enrolled)) return false
+      if (unassignedOnly && e.assigned) return false
       if (!needle) return true
       return (
         e.id.toLowerCase().includes(needle) ||
@@ -154,7 +178,7 @@ export function CatalogDialog(props: {
         e.servedName.toLowerCase().includes(needle)
       )
     })
-  }, [entries, q, freeOnly, undecidedOnly])
+  }, [entries, q, freeOnly, unassignedOnly])
 
   const toggle = (id: string) =>
     setSel((s) => {
@@ -163,41 +187,56 @@ export function CatalogDialog(props: {
       return n
     })
 
-  const enrol = async (state: 'approved' | 'rejected') => {
+  const apply = async (action: 'add' | 'remove') => {
     setMsg('')
-    const picks = entries.filter((e) => sel.has(e.id))
+    const rows = entries.filter((e) => sel.has(e.id))
     let failed = 0
-    // Sequential rather than parallel: each decision reloads the approval set
-    // and rebuilds the served registry, and firing thirty of those at once
-    // makes the last writer's view the only one that survives.
-    for (const p of picks) {
-      const r = await decide.mutateAsync({
-        provider,
-        credential,
-        model: p.servedName,
-        state,
-        upstream: p.id,
-        lanes:
-          state === 'approved' && lane ? [{ lane, order: String(Number(order || 0)) }] : [],
-        quality: 0,
-      })
-      if (!r.corrallm?.decideApproval?.ok) failed++
+    // Sequential rather than parallel: each write reloads the selection set and
+    // rebuilds the served registry, and firing thirty of those at once makes
+    // the last writer's view the only one that survives.
+    for (const p of rows) {
+      const ok =
+        action === 'add'
+          ? (
+              await assign.mutateAsync({
+                provider,
+                credential,
+                model: p.servedName,
+                // The provider's own id, always sent on an add: it is the only
+                // record of what goes on the wire.
+                upstream: p.id,
+                lanes: lane ? [{ lane, order: String(Number(order || 0)) }] : [],
+                quality: 0,
+              })
+            ).corrallm?.assignModel?.ok
+          : (
+              await unassign.mutateAsync({
+                provider,
+                credential,
+                model: p.servedName,
+              })
+            ).corrallm?.unassignModel?.ok
+      if (!ok) failed++
     }
     setSel(new Set())
     setMsg(
       failed
-        ? `${picks.length - failed} of ${picks.length} saved; ${failed} refused`
-        : `${picks.length} ${state}`,
+        ? `${rows.length - failed} of ${rows.length} saved; ${failed} refused`
+        : `${rows.length} ${action === 'add' ? 'added' : 'removed'}`,
     )
-    qc.invalidateQueries({ queryKey: ['approvals'] })
+    qc.invalidateQueries({ queryKey: ['selections'] })
     qc.invalidateQueries({ queryKey: ['providers'] })
     refetch()
   }
 
+  // Only rows that are actually assigned can be removed, so the Remove button
+  // reports what it would really do rather than counting ticks that are no-ops.
+  const selectedAssigned = entries.filter((e) => sel.has(e.id) && e.assigned).length
+
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth fullScreen={!wide}>
       <DialogTitle sx={{ pb: 1 }}>
-        {provider} catalogue
+        {provider} directory
         <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
           as seen by <strong>{credential}</strong>
           {cat?.url ? ` · ${cat.url}` : ''}
@@ -229,11 +268,11 @@ export function CatalogDialog(props: {
               control={
                 <Checkbox
                   size="small"
-                  checked={undecidedOnly}
-                  onChange={(e) => setUndecidedOnly(e.target.checked)}
+                  checked={unassignedOnly}
+                  onChange={(e) => setUnassignedOnly(e.target.checked)}
                 />
               }
-              label={<Typography variant="body2">Undecided only</Typography>}
+              label={<Typography variant="body2">Not added yet</Typography>}
             />
             <Typography variant="caption" sx={{ color: C.textFaint, ml: 'auto' }}>
               {shown.length} of {entries.length}
@@ -321,18 +360,25 @@ export function CatalogDialog(props: {
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           {e.free && <Chip size="small" color="success" label="free" />}
                           {e.declared && <Chip size="small" variant="outlined" label="declared" />}
-                          {e.state === 'approved' && (
-                            <Chip size="small" color="success" variant="outlined" label="approved" />
-                          )}
-                          {e.state === 'rejected' && (
-                            <Chip size="small" color="error" variant="outlined" label="rejected" />
-                          )}
-                          {!e.state && e.enrolled && (
-                            <Tooltip title="Admitted by this provider's discover filter — it already serves, with no decision recorded.">
-                              <Chip size="small" variant="outlined" label="serving" />
+                          {e.assigned && (
+                            <Tooltip title="You added this one. Tick it and press Remove to take it out of service.">
+                              <Chip
+                                size="small"
+                                color="success"
+                                label={
+                                  e.lanes.length
+                                    ? `added · ${e.lanes.map((l) => `${l.lane}@${l.order}`).join(', ')}`
+                                    : 'added'
+                                }
+                              />
                             </Tooltip>
                           )}
-                          {!e.state && !e.enrolled && e.passesFilter && (
+                          {!e.assigned && e.enrolled && (
+                            <Tooltip title="Admitted by this provider's discover filter, not by you. It already serves; adding it pins it so a filter change cannot drop it.">
+                              <Chip size="small" variant="outlined" label="from filter" />
+                            </Tooltip>
+                          )}
+                          {!e.assigned && !e.enrolled && e.passesFilter && (
                             <Tooltip title="The filter admits this row, but a cap or a pending refresh means it is not serving yet.">
                               <Chip size="small" variant="outlined" label="in filter" />
                             </Tooltip>
@@ -394,19 +440,23 @@ export function CatalogDialog(props: {
           />
         </Tooltip>
         <Button onClick={onClose}>Close</Button>
-        <Button
-          color="error"
-          disabled={sel.size === 0 || decide.isPending}
-          onClick={() => enrol('rejected')}
-        >
-          Reject {sel.size || ''}
-        </Button>
+        <Tooltip title="Take these out of service. For a model you added this removes it; one the filter contributes comes back on the next refresh.">
+          <span>
+            <Button
+              color="error"
+              disabled={selectedAssigned === 0 || unassign.isPending}
+              onClick={() => apply('remove')}
+            >
+              Remove {selectedAssigned || ''}
+            </Button>
+          </span>
+        </Tooltip>
         <Button
           variant="contained"
-          disabled={sel.size === 0 || decide.isPending}
-          onClick={() => enrol('approved')}
+          disabled={sel.size === 0 || assign.isPending}
+          onClick={() => apply('add')}
         >
-          {decide.isPending ? 'Saving…' : `Add ${sel.size || ''}`}
+          {assign.isPending ? 'Saving…' : `Add ${sel.size || ''}`}
         </Button>
       </DialogActions>
     </Dialog>

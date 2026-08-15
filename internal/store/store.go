@@ -234,28 +234,35 @@ CREATE TABLE IF NOT EXISTS quota_counter (
     PRIMARY KEY (backend, label)
 );
 
-CREATE TABLE IF NOT EXISTS model_approval (
-    provider    TEXT NOT NULL,          -- the provider whose catalogue offered it
+CREATE TABLE IF NOT EXISTS model_selection (
+    provider    TEXT NOT NULL,          -- the provider whose directory offered it
     credential  TEXT NOT NULL,          -- WHICH account saw it; catalogues differ by key
     model       TEXT NOT NULL,          -- served name
-    state       TEXT NOT NULL,          -- pending | approved | rejected
-    lanes       TEXT NOT NULL DEFAULT '', -- JSON [{lane,order}] chosen at approval
+    upstream    TEXT NOT NULL DEFAULT '', -- provider's own id, when this row is what creates the model
+    lanes       TEXT NOT NULL DEFAULT '', -- JSON [{lane,order}] placement
     quality     REAL NOT NULL DEFAULT 0,  -- operator's rank, replacing the template guess
     note        TEXT NOT NULL DEFAULT '',
     at          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (provider, credential, model)
 );
 
--- model_approval: whether a DISCOVERED model may serve, and on what terms.
+-- model_selection: the models an operator chose off a provider's directory, and
+-- where they put them.
 --
--- Operational state, not config — same argument model_pause makes for itself.
--- It must be durable for a sharper reason though: a rejection that does not
--- survive a restart means the model reappears in the queue on the next refresh,
--- and the operator is asked the same question forever.
+-- Operational state, not config — same argument model_pause makes for itself —
+-- and durable because a selection that did not survive a restart would take a
+-- hand-chosen model out of service silently.
+--
+-- There is NO state column, and that is the design. This replaced
+-- model_approval, which carried pending/approved/rejected and a queue of
+-- questions owed to the operator. The queue was the mistake: nobody wants to be
+-- asked about 413 OpenRouter models. Presence is the whole predicate — the row
+-- exists and the model is selected, or it does not and it is not — so
+-- "rejecting" and "changing your mind" are one operation, DELETE, and need no
+-- vocabulary between them.
 --
 -- Keyed per (provider, credential, model) because the same upstream id can be
--- wanted on one account and refused on another — a paid key's model is a
--- spending decision the free key's is not.
+-- wanted on one account and not another.
 --
 -- lanes is JSON rather than a join table: it is a short list read whole,
 -- written whole, and never queried across rows.
@@ -290,6 +297,10 @@ CREATE TABLE IF NOT EXISTS model_pause (
 //     schema, which never had the column to begin with. Without this a new
 //     install fails to open at all, which is a worse outcome than the tidiness
 //     the DROP was for.
+//   - "no such table"   — the same argument one level up, for a table this list
+//     migrates data OUT of and then drops. On the second open, and on every
+//     fresh install, the source is already gone; that is the migration having
+//     succeeded, not a failure.
 var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`,
@@ -347,6 +358,17 @@ var migrations = []string{
 	// makes the row load-bearing: it is the only record that the model should
 	// exist at all, so nothing else can reconstruct what to put on the wire.
 	`ALTER TABLE model_approval ADD COLUMN upstream TEXT NOT NULL DEFAULT ''`,
+	// Approvals become selections. Only APPROVED rows carry over: a selection
+	// means "serve this", and pending meant "nobody has said yet" while
+	// rejected meant "no" — neither is a thing to serve. Both are dropped, and
+	// with the gate gone there is nothing for a rejection to hold back anyway.
+	//
+	// The source table then goes. Keeping a three-state table nothing reads is
+	// how the old vocabulary leaks back into the next person's mental model.
+	`INSERT OR IGNORE INTO model_selection (provider, credential, model, upstream, lanes, quality, note, at)
+	 SELECT provider, credential, model, upstream, lanes, quality, note, at
+	 FROM model_approval WHERE state = 'approved'`,
+	`DROP TABLE model_approval`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -582,7 +604,8 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	for _, m := range migrations {
 		if _, err := db.ExecContext(ctx, m); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") &&
-			!strings.Contains(err.Error(), "no such column") {
+			!strings.Contains(err.Error(), "no such column") &&
+			!strings.Contains(err.Error(), "no such table") {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate: %w", err)
 		}

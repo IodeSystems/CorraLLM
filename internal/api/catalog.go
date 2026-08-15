@@ -12,21 +12,21 @@ import (
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
-// Catalogue browsing: what a provider actually offers on one account.
+// The provider directory: what a provider actually offers on one account.
 //
-// Discovery answers "what should this provider contribute automatically",
-// which is a filter, and everything the filter rejects is dropped in memory
-// with no record it ever existed. That leaves no way to reach a specific model
-// the filter excluded except by loosening the filter and admitting a hundred
-// others with it. This endpoint is the other half: the catalogue as the
-// provider reports it, annotated with what corrallm has already decided about
-// each row, so a model can be picked by hand.
+// This is the PRIMARY way models get into corrallm. A discover filter is the
+// bulk shortcut — right for a small catalogue or a churning free roster — but
+// against a provider listing four hundred models a filter is a guess, and
+// everything it rejects is dropped in memory with no record it existed. The
+// directory is the catalogue as the provider reports it, annotated with what
+// has already been chosen, so an operator can pick the models they actually
+// want and say where each one goes.
 //
 // Fetched live rather than served from the discovery cache. The cache holds
-// only the survivors, and the point here is the rows that did not survive.
+// only what a filter admitted, and the point here is everything else.
 
 // CatalogEntryView is one model as the provider reports it, plus what corrallm
-// has decided about it.
+// already knows about it.
 type CatalogEntryView struct {
 	ID            string  `json:"id" doc:"The provider's own model id — what actually goes on the wire."`
 	ServedName    string  `json:"servedName" doc:"What it would be called here if enrolled."`
@@ -39,12 +39,16 @@ type CatalogEntryView struct {
 	InputModality string  `json:"inputModality" doc:"e.g. text, text+image; empty when unreported."`
 	OutputModality string `json:"outputModality" doc:"e.g. text; empty when unreported."`
 
-	// State is the recorded decision, "" when none was ever made.
-	State string `json:"state" doc:"approved | rejected | pending, or empty when undecided."`
+	// Assigned says the operator chose this row: there is a selection for it.
+	Assigned bool `json:"assigned" doc:"Selected off this directory by the operator."`
+	// Lanes/Quality echo that selection's placement, so the directory can show
+	// where an assigned model went without a second round trip.
+	Lanes   []LaneRefView `json:"lanes" doc:"Lanes this assignment placed it in."`
+	Quality float64       `json:"quality" doc:"Rank recorded with the assignment, 0 when none."`
 	// Enrolled says the model is servable RIGHT NOW under this credential —
-	// whether it got there by filter or by hand. It is the honest answer to
-	// "can I call this", which state alone cannot give: a model can be approved
-	// on an account whose credential does not gate anything.
+	// whether it got there by filter or by assignment. It is the honest answer
+	// to "can I call this", which Assigned alone cannot give: a filter
+	// contributes models nobody assigned.
 	Enrolled bool `json:"enrolled" doc:"Currently servable on this credential."`
 	// PassesFilter marks the rows discovery would take on its own, so the
 	// browser distinguishes "you would get this anyway" from "this needs a
@@ -130,14 +134,14 @@ func (h *Handlers) BrowseCatalog(ctx context.Context, in *BrowseCatalogInput) (*
 		filter, out.Body.HasFilter = pv.Discover.Filter, true
 	}
 
-	// One lookup table for decisions rather than a query per row: a catalogue
-	// is hundreds of entries and the decision set is tens.
-	decided := map[string]store.ModelApproval{}
+	// One lookup table for selections rather than a query per row: a directory
+	// is hundreds of entries and the selection set is tens.
+	chosen := map[string]store.ModelSelection{}
 	if h.Store != nil {
-		if rows, err := h.Store.LoadApprovals(); err == nil {
+		if rows, err := h.Store.LoadSelections(); err == nil {
 			for _, r := range rows {
 				if r.Provider == in.Provider && r.Credential == cred {
-					decided[r.Model] = r
+					chosen[r.Model] = r
 				}
 			}
 		}
@@ -162,6 +166,7 @@ func (h *Handlers) BrowseCatalog(ctx context.Context, in *BrowseCatalogInput) (*
 			ContextLength: e.ContextLength, Free: e.Free,
 			PromptUSD: e.PromptUSD, CompletionUSD: e.CompletionUSD,
 			InputModality: e.InputModality, OutputModality: e.OutputModality,
+			Lanes:        []LaneRefView{},
 			PassesFilter: out.Body.HasFilter && filter.Admits(e.ID, e.Free, e.InputModality, e.OutputModality, e.ContextLength),
 			Declared:     isDeclared,
 			Enrolled:     isDeclared || (isDiscovered && cfg.DiscoveredServableBy(served, cred)),
@@ -169,8 +174,12 @@ func (h *Handlers) BrowseCatalog(ctx context.Context, in *BrowseCatalogInput) (*
 		if holder != "" && holder != e.ID {
 			v.ConflictsWith = holder
 		}
-		if d, ok := decided[served]; ok {
-			v.State = d.State
+		if sel, ok := chosen[served]; ok {
+			v.Assigned = true
+			v.Quality = sel.Quality
+			for _, l := range sel.Lanes {
+				v.Lanes = append(v.Lanes, LaneRefView{Lane: l.Lane, Order: l.Order})
+			}
 		}
 		out.Body.Entries = append(out.Body.Entries, v)
 	}
