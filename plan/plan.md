@@ -1679,6 +1679,47 @@ are real.
 form rather than only in `advancedFields`; 3.8 past 188k needs one of the priced
 levers, not more window.
 
+### ✅ P23 — per-mode sampler profiles + `--pin-sampling` (2026-08-15)
+
+Two fixes to one root problem: **a reasoning model has two right samplers and
+only one launch flag**, while the caller flips the mode per request.
+
+**`sampling:` on a model** (`b4c6bf9`). Profiles for `thinking` and `instruct`
+plus a `default`; the proxy reads the request's mode and fills in ONLY the
+fields the caller omitted. Mode is read in four dialects that all reach
+`/v1/chat/completions` — llama.cpp's `chat_template_kwargs.enable_thinking`,
+OpenAI's `reasoning_effort`, Anthropic's `thinking` object, and
+`reasoning_budget_tokens` (0 = end reasoning now, so NOT thinking).
+
+Placed here rather than in a client because corrallm is the only component that
+knows which model a name actually resolved to (after aliases, lanes and globs)
+AND holds that model's card values. In a client, every client reimplements it.
+Same seam as the PDF rewrite: once at the proxy, not per backend.
+
+Verified live against `/upstream/Qwen3.8-27B/slots`, which reports the sampler a
+slot really ran with — the cmd no longer carries any sampler flags:
+
+    plain request                temp 0.7  top_p 0.80  presence 1.5
+    enable_thinking: true        temp 1.0  top_p 0.95  presence 0.0
+    caller sends temperature: 0  temp 0.0  top_p 0.80  (caller wins)
+
+**THE CALLER ALWAYS WINS** is load-bearing, not politeness: `--pin-sampling`
+sends temperature 0 so a probe is not a coin flip, and a proxy that overwrote it
+would restore the coin flip silently.
+
+**`--pin-sampling` on llm-bench** (`79567a7`). The capability pin already existed
+and its comment explicitly excluded quality probes — they measure a deployment
+as served. That is right for "how good is this" and wrong for "is A better than
+B", so this is a flag, not a changed default. Composes with `--runs N`: pinning
+removes sampler variance, repeats measure what is left.
+
+**Why it was needed, measured:** two full runs of one model with byte-identical
+config came back 77/90 and 75/90 with FOUR stages flipping each way. The
+thinking-mode A/B landed inside that spread and so decided nothing on quality.
+
+**next** re-run the A/B under `--pin-sampling` if the thinking question is worth
+settling on quality as well as cost. Cost already decided it: 3.16x tokens.
+
 ### ✅ VRAM measurement: per-device attribution + peak decay (2026-08-12, UNCOMMITTED)
 
 Two fixes to `internal/tune` + `internal/proc`, both found by measuring rather than reading:
