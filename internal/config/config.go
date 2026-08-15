@@ -119,6 +119,10 @@ type Config struct {
 	// approvals gates which DISCOVERED models may serve, and carries the lane
 	// placement chosen when each was approved. Keyed by ApprovalKey.
 	approvals map[string]ApprovalView
+	// picks are models chosen by hand from a provider's catalogue, re-applied
+	// into `discovered` after every refresh replaces it. See pick.go for why
+	// they share that overlay rather than living beside it.
+	picks []Pick
 }
 
 // SetDiscovered replaces the models contributed by one provider. Replacing
@@ -176,6 +180,11 @@ func (c *Config) SetDiscoveredFor(provider, credential string, models map[string
 		}
 		c.discoveredBy[name][credential] = true
 	}
+	// Hand-picked models are contributed by the same overlay this just
+	// replaced, so they have to be put back. Without this a model approved off
+	// the catalogue would disappear at the next refresh — within minutes, and
+	// looking exactly like the provider had dropped it.
+	c.applyPicksLocked(provider, credential)
 }
 
 // DiscoveredServableBy is the exported form, for the approval queue.
@@ -318,6 +327,18 @@ type Provider struct {
 	// hand-written list. `provides` is a static declaration; this is the same
 	// thing enumerated at runtime, for a roster that churns.
 	Discover *Discover `yaml:"discover,omitempty"`
+
+	// Manual declares that this provider's models are chosen ONE AT A TIME from
+	// its catalogue (see pick.go) rather than admitted by a filter or written
+	// out in `provides`.
+	//
+	// It is a flag rather than an inference because the alternative is to stop
+	// rejecting providers that contribute nothing, and "contributes no models"
+	// catches a real class of typo — a provider block that was half-written.
+	// Writing the intent down keeps that check while making the third way of
+	// contributing legal. Nothing reads it at runtime: the picks do the work,
+	// and this only says they are expected.
+	Manual bool `yaml:"manual,omitempty"`
 }
 
 // Discover enumerates a provider's /v1/models and contributes the rows that
@@ -350,6 +371,35 @@ type DiscoverFilter struct {
 	MinContext int `yaml:"minContext,omitempty"`
 	// Exclude drops any id containing one of these substrings.
 	Exclude []string `yaml:"exclude,omitempty"`
+}
+
+// Admits reports whether one catalogue row passes this filter.
+//
+// Takes primitives rather than a freeroster.Entry so config keeps no dependency
+// on the fetcher. It lives here, not next to the refresh loop, because two
+// callers now ask the same question — the loop deciding what to enrol, and the
+// catalogue browser marking which rows discovery would have taken anyway — and
+// a browser that disagreed with the loop about the same filter would be worse
+// than no marking at all.
+func (f DiscoverFilter) Admits(id string, free bool, inMod, outMod string, contextLength int) bool {
+	if f.Free && !free {
+		return false
+	}
+	if f.InputModality != "" && inMod != f.InputModality {
+		return false
+	}
+	if f.OutputModality != "" && outMod != f.OutputModality {
+		return false
+	}
+	if f.MinContext > 0 && contextLength < f.MinContext {
+		return false
+	}
+	for _, x := range f.Exclude {
+		if x != "" && strings.Contains(id, x) {
+			return false
+		}
+	}
+	return true
 }
 
 // Server declares a host's capacity as a vector over named memory pools.
@@ -1730,11 +1780,12 @@ func (c *Config) resolveExtensions() error {
 				if pv.Proxy.IsZero() {
 					return fmt.Errorf("extension %q provider %q: needs proxy", name, pn)
 				}
-				// `discover` is the other way to contribute models, so a provider
-				// with only a discover block is complete — it just contributes
-				// nothing until the first refresh.
-				if len(pv.Provides) == 0 && pv.Discover == nil {
-					return fmt.Errorf("extension %q provider %q: contributes no models (needs provides or discover)", name, pn)
+				// `discover` and `manual` are the other two ways to contribute
+				// models, so a provider with either is complete — it just
+				// contributes nothing until the first refresh, or until someone
+				// picks a model off its catalogue.
+				if len(pv.Provides) == 0 && pv.Discover == nil && !pv.Manual {
+					return fmt.Errorf("extension %q provider %q: contributes no models (needs provides, discover, or manual: true to pick from its catalogue by hand)", name, pn)
 				}
 				if err := validateCredentials(name, pn, pv); err != nil {
 					return err

@@ -25,12 +25,22 @@ import type { Corrallm_DecideApprovalInputBodyInput } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
 
 /**
- * Model approval (P21e2): which DISCOVERED models may serve, on which account,
- * and where they sit in a lane.
+ * Model approval (P21e2): which models may serve, on which account, and where
+ * they sit in a lane.
  *
- * Only credentials with approvalRequired contribute rows. Everywhere else a
- * discovered model already serves, so listing it here would imply a gate that
- * is not there — the queue is exactly the set of decisions actually owed.
+ * Two kinds of row land here, and they are not the same question:
+ *
+ *   DISCOVERED — a filter found it on a credential that sets approvalRequired,
+ *   and it will not serve until someone says yes. Credentials without that flag
+ *   contribute nothing here, because their discovered models already serve and
+ *   listing them would imply a gate that is not there.
+ *
+ *   PICKED — someone chose it off the provider's catalogue by hand (Providers →
+ *   Browse). The decision is not a gate on that one, it is the whole reason the
+ *   model exists: rejecting it removes it rather than merely blocking it.
+ *
+ * So this page is the decision LOG plus whatever queue discovery has raised.
+ * The place to go looking for a model is the provider that holds it.
  */
 const ApprovalsDoc = graphql(/* GraphQL */ `
   query Approvals {
@@ -44,6 +54,8 @@ const ApprovalsDoc = graphql(/* GraphQL */ `
           quality
           note
           atMs
+          upstream
+          picked
           lanes {
             lane
             order
@@ -129,16 +141,18 @@ function ApprovalsPage() {
     <Box sx={{ p: 2 }}>
       <PageHeader title="Approvals">
         <Typography variant="body2" sx={{ opacity: 0.75 }}>
-          Discovered models awaiting a decision, per credential. A provider&apos;s catalogue differs
-          by key, so the same model can be wanted on one account and refused on another.
+          Every decision on record, plus anything discovery has queued. A provider&apos;s catalogue
+          differs by key, so the same model can be wanted on one account and refused on another. To
+          go looking for a model, use <strong>Providers → Browse</strong>.
         </Typography>
       </PageHeader>
-      <Panel title={`Queue (${pending} pending)`} flush>
+      <Panel title={`Decisions (${pending} pending)`} flush>
         {rows.length === 0 ? (
           <Typography variant="body2" sx={{ p: 2, opacity: 0.7 }}>
-            Nothing to decide. A credential only contributes rows here when it sets{' '}
-            <code>approvalRequired: true</code> — elsewhere discovered models serve as soon as they
-            are found.
+            Nothing decided and nothing queued. Discovery only queues a model when its credential
+            sets <code>approvalRequired: true</code> — elsewhere a discovered model serves as soon
+            as it is found. To enrol something discovery did not pick up, browse the provider&apos;s
+            catalogue.
           </Typography>
         ) : (
           <TableContainer>
@@ -147,6 +161,7 @@ function ApprovalsPage() {
                 <TableRow>
                   <TableCell>Model</TableCell>
                   <TableCell>Provider / account</TableCell>
+                  <TableCell>Source</TableCell>
                   <TableCell>State</TableCell>
                   <TableCell>Lane</TableCell>
                   <TableCell>Order</TableCell>
@@ -164,9 +179,28 @@ function ApprovalsPage() {
                     <TableRow key={k} hover>
                       <TableCell sx={{ fontFamily: 'monospace', fontSize: 12.5 }}>
                         {r.model}
+                        {r.upstream && (
+                          <Typography
+                            variant="caption"
+                            sx={{ display: 'block', opacity: 0.6, fontFamily: 'monospace' }}
+                          >
+                            {r.upstream}
+                          </Typography>
+                        )}
                       </TableCell>
                       <TableCell>
                         {r.provider} / <strong>{r.credential}</strong>
+                      </TableCell>
+                      <TableCell>
+                        {r.picked ? (
+                          <Tooltip title="Chosen by hand off the catalogue. This decision is what makes it exist — rejecting it removes the model, it does not merely gate it.">
+                            <Chip size="small" variant="outlined" label="picked" />
+                          </Tooltip>
+                        ) : (
+                          <Tooltip title="Found by the provider's discover filter. Rejecting it only stops it serving; the filter still sees it.">
+                            <Chip size="small" variant="outlined" label="discovered" />
+                          </Tooltip>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Chip

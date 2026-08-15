@@ -24,6 +24,8 @@ type ApprovalView struct {
 	Quality    float64       `json:"quality" doc:"Operator's rank, replacing the discovery template's uniform guess (0 = keep the template's)."`
 	Note       string        `json:"note" doc:"Free text kept with the decision."`
 	AtMS       int64         `json:"atMs" doc:"When the decision was recorded."`
+	Upstream   string        `json:"upstream" doc:"Provider id for a model picked off a catalogue by hand. Empty for one a discovery filter found."`
+	Picked     bool          `json:"picked" doc:"Chosen by hand rather than admitted by a filter — so this decision is what makes the model exist at all."`
 }
 
 type ApprovalsOutput struct {
@@ -55,7 +57,7 @@ func (h *Handlers) ListApprovals(_ context.Context, _ *struct{}) (*ApprovalsOutp
 		out.Body.Approvals = append(out.Body.Approvals, ApprovalView{
 			Provider: r.Provider, Credential: r.Credential, Model: r.Model,
 			State: r.State, Lanes: lanes, Quality: r.Quality, Note: r.Note,
-			AtMS: r.At.UnixMilli(),
+			AtMS: r.At.UnixMilli(), Upstream: r.Upstream, Picked: r.Upstream != "",
 		})
 	}
 	// Synthesise a pending row per (credential that can serve it, discovered
@@ -109,6 +111,11 @@ type DecideApprovalInput struct {
 		Lanes      []LaneRefView `json:"lanes,omitempty" doc:"Lanes to place it in, with position."`
 		Quality    float64       `json:"quality,omitempty" doc:"Rank to use instead of the discovery template's guess."`
 		Note       string        `json:"note,omitempty"`
+		// Upstream turns this from a verdict into an ENROLMENT. Sent when the
+		// model was picked off a catalogue rather than found by a filter: it is
+		// the provider's own id, and without it nothing downstream could
+		// address a model discovery never saw.
+		Upstream string `json:"upstream,omitempty" doc:"Provider model id, for a model chosen off a catalogue instead of found by the discover filter."`
 	}
 }
 
@@ -129,6 +136,7 @@ func (h *Handlers) DecideApproval(_ context.Context, in *DecideApprovalInput) (*
 		if err := h.Store.SaveApproval(store.ModelApproval{
 			Provider: b.Provider, Credential: b.Credential, Model: b.Model,
 			State: b.State, Lanes: lanes, Quality: b.Quality, Note: b.Note,
+			Upstream: b.Upstream,
 		}); err != nil {
 			return nil, err
 		}
@@ -157,7 +165,24 @@ func (h *Handlers) reloadApprovals() error {
 	if err != nil {
 		return err
 	}
+	InstallApprovals(h.config(), rows)
+	return nil
+}
+
+// InstallApprovals applies a decision set to a live config: the gate that says
+// which discovered models may serve, and the manual enrolments that say which
+// models exist in the first place.
+//
+// Exported and shared with startup because the two used to be separate copies
+// of the same loop, and a copy that installs the gate but forgets the picks
+// would drop every hand-chosen model on restart — silently, and only on
+// restart, which is the worst way to find out.
+func InstallApprovals(cfg *config.Config, rows []store.ModelApproval) {
+	if cfg == nil {
+		return
+	}
 	view := make(map[string]config.ApprovalView, len(rows))
+	var picks []config.Pick
 	for _, r := range rows {
 		lanes := make([]config.LanePlacement, 0, len(r.Lanes))
 		for _, l := range r.Lanes {
@@ -166,9 +191,16 @@ func (h *Handlers) reloadApprovals() error {
 		view[config.ApprovalKey(r.Provider, r.Credential, r.Model)] = config.ApprovalView{
 			State: r.State, Lanes: lanes, Quality: r.Quality,
 		}
+		// Only an APPROVED pick enrols. A pending or rejected one keeps its row
+		// — that is what stops the queue asking again — but contributes no
+		// model, so "reject" genuinely removes it rather than merely un-gating.
+		if r.Upstream != "" && r.State == store.ApprovalApproved {
+			picks = append(picks, config.Pick{
+				Provider: r.Provider, Credential: r.Credential,
+				Model: r.Model, Upstream: r.Upstream, Quality: r.Quality,
+			})
+		}
 	}
-	if cfg := h.Cfg; cfg != nil {
-		cfg.SetApprovals(view)
-	}
-	return nil
+	cfg.SetApprovals(view)
+	cfg.SetPicks(picks)
 }

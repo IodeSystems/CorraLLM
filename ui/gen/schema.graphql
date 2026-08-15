@@ -131,6 +131,12 @@ type CorrallmQueryNamespace {
     """Arm's toolset; defaults to "baseline"."""
     toolset: String
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
+  browseCatalog(
+    """Account to fetch it with; catalogues differ by key. Defaults to the provider's single/implicit credential."""
+    credential: String
+    """Provider whose catalogue to enumerate."""
+    provider: String!
+  ): corrallm_BrowseCatalogOutputBody @derived(operationId: "browseCatalog")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   entryYaml(
     """model | server | lane"""
@@ -146,6 +152,7 @@ type CorrallmQueryNamespace {
     windowHours: Long
   ): corrallm_KeysOutputBody @derived(operationId: "keys")
   listApprovals: corrallm_ApprovalsOutputBody @derived(operationId: "listApprovals")
+  listProviderPresets: corrallm_ProviderPresetsOutputBody @derived(operationId: "listProviderPresets")
   listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
@@ -359,6 +366,12 @@ type CorrallmV1QueryNamespace {
     """Arm's toolset; defaults to "baseline"."""
     toolset: String
   ): corrallm_BenchTranscriptOutputBody @derived(operationId: "benchTranscript")
+  browseCatalog(
+    """Account to fetch it with; catalogues differ by key. Defaults to the provider's single/implicit credential."""
+    credential: String
+    """Provider whose catalogue to enumerate."""
+    provider: String!
+  ): corrallm_BrowseCatalogOutputBody @derived(operationId: "browseCatalog")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   entryYaml(
     """model | server | lane"""
@@ -374,6 +387,7 @@ type CorrallmV1QueryNamespace {
     windowHours: Long
   ): corrallm_KeysOutputBody @derived(operationId: "keys")
   listApprovals: corrallm_ApprovalsOutputBody @derived(operationId: "listApprovals")
+  listProviderPresets: corrallm_ProviderPresetsOutputBody @derived(operationId: "listProviderPresets")
   listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
@@ -620,12 +634,16 @@ type corrallm_ApprovalView {
   model: String!
   """Free text kept with the decision."""
   note: String!
+  """Chosen by hand rather than admitted by a filter — so this decision is what makes the model exist at all."""
+  picked: Boolean!
   """Provider whose catalogue offered it."""
   provider: String!
   """Operator's rank, replacing the discovery template's uniform guess (0 = keep the template's)."""
   quality: Float!
   """pending | approved | rejected."""
   state: String!
+  """Provider id for a model picked off a catalogue by hand. Empty for one a discovery filter found."""
+  upstream: String!
 }
 
 type corrallm_ApprovalsOutputBody {
@@ -1135,6 +1153,18 @@ type corrallm_BenchTranscriptOutputBody {
   truncated: Boolean
 }
 
+type corrallm_BrowseCatalogOutputBody {
+  credential: String!
+  entries: [corrallm_CatalogEntryView!]!
+  """Why the catalogue could not be read. Entries is empty when set."""
+  error: String!
+  """Whether this provider has a discover block at all; without one, passesFilter is meaningless."""
+  hasFilter: Boolean!
+  provider: String!
+  """The models endpoint that was queried — the fastest way to see a wrong basePath."""
+  url: String!
+}
+
 input corrallm_CancelRequestInputBodyInput {
   """Live request id, from activeRequests."""
   id: Long!
@@ -1168,6 +1198,39 @@ type corrallm_CatalogEntry {
   source: String!
   stages: Long!
   summary: String
+}
+
+type corrallm_CatalogEntryView {
+  """Dollars per completion token, 0 when unpriced."""
+  completionUsd: Float!
+  """Upstream id currently serving under this served name, when it differs from this row's. Picking this row repoints that name."""
+  conflictsWith: String!
+  """Advertised window, 0 when unreported."""
+  contextLength: Long!
+  """Already declared in config under this served name."""
+  declared: Boolean!
+  """The provider's blurb, when it reports one."""
+  description: String!
+  """Currently servable on this credential."""
+  enrolled: Boolean!
+  """Offered at no cost, by ':free' suffix or zero pricing."""
+  free: Boolean!
+  """The provider's own model id — what actually goes on the wire."""
+  id: String!
+  """e.g. text, text+image; empty when unreported."""
+  inputModality: String!
+  """The provider's human label, when it reports one."""
+  name: String!
+  """e.g. text; empty when unreported."""
+  outputModality: String!
+  """The provider's discover filter would admit this row."""
+  passesFilter: Boolean!
+  """Dollars per prompt token, 0 when unpriced."""
+  promptUsd: Float!
+  """What it would be called here if enrolled."""
+  servedName: String!
+  """approved | rejected | pending, or empty when undecided."""
+  state: String!
 }
 
 type corrallm_ConfigMutationOutputBody {
@@ -1232,6 +1295,8 @@ input corrallm_DecideApprovalInputBodyInput {
   quality: Float
   """approved | rejected | pending (pending clears the decision)."""
   state: String!
+  """Provider model id, for a model chosen off a catalogue instead of found by the discover filter."""
+  upstream: String
 }
 
 type corrallm_DepthPoint {
@@ -1897,6 +1962,41 @@ type corrallm_PoolView {
   used: Long!
 }
 
+type corrallm_ProviderPresetView {
+  """Wire format. Only 'openai' is handled today."""
+  api: String!
+  authHeader: String!
+  authScheme: String!
+  """Path prefix in front of /v1. Empty for endpoints mounted at root."""
+  basePath: String!
+  """public = /v1/models answers without a key, so it can be browsed before one is stored; authed = it cannot."""
+  catalog: String!
+  docs: String!
+  """Suggested discovery filter: keep only free rows."""
+  freeOnly: Boolean!
+  """aggregator | lab | local — buckets the typeahead."""
+  group: String!
+  host: String!
+  id: String!
+  label: String!
+  """Suggested cap on how many models this provider contributes."""
+  limit: Long!
+  """Suggested discovery filter: minimum advertised window."""
+  minContext: Long!
+  """False for local endpoints, which take no key."""
+  needsSecret: Boolean!
+  notes: String!
+  port: Long!
+  """Rank applied to discovered models until one is approved with its own."""
+  quality: Float!
+  """Suggested credential-store entry name."""
+  secretRef: String!
+}
+
+type corrallm_ProviderPresetsOutputBody {
+  presets: [corrallm_ProviderPresetView!]!
+}
+
 type corrallm_ProviderSpec {
   """Path prefix, e.g. /api."""
   basePath: String
@@ -1909,10 +2009,14 @@ type corrallm_ProviderSpec {
   host: String!
   """Budget across ALL this provider's accounts together."""
   limits: [corrallm_Limit!]
+  """Models will be picked by hand from this provider's catalogue. Required when no discover filter is set."""
+  manual: Boolean
   """Provider name; served models are <provider>-<id>."""
   name: String!
   """Upstream port (default 443)."""
   port: Long
+  """How many models this provider declares in config by hand. Read-only here; edit them in the extension YAML."""
+  provides: Long
 }
 
 input corrallm_ProviderSpecInput {
@@ -1927,10 +2031,14 @@ input corrallm_ProviderSpecInput {
   host: String!
   """Budget across ALL this provider's accounts together."""
   limits: [corrallm_LimitInput!]
+  """Models will be picked by hand from this provider's catalogue. Required when no discover filter is set."""
+  manual: Boolean
   """Provider name; served models are <provider>-<id>."""
   name: String!
   """Upstream port (default 443)."""
   port: Long
+  """How many models this provider declares in config by hand. Read-only here; edit them in the extension YAML."""
+  provides: Long
 }
 
 type corrallm_ProviderView {

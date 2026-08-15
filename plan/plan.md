@@ -1392,9 +1392,22 @@ the BackpressureError shape we already validated.
   (4) **`queued_ms` is forward-only** — rows predating the column read 0; queue *wait* populates as new
   queued-then-served requests accumulate (rejections + sampled depth are already live).
 
-### ◻ P21 — provider credentials (multi-key providers, scoped budgets, key ACLs)
+### ◐ P21 — provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Design doc: **`plan/p21-provider-credentials.md`**. Not started.
+Design doc: **`plan/p21-provider-credentials.md`**. **P21a–h shipped** (this
+heading said "Not started" long after they were; the design doc's status list is
+the accurate one). Latest: **P21h** (2026-08-15) — provider presets, an
+add-provider modal with a typeahead, live catalogue browsing per credential, and
+models picked off a catalogue by hand rather than admitted by a filter.
+
+**next** P21c (budget granularity — the `usd` note below is still live).
+**risks** the preset table's basePaths were probed once, on 2026-08-15; a vendor
+moving one shows up as a 404 from a host that plainly exists. The catalogue
+browser prints the URL it tried, which is the intended cure.
+**assumption** browsing uses a credential's STATIC headers, matching what the
+discovery loop does; a credential using `authTokenCommand` reports that it
+cannot be browsed rather than sending an unauthenticated request and blaming the
+endpoint.
 
 Completes the P16 insight the implementation shortcut — *"free quota is enforced
 per ACCOUNT ... across multiple accounts of the same provider"* — by making

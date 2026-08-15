@@ -536,7 +536,8 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	// Approval decisions gate which DISCOVERED models serve. Loaded before the
+	// Approval decisions gate which DISCOVERED models serve, and carry the
+	// hand-picked models that exist for no other reason. Loaded before the
 	// first refresh: a rejection that arrived late would let the model serve in
 	// the gap, and a decision that did not survive a restart would put the same
 	// question back in the queue on every pass.
@@ -544,17 +545,7 @@ func serve(ctx context.Context, o serveOpts) error {
 		if rows, err := st.LoadApprovals(); err != nil {
 			slog.Warn("load approvals", "err", err)
 		} else if len(rows) > 0 {
-			view := make(map[string]config.ApprovalView, len(rows))
-			for _, r := range rows {
-				lanes := make([]config.LanePlacement, 0, len(r.Lanes))
-				for _, l := range r.Lanes {
-					lanes = append(lanes, config.LanePlacement{Lane: l.Lane, Order: l.Order})
-				}
-				view[config.ApprovalKey(r.Provider, r.Credential, r.Model)] = config.ApprovalView{
-					State: r.State, Lanes: lanes, Quality: r.Quality,
-				}
-			}
-			cfg.SetApprovals(view)
+			api.InstallApprovals(cfg, rows)
 			slog.Info("model approvals loaded", "count", len(rows))
 		}
 	}
@@ -743,7 +734,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// Enrollment writes config; reloading makes the new server usable without a
 	// restart. Set here rather than at construction because it closes over the
 	// proxy, which does not exist yet at that point.
-	h.Reload = func() error { return reloadInto(o.configPath, mgr, scheduler, px, h) }
+	h.Reload = func() error { return reloadInto(o.configPath, st, mgr, scheduler, px, h) }
 
 	// SIGHUP re-reads the config without dropping the listener or the resident
 	// backends. Config and keys were boot-time-only before this, so every edit
@@ -1072,10 +1063,23 @@ func applyConfig(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, px 
 
 // reloadInto re-reads path and applies it. Used by enrollment, which writes the
 // config and needs the new server usable without a restart.
-func reloadInto(path string, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) error {
+func reloadInto(path string, st *store.Store, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) error {
 	cfg, err := config.Load(path)
 	if err != nil {
 		return err
+	}
+	// Approvals and hand-picked models live on the CONFIG OBJECT, and a reload
+	// builds a new one — so without this they silently reset to "no decisions
+	// on record" until the next decide or the next restart. That drops every
+	// hand-picked model and un-rejects every rejected one, on any config write
+	// at all (adding a provider, saving the YAML editor). Reinstalled from the
+	// store, which is where the durable truth is.
+	if st != nil {
+		if rows, err := st.LoadApprovals(); err != nil {
+			slog.Warn("reload: load approvals", "err", err)
+		} else {
+			api.InstallApprovals(cfg, rows)
+		}
 	}
 	applyConfig(cfg, mgr, sc, px, h)
 	return nil

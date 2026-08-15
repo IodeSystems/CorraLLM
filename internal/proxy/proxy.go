@@ -165,26 +165,10 @@ func (p *Proxy) refreshDiscovery(ctx context.Context, hc *http.Client) {
 func selectDiscovered(cat []freeroster.Entry, dt config.DiscoverTarget) map[string]config.Model {
 	f := dt.Spec.Filter
 	pass := make([]freeroster.Entry, 0, len(cat))
-entries:
 	for _, e := range cat {
-		if f.Free && !e.Free {
-			continue
+		if f.Admits(e.ID, e.Free, e.InputModality, e.OutputModality, e.ContextLength) {
+			pass = append(pass, e)
 		}
-		if f.InputModality != "" && e.InputModality != f.InputModality {
-			continue
-		}
-		if f.OutputModality != "" && e.OutputModality != f.OutputModality {
-			continue
-		}
-		if f.MinContext > 0 && e.ContextLength < f.MinContext {
-			continue
-		}
-		for _, x := range f.Exclude {
-			if x != "" && strings.Contains(e.ID, x) {
-				continue entries
-			}
-		}
-		pass = append(pass, e)
 	}
 	// Largest context first, so a Limit keeps the most useful models and the
 	// result is stable across refreshes regardless of the provider's ordering.

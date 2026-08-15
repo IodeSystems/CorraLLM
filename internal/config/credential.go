@@ -126,6 +126,37 @@ func (c Credential) MergedHeaders(shared map[string]string) map[string]string {
 	return out
 }
 
+// ProviderTarget resolves where one credential of a provider talks to, for
+// callers that need the endpoint OUTSIDE a served model — enumerating a
+// catalogue, testing a key.
+//
+// DiscoverTargets answers the same question but only for providers carrying a
+// `discover` block, which is the wrong precondition here: browsing a catalogue
+// is how you decide whether to write a filter, so requiring the filter first
+// inverts the order the work actually happens in.
+func (c *Config) ProviderTarget(provider, credential string) (string, *ProxyTarget, Credential, error) {
+	extName, pv, ok := c.findProvider(provider)
+	if !ok {
+		return "", nil, Credential{}, fmt.Errorf("unknown provider %q", provider)
+	}
+	cr, ok := pv.CredentialNamed(credential)
+	if !ok {
+		return "", nil, Credential{}, fmt.Errorf("provider %q has no credential %q", provider, credential)
+	}
+	base, err := (Model{Proxy: pv.Proxy}).ProxyTarget()
+	if err != nil {
+		return "", nil, Credential{}, fmt.Errorf("provider %q: %w", provider, err)
+	}
+	t := *base
+	if len(cr.Headers) > 0 || cr.AuthTokenCommand != "" {
+		t.Headers = cr.MergedHeaders(base.Headers)
+		if cr.AuthTokenCommand != "" {
+			t.AuthTokenCommand = cr.AuthTokenCommand
+		}
+	}
+	return extName, &t, cr, nil
+}
+
 // validateCredentials checks one provider's credential list.
 func validateCredentials(ext, provider string, p Provider) error {
 	if len(p.Credentials) == 0 {

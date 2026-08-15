@@ -340,6 +340,13 @@ var migrations = []string{
 	// shared mode, since those held the lease and nothing else could queue.
 	`ALTER TABLE bench_probe_stages ADD COLUMN queued_ms INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE bench_probe_stages ADD COLUMN exec_ms INTEGER NOT NULL DEFAULT 0`,
+	// The provider's own model id, for a row approved off a catalogue rather
+	// than out of a discovery filter. Empty means the older shape — a decision
+	// ABOUT something discovery already found — and stays correct forever,
+	// because for those rows the upstream id is discovery's to supply. Non-empty
+	// makes the row load-bearing: it is the only record that the model should
+	// exist at all, so nothing else can reconstruct what to put on the wire.
+	`ALTER TABLE model_approval ADD COLUMN upstream TEXT NOT NULL DEFAULT ''`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms

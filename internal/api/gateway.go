@@ -299,6 +299,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.ListProviders)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "listProviderPresets",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/providers/presets",
+		Summary:     "Known OpenAI-compatible endpoints, with the host/basePath/auth a form would otherwise have to look up.",
+		Tags:        []string{"config"},
+	}, h.ListProviderPresets)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "browseCatalog",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/providers/catalog",
+		Summary:     "Enumerate one credential's /v1/models live, annotated with what has already been decided about each row.",
+		Tags:        []string{"config"},
+	}, h.BrowseCatalog)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "upsertProvider",
 		Method:      http.MethodPut,
 		Path:        "/api/v1/providers",

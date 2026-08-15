@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -162,6 +163,17 @@ type Entry struct {
 	InputModality  string // e.g. "text", "text+image"; empty when unreported
 	OutputModality string
 	ContextLength  int
+	// Name/Description are the provider's own human labels, empty on the many
+	// endpoints that report neither. Discovery ignores them; a person choosing
+	// a model off a catalogue of three hundred ids cannot.
+	Name        string
+	Description string
+	// PromptUSD/CompletionUSD are dollars per TOKEN as the provider advertises
+	// them (OpenRouter's own unit), or 0 when unpriced. Kept as parsed numbers
+	// rather than the raw strings so a UI can sort by cost — the reason to look
+	// at a catalogue at all is usually "what does this one cost".
+	PromptUSD     float64
+	CompletionUSD float64
 }
 
 // FetchCatalog GETs an OpenAI-compatible /v1/models and returns every row with
@@ -197,6 +209,8 @@ func parseCatalog(body []byte) ([]Entry, error) {
 	var doc struct {
 		Data []struct {
 			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Desc    string `json:"description"`
 			Pricing struct {
 				Prompt     string `json:"prompt"`
 				Completion string `json:"completion"`
@@ -218,7 +232,15 @@ func parseCatalog(body []byte) ([]Entry, error) {
 			ID:            m.ID,
 			Free:          hasFreeSuffix(m.ID) || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0"),
 			ContextLength: m.ContextLength,
+			Name:          m.Name,
+			Description:   m.Desc,
 		}
+		// Unparseable or absent pricing lands at 0, which reads as "unpriced" —
+		// the same thing the caller sees for an endpoint that reports no pricing
+		// block at all. Free is NOT inferred from these: it is already decided
+		// above on the raw strings, where "0" and "" are distinguishable.
+		e.PromptUSD, _ = strconv.ParseFloat(m.Pricing.Prompt, 64)
+		e.CompletionUSD, _ = strconv.ParseFloat(m.Pricing.Completion, 64)
 		e.InputModality = strings.Join(m.Architecture.InputModalities, "+")
 		e.OutputModality = strings.Join(m.Architecture.OutputModalities, "+")
 		// Older payloads report only "text->text"; split it so one filter works

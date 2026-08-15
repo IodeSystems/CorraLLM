@@ -488,6 +488,44 @@ Plumbing exists; the provider-shaped view does not.
   storing a secret and creating a provider referencing it, the value appears in
   neither `/api/v1/providers` nor the config YAML — config holds
   `Bearer ${NAME}` and nothing else.
+- ✅ **P21h** Catalogue browsing + provider presets + hand-picked models
+  (2026-08-15). Closes the gap P21g left: approvals gated what a FILTER had
+  already chosen, so a model the filter excluded was unreachable except by
+  loosening the filter and admitting a hundred others with it. The catalogue was
+  fetched, narrowed, and the remainder discarded with no record it existed.
+  - **`internal/config/presets.go`** — 18 verified OpenAI-compatible endpoints
+    (host, port, basePath, auth header, suggested filter, docs), served over
+    `GET /api/v1/providers/presets`. In Go so `validate`, the CLI and the UI
+    share one table and a corrected path ships with the binary. Each carries
+    `api: "openai"` — the seam a non-OpenAI adapter becomes a value of rather
+    than a schema change. Gemini is deliberately absent for exactly that
+    reason: its OpenAI surface is rooted at `/v1beta/openai/`, and no basePath
+    makes `basePath + "/v1/models"` reach it.
+  - **`GET /api/v1/providers/catalog`** — one credential's `/v1/models` live,
+    annotated with what corrallm already decided per row (state, enrolled,
+    passesFilter, declared, conflictsWith). Live rather than cached, because the
+    cache holds only the survivors and the point is the rows that did not
+    survive.
+  - **Picks** (`internal/config/pick.go`) — an approval carrying the provider's
+    own `upstream` id ENROLS a model instead of merely gating one. They live in
+    the same overlay as discovered models (every downstream reader already knows
+    it) and are re-applied after each `SetDiscoveredFor`, which replaces a
+    credential's contribution wholesale — without that a hand-picked model
+    vanished within one refresh interval, looking like the provider had dropped
+    it.
+  - **`manual: true` on a provider** — the third way to contribute models, so
+    "contributes nothing" stays an error and a half-written provider block is
+    still caught.
+  - **Bug found and fixed**: `reloadInto` built a fresh Config and installed it
+    without re-seeding approvals, so ANY config write through the UI silently
+    reset every decision until the next decide or restart — un-rejecting
+    rejections and (once picks existed) dropping every hand-picked model.
+    `api.InstallApprovals` is now the single install path, shared by startup and
+    reload.
+  - Verified live on an isolated daemon: 413-row OpenRouter catalogue, 10
+    passing the filter; picking the paid, filter-excluded `x-ai/grok-4.20` put it
+    in `/v1/models`, and it survived a config write, a discovery refresh and a
+    restart.
 
 All phases shipped. What is deliberately NOT built:
   - Provider-level spend rollup in the UI. The budgets exist and are enforced;

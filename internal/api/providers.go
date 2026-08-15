@@ -53,6 +53,17 @@ type ProviderSpec struct {
 	// nothing can reach — and a form has no sane way to hand-list a remote
 	// catalogue, so this is the shape "add a provider" actually takes.
 	Discover *DiscoverSpec `json:"discover,omitempty" required:"false" doc:"Enumerate the provider's own catalogue instead of listing models by hand."`
+
+	// Manual is the other way to satisfy that requirement: no filter, models
+	// picked one at a time off the catalogue. The two are not exclusive — a
+	// filter for the bulk and hand-picks for the exceptions is the common case.
+	Manual bool `json:"manual" required:"false" doc:"Models will be picked by hand from this provider's catalogue. Required when no discover filter is set."`
+
+	// Provides counts the models declared for this provider in YAML. Output
+	// only: a form cannot edit a hand-written model list, but it must be able
+	// to SAY there is one — otherwise a provider that declares its models looks
+	// identical to one that contributes nothing.
+	Provides int `json:"provides" required:"false" doc:"How many models this provider declares in config by hand. Read-only here; edit them in the extension YAML."`
 }
 
 // DiscoverSpec is the filter a provider's catalogue is admitted through.
@@ -100,6 +111,22 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 			_ = pv.Proxy.Decode(&po)
 			ps.Host, ps.Port, ps.BasePath = po.Host, po.Port, po.BasePath
 			ps.Limits = toWireLimits(pv.Limits)
+			ps.Manual = pv.Manual
+			ps.Provides = len(pv.Provides)
+			// Reported so an edit form can ROUND-TRIP the filter. Without it a
+			// form could only ever send a filter it had invented, and the only
+			// safe thing to do with the field was omit it — which made "edit
+			// this provider" and "keep its discovery rules" mutually exclusive.
+			if pv.Discover != nil {
+				f := pv.Discover.Filter
+				ps.Discover = &DiscoverSpec{
+					FreeOnly: f.Free, InputModality: f.InputModality,
+					OutputModality: f.OutputModality, MinContext: f.MinContext,
+					Exclude: f.Exclude, Limit: pv.Discover.Limit,
+					Quality: pv.Discover.Template.Quality,
+					Type:    pv.Discover.Template.Type,
+				}
+			}
 			for _, cr := range pv.Credentials {
 				ref, header := secretRefOf(cr)
 				ps.Credentials = append(ps.Credentials, CredentialSpec{
@@ -170,11 +197,11 @@ func (h *Handlers) UpsertProvider(_ context.Context, in *UpsertProviderInput) (*
 		out.Body.Message = "host is required: a provider is an endpoint"
 		return out, nil
 	}
-	if b.Discover == nil {
+	if b.Discover == nil && !b.Manual {
 		// Caught here rather than by config validation so the message names the
 		// fix instead of the rule: a provider must contribute models, and a
-		// form's way of doing that is discovery.
-		out.Body.Message = "discover is required when adding a provider: an endpoint that contributes no models cannot be reached. Set discover (e.g. {freeOnly: true, inputModality: text}) or add provides by editing the extension YAML."
+		// form's two ways of doing that are a discovery filter or hand-picking.
+		out.Body.Message = "a provider must contribute models: set discover (e.g. {freeOnly: true, inputModality: text}), or manual to pick them off its catalogue by hand. An endpoint contributing neither cannot be reached."
 		return out, nil
 	}
 	port := b.Port
@@ -199,6 +226,15 @@ func (h *Handlers) UpsertProvider(_ context.Context, in *UpsertProviderInput) (*
 		}
 		pv.Proxy = proxy
 		pv.Limits = toConfigLimits(b.Limits)
+		pv.Manual = b.Manual
+		// Omitting discover normally PRESERVES the block (see above): a form
+		// editing credentials must not delete a filter someone wrote by hand.
+		// The one case that means deletion is manual-with-no-filter, which is
+		// the operator saying "I choose these myself" — leaving the old filter
+		// running there would keep enrolling exactly what they took over.
+		if b.Discover == nil && b.Manual {
+			pv.Discover = nil
+		}
 		if b.Discover != nil {
 			d := b.Discover
 			typ := d.Type
