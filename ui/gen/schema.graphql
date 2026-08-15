@@ -45,6 +45,7 @@ type CorrallmMutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
+  setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
@@ -63,6 +64,7 @@ type CorrallmMutationNamespace {
     """Served model name."""
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
+  upsertProvider(body: corrallm_ProviderSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertProvider")
   v1: CorrallmV1MutationNamespace!
 }
 
@@ -144,6 +146,7 @@ type CorrallmQueryNamespace {
     windowHours: Long
   ): corrallm_KeysOutputBody @derived(operationId: "keys")
   listApprovals: corrallm_ApprovalsOutputBody @derived(operationId: "listApprovals")
+  listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -271,6 +274,7 @@ type CorrallmV1MutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
+  setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
@@ -289,6 +293,7 @@ type CorrallmV1MutationNamespace {
     """Served model name."""
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
+  upsertProvider(body: corrallm_ProviderSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertProvider")
 }
 
 type CorrallmV1QueryNamespace {
@@ -369,6 +374,7 @@ type CorrallmV1QueryNamespace {
     windowHours: Long
   ): corrallm_KeysOutputBody @derived(operationId: "keys")
   listApprovals: corrallm_ApprovalsOutputBody @derived(operationId: "listApprovals")
+  listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -1178,6 +1184,40 @@ type corrallm_ConfigSummaryOutputBody {
   servers: [String!]!
 }
 
+type corrallm_CredentialSpec {
+  """corrallm keys permitted to use this account. Empty = all."""
+  allow: [String!]
+  """Gate DISCOVERED models behind an explicit decision before they serve."""
+  approvalRequired: Boolean
+  """Whether the referenced entry exists in the store. The value itself is never returned."""
+  hasSecret: Boolean
+  """Header to carry it in (default authorization, as 'Bearer <value>')."""
+  headerName: String
+  """Budgets for this account alone."""
+  limits: [corrallm_Limit!]
+  """Account name; also the budget key, stable across restarts."""
+  name: String!
+  """Name of the credential-store entry holding this account's token. Referenced as ${NAME}; the value never enters config."""
+  secretRef: String
+}
+
+input corrallm_CredentialSpecInput {
+  """corrallm keys permitted to use this account. Empty = all."""
+  allow: [String!]
+  """Gate DISCOVERED models behind an explicit decision before they serve."""
+  approvalRequired: Boolean
+  """Whether the referenced entry exists in the store. The value itself is never returned."""
+  hasSecret: Boolean
+  """Header to carry it in (default authorization, as 'Bearer <value>')."""
+  headerName: String
+  """Budgets for this account alone."""
+  limits: [corrallm_LimitInput!]
+  """Account name; also the budget key, stable across restarts."""
+  name: String!
+  """Name of the credential-store entry holding this account's token. Referenced as ${NAME}; the value never enters config."""
+  secretRef: String
+}
+
 input corrallm_DecideApprovalInputBodyInput {
   """Account the decision applies to."""
   credential: String!
@@ -1225,6 +1265,44 @@ type corrallm_DeviceMemView {
   usedBytes: Long!
   """Vendor device UUID — the identity a pool binds to."""
   uuid: String
+}
+
+type corrallm_DiscoverSpec {
+  """Drop ids containing any of these substrings."""
+  exclude: [String!]
+  """Keep only rows the provider offers at no cost."""
+  freeOnly: Boolean
+  """Exact match, e.g. text. Keeps a music model out of a chat lane."""
+  inputModality: String
+  """Cap how many models this provider contributes (largest context first)."""
+  limit: Long
+  """Drop rows with a smaller advertised window."""
+  minContext: Long
+  """Exact match, e.g. text."""
+  outputModality: String
+  """Rank applied to every discovered model until one is approved with its own."""
+  quality: Float
+  """Cost class for discovered models (default chat)."""
+  type: String
+}
+
+input corrallm_DiscoverSpecInput {
+  """Drop ids containing any of these substrings."""
+  exclude: [String!]
+  """Keep only rows the provider offers at no cost."""
+  freeOnly: Boolean
+  """Exact match, e.g. text. Keeps a music model out of a chat lane."""
+  inputModality: String
+  """Cap how many models this provider contributes (largest context first)."""
+  limit: Long
+  """Drop rows with a smaller advertised window."""
+  minContext: Long
+  """Exact match, e.g. text."""
+  outputModality: String
+  """Rank applied to every discovered model until one is approved with its own."""
+  quality: Float
+  """Cost class for discovered models (default chat)."""
+  type: String
 }
 
 input corrallm_EnrollRequestInput {
@@ -1497,6 +1575,28 @@ input corrallm_LaneRefViewInput {
   lane: String!
   """Position in that lane's ladder; lower is tried first."""
   order: Long!
+}
+
+type corrallm_Limit {
+  """Window: minute | hour | day | month."""
+  per: String!
+  """Requests."""
+  req: Float
+  """Seconds of backend dwell."""
+  sec: Float
+  """Dollars."""
+  usd: Float
+}
+
+input corrallm_LimitInput {
+  """Window: minute | hour | day | month."""
+  per: String!
+  """Requests."""
+  req: Float
+  """Seconds of backend dwell."""
+  sec: Float
+  """Dollars."""
+  usd: Float
 }
 
 input corrallm_MintEnrollmentTokenInputBodyInput {
@@ -1797,12 +1897,54 @@ type corrallm_PoolView {
   used: Long!
 }
 
+type corrallm_ProviderSpec {
+  """Path prefix, e.g. /api."""
+  basePath: String
+  """Accounts held against this endpoint."""
+  credentials: [corrallm_CredentialSpec!]
+  discover: corrallm_DiscoverSpec
+  """Extension that groups this provider."""
+  extension: String!
+  """Upstream host."""
+  host: String!
+  """Budget across ALL this provider's accounts together."""
+  limits: [corrallm_Limit!]
+  """Provider name; served models are <provider>-<id>."""
+  name: String!
+  """Upstream port (default 443)."""
+  port: Long
+}
+
+input corrallm_ProviderSpecInput {
+  """Path prefix, e.g. /api."""
+  basePath: String
+  """Accounts held against this endpoint."""
+  credentials: [corrallm_CredentialSpecInput!]
+  discover: corrallm_DiscoverSpecInput
+  """Extension that groups this provider."""
+  extension: String!
+  """Upstream host."""
+  host: String!
+  """Budget across ALL this provider's accounts together."""
+  limits: [corrallm_LimitInput!]
+  """Provider name; served models are <provider>-<id>."""
+  name: String!
+  """Upstream port (default 443)."""
+  port: Long
+}
+
 type corrallm_ProviderView {
   count: Long!
   error: String
   fetchedAt: Long
   free: [String!]!
   provider: String!
+}
+
+type corrallm_ProvidersOutputBody {
+  providers: [corrallm_ProviderSpec!]!
+  """Names present in the credential store. Names only — values are never served."""
+  secrets: [String!]!
 }
 
 input corrallm_PutEntryYAMLInputBodyInput {
@@ -2080,6 +2222,13 @@ type corrallm_ServiceProfilesOutputBody {
   minutes: Long!
   """One row per (model, caller), heaviest consumer first."""
   rows: [corrallm_ServiceProfileRow!]!
+}
+
+input corrallm_SetSecretInputBodyInput {
+  """Store entry name; referenced from config as ${NAME}."""
+  name: String!
+  """The secret. Empty clears it. NEVER returned by any endpoint."""
+  value: String!
 }
 
 type corrallm_StageView {

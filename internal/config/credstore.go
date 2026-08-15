@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 	"sync"
 )
 
@@ -45,6 +48,7 @@ var (
 // rather than loading it with a warning nobody reads. Failing here is loud and
 // recoverable (`chmod 600`); loading is silent and permanent.
 func LoadCredentials(home string) error {
+	credentialsHome = home
 	path := filepath.Join(home, CredentialsFileName)
 	st, err := os.Stat(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -105,3 +109,78 @@ func SecretNames() []string {
 	}
 	return out
 }
+
+// credentialsHome remembers where the store was loaded from, so a write lands
+// beside the config rather than needing the path threaded through every caller.
+var credentialsHome string
+
+// SetSecret writes one value into the credential store and installs it live.
+//
+// WRITE-ONLY BY DESIGN. There is no companion getter: the §9 property is that
+// /api/v1/config/* never serves a secret, and a read endpoint would reintroduce
+// exactly what keeping this file separate was meant to prevent. A UI can set a
+// key and see that it EXISTS (SecretNames), never what it is.
+//
+// The file is rewritten whole at 0600. Comments and ordering are not preserved
+// — this is a machine-managed store, and the alternative is a merge that
+// silently drops a key it failed to parse.
+func SetSecret(name, value string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("secret name is required")
+	}
+	if !envName.MatchString(name) {
+		// Config references it as ${NAME}, and envRef only matches this shape,
+		// so a name outside it would be unreferenceable — stored and never
+		// usable, which is worse than refused.
+		return fmt.Errorf("secret name %q must match [A-Za-z_][A-Za-z0-9_]*: it is referenced as ${%s} and nothing else would resolve", name, name)
+	}
+	if credentialsHome == "" {
+		return fmt.Errorf("credential store location unknown: LoadCredentials was never called")
+	}
+	secretsMu.Lock()
+	if secrets == nil {
+		secrets = map[string]string{}
+	}
+	if value == "" {
+		delete(secrets, name)
+	} else {
+		secrets[name] = value
+	}
+	snapshot := make(map[string]string, len(secrets))
+	for k, v := range secrets {
+		snapshot[k] = v
+	}
+	secretsMu.Unlock()
+	return writeCredentials(filepath.Join(credentialsHome, CredentialsFileName), snapshot)
+}
+
+// writeCredentials rewrites the store atomically at 0600.
+//
+// Via a temp file in the same directory then rename: a partial write would
+// leave every credential unreadable, and a process that crashed mid-write would
+// take the whole provider set down until someone noticed.
+func writeCredentials(path string, m map[string]string) error {
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("# corrallm credential store — managed, rewritten whole.\n")
+	b.WriteString("# Referenced from config as ${NAME}; the config itself holds no secrets.\n")
+	b.WriteString("# Must stay mode 0600: corrallm refuses to start if it is readable more widely.\n")
+	for _, k := range names {
+		b.WriteString(k)
+		b.WriteString("=")
+		b.WriteString(m[k])
+		b.WriteString("\n")
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// envName is the shape ${...} expansion recognises (see envRef).
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

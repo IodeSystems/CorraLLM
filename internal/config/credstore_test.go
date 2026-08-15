@@ -106,3 +106,83 @@ func TestSecretNamesLeaksNoValues(t *testing.T) {
 		}
 	}
 }
+
+// TestSetSecretWritesAndResolves: a value set through the API must be usable by
+// ${...} expansion immediately, not after a restart.
+func TestSetSecretWritesAndResolves(t *testing.T) {
+	dir := writeCreds(t, "EXISTING=old\n", 0o600)
+	if err := LoadCredentials(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetSecret("NEWKEY", "sk-new"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lookupSecret("NEWKEY"); got != "sk-new" {
+		t.Errorf("lookupSecret = %q, want it live immediately", got)
+	}
+	// and it survives a reload from disk
+	secretsMu.Lock()
+	secrets = nil
+	secretsMu.Unlock()
+	if err := LoadCredentials(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := lookupSecret("NEWKEY"); got != "sk-new" {
+		t.Errorf("after reload lookupSecret = %q", got)
+	}
+	if got := lookupSecret("EXISTING"); got != "old" {
+		t.Errorf("writing one key dropped another: EXISTING = %q", got)
+	}
+}
+
+// TestSetSecretKeepsFileMode: the store is rewritten whole, and corrallm
+// refuses to start on a loose mode — so a write that widened it would break the
+// next restart.
+func TestSetSecretKeepsFileMode(t *testing.T) {
+	dir := writeCreds(t, "A=1\n", 0o600)
+	if err := LoadCredentials(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetSecret("B", "2"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(filepath.Join(dir, CredentialsFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("mode widened to %04o — the next startup would refuse to load it", perm)
+	}
+}
+
+// TestSetSecretEmptyDeletes: clearing a value removes the key rather than
+// storing an empty string that would expand to "" and look like a broken token.
+func TestSetSecretEmptyDeletes(t *testing.T) {
+	dir := writeCreds(t, "GONE=x\n", 0o600)
+	if err := LoadCredentials(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetSecret("GONE", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range SecretNames() {
+		if n == "GONE" {
+			t.Error("cleared secret still present")
+		}
+	}
+}
+
+// TestSetSecretRejectsUnreferenceableName: config refers to a secret as ${NAME}
+// and envRef only matches that shape, so a name outside it would be stored and
+// never usable.
+func TestSetSecretRejectsUnreferenceableName(t *testing.T) {
+	dir := writeCreds(t, "", 0o600)
+	if err := LoadCredentials(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"", "has space", "has-dash", "1leading", "dot.name"} {
+		if err := SetSecret(bad, "v"); err == nil {
+			t.Errorf("name %q should be refused as unreferenceable", bad)
+		}
+	}
+}

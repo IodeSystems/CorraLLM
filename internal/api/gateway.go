@@ -291,6 +291,30 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UnloadModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "listProviders",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/providers",
+		Summary:     "Every provider with its accounts, plus the NAMES held in the credential store (never the values).",
+		Tags:        []string{"config"},
+	}, h.ListProviders)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "upsertProvider",
+		Method:      http.MethodPut,
+		Path:        "/api/v1/providers",
+		Summary:     "Create or replace a provider and its accounts. Credentials carry a secretRef, never a secret.",
+		Tags:        []string{"config"},
+	}, h.UpsertProvider)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "setSecret",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/secrets",
+		Summary:     "Write one entry into the credential store. WRITE-ONLY: no endpoint ever returns a secret's value.",
+		Tags:        []string{"config"},
+	}, h.SetSecret)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "listApprovals",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/approvals",

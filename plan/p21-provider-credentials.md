@@ -480,15 +480,22 @@ Plumbing exists; the provider-shaped view does not.
   positions and re-installs the table immediately. The page pairs the decision
   with its placement in one click — approving and then separately placing would
   leave a model serving from nowhere in between.
-  NOT built: credential CRUD from the UI. Credentials are still edited as
-  config, which is the honest shape while secrets live in a separate file
-  (§9) — a credential form that could not set the secret would be half a form.
+  Also: a **Providers** page with credential CRUD. The §9 objection turned out
+  to be narrower than stated — the property is that the API never SERVES a
+  secret, and writing one is a different operation. `POST /api/v1/secrets` is
+  write-only with no read counterpart, so a form can set a value and see that it
+  EXISTS (`hasSecret`) without any endpoint able to return it. Verified: after
+  storing a secret and creating a provider referencing it, the value appears in
+  neither `/api/v1/providers` nor the config YAML — config holds
+  `Bearer ${NAME}` and nothing else.
 
 All phases shipped. What is deliberately NOT built:
-  - Credential CRUD from the UI (see P21g) — needs a story for editing
-    ~/.corrallm/credentials, which the API must never serve.
   - Provider-level spend rollup in the UI. The budgets exist and are enforced;
     only the visualisation is missing.
+  - Editing an EXISTING provider's discovery filter from the form. Upsert keeps
+    `provides`/`discover` when a provider already exists, so a form save cannot
+    silently drop a hand-written model list — but it also cannot change the
+    filter, which stays a YAML edit.
   - `SetLimits` still runs at proxy construction, so a credential added by a
     live config edit needs a restart before its budget registers. Pre-existing;
     per-model freeTier limits behave the same way.

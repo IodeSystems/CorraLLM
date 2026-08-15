@@ -100,6 +100,7 @@ const NAV = [
   { to: '/keys', label: 'Keys' },
   { to: '/bench', label: 'Bench' },
   { to: '/quota', label: 'Quota' },
+  { to: '/providers', label: 'Providers' },
   { to: '/approvals', label: 'Approvals' },
 ] as const
 
