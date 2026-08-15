@@ -789,11 +789,40 @@ func serve(ctx context.Context, o serveOpts) error {
 		return err
 	case <-sigCtx.Done():
 		slog.Info("shutdown signal received")
-		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownDrain)
 		defer cancel()
-		return srv.Shutdown(shutCtx)
+		if err := srv.Shutdown(shutCtx); err != nil {
+			// Running out of drain is a fact about the traffic, not a failure of
+			// this process, and returning it made every busy restart exit 1 and
+			// log `status=1/FAILURE` — a routine reload indistinguishable from a
+			// real fault in the journal.
+			//
+			// The requests are not abandoned by saying so. Shutdown stops the
+			// listener and waits; it never cancels a handler. What ends them is
+			// the deferred mgr.Shutdown() below, which SIGTERMs every backend the
+			// instant this returns — so whatever was still running dies either
+			// way, and the only question is whether the exit code lies about it.
+			slog.Warn("shutdown drain expired with requests still in flight",
+				"drain", shutdownDrain, "err", err)
+		}
+		return nil
 	}
 }
+
+// shutdownDrain is how long in-flight requests get to finish on a restart.
+//
+// Was 10s, against a systemd TimeoutStopSec of 90 — corrallm held itself to a
+// ninth of the budget it had. Nothing is paid for the larger number when the
+// server is quiet: Shutdown returns the moment the last handler does, which is
+// the same reasoning Manager.Shutdown already applies to reaping backends
+// ("polled, not slept … only a genuinely stuck backend pays the grace period").
+//
+// It deliberately does NOT cover a transcription. oidio diarizes at roughly a
+// third of realtime, so a 24-minute recording occupies a handler for over five
+// minutes, and a drain that waited for one would make every reload take that
+// long — on a box seeing 26 restarts in a day. A request that outlives a
+// restart is the client's problem to retry, and raglit's stt client now does.
+const shutdownDrain = 60 * time.Second
 
 // runRosterRefresh refreshes the free-model roster once at startup and then on
 // an interval, until shutdown. The first pass runs after a short delay so a slow
