@@ -806,14 +806,50 @@ type LaneMember struct {
 	// selector says what is WANTED, so churn stops being an event to handle.
 	Provider string `yaml:"provider,omitempty"`
 
+	// Server scopes a selector to ONE host. Without it, "the same model" on two
+	// hosts is one undifferentiated pool, and a lane cannot express the thing
+	// lanes exist for: try the local copy first, fall to the attached box, fall
+	// to a paid remote. A local Qwen and a remote Qwen are different backends
+	// with different latency, cost and failure modes — collapsing them makes
+	// the fallback ladder meaningless.
+	//
+	// Combines with Provider: both set means both must match.
+	Server string `yaml:"server,omitempty"`
+
+	// Device scopes further, to models drawing on one memory pool of that host
+	// (gpu0, gpu1, system). Two cards on one box are not interchangeable — a
+	// 5090 and a 3080 differ by 3x in bandwidth — so "the local copy" is
+	// sometimes a per-DEVICE statement, not a per-host one.
+	Device string `yaml:"device,omitempty"`
+
 	// MinQuality drops contributed models below this rank, so a selector does
 	// not have to accept everything a provider happens to publish.
 	MinQuality float64 `yaml:"minQuality,omitempty"`
 }
 
 // IsSelector reports whether this member resolves against the roster rather
-// than naming one model.
-func (lm LaneMember) IsSelector() bool { return lm.Model == "" && lm.Provider != "" }
+// than naming one model. Any scoping field makes it one.
+func (lm LaneMember) IsSelector() bool {
+	return lm.Model == "" && (lm.Provider != "" || lm.Server != "" || lm.Device != "")
+}
+
+// matches reports whether a model satisfies every scope this selector declares.
+// Unset fields do not constrain, so `{provider: openrouter}` still means "all of
+// that provider's" and `{server: box1}` means "everything hosted here".
+func (lm LaneMember) matches(m Model) bool {
+	if lm.Provider != "" && m.ProviderName != lm.Provider {
+		return false
+	}
+	if lm.Server != "" && m.Server != lm.Server {
+		return false
+	}
+	if lm.Device != "" {
+		if _, ok := m.RAMUsage[lm.Device]; !ok {
+			return false
+		}
+	}
+	return m.Quality >= lm.MinQuality
+}
 
 // selectorMembers expands one selector into concrete candidates.
 //
@@ -824,7 +860,7 @@ func (lm LaneMember) IsSelector() bool { return lm.Model == "" && lm.Provider !=
 func (c *Config) selectorMembers(lm LaneMember) []Candidate {
 	var out []Candidate
 	add := func(name string, m Model) {
-		if m.ProviderName != lm.Provider || m.Quality < lm.MinQuality {
+		if !lm.matches(m) {
 			return
 		}
 		out = append(out, Candidate{Name: name, Model: m, Sticky: lm.Sticky})

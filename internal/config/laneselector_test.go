@@ -144,3 +144,127 @@ func TestSelectorPicksUpDiscoveredModels(t *testing.T) {
 		t.Errorf("ordering = %v, want openrouter-new third by quality", names)
 	}
 }
+
+// localAndRemote is the case the goal names: the same model family reachable
+// locally, on an attached host, and via a paid remote. They are DIFFERENT
+// backends — different latency, cost and failure modes — and a lane exists to
+// order them, not to pool them.
+const localAndRemote = `
+servers:
+  box1: {pools: {gpu0: 32GB, gpu1: 10GB, system: 125GB}}
+  mac1: {pools: {system: 64GB}}
+models:
+  qwen-local:
+    cmd: llama-server
+    server: box1
+    proxy: 5800
+    type: chat
+    quality: 5
+    ramUsage: {gpu0: 30GB}
+  qwen-local-small:
+    cmd: llama-server
+    server: box1
+    proxy: 5802
+    type: chat
+    quality: 3
+    ramUsage: {gpu1: 8GB}
+  qwen-mac:
+    cmd: llama-server
+    server: mac1
+    proxy: 5810
+    type: chat
+    quality: 4
+    ramUsage: {system: 34GB}
+extensions:
+  free:
+    providers:
+      openrouter:
+        proxy: {host: openrouter.ai, port: 443}
+        provides:
+          qwen: {type: chat, quality: 2, upstream: v/qwen}
+`
+
+// TestSelectorScopesByHost: "the local copy first, then the attached box, then
+// the remote" — which is meaningless if a selector cannot tell hosts apart.
+func TestSelectorScopesByHost(t *testing.T) {
+	c := laneCfg(t, localAndRemote+`
+lanes:
+  chat:
+    members:
+      - {server: box1}
+      - {server: mac1}
+      - {provider: openrouter}
+`)
+	cands, ok := c.ResolveServed("chat")
+	if !ok {
+		t.Fatal("lane did not resolve")
+	}
+	var got []string
+	for _, cd := range cands {
+		got = append(got, cd.Name)
+	}
+	want := []string{"qwen-local", "qwen-local-small", "qwen-mac", "openrouter-qwen"}
+	if len(got) != len(want) {
+		t.Fatalf("members = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("members = %v, want %v — declared member order IS lane priority", got, want)
+		}
+	}
+}
+
+// TestSelectorDoesNotConfuseLocalAndRemote: the explicit goal. A host-scoped
+// selector must not sweep in the remote copy, however similar the model.
+func TestSelectorDoesNotConfuseLocalAndRemote(t *testing.T) {
+	c := laneCfg(t, localAndRemote+`
+lanes:
+  localonly:
+    members: [{server: box1}]
+`)
+	cands, _ := c.ResolveServed("localonly")
+	for _, cd := range cands {
+		if cd.Model.ProviderName == "openrouter" {
+			t.Errorf("a host-scoped selector picked up the remote %q", cd.Name)
+		}
+		if cd.Model.Server != "box1" {
+			t.Errorf("%q is on server %q, not box1", cd.Name, cd.Model.Server)
+		}
+	}
+	if len(cands) != 2 {
+		t.Errorf("want both box1 models, got %d", len(cands))
+	}
+}
+
+// TestSelectorScopesByDevice: two cards on one box are not interchangeable —
+// a 5090 and a 3080 differ ~3x in bandwidth — so "the local copy" is sometimes
+// a per-device statement.
+func TestSelectorScopesByDevice(t *testing.T) {
+	c := laneCfg(t, localAndRemote+`
+lanes:
+  fastcard:
+    members: [{server: box1, device: gpu0}]
+`)
+	cands, _ := c.ResolveServed("fastcard")
+	if len(cands) != 1 || cands[0].Name != "qwen-local" {
+		var got []string
+		for _, cd := range cands {
+			got = append(got, cd.Name)
+		}
+		t.Errorf("members = %v, want only qwen-local (the gpu0 one)", got)
+	}
+}
+
+// TestSelectorCombinesScopes: provider AND server both set means both must
+// match, so a provider reachable from two hosts stays separable.
+func TestSelectorCombinesScopes(t *testing.T) {
+	c := laneCfg(t, localAndRemote+`
+lanes:
+  none:
+    members: [{provider: openrouter, server: box1}]
+`)
+	cands, ok := c.ResolveServed("none")
+	if ok && len(cands) > 0 {
+		t.Errorf("openrouter is not on box1; want no members, got %d", len(cands))
+	}
+}
