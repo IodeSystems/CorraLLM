@@ -291,6 +291,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UnloadModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "listApprovals",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/approvals",
+		Summary:     "Every approval decision, plus the discovered models still awaiting one.",
+		Tags:        []string{"config"},
+	}, h.ListApprovals)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "decideApproval",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/approvals/decide",
+		Summary:     "Approve or reject a discovered model on one credential, with the lanes and position it should take.",
+		Tags:        []string{"config"},
+	}, h.DecideApproval)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "pauseModel",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/models/pause",

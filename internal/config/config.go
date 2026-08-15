@@ -178,6 +178,11 @@ func (c *Config) SetDiscoveredFor(provider, credential string, models map[string
 	}
 }
 
+// DiscoveredServableBy is the exported form, for the approval queue.
+func (c *Config) DiscoveredServableBy(model, credential string) bool {
+	return c.discoveredServableBy(model, credential)
+}
+
 // discoveredServableBy reports whether a discovered model is reachable with the
 // named credential. A model that is not discovered at all (declared, or a glob
 // template) is unconstrained — this only narrows what discovery contributed.
