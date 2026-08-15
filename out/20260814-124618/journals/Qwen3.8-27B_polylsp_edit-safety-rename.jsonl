@@ -1,0 +1,4 @@
+{"ts":1786737358433076711,"tool":"node_query","args":{"selector":"#Config"},"resultBytes":169,"poisoned":false,"bait":false}
+{"ts":1786737360226433150,"tool":"node_edit","args":{"node":"app/config.go#Config","rename":"Settings"},"resultBytes":876,"poisoned":false,"bait":false}
+{"ts":1786737361164414220,"tool":"run","args":{"argv":["go","build","./..."]},"resultBytes":26,"poisoned":false,"bait":false}
+{"ts":1786737361349460896,"tool":"run","args":{"argv":["go","test","./..."]},"resultBytes":51,"poisoned":false,"bait":false}

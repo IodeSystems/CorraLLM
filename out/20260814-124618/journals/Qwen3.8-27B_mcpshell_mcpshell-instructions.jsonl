@@ -1,0 +1,7 @@
+{"ts":1786737731084197445,"tool":"eval","args":{"code":"help()"},"resultBytes":6539,"poisoned":false,"bait":false}
+{"ts":1786737732165882527,"tool":"eval","args":{"code":"help(\"export\")"},"resultBytes":116,"poisoned":false,"bait":false}
+{"ts":1786737732670932210,"tool":"eval","args":{"code":"help(\"core\")"},"resultBytes":1406,"poisoned":false,"bait":false}
+{"ts":1786737733697266560,"tool":"eval","args":{"code":"help(\"match\")"},"resultBytes":198,"poisoned":false,"bait":false}
+{"ts":1786737733698249706,"tool":"eval","args":{"code":"help(\"regex\")"},"resultBytes":518,"poisoned":false,"bait":false}
+{"ts":1786737734414550179,"tool":"eval","args":{"code":"\"alpha beta gamma delta\" |\u003e match(/\\S+/g) |\u003e len()"},"resultBytes":1,"poisoned":false,"bait":false}
+{"ts":1786737734943520424,"tool":"eval","args":{"code":"help(\"split\")"},"resultBytes":144,"poisoned":false,"bait":false}

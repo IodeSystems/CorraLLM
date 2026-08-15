@@ -28,7 +28,7 @@ func TestMeteredRunner_PinsSamplingWhenSet(t *testing.T) {
 	inner := &capturingRunner{}
 	m := &meteredRunner{
 		inner: inner, sc: &stageCounters{seen: map[string]int{}},
-		temperature: &capabilityTemperature, seed: &capabilitySeed,
+		temperature: &pinnedTemperature, seed: &pinnedSeed,
 	}
 	if _, err := m.ChatStream(context.Background(), nil, nil, &llm.ChatOpts{ToolChoice: "auto"}); err != nil {
 		t.Fatal(err)
@@ -36,7 +36,7 @@ func TestMeteredRunner_PinsSamplingWhenSet(t *testing.T) {
 	if inner.got == nil || inner.got.Temperature == nil || *inner.got.Temperature != 0 {
 		t.Fatalf("temperature should be pinned to 0: %+v", inner.got)
 	}
-	if inner.got.Seed == nil || *inner.got.Seed != capabilitySeed {
+	if inner.got.Seed == nil || *inner.got.Seed != pinnedSeed {
 		t.Errorf("seed should be pinned: %+v", inner.got)
 	}
 	// Unrelated fields must survive the override.
@@ -63,7 +63,7 @@ func TestMeteredRunner_DoesNotMutateCallerOpts(t *testing.T) {
 	inner := &capturingRunner{}
 	m := &meteredRunner{
 		inner: inner, sc: &stageCounters{seen: map[string]int{}},
-		temperature: &capabilityTemperature,
+		temperature: &pinnedTemperature,
 	}
 	caller := &llm.ChatOpts{ToolChoice: "auto"}
 	if _, err := m.ChatStream(context.Background(), nil, nil, caller); err != nil {
@@ -178,5 +178,32 @@ func TestBuildSystemPrompt_TaskOverrideWins(t *testing.T) {
 	got := buildSystemPrompt(&task.Task{Class: "capability", System: "custom prompt"})
 	if got != "custom prompt" {
 		t.Errorf("task System should win: %q", got)
+	}
+}
+
+// TestPinSamplingWidensTheGate: --pin-sampling is what makes a COMPARISON
+// readable. The default measures a deployment as served, sampler and all, which
+// is the right answer to a different question — and on this suite it cannot
+// resolve less than ~4 stages (measured: two identical-config runs came back
+// 77/90 and 75/90). So the gate must open for every class when the flag is set
+// and for capability only when it is not.
+func TestPinSamplingWidensTheGate(t *testing.T) {
+	for _, tc := range []struct {
+		class string
+		pin   bool
+		want  bool
+	}{
+		{"capability", false, true}, // always pinned: a yes/no backend question
+		{"capability", true, true},
+		{"tooluse", false, false}, // as-served by default
+		{"tooluse", true, true},   // pinned for comparison
+		{"coding", false, false},
+		{"coding", true, true},
+		{"adversarial", true, true},
+	} {
+		got := shouldPinSampling(tc.class, tc.pin)
+		if got != tc.want {
+			t.Errorf("class=%s pin=%v: gate=%v, want %v", tc.class, tc.pin, got, tc.want)
+		}
 	}
 }

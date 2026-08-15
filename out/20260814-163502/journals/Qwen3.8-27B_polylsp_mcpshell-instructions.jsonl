@@ -1,0 +1,8 @@
+{"ts":1786752291850521126,"tool":"run","args":{"argv":["python3","-c","s=r'C:\\Users\\nthalk\\src\\app\\main.go';print(len(s.split('\\')))"]},"resultBytes":318,"poisoned":false,"bait":false}
+{"ts":1786752293141835021,"tool":"run","args":{"argv":["python3","-c","import pathlib; print(len(pathlib.PureWindowsPath('C:/Users/nthalk/src/app/main.go').parts))"]},"resultBytes":117,"poisoned":false,"bait":false}
+{"ts":1786752296536877759,"tool":"run","args":{"argv":["python3","-c","open('/tmp/eval_state.txt','w').write(str(41+1))"]},"resultBytes":71,"poisoned":false,"bait":false}
+{"ts":1786752297350536871,"tool":"run","args":{"argv":["python3","-c","print(int(open('/tmp/eval_state.txt').read())*2)"]},"resultBytes":74,"poisoned":false,"bait":false}
+{"ts":1786752301576833048,"tool":"node_query","args":{"selector":":root \u003e *"},"resultBytes":44,"poisoned":false,"bait":false}
+{"ts":1786752301577155674,"tool":"run","args":{"argv":["mcpshell","--help"]},"resultBytes":34,"poisoned":false,"bait":false}
+{"ts":1786752303585788321,"tool":"node_query","args":{"selector":"dir"},"resultBytes":216,"poisoned":false,"bait":false}
+{"ts":1786752303588052555,"tool":"run","args":{"argv":["ls","-la"]},"resultBytes":188,"poisoned":false,"bait":false}

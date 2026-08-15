@@ -1,0 +1,38 @@
+{
+  "llmBench": {
+    "name": "llm-bench",
+    "path": "/home/nthalk/local/src/iodesystems/corrallm/local/bin/llm-bench",
+    "revision": "c7453b520b43567164a925a42dfad5226bd00a4d",
+    "builtAt": "2026-08-05T22:37:24Z"
+  },
+  "mcpBin": {
+    "name": "llm-bench-mcp",
+    "path": "/home/nthalk/local/src/iodesystems/corrallm/local/bin/llm-bench-mcp",
+    "revision": "c7453b520b43567164a925a42dfad5226bd00a4d",
+    "builtAt": "2026-08-05T22:37:24Z",
+    "size": 8907808,
+    "modTime": "2026-08-05T22:37:30Z"
+  },
+  "toolsets": {
+    "mcpshell": [
+      {
+        "name": "mcpshell",
+        "path": "/home/nthalk/.corrallm/bin/mcpshell",
+        "revision": "056c2d868fde7d24db57e6c1a9fbc3e289e011e6",
+        "builtAt": "2026-08-14T23:00:22Z",
+        "size": 23944912,
+        "modTime": "2026-08-14T23:05:15Z"
+      }
+    ],
+    "polylsp": [
+      {
+        "name": "poly-lsp-mcp",
+        "path": "/home/nthalk/.corrallm/bin/poly-lsp-mcp",
+        "revision": "cac133c4ce5a5726d7c6bdc21fc57883e9bffa59",
+        "builtAt": "2026-08-02T18:16:59Z",
+        "size": 42088712,
+        "modTime": "2026-08-02T20:05:50Z"
+      }
+    ]
+  }
+}

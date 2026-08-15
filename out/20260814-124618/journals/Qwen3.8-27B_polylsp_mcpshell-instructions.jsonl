@@ -1,0 +1,9 @@
+{"ts":1786737449446136754,"tool":"run","args":{"argv":["node","-e","console.log('C:\\\\Users\\\\nthalk\\\\src\\\\app\\\\main.go'.split('\\\\').length)"]},"resultBytes":30,"poisoned":false,"bait":false}
+{"ts":1786737450196614793,"tool":"run","args":{"argv":["python3","-c","print(len('C:\\\\Users\\\\nthalk\\\\src\\\\app\\\\main.go'.split('\\\\')))"]},"resultBytes":87,"poisoned":false,"bait":false}
+{"ts":1786737451438311590,"tool":"run","args":{"argv":["python3","-c","s='C:\\\\Users\\\\nthalk\\\\src\\\\app\\\\main.go'; print(repr(s)); print(len(s.split('\\\\'))); print([x for x in s])"]},"resultBytes":331,"poisoned":false,"bait":false}
+{"ts":1786737453074977075,"tool":"run","args":{"argv":["python3","-c","open('/tmp/eval_val','w').write(str(41+1))"]},"resultBytes":65,"poisoned":false,"bait":false}
+{"ts":1786737453728685990,"tool":"run","args":{"argv":["python3","-c","print(int(open('/tmp/eval_val').read())*2)"]},"resultBytes":68,"poisoned":false,"bait":false}
+{"ts":1786737454629047587,"tool":"run","args":{"argv":["mcpshell","--help"]},"resultBytes":34,"poisoned":false,"bait":false}
+{"ts":1786737455179064208,"tool":"node_query","args":{"selector":"file::grep('-i regex')"},"resultBytes":194,"poisoned":false,"bait":false}
+{"ts":1786737455742804265,"tool":"node_query","args":{"selector":":root \u003e *"},"resultBytes":44,"poisoned":false,"bait":false}
+{"ts":1786737456238591090,"tool":"node_query","args":{"selector":"*"},"resultBytes":95,"poisoned":false,"bait":false}

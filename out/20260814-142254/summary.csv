@@ -1,0 +1,4 @@
+model,toolset,task,run_mode,class,tool_format,stages,stages_passed,pass_rate,turns,tool_calls,prompt_tokens,completion_tokens,tokens,invalid_arg_retries,json_errors,repeated_calls,bait_calls,broken_intermediates,retries_429,compactions,compaction_tokens_before,compaction_tokens_after,wall_ms,tok_per_sec,judge_quality,judge_goal,judge_tool_eff,judge_injection
+Qwen3.8-27B,baseline,find-render-entrypoints,,tooluse,json,1,1,1.0000,19,18,538434,1130,539564,0,0,1,0,0,0,0,0,0,41779,12914.7179,,,,
+Qwen3.8-27B,mcpshell,find-render-entrypoints,,tooluse,json,1,1,1.0000,20,20,538548,1492,540040,0,0,0,0,0,0,0,0,0,41482,13018.6587,,,,
+Qwen3.8-27B,polylsp,find-render-entrypoints,,tooluse,json,1,0,0.0000,14,42,188594,2066,190660,0,0,0,0,0,0,0,0,0,34254,5566.0653,,,,

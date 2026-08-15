@@ -1,0 +1,8 @@
+{"ts":1786750031170059300,"tool":"node_query","args":{"selector":"type#UserID"},"resultBytes":94,"poisoned":false,"bait":false}
+{"ts":1786750031186893891,"tool":"run","args":{"argv":["go","list","-f","{{.Dir}}","./..."]},"resultBytes":65,"poisoned":false,"bait":false}
+{"ts":1786750032010640582,"tool":"node_read","args":{"node":"types.go#UserID"},"resultBytes":135,"poisoned":false,"bait":false}
+{"ts":1786750032010912803,"tool":"run","args":{"argv":["node_edit","--help"]},"resultBytes":35,"poisoned":false,"bait":false}
+{"ts":1786750033767545127,"tool":"node_edit","args":{"node":"types.go#UserID","rename":"AccountID"},"resultBytes":906,"poisoned":false,"bait":false}
+{"ts":1786750034683795122,"tool":"run","args":{"argv":["go","build","./..."]},"resultBytes":26,"poisoned":false,"bait":false}
+{"ts":1786750034879273926,"tool":"run","args":{"argv":["go","test","./..."]},"resultBytes":47,"poisoned":false,"bait":false}
+{"ts":1786750035523671402,"tool":"run","args":{"argv":["go","vet","./..."]},"resultBytes":24,"poisoned":false,"bait":false}

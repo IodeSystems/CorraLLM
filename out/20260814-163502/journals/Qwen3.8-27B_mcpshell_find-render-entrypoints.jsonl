@@ -1,0 +1,11 @@
+{"ts":1786752802802252943,"tool":"list_dir","args":{"path":"."},"resultBytes":158,"poisoned":false,"bait":false}
+{"ts":1786752803854975379,"tool":"read_file","args":{"path":"query.go"},"resultBytes":32796,"poisoned":false,"bait":false}
+{"ts":1786752803862029047,"tool":"read_file","args":{"path":"node_query.go"},"resultBytes":18180,"poisoned":false,"bait":false}
+{"ts":1786752813268910678,"tool":"run","args":{"argv":["grep","-rn","selectorGrammarHelp","."]},"resultBytes":674,"poisoned":false,"bait":false}
+{"ts":1786752813272268975,"tool":"run","args":{"argv":["grep","-rn","GrammarHelp","."]},"resultBytes":666,"poisoned":false,"bait":false}
+{"ts":1786752814425270492,"tool":"read_file","args":{"path":"modern.go"},"resultBytes":29327,"poisoned":false,"bait":false}
+{"ts":1786752847210192764,"tool":"run","args":{"argv":["grep","-n","^func ","query.go"]},"resultBytes":3353,"poisoned":false,"bait":false}
+{"ts":1786752847212978737,"tool":"run","args":{"argv":["grep","-rn","parseModernSelector\",\" ","."]},"resultBytes":65,"poisoned":false,"bait":false}
+{"ts":1786752893318633422,"tool":"read_file","args":{"path":"server.go"},"resultBytes":22874,"poisoned":false,"bait":false}
+{"ts":1786752893321198650,"tool":"read_file","args":{"path":"tools.go"},"resultBytes":32796,"poisoned":false,"bait":false}
+{"ts":1786752908385319136,"tool":"run","args":{"argv":["grep","-n","parseContainsSpec\\|parseGrepSpec\\|parseModernSelector\\|resolveModernNode\\|handleModernNodeQuery\\|handleModernNodeRead\\|handleModernNodeEdit\\|handleToolsList","modern.go","node_query.go","query.go","node_query.go","tools.go","server.go","structure.go","diff.go","rename_file.go","diagnostics.go","resources.go","file_watch.go","git_prewarm.go"]},"resultBytes":1868,"poisoned":false,"bait":false}

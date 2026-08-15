@@ -86,6 +86,23 @@ type Options struct {
 	BinDir  string // dir searched for toolset server binaries (e.g. local/bin); "" = $PATH only
 	Judge   bool   // run the P1 judge phase after candidates finish
 
+	// PinSampling forces greedy, seeded decoding on EVERY class, not just
+	// capability. Off by default, because the default answers a different
+	// question — see the comment at the capability pin below.
+	//
+	// Turn it on to COMPARE two things; leave it off to measure one thing as it
+	// is actually served. The difference is not academic: on 2026-08-14 two
+	// full runs of one model with byte-identical config came back 77/90 and
+	// 75/90, with FOUR stages flipping in each direction, because the model was
+	// launched --temp 0.7 and the harness sent no temperature. Anything smaller
+	// than that spread is unreadable, and the thinking-mode A/B that followed
+	// landed inside it (75 vs 74) and so decided nothing on quality.
+	//
+	// `--runs N` is the other half of the answer and they compose: pinning
+	// removes sampler variance, repeats measure whatever variance is left
+	// (tool-call ordering, MCP timing, a server that evicted mid-run).
+	PinSampling bool
+
 	// NewRunner builds the LLM runner for a model. Injectable for tests; nil
 	// uses a corrallm llm.Client from Config. Also used for the judge model.
 	NewRunner func(model string) agent.LLMRunner
@@ -974,12 +991,19 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 	// failed cold and passed warm on byte-identical input and was published as a
 	// cold-path capability failure.
 	//
-	// Quality probes are deliberately NOT pinned. They are meant to measure the
+	// Quality probes are NOT pinned by default. They are meant to measure the
 	// model as it is actually served, sampler included; forcing greedy decoding
 	// there would measure a configuration nobody runs.
-	if tsk.Class == "capability" {
-		runner.temperature = &capabilityTemperature
-		runner.seed = &capabilitySeed
+	//
+	// That is right for "how good is this deployment" and wrong for "is A better
+	// than B", which is why --pin-sampling exists rather than a change of
+	// default. An unpinned comparison cannot resolve less than ~4 stages on this
+	// suite (measured: two identical-config runs, 77/90 vs 75/90), so a small
+	// difference between two configs is indistinguishable from the same config
+	// run twice.
+	if shouldPinSampling(tsk.Class, opts.PinSampling) {
+		runner.temperature = &pinnedTemperature
+		runner.seed = &pinnedSeed
 	}
 	// The Shaper keeps every session inside the SAME token budget regardless of
 	// the model's raw window: unbounded tool results (a full `go test all` dump)
@@ -1474,12 +1498,23 @@ func workspaceBuilds(scratch, cmd string) bool {
 // current stage. This is the seam where the split is obtainable: agentkit's
 // Session only surfaces the combined cumulative Total (TokenUsage.Total), but
 // each round's StreamChunk.Usage carries prompt/completion separately.
-// capabilityTemperature/capabilitySeed pin greedy, reproducible decoding for
-// capability-class probes. Package-level so their addresses are stable.
+// pinnedTemperature/pinnedSeed pin greedy, reproducible decoding. Always applied
+// to capability-class probes; applied to every class under --pin-sampling.
+// Package-level so their addresses are stable.
 var (
-	capabilityTemperature = 0.0
-	capabilitySeed        = 1
+	pinnedTemperature = 0.0
+	pinnedSeed        = 1
 )
+
+// shouldPinSampling reports whether a probe decodes greedily.
+//
+// Capability is unconditional: it asks a yes/no question about the backend (did
+// the pixels arrive) and a sampler must not be able to change the answer.
+// Everything else is opt-in, because the default is measuring a deployment as
+// it is really served.
+func shouldPinSampling(class string, pin bool) bool {
+	return class == "capability" || pin
+}
 
 type meteredRunner struct {
 	// hb is the combo's proof of life, marked on every stream chunk — the

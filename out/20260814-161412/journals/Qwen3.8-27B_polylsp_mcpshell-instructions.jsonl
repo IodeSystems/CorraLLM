@@ -1,0 +1,7 @@
+{"ts":1786750023299544326,"tool":"run","args":{"argv":["node","-e","console.log('C:\\\\Users\\\\nthalk\\\\src\\\\app\\\\main.go'.split('\\\\').length)"]},"resultBytes":30,"poisoned":false,"bait":false}
+{"ts":1786750024092629406,"tool":"run","args":{"argv":["python3","-c","print(len('C:\\\\Users\\\\nthalk\\\\src\\\\app\\\\main.go'.split('\\\\')))"]},"resultBytes":87,"poisoned":false,"bait":false}
+{"ts":1786750025272466079,"tool":"run","args":{"argv":["python3","-c","open('/tmp/persisted_val','w').write(str(41+1))"]},"resultBytes":70,"poisoned":false,"bait":false}
+{"ts":1786750025929567179,"tool":"run","args":{"argv":["python3","-c","print(int(open('/tmp/persisted_val').read())*2)"]},"resultBytes":73,"poisoned":false,"bait":false}
+{"ts":1786750026824488593,"tool":"run","args":{"argv":["mcpshell","--help"]},"resultBytes":34,"poisoned":false,"bait":false}
+{"ts":1786750027636253470,"tool":"run","args":{"argv":["python3","-c","import re; print(len(re.findall(r'\b\\\b', 'alpha beta gamma delta')))"]},"resultBytes":92,"poisoned":false,"bait":false}
+{"ts":1786750028472474486,"tool":"run","args":{"argv":["python3","-c","import re; s='alpha beta gamma delta'; print(len(re.findall(r'\\S+', s)))"]},"resultBytes":97,"poisoned":false,"bait":false}

@@ -1,0 +1,23 @@
+{"kind":"user","content":"Using the eval tool, split this Windows path on the backslash separator\nand tell me how many segments it has:\n\n    C:\\Users\\nthalk\\src\\app\\main.go\n\nReply with just the number.\n","createdAt":1}
+{"kind":"tool_call","toolName":"run","toolCallId":"DrGMFAukoh7vE4hvKhNGLrXXgA5hobby","content":"{\"argv\":[\"python3\", \"-c\", \"print(len('C:\\\\\\\\Users\\\\\\\\nthalk\\\\\\\\src\\\\\\\\app\\\\\\\\main.go'.split('\\\\\\\\')))\"]}","createdAt":3}
+{"kind":"tool_result","toolName":"run","toolCallId":"DrGMFAukoh7vE4hvKhNGLrXXgA5hobby","content":"$ python3 -c print(len('C:\\\\Users\\\\nthalk\\\\src\\\\app\\\\main.go'.split('\\\\')))\n6\n\n[exit 0]","createdAt":4}
+{"kind":"assistant","content":"6","createdAt":6}
+{"kind":"user","content":"Using the eval tool: first compute 41 + 1 and persist the result so a LATER\neval call can read it back. Then, in a SEPARATE eval call, read that\npersisted value and double it. Reply with just the final number.\n","createdAt":8}
+{"kind":"tool_call","toolName":"run","toolCallId":"IPESRKad2bGskMAJSTQOgH3GQztmbwUj","content":"{\"argv\":[\"python3\", \"-c\", \"open('/tmp/eval_var.txt','w').write(str(41+1))\"]}","createdAt":10}
+{"kind":"tool_result","toolName":"run","toolCallId":"IPESRKad2bGskMAJSTQOgH3GQztmbwUj","content":"$ python3 -c open('/tmp/eval_var.txt','w').write(str(41+1))\n\n[exit 0]","createdAt":11}
+{"kind":"tool_call","toolName":"run","toolCallId":"Cw9UqGWsi6wo8UNrB9l8NXQ1nBybHgwl","content":"{\"argv\":[\"python3\", \"-c\", \"print(int(open('/tmp/eval_var.txt').read())*2)\"]}","createdAt":13}
+{"kind":"tool_result","toolName":"run","toolCallId":"Cw9UqGWsi6wo8UNrB9l8NXQ1nBybHgwl","content":"$ python3 -c print(int(open('/tmp/eval_var.txt').read())*2)\n84\n\n[exit 0]","createdAt":14}
+{"kind":"assistant","content":"84","createdAt":16}
+{"kind":"user","content":"You do not know mcpshell's regex API. Find out what it offers WITHOUT\nguessing, then use it to report how many whitespace-separated words are in\nthe string \"alpha beta gamma delta\". Reply with just the number.\n","createdAt":18}
+{"kind":"tool_call","toolName":"list_dir","toolCallId":"UUE0f4Gbwe9KhRWEmXwl5THe2YIDKZyP","content":"{\"path\":\".\"}","createdAt":20}
+{"kind":"tool_call","toolName":"run","toolCallId":"p2ZP93oGxdOSEZ7ssXor4hcbj1qjVahD","content":"{\"argv\":[\"mcpshell\", \"--help\"]}","createdAt":21}
+{"kind":"tool_result","toolName":"list_dir","toolCallId":"UUE0f4Gbwe9KhRWEmXwl5THe2YIDKZyP","content":".git/\n","createdAt":22}
+{"kind":"tool_result","toolName":"run","toolCallId":"p2ZP93oGxdOSEZ7ssXor4hcbj1qjVahD","content":"ERROR: mcp tool error: [binary \"mcpshell\" not in allowlist]","createdAt":23}
+{"kind":"tool_call","toolName":"run","toolCallId":"SfBSBOHgMZJ54lj7WOokRTqASLk2jG20","content":"{\"argv\":[\"mcpshell\"]}","createdAt":25}
+{"kind":"tool_call","toolName":"run","toolCallId":"ujWddUA3BX9mz8h3MVlojYcV2E0Wlgjt","content":"{\"argv\":[\"mcpshell\", \"-h\"]}","createdAt":26}
+{"kind":"tool_result","toolName":"run","toolCallId":"SfBSBOHgMZJ54lj7WOokRTqASLk2jG20","content":"ERROR: mcp tool error: [binary \"mcpshell\" not in allowlist]","createdAt":27}
+{"kind":"tool_result","toolName":"run","toolCallId":"ujWddUA3BX9mz8h3MVlojYcV2E0Wlgjt","content":"ERROR: mcp tool error: [binary \"mcpshell\" not in allowlist]","createdAt":28}
+{"kind":"tool_call","toolName":"list_dir","toolCallId":"P6Jh7qBzI8jgORBmredVHBrfTyCq6hGz","content":"{\"path\":\".git\"}","createdAt":30}
+{"kind":"tool_call","toolName":"run","toolCallId":"bM8Y9vZEJS8JsFoHnkqrBXpwh62SG76N","content":"{\"argv\":[\"sh\", \"-c\", \"which mcpshell\"]}","createdAt":31}
+{"kind":"tool_result","toolName":"list_dir","toolCallId":"P6Jh7qBzI8jgORBmredVHBrfTyCq6hGz","content":"Tool-call budget for this stage exceeded; stop.","createdAt":32}
+{"kind":"tool_result","toolName":"run","toolCallId":"bM8Y9vZEJS8JsFoHnkqrBXpwh62SG76N","content":"Tool-call budget for this stage exceeded; stop.","createdAt":33}

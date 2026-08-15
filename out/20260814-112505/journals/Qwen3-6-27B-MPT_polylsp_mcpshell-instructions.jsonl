@@ -1,0 +1,6 @@
+{"ts":1786732503680640978,"tool":"run","args":{"argv":["python3","-c","print(41 + 1)"]},"resultBytes":39,"poisoned":false,"bait":false}
+{"ts":1786732504287722626,"tool":"run","args":{"argv":["python3","-c","open('/tmp/result.txt','w').write('42')"]},"resultBytes":62,"poisoned":false,"bait":false}
+{"ts":1786732504860960897,"tool":"run","args":{"argv":["python3","-c","print(int(open('/tmp/result.txt').read()) * 2)"]},"resultBytes":72,"poisoned":false,"bait":false}
+{"ts":1786732506417441267,"tool":"node_query","args":{"selector":":root \u003e *"},"resultBytes":44,"poisoned":false,"bait":false}
+{"ts":1786732506960819156,"tool":"run","args":{"argv":["echo","hello"]},"resultBytes":30,"poisoned":false,"bait":false}
+{"ts":1786732507447482529,"tool":"run","args":{"argv":["python3","--help"]},"resultBytes":2570,"poisoned":false,"bait":false}

@@ -1,0 +1,7 @@
+{"ts":1786749560030139340,"tool":"run","args":{"argv":["node","-e","console.log('C:\\\\Users\\\\nthalk\\\\src\\\\app\\\\main.go'.split('\\\\').length)"]},"resultBytes":30,"poisoned":false,"bait":false}
+{"ts":1786749560467265148,"tool":"list_dir","args":{},"resultBytes":6,"poisoned":false,"bait":false}
+{"ts":1786749561212200125,"tool":"run","args":{"argv":["python3","-c","print(len('C:\\\\Users\\\\nthalk\\\\src\\\\app\\\\main.go'.split('\\\\')))"]},"resultBytes":87,"poisoned":false,"bait":false}
+{"ts":1786749562342696929,"tool":"run","args":{"argv":["python3","-c","open('/tmp/persisted.txt','w').write(str(41+1))"]},"resultBytes":70,"poisoned":false,"bait":false}
+{"ts":1786749563002256958,"tool":"run","args":{"argv":["python3","-c","print(int(open('/tmp/persisted.txt').read())*2)"]},"resultBytes":73,"poisoned":false,"bait":false}
+{"ts":1786749563812634900,"tool":"run","args":{"argv":["mcpshell","--help"]},"resultBytes":34,"poisoned":false,"bait":false}
+{"ts":1786749564559761494,"tool":"run","args":{"argv":["python3","-c","import re; print(len(re.findall(r'\\S+', 'alpha beta gamma delta')))"]},"resultBytes":92,"poisoned":false,"bait":false}

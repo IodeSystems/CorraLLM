@@ -1,0 +1,38 @@
+{"ts":1786749934746890647,"tool":"node_query","args":{"limit":100,"selector":"*"},"resultBytes":7975,"poisoned":false,"bait":false}
+{"ts":1786749936277363824,"tool":"node_query","args":{"limit":50,"selector":"file::grep('grammar')"},"resultBytes":4229,"poisoned":false,"bait":false}
+{"ts":1786749937309225656,"tool":"node_read","args":{"node":"query.go#selectorGrammarHelp"},"resultBytes":2438,"poisoned":false,"bait":false}
+{"ts":1786749938484209775,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#selectorGrammarHelp'::in"},"resultBytes":489,"poisoned":false,"bait":false}
+{"ts":1786749939749627689,"tool":"node_read","args":{"node":"modern.go@145"},"resultBytes":2639,"poisoned":false,"bait":false}
+{"ts":1786749939750143357,"tool":"node_read","args":{"node":"query.go@379"},"resultBytes":2693,"poisoned":false,"bait":false}
+{"ts":1786749939750453209,"tool":"node_read","args":{"node":"query.go@549"},"resultBytes":2693,"poisoned":false,"bait":false}
+{"ts":1786749939750756768,"tool":"node_read","args":{"node":"query.go@687"},"resultBytes":2693,"poisoned":false,"bait":false}
+{"ts":1786749942932101083,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.errf'::in"},"resultBytes":2756,"poisoned":false,"bait":false}
+{"ts":1786749943176616655,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parseAttr'::in"},"resultBytes":368,"poisoned":false,"bait":false}
+{"ts":1786749943375702732,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parsePseudo'::in"},"resultBytes":368,"poisoned":false,"bait":false}
+{"ts":1786749943385584010,"tool":"node_read","args":{"node":"modern.go#handleModernNodeQuery"},"resultBytes":3712,"poisoned":false,"bait":false}
+{"ts":1786749946431267300,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#parseModernSelector'::in"},"resultBytes":290,"poisoned":false,"bait":false}
+{"ts":1786749946645274666,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parseComplex'::in"},"resultBytes":364,"poisoned":false,"bait":false}
+{"ts":1786749946796450880,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parseCompound'::in"},"resultBytes":487,"poisoned":false,"bait":false}
+{"ts":1786749946967909858,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.readID'::in"},"resultBytes":168,"poisoned":false,"bait":false}
+{"ts":1786749948520085163,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parseList'::in"},"resultBytes":480,"poisoned":false,"bait":false}
+{"ts":1786749948628778533,"tool":"node_query","args":{"limit":50,"selector":"#'modern.go#Server.resolveModernNode'::in"},"resultBytes":285,"poisoned":false,"bait":false}
+{"ts":1786749950109456341,"tool":"node_read","args":{"node":"query.go#parseModernSelector"},"resultBytes":478,"poisoned":false,"bait":false}
+{"ts":1786749950254703135,"tool":"node_query","args":{"limit":50,"selector":"#'modern.go#handleModernNodeRead'::in"},"resultBytes":151,"poisoned":false,"bait":false}
+{"ts":1786749950386083231,"tool":"node_query","args":{"limit":50,"selector":"#'modern.go#handleModernNodeEdit'::in"},"resultBytes":151,"poisoned":false,"bait":false}
+{"ts":1786749951761765251,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.errf'::out"},"resultBytes":885,"poisoned":false,"bait":false}
+{"ts":1786749951769246013,"tool":"node_read","args":{"node":"modern.go#Server.resolveModernNode"},"resultBytes":3444,"poisoned":false,"bait":false}
+{"ts":1786749953078365549,"tool":"node_query","args":{"limit":50,"selector":"file::grep('selectorGrammarHelp')"},"resultBytes":1120,"poisoned":false,"bait":false}
+{"ts":1786749954292627408,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.errf'::in.call{1,} \u003e *"},"resultBytes":1114,"poisoned":false,"bait":false}
+{"ts":1786749956855677439,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parseList'::in.call{1,} \u003e *"},"resultBytes":969,"poisoned":false,"bait":false}
+{"ts":1786749957068637700,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parseComplex'::in.call{1,} \u003e *"},"resultBytes":969,"poisoned":false,"bait":false}
+{"ts":1786749957303161028,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parseCompound'::in.call{1,} \u003e *"},"resultBytes":969,"poisoned":false,"bait":false}
+{"ts":1786749957493411370,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.readID'::in.call{1,} \u003e *"},"resultBytes":969,"poisoned":false,"bait":false}
+{"ts":1786749959573099318,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parseAttr'::in.call{1,} \u003e *"},"resultBytes":969,"poisoned":false,"bait":false}
+{"ts":1786749959803761138,"tool":"node_query","args":{"limit":50,"selector":"#'query.go#modSelParser.parsePseudo'::in.call{1,} \u003e *"},"resultBytes":969,"poisoned":false,"bait":false}
+{"ts":1786749961486810019,"tool":"node_query","args":{"limit":100,"selector":"func:not(#main):not(#init):empty(::in.call)"},"resultBytes":1327,"poisoned":false,"bait":false}
+{"ts":1786749962359421024,"tool":"node_read","args":{"node":"query.go#modSelParser.errf"},"resultBytes":671,"poisoned":false,"bait":false}
+{"ts":1786749963918891688,"tool":"node_read","args":{"node":"query.go#modSelParser.parseList"},"resultBytes":429,"poisoned":false,"bait":false}
+{"ts":1786749963927715872,"tool":"node_read","args":{"node":"query.go#modSelParser.parseComplex"},"resultBytes":815,"poisoned":false,"bait":false}
+{"ts":1786749963942632312,"tool":"node_read","args":{"node":"query.go#modSelParser.parseCompound"},"resultBytes":2564,"poisoned":false,"bait":false}
+{"ts":1786749963957246484,"tool":"node_read","args":{"node":"query.go#modSelParser.readID"},"resultBytes":1608,"poisoned":false,"bait":false}
+{"ts":1786749965870847134,"tool":"node_query","args":{"limit":50,"selector":"func::grep('parseModernSelector|resolveModernNode|handleModernNodeQuery|handleModernNodeRead|handleModernNodeEdit')"},"resultBytes":409,"poisoned":false,"bait":false}

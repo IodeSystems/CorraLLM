@@ -1,0 +1,5 @@
+{"ts":1786753107613553095,"tool":"eval","args":{"code":"const p = r\"C:\\Users\\nthalk\\src\\app\\main.go\"\nconst parts = p.split(r\"\\\")\nreturn { count: parts.length, parts }\n"},"resultBytes":69,"poisoned":false,"bait":false}
+{"ts":1786753109387100857,"tool":"eval","args":{"code":"export sum = 41 + 1\nreturn sum\n"},"resultBytes":2,"poisoned":false,"bait":false}
+{"ts":1786753110074348195,"tool":"eval","args":{"code":"return sum * 2\n"},"resultBytes":2,"poisoned":false,"bait":false}
+{"ts":1786753111740437298,"tool":"eval","args":{"code":"help()\n"},"resultBytes":6539,"poisoned":false,"bait":false}
+{"ts":1786753116377173824,"tool":"eval","args":{"code":"const words = split(ws, /\\s+/).filter(w =\u003e w !== \"\")\nreturn len(words)\n","vars":{"ws":"alpha beta gamma delta"}},"resultBytes":1,"poisoned":false,"bait":false}

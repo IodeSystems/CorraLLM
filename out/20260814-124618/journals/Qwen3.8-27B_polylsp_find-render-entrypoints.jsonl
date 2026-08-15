@@ -1,0 +1,40 @@
+{"ts":1786737364334432153,"tool":"node_query","args":{"limit":50,"selector":":root \u003e *"},"resultBytes":677,"poisoned":false,"bait":false}
+{"ts":1786737365234696991,"tool":"node_query","args":{"limit":20,"selector":"::grep('FOOTGUNS')"},"resultBytes":44,"poisoned":false,"bait":false}
+{"ts":1786737366054679189,"tool":"node_query","args":{"limit":20,"selector":"::grep('-i grammar')"},"resultBytes":3425,"poisoned":false,"bait":false}
+{"ts":1786737367238655718,"tool":"node_query","args":{"limit":30,"selector":"::grep('selectorGrammarHelp')"},"resultBytes":2289,"poisoned":false,"bait":false}
+{"ts":1786737369095248946,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.errf::in"},"resultBytes":2756,"poisoned":false,"bait":false}
+{"ts":1786737369297136921,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.parseAttr::in"},"resultBytes":368,"poisoned":false,"bait":false}
+{"ts":1786737369498581593,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.parsePseudo::in"},"resultBytes":368,"poisoned":false,"bait":false}
+{"ts":1786737371764214214,"tool":"node_query","args":{"limit":30,"selector":"#parseModernSelector::in"},"resultBytes":290,"poisoned":false,"bait":false}
+{"ts":1786737371954263352,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.parseComplex::in"},"resultBytes":364,"poisoned":false,"bait":false}
+{"ts":1786737372123101816,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.parseCompound::in"},"resultBytes":487,"poisoned":false,"bait":false}
+{"ts":1786737372266017842,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.readID::in"},"resultBytes":168,"poisoned":false,"bait":false}
+{"ts":1786737373489398362,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.parseList::in"},"resultBytes":480,"poisoned":false,"bait":false}
+{"ts":1786737373498652837,"tool":"node_read","args":{"node":"query.go#parseModernSelector"},"resultBytes":478,"poisoned":false,"bait":false}
+{"ts":1786737374677640820,"tool":"node_query","args":{"limit":30,"selector":"#Server.resolveModernNode::in"},"resultBytes":285,"poisoned":false,"bait":false}
+{"ts":1786737374687001655,"tool":"node_read","args":{"node":"modern.go#handleModernNodeQuery"},"resultBytes":3712,"poisoned":false,"bait":false}
+{"ts":1786737376663508533,"tool":"node_query","args":{"limit":30,"selector":"#handleModernNodeQuery::in"},"resultBytes":151,"poisoned":false,"bait":false}
+{"ts":1786737376763853160,"tool":"node_query","args":{"limit":30,"selector":"#handleModernNodeRead::in"},"resultBytes":151,"poisoned":false,"bait":false}
+{"ts":1786737376898959702,"tool":"node_query","args":{"limit":30,"selector":"#handleModernNodeEdit::in"},"resultBytes":151,"poisoned":false,"bait":false}
+{"ts":1786737377850404934,"tool":"node_read","args":{"node":"modern.go#Server.resolveModernNode"},"resultBytes":3444,"poisoned":false,"bait":false}
+{"ts":1786737378071583798,"tool":"node_query","args":{"limit":30,"selector":"::grep('resolveModernNode')"},"resultBytes":1807,"poisoned":false,"bait":false}
+{"ts":1786737380453162750,"tool":"node_query","args":{"limit":40,"selector":"#modSelParser.parseComplex::out.call \u003e *"},"resultBytes":598,"poisoned":false,"bait":false}
+{"ts":1786737380597160666,"tool":"node_query","args":{"limit":40,"selector":"#modSelParser.parseCompound::out.call \u003e *"},"resultBytes":937,"poisoned":false,"bait":false}
+{"ts":1786737380790510070,"tool":"node_query","args":{"limit":40,"selector":"#modSelParser.parsePseudo::out.call \u003e *"},"resultBytes":862,"poisoned":false,"bait":false}
+{"ts":1786737382592308723,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.readIdent::in"},"resultBytes":721,"poisoned":false,"bait":false}
+{"ts":1786737382763045833,"tool":"node_query","args":{"limit":30,"selector":"#parseContainsSpec::in"},"resultBytes":166,"poisoned":false,"bait":false}
+{"ts":1786737382772191564,"tool":"node_read","args":{"node":"query.go#modSelParser.readIdent"},"resultBytes":267,"poisoned":false,"bait":false}
+{"ts":1786737383952626525,"tool":"node_read","args":{"node":"query.go#parseContainsSpec"},"resultBytes":1657,"poisoned":false,"bait":false}
+{"ts":1786737384121961702,"tool":"node_query","args":{"limit":20,"selector":"::grep('parseContainsSpec')"},"resultBytes":1448,"poisoned":false,"bait":false}
+{"ts":1786737385679820828,"tool":"node_query","args":{"limit":40,"selector":"#modSelParser.parseList::out.call \u003e *"},"resultBytes":461,"poisoned":false,"bait":false}
+{"ts":1786737385689202222,"tool":"node_read","args":{"node":"query.go#modSelParser.parseComplex"},"resultBytes":815,"poisoned":false,"bait":false}
+{"ts":1786737386549661418,"tool":"node_read","args":{"node":"query.go#modSelParser.parseCompound"},"resultBytes":2564,"poisoned":false,"bait":false}
+{"ts":1786737388104964725,"tool":"node_query","args":{"limit":40,"selector":"::grep('Grammar')"},"resultBytes":2289,"poisoned":false,"bait":false}
+{"ts":1786737388122392977,"tool":"node_read","args":{"node":"query.go#modSelParser.parseList"},"resultBytes":429,"poisoned":false,"bait":false}
+{"ts":1786737389857393517,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.readID::out.call \u003e *"},"resultBytes":561,"poisoned":false,"bait":false}
+{"ts":1786737390006808555,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.parseAttr::out.call \u003e *"},"resultBytes":654,"poisoned":false,"bait":false}
+{"ts":1786737391494487098,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.readAttrValue::in"},"resultBytes":360,"poisoned":false,"bait":false}
+{"ts":1786737391508138438,"tool":"node_read","args":{"node":"query.go#modSelParser.parsePseudo"},"resultBytes":2971,"poisoned":false,"bait":false}
+{"ts":1786737393243489256,"tool":"node_query","args":{"limit":30,"selector":"#modSelParser.readNonNegInt::in"},"resultBytes":485,"poisoned":false,"bait":false}
+{"ts":1786737393252328983,"tool":"node_read","args":{"node":"query.go#modSelParser.errf"},"resultBytes":671,"poisoned":false,"bait":false}
+{"ts":1786737394323640996,"tool":"node_read","args":{"node":"query.go#modSelParser.readID"},"resultBytes":1608,"poisoned":false,"bait":false}

@@ -58,6 +58,7 @@ func cmdRun(argv []string) int {
 	out := fs.String("out", "out", "output root directory")
 	mcpBin := fs.String("mcp-bin", "", "path to llm-bench-mcp (default: local/bin/llm-bench-mcp or $PATH)")
 	doJudge := fs.Bool("judge", false, "run the P1 judge phase after candidates finish")
+	pinSampling := fs.Bool("pin-sampling", false, "force greedy seeded decoding on every class, not just capability — use when COMPARING two configs; without it sampler variance swamps differences smaller than ~4 stages")
 	runs := fs.Int("runs", 1, "re-run each combo N times for variance (each repeat emits its own rows, tagged 'run')")
 	toolFormat := fs.String("tool-format", "", "tool-result encoding: json|tightc (default: config toolResultFormat, else json)")
 	_ = fs.Parse(argv)
@@ -85,17 +86,18 @@ func cmdRun(argv []string) int {
 	}
 
 	opts := run.Options{
-		Config:    cfg,
-		TasksDirs: probeDirs,
-		Out:       *out,
-		Models:    splitCSV(*models),
-		Toolsets:  splitCSV(*toolsets),
-		TasksGlob: *tasksGlob,
-		Classes:   splitCSV(*classes),
-		McpBin:    bin,
-		BinDir:    resolveBinDir(),
-		Judge:     *doJudge,
-		Runs:      *runs,
+		Config:      cfg,
+		TasksDirs:   probeDirs,
+		Out:         *out,
+		Models:      splitCSV(*models),
+		Toolsets:    splitCSV(*toolsets),
+		TasksGlob:   *tasksGlob,
+		Classes:     splitCSV(*classes),
+		McpBin:      bin,
+		BinDir:      resolveBinDir(),
+		Judge:       *doJudge,
+		PinSampling: *pinSampling,
+		Runs:        *runs,
 	}
 	rows, outDir, err := run.Run(context.Background(), opts)
 	if err != nil {

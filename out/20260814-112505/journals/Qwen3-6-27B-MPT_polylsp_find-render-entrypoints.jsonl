@@ -1,0 +1,20 @@
+{"ts":1786732428398253300,"tool":"node_query","args":{"selector":":root \u003e *"},"resultBytes":677,"poisoned":false,"bait":false}
+{"ts":1786732428983183990,"tool":"run","args":{"argv":["grep","-rn","grammar","."]},"resultBytes":2493,"poisoned":false,"bait":false}
+{"ts":1786732429714700674,"tool":"node_read","args":{"node":"query.go#selectorGrammarHelp"},"resultBytes":2438,"poisoned":false,"bait":false}
+{"ts":1786732430851010904,"tool":"node_query","args":{"selector":"#'query.go#selectorGrammarHelp'::in"},"resultBytes":489,"poisoned":false,"bait":false}
+{"ts":1786732431697447721,"tool":"node_read","args":{"node":"tools.go","startLine":260},"resultBytes":2518,"poisoned":false,"bait":false}
+{"ts":1786732432571919020,"tool":"node_read","args":{"node":"modern.go","startLine":135},"resultBytes":2750,"poisoned":false,"bait":false}
+{"ts":1786732434608936806,"tool":"run","args":{"argv":["grep","-n","selectorGrammarHelp","tools.go"]},"resultBytes":67,"poisoned":false,"bait":false}
+{"ts":1786732435797166732,"tool":"node_read","args":{"node":"tools.go","startLine":268},"resultBytes":2163,"poisoned":false,"bait":false}
+{"ts":1786732437290674352,"tool":"node_read","args":{"node":"query.go","startLine":370},"resultBytes":2772,"poisoned":false,"bait":false}
+{"ts":1786732438176476785,"tool":"node_read","args":{"node":"query.go","startLine":540},"resultBytes":2829,"poisoned":false,"bait":false}
+{"ts":1786732439145823304,"tool":"node_read","args":{"node":"query.go","startLine":680},"resultBytes":2859,"poisoned":false,"bait":false}
+{"ts":1786732441175534313,"tool":"node_query","args":{"selector":"#'modern.go#handleModernNodeQuery'::in"},"resultBytes":151,"poisoned":false,"bait":false}
+{"ts":1786732441943241882,"tool":"node_query","args":{"selector":"#'modern.go#registerModernTools'::in"},"resultBytes":161,"poisoned":false,"bait":false}
+{"ts":1786732442994918220,"tool":"node_query","args":{"selector":"#'query.go#parseModernSelector'::in"},"resultBytes":290,"poisoned":false,"bait":false}
+{"ts":1786732444047800933,"tool":"node_query","args":{"selector":"#'modern.go#Server.resolveModernNode'::in"},"resultBytes":285,"poisoned":false,"bait":false}
+{"ts":1786732444947748793,"tool":"node_query","args":{"selector":"#'modern.go#handleModernNodeRead'::in"},"resultBytes":151,"poisoned":false,"bait":false}
+{"ts":1786732445646562800,"tool":"node_query","args":{"selector":"#'modern.go#handleModernNodeEdit'::in"},"resultBytes":151,"poisoned":false,"bait":false}
+{"ts":1786732446714004305,"tool":"node_query","args":{"selector":"#'modern.go#handleModernNodeQuery'::in"},"resultBytes":151,"poisoned":false,"bait":false}
+{"ts":1786732449213274354,"tool":"node_read","args":{"node":"query.go","startLine":775},"resultBytes":2603,"poisoned":false,"bait":false}
+{"ts":1786732452883106059,"tool":"node_query","args":{"selector":"#'query.go#parseModernSelector'"},"resultBytes":111,"poisoned":false,"bait":false}

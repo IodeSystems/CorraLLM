@@ -1,0 +1,7 @@
+{"ts":1786751280360088859,"tool":"run","args":{"argv":["python3","-c","print(len('C:\\\\Users\\\\nthalk\\\\src\\\\app\\\\main.go'.split('\\\\')))"]},"resultBytes":87,"poisoned":false,"bait":false}
+{"ts":1786751283170387348,"tool":"run","args":{"argv":["python3","-c","open('/tmp/eval_var.txt','w').write(str(41+1))"]},"resultBytes":69,"poisoned":false,"bait":false}
+{"ts":1786751284319505213,"tool":"run","args":{"argv":["python3","-c","print(int(open('/tmp/eval_var.txt').read())*2)"]},"resultBytes":72,"poisoned":false,"bait":false}
+{"ts":1786751286919708383,"tool":"list_dir","args":{"path":"."},"resultBytes":6,"poisoned":false,"bait":false}
+{"ts":1786751286920061556,"tool":"run","args":{"argv":["mcpshell","--help"]},"resultBytes":34,"poisoned":false,"bait":false}
+{"ts":1786751289280423251,"tool":"run","args":{"argv":["mcpshell"]},"resultBytes":34,"poisoned":false,"bait":false}
+{"ts":1786751289280689782,"tool":"run","args":{"argv":["mcpshell","-h"]},"resultBytes":34,"poisoned":false,"bait":false}

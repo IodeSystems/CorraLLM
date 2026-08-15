@@ -1,0 +1,9 @@
+{"ts":1786732417410038190,"tool":"node_query","args":{"selector":"type#Config"},"resultBytes":213,"poisoned":false,"bait":false}
+{"ts":1786732417412620999,"tool":"node_query","args":{"selector":"*::grep('-w Config')"},"resultBytes":2657,"poisoned":false,"bait":false}
+{"ts":1786732418292283894,"tool":"node_read","args":{"node":"app/config.go#Config"},"resultBytes":174,"poisoned":false,"bait":false}
+{"ts":1786732420274023641,"tool":"node_edit","args":{"node":"app/config.go#Config","rename":"Settings"},"resultBytes":876,"poisoned":false,"bait":false}
+{"ts":1786732421288209923,"tool":"node_query","args":{"selector":"*::grep('-w Config')"},"resultBytes":922,"poisoned":false,"bait":false}
+{"ts":1786732423311675565,"tool":"node_edit","args":{"newText":"// Default returns the default Settings.","node":"app/config.go#Default","oldText":"// Default returns the default Config."},"resultBytes":255,"poisoned":false,"bait":false}
+{"ts":1786732423525956329,"tool":"node_edit","args":{"newText":"// Describe returns a one-line description of a Settings.","node":"app/handler.go#Describe","oldText":"// Describe returns a one-line description of a Config."},"resultBytes":256,"poisoned":false,"bait":false}
+{"ts":1786732423735769467,"tool":"node_edit","args":{"newText":"// NewServer builds a Server from a Settings.","node":"app/server.go#NewServer","oldText":"// NewServer builds a Server from a Config."},"resultBytes":259,"poisoned":false,"bait":false}
+{"ts":1786732424732997792,"tool":"run","args":{"argv":["go","test","./..."]},"resultBytes":51,"poisoned":false,"bait":false}
