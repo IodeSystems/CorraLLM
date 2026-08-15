@@ -454,6 +454,19 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			body = nb
 		}
 	}
+	// Per-mode sampler substitution: a reasoning model wants different sampling
+	// while thinking than while not, the backend was launched with only one set,
+	// and the caller can flip the mode per request. Fills in ONLY what the
+	// caller left unset. Same placement as the PDF rewrite and for the same
+	// reason — once here, not per backend in the fall-through loop.
+	if r.URL.Path == "/v1/chat/completions" {
+		if m, ok := p.config().Models[served]; ok && m.Sampling != nil {
+			if nb, did := applySamplingProfile(body, m.Sampling); did {
+				body = nb
+				slog.Debug("sampling profile applied", "model", served)
+			}
+		}
+	}
 	// Only impose a deadline when one is configured. A fixed cap here would turn
 	// long-but-valid requests (big prompts, image data on a 27B/220k-ctx model)
 	// into spurious timeouts — the regression that surfaced as 502s in production.

@@ -526,6 +526,16 @@ type Model struct {
 	// one Process would pool their admission slots for no reason.
 	ExtensionHosted bool `yaml:"-"`
 
+	// Sampling holds this model's per-mode samplers, substituted into a chat
+	// request for whichever fields the CALLER did not set. Nil = substitute
+	// nothing, which is what every model did before this existed.
+	//
+	// Deliberately NOT merged with the cmd's own sampler flags: those are the
+	// backend's floor and apply to /upstream traffic that bypasses this rewrite,
+	// so keeping them independent means a direct-to-backend request still gets a
+	// sane sampler rather than none.
+	Sampling *SamplingConfig `yaml:"sampling,omitempty"`
+
 	// Aliases are ADDITIONAL served names that resolve to this model. They exist
 	// for version cutovers: a caller that hardcodes last quarter's model id keeps
 	// working while the id it names starts meaning the new model.
@@ -1070,6 +1080,68 @@ func globMatch(pattern, s string) bool {
 // ingested before reaching the model. Resolved per request as built-in defaults →
 // global `convert:` → the model's `convert:`, each field overriding the last.
 // Zero/empty fields inherit; OCR is a pointer so a model can force it false.
+// SamplingProfile is one mode's sampler, as the model's own card states it.
+//
+// Every field is a POINTER because 0 is a meaningful value for most of them —
+// temperature 0 is greedy, presencePenalty 0 is off, minP 0 is off — and a plain
+// float could not tell "the operator set it to 0" from "the operator said
+// nothing". An unset field is never sent, which is what lets a caller keep
+// control of the knobs the config has no opinion about.
+type SamplingProfile struct {
+	Temperature      *float64 `yaml:"temperature,omitempty"`
+	TopP             *float64 `yaml:"topP,omitempty"`
+	TopK             *int     `yaml:"topK,omitempty"`
+	MinP             *float64 `yaml:"minP,omitempty"`
+	PresencePenalty  *float64 `yaml:"presencePenalty,omitempty"`
+	FrequencyPenalty *float64 `yaml:"frequencyPenalty,omitempty"`
+	RepeatPenalty    *float64 `yaml:"repeatPenalty,omitempty"`
+}
+
+// Empty reports whether this profile would send nothing.
+func (p SamplingProfile) Empty() bool {
+	return p.Temperature == nil && p.TopP == nil && p.TopK == nil && p.MinP == nil &&
+		p.PresencePenalty == nil && p.FrequencyPenalty == nil && p.RepeatPenalty == nil
+}
+
+// SamplingConfig carries the per-MODE samplers for one model.
+//
+// It exists because a reasoning model has two right answers and the server flag
+// can only hold one. Qwen3.8's card, for instance, asks for temperature 1.0 /
+// top_p 0.95 / presence_penalty 0.0 while thinking and 0.7 / 0.80 / 1.5 while
+// not — so a llama-server launched with one set is running the wrong sampler
+// every time a caller flips the mode per request, which llama.cpp lets them do
+// (chat_template_kwargs.enable_thinking overrides --reasoning).
+//
+// That mismatch is invisible: it degrades output, it does not error. Corrallm is
+// the only component that knows both which model a request resolved to (after
+// aliases, lanes and globs) and what that model's card recommends, which is why
+// this lives here and not in each client.
+type SamplingConfig struct {
+	// Thinking and Instruct are the two modes' profiles. Either may be empty,
+	// in which case nothing is substituted for that mode.
+	Thinking SamplingProfile `yaml:"thinking,omitempty"`
+	Instruct SamplingProfile `yaml:"instruct,omitempty"`
+
+	// Default names the profile to use when the request expresses no opinion
+	// about thinking: "instruct" (the zero value) or "thinking". It must match
+	// how the backend was actually launched — a model started with
+	// `--reasoning off` and a Default of "thinking" would hand every unmarked
+	// request the wrong sampler, which is the exact failure this type exists to
+	// prevent.
+	Default string `yaml:"default,omitempty"`
+}
+
+// ProfileFor returns the profile for a mode: thinking when think is true.
+func (s SamplingConfig) ProfileFor(think bool) SamplingProfile {
+	if think {
+		return s.Thinking
+	}
+	return s.Instruct
+}
+
+// DefaultThinking reports which mode an unmarked request gets.
+func (s SamplingConfig) DefaultThinking() bool { return s.Default == "thinking" }
+
 type ConvertConfig struct {
 	PDF      string `yaml:"pdf,omitempty"`      // text | vision | off
 	DPI      int    `yaml:"dpi,omitempty"`      // rasterization DPI (vision/OCR)
@@ -1877,6 +1949,32 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	// A misspelled sampling default must not load. It has no error surface at
+	// request time — an unrecognised value simply reads as "instruct" — so every
+	// unmarked request would quietly get the wrong mode's sampler, which is the
+	// precise failure this block of config exists to prevent.
+	for _, name := range func() []string {
+		out := make([]string, 0, len(c.Models))
+		for n := range c.Models {
+			out = append(out, n)
+		}
+		sort.Strings(out)
+		return out
+	}() {
+		s := c.Models[name].Sampling
+		if s == nil {
+			continue
+		}
+		switch s.Default {
+		case "", "instruct", "thinking":
+		default:
+			return fmt.Errorf("model %q: sampling.default %q must be \"instruct\" or \"thinking\"", name, s.Default)
+		}
+		if s.Thinking.Empty() && s.Instruct.Empty() {
+			return fmt.Errorf("model %q: sampling block declares no profile; remove it or give it one", name)
+		}
+	}
+
 	// Aliases are checked after models AND lanes, because an alias can collide
 	// with either. Sorted so a config with two faults always reports the same
 	// one — map order would otherwise make the error flap between loads and

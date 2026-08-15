@@ -286,3 +286,32 @@ func portNode(port int) yaml.Node {
 	n.SetString(strconv.Itoa(port))
 	return n
 }
+
+// TestValidateSamplingDefault: an unrecognised default has NO error surface at
+// request time — it just reads as "instruct" — so every unmarked request would
+// quietly get the wrong mode's sampler. It has to fail at load or not at all.
+func TestValidateSamplingDefault(t *testing.T) {
+	temp := 0.7
+	base := func(def string) *Config {
+		return &Config{Models: map[string]Model{"m": {
+			Proxy:    portNode(1234),
+			Sampling: &SamplingConfig{Instruct: SamplingProfile{Temperature: &temp}, Default: def},
+		}}}
+	}
+	for _, ok := range []string{"", "instruct", "thinking"} {
+		if err := base(ok).Validate(); err != nil {
+			t.Errorf("default %q rejected: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"thinkng", "Thinking", "on", "auto"} {
+		if err := base(bad).Validate(); err == nil {
+			t.Errorf("default %q must be rejected", bad)
+		}
+	}
+	// A sampling block with neither profile does nothing at all; saying so at
+	// load beats an operator wondering why their config has no effect.
+	c := &Config{Models: map[string]Model{"m": {Proxy: portNode(1234), Sampling: &SamplingConfig{}}}}
+	if err := c.Validate(); err == nil {
+		t.Error("an empty sampling block must be rejected")
+	}
+}

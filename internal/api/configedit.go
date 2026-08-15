@@ -370,6 +370,7 @@ func advancedFields(m config.Model) []string {
 		}
 	}
 	add(len(m.Aliases) > 0, "aliases")
+	add(m.Sampling != nil, "sampling")
 	add(m.Swap != nil, "swap")
 	add(m.ContextPerRequest > 0, "contextPerRequest")
 	add(len(m.Modalities) > 0, "modalities")
