@@ -149,13 +149,14 @@ func (p *Proxy) refreshDiscovery(ctx context.Context, hc *http.Client) {
 		modelsURL := strings.TrimRight(dt.Target.URL.String(), "/") + dt.Target.BasePath + "/v1/models"
 		cat, err := freeroster.FetchCatalog(ctx, hc, modelsURL, dt.Target.Headers)
 		if err != nil {
-			slog.Warn("discovery fetch failed", "extension", dt.Extension, "provider", dt.Provider, "err", err)
+			slog.Warn("discovery fetch failed", "extension", dt.Extension, "provider", dt.Provider,
+				"credential", dt.Credential, "err", err)
 			continue
 		}
 		kept := selectDiscovered(cat, dt)
-		p.config().SetDiscovered(dt.Provider, kept)
+		p.config().SetDiscoveredFor(dt.Provider, dt.Credential, kept)
 		slog.Info("discovered models", "extension", dt.Extension, "provider", dt.Provider,
-			"kept", len(kept), "of", len(cat))
+			"credential", dt.Credential, "kept", len(kept), "of", len(cat))
 	}
 }
 

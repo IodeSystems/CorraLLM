@@ -1,6 +1,6 @@
 # P21 — Provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Status: **P21a–d + P21f shipped; §8 resolved and its selector built (P21e3 partial); P21e/e2 + P21g not started.** Pointer from §6 roadmap in plan.md.
+Status: **P21a–f shipped (§8, §9 resolved); P21e2 + P21e3's per-model half + P21g remain.** Pointer from §6 roadmap in plan.md.
 Supersedes the single-credential assumption in `p16-free-aggregator.md` §4.
 
 > This is a design doc, not a changelog. It states the problem, the shape of the
@@ -437,7 +437,16 @@ Plumbing exists; the provider-shaped view does not.
   budget is temporary and serving anyway is arguable, a permission is not.
   Applied BEFORE the budget filter, so an exhausted-but-permitted account cannot
   mask a forbidden one.
-- **P21e** Per-credential discovery + roster keying (§6).
+- ✅ **P21e** Per-credential discovery (§6). `DiscoverTargets()` emits one target
+  per credential, each carrying that credential's merged auth, because the
+  catalogues genuinely differ by key (free tier vs paid vs BYOK).
+  `SetDiscoveredFor(provider, credential, models)` records WHICH credentials saw
+  each model, and expansion offers a model only on the accounts that can serve
+  it — a union would route to a 404 that looks like provider flakiness rather
+  than a config error. Retraction is scoped to the refreshing credential, so two
+  accounts refreshing in turn do not erase each other, and a model disappears
+  only when NO credential still sees it. Verified live: `discovered models
+  provider=openrouter credential=default kept=10 of=413`.
 - **P21e2** Model approval state + `approvalRequired` policy (§7). Follows P21e
   because approval is per credential and needs the per-credential roster.
 - ◐ **P21e3** Lane membership for discovered models (§8). Shape DECIDED and the
@@ -449,8 +458,8 @@ Plumbing exists; the provider-shaped view does not.
   resolution, 0600 enforced. No schema change — config keeps holding references.
 - **P21g** UI: provider view, credential CRUD, model picker, spend-vs-budget.
 
-P21e is the next unblocked step. P21e2 needs it; P21e3's remaining half needs
-P21e2. P21g is unblocked on the secrets side (it still needs the UI built).
+P21e2 is the next unblocked step; P21e3's remaining half needs it. P21g is
+unblocked on the secrets side (it still needs the UI built).
 
 ## 12. Risks & non-goals
 

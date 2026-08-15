@@ -109,20 +109,56 @@ type Config struct {
 	// truth, this is the live addition to it.
 	mu         sync.RWMutex
 	discovered map[string]Model
+	// discoveredBy records WHICH credentials saw each discovered model.
+	//
+	// Two accounts of one provider do not see the same catalogue — OpenRouter's
+	// /v1/models differs by key (free tier vs paid vs BYOK) — so a union would
+	// offer a model on a credential that cannot serve it, and every request
+	// routed there would 404. model → set of credential names.
+	discoveredBy map[string]map[string]bool
 }
 
 // SetDiscovered replaces the models contributed by one provider. Replacing
 // wholesale (rather than merging) is what lets a model that has churned OUT of
 // the provider's free set disappear on the next pass.
+//
+// Equivalent to SetDiscoveredFor with the provider's implicit single credential.
 func (c *Config) SetDiscovered(provider string, models map[string]Model) {
+	c.SetDiscoveredFor(provider, DefaultCredentialName, models)
+}
+
+// SetDiscoveredFor replaces what ONE CREDENTIAL of a provider contributes.
+//
+// Per credential rather than per provider because the catalogues genuinely
+// differ: a free-tier key and a paid key of the same account see different
+// model lists. Recording the union would offer a model on a credential that
+// cannot serve it, and the walk would route there and 404 — a failure that
+// looks like the provider being flaky rather than a config error.
+//
+// A model several credentials can serve keeps ONE served name, backed by
+// several candidates; expandCredentials emits only the ones that saw it.
+func (c *Config) SetDiscoveredFor(provider, credential string, models map[string]Model) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.discovered == nil {
 		c.discovered = map[string]Model{}
 	}
+	if c.discoveredBy == nil {
+		c.discoveredBy = map[string]map[string]bool{}
+	}
+	// Retract only what THIS credential previously contributed. A sibling's
+	// entry must survive, or two credentials refreshing in turn would each
+	// erase the other's models.
 	for name, m := range c.discovered {
-		if m.ProviderName == provider {
-			delete(c.discovered, name)
+		if m.ProviderName != provider {
+			continue
+		}
+		if by := c.discoveredBy[name]; by != nil {
+			delete(by, credential)
+			if len(by) == 0 {
+				delete(c.discoveredBy, name)
+				delete(c.discovered, name)
+			}
 		}
 	}
 	for name, m := range models {
@@ -132,7 +168,24 @@ func (c *Config) SetDiscovered(provider string, models map[string]Model) {
 			continue
 		}
 		c.discovered[name] = m
+		if c.discoveredBy[name] == nil {
+			c.discoveredBy[name] = map[string]bool{}
+		}
+		c.discoveredBy[name][credential] = true
 	}
+}
+
+// discoveredServableBy reports whether a discovered model is reachable with the
+// named credential. A model that is not discovered at all (declared, or a glob
+// template) is unconstrained — this only narrows what discovery contributed.
+func (c *Config) discoveredServableBy(model, credential string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	by, ok := c.discoveredBy[model]
+	if !ok {
+		return true
+	}
+	return by[credential]
 }
 
 // Discovered returns a copy of the runtime-contributed models.
@@ -1011,6 +1064,11 @@ func (c *Config) expandCredentials(in []Candidate) []Candidate {
 		}
 		for i := range pv.Credentials {
 			cr := pv.Credentials[i]
+			// A credential that did not see this model in its own catalogue
+			// cannot serve it; offering it would route a request to a 404.
+			if !c.discoveredServableBy(cand.Name, cr.Name) {
+				continue
+			}
 			dup := cand
 			dup.Credential = &cr
 			out = append(out, dup)
@@ -1723,6 +1781,11 @@ func (c *Config) resolveExtensions() error {
 type DiscoverTarget struct {
 	Extension string
 	Provider  string
+	// Credential names the account this catalogue was fetched with. Discovery
+	// runs once PER credential because the catalogues differ by key, and the
+	// result is recorded against this name so the walk only offers a model on
+	// the accounts that can actually serve it.
+	Credential string
 	Spec      *Discover
 	Target    *ProxyTarget
 	// ProxyNode is the provider's proxy block as written, so a discovered model
@@ -1751,11 +1814,27 @@ func (c *Config) DiscoverTargets() []DiscoverTarget {
 			if pv.Discover == nil {
 				continue
 			}
-			t, err := (Model{Proxy: pv.Proxy}).ProxyTarget()
+			base, err := (Model{Proxy: pv.Proxy}).ProxyTarget()
 			if err != nil {
 				continue
 			}
-			out = append(out, DiscoverTarget{Extension: en, Provider: pn, Spec: pv.Discover, Target: t, ProxyNode: pv.Proxy})
+			// One target per credential: same endpoint, different auth, and
+			// therefore a different catalogue. A provider declaring none yields
+			// exactly one with the implicit default, so nothing changes for a
+			// config that predates credentials.
+			for _, cr := range pv.CredentialList() {
+				t := *base
+				if len(cr.Headers) > 0 || cr.AuthTokenCommand != "" {
+					t.Headers = cr.MergedHeaders(base.Headers)
+					if cr.AuthTokenCommand != "" {
+						t.AuthTokenCommand = cr.AuthTokenCommand
+					}
+				}
+				out = append(out, DiscoverTarget{
+					Extension: en, Provider: pn, Credential: cr.Name,
+					Spec: pv.Discover, Target: &t, ProxyNode: pv.Proxy,
+				})
+			}
 		}
 	}
 	return out
