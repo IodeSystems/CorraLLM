@@ -234,6 +234,32 @@ CREATE TABLE IF NOT EXISTS quota_counter (
     PRIMARY KEY (backend, label)
 );
 
+CREATE TABLE IF NOT EXISTS model_approval (
+    provider    TEXT NOT NULL,          -- the provider whose catalogue offered it
+    credential  TEXT NOT NULL,          -- WHICH account saw it; catalogues differ by key
+    model       TEXT NOT NULL,          -- served name
+    state       TEXT NOT NULL,          -- pending | approved | rejected
+    lanes       TEXT NOT NULL DEFAULT '', -- JSON [{lane,order}] chosen at approval
+    quality     REAL NOT NULL DEFAULT 0,  -- operator's rank, replacing the template guess
+    note        TEXT NOT NULL DEFAULT '',
+    at          INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, credential, model)
+);
+
+-- model_approval: whether a DISCOVERED model may serve, and on what terms.
+--
+-- Operational state, not config — same argument model_pause makes for itself.
+-- It must be durable for a sharper reason though: a rejection that does not
+-- survive a restart means the model reappears in the queue on the next refresh,
+-- and the operator is asked the same question forever.
+--
+-- Keyed per (provider, credential, model) because the same upstream id can be
+-- wanted on one account and refused on another — a paid key's model is a
+-- spending decision the free key's is not.
+--
+-- lanes is JSON rather than a join table: it is a short list read whole,
+-- written whole, and never queried across rows.
+
 -- model_pause: an operator's "do not run this" order. Operational state, not
 -- config: it lives here rather than in the YAML so pausing a model for an
 -- afternoon does not rewrite the user's configuration file. It MUST be durable

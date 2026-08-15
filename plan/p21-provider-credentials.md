@@ -1,6 +1,6 @@
 # P21 — Provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Status: **P21a–f shipped (§8, §9 resolved); P21e2 + P21e3's per-model half + P21g remain.** Pointer from §6 roadmap in plan.md.
+Status: **P21a–f shipped, including e2/e3 (§8, §9 resolved). Only P21g (UI) remains.** Pointer from §6 roadmap in plan.md.
 Supersedes the single-credential assumption in `p16-free-aggregator.md` §4.
 
 > This is a design doc, not a changelog. It states the problem, the shape of the
@@ -447,19 +447,35 @@ Plumbing exists; the provider-shaped view does not.
   accounts refreshing in turn do not erase each other, and a model disappears
   only when NO credential still sees it. Verified live: `discovered models
   provider=openrouter credential=default kept=10 of=413`.
-- **P21e2** Model approval state + `approvalRequired` policy (§7). Follows P21e
-  because approval is per credential and needs the per-credential roster.
-- ◐ **P21e3** Lane membership for discovered models (§8). Shape DECIDED and the
-  selector is built (`- {provider: openrouter}` resolves against the live
-  roster). What remains is the per-model half: choosing WHICH lanes a given
-  model joins and where in the ladder, which needs P21e2's approval record to
-  hang that state on. A selector is blanket today.
+- ✅ **P21e2** Model approval state + `approvalRequired` policy (§7).
+  `model_approval` in SQLite, keyed (provider, credential, model) — the same
+  upstream id can be wanted on one account and refused on another, because a
+  paid key's model is a spending decision the free key's is not. Persisted for a
+  sharper reason than config-vs-state: a rejection that did not survive a
+  restart puts the model back in the queue on the next refresh and asks the
+  operator the same question forever. `approvalRequired` is per credential and
+  OFF by default, so turning it on for a paid key leaves a free roster working
+  untouched, and DECLARED models are never gated — asking someone to approve
+  what they just wrote down would be theatre.
+- ✅ **P21e3** Lane membership for discovered models (§8). Two complementary
+  mechanisms, neither sufficient alone:
+  - *selector* — `{provider, server, device, minQuality}` says "everything
+    matching this", resolved against the live roster. Scoped by HOST and DEVICE
+    as well as provider, because a local Qwen, the same family on an attached
+    box, and a paid remote are different backends with different latency, cost
+    and failure modes; a lane exists to order them, not to pool them.
+  - *approval placement* — `{lane, order}` recorded per model says "this one, in
+    these lanes, at this position". The per-model half a blanket selector cannot
+    express.
+  Declared members keep the front of the ladder; approved additions follow in
+  their chosen order. An approval's `quality` also replaces the discovery
+  template's uniform guess, which p16 flagged as "an ASSUMPTION applied to every
+  discovered model, and a wrong one".
 - ✅ **P21f** Secrets store: `~/.corrallm/credentials`, file-first `${...}`
   resolution, 0600 enforced. No schema change — config keeps holding references.
 - **P21g** UI: provider view, credential CRUD, model picker, spend-vs-budget.
 
-P21e2 is the next unblocked step; P21e3's remaining half needs it. P21g is
-unblocked on the secrets side (it still needs the UI built).
+Only P21g remains: the UI over an API that now exists.
 
 ## 12. Risks & non-goals
 

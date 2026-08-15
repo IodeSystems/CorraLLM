@@ -536,6 +536,29 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 	defer func() { _ = st.Close() }()
 
+	// Approval decisions gate which DISCOVERED models serve. Loaded before the
+	// first refresh: a rejection that arrived late would let the model serve in
+	// the gap, and a decision that did not survive a restart would put the same
+	// question back in the queue on every pass.
+	if st != nil {
+		if rows, err := st.LoadApprovals(); err != nil {
+			slog.Warn("load approvals", "err", err)
+		} else if len(rows) > 0 {
+			view := make(map[string]config.ApprovalView, len(rows))
+			for _, r := range rows {
+				lanes := make([]config.LanePlacement, 0, len(r.Lanes))
+				for _, l := range r.Lanes {
+					lanes = append(lanes, config.LanePlacement{Lane: l.Lane, Order: l.Order})
+				}
+				view[config.ApprovalKey(r.Provider, r.Credential, r.Model)] = config.ApprovalView{
+					State: r.State, Lanes: lanes, Quality: r.Quality,
+				}
+			}
+			cfg.SetApprovals(view)
+			slog.Info("model approvals loaded", "count", len(rows))
+		}
+	}
+
 	mgr := proc.NewManager(cfg)
 	if o.healthTimeout > 0 {
 		mgr.SetHealthTimeout(o.healthTimeout)

@@ -116,6 +116,9 @@ type Config struct {
 	// offer a model on a credential that cannot serve it, and every request
 	// routed there would 404. model → set of credential names.
 	discoveredBy map[string]map[string]bool
+	// approvals gates which DISCOVERED models may serve, and carries the lane
+	// placement chosen when each was approved. Keyed by ApprovalKey.
+	approvals map[string]ApprovalView
 }
 
 // SetDiscovered replaces the models contributed by one provider. Replacing
@@ -1071,6 +1074,11 @@ func (c *Config) expandCredentials(in []Candidate) []Candidate {
 			}
 			dup := cand
 			dup.Credential = &cr
+			// A credential requiring approval serves a discovered model only
+			// once someone has said yes to it ON THAT ACCOUNT.
+			if !c.servesUnderApproval(dup) {
+				continue
+			}
 			out = append(out, dup)
 		}
 	}
@@ -1098,6 +1106,11 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 			}
 			cands = append(cands, Candidate{Name: mem.Model, Model: m, Sticky: mem.Sticky})
 		}
+		// Models approved INTO this lane join after its declared members, in the
+		// order chosen at approval. Declared membership is an operator's
+		// explicit ladder and keeps the front of it; an approval is a later,
+		// per-model addition rather than a reordering of what was written down.
+		cands = append(cands, c.approvedLaneMembers(served)...)
 		return c.expandCredentials(cands), len(cands) > 0
 	}
 	if m, ok := c.Models[served]; ok {
