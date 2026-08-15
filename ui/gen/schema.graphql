@@ -18,6 +18,7 @@ type CorrallmMutationNamespace {
   ): corrallm_HeartbeatAck @derived(operationId: "agentHeartbeat")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
+  decideApproval(body: corrallm_DecideApprovalInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "decideApproval")
   deleteEntry(
     """model | server | lane"""
     kind: String!
@@ -142,6 +143,7 @@ type CorrallmQueryNamespace {
     """Look back this far for keys seen in traffic (0 = all recorded usage)."""
     windowHours: Long
   ): corrallm_KeysOutputBody @derived(operationId: "keys")
+  listApprovals: corrallm_ApprovalsOutputBody @derived(operationId: "listApprovals")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -242,6 +244,7 @@ type CorrallmV1MutationNamespace {
   ): corrallm_HeartbeatAck @derived(operationId: "agentHeartbeat")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
+  decideApproval(body: corrallm_DecideApprovalInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "decideApproval")
   deleteEntry(
     """model | server | lane"""
     kind: String!
@@ -365,6 +368,7 @@ type CorrallmV1QueryNamespace {
     """Look back this far for keys seen in traffic (0 = all recorded usage)."""
     windowHours: Long
   ): corrallm_KeysOutputBody @derived(operationId: "keys")
+  listApprovals: corrallm_ApprovalsOutputBody @derived(operationId: "listApprovals")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -597,6 +601,30 @@ type corrallm_ActivityRecord {
   ts: Long!
   """Time to first response byte, milliseconds (0 if no body)."""
   ttfbMs: Long!
+}
+
+type corrallm_ApprovalView {
+  """When the decision was recorded."""
+  atMs: Long!
+  """Account that saw it — catalogues differ by key."""
+  credential: String!
+  """Lanes it was approved into, with position."""
+  lanes: [corrallm_LaneRefView!]!
+  """Served model name."""
+  model: String!
+  """Free text kept with the decision."""
+  note: String!
+  """Provider whose catalogue offered it."""
+  provider: String!
+  """Operator's rank, replacing the discovery template's uniform guess (0 = keep the template's)."""
+  quality: Float!
+  """pending | approved | rejected."""
+  state: String!
+}
+
+type corrallm_ApprovalsOutputBody {
+  """Every recorded decision, plus every discovered model still awaiting one."""
+  approvals: [corrallm_ApprovalView!]!
 }
 
 input corrallm_BackendInput {
@@ -1150,6 +1178,22 @@ type corrallm_ConfigSummaryOutputBody {
   servers: [String!]!
 }
 
+input corrallm_DecideApprovalInputBodyInput {
+  """Account the decision applies to."""
+  credential: String!
+  """Lanes to place it in, with position."""
+  lanes: [corrallm_LaneRefViewInput!]
+  """Served model name."""
+  model: String!
+  note: String
+  """Provider whose catalogue offered it."""
+  provider: String!
+  """Rank to use instead of the discovery template's guess."""
+  quality: Float
+  """approved | rejected | pending (pending clears the decision)."""
+  state: String!
+}
+
 type corrallm_DepthPoint {
   """Mean in-flight slots in this bucket."""
   avgActive: Float!
@@ -1441,6 +1485,20 @@ type corrallm_LaneMemberDef {
   ttl: String!
 }
 
+type corrallm_LaneRefView {
+  """Lane name."""
+  lane: String!
+  """Position in that lane's ladder; lower is tried first."""
+  order: Long!
+}
+
+input corrallm_LaneRefViewInput {
+  """Lane name."""
+  lane: String!
+  """Position in that lane's ladder; lower is tried first."""
+  order: Long!
+}
+
 input corrallm_MintEnrollmentTokenInputBodyInput {
   """Base URL the attaching machine should use. The dashboard sends its own origin; falls back to the daemon's --public-base."""
   base: String
@@ -1543,7 +1601,7 @@ type corrallm_ModelDef {
   ttl: String!
   """Cost class (chat | embed | openrouter | …)."""
   type: String!
-  """The id the BACKEND knows this model by, when it differs from the served name (the alias). Empty means the backend uses the served name."""
+  """The id the BACKEND knows this model by, when it differs from the served name. Empty means the backend uses the served name. Outbound only — the inbound counterpart is 'aliases', which are extra names CALLERS may use for this model."""
   upstream: String!
 }
 
