@@ -1,6 +1,6 @@
 # P21 — Provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Status: **P21a–f shipped, including e2/e3 (§8, §9 resolved). Only P21g (UI) remains.** Pointer from §6 roadmap in plan.md.
+Status: **COMPLETE — P21a–g shipped, §8 and §9 resolved.** Pointer from §6 roadmap in plan.md.
 Supersedes the single-credential assumption in `p16-free-aggregator.md` §4.
 
 > This is a design doc, not a changelog. It states the problem, the shape of the
@@ -473,9 +473,25 @@ Plumbing exists; the provider-shaped view does not.
   discovered model, and a wrong one".
 - ✅ **P21f** Secrets store: `~/.corrallm/credentials`, file-first `${...}`
   resolution, 0600 enforced. No schema change — config keeps holding references.
-- **P21g** UI: provider view, credential CRUD, model picker, spend-vs-budget.
+- ✅ **P21g** Approvals API + UI. `GET /api/v1/approvals` returns decisions AND
+  the discovered models still awaiting one, composed server-side so no client
+  has to diff the roster against the decisions and get it subtly different.
+  `POST /api/v1/approvals/decide` records approved/rejected with lanes and
+  positions and re-installs the table immediately. The page pairs the decision
+  with its placement in one click — approving and then separately placing would
+  leave a model serving from nowhere in between.
+  NOT built: credential CRUD from the UI. Credentials are still edited as
+  config, which is the honest shape while secrets live in a separate file
+  (§9) — a credential form that could not set the secret would be half a form.
 
-Only P21g remains: the UI over an API that now exists.
+All phases shipped. What is deliberately NOT built:
+  - Credential CRUD from the UI (see P21g) — needs a story for editing
+    ~/.corrallm/credentials, which the API must never serve.
+  - Provider-level spend rollup in the UI. The budgets exist and are enforced;
+    only the visualisation is missing.
+  - `SetLimits` still runs at proxy construction, so a credential added by a
+    live config edit needs a restart before its budget registers. Pre-existing;
+    per-model freeTier limits behave the same way.
 
 ## 12. Risks & non-goals
 
