@@ -1,6 +1,6 @@
 # P21 — Provider credentials (multi-key providers, scoped budgets, key ACLs)
 
-Status: **P21a–d + P21f shipped; P21e/e2/e3 + P21g not started.** Pointer from §6 roadmap in plan.md.
+Status: **P21a–d + P21f shipped; §8 resolved and its selector built (P21e3 partial); P21e/e2 + P21g not started.** Pointer from §6 roadmap in plan.md.
 Supersedes the single-credential assumption in `p16-free-aggregator.md` §4.
 
 > This is a design doc, not a changelog. It states the problem, the shape of the
@@ -396,7 +396,7 @@ Plumbing exists; the provider-shaped view does not.
   unit test, and live against the running managed marshaller, which rewrites
   the file on every edit and would otherwise delete a field it could parse but
   not re-emit. `${ENV}` references stay literal through both.
-- ◐ **P21b** Credential as a routing target: one served name, N credential-backed
+- ✅ **P21b** Credential as a routing target: one served name, N credential-backed
   backends; selector picks by budget. Closes the P16 insight.
   - ✅ *config layer.* `ResolveServed` expands one served name into one
     Candidate per declared credential (order follows config, so the walk is
@@ -440,14 +440,17 @@ Plumbing exists; the provider-shaped view does not.
 - **P21e** Per-credential discovery + roster keying (§6).
 - **P21e2** Model approval state + `approvalRequired` policy (§7). Follows P21e
   because approval is per credential and needs the per-credential roster.
-- **P21e3** Lane membership for discovered models (§8). BLOCKED on the §8 shape
-  decision; approval UI is of limited use without it.
+- ◐ **P21e3** Lane membership for discovered models (§8). Shape DECIDED and the
+  selector is built (`- {provider: openrouter}` resolves against the live
+  roster). What remains is the per-model half: choosing WHICH lanes a given
+  model joins and where in the ladder, which needs P21e2's approval record to
+  hang that state on. A selector is blanket today.
 - ✅ **P21f** Secrets store: `~/.corrallm/credentials`, file-first `${...}`
   resolution, 0600 enforced. No schema change — config keeps holding references.
 - **P21g** UI: provider view, credential CRUD, model picker, spend-vs-budget.
 
-P21a–c are independently useful and unblocked. P21f is done, so P21g is
-unblocked on the secrets side (it still needs a UI to write the file).
+P21e is the next unblocked step. P21e2 needs it; P21e3's remaining half needs
+P21e2. P21g is unblocked on the secrets side (it still needs the UI built).
 
 ## 12. Risks & non-goals
 
