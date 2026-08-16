@@ -104,6 +104,12 @@ type Config struct {
 	// Scheduler holds global admission knobs (queue bounds).
 	Scheduler SchedulerConfig `yaml:"scheduler,omitempty"`
 
+	// Providers are top-level providers whose models own their own process —
+	// `local` above all. See localprovider.go. Their models are folded into
+	// Models under prefixed served names at load, so nothing downstream needs a
+	// second registry.
+	Providers map[string]LocalProvider `yaml:"providers,omitempty"`
+
 	// discovered holds models contributed at runtime by a provider's `discover`
 	// block, keyed by served name. Guarded because the refresh loop writes it
 	// while requests read it. Never populated by Load — the file is the static
@@ -133,6 +139,10 @@ type Config struct {
 	// the same source. The credential rides alongside rather than being parsed
 	// back out of the key.
 	fetched map[string]contribution
+	// bare indexes UNPREFIXED model ids to the providers claiming them, so a
+	// request for `Qwen3.8-27B` can still find `local-Qwen3.8-27B`. Built at
+	// load; read-only afterwards, hence no lock.
+	bare map[string][]bareClaim
 	// virtualMembers records which served names each virtual extension is
 	// currently contributing, so a lane fed by one can be resolved without
 	// re-deriving the filter against models that no longer carry its inputs.
@@ -1299,6 +1309,20 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 			return []Candidate{{Name: served, Model: c.Models[p]}}, true
 		}
 	}
+	// Bare-name precedence, LAST. Nothing explicit recognised this name, so the
+	// remaining question is whether some provider offers an id spelled that way
+	// unprefixed — `Qwen3.8-27B` for `local-Qwen3.8-27B`. Highest precedence
+	// wins; local claims highest by default, so a name that is both local and
+	// remote goes to the process already running on this box.
+	//
+	// It resolves to the CANONICAL served name, like an alias does, so
+	// residency, metrics and quota all stay on one id rather than splitting
+	// between the prefixed and bare spellings of one model.
+	if canonical, ok := c.resolveBare(served); ok {
+		if m, ok := c.Models[canonical]; ok {
+			return c.expandCredentials([]Candidate{{Name: canonical, Model: m}}), true
+		}
+	}
 	return nil, false
 }
 
@@ -1834,6 +1858,11 @@ func (c *Config) projectFirstPlacement() {
 }
 
 func (c *Config) resolveExtensions() error {
+	// Counted HERE, before extension `provides` are merged in below: by the end
+	// of this function c.Models holds every extension-provided model too, and
+	// counting there reported "9 legacy models" for a config whose top-level
+	// map was already empty — a warning that nags forever about nothing.
+	legacyTopLevel := len(c.Models)
 	for name, ext := range c.Extensions {
 		hosted := ext.Cmd != ""
 		// A hosted extension runs a process here and needs a pool to draw from. A
@@ -1943,6 +1972,12 @@ func (c *Config) resolveExtensions() error {
 			}
 		}
 	}
+	// Top-level providers fold in BEFORE the extension check below, so their
+	// models are validated on the same terms as any other declared model.
+	if err := c.foldLocalProviders(); err != nil {
+		return err
+	}
+	warnLegacyTopLevelModels(legacyTopLevel)
 	for name, m := range c.Models {
 		if m.Extension == "" {
 			continue
