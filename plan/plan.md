@@ -1437,6 +1437,30 @@ served. P21f/g wait on this.
 discovery template becomes N independent caps (12 models × $200 = $2,400, not
 $200). P21c fixes it. The live openrouter template carries such a cap today.
 
+### ✅ P24 — local models are a provider (2026-08-16)
+
+Top-level `models:` is retired. Local models live under
+`providers.local.models`, served as `local-<id>` like every remote — local
+stops being the special case. **Bare precedence** (default on, 100) keeps old
+callers working: an unprefixed name nothing else claims resolves to the
+highest-precedence provider offering it, yielding the canonical prefixed name so
+residency, metrics and quota stay on one identity. Tried LAST, after lanes,
+exact models, aliases, discovered ids and globs.
+
+Also in this pass: `discover:` → `directory:` (a browsing default that enrols
+nothing) and `extensions.free.virtual` (a pool across its member providers) —
+see `plan/p21-provider-credentials.md` P21h–j.
+
+**Deployed 2026-08-16** (`412508a`). Live config migrated; six models moved, one
+lane reference renamed, nothing else. Verified on production: both `Qwen3.8-27B`
+and `local-Qwen3.8-27B` serve.
+
+**risks** activity history and the VRAM tune cache key on served name, so both
+start fresh under the new ids — old rows remain under the old names and will not
+be joined to the new ones.
+**next** nothing required. Optional: a UI to ADD a local model (the Providers
+panel lists and links to them; creating one is still a YAML edit).
+
 ### ◐ P22 — Qwen3.8-27B cutover (model aliases) — 2026-08-14 (cutover ✅; KLD + bench open)
 
 Qwen3.8 shipped 2026-08-03; open weights are **Max (2.4T MoE)** and **27B** only,
