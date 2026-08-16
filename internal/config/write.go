@@ -44,6 +44,14 @@ func forWriting(c *Config) *Config {
 			if m.Extension != "" {
 				continue // derived from an extension; the extension is the source
 			}
+			// Same argument for a top-level provider's models: foldLocalProviders
+			// puts them here under their prefixed names, but `providers:` is
+			// where they were authored. Emitting both makes the next Load fail
+			// on "collides with a model declared elsewhere" — the identical trap
+			// extensions already sprang once.
+			if _, fromProvider := c.Providers[m.ProviderName]; fromProvider {
+				continue
+			}
 			models[name] = m
 		}
 		out.Models = models

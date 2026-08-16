@@ -139,6 +139,22 @@ func (h *Handlers) UpsertModel(_ context.Context, in *UpsertModelInput) (*Config
 		if existed {
 			m = applySpec(prev, m)
 		}
+		// A model owned by a top-level provider was AUTHORED under
+		// `providers.<p>.models`; c.Models only holds the folded copy. Writing
+		// the edit here would leave the provider block untouched and emit a
+		// second, top-level model with the prefixed name — which the next load
+		// refuses as a collision. Write it back where it came from.
+		if lp, ok := c.Providers[prev.ProviderName]; ok && existed {
+			for id := range lp.Models {
+				if config.ServedName(prev.ProviderName, id) != name {
+					continue
+				}
+				lp.Models[id] = m
+				c.Providers[prev.ProviderName] = lp
+				c.Models[name] = m // keep the folded view consistent in-process
+				return nil
+			}
+		}
 		c.Models[name] = m
 		return nil
 	})

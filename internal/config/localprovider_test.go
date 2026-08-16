@@ -238,3 +238,19 @@ func keys(m map[string]Model) []string {
 	}
 	return out
 }
+
+// TestSavedConfigDoesNotDuplicateProviderModels is the trap extensions already
+// sprang once: the fold puts a provider's models into c.Models under prefixed
+// names, and a writer that marshals c.Models emits BOTH the provider block and
+// its expansion — so the next Load dies on "collides with a model declared
+// elsewhere". A save must round-trip.
+func TestSavedConfigDoesNotDuplicateProviderModels(t *testing.T) {
+	c := localCfg(t)
+	out := forWriting(c)
+	if _, dup := out.Models["local-Qwen3.8-27B"]; dup {
+		t.Error("a provider's model was written back into top-level models:; the next load would refuse it")
+	}
+	if len(out.Providers) != 1 || len(out.Providers["local"].Models) != 2 {
+		t.Errorf("the provider block itself must survive the write: %+v", out.Providers)
+	}
+}

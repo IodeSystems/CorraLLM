@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
@@ -42,6 +42,19 @@ const ProvidersDoc = graphql(/* GraphQL */ `
     corrallm {
       listProviders {
         secrets
+        local {
+          name
+          barePrecedence
+          notes
+          models {
+            id
+            served
+            bare
+            type
+            server
+            hasCmd
+          }
+        }
         pools {
           extension
           sources
@@ -212,6 +225,7 @@ function AssignedModels() {
 }
 
 function ProvidersPage() {
+  const navigate = useNavigate()
   const [addOpen, setAddOpen] = useState(false)
   const [edit, setEdit] = useState<ProviderInitial | null>(null)
   const [browse, setBrowse] = useState<{ provider: string; credential: string } | null>(null)
@@ -232,6 +246,7 @@ function ProvidersPage() {
   const list = data?.corrallm?.listProviders
   const providers = list?.providers ?? []
   const pools = list?.pools ?? []
+  const local = list?.local ?? []
   const secrets = list?.secrets ?? []
 
   const toInitial = (p: ProviderRow): ProviderInitial => ({
@@ -358,6 +373,56 @@ function ProvidersPage() {
           )
         })}
       </Panel>
+
+      {local.length > 0 && (
+        <Panel title={`Local (${local.reduce((n, p) => n + p.models.length, 0)} models)`} flush>
+          <Typography variant="body2" sx={{ px: 2, pt: 1.5, color: C.textMuted }}>
+            Models that run on this box. Each owns its process, its GPU budget and its port —
+            which is why they are declared rather than browsed: the catalogue is whatever you put
+            on the disk. Served as <code>&lt;provider&gt;-&lt;id&gt;</code> like any remote.
+          </Typography>
+          {local.map((p) => (
+            <Row key={p.name}>
+              <Stack direction="row" spacing={1.5} alignItems="baseline" flexWrap="wrap" useFlexGap>
+                <Box sx={{ minWidth: 140 }}>
+                  <Typography variant="subtitle2">{p.name}</Typography>
+                  <Typography variant="caption" sx={{ color: C.textFaint }}>
+                    {p.models.length} model{p.models.length === 1 ? '' : 's'}
+                  </Typography>
+                </Box>
+                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+                  {Number(p.barePrecedence) > 0 ? (
+                    <Tooltip
+                      title={`An unprefixed name that nothing else claims resolves here (precedence ${p.barePrecedence}). This is what keeps callers working after the prefix rename.`}
+                    >
+                      <Chip size="small" variant="outlined" label={`bare names → here`} />
+                    </Tooltip>
+                  ) : (
+                    <Tooltip title="Only the prefixed name resolves; barePrecedence is 0.">
+                      <Chip size="small" variant="outlined" label="prefixed only" />
+                    </Tooltip>
+                  )}
+                  {p.models.map((m) => (
+                    <Tooltip
+                      key={m.id}
+                      title={`${m.served}${m.bare ? ` — also answers to ${m.id}` : ''}${
+                        m.server ? ` · runs on ${m.server}` : ''
+                      }${m.hasCmd ? '' : ' · proxies something already listening'}`}
+                    >
+                      <Chip
+                        size="small"
+                        clickable
+                        onClick={() => navigate({ to: '/m/$name', params: { name: m.served } })}
+                        label={m.id}
+                      />
+                    </Tooltip>
+                  ))}
+                </Stack>
+              </Stack>
+            </Row>
+          ))}
+        </Panel>
+      )}
 
       {pools.length > 0 && (
         <Panel title={`Pools (${pools.length})`} flush>

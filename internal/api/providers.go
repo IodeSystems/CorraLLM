@@ -90,9 +90,34 @@ type VirtualProviderView struct {
 	Models     int           `json:"models" doc:"How many models it is contributing right now. 0 before the first refresh."`
 }
 
+// LocalProviderView is a top-level provider whose models own their process.
+//
+// Reported separately from the remote providers because almost nothing about
+// them is the same: there is no host, no key and no catalogue to browse — its
+// models are declared, not discovered — and its served names are the only ones
+// on the box that also answer to their bare spelling.
+type LocalProviderView struct {
+	Name string `json:"name"`
+	// BarePrecedence is how strongly it claims an unprefixed name; 0 = off.
+	BarePrecedence int                      `json:"barePrecedence" doc:"Strength of this provider's claim on unprefixed model names. 0 means only the prefixed name resolves."`
+	Notes          string                   `json:"notes"`
+	Models         []LocalProviderModelView `json:"models"`
+}
+
+// LocalProviderModelView is one declared model of a local provider.
+type LocalProviderModelView struct {
+	ID     string `json:"id" doc:"As written under the provider."`
+	Served string `json:"served" doc:"What callers ask for: <provider>-<id>."`
+	Bare   bool   `json:"bare" doc:"Whether the unprefixed id also resolves here."`
+	Type   string `json:"type"`
+	Server string `json:"server" doc:"Which box runs its process."`
+	HasCmd bool   `json:"hasCmd" doc:"Whether it spawns a process (vs proxying something already listening)."`
+}
+
 type ProvidersOutput struct {
 	Body struct {
 		Providers []ProviderSpec        `json:"providers"`
+		Local     []LocalProviderView   `json:"local" doc:"Top-level providers whose models own their own process."`
 		Pools     []VirtualProviderView `json:"pools" doc:"Virtual extensions — those that pool their members' catalogues."`
 		Secrets   []string              `json:"secrets" doc:"Names present in the credential store. Names only — values are never served."`
 	}
@@ -104,6 +129,7 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 	out := &ProvidersOutput{}
 	out.Body.Providers = []ProviderSpec{}
 	out.Body.Pools = []VirtualProviderView{}
+	out.Body.Local = []LocalProviderView{}
 	out.Body.Secrets = config.SecretNames()
 	sort.Strings(out.Body.Secrets)
 	have := map[string]bool{}
@@ -178,6 +204,19 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 		v.Models = contributing[en]
 		out.Body.Pools = append(out.Body.Pools, v)
 	}
+	for pn, lp := range cfg.Providers {
+		v := LocalProviderView{Name: pn, Notes: lp.Notes, Models: []LocalProviderModelView{}}
+		v.BarePrecedence = config.BarePrecedenceOf(lp)
+		for id, m := range lp.Models {
+			v.Models = append(v.Models, LocalProviderModelView{
+				ID: id, Served: config.ServedName(pn, id), Bare: v.BarePrecedence > 0,
+				Type: m.Type, Server: m.Server, HasCmd: m.Cmd != "",
+			})
+		}
+		sort.Slice(v.Models, func(i, j int) bool { return v.Models[i].ID < v.Models[j].ID })
+		out.Body.Local = append(out.Body.Local, v)
+	}
+	sort.Slice(out.Body.Local, func(i, j int) bool { return out.Body.Local[i].Name < out.Body.Local[j].Name })
 	sort.Slice(out.Body.Pools, func(i, j int) bool {
 		return out.Body.Pools[i].Extension < out.Body.Pools[j].Extension
 	})

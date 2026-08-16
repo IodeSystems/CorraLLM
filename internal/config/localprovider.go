@@ -74,6 +74,16 @@ type LocalProvider struct {
 // for over anybody's API.
 const defaultBarePrecedence = 100
 
+// BarePrecedenceOf resolves a provider's effective claim strength, applying the
+// default. Exported so the dashboard reports what is IN FORCE rather than what
+// was written, which for an unset field are different things.
+func BarePrecedenceOf(lp LocalProvider) int {
+	if lp.BarePrecedence == nil {
+		return defaultBarePrecedence
+	}
+	return *lp.BarePrecedence
+}
+
 // bareClaim is one provider's claim on an unprefixed model id.
 type bareClaim struct {
 	served     string

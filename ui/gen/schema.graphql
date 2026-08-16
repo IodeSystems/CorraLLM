@@ -1646,6 +1646,28 @@ input corrallm_LimitInput {
   usd: Float
 }
 
+type corrallm_LocalProviderModelView {
+  """Whether the unprefixed id also resolves here."""
+  bare: Boolean!
+  """Whether it spawns a process (vs proxying something already listening)."""
+  hasCmd: Boolean!
+  """As written under the provider."""
+  id: String!
+  """What callers ask for: <provider>-<id>."""
+  served: String!
+  """Which box runs its process."""
+  server: String!
+  type: String!
+}
+
+type corrallm_LocalProviderView {
+  """Strength of this provider's claim on unprefixed model names. 0 means only the prefixed name resolves."""
+  barePrecedence: Long!
+  models: [corrallm_LocalProviderModelView!]!
+  name: String!
+  notes: String!
+}
+
 input corrallm_MintEnrollmentTokenInputBodyInput {
   """Base URL the attaching machine should use. The dashboard sends its own origin; falls back to the daemon's --public-base."""
   base: String
@@ -2032,6 +2054,8 @@ type corrallm_ProviderView {
 }
 
 type corrallm_ProvidersOutputBody {
+  """Top-level providers whose models own their own process."""
+  local: [corrallm_LocalProviderView!]!
   """Virtual extensions — those that pool their members' catalogues."""
   pools: [corrallm_VirtualProviderView!]!
   providers: [corrallm_ProviderSpec!]!
