@@ -1858,6 +1858,11 @@ func (c *Config) projectFirstPlacement() {
 }
 
 func (c *Config) resolveExtensions() error {
+	// Counted HERE, before extension `provides` are merged in below: by the end
+	// of this function c.Models holds every extension-provided model too, and
+	// counting there reported "9 legacy models" for a config whose top-level
+	// map was already empty — a warning that nags forever about nothing.
+	legacyTopLevel := len(c.Models)
 	for name, ext := range c.Extensions {
 		hosted := ext.Cmd != ""
 		// A hosted extension runs a process here and needs a pool to draw from. A
@@ -1969,11 +1974,10 @@ func (c *Config) resolveExtensions() error {
 	}
 	// Top-level providers fold in BEFORE the extension check below, so their
 	// models are validated on the same terms as any other declared model.
-	legacy := len(c.Models)
 	if err := c.foldLocalProviders(); err != nil {
 		return err
 	}
-	warnLegacyTopLevelModels(legacy)
+	warnLegacyTopLevelModels(legacyTopLevel)
 	for name, m := range c.Models {
 		if m.Extension == "" {
 			continue
