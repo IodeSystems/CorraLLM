@@ -94,11 +94,10 @@ func (p *Proxy) HasRosterRefresh() bool {
 			return true
 		}
 	}
-	// Discovery rides the same loop. Checking only declared models missed the
-	// case where a provider contributes EVERY model by discovery: with nothing
-	// declared there was nothing to refresh, so the loop never started and the
-	// provider silently served nothing.
-	return len(p.config().DiscoverTargets()) > 0
+	// A virtual pool rides the same loop, and needs it even when nothing is
+	// declared: the pool's entire membership comes from the refresh, so without
+	// this the loop never starts and the pool is permanently empty.
+	return len(p.config().VirtualTargets()) > 0
 }
 
 // RefreshRoster does one refresh pass: for each refresh-opted backend, pull its
@@ -138,58 +137,139 @@ func (p *Proxy) RefreshRoster(ctx context.Context) {
 			p.quota.SetStale(name, false)
 		}
 	}
-	p.refreshDiscovery(ctx, hc)
+	p.refreshVirtual(ctx, hc)
 }
 
-// refreshDiscovery pulls each discover-opted provider's catalog and contributes
-// the rows that pass its filter. A fetch error leaves the previous set in place:
-// a transient outage must not deregister every model a provider contributed.
-func (p *Proxy) refreshDiscovery(ctx context.Context, hc *http.Client) {
-	for _, dt := range p.config().DiscoverTargets() {
-		modelsURL := strings.TrimRight(dt.Target.URL.String(), "/") + dt.Target.BasePath + "/v1/models"
-		cat, err := freeroster.FetchCatalog(ctx, hc, modelsURL, dt.Target.Headers)
-		if err != nil {
-			slog.Warn("discovery fetch failed", "extension", dt.Extension, "provider", dt.Provider,
-				"credential", dt.Credential, "err", err)
+// poolCandidate is one catalogue row and the (virtual, source, credential) it
+// came from.
+type poolCandidate struct {
+	Target config.VirtualTarget
+	Entry  freeroster.Entry
+}
+
+// selectPool applies a pool's filter and cap across every member's rows at
+// once. Pure and deterministic, so it is unit-tested without any network.
+//
+// The cap is filled ROUND-ROBIN across members, each member's rows ordered by
+// context descending. A single global sort was the obvious thing and it was
+// wrong: it ranks on a field members do not all report. DeepInfra's /v1/models
+// carries neither pricing nor context_length — 185 rows, every one of them
+// context 0 — so under a global sort it lands at the bottom and any cap
+// excludes it entirely. That is the same "one member crowds out the rest"
+// failure the global cap existed to prevent, arriving through the ordering
+// instead of the counting.
+//
+// Round-robin gives every member a fair share of a capped pool and degrades
+// sanely when a member reports nothing useful to rank by.
+func selectPool(cands []poolCandidate, spec *config.Virtual) []poolCandidate {
+	f := spec.Filter
+	bySource := map[string][]poolCandidate{}
+	var sources []string
+	for _, c := range cands {
+		e := c.Entry
+		if !f.Admits(e.ID, e.Free, e.InputModality, e.OutputModality, e.ContextLength) {
 			continue
 		}
-		kept := selectDiscovered(cat, dt)
-		p.config().SetDiscoveredFor(dt.Provider, dt.Credential, kept)
-		slog.Info("discovered models", "extension", dt.Extension, "provider", dt.Provider,
-			"credential", dt.Credential, "kept", len(kept), "of", len(cat))
+		if _, seen := bySource[c.Target.Source]; !seen {
+			sources = append(sources, c.Target.Source)
+		}
+		bySource[c.Target.Source] = append(bySource[c.Target.Source], c)
+	}
+	// Sources in a fixed order, and each source's rows largest-window first, so
+	// a pool assembled from maps is reproducible between refreshes — routing
+	// that reshuffles is routing nobody can reason about.
+	sort.Strings(sources)
+	for _, s := range sources {
+		rows := bySource[s]
+		sort.SliceStable(rows, func(i, j int) bool {
+			if rows[i].Entry.ContextLength != rows[j].Entry.ContextLength {
+				return rows[i].Entry.ContextLength > rows[j].Entry.ContextLength
+			}
+			return rows[i].Entry.ID < rows[j].Entry.ID
+		})
+		bySource[s] = rows
+	}
+	out := make([]poolCandidate, 0, len(cands))
+	for round := 0; ; round++ {
+		added := false
+		for _, s := range sources {
+			rows := bySource[s]
+			if round >= len(rows) {
+				continue
+			}
+			if spec.Limit > 0 && len(out) >= spec.Limit {
+				return out
+			}
+			out = append(out, rows[round])
+			added = true
+		}
+		if !added {
+			return out
+		}
 	}
 }
 
-// selectDiscovered applies a provider's filter and template to its catalog. Pure
-// and deterministic, so it is unit-tested without any network.
-func selectDiscovered(cat []freeroster.Entry, dt config.DiscoverTarget) map[string]config.Model {
-	f := dt.Spec.Filter
-	pass := make([]freeroster.Entry, 0, len(cat))
-	for _, e := range cat {
-		if f.Admits(e.ID, e.Free, e.InputModality, e.OutputModality, e.ContextLength) {
-			pass = append(pass, e)
+// refreshVirtual rebuilds each virtual extension's pool: fetch every member
+// provider's catalogue, keep the rows the pool's filter admits, cap the POOL as
+// a whole, and contribute what survives.
+//
+// One pass per virtual rather than per provider, because the cap is a property
+// of the pool. Capping each member separately would let one verbose provider
+// crowd out the rest, and "the twelve best free models available to me" is not
+// answerable one catalogue at a time.
+//
+// A fetch error drops only the failing (source, credential) from this round and
+// leaves its previous contribution in place: a transient outage at one provider
+// must not empty a pool the others are still serving.
+func (p *Proxy) refreshVirtual(ctx context.Context, hc *http.Client) {
+	byVirtual := map[string][]config.VirtualTarget{}
+	var order []string
+	for _, vt := range p.config().VirtualTargets() {
+		if _, seen := byVirtual[vt.Virtual]; !seen {
+			order = append(order, vt.Virtual)
 		}
+		byVirtual[vt.Virtual] = append(byVirtual[vt.Virtual], vt)
 	}
-	// Largest context first, so a Limit keeps the most useful models and the
-	// result is stable across refreshes regardless of the provider's ordering.
-	sort.SliceStable(pass, func(i, j int) bool {
-		if pass[i].ContextLength != pass[j].ContextLength {
-			return pass[i].ContextLength > pass[j].ContextLength
+	for _, name := range order {
+		targets := byVirtual[name]
+		// Every candidate row across every member, tagged with where it came
+		// from so the cap can be applied once and the survivors handed back to
+		// the right contributor.
+		var pool []poolCandidate
+		fetched := map[string]bool{} // (source,credential) that answered
+		spec := targets[0].Spec
+		for _, vt := range targets {
+			modelsURL := strings.TrimRight(vt.Target.URL.String(), "/") + vt.Target.BasePath + "/v1/models"
+			cat, err := freeroster.FetchCatalog(ctx, hc, modelsURL, vt.Target.Headers)
+			if err != nil {
+				slog.Warn("virtual pool: member fetch failed", "virtual", name,
+					"source", vt.Source, "credential", vt.Credential, "err", err)
+				continue
+			}
+			fetched[vt.Source+"\x00"+vt.Credential] = true
+			for _, e := range cat {
+				pool = append(pool, poolCandidate{Target: vt, Entry: e})
+			}
 		}
-		return pass[i].ID < pass[j].ID
-	})
-	if dt.Spec.Limit > 0 && len(pass) > dt.Spec.Limit {
-		pass = pass[:dt.Spec.Limit]
+		pool = selectPool(pool, spec)
+		kept := map[string]map[string]config.Model{} // (source,credential) -> models
+		for k := range fetched {
+			kept[k] = map[string]config.Model{} // answered but contributed nothing
+		}
+		cfg := p.config()
+		for _, c := range pool {
+			served, m := cfg.VirtualModelFor(c.Target, c.Entry.ID)
+			kept[c.Target.Source+"\x00"+c.Target.Credential][served] = m
+		}
+		total := 0
+		for k, models := range kept {
+			source, credential, _ := strings.Cut(k, "\x00")
+			cfg.SetVirtualModels(name, source, credential, models)
+			total += len(models)
+		}
+		slog.Info("virtual pool refreshed", "virtual", name, "models", total,
+			"members", len(fetched), "of", len(targets))
 	}
-	out := make(map[string]config.Model, len(pass))
-	for _, e := range pass {
-		m := dt.Spec.Template // value copy: the template is never mutated
-		m.Extension, m.ProviderName = dt.Extension, dt.Provider
-		m.Proxy = dt.ProxyNode
-		m.Upstream = e.ID // the provider's own id, never the served name
-		out[config.ServedName(dt.Provider, e.ID)] = m
-	}
-	return out
 }
 
 // QuotaSnapshot returns the current free-tier budget ledger (P16), for the

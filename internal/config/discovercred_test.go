@@ -9,14 +9,14 @@ import (
 const twoKeyProvider = `
 extensions:
   free:
+    virtual:
+      filter: {free: true}
+      template: {type: chat, quality: 3}
     providers:
       openrouter:
         proxy: {host: openrouter.ai, port: 443, headers: {x-shared: "1"}}
         provides:
           anchor: {type: chat, upstream: v/anchor}
-        discover:
-          filter: {free: true}
-          template: {type: chat, quality: 3}
         credentials:
           - name: freekey
             headers: {authorization: "Bearer FREE"}
@@ -40,13 +40,14 @@ func disc(provider string) Model {
 	return Model{Type: "chat", Quality: 3, ProviderName: provider, Extension: "free"}
 }
 
-// TestDiscoveryRunsPerCredential: the catalogues differ by key, so one target
-// per credential — each carrying that credential's auth.
-func TestDiscoveryRunsPerCredential(t *testing.T) {
+// TestPoolFetchesPerCredential: the catalogues differ by key, so one fetch per
+// credential — each carrying that credential's auth. A pool borrows its
+// members' keys; it holds none of its own.
+func TestPoolFetchesPerCredential(t *testing.T) {
 	c := discCfg(t)
-	targets := c.DiscoverTargets()
+	targets := c.VirtualTargets()
 	if len(targets) != 2 {
-		t.Fatalf("want one discover target per credential, got %d", len(targets))
+		t.Fatalf("want one fetch per credential, got %d", len(targets))
 	}
 	seen := map[string]string{}
 	for _, dt := range targets {
@@ -67,11 +68,11 @@ func TestDiscoveryRunsPerCredential(t *testing.T) {
 func TestModelOfferedOnlyOnCredentialsThatSawIt(t *testing.T) {
 	c := discCfg(t)
 	c.SetDiscoveredFor("openrouter", "freekey", map[string]Model{
-		"openrouter-common": disc("openrouter"),
+		"openrouter-common":   disc("openrouter"),
 		"openrouter-freeonly": disc("openrouter"),
 	})
 	c.SetDiscoveredFor("openrouter", "paidkey", map[string]Model{
-		"openrouter-common": disc("openrouter"),
+		"openrouter-common":   disc("openrouter"),
 		"openrouter-paidonly": disc("openrouter"),
 	})
 

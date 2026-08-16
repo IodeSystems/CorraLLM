@@ -46,17 +46,13 @@ type ProviderSpec struct {
 	Limits      []Limit          `json:"limits" required:"false" doc:"Budget across ALL this provider's accounts together."`
 	Credentials []CredentialSpec `json:"credentials" required:"false" doc:"Accounts held against this endpoint."`
 
-	// Discover is how a provider contributes models without hand-listing them.
-	// A provider must contribute SOMETHING — config validation refuses one that
-	// declares neither provides nor discover, because it would be an endpoint
-	// nothing can reach — and a form has no sane way to hand-list a remote
-	// catalogue, so this is the shape "add a provider" actually takes.
-	Discover *DiscoverSpec `json:"discover,omitempty" required:"false" doc:"Enumerate the provider's own catalogue instead of listing models by hand."`
+	// Directory is the DEFAULT FILTER for browsing this provider's catalogue.
+	// It enrols nothing — see config.Provider.Directory for why that changed.
+	Directory *DiscoverSpec `json:"directory,omitempty" required:"false" doc:"Default filter applied when browsing this provider's directory. Enrols nothing."`
 
-	// Manual is the other way to satisfy that requirement: no filter, models
-	// picked one at a time off the catalogue. The two are not exclusive — a
-	// filter for the bulk and hand-picks for the exceptions is the common case.
-	Manual bool `json:"manual" required:"false" doc:"Models will be picked by hand from this provider's catalogue. Required when no discover filter is set."`
+	// Manual says models are chosen off the directory. The normal case now that
+	// a filter contributes nothing.
+	Manual bool `json:"manual" required:"false" doc:"Models are chosen by hand from this provider's directory."`
 
 	// Provides counts the models declared for this provider in YAML. Output
 	// only: a form cannot edit a hand-written model list, but it must be able
@@ -77,10 +73,28 @@ type DiscoverSpec struct {
 	Type           string   `json:"type" required:"false" doc:"Cost class for discovered models (default chat)."`
 }
 
+// VirtualProviderView is a VIRTUAL extension: one that satisfies the provider contract by
+// pooling its members' catalogues rather than holding an endpoint of its own.
+//
+// Reported alongside providers, not as one of them, because the difference is
+// the thing worth seeing: a pool has no host and no key, its membership changes
+// under it as providers add and withdraw models, and its whole value is that it
+// spans several endpoints at once.
+type VirtualProviderView struct {
+	Extension  string        `json:"extension" doc:"The extension acting as a provider."`
+	Sources    []string      `json:"sources" doc:"Member providers whose catalogues it draws on."`
+	FreeOnly   bool          `json:"freeOnly" doc:"Filter: keep only rows offered at no cost."`
+	MinContext int           `json:"minContext" doc:"Filter: minimum advertised window."`
+	Limit      int           `json:"limit" doc:"Cap on the POOL as a whole, largest window first."`
+	Lanes      []LaneRefView `json:"lanes" doc:"Lanes every member of the pool joins, and at what priority."`
+	Models     int           `json:"models" doc:"How many models it is contributing right now. 0 before the first refresh."`
+}
+
 type ProvidersOutput struct {
 	Body struct {
-		Providers []ProviderSpec `json:"providers"`
-		Secrets   []string       `json:"secrets" doc:"Names present in the credential store. Names only — values are never served."`
+		Providers []ProviderSpec        `json:"providers"`
+		Pools     []VirtualProviderView `json:"pools" doc:"Virtual extensions — those that pool their members' catalogues."`
+		Secrets   []string              `json:"secrets" doc:"Names present in the credential store. Names only — values are never served."`
 	}
 }
 
@@ -89,6 +103,7 @@ type ProvidersOutput struct {
 func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutput, error) {
 	out := &ProvidersOutput{}
 	out.Body.Providers = []ProviderSpec{}
+	out.Body.Pools = []VirtualProviderView{}
 	out.Body.Secrets = config.SecretNames()
 	sort.Strings(out.Body.Secrets)
 	have := map[string]bool{}
@@ -115,15 +130,14 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 			// Reported so an edit form can ROUND-TRIP the filter. Without it a
 			// form could only ever send a filter it had invented, and the only
 			// safe thing to do with the field was omit it — which made "edit
-			// this provider" and "keep its discovery rules" mutually exclusive.
-			if pv.Discover != nil {
-				f := pv.Discover.Filter
-				ps.Discover = &DiscoverSpec{
+			// this provider" and "keep its browse defaults" mutually exclusive.
+			if d := pv.Directory; d != nil {
+				f := d.Filter
+				ps.Directory = &DiscoverSpec{
 					FreeOnly: f.Free, InputModality: f.InputModality,
 					OutputModality: f.OutputModality, MinContext: f.MinContext,
-					Exclude: f.Exclude, Limit: pv.Discover.Limit,
-					Quality: pv.Discover.Template.Quality,
-					Type:    pv.Discover.Template.Type,
+					Exclude: f.Exclude, Limit: d.Limit,
+					Quality: d.Template.Quality, Type: d.Template.Type,
 				}
 			}
 			for _, cr := range pv.Credentials {
@@ -137,6 +151,36 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 			out.Body.Providers = append(out.Body.Providers, ps)
 		}
 	}
+	// Virtual extensions: reported with their live membership, because "how big
+	// is the free pool right now" is the question a pool exists to answer and it
+	// is not derivable from config alone.
+	contributing := map[string]int{}
+	for _, m := range cfg.Discovered() {
+		contributing[m.Extension]++
+	}
+	for en, ext := range cfg.Extensions {
+		if ext.Virtual == nil {
+			continue
+		}
+		v := VirtualProviderView{Extension: en, Sources: []string{}, Lanes: []LaneRefView{}}
+		for pn, pv := range ext.Providers {
+			if !pv.Proxy.IsZero() {
+				v.Sources = append(v.Sources, pn)
+			}
+		}
+		sort.Strings(v.Sources)
+		v.FreeOnly = ext.Virtual.Filter.Free
+		v.MinContext = ext.Virtual.Filter.MinContext
+		v.Limit = ext.Virtual.Limit
+		for _, lp := range ext.Virtual.Lanes {
+			v.Lanes = append(v.Lanes, LaneRefView{Lane: lp.Lane, Order: lp.Order})
+		}
+		v.Models = contributing[en]
+		out.Body.Pools = append(out.Body.Pools, v)
+	}
+	sort.Slice(out.Body.Pools, func(i, j int) bool {
+		return out.Body.Pools[i].Extension < out.Body.Pools[j].Extension
+	})
 	sort.Slice(out.Body.Providers, func(i, j int) bool {
 		a, b := out.Body.Providers[i], out.Body.Providers[j]
 		if a.Extension != b.Extension {
@@ -196,13 +240,7 @@ func (h *Handlers) UpsertProvider(_ context.Context, in *UpsertProviderInput) (*
 		out.Body.Message = "host is required: a provider is an endpoint"
 		return out, nil
 	}
-	if b.Discover == nil && !b.Manual {
-		// Caught here rather than by config validation so the message names the
-		// fix instead of the rule: a provider must contribute models, and a
-		// form's two ways of doing that are a discovery filter or hand-picking.
-		out.Body.Message = "a provider must contribute models: set discover (e.g. {freeOnly: true, inputModality: text}), or manual to pick them off its catalogue by hand. An endpoint contributing neither cannot be reached."
-		return out, nil
-	}
+
 	port := b.Port
 	if port == 0 {
 		port = 443
@@ -225,22 +263,17 @@ func (h *Handlers) UpsertProvider(_ context.Context, in *UpsertProviderInput) (*
 		}
 		pv.Proxy = proxy
 		pv.Limits = toConfigLimits(b.Limits)
-		pv.Manual = b.Manual
-		// Omitting discover normally PRESERVES the block (see above): a form
-		// editing credentials must not delete a filter someone wrote by hand.
-		// The one case that means deletion is manual-with-no-filter, which is
-		// the operator saying "I choose these myself" — leaving the old filter
-		// running there would keep enrolling exactly what they took over.
-		if b.Discover == nil && b.Manual {
-			pv.Discover = nil
-		}
-		if b.Discover != nil {
-			d := b.Discover
+		// A provider added through a form is always chosen-by-hand: a filter no
+		// longer enrols anything, so there is nothing else it could be.
+		pv.Manual = true
+		pv.Discover = nil // the retired key never survives a rewrite
+		if b.Directory != nil {
+			d := b.Directory
 			typ := d.Type
 			if typ == "" {
 				typ = "chat"
 			}
-			pv.Discover = &config.Discover{
+			pv.Directory = &config.Discover{
 				Filter: config.DiscoverFilter{
 					Free: d.FreeOnly, InputModality: d.InputModality,
 					OutputModality: d.OutputModality, MinContext: d.MinContext,

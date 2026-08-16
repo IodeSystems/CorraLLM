@@ -557,6 +557,41 @@ Plumbing exists; the provider-shaped view does not.
   - Verified end to end on an isolated daemon and in the UI: assign with
     lane+priority → serves; survives config write and restart; unassign →
     out of service immediately, with the filter's own 10 models untouched.
+- ✅ **P21j — a filter stops importing; `free` becomes a virtual extension**
+  (2026-08-15). P21i still had per-provider `discover` auto-enrolling, which is
+  the wrong shape twice over: against a 413-model catalogue a filter is a guess
+  whose wrong answers bill, and it can only ever see ONE provider at a time —
+  while the thing it was wanted for, a blended free tier, is inherently a
+  property of the SET of providers that give something away.
+  - **`extensions.<name>.virtual`** — an extension that satisfies the provider
+    contract. Its catalogue is the union of its member providers', narrowed by a
+    filter, capped as a pool, and placed into a lane. It holds no endpoint and
+    no key: every model is reached with the key of whichever member serves it.
+    Members are the providers declared INSIDE it, so a provider added elsewhere
+    can never leak in.
+  - **Pooled models keep their SOURCE served name** (`openrouter-…`). Quota,
+    credential scoping and cost already key on the source provider, and a second
+    name for one upstream model would split its metrics, residency and budget
+    between two identities. Membership is a fact about a model, not a new model.
+  - **`discover:` → `directory:`** — a per-provider filter now only decides what
+    Browse opens pre-filtered to. The old key still parses (so configs load) and
+    warns loudly at load, because silently reinterpreting it would stop enrolling
+    models with no signal. A provider whose only content is a directory filter is
+    now a config error: it can reach nothing.
+  - **Bug found by LIVE data, not by tests.** The pool cap sorted globally by
+    context length — which silently excluded any member that does not report one.
+    DeepInfra's `/v1/models` carries neither pricing nor `context_length` (185
+    bare rows), so under any cap it contributed ZERO: exactly the crowding-out
+    the pool-wide cap existed to prevent, arriving through the ordering instead
+    of the counting. The cap is now filled round-robin across members, each
+    member ordered by context descending. Verified live: 8-model cap over
+    openrouter+deepinfra went 8/0 → 4/4.
+  - **Known limitation, worth knowing before adding a member:** a provider whose
+    catalogue reports no pricing and no context (DeepInfra) cannot be filtered by
+    `free`, `minContext` or modality — only by id substring. It can still join a
+    pool; it just cannot be narrowed sensibly.
+  - Future work parked in `plan/icebox.md`: fanning pool requests out across
+    agents on other public IPs, pinned for prompt-cache affinity.
 
 All phases shipped. What is deliberately NOT built:
   - Provider-level spend rollup in the UI. The budgets exist and are enforced;

@@ -13,8 +13,6 @@ import {
   FormControlLabel,
   Link as MuiLink,
   MenuItem,
-  Radio,
-  RadioGroup,
   Stack,
   Switch,
   TextField,
@@ -120,11 +118,9 @@ export type ProviderInitial = {
   port: string
   basePath: string
   manual: boolean
-  discover: null | {
+  directory: null | {
     freeOnly: boolean
     minContext: string
-    limit: string
-    quality: number
   }
 }
 
@@ -138,14 +134,8 @@ type Draft = {
   secretValue: string
   monthlyUSD: string
   rpm: string
-  // 'filter' contributes models automatically; 'manual' contributes none until
-  // one is picked off the catalogue. Not a switch, because they are two
-  // different answers to "where do this provider's models come from" and a
-  // switch would imply one is the other turned off.
-  source: 'filter' | 'manual'
   freeOnly: boolean
   minContext: string
-  limit: string
 }
 
 const BLANK: Draft = {
@@ -158,10 +148,8 @@ const BLANK: Draft = {
   secretValue: '',
   monthlyUSD: '',
   rpm: '',
-  source: 'filter',
   freeOnly: true,
   minContext: '8192',
-  limit: '12',
 }
 
 const GROUP_LABEL: Record<string, string> = {
@@ -206,10 +194,8 @@ export function ProviderDialog(props: {
             host: initial.host,
             port: initial.port,
             basePath: initial.basePath,
-            source: initial.discover ? 'filter' : 'manual',
-            freeOnly: initial.discover?.freeOnly ?? false,
-            minContext: initial.discover?.minContext ?? '0',
-            limit: initial.discover?.limit ?? '0',
+            freeOnly: initial.directory?.freeOnly ?? false,
+            minContext: initial.directory?.minContext ?? '0',
           }
         : BLANK,
     )
@@ -241,11 +227,6 @@ export function ProviderDialog(props: {
       secretRef: p.needsSecret ? p.secretRef : '',
       freeOnly: p.freeOnly,
       minContext: String(p.minContext),
-      limit: String(p.limit),
-      // A big catalogue is not something to enrol by filter — that is a guess
-      // over hundreds of models. Presets that suggest no cap say "choose them
-      // yourself", and the radio starts there.
-      source: p.group === 'local' || p.limit === '0' ? 'manual' : s.source,
     }))
   }
 
@@ -272,19 +253,16 @@ export function ProviderDialog(props: {
         host: d.host,
         port: String(Number(d.port || 443)),
         basePath: d.basePath,
-        manual: d.source === 'manual',
+        manual: true,
         limits: d.monthlyUSD ? [{ usd: Number(d.monthlyUSD), per: 'month' }] : [],
-        discover:
-          d.source === 'filter'
-            ? {
-                freeOnly: d.freeOnly,
-                inputModality: 'text',
-                outputModality: 'text',
-                minContext: String(Number(d.minContext || 0)),
-                limit: String(Number(d.limit || 0)),
-                quality: preset?.quality ?? 3,
-              }
-            : null,
+        directory: {
+          freeOnly: d.freeOnly,
+          inputModality: '',
+          outputModality: '',
+          minContext: String(Number(d.minContext || 0)),
+          limit: '0',
+          quality: 0,
+        },
         credentials: d.secretRef
           ? [
               {
@@ -480,39 +458,16 @@ export function ProviderDialog(props: {
             />
           </Stack>
           <Divider textAlign="left">
-            <Typography variant="caption">Where its models come from</Typography>
+            <Typography variant="caption">Directory defaults</Typography>
           </Divider>
-          <RadioGroup
-            value={d.source}
-            onChange={(e) => set({ source: e.target.value as Draft['source'] })}
-          >
-            <FormControlLabel
-              value="filter"
-              control={<Radio size="small" />}
-              label={
-                <Typography variant="body2">
-                  Discover automatically, through a filter
-                  <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
-                    Re-enumerated on every refresh, so a churning roster keeps working.
-                  </Typography>
-                </Typography>
-              }
-            />
-            <FormControlLabel
-              value="manual"
-              control={<Radio size="small" />}
-              label={
-                <Typography variant="body2">
-                  Pick models by hand from its catalogue
-                  <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
-                    Contributes nothing until you browse it and choose.
-                  </Typography>
-                </Typography>
-              }
-            />
-          </RadioGroup>
-          {d.source === 'filter' && (
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ pl: { sm: 3.5 } }} flexWrap="wrap" useFlexGap>
+          <Typography variant="caption" sx={{ color: C.textFaint, mt: -1 }}>
+            Models are chosen from this provider&apos;s directory — nothing is imported
+            automatically. These are just what <strong>Browse</strong> opens pre-filtered to, and
+            you can clear them there. To pool free models across several providers, use a virtual
+            extension instead.
+          </Typography>
+          {(
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} flexWrap="wrap" useFlexGap>
               <FormControlLabel
                 control={
                   <Switch
@@ -528,13 +483,6 @@ export function ProviderDialog(props: {
                 label="Min context"
                 value={d.minContext}
                 onChange={(e) => set({ minContext: e.target.value })}
-                sx={{ width: 120 }}
-              />
-              <TextField
-                size="small"
-                label="Max models"
-                value={d.limit}
-                onChange={(e) => set({ limit: e.target.value })}
                 sx={{ width: 120 }}
               />
             </Stack>

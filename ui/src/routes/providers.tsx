@@ -42,6 +42,18 @@ const ProvidersDoc = graphql(/* GraphQL */ `
     corrallm {
       listProviders {
         secrets
+        pools {
+          extension
+          sources
+          freeOnly
+          minContext
+          limit
+          models
+          lanes {
+            lane
+            order
+          }
+        }
         providers {
           extension
           name
@@ -50,11 +62,9 @@ const ProvidersDoc = graphql(/* GraphQL */ `
           basePath
           manual
           provides
-          discover {
+          directory {
             freeOnly
             minContext
-            limit
-            quality
           }
           limits {
             req
@@ -221,6 +231,7 @@ function ProvidersPage() {
 
   const list = data?.corrallm?.listProviders
   const providers = list?.providers ?? []
+  const pools = list?.pools ?? []
   const secrets = list?.secrets ?? []
 
   const toInitial = (p: ProviderRow): ProviderInitial => ({
@@ -230,12 +241,10 @@ function ProvidersPage() {
     port: String(p.port ?? '443'),
     basePath: p.basePath ?? '',
     manual: p.manual ?? false,
-    discover: p.discover
+    directory: p.directory
       ? {
-          freeOnly: p.discover.freeOnly ?? false,
-          minContext: String(p.discover.minContext ?? '0'),
-          limit: String(p.discover.limit ?? '0'),
-          quality: p.discover.quality ?? 3,
+          freeOnly: p.directory.freeOnly ?? false,
+          minContext: String(p.directory.minContext ?? '0'),
         }
       : null,
   })
@@ -288,28 +297,22 @@ function ProvidersPage() {
                 </Box>
 
                 <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
-                  {/* Where this provider's models come from. The three sources
-                      are independent and a provider can have more than one, so
-                      these are separate chips rather than one exclusive label. */}
-                  {p.discover && (
-                    <Tooltip title="Models are enrolled automatically by this filter on every refresh.">
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={`filter${p.discover.freeOnly ? ' · free' : ''}${
-                          Number(p.discover.limit) > 0 ? ` · top ${p.discover.limit}` : ''
-                        }`}
-                      />
-                    </Tooltip>
-                  )}
+                  {/* Where this provider's models come from. A directory filter
+                      is NOT one of them — it only changes what Browse opens
+                      pre-filtered to. */}
                   {Number(p.provides ?? 0) > 0 && (
                     <Tooltip title="Models written into the extension YAML by hand. Edit them there, not here.">
                       <Chip size="small" variant="outlined" label={`${p.provides} declared`} />
                     </Tooltip>
                   )}
                   {p.manual && (
-                    <Tooltip title="Models are chosen one at a time off this provider's catalogue.">
+                    <Tooltip title="Models are chosen one at a time off this provider's directory.">
                       <Chip size="small" variant="outlined" label="hand-picked" />
+                    </Tooltip>
+                  )}
+                  {p.directory?.freeOnly && (
+                    <Tooltip title="Browse opens pre-filtered to free models. A browsing default only — it imports nothing.">
+                      <Chip size="small" variant="outlined" label="browse: free" />
                     </Tooltip>
                   )}
                   {(p.limits ?? []).map((l, i) => (
@@ -355,6 +358,53 @@ function ProvidersPage() {
           )
         })}
       </Panel>
+
+      {pools.length > 0 && (
+        <Panel title={`Pools (${pools.length})`} flush>
+          <Typography variant="body2" sx={{ px: 2, pt: 1.5, color: C.textMuted }}>
+            An extension that satisfies the provider contract by pooling its members&apos;
+            catalogues. It holds no endpoint and no key of its own — each model is reached with
+            the key of whichever member serves it, and membership is re-derived on every refresh
+            so a provider withdrawing a model does not take the pool down.
+          </Typography>
+          {pools.map((p) => (
+            <Row key={p.extension}>
+              <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Box sx={{ minWidth: 180 }}>
+                  <Typography variant="subtitle2">{p.extension}</Typography>
+                  <Typography variant="caption" sx={{ color: C.textMuted }}>
+                    over {p.sources.join(', ') || 'no members'}
+                  </Typography>
+                </Box>
+                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+                  <Chip
+                    size="small"
+                    color={Number(p.models) > 0 ? 'success' : 'warning'}
+                    label={`${p.models} model${Number(p.models) === 1 ? '' : 's'}`}
+                  />
+                  {p.freeOnly && <Chip size="small" variant="outlined" label="free only" />}
+                  {Number(p.minContext) > 0 && (
+                    <Chip size="small" variant="outlined" label={`ctx ≥ ${p.minContext}`} />
+                  )}
+                  {Number(p.limit) > 0 && (
+                    <Tooltip title="Cap on the pool as a whole, largest window first — not per member, so one verbose provider cannot crowd out the rest.">
+                      <Chip size="small" variant="outlined" label={`top ${p.limit}`} />
+                    </Tooltip>
+                  )}
+                  {p.lanes.map((l) => (
+                    <Tooltip
+                      key={l.lane}
+                      title="Every model in the pool joins this lane at this priority. Ask for the lane to get the pool."
+                    >
+                      <Chip size="small" label={`${l.lane} @ ${l.order}`} />
+                    </Tooltip>
+                  ))}
+                </Stack>
+              </Stack>
+            </Row>
+          ))}
+        </Panel>
+      )}
 
       <AssignedModels />
 

@@ -14,30 +14,28 @@ import (
 
 // The provider directory: what a provider actually offers on one account.
 //
-// This is the PRIMARY way models get into corrallm. A discover filter is the
-// bulk shortcut — right for a small catalogue or a churning free roster — but
-// against a provider listing four hundred models a filter is a guess, and
-// everything it rejects is dropped in memory with no record it existed. The
-// directory is the catalogue as the provider reports it, annotated with what
-// has already been chosen, so an operator can pick the models they actually
-// want and say where each one goes.
+// This is the PRIMARY way models get into corrallm: you look at what a provider
+// offers and choose. Nothing here imports anything on its own — a provider's
+// `directory` filter only decides what this listing OPENS pre-filtered to, and
+// pooling free models across several providers is a virtual extension's job
+// (see config/virtual.go), not a per-provider guess.
 //
-// Fetched live rather than served from the discovery cache. The cache holds
-// only what a filter admitted, and the point here is everything else.
+// Fetched live rather than from any cache: a cache holds what some filter kept,
+// and the whole point of a directory is everything else.
 
 // CatalogEntryView is one model as the provider reports it, plus what corrallm
 // already knows about it.
 type CatalogEntryView struct {
-	ID            string  `json:"id" doc:"The provider's own model id — what actually goes on the wire."`
-	ServedName    string  `json:"servedName" doc:"What it would be called here if enrolled."`
-	Name          string  `json:"name" doc:"The provider's human label, when it reports one."`
-	Description   string  `json:"description" doc:"The provider's blurb, when it reports one."`
-	ContextLength int     `json:"contextLength" doc:"Advertised window, 0 when unreported."`
-	Free          bool    `json:"free" doc:"Offered at no cost, by ':free' suffix or zero pricing."`
-	PromptUSD     float64 `json:"promptUsd" doc:"Dollars per prompt token, 0 when unpriced."`
-	CompletionUSD float64 `json:"completionUsd" doc:"Dollars per completion token, 0 when unpriced."`
-	InputModality string  `json:"inputModality" doc:"e.g. text, text+image; empty when unreported."`
-	OutputModality string `json:"outputModality" doc:"e.g. text; empty when unreported."`
+	ID             string  `json:"id" doc:"The provider's own model id — what actually goes on the wire."`
+	ServedName     string  `json:"servedName" doc:"What it would be called here if enrolled."`
+	Name           string  `json:"name" doc:"The provider's human label, when it reports one."`
+	Description    string  `json:"description" doc:"The provider's blurb, when it reports one."`
+	ContextLength  int     `json:"contextLength" doc:"Advertised window, 0 when unreported."`
+	Free           bool    `json:"free" doc:"Offered at no cost, by ':free' suffix or zero pricing."`
+	PromptUSD      float64 `json:"promptUsd" doc:"Dollars per prompt token, 0 when unpriced."`
+	CompletionUSD  float64 `json:"completionUsd" doc:"Dollars per completion token, 0 when unpriced."`
+	InputModality  string  `json:"inputModality" doc:"e.g. text, text+image; empty when unreported."`
+	OutputModality string  `json:"outputModality" doc:"e.g. text; empty when unreported."`
 
 	// Assigned says the operator chose this row: there is a selection for it.
 	Assigned bool `json:"assigned" doc:"Selected off this directory by the operator."`
@@ -50,10 +48,10 @@ type CatalogEntryView struct {
 	// to "can I call this", which Assigned alone cannot give: a filter
 	// contributes models nobody assigned.
 	Enrolled bool `json:"enrolled" doc:"Currently servable on this credential."`
-	// PassesFilter marks the rows discovery would take on its own, so the
-	// browser distinguishes "you would get this anyway" from "this needs a
-	// decision to ever serve".
-	PassesFilter bool `json:"passesFilter" doc:"The provider's discover filter would admit this row."`
+	// PassesFilter marks the rows this provider's DIRECTORY filter admits — the
+	// default view. Nothing follows from it about serving; it is a hint about
+	// what you were probably looking for.
+	PassesFilter bool `json:"passesFilter" doc:"The provider's directory filter admits this row (a browsing default; it enrols nothing)."`
 	// Declared marks a served name the operator wrote into config by hand.
 	// Picking it would be a no-op — a declared model always wins — and saying
 	// so beats a button that silently does nothing.
@@ -80,7 +78,7 @@ type BrowseCatalogOutput struct {
 		Credential string             `json:"credential"`
 		URL        string             `json:"url" doc:"The models endpoint that was queried — the fastest way to see a wrong basePath."`
 		Entries    []CatalogEntryView `json:"entries"`
-		HasFilter  bool               `json:"hasFilter" doc:"Whether this provider has a discover block at all; without one, passesFilter is meaningless."`
+		HasFilter  bool               `json:"hasFilter" doc:"Whether this provider declares a directory filter; without one, passesFilter is meaningless."`
 		Error      string             `json:"error" doc:"Why the catalogue could not be read. Entries is empty when set."`
 	}
 }
@@ -129,9 +127,11 @@ func (h *Handlers) BrowseCatalog(ctx context.Context, in *BrowseCatalogInput) (*
 		return out, nil
 	}
 
+	// The provider's DIRECTORY filter: what this listing opens pre-filtered to.
+	// It enrols nothing, so it is a browsing default and nothing more.
 	var filter config.DiscoverFilter
-	if _, pv, ok := providerOf(cfg, in.Provider); ok && pv.Discover != nil {
-		filter, out.Body.HasFilter = pv.Discover.Filter, true
+	if _, pv, ok := providerOf(cfg, in.Provider); ok && pv.Directory != nil {
+		filter, out.Body.HasFilter = pv.Directory.Filter, true
 	}
 
 	// One lookup table for selections rather than a query per row: a directory

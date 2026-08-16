@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -120,12 +121,28 @@ type Config struct {
 	// with where they put them. See selection.go for why they share the
 	// discovered overlay rather than living beside it.
 	selections []Selection
-	// fetched is what each refresh last contributed, keyed
-	// provider\x00credential. Kept SEPARATELY from `discovered` because
-	// `discovered` is a derived union of this and the selections, and a union
-	// cannot be un-merged: without the inputs there was no way to withdraw one
-	// contributor without also withdrawing the other's.
-	fetched map[string]map[string]Model
+	// fetched is what each refresh last contributed, keyed by CONTRIBUTOR.
+	//
+	// Kept SEPARATELY from `discovered` because `discovered` is a derived union
+	// of this and the selections, and a union cannot be un-merged: without the
+	// inputs there was no way to withdraw one contributor without also
+	// withdrawing the other's.
+	//
+	// The key is opaque on purpose — a virtual extension pulling from three
+	// providers is three contributors, and two virtuals may legitimately pull
+	// the same source. The credential rides alongside rather than being parsed
+	// back out of the key.
+	fetched map[string]contribution
+	// virtualMembers records which served names each virtual extension is
+	// currently contributing, so a lane fed by one can be resolved without
+	// re-deriving the filter against models that no longer carry its inputs.
+	virtualMembers map[string][]string
+}
+
+// contribution is one refresh's output from one contributor.
+type contribution struct {
+	credential string
+	models     map[string]Model
 }
 
 // SetDiscovered replaces the models contributed by one provider. Replacing
@@ -150,10 +167,48 @@ func (c *Config) SetDiscovered(provider string, models map[string]Model) {
 func (c *Config) SetDiscoveredFor(provider, credential string, models map[string]Model) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.fetched == nil {
-		c.fetched = map[string]map[string]Model{}
+	c.setFetchedLocked("provider\x00"+provider+"\x00"+credential, credential, models)
+}
+
+// SetVirtualModels records what one virtual extension drew from one source
+// provider on one of that source's credentials.
+//
+// Keyed by all three because they vary independently: a virtual spanning three
+// providers is three contributions, each credential of a source sees a
+// different catalogue, and two virtuals may legitimately draw on the same
+// source without either erasing the other.
+func (c *Config) SetVirtualModels(virtual, source, credential string, models map[string]Model) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setFetchedLocked("virtual\x00"+virtual+"\x00"+source+"\x00"+credential, credential, models)
+	// Recorded per virtual so a lane it feeds can list its members without
+	// re-deriving the filter — Model keeps no context length or free flag, so
+	// the predicate is not reconstructible after the fact.
+	names := map[string]bool{}
+	for key, con := range c.fetched {
+		if !strings.HasPrefix(key, "virtual\x00"+virtual+"\x00") {
+			continue
+		}
+		for name := range con.models {
+			names[name] = true
+		}
 	}
-	c.fetched[provider+"\x00"+credential] = models
+	out := make([]string, 0, len(names))
+	for n := range names {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	if c.virtualMembers == nil {
+		c.virtualMembers = map[string][]string{}
+	}
+	c.virtualMembers[virtual] = out
+}
+
+func (c *Config) setFetchedLocked(key, credential string, models map[string]Model) {
+	if c.fetched == nil {
+		c.fetched = map[string]contribution{}
+	}
+	c.fetched[key] = contribution{credential: credential, models: models}
 	c.rebuildDiscoveredLocked()
 }
 
@@ -172,9 +227,9 @@ func (c *Config) SetDiscoveredFor(provider, credential string, models map[string
 func (c *Config) rebuildDiscoveredLocked() {
 	c.discovered = make(map[string]Model, len(c.discovered))
 	c.discoveredBy = make(map[string]map[string]bool, len(c.discoveredBy))
-	for key, models := range c.fetched {
-		credential := key[strings.Index(key, "\x00")+1:]
-		for name, m := range models {
+	for _, con := range c.fetched {
+		credential := con.credential
+		for name, m := range con.models {
 			// A declared model always wins: discovery must never silently
 			// redefine something the operator wrote down.
 			if _, static := c.Models[name]; static {
@@ -287,6 +342,12 @@ type Extension struct {
 	// the UI beside it. See Model.Notes.
 	Notes string `yaml:"notes,omitempty"`
 
+	// Virtual makes this extension satisfy the PROVIDER contract as well as
+	// grouping providers: its catalogue is the union of its members', narrowed
+	// by a filter, reached with whichever member's key serves the model. See
+	// virtual.go — `free` is the case it exists for.
+	Virtual *Virtual `yaml:"virtual,omitempty"`
+
 	// Providers lets ONE extension span several upstreams, each with its own
 	// endpoint and credentials. The free-tier aggregator is the motivating case:
 	// "free" is a single integration, but Groq, Cerebras and OpenRouter are three
@@ -330,24 +391,33 @@ type Provider struct {
 	// express that, and N per-credential budgets multiply instead of capping.
 	Limits LimitSet `yaml:"limits,omitempty"`
 
-	// Discover contributes models from the provider's own catalog instead of a
-	// hand-written list. `provides` is a static declaration; this is the same
-	// thing enumerated at runtime, for a roster that churns.
+	// Directory is the DEFAULT FILTER applied when someone browses this
+	// provider's catalogue. It enrolls nothing.
+	//
+	// It used to (as `discover:`), and that was backwards: a filter over four
+	// hundred models is a guess, and the models it guesses wrong about are
+	// billable. Pooling across providers — the one job auto-enrolment was
+	// actually wanted for — is now a virtual extension (see virtual.go), which
+	// can see every member's catalogue at once instead of one at a time.
+	//
+	// So this is a UI convenience: open OpenRouter's directory and it starts on
+	// free/text/8k+ rather than all 413 rows, and you can clear it.
+	Directory *Discover `yaml:"directory,omitempty"`
+	// Discover is the retired spelling, still parsed so an existing config
+	// loads. It is treated as Directory and warned about at load: silently
+	// reinterpreting a key that used to enrol models would be a behaviour
+	// change nobody could see.
 	Discover *Discover `yaml:"discover,omitempty"`
 
 	// Manual declares that this provider's models are chosen ONE AT A TIME from
-	// its directory (see selection.go) rather than admitted by a filter or
-	// written out in `provides`.
+	// its directory (see selection.go) rather than written out in `provides`.
 	//
-	// This is the right setting for a provider with a large catalogue — nobody
-	// wants OpenRouter's four hundred models enrolled by a filter that guessed.
-	//
-	// It is a flag rather than an inference because the alternative is to stop
-	// rejecting providers that contribute nothing, and "contributes no models"
-	// catches a real class of typo — a provider block that was half-written.
-	// Writing the intent down keeps that check while making the third way of
-	// contributing legal. Nothing reads it at runtime: the selections do the
-	// work, and this only says they are expected.
+	// This is the normal case now that a filter no longer enrols anything. It
+	// is a flag rather than an inference because "contributes no models"
+	// catches a real class of typo — a provider block that was half-written —
+	// and writing the intent down keeps that check meaningful. Nothing reads it
+	// at runtime: the selections do the work, and this only says they are
+	// expected.
 	Manual bool `yaml:"manual,omitempty"`
 }
 
@@ -1178,6 +1248,10 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 		// it; a selection is a later, per-model addition rather than a
 		// reordering of what was written down.
 		cands = append(cands, c.selectedLaneMembers(served)...)
+		// A virtual extension's pool joins the same way, at the priority the
+		// pool declares. This is what makes `model: "free"` mean "try the free
+		// tier" rather than naming one provider's model.
+		cands = append(cands, c.virtualLaneMembers(served)...)
 		return c.expandCredentials(cands), len(cands) > 0
 	}
 	if m, ok := c.Models[served]; ok {
@@ -1776,6 +1850,29 @@ func (c *Config) resolveExtensions() error {
 		if _, clash := c.Models[name]; clash {
 			return fmt.Errorf("extension %q: name collides with a model", name)
 		}
+		if ext.Virtual != nil {
+			if hosted {
+				return fmt.Errorf("extension %q: virtual pools remote catalogues; a cmd serves exactly one local process", name)
+			}
+			if err := validateVirtual(name, ext); err != nil {
+				return err
+			}
+		}
+		// `discover` no longer enrols anything. Reinterpreting it silently as a
+		// directory filter would be a behaviour change with no signal — the
+		// models it used to contribute would simply stop existing — so say so
+		// once per provider, at load, and carry the value over.
+		for pn, pv := range ext.Providers {
+			if pv.Discover == nil {
+				continue
+			}
+			if pv.Directory == nil {
+				pv.Directory = pv.Discover
+				ext.Providers[pn] = pv
+			}
+			slog.Warn("`discover` no longer enrols models — it is now the directory's default filter; rename it to `directory:`, and use a virtual extension to pool a free tier across providers",
+				"extension", name, "provider", pn)
+		}
 
 		// Normalize both shapes to a provider list. The extension-level
 		// proxy/provides pair is one provider named after the extension.
@@ -1792,12 +1889,13 @@ func (c *Config) resolveExtensions() error {
 				if pv.Proxy.IsZero() {
 					return fmt.Errorf("extension %q provider %q: needs proxy", name, pn)
 				}
-				// `discover` and `manual` are the other two ways to contribute
-				// models, so a provider with either is complete — it just
-				// contributes nothing until the first refresh, or until someone
-				// picks a model off its catalogue.
-				if len(pv.Provides) == 0 && pv.Discover == nil && !pv.Manual {
-					return fmt.Errorf("extension %q provider %q: contributes no models (needs provides, discover, or manual: true to pick from its catalogue by hand)", name, pn)
+				// A provider is complete if it declares models, expects them to
+				// be chosen off its directory, or is a member of a virtual
+				// extension that pools its catalogue. A `directory` filter alone
+				// is NOT enough any more — it enrols nothing, so a provider
+				// carrying only that would contribute nothing and reach nothing.
+				if len(pv.Provides) == 0 && !pv.Manual && ext.Virtual == nil {
+					return fmt.Errorf("extension %q provider %q: contributes no models (needs provides, manual: true to choose from its directory, or a virtual extension pooling it)", name, pn)
 				}
 				if err := validateCredentials(name, pn, pv); err != nil {
 					return err
@@ -1854,71 +1952,6 @@ func (c *Config) resolveExtensions() error {
 		}
 	}
 	return nil
-}
-
-// DiscoverTargets lists every (extension, provider, spec) that opted into
-// catalog discovery, with the provider's proxy target resolved. The refresh loop
-// needs the target to know where to fetch and which credentials to send.
-type DiscoverTarget struct {
-	Extension string
-	Provider  string
-	// Credential names the account this catalogue was fetched with. Discovery
-	// runs once PER credential because the catalogues differ by key, and the
-	// result is recorded against this name so the walk only offers a model on
-	// the accounts that can actually serve it.
-	Credential string
-	Spec      *Discover
-	Target    *ProxyTarget
-	// ProxyNode is the provider's proxy block as written, so a discovered model
-	// can be given the same target the declared ones get. ProxyTarget is resolved
-	// and cannot round-trip back to YAML.
-	ProxyNode yaml.Node
-}
-
-// DiscoverTargets returns the providers with a `discover` block.
-func (c *Config) DiscoverTargets() []DiscoverTarget {
-	var out []DiscoverTarget
-	names := make([]string, 0, len(c.Extensions))
-	for n := range c.Extensions {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, en := range names {
-		ext := c.Extensions[en]
-		provs := make([]string, 0, len(ext.Providers))
-		for pn := range ext.Providers {
-			provs = append(provs, pn)
-		}
-		sort.Strings(provs)
-		for _, pn := range provs {
-			pv := ext.Providers[pn]
-			if pv.Discover == nil {
-				continue
-			}
-			base, err := (Model{Proxy: pv.Proxy}).ProxyTarget()
-			if err != nil {
-				continue
-			}
-			// One target per credential: same endpoint, different auth, and
-			// therefore a different catalogue. A provider declaring none yields
-			// exactly one with the implicit default, so nothing changes for a
-			// config that predates credentials.
-			for _, cr := range pv.CredentialList() {
-				t := *base
-				if len(cr.Headers) > 0 || cr.AuthTokenCommand != "" {
-					t.Headers = cr.MergedHeaders(base.Headers)
-					if cr.AuthTokenCommand != "" {
-						t.AuthTokenCommand = cr.AuthTokenCommand
-					}
-				}
-				out = append(out, DiscoverTarget{
-					Extension: en, Provider: pn, Credential: cr.Name,
-					Spec: pv.Discover, Target: &t, ProxyNode: pv.Proxy,
-				})
-			}
-		}
-	}
-	return out
 }
 
 // ServedName turns a provider's own model id into a served name under this

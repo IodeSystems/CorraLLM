@@ -1410,11 +1410,12 @@ browser prints the URL it tried, which is the intended cure.
 discovery loop does; a credential using `authTokenCommand` reports that it
 cannot be browsed rather than sending an unauthenticated request and blaming the
 endpoint.
-**open (USER)** the live `openrouter` provider still auto-imports its top 12 free
-models by filter. Left as-is deliberately: switching it to hand-picked
-un-serves those 12 (they are the `free` lane's members) until models are chosen
-to replace them. Do it from Providers → Edit → "Pick models by hand" once the
-replacements are assigned.
+**open (USER)** the live config still spells OpenRouter's filter `discover:`. It
+loads, warns, and is now treated as a DIRECTORY default (it enrols nothing), so
+those 12 models stop being served the moment this deploys. To get a free tier
+back, declare `extensions.free.virtual` — the pool spans openrouter/groq/
+cerebras and feeds a lane. Nothing in the `free` LANE breaks either way: its
+members are declared by name and never included the discovered 12.
 
 Completes the P16 insight the implementation shortcut — *"free quota is enforced
 per ACCOUNT ... across multiple accounts of the same provider"* — by making

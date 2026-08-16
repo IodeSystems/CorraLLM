@@ -1148,7 +1148,7 @@ type corrallm_BrowseCatalogOutputBody {
   entries: [corrallm_CatalogEntryView!]!
   """Why the catalogue could not be read. Entries is empty when set."""
   error: String!
-  """Whether this provider has a discover block at all; without one, passesFilter is meaningless."""
+  """Whether this provider declares a directory filter; without one, passesFilter is meaningless."""
   hasFilter: Boolean!
   provider: String!
   """The models endpoint that was queried — the fastest way to see a wrong basePath."""
@@ -1217,7 +1217,7 @@ type corrallm_CatalogEntryView {
   name: String!
   """e.g. text; empty when unreported."""
   outputModality: String!
-  """The provider's discover filter would admit this row."""
+  """The provider's directory filter admits this row (a browsing default; it enrols nothing)."""
   passesFilter: Boolean!
   """Dollars per prompt token, 0 when unpriced."""
   promptUsd: Float!
@@ -1974,14 +1974,14 @@ type corrallm_ProviderSpec {
   basePath: String
   """Accounts held against this endpoint."""
   credentials: [corrallm_CredentialSpec!]
-  discover: corrallm_DiscoverSpec
+  directory: corrallm_DiscoverSpec
   """Extension that groups this provider."""
   extension: String!
   """Upstream host."""
   host: String!
   """Budget across ALL this provider's accounts together."""
   limits: [corrallm_Limit!]
-  """Models will be picked by hand from this provider's catalogue. Required when no discover filter is set."""
+  """Models are chosen by hand from this provider's directory."""
   manual: Boolean
   """Provider name; served models are <provider>-<id>."""
   name: String!
@@ -1996,14 +1996,14 @@ input corrallm_ProviderSpecInput {
   basePath: String
   """Accounts held against this endpoint."""
   credentials: [corrallm_CredentialSpecInput!]
-  discover: corrallm_DiscoverSpecInput
+  directory: corrallm_DiscoverSpecInput
   """Extension that groups this provider."""
   extension: String!
   """Upstream host."""
   host: String!
   """Budget across ALL this provider's accounts together."""
   limits: [corrallm_LimitInput!]
-  """Models will be picked by hand from this provider's catalogue. Required when no discover filter is set."""
+  """Models are chosen by hand from this provider's directory."""
   manual: Boolean
   """Provider name; served models are <provider>-<id>."""
   name: String!
@@ -2022,6 +2022,8 @@ type corrallm_ProviderView {
 }
 
 type corrallm_ProvidersOutputBody {
+  """Virtual extensions — those that pool their members' catalogues."""
+  pools: [corrallm_VirtualProviderView!]!
   providers: [corrallm_ProviderSpec!]!
   """Names present in the credential store. Names only — values are never served."""
   secrets: [String!]!
@@ -2565,4 +2567,21 @@ input corrallm_VerifiedCapabilityInputBodyInput {
 type corrallm_VerifiedCapabilityOutputBody {
   message: String!
   ok: Boolean!
+}
+
+type corrallm_VirtualProviderView {
+  """The extension acting as a provider."""
+  extension: String!
+  """Filter: keep only rows offered at no cost."""
+  freeOnly: Boolean!
+  """Lanes every member of the pool joins, and at what priority."""
+  lanes: [corrallm_LaneRefView!]!
+  """Cap on the POOL as a whole, largest window first."""
+  limit: Long!
+  """Filter: minimum advertised window."""
+  minContext: Long!
+  """How many models it is contributing right now. 0 before the first refresh."""
+  models: Long!
+  """Member providers whose catalogues it draws on."""
+  sources: [String!]!
 }

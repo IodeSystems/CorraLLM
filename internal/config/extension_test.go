@@ -325,31 +325,108 @@ func TestResolveFindsDiscoveredModels(t *testing.T) {
 	}
 }
 
-// A provider may contribute models by discovery alone — it just serves nothing
-// until the first refresh lands.
-func TestProviderWithOnlyDiscoverIsValid(t *testing.T) {
+// A `discover` filter no longer contributes anything, so a provider carrying
+// only that reaches nothing — and is rejected rather than silently serving an
+// empty catalogue forever.
+func TestDiscoverOnlyProviderIsRejected(t *testing.T) {
+	_, err := loadYAML(t, `
+extensions:
+  free:
+    providers:
+      openrouter:
+        proxy: { host: openrouter.ai, port: 443, basePath: /api }
+        directory:
+          filter: { free: true, inputModality: text, outputModality: text }
+`)
+	if err == nil {
+		t.Fatal("a provider whose only content is a directory filter was accepted; it can contribute no models")
+	}
+}
+
+// The retired `discover:` spelling still loads and becomes the directory's
+// default filter, so an existing config does not fail to parse — it just stops
+// enrolling, which is the point.
+func TestLegacyDiscoverBecomesDirectoryFilter(t *testing.T) {
 	c, err := loadYAML(t, `
 extensions:
   free:
     providers:
       openrouter:
         proxy: { host: openrouter.ai, port: 443, basePath: /api }
+        manual: true
         discover:
-          filter: { free: true, inputModality: text, outputModality: text }
-          template: { type: chat, quality: 3 }
+          filter: { free: true, minContext: 8192 }
 `)
 	if err != nil {
-		t.Fatalf("discover-only provider rejected: %v", err)
+		t.Fatalf("legacy discover key failed to load: %v", err)
+	}
+	pv := c.Extensions["openrouter"].Providers["openrouter"]
+	if pv.Directory == nil {
+		pv = c.Extensions["free"].Providers["openrouter"]
+	}
+	if pv.Directory == nil || !pv.Directory.Filter.Free || pv.Directory.Filter.MinContext != 8192 {
+		t.Errorf("legacy discover did not carry over as the directory filter: %+v", pv.Directory)
+	}
+	if n := len(c.AllModels()); n != 0 {
+		t.Errorf("a directory filter enrolled %d models; it must enrol none", n)
+	}
+}
+
+// A virtual extension exposes one fetch per member provider per credential, and
+// serves nothing until the first refresh lands.
+func TestVirtualExtensionExposesFetchTargets(t *testing.T) {
+	c, err := loadYAML(t, `
+extensions:
+  free:
+    virtual:
+      filter: { free: true, inputModality: text, outputModality: text }
+      template: { type: chat, quality: 3 }
+      limit: 12
+      lanes: [{ lane: free, order: 60 }]
+    providers:
+      openrouter:
+        proxy: { host: openrouter.ai, port: 443, basePath: /api }
+      groq:
+        proxy: { host: api.groq.com, port: 443, basePath: /openai }
+`)
+	if err != nil {
+		t.Fatalf("virtual extension rejected: %v", err)
 	}
 	if n := len(c.AllModels()); n != 0 {
 		t.Errorf("served %d models before any refresh, want 0", n)
 	}
-	tg := c.DiscoverTargets()
-	if len(tg) != 1 || tg[0].Provider != "openrouter" || tg[0].Target.URL.Hostname() != "openrouter.ai" {
-		t.Fatalf("discover target not exposed to the refresh loop: %+v", tg)
+	tg := c.VirtualTargets()
+	if len(tg) != 2 {
+		t.Fatalf("want one fetch per member provider, got %+v", tg)
 	}
-	if tg[0].Spec.Template.Type != "chat" {
-		t.Errorf("template lost: %+v", tg[0].Spec.Template)
+	hosts := map[string]bool{}
+	for _, vt := range tg {
+		hosts[vt.Target.URL.Hostname()] = true
+		if vt.Virtual != "free" {
+			t.Errorf("fetch attributed to %q, want the pool that asked for it", vt.Virtual)
+		}
+	}
+	if !hosts["openrouter.ai"] || !hosts["api.groq.com"] {
+		t.Errorf("pool did not span both members: %+v", hosts)
+	}
+	if tg[0].Spec.Template.Type != "chat" || tg[0].Spec.Limit != 12 {
+		t.Errorf("pool spec lost: %+v", tg[0].Spec)
+	}
+}
+
+// A virtual extension with no filter and no cap would pool every model every
+// member offers — hundreds, most of them wrong for it.
+func TestUnboundedVirtualIsRejected(t *testing.T) {
+	_, err := loadYAML(t, `
+extensions:
+  free:
+    virtual: {}
+    providers:
+      openrouter:
+        proxy: { host: openrouter.ai, port: 443, basePath: /api }
+`)
+	if err == nil {
+		t.Fatal("an unfiltered, uncapped pool was accepted")
 	}
 }
 
