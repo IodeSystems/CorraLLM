@@ -1746,8 +1746,25 @@ type LaneMemberDef struct {
 // LaneDef is a named ordered fallback list over models: requesting the lane
 // name allows substitution across members; requesting a model name pins it.
 type LaneDef struct {
-	Name    string          `json:"name" doc:"Lane name (requestable as a model id)."`
-	Members []LaneMemberDef `json:"members" doc:"Members in fallback order (best first)."`
+	Name string `json:"name" doc:"Lane name (requestable as a model id)."`
+	// Members is what the CONFIG declares, in declared order.
+	Members []LaneMemberDef `json:"members" doc:"Members written in config, in declared order."`
+	// Ladder is what the lane actually resolves to right now, in the order the
+	// walk will try it, each rung tagged with where it came from.
+	//
+	// Reported separately from Members because they answer different questions
+	// and the panel needs the second one: a lane can gain rungs from a selector,
+	// from models chosen off a directory, and from a virtual extension's pool,
+	// none of which appear in the config's member list. Showing only Members
+	// meant `free` displayed two entries while resolving to twelve.
+	Ladder []LaneRungDef `json:"ladder" doc:"Resolved membership in fallback order, with each rung's origin."`
+}
+
+// LaneRungDef is one resolved rung of a lane.
+type LaneRungDef struct {
+	Model  string `json:"model"`
+	Origin string `json:"origin" doc:"declared | selector | selection | pool."`
+	Pool   string `json:"pool" doc:"The virtual extension it came from, when origin is pool."`
 }
 
 // StageView summarizes a group's saturation policy for one backend type.
@@ -1934,13 +1951,16 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	sort.Slice(out.Body.Extensions, func(i, j int) bool { return out.Body.Extensions[i].Name < out.Body.Extensions[j].Name })
 
 	for name, lane := range h.config().Lanes {
-		ld := LaneDef{Name: name}
+		ld := LaneDef{Name: name, Ladder: []LaneRungDef{}}
 		for _, mem := range lane.Members {
 			lm := LaneMemberDef{Model: mem.Model}
 			if mem.Sticky != nil {
 				lm.TTL, lm.IdleUnload, lm.EvictCost = mem.Sticky.TTL, mem.Sticky.IdleUnload, mem.Sticky.EvictCost
 			}
 			ld.Members = append(ld.Members, lm)
+		}
+		for _, e := range h.config().LaneLadder(name) {
+			ld.Ladder = append(ld.Ladder, LaneRungDef{Model: e.Name, Origin: e.Origin, Pool: e.Pool})
 		}
 		out.Body.Lanes = append(out.Body.Lanes, ld)
 	}

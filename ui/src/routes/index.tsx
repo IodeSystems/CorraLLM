@@ -83,6 +83,11 @@ const OverviewDoc = graphql(/* GraphQL */ `
             idleUnload
             evictCost
           }
+          ladder {
+            model
+            origin
+            pool
+          }
         }
         extensions {
           name
@@ -1132,34 +1137,73 @@ function Home() {
       {lanes.length > 0 && (
         <Panel
           title="Lanes"
-          subtitle="Requestable as a model id; falls back across members in order"
+          subtitle="Requestable as a model id; tried left to right. Filled chips are contributed at runtime — a pool, a directory choice, or a selector — and are not in your config's member list."
           flush
         >
-          {lanes.map((l) => (
-            <Row key={l.name}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                <Typography variant="subtitle2" sx={{ minWidth: 150 }}>
-                  {l.name}
-                </Typography>
-                {l.members.map((mem, i) => (
-                  <Box key={mem.model} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    {i > 0 && (
-                      <Typography variant="body2" sx={{ color: C.textFaint }}>
-                        →
-                      </Typography>
-                    )}
-                    <Tooltip
-                      title={[mem.ttl ? `ttl ${mem.ttl}` : null, mem.idleUnload ? `idle-unload ${mem.idleUnload}` : null, mem.evictCost ? `evict ${mem.evictCost}` : null]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    >
-                      <Chip size="small" variant="outlined" label={mem.model} />
-                    </Tooltip>
-                  </Box>
-                ))}
-              </Box>
-            </Row>
-          ))}
+          {lanes.map((l) => {
+            // The LADDER, not the config's member list. A lane gains rungs from
+            // selectors, from models chosen off a directory, and from a virtual
+            // extension's pool — none of which are written in `members`, so
+            // rendering `members` showed `free` as two entries while it actually
+            // resolved to twelve. Fall back to the declared list only for a lane
+            // the server did not resolve.
+            const rungs =
+              l.ladder.length > 0
+                ? l.ladder
+                : l.members.map((m) => ({ model: m.model, origin: 'declared', pool: '' }))
+            const sticky = new Map(l.members.map((m) => [m.model, m]))
+            return (
+              <Row key={l.name}>
+                <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+                  <Typography variant="subtitle2" sx={{ minWidth: 150 }}>
+                    {l.name}
+                  </Typography>
+                  {rungs.map((r, i) => {
+                    const mem = sticky.get(r.model)
+                    const notes = [
+                      mem?.ttl ? `ttl ${mem.ttl}` : null,
+                      mem?.idleUnload ? `idle-unload ${mem.idleUnload}` : null,
+                      mem?.evictCost ? `evict ${mem.evictCost}` : null,
+                      r.origin === 'pool'
+                        ? `from the ${r.pool || 'virtual'} pool — membership changes as providers add and withdraw models`
+                        : null,
+                      r.origin === 'selection' ? 'chosen off a provider directory' : null,
+                      r.origin === 'selector' ? 'matched by a selector, expanded here' : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')
+                    return (
+                      <Box
+                        key={r.model}
+                        sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
+                      >
+                        {i > 0 && (
+                          <Typography variant="body2" sx={{ color: C.textFaint }}>
+                            →
+                          </Typography>
+                        )}
+                        <Tooltip title={notes}>
+                          {/* Declared rungs are outlined; everything the runtime
+                              contributed is filled, so "what did I write down"
+                              stays readable at a glance against "what showed up". */}
+                          <Chip
+                            size="small"
+                            variant={r.origin === 'declared' ? 'outlined' : 'filled'}
+                            label={r.model}
+                          />
+                        </Tooltip>
+                      </Box>
+                    )
+                  })}
+                  {rungs.length === 0 && (
+                    <Typography variant="caption" sx={{ color: C.textFaint }}>
+                      nothing resolves — this lane serves no one
+                    </Typography>
+                  )}
+                </Box>
+              </Row>
+            )
+          })}
         </Panel>
       )}
 

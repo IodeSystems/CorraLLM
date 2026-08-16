@@ -289,3 +289,90 @@ func (c *Config) contributorExistsLocked(key string) bool {
 	}
 	return false
 }
+
+// LaneEntry is one rung of a lane's ladder as it ACTUALLY resolves, with where
+// that rung came from.
+type LaneEntry struct {
+	Name string
+	// Origin is one of:
+	//   declared  written in the lane's `members` by hand
+	//   selector  matched by a selector member, expanded in place
+	//   selection chosen off a provider's directory and placed here
+	//   pool      contributed by a virtual extension whose pool targets this lane
+	Origin string
+	// Pool names the virtual extension, when Origin is "pool".
+	Pool string
+}
+
+// LaneLadder returns a lane's resolved membership, in the order the walk will
+// try it, annotated by origin.
+//
+// It exists because the dashboard was reporting `lane.Members` — the STATIC
+// config — and calling it the lane. That was always incomplete (a selector
+// expands at runtime) and it got worse once pools and selections could
+// contribute: the `free` lane showed two entries while actually resolving to
+// twelve, so the one question the panel exists to answer, "what will this try",
+// had a wrong answer on screen.
+//
+// Deduplicated by served name, first occurrence winning, matching the walk:
+// a model reachable two ways is still tried once, at its earliest position.
+func (c *Config) LaneLadder(lane string) []LaneEntry {
+	l, ok := c.Lanes[lane]
+	if !ok {
+		return nil
+	}
+	origin := map[string]LaneEntry{}
+	var order []string
+	add := func(name, o, pool string) {
+		if name == "" {
+			return
+		}
+		if _, seen := origin[name]; seen {
+			return
+		}
+		origin[name] = LaneEntry{Name: name, Origin: o, Pool: pool}
+		order = append(order, name)
+	}
+	for _, mem := range l.Members {
+		if mem.IsSelector() {
+			for _, cd := range c.selectorMembers(mem) {
+				add(cd.Name, "selector", "")
+			}
+			continue
+		}
+		if _, ok := c.Models[mem.Model]; ok {
+			add(mem.Model, "declared", "")
+		}
+	}
+	for _, cd := range c.selectedLaneMembers(lane) {
+		add(cd.Name, "selection", "")
+	}
+	// Which pool a name came from, so the panel can say "from the free pool"
+	// rather than the unhelpfully vague "not in your config".
+	c.mu.RLock()
+	poolOf := map[string]string{}
+	for en, ext := range c.Extensions {
+		if ext.Virtual == nil {
+			continue
+		}
+		for _, lp := range ext.Virtual.Lanes {
+			if lp.Lane != lane {
+				continue
+			}
+			for _, n := range c.virtualMembers[en] {
+				if _, already := poolOf[n]; !already {
+					poolOf[n] = en
+				}
+			}
+		}
+	}
+	c.mu.RUnlock()
+	for _, cd := range c.virtualLaneMembers(lane) {
+		add(cd.Name, "pool", poolOf[cd.Name])
+	}
+	out := make([]LaneEntry, 0, len(order))
+	for _, n := range order {
+		out = append(out, origin[n])
+	}
+	return out
+}

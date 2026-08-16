@@ -1576,7 +1576,9 @@ type corrallm_KeysOutputBody {
 }
 
 type corrallm_LaneDef {
-  """Members in fallback order (best first)."""
+  """Resolved membership in fallback order, with each rung's origin."""
+  ladder: [corrallm_LaneRungDef!]!
+  """Members written in config, in declared order."""
   members: [corrallm_LaneMemberDef!]!
   """Lane name (requestable as a model id)."""
   name: String!
@@ -1612,6 +1614,14 @@ input corrallm_LaneRefViewInput {
   lane: String!
   """Priority in that lane's ladder; lower is tried first."""
   order: Long!
+}
+
+type corrallm_LaneRungDef {
+  model: String!
+  """declared | selector | selection | pool."""
+  origin: String!
+  """The virtual extension it came from, when origin is pool."""
+  pool: String!
 }
 
 type corrallm_Limit {

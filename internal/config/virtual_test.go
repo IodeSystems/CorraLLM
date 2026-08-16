@@ -237,3 +237,70 @@ models:
 		t.Error("a deleted extension's models were carried across and would serve forever")
 	}
 }
+
+// TestLaneLadderReportsEveryOrigin is what the Overview panel renders. The
+// panel used to show `lane.Members` and call it the lane, so `free` displayed
+// two entries while resolving to twelve — the one question it exists to answer,
+// "what will this try", had a wrong answer on screen.
+func TestLaneLadderReportsEveryOrigin(t *testing.T) {
+	c := virtCfg(t)
+	pooled, m := c.VirtualModelFor(poolTarget(c, "openrouter"), "vendor/pooled:free")
+	c.SetVirtualModels("free", "openrouter", "paid", map[string]Model{pooled: m})
+	chosen, cm := c.VirtualModelFor(poolTarget(c, "openrouter"), "vendor/chosen")
+	c.SetSelections([]Selection{{
+		Provider: "openrouter", Credential: "paid", Model: chosen,
+		Upstream: cm.Upstream, Lanes: []LanePlacement{{Lane: "freepool", Order: 5}},
+	}})
+
+	ladder := c.LaneLadder("freepool")
+	got := map[string]LaneEntry{}
+	var order []string
+	for _, e := range ladder {
+		got[e.Name] = e
+		order = append(order, e.Name)
+	}
+	if len(order) != 3 {
+		t.Fatalf("ladder = %v, want the declared floor plus the selection plus the pool", order)
+	}
+	if order[0] != "local-floor" {
+		t.Errorf("declared member lost the front: %v", order)
+	}
+	if got["local-floor"].Origin != "declared" {
+		t.Errorf("local-floor origin = %q, want declared", got["local-floor"].Origin)
+	}
+	if got[chosen].Origin != "selection" {
+		t.Errorf("%s origin = %q, want selection", chosen, got[chosen].Origin)
+	}
+	if got[pooled].Origin != "pool" || got[pooled].Pool != "free" {
+		t.Errorf("%s origin = %q/%q, want pool/free", pooled, got[pooled].Origin, got[pooled].Pool)
+	}
+}
+
+// TestLaneLadderDedupesToFirstPosition: a model reachable two ways is tried
+// once, at its earliest rung, and the ladder must say so rather than listing it
+// twice — a panel that double-counts is a panel that misreports depth.
+func TestLaneLadderDedupesToFirstPosition(t *testing.T) {
+	c := virtCfg(t)
+	name, m := c.VirtualModelFor(poolTarget(c, "openrouter"), "vendor/both:free")
+	c.SetVirtualModels("free", "openrouter", "paid", map[string]Model{name: m})
+	// The same model ALSO chosen by hand into the same lane.
+	c.SetSelections([]Selection{{
+		Provider: "openrouter", Credential: "paid", Model: name,
+		Lanes: []LanePlacement{{Lane: "freepool", Order: 1}},
+	}})
+	seen := 0
+	var origin string
+	for _, e := range c.LaneLadder("freepool") {
+		if e.Name == name {
+			seen++
+			origin = e.Origin
+		}
+	}
+	if seen != 1 {
+		t.Errorf("model appears %d times in the ladder, want once", seen)
+	}
+	// Selections are added before pools, so the earlier rung wins.
+	if origin != "selection" {
+		t.Errorf("origin = %q, want the earlier rung (selection)", origin)
+	}
+}
