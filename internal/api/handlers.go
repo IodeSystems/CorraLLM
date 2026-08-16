@@ -2291,6 +2291,11 @@ func (h *Handlers) localDevicePools(devs []gpu.Stats) map[string]string {
 	return out
 }
 
+// Config is the live config: the reloaded one when there is one, otherwise the
+// one this Handlers was constructed with. Exported for the reload path, which
+// needs the OUTGOING config to carry its runtime overlay onto the incoming one.
+func (h *Handlers) Config() *config.Config { return h.config() }
+
 func (h *Handlers) config() *config.Config {
 	if c := h.live.Load(); c != nil {
 		return c

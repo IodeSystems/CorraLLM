@@ -739,7 +739,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// cost a restart — which on this box means evicting a 27B and paying a cold
 	// load, and (until agentkit learned to retry transport errors) failing every
 	// in-flight client request.
-	go watchReload(sigCtx, o.configPath, mgr, scheduler, px, h)
+	go watchReload(sigCtx, o.configPath, st, mgr, scheduler, px, h)
 
 	// Expire stale slot reservations (a keyed caller can lease headroom for its
 	// lane; the lease must be renewed or it auto-frees). Stops on shutdown.
@@ -1023,7 +1023,7 @@ func envInt(key string, def int) int {
 // memory; the config is a statement of intent for the NEXT spawn. Evicting
 // someone's warm 27B because a file changed is not a reload, it is a restart
 // with extra steps.
-func watchReload(ctx context.Context, path string, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) {
+func watchReload(ctx context.Context, path string, st *store.Store, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
 	defer signal.Stop(ch)
@@ -1039,7 +1039,7 @@ func watchReload(ctx context.Context, path string, mgr *proc.Manager, sc *sched.
 					"path", path, "err", err)
 				continue
 			}
-			applyConfig(cfg, mgr, sc, px, h)
+			applyConfig(cfg, st, mgr, sc, px, h)
 			slog.Info("config reloaded", "path", path,
 				"servers", len(cfg.Servers), "models", len(cfg.Models),
 				"lanes", len(cfg.Lanes), "groups", len(cfg.PriorityGroups))
@@ -1052,7 +1052,25 @@ func watchReload(ctx context.Context, path string, mgr *proc.Manager, sc *sched.
 // Order is deliberate: residency and admission learn about it BEFORE the proxy
 // starts routing on it, so the brief window where holders disagree can only
 // have downstream components knowing more than the entry point, never less.
-func applyConfig(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) {
+//
+// The carry-over lives HERE, not in the callers, because there are two reload
+// paths — SIGHUP and the config API — and they drifted: the API path
+// reinstalled selections and the signal path did not, so a SIGHUP silently
+// dropped every hand-chosen model and every pool. A duplicated step is a step
+// one copy will forget.
+func applyConfig(cfg *config.Config, st *store.Store, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) {
+	// A reload builds a new Config, so anything held on the old one has to come
+	// across. Two sources, two recoveries: pooled models are somebody else's
+	// catalogue and cannot be refetched synchronously, so the previous overlay
+	// is adopted; selections are durable and are reinstalled from the store.
+	cfg.AdoptRuntime(h.Config())
+	if st != nil {
+		if rows, err := st.LoadSelections(); err != nil {
+			slog.Warn("reload: load selections", "err", err)
+		} else {
+			api.InstallSelections(cfg, rows)
+		}
+	}
 	mgr.SetConfig(cfg)
 	sc.SetConfig(cfg)
 	h.SetConfig(cfg)
@@ -1066,18 +1084,6 @@ func reloadInto(path string, st *store.Store, mgr *proc.Manager, sc *sched.Sched
 	if err != nil {
 		return err
 	}
-	// Selections live on the CONFIG OBJECT, and a reload builds a new one — so
-	// without this every hand-chosen model silently vanishes on any config
-	// write at all (adding a provider, saving the YAML editor) until the next
-	// selection change or restart. Reinstalled from the store, which is where
-	// the durable truth is.
-	if st != nil {
-		if rows, err := st.LoadSelections(); err != nil {
-			slog.Warn("reload: load selections", "err", err)
-		} else {
-			api.InstallSelections(cfg, rows)
-		}
-	}
-	applyConfig(cfg, mgr, sc, px, h)
+	applyConfig(cfg, st, mgr, sc, px, h)
 	return nil
 }

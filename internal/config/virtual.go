@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -221,4 +222,70 @@ func validateVirtual(name string, ext Extension) error {
 		}
 	}
 	return nil
+}
+
+// AdoptRuntime carries the runtime overlay across a config reload.
+//
+// A reload builds a WHOLE NEW Config, and everything a refresh fetched lives on
+// the old one. Without this, editing the config file empties every pool until
+// the next refresh tick — 30 minutes at the default interval — so a one-line
+// YAML change silently takes the free tier out of service for half an hour.
+// Selections survive a reload because they are in the store and can be
+// reinstalled; a pool cannot be, because it is somebody else's catalogue.
+//
+// Carrying it over is also the honest semantics: the file changed, the world
+// did not. The next scheduled refresh replaces it all anyway.
+//
+// Contributions whose contributor no longer exists are DROPPED, or removing a
+// provider from the config would leave its models serving until a refresh that,
+// for a deleted provider, never comes.
+func (c *Config) AdoptRuntime(prev *Config) {
+	if prev == nil || prev == c {
+		return
+	}
+	prev.mu.RLock()
+	fetched := make(map[string]contribution, len(prev.fetched))
+	for k, v := range prev.fetched {
+		fetched[k] = v
+	}
+	members := make(map[string][]string, len(prev.virtualMembers))
+	for k, v := range prev.virtualMembers {
+		members[k] = append([]string(nil), v...)
+	}
+	prev.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fetched = make(map[string]contribution, len(fetched))
+	for k, v := range fetched {
+		if c.contributorExistsLocked(k) {
+			c.fetched[k] = v
+		}
+	}
+	c.virtualMembers = make(map[string][]string, len(members))
+	for name, list := range members {
+		if ext, ok := c.Extensions[name]; ok && ext.Virtual != nil {
+			c.virtualMembers[name] = list
+		}
+	}
+	c.rebuildDiscoveredLocked()
+}
+
+// contributorExistsLocked reports whether the source of a carried-over
+// contribution is still in the config.
+func (c *Config) contributorExistsLocked(key string) bool {
+	parts := strings.Split(key, "\x00")
+	switch {
+	case len(parts) == 4 && parts[0] == "virtual":
+		ext, ok := c.Extensions[parts[1]]
+		if !ok || ext.Virtual == nil {
+			return false
+		}
+		_, ok = ext.Providers[parts[2]]
+		return ok
+	case len(parts) == 3 && parts[0] == "provider":
+		_, _, ok := c.findProvider(parts[1])
+		return ok
+	}
+	return false
 }

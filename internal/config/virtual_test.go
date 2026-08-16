@@ -176,3 +176,64 @@ func TestOneMemberFailingDoesNotEmptyThePool(t *testing.T) {
 		t.Error("the withdrawing member's model is still contributed")
 	}
 }
+
+// TestPoolSurvivesAConfigReload is the regression that a SIGHUP exposed on the
+// live box: a reload builds a NEW Config, the pool lives on the old one, and
+// without adoption a one-line YAML edit empties every pool until the next
+// refresh tick — 30 minutes at the default interval.
+func TestPoolSurvivesAConfigReload(t *testing.T) {
+	old := virtCfg(t)
+	served, m := old.VirtualModelFor(poolTarget(old, "openrouter"), "vendor/thing:free")
+	old.SetVirtualModels("free", "openrouter", "paid", map[string]Model{served: m})
+	if _, ok := old.Discovered()[served]; !ok {
+		t.Fatal("precondition: the pool should be populated")
+	}
+
+	fresh := virtCfg(t) // what Load() produces after the file is edited
+	if _, ok := fresh.Discovered()[served]; ok {
+		t.Fatal("precondition: a freshly loaded config starts with an empty overlay")
+	}
+	fresh.AdoptRuntime(old)
+	if _, ok := fresh.Discovered()[served]; !ok {
+		t.Error("the pool did not survive the reload")
+	}
+	// And it must still be in its lane, not merely in the registry.
+	cands, _ := fresh.ResolveServed("freepool")
+	var found bool
+	for _, cd := range cands {
+		if cd.Name == served {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the pool survived the reload but stopped feeding its lane")
+	}
+}
+
+// TestAdoptDropsContributionsFromDeletedProviders: carrying the overlay across
+// must not resurrect a provider the edit removed. For a deleted provider no
+// refresh ever comes to retract it, so it would serve forever.
+func TestAdoptDropsContributionsFromDeletedProviders(t *testing.T) {
+	old := virtCfg(t)
+	served, m := old.VirtualModelFor(poolTarget(old, "openrouter"), "vendor/thing:free")
+	old.SetVirtualModels("free", "openrouter", "paid", map[string]Model{served: m})
+
+	// The edit removed the whole virtual extension.
+	var fresh Config
+	if err := yaml.Unmarshal([]byte(`
+models:
+  local-floor:
+    type: chat
+    quality: 2
+    proxy: {host: 127.0.0.1, port: 8080}
+`), &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.resolveExtensions(); err != nil {
+		t.Fatal(err)
+	}
+	fresh.AdoptRuntime(old)
+	if _, ok := fresh.Discovered()[served]; ok {
+		t.Error("a deleted extension's models were carried across and would serve forever")
+	}
+}

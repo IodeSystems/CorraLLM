@@ -48,10 +48,18 @@ func TestLiveConfigFreeLaneIncludesThePool(t *testing.T) {
 			order = append(order, cd.Name)
 		}
 	}
-	for _, declared := range []string{"groq-llama-70b", "cerebras-gpt-oss-120b", "Qwen3.8-27B"} {
+	for _, declared := range []string{"groq-llama-70b", "cerebras-gpt-oss-120b"} {
 		if !seen[declared] {
 			t.Errorf("declared member %q vanished from the free lane: %v", declared, order)
 		}
+	}
+	// The local floor was deliberately removed from THIS lane (2026-08-15) so
+	// the pool is reached before the walk falls off the end. A declared member
+	// is always tried before a pool, so leaving it in meant the pooled models
+	// were only ever reached when the local box was unavailable too — backwards
+	// for a lane whose purpose is spending someone else's quota first.
+	if seen["Qwen3.8-27B"] {
+		t.Errorf("the local floor is back in the free lane, so the pool is unreachable behind it: %v", order)
 	}
 	for _, p := range pooled {
 		if !seen[p] {
