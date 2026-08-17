@@ -392,6 +392,17 @@ function ProvidersPage() {
                     {p.models.length} model{p.models.length === 1 ? '' : 's'}
                   </Typography>
                 </Box>
+                {/* The provider's own notes. A real config field, so unlike a
+                    YAML comment it survives the file being rewritten — which is
+                    where an explanation about this provider belongs. */}
+                {p.notes && (
+                  <Typography
+                    variant="caption"
+                    sx={{ color: C.textMuted, flexBasis: '100%', whiteSpace: 'pre-wrap', mt: 0.5 }}
+                  >
+                    {p.notes}
+                  </Typography>
+                )}
                 <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
                   {Number(p.barePrecedence) > 0 ? (
                     <Tooltip
