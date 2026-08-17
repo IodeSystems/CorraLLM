@@ -234,9 +234,14 @@ export function ProviderModelDialog(props: {
             helperText={
               editing
                 ? `Callers ask for ${served}. Renaming is add + delete — the served name is an identity, and metrics and residency key on it.`
-                : served
-                  ? `Callers ask for ${served} — and for ${id} too, while this provider claims bare names.`
-                  : 'As written under the provider. The served name gets the provider prefix.'
+                : !served
+                  ? 'As written under the provider. The served name gets the provider prefix.'
+                  : remote
+                    ? // Bare-name precedence belongs to a top-level provider. A
+                      // remote provider has none, so promising that the
+                      // unprefixed name resolves here would simply be untrue.
+                      `Callers ask for ${served}.`
+                    : `Callers ask for ${served} — and for ${id} too, while this provider claims bare names.`
             }
           />
           <Typography variant="caption" sx={{ color: C.textFaint, mt: -1 }}>
