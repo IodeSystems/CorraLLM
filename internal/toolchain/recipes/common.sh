@@ -187,6 +187,164 @@ tool_src_dir() { printf '%s/src' "${TOOL_PREFIX:?TOOL_PREFIX not set}"; }
 adopted() { [ -n "${TOOL_INSTALLED_AT:-}" ]; }
 
 # ---------------------------------------------------------------------------
+# Build support — aligning a tree to its pin, carrying local patches, and
+# deciding whether a build is needed at all.
+#
+# Ported from ml-kit's bin/llama-rebuild. Each rule below exists because its
+# absence produced a wrong result, not because it seemed tidy.
+# ---------------------------------------------------------------------------
+
+current_head() { (cd "$1" && git rev-parse HEAD 2>/dev/null); }
+
+patch_dir() { printf '%s/patches' "${TOOL_PREFIX:?}"; }
+
+# patch_files emits this tool's patches in apply order.
+patch_files() {
+    local pd; pd=$(patch_dir)
+    [ -d "$pd" ] || return 0
+    find "$pd" -maxdepth 1 -name '*.patch' -type f 2>/dev/null | LC_ALL=C sort
+}
+
+# patch_set_hash identifies the patch CONTENT, so editing a patch invalidates
+# the stamp. "none" when there are no patches.
+patch_set_hash() {
+    local files; files=$(patch_files)
+    [ -z "$files" ] && { printf 'none'; return; }
+    # shellcheck disable=SC2086
+    cat $files | sha256sum | cut -c1-12
+}
+
+# unapply_patches reverts our patches so align_tree sees a pristine tree.
+#
+# Load-bearing: `git reset --hard` would destroy them anyway, and align_tree
+# REFUSES to move a tree with uncommitted tracked changes — which applied
+# patches are. Left alone, the tree freezes at the patched commit and silently
+# stops taking upstream. Best-effort by design: a patch that will not reverse
+# cleanly is left, and align_tree's own guard then warns instead of clobbering.
+unapply_patches() {
+    local dir=$1 f
+    [ -d "$dir" ] || return 0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if (cd "$dir" && git apply -R --check "$f" >/dev/null 2>&1); then
+            (cd "$dir" && git apply -R "$f")
+        fi
+    done < <(patch_files | tac)
+}
+
+# apply_patches applies the set idempotently. An already-applied patch is not an
+# error (the reverse-check proves it); one that neither applies nor reverses is
+# fatal, because building an unpatched tree you believe is patched is worse than
+# not building at all.
+apply_patches() {
+    local dir=$1 f n=0
+    local files; files=$(patch_files)
+    [ -z "$files" ] && return 0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if (cd "$dir" && git apply --check "$f" >/dev/null 2>&1); then
+            (cd "$dir" && git apply "$f"); say "    applied  $(basename "$f")"
+        elif (cd "$dir" && git apply -R --check "$f" >/dev/null 2>&1); then
+            say "    already  $(basename "$f")"
+        else
+            say "    FAILED   $(basename "$f")"
+            say "  Upstream moved under this patch. Refresh or drop it; refusing to"
+            say "  build a tree that is not in the state the patch set describes."
+            return 1
+        fi
+        n=$((n + 1))
+    done <<< "$files"
+    say "  $n patch(es) in effect"
+    return 0
+}
+
+# align_tree clones if needed and resets to the pinned ref.
+#
+# It will NOT clobber a tree with uncommitted tracked changes. Untracked files
+# (build output, .idea) are left alone by reset --hard anyway, so the guard is
+# on tracked changes only.
+align_tree() {
+    local dir=$1 ref=$2 url=$3
+    if [ ! -d "$dir/.git" ]; then
+        say "=== cloning $url -> $dir"
+        mkdir -p "$(dirname "$dir")"
+        git clone "$url" "$dir" >&2 || return 1
+    fi
+    (
+    cd "$dir" || exit 1
+    # `git remote get-url` APPLIES url.<base>.insteadOf rewrites, so on a box
+    # that rewrites https://github.com/ to git@github.com: it returns the ssh
+    # form while the stored value is the https one we set. Comparing against it
+    # makes this branch fire on every single run and "update" the origin to the
+    # value it already has. Read the raw config instead.
+    local cur; cur=$(git config --get remote.origin.url 2>/dev/null)
+    if [ -n "$cur" ] && [ "$cur" != "$url" ]; then
+        say "  updating origin: $cur -> $url"
+        git remote set-url origin "$url"
+    fi
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        say "  WARNING: $dir has uncommitted tracked changes; leaving as-is (not aligning to $ref)"
+        say "  at $(git rev-parse --short HEAD) $(git log -1 --format='%s')"
+        exit 0
+    fi
+    say "  fetching $ref"
+    git fetch --tags origin "$ref" >&2 || exit 1
+    git reset --hard FETCH_HEAD >&2 || exit 1
+    say "  at $(git rev-parse --short HEAD) $(git log -1 --format='%s')"
+    )
+}
+
+# cuda_toolkit_home resolves the toolkit to BUILD with.
+#
+# Explicit CUDA_HOME wins, then CUDA_VERSION, then the newest /usr/local
+# toolkit that has an nvcc. PATH is deliberately last: box1 carries a distro
+# /usr/bin/nvcc at CUDA 12.0 that shadows 13.3, and building against it would
+# silently produce a binary from the wrong toolkit. Prints nothing when there is
+# no toolkit, and cmake then finds its own.
+cuda_toolkit_home() {
+    if [ -n "${CUDA_HOME:-}" ]; then
+        [ -x "$CUDA_HOME/bin/nvcc" ] || { say "CUDA_HOME=$CUDA_HOME has no bin/nvcc"; return 1; }
+        printf '%s' "$CUDA_HOME"; return
+    fi
+    if [ -n "${CUDA_VERSION:-}" ]; then
+        local want="/usr/local/cuda-$CUDA_VERSION"
+        [ -x "$want/bin/nvcc" ] || { say "CUDA_VERSION=$CUDA_VERSION: no nvcc at $want/bin/nvcc"; return 1; }
+        printf '%s' "$want"; return
+    fi
+    local d
+    for d in $(printf '%s\n' /usr/local/cuda-[0-9]* 2>/dev/null | sort -Vr); do
+        [ -x "$d/bin/nvcc" ] && { printf '%s' "$d"; return; }
+    done
+}
+
+# cuda_arch_spec resolves the architectures to target.
+#
+# EVERY card present contributes, so a mixed box (a 5090 beside a 3080) produces
+# ONE binary that runs on both. An earlier `head -n 1` saw only the first card
+# and silently built for one architecture, leaving the other unable to load the
+# backend at all. CUDA_ARCHS overrides, and is the only way to target a card that
+# is not installed yet — detection can only describe the hardware in the box now.
+cuda_arch_spec() {
+    if [ -n "${CUDA_ARCHS:-}" ]; then printf '%s' "$CUDA_ARCHS"; return; fi
+    have nvidia-smi || { printf 'cpu'; return; }
+    local a
+    a=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null \
+        | awk -F. 'NF==2 { printf "%d%d\n", $1, $2 }' | sort -un | paste -sd';')
+    printf '%s' "${a:-native}"
+}
+
+# install_scope replaces the install directory with a fresh copy of the build
+# output. Wholesale, not merged: a stale binary left behind from a previous
+# build is indistinguishable from a current one.
+install_scope() {
+    local src=$1 dst=$2
+    say "=== installing -> $dst"
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    cp -a "$src"/. "$dst"/
+}
+
+# ---------------------------------------------------------------------------
 # Upstream
 #
 # One `git ls-remote` round trip. No clone, no fetch — the scheduled drift check

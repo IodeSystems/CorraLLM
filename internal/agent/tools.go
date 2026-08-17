@@ -39,6 +39,8 @@ import (
 type ToolRunRequest struct {
 	Spec toolchain.Spec `json:"spec"`
 	Verb string         `json:"verb"`
+	// Force rebuilds even when the build stamp already matches.
+	Force bool `json:"force,omitempty"`
 }
 
 // ToolRunResponse is the recipe's JSON result plus what it printed getting there.
@@ -75,6 +77,11 @@ func (s *Server) toolRun(w http.ResponseWriter, r *http.Request) {
 		Dir:              s.recipeDir(),
 		AllowInstallDeps: s.allowInstallDeps,
 		Server:           s.hello().Hostname,
+		Force:            req.Force,
+		// No Progress writer: this response is not streamed, so a remote build's
+		// log arrives when it finishes. Acceptable for now — the same first-cut
+		// shape proc.Trial took, and streaming can be added without changing the
+		// contract.
 	}
 	raw, err := runner.Run(r.Context(), req.Spec, verb)
 	resp := ToolRunResponse{}

@@ -28,7 +28,7 @@ func newToolsCmd() *cobra.Command {
 		Use:   "tools",
 		Short: "Report the tools that run the models (llama.cpp, ninfer) per host",
 	}
-	cmd.AddCommand(newToolsListCmd(), newToolsPreflightCmd(), newToolsInstallDepsCmd(), newToolsRecipesCmd())
+	cmd.AddCommand(newToolsListCmd(), newToolsPreflightCmd(), newToolsBuildCmd(), newToolsInstallDepsCmd(), newToolsRecipesCmd())
 	return cmd
 }
 
@@ -186,6 +186,61 @@ func newToolsPreflightCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "path to the corrallm YAML config")
 	cmd.Flags().StringVar(&server, "server", "", "which host to ask (default: the only one declaring this tool)")
+	return cmd
+}
+
+func newToolsBuildCmd() *cobra.Command {
+	var configPath, server string
+	var force, quiet bool
+	cmd := &cobra.Command{
+		Use:   "build <tool>",
+		Short: "Pull and build a fresh copy on a host (ten to twenty minutes for a CUDA build)",
+		Long: "Aligns the managed checkout to the tool's pinned ref, applies any patches, compiles\n" +
+			"and installs it, then records a build stamp.\n\n" +
+			"Refused on an ADOPTED install: a build starts with `git clean -xdf`, and an adopted\n" +
+			"entry points at a tree corrallm does not own. Preflight runs first, so a missing\n" +
+			"dependency costs a second rather than twelve minutes.\n\n" +
+			"The stamp carries HEAD, the patch-set hash and the CUDA arch list, so a rebuild is\n" +
+			"skipped only when all three still match — editing a patch or adding a GPU correctly\n" +
+			"forces one. --force overrides.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reg, _, err := toolsRegistry(configPath)
+			if err != nil {
+				return err
+			}
+			host, err := pickHost(reg, args[0], server)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+
+			// Progress goes to stderr as it happens. A quarter-hour of silence is
+			// indistinguishable from a hang, and the operator is the one who has
+			// to decide whether to wait.
+			var progress io.Writer
+			if !quiet {
+				progress = cmd.ErrOrStderr()
+			}
+
+			fmt.Fprintf(out, "building %s on %s — this takes a while; ^C is safe (the compile keeps going)\n", args[0], host)
+			res, err := reg.Build(cmd.Context(), args[0], host, force, progress)
+			if err != nil {
+				return err
+			}
+			if res.Skipped {
+				fmt.Fprintf(out, "%s on %s: already current at %s (use --force to rebuild)\n", args[0], host, res.Stamp)
+				return nil
+			}
+			fmt.Fprintf(out, "%s on %s: built %s in %ds\n", args[0], host, res.Version, res.Seconds)
+			fmt.Fprintf(out, "  stamp: %s\n", res.Stamp)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "path to the corrallm YAML config")
+	cmd.Flags().StringVar(&server, "server", "", "which host to build on")
+	cmd.Flags().BoolVar(&force, "force", false, "rebuild even when the stamp already matches")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress the live build log")
 	return cmd
 }
 

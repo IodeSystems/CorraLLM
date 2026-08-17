@@ -14,6 +14,8 @@ import (
 // toolchain.Runner counterpart to RemoteHost.
 type ToolRunner struct {
 	rh *RemoteHost
+	// Force is passed through to the recipe's build verb.
+	Force bool
 }
 
 // NewToolRunner binds a toolchain runner to an already-configured RemoteHost,
@@ -23,6 +25,10 @@ type ToolRunner struct {
 func NewToolRunner(rh *RemoteHost) *ToolRunner { return &ToolRunner{rh: rh} }
 
 func (t *ToolRunner) Where() string { return t.rh.Name() }
+
+// SetForce lets the registry apply a per-invocation force without knowing this
+// type. Matches the interface{ SetForce(bool) } it probes for.
+func (t *ToolRunner) SetForce(v bool) { t.Force = v }
 
 // Run posts one verb to the agent.
 func (t *ToolRunner) Run(ctx context.Context, spec toolchain.Spec, verb toolchain.Verb) (*toolchain.Raw, error) {
@@ -36,7 +42,7 @@ func (t *ToolRunner) Run(ctx context.Context, spec toolchain.Spec, verb toolchai
 	// package install, which is minutes by nature.
 	cli := &http.Client{Timeout: toolchain.Timeout(verb) + 30*time.Second}
 
-	req := ToolRunRequest{Spec: spec, Verb: string(verb)}
+	req := ToolRunRequest{Spec: spec, Verb: string(verb), Force: t.Force}
 	var resp ToolRunResponse
 	err = t.rh.callWith(ctx, cli, http.MethodPost, endpoint+"/agent/v1/tools/run", req, &resp)
 	if err != nil {

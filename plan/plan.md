@@ -1424,7 +1424,33 @@ what `preflight` reported missing. Doubly gated — the agent refuses it without
 — and never scheduled. Both refusals return the exact command, so "no" costs a
 copy-paste rather than an investigation.
 
-**next** P25b — an API op + a Tooling surface in the UI. P25a is CLI-only by
+**P25c (2026-08-17)** — `build` shipped for llama.cpp and run for real on box1.
+box1's `llama.cpp` is now MANAGED (built into `~/.corrallm/tools/llama.cpp`);
+the ml-kit install its models actually spawn is declared beside it as
+`llama.cpp-mlkit`, adopted, so the in-use binary keeps its version and drift
+visible during the transition. **Two box1 environment faults that only a real
+build could surface:** (1) `cc` is gcc 13.3 while `c++` is clang 18.1.3, and
+ggml derives its C warning flags from one compiler id — clang's flags reached
+gcc and killed the build at 2%; ml-kit pins `CC`/`CXX=clang` and dropping that
+was the entire failure. (2) `git remote get-url` applies this box's
+`insteadOf` rewrite, so `align_tree` "updated" the origin to the value it
+already had on every run; compare `git config --get remote.origin.url`.
+
+**built for real** `0.1.1-dev (build 10472, commit 60eeeb608)` in 481s, both
+`sm_86` and `sm_120a` cubins confirmed in `libggml-cuda.so` (one binary for the
+5090 AND the 3080), `--list-devices` sees both cards. Stamp verified both ways:
+rebuilt when master moved, skipped in 2.1s when it had not. ccache makes
+rebuilds ~5x cheaper than the first.
+**⚠ operational rule this phase established (USER should know)** a new top-level
+config field is NOT safe to add while an OLDER daemon is running. Reading is
+fine — `yaml.Unmarshal` ignores unknown fields, and the pre-`tools:` binary
+validated the file. But `forWriting` marshals the in-memory struct back out, so
+a field the running binary lacks has nowhere to live: at 13:01 the daemon
+rewrote config.yml and the whole `tools:` block silently VANISHED. Restored, but
+it will go again on the next autonomous config write until a daemon that knows
+`tools:` is the one running. **Deploy + restart before relying on it.**
+
+**next** P25b — an API op + a Tooling surface in the UI. P25a/c are CLI-only by
 design; nothing GraphQL-facing was added, so no schema regeneration was needed.
 **risks** a build competes with resident models for the same GPU (P25c decides
 whether it takes an admission slot; starting "reported, not scheduled");

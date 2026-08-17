@@ -126,6 +126,20 @@ type InstallDeps struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// Build is the result of compiling and installing a tool.
+type Build struct {
+	OK bool `json:"ok"`
+	// Skipped means the stamp already matched — same HEAD, same patch set, same
+	// arch list — so there was nothing to do. Reported rather than hidden,
+	// because "it finished in two seconds" should be explicable.
+	Skipped bool   `json:"skipped"`
+	Head    string `json:"head"`
+	Version string `json:"version"`
+	Stamp   string `json:"stamp"`
+	Seconds int    `json:"seconds"`
+	Error   string `json:"error,omitempty"`
+}
+
 // State is one tool on one host, as the registry reports it.
 type State struct {
 	Tool string `json:"tool"`

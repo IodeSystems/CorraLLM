@@ -278,9 +278,66 @@ Each is a green, tested commit per plan.md §0.
 - **P25b — a Tooling surface.** Per-host table: tool, version, source
   (binary/stamp/unknown), upstream drift, declared-but-absent, undeclared. Where
   the scheduled check lands.
-- **P25c — `preflight` + build, llama.cpp only.** Port `llama-rebuild` to the
-  recipe contract, stamp included. Operator-triggered, streamed like a trial.
-  First build target is box1, where the existing pipeline already proves out.
+- **◐ P25c — build, llama.cpp (2026-08-17).** `build` verb (align → patch →
+  configure → compile → install → stamp), `Registry.Build`, `corrallm tools
+  build` with a live log. Preflight gates it; adopted entries are refused.
+
+  **Two environment faults on box1 that only a real build could find**, both
+  now carried in the recipe:
+
+  1. **`cc` is gcc 13.3 and `c++` is clang 18.1.3.** ggml's
+     `cmake/common.cmake` derives its warning flags from ONE compiler id and
+     applies the C set to C targets, so clang's flags reached gcc and the build
+     died at 2% with `cc: error: unrecognized command-line option
+     '-Wunreachable-code-break'` on `ggml.c`, `sha256.c` and friends. ml-kit
+     exports `CC`/`CXX=clang` and never sees this; dropping that line was the
+     whole failure. The recipe now pins one toolchain for both languages and
+     says so in the log, and an explicit `CC`/`CXX` still wins.
+  2. **`git remote get-url` applies `insteadOf` rewrites.** This box rewrites
+     `https://github.com/` → `git@github.com:`, so the stored https origin read
+     back as ssh, `align_tree` decided the remote had changed, and it "updated"
+     the origin to the value it already had — on every run, forever. Compare
+     `git config --get remote.origin.url` instead.
+
+  **Built for real on box1:** `0.1.1-dev (build 10472, commit 60eeeb608)` in
+  **481s**, installed to `~/.corrallm/tools/llama.cpp/bin` (166 MB). Verified
+  independently of the recipe's own report: `llama-server --version` agrees, and
+  `cuobjdump --list-elf libggml-cuda.so` shows **both `sm_86` and `sm_120a`**
+  cubins — the "every card contributes" rule producing one binary that serves the
+  5090 and the 3080. `--list-devices` sees both cards.
+
+  Stamp behaviour verified end to end: a re-run after master moved
+  (`60eeeb608` → `058df671b`) correctly REBUILT, and an immediate re-run after
+  that skipped in **2.1s** with "already current". Rebuilds are far cheaper than
+  the first one (101s) because llama.cpp enables **ccache** when it finds it —
+  33.9% hit rate on the second pass.
+
+  A build is deliberately NOT scheduled work: it is minutes of full-machine
+  compile that replaces a binary models may be spawning. It stays a decision.
+
+  **A THIRD instance of the two-toolchain trap**, worth stating because it will
+  bite again: `cuobjdump` from `PATH` is the CUDA 12.0 build and printed NOTHING
+  for a 13.3-compiled object — no error, just empty output. On this box, reach
+  for `/usr/local/cuda-13.3/bin/*` explicitly for any CUDA tool, not just nvcc.
+
+### ⚠ Adding a top-level config field is NOT safe while an older daemon runs
+
+Landing `tools:` in the live config looked additive and inert, and it was — for
+**reading**. `config.Load` uses `yaml.Unmarshal`, which ignores unknown fields,
+and the running (08:42, pre-`tools:`) binary validated the new file happily.
+That check was necessary and insufficient.
+
+**The daemon also WRITES config.** `forWriting` marshals the in-memory `Config`
+back out, and a field the running binary has no struct member for has nowhere to
+live — so it is silently dropped. At 13:01 the daemon rewrote `config.yml` and
+the entire `tools:` block vanished; `corrallm tools list` went from three rows to
+"no tools declared".
+
+The rule this establishes: **a new top-level config field only persists once a
+daemon that knows it is the one running.** Add the field, deploy, restart, THEN
+write it into config — or accept that it survives only until the next autonomous
+config write (a discovery refresh, a UI edit, an enrolment). Nothing warns; the
+block just disappears.
 - **P25d — ninfer recipe.** `preflight` reports box1's missing ffmpeg before
   anything compiles; hard-fail on non-sm_120a hosts with the reason.
 - **P25e — `${tool:}` binding.** Expansion + refusal path; migrate one model as
@@ -298,10 +355,17 @@ Each is a green, tested commit per plan.md §0.
   entry at a working tree someone edits.
 - **risk** cmake 3.28.3 on box1 is exactly ninfer's floor. A distro downgrade
   breaks the build with a message that will not obviously mean "cmake".
-- **open (USER)** whether the live `~/.corrallm/config.yml` gets the `tools:`
-  block. P25a was verified against a COPY; the production file is untouched. The
-  block is additive and inert — nothing reads it but the new CLI — and it
-  validates, but it is a running service's config.
+- **decided (2026-08-17)** the live config carries `tools:`. box1's `llama.cpp`
+  is **managed** (corrallm builds it under `~/.corrallm/tools/llama.cpp`); the
+  ml-kit install box1's models actually spawn is declared separately as
+  **`llama.cpp-mlkit`**, adopted, so the in-use binary keeps its version and
+  drift visible while corrallm's own copy is proven beside it. Retire that entry
+  when the models move to `${tool:llama.cpp}` (P25e). The Mac's `llama.cpp` stays
+  adopted — a tool can be managed on one host and adopted on another.
+- **note** a plain `make deploy` does NOT refresh the agent binaries; only
+  `--agents` (or `make agents`) does, and `bin/agents/` was 13 days stale, which
+  is why carlsmacbookpro 404s the toolchain route. Self-update also requires that
+  agent to be idle, and the Mac hosts a model.
 - **open (USER)** whether the llama.cpp **pin** moves into corrallm's `tools:`
   or stays in ml-kit's `llama.cpp.pin`. Two sources of truth is the bad outcome;
   P25a adopts rather than owns, so this can be decided at P25c without rework.

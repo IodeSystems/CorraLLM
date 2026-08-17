@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,6 +75,15 @@ type Local struct {
 	AllowInstallDeps bool
 	// Server is the name this machine answers to, for error messages.
 	Server string
+	// Progress, when set, receives the recipe's stderr AS IT HAPPENS.
+	//
+	// A build is fifteen minutes of cmake and nvcc. Buffering all of it and
+	// handing it over at the end is fine for a machine and awful for the person
+	// who has to decide whether it is progressing or wedged. The log is still
+	// captured in full either way; this only adds a live copy.
+	Progress io.Writer
+	// Force rebuilds even when the stamp matches.
+	Force bool
 }
 
 func (l *Local) Where() string {
@@ -124,10 +134,13 @@ func (l *Local) Run(ctx context.Context, spec Spec, verb Verb) (*Raw, error) {
 
 	script := filepath.Join(dir, recipe+".sh")
 	cmd := exec.CommandContext(ctx, "bash", script, string(verb))
-	cmd.Env = specEnv(spec)
+	cmd.Env = specEnv(spec, l.Force)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
+	if l.Progress != nil {
+		cmd.Stderr = io.MultiWriter(&errb, l.Progress)
+	}
 
 	runErr := cmd.Run()
 	raw := &Raw{Log: errb.String()}
@@ -158,7 +171,7 @@ func (l *Local) Run(ctx context.Context, spec Spec, verb Verb) (*Raw, error) {
 // The process environment is inherited rather than replaced: a recipe needs
 // PATH to find git and cmake, HOME for git's config, and CUDA_HOME/CUDA_VERSION
 // are honoured by the ninfer recipe exactly as ml-kit's builder honours them.
-func specEnv(spec Spec) []string {
+func specEnv(spec Spec, force bool) []string {
 	env := os.Environ()
 	set := func(k, v string) { env = append(env, k+"="+v) }
 	set("TOOL_NAME", spec.Name)
@@ -167,6 +180,9 @@ func specEnv(spec Spec) []string {
 	set("TOOL_BIN", spec.Bin)
 	set("TOOL_PREFIX", spec.Prefix)
 	set("TOOL_INSTALLED_AT", spec.InstalledAt)
+	if force {
+		set("TOOL_FORCE", "1")
+	}
 	return env
 }
 
@@ -200,6 +216,12 @@ func RunPreflight(ctx context.Context, r Runner, spec Spec) (*Preflight, error) 
 // only — nothing schedules this.
 func RunInstallDeps(ctx context.Context, r Runner, spec Spec) (*InstallDeps, error) {
 	return runTyped[InstallDeps](ctx, r, spec, VerbInstallDeps)
+}
+
+// RunBuild compiles and installs. Operator-triggered in P25c; the scheduled
+// path (P25f) is opt-in per tool and off by default.
+func RunBuild(ctx context.Context, r Runner, spec Spec) (*Build, error) {
+	return runTyped[Build](ctx, r, spec, VerbBuild)
 }
 
 func runTyped[T any](ctx context.Context, r Runner, spec Spec, verb Verb) (*T, error) {
