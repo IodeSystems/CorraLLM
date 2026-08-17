@@ -1462,6 +1462,16 @@ with nothing evicted, and it served a 768-dim embedding in 1.6s from
 own build — on the **3080**, which exercises the sm_86 half of the multi-arch
 build. The other five local models keep their absolute ml-kit paths; opt-in is
 the point. Resolution refuses rather than falling back to PATH.
+**all six local models migrated** — no absolute ml-kit path remains in any model
+cmd. The two hosts migrate to different things, which is the design working: on
+box1 `${tool:llama.cpp}` is the MANAGED build (10380 → 10478, a real version
+change), on the Mac it is ADOPTED and resolves to the identical path already in
+use (a no-op). Each box1 model was load-verified — all four spawn with
+`/proc/<pid>/exe` = corrallm's build — and `Qwen3.8-27B` (the one most likely to
+break on a version bump, `--spec-type draft-mtp`) was made to GENERATE, not just
+pass a health check. Added `corrallm tools resolve` so a migration is checkable
+without spawning anything, which is how the Mac was verified without pulling 35B
+of weights onto a laptop.
 **known gap (P25e)** `SpecFor` derives a MANAGED prefix from the PRIMARY's home
 for every host — right for box1, wrong for a remote managed install under
 `/Users`. Resolution asks the host instead, so it is host-truthful anyway, but

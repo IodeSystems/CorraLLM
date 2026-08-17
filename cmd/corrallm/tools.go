@@ -28,7 +28,7 @@ func newToolsCmd() *cobra.Command {
 		Use:   "tools",
 		Short: "Report the tools that run the models (llama.cpp, ninfer) per host",
 	}
-	cmd.AddCommand(newToolsListCmd(), newToolsPreflightCmd(), newToolsBuildCmd(), newToolsInstallDepsCmd(), newToolsRecipesCmd())
+	cmd.AddCommand(newToolsListCmd(), newToolsPreflightCmd(), newToolsBuildCmd(), newToolsInstallDepsCmd(), newToolsResolveCmd(), newToolsRecipesCmd())
 	return cmd
 }
 
@@ -280,6 +280,41 @@ func newToolsInstallDepsCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "path to the corrallm YAML config")
 	cmd.Flags().StringVar(&server, "server", "", "which host to act on")
+	return cmd
+}
+
+// `tools resolve` answers what ${tool:x} becomes on a host, without spawning
+// anything.
+//
+// Migrating a model's cmd to a tool reference is otherwise only checkable by
+// loading the model, which on a remote host means pulling tens of GB of weights
+// to find out whether a path was right. This is the same code path the spawn
+// uses, so agreement here is agreement there.
+func newToolsResolveCmd() *cobra.Command {
+	var configPath, server string
+	cmd := &cobra.Command{
+		Use:   "resolve <tool>",
+		Short: "Print what ${tool:<tool>} expands to on a host (spawns nothing)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reg, _, err := toolsRegistry(configPath)
+			if err != nil {
+				return err
+			}
+			host, err := pickHost(reg, args[0], server)
+			if err != nil {
+				return err
+			}
+			dir, err := reg.ToolDir(cmd.Context(), args[0], host)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "${tool:%s} on %s -> %s\n", args[0], host, dir)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "path to the corrallm YAML config")
+	cmd.Flags().StringVar(&server, "server", "", "which host to resolve for")
 	return cmd
 }
 

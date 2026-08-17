@@ -376,6 +376,26 @@ of the config and do survive. Anything worth knowing about a tool goes in
   also refuses when no resolver is wired, since a literal `${tool:x}` handed to
   sh expands to nothing and runs whatever the rest of the line names.
 
+  **All six local models migrated (2026-08-17).** `nomic-embed-text` first, then
+  `Qwen3.8-27B`, `chandra-ocr-2`, `deepseek-v4-flash`, `muse-glimmer-30b` on box1
+  and `Qwen3.6-35B-A3B-MTP` on the Mac. No absolute ml-kit path remains in any
+  model cmd.
+
+  The two hosts migrate to different things, and that is the design working: on
+  box1 `${tool:llama.cpp}` is the MANAGED build (10380 → **10478**, a real
+  version change), while on the Mac it is ADOPTED and resolves to the identical
+  path the model already used — a textual no-op. `corrallm tools resolve` (added
+  here) prints either without spawning anything, which is how the Mac's
+  substitution was checked without pulling 35B of weights onto a laptop.
+
+  Each box1 model was load-verified rather than assumed: all four spawn with
+  `/proc/<pid>/exe` = `~/.corrallm/tools/llama.cpp/bin/llama-server`. A health
+  check only proves a port answers, so `Qwen3.8-27B` — the one most likely to
+  break on a version bump, with `--spec-type draft-mtp` and `--spec-draft-hf` —
+  was additionally made to GENERATE: it returned "toolchain ok" in 9.8s. The Mac
+  model is verified by resolution only; adopted resolution needs no agent round
+  trip, so its stale agent does not matter.
+
   **Known gap this exposed (not fixed here):** `SpecFor` computes a MANAGED
   tool's prefix from the PRIMARY's home for every host — correct for box1, wrong
   for a remote managed install on a machine whose home is `/Users`. Resolution
