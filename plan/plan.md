@@ -1455,6 +1455,12 @@ see `plan/p21-provider-credentials.md` P21h–j.
 lane reference renamed, nothing else. Verified on production: both `Qwen3.8-27B`
 and `local-Qwen3.8-27B` serve.
 
+**bare names** are indexed for BOTH provider kinds now (`buildBareIndex`), so
+claims compete on precedence. Local defaults ON at 100; a remote provider is OFF
+unless it sets `barePrecedence`, because somebody else's endpoint answering an
+unprefixed name would route a request off this box on a coincidence. A value
+above 100 takes a name away from a local model of the same id.
+
 **risks** activity history and the VRAM tune cache key on served name, so both
 start fresh under the new ids — old rows remain under the old names and will not
 be joined to the new ones.
