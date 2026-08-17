@@ -17,6 +17,7 @@ import { Panel, PageHeader, Row } from '@/Panel'
 import { ProviderDialog } from '@/ProviderDialog'
 import type { ProviderInitial } from '@/ProviderDialog'
 import { CatalogDialog } from '@/CatalogDialog'
+import { LocalModelDialog } from '@/LocalModelDialog'
 import { graphql } from '@/gql'
 import type { ProvidersQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
@@ -229,6 +230,7 @@ function ProvidersPage() {
   const [addOpen, setAddOpen] = useState(false)
   const [edit, setEdit] = useState<ProviderInitial | null>(null)
   const [browse, setBrowse] = useState<{ provider: string; credential: string } | null>(null)
+  const [addLocal, setAddLocal] = useState<string | null>(null)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['providers'],
@@ -402,6 +404,11 @@ function ProvidersPage() {
                       <Chip size="small" variant="outlined" label="prefixed only" />
                     </Tooltip>
                   )}
+                  {p.models.length === 0 && (
+                    <Typography variant="caption" sx={{ color: C.textFaint }}>
+                      no models yet
+                    </Typography>
+                  )}
                   {p.models.map((m) => (
                     <Tooltip
                       key={m.id}
@@ -418,6 +425,9 @@ function ProvidersPage() {
                     </Tooltip>
                   ))}
                 </Stack>
+                <Button size="small" startIcon={<AddIcon />} onClick={() => setAddLocal(p.name)}>
+                  Add model
+                </Button>
               </Stack>
             </Row>
           ))}
@@ -497,6 +507,9 @@ function ProvidersPage() {
         initial={edit ?? undefined}
         secrets={secrets}
       />
+      {addLocal && (
+        <LocalModelDialog open onClose={() => setAddLocal(null)} provider={addLocal} />
+      )}
       {browse && (
         <CatalogDialog
           open

@@ -64,6 +64,8 @@ type CorrallmMutationNamespace {
     body: corrallm_ModelSpecInput!
     """Served model name."""
     name: String!
+    """Create this model under a top-level provider (e.g. local). The name must be <provider>-<id>."""
+    provider: String
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
   upsertProvider(body: corrallm_ProviderSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertProvider")
   v1: CorrallmV1MutationNamespace!
@@ -301,6 +303,8 @@ type CorrallmV1MutationNamespace {
     body: corrallm_ModelSpecInput!
     """Served model name."""
     name: String!
+    """Create this model under a top-level provider (e.g. local). The name must be <provider>-<id>."""
+    provider: String
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
   upsertProvider(body: corrallm_ProviderSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertProvider")
 }

@@ -96,7 +96,15 @@ type ModelSpec struct {
 // UpsertModelInput creates or replaces one model.
 type UpsertModelInput struct {
 	Name string `path:"name" doc:"Served model name."`
-	Body ModelSpec
+	// Provider names the top-level provider a NEW model is authored under, so
+	// it lands in `providers.<p>.models` rather than as a top-level orphan.
+	//
+	// Only consulted when creating: an existing model is written back wherever
+	// it was authored, which the handler already knows from the model itself.
+	// Absent means the old shape — a bare top-level model — which still works
+	// and is still what the YAML editor produces.
+	Provider string `query:"provider" required:"false" doc:"Create this model under a top-level provider (e.g. local). The name must be <provider>-<id>."`
+	Body     ModelSpec
 }
 
 // ConfigMutationOutput reports the result of a config edit.
@@ -138,6 +146,35 @@ func (h *Handlers) UpsertModel(_ context.Context, in *UpsertModelInput) (*Config
 		}
 		if existed {
 			m = applySpec(prev, m)
+		}
+		// Creating under a provider: the model belongs in its block, and the
+		// served name must match the prefix rule so the URL and the config
+		// cannot disagree about what this model is called.
+		if !existed && in.Provider != "" {
+			lp, ok := c.Providers[in.Provider]
+			if !ok {
+				return huma.Error400BadRequest(fmt.Sprintf("unknown provider %q", in.Provider))
+			}
+			id := strings.TrimPrefix(name, in.Provider+"-")
+			if id == name || id == "" {
+				return huma.Error400BadRequest(fmt.Sprintf(
+					"a model of provider %q must be named %s-<id>; got %q", in.Provider, in.Provider, name))
+			}
+			if _, clash := lp.Models[id]; clash {
+				return huma.Error409Conflict(fmt.Sprintf("%q already exists under provider %q", id, in.Provider))
+			}
+			if m.Cmd == "" && m.Proxy.IsZero() {
+				return huma.Error400BadRequest(
+					"a local model needs a cmd (a process to run) or a proxy (something already listening)")
+			}
+			if lp.Models == nil {
+				lp.Models = map[string]config.Model{}
+			}
+			m.ProviderName = in.Provider
+			lp.Models[id] = m
+			c.Providers[in.Provider] = lp
+			c.Models[name] = m // keep the folded view consistent in-process
+			return nil
 		}
 		// A model owned by a top-level provider was AUTHORED under
 		// `providers.<p>.models`; c.Models only holds the folded copy. Writing
