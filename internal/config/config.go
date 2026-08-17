@@ -110,6 +110,12 @@ type Config struct {
 	// second registry.
 	Providers map[string]LocalProvider `yaml:"providers,omitempty"`
 
+	// Tools are the PROGRAMS that run the models — llama.cpp, ninfer —
+	// tracked per host with their versions, and buildable on demand. See
+	// tools.go. Nothing requires them: a model's cmd may go on naming an
+	// absolute path forever, and every existing one does.
+	Tools map[string]Tool `yaml:"tools,omitempty"`
+
 	// discovered holds models contributed at runtime by a provider's `discover`
 	// block, keyed by served name. Guarded because the refresh loop writes it
 	// while requests read it. Never populated by Load — the file is the static
@@ -2293,6 +2299,9 @@ func (c *Config) Validate() error {
 		if _, ok := c.PriorityGroups[grp]; !ok {
 			return fmt.Errorf("key %q: unknown priorityGroup %q", key, grp)
 		}
+	}
+	if err := c.validateTools(); err != nil {
+		return err
 	}
 	return nil
 }
