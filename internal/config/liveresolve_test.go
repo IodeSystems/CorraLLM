@@ -48,9 +48,24 @@ func TestLiveConfigFreeLaneIncludesThePool(t *testing.T) {
 			order = append(order, cd.Name)
 		}
 	}
-	for _, declared := range []string{"groq-llama-70b", "cerebras-gpt-oss-120b"} {
-		if !seen[declared] {
-			t.Errorf("declared member %q vanished from the free lane: %v", declared, order)
+	// Read the declared members from the lane itself rather than naming them
+	// here. Hardcoding them made this test assert the CONTENTS of a config the
+	// operator edits, so repointing a dead upstream broke it — `groq-llama-70b`
+	// went away in c0b98eb and this failed for a config change that was
+	// entirely correct. What is worth pinning is the INVARIANT: every declared
+	// member survives resolution, and the declared ones come before the pool.
+	var declared []string
+	for _, m := range c.Lanes["free"].Members {
+		if m.Model != "" {
+			declared = append(declared, m.Model)
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("the free lane declares no members by name")
+	}
+	for _, d := range declared {
+		if !seen[d] {
+			t.Errorf("declared member %q vanished from the free lane: %v", d, order)
 		}
 	}
 	// The local floor was deliberately removed from THIS lane (2026-08-15) so
@@ -67,7 +82,8 @@ func TestLiveConfigFreeLaneIncludesThePool(t *testing.T) {
 		}
 	}
 	// Declared members keep the front; the pool is appended.
-	if len(order) > 0 && order[0] != "groq-llama-70b" {
-		t.Errorf("declared order disturbed, lane starts with %q: %v", order[0], order)
+	if len(order) > 0 && order[0] != declared[0] {
+		t.Errorf("declared order disturbed, lane starts with %q, want the first declared member %q: %v",
+			order[0], declared[0], order)
 	}
 }
