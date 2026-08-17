@@ -338,6 +338,20 @@ daemon that knows it is the one running.** Add the field, deploy, restart, THEN
 write it into config — or accept that it survives only until the next autonomous
 config write (a discovery refresh, a UI edit, an enrolment). Nothing warns; the
 block just disappears.
+
+**Resolved 2026-08-17:** deployed and restarted (`8e21890`), so the running
+daemon now knows `tools:`. `TestToolsSurviveSave` pins the round trip, including
+that `installedAt` survives — an adopted entry silently returning as managed
+would make somebody else's tree buildable.
+
+**Second-order consequence, also handled.** The live config's own header says it
+plainly: *"Hand edits are NOT preserved: this file is rewritten whenever
+configuration changes, and a marshaller cannot keep YAML comments."* The
+`tools:` block was originally landed as a wall of explanatory comments —
+including, with some irony, the warning about this exact class of loss. All of
+it has been moved into the `notes:` fields on each tool and host, which ARE part
+of the config and do survive. Anything worth knowing about a tool goes in
+`notes:`, never a `#` comment.
 - **P25d — ninfer recipe.** `preflight` reports box1's missing ffmpeg before
   anything compiles; hard-fail on non-sm_120a hosts with the reason.
 - **P25e — `${tool:}` binding.** Expansion + refusal path; migrate one model as

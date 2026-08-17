@@ -1449,6 +1449,10 @@ a field the running binary lacks has nowhere to live: at 13:01 the daemon
 rewrote config.yml and the whole `tools:` block silently VANISHED. Restored, but
 it will go again on the next autonomous config write until a daemon that knows
 `tools:` is the one running. **Deploy + restart before relying on it.**
+**resolved** deployed + restarted 2026-08-17 (`8e21890`, 0 in-flight, 4 models
+evicted and reloaded); `TestToolsSurviveSave` now pins the round trip. Related:
+the managed config cannot keep `#` comments either, so everything worth knowing
+about a tool moved into its `notes:` field, which does survive a rewrite.
 
 **next** P25b — an API op + a Tooling surface in the UI. P25a/c are CLI-only by
 design; nothing GraphQL-facing was added, so no schema regeneration was needed.
