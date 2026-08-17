@@ -54,6 +54,12 @@ type ProviderSpec struct {
 	// a filter contributes nothing.
 	Manual bool `json:"manual" required:"false" doc:"Models are chosen by hand from this provider's directory."`
 
+	// BarePrecedence lets this provider answer UNPREFIXED model names. A
+	// POINTER so "unset" and "explicitly 0" stay distinguishable: unset means
+	// keep whatever is stored, 0 means off. A form that sent a plain 0 for
+	// "unspecified" would silently switch the feature off on every save.
+	BarePrecedence *int `json:"barePrecedence,omitempty" required:"false" doc:"Claim strength on unprefixed model names; 0 or absent = off for a remote provider. Higher wins across providers (a local provider claims 100 by default)."`
+
 	// Provides counts the models declared for this provider in YAML. Output
 	// only: a form cannot edit a hand-written model list, but it must be able
 	// to SAY there is one — otherwise a provider that declares its models looks
@@ -159,6 +165,7 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 			ps.Limits = toWireLimits(pv.Limits)
 			ps.Manual = pv.Manual
 			ps.Provides = len(pv.Provides)
+			ps.BarePrecedence = pv.BarePrecedence
 			// Reported so an edit form can ROUND-TRIP the filter. Without it a
 			// form could only ever send a filter it had invented, and the only
 			// safe thing to do with the field was omit it — which made "edit

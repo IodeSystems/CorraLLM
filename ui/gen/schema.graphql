@@ -2010,6 +2010,8 @@ type corrallm_ProviderPresetsOutputBody {
 }
 
 type corrallm_ProviderSpec {
+  """Claim strength on unprefixed model names; 0 or absent = off for a remote provider. Higher wins across providers (a local provider claims 100 by default)."""
+  barePrecedence: Long
   """Path prefix, e.g. /api."""
   basePath: String
   """Accounts held against this endpoint."""
@@ -2032,6 +2034,8 @@ type corrallm_ProviderSpec {
 }
 
 input corrallm_ProviderSpecInput {
+  """Claim strength on unprefixed model names; 0 or absent = off for a remote provider. Higher wins across providers (a local provider claims 100 by default)."""
+  barePrecedence: Long
   """Path prefix, e.g. /api."""
   basePath: String
   """Accounts held against this endpoint."""

@@ -20,11 +20,22 @@ import "sort"
 // wants a key). Re-probe before trusting one that starts failing — a vendor
 // silently moving its base path is exactly the failure this table absorbs.
 //
-// Deliberately ABSENT: Google Gemini. Its OpenAI surface is rooted at
-// /v1beta/openai/, so the models list is /v1beta/openai/models — there is no
-// basePath for which `basePath + "/v1/models"` reaches it. That is not a
-// missing row, it is the first endpoint that needs API != "openai", and it is
-// why that field exists before anything reads it.
+// Deliberately ABSENT, both for the same reason — corrallm builds
+// `basePath + "/v1/..."`, and neither endpoint's OpenAI surface can be reached
+// that way. These are not missing rows; they are why the API field exists
+// before anything reads it.
+//
+//   Google Gemini — rooted at /v1beta/openai/, so the models list is
+//   /v1beta/openai/models. No basePath produces that.
+//
+//   Z.ai (Zhipu GLM) — OpenAI-compatible at /api/paas/V4/. basePath
+//   "/api/paas" yields /api/paas/v1/..., which EXISTS but is the legacy
+//   surface: probed 2026-08-17, an unauthenticated POST to
+//   /api/paas/v1/chat/completions answers HTTP 200 with
+//   {"code":1001,...,"success":false} — not an OpenAI error shape. That is
+//   worse than a 404, because a 200 reads as success and the body would be
+//   parsed as a completion. Adding it as a preset would hand someone a
+//   provider that fails silently.
 
 // PresetAPIOpenAI marks an endpoint that speaks OpenAI's wire format at
 // <basePath>/v1/*. It is the only value the proxy handles today; the field
@@ -154,6 +165,23 @@ var presets = []ProviderPreset{
 		SecretRef: "HYPERBOLIC_API_KEY", Catalog: CatalogAuthed,
 		Docs:   "https://docs.hyperbolic.xyz",
 		Filter: PresetFilter{MinContext: 8192, Limit: 12},
+	},
+
+	{
+		ID: "qwen-intl", PickByHand: true, Label: "Qwen / DashScope (international)", Group: "aggregator",
+		Host: "dashscope-intl.aliyuncs.com", Port: 443, BasePath: "/compatible-mode",
+		SecretRef: "DASHSCOPE_API_KEY", Catalog: CatalogAuthed,
+		Docs:   "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
+		Notes:  "Alibaba Model Studio. OpenAI surface under /compatible-mode. Qwen models are periodically offered free — the catalogue reports no pricing, so a free filter cannot see that; check their console.",
+		Filter: PresetFilter{Limit: 12},
+	},
+	{
+		ID: "qwen-cn", PickByHand: true, Label: "Qwen / DashScope (China)", Group: "aggregator",
+		Host: "dashscope.aliyuncs.com", Port: 443, BasePath: "/compatible-mode",
+		SecretRef: "DASHSCOPE_API_KEY_CN", Catalog: CatalogAuthed,
+		Docs:   "https://help.aliyun.com/zh/model-studio/developer-reference/compatibility-of-openai-with-dashscope",
+		Notes:  "The China-region endpoint of the same service; keys are NOT interchangeable with the international one.",
+		Filter: PresetFilter{Limit: 12},
 	},
 
 	// --- First-party labs: small catalogues, real money.

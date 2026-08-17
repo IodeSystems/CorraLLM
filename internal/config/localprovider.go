@@ -139,17 +139,49 @@ func (c *Config) foldLocalProviders() error {
 			}
 			m.ProviderName = pn
 			c.Models[served] = m
+		}
+	}
+	return nil
+}
 
-			// Index the BARE id so an unprefixed request can still find it.
-			prec := defaultBarePrecedence
-			if lp.BarePrecedence != nil {
-				prec = *lp.BarePrecedence
+// buildBareIndex indexes every provider's UNPREFIXED model ids.
+//
+// One function for both kinds deliberately. The claim is the same mechanism
+// wherever it comes from, and the whole point of precedence is that claims from
+// different providers COMPETE — which they cannot do if each kind maintains its
+// own index.
+//
+//	top-level providers (local)   default ON at defaultBarePrecedence
+//	providers inside an extension default OFF
+//
+// The asymmetry is not an accident: a local model runs on this box and its
+// unprefixed name is what callers used before the prefix rename, while a remote
+// provider answering a bare name would route a request off the box on the
+// strength of a coincidence.
+func (c *Config) buildBareIndex() {
+	c.bare = map[string][]bareClaim{}
+	claim := func(id, served, provider string, prec int) {
+		if prec <= 0 || id == "" {
+			return
+		}
+		c.bare[id] = append(c.bare[id], bareClaim{served: served, provider: provider, precedence: prec})
+	}
+	for pn, lp := range c.Providers {
+		prec := defaultBarePrecedence
+		if lp.BarePrecedence != nil {
+			prec = *lp.BarePrecedence
+		}
+		for id := range lp.Models {
+			claim(id, ServedName(pn, id), pn, prec)
+		}
+	}
+	for _, ext := range c.Extensions {
+		for pn, pv := range ext.Providers {
+			if pv.BarePrecedence == nil {
+				continue // off by default for a remote provider
 			}
-			if prec > 0 {
-				if c.bare == nil {
-					c.bare = map[string][]bareClaim{}
-				}
-				c.bare[id] = append(c.bare[id], bareClaim{served: served, provider: pn, precedence: prec})
+			for id := range pv.Provides {
+				claim(id, ServedName(pn, id), pn, *pv.BarePrecedence)
 			}
 		}
 	}
@@ -165,7 +197,6 @@ func (c *Config) foldLocalProviders() error {
 		})
 		c.bare[id] = claims
 	}
-	return nil
 }
 
 // resolveBare answers an unprefixed request, or reports that nothing claims it.

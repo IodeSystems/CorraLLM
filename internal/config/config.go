@@ -419,6 +419,20 @@ type Provider struct {
 	// change nobody could see.
 	Discover *Discover `yaml:"discover,omitempty"`
 
+	// BarePrecedence lets this provider claim UNPREFIXED model names, the same
+	// mechanism a top-level provider uses (see localprovider.go).
+	//
+	// Default 0: OFF. A remote provider is somebody else's endpoint, and having
+	// one silently answer a bare name would route a request off this box on the
+	// strength of a coincidence. A local provider defaults ON because its models
+	// run here and were the unprefixed names before the rename.
+	//
+	// Set it to make `llama-70b` reach `groq-llama-70b`. Higher wins across
+	// providers, so a number above the local default (100) takes a name away
+	// from a local model of the same id — which is occasionally what you want,
+	// and should have to be written down.
+	BarePrecedence *int `yaml:"barePrecedence,omitempty"`
+
 	// Manual declares that this provider's models are chosen ONE AT A TIME from
 	// its directory (see selection.go) rather than written out in `provides`.
 	//
@@ -1977,6 +1991,8 @@ func (c *Config) resolveExtensions() error {
 	if err := c.foldLocalProviders(); err != nil {
 		return err
 	}
+	// After BOTH kinds of provider are in place, so their claims can compete.
+	c.buildBareIndex()
 	warnLegacyTopLevelModels(legacyTopLevel)
 	for name, m := range c.Models {
 		if m.Extension == "" {

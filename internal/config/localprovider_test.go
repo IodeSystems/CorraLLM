@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -252,5 +253,103 @@ func TestSavedConfigDoesNotDuplicateProviderModels(t *testing.T) {
 	}
 	if len(out.Providers) != 1 || len(out.Providers["local"].Models) != 2 {
 		t.Errorf("the provider block itself must survive the write: %+v", out.Providers)
+	}
+}
+
+// TestRemoteProviderCanClaimBareNames: a remote provider is OFF by default —
+// having somebody else's endpoint silently answer a bare name would route a
+// request off the box on a coincidence — but it can opt in, and then it competes
+// with everyone else on precedence.
+func TestRemoteProviderCanClaimBareNames(t *testing.T) {
+	var c Config
+	if err := yaml.Unmarshal([]byte(`
+extensions:
+  free:
+    providers:
+      groq:
+        proxy: {host: api.groq.com, port: 443, basePath: /openai}
+        provides:
+          llama-70b: {upstream: llama-3.3-70b, type: chat}
+`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.resolveExtensions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.ResolveServed("llama-70b"); ok {
+		t.Error("a remote provider claimed a bare name without opting in")
+	}
+	if _, ok := c.ResolveServed("groq-llama-70b"); !ok {
+		t.Error("the prefixed name must resolve regardless")
+	}
+
+	// Opted in.
+	var opted Config
+	if err := yaml.Unmarshal([]byte(`
+extensions:
+  free:
+    providers:
+      groq:
+        proxy: {host: api.groq.com, port: 443, basePath: /openai}
+        barePrecedence: 50
+        provides:
+          llama-70b: {upstream: llama-3.3-70b, type: chat}
+`), &opted); err != nil {
+		t.Fatal(err)
+	}
+	if err := opted.resolveExtensions(); err != nil {
+		t.Fatal(err)
+	}
+	cands, ok := opted.ResolveServed("llama-70b")
+	if !ok {
+		t.Fatal("opted-in remote provider did not answer its bare name")
+	}
+	if cands[0].Name != "groq-llama-70b" {
+		t.Errorf("resolved to %q, want the canonical prefixed name", cands[0].Name)
+	}
+}
+
+// TestLocalOutranksRemoteOnABareName, and a remote can be given the win
+// explicitly. This is what "highest precedence" is FOR: the same id offered in
+// two places, and a written-down rule for who gets the unprefixed spelling.
+func TestLocalOutranksRemoteOnABareName(t *testing.T) {
+	base := `
+servers:
+  box1:
+    pools: {gpu0: 24GB}
+providers:
+  local:
+    models:
+      shared: {cmd: llama-server --port 5801, server: box1, type: chat, proxy: {host: 127.0.0.1, port: 5801}}
+extensions:
+  free:
+    providers:
+      groq:
+        proxy: {host: api.groq.com, port: 443, basePath: /openai}
+        barePrecedence: %d
+        provides:
+          shared: {upstream: shared-remote, type: chat}
+`
+	for _, tc := range []struct {
+		prec int
+		want string
+	}{
+		{50, "local-shared"}, // below the local default of 100
+		{500, "groq-shared"}, // above it, deliberately
+	} {
+		var c Config
+		if err := yaml.Unmarshal([]byte(fmt.Sprintf(base, tc.prec)), &c); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.resolveExtensions(); err != nil {
+			t.Fatal(err)
+		}
+		cands, ok := c.ResolveServed("shared")
+		if !ok {
+			t.Fatalf("prec %d: bare name did not resolve", tc.prec)
+		}
+		if cands[0].Name != tc.want {
+			t.Errorf("prec %d: resolved to %q, want %q", tc.prec, cands[0].Name, tc.want)
+		}
 	}
 }
