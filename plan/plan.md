@@ -1399,6 +1399,7 @@ the BackpressureError shape we already validated.
 
 ### ◐ P25 — toolchain registry (per-host tool availability, versions, builds)
 
+
 Design doc: **`plan/p25-toolchain.md`**. Scoped 2026-08-17; **P25a shipped the
 same day** — registry + recipes + agent surface + CLI, read-only plus
 `install-deps`. P25b–f open.
@@ -1454,7 +1455,19 @@ evicted and reloaded); `TestToolsSurviveSave` now pins the round trip. Related:
 the managed config cannot keep `#` comments either, so everything worth knowing
 about a tool moved into its `notes:` field, which does survive a rewrite.
 
-**next** P25b — an API op + a Tooling surface in the UI. P25a/c are CLI-only by
+**P25e (2026-08-17)** — `${tool:x}` binding shipped and PROVEN live.
+`nomic-embed-text` now reads `${tool:llama.cpp}/llama-server`; SIGHUP reloaded it
+with nothing evicted, and it served a 768-dim embedding in 1.6s from
+`/proc/<pid>/exe` = `~/.corrallm/tools/llama.cpp/bin/llama-server` — corrallm's
+own build — on the **3080**, which exercises the sm_86 half of the multi-arch
+build. The other five local models keep their absolute ml-kit paths; opt-in is
+the point. Resolution refuses rather than falling back to PATH.
+**known gap (P25e)** `SpecFor` derives a MANAGED prefix from the PRIMARY's home
+for every host — right for box1, wrong for a remote managed install under
+`/Users`. Resolution asks the host instead, so it is host-truthful anyway, but
+fix the prefix before managing a tool anywhere but box1.
+
+**next** P25b — an API op + a Tooling surface in the UI. P25a/c/e are CLI-only by
 design; nothing GraphQL-facing was added, so no schema regeneration was needed.
 **risks** a build competes with resident models for the same GPU (P25c decides
 whether it takes an admission slot; starting "reported, not scheduled");

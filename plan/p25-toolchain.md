@@ -354,8 +354,34 @@ of the config and do survive. Anything worth knowing about a tool goes in
 `notes:`, never a `#` comment.
 - **P25d — ninfer recipe.** `preflight` reports box1's missing ffmpeg before
   anything compiles; hard-fail on non-sm_120a hosts with the reason.
-- **P25e — `${tool:}` binding.** Expansion + refusal path; migrate one model as
-  the proof.
+- **✅ P25e — `${tool:}` binding (2026-08-17).** Expansion at spawn time against
+  the host the model runs on, resolved through `Registry.ExpandTools` and wired
+  into `proc.Manager.ExpandCmd` (a function, so proc keeps no dependency on the
+  toolchain). Opt-in per model: a cmd with no reference never touches the
+  registry.
+
+  **Proven live.** `nomic-embed-text` now reads
+  `${tool:llama.cpp}/llama-server`, reloaded with SIGHUP (no restart, nothing
+  evicted), and served a 768-dim embedding in 1.6s. The spawned process is
+  `/proc/<pid>/exe` → `~/.corrallm/tools/llama.cpp/bin/llama-server` — corrallm's
+  own build, holding :5801 — and `nvidia-smi` puts it on the 3080 at 788 MiB,
+  which exercises the **sm_86** half of the multi-arch build rather than only the
+  5090's sm_120a. The other five local models keep their absolute ml-kit paths,
+  which is the point of opt-in.
+
+  **It refuses rather than guessing.** Not built, not declared on this host,
+  host unreachable — each fails the load with its reason and the fix. A PATH
+  fallback would run whichever llama-server the machine happened to have,
+  silently, at load time, where a wrong binary presents as a model bug. proc
+  also refuses when no resolver is wired, since a literal `${tool:x}` handed to
+  sh expands to nothing and runs whatever the rest of the line names.
+
+  **Known gap this exposed (not fixed here):** `SpecFor` computes a MANAGED
+  tool's prefix from the PRIMARY's home for every host — correct for box1, wrong
+  for a remote managed install on a machine whose home is `/Users`. Resolution
+  sidesteps it by asking the host (probe returns the real path), so the resolver
+  is host-truthful even where `SpecFor` is not, but the prefix itself must be
+  fixed before any tool is managed anywhere but box1.
 - **P25f — scheduled check (on) / rebuild (opt-in).**
 
 ## 9. Risks and open items
