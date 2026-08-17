@@ -62,9 +62,11 @@ type CorrallmMutationNamespace {
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "updateNotes")
   upsertModel(
     body: corrallm_ModelSpecInput!
+    """Extension holding the remote provider named by provider. Its models are authored under providers.<p>.provides."""
+    extension: String
     """Served model name."""
     name: String!
-    """Create this model under a top-level provider (e.g. local). The name must be <provider>-<id>."""
+    """Create this model under a provider (e.g. local). The name must be <provider>-<id>."""
     provider: String
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
   upsertProvider(body: corrallm_ProviderSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertProvider")
@@ -301,9 +303,11 @@ type CorrallmV1MutationNamespace {
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "updateNotes")
   upsertModel(
     body: corrallm_ModelSpecInput!
+    """Extension holding the remote provider named by provider. Its models are authored under providers.<p>.provides."""
+    extension: String
     """Served model name."""
     name: String!
-    """Create this model under a top-level provider (e.g. local). The name must be <provider>-<id>."""
+    """Create this model under a provider (e.g. local). The name must be <provider>-<id>."""
     provider: String
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
   upsertProvider(body: corrallm_ProviderSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertProvider")

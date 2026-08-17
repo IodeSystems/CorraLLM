@@ -103,8 +103,12 @@ type UpsertModelInput struct {
 	// it was authored, which the handler already knows from the model itself.
 	// Absent means the old shape — a bare top-level model — which still works
 	// and is still what the YAML editor produces.
-	Provider string `query:"provider" required:"false" doc:"Create this model under a top-level provider (e.g. local). The name must be <provider>-<id>."`
-	Body     ModelSpec
+	Provider string `query:"provider" required:"false" doc:"Create this model under a provider (e.g. local). The name must be <provider>-<id>."`
+	// Extension names the extension holding a REMOTE provider, whose models
+	// live in `extensions.<ext>.providers.<p>.provides`. With Provider but
+	// without this, the target is a top-level provider instead.
+	Extension string `query:"extension" required:"false" doc:"Extension holding the remote provider named by provider. Its models are authored under providers.<p>.provides."`
+	Body      ModelSpec
 }
 
 // ConfigMutationOutput reports the result of a config edit.
@@ -134,20 +138,83 @@ func (h *Handlers) UpsertModel(_ context.Context, in *UpsertModelInput) (*Config
 	}
 	err := h.mutateConfig(func(c *config.Config) error {
 		prev, existed := c.Models[name]
-		if existed && prev.Extension != "" {
-			// An extension's models are derived from the extension. Editing one
-			// here would be overwritten the moment the config reloads.
+		if existed && prev.Extension != "" && prev.ProviderName == "" {
+			// An extension's own `provides` (the oidio shape: one cmd, several
+			// models) is derived from the extension, and editing the derived
+			// copy would be overwritten on the next reload. A model of a
+			// PROVIDER inside that extension is different — it has a provider to
+			// be written back to, which the branch below does.
 			return huma.Error409Conflict(fmt.Sprintf(
 				"%q is provided by extension %q — edit the extension instead", name, prev.Extension))
 		}
-		m, err := specToModel(in.Body)
+		// A remote provider's model inherits the provider's endpoint.
+		remote := in.Provider != "" && in.Extension != ""
+		m, err := specToModel(in.Body, remote)
 		if err != nil {
 			return huma.Error400BadRequest(err.Error())
 		}
 		if existed {
 			m = applySpec(prev, m)
 		}
-		// Creating under a provider: the model belongs in its block, and the
+		// A remote provider's model: authored under
+		// extensions.<ext>.providers.<p>.provides. Handles create AND edit,
+		// because for these the served name carries the provider and the
+		// location is derivable either way.
+		if pn := in.Provider; pn != "" && in.Extension != "" {
+			ext, ok := c.Extensions[in.Extension]
+			if !ok {
+				return huma.Error400BadRequest(fmt.Sprintf("unknown extension %q", in.Extension))
+			}
+			pv, ok := ext.Providers[pn]
+			if !ok {
+				return huma.Error400BadRequest(fmt.Sprintf(
+					"extension %q has no provider %q", in.Extension, pn))
+			}
+			id := strings.TrimPrefix(name, pn+"-")
+			if id == name || id == "" {
+				return huma.Error400BadRequest(fmt.Sprintf(
+					"a model of provider %q must be named %s-<id>; got %q", pn, pn, name))
+			}
+			_, replacing := pv.Provides[id]
+			if !existed && replacing {
+				return huma.Error409Conflict(fmt.Sprintf("%q already exists under provider %q", id, pn))
+			}
+			if replacing {
+				m = applySpec(pv.Provides[id], m)
+			}
+			// A remote model is an id on somebody else's endpoint, so the
+			// authored entry carries NONE of the fields that describe a local
+			// process or an owner. Two different reasons, both enforced by
+			// config validation:
+			//
+			//   cmd/server/proxy/ramUsage/swap/persistent/sticky — the provider
+			//   supplies the endpoint, and a stray cmd would make corrallm try
+			//   to RUN somebody else's hosted model.
+			//
+			//   extension/providerName — DERIVED at load from where the model
+			//   sits. Writing them makes the file assert something it also
+			//   implies, and validation rejects it outright.
+			m.Cmd, m.Server = "", ""
+			m.Proxy = yaml.Node{}
+			m.RAMUsage = nil
+			m.Swap, m.Sticky = nil, nil
+			m.Persistent = false
+			m.Extension, m.ProviderName = "", ""
+			if pv.Provides == nil {
+				pv.Provides = map[string]config.Model{}
+			}
+			pv.Provides[id] = m
+			ext.Providers[pn] = pv
+			c.Extensions[in.Extension] = ext
+			// The in-process resolved view DOES carry them: that is what the
+			// rest of the system reads, and it is what resolveExtensions would
+			// have computed on the next load.
+			resolved := m
+			resolved.Extension, resolved.ProviderName = in.Extension, pn
+			c.Models[name] = resolved
+			return nil
+		}
+		// Creating under a top-level provider: the model belongs in its block, and the
 		// served name must match the prefix rule so the URL and the config
 		// cannot disagree about what this model is called.
 		if !existed && in.Provider != "" {
@@ -258,7 +325,12 @@ func (h *Handlers) UpdateNotes(_ context.Context, in *UpdateNotesInput) (*Config
 
 // specToModel converts the editable shape into a config.Model, encoding proxy
 // back into the yaml.Node the config schema uses.
-func specToModel(s ModelSpec) (config.Model, error) {
+// specToModel builds a model from the form's subset.
+//
+// inheritsProxy is set for a model of a REMOTE provider, which reaches its
+// endpoint through the provider and must not carry one of its own. Everything
+// else must say where to forward, and saying so here beats a 502 later.
+func specToModel(s ModelSpec, inheritsProxy bool) (config.Model, error) {
 	m := config.Model{
 		Cmd: strings.TrimSpace(s.Cmd), Server: strings.TrimSpace(s.Server),
 		Upstream: strings.TrimSpace(s.Upstream), Type: strings.TrimSpace(s.Type),
@@ -267,6 +339,9 @@ func specToModel(s ModelSpec) (config.Model, error) {
 		Sticky: specSticky(s),
 	}
 	p := strings.TrimSpace(s.Proxy)
+	if p == "" && inheritsProxy {
+		return m, nil
+	}
 	if p == "" {
 		return m, fmt.Errorf("proxy is required: a model must say where to forward (a port, host:port, or URL)")
 	}

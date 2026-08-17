@@ -294,6 +294,44 @@ func (h *Handlers) DeleteEntry(_ context.Context, in *DeleteEntryInput) (*Config
 					break
 				}
 			}
+			// And a REMOTE provider's model, authored under
+			// extensions.<ext>.providers.<p>.provides. Same argument, third
+			// possible location — forWriting drops extension-derived models
+			// from c.Models, so deleting only there left the provides entry
+			// intact and the model returned on the next load.
+			if !deleted {
+				for en, ext := range c.Extensions {
+					for pn, pv := range ext.Providers {
+						for id := range pv.Provides {
+							if config.ServedName(pn, id) != in.Name {
+								continue
+							}
+							// A provider must contribute something. Deleting its
+							// LAST declared model leaves an endpoint nothing can
+							// reach, which config validation rejects — with a
+							// message about provider shape rather than about the
+							// delete that caused it. Say it here instead, and
+							// name the ways out.
+							if len(pv.Provides) == 1 && pv.Discover == nil && !pv.Manual && ext.Virtual == nil {
+								return huma.Error409Conflict(fmt.Sprintf(
+									"%q is the only model provider %q declares — deleting it would leave an endpoint nothing can reach. Delete the provider instead, or give it another way to contribute (choose models off its directory, or pool it in a virtual extension) first.",
+									in.Name, pn))
+							}
+							delete(pv.Provides, id)
+							ext.Providers[pn] = pv
+							c.Extensions[en] = ext
+							deleted = true
+							break
+						}
+						if deleted {
+							break
+						}
+					}
+					if deleted {
+						break
+					}
+				}
+			}
 			delete(c.Models, in.Name)
 		case "server":
 			if _, ok := c.Servers[in.Name]; !ok {

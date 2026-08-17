@@ -19,7 +19,7 @@ import { gqlClient } from '@/gqlClient'
 import { C, theme } from '@/theme'
 
 /**
- * Add a model to a local provider.
+ * Add or edit a model of a provider — local or remote.
  *
  * Reuses ModelForm rather than growing a second one. The Config page already
  * edits a model with these fields and the server MERGES a spec onto whatever is
@@ -77,9 +77,14 @@ const LocalModelSpecDoc = graphql(/* GraphQL */ `
 `)
 
 const UpsertLocalModelDoc = graphql(/* GraphQL */ `
-  mutation UpsertLocalModel($name: String!, $provider: String, $body: corrallm_ModelSpecInput!) {
+  mutation UpsertProviderModel(
+    $name: String!
+    $provider: String
+    $extension: String
+    $body: corrallm_ModelSpecInput!
+  ) {
     corrallm {
-      upsertModel(name: $name, provider: $provider, body: $body) {
+      upsertModel(name: $name, provider: $provider, extension: $extension, body: $body) {
         ok
         message
       }
@@ -87,11 +92,21 @@ const UpsertLocalModelDoc = graphql(/* GraphQL */ `
   }
 `)
 
-export function LocalModelDialog(props: {
+export function ProviderModelDialog(props: {
   open: boolean
   onClose: () => void
-  /** The local provider this model is authored under. */
+  /** The provider this model is authored under. */
   provider: string
+  /**
+   * The extension holding a REMOTE provider. Absent means a top-level (local)
+   * provider.
+   *
+   * The two are genuinely different models, not a cosmetic difference: a local
+   * model owns a process and a port, a remote one is an id on somebody else's
+   * endpoint and inherits the provider's target. So the form shows a different
+   * field set, and the write goes to a different place in the config.
+   */
+  extension?: string
   /**
    * The id of an existing model to edit. Absent means create.
    *
@@ -101,7 +116,8 @@ export function LocalModelDialog(props: {
    */
   editId?: string
 }) {
-  const { open, onClose, provider, editId } = props
+  const { open, onClose, provider, extension, editId } = props
+  const remote = !!extension
   const qc = useQueryClient()
   const wide = useMediaQuery(theme.breakpoints.up('sm'))
   const [id, setId] = useState('')
@@ -146,8 +162,10 @@ export function LocalModelDialog(props: {
     mutationFn: (v: { name: string; body: Corrallm_ModelSpecInput }) =>
       gqlClient.request(UpsertLocalModelDoc, {
         name: v.name,
-        // Only on create. See editId.
-        provider: editing ? null : provider,
+        // A remote model needs the target on EDIT too: unlike a local one, the
+        // handler cannot infer the extension from the stored model alone.
+        provider: remote || !editing ? provider : null,
+        extension: extension ?? null,
         body: v.body,
       }),
   })
@@ -194,11 +212,15 @@ export function LocalModelDialog(props: {
     }
   }
 
-  const incomplete = !id.trim() || (!spec.cmd.trim() && !spec.proxy.trim())
+  // A remote model needs nothing but an id: its endpoint comes from the
+  // provider. A local one must say how to reach it.
+  const incomplete = !id.trim() || (!remote && !spec.cmd.trim() && !spec.proxy.trim())
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth fullScreen={!wide}>
-      <DialogTitle>{editing ? `Edit ${provider}-${editId}` : `Add a model to ${provider}`}</DialogTitle>
+      <DialogTitle>
+        {editing ? `Edit ${provider}-${editId}` : `Add a model to ${provider}`}
+      </DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2.5} sx={{ pt: 0.5 }}>
           <TextField
@@ -218,8 +240,19 @@ export function LocalModelDialog(props: {
             }
           />
           <Typography variant="caption" sx={{ color: C.textFaint, mt: -1 }}>
-            A local model owns its process, so it needs a <strong>cmd</strong> to run — or a{' '}
-            <strong>proxy</strong>, if something is already listening on that port.
+            {remote ? (
+              <>
+                A remote model is an id on this provider&apos;s endpoint — it inherits the
+                provider&apos;s host and key, so it has no command, server or port of its own. Set{' '}
+                <strong>Upstream id</strong> if the provider calls it something other than the id
+                above.
+              </>
+            ) : (
+              <>
+                A local model owns its process, so it needs a <strong>cmd</strong> to run — or a{' '}
+                <strong>proxy</strong>, if something is already listening on that port.
+              </>
+            )}
           </Typography>
           <ModelForm
             spec={spec}
@@ -227,7 +260,9 @@ export function LocalModelDialog(props: {
             servers={servers}
             advanced={[]}
             existing={editing}
-            hideName
+            hide={
+              remote ? ['name', 'process', 'proxy', 'footprint', 'residency'] : ['name']
+            }
           />
           {err && <Alert severity="error">{err}</Alert>}
         </Stack>

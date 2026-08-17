@@ -21,7 +21,7 @@ import { Panel, PageHeader, Row } from '@/Panel'
 import { ProviderDialog } from '@/ProviderDialog'
 import type { ProviderInitial } from '@/ProviderDialog'
 import { CatalogDialog } from '@/CatalogDialog'
-import { LocalModelDialog } from '@/LocalModelDialog'
+import { ProviderModelDialog } from '@/ProviderModelDialog'
 import { graphql } from '@/gql'
 import type { ProvidersQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
@@ -247,7 +247,11 @@ function ProvidersPage() {
   const [addOpen, setAddOpen] = useState(false)
   const [edit, setEdit] = useState<ProviderInitial | null>(null)
   const [browse, setBrowse] = useState<{ provider: string; credential: string } | null>(null)
-  const [addLocal, setAddLocal] = useState<{ provider: string; editId?: string } | null>(null)
+  const [addLocal, setAddLocal] = useState<{
+    provider: string
+    extension?: string
+    editId?: string
+  } | null>(null)
   // Deleting a model is not undoable from here, so it is confirmed by name.
   const [confirmDelete, setConfirmDelete] = useState<{ served: string; hasCmd: boolean } | null>(
     null,
@@ -407,6 +411,22 @@ function ProvidersPage() {
                   >
                     Browse
                   </Button>
+                  {/* Declaring a model by hand, for a provider whose catalogue
+                      cannot be browsed — Groq and Cerebras publish no pricing or
+                      context, so their directories cannot be filtered — or for
+                      one model you want pinned by name regardless of what the
+                      catalogue says today. */}
+                  <Tooltip title="Declare a model of this provider by hand, instead of choosing one off its directory.">
+                    <Button
+                      size="small"
+                      startIcon={<AddIcon />}
+                      onClick={() =>
+                        setAddLocal({ provider: p.name, extension: p.extension })
+                      }
+                    >
+                      Model
+                    </Button>
+                  </Tooltip>
                   <Button size="small" onClick={() => setEdit(toInitial(p))}>
                     Edit
                   </Button>
@@ -610,10 +630,11 @@ function ProvidersPage() {
         secrets={secrets}
       />
       {addLocal && (
-        <LocalModelDialog
+        <ProviderModelDialog
           open
           onClose={() => setAddLocal(null)}
           provider={addLocal.provider}
+          extension={addLocal.extension}
           editId={addLocal.editId}
         />
       )}

@@ -59,7 +59,7 @@ func (h *Handlers) TrialModel(ctx context.Context, in *TrialModelInput) (*TrialM
 	mdl, err := specToModel(ModelSpec{
 		Cmd: in.Body.Cmd, Server: in.Body.Server,
 		Proxy: in.Body.Proxy, RAMUsage: in.Body.RAMUsage,
-	})
+	}, false) // a trial spawns a real process here; it needs a real target
 	if err != nil {
 		return nil, huma.Error400BadRequest(err.Error())
 	}

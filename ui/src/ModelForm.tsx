@@ -93,7 +93,7 @@ export function ModelForm({
   servers,
   advanced,
   existing,
-  hideName,
+  hide = [],
 }: {
   spec: ModelSpec
   onChange: (s: ModelSpec) => void
@@ -101,13 +101,28 @@ export function ModelForm({
   advanced: string[]
   existing: boolean
   /**
-   * Suppress the Name field, for a caller that establishes the identity itself.
-   * A local provider's model is named by its id PLUS its provider, so showing
-   * this box beside that one offered two name fields of which the form's was
-   * ignored on submit — worse than no field at all.
+   * Field groups to leave out.
+   *
+   * The form serves two shapes of model and they barely overlap. A LOCAL model
+   * owns a process: cmd, server, footprint, residency. A model of a REMOTE
+   * provider owns none of that — it is an id on somebody else's endpoint, and
+   * its proxy comes from the provider — so showing those boxes would invite
+   * filling in fields that describe nothing, and `proxy` would demand a value
+   * the model must not carry.
+   *
+   * Gating one form beats writing a second: the overlapping half (type,
+   * quality, upstream, notes) is where the semantics live, and two copies of it
+   * is where they drift.
+   *
+   *   name       identity established by the caller
+   *   process    cmd + server
+   *   proxy      where to forward (inherited from a provider, for a remote)
+   *   footprint  declared per-pool memory
+   *   residency  persistent, idle-unload, evict
    */
-  hideName?: boolean
+  hide?: ('name' | 'process' | 'proxy' | 'footprint' | 'residency')[]
 }) {
+  const hidden = (k: 'name' | 'process' | 'proxy' | 'footprint' | 'residency') => hide.includes(k)
   const set = <K extends keyof ModelSpec>(k: K, v: ModelSpec[K]) => onChange({ ...spec, [k]: v })
 
   const srv = servers.find((s) => s.server === spec.server)
@@ -118,7 +133,7 @@ export function ModelForm({
 
   return (
     <Stack spacing={2} sx={{ mt: 1 }}>
-      {!hideName && (
+      {!hidden('name') && (
         <TextField
           label="Name"
           size="small"
@@ -129,6 +144,7 @@ export function ModelForm({
         />
       )}
 
+      {!hidden('process') && (
       <TextField
         label="Spawn command"
         size="small"
@@ -143,8 +159,10 @@ export function ModelForm({
             : 'Empty: this is a pure proxy — corrallm forwards to it and never starts or stops it.'
         }
       />
+      )}
 
       <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+        {!hidden('process') && (
         <TextField
           select
           label="Server"
@@ -171,7 +189,9 @@ export function ModelForm({
             </MenuItem>
           ))}
         </TextField>
+        )}
 
+        {!hidden('proxy') && (
         <TextField
           label="Proxy"
           size="small"
@@ -185,6 +205,7 @@ export function ModelForm({
               : 'A port (5800), host:port, or a URL'
           }
         />
+        )}
 
         <TextField
           label="Upstream id"
@@ -247,6 +268,7 @@ export function ModelForm({
         />
       </Box>
 
+      {!hidden('residency') && (
       <FormControlLabel
         control={
           <Switch checked={spec.persistent} onChange={(e) => set('persistent', e.target.checked)} />
@@ -257,7 +279,9 @@ export function ModelForm({
           </Typography>
         }
       />
+      )}
 
+      {!hidden('residency') && (
       <Box>
         <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
           Residency
@@ -299,8 +323,9 @@ export function ModelForm({
           </TextField>
         </Box>
       </Box>
+      )}
 
-      {showRAM && (
+      {showRAM && !hidden('footprint') && (
         <Box>
           <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
             Declared footprint
