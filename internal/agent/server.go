@@ -28,6 +28,13 @@ type Server struct {
 	// a RESTARTED agent can kill what the previous one left running. Empty
 	// disables it (tests, and any install with nowhere to write).
 	stateDir string
+	// allowInstallDeps lets the toolchain surface install SYSTEM PACKAGES here.
+	//
+	// Off unless asked for. This agent already runs arbitrary shell by design,
+	// so the flag is not much of a security boundary — what it buys is the
+	// promise that corrallm does not touch a machine's packages unless somebody
+	// enabled it on that machine deliberately.
+	allowInstallDeps bool
 
 	mu       sync.Mutex
 	backends map[string]*supervised
@@ -43,6 +50,10 @@ type supervised struct {
 	handle  host.Handle
 	logs    *logRing
 }
+
+// SetAllowInstallDeps permits the toolchain surface to install system packages
+// on this machine. Call before serving.
+func (s *Server) SetAllowInstallDeps(v bool) { s.allowInstallDeps = v }
 
 // SetStateDir enables crash-recovery bookkeeping and reaps anything a previous
 // agent left behind. Call before serving.
@@ -75,6 +86,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /agent/v1/backends/{id}", s.guard(s.status))
 	mux.HandleFunc("POST /agent/v1/backends/{id}/signal", s.guard(s.signal))
 	mux.HandleFunc("GET /agent/v1/backends/{id}/logs", s.guard(s.logs))
+	// Toolchain. Deliberately NOT under /backends — see tools.go for why a
+	// build that registered as a backend would be reaped 60 seconds in.
+	mux.HandleFunc("POST /agent/v1/tools/run", s.guard(s.toolRun))
 	// Data plane. No method filter: this carries whatever the client sent —
 	// POST completions, GET /v1/models, a websocket upgrade for realtime audio.
 	mux.HandleFunc(proxyPrefix+"{port}/", s.guard(s.proxyBackend))

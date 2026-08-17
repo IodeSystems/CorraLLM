@@ -160,6 +160,11 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   single continuous ramp (0.239, 25.8C) predicts 73.6C against 71.7C.
 >   **consequence for placement:** gpu1 is the thermally-limited card behind the chipset at x4. Bursty
 >   OCR there is fine; a sustained sweep is not — bench on gpu0, which idles while gpu1 cooks.
+> - ◐ **P25 toolchain registry** — per-host tool availability + versions, and pulling/building
+>   fresh copies of llama.cpp and ninfer. **P25a ✅ (2026-08-17)**: `tools:` schema, embedded
+>   recipes (probe/upstream/preflight/install-deps), `/agent/v1/tools/run`, `corrallm tools`.
+>   Adopts ml-kit's existing builds rather than owning them; box1's llama.cpp reports BEHIND
+>   master on day one. Design in `plan/p25-toolchain.md`; phase entry in §7.
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
@@ -1391,6 +1396,75 @@ the BackpressureError shape we already validated.
   equivalent; browser callers land in `default` unless keyed (design choice — priorityGroup is first-class).
   (4) **`queued_ms` is forward-only** — rows predating the column read 0; queue *wait* populates as new
   queued-then-served requests accumulate (rejections + sampled depth are already live).
+
+### ◐ P25 — toolchain registry (per-host tool availability, versions, builds)
+
+Design doc: **`plan/p25-toolchain.md`**. Scoped 2026-08-17; **P25a shipped the
+same day** — registry + recipes + agent surface + CLI, read-only plus
+`install-deps`. P25b–f open.
+
+corrallm knows what models it runs and nothing about the **programs that run
+them** — llama.cpp is a path in a `cmd:` string and that is the whole of its
+awareness. Three forcing functions: the tools move (llama.cpp ships daily;
+LM Studio and Unsloth pushed tool-calling changes that need a fresh build);
+there is a second engine worth tracking ([ninfer](https://github.com/Neroued/ninfer),
+OpenAI-compatible, **sm_120a only**); and the same binary is spelled as two
+hand-maintained absolute paths across box1 and carlsmacbookpro, so nothing links
+a rebuild to the models depending on it.
+
+Decided (user, 2026-08-17): recipes are **bash in corrallm's tree**
+(`scripts/tools/<name>.sh`, ported from ml-kit's `llama-rebuild`, embedded via
+`go:embed` so they ride agent self-update); `${tool:name}` cmd binding is
+**opt-in per model**; builds are **operator-triggered**, with the scheduled
+upstream check **on** by default and scheduled rebuild **off**.
+
+A fifth verb landed with it at the user's ask: **`install-deps`**, which installs
+what `preflight` reported missing. Doubly gated — the agent refuses it without
+`--allow-install-deps`, and the registry refuses it outright on an ADOPTED entry
+— and never scheduled. Both refusals return the exact command, so "no" costs a
+copy-paste rather than an investigation.
+
+**next** P25b — an API op + a Tooling surface in the UI. P25a is CLI-only by
+design; nothing GraphQL-facing was added, so no schema regeneration was needed.
+**risks** a build competes with resident models for the same GPU (P25c decides
+whether it takes an admission slot; starting "reported, not scheduled");
+`git clean -xdf` is destructive, so managed trees live under `~/.corrallm/tools/`
+and never point at a human's checkout.
+**verified live** box1's adopted ml-kit llama.cpp reports `10380 (0b1bad14f)`
+from the binary and **BEHIND `34af94cd9`** — drift on an install corrallm never
+built, which is the day-one payoff. carlsmacbookpro was really dialled and
+answered 404, rendering as the designed "its agent is too old" rather than a
+mystery HTTP error.
+**found while building it (box1)** TWO nvcc installs: `/usr/bin/nvcc` is the
+distro's CUDA **12.0** and shadows `/usr/local/cuda-13.3/bin/nvcc` in PATH.
+Trusting `command -v nvcc` reported "CUDA 12.0, too old for ninfer" on a box with
+13.3 working. The recipe now uses ml-kit's resolution order and reports the
+shadowing as a note even when the answer is fine.
+**assumption recorded** the live config was NOT touched — P25a was verified
+against a copy. Adding the `tools:` block to `~/.corrallm/config.yml` is the
+user's call (below).
+**pre-existing, not mine** `TestLiveConfigFreeLaneIncludesThePool` already fails
+at HEAD (commit `c0b98eb` repointed groq-llama-70b in the live config without
+updating the test); plus four gofmt-dirty files and three vet copylocks hits from
+`Config`'s mutex. None touched by P25a.
+**measured, not assumed (box1, 2026-08-17)** `llama-server --version` writes to
+**stderr** (a naive `$(...)` capture reports "unknown" on a good binary); ninfer
+has **no `--version` anywhere**, so a ninfer built outside corrallm is
+unidentifiable; ninfer **will not build on box1 today** — CUDA 13.3 ✓, cmake
+3.28.3 ✓ (exactly its floor), ffmpeg dev libs ✗ — which is why the recipe
+contract has a `preflight` verb.
+**trap (load-bearing)** builds must not go through the agent's backend table:
+`ReconcileAgent` reaps unclaimed backends after a 60s grace, so a 15-minute CUDA
+compile would be killed every time. Separate `/agent/v1/tools/*` surface, and
+**Protocol stays at 1** — bumping it takes the whole fleet out until every agent
+self-updates, whereas an old agent simply 404s a new route.
+**blocking decisions (USER)** whether the live `~/.corrallm/config.yml` gets the
+`tools:` block (additive, inert, validates — but it is a running service's
+config); whether the llama.cpp pin moves into `tools:` or stays in ml-kit's
+`llama.cpp.pin` (P25a adopts rather than owns, so it can wait until P25c); and
+whether ninfer is worth running before its checkpoints are on the box.
+**optional extensions** other tools (oidio, whichever engine lands next) are the
+same shape once the contract exists; not in scope.
 
 ### ◐ P21 — provider credentials (multi-key providers, scoped budgets, key ACLs)
 

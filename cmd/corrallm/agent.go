@@ -35,6 +35,10 @@ func newAgentCmd() *cobra.Command {
 		server     string
 		selfUpdate bool
 		cfgPath    string
+		// allowInstallDeps is per-machine on purpose: whether corrallm may
+		// touch this box's system packages is a property of the box, not of
+		// the tool being installed.
+		allowInstallDeps bool
 	)
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -95,7 +99,7 @@ func newAgentCmd() *cobra.Command {
 			}
 			return runAgent(cmd.Context(), addr, token,
 				pick(primary, os.Getenv("CORRALLM_PRIMARY")),
-				pick(server, os.Getenv("CORRALLM_AGENT_SERVER")), selfUpdate)
+				pick(server, os.Getenv("CORRALLM_AGENT_SERVER")), selfUpdate, allowInstallDeps)
 		},
 	}
 	f := cmd.Flags()
@@ -107,11 +111,13 @@ func newAgentCmd() *cobra.Command {
 	f.StringVar(&primary, "primary", "", "base URL of the corrallm to report liveness to, e.g. http://box1:8111 (or CORRALLM_PRIMARY)")
 	f.StringVar(&server, "server", "", "the `servers:` key in the primary's config that this machine backs (or CORRALLM_AGENT_SERVER)")
 	f.BoolVar(&selfUpdate, "self-update", true, "replace this binary with the primary's build when versions differ AND no backends are running here")
+	f.BoolVar(&allowInstallDeps, "allow-install-deps", false, "let the primary install SYSTEM PACKAGES here when a tool's preflight reports missing dependencies (off by default; the commands are always reported so they can be run by hand)")
 	return cmd
 }
 
-func runAgent(ctx context.Context, addr, token, primary, server string, selfUpdate bool) error {
+func runAgent(ctx context.Context, addr, token, primary, server string, selfUpdate, allowInstallDeps bool) error {
 	a := agent.New(version, token)
+	a.SetAllowInstallDeps(allowInstallDeps)
 
 	// Keep start.sh in step with this build. Self-update replaces the binary and
 	// re-execs, so the NEW image is the only thing that knows the new launcher —
