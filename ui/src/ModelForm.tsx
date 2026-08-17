@@ -93,12 +93,20 @@ export function ModelForm({
   servers,
   advanced,
   existing,
+  hideName,
 }: {
   spec: ModelSpec
   onChange: (s: ModelSpec) => void
   servers: ServerOption[]
   advanced: string[]
   existing: boolean
+  /**
+   * Suppress the Name field, for a caller that establishes the identity itself.
+   * A local provider's model is named by its id PLUS its provider, so showing
+   * this box beside that one offered two name fields of which the form's was
+   * ignored on submit — worse than no field at all.
+   */
+  hideName?: boolean
 }) {
   const set = <K extends keyof ModelSpec>(k: K, v: ModelSpec[K]) => onChange({ ...spec, [k]: v })
 
@@ -110,14 +118,16 @@ export function ModelForm({
 
   return (
     <Stack spacing={2} sx={{ mt: 1 }}>
-      <TextField
-        label="Name"
-        size="small"
-        value={spec.name}
-        disabled={existing}
-        onChange={(e) => set('name', e.target.value)}
-        helperText="The name callers request, and the config key. Renaming means add + delete."
-      />
+      {!hideName && (
+        <TextField
+          label="Name"
+          size="small"
+          value={spec.name}
+          disabled={existing}
+          onChange={(e) => set('name', e.target.value)}
+          helperText="The name callers request, and the config key. Renaming means add + delete."
+        />
+      )}
 
       <TextField
         label="Spawn command"

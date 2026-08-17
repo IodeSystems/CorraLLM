@@ -169,6 +169,7 @@ export function LocalModelDialog(props: {
             servers={servers}
             advanced={[]}
             existing={false}
+            hideName
           />
           {err && <Alert severity="error">{err}</Alert>}
         </Stack>

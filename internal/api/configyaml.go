@@ -274,6 +274,26 @@ func (h *Handlers) DeleteEntry(_ context.Context, in *DeleteEntryInput) (*Config
 				return huma.Error409Conflict(fmt.Sprintf(
 					"%q is a member of lane(s) %s — remove it there first", in.Name, strings.Join(used, ", ")))
 			}
+			// Delete it where it was AUTHORED. A model owned by a top-level
+			// provider lives in providers.<p>.models; c.Models only holds the
+			// folded copy, and forWriting deliberately drops that copy — so
+			// deleting only from c.Models reported success and changed nothing
+			// on disk, and the model came back on the next load.
+			deleted := false
+			for pn, lp := range c.Providers {
+				for id := range lp.Models {
+					if config.ServedName(pn, id) != in.Name {
+						continue
+					}
+					delete(lp.Models, id)
+					c.Providers[pn] = lp
+					deleted = true
+					break
+				}
+				if deleted {
+					break
+				}
+			}
 			delete(c.Models, in.Name)
 		case "server":
 			if _, ok := c.Servers[in.Name]; !ok {
