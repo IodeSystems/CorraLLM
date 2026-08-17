@@ -23,7 +23,7 @@ import { ModelForm, blankSpec, specFromGql, type ModelSpec, type ServerOption } 
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
-import { fmtBytes } from '@/format'
+import { fmtBytes, extractMessage } from '@/format'
 
 /**
  * Config: what corrallm was TOLD, as opposed to what it is currently doing.
@@ -1165,12 +1165,6 @@ maxConcurrent: 1
 // extractMessage digs the server's actual complaint out of a GraphQL error.
 // The useful text — "lane chat member 0: unknown model" — is nested, and the
 // wrapper alone says nothing actionable.
-function extractMessage(e: unknown): string {
-  const any = e as { response?: { errors?: { message?: string }[] }; message?: string }
-  const first = any?.response?.errors?.[0]?.message
-  return first || any?.message || String(e)
-}
-
 // What each agent state means for whether anything can run there.
 const AGENT_STATUS_HINT: Record<string, string> = {
   up: 'heartbeating; models can be spawned here',

@@ -84,3 +84,18 @@ export function capLabel(c?: string): string {
       return c || 'chat'
   }
 }
+
+// extractMessage pulls the useful sentence out of a GraphQL client error.
+//
+// graphql-request throws an object carrying the whole response, so String(e) is
+// a wall of serialized JSON with the one readable sentence buried at the front.
+// The server's refusals are written to be read — "X is a member of lane(s) chat
+// — remove it there first" — and that is what belongs on screen.
+//
+// Lives here because there were already two private copies, and a third was
+// about to be written.
+export function extractMessage(e: unknown): string {
+  const any = e as { response?: { errors?: { message?: string }[] }; message?: string }
+  const first = any?.response?.errors?.[0]?.message
+  return first || any?.message || String(e)
+}

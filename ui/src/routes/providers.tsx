@@ -7,6 +7,10 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Stack,
   Tooltip,
   Typography,
@@ -21,6 +25,7 @@ import { LocalModelDialog } from '@/LocalModelDialog'
 import { graphql } from '@/gql'
 import type { ProvidersQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
+import { extractMessage } from '@/format'
 import { C } from '@/theme'
 
 /**
@@ -130,6 +135,17 @@ const SelectionsDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const DeleteModelDoc = graphql(/* GraphQL */ `
+  mutation DeleteLocalModel($name: String!) {
+    corrallm {
+      deleteEntry(kind: "model", name: $name) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
 const UnassignDoc = graphql(/* GraphQL */ `
   mutation UnassignFromList($body: corrallm_UnassignModelInputBodyInput!) {
     corrallm {
@@ -227,10 +243,35 @@ function AssignedModels() {
 
 function ProvidersPage() {
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const [addOpen, setAddOpen] = useState(false)
   const [edit, setEdit] = useState<ProviderInitial | null>(null)
   const [browse, setBrowse] = useState<{ provider: string; credential: string } | null>(null)
   const [addLocal, setAddLocal] = useState<{ provider: string; editId?: string } | null>(null)
+  // Deleting a model is not undoable from here, so it is confirmed by name.
+  const [confirmDelete, setConfirmDelete] = useState<{ served: string; hasCmd: boolean } | null>(
+    null,
+  )
+  const [deleteErr, setDeleteErr] = useState('')
+
+  const del = useMutation({
+    mutationFn: (name: string) => gqlClient.request(DeleteModelDoc, { name }),
+    onSuccess: (r) => {
+      const res = r.corrallm?.deleteEntry
+      // The server refuses to delete a lane member and says which lane. That is
+      // the useful half of the answer, so it goes on screen rather than being
+      // collapsed into a generic failure.
+      if (!res?.ok) {
+        setDeleteErr(res?.message ?? 'delete refused')
+        return
+      }
+      setConfirmDelete(null)
+      setDeleteErr('')
+      qc.invalidateQueries({ queryKey: ['providers'] })
+      qc.invalidateQueries({ queryKey: ['overview'] })
+    },
+    onError: (e) => setDeleteErr(extractMessage(e)),
+  })
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['providers'],
@@ -478,6 +519,16 @@ function ProvidersPage() {
                   >
                     Inspect
                   </Button>
+                  <Button
+                    size="small"
+                    color="error"
+                    onClick={() => {
+                      setDeleteErr('')
+                      setConfirmDelete({ served: m.served, hasCmd: m.hasCmd })
+                    }}
+                  >
+                    Delete
+                  </Button>
                 </Stack>
               ))}
             </Row>
@@ -566,6 +617,43 @@ function ProvidersPage() {
           editId={addLocal.editId}
         />
       )}
+      <Dialog open={confirmDelete != null} onClose={() => setConfirmDelete(null)}>
+        <DialogTitle>Delete {confirmDelete?.served}?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            Removes it from the provider&apos;s config. Callers asking for it — by this name or its
+            unprefixed one — start getting a 404.
+          </Typography>
+          {confirmDelete?.hasCmd && (
+            <Typography variant="body2" sx={{ mt: 1.5, color: C.warn }}>
+              If it is running right now, the process keeps running and keeps its memory: a config
+              reload deliberately does not kill backends that are already up. Unload it from its
+              model page first if you want the memory back before the next restart.
+            </Typography>
+          )}
+          <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: C.textFaint }}>
+            A lane member cannot be deleted until it is removed from the lane; the server will say
+            which lane.
+          </Typography>
+          {deleteErr && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {deleteErr}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmDelete(null)}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={del.isPending}
+            onClick={() => confirmDelete && del.mutate(confirmDelete.served)}
+          >
+            {del.isPending ? 'Deleting…' : 'Delete'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {browse && (
         <CatalogDialog
           open

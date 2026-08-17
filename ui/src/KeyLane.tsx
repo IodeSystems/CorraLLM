@@ -14,6 +14,7 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
+import { extractMessage } from '@/format'
 import { fmtInt } from '@/format'
 
 /**
@@ -59,11 +60,9 @@ const DeleteKeyDoc = graphql(/* GraphQL */ `
 
 // The server's own error text is the useful part — "no priority group", "config
 // is hand-written and will not be rewritten". A transport wrapper says nothing
-// actionable.
-export function extractMessage(e: unknown): string {
-  const any = e as { response?: { errors?: { message?: string }[] }; message?: string }
-  return any?.response?.errors?.[0]?.message || any?.message || String(e)
-}
+// actionable. Re-exported from @/format, which is the one copy; this alias
+// keeps existing importers working.
+export { extractMessage }
 
 export type LaneGroup = { name: string; weight: number | string }
 
