@@ -374,3 +374,44 @@ export function ModelForm({
     </Stack>
   )
 }
+
+// specFromGql hydrates a ModelSpec from the wire shape.
+//
+// Lives beside the form rather than in one of its callers: two editors now load
+// the same spec, and a private copy in each is how they start disagreeing about
+// what a missing field means.
+export function specFromGql(s: {
+  name?: string | null
+  cmd?: string | null
+  server?: string | null
+  proxy?: string | null
+  upstream?: string | null
+  type?: string | null
+  quality?: number | null
+  maxConcurrent?: string | number | null
+  maxTokens?: string | number | null
+  persistent?: boolean | null
+  stickyTtl?: string | null
+  stickyIdleUnload?: string | null
+  stickyEvictCost?: string | null
+  ramUsage?: unknown
+  notes?: string | null
+}): ModelSpec {
+  return {
+    name: s.name ?? '',
+    cmd: s.cmd ?? '',
+    server: s.server ?? '',
+    proxy: s.proxy ?? '',
+    upstream: s.upstream ?? '',
+    type: s.type ?? '',
+    quality: s.quality ?? 0,
+    maxConcurrent: Number(s.maxConcurrent ?? 0),
+    maxTokens: Number(s.maxTokens ?? 0),
+    persistent: s.persistent ?? false,
+    stickyTtl: s.stickyTtl ?? '',
+    stickyIdleUnload: s.stickyIdleUnload ?? '',
+    stickyEvictCost: s.stickyEvictCost ?? '',
+    ramUsage: (s.ramUsage as Record<string, string> | null) ?? {},
+    notes: s.notes ?? '',
+  }
+}

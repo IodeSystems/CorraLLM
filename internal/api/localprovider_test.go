@@ -94,3 +94,26 @@ func TestProviderOwnedModelRoundTripsThroughItsBlock(t *testing.T) {
 		t.Error("delete took an unrelated model with it")
 	}
 }
+
+// TestListProvidersReadsTheLiveConfig: a reload installs a new config through
+// SetConfig, and a handler reading the construction-time field reports the
+// world as it was at startup. That is invisible until something changes — here,
+// a provider gaining notes.
+func TestListProvidersReadsTheLiveConfig(t *testing.T) {
+	h, _ := localHandlers(t)
+	updated, err := config.Load(managedConfig(t, localProviderYAML+"    notes: hello\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.SetConfig(updated)
+	out, err := h.ListProviders(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Body.Local) != 1 {
+		t.Fatalf("want the local provider, got %+v", out.Body.Local)
+	}
+	if out.Body.Local[0].Notes != "hello" {
+		t.Errorf("notes = %q — the handler is reading the config it was built with, not the live one", out.Body.Local[0].Notes)
+	}
+}

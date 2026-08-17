@@ -19,7 +19,7 @@ import {
   Typography,
 } from '@mui/material'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
-import { ModelForm, blankSpec, type ModelSpec, type ServerOption } from '@/ModelForm'
+import { ModelForm, blankSpec, specFromGql, type ModelSpec, type ServerOption } from '@/ModelForm'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
@@ -1085,41 +1085,6 @@ type Edit = {
 // specFromGql fills the gaps a nullable schema leaves, so the form always has a
 // value to render. A null quality is 0, not "unset" — the form has to put
 // SOMETHING in the box, and 0 is what the config means by absent.
-function specFromGql(s: {
-  name?: string | null
-  cmd?: string | null
-  server?: string | null
-  proxy?: string | null
-  upstream?: string | null
-  type?: string | null
-  quality?: number | null
-  maxConcurrent?: string | number | null
-  maxTokens?: string | number | null
-  persistent?: boolean | null
-  stickyTtl?: string | null
-  stickyIdleUnload?: string | null
-  stickyEvictCost?: string | null
-  ramUsage?: unknown
-  notes?: string | null
-}): ModelSpec {
-  return {
-    name: s.name ?? '',
-    cmd: s.cmd ?? '',
-    server: s.server ?? '',
-    proxy: s.proxy ?? '',
-    upstream: s.upstream ?? '',
-    type: s.type ?? '',
-    quality: s.quality ?? 0,
-    maxConcurrent: Number(s.maxConcurrent ?? 0),
-    maxTokens: Number(s.maxTokens ?? 0),
-    persistent: s.persistent ?? false,
-    stickyTtl: s.stickyTtl ?? '',
-    stickyIdleUnload: s.stickyIdleUnload ?? '',
-    stickyEvictCost: s.stickyEvictCost ?? '',
-    ramUsage: (s.ramUsage as Record<string, string> | null) ?? {},
-    notes: s.notes ?? '',
-  }
-}
 
 // TrialReport is what a trial told us, flattened for rendering.
 type TrialReport = {

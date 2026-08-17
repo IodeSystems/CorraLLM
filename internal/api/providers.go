@@ -136,7 +136,13 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 	for _, n := range out.Body.Secrets {
 		have[n] = true
 	}
-	cfg := h.Cfg
+	// h.config(), NOT h.Cfg. h.Cfg is the config this Handlers was CONSTRUCTED
+	// with; a reload installs a newer one via SetConfig. Reading the field meant
+	// the Providers page kept reporting the config as it was at startup — adding
+	// a provider through the UI, or a SIGHUP, changed nothing on screen until a
+	// restart. Caught by adding notes to a provider and watching the API insist
+	// there were none.
+	cfg := h.config()
 	if cfg == nil {
 		return out, nil
 	}

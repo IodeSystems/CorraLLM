@@ -12,7 +12,7 @@ import {
   Typography,
   useMediaQuery,
 } from '@mui/material'
-import { ModelForm, blankSpec, type ModelSpec, type ServerOption } from '@/ModelForm'
+import { ModelForm, blankSpec, specFromGql, type ModelSpec, type ServerOption } from '@/ModelForm'
 import { graphql } from '@/gql'
 import type { Corrallm_ModelSpecInput } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
@@ -48,6 +48,34 @@ const ServersDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const LocalModelSpecDoc = graphql(/* GraphQL */ `
+  query LocalModelSpec($name: String!) {
+    corrallm {
+      modelSpec(name: $name) {
+        exists
+        advanced
+        spec {
+          name
+          cmd
+          server
+          proxy
+          upstream
+          type
+          quality
+          maxConcurrent
+          maxTokens
+          persistent
+          stickyTtl
+          stickyIdleUnload
+          stickyEvictCost
+          ramUsage
+          notes
+        }
+      }
+    }
+  }
+`)
+
 const UpsertLocalModelDoc = graphql(/* GraphQL */ `
   mutation UpsertLocalModel($name: String!, $provider: String, $body: corrallm_ModelSpecInput!) {
     corrallm {
@@ -64,13 +92,22 @@ export function LocalModelDialog(props: {
   onClose: () => void
   /** The local provider this model is authored under. */
   provider: string
+  /**
+   * The id of an existing model to edit. Absent means create.
+   *
+   * Editing does NOT send a provider: the server already knows where an
+   * existing model was authored and writes it back there. Sending one would be
+   * a second opinion about a question that is already settled.
+   */
+  editId?: string
 }) {
-  const { open, onClose, provider } = props
+  const { open, onClose, provider, editId } = props
   const qc = useQueryClient()
   const wide = useMediaQuery(theme.breakpoints.up('sm'))
   const [id, setId] = useState('')
   const [spec, setSpec] = useState<ModelSpec>(blankSpec())
   const [err, setErr] = useState('')
+  const editing = !!editId
 
   const { data } = useQuery({
     queryKey: ['localModelServers'],
@@ -83,18 +120,36 @@ export function LocalModelDialog(props: {
     noProcessMemory: s.noProcessMemory ?? false,
   }))
 
+  // Loaded through the SAME query the Config page uses, so the two editors
+  // cannot disagree about what a stored model looks like.
+  const { data: existing, isFetching: loadingSpec } = useQuery({
+    queryKey: ['localModelSpec', provider, editId],
+    queryFn: () => gqlClient.request(LocalModelSpecDoc, { name: `${provider}-${editId}` }),
+    enabled: open && !!editId,
+  })
+
   useEffect(() => {
     if (!open) return
-    setId('')
-    setSpec(blankSpec())
     setErr('')
-  }, [open])
+    setId(editId ?? '')
+    if (!editId) {
+      setSpec(blankSpec())
+      return
+    }
+    const s = existing?.corrallm?.modelSpec?.spec
+    setSpec(s ? specFromGql(s) : blankSpec())
+  }, [open, editId, existing])
 
   const served = id ? `${provider}-${id}` : ''
 
   const upsert = useMutation({
     mutationFn: (v: { name: string; body: Corrallm_ModelSpecInput }) =>
-      gqlClient.request(UpsertLocalModelDoc, { name: v.name, provider, body: v.body }),
+      gqlClient.request(UpsertLocalModelDoc, {
+        name: v.name,
+        // Only on create. See editId.
+        provider: editing ? null : provider,
+        body: v.body,
+      }),
   })
 
   const save = async () => {
@@ -143,20 +198,23 @@ export function LocalModelDialog(props: {
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth fullScreen={!wide}>
-      <DialogTitle>Add a model to {provider}</DialogTitle>
+      <DialogTitle>{editing ? `Edit ${provider}-${editId}` : `Add a model to ${provider}`}</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2.5} sx={{ pt: 0.5 }}>
           <TextField
             size="small"
-            autoFocus
+            autoFocus={!editing}
             label="Model id"
             value={id}
+            disabled={editing}
             onChange={(e) => setId(e.target.value)}
             placeholder="Qwen3.8-27B"
             helperText={
-              served
-                ? `Callers ask for ${served} — and for ${id} too, while this provider claims bare names.`
-                : 'As written under the provider. The served name gets the provider prefix.'
+              editing
+                ? `Callers ask for ${served}. Renaming is add + delete — the served name is an identity, and metrics and residency key on it.`
+                : served
+                  ? `Callers ask for ${served} — and for ${id} too, while this provider claims bare names.`
+                  : 'As written under the provider. The served name gets the provider prefix.'
             }
           />
           <Typography variant="caption" sx={{ color: C.textFaint, mt: -1 }}>
@@ -168,7 +226,7 @@ export function LocalModelDialog(props: {
             onChange={setSpec}
             servers={servers}
             advanced={[]}
-            existing={false}
+            existing={editing}
             hideName
           />
           {err && <Alert severity="error">{err}</Alert>}
@@ -176,8 +234,12 @@ export function LocalModelDialog(props: {
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={save} disabled={incomplete || upsert.isPending}>
-          {upsert.isPending ? 'Saving…' : 'Add model'}
+        <Button
+          variant="contained"
+          onClick={save}
+          disabled={incomplete || upsert.isPending || loadingSpec}
+        >
+          {upsert.isPending ? 'Saving…' : editing ? 'Save changes' : 'Add model'}
         </Button>
       </DialogActions>
     </Dialog>

@@ -230,7 +230,7 @@ function ProvidersPage() {
   const [addOpen, setAddOpen] = useState(false)
   const [edit, setEdit] = useState<ProviderInitial | null>(null)
   const [browse, setBrowse] = useState<{ provider: string; credential: string } | null>(null)
-  const [addLocal, setAddLocal] = useState<string | null>(null)
+  const [addLocal, setAddLocal] = useState<{ provider: string; editId?: string } | null>(null)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['providers'],
@@ -397,38 +397,78 @@ function ProvidersPage() {
                     <Tooltip
                       title={`An unprefixed name that nothing else claims resolves here (precedence ${p.barePrecedence}). This is what keeps callers working after the prefix rename.`}
                     >
-                      <Chip size="small" variant="outlined" label={`bare names → here`} />
+                      <Chip size="small" variant="outlined" label="bare names → here" />
                     </Tooltip>
                   ) : (
                     <Tooltip title="Only the prefixed name resolves; barePrecedence is 0.">
                       <Chip size="small" variant="outlined" label="prefixed only" />
                     </Tooltip>
                   )}
-                  {p.models.length === 0 && (
-                    <Typography variant="caption" sx={{ color: C.textFaint }}>
-                      no models yet
-                    </Typography>
-                  )}
-                  {p.models.map((m) => (
-                    <Tooltip
-                      key={m.id}
-                      title={`${m.served}${m.bare ? ` — also answers to ${m.id}` : ''}${
-                        m.server ? ` · runs on ${m.server}` : ''
-                      }${m.hasCmd ? '' : ' · proxies something already listening'}`}
-                    >
-                      <Chip
-                        size="small"
-                        clickable
-                        onClick={() => navigate({ to: '/m/$name', params: { name: m.served } })}
-                        label={m.id}
-                      />
-                    </Tooltip>
-                  ))}
                 </Stack>
-                <Button size="small" startIcon={<AddIcon />} onClick={() => setAddLocal(p.name)}>
+                <Button
+                  size="small"
+                  startIcon={<AddIcon />}
+                  onClick={() => setAddLocal({ provider: p.name })}
+                >
                   Add model
                 </Button>
               </Stack>
+              {p.models.length === 0 && (
+                <Typography variant="caption" sx={{ color: C.textFaint, pl: 0.5 }}>
+                  no models yet
+                </Typography>
+              )}
+              {/* One row per model rather than a strip of chips: these are the
+                  processes on this box, and each needs somewhere to put Edit. */}
+              {p.models.map((m) => (
+                <Stack
+                  key={m.id}
+                  direction="row"
+                  spacing={1.5}
+                  alignItems="center"
+                  flexWrap="wrap"
+                  useFlexGap
+                  sx={{ pl: 2, py: 0.75, borderTop: `1px solid ${C.border}`, mt: 0.75 }}
+                >
+                  <Box sx={{ minWidth: 220 }}>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12.5 }}>
+                      {m.served}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: C.textFaint }}>
+                      {m.bare ? `also answers to ${m.id}` : 'prefixed name only'}
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+                    {m.type && <Chip size="small" variant="outlined" label={m.type} />}
+                    {m.server && <Chip size="small" variant="outlined" label={m.server} />}
+                    <Tooltip
+                      title={
+                        m.hasCmd
+                          ? 'corrallm starts and stops this process'
+                          : 'A pure proxy — corrallm forwards to it and never starts or stops it'
+                      }
+                    >
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={m.hasCmd ? 'spawned' : 'proxy'}
+                      />
+                    </Tooltip>
+                  </Stack>
+                  <Button
+                    size="small"
+                    onClick={() => setAddLocal({ provider: p.name, editId: m.id })}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={() => navigate({ to: '/m/$name', params: { name: m.served } })}
+                  >
+                    Inspect
+                  </Button>
+                </Stack>
+              ))}
             </Row>
           ))}
         </Panel>
@@ -508,7 +548,12 @@ function ProvidersPage() {
         secrets={secrets}
       />
       {addLocal && (
-        <LocalModelDialog open onClose={() => setAddLocal(null)} provider={addLocal} />
+        <LocalModelDialog
+          open
+          onClose={() => setAddLocal(null)}
+          provider={addLocal.provider}
+          editId={addLocal.editId}
+        />
       )}
       {browse && (
         <CatalogDialog
