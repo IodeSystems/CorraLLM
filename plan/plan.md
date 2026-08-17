@@ -1458,8 +1458,17 @@ and `local-Qwen3.8-27B` serve.
 **risks** activity history and the VRAM tune cache key on served name, so both
 start fresh under the new ids — old rows remain under the old names and will not
 be joined to the new ones.
-**next** nothing required. Optional: a UI to ADD a local model (the Providers
-panel lists and links to them; creating one is still a YAML edit).
+**next** nothing required.
+**also shipped** creating a local model from the Providers page (`Add model`),
+reusing ModelForm so the two editors cannot drift. `upsertModel` takes an
+optional `provider` for creation.
+**pattern worth remembering** the fold puts provider-owned models into
+`c.Models`, and THREE separate handlers wrote to that copy instead of the
+provider block — the config writer, upsert, and delete. Delete was the worst: it
+reported success and changed nothing, so the model returned on the next load.
+`internal/api/localprovider_test.go` covers create/edit/delete in one
+round-trip, each followed by a real `config.Load` of the written file. Any new
+handler that mutates a model must ask where the model was AUTHORED.
 
 ### ◐ P22 — Qwen3.8-27B cutover (model aliases) — 2026-08-14 (cutover ✅; KLD + bench open)
 
