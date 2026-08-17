@@ -37,6 +37,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/proxy"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
+	"github.com/iodesystems/corrallm/internal/toolchain"
 	"github.com/iodesystems/corrallm/internal/tune"
 	"github.com/iodesystems/corrallm/internal/webui"
 	"github.com/iodesystems/corrallm/ui"
@@ -384,6 +385,7 @@ func newServeCmd() *cobra.Command {
 			dbPathResolved := p.db
 			slog.Info("paths resolved", "home", p.home, "config", p.config, "db", p.db)
 			return serve(cmd.Context(), serveOpts{
+				home:               p.home,
 				webRoot:            pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
 				agentDir:           pick(agentDir, envOr("CORRALLM_AGENT_DIR", "./bin/agents")),
 				publicBase:         pick(publicBase, envOr("CORRALLM_PUBLIC_BASE", "")),
@@ -471,6 +473,10 @@ func defaultTuneCachePath(dbPath string) string {
 }
 
 type serveOpts struct {
+	// home is corrallm's home directory. Carried so a MANAGED tool's default
+	// install prefix (<home>/tools/<name>) resolves the same way the CLI
+	// resolves it.
+	home                                  string
 	webRoot, configPath, dbPath, addr     string
 	configDerived                         bool
 	agentDir, publicBase                  string
@@ -580,6 +586,30 @@ func serve(ctx context.Context, o serveOpts) error {
 	// one view of which agent-backed servers are reporting in.
 	liveness := agent.NewLiveness()
 	mgr.SetLiveness(liveness)
+	// ${tool:x} in a model's cmd resolves through the toolchain registry, on the
+	// host the model runs on, at spawn time. Wired as a function so proc keeps
+	// no dependency on the toolchain package.
+	//
+	// Cfg reads the CURRENT config (mgr.SetConfig swaps it on reload), so a tool
+	// added or repointed by a config reload is picked up without a restart.
+	toolReg := &toolchain.Registry{
+		Home: o.home,
+		Cfg:  func() *config.Config { return mgr.Config() },
+		RunnerFor: func(server string) (toolchain.Runner, error) {
+			c := mgr.Config()
+			srv, ok := c.Servers[server]
+			if !ok {
+				return nil, fmt.Errorf("no server %q in config", server)
+			}
+			if srv.Agent != nil {
+				return agent.NewToolRunner(
+					agent.NewRemoteHost(server, srv.Agent.Endpoints, srv.Agent.ExpandedToken())), nil
+			}
+			return &toolchain.Local{Server: server}, nil
+		},
+	}
+	mgr.ExpandCmd = toolReg.ExpandTools
+
 	agentDist := &agentdist.Handler{Dir: o.agentDir, Version: version}
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler,
 		Liveness: liveness, AgentDist: agentDist, Verified: api.NewVerifiedStore(),

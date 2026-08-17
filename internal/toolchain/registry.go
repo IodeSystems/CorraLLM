@@ -29,6 +29,11 @@ type Registry struct {
 	// Cfg reads current config. Called per operation rather than captured, so a
 	// config reload is picked up without rebuilding the registry.
 	Cfg func() *config.Config
+
+	// resolved memoises ${tool:x} → directory per host, guarded by mu. See
+	// ToolDir: only successful lookups are cached.
+	mu       sync.Mutex
+	resolved map[resolvedKey]string
 }
 
 // SpecFor builds the recipe input for one tool on one host.
@@ -215,7 +220,13 @@ func (r *Registry) Build(ctx context.Context, tool, host string, force bool, pro
 			f.SetForce(force)
 		}
 	}
-	return RunBuild(ctx, runner, spec)
+	res, err := RunBuild(ctx, runner, spec)
+	if err == nil {
+		// A build is the moment a previously-absent tool becomes present, so
+		// drop any remembered answer about where it is.
+		r.InvalidateResolved(tool, host)
+	}
+	return res, err
 }
 
 // InstallDeps installs what Preflight found missing on a host.

@@ -20,6 +20,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,8 +150,8 @@ type Process struct {
 	usage      map[string]int64 // reserved bytes per pool
 	persistent bool             // pinned: never evicted
 	evictRank  int              // 0 low … 2 high (resistance to eviction)
-	ttl        time.Duration // idle keep-warm window (eviction PRIORITY, not a timer)
-	idleUnload time.Duration // quiet period before self-unload (0 = never)
+	ttl        time.Duration    // idle keep-warm window (eviction PRIORITY, not a timer)
+	idleUnload time.Duration    // quiet period before self-unload (0 = never)
 
 	logs *logBuffer // captured stdout/stderr (spawned backends only; nil for pure-proxy)
 
@@ -194,6 +195,17 @@ type Manager struct {
 	healthCli     *http.Client
 	healthTimeout time.Duration
 	activeUse     time.Duration // recently-used models are not eviction victims
+
+	// ExpandCmd resolves ${tool:x} references in a spawn command against the
+	// host the model runs on, immediately before the command is tuned and run.
+	//
+	// A function rather than a toolchain.Registry so proc stays unaware of the
+	// toolchain entirely — this package's job is lifecycle, not where binaries
+	// come from. Nil means unresolved references are a hard error rather than a
+	// silent passthrough: a cmd containing a literal "${tool:llama.cpp}" would
+	// be handed to sh, which would expand it to nothing and run whatever the
+	// rest of the line happened to name.
+	ExpandCmd func(ctx context.Context, cmd, server string) (string, error)
 
 	// tuneCache is the VRAM slot auto-tuner's profile store. Unset (nil, the
 	// zero value) — the default — means introspection is entirely disabled:
@@ -615,6 +627,25 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		// NEVER mutate mdl (config.Model is passed by value into load, but mdl.Cmd
 		// is still the same backing string as m.config().Models[name].Cmd until copied).
 		cmdStr := mdl.Cmd
+
+		// Resolve ${tool:x} BEFORE tuning, so a tuner rewriting --parallel sees
+		// the command that will actually run, and before the spawn, so a
+		// reference that cannot be resolved fails the load with its reason
+		// instead of reaching sh — which would expand the unknown ${...} to an
+		// empty string and run whatever the rest of the line named.
+		if toolchainRef(cmdStr) {
+			if m.ExpandCmd == nil {
+				finish(StateFailed, fmt.Errorf("model %q uses ${tool:...} but no toolchain resolver is wired", name))
+				return
+			}
+			expanded, err := m.ExpandCmd(context.Background(), cmdStr, mdl.Server)
+			if err != nil {
+				finish(StateFailed, fmt.Errorf("model %q: %w", name, err))
+				return
+			}
+			cmdStr = expanded
+		}
+
 		tunedSlots := m.tuneCmd(name, &cmdStr, mdl.Slots(), mdl.ContextPerRequest)
 		if tunedSlots > 0 {
 			p.mu.Lock()
@@ -2772,6 +2803,11 @@ func (m *Manager) config() *config.Config {
 	return m.cfg.Load()
 }
 
+// Config is the CURRENT config, following reloads. Exported for callers that
+// must see what the manager sees rather than the snapshot they booted with —
+// the ${tool:} resolver, whose tools may be added or repointed by a reload.
+func (m *Manager) Config() *config.Config { return m.config() }
+
 // SetConfig swaps in a reloaded config.
 //
 // Pool budgets are RECOMPUTED, but reservations already held by resident
@@ -2808,3 +2844,9 @@ func (m *Manager) SetConfig(cfg *config.Config) {
 		}
 	}
 }
+
+// toolchainRef reports whether a command carries a ${tool:x} reference.
+//
+// Matched here rather than by importing internal/toolchain, so proc keeps no
+// dependency on the toolchain package — the resolver arrives as a function.
+func toolchainRef(cmd string) bool { return strings.Contains(cmd, "${tool:") }
