@@ -24,7 +24,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
+
+// extractMu serialises Extract against itself.
+//
+// A survey runs every (tool, host) pair CONCURRENTLY and each one extracts, so
+// without this several goroutines rewrite the same directory at once. The
+// atomic rename below is what makes a reader safe; this only keeps them from
+// doing redundant work and racing each other's temp files.
+var extractMu sync.Mutex
 
 //go:embed *.sh
 var files embed.FS
@@ -67,6 +76,8 @@ func Has(name string) bool {
 // start. Writing the set is also idempotent and cheap enough to do on every
 // call, which keeps a stale extraction from outliving an agent update.
 func Extract(dir string) error {
+	extractMu.Lock()
+	defer extractMu.Unlock()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("recipe dir: %w", err)
 	}
@@ -79,11 +90,39 @@ func Extract(dir string) error {
 		if err != nil {
 			return err
 		}
-		// 0o700: these are executed, and they run with whatever privileges the
-		// agent has. Not group- or world-writable, or anyone on the box could
-		// rewrite what the agent is about to run as itself.
-		if err := os.WriteFile(filepath.Join(dir, e.Name()), b, 0o700); err != nil {
+		// WRITE, THEN RENAME. os.WriteFile truncates before it writes, so a
+		// bash already opening that path sees a half-written script — and since
+		// a survey extracts from several goroutines while other recipes are
+		// executing, that window is hit intermittently. It surfaced as a probe
+		// returning unparseable output, which reads like a broken recipe rather
+		// than a torn file. A rename is atomic, so a reader gets the whole old
+		// file or the whole new one.
+		//
+		// 0o700: these are executed with whatever privileges the agent has. Not
+		// group- or world-writable, or anyone on the box could rewrite what the
+		// agent is about to run as itself.
+		final := filepath.Join(dir, e.Name())
+		tmp, err := os.CreateTemp(dir, "."+e.Name()+".*")
+		if err != nil {
 			return fmt.Errorf("write recipe %s: %w", e.Name(), err)
+		}
+		if _, err := tmp.Write(b); err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			return fmt.Errorf("write recipe %s: %w", e.Name(), err)
+		}
+		if err := tmp.Chmod(0o700); err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			return fmt.Errorf("chmod recipe %s: %w", e.Name(), err)
+		}
+		if err := tmp.Close(); err != nil {
+			os.Remove(tmp.Name())
+			return fmt.Errorf("write recipe %s: %w", e.Name(), err)
+		}
+		if err := os.Rename(tmp.Name(), final); err != nil {
+			os.Remove(tmp.Name())
+			return fmt.Errorf("install recipe %s: %w", e.Name(), err)
 		}
 	}
 	return nil

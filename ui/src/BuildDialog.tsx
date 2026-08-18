@@ -130,15 +130,14 @@ export function BuildDialog({
     if (Number.isFinite(total) && total !== logFrom) setLogFrom(total)
   }, [st, logFrom])
 
-  // Reset when the dialog opens, so a second look does not show the previous
-  // job's lines above this one's.
+  // Reset on BOTH edges. Resetting only on open leaves the previous job's lines
+  // in state while the dialog is shut, so the next open renders them once —
+  // under the new tool's title — before the effect clears them.
   useEffect(() => {
-    if (open) {
-      setLines([])
-      setLogFrom(0)
-      setErr('')
-      pinnedRef.current = true
-    }
+    setLines([])
+    setLogFrom(0)
+    setErr('')
+    pinnedRef.current = true
   }, [open])
 
   // Follow the tail, but only while the operator has not scrolled up to read
@@ -196,6 +195,15 @@ export function BuildDialog({
             Build {tool ?? shown?.tool} <span style={{ color: C.textFaint }}>on</span>{' '}
             {host ?? shown?.host}
           </span>
+          {/* One slot means the retained job can be a different tool than the
+              row that opened this. Flagged rather than shown silently. */}
+          {shown && tool && shown.tool !== tool && (
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`showing last run: ${shown.tool} on ${shown.host}`}
+            />
+          )}
           {statusChip(shown?.status ?? undefined, last?.skipped ?? undefined)}
           {shown && (
             <Typography variant="caption" sx={{ color: C.textMuted }}>
@@ -224,9 +232,13 @@ export function BuildDialog({
 
         {last && !running && last.status === 'ok' && (
           <Alert severity="success" sx={{ mb: 1.5 }}>
+            <strong>
+              {last.tool} on {last.host}
+            </strong>{' '}
+            —{' '}
             {last.skipped
-              ? 'Already current — the stamp matched (same commit, same patches, same CUDA archs), so nothing was compiled.'
-              : `Built ${last.version ?? ''} in ${fmtElapsed(Number(last.elapsedSeconds))}.`}
+              ? 'already current: the stamp matched (same commit, same patches, same CUDA archs), so nothing was compiled.'
+              : `built ${last.version ?? ''} in ${fmtElapsed(Number(last.elapsedSeconds))}.`}
             {last.stamp && (
               <Box
                 sx={{ mt: 0.5, fontFamily: 'monospace', fontSize: 11.5, color: C.textMuted }}
@@ -238,7 +250,10 @@ export function BuildDialog({
         )}
         {last && !running && last.status === 'failed' && (
           <Alert severity="error" sx={{ mb: 1.5 }}>
-            {last.error}
+            <strong>
+              {last.tool} on {last.host}
+            </strong>{' '}
+            — {last.error}
           </Alert>
         )}
 

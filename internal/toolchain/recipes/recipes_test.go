@@ -4,7 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestNamesExcludesTheSharedLibrary(t *testing.T) {
@@ -102,5 +105,70 @@ func TestRecipesDoNotEchoToStdout(t *testing.T) {
 				t.Errorf("%s.sh:%d echoes to stdout, which corrupts the JSON result: %s", n, i+1, trimmed)
 			}
 		}
+	}
+}
+
+// Extraction races execution, and the failure is intermittent.
+//
+// A survey extracts from several goroutines at once while other recipes are
+// already running from that same directory. With a truncate-then-write, bash
+// occasionally opens a half-written script; it surfaced as a probe returning
+// unparseable output, which reads like a broken recipe rather than a torn file.
+// This runs the two against each other hard enough to catch a non-atomic write.
+func TestExtractIsSafeWhileScriptsAreRead(t *testing.T) {
+	dir := t.TempDir()
+	if err := Extract(dir); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "common.sh")
+	want, err := files.ReadFile("common.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	var torn atomic.Int64
+
+	// Readers: a reader must never observe a partial file.
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				got, err := os.ReadFile(target)
+				// A rename can briefly make the path absent on some systems;
+				// that is recoverable and not what this is looking for. A
+				// SHORT file is the bug.
+				if err == nil && len(got) != len(want) {
+					torn.Add(1)
+				}
+			}
+		}()
+	}
+	// Writers: several concurrent extractions, as a survey produces.
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				if err := Extract(dir); err != nil {
+					t.Errorf("Extract: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	time.Sleep(150 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	if n := torn.Load(); n > 0 {
+		t.Errorf("observed %d partially-written reads — extraction is not atomic", n)
 	}
 }

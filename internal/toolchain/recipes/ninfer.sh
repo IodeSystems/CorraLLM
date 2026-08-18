@@ -198,11 +198,89 @@ install_deps() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# build
+#
+# Unlike llama.cpp this has ONE valid architecture. CMakeLists hard-pins
+# CMAKE_CUDA_ARCHITECTURES to 120a and FATAL_ERRORs on anything else, so there
+# is no arch detection to do — and no point building for "every card present",
+# because only one of box1's two cards can run the result.
+#
+# The stamp still records the arch for the same reason llama.cpp's does: it is
+# part of what the binary IS, and a stamp that omits it would let a changed
+# target skip a rebuild.
+# ---------------------------------------------------------------------------
+build() {
+    local started=$SECONDS
+    local src; src=$(tool_src_dir)
+    local bindir; bindir=$(tool_bin_dir)
+
+    if adopted; then
+        die "refusing to build an adopted install ($TOOL_INSTALLED_AT) — corrallm does not write to a tree it does not own; drop installedAt to manage it here"
+    fi
+
+    unapply_patches "$src"
+    align_tree "$src" "$TOOL_REF" "$TOOL_URL" || die "could not align $src to $TOOL_REF"
+    apply_patches "$src" || die "patch set does not apply to $(current_head "$src")"
+
+    local head stamp_now
+    head=$(current_head "$src")
+    stamp_now="head=$head patches=$(patch_set_hash) archs=$REQUIRED_ARCH"
+
+    if [ "${TOOL_FORCE:-0}" != "1" ] && [ -x "$bindir/$BIN_NAME" ] && [ "$(stamp_read "$bindir")" = "$stamp_now" ]; then
+        say "up-to-date at $stamp_now; skipping build"
+        printf '{"ok":true,"skipped":true,"head":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
+            "$(jstr "$head")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
+        return 0
+    fi
+
+    local nvcc; nvcc=$(nvcc_bin)
+    [ -n "$nvcc" ] || die "no nvcc found; ninfer needs CUDA >= $MIN_CUDA"
+
+    say "=== building $src (arch=$REQUIRED_ARCH, $nvcc)"
+    (
+    cd "$src" || exit 1
+    git clean -xdf >&2
+
+    export CUDACXX="$nvcc"
+    export PATH="$(dirname "$nvcc"):$PATH"
+
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CUDA_ARCHITECTURES="$REQUIRED_ARCH" \
+        -DCMAKE_CUDA_COMPILER="$nvcc" \
+        -DNINFER_BUILD_APPS=ON >&2 || exit 1
+    cmake --build build --config Release --parallel "$(nproc 2>/dev/null || echo 4)" >&2 || exit 1
+    ) || die "build failed; see log"
+
+    # ninfer has no install target and does not collect its binaries, so they
+    # are gathered by name rather than by copying a bin/ that does not exist.
+    mkdir -p "$bindir"
+    local found=0 f
+    for f in ninfer ninfer-serve; do
+        local built
+        built=$(find "$src/build" -type f -name "$f" -perm -u+x 2>/dev/null | head -1)
+        if [ -n "$built" ]; then
+            cp -f "$built" "$bindir/$f"
+            found=$((found + 1))
+            say "  installed $f"
+        fi
+    done
+    [ "$found" -gt 0 ] || die "build produced no ninfer binaries under $src/build"
+
+    stamp_write "$bindir" "$stamp_now"
+
+    # No --version to ask, so the stamp's head IS the version. See the note at
+    # the top of this recipe.
+    printf '{"ok":true,"skipped":false,"head":%s,"version":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
+        "$(jstr "$head")" "$(jstr "$head")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
+}
+
 case "${1:-}" in
     probe)        require_tool_root; probe ;;
     upstream)     require_tool_root; require_env TOOL_URL TOOL_REF; upstream ;;
     preflight)    preflight ;;
     install-deps) install_deps ;;
-    build)        die "build is not implemented yet (P25d); this recipe answers probe, upstream, preflight and install-deps" ;;
+    build)        require_tool_root; require_env TOOL_URL TOOL_REF TOOL_PREFIX; build ;;
     *)            die "unknown verb: ${1:-<none>}" ;;
 esac
