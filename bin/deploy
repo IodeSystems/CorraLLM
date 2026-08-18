@@ -14,6 +14,27 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
+# Deploy what we DECLARE, not what happens to be next door.
+#
+# go.work lists ../gwag and ../agentkit, so an ordinary build here compiles
+# against those working copies — gwag's is currently several commits past the
+# released version go.mod pins. That is the right default for developing them
+# together and the wrong one for shipping: the binary under systemd would
+# contain code that is in no release, matching no tag, reproducible nowhere.
+#
+# GOWORK=off ignores go.work and resolves from go.mod alone, checksum-verified
+# against go.sum. Exported, so `make install` and the tests below inherit it.
+#
+# CONSEQUENCE, on purpose: if corrallm needs an unreleased change in gwag or
+# agentkit, this deploy FAILS. Release and pin it, or set CORRALLM_DEPLOY_WORKSPACE=1
+# for a deliberately unreproducible build you have chosen with your eyes open.
+if [ "${CORRALLM_DEPLOY_WORKSPACE:-0}" = "1" ]; then
+    say_mode="WORKSPACE (unpinned — ../gwag and ../agentkit as they are on disk)"
+else
+    export GOWORK=off
+    say_mode="pinned (go.mod only; go.work ignored)"
+fi
+
 SERVICE="${CORRALLM_SERVICE:-corrallm}"
 BASE="${CORRALLM_BASE:-http://127.0.0.1:8111}"
 WITH_AGENTS=false
@@ -45,7 +66,7 @@ done
 
 say() { printf '\n==> %s\n' "$1"; }
 
-say "go build + tests"
+say "go build + tests — $say_mode"
 go build ./...
 go test ./... >/dev/null
 
