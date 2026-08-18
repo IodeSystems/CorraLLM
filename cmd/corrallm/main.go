@@ -610,6 +610,20 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 	mgr.ExpandCmd = toolReg.ExpandTools
 	toolBuilds := &toolchain.Builder{Reg: toolReg}
+	if st != nil {
+		toolBuilds.History = api.BuildHistoryStore{S: st}
+		// A build is a child of this process, so a restart kills it. A row left
+		// saying "running" would be a lie that never resolves and a spinner in
+		// the UI for a build that died days ago.
+		if n, err := st.InterruptStaleToolBuilds(context.Background()); err != nil {
+			slog.Warn("could not settle interrupted tool builds", "err", err)
+		} else if n > 0 {
+			slog.Warn("marked tool builds interrupted by a restart", "count", n)
+		}
+		if n, err := st.PruneToolBuilds(context.Background(), 100); err == nil && n > 0 {
+			slog.Info("pruned old tool build records", "removed", n)
+		}
+	}
 
 	agentDist := &agentdist.Handler{Dir: o.agentDir, Version: version}
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler, Tools: toolReg, Builds: toolBuilds,

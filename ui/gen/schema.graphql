@@ -214,6 +214,15 @@ type CorrallmQueryNamespace {
     """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
     minutes: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  toolBuildHistory(
+    """Scope to one host. Empty means any."""
+    host: String
+    """Newest first. Default 20."""
+    limit: Long
+    """Scope to one tool. Empty means any."""
+    tool: String
+  ): corrallm_ToolBuildHistoryOutputBody @derived(operationId: "toolBuildHistory")
+  toolBuildLog(id: Long!): corrallm_ToolBuildLogOutputBody @derived(operationId: "toolBuildLog")
   toolBuildStatus(
     """Absolute line index to read the log from. Send the previous response's logTotal to get only what is new."""
     logFrom: Long
@@ -465,6 +474,15 @@ type CorrallmV1QueryNamespace {
     """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
     minutes: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  toolBuildHistory(
+    """Scope to one host. Empty means any."""
+    host: String
+    """Newest first. Default 20."""
+    limit: Long
+    """Scope to one tool. Empty means any."""
+    tool: String
+  ): corrallm_ToolBuildHistoryOutputBody @derived(operationId: "toolBuildHistory")
+  toolBuildLog(id: Long!): corrallm_ToolBuildLogOutputBody @derived(operationId: "toolBuildLog")
   toolBuildStatus(
     """Absolute line index to read the log from. Send the previous response's logTotal to get only what is new."""
     logFrom: Long
@@ -2412,6 +2430,28 @@ type corrallm_StageView {
   policy: String!
   """Backend type (or "default")."""
   type: String!
+}
+
+type corrallm_ToolBuildHistoryOutputBody {
+  builds: [corrallm_ToolBuildRecord!]!
+}
+
+type corrallm_ToolBuildLogOutputBody {
+  log: String!
+}
+
+type corrallm_ToolBuildRecord {
+  elapsedSeconds: Long!
+  error: String
+  finishedAt: String
+  host: String!
+  id: Long!
+  skipped: Boolean!
+  stamp: String
+  startedAt: String!
+  status: String!
+  tool: String!
+  version: String
 }
 
 input corrallm_ToolBuildStartInputBodyInput {

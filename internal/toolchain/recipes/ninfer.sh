@@ -281,6 +281,6 @@ case "${1:-}" in
     upstream)     require_tool_root; require_env TOOL_URL TOOL_REF; upstream ;;
     preflight)    preflight ;;
     install-deps) install_deps ;;
-    build)        require_tool_root; require_env TOOL_URL TOOL_REF TOOL_PREFIX; build ;;
+    build)        require_tool_root; require_env TOOL_NAME TOOL_URL TOOL_REF; build ;;
     *)            die "unknown verb: ${1:-<none>}" ;;
 esac

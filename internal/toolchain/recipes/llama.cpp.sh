@@ -249,7 +249,7 @@ build() {
 case "${1:-}" in
     probe)        require_tool_root; probe ;;
     upstream)     require_tool_root; require_env TOOL_URL TOOL_REF; upstream ;;
-    build)        require_tool_root; require_env TOOL_URL TOOL_REF TOOL_PREFIX; build ;;
+    build)        require_tool_root; require_env TOOL_NAME TOOL_URL TOOL_REF; build ;;
     preflight)    preflight ;;
     install-deps) install_deps ;;
     *)            die "unknown verb: ${1:-<none>}" ;;

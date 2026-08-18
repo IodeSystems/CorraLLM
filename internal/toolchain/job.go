@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -25,11 +26,28 @@ import (
 // out how the last one went.
 type Builder struct {
 	Reg *Registry
+	// History persists builds so they survive a restart. Nil keeps everything
+	// in memory, which is what tests want and what a daemon with no store gets.
+	//
+	// An interface rather than *store.Store so this package stays unaware of
+	// persistence: a build is a process and a log, and where the record ends up
+	// is somebody else's decision.
+	History BuildHistory
 
 	mu      sync.Mutex
 	current *Job
 	last    *Job
 	seq     int
+}
+
+// BuildHistory is the persistence a Builder needs, and no more.
+//
+// Start returns an opaque id handed back to Finish. The Builder never reads
+// history — the UI does, straight from the store — so there is no Recent here.
+type BuildHistory interface {
+	Start(ctx context.Context, tool, host string, at time.Time) (int64, error)
+	Finish(ctx context.Context, id int64, status string, finishedAt time.Time,
+		skipped bool, version, stamp, errMsg, log string) error
 }
 
 // Job is one build, running or finished.
@@ -48,6 +66,9 @@ type Job struct {
 	Version string `json:"version,omitempty"`
 	Stamp   string `json:"stamp,omitempty"`
 	Error   string `json:"error,omitempty"`
+
+	// rowID is this job's history row, 0 when nothing is persisting.
+	rowID int64
 
 	mu  sync.Mutex
 	log []string
@@ -151,6 +172,16 @@ func (b *Builder) Start(tool, host string, force bool) (*Job, error) {
 	b.current = j
 	b.mu.Unlock()
 
+	// Recorded as it BEGINS, so a build killed by a restart leaves evidence
+	// rather than vanishing along with twenty minutes of work.
+	if b.History != nil {
+		if id, err := b.History.Start(context.Background(), j.Tool, j.Host, j.StartedAt); err != nil {
+			slog.Warn("could not record the start of a tool build", "tool", j.Tool, "host", j.Host, "err", err)
+		} else {
+			j.rowID = id
+		}
+	}
+
 	go b.run(j, force)
 	return j, nil
 }
@@ -196,6 +227,16 @@ func (b *Builder) run(j *Job, force bool) {
 	b.mu.Lock()
 	b.last, b.current = j, nil
 	b.mu.Unlock()
+
+	if b.History != nil && j.rowID != 0 {
+		snap := j.Snapshot()
+		lines, _ := j.LogFrom(0)
+		if err := b.History.Finish(context.Background(), j.rowID, snap.Status, snap.FinishedAt,
+			snap.Skipped, snap.Version, snap.Stamp, snap.Error, strings.Join(lines, "\n")); err != nil {
+			slog.Warn("could not record the result of a tool build",
+				"tool", j.Tool, "host", j.Host, "err", err)
+		}
+	}
 }
 
 // State returns the running job (if any) and the last finished one.

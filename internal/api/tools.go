@@ -301,3 +301,95 @@ func jobView(j *toolchain.Job) ToolJobView {
 	}
 	return v
 }
+
+// ToolBuildHistoryInput bounds the listing.
+type ToolBuildHistoryInput struct {
+	Tool  string `query:"tool" doc:"Scope to one tool. Empty means any."`
+	Host  string `query:"host" doc:"Scope to one host. Empty means any."`
+	Limit int    `query:"limit" doc:"Newest first. Default 20."`
+}
+
+// ToolBuildRecord is one persisted build.
+//
+// No log field: a listing of twenty builds would otherwise carry twenty logs,
+// which is megabytes to render a list of dates. Fetch one with toolBuildLog.
+type ToolBuildRecord struct {
+	ID   int64  `json:"id"`
+	Tool string `json:"tool"`
+	Host string `json:"host"`
+	// Status is running | ok | failed | interrupted. "interrupted" means the
+	// daemon restarted while it ran, which kills it — a build is a child of
+	// this process.
+	Status         string `json:"status"`
+	StartedAt      string `json:"startedAt"`
+	FinishedAt     string `json:"finishedAt,omitempty"`
+	ElapsedSeconds int    `json:"elapsedSeconds"`
+	Skipped        bool   `json:"skipped"`
+	Version        string `json:"version,omitempty"`
+	Stamp          string `json:"stamp,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// ToolBuildHistoryOutput is the persisted list.
+type ToolBuildHistoryOutput struct {
+	Body struct {
+		Builds []ToolBuildRecord `json:"builds"`
+	}
+}
+
+// ToolBuildHistory lists builds that outlived the process that ran them.
+//
+// The Builder's in-memory current/last is right for a live modal and empty
+// after any restart — and this daemon restarts on every deploy, so "did that
+// build work?" had no answer an hour later. This does.
+func (h *Handlers) ToolBuildHistory(ctx context.Context, in *ToolBuildHistoryInput) (*ToolBuildHistoryOutput, error) {
+	out := &ToolBuildHistoryOutput{}
+	out.Body.Builds = []ToolBuildRecord{}
+	if h.Store == nil {
+		return out, nil
+	}
+	rows, err := h.Store.RecentToolBuilds(ctx, in.Tool, in.Host, in.Limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		rec := ToolBuildRecord{
+			ID: r.ID, Tool: r.Tool, Host: r.Host, Status: r.Status,
+			StartedAt: r.StartedAt.Format(time.RFC3339),
+			Skipped:   r.Skipped, Version: r.Version, Stamp: r.Stamp, Error: r.Error,
+		}
+		if !r.FinishedAt.IsZero() {
+			rec.FinishedAt = r.FinishedAt.Format(time.RFC3339)
+			rec.ElapsedSeconds = int(r.FinishedAt.Sub(r.StartedAt).Seconds())
+		}
+		out.Body.Builds = append(out.Body.Builds, rec)
+	}
+	return out, nil
+}
+
+// ToolBuildLogInput names one build.
+type ToolBuildLogInput struct {
+	ID int64 `path:"id"`
+}
+
+// ToolBuildLogOutput is that build's captured output.
+type ToolBuildLogOutput struct {
+	Body struct {
+		Log string `json:"log"`
+	}
+}
+
+// ToolBuildLog returns one past build's log — the reason anybody opens an old
+// build at all.
+func (h *Handlers) ToolBuildLog(ctx context.Context, in *ToolBuildLogInput) (*ToolBuildLogOutput, error) {
+	out := &ToolBuildLogOutput{}
+	if h.Store == nil {
+		return out, nil
+	}
+	log, err := h.Store.ToolBuildLog(ctx, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	out.Body.Log = log
+	return out, nil
+}

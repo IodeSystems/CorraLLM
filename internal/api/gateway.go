@@ -86,6 +86,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.ToolBuildStatus)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolBuildHistory",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/tools/builds",
+		Summary:     "Past builds, which survive the restart that ends an in-memory one.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolBuildHistory)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolBuildLog",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/tools/builds/{id}/log",
+		Summary:     "One past build's captured output.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolBuildLog)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "recentActivity",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/activity",

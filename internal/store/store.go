@@ -593,6 +593,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if _, err := db.ExecContext(ctx, toolBuildSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("tool_build schema: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, enrollSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply enrollment schema: %w", err)

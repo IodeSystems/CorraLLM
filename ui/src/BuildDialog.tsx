@@ -62,6 +62,36 @@ const BuildStatusDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const BuildHistoryDoc = graphql(/* GraphQL */ `
+  query BuildHistory($tool: String, $host: String) {
+    corrallm {
+      toolBuildHistory(tool: $tool, host: $host, limit: 8) {
+        builds {
+          id
+          tool
+          host
+          status
+          startedAt
+          elapsedSeconds
+          skipped
+          version
+          error
+        }
+      }
+    }
+  }
+`)
+
+const BuildLogDoc = graphql(/* GraphQL */ `
+  query BuildLog($id: Long!) {
+    corrallm {
+      toolBuildLog(id: $id) {
+        log
+      }
+    }
+  }
+`)
+
 const BuildStartDoc = graphql(/* GraphQL */ `
   mutation BuildStart($tool: String!, $host: String!, $force: Boolean!) {
     corrallm {
@@ -115,6 +145,23 @@ export function BuildDialog({
       query.state.data?.corrallm.toolBuildStatus?.current ? 1000 : false,
   })
 
+  // History outlives the process. The in-memory current/last is empty after
+  // any restart, and this daemon restarts on every deploy — so without this,
+  // "did that build work?" had no answer an hour later.
+  const hist = useQuery({
+    queryKey: ['buildHistory', tool ?? '', host ?? ''],
+    queryFn: () => gqlClient.request(BuildHistoryDoc, { tool: tool ?? null, host: host ?? null }),
+    enabled: open,
+  })
+  const past = hist.data?.corrallm.toolBuildHistory?.builds ?? []
+
+  const [pastId, setPastId] = useState<string | null>(null)
+  const pastLog = useQuery({
+    queryKey: ['buildLog', pastId],
+    queryFn: () => gqlClient.request(BuildLogDoc, { id: String(pastId) }),
+    enabled: open && !!pastId,
+  })
+
   const st = q.data?.corrallm.toolBuildStatus
   const current = st?.current
   const last = st?.last
@@ -137,6 +184,7 @@ export function BuildDialog({
     setLines([])
     setLogFrom(0)
     setErr('')
+    setPastId(null)
     pinnedRef.current = true
   }, [open])
 
@@ -156,7 +204,9 @@ export function BuildDialog({
       setErr('')
       setLines([])
       setLogFrom(0)
+      setPastId(null)
       void q.refetch()
+      void hist.refetch()
     },
     onError: (e: unknown) => setErr(extractMessage(e)),
   })
@@ -278,7 +328,16 @@ export function BuildDialog({
             wordBreak: 'break-word',
           }}
         >
-          {lines.length === 0 ? (
+          {pastId ? (
+            <Typography
+              variant="caption"
+              sx={{ color: C.textMuted, whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}
+            >
+              {pastLog.isFetching
+                ? 'loading…'
+                : (pastLog.data?.corrallm.toolBuildLog?.log ?? '(no log kept for that build)')}
+            </Typography>
+          ) : lines.length === 0 ? (
             <Typography variant="caption" sx={{ color: C.textFaint }}>
               {running ? 'waiting for output…' : 'no output'}
             </Typography>
@@ -290,6 +349,54 @@ export function BuildDialog({
             ))
           )}
         </Box>
+        {past.length > 0 && (
+          <Box sx={{ mt: 1.5 }}>
+            <Typography variant="caption" sx={{ color: C.textMuted }}>
+              Past builds — these survive a restart, which the live view above does not.
+            </Typography>
+            {past.map((b) => {
+              const selected = pastId === String(b.id)
+              return (
+                <Stack
+                  key={String(b.id)}
+                  direction="row"
+                  spacing={1}
+                  alignItems="baseline"
+                  flexWrap="wrap"
+                  useFlexGap
+                  onClick={() => setPastId(selected ? null : String(b.id))}
+                  sx={{
+                    cursor: 'pointer',
+                    py: 0.5,
+                    px: 1,
+                    borderRadius: 1,
+                    bgcolor: selected ? C.raised : undefined,
+                    '&:hover': { bgcolor: C.raised },
+                  }}
+                >
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color={
+                      b.status === 'ok' ? 'success' : b.status === 'failed' ? 'error' : 'warning'
+                    }
+                    label={b.status === 'ok' && b.skipped ? 'no-op' : b.status}
+                  />
+                  <Typography variant="caption" sx={{ minWidth: 150 }}>
+                    {b.tool} on {b.host}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: C.textFaint }}>
+                    {new Date(b.startedAt).toLocaleString()} ·{' '}
+                    {fmtElapsed(Number(b.elapsedSeconds))}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: C.textFaint, flex: 1 }}>
+                    {b.version || b.error || ''}
+                  </Typography>
+                </Stack>
+              )
+            })}
+          </Box>
+        )}
       </DialogContent>
 
       <DialogActions>
