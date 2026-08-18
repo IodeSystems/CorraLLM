@@ -43,6 +43,24 @@ import { C } from '@/theme'
  * value is written through a separate write-only endpoint. That is what keeps
  * the config document safe to read, back up and share.
  */
+// A local model with no `server` is a pure proxy — corrallm forwards to it and
+// never starts it — so it has no box. It gets its own heading rather than being
+// dropped or filed under an arbitrary host, because "which machine runs this"
+// having no answer is itself the answer.
+const UNPLACED = '\u0000unplaced'
+
+function groupByBox<T extends { server?: string | null }>(models: readonly T[]): [string, T[]][] {
+  const by = new Map<string, T[]>()
+  for (const m of models) {
+    const k = m.server || UNPLACED
+    by.set(k, [...(by.get(k) ?? []), m])
+  }
+  // Named boxes first, alphabetically; the unplaced group last.
+  return [...by.entries()].sort(([a], [b]) =>
+    a === UNPLACED ? 1 : b === UNPLACED ? -1 : a.localeCompare(b),
+  )
+}
+
 const ProvidersDoc = graphql(/* GraphQL */ `
   query Providers {
     corrallm {
@@ -490,9 +508,29 @@ function ProvidersPage() {
                   no models yet
                 </Typography>
               )}
-              {/* One row per model rather than a strip of chips: these are the
-                  processes on this box, and each needs somewhere to put Edit. */}
-              {p.models.map((m) => (
+              {/* Grouped by BOX, because that is the question actually asked of
+                  this list: "what runs on box1". A per-row server chip said the
+                  same thing scattered across twenty rows, which reads as a flat
+                  list of processes with no machine behind them. A model with no
+                  server is a pure proxy and groups under its own heading rather
+                  than being hidden or faked onto a host. */}
+              {groupByBox(p.models).map(([box, boxModels]) => (
+                <Box key={box} sx={{ mt: 1 }}>
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="baseline"
+                    sx={{ pl: 2, pt: 0.5 }}
+                  >
+                    <Typography
+                      variant="caption"
+                      sx={{ color: C.textMuted, fontWeight: 600, letterSpacing: 0.4 }}
+                    >
+                      {box === UNPLACED ? 'no host (proxy)' : box}
+                    </Typography>
+                    <Chip size="small" variant="outlined" label={boxModels.length} />
+                  </Stack>
+                  {boxModels.map((m) => (
                 <Stack
                   key={m.id}
                   direction="row"
@@ -512,7 +550,10 @@ function ProvidersPage() {
                   </Box>
                   <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
                     {m.type && <Chip size="small" variant="outlined" label={m.type} />}
-                    {m.server && <Chip size="small" variant="outlined" label={m.server} />}
+                    {/* No server chip: the group heading above already says
+                        which box, and repeating it on every row was the flat
+                        list's way of answering a question the grouping now
+                        answers once. */}
                     <Tooltip
                       title={
                         m.hasCmd
@@ -550,6 +591,8 @@ function ProvidersPage() {
                     Delete
                   </Button>
                 </Stack>
+              ))}
+                </Box>
               ))}
             </Row>
           ))}

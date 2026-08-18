@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
@@ -219,13 +219,6 @@ const DeleteEntryDoc = graphql(/* GraphQL */ `
   }
 `)
 
-// A model's home: the server it draws capacity from, else the fact that it is
-// somebody else's machine. Grouping by this is the question the page answers —
-// "what runs where" — and it is also the grouping the Agents section will slot
-// into once a server can be bound to a remote agent.
-const REMOTE = '(remote — not ours to run)'
-const UNBOUND = '(no server)'
-
 function ConfigPage() {
   const q = useQuery({
     queryKey: ['config'],
@@ -237,6 +230,7 @@ function ConfigPage() {
   // that only runs on the success path changes that count between renders —
   // "rendered more hooks than during the previous render" (React #310).
   const qc = useQueryClient()
+  const nav = useNavigate()
   const [editing, setEditing] = useState<Edit | null>(null)
   const [err, setErr] = useState('')
   const [minted, setMinted] = useState<{ command: string; expires: string } | null>(null)
@@ -444,30 +438,11 @@ function ConfigPage() {
     agentStatus: s.agentStatus,
   }))
 
-  const homeOf = (m: (typeof models)[number]) =>
-    m.remote ? REMOTE : m.server ? m.server : UNBOUND
-
-  const byHome = new Map<string, typeof models>()
-  for (const m of models) {
-    const k = homeOf(m)
-    byHome.set(k, [...(byHome.get(k) ?? []), m])
-  }
-  // Declared servers first (in order), then remote, then anything unbound —
-  // roughly most-ours to least-ours.
-  const homes = [
-    ...servers.map((s) => s.server).filter((s) => byHome.has(s)),
-    ...[REMOTE, UNBOUND].filter((k) => byHome.has(k)),
-  ]
-
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title="Config">
         <Chip size="small" variant="outlined" label={`${models.length} models`} />
         <Chip size="small" variant="outlined" label={`${servers.length} servers`} />
-        <Box sx={{ flexGrow: 1 }} />
-        <Button size="small" variant="outlined" onClick={() => setEditing(blankModel())}>
-          Add model
-        </Button>
       </PageHeader>
 
       {/* First run. Every panel below renders empty on a fresh install, which
@@ -478,17 +453,18 @@ function ConfigPage() {
       {models.length === 0 && servers.length === 0 && (
         <Panel title="Nothing configured yet">
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            This instance is running but serves no models. The quickest start is{' '}
-            <b>Add model</b> with a <code>proxy:</code> target — an upstream API such as Groq or
-            OpenRouter — which needs no host declared. To run models on this machine instead,{' '}
-            <b>Add host</b> first to declare its memory budget, then add models that name it.
+            This instance is running but serves no models. Declare a host here first — its
+            memory budget is what the scheduler admits against — then add models on{' '}
+            <b>Providers</b>, which is where a model gets the provider that owns it. A{' '}
+            <code>proxy:</code> model (an upstream API such as Groq or OpenRouter) needs no host
+            at all, so that is the shortest path to a working instance.
           </Typography>
           <Stack direction="row" spacing={1}>
-            <Button size="small" variant="contained" onClick={() => setEditing(blankModel())}>
-              Add model
-            </Button>
-            <Button size="small" variant="outlined" onClick={() => setEditing(blankServer())}>
+            <Button size="small" variant="contained" onClick={() => setEditing(blankServer())}>
               Add host
+            </Button>
+            <Button size="small" variant="outlined" onClick={() => nav({ to: '/providers' })}>
+              Go to Providers
             </Button>
           </Stack>
         </Panel>
@@ -644,96 +620,12 @@ function ConfigPage() {
           would otherwise make capacity wait on a sleeping laptop. */}
       <ToolingPanel />
 
-      {homes.map((home) => {
-        const ms = byHome.get(home) ?? []
-        return (
-          <Panel
-            key={home}
-            title={home}
-            subtitle={
-              home === REMOTE
-                ? 'Forwarded to a host we do not run. No process, no residency.'
-                : home === UNBOUND
-                  ? 'Declared without a server.'
-                  : 'Spawned and evicted here'
-            }
-            badge={<Chip size="small" variant="outlined" label={`${ms.length}`} />}
-            flush
-          >
-            {ms
-              .slice()
-              .sort((a, b) => Number(b.quality) - Number(a.quality) || a.name.localeCompare(b.name))
-              .map((m) => (
-                <Row key={m.name} onClick={() => openEditor('model', m.name)}>
-                  <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
-                    <Typography variant="subtitle2">{m.name}</Typography>
-                    {/* The alias. corrallm routes on the served name; the backend
-                        knows it by this one. */}
-                    {m.upstream && m.upstream !== m.name && (
-                      <Tooltip title="The id the BACKEND knows this model by. corrallm routes on the served name and rewrites it on the way out.">
-                        <Chip size="small" variant="outlined" label={`→ ${m.upstream}`} />
-                      </Tooltip>
-                    )}
-                    <Chip size="small" color="info" variant="outlined" label={m.capability} />
-                    {/* What it can actually TAKE. A model that accepts images
-                        looked identical to one that does not, so the only way
-                        to find out was to send one and see. */}
-                    {(m.modalities ?? [])
-                      .map((x) => x?.modality)
-                      .filter((x): x is string => !!x && x !== 'text')
-                      .map((mod) => (
-                        <Tooltip key={mod} title={`Accepts ${mod} input`}>
-                          <Chip size="small" color="success" variant="outlined" label={mod} />
-                        </Tooltip>
-                      ))}
-                    {m.persistent && <Chip size="small" variant="outlined" label="pinned" />}
-                    {m.ttl && <Chip size="small" variant="outlined" label={`ttl ${m.ttl}`} />}
-                    {m.idleUnload && (
-                      <Chip size="small" variant="outlined" label={`idle-unload ${m.idleUnload}`} />
-                    )}
-                  </Box>
-                  <Box sx={{ display: 'flex', gap: 3, mt: 0.75, flexWrap: 'wrap' }}>
-                    <Stat label="Quality" value={m.quality} />
-                    <Stat label="Type" value={m.type} />
-                    <Stat label="Slots" value={m.maxConcurrent} />
-                    <Stat
-                      label="Context"
-                      value={m.contextPerRequest ? Number(m.contextPerRequest).toLocaleString() : '—'}
-                    />
-                    <Stat label="Target" value={m.target || '—'} />
-                  </Box>
-                  {m.notes && (
-                    <Typography
-                      variant="caption"
-                      sx={{ display: 'block', mt: 0.75, color: C.textMuted, whiteSpace: 'pre-wrap' }}
-                    >
-                      {m.notes.length > 240 ? m.notes.slice(0, 240) + '…' : m.notes}
-                    </Typography>
-                  )}
-                  {m.cmd && (
-                    <Box
-                      component="pre"
-                      sx={{
-                        mt: 0.75,
-                        mb: 0,
-                        p: 1,
-                        bgcolor: C.raised,
-                        border: `1px solid ${C.border}`,
-                        borderRadius: 1,
-                        fontSize: 11,
-                        color: C.textMuted,
-                        overflowX: 'auto',
-                        whiteSpace: 'pre',
-                      }}
-                    >
-                      {m.cmd}
-                    </Box>
-                  )}
-                </Row>
-              ))}
-          </Panel>
-        )
-      })}
+      {/* The per-box model list moved to Providers. A model belongs to the
+          provider that owns it — that is what decides its served prefix and
+          what it falls back to — and having a second list here meant two places
+          to add one thing, which disagreed about which fields mattered. Boxes
+          are still the grouping there; this page keeps what a box IS, not what
+          runs on it. */}
 
       <Panel
         title="Lanes"
@@ -1139,38 +1031,6 @@ function whyNotSaveable(e: Edit): string {
   return 'Cannot save yet — this model still needs ' + missing.join(', and ') + '.'
 }
 
-// blankModel seeds a new entry with the fields every model needs, so the first
-// thing an operator sees is a shape to fill in rather than an empty box.
-function blankModel(): Edit {
-  return {
-    kind: 'model',
-    existing: false,
-    name: '',
-    // A new model opens on the FORM: it is the shape most models need, and the
-    // YAML tab is one click away for the ones that need more.
-    mode: 'form',
-    spec: blankSpec(),
-    advanced: [],
-    yaml: `# A model is exactly ONE serving path: a spawned cmd, or a proxy target.
-# Everything the config schema accepts works here.
-
-# cmd: "exec llama-server --port 5800 ..."   # spawned locally; needs a server
-# server: box1
-proxy: 5800            # port, host:port, or {host, port, headers}
-type: chat             # chat | embed | stt | tts
-quality: 1             # fractional is fine — 1.5 sits between two tiers
-maxConcurrent: 1
-# ramUsage: { gpu0: 16GB }   # required on a host that cannot measure itself
-# sticky: { ttl: 300s, evictCost: high }
-# notes: |
-#   Why this model is configured the way it is.
-`,
-  }
-}
-
-// extractMessage digs the server's actual complaint out of a GraphQL error.
-// The useful text — "lane chat member 0: unknown model" — is nested, and the
-// wrapper alone says nothing actionable.
 // What each agent state means for whether anything can run there.
 const AGENT_STATUS_HINT: Record<string, string> = {
   up: 'heartbeating; models can be spawned here',
