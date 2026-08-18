@@ -25,6 +25,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
 	"github.com/iodesystems/corrallm/internal/sysmem"
+	"github.com/iodesystems/corrallm/internal/toolchain"
 )
 
 // Handlers carries the dependencies every operation needs. It grows as phases
@@ -42,7 +43,11 @@ type Handlers struct {
 	Cfg   *config.Config
 	live  atomic.Pointer[config.Config]
 	Store *store.Store
-	Mgr   *proc.Manager    // residency introspection (P8)
+	Mgr   *proc.Manager // residency introspection (P8)
+	// Tools answers "what tool is installed where, at what version" (P25b).
+	// Nil renders an empty table rather than failing — a daemon with no tools:
+	// block is the normal state, not an error.
+	Tools *toolchain.Registry
 	Sched *sched.Scheduler // live admission load (P8-beyond)
 	// PublicBase is how an attaching machine reaches this daemon, used to build
 	// the copy-pasteable install command.

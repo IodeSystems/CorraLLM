@@ -611,7 +611,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	mgr.ExpandCmd = toolReg.ExpandTools
 
 	agentDist := &agentdist.Handler{Dir: o.agentDir, Version: version}
-	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler,
+	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler, Tools: toolReg,
 		Liveness: liveness, AgentDist: agentDist, Verified: api.NewVerifiedStore(),
 		ConfigPath: o.configPath, PublicBase: o.publicBase,
 	}

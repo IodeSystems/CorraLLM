@@ -42,6 +42,33 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Tags:        []string{"meta"},
 	}, h.ConfigSummary)
 
+	// Toolchain (P25b). Read-only: a build is minutes long and needs a job with
+	// a streamed log, not a request somebody's browser holds open — that is a
+	// follow-up, and `corrallm tools build` covers it meanwhile.
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolStates",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/tools",
+		Summary:     "What tool is installed on which host, at what version, and how far behind its pin.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolStates)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolPreflight",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/tools/preflight",
+		Summary:     "Can a host build this tool, and what is missing. Compiles nothing.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolPreflight)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolResolve",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/tools/resolve",
+		Summary:     "What ${tool:x} expands to on a host. Spawns nothing.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolResolve)
+
 	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "recentActivity",
 		Method:      http.MethodGet,

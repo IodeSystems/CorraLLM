@@ -47,6 +47,8 @@ type CorrallmMutationNamespace {
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  toolPreflight(body: corrallm_ToolPreflightInputBodyInput!): corrallm_ToolPreflightOutputBody @derived(operationId: "toolPreflight")
+  toolResolve(body: corrallm_ToolResolveInputBodyInput!): corrallm_ToolResolveOutputBody @derived(operationId: "toolResolve")
   trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
   unassignModel(body: corrallm_UnassignModelInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "unassignModel")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
@@ -211,6 +213,10 @@ type CorrallmQueryNamespace {
     """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
     minutes: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  toolStates(
+    """Also ask upstream whether each pin has moved. One git ls-remote per installed tool; skip it for a fast render."""
+    drift: Boolean
+  ): corrallm_ToolStatesOutputBody @derived(operationId: "toolStates")
   usageByKey(
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
@@ -288,6 +294,8 @@ type CorrallmV1MutationNamespace {
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  toolPreflight(body: corrallm_ToolPreflightInputBodyInput!): corrallm_ToolPreflightOutputBody @derived(operationId: "toolPreflight")
+  toolResolve(body: corrallm_ToolResolveInputBodyInput!): corrallm_ToolResolveOutputBody @derived(operationId: "toolResolve")
   trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
   unassignModel(body: corrallm_UnassignModelInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "unassignModel")
   unloadAllModels: corrallm_UnloadAllOutputBody @derived(operationId: "unloadAllModels")
@@ -451,6 +459,10 @@ type CorrallmV1QueryNamespace {
     """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
     minutes: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  toolStates(
+    """Also ask upstream whether each pin has moved. One git ls-remote per installed tool; skip it for a fast render."""
+    drift: Boolean
+  ): corrallm_ToolStatesOutputBody @derived(operationId: "toolStates")
   usageByKey(
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
@@ -2390,6 +2402,49 @@ type corrallm_StageView {
   policy: String!
   """Backend type (or "default")."""
   type: String!
+}
+
+input corrallm_ToolPreflightInputBodyInput {
+  host: String!
+  tool: String!
+}
+
+type corrallm_ToolPreflightOutputBody {
+  """Exactly what would be run to fix it. Shown even when installing is not permitted here, so it can be run by hand."""
+  commands: [String!]!
+  missing: [String!]!
+  notes: [String!]!
+  ok: Boolean!
+  runnable: Boolean!
+}
+
+input corrallm_ToolResolveInputBodyInput {
+  host: String!
+  tool: String!
+}
+
+type corrallm_ToolResolveOutputBody {
+  dir: String!
+}
+
+type corrallm_ToolStateView {
+  adopted: Boolean!
+  behind: Boolean!
+  commit: String
+  declared: Boolean!
+  driftError: String
+  error: String
+  host: String!
+  path: String
+  present: Boolean!
+  remoteHead: String
+  tool: String!
+  version: String
+  versionSource: String
+}
+
+type corrallm_ToolStatesOutputBody {
+  tools: [corrallm_ToolStateView!]!
 }
 
 type corrallm_TrialEvent {
