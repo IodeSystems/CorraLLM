@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import {
   Box,
+  Button,
   Chip,
   CircularProgress,
   LinearProgress,
@@ -15,6 +16,7 @@ import {
   Typography,
 } from '@mui/material'
 import { Panel, PageHeader } from '@/Panel'
+import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtInt } from '@/format'
@@ -85,6 +87,11 @@ function Groups() {
     return () => clearInterval(id)
   }, [])
 
+  // ABOVE the early returns: a hook after them runs on some renders and not
+  // others, and React counts hooks. This page crashed with #310 the instant the
+  // query resolved when it sat below.
+  const [editing, setEditing] = useState<EntryEdit | null>(null)
+
   if (q.isLoading) {
     return (
       <Box sx={{ p: 3 }}>
@@ -109,7 +116,16 @@ function Groups() {
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title="Groups" />
 
-      <Panel title="Priority groups" subtitle="Weighted fairshare lanes + live load" flush>
+      <Panel
+        title="Priority groups"
+        subtitle="Weighted fairshare lanes + live load. Click a row to edit it."
+        actions={
+          <Button size="small" variant="outlined" onClick={() => setEditing(blankGroup())}>
+            Add group
+          </Button>
+        }
+        flush
+      >
         <TableContainer>
           <Table size="small">
             <TableHead>
@@ -131,7 +147,14 @@ function Groups() {
                 </TableRow>
               ) : (
                 groups.map((g) => (
-                  <TableRow key={g.name} hover>
+                  <TableRow
+                    key={g.name}
+                    hover
+                    sx={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      void openEntry('group', g.name).then(setEditing)
+                    }}
+                  >
                     <TableCell>{g.name}</TableCell>
                     <TableCell align="right">{fmtInt(g.weight)}</TableCell>
                     <TableCell>{g.shareCurrency}</TableCell>
@@ -244,8 +267,32 @@ function Groups() {
           </Table>
         </TableContainer>
       </Panel>
+      <EntryEditor
+        editing={editing}
+        onChange={setEditing}
+        onClose={() => setEditing(null)}
+        invalidate={['groups', 'config']}
+      />
     </Box>
   )
+}
+
+// blankGroup seeds a policy unit: who gets served first under load, and what
+// they accept when the good backend is full.
+function blankGroup(): EntryEdit {
+  return {
+    kind: 'group',
+    existing: false,
+    name: '',
+    yaml: `# A priority group bundles ALL policy for the keys mapped to it.
+weight: 1                 # share under contention, in the share currency
+interruptible: true       # may a higher group preempt its in-flight slot?
+# acceptDegrade: true     # will it take a lower-quality tier when saturated?
+# qualityFloor: 0.5       # ...but no lower than this
+onSaturated:
+  default: reject
+`,
+  }
 }
 
 export const Route = createFileRoute('/groups')({ component: Groups })

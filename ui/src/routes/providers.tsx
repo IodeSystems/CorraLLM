@@ -18,6 +18,7 @@ import {
 import AddIcon from '@mui/icons-material/Add'
 import SearchIcon from '@mui/icons-material/Search'
 import { Panel, PageHeader, Row } from '@/Panel'
+import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { ProviderDialog } from '@/ProviderDialog'
 import type { ProviderInitial } from '@/ProviderDialog'
 import { CatalogDialog } from '@/CatalogDialog'
@@ -47,6 +48,41 @@ import { C } from '@/theme'
 // never starts it — so it has no box. It gets its own heading rather than being
 // dropped or filed under an arbitrary host, because "which machine runs this"
 // having no answer is itself the answer.
+// Blank templates for the two entry kinds this page now owns. They live with
+// the panels that create them rather than in the editor, because the editor is
+// a text box and these are the domain's opinion about what to type in it.
+function blankLane(): EntryEdit {
+  return {
+    kind: 'lane',
+    existing: false,
+    name: '',
+    yaml: `# A lane is an ORDERED fallback list. Requesting the lane allows
+# substitution across its members; requesting a model pins that model.
+members:
+  - some-local-model      # best first
+  - some-remote-model     # spilled to when the local one is full
+`,
+  }
+}
+
+function blankExtension(): EntryEdit {
+  return {
+    kind: 'extension',
+    existing: false,
+    name: '',
+    yaml: `# One process serving SEVERAL models. They load, unload and are
+# accounted for together, because they are the same bytes.
+# cmd: "exec my-server --addr :5806"
+# server: box1
+# ramUsage: { system: 3GB }     # counted ONCE, not per provided model
+proxy: 5806
+provides:
+  - name: my-model
+    type: chat
+`,
+  }
+}
+
 const UNPLACED = '\u0000unplaced'
 
 function groupByBox<T extends { server?: string | null }>(models: readonly T[]): [string, T[]][] {
@@ -64,6 +100,21 @@ function groupByBox<T extends { server?: string | null }>(models: readonly T[]):
 const ProvidersDoc = graphql(/* GraphQL */ `
   query Providers {
     corrallm {
+      overview {
+        lanes {
+          name
+          members {
+            model
+          }
+        }
+        extensions {
+          name
+          cmd
+          server
+          provides
+          notes
+        }
+      }
       listProviders {
         secrets
         local {
@@ -275,6 +326,7 @@ function ProvidersPage() {
     null,
   )
   const [deleteErr, setDeleteErr] = useState('')
+  const [editing, setEditing] = useState<EntryEdit | null>(null)
 
   const del = useMutation({
     mutationFn: (name: string) => gqlClient.request(DeleteModelDoc, { name }),
@@ -312,6 +364,13 @@ function ProvidersPage() {
   const providers = list?.providers ?? []
   const pools = list?.pools ?? []
   const local = list?.local ?? []
+  const ov = data?.corrallm?.overview
+  // Lanes and extensions moved here from the Config page. Both are about
+  // MODELS — a lane is an ordered list of them, an extension is one process
+  // serving several — so they belong with the models rather than on a page
+  // named after a file.
+  const lanes = ov?.lanes ?? []
+  const extensions = ov?.extensions ?? []
   const secrets = list?.secrets ?? []
 
   const toInitial = (p: ProviderRow): ProviderInitial => ({
@@ -648,6 +707,92 @@ function ProvidersPage() {
 
       <AssignedModels />
 
+      <Panel
+        title={`Lanes (${lanes.length})`}
+        subtitle="Named fallback lists. Requesting a lane allows substitution; requesting a model pins it."
+        actions={
+          <Button size="small" variant="outlined" onClick={() => setEditing(blankLane())}>
+            Add lane
+          </Button>
+        }
+        flush
+      >
+        {lanes.length === 0 ? (
+          <Row>
+            <Typography variant="body2" sx={{ color: C.textFaint }}>
+              No lanes declared.
+            </Typography>
+          </Row>
+        ) : (
+          lanes.map((l) => (
+            <Row
+              key={l.name}
+              onClick={() => {
+                void openEntry('lane', l.name).then(setEditing)
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+                <Typography variant="subtitle2">{l.name}</Typography>
+                <Typography variant="caption" sx={{ color: C.textFaint }}>
+                  {l.members.map((mem) => mem.model).join('  \u2192  ')}
+                </Typography>
+              </Box>
+            </Row>
+          ))
+        )}
+      </Panel>
+
+      <Panel
+        title={`Extensions (${extensions.length})`}
+        subtitle="One process serving several models — they load, unload and are accounted for together"
+        actions={
+          <Button size="small" variant="outlined" onClick={() => setEditing(blankExtension())}>
+            Add extension
+          </Button>
+        }
+        flush
+      >
+        {extensions.length === 0 ? (
+          <Row>
+            <Typography variant="body2" sx={{ color: C.textFaint }}>
+              No extensions declared.
+            </Typography>
+          </Row>
+        ) : (
+          extensions.map((x) => (
+            <Row
+              key={x.name}
+              onClick={() => {
+                void openEntry('extension', x.name).then(setEditing)
+              }}
+            >
+              <Stack direction="row" spacing={1.5} alignItems="baseline" flexWrap="wrap" useFlexGap>
+                <Typography variant="subtitle2" sx={{ minWidth: 140 }}>
+                  {x.name}
+                </Typography>
+                {x.server && <Chip size="small" variant="outlined" label={x.server} />}
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={x.cmd ? 'spawned' : 'proxy'}
+                />
+                <Typography variant="caption" sx={{ color: C.textFaint }}>
+                  {(x.provides ?? []).join(', ')}
+                </Typography>
+              </Stack>
+              {x.notes && (
+                <Typography
+                  variant="caption"
+                  sx={{ color: C.textMuted, whiteSpace: 'pre-wrap', display: 'block', mt: 0.5 }}
+                >
+                  {x.notes}
+                </Typography>
+              )}
+            </Row>
+          ))
+        )}
+      </Panel>
+
       <Panel title={`Credential store (${secrets.length})`}>
         <Typography variant="body2" sx={{ opacity: 0.75, mb: 1 }}>
           Names only. No endpoint returns a value — that is what keeps the config document safe to
@@ -726,6 +871,12 @@ function ProvidersPage() {
           credential={browse.credential}
         />
       )}
+      <EntryEditor
+        editing={editing}
+        onChange={setEditing}
+        onClose={() => setEditing(null)}
+        invalidate={['providers', 'config']}
+      />
     </Box>
   )
 }

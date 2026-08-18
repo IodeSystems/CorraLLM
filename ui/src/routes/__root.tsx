@@ -112,7 +112,7 @@ function CalibrationBanner() {
 
 const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/', label: 'Overview', icon: DashboardOutlined },
-  { to: '/config', label: 'Config', icon: SettingsOutlined },
+  { to: '/hosts', label: 'Hosts', icon: SettingsOutlined },
   { to: '/activity', label: 'Activity', icon: TimelineOutlined },
   { to: '/usage', label: 'Usage', icon: BarChartOutlined },
   { to: '/groups', label: 'Groups', icon: GroupsOutlined },
