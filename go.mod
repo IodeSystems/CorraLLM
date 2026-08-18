@@ -6,7 +6,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.37.3
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/iodesystems/agentkit v0.5.0
-	github.com/iodesystems/gwag v1.1.0-rc.5
+	github.com/iodesystems/gwag v1.4.0
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/spf13/cobra v1.10.2
@@ -60,4 +60,3 @@ require (
 )
 
 // gat lives in the iodesystems monorepo libs/ tree; same pattern as redline2.
-replace github.com/iodesystems/gwag => ../gwag

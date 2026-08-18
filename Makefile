@@ -1,4 +1,4 @@
-.PHONY: install gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean
+.PHONY: install gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -76,6 +76,38 @@ dev:              ## Frees :6502/:6503, runs air (Go hot-reload) + Vite (delegat
 
 test:             ## Go tests
 	go test ./...
+
+# Proves corrallm builds from its OWN go.mod, with nothing borrowed from the
+# machine it is sitting on.
+#
+# This exists because the alternative failed silently for a long time: go.mod
+# declared gwag v1.1.0-rc.5 while a `replace` pointed at ../gwag, so every build
+# here used whatever was checked out next door. The declared version had not
+# been buildable in months — it lacks an API internal/api calls — and nothing
+# noticed, because nothing ever tried. A dependency you never resolve is not
+# pinned, it is imagined.
+#
+# GOWORK=off alone is not enough: a replace still redirects. Both are checked.
+verify-deps:      ## Fail if the build depends on anything outside this module
+	@echo "==> no replace directives"
+	@bad=$$(GOWORK=off go list -m -f '{{if .Replace}}{{.Path}} => {{.Replace.Path}}{{end}}' all 2>/dev/null | grep . || true); \
+	if [ -n "$$bad" ]; then \
+		echo "   REPLACED (this build is not reproducible elsewhere):"; \
+		echo "$$bad" | sed 's/^/     /'; \
+		exit 1; \
+	fi
+	@echo "==> builds with the workspace disabled"
+	@GOWORK=off go build ./... || exit 1
+	@echo "==> go.mod is tidy"
+	@cp go.mod $${TMPDIR:-/tmp}/corrallm.go.mod.bak; cp go.sum $${TMPDIR:-/tmp}/corrallm.go.sum.bak; \
+	GOWORK=off go mod tidy; \
+	rc=0; cmp -s go.mod $${TMPDIR:-/tmp}/corrallm.go.mod.bak || rc=1; \
+	if [ $$rc -ne 0 ]; then \
+		echo "   go.mod is not tidy — run 'GOWORK=off go mod tidy' and commit the result"; \
+		cp $${TMPDIR:-/tmp}/corrallm.go.mod.bak go.mod; cp $${TMPDIR:-/tmp}/corrallm.go.sum.bak go.sum; \
+		exit 1; \
+	fi
+	@echo "==> isolated: every dependency resolves from go.mod alone"
 
 clean:
 	rm -f bin/corrallm
