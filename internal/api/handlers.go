@@ -58,7 +58,14 @@ type Handlers struct {
 	PublicBase string
 	// ConfigPath is the config file corrallm owns and may rewrite. Empty means
 	// this daemon has no writable config and enrollment is unavailable.
+	//
+	// Legacy: config lives in SQLite now. Still carried because `corrallm bench`
+	// is handed a path, and because the import path names it in messages.
 	ConfigPath string
+	// SaveConfig persists a whole config. When set it REPLACES the file writer,
+	// and the ConfigPath checks with it — a store has no "is this file managed"
+	// question to answer, because nothing else writes it.
+	SaveConfig func(*config.Config) error
 	// Reload re-reads the config after a write. Nil skips it (the change
 	// applies on the next restart).
 	Reload func() error

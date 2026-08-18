@@ -30,6 +30,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/auth"
 	"github.com/iodesystems/corrallm/internal/bench/task"
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/configdb"
 	"github.com/iodesystems/corrallm/internal/events"
 	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/metrics"
@@ -529,18 +530,23 @@ func serve(ctx context.Context, o serveOpts) error {
 	if err := config.LoadCredentials(filepath.Dir(o.configPath)); err != nil {
 		return err
 	}
-	cfg, err := config.Load(o.configPath)
-	if err != nil {
-		return err
-	}
-	slog.Info("config loaded", "path", o.configPath,
-		"servers", len(cfg.Servers), "models", len(cfg.Models), "groups", len(cfg.PriorityGroups))
-
+	// The store opens BEFORE the config, because the config lives in it now.
 	st, err := store.Open(ctx, o.dbPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = st.Close() }()
+
+	if err := configdb.Apply(ctx, st.DB()); err != nil {
+		return err
+	}
+	cfgSource := &configdb.Source{DB: st.DB()}
+	cfg, err := loadConfig(ctx, cfgSource, o.configPath)
+	if err != nil {
+		return err
+	}
+	slog.Info("config loaded", "from", "database", "db", o.dbPath,
+		"servers", len(cfg.Servers), "models", len(cfg.Models), "groups", len(cfg.PriorityGroups))
 
 	// The models chosen off provider directories, and where they were placed.
 	// Loaded before the first refresh: a selection is the only record that a
@@ -629,6 +635,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler, Tools: toolReg, Builds: toolBuilds,
 		Liveness: liveness, AgentDist: agentDist, Verified: api.NewVerifiedStore(),
 		ConfigPath: o.configPath, PublicBase: o.publicBase,
+		SaveConfig: func(c *config.Config) error { return cfgSource.Save(ctx, c) },
 	}
 
 	// Admin token gates the management surface (/api/*). Generated into
@@ -777,14 +784,14 @@ func serve(ctx context.Context, o serveOpts) error {
 	// Enrollment writes config; reloading makes the new server usable without a
 	// restart. Set here rather than at construction because it closes over the
 	// proxy, which does not exist yet at that point.
-	h.Reload = func() error { return reloadInto(o.configPath, st, mgr, scheduler, px, h) }
+	h.Reload = func() error { return reloadInto(ctx, cfgSource, st, mgr, scheduler, px, h) }
 
 	// SIGHUP re-reads the config without dropping the listener or the resident
 	// backends. Config and keys were boot-time-only before this, so every edit
 	// cost a restart — which on this box means evicting a 27B and paying a cold
 	// load, and (until agentkit learned to retry transport errors) failing every
 	// in-flight client request.
-	go watchReload(sigCtx, o.configPath, st, mgr, scheduler, px, h)
+	go watchReload(sigCtx, cfgSource, st, mgr, scheduler, px, h)
 
 	// Expire stale slot reservations (a keyed caller can lease headroom for its
 	// lane; the lease must be renewed or it auto-frees). Stops on shutdown.
@@ -1068,7 +1075,7 @@ func envInt(key string, def int) int {
 // memory; the config is a statement of intent for the NEXT spawn. Evicting
 // someone's warm 27B because a file changed is not a reload, it is a restart
 // with extra steps.
-func watchReload(ctx context.Context, path string, st *store.Store, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) {
+func watchReload(ctx context.Context, src *configdb.Source, st *store.Store, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
 	defer signal.Stop(ch)
@@ -1078,14 +1085,17 @@ func watchReload(ctx context.Context, path string, st *store.Store, mgr *proc.Ma
 		case <-ctx.Done():
 			return
 		case <-ch:
-			cfg, err := config.Load(path)
+			// From the DATABASE. A SIGHUP used to re-read the file, which is
+			// now neither what the daemon booted from nor what the dashboard
+			// edits — reloading it would silently revert every change made
+			// through the UI since startup.
+			cfg, err := src.Load(ctx)
 			if err != nil {
-				slog.Error("config reload REJECTED; keeping the running config",
-					"path", path, "err", err)
+				slog.Error("config reload REJECTED; keeping the running config", "err", err)
 				continue
 			}
 			applyConfig(cfg, st, mgr, sc, px, h)
-			slog.Info("config reloaded", "path", path,
+			slog.Info("config reloaded", "from", "database",
 				"servers", len(cfg.Servers), "models", len(cfg.Models),
 				"lanes", len(cfg.Lanes), "groups", len(cfg.PriorityGroups))
 		}
@@ -1124,11 +1134,55 @@ func applyConfig(cfg *config.Config, st *store.Store, mgr *proc.Manager, sc *sch
 
 // reloadInto re-reads path and applies it. Used by enrollment, which writes the
 // config and needs the new server usable without a restart.
-func reloadInto(path string, st *store.Store, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) error {
-	cfg, err := config.Load(path)
+// reloadInto re-reads the stored config and installs it everywhere.
+//
+// Called after an API edit. It reads back from the STORE rather than reusing
+// the in-memory config that was just saved, so what the daemon runs is always
+// what persistence actually holds — if a write silently dropped something, the
+// reload surfaces it immediately instead of at the next restart.
+func reloadInto(ctx context.Context, src *configdb.Source, st *store.Store, mgr *proc.Manager, sc *sched.Scheduler, px *proxy.Proxy, h *api.Handlers) error {
+	cfg, err := src.Load(ctx)
 	if err != nil {
 		return err
 	}
 	applyConfig(cfg, st, mgr, sc, px, h)
 	return nil
+}
+
+// loadConfig reads the configuration, importing the legacy file exactly once.
+//
+// THE ONE-TIME IMPORT. An empty database with a config.yml beside it is an
+// install that predates the move to SQLite; the file is read, stored and
+// verified, and from then on the database is the only thing consulted. An empty
+// database with no file is a fresh install, which serves nothing until
+// something is configured — the same state a missing config file always
+// produced.
+//
+// The import VERIFIES rather than trusting the write: the config read back out
+// of the tables must be semantically equal to the one parsed from the file. A
+// silent partial import would be the worst possible outcome here, because the
+// daemon would come up serving a subset of what the operator declared and
+// nothing would say so.
+func loadConfig(ctx context.Context, src *configdb.Source, path string) (*config.Config, error) {
+	empty, err := configdb.IsEmpty(ctx, src.DB)
+	if err != nil {
+		return nil, err
+	}
+	if empty && configdb.FileExists(path) {
+		slog.Warn("importing the legacy config file into the database (one time)", "path", path)
+		if _, err := src.ImportFile(ctx, path); err != nil {
+			return nil, fmt.Errorf("importing %s: %w", path, err)
+		}
+		if err := src.VerifyAgainstFile(ctx, path); err != nil {
+			return nil, fmt.Errorf("the import did not verify, so nothing will be trusted: %w", err)
+		}
+		slog.Info("config imported and verified; the database is now authoritative",
+			"path", path, "hint", "corrallm config export writes it back out as YAML")
+	} else if !empty && configdb.FileExists(path) {
+		// A file that is no longer read is a trap: someone edits it, restarts,
+		// and nothing changes. Say so on every boot until it is gone.
+		slog.Warn("config.yml is present but NOT read — the database is authoritative",
+			"path", path, "hint", "corrallm config export > "+path+" to refresh it, or delete it")
+	}
+	return src.Load(ctx)
 }
