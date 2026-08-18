@@ -1,6 +1,10 @@
 # See raglit/.replace-allow for the rationale. Permitted local replaces only.
-
-# corrallm already requires gwag v1.1.0-rc.5, so this replace is a local
-# convenience rather than a necessity — it can move to go.work whenever the
-# rc is good enough to build against.
-github.com/iodesystems/gwag
+#
+# EMPTY, and worth keeping that way. Every entry here is a module that only
+# builds because of a sibling checkout, which is debt with a name — the pre-push
+# guard refuses any replace not listed, so removing a line is what makes the
+# ratchet tighten.
+#
+# gwag was the last entry. It is now required at a released version and the
+# replace is gone; `make verify-deps` proves the build resolves from go.mod
+# alone, including inside a bare container.
