@@ -371,6 +371,43 @@ function ProvidersPage() {
   // named after a file.
   const lanes = ov?.lanes ?? []
   const extensions = ov?.extensions ?? []
+
+  // Providers live INSIDE extensions — `extensions.free.providers.groq` — and
+  // the page used to contradict that by listing extensions, their providers and
+  // their pools as three flat panels, so `free` appeared three times and its
+  // three providers appeared unattached. One tree instead: the extension is the
+  // container, its providers are its members, and a pool is a property of the
+  // extension rather than a separate object.
+  const byExtension = (() => {
+    const groups = new Map<
+      string,
+      {
+        name: string
+        ext?: (typeof extensions)[number]
+        pool?: (typeof pools)[number]
+        provs: typeof providers
+      }
+    >()
+    const get = (name: string) => {
+      let g = groups.get(name)
+      if (!g) {
+        g = {
+          name,
+          ext: extensions.find((x) => x.name === name),
+          pool: pools.find((x) => x.extension === name),
+          provs: [],
+        }
+        groups.set(name, g)
+      }
+      return g
+    }
+    // Every declared extension gets a group even with no providers: claude and
+    // oidio provide models directly, and omitting them would hide half of what
+    // is configured.
+    for (const x of extensions) get(x.name)
+    for (const pr of providers) get(pr.extension).provs.push(pr)
+    return [...groups.values()].sort((a, b) => b.provs.length - a.provs.length || a.name.localeCompare(b.name))
+  })()
   const secrets = list?.secrets ?? []
 
   const toInitial = (p: ProviderRow): ProviderInitial => ({
@@ -406,14 +443,90 @@ function ProvidersPage() {
         </Typography>
       </PageHeader>
 
-      <Panel title={`Configured (${providers.length})`} flush>
-        {providers.length === 0 && (
+      <Panel
+        title={`Integrations (${byExtension.length})`}
+        subtitle="An extension is the container: one integration, its providers, and the models it serves."
+        actions={
+          <Button size="small" variant="outlined" onClick={() => setEditing(blankExtension())}>
+            Add extension
+          </Button>
+        }
+        flush
+      >
+        {byExtension.length === 0 && (
           <Typography variant="body2" sx={{ p: 2, color: C.textFaint }}>
             None yet. <strong>Add provider</strong> starts from a table of known OpenAI-compatible
             endpoints, or takes a custom one.
           </Typography>
         )}
-        {providers.map((p) => {
+        {byExtension.map((g) => (
+          <Box key={g.name}>
+            {/* The extension itself. Clicking it opens the same YAML editor the
+                flat Extensions panel used to own. */}
+            <Row
+              onClick={() => {
+                if (g.ext) void openEntry('extension', g.name).then(setEditing)
+              }}
+            >
+              <Stack direction="row" spacing={1.25} alignItems="baseline" flexWrap="wrap" useFlexGap>
+                <Typography variant="subtitle2" sx={{ minWidth: 120 }}>
+                  {g.name}
+                </Typography>
+                {g.pool && (
+                  <Tooltip title="A virtual extension: it has no endpoint of its own and pools its members' catalogues. Membership is re-derived on every refresh, so a provider withdrawing a model does not take the pool down.">
+                    <Chip size="small" color="info" variant="outlined" label="pool" />
+                  </Tooltip>
+                )}
+                {g.ext?.cmd && (
+                  <Tooltip title="One local process serving several models. They load, unload and are accounted for together, because they are the same bytes.">
+                    <Chip size="small" variant="outlined" label="spawned" />
+                  </Tooltip>
+                )}
+                {g.ext?.server && <Chip size="small" variant="outlined" label={g.ext.server} />}
+                {g.provs.length > 0 && (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={`${g.provs.length} provider${g.provs.length === 1 ? '' : 's'}`}
+                  />
+                )}
+                {(g.ext?.provides ?? []).length > 0 && (
+                  <Typography variant="caption" sx={{ color: C.textFaint }}>
+                    serves {(g.ext?.provides ?? []).join(', ')}
+                  </Typography>
+                )}
+                {g.pool?.lanes?.map((l) => (
+                  <Tooltip
+                    key={l.lane}
+                    title="Every model in the pool joins this lane at this priority. Ask for the lane to get the pool."
+                  >
+                    <Chip size="small" variant="outlined" label={`lane ${l.lane}`} />
+                  </Tooltip>
+                ))}
+              </Stack>
+              {g.ext?.notes && (
+                <Tooltip title={<span style={{ whiteSpace: 'pre-wrap' }}>{g.ext.notes}</span>}>
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: C.textMuted,
+                      whiteSpace: 'pre-wrap',
+                      display: '-webkit-box',
+                      WebkitLineClamp: 3,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                      mt: 0.5,
+                    }}
+                  >
+                    {g.ext.notes}
+                  </Typography>
+                </Tooltip>
+              )}
+            </Row>
+
+            {/* Its providers, indented to say so. */}
+            <Box sx={{ pl: 3, borderLeft: `2px solid ${C.border}`, ml: 2 }}>
+        {g.provs.map((p) => {
           // A provider with no explicit credentials still has one — the
           // implicit "default" carrying the provider's own headers — and the
           // catalogue is fetched per credential, so that is what Browse uses.
@@ -423,12 +536,8 @@ function ProvidersPage() {
             <Row key={`${p.extension}/${p.name}`}>
               <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
                 <Box sx={{ minWidth: 200 }}>
-                  <Typography variant="subtitle2">
-                    {p.name}{' '}
-                    <Typography component="span" variant="caption" sx={{ color: C.textFaint }}>
-                      {p.extension}
-                    </Typography>
-                  </Typography>
+                  {/* No extension label: the row above and the indent say it. */}
+                  <Typography variant="subtitle2">{p.name}</Typography>
                   <Typography variant="caption" sx={{ color: C.textMuted }}>
                     {p.host}:{p.port}
                     {p.basePath}
@@ -512,6 +621,9 @@ function ProvidersPage() {
             </Row>
           )
         })}
+            </Box>
+          </Box>
+        ))}
       </Panel>
 
       {local.length > 0 && (
@@ -534,12 +646,23 @@ function ProvidersPage() {
                     YAML comment it survives the file being rewritten — which is
                     where an explanation about this provider belongs. */}
                 {p.notes && (
-                  <Typography
-                    variant="caption"
-                    sx={{ color: C.textMuted, flexBasis: '100%', whiteSpace: 'pre-wrap', mt: 0.5 }}
-                  >
-                    {p.notes}
-                  </Typography>
+                  <Tooltip title={<span style={{ whiteSpace: 'pre-wrap' }}>{p.notes}</span>}>
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: C.textMuted,
+                        flexBasis: '100%',
+                        whiteSpace: 'pre-wrap',
+                        display: '-webkit-box',
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                        mt: 0.5,
+                      }}
+                    >
+                      {p.notes}
+                    </Typography>
+                  </Tooltip>
                 )}
                 <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
                   {Number(p.barePrecedence) > 0 ? (
@@ -658,54 +781,12 @@ function ProvidersPage() {
         </Panel>
       )}
 
-      {pools.length > 0 && (
-        <Panel title={`Pools (${pools.length})`} flush>
-          <Typography variant="body2" sx={{ px: 2, pt: 1.5, color: C.textMuted }}>
-            An extension that satisfies the provider contract by pooling its members&apos;
-            catalogues. It holds no endpoint and no key of its own — each model is reached with
-            the key of whichever member serves it, and membership is re-derived on every refresh
-            so a provider withdrawing a model does not take the pool down.
-          </Typography>
-          {pools.map((p) => (
-            <Row key={p.extension}>
-              <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
-                <Box sx={{ minWidth: 180 }}>
-                  <Typography variant="subtitle2">{p.extension}</Typography>
-                  <Typography variant="caption" sx={{ color: C.textMuted }}>
-                    over {p.sources.join(', ') || 'no members'}
-                  </Typography>
-                </Box>
-                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
-                  <Chip
-                    size="small"
-                    color={Number(p.models) > 0 ? 'success' : 'warning'}
-                    label={`${p.models} model${Number(p.models) === 1 ? '' : 's'}`}
-                  />
-                  {p.freeOnly && <Chip size="small" variant="outlined" label="free only" />}
-                  {Number(p.minContext) > 0 && (
-                    <Chip size="small" variant="outlined" label={`ctx ≥ ${p.minContext}`} />
-                  )}
-                  {Number(p.limit) > 0 && (
-                    <Tooltip title="Cap on the pool as a whole, largest window first — not per member, so one verbose provider cannot crowd out the rest.">
-                      <Chip size="small" variant="outlined" label={`top ${p.limit}`} />
-                    </Tooltip>
-                  )}
-                  {p.lanes.map((l) => (
-                    <Tooltip
-                      key={l.lane}
-                      title="Every model in the pool joins this lane at this priority. Ask for the lane to get the pool."
-                    >
-                      <Chip size="small" label={`${l.lane} @ ${l.order}`} />
-                    </Tooltip>
-                  ))}
-                </Stack>
-              </Stack>
-            </Row>
-          ))}
-        </Panel>
-      )}
-
       <AssignedModels />
+
+      {/* The Pools and Extensions panels are gone: both described objects that
+          are now rows in Integrations above. `free` used to appear three times
+          — as an extension, as a pool, and implicitly as the parent of three
+          unattached providers — which is three places to look for one thing. */}
 
       <Panel
         title={`Lanes (${lanes.length})`}
@@ -737,57 +818,6 @@ function ProvidersPage() {
                   {l.members.map((mem) => mem.model).join('  \u2192  ')}
                 </Typography>
               </Box>
-            </Row>
-          ))
-        )}
-      </Panel>
-
-      <Panel
-        title={`Extensions (${extensions.length})`}
-        subtitle="One process serving several models — they load, unload and are accounted for together"
-        actions={
-          <Button size="small" variant="outlined" onClick={() => setEditing(blankExtension())}>
-            Add extension
-          </Button>
-        }
-        flush
-      >
-        {extensions.length === 0 ? (
-          <Row>
-            <Typography variant="body2" sx={{ color: C.textFaint }}>
-              No extensions declared.
-            </Typography>
-          </Row>
-        ) : (
-          extensions.map((x) => (
-            <Row
-              key={x.name}
-              onClick={() => {
-                void openEntry('extension', x.name).then(setEditing)
-              }}
-            >
-              <Stack direction="row" spacing={1.5} alignItems="baseline" flexWrap="wrap" useFlexGap>
-                <Typography variant="subtitle2" sx={{ minWidth: 140 }}>
-                  {x.name}
-                </Typography>
-                {x.server && <Chip size="small" variant="outlined" label={x.server} />}
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={x.cmd ? 'spawned' : 'proxy'}
-                />
-                <Typography variant="caption" sx={{ color: C.textFaint }}>
-                  {(x.provides ?? []).join(', ')}
-                </Typography>
-              </Stack>
-              {x.notes && (
-                <Typography
-                  variant="caption"
-                  sx={{ color: C.textMuted, whiteSpace: 'pre-wrap', display: 'block', mt: 0.5 }}
-                >
-                  {x.notes}
-                </Typography>
-              )}
             </Row>
           ))
         )}
