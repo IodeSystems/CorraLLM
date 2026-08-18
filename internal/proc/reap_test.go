@@ -1,3 +1,6 @@
+//go:build unix
+
+// Reaping is asserted against real process groups, which are POSIX.
 package proc
 
 import (

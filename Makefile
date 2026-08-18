@@ -47,15 +47,20 @@ dist:             ## Full deployable: build UI (→ ui/dist, served via --web-ro
 # sqlite is modernc (pure Go), so these cross-compile from any host with no
 # toolchain — which is what makes `curl <daemon>/install.sh | bash` work on a
 # Mac without installing Go there.
-AGENT_PLATFORMS ?= darwin/arm64 linux/amd64 linux/arm64
+# windows/amd64 is built but UNVERIFIED — see internal/host/platform_windows.go.
+# It has never run on Windows because there is no Windows machine here. The
+# process-tree handling is a Job Object port of the POSIX group logic, and the
+# recipes that probe and build tools are bash, which Windows does not have.
+AGENT_PLATFORMS ?= darwin/arm64 linux/amd64 linux/arm64 windows/amd64
 
 agents:           ## Cross-compile agent binaries into bin/agents/ for the daemon to serve
 	@mkdir -p bin/agents
 	@for p in $(AGENT_PLATFORMS); do \
 		os=$${p%/*}; arch=$${p#*/}; \
 		echo "==> $$os/$$arch"; \
+		ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
-		  go build -ldflags "$(AGENT_LDFLAGS)" -o bin/agents/corrallm-$$os-$$arch ./cmd/corrallm || exit 1; \
+		  go build -ldflags "$(AGENT_LDFLAGS)" -o bin/agents/corrallm-$$os-$$arch$$ext ./cmd/corrallm || exit 1; \
 	done
 	@printf '%s' "$(VERSION)" > bin/agents/VERSION
 	@ls -la bin/agents/

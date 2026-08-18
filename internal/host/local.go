@@ -23,15 +23,24 @@ func (l *Local) Name() string { return l.name }
 // handle calls it and publishes the result through Done/Err rather than letting
 // callers race for it.
 func (l *Local) Start(s Spec) (Handle, error) {
-	cmd := exec.Command("sh", "-c", s.Cmd)
+	shell, args := shellFor(s.Cmd)
+	cmd := exec.Command(shell, args...)
 	cmd.Stdout, cmd.Stderr = s.Out, s.Out
 	cmd.SysProcAttr = sysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn %q: %w", s.Cmd, err)
 	}
+	// No-op on unix, where Setpgid already grouped the tree. On Windows this is
+	// what creates the job that makes the tree killable as a unit; a failure
+	// there is reported but not fatal, because a running backend we can only
+	// half-reap still beats refusing to serve.
+	if err := adoptGroup(cmd.Process.Pid); err != nil {
+		fmt.Fprintf(s.Out, "corrallm: could not group this backend's process tree: %v\n", err)
+	}
 	h := &localHandle{cmd: cmd, pid: cmd.Process.Pid, done: make(chan struct{})}
 	go func() {
 		err := cmd.Wait()
+		releaseGroup(h.pid)
 		h.mu.Lock()
 		h.err = err
 		h.mu.Unlock()

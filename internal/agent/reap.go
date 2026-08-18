@@ -3,14 +3,12 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 // A backend can outlive the agent that started it, and until now nothing could
@@ -107,7 +105,7 @@ func ReapStale(dir string) int {
 			"pgid", r.PGID, "cmd", firstToken(r.Cmd))
 		// The group, not the leader: the shell may already be gone while the
 		// process actually holding the memory is its child.
-		_ = syscall.Kill(-r.PGID, syscall.SIGTERM)
+		_ = signalStaleGroup(r.PGID)
 		killed++
 	}
 	writeSupervised(dir, nil)
@@ -120,10 +118,10 @@ func ReapStale(dir string) int {
 // from days ago could name a pid the OS has since handed to something the
 // operator cares about.
 func stillOurs(r supervisedRec) bool {
-	if syscall.Kill(r.PGID, 0) != nil {
+	if !pidAlive(r.PGID) {
 		return false // no such process
 	}
-	out, err := exec.Command("ps", "-o", "command=", "-p", fmt.Sprint(r.PGID)).Output()
+	out, err := exec.Command(psCommand(r.PGID)[0], psCommand(r.PGID)[1:]...).Output()
 	if err != nil {
 		return false // cannot confirm; leaking is better than killing a stranger
 	}

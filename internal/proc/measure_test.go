@@ -1,3 +1,7 @@
+//go:build unix
+
+// Exercises real process groups (Setpgid, kill by negative pid), which are a
+// POSIX construct; Windows groups a tree with a Job Object instead.
 package proc
 
 import (

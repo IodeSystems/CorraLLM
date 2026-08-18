@@ -1,3 +1,6 @@
+//go:build unix
+
+// Asserts on real process groups (kill by negative pid), which are POSIX.
 package proc
 
 import (

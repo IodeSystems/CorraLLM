@@ -1,3 +1,7 @@
+//go:build unix
+
+// The stub handle drives real process groups (Setpgid, kill by negative pid),
+// which is a POSIX construct. Windows groups a tree with a Job Object instead.
 package proc
 
 import (

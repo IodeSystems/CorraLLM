@@ -1,3 +1,7 @@
+//go:build unix
+
+// These tests parse /proc/meminfo, which only exists on Linux. The Windows
+// probe calls GlobalMemoryStatusEx and has no fixture to parse.
 package sysmem
 
 import (
