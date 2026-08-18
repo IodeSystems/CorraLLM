@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,7 +10,30 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/configdb"
+
+	_ "modernc.org/sqlite"
 )
+
+// openConfigDB opens the database configuration now lives in.
+//
+// Read-write on purpose even for export: the schema is applied on open, and a
+// brand-new database that cannot be initialised would fail with something far
+// less obvious than "cannot create tables".
+func openConfigDB(dbPath string) (*sql.DB, *configdb.Source, error) {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return nil, nil, err
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := configdb.Apply(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
+	return db, &configdb.Source{DB: db}, nil
+}
 
 // DefaultConfigPath is where corrallm keeps the config it OWNS.
 //
@@ -90,6 +115,79 @@ func newConfigCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.AddCommand(imp, pathCmd)
+	var dbPath string
+	var exportOut string
+	exportCmd := &cobra.Command{
+		Use:   "export",
+		Short: "Write the stored configuration out as YAML",
+		Long: "Renders the configuration held in the database as YAML.\n\n" +
+			"This is the escape hatch. Config lives in SQLite, which is not readable with a\n" +
+			"text editor and not diffable in git; an export is how you take a backup, review\n" +
+			"a change, or move a config to another machine. It exports what was STORED rather\n" +
+			"than what was resolved, so the output can be imported again — an export you\n" +
+			"cannot re-import is a backup of nothing.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			p := derivePaths(defaultHome(), "", dbPath)
+			db, src, err := openConfigDB(p.db)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			out, err := src.ExportYAML(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if exportOut == "" || exportOut == "-" {
+				_, err = cmd.OutOrStdout().Write(out)
+				return err
+			}
+			if err := os.WriteFile(exportOut, out, 0o600); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s (%d bytes)\n", exportOut, len(out))
+			return nil
+		},
+	}
+	exportCmd.Flags().StringVar(&exportOut, "out", "", "write here instead of stdout")
+	exportCmd.Flags().StringVar(&dbPath, "db", "", "database holding the config")
+
+	var loadDB string
+	var loadForce bool
+	loadCmd := &cobra.Command{
+		Use:   "load <config.yaml>",
+		Short: "Replace the stored configuration with a YAML file",
+		Long: "Parses, validates and stores a YAML config, REPLACING what is there.\n\n" +
+			"The inverse of export, and the way to restore a backup or move a config between\n" +
+			"machines. Validation happens before anything is written: an invalid config is\n" +
+			"refused rather than stored and discovered at the next restart.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p := derivePaths(defaultHome(), "", loadDB)
+			db, src, err := openConfigDB(p.db)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			empty, err := configdb.IsEmpty(cmd.Context(), db)
+			if err != nil {
+				return err
+			}
+			if !empty && !loadForce {
+				return fmt.Errorf("the database already holds a configuration; pass --force to replace it (export it first if you want a copy)")
+			}
+			c, err := src.ImportFile(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "stored %s — %d models, %d servers, %d lanes\n",
+				args[0], len(c.AllModels()), len(c.Servers), len(c.Lanes))
+			return nil
+		},
+	}
+	loadCmd.Flags().StringVar(&loadDB, "db", "", "database to store the config in")
+	loadCmd.Flags().BoolVar(&loadForce, "force", false, "replace an existing stored configuration")
+
+	cmd.AddCommand(imp, pathCmd, exportCmd, loadCmd)
 	return cmd
 }

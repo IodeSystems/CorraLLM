@@ -36,6 +36,16 @@ const managedHeader = `# corrallm — MANAGED CONFIG. Edited through the dashboa
 // In other words a Config that came from Load is a different shape to one that
 // goes into Load, and writing without accounting for that produces a file the
 // daemon cannot start from.
+// ForWriting is forWriting, exported for the SQLite store.
+//
+// The rule is identical wherever config is persisted: store what was AUTHORED,
+// never what resolution derived from it. A resolved config carries every
+// extension-provided and provider-folded model in Models, and storing those
+// makes the next load fail on "collides with a declared model" — the trap this
+// function exists to avoid, which the database hit the first time it tried to
+// save a config that had already been through Load.
+func ForWriting(c *Config) *Config { return forWriting(c) }
+
 func forWriting(c *Config) *Config {
 	out := *c
 	if len(c.Models) > 0 {

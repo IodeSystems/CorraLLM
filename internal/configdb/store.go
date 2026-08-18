@@ -23,6 +23,13 @@ func Apply(ctx context.Context, db *sql.DB) error {
 // deletion work at all — a model removed from c has to disappear, and a
 // merge-only write would resurrect it on every save.
 func Write(ctx context.Context, db *sql.DB, c *config.Config) error {
+	// Store what was AUTHORED. A config that has been through Load carries every
+	// extension-provided and provider-folded model in Models; persisting those
+	// makes the next read fail on "collides with a declared model". The file
+	// writer has always applied this rule — the database has to apply the same
+	// one, or the two disagree about what a saved config contains.
+	c = config.ForWriting(c)
+
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

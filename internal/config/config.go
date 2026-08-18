@@ -1705,17 +1705,28 @@ func Load(path string) (*Config, error) {
 	if err := c.mergeIncludes(path); err != nil {
 		return nil, err
 	}
-	// Before Validate: resolution fills in cmd/server/proxy from the extension,
-	// and the existing model rules ("cmd set but no server") must judge the
-	// resolved model, not the sparse one the author wrote.
-	c.projectFirstPlacement()
-	if err := c.resolveExtensions(); err != nil {
-		return nil, fmt.Errorf("config %s: %w", path, err)
-	}
-	if err := c.Validate(); err != nil {
+	if err := c.Finalize(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// Finalize turns a PARSED config into a usable one: resolve, then validate.
+//
+// Exported because the config no longer arrives only from a file. Whatever the
+// source — YAML on disk, or the normalized tables — the same resolution has to
+// run before the same rules judge the result, and two copies of this sequence
+// is how the two sources start disagreeing about what a valid config is.
+//
+// Order matters: resolution fills in cmd/server/proxy from an extension, and
+// the model rules ("cmd set but no server") must judge the RESOLVED model, not
+// the sparse one the author wrote.
+func (c *Config) Finalize() error {
+	c.projectFirstPlacement()
+	if err := c.resolveExtensions(); err != nil {
+		return err
+	}
+	return c.Validate()
 }
 
 // mergeIncludes folds every file named in c.Include into c, resolving relative

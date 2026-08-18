@@ -114,7 +114,20 @@ func TestRoundTripLiveConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load live config: %v", err)
 	}
-	compare(t, in, roundTrip(t, in))
+	// Through the Source, because that is the contract the daemon relies on:
+	// save a config, load it back, get the same thing. Comparing Write/Read
+	// directly would compare a RESOLVED config against the AUTHORED one that is
+	// deliberately stored — extensions expanded on one side and not the other.
+	src := &Source{DB: openDB(t)}
+	ctx := context.Background()
+	if err := src.Save(ctx, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := src.Load(ctx)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	compare(t, in, out)
 }
 
 // An empty config must survive too: a fresh install writes one before anything
@@ -209,5 +222,92 @@ func TestUnprojectedFieldsSurvive(t *testing.T) {
 	defer rows.Close()
 	if !rows.Next() {
 		t.Fatal("the remainder row was not stored")
+	}
+}
+
+// Export must be re-importable, and importing an export must change nothing.
+//
+// A backup you cannot restore is not a backup, and this is the file that has to
+// be trustworthy before config.yml is deleted. Asserting a FIXED POINT rather
+// than just "it parses": export, import into a fresh database, export again,
+// and require the two exports to be byte-identical. That catches a field that
+// survives one direction but not the other, which a single round trip does not.
+func TestExportIsAFixedPoint(t *testing.T) {
+	path := os.Getenv("HOME") + "/.corrallm/config.yml"
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("no live config on this machine")
+	}
+	ctx := context.Background()
+
+	first := &Source{DB: openDB(t)}
+	if _, err := first.ImportFile(ctx, path); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	a, err := first.ExportYAML(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := filepath.Join(t.TempDir(), "exported.yml")
+	if err := os.WriteFile(tmp, a, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	second := &Source{DB: openDB(t)}
+	if _, err := second.ImportFile(ctx, tmp); err != nil {
+		t.Fatalf("the export did not import again: %v", err)
+	}
+	b, err := second.ExportYAML(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Errorf("export -> import -> export is not stable (%d vs %d bytes)", len(a), len(b))
+	}
+}
+
+// The verification that gates deleting the file. It must PASS for a faithful
+// import and FAIL when the stored config has drifted, or it gates nothing.
+func TestVerifyAgainstFile(t *testing.T) {
+	path := os.Getenv("HOME") + "/.corrallm/config.yml"
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("no live config on this machine")
+	}
+	ctx := context.Background()
+	src := &Source{DB: openDB(t)}
+	if _, err := src.ImportFile(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.VerifyAgainstFile(ctx, path); err != nil {
+		t.Fatalf("a faithful import failed verification: %v", err)
+	}
+
+	// Now make the stored config differ, and require the gate to notice.
+	if _, err := src.DB.ExecContext(ctx, `DELETE FROM config_key`); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.VerifyAgainstFile(ctx, path); err == nil {
+		t.Error("verification passed after keys were dropped from the store")
+	}
+}
+
+// Storing a config that has already been through Load must not double-resolve.
+// It did: every extension-provided model was reported as colliding with itself.
+func TestSaveAcceptsAnAlreadyResolvedConfig(t *testing.T) {
+	path := os.Getenv("HOME") + "/.corrallm/config.yml"
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("no live config on this machine")
+	}
+	ctx := context.Background()
+	c, err := config.Load(path) // resolved: extensions expanded into Models
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &Source{DB: openDB(t)}
+	if err := src.Save(ctx, c); err != nil {
+		t.Fatalf("saving a resolved config: %v", err)
+	}
+	if _, err := src.Load(ctx); err != nil {
+		t.Fatalf("reading it back: %v", err)
 	}
 }
