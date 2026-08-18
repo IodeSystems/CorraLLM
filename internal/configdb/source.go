@@ -17,7 +17,11 @@ import (
 // `config.SaveValidated(path, c)` were reasonable while a file was the only
 // answer; a Source lets the daemon, the CLI and the API each ask for "the
 // config" without repeating the decision about where that is.
-type Source struct{ DB *sql.DB }
+type Source struct {
+	DB *sql.DB
+	// Note labels the revision the next Save records. See WithNote.
+	Note string
+}
 
 // Load reads the stored config and finalizes it exactly as the file path does.
 //
@@ -55,7 +59,29 @@ func (s *Source) Save(ctx context.Context, c *config.Config) error {
 	if err := check.Finalize(); err != nil {
 		return fmt.Errorf("refusing to store an invalid config: %w", err)
 	}
-	return Write(ctx, s.DB, authored)
+	if err := Write(ctx, s.DB, authored); err != nil {
+		return err
+	}
+	// Recorded AFTER the write succeeds: a revision is a state the system
+	// actually reached. Recording before would fill the history with configs
+	// that failed validation and never ran.
+	//
+	// A failure to record is logged by the caller, not returned: losing an
+	// audit entry is bad, and refusing a config change that has already been
+	// committed is worse.
+	if err := Record(ctx, s.DB, authored, s.Note); err != nil {
+		return fmt.Errorf("config saved, but recording the revision failed: %w", err)
+	}
+	return nil
+}
+
+// WithNote returns a Source that labels its next save.
+//
+// The note is what makes history readable a month later — "ui: upsert model
+// qwen3.8" beats a timestamp and a blob. A copy rather than a mutation so
+// concurrent callers cannot relabel each other's writes.
+func (s *Source) WithNote(note string) *Source {
+	return &Source{DB: s.DB, Note: note}
 }
 
 // clone deep-copies through YAML, which is the only representation that
@@ -87,12 +113,20 @@ func (s *Source) ExportYAML(ctx context.Context) ([]byte, error) {
 }
 
 // ImportFile parses a YAML config and stores it, replacing what was there.
+//
+// Labels the revision with where it came from when the caller has not said
+// otherwise: an unlabelled entry in the history is a date and a byte count,
+// which is exactly as useful as no history.
 func (s *Source) ImportFile(ctx context.Context, path string) (*config.Config, error) {
 	c, err := config.Load(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.Save(ctx, c); err != nil {
+	src := s
+	if src.Note == "" {
+		src = s.WithNote("loaded from " + path)
+	}
+	if err := src.Save(ctx, c); err != nil {
 		return nil, err
 	}
 	return c, nil

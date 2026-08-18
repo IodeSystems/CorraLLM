@@ -188,6 +188,99 @@ func newConfigCmd() *cobra.Command {
 	loadCmd.Flags().StringVar(&loadDB, "db", "", "database to store the config in")
 	loadCmd.Flags().BoolVar(&loadForce, "force", false, "replace an existing stored configuration")
 
-	cmd.AddCommand(imp, pathCmd, exportCmd, loadCmd)
+	var histDB string
+	var histLimit int
+	histCmd := &cobra.Command{
+		Use:   "history",
+		Short: "List recorded configuration revisions, newest first",
+		Long: "Every save records what the configuration became.\n\n" +
+			"This is what a rewritten file could never answer: what did this look like\n" +
+			"yesterday, and what changed it. Use `config show <id>` to read one and\n" +
+			"`config restore <id>` to make it current again.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			p := derivePaths(defaultHome(), "", histDB)
+			db, _, err := openConfigDB(p.db)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			revs, err := configdb.Revisions(cmd.Context(), db, histLimit)
+			if err != nil {
+				return err
+			}
+			if len(revs) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no revisions recorded yet")
+				return nil
+			}
+			for _, r := range revs {
+				fmt.Fprintf(cmd.OutOrStdout(), "%-6d %s  %6dB  %s\n",
+					r.ID, r.At.Format("2006-01-02 15:04:05"), r.Size, r.Note)
+			}
+			return nil
+		},
+	}
+	histCmd.Flags().StringVar(&histDB, "db", "", "database holding the config")
+	histCmd.Flags().IntVar(&histLimit, "limit", 20, "how many revisions to list")
+
+	var showDB string
+	showCmd := &cobra.Command{
+		Use:   "show <revision-id>",
+		Short: "Print one recorded revision as YAML",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var id int64
+			if _, err := fmt.Sscanf(args[0], "%d", &id); err != nil {
+				return fmt.Errorf("revision id must be a number: %q", args[0])
+			}
+			p := derivePaths(defaultHome(), "", showDB)
+			db, _, err := openConfigDB(p.db)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			y, err := configdb.RevisionYAML(cmd.Context(), db, id)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprint(cmd.OutOrStdout(), y)
+			return err
+		},
+	}
+	showCmd.Flags().StringVar(&showDB, "db", "", "database holding the config")
+
+	var restoreDB string
+	restoreCmd := &cobra.Command{
+		Use:   "restore <revision-id>",
+		Short: "Make an earlier revision the current configuration",
+		Long: "Restores a recorded revision.\n\n" +
+			"The restore is itself a change: it is validated like any other save, and\n" +
+			"recorded as a NEW revision rather than rewinding the history. A revision that\n" +
+			"is no longer valid — it names a server that has since been removed — is\n" +
+			"refused rather than restored into a daemon that cannot run it.\n\n" +
+			"A running daemon does not notice by itself: send it a SIGHUP, or restart it.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var id int64
+			if _, err := fmt.Sscanf(args[0], "%d", &id); err != nil {
+				return fmt.Errorf("revision id must be a number: %q", args[0])
+			}
+			p := derivePaths(defaultHome(), "", restoreDB)
+			db, src, err := openConfigDB(p.db)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			if err := src.Restore(cmd.Context(), id); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"restored revision %d — send the daemon a SIGHUP to pick it up\n", id)
+			return nil
+		},
+	}
+	restoreCmd.Flags().StringVar(&restoreDB, "db", "", "database holding the config")
+
+	cmd.AddCommand(imp, pathCmd, exportCmd, loadCmd, histCmd, showCmd, restoreCmd)
 	return cmd
 }

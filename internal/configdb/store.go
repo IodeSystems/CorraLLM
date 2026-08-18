@@ -8,10 +8,19 @@ import (
 	"github.com/iodesystems/corrallm/internal/config"
 )
 
-// Apply creates the config tables. Idempotent, like every other schema here.
+// Apply creates the config tables, history included. Idempotent, like every
+// other schema here.
+//
+// History is not optional and not a separate step. Save records a revision on
+// every write, so a database with the config tables but not the revision table
+// is a Source that fails on its first save — which is exactly what happened
+// when this was two calls and a test helper only made the first one.
 func Apply(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("config schema: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, historySchema); err != nil {
+		return fmt.Errorf("config history schema: %w", err)
 	}
 	return nil
 }

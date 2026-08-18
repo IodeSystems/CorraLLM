@@ -538,6 +538,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	if err := configdb.Apply(ctx, st.DB()); err != nil {
 		return err
 	}
+	if n, err := configdb.PruneRevisions(ctx, st.DB(), 100); err == nil && n > 0 {
+		slog.Info("pruned old config revisions", "removed", n)
+	}
 	cfgSource := &configdb.Source{DB: st.DB()}
 	cfg, err := loadConfig(ctx, cfgSource, o.configPath)
 	if err != nil {
@@ -633,7 +636,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler, Tools: toolReg, Builds: toolBuilds,
 		Liveness: liveness, AgentDist: agentDist, Verified: api.NewVerifiedStore(),
 		ConfigPath: o.configPath, PublicBase: o.publicBase,
-		SaveConfig: func(c *config.Config) error { return cfgSource.Save(ctx, c) },
+		SaveConfig: func(c *config.Config) error {
+			return cfgSource.WithNote("edited through the dashboard").Save(ctx, c)
+		},
 	}
 
 	// Admin token gates the management surface (/api/*). Generated into
@@ -1168,6 +1173,7 @@ func loadConfig(ctx context.Context, src *configdb.Source, path string) (*config
 	}
 	if empty && configdb.FileExists(path) {
 		slog.Warn("importing the legacy config file into the database (one time)", "path", path)
+		src = src.WithNote("imported from " + path)
 		if _, err := src.ImportFile(ctx, path); err != nil {
 			return nil, fmt.Errorf("importing %s: %w", path, err)
 		}
