@@ -1,4 +1,4 @@
-.PHONY: install gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps
+.PHONY: install gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps verify-docker
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -108,6 +108,47 @@ verify-deps:      ## Fail if the build depends on anything outside this module
 		exit 1; \
 	fi
 	@echo "==> isolated: every dependency resolves from go.mod alone"
+ifneq ($(VERIFY_DOCKER),0)
+	@$(MAKE) --no-print-directory verify-docker
+else
+	@echo "==> docker check SKIPPED (VERIFY_DOCKER=0) — local checks only"
+endif
+
+# The Go version the container installs, taken from go.mod so the two cannot
+# drift. `go 1.26.2` → `1.26.2`.
+VERIFY_GO_VERSION := $(shell awk '/^go /{print $$2; exit}' go.mod)
+
+# What gets verified. HEAD by default, because the claim being made is "a fresh
+# clone builds". `git write-tree` on a staged index lets you check a change
+# before committing it.
+VERIFY_REF ?= HEAD
+
+verify-docker:    ## Build, verify and test from a bare ubuntu:24.04 container
+	@command -v docker >/dev/null 2>&1 || { \
+		echo "==> docker check SKIPPED — no docker on this machine."; \
+		echo "    Install docker, or run 'make verify-deps VERIFY_DOCKER=0' to accept local-only checks."; \
+		exit 0; \
+	}
+	@echo "==> building from a bare ubuntu:24.04 (go $(VERIFY_GO_VERSION))"
+	@echo "    context is 'git archive $(VERIFY_REF)': what is COMMITTED, not the working tree."
+	@echo "    Uncommitted work is NOT tested here — that is the point. To try a"
+	@echo "    change before committing: git add -A && make verify-docker VERIFY_REF=\$$(git write-tree)"
+	@git archive $(VERIFY_REF) | docker build \
+		--build-arg GO_VERSION=$(VERIFY_GO_VERSION) \
+		-f scripts/verify/Dockerfile \
+		-t corrallm-verify:$(VERSION) - \
+	|| { \
+		echo ""; \
+		echo "  The isolated build FAILED. Read the last failing step above:"; \
+		echo "    * a missing command  -> add the package to scripts/verify/Dockerfile,"; \
+		echo "                            WITH a comment saying why it is needed"; \
+		echo "    * a missing Go dep   -> something is only resolving via go.work or a"; \
+		echo "                            replace; release and pin it instead"; \
+		echo "    * a missing file     -> it is untracked; git add it, since the context"; \
+		echo "                            is 'git archive HEAD'"; \
+		exit 1; \
+	}
+	@echo "==> isolated build OK: a fresh clone on a bare Ubuntu can build this"
 
 clean:
 	rm -f bin/corrallm
