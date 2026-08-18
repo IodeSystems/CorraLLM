@@ -164,24 +164,36 @@ require_env() {
 # reads it, and nothing ever writes there.
 # ---------------------------------------------------------------------------
 
-# require_tool_root insists on somewhere to look. A managed tool has
-# TOOL_PREFIX; an adopted one has TOOL_INSTALLED_AT. Neither means the caller
-# has not said which install it is asking about, and probing "/ninfer-serve"
-# would answer "not present" about a path that was never the question.
+# require_tool_root insists on somewhere to look: an adopted install to read, or
+# a tool name from which the managed default can be derived.
 require_tool_root() {
-    [ -n "${TOOL_PREFIX:-}" ] || [ -n "${TOOL_INSTALLED_AT:-}" ] || \
-        die "missing required environment: TOOL_PREFIX or TOOL_INSTALLED_AT"
+    [ -n "${TOOL_NAME:-}" ] || [ -n "${TOOL_INSTALLED_AT:-}" ] || \
+        die "missing required environment: TOOL_NAME or TOOL_INSTALLED_AT"
+}
+
+# tool_prefix is where a MANAGED install lives, decided HERE rather than by the
+# primary.
+#
+# The primary used to compute this from its own home directory and send it to
+# every host, which is right for itself and wrong for anybody else: a Mac agent
+# would have been told to install under /home/nthalk when its home is
+# /Users/nthalk. Only the machine doing the installing knows where its home is,
+# so an empty TOOL_PREFIX means "your default" and an explicit one (config's
+# per-host `prefix:`) still wins.
+tool_prefix() {
+    if [ -n "${TOOL_PREFIX:-}" ]; then printf '%s' "$TOOL_PREFIX"; return; fi
+    printf '%s/tools/%s' "${CORRALLM_HOME:-$HOME/.corrallm}" "${TOOL_NAME:?}"
 }
 
 tool_bin_dir() {
     if [ -n "${TOOL_INSTALLED_AT:-}" ]; then
         printf '%s' "$TOOL_INSTALLED_AT"
     else
-        printf '%s/bin' "${TOOL_PREFIX:?TOOL_PREFIX not set}"
+        printf '%s/bin' "$(tool_prefix)"
     fi
 }
 
-tool_src_dir() { printf '%s/src' "${TOOL_PREFIX:?TOOL_PREFIX not set}"; }
+tool_src_dir() { printf '%s/src' "$(tool_prefix)"; }
 
 # adopted reports whether this host's entry points at someone else's install.
 adopted() { [ -n "${TOOL_INSTALLED_AT:-}" ]; }
@@ -196,7 +208,7 @@ adopted() { [ -n "${TOOL_INSTALLED_AT:-}" ]; }
 
 current_head() { (cd "$1" && git rev-parse HEAD 2>/dev/null); }
 
-patch_dir() { printf '%s/patches' "${TOOL_PREFIX:?}"; }
+patch_dir() { printf '%s/patches' "$(tool_prefix)"; }
 
 # patch_files emits this tool's patches in apply order.
 patch_files() {

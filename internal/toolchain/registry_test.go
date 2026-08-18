@@ -64,8 +64,11 @@ func TestSpecForManagedVsAdopted(t *testing.T) {
 	if err != nil || !declared {
 		t.Fatalf("declared=%v err=%v", declared, err)
 	}
-	if spec.Prefix != "/home/test/.corrallm/tools/llama.cpp" {
-		t.Errorf("managed prefix = %q", spec.Prefix)
+	// An empty prefix is correct: it means "the host's own default", which the
+	// recipe derives where the install actually happens. The primary's home is
+	// not the agent's on a machine whose home is /Users rather than /home.
+	if spec.Prefix != "" {
+		t.Errorf("managed prefix = %q, want empty so the host decides", spec.Prefix)
 	}
 	if spec.InstalledAt != "" {
 		t.Errorf("managed entry must not carry installedAt, got %q", spec.InstalledAt)

@@ -133,21 +133,45 @@ func TestProbeFallsBackToTheStamp(t *testing.T) {
 	}
 }
 
-// Missing environment must produce a clean error, not malformed JSON. A recipe
-// that aborts mid-printf under `set -u` emits `{"ref":,...}`, which surfaces as
-// an unparseable-JSON complaint that says nothing about the real mistake.
+// A recipe with nothing to go on must fail CLEANLY, not emit malformed JSON.
+//
+// Under `set -u` an unset variable aborts a command substitution mid-printf and
+// the recipe emits `{"ref":,...}`, which surfaces as an unparseable-JSON
+// complaint that says nothing about the actual mistake. A recipe's error path
+// has to be valid JSON too.
 func TestMissingSpecFieldsFailCleanly(t *testing.T) {
 	requireBash(t)
 	l := &Local{Dir: filepath.Join(t.TempDir(), "recipes"), Server: "test"}
-	_, err := RunProbe(context.Background(), l, Spec{Name: "ninfer", Recipe: "ninfer"})
+	// No Name and no InstalledAt: nothing identifies which install to look at.
+	// Through RunProbe, not Run: Run deliberately returns a recipe's own error
+	// INSIDE the JSON (that is a well-formed answer), and the typed helper is
+	// what turns it into a Go error.
+	_, err := RunProbe(context.Background(), l, Spec{Recipe: "ninfer"})
 	if err == nil {
-		t.Fatal("expected an error with neither prefix nor installedAt set")
+		t.Fatal("expected an error with nothing to identify the install")
 	}
 	if strings.Contains(err.Error(), "unparseable") {
 		t.Errorf("got a JSON parse failure instead of a stated reason: %v", err)
 	}
-	if !strings.Contains(err.Error(), "TOOL_PREFIX") {
-		t.Errorf("error does not name what was missing: %v", err)
+}
+
+// A MANAGED spec carries no prefix: the host derives it, because only the
+// machine doing the installing knows where its own home is. The primary used to
+// send its own home to every host, which is wrong for any agent whose home
+// differs — a Mac under /Users told to install under /home.
+func TestManagedProbeUsesTheHostsOwnDefault(t *testing.T) {
+	requireBash(t)
+	home := t.TempDir()
+	l := &Local{Dir: filepath.Join(t.TempDir(), "recipes"), Server: "test"}
+	t.Setenv("CORRALLM_HOME", home)
+
+	p, err := RunProbe(context.Background(), l, Spec{Name: "ninfer", Recipe: "ninfer", Bin: "ninfer-serve"})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	want := filepath.Join(home, "tools", "ninfer", "bin", "ninfer-serve")
+	if p.Path != want {
+		t.Errorf("path = %q, want the host-derived %q", p.Path, want)
 	}
 }
 

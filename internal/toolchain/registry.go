@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -63,10 +62,15 @@ func (r *Registry) SpecFor(tool, host string) (spec Spec, declared bool, err err
 		InstalledAt: h.InstalledAt,
 	}
 	if !h.Adopted() {
+		// Only an EXPLICIT per-host prefix travels. An empty one means "the
+		// host's own default", which the recipe derives there.
+		//
+		// This used to default to filepath.Join(r.Home, ...) — the PRIMARY's
+		// home — and send it everywhere. Correct for this machine and wrong for
+		// every other: a Mac agent would have been told to install under
+		// /home/nthalk when its home is /Users/nthalk. Only the machine doing
+		// the installing knows where its home is.
 		spec.Prefix = h.Prefix
-		if spec.Prefix == "" {
-			spec.Prefix = filepath.Join(r.Home, "tools", tool)
-		}
 	}
 	return spec, true, nil
 }
