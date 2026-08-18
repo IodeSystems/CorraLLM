@@ -124,31 +124,7 @@ VERIFY_GO_VERSION := $(shell awk '/^go /{print $$2; exit}' go.mod)
 VERIFY_REF ?= HEAD
 
 verify-docker:    ## Build, verify and test from a bare ubuntu:24.04 container
-	@command -v docker >/dev/null 2>&1 || { \
-		echo "==> docker check SKIPPED — no docker on this machine."; \
-		echo "    Install docker, or run 'make verify-deps VERIFY_DOCKER=0' to accept local-only checks."; \
-		exit 0; \
-	}
-	@echo "==> building from a bare ubuntu:24.04 (go $(VERIFY_GO_VERSION))"
-	@echo "    context is 'git archive $(VERIFY_REF)': what is COMMITTED, not the working tree."
-	@echo "    Uncommitted work is NOT tested here — that is the point. To try a"
-	@echo "    change before committing: git add -A && make verify-docker VERIFY_REF=\$$(git write-tree)"
-	@git archive $(VERIFY_REF) | docker build \
-		--build-arg GO_VERSION=$(VERIFY_GO_VERSION) \
-		-f scripts/verify/Dockerfile \
-		-t corrallm-verify:$(VERSION) - \
-	|| { \
-		echo ""; \
-		echo "  The isolated build FAILED. Read the last failing step above:"; \
-		echo "    * a missing command  -> add the package to scripts/verify/Dockerfile,"; \
-		echo "                            WITH a comment saying why it is needed"; \
-		echo "    * a missing Go dep   -> something is only resolving via go.work or a"; \
-		echo "                            replace; release and pin it instead"; \
-		echo "    * a missing file     -> it is untracked; git add it, since the context"; \
-		echo "                            is 'git archive HEAD'"; \
-		exit 1; \
-	}
-	@echo "==> isolated build OK: a fresh clone on a bare Ubuntu can build this"
+	@VERIFY_REF="$(VERIFY_REF)" ./scripts/verify/run.sh
 
 clean:
 	rm -f bin/corrallm

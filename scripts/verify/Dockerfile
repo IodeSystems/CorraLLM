@@ -41,7 +41,7 @@ RUN go build ./...
 
 # The same isolation checks the Makefile runs, now on a machine that has no
 # ../gwag to fall back on.
-RUN make verify-deps
+RUN make verify-deps VERIFY_DOCKER=0
 
 # Tests, because "it compiles" is a weaker claim than anyone wants from this.
 # internal/proc spawns real process groups and is the slowest by far; it is
