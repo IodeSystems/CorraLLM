@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"path/filepath"
-	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -1702,8 +1700,17 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	if err := c.mergeIncludes(path); err != nil {
-		return nil, err
+	if len(c.Include) > 0 {
+		// REFUSED, not merged. `include:` existed to protect a hand-written file
+		// from the daemon's rewrites — "a generated file included from here is
+		// machine-owned end to end, and the hand-written file stays
+		// hand-written". Config lives in the database now, so there is no
+		// rewrite to protect anything from, and honouring an include would pull
+		// in a file that the import then stores as if it had been written
+		// inline. Flatten it and import once.
+		return nil, fmt.Errorf("config %s: include: is no longer supported — config lives in the database now, "+
+			"so there is no file being rewritten to protect. Merge the included file(s) %v into this one and import again",
+			path, c.Include)
 	}
 	if err := c.Finalize(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
@@ -1729,88 +1736,6 @@ func (c *Config) Finalize() error {
 	return c.Validate()
 }
 
-// mergeIncludes folds every file named in c.Include into c, resolving relative
-// paths against the including file's directory.
-//
-// Precedence, from weakest to strongest: the first include, later includes,
-// then c itself. The operator's own file always wins, so a generated include
-// can never quietly redefine something a human wrote down — the same rule
-// SetDiscovered follows for runtime-contributed models.
-//
-// Only the map-shaped sections merge. A scalar or struct section in an included
-// file is REJECTED rather than ignored: silently dropping a costPerKwh someone
-// wrote is the kind of thing that is discovered months later via a wrong bill.
-func (c *Config) mergeIncludes(path string) error {
-	if len(c.Include) == 0 {
-		return nil
-	}
-	dir := filepath.Dir(path)
-
-	// Accumulate the includes among themselves first, last-wins, THEN let c win
-	// over the result. Folding straight into c would invert the include order:
-	// c is already populated, so "skip what exists" would make the FIRST include
-	// beat every later one.
-	var acc Config
-	for _, inc := range c.Include {
-		p := inc
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(dir, p)
-		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			// Unlike the top-level config, a named include must exist: the
-			// operator asked for it by name, and booting without it would serve
-			// a silently smaller config.
-			return fmt.Errorf("config %s: include %q: %w", path, inc, err)
-		}
-		var in Config
-		if err := yaml.Unmarshal(b, &in); err != nil {
-			return fmt.Errorf("parse include %s: %w", p, err)
-		}
-		if len(in.Include) > 0 {
-			return fmt.Errorf("include %s: nested include is not supported (one level only)", p)
-		}
-		if err := in.rejectNonMergeable(p); err != nil {
-			return err
-		}
-		overwriteMap(&acc.Servers, in.Servers)
-		overwriteMap(&acc.Extensions, in.Extensions)
-		overwriteMap(&acc.Models, in.Models)
-		overwriteMap(&acc.Lanes, in.Lanes)
-		overwriteMap(&acc.PriorityGroups, in.PriorityGroups)
-		overwriteMap(&acc.Keys, in.Keys)
-		overwriteMap(&acc.CommandCosts, in.CommandCosts)
-	}
-
-	mergeMap(&c.Servers, acc.Servers)
-	mergeMap(&c.Extensions, acc.Extensions)
-	mergeMap(&c.Models, acc.Models)
-	mergeMap(&c.Lanes, acc.Lanes)
-	mergeMap(&c.PriorityGroups, acc.PriorityGroups)
-	mergeMap(&c.Keys, acc.Keys)
-	mergeMap(&c.CommandCosts, acc.CommandCosts)
-	return nil
-}
-
-// rejectNonMergeable fails an included file that sets a section which only the
-// top-level config may set, rather than dropping it on the floor.
-func (c *Config) rejectNonMergeable(p string) error {
-	var bad []string
-	if c.CostPerKwh != 0 {
-		bad = append(bad, "costPerKwh")
-	}
-	if !reflect.DeepEqual(c.Convert, ConvertConfig{}) {
-		bad = append(bad, "convert")
-	}
-	if !reflect.DeepEqual(c.Scheduler, SchedulerConfig{}) {
-		bad = append(bad, "scheduler")
-	}
-	if len(bad) > 0 {
-		return fmt.Errorf("include %s: sets %s — only the top-level config may set these (merging is per-model, not global)",
-			p, strings.Join(bad, ", "))
-	}
-	return nil
-}
 
 // mergeMap copies src into *dst for keys *dst does not already hold — dst is
 // the stronger side and keeps what it has.

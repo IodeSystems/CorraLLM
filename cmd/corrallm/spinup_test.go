@@ -63,7 +63,10 @@ func TestRawSpinup(t *testing.T) {
 	waitReady(t, base+"/health")
 
 	t.Run("creates its home", func(t *testing.T) {
-		for _, p := range []string{"admin.token", "config.yml", filepath.Join("var", "corrallm.db")} {
+		// No config.yml: config lives in the database, and a fresh install
+		// writes none. The database IS the config, so its presence is what this
+		// asserts.
+		for _, p := range []string{"admin.token", filepath.Join("var", "corrallm.db")} {
 			if _, err := os.Stat(filepath.Join(home, p)); err != nil {
 				t.Errorf("%s not created under home: %v", p, err)
 			}

@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/iodesystems/corrallm/internal/config"
 )
 
 // A bare home implies all three paths, so an operator who sets only --home does
@@ -80,43 +78,17 @@ func TestDefaultHomeHonorsEnv(t *testing.T) {
 	}
 }
 
-// The bootstrap is what makes a fresh install writable at all: without a file
-// carrying the managed marker, every config edit and every agent enrollment is
-// refused with 409.
-func TestBootstrapConfigWritesManagedFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sub", "config.yml")
-	if err := bootstrapConfig(path); err != nil {
-		t.Fatalf("bootstrapConfig: %v", err)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read bootstrapped config: %v", err)
-	}
-	if !strings.Contains(string(b), "MANAGED CONFIG") {
-		t.Fatalf("bootstrapped config lacks the managed marker; the API would refuse to write it:\n%s", b)
-	}
-	// It must also load: writing something the daemon cannot parse would turn a
-	// first run into a boot failure.
-	if _, err := config.Load(path); err != nil {
-		t.Fatalf("bootstrapped config does not load: %v", err)
-	}
-}
-
-// Bootstrapping must never clobber. It runs on EVERY start, not just the first.
-func TestBootstrapConfigLeavesExistingUntouched(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yml")
-	const existing = "# MANAGED CONFIG\nmodels:\n  keep-me:\n    proxy: https://example.invalid/v1\n"
-	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := bootstrapConfig(path); err != nil {
-		t.Fatalf("bootstrapConfig: %v", err)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(b) != existing {
-		t.Fatalf("bootstrapConfig rewrote an existing config:\n%s", b)
+// A fresh install writes NO config file.
+//
+// It used to write an empty managed one, because the API's requireManaged check
+// demanded a file carrying a "MANAGED CONFIG" marker before it would accept an
+// edit. Config lives in the database now, so there is nothing to mark — and a
+// file created here would be imported and immediately retired by the boot path,
+// which is churn that looks like a bug.
+func TestFreshInstallWritesNoConfigFile(t *testing.T) {
+	home := t.TempDir()
+	p := derivePaths(home, "", "")
+	if _, err := os.Stat(p.config); !os.IsNotExist(err) {
+		t.Errorf("a config file exists on a fresh install (%v); config belongs in the database", err)
 	}
 }

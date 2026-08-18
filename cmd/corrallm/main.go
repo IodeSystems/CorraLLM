@@ -520,9 +520,7 @@ func (p pauseStore) LoadPauses() ([]proc.PersistedPause, error) {
 
 func serve(ctx context.Context, o serveOpts) error {
 	if o.configDerived {
-		if err := bootstrapConfig(o.configPath); err != nil {
-			return err
-		}
+
 	}
 	// Before the config: ${...} references in it resolve through this store, so
 	// it has to be installed first or a credential-backed provider silently
@@ -1176,8 +1174,23 @@ func loadConfig(ctx context.Context, src *configdb.Source, path string) (*config
 		if err := src.VerifyAgainstFile(ctx, path); err != nil {
 			return nil, fmt.Errorf("the import did not verify, so nothing will be trusted: %w", err)
 		}
+		// RETIRE THE FILE, but never without a copy first.
+		//
+		// It is deleted because a file nobody reads is a trap — edited,
+		// restarted, and nothing changes. It is BACKED UP because this is the
+		// moment the database becomes the only copy, and a verified import is
+		// still a first import. The backup is a plain YAML file next to where
+		// the config used to be; `corrallm config export` regenerates one any
+		// time.
+		backup := path + ".imported-" + time.Now().Format("20060102-150405")
+		if err := os.Rename(path, backup); err != nil {
+			slog.Warn("imported, but could not retire the old config file; it will be ignored",
+				"path", path, "err", err)
+		} else {
+			slog.Info("retired the old config file", "moved_to", backup)
+		}
 		slog.Info("config imported and verified; the database is now authoritative",
-			"path", path, "hint", "corrallm config export writes it back out as YAML")
+			"hint", "corrallm config export writes it back out as YAML")
 	} else if !empty && configdb.FileExists(path) {
 		// A file that is no longer read is a trap: someone edits it, restarts,
 		// and nothing changes. Say so on every boot until it is gone.

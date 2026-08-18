@@ -1,12 +1,8 @@
 package main
 
 import (
-	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
-
-	"github.com/iodesystems/corrallm/internal/config"
 )
 
 // corrallm roots everything it owns — the managed config, the SQLite store, the
@@ -74,28 +70,11 @@ func derivePaths(home, configFlag, dbFlag string) resolvedPaths {
 	return r
 }
 
-// bootstrapConfig writes an empty MANAGED config when none exists yet.
+// bootstrapConfig is GONE, and its reason with it.
 //
-// Without it a fresh install is readable but not writable. config.Load treats a
-// missing file as an empty config, so the daemon boots and serves — but every
-// write path (the dashboard's config editor, agent enrollment) goes through
-// requireManaged, which reads the file and demands a "MANAGED CONFIG" marker.
-// No file means no marker, so a brand-new instance answers 409 to the very
-// first thing an operator tries to do with it. Creating the file up front is
-// what makes the UI usable from minute one.
-//
-// Only ever called for a DERIVED path. A --config the operator named may be a
-// hand-written file that does not exist yet, or a typo'd path; creating a
-// managed file at either is worse than failing to.
-func bootstrapConfig(path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat config %s: %w", path, err)
-	}
-	if err := config.Save(path, &config.Config{}); err != nil {
-		return fmt.Errorf("bootstrap config: %w", err)
-	}
-	slog.Info("wrote an empty managed config", "path", path)
-	return nil
-}
+// It used to write an empty managed config so a fresh install had a file with
+// the "MANAGED CONFIG" marker in it — without which requireManaged made the
+// dashboard answer 409 to the very first edit. Config lives in the database
+// now: there is no file to mark, and no marker to check, because nothing else
+// writes the tables. Creating one would be worse than useless, since the boot
+// path would import the empty file and immediately retire it.
