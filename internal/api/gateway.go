@@ -70,6 +70,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.ToolResolve)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolBuildStart",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/tools/build",
+		Summary:     "Start a tool build. One at a time — a build takes every core on the box.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolBuildStart)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolBuildStatus",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/tools/build",
+		Summary:     "The running build (or the last finished one) with its log.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolBuildStatus)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "recentActivity",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/activity",

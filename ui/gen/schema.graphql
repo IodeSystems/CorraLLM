@@ -47,6 +47,7 @@ type CorrallmMutationNamespace {
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  toolBuildStart(body: corrallm_ToolBuildStartInputBodyInput!): corrallm_ToolBuildStartOutputBody @derived(operationId: "toolBuildStart")
   toolPreflight(body: corrallm_ToolPreflightInputBodyInput!): corrallm_ToolPreflightOutputBody @derived(operationId: "toolPreflight")
   toolResolve(body: corrallm_ToolResolveInputBodyInput!): corrallm_ToolResolveOutputBody @derived(operationId: "toolResolve")
   trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
@@ -213,6 +214,10 @@ type CorrallmQueryNamespace {
     """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
     minutes: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  toolBuildStatus(
+    """Absolute line index to read the log from. Send the previous response's logTotal to get only what is new."""
+    logFrom: Long
+  ): corrallm_ToolBuildStatusOutputBody @derived(operationId: "toolBuildStatus")
   toolStates(
     """Also ask upstream whether each pin has moved. One git ls-remote per installed tool; skip it for a fast render."""
     drift: Boolean
@@ -294,6 +299,7 @@ type CorrallmV1MutationNamespace {
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  toolBuildStart(body: corrallm_ToolBuildStartInputBodyInput!): corrallm_ToolBuildStartOutputBody @derived(operationId: "toolBuildStart")
   toolPreflight(body: corrallm_ToolPreflightInputBodyInput!): corrallm_ToolPreflightOutputBody @derived(operationId: "toolPreflight")
   toolResolve(body: corrallm_ToolResolveInputBodyInput!): corrallm_ToolResolveOutputBody @derived(operationId: "toolResolve")
   trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
@@ -459,6 +465,10 @@ type CorrallmV1QueryNamespace {
     """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
     minutes: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  toolBuildStatus(
+    """Absolute line index to read the log from. Send the previous response's logTotal to get only what is new."""
+    logFrom: Long
+  ): corrallm_ToolBuildStatusOutputBody @derived(operationId: "toolBuildStatus")
   toolStates(
     """Also ask upstream whether each pin has moved. One git ls-remote per installed tool; skip it for a fast render."""
     drift: Boolean
@@ -2402,6 +2412,40 @@ type corrallm_StageView {
   policy: String!
   """Backend type (or "default")."""
   type: String!
+}
+
+input corrallm_ToolBuildStartInputBodyInput {
+  """Build even when the stamp already matches (same HEAD, same patches, same CUDA archs)."""
+  force: Boolean
+  host: String!
+  tool: String!
+}
+
+type corrallm_ToolBuildStartOutputBody {
+  job: corrallm_ToolJobView!
+}
+
+type corrallm_ToolBuildStatusOutputBody {
+  current: corrallm_ToolJobView
+  last: corrallm_ToolJobView
+  log: [String!]!
+  """Total lines ever emitted. Pass back as logFrom; a gap means the ring trimmed what you missed."""
+  logTotal: Long!
+}
+
+type corrallm_ToolJobView {
+  elapsedSeconds: Long!
+  error: String
+  finishedAt: String
+  host: String!
+  id: String!
+  skipped: Boolean!
+  stamp: String
+  startedAt: String!
+  """running | ok | failed"""
+  status: String!
+  tool: String!
+  version: String
 }
 
 input corrallm_ToolPreflightInputBodyInput {

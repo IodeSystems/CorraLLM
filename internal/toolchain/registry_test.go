@@ -16,12 +16,18 @@ type fakeRunner struct {
 	answers map[Verb]any
 	calls   []Verb
 	force   bool
+	// block, when set, holds the build verb open until closed — so a test can
+	// observe the single-slot refusal while a build is genuinely in flight.
+	block chan struct{}
 }
 
 func (f *fakeRunner) Where() string   { return "fake" }
 func (f *fakeRunner) SetForce(v bool) { f.force = v }
 func (f *fakeRunner) Run(_ context.Context, _ Spec, v Verb) (*Raw, error) {
 	f.calls = append(f.calls, v)
+	if v == VerbBuild && f.block != nil {
+		<-f.block
+	}
 	a, ok := f.answers[v]
 	if !ok {
 		// Stands in for a host that could not answer this verb — an unreachable

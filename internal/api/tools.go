@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/iodesystems/corrallm/internal/toolchain"
 )
@@ -179,5 +180,124 @@ func orEmpty(s []string) []string {
 	return s
 }
 
-// compile-time assurance the registry type is what the handlers expect.
-var _ = (*toolchain.Registry)(nil)
+// --- builds (P25b) ---
+//
+// A build is minutes long, so it cannot be a request/response: the browser
+// would hold a connection for a quarter of an hour and lose everything on a
+// reload. Start returns immediately with a job id; the modal polls status and
+// pulls the log incrementally.
+
+// ToolBuildStartInput names what to build.
+type ToolBuildStartInput struct {
+	Body struct {
+		Tool  string `json:"tool"`
+		Host  string `json:"host"`
+		Force bool   `json:"force" required:"false" doc:"Build even when the stamp already matches (same HEAD, same patches, same CUDA archs)."`
+	}
+}
+
+// ToolJobView is one build, running or finished.
+type ToolJobView struct {
+	ID     string `json:"id"`
+	Tool   string `json:"tool"`
+	Host   string `json:"host"`
+	Status string `json:"status" doc:"running | ok | failed"`
+	// StartedAt/FinishedAt are RFC3339. ElapsedSeconds is computed server-side
+	// so a running job's timer does not depend on the client's clock agreeing
+	// with the daemon's.
+	StartedAt      string `json:"startedAt"`
+	FinishedAt     string `json:"finishedAt,omitempty"`
+	ElapsedSeconds int    `json:"elapsedSeconds"`
+	// Skipped means the stamp matched and nothing compiled — which is why a
+	// "build" can finish in two seconds.
+	Skipped bool   `json:"skipped"`
+	Version string `json:"version,omitempty"`
+	Stamp   string `json:"stamp,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// ToolBuildStartOutput hands back the job that was started.
+type ToolBuildStartOutput struct {
+	Body struct {
+		Job ToolJobView `json:"job"`
+	}
+}
+
+// ToolBuildStart begins a build. Refused when one is already running: a build
+// takes every core on the box, so two at once finish later than two in sequence.
+func (h *Handlers) ToolBuildStart(_ context.Context, in *ToolBuildStartInput) (*ToolBuildStartOutput, error) {
+	if h.Builds == nil {
+		return nil, fmt.Errorf("no toolchain builder configured")
+	}
+	j, err := h.Builds.Start(in.Body.Tool, in.Body.Host, in.Body.Force)
+	if err != nil {
+		return nil, err
+	}
+	out := &ToolBuildStartOutput{}
+	out.Body.Job = jobView(j)
+	return out, nil
+}
+
+// ToolBuildStatusInput asks for the current or last build, and the log after a
+// point the caller has already seen.
+type ToolBuildStatusInput struct {
+	LogFrom int `query:"logFrom" doc:"Absolute line index to read the log from. Send the previous response's logTotal to get only what is new."`
+}
+
+// ToolBuildStatusOutput is the whole modal's state in one call.
+type ToolBuildStatusOutput struct {
+	Body struct {
+		// Current is the running build, absent when nothing is running.
+		Current *ToolJobView `json:"current,omitempty"`
+		// Last is the most recent finished build, kept because "did that work?"
+		// is asked minutes later by somebody who closed the modal.
+		Last     *ToolJobView `json:"last,omitempty"`
+		Log      []string     `json:"log"`
+		LogTotal int          `json:"logTotal" doc:"Total lines ever emitted. Pass back as logFrom; a gap means the ring trimmed what you missed."`
+	}
+}
+
+// ToolBuildStatus reports the running build if there is one, else the last.
+func (h *Handlers) ToolBuildStatus(_ context.Context, in *ToolBuildStatusInput) (*ToolBuildStatusOutput, error) {
+	out := &ToolBuildStatusOutput{}
+	out.Body.Log = []string{}
+	if h.Builds == nil {
+		return out, nil
+	}
+	cur, last := h.Builds.State()
+	if cur != nil {
+		v := jobView(cur)
+		out.Body.Current = &v
+	}
+	if last != nil {
+		v := jobView(last)
+		out.Body.Last = &v
+	}
+	// The log follows whichever job the modal is showing: the running one when
+	// there is one, otherwise the last. Same rule the UI uses to pick a title,
+	// so the two never disagree about which build's output is on screen.
+	show := cur
+	if show == nil {
+		show = last
+	}
+	if show != nil {
+		lines, total := show.LogFrom(in.LogFrom)
+		out.Body.Log = lines
+		out.Body.LogTotal = total
+	}
+	return out, nil
+}
+
+func jobView(j *toolchain.Job) ToolJobView {
+	s := j.Snapshot()
+	v := ToolJobView{
+		ID: s.ID, Tool: s.Tool, Host: s.Host, Status: s.Status,
+		StartedAt:      s.StartedAt.Format(time.RFC3339),
+		ElapsedSeconds: int(j.Elapsed().Seconds()),
+		Skipped:        s.Skipped, Version: s.Version, Stamp: s.Stamp, Error: s.Error,
+	}
+	if !s.FinishedAt.IsZero() {
+		v.FinishedAt = s.FinishedAt.Format(time.RFC3339)
+	}
+	return v
+}

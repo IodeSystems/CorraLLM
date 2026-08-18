@@ -1,5 +1,16 @@
-import { useQuery } from '@tanstack/react-query'
-import { Alert, Box, Chip, CircularProgress, Stack, Tooltip, Typography } from '@mui/material'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Stack,
+  Tooltip,
+  Typography,
+} from '@mui/material'
+import { BuildDialog } from '@/BuildDialog'
 import { Panel, Row } from '@/Panel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -42,15 +53,12 @@ const ToolingDoc = graphql(/* GraphQL */ `
   }
 `)
 
-// A build is minutes long, so there is no button for it: a request the browser
-// holds open for a quarter of an hour is the wrong shape, and a reload would
-// lose it. The command is shown instead, which is honest about where the work
-// happens and is copy-pasteable.
-function buildHint(tool: string, host: string) {
-  return `corrallm tools build ${tool} --server ${host}`
-}
-
 export function ToolingPanel() {
+  const qc = useQueryClient()
+  // Which row's build the modal is for. The build itself is a single global
+  // slot on the daemon; this only decides what a fresh Build click targets.
+  const [building, setBuilding] = useState<{ tool: string; host: string } | null>(null)
+
   const q = useQuery({
     queryKey: ['tooling'],
     queryFn: () => gqlClient.request(ToolingDoc),
@@ -183,24 +191,36 @@ export function ToolingPanel() {
               </Box>
 
               {/* Only where a build is actually possible. An adopted entry would
-                  refuse it, and saying so after the click is worse than not
-                  offering it. */}
-              {!t.adopted && !t.error && (t.behind || !t.present) && (
-                <Box sx={{ flexBasis: '100%' }}>
-                  <Tooltip title="A CUDA build is minutes of full-machine compile that replaces a binary models may be spawning, so it stays a deliberate command rather than a button.">
-                    <Typography
-                      variant="caption"
-                      sx={{ color: C.textMuted, fontFamily: 'monospace', fontSize: 11.5 }}
-                    >
-                      $ {buildHint(t.tool, t.host)}
-                    </Typography>
-                  </Tooltip>
-                </Box>
+                  be refused by the server anyway, and saying so after the click
+                  is worse than not offering it. */}
+              {!t.adopted && !t.error && (
+                <Tooltip
+                  title={
+                    t.present
+                      ? 'Pull the pinned ref and rebuild. Minutes of full-machine compile; it runs on the daemon and keeps going if you close the dialog.'
+                      : 'Clone and build it on this host.'
+                  }
+                >
+                  <Button size="small" onClick={() => setBuilding({ tool: t.tool, host: t.host })}>
+                    {t.present ? 'Rebuild' : 'Build'}
+                  </Button>
+                </Tooltip>
               )}
             </Stack>
           </Row>
         )
       })}
+      <BuildDialog
+        open={!!building}
+        tool={building?.tool}
+        host={building?.host}
+        onClose={() => {
+          setBuilding(null)
+          // A finished build changes the version and the drift answer, so the
+          // table behind the dialog is stale the moment it closes.
+          void qc.invalidateQueries({ queryKey: ['tooling'] })
+        }}
+      />
     </Panel>
   )
 }

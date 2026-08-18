@@ -48,7 +48,11 @@ type Handlers struct {
 	// Nil renders an empty table rather than failing — a daemon with no tools:
 	// block is the normal state, not an error.
 	Tools *toolchain.Registry
-	Sched *sched.Scheduler // live admission load (P8-beyond)
+	// Builds runs tool builds as background jobs with one slot. Separate from
+	// Tools because a survey is a question and a build is an action with a
+	// lifetime — and only the latter needs somewhere to keep a log.
+	Builds *toolchain.Builder
+	Sched  *sched.Scheduler // live admission load (P8-beyond)
 	// PublicBase is how an attaching machine reaches this daemon, used to build
 	// the copy-pasteable install command.
 	PublicBase string
