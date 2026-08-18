@@ -1238,6 +1238,36 @@ function extractText(content: unknown): string {
   return ''
 }
 
+// The slices of an OpenAI request body this replay parser actually reads.
+//
+// Every field is optional and the nested ones are `unknown`, because this is
+// untrusted wire data recorded from a real request — the parser already guards
+// each access with `?.` and String(). These types exist to keep those guards
+// honest rather than to claim the payload conforms to anything.
+type RawContentPart = {
+  type?: unknown
+  text?: unknown
+  image_url?: { url?: unknown }
+  file?: { filename?: unknown; file_data?: unknown }
+}
+
+type RawToolCall = {
+  id?: unknown
+  function?: { name?: unknown; arguments?: unknown }
+}
+
+type RawMsg = {
+  role?: unknown
+  content?: unknown
+  tool_calls?: unknown
+  tool_call_id?: unknown
+}
+
+type RawToolDef = {
+  type?: unknown
+  function?: { name?: unknown; description?: unknown; parameters?: unknown }
+}
+
 // parseUserContent splits an OpenAI user `content` (string or content-parts array)
 // into the text + any attached image / file — WITHOUT flattening media away.
 function parseUserContent(content: unknown): Pick<Msg, 'content' | 'image' | 'file'> {
@@ -1248,7 +1278,7 @@ function parseUserContent(content: unknown): Pick<Msg, 'content' | 'image' | 'fi
   let file: Msg['file']
   for (const p of content) {
     if (!p || typeof p !== 'object') continue
-    const part = p as Record<string, any>
+    const part = p as RawContentPart
     if (part.type === 'text') text += (text ? ' ' : '') + String(part.text ?? '')
     else if (part.type === 'image_url') image = String(part.image_url?.url ?? '')
     else if (part.type === 'file') file = { name: String(part.file?.filename ?? 'file'), data: String(part.file?.file_data ?? '') }
@@ -1325,7 +1355,7 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
       if (!raw) return
       try {
         const body = JSON.parse(raw)
-        const rawMsgs: any[] = body.messages ?? []
+        const rawMsgs: RawMsg[] = Array.isArray(body.messages) ? body.messages : []
         // map tool_call_id → name so tool results can name the call they answer
         const toolNames = new Map<string, string>()
         for (const m of rawMsgs) {
@@ -1336,7 +1366,7 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
         const parsed: Msg[] = rawMsgs.map((m) => {
           if (m?.role === 'assistant') {
             const toolCalls: ToolCall[] = Array.isArray(m.tool_calls)
-              ? m.tool_calls.map((tc: any) => ({ id: String(tc?.id ?? ''), name: String(tc?.function?.name ?? ''), args: String(tc?.function?.arguments ?? '') }))
+              ? m.tool_calls.map((tc: RawToolCall) => ({ id: String(tc?.id ?? ''), name: String(tc?.function?.name ?? ''), args: String(tc?.function?.arguments ?? '') }))
               : []
             return {
               role: 'assistant',
@@ -1358,13 +1388,15 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
         })
         // capture the function-tool defs the model had available so continuations
         // re-offer them (purely informational in the Tools panel too).
-        const rawTools: any[] = Array.isArray(body.tools) ? body.tools : []
+        const rawTools: RawToolDef[] = Array.isArray(body.tools) ? body.tools : []
         const tools: ReplayTool[] = rawTools
           .filter((t) => t?.type === 'function' && t.function)
+          // `?.` despite the filter above proving it: the filter is a boolean
+          // test, not a type predicate, so it narrows nothing for the compiler.
           .map((t) => ({
-            name: String(t.function.name ?? ''),
-            description: String(t.function.description ?? ''),
-            parameters: t.function.parameters,
+            name: String(t.function?.name ?? ''),
+            description: String(t.function?.description ?? ''),
+            parameters: t.function?.parameters,
           }))
         setReplayTools(tools)
         // pull the LAST user turn into the input to re-run/tweak; keep every other
