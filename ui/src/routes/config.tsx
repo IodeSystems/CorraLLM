@@ -19,6 +19,7 @@ import {
   Typography,
 } from '@mui/material'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
+import { ToolingPanel } from '@/ToolingPanel'
 import { ModelForm, blankSpec, specFromGql, type ModelSpec, type ServerOption } from '@/ModelForm'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -637,6 +638,11 @@ function ConfigPage() {
           </Row>
         ))}
       </Panel>
+
+      {/* Per-machine, like the two panels above it — what each host can RUN
+          the models with. Its own query, because a survey asks every host and
+          would otherwise make capacity wait on a sleeping laptop. */}
+      <ToolingPanel />
 
       {homes.map((home) => {
         const ms = byHome.get(home) ?? []
