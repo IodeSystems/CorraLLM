@@ -214,15 +214,15 @@ func (r *Registry) Build(ctx context.Context, tool, host string, force bool, pro
 	}
 
 	// Force and progress are properties of THIS invocation, so they are applied
-	// to the runner rather than baked into the registry.
-	switch rr := runner.(type) {
-	case *Local:
-		rr.Force = force
-		rr.Progress = progress
-	default:
-		if f, ok := runner.(interface{ SetForce(bool) }); ok {
-			f.SetForce(force)
-		}
+	// to the runner rather than baked into the registry. Set through interfaces
+	// rather than a type switch, so a local and a remote runner are configured
+	// the same way — the type switch quietly skipped Progress for the remote
+	// one, which is why an agent build used to be silent for its whole run.
+	if f, ok := runner.(interface{ SetForce(bool) }); ok {
+		f.SetForce(force)
+	}
+	if p, ok := runner.(interface{ SetProgress(io.Writer) }); ok {
+		p.SetProgress(progress)
 	}
 	res, err := RunBuild(ctx, runner, spec)
 	if err == nil {

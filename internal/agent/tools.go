@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
+	"strings"
+	"sync"
 
 	"github.com/iodesystems/corrallm/internal/toolchain"
 )
@@ -41,6 +44,27 @@ type ToolRunRequest struct {
 	Verb string         `json:"verb"`
 	// Force rebuilds even when the build stamp already matches.
 	Force bool `json:"force,omitempty"`
+	// Stream asks for the log AS IT HAPPENS, as newline-delimited JSON, instead
+	// of one object at the end.
+	//
+	// A remote build was silent for its whole duration and then produced twenty
+	// thousand lines at once, which is indistinguishable from a hang for the ten
+	// minutes it takes. An agent that predates this field ignores it and answers
+	// the old way, which is why the primary decides by the response's
+	// content type rather than by assuming.
+	Stream bool `json:"stream,omitempty"`
+}
+
+// ToolRunFrame is one line of a streamed response.
+//
+// Either a log line or the terminal result — never both, because the log has
+// already been sent line by line and repeating it in the final frame would
+// double every build's output.
+type ToolRunFrame struct {
+	Log  string          `json:"log,omitempty"`
+	Done bool            `json:"done,omitempty"`
+	JSON json.RawMessage `json:"json,omitempty"`
+	Err  string          `json:"error,omitempty"`
 }
 
 // ToolRunResponse is the recipe's JSON result plus what it printed getting there.
@@ -70,6 +94,11 @@ func (s *Server) toolRun(w http.ResponseWriter, r *http.Request) {
 		toolchain.VerbInstallDeps, toolchain.VerbBuild:
 	default:
 		writeErr(w, http.StatusBadRequest, "unknown verb "+req.Verb)
+		return
+	}
+
+	if req.Stream {
+		s.toolRunStreaming(w, r, req, verb)
 		return
 	}
 
@@ -105,4 +134,91 @@ func (s *Server) recipeDir() string {
 		return ""
 	}
 	return s.stateDir + "/recipes"
+}
+
+// toolRunStreaming runs a verb and emits its output as it happens.
+//
+// One NDJSON frame per line, flushed immediately. Flushing per line is the
+// whole point: buffered, the operator sees nothing until the build ends, which
+// is the behaviour this replaces.
+func (s *Server) toolRunStreaming(w http.ResponseWriter, r *http.Request, req ToolRunRequest, verb toolchain.Verb) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	// Headers go out before the first line so the client knows which shape it
+	// is reading, even if the build takes a minute to say anything.
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	enc := json.NewEncoder(w)
+	var mu sync.Mutex
+	emit := func(f ToolRunFrame) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = enc.Encode(f)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
+	lw := &lineWriter{emit: func(line string) { emit(ToolRunFrame{Log: line}) }}
+	runner := &toolchain.Local{
+		Dir:              s.recipeDir(),
+		AllowInstallDeps: s.allowInstallDeps,
+		Server:           s.hello().Hostname,
+		Force:            req.Force,
+		Progress:         lw,
+	}
+
+	raw, err := runner.Run(r.Context(), req.Spec, verb)
+	lw.flush()
+
+	f := ToolRunFrame{Done: true}
+	if raw != nil {
+		f.JSON = raw.JSON
+	}
+	if err != nil {
+		f.Err = err.Error()
+	}
+	emit(f)
+}
+
+// lineWriter turns a byte stream into whole lines.
+//
+// cmd output arrives in arbitrary chunks — a write can hold half a line, or six
+// lines and a fragment — so emitting per Write would produce frames that split
+// mid-word and a UI that reassembles them wrongly.
+type lineWriter struct {
+	mu   sync.Mutex
+	buf  []byte
+	emit func(string)
+}
+
+func (l *lineWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buf = append(l.buf, p...)
+	for {
+		i := bytes.IndexByte(l.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimRight(string(l.buf[:i]), "\r")
+		l.buf = l.buf[i+1:]
+		l.emit(line)
+	}
+	return len(p), nil
+}
+
+// flush emits a trailing fragment, so a build whose last line has no newline
+// does not lose it — which is often the line that says what went wrong.
+func (l *lineWriter) flush() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.buf) > 0 {
+		l.emit(strings.TrimRight(string(l.buf), "\r"))
+		l.buf = nil
+	}
 }

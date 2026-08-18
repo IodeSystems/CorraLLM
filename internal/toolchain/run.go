@@ -86,6 +86,11 @@ type Local struct {
 	Force bool
 }
 
+// SetForce and SetProgress make a Local configurable through the same
+// interfaces a remote runner implements, so callers need no type switch.
+func (l *Local) SetForce(v bool)         { l.Force = v }
+func (l *Local) SetProgress(w io.Writer) { l.Progress = w }
+
 func (l *Local) Where() string {
 	if l.Server == "" {
 		return "local"
