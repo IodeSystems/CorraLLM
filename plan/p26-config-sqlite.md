@@ -1,6 +1,7 @@
 # P26 — config moves into SQLite
 
-Status: **P26a in progress** (2026-08-18).
+Status: **COMPLETE and live** (2026-08-18). All five phases shipped; the
+production daemon boots from SQLite and `~/.corrallm/config.yml` is retired.
 
 ## 1. Why
 
@@ -79,21 +80,53 @@ Kept as JSON columns, deliberately:
 The rule: a column when something filters, joins or validates on it; JSON when
 it is only ever carried along with its parent.
 
-## 4. Phases
+## 4. Phases — all shipped
 
-- **P26a — schema + round trip, wired to nothing.** Write a `Config` into the
-  tables, read it back, prove semantic equality against the LIVE config. Until
-  this passes on the real thing, nothing else is safe to build.
-- **P26b — `corrallm config export` / `import`.** YAML in, YAML out, against the
-  DB. This is the escape hatch that makes deleting the file survivable.
-- **P26c — the daemon reads from the DB.** Load prefers the tables; an empty DB
-  with a file present triggers the one-time import. Writers (`configedit`,
-  `enroll`) write tables.
-- **P26d — retire the file.** Delete after verification, drop `include:`
-  support, and make a stale `config.yml` a loud startup note rather than a
-  silent no-op.
-- **P26e — what the DB makes possible.** Per-entry writes (two operators editing
-  different models stop clobbering each other) and config history.
+- **✅ P26a — schema + round trip** (`0646b92`). Normalized tables, wired to
+  nothing. The mapper is LOSSLESS BY CONSTRUCTION: entities round-trip through
+  their own YAML as a map, columns are lifted out, and the remainder is stored
+  verbatim — so forgetting a field costs a column, not data. Proven against the
+  real config, and the test was itself verified by dropping one field and
+  watching it fail.
+- **✅ P26b — export / load** (`2d2774b`). The escape hatch, landed before
+  anything destructive. Tested as a FIXED POINT (export → import → export must
+  be byte-identical), which catches a field surviving one direction only.
+- **✅ P26c — the daemon reads from the DB** (`ea7472e`). Three named boot
+  cases. SIGHUP reloads from the database; re-reading the file would have
+  silently reverted every dashboard edit since startup.
+- **✅ P26d — retire the file, drop `include:`** (`e18d7ed`). Renamed rather
+  than deleted, because this is the moment the DB becomes the only copy.
+- **✅ P26e — history and restore** (`a31b56d`). Every save records what the
+  config became; restore is a change, not a rewind.
+
+### What it cost, and what it caught
+
+Four bugs, each found by a test or by running it rather than by reading:
+
+1. **Double resolution.** Saving a config that had been through `config.Load`
+   re-resolved it and reported every extension-provided model as colliding with
+   itself. Fixed by reducing to the AUTHORED form first — the rule the file
+   writer always applied, now shared via the exported `config.ForWriting`.
+2. **A fresh install wrote a config file just to retire it.** `bootstrapConfig`
+   existed so `requireManaged` would accept an edit; with the import path in
+   place the daemon imported that empty file and retired it two log lines later.
+   Gone entirely — a fresh install now creates `admin.token` and the DB, nothing
+   else. Caught by `TestRawSpinup`.
+3. **Restore double-recorded.** `Save` records and `Restore` recorded again, so
+   every rollback appeared twice in its own history.
+4. **`Apply` created the config tables but not the revision table.** Any Source
+   built outside the daemon failed on its first save. They are one call now,
+   because a Source that cannot record is broken.
+
+### Live cutover (2026-08-18)
+
+Imported, verified, retired to `config.yml.imported-20260818-162738`, booted
+from the database: 2 servers, 15 models, 3 groups, 28 served. `Qwen3.8-27B`
+generated from a DB-sourced config. Revision 1 reads "imported from
+/home/nthalk/.corrallm/config.yml".
+
+**Anything external that read `~/.corrallm/config.yml` now finds nothing.**
+`corrallm config export` is the replacement.
 
 ## 5. Risks
 
@@ -108,3 +141,14 @@ it is only ever carried along with its parent.
   (it ignored it on read, and dropped it on write). Columns cannot: an unknown
   key becomes an explicit error at import instead of silent data loss. That is
   better, but it IS a behaviour change.
+
+## 6. Not done
+
+- **Per-entry writes.** Two operators editing different models still read,
+  modify and write the WHOLE config, so the later save wins. The tables support
+  finer writes; nothing uses them yet. Low urgency at one operator.
+- **History in the UI.** `config history | show | restore` is CLI-only. The
+  dashboard has no view of it, which is where somebody would actually notice a
+  config had changed under them.
+- **`corrallm config import`** (the comment-carrying migration) still writes a
+  FILE, which nothing reads any more. It should target the database or go.

@@ -165,6 +165,8 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   recipes (probe/upstream/preflight/install-deps), `/agent/v1/tools/run`, `corrallm tools`.
 >   Adopts ml-kit's existing builds rather than owning them; box1's llama.cpp reports BEHIND
 >   master on day one. Design in `plan/p25-toolchain.md`; phase entry in §7.
+> - ✅ **P26 config in SQLite** (2026-08-18) — config.yml retired; the daemon boots from the
+>   database, with export/import and revision history. Design in `plan/p26-config-sqlite.md`.
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
@@ -1396,6 +1398,41 @@ the BackpressureError shape we already validated.
   equivalent; browser callers land in `default` unless keyed (design choice — priorityGroup is first-class).
   (4) **`queued_ms` is forward-only** — rows predating the column read 0; queue *wait* populates as new
   queued-then-served requests accumulate (rejections + sampled depth are already live).
+
+### ✅ P26 — config lives in SQLite (2026-08-18)
+
+Design doc: **`plan/p26-config-sqlite.md`**. All five phases shipped and LIVE:
+the production daemon boots from the database and `~/.corrallm/config.yml` is
+retired to `config.yml.imported-20260818-162738`.
+
+`config.yml` was already machine-owned — its own header said hand edits are not
+preserved, because the daemon rewrites it on every change. A struct-marshalled
+file a program rewrites is a database with a bad storage engine, and it failed
+twice this month in ways a database cannot: it silently DELETED the `tools:`
+block (added while a daemon with no struct member for it was running, so the
+field had nowhere to live on the next write), and it cannot hold an explanation,
+which is why the tools documentation had to move into `notes:` fields.
+
+Normalized tables, with the rule that a column is for anything that joins,
+filters or validates, and JSON for what is only carried along with its parent.
+The property that matters more than the schema: the mapper is LOSSLESS BY
+CONSTRUCTION — entities round-trip through their own YAML as a map, columns are
+lifted out, and the remainder is stored verbatim, so forgetting a field costs a
+column rather than data.
+
+**next** nothing required. Optional follow-ons in the doc's §6: per-entry writes
+(two operators editing different models still clobber each other), history in
+the UI (it is CLI-only), and `corrallm config import` still writing a file
+nothing reads.
+**⚠ behaviour change for anything external** reading `~/.corrallm/config.yml`
+now finds nothing. `corrallm config export` is the replacement, and
+`config history | show | restore` is the new undo.
+**verified live** imported, verified, retired; 2 servers / 15 models / 3 groups,
+28 models served, `Qwen3.8-27B` generating from a DB-sourced config.
+**found by tests, not reading** four bugs, the sharpest being that a FRESH
+install wrote an empty config.yml purely so the import could retire it two log
+lines later — `bootstrapConfig` is gone, and a new install now creates only
+`admin.token` and the DB.
 
 ### ◐ P25 — toolchain registry (per-host tool availability, versions, builds)
 
