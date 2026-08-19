@@ -1434,7 +1434,7 @@ install wrote an empty config.yml purely so the import could retire it two log
 lines later — `bootstrapConfig` is gone, and a new install now creates only
 `admin.token` and the DB.
 
-### ◐ P25 — toolchain registry (per-host tool availability, versions, builds)
+### ◐ P25 — toolchain registry (P25a–e shipped; only P25f left)
 
 
 Design doc: **`plan/p25-toolchain.md`**. Scoped 2026-08-17; **P25a shipped the
@@ -1514,8 +1514,11 @@ for every host — right for box1, wrong for a remote managed install under
 `/Users`. Resolution asks the host instead, so it is host-truthful anyway, but
 fix the prefix before managing a tool anywhere but box1.
 
-**next** P25b — an API op + a Tooling surface in the UI. P25a/c/e are CLI-only by
-design; nothing GraphQL-facing was added, so no schema regeneration was needed.
+**next** P25f — the scheduled drift check, and the ONLY phase left. The config
+already carries `check:`/`rebuild:` and resolves them, but nothing runs on a
+timer: drift is noticed when somebody opens the Tooling panel or runs
+`corrallm tools list`. Check on by default (one `git ls-remote`), rebuild
+opt-in per tool.
 **risks** a build competes with resident models for the same GPU (P25c decides
 whether it takes an admission slot; starting "reported, not scheduled");
 `git clean -xdf` is destructive, so managed trees live under `~/.corrallm/tools/`

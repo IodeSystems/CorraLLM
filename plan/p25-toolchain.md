@@ -1,7 +1,9 @@
 # P25 — toolchain registry: per-host tool availability, versions, and builds
 
-Status: **P25a shipped** (2026-08-17) — registry, recipes, agent surface and CLI,
-read-only plus `install-deps`. P25b–f open. The phase entry lives in
+Status: **P25a–e shipped** (2026-08-17/18) — registry, recipes, agent surface,
+CLI, the Tooling panel, builds driven from the dashboard with a live log and
+persisted history, and `${tool:}` binding with every local model migrated.
+**Only P25f (the scheduled drift check) is left.** The phase entry lives in
 `plan/plan.md` §7.
 
 ## 1. What this is
@@ -275,10 +277,10 @@ Each is a green, tested commit per plan.md §0.
   heartbeat does not carry tool state. Surveys are primary-driven and asked live
   on every call, which is why the agent holds no copy of `tools:` to drift out of
   agreement with config.
-- **P25b — a Tooling surface.** Per-host table: tool, version, source
+- **✅ P25b — a Tooling surface (2026-08-17, `7e42d20`).** Per-host table: tool, version, source
   (binary/stamp/unknown), upstream drift, declared-but-absent, undeclared. Where
   the scheduled check lands.
-- **◐ P25c — build, llama.cpp (2026-08-17).** `build` verb (align → patch →
+- **✅ P25c — build, llama.cpp (2026-08-17).** `build` verb (align → patch →
   configure → compile → install → stamp), `Registry.Build`, `corrallm tools
   build` with a live log. Preflight gates it; adopted entries are refused.
 
@@ -352,7 +354,10 @@ including, with some irony, the warning about this exact class of loss. All of
 it has been moved into the `notes:` fields on each tool and host, which ARE part
 of the config and do survive. Anything worth knowing about a tool goes in
 `notes:`, never a `#` comment.
-- **P25d — ninfer recipe.** `preflight` reports box1's missing ffmpeg before
+- **✅ P25d — ninfer recipe (2026-08-18, `8fa4e11`).** Built on box1 in 293s once
+  the ffmpeg dev libraries were present and the pin was corrected from `main` to
+  `master`; `sm_120a` confirmed in the binary.
+  Original scope: `preflight` reports box1's missing ffmpeg before
   anything compiles; hard-fail on non-sm_120a hosts with the reason.
 - **✅ P25e — `${tool:}` binding (2026-08-17).** Expansion at spawn time against
   the host the model runs on, resolved through `Registry.ExpandTools` and wired
@@ -402,7 +407,12 @@ of the config and do survive. Anything worth knowing about a tool goes in
   sidesteps it by asking the host (probe returns the real path), so the resolver
   is host-truthful even where `SpecFor` is not, but the prefix itself must be
   fixed before any tool is managed anywhere but box1.
-- **P25f — scheduled check (on) / rebuild (opt-in).**
+- **◻ P25f — scheduled check (on) / rebuild (opt-in). THE ONLY PHASE LEFT.**
+  The config carries `check:` and `rebuild:` and `CheckIntervalOf` resolves them,
+  but nothing runs on a timer yet: drift is only noticed when somebody opens the
+  Tooling panel or runs `corrallm tools list`. The decision made when this was
+  scoped still stands — check on by default (one `git ls-remote`), rebuild
+  opt-in per tool, because a CUDA build is minutes of full-machine compile.
 
 ## 9. Risks and open items
 
