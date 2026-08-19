@@ -19,6 +19,7 @@ type CorrallmMutationNamespace {
   assignModel(body: corrallm_AssignModelInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "assignModel")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
+  configRestore(body: corrallm_ConfigRestoreInputBodyInput!): corrallm_ConfigRestoreOutputBody @derived(operationId: "configRestore")
   deleteEntry(
     """model | server | lane"""
     kind: String!
@@ -145,6 +146,12 @@ type CorrallmQueryNamespace {
     """Provider whose catalogue to enumerate."""
     provider: String!
   ): corrallm_BrowseCatalogOutputBody @derived(operationId: "browseCatalog")
+  configExport: corrallm_ConfigYAMLOutputBody @derived(operationId: "configExport")
+  configHistory(
+    """Newest first. Default 20."""
+    limit: Long
+  ): corrallm_ConfigHistoryOutputBody @derived(operationId: "configHistory")
+  configRevision(id: Long!): corrallm_ConfigYAMLOutputBody @derived(operationId: "configRevision")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   entryYaml(
     """model | server | lane"""
@@ -280,6 +287,7 @@ type CorrallmV1MutationNamespace {
   assignModel(body: corrallm_AssignModelInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "assignModel")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
+  configRestore(body: corrallm_ConfigRestoreInputBodyInput!): corrallm_ConfigRestoreOutputBody @derived(operationId: "configRestore")
   deleteEntry(
     """model | server | lane"""
     kind: String!
@@ -405,6 +413,12 @@ type CorrallmV1QueryNamespace {
     """Provider whose catalogue to enumerate."""
     provider: String!
   ): corrallm_BrowseCatalogOutputBody @derived(operationId: "browseCatalog")
+  configExport: corrallm_ConfigYAMLOutputBody @derived(operationId: "configExport")
+  configHistory(
+    """Newest first. Default 20."""
+    limit: Long
+  ): corrallm_ConfigHistoryOutputBody @derived(operationId: "configHistory")
+  configRevision(id: Long!): corrallm_ConfigYAMLOutputBody @derived(operationId: "configRevision")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   entryYaml(
     """model | server | lane"""
@@ -1275,9 +1289,30 @@ type corrallm_CatalogEntryView {
   servedName: String!
 }
 
+type corrallm_ConfigHistoryOutputBody {
+  revisions: [corrallm_ConfigRevisionView!]!
+}
+
 type corrallm_ConfigMutationOutputBody {
   message: String!
   ok: Boolean!
+}
+
+input corrallm_ConfigRestoreInputBodyInput {
+  id: Long!
+}
+
+type corrallm_ConfigRestoreOutputBody {
+  message: String!
+  ok: Boolean!
+}
+
+type corrallm_ConfigRevisionView {
+  at: String!
+  bytes: Long!
+  current: Boolean!
+  id: Long!
+  note: String!
 }
 
 type corrallm_ConfigSummaryOutputBody {
@@ -1287,6 +1322,10 @@ type corrallm_ConfigSummaryOutputBody {
   priorityGroups: [String!]!
   """Declared server names."""
   servers: [String!]!
+}
+
+type corrallm_ConfigYAMLOutputBody {
+  yaml: String!
 }
 
 type corrallm_CredentialSpec {

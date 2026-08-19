@@ -18,6 +18,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/agent"
 	"github.com/iodesystems/corrallm/internal/agentdist"
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/configdb"
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/proc"
@@ -71,6 +72,10 @@ type Handlers struct {
 	// itself, where the read happened outside the write and two concurrent edits
 	// silently discarded one another.
 	UpdateConfig func(ctx context.Context, fn func(*config.Config) error) error
+	// ConfigSource backs the history surface: list revisions, read one, restore
+	// one, export the current config. Nil renders an empty history rather than
+	// failing — a daemon with no store is a valid state, not an error.
+	ConfigSource *configdb.Source
 	// Reload re-reads the config after a write. Nil skips it (the change
 	// applies on the next restart).
 	Reload func() error

@@ -101,6 +101,39 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Tags:        []string{"toolchain"},
 	}, h.ToolBuildLog)
 
+	// Configuration history. This is the undo now that config.yml is gone.
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "configHistory",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/config/history",
+		Summary:     "Recorded configuration revisions, newest first.",
+		Tags:        []string{"meta"},
+	}, h.ConfigHistory)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "configRevision",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/config/history/{id}",
+		Summary:     "One revision's configuration as YAML.",
+		Tags:        []string{"meta"},
+	}, h.ConfigRevision)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "configExport",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/config/export",
+		Summary:     "The current configuration as YAML — the readable copy of the database.",
+		Tags:        []string{"meta"},
+	}, h.ConfigExport)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "configRestore",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/config/restore",
+		Summary:     "Make an earlier revision current. Validated, and recorded as a new revision.",
+		Tags:        []string{"meta"},
+	}, h.ConfigRestore)
+
 	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "recentActivity",
 		Method:      http.MethodGet,

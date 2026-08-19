@@ -25,6 +25,7 @@ import CloudOutlined from '@mui/icons-material/CloudOutlined'
 import DashboardOutlined from '@mui/icons-material/DashboardOutlined'
 import DataUsageOutlined from '@mui/icons-material/DataUsageOutlined'
 import GroupsOutlined from '@mui/icons-material/GroupsOutlined'
+import HistoryOutlined from '@mui/icons-material/HistoryOutlined'
 import MenuIcon from '@mui/icons-material/Menu'
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined'
 import SpeedOutlined from '@mui/icons-material/SpeedOutlined'
@@ -113,6 +114,7 @@ function CalibrationBanner() {
 const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/', label: 'Overview', icon: DashboardOutlined },
   { to: '/hosts', label: 'Hosts', icon: SettingsOutlined },
+  { to: '/history', label: 'History', icon: HistoryOutlined },
   { to: '/activity', label: 'Activity', icon: TimelineOutlined },
   { to: '/usage', label: 'Usage', icon: BarChartOutlined },
   { to: '/groups', label: 'Groups', icon: GroupsOutlined },

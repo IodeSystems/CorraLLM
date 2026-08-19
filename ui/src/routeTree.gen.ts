@@ -15,6 +15,7 @@ import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as ModelRouteImport } from './routes/model'
 import { Route as KeysRouteImport } from './routes/keys'
 import { Route as HostsRouteImport } from './routes/hosts'
+import { Route as HistoryRouteImport } from './routes/history'
 import { Route as GroupsRouteImport } from './routes/groups'
 import { Route as ConfigRouteImport } from './routes/config'
 import { Route as BenchRouteImport } from './routes/bench'
@@ -55,6 +56,11 @@ const KeysRoute = KeysRouteImport.update({
 const HostsRoute = HostsRouteImport.update({
   id: '/hosts',
   path: '/hosts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HistoryRoute = HistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GroupsRoute = GroupsRouteImport.update({
@@ -119,6 +125,7 @@ export interface FileRoutesByFullPath {
   '/bench': typeof BenchRoute
   '/config': typeof ConfigRoute
   '/groups': typeof GroupsRoute
+  '/history': typeof HistoryRoute
   '/hosts': typeof HostsRoute
   '/keys': typeof KeysRoute
   '/model': typeof ModelRoute
@@ -138,6 +145,7 @@ export interface FileRoutesByTo {
   '/bench': typeof BenchRoute
   '/config': typeof ConfigRoute
   '/groups': typeof GroupsRoute
+  '/history': typeof HistoryRoute
   '/hosts': typeof HostsRoute
   '/keys': typeof KeysRoute
   '/model': typeof ModelRoute
@@ -158,6 +166,7 @@ export interface FileRoutesById {
   '/bench': typeof BenchRoute
   '/config': typeof ConfigRoute
   '/groups': typeof GroupsRoute
+  '/history': typeof HistoryRoute
   '/hosts': typeof HostsRoute
   '/keys': typeof KeysRoute
   '/model': typeof ModelRoute
@@ -179,6 +188,7 @@ export interface FileRouteTypes {
     | '/bench'
     | '/config'
     | '/groups'
+    | '/history'
     | '/hosts'
     | '/keys'
     | '/model'
@@ -198,6 +208,7 @@ export interface FileRouteTypes {
     | '/bench'
     | '/config'
     | '/groups'
+    | '/history'
     | '/hosts'
     | '/keys'
     | '/model'
@@ -217,6 +228,7 @@ export interface FileRouteTypes {
     | '/bench'
     | '/config'
     | '/groups'
+    | '/history'
     | '/hosts'
     | '/keys'
     | '/model'
@@ -237,6 +249,7 @@ export interface RootRouteChildren {
   BenchRoute: typeof BenchRoute
   ConfigRoute: typeof ConfigRoute
   GroupsRoute: typeof GroupsRoute
+  HistoryRoute: typeof HistoryRoute
   HostsRoute: typeof HostsRoute
   KeysRoute: typeof KeysRoute
   ModelRoute: typeof ModelRoute
@@ -292,6 +305,13 @@ declare module '@tanstack/react-router' {
       path: '/hosts'
       fullPath: '/hosts'
       preLoaderRoute: typeof HostsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/history': {
+      id: '/history'
+      path: '/history'
+      fullPath: '/history'
+      preLoaderRoute: typeof HistoryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/groups': {
@@ -390,6 +410,7 @@ const rootRouteChildren: RootRouteChildren = {
   BenchRoute: BenchRoute,
   ConfigRoute: ConfigRoute,
   GroupsRoute: GroupsRoute,
+  HistoryRoute: HistoryRoute,
   HostsRoute: HostsRoute,
   KeysRoute: KeysRoute,
   ModelRoute: ModelRoute,
