@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 
@@ -39,7 +40,109 @@ func (s *Source) Load(ctx context.Context) (*config.Config, error) {
 	return c, nil
 }
 
-// Save validates BEFORE writing.
+// Update is THE way to change configuration.
+//
+// Read, modify, validate, write, record — all inside one transaction, holding
+// one lock. Everything else that writes config goes through it.
+//
+// The read has to be inside, and that is the whole point. Editing was
+// read-modify-write with the read done separately from the write: the API took
+// the in-memory config, copied it, applied the change and saved. Two concurrent
+// edits therefore both started from the same base and the second silently
+// discarded the first — a model added in one browser tab disappearing when
+// another tab renamed a lane. Reading inside the transaction makes the second
+// edit see the first.
+//
+// The mutex is process-wide because there is one configuration per process, and
+// it serialises writers before they reach SQLite rather than letting them
+// collide there. It is NOT what makes this safe across processes — the
+// transaction is. A `corrallm config load` running against the daemon's
+// database takes SQLite's write lock, and whichever transaction commits second
+// still read inside its own transaction.
+func (s *Source) Update(ctx context.Context, fn func(*config.Config) error) (*config.Config, error) {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	cur, err := Read(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	// Callers edit the RESOLVED config — the API's handlers look up models by
+	// served name, which only exist after extensions are expanded — so resolve
+	// before handing it over, exactly as a load would.
+	if err := cur.Finalize(); err != nil {
+		return nil, fmt.Errorf("the stored config no longer finalizes: %w", err)
+	}
+	// Handed to the caller EDIT-READY: the maps a handler will assign into must
+	// exist, because a config read from an empty store has none and the first
+	// "add a model" on a fresh install panics on a nil map. The file path got
+	// this for free from its copy-for-edit step; reading from the store does
+	// not, and a caller should not have to remember which maps to allocate.
+	if cur.Models == nil {
+		cur.Models = map[string]config.Model{}
+	}
+	if cur.Servers == nil {
+		cur.Servers = map[string]config.Server{}
+	}
+	if cur.Lanes == nil {
+		cur.Lanes = map[string]config.Lane{}
+	}
+	if cur.PriorityGroups == nil {
+		cur.PriorityGroups = map[string]config.PriorityGroup{}
+	}
+	if cur.Keys == nil {
+		cur.Keys = map[string]string{}
+	}
+	if cur.Extensions == nil {
+		cur.Extensions = map[string]config.Extension{}
+	}
+	if cur.Providers == nil {
+		cur.Providers = map[string]config.LocalProvider{}
+	}
+	if cur.Tools == nil {
+		cur.Tools = map[string]config.Tool{}
+	}
+
+	if err := fn(cur); err != nil {
+		return nil, err
+	}
+
+	authored := config.ForWriting(cur)
+	check, err := clone(authored)
+	if err != nil {
+		return nil, err
+	}
+	if err := check.Finalize(); err != nil {
+		return nil, fmt.Errorf("refusing to store an invalid config: %w", err)
+	}
+	if err := writeTx(ctx, tx, authored); err != nil {
+		return nil, err
+	}
+	if err := recordTx(ctx, tx, authored, s.Note); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return check, nil
+}
+
+// writeMu serialises config writers in this process. See Update.
+var writeMu sync.Mutex
+
+// Save replaces the whole configuration.
+//
+// Update is preferred for an EDIT, because it reads and writes atomically.
+// This is for the cases that genuinely replace everything and have nothing to
+// merge with: an import, a restore, a CLI load.
+//
+// Validates BEFORE writing.
 //
 // A file could be written and then found invalid at the next start, which is
 // bad enough. A database that the running daemon reloads from would serve the
@@ -47,6 +150,9 @@ func (s *Source) Load(ctx context.Context) (*config.Config, error) {
 // because Finalize resolves extensions into models and storing the resolved
 // form would duplicate every provided model as if it had been declared.
 func (s *Source) Save(ctx context.Context, c *config.Config) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
 	// Reduce to the AUTHORED config first, then validate that. Validating the
 	// caller's copy instead checks a config that may already have been through
 	// resolution, and Finalize resolving it a second time reports every

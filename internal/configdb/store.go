@@ -8,6 +8,18 @@ import (
 	"github.com/iodesystems/corrallm/internal/config"
 )
 
+// querier is whatever can run SQL: a *sql.DB or a *sql.Tx.
+//
+// It exists so a READ can happen inside the same transaction as the write that
+// follows it. Config edits are read-modify-write, and with the read outside the
+// transaction two concurrent edits both start from the same base and the later
+// one silently discards the earlier — which is the bug this whole seam exists
+// to close, not a theoretical one.
+type querier interface {
+	QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error)
+}
+
 // Apply creates the config tables, history included. Idempotent, like every
 // other schema here.
 //
@@ -32,18 +44,25 @@ func Apply(ctx context.Context, db *sql.DB) error {
 // deletion work at all — a model removed from c has to disappear, and a
 // merge-only write would resurrect it on every save.
 func Write(ctx context.Context, db *sql.DB, c *config.Config) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := writeTx(ctx, tx, c); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// writeTx replaces the stored configuration inside a caller's transaction.
+func writeTx(ctx context.Context, tx querier, c *config.Config) error {
 	// Store what was AUTHORED. A config that has been through Load carries every
 	// extension-provided and provider-folded model in Models; persisting those
 	// makes the next read fail on "collides with a declared model". The file
 	// writer has always applied this rule — the database has to apply the same
 	// one, or the two disagree about what a saved config contains.
 	c = config.ForWriting(c)
-
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
 
 	for _, t := range allTables {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM "+t); err != nil {
@@ -75,10 +94,7 @@ func Write(ctx context.Context, db *sql.DB, c *config.Config) error {
 	if err := writeExtensions(ctx, tx, c); err != nil {
 		return err
 	}
-	if err := writeProviders(ctx, tx, c); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return writeProviders(ctx, tx, c)
 }
 
 // Read assembles a Config from the tables.
@@ -87,7 +103,7 @@ func Write(ctx context.Context, db *sql.DB, c *config.Config) error {
 // expanded into models and nothing is validated here. That is deliberate — the
 // file path does resolution and validation in config.Load, after parsing, and
 // doing it in two places is how the two drift.
-func Read(ctx context.Context, db *sql.DB) (*config.Config, error) {
+func Read(ctx context.Context, db querier) (*config.Config, error) {
 	c := &config.Config{}
 	if err := readScalars(ctx, db, c); err != nil {
 		return nil, err
@@ -123,10 +139,20 @@ func Read(ctx context.Context, db *sql.DB) (*config.Config, error) {
 //
 // The question a boot asks: an empty database with a file present is the
 // one-time import, and an empty database with no file is a fresh install.
-func IsEmpty(ctx context.Context, db *sql.DB) (bool, error) {
+func IsEmpty(ctx context.Context, db querier) (bool, error) {
 	for _, t := range allTables {
+		rows, err := db.QueryContext(ctx, "SELECT COUNT(*) FROM "+t)
+		if err != nil {
+			return false, err
+		}
 		var n int
-		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+t).Scan(&n); err != nil {
+		if rows.Next() {
+			if err := rows.Scan(&n); err != nil {
+				_ = rows.Close()
+				return false, err
+			}
+		}
+		if err := rows.Close(); err != nil {
 			return false, err
 		}
 		if n > 0 {
@@ -170,7 +196,7 @@ var sectionKeys = []string{
 	"keys", "tools", "extensions", "providers",
 }
 
-func writeScalars(ctx context.Context, tx *sql.Tx, c *config.Config) error {
+func writeScalars(ctx context.Context, tx querier, c *config.Config) error {
 	m, err := toMap(c)
 	if err != nil {
 		return err
@@ -191,7 +217,7 @@ func writeScalars(ctx context.Context, tx *sql.Tx, c *config.Config) error {
 	return nil
 }
 
-func readScalars(ctx context.Context, db *sql.DB, c *config.Config) error {
+func readScalars(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx, `SELECT key, value FROM config_scalar`)
 	if err != nil {
 		return err

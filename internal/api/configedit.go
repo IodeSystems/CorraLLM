@@ -19,7 +19,7 @@ import (
 // reloaded or restarted from, and the operator finds out at the worst possible
 // moment. Here a rejected edit is a 400 and the running system is untouched.
 func (h *Handlers) mutateConfig(fn func(*config.Config) error) error {
-	if h.SaveConfig == nil {
+	if h.UpdateConfig == nil {
 		if h.ConfigPath == "" {
 			return huma.Error503ServiceUnavailable("this daemon has no writable config")
 		}
@@ -27,15 +27,7 @@ func (h *Handlers) mutateConfig(fn func(*config.Config) error) error {
 			return huma.Error409Conflict(err.Error())
 		}
 	}
-	cur := h.config()
-	if cur == nil {
-		return huma.Error503ServiceUnavailable("config unavailable")
-	}
-	next := copyForEdit(cur)
-	if err := fn(next); err != nil {
-		return err
-	}
-	if err := h.saveConfig(next); err != nil {
+	if err := h.applyEdit(fn); err != nil {
 		// The message from Load names the actual problem — a lane pointing at a
 		// model that was just deleted, a devicePool that is not a pool. Pass it
 		// through rather than replacing it with something generic.
@@ -526,14 +518,26 @@ func isAllDigits(s string) bool {
 	return true
 }
 
-// saveConfig persists an edited config wherever this daemon keeps it.
+// applyEdit runs one edit wherever this daemon keeps its configuration.
 //
-// The store when there is one, the file otherwise. Both paths validate before
-// anything is committed — a rejected edit must leave the running system
-// untouched, which is the whole reason this funnel exists.
-func (h *Handlers) saveConfig(next *config.Config) error {
-	if h.SaveConfig != nil {
-		return h.SaveConfig(next)
+// The store's Update when there is one: it reads, applies fn, validates and
+// writes inside a single transaction, so a concurrent edit cannot be lost. The
+// file otherwise, which cannot offer that — the read is necessarily separate
+// from the write, and the last writer wins.
+//
+// Both validate before committing, because a rejected edit must leave the
+// running system untouched. That is the reason this funnel exists at all.
+func (h *Handlers) applyEdit(fn func(*config.Config) error) error {
+	if h.UpdateConfig != nil {
+		return h.UpdateConfig(context.Background(), fn)
+	}
+	cur := h.config()
+	if cur == nil {
+		return huma.Error503ServiceUnavailable("config unavailable")
+	}
+	next := copyForEdit(cur)
+	if err := fn(next); err != nil {
+		return err
 	}
 	return config.SaveValidated(h.ConfigPath, next)
 }

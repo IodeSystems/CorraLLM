@@ -2,7 +2,6 @@ package configdb
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 
 	"github.com/iodesystems/corrallm/internal/config"
@@ -14,7 +13,7 @@ import (
 // as provider '' so an old config still imports rather than losing a section —
 // the whole point of this port is that nothing disappears quietly.
 
-func writeModelRow(ctx context.Context, tx *sql.Tx, provider, name string, mdl config.Model) error {
+func writeModelRow(ctx context.Context, tx querier, provider, name string, mdl config.Model) error {
 	m, err := toMap(mdl)
 	if err != nil {
 		return err
@@ -66,7 +65,7 @@ func writeModelRow(ctx context.Context, tx *sql.Tx, provider, name string, mdl c
 	return nil
 }
 
-func writeModels(ctx context.Context, tx *sql.Tx, c *config.Config) error {
+func writeModels(ctx context.Context, tx querier, c *config.Config) error {
 	for _, name := range sortedKeys(c.Models) {
 		if err := writeModelRow(ctx, tx, "", name, c.Models[name]); err != nil {
 			return err
@@ -88,7 +87,7 @@ func writeModels(ctx context.Context, tx *sql.Tx, c *config.Config) error {
 	return nil
 }
 
-func readModels(ctx context.Context, db *sql.DB, c *config.Config) error {
+func readModels(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT provider, name, type, quality, cmd, server, upstream,
 		        max_concurrent, context_per_request, persistent, notes,
@@ -219,7 +218,7 @@ func strIntPtr(s string) *int {
 
 // --- lanes -----------------------------------------------------------------
 
-func writeLanes(ctx context.Context, tx *sql.Tx, c *config.Config) error {
+func writeLanes(ctx context.Context, tx querier, c *config.Config) error {
 	for _, name := range sortedKeys(c.Lanes) {
 		lane := c.Lanes[name]
 		m, err := toMap(lane)
@@ -274,7 +273,7 @@ func orEmptyAny(v any) any {
 	return v
 }
 
-func readLanes(ctx context.Context, db *sql.DB, c *config.Config) error {
+func readLanes(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx, `SELECT name, notes FROM config_lane`)
 	if err != nil {
 		return err
@@ -345,7 +344,7 @@ func readLanes(ctx context.Context, db *sql.DB, c *config.Config) error {
 
 // --- priority groups + keys ------------------------------------------------
 
-func writeGroups(ctx context.Context, tx *sql.Tx, c *config.Config) error {
+func writeGroups(ctx context.Context, tx querier, c *config.Config) error {
 	for _, name := range sortedKeys(c.PriorityGroups) {
 		m, err := toMap(c.PriorityGroups[name])
 		if err != nil {
@@ -387,7 +386,7 @@ func writeGroups(ctx context.Context, tx *sql.Tx, c *config.Config) error {
 	return nil
 }
 
-func readGroups(ctx context.Context, db *sql.DB, c *config.Config) error {
+func readGroups(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT name, weight, share_currency, interruptible, accept_degrade,
 		        quality_floor, prefer_resident, on_saturated_json, limits_json FROM config_group`)
@@ -440,7 +439,7 @@ func readGroups(ctx context.Context, db *sql.DB, c *config.Config) error {
 	return nil
 }
 
-func writeKeys(ctx context.Context, tx *sql.Tx, c *config.Config) error {
+func writeKeys(ctx context.Context, tx querier, c *config.Config) error {
 	for _, k := range sortedKeys(c.Keys) {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO config_key (key, group_name) VALUES (?, ?)`, k, c.Keys[k]); err != nil {
@@ -450,7 +449,7 @@ func writeKeys(ctx context.Context, tx *sql.Tx, c *config.Config) error {
 	return nil
 }
 
-func readKeys(ctx context.Context, db *sql.DB, c *config.Config) error {
+func readKeys(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx, `SELECT key, group_name FROM config_key`)
 	if err != nil {
 		return err
@@ -475,7 +474,7 @@ func readKeys(ctx context.Context, db *sql.DB, c *config.Config) error {
 
 // --- tools -----------------------------------------------------------------
 
-func writeTools(ctx context.Context, tx *sql.Tx, c *config.Config) error {
+func writeTools(ctx context.Context, tx querier, c *config.Config) error {
 	for _, name := range sortedKeys(c.Tools) {
 		t := c.Tools[name]
 		m, err := toMap(t)
@@ -524,7 +523,7 @@ func writeTools(ctx context.Context, tx *sql.Tx, c *config.Config) error {
 	return nil
 }
 
-func readTools(ctx context.Context, db *sql.DB, c *config.Config) error {
+func readTools(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT name, url, ref, recipe, bin, check_, rebuild, notes FROM config_tool`)
 	if err != nil {
@@ -601,7 +600,7 @@ func readTools(ctx context.Context, db *sql.DB, c *config.Config) error {
 
 // --- extensions + their providers ------------------------------------------
 
-func writeExtensions(ctx context.Context, tx *sql.Tx, c *config.Config) error {
+func writeExtensions(ctx context.Context, tx querier, c *config.Config) error {
 	for _, name := range sortedKeys(c.Extensions) {
 		x := c.Extensions[name]
 		m, err := toMap(x)
@@ -636,7 +635,7 @@ func writeExtensions(ctx context.Context, tx *sql.Tx, c *config.Config) error {
 	return nil
 }
 
-func readExtensions(ctx context.Context, db *sql.DB, c *config.Config) error {
+func readExtensions(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT name, cmd, server, notes, proxy_json, provides_json, virtual_json,
 		        ram_usage_json, sticky_json, rest_json FROM config_extension`)
@@ -685,7 +684,7 @@ func readExtensions(ctx context.Context, db *sql.DB, c *config.Config) error {
 	return nil
 }
 
-func writeProviders(ctx context.Context, tx *sql.Tx, c *config.Config) error {
+func writeProviders(ctx context.Context, tx querier, c *config.Config) error {
 	for _, xname := range sortedKeys(c.Extensions) {
 		x := c.Extensions[xname]
 		for _, pname := range sortedKeys(x.Providers) {
@@ -712,7 +711,7 @@ func writeProviders(ctx context.Context, tx *sql.Tx, c *config.Config) error {
 	return nil
 }
 
-func readProviders(ctx context.Context, db *sql.DB, c *config.Config) error {
+func readProviders(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT extension, name, host, port, base_path, manual, rest_json FROM config_provider`)
 	if err != nil {

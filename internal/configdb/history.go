@@ -50,6 +50,14 @@ type Revision struct {
 // actually reached, and recording an intent that then failed validation would
 // fill the history with configs that never ran.
 func Record(ctx context.Context, db *sql.DB, c *config.Config, note string) error {
+	return recordTx(ctx, db, c, note)
+}
+
+// recordTx is Record inside a caller's transaction, so a config change and the
+// revision describing it commit together. A revision recorded outside the
+// transaction can survive a write that rolled back, which would describe a
+// state the system never had.
+func recordTx(ctx context.Context, db querier, c *config.Config, note string) error {
 	b, err := yaml.Marshal(config.ForWriting(c))
 	if err != nil {
 		return err

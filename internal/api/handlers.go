@@ -62,10 +62,15 @@ type Handlers struct {
 	// Legacy: config lives in SQLite now. Still carried because `corrallm bench`
 	// is handed a path, and because the import path names it in messages.
 	ConfigPath string
-	// SaveConfig persists a whole config. When set it REPLACES the file writer,
-	// and the ConfigPath checks with it — a store has no "is this file managed"
-	// question to answer, because nothing else writes it.
-	SaveConfig func(*config.Config) error
+	// UpdateConfig applies an edit ATOMICALLY: it reads the current config,
+	// hands it to fn, validates and writes, all inside one transaction.
+	//
+	// When set it replaces the file writer, and the ConfigPath checks with it —
+	// a store has no "is this file managed" question, because nothing else
+	// writes it. It also replaces the read-modify-write this package used to do
+	// itself, where the read happened outside the write and two concurrent edits
+	// silently discarded one another.
+	UpdateConfig func(ctx context.Context, fn func(*config.Config) error) error
 	// Reload re-reads the config after a write. Nil skips it (the change
 	// applies on the next restart).
 	Reload func() error

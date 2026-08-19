@@ -109,16 +109,22 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 			in.Body.Hello.OS, in.Body.Hello.Arch, in.Body.Hello.Version),
 	}
 
-	next := shallowCopyConfig(cfg)
-	if next.Servers == nil {
-		next.Servers = map[string]config.Server{}
-	}
-	if prev, ok := next.Servers[name]; ok {
-		srv = mergeEnrollment(prev, srv)
-	}
-	next.Servers[name] = srv
-
-	if err := config.SaveValidated(h.ConfigPath, next); err != nil {
+	// Through the same funnel as every other edit. Enrollment used to read the
+	// config, add its server and save — with the read outside the write, so a
+	// machine attaching while somebody edited a model in the dashboard could
+	// erase that edit, or be erased by it. The merge happens INSIDE the
+	// transaction now, against whatever the config actually is at that moment.
+	if err := h.applyEdit(func(next *config.Config) error {
+		if next.Servers == nil {
+			next.Servers = map[string]config.Server{}
+		}
+		s := srv
+		if prev, ok := next.Servers[name]; ok {
+			s = mergeEnrollment(prev, s)
+		}
+		next.Servers[name] = s
+		return nil
+	}); err != nil {
 		return nil, huma.Error400BadRequest("enrollment would produce an invalid config", err)
 	}
 	// Claim LAST: everything that could reject this has passed, so the

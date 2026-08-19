@@ -636,8 +636,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	h := &api.Handlers{Version: version, Cfg: cfg, Store: st, Mgr: mgr, Sched: scheduler, Tools: toolReg, Builds: toolBuilds,
 		Liveness: liveness, AgentDist: agentDist, Verified: api.NewVerifiedStore(),
 		ConfigPath: o.configPath, PublicBase: o.publicBase,
-		SaveConfig: func(c *config.Config) error {
-			return cfgSource.WithNote("edited through the dashboard").Save(ctx, c)
+		UpdateConfig: func(c context.Context, fn func(*config.Config) error) error {
+			_, err := cfgSource.WithNote("edited through the dashboard").Update(c, fn)
+			return err
 		},
 	}
 

@@ -2,7 +2,6 @@ package configdb
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -35,7 +34,7 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // --- servers ---------------------------------------------------------------
 
-func writeServers(ctx context.Context, tx *sql.Tx, c *config.Config) error {
+func writeServers(ctx context.Context, tx querier, c *config.Config) error {
 	for _, name := range sortedKeys(c.Servers) {
 		srv := c.Servers[name]
 		m, err := toMap(srv)
@@ -114,7 +113,7 @@ func writeServers(ctx context.Context, tx *sql.Tx, c *config.Config) error {
 	return nil
 }
 
-func readServers(ctx context.Context, db *sql.DB, c *config.Config) error {
+func readServers(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT name, max_concurrent, device_pool, no_process_memory, notes, agent_json FROM config_server`)
 	if err != nil {
@@ -223,7 +222,7 @@ func readServers(ctx context.Context, db *sql.DB, c *config.Config) error {
 }
 
 // attachRest folds namespaced remainder rows back into their entities.
-func attachRest(ctx context.Context, db *sql.DB, prefix string, maps map[string]map[string]any) error {
+func attachRest(ctx context.Context, db querier, prefix string, maps map[string]map[string]any) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT key, value FROM config_scalar WHERE key LIKE ?`, prefix+"%")
 	if err != nil {
