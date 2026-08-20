@@ -40,7 +40,6 @@ const ConfigDoc = graphql(/* GraphQL */ `
   query Config {
     corrallm {
       overview {
-        include
         servers {
           server
           maxConcurrent
@@ -177,7 +176,6 @@ function HostsPage() {
   const ov = q.data?.corrallm.overview
   const servers = ov?.servers ?? []
   const models = ov?.models ?? []
-  const includes = ov?.include ?? []
 
   // A server with endpoints is an attached machine; one without is this box.
   const agents = servers.filter((s) => (s.agentEndpoints ?? []).length > 0)
@@ -385,27 +383,11 @@ function HostsPage() {
           moving them possible at all. */}
       <EntryEditor editing={editing} onChange={setEditing} onClose={() => setEditing(null)} />
 
-      <Panel
-        title="Included files"
-        subtitle="Merged into the top-level config, weakest first; the hand-written file always wins"
-        flush
-      >
-        {includes.length === 0 ? (
-          <Row>
-            <Typography variant="body2" sx={{ color: C.textFaint }}>
-              None. Everything is declared in the one config file.
-            </Typography>
-          </Row>
-        ) : (
-          includes.map((f) => (
-            <Row key={f}>
-              <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                {f}
-              </Typography>
-            </Row>
-          ))
-        )}
-      </Panel>
+      {/* The "Included files" panel is gone. `include:` was a way to keep a
+          hand-written config safe from the daemon's rewrites; configuration
+          lives in the database now, so includes are refused and that panel
+          could only ever render "None". A permanently empty panel is worse than
+          no panel: it implies a feature. */}
     </Box>
   )
 }

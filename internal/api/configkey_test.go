@@ -35,19 +35,14 @@ func putYAML(t *testing.T, h *Handlers, kind, name, yaml string) error {
 // hand-edited YAML and a restart, the only part of the scheduling model with no
 // management surface.
 func TestEnrolAKeyByAssigningItAGroup(t *testing.T) {
-	path := managedConfig(t, "priorityGroups:\n  batch:\n    weight: 1\n")
-	h := &Handlers{ConfigPath: path}
-	h.SetConfig(&config.Config{
+	h := storeBackedHandlers(t, &config.Config{
 		PriorityGroups: map[string]config.PriorityGroup{"batch": {Weight: 1}},
 	})
 
 	if err := putYAML(t, h, "key", "newcomer", "batch\n"); err != nil {
 		t.Fatalf("enrolling a key should succeed: %v", err)
 	}
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	saved := reloadStored(t, h, "after enrolling a key")
 	if saved.Keys["newcomer"] != "batch" {
 		t.Fatalf("keys = %v, want newcomer→batch persisted", saved.Keys)
 	}
@@ -62,9 +57,7 @@ func TestEnrolAKeyByAssigningItAGroup(t *testing.T) {
 // and silently leaves the caller at weight 1 — the exact silent-default failure
 // the roster exists to end.
 func TestAssigningAnUnknownGroupIsRejected(t *testing.T) {
-	path := managedConfig(t, "priorityGroups:\n  batch:\n    weight: 1\n")
-	h := &Handlers{ConfigPath: path}
-	h.SetConfig(&config.Config{
+	h := storeBackedHandlers(t, &config.Config{
 		PriorityGroups: map[string]config.PriorityGroup{"batch": {Weight: 1}},
 	})
 
@@ -75,7 +68,7 @@ func TestAssigningAnUnknownGroupIsRejected(t *testing.T) {
 	if !strings.Contains(err.Error(), "no priority group") {
 		t.Errorf("the error must name the problem, got: %v", err)
 	}
-	saved, _ := config.Load(path)
+	saved := reloadStored(t, h, "after a rejected assignment")
 	if _, ok := saved.Keys["newcomer"]; ok {
 		t.Error("a rejected assignment must not persist")
 	}

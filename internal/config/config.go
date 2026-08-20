@@ -1736,7 +1736,6 @@ func (c *Config) Finalize() error {
 	return c.Validate()
 }
 
-
 // mergeMap copies src into *dst for keys *dst does not already hold — dst is
 // the stronger side and keeps what it has.
 func mergeMap[V any](dst *map[string]V, src map[string]V) {

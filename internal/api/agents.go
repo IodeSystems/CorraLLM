@@ -136,9 +136,12 @@ func (h *Handlers) adoptEndpoints(server string, srv config.Server, reported []s
 	if sameEndpoints(srv.Agent.Endpoints, reported) {
 		return
 	}
-	if h.ConfigPath == "" || requireManaged(h.ConfigPath) != nil {
-		return
-	}
+	// No file check here any more, and its absence is the fix. This used to gate
+	// on requireManaged(h.ConfigPath), which reads config.yml and looks for a
+	// marker — and that file stopped existing when config moved into SQLite, so
+	// the gate failed every time and endpoint refresh was silently dead. A
+	// laptop that changed networks would never have had its addresses updated,
+	// which is the exact case this function exists for.
 	err := h.mutateConfig(func(c *config.Config) error {
 		cur, ok := c.Servers[server]
 		if !ok || cur.Agent == nil {

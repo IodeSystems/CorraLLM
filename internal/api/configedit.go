@@ -19,14 +19,6 @@ import (
 // reloaded or restarted from, and the operator finds out at the worst possible
 // moment. Here a rejected edit is a 400 and the running system is untouched.
 func (h *Handlers) mutateConfig(fn func(*config.Config) error) error {
-	if h.UpdateConfig == nil {
-		if h.ConfigPath == "" {
-			return huma.Error503ServiceUnavailable("this daemon has no writable config")
-		}
-		if err := requireManaged(h.ConfigPath); err != nil {
-			return huma.Error409Conflict(err.Error())
-		}
-	}
 	if err := h.applyEdit(fn); err != nil {
 		// The message from Load names the actual problem — a lane pointing at a
 		// model that was just deleted, a devicePool that is not a pool. Pass it
@@ -39,25 +31,6 @@ func (h *Handlers) mutateConfig(fn func(*config.Config) error) error {
 		}
 	}
 	return nil
-}
-
-// copyForEdit copies the maps an edit can touch, so a rejected change cannot
-// leave the live config half-modified.
-func copyForEdit(c *config.Config) *config.Config {
-	out := *c
-	out.Models = make(map[string]config.Model, len(c.Models)+1)
-	for k, v := range c.Models {
-		out.Models[k] = v
-	}
-	out.Servers = make(map[string]config.Server, len(c.Servers))
-	for k, v := range c.Servers {
-		out.Servers[k] = v
-	}
-	out.Lanes = make(map[string]config.Lane, len(c.Lanes))
-	for k, v := range c.Lanes {
-		out.Lanes[k] = v
-	}
-	return &out
 }
 
 // ModelSpec is a model as the dashboard edits it.
@@ -528,16 +501,8 @@ func isAllDigits(s string) bool {
 // Both validate before committing, because a rejected edit must leave the
 // running system untouched. That is the reason this funnel exists at all.
 func (h *Handlers) applyEdit(fn func(*config.Config) error) error {
-	if h.UpdateConfig != nil {
-		return h.UpdateConfig(context.Background(), fn)
+	if h.UpdateConfig == nil {
+		return huma.Error503ServiceUnavailable("this daemon has no writable configuration")
 	}
-	cur := h.config()
-	if cur == nil {
-		return huma.Error503ServiceUnavailable("config unavailable")
-	}
-	next := copyForEdit(cur)
-	if err := fn(next); err != nil {
-		return err
-	}
-	return config.SaveValidated(h.ConfigPath, next)
+	return h.UpdateConfig(context.Background(), fn)
 }

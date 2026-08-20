@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -45,14 +44,11 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 	if h.Store == nil {
 		return nil, huma.Error503ServiceUnavailable("no store: enrollment unavailable")
 	}
-	if h.ConfigPath == "" {
-		return nil, huma.Error503ServiceUnavailable("this daemon has no writable config; enrollment cannot record the server")
-	}
-	// Refuse to rewrite a config corrallm does not own. A hand-written file is
-	// mostly commentary, and a marshaller would delete all of it — the operator
-	// migrates first (corrallm config import) and knows they did.
-	if err := requireManaged(h.ConfigPath); err != nil {
-		return nil, huma.Error409Conflict(err.Error())
+	// No "is this file managed" check: there is no file. That question existed
+	// because a hand-written config is mostly commentary a marshaller would
+	// delete; the store has no commentary to lose and nothing else writes it.
+	if h.UpdateConfig == nil {
+		return nil, huma.Error503ServiceUnavailable("this daemon has no writable configuration; enrollment cannot record the server")
 	}
 
 	who := in.Body.Hello.Hostname
@@ -144,19 +140,6 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 	out := &AgentEnrollOutput{}
 	out.Body = agent.EnrollResponse{Server: name, Token: tok, Pools: srv.Pools}
 	return out, nil
-}
-
-// requireManaged refuses to write a config corrallm did not author.
-func requireManaged(path string) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("cannot read the config at %s: %v", path, err)
-	}
-	if !strings.Contains(string(b), "MANAGED CONFIG") {
-		return fmt.Errorf("%s is hand-written; corrallm will not rewrite it and lose its comments. "+
-			"Run `corrallm config import %s` first, then point the daemon at the managed file", path, path)
-	}
-	return nil
 }
 
 func newAgentToken() (string, error) {

@@ -2,10 +2,15 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/configdb"
+
+	_ "modernc.org/sqlite"
 )
 
 const localProviderYAML = `servers:
@@ -22,6 +27,13 @@ providers:
         type: chat
 `
 
+// localHandlers builds handlers backed by a real configuration STORE, which is
+// what production uses. They were backed by a managed file, and a file-backed
+// edit path no longer exists — so a test using one would exercise a code path
+// nothing ships.
+//
+// The returned path is where the fixture came from; assertions that used to
+// re-read the file now reload from the store instead.
 func localHandlers(t *testing.T) (*Handlers, string) {
 	t.Helper()
 	path := managedConfig(t, localProviderYAML)
@@ -29,9 +41,59 @@ func localHandlers(t *testing.T) (*Handlers, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &Handlers{ConfigPath: path}
+	return storeBackedHandlers(t, cfg), path
+}
+
+// storeBackedHandlers wires Handlers to a real configuration store, which is
+// the only writable path production has.
+func storeBackedHandlers(t *testing.T, cfg *config.Config) *Handlers {
+	t.Helper()
+	h := &Handlers{}
+	src := testConfigSource(t, cfg)
+	h.ConfigSource = src
+	h.UpdateConfig = func(ctx context.Context, fn func(*config.Config) error) error {
+		next, err := src.Update(ctx, fn)
+		if err != nil {
+			return err
+		}
+		h.SetConfig(next)
+		return nil
+	}
 	h.SetConfig(cfg)
-	return h, path
+	return h
+}
+
+// reloadStored reads the config back OUT of the store.
+//
+// These assertions used to re-read the config FILE, which no longer receives
+// edits — so they were checking a file nothing writes and would have passed
+// forever without noticing a broken save. Reading from the store is what
+// actually proves an edit persisted.
+func reloadStored(t *testing.T, h *Handlers, when string) *config.Config {
+	t.Helper()
+	c, err := h.ConfigSource.Load(context.Background())
+	if err != nil {
+		t.Fatalf("stored config does not load %s: %v", when, err)
+	}
+	return c
+}
+
+// testConfigSource is an in-memory configuration store seeded with cfg.
+func testConfigSource(t *testing.T, cfg *config.Config) *configdb.Source {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "cfg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := configdb.Apply(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	src := &configdb.Source{DB: db}
+	if err := src.Save(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	return src
 }
 
 // A model owned by a provider must be CREATED, EDITED and DELETED in the
@@ -40,7 +102,7 @@ func localHandlers(t *testing.T) (*Handlers, string) {
 // and changes nothing on disk. That bug appeared three separate times — in the
 // writer, in upsert and in delete — which is what earns it a test.
 func TestProviderOwnedModelRoundTripsThroughItsBlock(t *testing.T) {
-	h, path := localHandlers(t)
+	h, _ := localHandlers(t)
 
 	// CREATE under the provider.
 	in := &UpsertModelInput{Name: "local-fresh", Provider: "local"}
@@ -48,10 +110,7 @@ func TestProviderOwnedModelRoundTripsThroughItsBlock(t *testing.T) {
 	if _, err := h.UpsertModel(context.Background(), in); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("config no longer loads after create: %v", err)
-	}
+	saved := reloadStored(t, h, "after create")
 	if _, ok := saved.Providers["local"].Models["fresh"]; !ok {
 		t.Errorf("created model not in the provider block: %v", saved.Providers["local"].Models)
 	}
@@ -66,10 +125,7 @@ func TestProviderOwnedModelRoundTripsThroughItsBlock(t *testing.T) {
 	if _, err := h.UpsertModel(context.Background(), edit); err != nil {
 		t.Fatalf("edit: %v", err)
 	}
-	saved, err = config.Load(path)
-	if err != nil {
-		t.Fatalf("config no longer loads after edit: %v", err)
-	}
+	saved = reloadStored(t, h, "after edit")
 	if got := saved.Providers["local"].Models["keeper"].Proxy; got.IsZero() {
 		t.Error("edit did not reach the provider block")
 	}
@@ -80,10 +136,7 @@ func TestProviderOwnedModelRoundTripsThroughItsBlock(t *testing.T) {
 	if _, err := h.DeleteEntry(context.Background(), del); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	saved, err = config.Load(path)
-	if err != nil {
-		t.Fatalf("config no longer loads after delete: %v", err)
-	}
+	saved = reloadStored(t, h, "after delete")
 	if _, back := saved.Providers["local"].Models["goner"]; back {
 		t.Error("deleted model is still in the provider block; it would return on the next load")
 	}
@@ -146,8 +199,7 @@ func TestRemoteProviderModelRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &Handlers{ConfigPath: path}
-	h.SetConfig(cfg)
+	h := storeBackedHandlers(t, cfg)
 
 	in := &UpsertModelInput{Name: "groq-kimi-k2", Provider: "groq", Extension: "free"}
 	in.Body = ModelSpec{
@@ -160,10 +212,7 @@ func TestRemoteProviderModelRoundTrip(t *testing.T) {
 	if _, err := h.UpsertModel(context.Background(), in); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("config no longer loads: %v", err)
-	}
+	saved := reloadStored(t, h, "reload")
 	got, ok := saved.Extensions["free"].Providers["groq"].Provides["kimi-k2"]
 	if !ok {
 		t.Fatalf("not authored under the provider's provides: %v",
@@ -206,17 +255,13 @@ func TestRemoteProviderModelDeletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &Handlers{ConfigPath: path}
-	h.SetConfig(cfg)
+	h := storeBackedHandlers(t, cfg)
 
 	if _, err := h.DeleteEntry(context.Background(),
 		&DeleteEntryInput{Kind: "model", Name: "groq-llama-70b"}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	saved, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("config no longer loads: %v", err)
-	}
+	saved := reloadStored(t, h, "reload")
 	if _, back := saved.Extensions["free"].Providers["groq"].Provides["llama-70b"]; back {
 		t.Error("still in the provider's provides; it would return on the next load")
 	}
@@ -247,8 +292,7 @@ func TestDeletingAProvidersLastModelIsRefusedClearly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &Handlers{ConfigPath: path}
-	h.SetConfig(cfg)
+	h := storeBackedHandlers(t, cfg)
 	_, err = h.DeleteEntry(context.Background(), &DeleteEntryInput{Kind: "model", Name: "groq-only-one"})
 	if err == nil {
 		t.Fatal("deleting the only model of a provider was allowed")

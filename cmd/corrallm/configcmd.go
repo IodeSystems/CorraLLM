@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/configdb"
 
 	_ "modernc.org/sqlite"
@@ -51,70 +50,33 @@ func DefaultConfigPath() string {
 	return filepath.Join(home, ".corrallm", "config.yml")
 }
 
-// config import converts a hand-written config into the managed one, carrying
-// its comments across as notes.
+// The config subcommands. Configuration lives in SQLite; these are how it gets
+// in and out in a form a human can read.
+//
+// `import` is GONE. It converted a hand-written config into a managed FILE,
+// carrying comments across as notes — useful when a file was the destination,
+// and pointless once nothing reads one. `config load` is the replacement: it
+// parses a YAML config and stores it. Comments still do not survive, but they
+// never did.
 func newConfigCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "config", Short: "Inspect and migrate corrallm's own configuration"}
+	cmd := &cobra.Command{Use: "config", Short: "Inspect and manage corrallm's configuration"}
 
-	var out string
-	var force bool
-	imp := &cobra.Command{
-		Use:   "import <hand-written.yaml>",
-		Short: "Convert a hand-written config into the managed one, keeping comments as notes",
-		Long: "Convert a hand-written config into the managed one.\n\n" +
-			"A managed config is rewritten by corrallm whenever configuration changes, and a\n" +
-			"marshaller cannot keep YAML comments. This lifts the comments above each model\n" +
-			"and server into that entry's `notes` field first, so the reasoning survives the\n" +
-			"migration and shows up in the dashboard beside what it describes.\n\n" +
-			"Comments that belong to no single entry — file headers, section banners — cannot\n" +
-			"be attached to anything and are REPORTED rather than dropped silently, so you can\n" +
-			"decide where they go.",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			src, err := os.ReadFile(args[0])
-			if err != nil {
-				return err
-			}
-			c, err := config.Load(args[0])
-			if err != nil {
-				return fmt.Errorf("the source config does not load; fix it before importing: %w", err)
-			}
-			orphaned, err := config.ImportComments(src, c)
-			if err != nil {
-				return err
-			}
-			dst := pick(out, DefaultConfigPath())
-			if _, err := os.Stat(dst); err == nil && !force {
-				return fmt.Errorf("%s already exists; pass --force to overwrite", dst)
-			}
-			if err := config.SaveValidated(dst, c); err != nil {
-				return err
-			}
-			w := cmd.OutOrStdout()
-			fmt.Fprintf(w, "wrote %s — %d models, %d servers, %d lanes\n",
-				dst, len(c.Models), len(c.Servers), len(c.Lanes))
-			if len(orphaned) > 0 {
-				fmt.Fprintf(w, "\n%d comment block(s) belonged to no single entry and were NOT carried over.\n", len(orphaned))
-				fmt.Fprintf(w, "They are printed below so nothing is lost silently — move anything worth keeping\ninto a notes field or your docs:\n\n")
-				for _, o := range orphaned {
-					fmt.Fprintf(w, "--- %s\n", o)
-				}
-			}
-			return nil
-		},
-	}
-	imp.Flags().StringVar(&out, "out", "", "destination (default "+DefaultConfigPath()+")")
-	imp.Flags().BoolVar(&force, "force", false, "overwrite an existing managed config")
-
+	var pathDB string
 	pathCmd := &cobra.Command{
 		Use:   "path",
-		Short: "Print the managed config path",
-		Args:  cobra.NoArgs,
+		Short: "Print where the configuration lives",
+		Long: "Prints the database holding the configuration.\n\n" +
+			"It used to print a YAML file. That file no longer exists — config lives in\n" +
+			"SQLite — and printing a path nothing reads is how somebody ends up editing it\n" +
+			"and wondering why nothing changed. Use `config export` for a readable copy.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), DefaultConfigPath())
+			p := derivePaths(defaultHome(), "", pathDB)
+			fmt.Fprintln(cmd.OutOrStdout(), p.db)
 			return nil
 		},
 	}
+	pathCmd.Flags().StringVar(&pathDB, "db", "", "override the database path")
 	var dbPath string
 	var exportOut string
 	exportCmd := &cobra.Command{
@@ -281,6 +243,6 @@ func newConfigCmd() *cobra.Command {
 	}
 	restoreCmd.Flags().StringVar(&restoreDB, "db", "", "database holding the config")
 
-	cmd.AddCommand(imp, pathCmd, exportCmd, loadCmd, histCmd, showCmd, restoreCmd)
+	cmd.AddCommand(pathCmd, exportCmd, loadCmd, histCmd, showCmd, restoreCmd)
 	return cmd
 }
