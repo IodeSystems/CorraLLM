@@ -617,6 +617,12 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 	mgr.ExpandCmd = toolReg.ExpandTools
 	toolBuilds := &toolchain.Builder{Reg: toolReg}
+	// The scheduled drift check. Until this existed a pin only rotted in public:
+	// llama.cpp ships several builds a day and "how far behind are we" was
+	// answered solely by somebody opening the Tooling panel. Checking is on by
+	// default (one `git ls-remote` per tool); BUILDING is opt-in per tool, since
+	// it is minutes of pegged GPU that replaces the binary resident models run on.
+	toolWatch := &toolchain.Watcher{Reg: toolReg, Builder: toolBuilds}
 	if st != nil {
 		toolBuilds.History = api.BuildHistoryStore{S: st}
 		// A build is a child of this process, so a restart kills it. A row left
@@ -797,6 +803,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	// load, and (until agentkit learned to retry transport errors) failing every
 	// in-flight client request.
 	go watchReload(sigCtx, cfgSource, st, mgr, scheduler, px, h)
+
+	// Drift checks run on each tool's own cadence. Reads config per pass, so a
+	// reload that changes `check:`/`rebuild:` takes effect without a restart.
+	go toolWatch.Run(sigCtx)
 
 	// Expire stale slot reservations (a keyed caller can lease headroom for its
 	// lane; the lease must be renewed or it auto-frees). Stops on shutdown.

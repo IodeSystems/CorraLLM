@@ -3,7 +3,7 @@
 Status: **P25a–e shipped** (2026-08-17/18) — registry, recipes, agent surface,
 CLI, the Tooling panel, builds driven from the dashboard with a live log and
 persisted history, and `${tool:}` binding with every local model migrated.
-**Only P25f (the scheduled drift check) is left.** The phase entry lives in
+**COMPLETE 2026-08-21 — every phase shipped, P25f last.** The phase entry lives in
 `plan/plan.md` §7.
 
 ## 1. What this is
@@ -407,12 +407,17 @@ of the config and do survive. Anything worth knowing about a tool goes in
   sidesteps it by asking the host (probe returns the real path), so the resolver
   is host-truthful even where `SpecFor` is not, but the prefix itself must be
   fixed before any tool is managed anywhere but box1.
-- **◻ P25f — scheduled check (on) / rebuild (opt-in). THE ONLY PHASE LEFT.**
-  The config carries `check:` and `rebuild:` and `CheckIntervalOf` resolves them,
-  but nothing runs on a timer yet: drift is only noticed when somebody opens the
-  Tooling panel or runs `corrallm tools list`. The decision made when this was
-  scoped still stands — check on by default (one `git ls-remote`), rebuild
-  opt-in per tool, because a CUDA build is minutes of full-machine compile.
+- **✅ P25f — scheduled check (on) / rebuild (opt-in). 2026-08-21.**
+  `toolchain.Watcher` ticks once a minute; each tool comes due on its own
+  `check:` cadence (default 6h), and `check: off` means the host is never
+  contacted at all. Drift always logs at WARN; a rebuild happens only where
+  `rebuild: true`, and NEVER on an adopted entry — `Registry.Build` refuses one
+  anyway, but refusing first stops a scheduled check filing a doomed build every
+  six hours. Config is re-read every pass, so cadence changes need no restart.
+  Verified live on box1: real drift on llama.cpp, llama.cpp-mlkit and ninfer,
+  nothing built (rebuild off everywhere), second pass suppressed by cadence.
+  Absence is deliberately not drift — a declared-but-missing managed tool is not
+  auto-installed; first install stays a human action.
 
 ## 9. Risks and open items
 
