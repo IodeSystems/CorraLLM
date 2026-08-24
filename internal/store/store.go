@@ -66,10 +66,6 @@ CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
 -- Costs ~3 MB and one index to maintain per insert. It REPLACES
 -- idx_activity_key_ts, whose (key, ts) it contains as a prefix; the migration
 -- below drops that one so inserts do not pay for both.
--- Grouping a caller's attempts into one journey. PARTIAL: only rejected-and-
--- retried requests carry a ticket, so indexing the empty string on every other
--- row would be pure write cost for an entry nothing looks up.
-CREATE INDEX IF NOT EXISTS idx_activity_ticket ON activity(ticket, ts) WHERE ticket <> '';
 CREATE INDEX IF NOT EXISTS idx_activity_key_rollup
     ON activity(key, ts, cost_usd, dwell_ms, prompt_tokens, completion_tokens, cached_tokens);
 
@@ -331,6 +327,16 @@ var migrations = []string{
 	// would charge every insert twice for one access path.
 	`DROP INDEX IF EXISTS idx_activity_key_ts`,
 	`ALTER TABLE activity ADD COLUMN ticket TEXT NOT NULL DEFAULT ''`,
+	// AFTER the column, and here rather than in `schema`, because on an
+	// existing database the CREATE TABLE above is a no-op: the schema block
+	// runs first and the column it indexes does not exist yet. That crash-looped
+	// the daemon on the production box, where every test had passed against a
+	// database built fresh from the current schema.
+	//
+	// PARTIAL: only rejected-and-retried requests carry a ticket, so indexing
+	// the empty string on every other row is write cost for an entry nothing
+	// looks up.
+	`CREATE INDEX IF NOT EXISTS idx_activity_ticket ON activity(ticket, ts) WHERE ticket <> ''`,
 	`ALTER TABLE activity ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`,
