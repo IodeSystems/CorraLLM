@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -324,5 +326,70 @@ func TestMigrationsIdempotent(t *testing.T) {
 	defer func() { _ = a.Close() }()
 	if _, err := Open(ctx, dsn); err != nil {
 		t.Fatalf("second open (migrations must be idempotent): %v", err)
+	}
+}
+
+// The Keys page aggregates every row per key. On a table whose rows carry
+// captured payloads that is gigabytes of heap fetches unless the index carries
+// the summed columns — and with a single connection it blocks writers for as
+// long as it runs. Assert the plan is COVERING, which is the property that
+// makes it cheap; a future column added to the rollup without being added to
+// the index silently reintroduces the 2-second page.
+func TestKeyRollupIsIndexOnly(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	rows, err := st.db.Query(`EXPLAIN QUERY PLAN
+		SELECT key, COUNT(*), MAX(ts), SUM(prompt_tokens), SUM(completion_tokens),
+		       SUM(dwell_ms), SUM(cost_usd), SUM(cached_tokens)
+		FROM activity WHERE ts >= 0 GROUP BY key`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(detail + "\n")
+	}
+	if !strings.Contains(plan.String(), "COVERING INDEX idx_activity_key_rollup") {
+		t.Errorf("the per-key rollup is not index-only; it will fetch every row from a table of captured payloads:\n%s", plan.String())
+	}
+}
+
+// The superseded index must not survive an upgrade: idx_activity_key_rollup
+// begins with the same (key, ts), so keeping both charges every insert twice
+// for one access path.
+func TestSupersededKeyIndexIsDroppedOnUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.db")
+	st, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Put the old index back, as an upgraded database has it.
+	if _, err := st.db.Exec(`CREATE INDEX IF NOT EXISTS idx_activity_key_ts ON activity(key, ts)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	st2, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st2.Close() }()
+	var n int
+	if err := st2.db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_activity_key_ts'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Error("idx_activity_key_ts survived the upgrade; every insert now maintains two indexes for one access path")
 	}
 }

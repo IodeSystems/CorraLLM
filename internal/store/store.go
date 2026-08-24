@@ -45,9 +45,28 @@ CREATE TABLE IF NOT EXISTS activity (
     retry_after_ms    INTEGER NOT NULL DEFAULT 0  -- the Retry-After we PROMISED this caller on a 429 (P15)
 );
 CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
--- Correlating a promise with the caller's next request ("did they come back,
--- and when") is a per-key lookup by time, which the ts-only index can't serve.
-CREATE INDEX IF NOT EXISTS idx_activity_key_ts ON activity(key, ts);
+-- Per-key access, COVERING the rollup behind the Keys page.
+--
+-- Two things it serves. Correlating a promise with the caller's next request
+-- ("did they come back, and when") is a per-key lookup by time, which the
+-- ts-only index cannot serve — that is the (key, ts) prefix. The trailing
+-- columns are what make the ROLLUP index-only, and that is not a micro
+-- optimisation: a row of this table is enormous (req_body/resp_body carry
+-- captured payloads, ~85 KB per row over a 30-day retention, gigabytes in
+-- total). With (key, ts) alone SQLite walks the index in key order and then
+-- fetches every row from the heap for the sums, so aggregating 65k rows reads
+-- through a 5.5 GB table: 2.0s measured, against 0.04s once the index covers it.
+--
+-- On a database with ONE connection (see Open) that difference is not confined
+-- to the page that asked: the rollup held the single connection for its whole
+-- duration, so every activity insert on the response path queued behind a
+-- dashboard refresh that runs every 30 seconds.
+--
+-- Costs ~3 MB and one index to maintain per insert. It REPLACES
+-- idx_activity_key_ts, whose (key, ts) it contains as a prefix; the migration
+-- below drops that one so inserts do not pay for both.
+CREATE INDEX IF NOT EXISTS idx_activity_key_rollup
+    ON activity(key, ts, cost_usd, dwell_ms, prompt_tokens, completion_tokens, cached_tokens);
 
 -- Periodic snapshots of instantaneous per-lane admission load (P8-beyond), so
 -- queue depth is visible even before requests resolve. Sparse: only non-idle
@@ -302,6 +321,10 @@ CREATE TABLE IF NOT EXISTS model_pause (
 //     fresh install, the source is already gone; that is the migration having
 //     succeeded, not a failure.
 var migrations = []string{
+	// Superseded by idx_activity_key_rollup, which starts with the same
+	// (key, ts) columns and additionally covers the rollup's sums. Keeping both
+	// would charge every insert twice for one access path.
+	`DROP INDEX IF EXISTS idx_activity_key_ts`,
 	`ALTER TABLE activity ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`,
