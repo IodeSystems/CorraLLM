@@ -1693,6 +1693,73 @@ question closes, then it archives.
 
 ---
 
+## ✅ ramUsage split — `pool:` for placement, measurement for size (2026-08-24)
+
+`ramUsage` answered two unrelated questions: its VALUES said how big a model is, its KEYS said
+which card it was on. Size then became measurable — a tune profile supersedes the declared
+number — so models stopped declaring ramUsage, and in doing so silently stopped declaring their
+PLACEMENT. On box1 that charges a model actually running on gpu1 to gpu0: one budget inflates,
+the other looks free, and the scheduler places a second model onto memory already spoken for.
+Nothing errors.
+
+**`pool:` on a model and on a placement.** Placement only; it says nothing about size. An
+explicit pool WINS over ramUsage keys — otherwise it could not correct a stale hint, which is
+the one thing an operator would reach for it to do. Empty is not "unknown": it means the
+server-wide default, which is the right and only answer on a single-GPU box. A multi-GPU SPLIT
+still declares nothing, because a model spanning two cards has no single pool and one measured
+total cannot be divided back across them.
+
+**Per placement as well as per model**, and the placement wins. Two placements on two cards is
+precisely what a model-level field cannot express.
+
+**Validation rejects two different mistakes.** A pool the server does not declare is a typo,
+and it would fall back to the server default at spawn — the model would run on a card nobody
+asked for while the config said otherwise. A pool that EXISTS but is not device-backed
+(`system` on box1) is a category error: it would file a VRAM measurement against a pool that
+holds no VRAM. On the Mac, `system` IS the device pool, and the rule reads
+`DevicePoolsFor(server)` rather than a hardcoded name, so unified memory passes.
+
+**No column, by design.** `pool:` rides configdb's unprojected remainder, the same as P29's
+tool pin: the schema is applied with `CREATE TABLE IF NOT EXISTS`, so a new column would never
+appear on the live database and every read would fail. Three round-trip tests pin it, including
+the placement-level field, which travels a different path (`placements_json`).
+
+**The form cannot drop it.** `applySpec` is a PATCH — it overlays only the fields the form
+models — so `pool:` survives an unrelated save untouched. Pinned by test rather than assumed,
+because this codebase has already shipped three handlers that wrote to the wrong copy of a
+model. `advancedFields` now NAMES pool, so a form that edits ramUsage (size) and not pool
+(placement) says so instead of looking complete. `placements` was missing from that list too
+and was added with it.
+
+**Five call sites read the same three fields by hand**, which is the hazard this file names
+elsewhere: migrate one and forget its neighbour. Extracted to `Manager.placementOf`.
+
+**Claims-nothing, shipped as decided.** An unmeasured model on a device pool now claims nothing
+and the spawn is the fit test, replacing "assume it needs the whole pool" — which evicted every
+evictable resident on the first spawn of every new model to learn a number the spawn itself
+reports. Host RAM keeps the conservative path: a CUDA OOM kills the process that asked, an
+anon-RSS blowout takes the machine, and oidio already reached 119 GB on this box. Hosts that
+cannot measure per-process memory also keep reserving, or "claim nothing, then measure"
+degrades to "claim nothing, forever".
+
+**⚠ The caveat as recorded was understated, and the correction is in `plan.md` §6:** "a CUDA
+OOM kills only the allocator" is true, but the allocator is not always the newcomer — a
+resident that grows after load (Qwen's ~2 GB vision spike) can be the one that asks for memory
+an unmeasured neighbour took.
+
+**Verified by mutation, not by review** — every guard was broken deliberately and a test caught
+each: ignoring the explicit pool, accepting an undeclared pool, dropping the non-device-pool
+check, dropping the cannot-measure exception, and never claiming nothing. One mutation initially
+appeared to survive and had simply failed to compile (an unused variable), which is worth
+remembering: a mutation that does not build proves nothing.
+
+`go build`/`vet`/`test -race` green; gofmt clean on every touched file. The three gofmt-dirty
+files in the tree (`proxy/inflight.go`, `quota/ledger.go`, `sysmem/sysmem.go`) and the two vet
+copylocks hits are pre-existing.
+
+
+---
+
 # Dashboard & observability
 
 > These six trees were written into the roadmap under phase numbers that **collide with

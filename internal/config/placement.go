@@ -54,6 +54,14 @@ type Placement struct {
 	// hardware — the whole reason it could never be a model-level number.
 	RAMUsage map[string]string `yaml:"ramUsage,omitempty"`
 
+	// Pool names the DEVICE pool this placement's weights live in. See
+	// Model.Pool for why placement and size are separate fields.
+	//
+	// Per placement for the reason this whole type exists: the same model on two
+	// boxes lands on two different cards, and on one box with two cards it may
+	// land on either. A model-level answer could not express that.
+	Pool string `yaml:"pool,omitempty"`
+
 	// MaxConcurrent is admission slots for THIS process. A 5090 may serve four
 	// where a laptop serves one.
 	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
@@ -89,7 +97,7 @@ func (m Model) PlacementList() []Placement {
 	}
 	return []Placement{{
 		Name: m.Server, Server: m.Server, Cmd: m.Cmd, Proxy: m.Proxy,
-		RAMUsage: m.RAMUsage, MaxConcurrent: m.MaxConcurrent,
+		RAMUsage: m.RAMUsage, Pool: m.Pool, MaxConcurrent: m.MaxConcurrent,
 		ContextPerRequest: m.ContextPerRequest, Swap: m.Swap,
 	}}
 }
@@ -235,6 +243,9 @@ func (m Model) ForPlacement(p Placement) Model {
 	}
 	if len(p.RAMUsage) > 0 {
 		m.RAMUsage = p.RAMUsage
+	}
+	if p.Pool != "" {
+		m.Pool = p.Pool
 	}
 	if p.MaxConcurrent > 0 {
 		m.MaxConcurrent = p.MaxConcurrent

@@ -684,9 +684,9 @@ func (c *Config) DevicePoolsFor(server string) []string {
 	return []string{c.DevicePoolFor(server)}
 }
 
-// DevicePoolsNamedBy lists the DEVICE pools a ramUsage vector actually draws
-// from on a server, sorted. Pools that are not device-backed (`system`) are not
-// included, and neither are pools the server does not declare.
+// DevicePoolsNamedBy lists the DEVICE pools a model actually draws from on a
+// server, sorted. Pools that are not device-backed (`system`) are not included,
+// and neither are pools the server does not declare.
 //
 // The three answers mean three different things, and the caller must
 // distinguish them rather than take the first element:
@@ -698,15 +698,29 @@ func (c *Config) DevicePoolsFor(server string) []string {
 //   - several — a multi-GPU split. A measurement is one number, and how it
 //     divides between cards is not recoverable from it, so charging the total
 //     to either pool over-commits that card by whatever the other holds.
-func (c *Config) DevicePoolsNamedBy(server string, ramUsage map[string]string) []string {
+//
+// An explicit `pool:` WINS outright when it names a device pool the server
+// declares. That is the whole point of the split: placement is a declaration,
+// not something inferred from the shape of a size hint. ramUsage's keys remain
+// the fallback so every config written before `pool:` existed means exactly what
+// it always did.
+//
+// A declared pool the server does NOT declare is ignored here rather than
+// returned — validation rejects it at load, so reaching this with a bad name
+// means the config changed under a running daemon, and inventing a pool the
+// ledger has no budget for is worse than falling back.
+func (c *Config) DevicePoolsNamedBy(server, pool string, ramUsage map[string]string) []string {
 	devPools := map[string]bool{}
 	for _, p := range c.DevicePoolsFor(server) {
 		devPools[p] = true
 	}
+	if pool = strings.TrimSpace(pool); pool != "" && devPools[pool] {
+		return []string{pool}
+	}
 	var out []string
-	for pool := range ramUsage {
-		if devPools[pool] {
-			out = append(out, pool)
+	for p := range ramUsage {
+		if devPools[p] {
+			out = append(out, p)
 		}
 	}
 	sort.Strings(out)
@@ -812,9 +826,32 @@ type Model struct {
 	// 262 MiB. They stayed invisible because the errors cancelled — until
 	// measurement made one side honest and the arithmetic stopped working.
 	RAMUsage map[string]string `yaml:"ramUsage,omitempty"` // per-pool footprint vector (cmd only)
-	Swap     *Swap             `yaml:"swap,omitempty"`     // measured load cost (cmd only)
-	Proxy    yaml.Node         `yaml:"proxy,omitempty"`    // forward target: number | "host:port" | {host,port,headers}
-	Type     string            `yaml:"type,omitempty"`     // cost class: chat | embed | openrouter | …
+
+	// Pool names the DEVICE pool this model's weights live in — which card, on
+	// a server that has more than one. Placement only; it says nothing about
+	// size.
+	//
+	// Before this existed, ramUsage's KEYS were the only statement of which card
+	// a model used, so the same field answered two unrelated questions. That
+	// coupling had a specific failure: size became measurable (a tune profile
+	// supersedes the declared number), but a model that declared no ramUsage
+	// therefore declared no PLACEMENT either, and fell back to the server-wide
+	// default pool. On box1 that means a measured model actually running on gpu1
+	// was charged to gpu0 — inflating one budget while leaving the other looking
+	// free, which is exactly how a card gets over-committed silently.
+	//
+	// Empty is not "unknown": it means the server-wide default, which is the
+	// right and only answer on a single-GPU box. Set it when a server declares
+	// `devices:` with more than one entry.
+	//
+	// A multi-GPU SPLIT still declares nothing here — a model spanning two cards
+	// has no single pool, and ramUsage naming both remains how that is said.
+	// Validation rejects a pool the server does not declare.
+	Pool string `yaml:"pool,omitempty"`
+
+	Swap  *Swap     `yaml:"swap,omitempty"`  // measured load cost (cmd only)
+	Proxy yaml.Node `yaml:"proxy,omitempty"` // forward target: number | "host:port" | {host,port,headers}
+	Type  string    `yaml:"type,omitempty"`  // cost class: chat | embed | openrouter | …
 	// Quality is the relative rank used for lane ordering and degrade gating.
 	// FLOAT, not int: a tier often has to be slotted BETWEEN two existing ones —
 	// an MLX 4-bit port of a model that already sits at 2 is better than the 27B
@@ -2011,6 +2048,46 @@ func (m Model) ProcKey(served string) string {
 	return served
 }
 
+// validatePool checks a declared `pool:` names a DEVICE pool that exists on the
+// server it is placed on.
+//
+// Both halves matter and fail differently. A pool the server does not declare at
+// all is a typo, and it would fall back to the server default at spawn — the
+// model would run on a card nobody asked for while the config said otherwise.
+// A pool that exists but is NOT device-backed (`system`) is a category error:
+// placement names a card, and `system` is host RAM. Accepting it would file a
+// VRAM measurement against a pool that holds none.
+//
+// Empty is always valid: it means the server-wide default, which is the correct
+// and only answer on a single-GPU box.
+func (c *Config) validatePool(model, placement, server, pool string) error {
+	pool = strings.TrimSpace(pool)
+	if pool == "" || server == "" {
+		return nil
+	}
+	where := fmt.Sprintf("model %q", model)
+	if placement != "" {
+		where = fmt.Sprintf("model %q placement %q", model, placement)
+	}
+	srv, ok := c.Servers[server]
+	if !ok {
+		return nil // the unknown-server error is raised by the caller, and is clearer
+	}
+	if _, ok := srv.Pools[pool]; !ok {
+		return fmt.Errorf("%s: pool %q not declared on server %q (declares %v)",
+			where, pool, server, poolNames(srv.Pools))
+	}
+	devs := c.DevicePoolsFor(server)
+	for _, d := range devs {
+		if d == pool {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: pool %q on server %q is not a device pool (device pools: %v). "+
+		"`pool:` names the CARD a model's weights live on; host RAM is accounted through ramUsage",
+		where, pool, server, devs)
+}
+
 // Validate checks structural invariants that must hold before scheduling can
 // run. P0 enforces only what's cheap and unambiguous; richer checks land with
 // the phases that consume each section.
@@ -2109,6 +2186,9 @@ func (c *Config) Validate() error {
 						name, pl.Name, pool, pl.Server)
 				}
 			}
+			if err := c.validatePool(name, pl.Name, pl.Server, pl.Pool); err != nil {
+				return err
+			}
 		}
 		if m.Server != "" && m.Cmd != "" {
 			// NO ramUsage REQUIREMENT. It used to be mandatory on a host that
@@ -2143,6 +2223,9 @@ func (c *Config) Validate() error {
 					return fmt.Errorf("model %q: ramUsage pool %q not declared on server %q",
 						name, pool, m.Server)
 				}
+			}
+			if err := c.validatePool(name, "", m.Server, m.Pool); err != nil {
+				return err
 			}
 		}
 	}

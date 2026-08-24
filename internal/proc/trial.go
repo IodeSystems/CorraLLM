@@ -764,7 +764,7 @@ func (m *Manager) PlacementPeak(model string, pl config.Placement) int {
 	if m.tuneCache == nil {
 		return 0
 	}
-	dev := m.deviceNameFor(pl.Server, pl.RAMUsage)
+	dev := m.deviceNameFor(pl.Server, pl.Pool, pl.RAMUsage)
 	if dev == "" {
 		return 0
 	}

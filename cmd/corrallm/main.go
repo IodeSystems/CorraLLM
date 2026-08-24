@@ -239,7 +239,7 @@ func introspect(cmd *cobra.Command, o introspectOpts) error {
 		if len(devs) == 0 {
 			return gpu.Stats{}, "", false
 		}
-		if named := cfg.DevicePoolsNamedBy(mc.Server, mc.RAMUsage); len(named) == 1 {
+		if named := cfg.DevicePoolsNamedBy(mc.Server, mc.Pool, mc.RAMUsage); len(named) == 1 {
 			if sel := cfg.DeviceSelectorFor(mc.Server, named[0]); sel != "" {
 				if st, err := gpu.Select(devs, sel); err == nil {
 					return st, named[0], true

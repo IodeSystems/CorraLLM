@@ -310,24 +310,55 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ ramUsage carries two jobs — split placement from size
+### ◻ Migrate the live config to `pool:` — the split is BUILT, not deployed
 
-Follows P18 (pools bound to cards by UUID or PCI bus id, shipped `c7453b5`; full tree in
-`done.md`). The multi-GPU work made `ramUsage`'s KEYS the only statement of WHICH card a
-model uses, while size is independently measurable (`sampleVRAMPeak` already does it).
+**✅ Code shipped.** `ramUsage` no longer carries two jobs. `pool:` declares placement
+(which card); `ramUsage` is a size hint that measurement supersedes. Full tree in
+[`done.md`](done.md) § ramUsage split.
 
-**Agreed with the user, unbuilt:** an explicit `pool:` for placement, measurement for size.
-Decided with it: an unmeasured model claims **NOTHING** rather than the whole pool, and a
-failed spawn is the fit signal — the first run is the operator's problem.
+**Backwards compatible by construction** — an explicit `pool:` wins, ramUsage keys remain the
+fallback, so every model in the live config means today exactly what it meant before. Nothing
+is waiting on this migration; the split simply is not exercised until it happens.
 
-**next** add `pool:` to the model schema; make `ramUsage` size-only; migrate the live config.
-Verified today: no per-model `pool:` field exists — `devicePool` is a SERVER field
-(`config.go:530`), so this is unstarted.
-**risks** the "claims nothing" rule is safe on DEVICE pools (a CUDA OOM kills only the
-allocator) and is **exactly the rule that already bit this box on the `system` pool**, where
-oidio reached 119G anon-rss and took corrallm down with it. What saved that was the
-`MemoryMax` cgroup, not the ledger. Do not apply the rule uniformly to `system`.
-**blocking decisions (USER)** none outstanding — the design is agreed.
+**next** add `pool:` to box1's four single-card models, then deploy + restart. Derived from the
+live config store on 2026-08-24:
+
+| model | server | pool: | why |
+|---|---|---|---|
+| `Qwen3.8-27B` | box1 | `gpu0` | one card |
+| `muse-glimmer-30b` | box1 | `gpu0` | one card |
+| `chandra-ocr-2` | box1 | `gpu1` | one card |
+| `nomic-embed-text` | box1 | `gpu1` | one card |
+| `deepseek-v4-flash` | box1 | **none** | a real multi-GPU split (`gpu0` 32.5GB + `gpu1` 7GB); no single pool exists, and ramUsage naming both stays how that is said |
+| `Qwen3.6-35B-A3B-MTP` | carlsmacbookpro | **none** | one unified `system` pool; declaring it adds nothing |
+
+**risks** the migration is a write to a RUNNING daemon's config store. `pool:` has no column —
+it rides configdb's unprojected remainder, the same as P29's tool pin, because the schema is
+applied with `CREATE TABLE IF NOT EXISTS` and a new column would never appear on the live
+database. `TestModelPoolSurvivesTheStore` pins that round trip.
+**blocking decisions (USER)** none — but this touches production config, so it is yours to
+trigger.
+
+### ⚠ The claims-nothing rule is live, and the recorded caveat understated it
+
+Shipped with the split, as decided: an unmeasured model on a DEVICE pool now claims **nothing**
+rather than reserving the whole pool, and the spawn is the fit test. Host RAM keeps the
+conservative path, and so does any host that cannot measure per-process memory.
+
+**The decision recorded "a CUDA OOM kills only the allocator". That is true and it is not the
+whole risk — the allocator is not always the newcomer.** A resident model that grows AFTER load
+can be the one that asks for memory an unmeasured neighbour already took. Qwen's vision path
+spikes ~2 GB on a 400-dpi page, and that is exactly the shape of the 2026-08-14 production OOM,
+where Qwen3-6 crashed with 1,483 MiB free.
+
+Exposure is one spawn per (card, model): after that, measurement governs. It is bounded, it was
+decided deliberately, and it is written down here rather than discovered later.
+
+**next** watch for a spawn-time OOM on box1's first cold load of any newly-added model. If one
+bites an INCUMBENT rather than the newcomer, that is the signal to reinstate a floor — reserve
+some fraction of the pool for an unmeasured model instead of nothing.
+**risks** as above. `gpu1` is the likely first place to see it: 831 MiB of headroom once nomic
+and chandra are both resident, and chandra's footprint is input-driven.
 
 ### ◐ P21c — budget granularity
 

@@ -465,6 +465,14 @@ func advancedFields(m config.Model) []string {
 		}
 	}
 	add(len(m.Aliases) > 0, "aliases")
+	// pool is placement — WHICH card. The form edits ramUsage (size) and would
+	// otherwise look like it covered both, which is the exact confusion the
+	// two fields were split to end.
+	add(strings.TrimSpace(m.Pool) != "", "pool")
+	// placements were never listed here either. A model served two ways is the
+	// case this form is least able to represent, so silence about it is the
+	// worst answer.
+	add(len(m.Placements) > 0, "placements")
 	add(m.Sampling != nil, "sampling")
 	add(m.Swap != nil, "swap")
 	add(m.ContextPerRequest > 0, "contextPerRequest")

@@ -893,7 +893,7 @@ func (m *Manager) devicePoolForModel(mdl config.Model) (string, bool) {
 	if cfg == nil {
 		return defaultVRAMPool, true
 	}
-	named := cfg.DevicePoolsNamedBy(mdl.Server, mdl.RAMUsage)
+	named := cfg.DevicePoolsNamedBy(mdl.Server, mdl.Pool, mdl.RAMUsage)
 	switch len(named) {
 	case 1:
 		return named[0], true
@@ -909,20 +909,38 @@ func (m *Manager) devicePoolForModel(mdl config.Model) (string, bool) {
 // unknownIfEmpty handles a model whose size is genuinely UNKNOWN: no measured
 // profile and no declared ramUsage.
 //
-// The old behavior was the worst possible one. ParseSizes(nil) yields an empty
-// map, len(usage) > 0 is false, and the spawn skipped reservation entirely — so
-// corrallm admitted a model of unknown size while believing it consumed nothing,
-// and kept believing that until something OOMed.
+// The answer differs by POOL KIND, and that split is the point.
 //
-// "Unknown" now means "assume it needs the whole pool": every evictable resident
-// is cleared, the model spawns alone, and the measurement taken on that spawn is
-// what governs from then on. It costs one heavy-handed eviction, exactly once
-// per (gpu, model), and it is honest — the alternative is guessing, and every
-// guessed number on this box turned out wrong (the pool understated the card by
-// 2 GB, bonsai's ramUsage by 7 GB, Qwen's by 1 GB).
+// DEVICE pools (a card): claim NOTHING. The spawn is the fit test — it either
+// allocates or it fails, and a failure is a clean, immediate, attributable
+// signal that costs one cold load. The alternative it replaces was "assume it
+// needs the whole pool", which evicted every evictable resident so the newcomer
+// could run alone. That was safe and very expensive: a heavy-handed eviction on
+// the first spawn of every new model, to learn a number the spawn itself
+// reports. Placement is now declared (`pool:`) rather than inferred from a size
+// hint, so an unmeasured model no longer has to over-claim to be placed at all.
 //
-// This is why ramUsage is now advisory: it is a bootstrap hint that saves one
-// eviction, not a fact anything relies on.
+// NON-DEVICE pools (host RAM, `system`): keep reserving. The reasoning above
+// depends on the failure being contained, and on host RAM it is not. A CUDA OOM
+// kills the process that asked; an anonymous-RSS blowout takes the machine, and
+// this box has already had that happen — oidio reached 119 GB anon-rss and took
+// corrallm down with it. What saved that was the MemoryMax cgroup, not the
+// ledger, and a ledger that claims nothing offers no second line.
+//
+// Hosts that cannot measure per-process memory also keep reserving: "claim
+// nothing, then measure" has no measuring step there, so it would degrade to
+// "claim nothing, forever".
+//
+// This is why ramUsage is advisory: it is a bootstrap hint that saves one cold
+// load, not a fact anything relies on.
+//
+// KNOWN RISK, deliberately accepted and worth restating because the recorded
+// decision understated it: "a CUDA OOM kills only the allocator" is true, and
+// the allocator is not always the newcomer. A resident model that grows after
+// load — Qwen's vision path spikes ~2 GB per 400-dpi page — can be the one that
+// asks for memory an unmeasured neighbour already took. That is exactly the
+// shape of the 2026-08-14 production OOM. The exposure lasts one spawn per
+// (card, model), after which measurement governs.
 func (m *Manager) unknownIfEmpty(name string, mdl config.Model, usage map[string]int64) map[string]int64 {
 	if len(usage) > 0 || mdl.Server == "" {
 		return usage
@@ -939,8 +957,10 @@ func (m *Manager) unknownIfEmpty(name string, mdl config.Model, usage map[string
 	// Config validation requires ramUsage on such a server, so reaching here
 	// means the config changed under a running daemon. Say so loudly rather
 	// than quietly becoming single-tenant.
+	noMeasure := false
 	if cfg := m.config(); cfg != nil {
 		if srv, ok := cfg.Servers[mdl.Server]; ok && srv.NoProcessMemory {
+			noMeasure = true
 			slog.Warn("model has no ramUsage on a host that reports it cannot measure per-process "+
 				"memory — it will hold the entire pool until something corrects that. If this is an "+
 				"Apple-silicon host, re-enrol it: newer agents measure the resident set, and this "+
@@ -948,7 +968,8 @@ func (m *Manager) unknownIfEmpty(name string, mdl config.Model, usage map[string
 				"model", name, "server", mdl.Server)
 		}
 	}
-	// The whole pool MINUS what other tenants hold.
+	// Device pools are skipped entirely; see the doc comment. Non-device pools
+	// take the whole pool MINUS what other tenants hold.
 	//
 	// Reserving the literal pool deadlocks on a shared machine: the budget is
 	// never entirely available, so the reservation never fits, so the model
@@ -958,16 +979,29 @@ func (m *Manager) unknownIfEmpty(name string, mdl config.Model, usage map[string
 	//
 	// Evictable residents are deliberately not subtracted; makeRoomLocked
 	// clears those, which is the eviction this path is willing to pay for.
+	devPools := map[string]bool{}
+	if cfg := m.config(); cfg != nil && !noMeasure {
+		for _, p := range cfg.DevicePoolsFor(mdl.Server) {
+			devPools[p] = true
+		}
+	}
 	out := make(map[string]int64, len(budget))
+	var unclaimed []string
 	for pool, b := range budget {
+		if devPools[pool] {
+			unclaimed = append(unclaimed, pool)
+			continue
+		}
 		if avail := b - m.foreignUsedLocked(mdl.Server, pool); avail > 0 {
 			out[pool] = avail
 		} else {
 			out[pool] = b
 		}
 	}
-	slog.Info("model size unknown (no measured profile, no ramUsage) — reserving what the machine can offer for one spawn, then measuring",
-		"model", name, "server", mdl.Server, "reserving", out)
+	sort.Strings(unclaimed)
+	slog.Info("model size unknown (no measured profile, no ramUsage) — the spawn is the fit test",
+		"model", name, "server", mdl.Server,
+		"claimingNothingOn", unclaimed, "reserving", out)
 	return out
 }
 
@@ -996,7 +1030,7 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 	}
 	// Keyed by the device that RAN it, not the primary's own card — a model on
 	// an attached machine was previously filed under the primary's GPU.
-	dev := m.deviceNameFor(mdl.Server, mdl.RAMUsage)
+	dev := m.deviceNameFor(mdl.Server, mdl.Pool, mdl.RAMUsage)
 	if dev == "" {
 		return m.unknownIfEmpty(name, mdl, usage)
 	}
@@ -1054,6 +1088,22 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 	return out
 }
 
+// placementOf reads a model's PLACEMENT identity: the box it runs on, the device
+// pool (card) its weights live in, and its advisory size hint.
+//
+// One reader rather than five hand-rolled copies. The copies were the hazard
+// this file already names elsewhere — migrate one call site and forget its
+// neighbour — and adding `pool:` to five identical blocks is exactly the shape
+// that goes wrong.
+func (m *Manager) placementOf(model string) (server, pool string, ramUsage map[string]string) {
+	cfg := m.config()
+	if cfg == nil {
+		return "", "", nil
+	}
+	mc := cfg.Models[model]
+	return mc.Server, mc.Pool, mc.RAMUsage
+}
+
 // modelDevice is the card a model's VRAM arithmetic must be done against.
 //
 // It matters most here, in slot tuning, because that arithmetic ends up in the
@@ -1066,13 +1116,8 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 // Falls back to the first-GPU probe when the model names no device-bound pool —
 // the single-GPU case, where "first" and "the one" are the same card.
 func (m *Manager) modelDevice(model string) (gpu.Stats, error) {
-	server := ""
-	var ramUsage map[string]string
-	if cfg := m.config(); cfg != nil {
-		server = cfg.Models[model].Server
-		ramUsage = cfg.Models[model].RAMUsage
-	}
-	if st, ok := m.localDeviceFor(server, ramUsage); ok {
+	server, pool, ramUsage := m.placementOf(model)
+	if st, ok := m.localDeviceFor(server, pool, ramUsage); ok {
 		return st, nil
 	}
 	return gpu.Probe()
@@ -1249,7 +1294,7 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 	// that total under one device name, which for a two-card model is a figure
 	// true of the host and false of both pools — and it is the pool that
 	// admission reads. Falls through when the host cannot attribute per device.
-	if devs, ok := m.localDevicesFor(mdl.Server, mdl.RAMUsage); ok && len(devs) > 1 {
+	if devs, ok := m.localDevicesFor(mdl.Server, mdl.Pool, mdl.RAMUsage); ok && len(devs) > 1 {
 		if m.measurePerDevice(model, h, devs, nCtx, nSlots, time.Now().Unix()) {
 			return
 		}
@@ -1257,7 +1302,7 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 
 	// The device that ran it names the profile. On an agent-backed server that
 	// is the agent's hardware, reported on its heartbeat — not this machine's.
-	dev := m.deviceNameFor(mdl.Server, mdl.RAMUsage)
+	dev := m.deviceNameFor(mdl.Server, mdl.Pool, mdl.RAMUsage)
 	if dev == "" {
 		slog.Debug("no device name; skipping vram measurement", "model", model)
 		return
@@ -1311,12 +1356,7 @@ func (m *Manager) sampleVRAMPeak(model string, h host.Handle) {
 	if m.tuneCache == nil {
 		return
 	}
-	server := ""
-	var ramUsage map[string]string
-	if cfg := m.config(); cfg != nil {
-		server = cfg.Models[model].Server
-		ramUsage = cfg.Models[model].RAMUsage
-	}
+	server, pool, ramUsage := m.placementOf(model)
 	t := time.NewTicker(vramSampleInterval)
 	defer t.Stop()
 	for {
@@ -1324,7 +1364,7 @@ func (m *Manager) sampleVRAMPeak(model string, h host.Handle) {
 		case <-h.Done():
 			return
 		case <-t.C:
-			dev := m.deviceNameFor(server, ramUsage)
+			dev := m.deviceNameFor(server, pool, ramUsage)
 			if dev == "" {
 				slog.Debug("vram peak sample: no device name", "model", model)
 				continue
@@ -1404,7 +1444,7 @@ func (m *Manager) TunedSlots(model string, configDefault int) int {
 // server that is the authority. Falls back to the local probe for a local
 // server, which is what it always was — and stays exactly that on a single-GPU
 // box, where no pool declares a device.
-func (m *Manager) deviceNameFor(server string, ramUsage map[string]string) string {
+func (m *Manager) deviceNameFor(server, pool string, ramUsage map[string]string) string {
 	if m.live != nil && server != "" {
 		if cap, ok := m.live.Capacity(server); ok {
 			if cap.GPU != nil && cap.GPU.Name != "" {
@@ -1415,7 +1455,7 @@ func (m *Manager) deviceNameFor(server string, ramUsage map[string]string) strin
 			}
 		}
 	}
-	if st, ok := m.localDeviceFor(server, ramUsage); ok {
+	if st, ok := m.localDeviceFor(server, pool, ramUsage); ok {
 		return st.Name
 	}
 	if stats, err := gpu.Probe(); err == nil {
@@ -1432,15 +1472,19 @@ func (m *Manager) deviceNameFor(server string, ramUsage map[string]string) strin
 // selector that matches nothing. Every one of those falls back to the caller's
 // previous behavior rather than picking a card, because the failure this exists
 // to prevent is precisely a confident answer about the wrong GPU.
-func (m *Manager) localDeviceFor(server string, ramUsage map[string]string) (gpu.Stats, bool) {
+func (m *Manager) localDeviceFor(server, pool string, ramUsage map[string]string) (gpu.Stats, bool) {
 	cfg := m.config()
-	if cfg == nil || server == "" || len(ramUsage) == 0 {
+	// An explicit pool is placement knowledge on its own: a model that declares
+	// `pool:` and no ramUsage still knows which card it is on. Before the split
+	// this gate read `len(ramUsage) == 0`, which is why size and placement could
+	// not be declared independently.
+	if cfg == nil || server == "" || (pool == "" && len(ramUsage) == 0) {
 		return gpu.Stats{}, false
 	}
 	// Exactly one, unlike devicePoolForModel's charging rule: naming the card a
 	// profile is filed under requires a card, and a model spanning two of them
 	// has no single answer to give.
-	named := cfg.DevicePoolsNamedBy(server, ramUsage)
+	named := cfg.DevicePoolsNamedBy(server, pool, ramUsage)
 	if len(named) != 1 {
 		return gpu.Stats{}, false
 	}
@@ -1477,12 +1521,12 @@ func (m *Manager) localDeviceFor(server string, ramUsage map[string]string) (gpu
 // Returns ok=false whenever any named pool fails to resolve, rather than a
 // partial list: measuring three cards out of four and charging the sum to those
 // three is a worse lie than not measuring.
-func (m *Manager) localDevicesFor(server string, ramUsage map[string]string) ([]gpu.Stats, bool) {
+func (m *Manager) localDevicesFor(server, pool string, ramUsage map[string]string) ([]gpu.Stats, bool) {
 	cfg := m.config()
-	if cfg == nil || server == "" || len(ramUsage) == 0 {
+	if cfg == nil || server == "" || (pool == "" && len(ramUsage) == 0) {
 		return nil, false
 	}
-	named := cfg.DevicePoolsNamedBy(server, ramUsage)
+	named := cfg.DevicePoolsNamedBy(server, pool, ramUsage)
 	if len(named) == 0 {
 		return nil, false
 	}
@@ -1570,13 +1614,8 @@ func (m *Manager) TuneProfilePeak(model string) int {
 	if m.tuneCache == nil {
 		return 0
 	}
-	server := ""
-	var ramUsage map[string]string
-	if cfg := m.config(); cfg != nil {
-		server = cfg.Models[model].Server
-		ramUsage = cfg.Models[model].RAMUsage
-	}
-	dev := m.deviceNameFor(server, ramUsage)
+	server, pool, ramUsage := m.placementOf(model)
+	dev := m.deviceNameFor(server, pool, ramUsage)
 	if dev == "" {
 		return 0
 	}
@@ -1643,13 +1682,8 @@ func (m *Manager) TuneProfile(gpuName, model string) (tune.Profile, bool) {
 // scheduler will later read by, and a publish filed under the wrong card is a
 // measurement nobody ever finds again.
 func (m *Manager) DeviceNameForModel(model string) string {
-	server := ""
-	var ramUsage map[string]string
-	if cfg := m.config(); cfg != nil {
-		server = cfg.Models[model].Server
-		ramUsage = cfg.Models[model].RAMUsage
-	}
-	return m.deviceNameFor(server, ramUsage)
+	server, pool, ramUsage := m.placementOf(model)
+	return m.deviceNameFor(server, pool, ramUsage)
 }
 
 // TuneProfileForModel is TuneProfile with the device resolved for you — the
@@ -1662,13 +1696,8 @@ func (m *Manager) TuneProfileForModel(model string) (tune.Profile, bool) {
 	if m.tuneCache == nil {
 		return tune.Profile{}, false
 	}
-	server := ""
-	var ramUsage map[string]string
-	if cfg := m.config(); cfg != nil {
-		server = cfg.Models[model].Server
-		ramUsage = cfg.Models[model].RAMUsage
-	}
-	dev := m.deviceNameFor(server, ramUsage)
+	server, pool, ramUsage := m.placementOf(model)
+	dev := m.deviceNameFor(server, pool, ramUsage)
 	if dev == "" {
 		return tune.Profile{}, false
 	}

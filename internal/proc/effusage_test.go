@@ -118,17 +118,60 @@ func TestEffectiveUsage_ProxyModelUntouched(t *testing.T) {
 //
 // Unknown now means "assume it needs the whole pool": clear the board, spawn
 // alone, measure. One heavy eviction, once, and then the measurement governs.
-func TestEffectiveUsage_UnknownSizeReservesWholePool(t *testing.T) {
+// An unmeasured model claims NOTHING on a device pool: the spawn is the fit
+// test. This replaced "reserve the whole pool", which evicted every evictable
+// resident on the first spawn of every new model to learn a number the spawn
+// itself reports.
+//
+// Safe to let fail because a CUDA OOM is contained to the process that asked and
+// costs one cold load. It is NOT the rule for host RAM — see the sibling test.
+func TestEffectiveUsage_UnknownSizeClaimsNothingOnADevicePool(t *testing.T) {
 	m := usageMgr(t, nil) // no profile
 	m.budget["box"] = map[string]int64{"gpu0": 31654 * mib}
 
 	mdl := config.Model{Server: "box", MaxConcurrent: 1} // no RAMUsage at all
 	got := m.effectiveUsage("mystery", mdl)
-	if len(got) == 0 {
-		t.Fatal("unknown size must NOT reserve nothing — that is how an unmeasured model gets admitted as free")
+	if _, claimed := got["gpu0"]; claimed {
+		t.Errorf("gpu0 = %d MiB; an unmeasured model must claim nothing on a device pool",
+			got["gpu0"]/mib)
 	}
+}
+
+// Host RAM is the exception, and it is not a stylistic one. A CUDA OOM kills the
+// allocator; an anonymous-RSS blowout takes the machine — oidio reached 119 GB
+// anon-rss on this box and took corrallm down with it. Claiming nothing there
+// removes the only ledger-side check.
+func TestEffectiveUsage_UnknownSizeStillReservesHostRAM(t *testing.T) {
+	m := usageMgr(t, nil)
+	m.SetConfig(&config.Config{Servers: map[string]config.Server{
+		"box": {Pools: map[string]string{"gpu0": "31654MiB", "system": "64GB"}},
+	}})
+	m.budget["box"] = map[string]int64{"gpu0": 31654 * mib, "system": 64000 * mib}
+
+	got := m.effectiveUsage("mystery", config.Model{Server: "box", MaxConcurrent: 1})
+	if _, claimed := got["gpu0"]; claimed {
+		t.Errorf("gpu0 must be unclaimed, got %d MiB", got["gpu0"]/mib)
+	}
+	if got["system"] != 64000*mib {
+		t.Errorf("system = %d MiB, want the whole pool — host RAM keeps the conservative path",
+			got["system"]/mib)
+	}
+}
+
+// "Claim nothing, then measure" has no measuring step on a host that cannot
+// attribute memory per process, so it would degrade to "claim nothing, forever"
+// and the server would silently over-admit.
+func TestEffectiveUsage_UnknownSizeStillReservesWhereNothingCanMeasure(t *testing.T) {
+	m := usageMgr(t, nil)
+	m.SetConfig(&config.Config{Servers: map[string]config.Server{
+		"box": {Pools: map[string]string{"gpu0": "31654MiB"}, NoProcessMemory: true},
+	}})
+	m.budget["box"] = map[string]int64{"gpu0": 31654 * mib}
+
+	got := m.effectiveUsage("mystery", config.Model{Server: "box", MaxConcurrent: 1})
 	if got["gpu0"] != 31654*mib {
-		t.Errorf("gpu0 = %d MiB, want the whole pool while the size is unknown", got["gpu0"]/mib)
+		t.Errorf("gpu0 = %d MiB, want the whole pool on a host that cannot measure",
+			got["gpu0"]/mib)
 	}
 }
 
@@ -185,6 +228,77 @@ func TestEffectiveUsage_ChargesMeasuredToServerDevicePool(t *testing.T) {
 	}
 	if _, ok := got["gpu0"]; ok {
 		t.Errorf("charged %d to gpu0, a pool this server does not declare", got["gpu0"])
+	}
+}
+
+// THE BUG THE SPLIT FIXES, end to end.
+//
+// chandra-ocr-2 runs on gpu1 and has a measured profile. Once ramUsage stopped
+// being declared — measurement supersedes it — nothing said which card it was
+// on, so it fell back to the server-wide default pool (gpu0). The measured
+// 8240 MiB then landed on the 5090's ledger while the 3080's looked free, and
+// the scheduler would place another model onto memory already spoken for.
+//
+// `pool: gpu1` says it outright, with no size hint anywhere.
+func TestEffectiveUsage_PoolChargesMeasuredToTheRightCard(t *testing.T) {
+	fakeNvidiaSMI(t, "0, Fake GPU, 60000, 0, 60000", "")
+	m := NewManager(&config.Config{Servers: map[string]config.Server{
+		"box1": {
+			Pools:   map[string]string{"gpu0": "31654MiB", "gpu1": "9877MiB"},
+			Devices: map[string]string{"gpu0": "GPU-ee90af07", "gpu1": "GPU-76a4c775"},
+		},
+	}})
+	c, err := tune.New(t.TempDir() + "/vram-profile.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Update("Fake GPU", "chandra-ocr-2", tune.Profile{
+		BaseMiB: 6196, PerSlotMiB: 0, PeakMiB: 8240, MeasuredSlots: 1,
+	})
+	m.SetTuneCache(c)
+
+	mdl := config.Model{Server: "box1", MaxConcurrent: 1, Pool: "gpu1"} // no ramUsage
+	got := m.effectiveUsage("chandra-ocr-2", mdl)
+
+	if want := int64(8240) * mib; got["gpu1"] != want {
+		t.Errorf("gpu1 = %d MiB, want %d — the card it actually runs on",
+			got["gpu1"]/mib, want/mib)
+	}
+	if _, ok := got["gpu0"]; ok {
+		t.Errorf("charged %d MiB to gpu0; that is the 5090, and this model is on the 3080",
+			got["gpu0"]/mib)
+	}
+}
+
+// A stale ramUsage naming the wrong card must not override an explicit `pool:`.
+// This is the migration case: an operator adds `pool:` to correct a placement
+// without hunting down every size hint that implied the old one.
+func TestEffectiveUsage_PoolOverridesAStaleRAMUsageKey(t *testing.T) {
+	fakeNvidiaSMI(t, "0, Fake GPU, 60000, 0, 60000", "")
+	m := NewManager(&config.Config{Servers: map[string]config.Server{
+		"box1": {
+			Pools:   map[string]string{"gpu0": "31654MiB", "gpu1": "9877MiB"},
+			Devices: map[string]string{"gpu0": "GPU-ee90af07", "gpu1": "GPU-76a4c775"},
+		},
+	}})
+	c, err := tune.New(t.TempDir() + "/vram-profile.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Update("Fake GPU", "moved", tune.Profile{
+		BaseMiB: 6000, PerSlotMiB: 0, PeakMiB: 6000, MeasuredSlots: 1,
+	})
+	m.SetTuneCache(c)
+
+	mdl := config.Model{
+		Server: "box1", MaxConcurrent: 1,
+		Pool:     "gpu1",
+		RAMUsage: map[string]string{"gpu0": "6GB"}, // stale: it used to live here
+	}
+	got := m.effectiveUsage("moved", mdl)
+
+	if want := int64(6000) * mib; got["gpu1"] != want {
+		t.Errorf("gpu1 = %d MiB, want %d", got["gpu1"]/mib, want/mib)
 	}
 }
 
