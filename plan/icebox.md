@@ -55,3 +55,40 @@ it is a UI + API + codegen slice rather than a one-file change.
 **Resume when.** An unattended rebuild on the Mac actually gets in the way, or
 the next time somebody needs to change a tool entry and has to reach for the
 CLI to do it.
+
+---
+
+## Optional extensions — improve the product; nothing active requires them
+
+*(Relocated from `plan.md` §7 during the 2026-08-24 archive pass. Pull in opportunistically.)*
+
+- **Stickiness/affinity weighting** — how strongly a warm backend overrides *ordered list*
+  preference (P4 does ttl/evictCost for *eviction*, but the proxy walks strict quality/list order
+  regardless of warmth); per-group vs per-request latency hint. Not built.
+- **Context-window clamp on degrade** — P7 clamps `max_tokens`; clamping the prompt to a smaller
+  backend's context window needs tokenization, so it's deferred (declared `maxTokens` only for now).
+- **gRPC surface** — gat gives it cheaply, but no consumer yet; add when one appears.
+- **CapacityProbe** (nvidia/drm/amd/metal/none, auto) — declared budget is canonical and
+  implemented; the probe only auto-fills undeclared totals, drift-guards, and feeds dashboards.
+- **`server.maxConcurrent` host cap** — per-backend slots enforced (P2); the host-wide concurrency
+  ceiling parses but isn't enforced yet (layer onto residency).
+- **Proactive ttl reaper** — P4 eviction is lazy (on demand); `ttl` only orders victims. A
+  background reaper that frees warm-but-expired models for power is not built.
+- **Dynamic footprint** — KV scales with slots×context; v1 reserves worst-case `ramUsage`;
+  refine with `{base, perSlot}` later.
+- **Audio true-duration costing** (post-P9) — P9c costs audio by bytes; cost by actual seconds
+  needs duration: parse parakeet `verbose_json`/SRT, or add a local `ffprobe` dependency. Refine
+  the byte-basis once P9 is live and the byte→$ error matters.
+
+> **Correction made during the archive pass.** The old §7 footnote claimed "the proactive ttl
+> reaper shipped with slot reservations". It did not: `sched.StartReaper`
+> (`internal/sched/reservation.go:128`) expires stale **reservations**, not ttl-expired resident
+> models. The bullet above stands as unbuilt. Instantaneous queue depth *is* genuinely covered
+> by the sampler, and is struck from the list.
+
+## Deferred — out of scope until later
+
+- **NUMA / interconnect** — per-NUMA system pools, PCIe/NVLink cost of multi-GPU splits.
+*(Multi-node peer awareness was here; it is no longer deferred — `host.Remote` is the last
+step and it is active in `plan.md` §6.)*
+
