@@ -121,11 +121,26 @@ func printToolStates(w io.Writer, states []toolchain.State) {
 			detail = s.Probe.Path
 		}
 		if s.Drift != nil {
+			// While PINNED, "behind" means behind the pin, not behind upstream:
+			// a held tool is behind master on purpose, and the DRIFT column
+			// showing that as a problem would nag about a decision. The target
+			// is the pin, so it is the pin that gets named.
+			target := s.Drift.RemoteHead
+			if s.Drift.Pin != "" {
+				target = s.Drift.Pin
+			}
 			switch {
 			case s.Drift.Error != "":
 				drift = "?"
 			case s.Drift.Behind:
-				drift = "BEHIND " + short(s.Drift.RemoteHead)
+				drift = "BEHIND " + short(target)
+			case s.Drift.Pin != "":
+				drift = "pinned " + short(s.Drift.Pin)
+				if s.Drift.Ahead {
+					// What you are holding back FROM. The number a person who
+					// pinned three weeks ago actually wants.
+					drift += " (" + s.Drift.Ref + " at " + short(s.Drift.RemoteHead) + ")"
+				}
 			case s.Drift.RemoteHead != "":
 				drift = "current"
 			}

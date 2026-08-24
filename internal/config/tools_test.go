@@ -167,3 +167,57 @@ func TestNoToolsIsFine(t *testing.T) {
 		t.Errorf("a config with no tools must validate: %v", err)
 	}
 }
+
+// A pin is a full sha or nothing.
+//
+// Abbreviated is refused rather than accepted-and-resolved because the two ends
+// disagree about whether it can be: a host with an existing clone resolves
+// "0b1bad14" locally, and a host without one asks the remote, which cannot
+// answer for an abbreviated hash. Accepting it would produce a pin that works
+// on the machine it was set from and fails on the machine that needed it.
+func TestPinMustBeAFullSha(t *testing.T) {
+	full := "0b1bad14f0b1bad14f0b1bad14f0b1bad14f0b1b"
+	for _, tc := range []struct {
+		pin  string
+		ok   bool
+		what string
+	}{
+		{"", true, "empty means not pinned"},
+		{full, true, "a full sha"},
+		{"  " + full + "  ", true, "surrounding whitespace, as pasted"},
+		{"0b1bad14f", false, "abbreviated — a remote cannot be asked for it"},
+		{"master", false, "a branch belongs in ref, where drift can follow it"},
+		{full[:39] + "z", false, "not hex"},
+	} {
+		err := ValidatePin(tc.pin)
+		if tc.ok && err != nil {
+			t.Errorf("%s: rejected %q: %v", tc.what, tc.pin, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("%s: accepted %q", tc.what, tc.pin)
+		}
+	}
+}
+
+// The pin overrides the tracked ref for a checkout, and only for the checkout —
+// Ref stays put so the drift check can go on saying how far ahead the branch is.
+func TestEffectiveRefPrefersThePin(t *testing.T) {
+	full := "0b1bad14f0b1bad14f0b1bad14f0b1bad14f0b1b"
+	if got := EffectiveRef(Tool{Ref: "master"}); got != "master" {
+		t.Errorf("unpinned should track the ref, got %q", got)
+	}
+	if got := EffectiveRef(Tool{Ref: "master", Pin: full}); got != full {
+		t.Errorf("pinned should check out the pin, got %q", got)
+	}
+}
+
+// An invalid pin fails the whole config rather than being ignored. A pin that
+// is silently dropped leaves a tool tracking master while a dashboard says it
+// is held — the one lie this feature cannot afford.
+func TestBadPinRejectedAtLoad(t *testing.T) {
+	tool := validTool()
+	tool.Pin = "0b1bad14"
+	if err := toolsCfg(tool).validateTools(); err == nil {
+		t.Fatal("an abbreviated pin was accepted")
+	}
+}

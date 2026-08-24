@@ -58,6 +58,7 @@ func (r *Registry) SpecFor(tool, host string) (spec Spec, declared bool, err err
 		Recipe:      config.RecipeOf(tool, t),
 		URL:         t.URL,
 		Ref:         t.Ref,
+		Pin:         config.NormalizePin(t.Pin),
 		Bin:         t.Bin,
 		InstalledAt: h.InstalledAt,
 	}
@@ -121,11 +122,43 @@ func (r *Registry) Survey(ctx context.Context, tool, host string) State {
 			u.Error = err.Error()
 		}
 		if u == nil {
-			u = &Upstream{Ref: spec.Ref, Error: err.Error()}
+			u = &Upstream{Ref: spec.Ref, Pin: spec.Pin, Error: err.Error()}
 		}
 	}
 	st.Drift = u
+	notePinSupport(spec, st.Drift)
 	return st
+}
+
+// notePinSupport catches the window where the primary understands pins and a
+// host does not yet.
+//
+// Agents carry their OWN embedded recipes and self-update on a build-id
+// mismatch, so for a heartbeat or two after a primary deploy the older recipe
+// is the one answering — and it computes drift against the tracked ref, knowing
+// nothing about TOOL_PIN. Left alone that is worse than a stale answer: the row
+// reports a pinned tool as BEHIND, and with `rebuild: true` the watcher starts a
+// build there, which the same old recipe aligns to master. The pin gets walked
+// straight past, silently, by the machinery meant to honour it.
+//
+// So an answer that cannot see the pin is treated as no answer about drift at
+// all. Behind is cleared — an unknown is not a "yes", and it is Behind that the
+// watcher acts on — and the row says why.
+//
+// Feature-detected from the wire rather than gated on a version: the protocol
+// deliberately stays at 1 (bumping it would take the whole fleet out until each
+// agent self-updated), and a recipe that understands pins always echoes the pin
+// back, while one that does not never can.
+func notePinSupport(spec Spec, u *Upstream) {
+	if u == nil || spec.Pin == "" || u.Pin != "" {
+		return
+	}
+	u.PinUnsupported = true
+	u.Behind = false
+	u.Ahead = false
+	if u.Error == "" {
+		u.Error = "this host's agent predates tool pins, so its drift answer ignores the pin — it self-updates from the primary within a heartbeat or two"
+	}
 }
 
 // SurveyAll reports every declared (tool, host) pair.
@@ -208,6 +241,24 @@ func (r *Registry) Build(ctx context.Context, tool, host string, force bool, pro
 	if err != nil {
 		return nil, err
 	}
+
+	// A PINNED build on a host whose recipe predates pins would align to the
+	// tracked ref and install whatever master is at — the exact regression the
+	// pin was set to prevent, produced by the act of honouring it. Refuse
+	// instead, and refuse on an inconclusive answer too: while pinned, a build
+	// nobody can promise will honour the pin is the build not to run.
+	//
+	// One ls-remote before twenty minutes of nvcc, on the same argument that
+	// puts preflight here.
+	if spec.Pin != "" {
+		u, _ := RunUpstream(ctx, runner, spec)
+		if u == nil || u.Pin == "" {
+			return nil, fmt.Errorf(
+				"%s is pinned to %s, and %s's agent predates tool pins — building there would check out %s and walk past the pin; it self-updates from the primary within a heartbeat or two, or run `make agents` and deploy",
+				tool, spec.Pin, host, spec.Ref)
+		}
+	}
+
 	if pf, err := RunPreflight(ctx, runner, spec); err == nil && pf != nil && !pf.OK {
 		return nil, fmt.Errorf("%s cannot be built on %s: %s (fix: %s)",
 			tool, host, strings.Join(pf.Missing, "; "), strings.Join(pf.Commands, "; "))

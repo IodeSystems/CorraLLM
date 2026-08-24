@@ -39,11 +39,34 @@ type Tool struct {
 	// about, and a tool nobody can check for drift is just a path.
 	URL string `yaml:"url"`
 
-	// Ref is the pin — a branch, tag or commit. Required, and deliberately not
-	// defaulted to "main"/"master": the two projects tracked here disagree
-	// (llama.cpp uses master, ninfer main), so a default would be wrong half
-	// the time and silently.
+	// Ref is what the tool TRACKS — a branch or a tag. Required, and
+	// deliberately not defaulted to "main"/"master": the two projects tracked
+	// here disagree (llama.cpp uses master, ninfer main), so a default would be
+	// wrong half the time and silently.
+	//
+	// To hold a tool at one commit, set Pin rather than putting a sha here: Ref
+	// is what the drift check follows, and a sha in it makes that check
+	// meaningless (a commit never moves).
 	Ref string `yaml:"ref"`
+
+	// Pin HOLDS the tool at one commit, overriding Ref.
+	//
+	// Ref says what to track; Pin says "not past here". They are separate
+	// fields rather than one because holding a tool back is temporary and
+	// tracking is not: overwriting `ref: master` with a sha loses the branch
+	// you meant to return to, and un-pinning then becomes an act of memory.
+	// With both, a pin is one field set and one field cleared, and the drift
+	// check can go on reporting how far the tracked branch has run ahead while
+	// you stay put.
+	//
+	// A full 40-character sha, or empty. Abbreviated is refused: `git fetch`
+	// cannot ask a remote for a short hash, and accepting one would produce a
+	// pin that resolves on a host with a clone and fails on a host without.
+	//
+	// While pinned, "behind" means behind the PIN, not behind upstream — so a
+	// scheduled rebuild converges on the pin and then stops, which is the whole
+	// point of setting one.
+	Pin string `yaml:"pin,omitempty"`
 
 	// Recipe names the script that knows how to probe and build this tool.
 	// Empty means "same as the tool's key", which is the case for both tools
@@ -135,6 +158,42 @@ func CheckIntervalOf(t Tool) (d time.Duration, ok bool) {
 	return d, true
 }
 
+// EffectiveRef is what a checkout should be aligned to: the pin when there is
+// one, the tracked ref otherwise.
+func EffectiveRef(t Tool) string {
+	if p := strings.TrimSpace(t.Pin); p != "" {
+		return p
+	}
+	return strings.TrimSpace(t.Ref)
+}
+
+// ValidatePin refuses everything a pin cannot be.
+//
+// Only a full sha, because that is the only form every path here can honour: a
+// remote cannot be asked for an abbreviated hash, and a branch or tag belongs in
+// `ref` where the drift check can follow it.
+func ValidatePin(pin string) error {
+	p := strings.TrimSpace(pin)
+	if p == "" {
+		return nil
+	}
+	if len(p) != 40 {
+		return fmt.Errorf("pin %q is not a full commit sha (40 hex characters) — a remote cannot be asked for an abbreviated hash; to follow a branch or tag, set ref instead", p)
+	}
+	for _, r := range p {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		default:
+			return fmt.Errorf("pin %q is not a commit sha — %q is not a hex digit", p, string(r))
+		}
+	}
+	return nil
+}
+
+// NormalizePin lowercases a pin so two spellings of the same commit compare
+// equal. Git prints lowercase; a hash pasted from a UI may not.
+func NormalizePin(pin string) string { return strings.ToLower(strings.TrimSpace(pin)) }
+
 // validateTools checks the shape of `tools:` and that every host it names is a
 // real server.
 //
@@ -152,6 +211,9 @@ func (c *Config) validateTools() error {
 		}
 		if strings.TrimSpace(t.Ref) == "" {
 			return fmt.Errorf("tool %q: ref is required — llama.cpp pins master and ninfer main, so there is no safe default", name)
+		}
+		if err := ValidatePin(t.Pin); err != nil {
+			return fmt.Errorf("tool %q: %w", name, err)
 		}
 		recipe := RecipeOf(name, t)
 		if !recipes.Has(recipe) {

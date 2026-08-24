@@ -3,8 +3,12 @@ package api
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/toolchain"
 )
 
@@ -57,6 +61,23 @@ type ToolStateView struct {
 	Behind     bool   `json:"behind"`
 	RemoteHead string `json:"remoteHead,omitempty"`
 	DriftError string `json:"driftError,omitempty"`
+	// Ref is what the tool TRACKS — a branch or tag — and Pin, when set, is the
+	// commit it is HELD at instead.
+	//
+	// Both are on the row because they answer different questions and the UI
+	// shows them together: "master, held at 0b1bad14f" is the whole state of a
+	// tool somebody deliberately stopped moving, and either half alone reads as
+	// something else.
+	Ref string `json:"ref,omitempty"`
+	Pin string `json:"pin,omitempty"`
+	// Ahead means the tracked ref has moved past the pin. Only ever true while
+	// pinned — unpinned, Behind already says it.
+	Ahead bool `json:"ahead,omitempty"`
+	// PinUnsupported means this host's agent predates pins: its drift answer
+	// was computed against the tracked ref and says nothing about the pin.
+	// Behind is cleared when it is set, so the row must say why rather than
+	// leaving a pinned tool looking quietly fine.
+	PinUnsupported bool `json:"pinUnsupported,omitempty"`
 	// Error is a failure to ASK — host unreachable, agent too old, recipe
 	// crashed. Distinct from a probe that answered "not present".
 	Error string `json:"error,omitempty"`
@@ -92,6 +113,17 @@ func (h *Handlers) ToolStates(ctx context.Context, in *ToolStatesInput) (*ToolSt
 			v.Behind = s.Drift.Behind
 			v.RemoteHead = s.Drift.RemoteHead
 			v.DriftError = s.Drift.Error
+			v.Ahead = s.Drift.Ahead
+			v.PinUnsupported = s.Drift.PinUnsupported
+		}
+		// From config, not the survey: a pin is a fact about configuration and
+		// must show even on a host that could not be asked anything. A row
+		// reading "cannot ask" with no pin beside it would send somebody to
+		// re-pin a tool that is already pinned.
+		if cfg := h.config(); cfg != nil {
+			if t, ok := cfg.Tools[s.Tool]; ok {
+				v.Ref, v.Pin = t.Ref, config.NormalizePin(t.Pin)
+			}
 		}
 		out.Body.Tools = append(out.Body.Tools, v)
 	}
@@ -392,4 +424,198 @@ func (h *Handlers) ToolBuildLog(ctx context.Context, in *ToolBuildLogInput) (*To
 	}
 	out.Body.Log = log
 	return out, nil
+}
+
+// Pinning, and rolling back to a build already on the host.
+//
+// These are the two halves of "hold this tool still", and they are deliberately
+// different operations because they act on different things:
+//
+//   - A PIN is configuration. It says which commit the tool should be at, on
+//     every host, and it survives a rebuild — including a scheduled one, which
+//     is the failure it exists to prevent: `rebuild: true` plus a regression
+//     upstream means the bad build comes back every six hours.
+//   - ACTIVATE is local. It repoints one host's bin/ at a build already sitting
+//     in builds/, which takes a second and needs no compiler. It is what you
+//     reach for when a build you already have is known-good.
+//
+// The pair is what makes holding a tool back cheap: activate to get serving
+// again now, pin so nothing walks it forward later.
+
+// ToolPinInput sets or clears a tool's pin.
+type ToolPinInput struct {
+	Body struct {
+		Tool string `json:"tool"`
+		// Pin is a full 40-character commit sha, or empty to un-pin.
+		//
+		// Full only, and validated here rather than at build time: an
+		// abbreviated hash cannot be requested from a remote, so it would
+		// resolve on a host that already has a clone and fail on one that does
+		// not — a pin that works until the machine you need it on.
+		Pin string `json:"pin"`
+	}
+}
+
+// ToolPinOutput reports what the tool is now pinned to.
+type ToolPinOutput struct {
+	Body struct {
+		Tool string `json:"tool"`
+		Ref  string `json:"ref" doc:"What the tool tracks. Unchanged by pinning — a pin holds, it does not retarget."`
+		Pin  string `json:"pin" doc:"The commit it is held at. Empty means it tracks ref freely again."`
+		// Message says what happens next, because the effect is NOT immediate:
+		// a pin changes what the next build produces, and processes already
+		// running keep the binary they started with.
+		Message string `json:"message"`
+	}
+}
+
+// ToolPin holds a tool at one commit, or lets it go again.
+//
+// It does not build and it does not verify the commit exists upstream. Neither
+// is free — one is twenty minutes of nvcc, the other a clone or a remote that
+// may not serve an arbitrary sha — and both would turn "hold this still" into
+// an operation that can fail for reasons unrelated to the decision being
+// recorded. A pin that names a commit no branch reaches fails at the next
+// build, loudly, naming the sha.
+func (h *Handlers) ToolPin(_ context.Context, in *ToolPinInput) (*ToolPinOutput, error) {
+	name := strings.TrimSpace(in.Body.Tool)
+	if name == "" {
+		return nil, huma.Error400BadRequest("a pin needs a tool")
+	}
+	pin := config.NormalizePin(in.Body.Pin)
+	if err := config.ValidatePin(pin); err != nil {
+		return nil, huma.Error400BadRequest(err.Error())
+	}
+
+	var ref string
+	err := h.mutateConfig(func(c *config.Config) error {
+		t, ok := c.Tools[name]
+		if !ok {
+			return huma.Error404NotFound(fmt.Sprintf("no tool %q declared", name))
+		}
+		t.Pin = pin
+		c.Tools[name] = t
+		ref = t.Ref
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := &ToolPinOutput{}
+	out.Body.Tool, out.Body.Ref, out.Body.Pin = name, ref, pin
+	if pin == "" {
+		out.Body.Message = fmt.Sprintf("%s tracks %s again — the next build takes whatever is at its head", name, ref)
+	} else {
+		out.Body.Message = fmt.Sprintf("%s is held at %s; the next build on each host checks that out, and nothing that is already running changes until then", name, pin)
+	}
+	return out, nil
+}
+
+// ToolInstalledBuildsInput names one tool on one host.
+type ToolInstalledBuildsInput struct {
+	Tool string `query:"tool" doc:"Tool name."`
+	Host string `query:"host" doc:"Server the builds live on."`
+}
+
+// InstalledBuildView is one build sitting in the host's builds/ directory.
+type InstalledBuildView struct {
+	ID string `json:"id" doc:"The build directory: a UTC timestamp and the short commit."`
+	// Head is the commit it was built from, which is what a pin would name.
+	Head   string `json:"head,omitempty"`
+	Stamp  string `json:"stamp,omitempty"`
+	At     int64  `json:"at" doc:"Unix seconds when it was installed."`
+	Active bool   `json:"active" doc:"bin/ currently points here."`
+}
+
+// ToolInstalledBuildsOutput is what a host can roll back to.
+type ToolInstalledBuildsOutput struct {
+	Body struct {
+		Builds []InstalledBuildView `json:"builds"`
+		Active string               `json:"active"`
+		// Versioned is false on a prefix that predates versioned installs.
+		// Reported rather than inferred from an empty list: "nothing to roll
+		// back to yet" and "this layout does not track builds" are different
+		// answers and only one of them is fixed by building again.
+		Versioned bool `json:"versioned"`
+		Keep      int  `json:"keep" doc:"How many the host retains. The active build is never pruned."`
+	}
+}
+
+// ToolInstalledBuilds lists the builds a host could activate.
+//
+// As cheap as a probe — it reads a directory — and it deliberately does not
+// mutate the tree it describes, so a listing is safe to open on a host mid-build.
+func (h *Handlers) ToolInstalledBuilds(ctx context.Context, in *ToolInstalledBuildsInput) (*ToolInstalledBuildsOutput, error) {
+	if h.Tools == nil {
+		return nil, fmt.Errorf("no toolchain registry configured")
+	}
+	bl, err := h.Tools.Builds(ctx, in.Tool, in.Host)
+	if err != nil {
+		return nil, err
+	}
+	if bl.Error != "" {
+		return nil, fmt.Errorf("%s", bl.Error)
+	}
+	out := &ToolInstalledBuildsOutput{}
+	out.Body.Builds = []InstalledBuildView{}
+	for _, b := range bl.Builds {
+		out.Body.Builds = append(out.Body.Builds, InstalledBuildView{
+			ID: b.ID, Head: b.Head, Stamp: b.Stamp, At: b.At, Active: b.Active,
+		})
+	}
+	out.Body.Active, out.Body.Versioned, out.Body.Keep = bl.Active, bl.Versioned, bl.Keep
+	return out, nil
+}
+
+// ToolActivateInput names the build to make current.
+type ToolActivateInput struct {
+	Body struct {
+		Tool string `json:"tool"`
+		Host string `json:"host"`
+		ID   string `json:"id" doc:"Build id from toolInstalledBuilds."`
+	}
+}
+
+// ToolActivateOutput reports the swap.
+type ToolActivateOutput struct {
+	Body struct {
+		Active string `json:"active"`
+		// Previous is what was current before, so a rollback taken by mistake
+		// can be undone without listing again.
+		Previous string `json:"previous"`
+		Message  string `json:"message"`
+	}
+}
+
+// ToolActivate repoints a host's bin/ at a build it already has.
+//
+// Seconds, not minutes: this is a symlink rename, which is the entire reason
+// versioned builds exist. Processes already running keep the binary they
+// started with — they hold the inode — so it takes effect on the next spawn,
+// exactly as a build does.
+func (h *Handlers) ToolActivate(ctx context.Context, in *ToolActivateInput) (*ToolActivateOutput, error) {
+	if h.Tools == nil {
+		return nil, fmt.Errorf("no toolchain registry configured")
+	}
+	res, err := h.Tools.Activate(ctx, in.Body.Tool, in.Body.Host, in.Body.ID)
+	if err != nil {
+		return nil, err
+	}
+	if res.Error != "" {
+		return nil, fmt.Errorf("%s", res.Error)
+	}
+	out := &ToolActivateOutput{}
+	out.Body.Active, out.Body.Previous = res.Active, res.Previous
+	out.Body.Message = fmt.Sprintf(
+		"%s on %s now serves %s (was %s). Models already loaded keep the binary they started with; reload one to pick this up.",
+		in.Body.Tool, in.Body.Host, res.Active, orDash(res.Previous))
+	return out, nil
+}
+
+func orDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "nothing"
+	}
+	return s
 }

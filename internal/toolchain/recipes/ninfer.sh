@@ -220,7 +220,12 @@ build() {
     fi
 
     unapply_patches "$src"
-    align_tree "$src" "$TOOL_REF" "$TOOL_URL" || die "could not align $src to $TOOL_REF"
+    # The PIN wins over the tracked ref here, and only here: `upstream` still
+    # asks where the branch has got to, so holding a build back does not cost
+    # the ability to see what you are holding it back from.
+    local want; want=$(effective_ref)
+    pinned && say "=== pinned at $want (tracking $TOOL_REF)"
+    align_tree "$src" "$want" "$TOOL_URL" || die "could not align $src to $want"
     apply_patches "$src" || die "patch set does not apply to $(current_head "$src")"
 
     local head stamp_now

@@ -210,6 +210,33 @@ tool_src_dir() { printf '%s/src' "$(tool_prefix)"; }
 # adopted reports whether this host's entry points at someone else's install.
 adopted() { [ -n "${TOOL_INSTALLED_AT:-}" ]; }
 
+# is_sha reports whether a ref is a full commit hash rather than a branch or tag.
+#
+# Full only. A remote cannot be asked for an abbreviated hash, so accepting one
+# here would produce a ref that resolves on a host that already has a clone and
+# fails on one that does not — the worst kind of pin, since it works until the
+# machine you need it on.
+is_sha() {
+    case "${1-}" in
+        [0-9a-fA-F]*) [ ${#1} -eq 40 ] && [ -z "$(printf '%s' "$1" | tr -d '0-9a-fA-F')" ] ;;
+        *) return 1 ;;
+    esac
+}
+
+# effective_ref is what a checkout is aligned to: the PIN when one is set, and
+# the tracked ref otherwise.
+#
+# TOOL_REF still travels alongside it, because `upstream` reports both — the
+# whole reason to pin is to hold a version while WATCHING the branch run ahead,
+# and un-pinning to find out how far would defeat it.
+effective_ref() {
+    if [ -n "${TOOL_PIN:-}" ]; then printf '%s' "$TOOL_PIN"; return; fi
+    printf '%s' "${TOOL_REF:-}"
+}
+
+# pinned reports whether this tool is held at a commit.
+pinned() { [ -n "${TOOL_PIN:-}" ]; }
+
 # ---------------------------------------------------------------------------
 # Build support — aligning a tree to its pin, carrying local patches, and
 # deciding whether a build is needed at all.
@@ -312,8 +339,26 @@ align_tree() {
         exit 0
     fi
     say "  fetching $ref"
-    git fetch --tags origin "$ref" >&2 || exit 1
-    git reset --hard FETCH_HEAD >&2 || exit 1
+    if git fetch --tags origin "$ref" >&2; then
+        git reset --hard FETCH_HEAD >&2 || exit 1
+    elif is_sha "$ref"; then
+        # A remote may refuse to serve an arbitrary commit: upload-pack's
+        # allowReachableSHA1InWant is OFF by default and only some hosts (GitHub
+        # among them) turn it on, so `fetch <sha>` is not a thing you can rely on
+        # across every remote a tool might be pinned against. Fall back to
+        # fetching the branches and finding the commit in what came back.
+        say "  the remote would not serve $ref directly; fetching all branches"
+        git fetch --tags --prune origin '+refs/heads/*:refs/remotes/origin/*' >&2 || exit 1
+        if ! git cat-file -e "$ref^{commit}" 2>/dev/null; then
+            say "  no commit $ref reachable from any branch of $url"
+            say "  a pin must name a commit that is still on a branch — a force-push can"
+            say "  strand one, and a commit from a fork is not in this remote at all"
+            exit 1
+        fi
+        git reset --hard "$ref" >&2 || exit 1
+    else
+        exit 1
+    fi
     say "  at $(git rev-parse --short HEAD) $(git log -1 --format='%s')"
     )
 }
@@ -570,19 +615,48 @@ remote_head() {
 # what makes drift visible on an ADOPTED install on day one — llama-server
 # prints its short commit, so a build corrallm never performed can still be told
 # it is behind.
+# rev_eq compares two revisions that may be abbreviated to different lengths.
+#
+# A binary banner carries a short hash and ls-remote a full one, and they name
+# the same commit when one prefixes the other. Compare on the shorter.
+rev_eq() {
+    local a=${1-} b=${2-}
+    [ -n "$a" ] && [ -n "$b" ] || return 1
+    local n=${#a}
+    [ ${#b} -lt "$n" ] && n=${#b}
+    [ "${a:0:$n}" = "${b:0:$n}" ]
+}
+
 emit_upstream() {
     local localrev=$1
     local rhead; rhead=$(remote_head "${TOOL_URL:?}" "${TOOL_REF:?}")
-    local behind=0
-    if [ -n "$rhead" ] && [ -n "$localrev" ]; then
-        # Compare on the shorter of the two: a banner carries an abbreviated
-        # hash and ls-remote a full one, and they are equal when one prefixes
-        # the other.
-        local n=${#localrev}
-        [ "$n" -gt 0 ] && [ "${rhead:0:$n}" != "$localrev" ] && behind=1
+    local pin=${TOOL_PIN:-}
+
+    # WHAT SHOULD BE INSTALLED is the pin when there is one, and the tracked
+    # ref's head otherwise. That is the difference a pin exists to make: a held
+    # tool is behind upstream ON PURPOSE, and reporting that as drift would put
+    # a permanent warning on a deliberate decision — and, with `rebuild: true`,
+    # rebuild it straight past the hold every six hours.
+    local target=$rhead
+    [ -n "$pin" ] && target=$pin
+
+    local behind=0 ahead=0
+    rev_eq "$target" "$localrev" || { [ -n "$target" ] && [ -n "$localrev" ] && behind=1; }
+    # Ahead is informational and only meaningful while pinned: it says the
+    # branch has moved past what is being held, which is what somebody who
+    # pinned weeks ago wants to see without un-pinning to find out.
+    if [ -n "$pin" ] && [ -n "$rhead" ] && ! rev_eq "$rhead" "$pin"; then
+        ahead=1
     fi
-    printf '{"ref":%s,"remoteHead":%s,"local":%s,"behind":%s,"error":%s}\n' \
-        "$(jstr "$TOOL_REF")" "$(jstr "$rhead")" "$(jstr "$localrev")" \
-        "$(jbool "$behind")" \
-        "$(jstr "$([ -z "$rhead" ] && printf 'could not reach %s' "$TOOL_URL")")"
+
+    # A pin makes the remote round trip optional rather than load-bearing: the
+    # target is known locally, so an unreachable remote costs the "how far has
+    # the branch run" half and nothing else. Reporting it as an error would put
+    # a red mark on a tool that is exactly where it was told to be.
+    local err=""
+    [ -z "$rhead" ] && [ -z "$pin" ] && err=$(printf 'could not reach %s' "$TOOL_URL")
+
+    printf '{"ref":%s,"pin":%s,"remoteHead":%s,"local":%s,"behind":%s,"ahead":%s,"error":%s}\n' \
+        "$(jstr "$TOOL_REF")" "$(jstr "$pin")" "$(jstr "$rhead")" "$(jstr "$localrev")" \
+        "$(jbool "$behind")" "$(jbool "$ahead")" "$(jstr "$err")"
 }

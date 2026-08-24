@@ -36,7 +36,7 @@ const redactedToken = "<unchanged>"
 
 // EntryYAMLInput fetches one config entry as YAML.
 type EntryYAMLInput struct {
-	Kind string `path:"kind" doc:"model | server | lane"`
+	Kind string `path:"kind" doc:"model | server | lane | group | extension | tool | key"`
 	Name string `path:"name"`
 }
 
@@ -94,6 +94,12 @@ func (h *Handlers) EntryYAML(_ context.Context, in *EntryYAMLInput) (*EntryYAMLO
 			return nil, huma.Error404NotFound(fmt.Sprintf("no extension %q", in.Name))
 		}
 		v = e
+	case "tool":
+		t, ok := cfg.Tools[in.Name]
+		if !ok {
+			return nil, huma.Error404NotFound(fmt.Sprintf("no tool %q", in.Name))
+		}
+		v = t
 	case "key":
 		// A caller key's whole entry is the GROUP it belongs to, so its YAML is
 		// a bare string. Keys are the one part of the scheduling model with no
@@ -111,7 +117,7 @@ func (h *Handlers) EntryYAML(_ context.Context, in *EntryYAMLInput) (*EntryYAMLO
 		}
 		v = g
 	default:
-		return nil, huma.Error400BadRequest("kind must be model, server, lane, group, extension or key")
+		return nil, huma.Error400BadRequest("kind must be model, server, lane, group, extension, tool or key")
 	}
 	b, err := yaml.Marshal(v)
 	if err != nil {
@@ -124,7 +130,7 @@ func (h *Handlers) EntryYAML(_ context.Context, in *EntryYAMLInput) (*EntryYAMLO
 
 // PutEntryYAMLInput replaces one entry from YAML.
 type PutEntryYAMLInput struct {
-	Kind string `path:"kind" doc:"model | server | lane"`
+	Kind string `path:"kind" doc:"model | server | lane | group | extension | tool | key"`
 	Name string `path:"name"`
 	Body struct {
 		YAML string `json:"yaml"`
@@ -206,6 +212,20 @@ func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*Conf
 					delete(c.Models, mn)
 				}
 			}
+		case "tool":
+			var t config.Tool
+			if err := decode(&t); err != nil {
+				return err
+			}
+			// Normalize here rather than only in ValidatePin: a sha pasted from
+			// a UI arrives in whatever case it was copied in, and two spellings
+			// of one commit that do not compare equal would make a pinned tool
+			// report itself as behind its own pin forever.
+			t.Pin = config.NormalizePin(t.Pin)
+			if c.Tools == nil {
+				c.Tools = map[string]config.Tool{}
+			}
+			c.Tools[name] = t
 		case "key":
 			var group string
 			if err := decode(&group); err != nil {
@@ -229,7 +249,7 @@ func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*Conf
 			}
 			c.Keys[name] = group
 		default:
-			return huma.Error400BadRequest("kind must be model, server, lane, group, extension or key")
+			return huma.Error400BadRequest("kind must be model, server, lane, group, extension, tool or key")
 		}
 		return nil
 	})
@@ -244,7 +264,7 @@ func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*Conf
 
 // DeleteEntryInput names what to remove.
 type DeleteEntryInput struct {
-	Kind string `path:"kind" doc:"model | server | lane"`
+	Kind string `path:"kind" doc:"model | server | lane | group | extension | tool | key"`
 	Name string `path:"name"`
 }
 
@@ -388,6 +408,27 @@ func (h *Handlers) DeleteEntry(_ context.Context, in *DeleteEntryInput) (*Config
 				}
 			}
 			delete(c.Extensions, in.Name)
+		case "tool":
+			if _, ok := c.Tools[in.Name]; !ok {
+				return huma.Error404NotFound(fmt.Sprintf("no tool %q", in.Name))
+			}
+			// A model whose cmd says ${tool:x} cannot spawn without x — the
+			// expansion refuses rather than falling back to PATH, which is the
+			// whole point of the binding. Name the models instead of letting
+			// them fail at the next load.
+			var used []string
+			for mn, m := range c.Models {
+				if strings.Contains(m.Cmd, "${tool:"+in.Name+"}") {
+					used = append(used, mn)
+				}
+			}
+			if len(used) > 0 {
+				sort.Strings(used)
+				return huma.Error409Conflict(fmt.Sprintf(
+					"%q is referenced by model(s) %s — they would fail to spawn; repoint them first",
+					in.Name, strings.Join(used, ", ")))
+			}
+			delete(c.Tools, in.Name)
 		case "key":
 			if _, ok := c.Keys[in.Name]; !ok {
 				return huma.Error404NotFound(fmt.Sprintf("no caller key %q", in.Name))
@@ -398,7 +439,7 @@ func (h *Handlers) DeleteEntry(_ context.Context, in *DeleteEntryInput) (*Config
 			// caller out, and nothing here should imply otherwise.
 			delete(c.Keys, in.Name)
 		default:
-			return huma.Error400BadRequest("kind must be model, server, lane, group, extension or key")
+			return huma.Error400BadRequest("kind must be model, server, lane, group, extension, tool or key")
 		}
 		return nil
 	})

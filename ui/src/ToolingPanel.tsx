@@ -11,6 +11,7 @@ import {
   Typography,
 } from '@mui/material'
 import { BuildDialog } from '@/BuildDialog'
+import { ToolVersionDialog } from '@/ToolVersionDialog'
 import { Panel, Row } from '@/Panel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -47,6 +48,10 @@ const ToolingDoc = graphql(/* GraphQL */ `
           remoteHead
           driftError
           error
+          ref
+          pin
+          ahead
+          pinUnsupported
         }
       }
     }
@@ -58,6 +63,16 @@ export function ToolingPanel() {
   // Which row's build the modal is for. The build itself is a single global
   // slot on the daemon; this only decides what a fresh Build click targets.
   const [building, setBuilding] = useState<{ tool: string; host: string } | null>(null)
+  // Which row's version dialog is open. Keyed by (tool, host) like the build
+  // slot, but unlike a build there is nothing global about it — a pin is
+  // config and an activation is one host's symlink.
+  const [versioning, setVersioning] = useState<{
+    tool: string
+    host: string
+    ref?: string | null
+    pin?: string | null
+    adopted: boolean
+  } | null>(null)
 
   const q = useQuery({
     queryKey: ['tooling'],
@@ -160,13 +175,58 @@ export function ToolingPanel() {
                     <Chip size="small" variant="outlined" label="adopted" />
                   </Tooltip>
                 )}
-                {t.behind && (
-                  <Tooltip title={`Upstream is at ${t.remoteHead ?? 'a newer commit'}`}>
-                    <Chip size="small" color="warning" variant="outlined" label="behind" />
+                {/* A pin changes what "behind" MEANS, so it is rendered first
+                    and the drift chips read against it. While pinned, behind
+                    is "not yet at the pin" — a build is owed — and being far
+                    behind upstream is the intended state, not a warning. */}
+                {t.pin && (
+                  <Tooltip
+                    title={
+                      t.ahead
+                        ? `Held at ${t.pin}. ${t.ref} has moved on to ${t.remoteHead ?? 'a newer commit'} — this tool stays put until the pin is cleared.`
+                        : `Held at ${t.pin} (${t.ref} is there too).`
+                    }
+                  >
+                    <Chip
+                      size="small"
+                      color="info"
+                      variant="outlined"
+                      label={`pinned ${t.pin.slice(0, 9)}`}
+                    />
                   </Tooltip>
                 )}
-                {!t.behind && t.present && !t.driftError && t.remoteHead && (
-                  <Chip size="small" color="success" variant="outlined" label="current" />
+                {/* The window between deploying a primary that understands pins
+                    and a host whose agent has not self-updated yet. Its drift
+                    answer was computed against the branch, so it is reported as
+                    unknown rather than as a number that means something else. */}
+                {t.pinUnsupported && (
+                  <Tooltip title="This host's agent predates tool pins, so it cannot say whether it is at the pin — and it is refused a build until it updates, because it would check out the tracked branch instead. It self-updates from the primary within a heartbeat or two.">
+                    <Chip size="small" color="warning" variant="outlined" label="agent predates pins" />
+                  </Tooltip>
+                )}
+                {t.behind && (
+                  <Tooltip
+                    title={
+                      t.pin
+                        ? `Installed ${t.commit ?? 'build'} is not the pinned ${t.pin.slice(0, 9)} — rebuild, or activate a build already here.`
+                        : `Upstream is at ${t.remoteHead ?? 'a newer commit'}`
+                    }
+                  >
+                    <Chip
+                      size="small"
+                      color="warning"
+                      variant="outlined"
+                      label={t.pin ? 'not at pin' : 'behind'}
+                    />
+                  </Tooltip>
+                )}
+                {!t.behind && t.present && !t.driftError && !t.pinUnsupported && (t.remoteHead || t.pin) && (
+                  <Chip
+                    size="small"
+                    color="success"
+                    variant="outlined"
+                    label={t.pin ? 'at pin' : 'current'}
+                  />
                 )}
                 {t.driftError && (
                   <Tooltip title={t.driftError}>
@@ -193,6 +253,28 @@ export function ToolingPanel() {
               {/* Only where a build is actually possible. An adopted entry would
                   be refused by the server anyway, and saying so after the click
                   is worse than not offering it. */}
+              {/* Offered even on an adopted entry and an unreachable host: a pin
+                  is CONFIGURATION. Refusing to show it because a laptop is
+                  asleep would mean the one thing you can always do — record
+                  which commit this tool should be at — is unavailable exactly
+                  when a bad build has made the question urgent. */}
+              <Tooltip title="Hold this tool at a commit, or switch this host to a build it already has.">
+                <Button
+                  size="small"
+                  onClick={() =>
+                    setVersioning({
+                      tool: t.tool,
+                      host: t.host,
+                      ref: t.ref,
+                      pin: t.pin,
+                      adopted: !!t.adopted,
+                    })
+                  }
+                >
+                  Version
+                </Button>
+              </Tooltip>
+
               {!t.adopted && !t.error && (
                 <Tooltip
                   title={
@@ -210,6 +292,15 @@ export function ToolingPanel() {
           </Row>
         )
       })}
+      <ToolVersionDialog
+        open={!!versioning}
+        tool={versioning?.tool}
+        host={versioning?.host}
+        ref_={versioning?.ref}
+        pin={versioning?.pin}
+        adopted={versioning?.adopted}
+        onClose={() => setVersioning(null)}
+      />
       <BuildDialog
         open={!!building}
         tool={building?.tool}
@@ -217,8 +308,10 @@ export function ToolingPanel() {
         onClose={() => {
           setBuilding(null)
           // A finished build changes the version and the drift answer, so the
-          // table behind the dialog is stale the moment it closes.
+          // table behind the dialog is stale the moment it closes — and so is
+          // the rollback list, which just gained an entry.
           void qc.invalidateQueries({ queryKey: ['tooling'] })
+          void qc.invalidateQueries({ queryKey: ['installedBuilds'] })
         }}
       />
     </Panel>

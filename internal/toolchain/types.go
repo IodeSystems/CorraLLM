@@ -52,9 +52,16 @@ type Spec struct {
 	Name string `json:"name"`
 	// Recipe is the script to run. Already defaulted from Name by the caller.
 	Recipe string `json:"recipe"`
-	// URL and Ref are the pin, for Upstream.
+	// URL is the upstream remote and Ref is what the tool TRACKS, for Upstream.
 	URL string `json:"url,omitempty"`
 	Ref string `json:"ref,omitempty"`
+	// Pin holds the tool at one commit, overriding Ref for the checkout.
+	//
+	// Both travel, not just the effective one: the recipe aligns to the pin and
+	// still asks the remote where Ref has got to, so an operator holding a tool
+	// back can see how far ahead the branch has run without un-pinning to find
+	// out.
+	Pin string `json:"pin,omitempty"`
 	// Bin is the executable to ask for a version, relative to the install dir.
 	Bin string `json:"bin,omitempty"`
 	// Prefix is where a MANAGED install lives (src/ and bin/ beneath it).
@@ -99,6 +106,14 @@ func (p Probe) Identified() bool { return p.Present && p.Source != "" }
 type Upstream struct {
 	Ref        string `json:"ref"`
 	RemoteHead string `json:"remoteHead"`
+	// Pin is the commit the tool is held at, empty when it tracks Ref freely.
+	//
+	// When it is set it is also the TARGET: Behind then means "the installed
+	// build is not the pinned commit", not "upstream has moved". Those are
+	// different questions and only the first one is actionable while pinned —
+	// a pinned tool is behind upstream on purpose, and reporting that as drift
+	// would put a permanent warning on a deliberate decision.
+	Pin string `json:"pin,omitempty"`
 	// Local is the installed revision — from the stamp when corrallm built it,
 	// and from the binary's own banner when it did not. That second path is what
 	// makes drift visible on an ADOPTED install: llama-server prints its short
@@ -107,8 +122,25 @@ type Upstream struct {
 	// Behind is false when either side is unknown. An unknown is not a "no",
 	// but reporting drift we cannot demonstrate would put a permanent
 	// out-of-date badge on every tool that cannot identify itself.
-	Behind bool   `json:"behind"`
-	Error  string `json:"error,omitempty"`
+	//
+	// The other side is the PIN when there is one and RemoteHead otherwise.
+	Behind bool `json:"behind"`
+	// Ahead counts nothing — it says only that the tracked ref has moved past
+	// the pin, which is the fact a pinned operator wants at a glance ("master
+	// is at 34af94cd9, you are holding 0b1bad14f"). Always false when not
+	// pinned, where Behind already says it.
+	Ahead bool `json:"ahead,omitempty"`
+	// PinUnsupported means this host's recipe PREDATES pins, so its answer was
+	// computed against the tracked ref and says nothing about the pin.
+	//
+	// Not a field a recipe sets — it is the primary's inference from what came
+	// back. Agents self-update on a build-id mismatch, so between deploying the
+	// primary and a host's next heartbeat the two genuinely disagree about what
+	// `upstream` means, and the older one answers. Feature-detected rather than
+	// version-gated because the protocol deliberately stays at 1: a pinned
+	// recipe always reports the pin back, and an old one never can.
+	PinUnsupported bool   `json:"pinUnsupported,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // Preflight is "could this host build it".

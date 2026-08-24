@@ -21,7 +21,7 @@ type CorrallmMutationNamespace {
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
   configRestore(body: corrallm_ConfigRestoreInputBodyInput!): corrallm_ConfigRestoreOutputBody @derived(operationId: "configRestore")
   deleteEntry(
-    """model | server | lane"""
+    """model | server | lane | group | extension | tool | key"""
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteEntry")
@@ -42,13 +42,15 @@ type CorrallmMutationNamespace {
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
   putEntryYaml(
     body: corrallm_PutEntryYAMLInputBodyInput!
-    """model | server | lane"""
+    """model | server | lane | group | extension | tool | key"""
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  toolActivate(body: corrallm_ToolActivateInputBodyInput!): corrallm_ToolActivateOutputBody @derived(operationId: "toolActivate")
   toolBuildStart(body: corrallm_ToolBuildStartInputBodyInput!): corrallm_ToolBuildStartOutputBody @derived(operationId: "toolBuildStart")
+  toolPin(body: corrallm_ToolPinInputBodyInput!): corrallm_ToolPinOutputBody @derived(operationId: "toolPin")
   toolPreflight(body: corrallm_ToolPreflightInputBodyInput!): corrallm_ToolPreflightOutputBody @derived(operationId: "toolPreflight")
   toolResolve(body: corrallm_ToolResolveInputBodyInput!): corrallm_ToolResolveOutputBody @derived(operationId: "toolResolve")
   trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
@@ -154,7 +156,7 @@ type CorrallmQueryNamespace {
   configRevision(id: Long!): corrallm_ConfigYAMLOutputBody @derived(operationId: "configRevision")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   entryYaml(
-    """model | server | lane"""
+    """model | server | lane | group | extension | tool | key"""
     kind: String!
     name: String!
   ): corrallm_EntryYAMLOutputBody @derived(operationId: "entryYaml")
@@ -240,6 +242,12 @@ type CorrallmQueryNamespace {
     """Absolute line index to read the log from. Send the previous response's logTotal to get only what is new."""
     logFrom: Long
   ): corrallm_ToolBuildStatusOutputBody @derived(operationId: "toolBuildStatus")
+  toolInstalledBuilds(
+    """Server the builds live on."""
+    host: String
+    """Tool name."""
+    tool: String
+  ): corrallm_ToolInstalledBuildsOutputBody @derived(operationId: "toolInstalledBuilds")
   toolStates(
     """Also ask upstream whether each pin has moved. One git ls-remote per installed tool; skip it for a fast render."""
     drift: Boolean
@@ -295,7 +303,7 @@ type CorrallmV1MutationNamespace {
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
   configRestore(body: corrallm_ConfigRestoreInputBodyInput!): corrallm_ConfigRestoreOutputBody @derived(operationId: "configRestore")
   deleteEntry(
-    """model | server | lane"""
+    """model | server | lane | group | extension | tool | key"""
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteEntry")
@@ -316,13 +324,15 @@ type CorrallmV1MutationNamespace {
   publishVerifiedCapability(body: corrallm_VerifiedCapabilityInputBodyInput!): corrallm_VerifiedCapabilityOutputBody @derived(operationId: "publishVerifiedCapability")
   putEntryYaml(
     body: corrallm_PutEntryYAMLInputBodyInput!
-    """model | server | lane"""
+    """model | server | lane | group | extension | tool | key"""
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  toolActivate(body: corrallm_ToolActivateInputBodyInput!): corrallm_ToolActivateOutputBody @derived(operationId: "toolActivate")
   toolBuildStart(body: corrallm_ToolBuildStartInputBodyInput!): corrallm_ToolBuildStartOutputBody @derived(operationId: "toolBuildStart")
+  toolPin(body: corrallm_ToolPinInputBodyInput!): corrallm_ToolPinOutputBody @derived(operationId: "toolPin")
   toolPreflight(body: corrallm_ToolPreflightInputBodyInput!): corrallm_ToolPreflightOutputBody @derived(operationId: "toolPreflight")
   toolResolve(body: corrallm_ToolResolveInputBodyInput!): corrallm_ToolResolveOutputBody @derived(operationId: "toolResolve")
   trialModel(body: corrallm_TrialModelInputBodyInput!): corrallm_TrialModelOutputBody @derived(operationId: "trialModel")
@@ -427,7 +437,7 @@ type CorrallmV1QueryNamespace {
   configRevision(id: Long!): corrallm_ConfigYAMLOutputBody @derived(operationId: "configRevision")
   configSummary: corrallm_ConfigSummaryOutputBody @derived(operationId: "configSummary")
   entryYaml(
-    """model | server | lane"""
+    """model | server | lane | group | extension | tool | key"""
     kind: String!
     name: String!
   ): corrallm_EntryYAMLOutputBody @derived(operationId: "entryYaml")
@@ -513,6 +523,12 @@ type CorrallmV1QueryNamespace {
     """Absolute line index to read the log from. Send the previous response's logTotal to get only what is new."""
     logFrom: Long
   ): corrallm_ToolBuildStatusOutputBody @derived(operationId: "toolBuildStatus")
+  toolInstalledBuilds(
+    """Server the builds live on."""
+    host: String
+    """Tool name."""
+    tool: String
+  ): corrallm_ToolInstalledBuildsOutputBody @derived(operationId: "toolInstalledBuilds")
   toolStates(
     """Also ask upstream whether each pin has moved. One git ls-remote per installed tool; skip it for a fast render."""
     drift: Boolean
@@ -1617,6 +1633,17 @@ input corrallm_HelloInput {
   version: String!
 }
 
+type corrallm_InstalledBuildView {
+  """bin/ currently points here."""
+  active: Boolean!
+  """Unix seconds when it was installed."""
+  at: Long!
+  head: String
+  """The build directory: a UTC timestamp and the short commit."""
+  id: String!
+  stamp: String
+}
+
 type corrallm_JourneyRecord {
   """Requests made on this ticket."""
   attempts: Long!
@@ -2511,6 +2538,19 @@ type corrallm_StageView {
   type: String!
 }
 
+input corrallm_ToolActivateInputBodyInput {
+  host: String!
+  """Build id from toolInstalledBuilds."""
+  id: String!
+  tool: String!
+}
+
+type corrallm_ToolActivateOutputBody {
+  active: String!
+  message: String!
+  previous: String!
+}
+
 type corrallm_ToolBuildHistoryOutputBody {
   builds: [corrallm_ToolBuildRecord!]!
 }
@@ -2552,6 +2592,14 @@ type corrallm_ToolBuildStatusOutputBody {
   logTotal: Long!
 }
 
+type corrallm_ToolInstalledBuildsOutputBody {
+  active: String!
+  builds: [corrallm_InstalledBuildView!]!
+  """How many the host retains. The active build is never pruned."""
+  keep: Long!
+  versioned: Boolean!
+}
+
 type corrallm_ToolJobView {
   elapsedSeconds: Long!
   error: String
@@ -2565,6 +2613,20 @@ type corrallm_ToolJobView {
   status: String!
   tool: String!
   version: String
+}
+
+input corrallm_ToolPinInputBodyInput {
+  pin: String!
+  tool: String!
+}
+
+type corrallm_ToolPinOutputBody {
+  message: String!
+  """The commit it is held at. Empty means it tracks ref freely again."""
+  pin: String!
+  """What the tool tracks. Unchanged by pinning — a pin holds, it does not retarget."""
+  ref: String!
+  tool: String!
 }
 
 input corrallm_ToolPreflightInputBodyInput {
@@ -2592,6 +2654,7 @@ type corrallm_ToolResolveOutputBody {
 
 type corrallm_ToolStateView {
   adopted: Boolean!
+  ahead: Boolean
   behind: Boolean!
   commit: String
   declared: Boolean!
@@ -2599,7 +2662,10 @@ type corrallm_ToolStateView {
   error: String
   host: String!
   path: String
+  pin: String
+  pinUnsupported: Boolean
   present: Boolean!
+  ref: String
   remoteHead: String
   tool: String!
   version: String

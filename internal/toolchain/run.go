@@ -184,6 +184,7 @@ func specEnv(spec Spec, force bool) []string {
 	set("TOOL_NAME", spec.Name)
 	set("TOOL_URL", spec.URL)
 	set("TOOL_REF", spec.Ref)
+	set("TOOL_PIN", spec.Pin)
 	set("TOOL_BIN", spec.Bin)
 	set("TOOL_PREFIX", spec.Prefix)
 	set("TOOL_INSTALLED_AT", spec.InstalledAt)

@@ -93,6 +93,34 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Tags:        []string{"toolchain"},
 	}, h.ToolBuildHistory)
 
+	// Holding a tool still, in the two ways that differ: a PIN is configuration
+	// and survives every later build (including a scheduled one, which is the
+	// failure it prevents); ACTIVATE repoints one host's bin/ at a build it
+	// already has, in a second and with no compiler.
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolPin",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/tools/pin",
+		Summary:     "Hold a tool at one commit, or release it back to its tracked ref.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolPin)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolInstalledBuilds",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/tools/installed",
+		Summary:     "Builds already on a host, which it can be switched between without compiling.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolInstalledBuilds)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "toolActivate",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/tools/activate",
+		Summary:     "Point a host's tool at one of its installed builds. A rename, not a rebuild.",
+		Tags:        []string{"toolchain"},
+	}, h.ToolActivate)
+
 	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "toolBuildLog",
 		Method:      http.MethodGet,
