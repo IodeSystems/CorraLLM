@@ -6,7 +6,6 @@ import {
   AlertTitle,
   Box,
   Chip,
-  CircularProgress,
   Paper,
   Stack,
   Table,
@@ -23,6 +22,7 @@ import { BenchProbeDetail } from '@/BenchProbeDetail'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtTime, capLabel } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * The SUITE-AND-TEST view: one probe, every model, every run.
@@ -105,12 +105,7 @@ function ProbePage() {
   })
 
   if (!name) return <Alert severity="warning">No probe named. Use /bench/probe?name=&lt;probe&gt;.</Alert>
-  if (isLoading)
-    return (
-      <Box sx={{ p: 4 }}>
-        <CircularProgress />
-      </Box>
-    )
+  if (isLoading) return <Loading />
 
   const h = data?.corrallm?.benchProbeHistory
   const cat = h?.catalog

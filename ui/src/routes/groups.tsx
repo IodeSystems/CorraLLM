@@ -5,7 +5,6 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   LinearProgress,
   Table,
   TableBody,
@@ -20,6 +19,7 @@ import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtInt } from '@/format'
+import { Loading } from '@/Loading'
 
 const GroupsDoc = graphql(/* GraphQL */ `
   query Groups {
@@ -93,11 +93,7 @@ function Groups() {
   const [editing, setEditing] = useState<EntryEdit | null>(null)
 
   if (q.isLoading) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <CircularProgress />
-      </Box>
-    )
+    return <Loading />
   }
   if (q.error) {
     return (

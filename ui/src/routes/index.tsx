@@ -22,6 +22,7 @@ import { MemoryPanel } from '@/MemoryPanel'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { C, seriesColor } from '@/theme'
 import { fmtInt, fmtTime } from '@/format'
+import { Loading } from '@/Loading'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -667,11 +668,7 @@ function Home() {
     extUnpause.isPending
 
   if (q.isLoading) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <CircularProgress />
-      </Box>
-    )
+    return <Loading />
   }
   if (q.error) {
     return (

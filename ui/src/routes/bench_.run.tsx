@@ -9,7 +9,6 @@ import {
   AlertTitle,
   Box,
   Chip,
-  CircularProgress,
   Stack,
   Table,
   TableBody,
@@ -25,6 +24,7 @@ import { BenchProbeDetail } from '@/BenchProbeDetail'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtTime, fmtDuration, fmtInt, capLabel } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * The RUN view: what did this bench actually do?
@@ -206,12 +206,7 @@ function RunPage() {
   })
 
   if (!id) return <Alert severity="warning">No run named. Use /bench/run?id=&lt;runId&gt;.</Alert>
-  if (isLoading)
-    return (
-      <Box sx={{ p: 4 }}>
-        <CircularProgress />
-      </Box>
-    )
+  if (isLoading) return <Loading />
 
   const run = data?.corrallm?.benchRunDetail
   const models = run?.models ?? []

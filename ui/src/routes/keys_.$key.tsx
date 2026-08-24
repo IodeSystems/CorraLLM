@@ -5,7 +5,6 @@ import {
   Alert,
   Box,
   Chip,
-  CircularProgress,
   Stack,
   Tooltip,
   Typography,
@@ -17,6 +16,7 @@ import { KeyCharts } from '@/KeyCharts'
 import { KeysDoc } from './keys'
 import { gqlClient } from '@/gqlClient'
 import { fmtAgo, fmtDuration, fmtInt, fmtUSD } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * One caller, end to end: which lane it is in, what it has consumed, and every
@@ -43,11 +43,7 @@ function KeyDetail() {
   })
 
   if (q.isLoading) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <CircularProgress />
-      </Box>
-    )
+    return <Loading />
   }
 
   const roster = q.data?.corrallm.keys

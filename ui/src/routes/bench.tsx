@@ -30,6 +30,7 @@ import { C, SERIES } from '@/theme'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { capLabel, fmtInt, fmtTime, fmtDuration } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * Bench is the AGGREGATE view: how do the models compare?
@@ -342,12 +343,7 @@ function BenchPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['benchAggregate'] }),
   })
 
-  if (isLoading)
-    return (
-      <Box sx={{ p: 4 }}>
-        <CircularProgress />
-      </Box>
-    )
+  if (isLoading) return <Loading />
 
   const ranked = [...results].sort((a, b) => n(b.score) - n(a.score))
   const labels = ranked.map((r) => r.model)

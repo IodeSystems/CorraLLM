@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Box, CircularProgress, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material'
+import { Box, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { StackedArea, foldSeries } from '@/Charts'
 import { C } from '@/theme'
 import { fmtDuration, fmtInt, fmtUSD } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * Two views of the same traffic: who spent it, and what they spent it on.
@@ -112,11 +113,7 @@ export function KeyCharts({ filterKey }: { filterKey?: string }) {
   const loading = byModel.isLoading || (!filterKey && byKey.isLoading)
   const error = byModel.error || byKey.error
   if (loading) {
-    return (
-      <Box sx={{ p: 2 }}>
-        <CircularProgress />
-      </Box>
-    )
+    return <Loading size={20} minHeight={120} />
   }
   if (error) {
     return (

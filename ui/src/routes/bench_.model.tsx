@@ -4,7 +4,6 @@ import {
   Alert,
   Box,
   Chip,
-  CircularProgress,
   Table,
   TableBody,
   TableCell,
@@ -19,6 +18,7 @@ import { C, SERIES } from '@/theme'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtTime, fmtDuration, fmtInt } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * The MODEL view: how has this model moved between runs?
@@ -69,12 +69,7 @@ function ModelBenchPage() {
 
   if (!name)
     return <Alert severity="warning">No model named. Use /bench/model?name=&lt;model&gt;.</Alert>
-  if (isLoading)
-    return (
-      <Box sx={{ p: 4 }}>
-        <CircularProgress />
-      </Box>
-    )
+  if (isLoading) return <Loading />
 
   const results = data?.corrallm?.benchResults?.results ?? []
   // Oldest first for the trend line; the table stays newest-first below.

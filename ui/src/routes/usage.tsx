@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Box,
   Chip,
-  CircularProgress,
   LinearProgress,
   Stack,
   Table,
@@ -22,6 +21,7 @@ import { MetricChart, StackedArea } from '@/Charts'
 import type { ChartSeries } from '@/Charts'
 import { C, seriesColor } from '@/theme'
 import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
+import { Loading } from '@/Loading'
 
 // BarCell renders a value with a proportional background bar (value / columnMax).
 function BarCell({ value, max, label }: { value: number; max: number; label: string }) {
@@ -262,11 +262,7 @@ function Usage() {
   })
 
   if (q.isLoading) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <CircularProgress />
-      </Box>
-    )
+    return <Loading />
   }
   if (q.error) {
     return (

@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Box,
   Chip,
-  CircularProgress,
   Table,
   TableBody,
   TableCell,
@@ -17,6 +16,7 @@ import { gqlClient } from '@/gqlClient'
 import { Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtDuration, fmtInt } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * What each caller's work actually costs, and how predictable it is.
@@ -78,9 +78,7 @@ export function ServiceProfiles({ minutes = 1440 }: { minutes?: number }) {
   const rows = q.data?.corrallm.serviceProfiles?.rows ?? []
 
   const body = q.isLoading ? (
-    <Box sx={{ p: 2 }}>
-      <CircularProgress />
-    </Box>
+    <Loading size={20} minHeight={120} />
   ) : q.error ? (
     <Box sx={{ p: 2 }}>
       <Typography color="error">{String(q.error)}</Typography>

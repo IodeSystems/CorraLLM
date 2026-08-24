@@ -5,7 +5,6 @@ import {
   Alert,
   Box,
   Chip,
-  CircularProgress,
   Table,
   TableBody,
   TableCell,
@@ -21,6 +20,7 @@ import { KeyCharts } from '@/KeyCharts'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtAgo, fmtInt, fmtUSD } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * Keys: who is talking to this box, and whether anybody decided what they get.
@@ -79,11 +79,7 @@ function Keys() {
   })
 
   if (q.isLoading) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <CircularProgress />
-      </Box>
-    )
+    return <Loading />
   }
   if (q.error) {
     return (

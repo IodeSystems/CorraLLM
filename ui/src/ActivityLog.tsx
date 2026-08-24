@@ -5,7 +5,6 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   Dialog,
   DialogContent,
   DialogTitle,
@@ -25,6 +24,7 @@ import { gqlClient } from '@/gqlClient'
 import { Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * The completed-request log, and the one place that knows how to render it.
@@ -158,7 +158,7 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
         )}
       </DialogTitle>
       <DialogContent dividers>
-        {q.isLoading && <CircularProgress />}
+        {q.isLoading && <Loading size={20} minHeight={120} />}
         {rec && (
           <Stack spacing={1.5}>
             <Box>
@@ -268,9 +268,7 @@ export function ActivityLog({
   const records = q.data?.corrallm.recentActivity?.records ?? []
 
   const body = q.isLoading ? (
-    <Box sx={{ p: 2 }}>
-      <CircularProgress />
-    </Box>
+    <Loading size={20} minHeight={120} />
   ) : q.error ? (
     <Box sx={{ p: 2 }}>
       <Typography color="error">{String(q.error)}</Typography>

@@ -6,7 +6,6 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   Stack,
   Tooltip,
   Typography,
@@ -18,6 +17,7 @@ import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
 import { fmtBytes, extractMessage } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * Config: what corrallm was TOLD, as opposed to what it is currently doing.
@@ -159,11 +159,7 @@ function HostsPage() {
   })
 
   if (q.isLoading) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <CircularProgress size={20} />
-      </Box>
-    )
+    return <Loading />
   }
   if (q.error) {
     return (

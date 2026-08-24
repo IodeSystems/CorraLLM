@@ -4,7 +4,6 @@ import {
   Alert,
   Box,
   Chip,
-  CircularProgress,
   LinearProgress,
   Table,
   TableBody,
@@ -19,6 +18,7 @@ import { Panel, PageHeader } from '@/Panel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtInt } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * Free-tier quota ledger (P16): each remote backend's remaining rate-limit
@@ -110,7 +110,7 @@ function QuotaPage() {
     queryFn: () => gqlClient.request(QuotaDoc),
     refetchInterval: 4000,
   })
-  if (q.isLoading) return <Box sx={{ p: 3 }}><CircularProgress /></Box>
+  if (q.isLoading) return <Loading />
   const backends = q.data?.corrallm?.quotaLedger?.backends ?? []
 
   return (

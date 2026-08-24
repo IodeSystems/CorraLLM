@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Box,
   Chip,
-  CircularProgress,
   Table,
   TableBody,
   TableCell,
@@ -18,6 +17,7 @@ import { gqlClient } from '@/gqlClient'
 import { Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtDuration, fmtTime } from '@/format'
+import { Loading } from '@/Loading'
 
 /**
  * Who we told to come back, when they are due, and what they did about it.
@@ -93,9 +93,7 @@ export function RetryPromises({
   const waiting = Number(data?.waiting ?? 0)
 
   const body = q.isLoading ? (
-    <Box sx={{ p: 2 }}>
-      <CircularProgress />
-    </Box>
+    <Loading size={20} minHeight={120} />
   ) : q.error ? (
     <Box sx={{ p: 2 }}>
       <Typography color="error">{String(q.error)}</Typography>

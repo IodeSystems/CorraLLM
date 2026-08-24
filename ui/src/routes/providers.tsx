@@ -6,7 +6,6 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -28,6 +27,7 @@ import type { ProvidersQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
 import { extractMessage } from '@/format'
 import { C } from '@/theme'
+import { Loading } from '@/Loading'
 
 /**
  * Providers (P21): an upstream endpoint and the accounts held against it.
@@ -352,7 +352,7 @@ function ProvidersPage() {
     queryFn: () => gqlClient.request(ProvidersDoc),
   })
 
-  if (isLoading) return <CircularProgress sx={{ m: 4 }} />
+  if (isLoading) return <Loading />
   if (error)
     return (
       <Alert severity="error" sx={{ m: 2 }}>
