@@ -21,7 +21,7 @@ Last triaged: **2026-08-24** (against live box1 + the production database).
 ## 1. ❓ Agent lease: self-reap on/off, and its TTL
 
 **Owner:** you. **Gates:** `host.Remote` (`plan.md` §6) — the last multi-node step.
-**Status:** genuinely open, and the only one of the three that gates unbuilt code.
+**Status:** genuinely open, and the only one of the two that gates unbuilt code.
 
 ### What is undecided
 
@@ -56,59 +56,7 @@ that step, not now.
 
 ---
 
-## 2. ❓ `nvidia-power-init.sh` binds power limits by INDEX, which P18 exists to forbid
-
-**Owner:** you (needs root). **Status:** live risk, currently harmless.
-**Found:** 2026-08-24, while verifying the P19 thermal question.
-
-### The problem
-
-The 3080's 200 W cap is persistent and correct — `nvidia-smi.service` is enabled and active, and
-sets it at boot. But it names the cards by **position**:
-
-```bash
-# /usr/local/sbin/nvidia-power-init.sh
-nvidia-smi -pm 1
-nvidia-smi -pl 450 -i 1   # intended: 5090
-nvidia-smi -pl 200 -i 0   # intended: 3080
-```
-
-Today that is right, verified live: index 0 = 3080 (200 W of 340 W default), index 1 = 5090
-(450 W of 600 W). **But this is the exact identity trap P18 was built to eliminate.** nvidia-smi
-enumerates by PCI bus id, and P18's whole finding was that the index MOVED onto the new card when
-the 3080 went in — "index is a fine label and a terrible identity." corrallm's pools were fixed to
-bind by UUID; this script was not.
-
-### Why it matters
-
-If the indices ever swap — another card, a slot change, a BIOS update reordering the scan — the
-script silently applies **200 W to the 5090**. That is the box's entire interactive capacity
-running at a third of its power budget, with no error anywhere: the unit succeeds, `nvidia-smi`
-reports a valid limit, and corrallm's own pools stay correct because they bind by UUID. The
-symptom would be "chat got slow" with nothing to point at.
-
-The reverse half fails loudly (`-pl 450` on a 340 W card is rejected), so the loss is one-sided
-and silent in the direction that costs the most.
-
-### The fix
-
-`nvidia-smi -i` accepts a UUID. Two lines, same shape:
-
-```bash
-nvidia-smi -pl 450 -i GPU-ee90af07-0882-d325-182e-87137ec6d47b   # 5090
-nvidia-smi -pl 200 -i GPU-76a4c775-a47f-61b9-3a9f-9c7d5edfc544   # 3080
-```
-
-These are the same UUIDs box1's pools already bind to, so the script and the ledger would finally
-agree on what a card is.
-
-**Needs you** because the file is root-owned in `/usr/local/sbin/` and it runs at boot — I am not
-editing a boot script unasked. Say the word and I will write it; or run it yourself with
-`! sudo …`.
-
----
-
-## 3. ❓ Is an *honest* wait estimate even wanted?
+## 2. ❓ Is an *honest* wait estimate even wanted?
 
 **Owner:** you. **Gates:** "Fix the wait estimate" (`plan.md` §6) — the formula change, not the
 measurement. **Status:** open. **Missed in the 2026-08-24 triage** — the §6 slice named it, this
@@ -148,6 +96,6 @@ mix first. One caller against one single-slot model is not a sample.
 
 ---
 
-*Nothing else is open.* The six decisions this file started with were resolved on
-2026-08-24 against the running system; each answer and its evidence now sits in the plan item
-that needed it. See the `docs(plan)` commit for that pass.
+*Nothing else is open.* The six decisions this file started with were resolved on 2026-08-24
+against the running system, and the boot-script problem found during that pass was fixed the
+same day. Each answer and its evidence sits in the plan item that needed it.

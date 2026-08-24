@@ -1868,6 +1868,43 @@ and there was nothing to publish.
 
 ---
 
+## ✅ `nvidia-power-init.sh` binds power limits by UUID (2026-08-24)
+
+Found while verifying the P19 thermal question: the boot script that applies box1's power caps
+named its cards by INDEX — `-pl 450 -i 1`, `-pl 200 -i 0` — which is the exact identity trap P18
+exists to forbid. It was correct only by coincidence of enumeration order. nvidia-smi enumerates
+by PCI bus id, and on this box that puts the **3080 at index 0 and the 5090 at index 1**,
+backwards from slot order.
+
+If that order ever shifted, `-pl 200` would land on the 5090 — the box's whole interactive
+capacity at a third of its power budget, with no error anywhere: the unit succeeds and
+nvidia-smi reports a valid limit. The other half fails loudly (450 W on a 340 W card is
+rejected), so the damage was one-sided and silent in the expensive direction.
+
+Now a `declare -A LIMITS` map keyed by UUID — the same UUIDs corrallm's pools bind to, so the
+power caps and the scheduler's ledger finally agree on what a card is.
+
+**`set -e` was dropped on purpose.** Each card is applied independently, because aborting on the
+first missing card leaves every LATER card at its stock limit — a card running unlimited because
+a different one was pulled. Verified with a stubbed nvidia-smi: with the 3080 absent, the old
+shape stops; the new one still caps the 5090 and exits 1.
+
+It now reports what it did (`name [uuid] -> watts`), names a declared-but-absent card, and exits
+non-zero on any failure so the unit shows failed rather than succeeding quietly — the bug being
+fixed was silence.
+
+Also recorded in the script: WHY 200 W, so nobody rounds it up. That card measures 0.239 °C/W
+against a healthy 0.15–0.18 and throttles at a 250 W cap; at 200 W it is power-limited rather
+than thermally limited (71.7 °C sustained, zero thermal throttling over 7 minutes).
+
+**Verified live:** unit exited 0, both cards named by UUID in its log, and `nvidia-smi` reports
+3080 = 200 W of 340 W, 5090 = 450 W of 600 W, persistence enabled. Previous script kept at
+`/usr/local/sbin/nvidia-power-init.sh.bak-20260824`. Not tracked in this repo — no host or
+systemd config is.
+
+
+---
+
 # Dashboard & observability
 
 > These six trees were written into the roadmap under phase numbers that **collide with
