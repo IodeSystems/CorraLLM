@@ -179,6 +179,13 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   entry. Also here: `corrallm tools` read the retired `config.yml` and reported "no tools
 >   declared" on the live box (P26 regression) — it reads the database now; and the Mac's
 >   llama.cpp went MANAGED, so it builds its own copy instead of probing ml-kit's.
+> - ◐ **P28 tickets** (2026-08-24) — a 429 is no longer anonymous. corrallm mints a signed
+>   ticket when it turns away a request that has none, hands it back (header + body), records
+>   it on the activity row, and the scheduler spends its AGE: an attempt that has been trying
+>   longer outranks a fresh arrival, bounded so a configured weight still wins. Journeys group
+>   a caller's attempts into one story — 4 attempts / 3 rejections / 41s spent — and lane rows
+>   are marked as aggregates so one slot stops being reported twice. agentkit echoes the ticket
+>   (written, uncommitted — that tree has unrelated WIP). Design in `plan/p28-tickets.md`.
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
