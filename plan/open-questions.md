@@ -21,7 +21,7 @@ Last triaged: **2026-08-24** (against live box1 + the production database).
 ## 1. ❓ Agent lease: self-reap on/off, and its TTL
 
 **Owner:** you. **Gates:** `host.Remote` (`plan.md` §6) — the last multi-node step.
-**Status:** genuinely open. This is the only real fork left on the list.
+**Status:** genuinely open, and the only one of the three that gates unbuilt code.
 
 ### What is undecided
 
