@@ -186,6 +186,13 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   a caller's attempts into one story — 4 attempts / 3 rejections / 41s spent — and lane rows
 >   are marked as aggregates so one slot stops being reported twice. agentkit echoes the ticket
 >   (written, uncommitted — that tree has unrelated WIP). Design in `plan/p28-tickets.md`.
+> - ✅ **P29 tool pins + rollback from the dashboard** (2026-08-24) — holding a tool back is a
+>   decision the daemon knows about instead of a habit of not-rebuilding. `tools.<name>.pin` is a
+>   full sha that overrides `ref` for the CHECKOUT only, so the drift check keeps following the
+>   branch and reports how far ahead it has run. While pinned, **behind means behind the PIN** —
+>   which is what makes `rebuild: true` converge on the hold instead of walking past it every six
+>   hours. `tools:` also became editable (YAML entry editor + a `toolPin` op), and P27's
+>   builds/activate got an API + UI, so a bad build is one click back. Detail in §7.
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.
@@ -1456,6 +1463,92 @@ lines later — `bootstrapConfig` is gone, and a new install now creates only
 ### ✅ P25 — toolchain registry (COMPLETE 2026-08-21)
 
 Shipped P25a–f; archived to **`plan/done.md`**. Design doc: `plan/p25-toolchain.md`.
+
+### ✅ P29 — pin a tool to a commit, and roll back to a build you already have (2026-08-24)
+
+**The problem, stated by the person who had it:** llama.cpp ships several builds a day, one of
+them regresses a model, and the only lever was to stop rebuilding and remember why — for weeks.
+P25 tracked versions and P27 made rollback cheap, but neither was reachable from the dashboard and
+neither survived a scheduled rebuild.
+
+**Two levers, deliberately separate**, because they act on different things and doing only one is
+the common mistake in both directions:
+
+- **A pin is configuration.** `tools.<name>.pin` — a full 40-char sha, applying to every host,
+  surviving every later build including a scheduled one.
+- **Activate is local.** P27's symlink rename, one host, a second, no compiler.
+
+Activate without pinning and the next check undoes it; pin without activating and the host keeps
+serving the bad build. The dialog says so rather than assuming.
+
+**`pin` is separate from `ref` and does not overwrite it.** Ref says what the tool TRACKS; pin says
+"not past here". Putting a sha in `ref` would work for the hold and cost two things: the branch you
+meant to return to (un-pinning becomes an act of memory), and the drift check itself, which cannot
+follow a commit anywhere.
+
+**The semantic that carries the feature: while pinned, `behind` means behind the PIN.** If it kept
+meaning "behind upstream", a pinned tool would wear a permanent drift warning AND — with
+`rebuild: true` — get rebuilt straight past the hold every six hours, which is the exact regression
+a pin is set to prevent. `ahead` is the informational half: "master is at 34af94cd9, you are holding
+0b1bad14f", visible without un-pinning to find out.
+
+Three things the implementation had to get right, each a real failure mode:
+
+1. **`git fetch origin <sha>` is not reliable.** upload-pack's `allowReachableSHA1InWant` is off by
+   default; GitHub enables it, a mirror may not. The recipe falls back to fetching every branch and
+   locating the commit locally, and says so in the log. Forced deterministically in test with a git
+   shim, because the local file transport used by the suite happens to allow the direct fetch — so
+   the fallback would otherwise never run and would break unnoticed.
+2. **An abbreviated sha is refused, not resolved.** A host with a clone could expand it and a host
+   without one could not: it would work on the machine you set it from and fail on the machine you
+   needed it on.
+3. **`pin` has NO column.** It rides in configdb's unprojected remainder, by design — the schema is
+   applied with `CREATE TABLE IF NOT EXISTS`, so a new column would never appear on the live
+   database and every read would fail. (Same shape as the ticket-index crash-loop, `32eb6a0`.)
+   `TestToolPinSurvivesTheStore` pins the round trip.
+
+Also here: `tools` became a kind the YAML entry editor understands — it was the one config kind with
+no write surface at all — and deleting a tool now names the models whose `${tool:x}` would stop
+resolving.
+
+**A FOURTH failure, found only by deploying — a stale agent silently un-pins a host.** Agents carry
+their OWN embedded recipes and self-update on a build-id mismatch, so between deploying the primary
+and a host's next heartbeat the older recipe answers `upstream` — and it computes drift against the
+tracked ref, having never heard of `TOOL_PIN`. The Mac reported BEHIND while sitting exactly on the
+pin. That is worse than a stale number: `behind` is what the watcher acts on, so with
+`rebuild: true` it would start a build there, which the same old recipe aligns to **master** — the
+pin walked past by the machinery meant to honour it.
+
+Fixed by feature-detecting on the wire (a pinned recipe always echoes the pin back; an old one never
+can), NOT by a protocol bump — bumping would take the whole fleet out until each agent self-updated.
+An answer that cannot see the pin is treated as no drift answer at all: `Behind` is cleared so the
+watcher cannot fire, the row says "agent predates pins", and an explicit build there is refused
+naming both commits. Pinned by three tests against a runner that replays the old JSON shape.
+
+It nearly demonstrated itself: the Mac rebuilt 10603 → 10615 mid-session on the scheduled check. Had
+the pin been the older commit during that window, that rebuild would have gone straight past it.
+
+**Verified live (2026-08-24), box1 + carlsmacbookpro:**
+
+- Pin written through the new op, persisted through the config store and a **daemon restart** — the
+  historic loss mode for anything under `tools:`.
+- box1 pinned at its serving commit `f280b2698` reads **at pin**, `behind=false`, with
+  `rebuild: true` still on. That is the whole feature: the box stops rebuilding when master moves.
+- Pinned deliberately BACKWARD to `c060ca974`: box1 flipped to `behind=true, ahead=true` — held
+  back, master past it — then restored. Both halves of the semantic, on a real fleet.
+- The Mac exercised the stale-agent guard end to end (see above).
+- **GitHub does serve a bare sha fetch**: `git fetch --depth=1 origin <non-tip sha>` returns that
+  exact commit, so `align_tree`'s primary path is real. The fallback covers remotes that refuse, and
+  is forced in test with a git shim because the local transport the suite uses allows the direct
+  fetch — so it would otherwise never run and would break unnoticed.
+
+**Still not run:** a forced pinned BUILD on box1 (8–20 min of CUDA that replaces the serving
+llama-server, with the same commit, since the pin is its current head). The checkout half is covered
+by tests and by the GitHub fetch above; only the full compile-under-a-pin is unexercised.
+**optional extension:** run it next time box1 is idle. **Agents shipped** (`make agents`, 2026-08-24): served
+version `8303de9-dirty` → `32eb6a0-dirty` and the Mac self-updated on its next heartbeat, clearing
+`pinUnsupported` and reporting **at pin**. No restart was needed — agentdist reads
+`bin/agents/VERSION` per request, so `make agents` alone closes the window without evicting a model.
 
 ### ◐ P21 — provider credentials (multi-key providers, scoped budgets, key ACLs)
 
