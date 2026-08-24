@@ -47,6 +47,18 @@ jbool() {
 # have reports whether a command exists.
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# cpu_count is how many jobs a compile may run.
+#
+# `nproc` is GNU coreutils and does not exist on macOS, where the old fallback
+# quietly built with -j4 on a machine with twelve cores — a build that looked
+# merely slow rather than misconfigured.
+cpu_count() {
+    if have nproc; then nproc
+    elif have sysctl; then sysctl -n hw.ncpu 2>/dev/null || printf 4
+    else printf 4
+    fi
+}
+
 # say prints progress. ALWAYS stderr — see the output contract above.
 say() { printf '%s\n' "$*" >&2; }
 
@@ -345,15 +357,196 @@ cuda_arch_spec() {
     printf '%s' "${a:-native}"
 }
 
-# install_scope replaces the install directory with a fresh copy of the build
-# output. Wholesale, not merged: a stale binary left behind from a previous
-# build is indistinguishable from a current one.
-install_scope() {
-    local src=$1 dst=$2
+# ---------------------------------------------------------------------------
+# Versioned installs
+#
+# A build no longer overwrites the one that is serving. Each build lands in its
+# own directory and `bin` is a SYMLINK naming the active one:
+#
+#   <prefix>/builds/20260823-224500-c060ca97/llama-server
+#   <prefix>/bin -> builds/20260823-224500-c060ca97
+#
+# Three properties fall out of that, and each is one this used to lack:
+#
+#   1. The running build survives the next one. `rm -rf $dst` used to delete it
+#      before the copy, so a build that died mid-install left no working binary
+#      at all — on the very path every model spawns against.
+#   2. A bad build is reversible. Upstream ships several llama.cpp builds a day
+#      and any of them can regress a model; `activate` puts the previous one
+#      back in the time it takes to rename a symlink, with no compile.
+#   3. The swap is atomic. `bin` moves from one complete tree to another by
+#      rename(2), so a spawn racing an install sees the old build or the new
+#      one, never a half-copied directory.
+#
+# The symlink target is RELATIVE (`builds/<id>`), so the whole prefix can be
+# moved or copied to another machine without every link dangling.
+#
+# `bin` is still the only path anything outside here knows: probe reports
+# through it and ${tool:x} resolves to it, so a rollback needs no config edit
+# and no restart — the next spawn follows the link to wherever it now points.
+# ---------------------------------------------------------------------------
+
+# BUILD_KEEP is how many builds survive a prune. Five is enough to walk back
+# through a bad week of upstream and small enough that a 400 MB llama.cpp tree
+# does not quietly eat a laptop's disk.
+build_keep() { printf '%s' "${TOOL_KEEP_BUILDS:-5}"; }
+
+builds_dir() { printf '%s/builds' "$(tool_prefix)"; }
+
+# build_id names a build: sortable, and carrying the commit so `builds` is
+# readable without opening a stamp.
+build_id() {
+    local head=${1-}
+    printf '%s' "$(date -u +%Y%m%d-%H%M%S)${head:+-${head:0:8}}"
+}
+
+# mtime prints a file's modification time as a unix timestamp. GNU and BSD stat
+# share no flags at all, so both are tried — this runs on box1 and on a Mac.
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+# active_build names the build `bin` points at, empty when the layout is not
+# versioned (an adopted install, or one from before this existed).
+active_build() {
+    local link; link="$(tool_prefix)/bin"
+    [ -L "$link" ] || return 0
+    basename "$(readlink "$link")"
+}
+
+# versioned reports whether this prefix uses the symlink layout.
+versioned() { [ -L "$(tool_prefix)/bin" ]; }
+
+# migrate_legacy_bin moves a pre-versioning install into builds/ and links to
+# it, so the FIRST versioned build still has a predecessor to roll back to.
+#
+# Runs at build time rather than on a read: a listing that mutates the tree it
+# is describing is a surprise, and a build is already the moment this prefix
+# changes shape. Moving the directory does not disturb a running process — it
+# holds the inode, not the path.
+migrate_legacy_bin() {
+    local prefix; prefix=$(tool_prefix)
+    local bin="$prefix/bin"
+    [ -d "$bin" ] && [ ! -L "$bin" ] || return 0
+    local head id
+    head=$(stamp_field "$(stamp_read "$bin")" head)
+    id="legacy-$(build_id "$head")"
+    say "=== adopting the existing install as builds/$id"
+    mkdir -p "$prefix/builds"
+    mv "$bin" "$prefix/builds/$id" || return 1
+    (cd "$prefix" && ln -s "builds/$id" bin)
+}
+
+# swap_link renames one symlink onto another WITHOUT following it.
+#
+# `mv tmp bin` is wrong here and quietly so: when bin is a symlink to a
+# directory, both GNU and BSD mv follow it and move tmp INSIDE that directory —
+# so the link never moves, the old build stays active, and a stray `.bin.new.N`
+# link appears inside it. The tests caught exactly that.
+#
+# The flag that says "rename the link itself" is spelled differently on each:
+# -T on GNU, -h on BSD. Try both, and fall back to unlink-then-rename on
+# anything that has neither, which is not atomic but is still correct.
+swap_link() {
+    local tmp=$1 dst=$2
+    mv -Tf "$tmp" "$dst" 2>/dev/null && return 0
+    mv -hf "$tmp" "$dst" 2>/dev/null && return 0
+    if [ -d "$dst" ] && [ ! -L "$dst" ]; then
+        say "  refusing to replace the directory $dst with a link"
+        rm -f "$tmp"
+        return 1
+    fi
+    rm -f "$dst" && mv -f "$tmp" "$dst"
+}
+
+# activate_build points `bin` at one build, atomically.
+activate_build() {
+    local id=$1 prefix; prefix=$(tool_prefix)
+    [ -d "$prefix/builds/$id" ] || { say "no such build: $id"; return 1; }
+    migrate_legacy_bin || return 1
+    (
+    cd "$prefix" || exit 1
+    # Symlink then rename, rather than `ln -sfn`: -f unlinks before it links,
+    # which leaves a window with no bin/ at all, and its behaviour on a link to
+    # a directory differs between GNU and BSD. rename(2) has neither problem.
+    ln -s "builds/$id" ".bin.new.$$" || exit 1
+    swap_link ".bin.new.$$" bin || { rm -f ".bin.new.$$"; exit 1; }
+    ) || return 1
+}
+
+# install_build copies a finished build into its own directory and activates it.
+install_build() {
+    local src=$1 id=$2 prefix; prefix=$(tool_prefix)
+    local dst="$prefix/builds/$id"
+    migrate_legacy_bin || die "could not migrate the existing install at $prefix/bin"
     say "=== installing -> $dst"
     rm -rf "$dst"
     mkdir -p "$dst"
-    cp -a "$src"/. "$dst"/
+    cp -a "$src"/. "$dst"/ || die "could not install the build output into $dst"
+    activate_build "$id" || die "built and installed $id, but could not point $prefix/bin at it"
+}
+
+# prune_builds keeps the newest N, and NEVER the active one even if it has aged
+# out of the window: retention is about disk, and deleting what is currently
+# serving to satisfy a count would be a self-inflicted outage.
+prune_builds() {
+    local dir; dir=$(builds_dir)
+    [ -d "$dir" ] || return 0
+    local keep active i=0 b
+    keep=$(build_keep)
+    active=$(active_build)
+    for b in $(ls -1t "$dir" 2>/dev/null); do
+        i=$((i + 1))
+        [ "$i" -le "$keep" ] && continue
+        if [ "$b" = "$active" ]; then
+            say "  keeping $b past the retention window: it is the active build"
+            continue
+        fi
+        say "  pruning $b"
+        rm -rf "${dir:?}/$b"
+    done
+}
+
+# list_builds reports what can be rolled back to, newest first.
+list_builds() {
+    local dir; dir=$(builds_dir)
+    local active; active=$(active_build)
+    local out="[" first=1 b stamp head at
+    if [ -d "$dir" ]; then
+        for b in $(ls -1t "$dir" 2>/dev/null); do
+            [ -d "$dir/$b" ] || continue
+            stamp=$(stamp_read "$dir/$b")
+            head=$(stamp_field "$stamp" head)
+            at=$(mtime "$dir/$b")
+            [ $first -eq 1 ] || out+=","
+            out+=$(printf '{"id":%s,"stamp":%s,"head":%s,"at":%s,"active":%s}' \
+                "$(jstr "$b")" "$(jstr "$stamp")" "$(jstr "$head")" "${at:-0}" \
+                "$(jbool "$([ "$b" = "$active" ] && printf 1)")")
+            first=0
+        done
+    fi
+    out+="]"
+    printf '{"builds":%s,"active":%s,"versioned":%s,"keep":%s,"error":""}\n' \
+        "$out" "$(jstr "$active")" "$(jbool "$(versioned && printf 1)")" "$(build_keep)"
+}
+
+# builds_verb and activate_verb are the same on every tool — where a build
+# landed is a property of the layout, not of what was compiled — so they live
+# here and each recipe just dispatches to them.
+builds_verb() {
+    adopted && die "$TOOL_INSTALLED_AT is adopted: corrallm did not build it and keeps no versions of it"
+    list_builds
+}
+
+activate_verb() {
+    adopted && die "$TOOL_INSTALLED_AT is adopted: corrallm does not repoint an install it does not own"
+    local id=${TOOL_BUILD_ID:-}
+    [ -n "$id" ] || die "no build id given"
+    local prev; prev=$(active_build)
+    if [ "$id" = "$prev" ]; then
+        printf '{"ok":true,"active":%s,"previous":%s,"error":""}\n' "$(jstr "$id")" "$(jstr "$prev")"
+        return 0
+    fi
+    activate_build "$id" || die "could not activate $id"
+    printf '{"ok":true,"active":%s,"previous":%s,"error":""}\n' "$(jstr "$id")" "$(jstr "$prev")"
 }
 
 # ---------------------------------------------------------------------------

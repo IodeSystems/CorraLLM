@@ -233,6 +233,70 @@ func (r *Registry) Build(ctx context.Context, tool, host string, force bool, pro
 	return res, err
 }
 
+// Builds lists what a host could roll back to.
+//
+// Refused on an ADOPTED entry for the same reason Build is: corrallm did not
+// produce that install and keeps no history of it, and answering with an empty
+// list would read as "no previous builds" rather than "not ours to track".
+func (r *Registry) Builds(ctx context.Context, tool, host string) (*BuildList, error) {
+	spec, err := r.buildableSpec(tool, host, "list builds of")
+	if err != nil {
+		return nil, err
+	}
+	runner, err := r.RunnerFor(host)
+	if err != nil {
+		return nil, err
+	}
+	return RunBuilds(ctx, runner, spec)
+}
+
+// Activate makes an already-installed build current on a host.
+//
+// This is the cheap half of the build story: upstream ships several llama.cpp
+// builds a day, any of which can regress a model, and reverting one is a
+// symlink rename rather than another twenty minutes of nvcc. Processes already
+// running keep the binary they started with — they hold the inode — so a
+// rollback takes effect on the next spawn, exactly as a build does.
+func (r *Registry) Activate(ctx context.Context, tool, host, id string) (*Activation, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("no build id given")
+	}
+	spec, err := r.buildableSpec(tool, host, "repoint")
+	if err != nil {
+		return nil, err
+	}
+	spec.SelectBuild = id
+	runner, err := r.RunnerFor(host)
+	if err != nil {
+		return nil, err
+	}
+	res, err := RunActivate(ctx, runner, spec)
+	if err == nil {
+		// The path does not change, but a previously-absent tool becoming
+		// present does — and forgetting is cheaper than reasoning about which
+		// case this was.
+		r.InvalidateResolved(tool, host)
+	}
+	return res, err
+}
+
+// buildableSpec resolves a tool on a host and refuses the two states that make
+// writing to it wrong: undeclared, and adopted.
+func (r *Registry) buildableSpec(tool, host, verb string) (Spec, error) {
+	spec, declared, err := r.SpecFor(tool, host)
+	if err != nil {
+		return Spec{}, err
+	}
+	if !declared {
+		return Spec{}, fmt.Errorf("tool %q is not declared on host %q", tool, host)
+	}
+	if spec.InstalledAt != "" {
+		return Spec{}, fmt.Errorf("tool %q on %q is adopted (installedAt %s) — corrallm does not %s an install it does not own; drop installedAt to manage it here",
+			tool, host, spec.InstalledAt, verb)
+	}
+	return spec, nil
+}
+
 // InstallDeps installs what Preflight found missing on a host.
 //
 // Refused on an ADOPTED entry. Adoption's promise is that corrallm never

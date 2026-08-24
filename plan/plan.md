@@ -168,6 +168,17 @@ parakeet STT backend), not yet started. How to work this plan is §0; roadmap is
 >   builds rather than owning them. Archived in `plan/done.md`; design in `plan/p25-toolchain.md`.
 > - ✅ **P26 config in SQLite** (2026-08-18) — config.yml retired; the daemon boots from the
 >   database, with export/import and revision history. Design in `plan/p26-config-sqlite.md`.
+> - ✅ **P27 versioned tool builds** (2026-08-23) — a build no longer overwrites the one that
+>   is serving. Each lands in `<prefix>/builds/<utc>-<head8>` and `bin` is a symlink at the
+>   active one, so a rollback is a rename rather than a recompile: `corrallm tools builds`
+>   lists what is installed, `corrallm tools activate <id>` puts one back, the newest 5 are
+>   kept and the active build is never pruned. The pre-versioning install is migrated into
+>   `builds/` on the next build rather than deleted, so the FIRST versioned build already has
+>   something to fall back to. Verified live on carlsmacbookpro: forced rebuild (118s) →
+>   migrate + install + swap, rollback and forward, refusals for an unknown id and an adopted
+>   entry. Also here: `corrallm tools` read the retired `config.yml` and reported "no tools
+>   declared" on the live box (P26 regression) — it reads the database now; and the Mac's
+>   llama.cpp went MANAGED, so it builds its own copy instead of probing ml-kit's.
 > - ☐ Later: multi-node peer awareness.
 >
 > All shipped phases: `go build`/`vet`/`test` (incl `-race`) green, gofmt clean.

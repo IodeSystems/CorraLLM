@@ -172,8 +172,8 @@ build() {
 
     if [ "${TOOL_FORCE:-0}" != "1" ] && [ -x "$bindir/$BIN_NAME" ] && [ "$(stamp_read "$bindir")" = "$stamp_now" ]; then
         say "up-to-date at $stamp_now; skipping build"
-        printf '{"ok":true,"skipped":true,"head":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
-            "$(jstr "$head")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
+        printf '{"ok":true,"skipped":true,"id":%s,"head":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
+            "$(jstr "$(active_build)")" "$(jstr "$head")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
         return 0
     fi
 
@@ -228,26 +228,36 @@ build() {
                 -DCMAKE_CXX_FLAGS="-I$cuda_home/include/"
             )
         fi
+    elif [ "$(uname -s)" = "Darwin" ]; then
+        # Not CPU-only: llama.cpp's cmake defaults GGML_METAL=ON on Apple and
+        # embeds the shader library, so this produces a Metal build without a
+        # flag from us. Saying "CPU-only" here sent a reader looking for the
+        # missing GPU flag that was never missing.
+        say "  no CUDA; Apple platform — cmake enables Metal by default"
     else
         say "  no CUDA GPU detected; building CPU-only (supported)"
     fi
 
     cmake -B build "${args[@]}" >&2 || exit 1
-    cmake --build build --config Release --parallel "$(nproc 2>/dev/null || echo 4)" >&2 || exit 1
+    cmake --build build --config Release --parallel "$(cpu_count)" >&2 || exit 1
     ) || die "build failed; see log"
 
-    install_scope "$src/build/bin" "$bindir"
-    stamp_write "$bindir" "$stamp_now"
+    local id; id=$(build_id "$head")
+    install_build "$src/build/bin" "$id"
+    stamp_write "$(builds_dir)/$id" "$stamp_now"
+    prune_builds
 
     local version=""
     [ -x "$bindir/$BIN_NAME" ] && version=$("$bindir/$BIN_NAME" --version 2>&1 | sed -n 's/^version: *\(.*\)$/\1/p' | head -1)
 
-    printf '{"ok":true,"skipped":false,"head":%s,"version":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
-        "$(jstr "$head")" "$(jstr "$version")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
+    printf '{"ok":true,"skipped":false,"id":%s,"head":%s,"version":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
+        "$(jstr "$id")" "$(jstr "$head")" "$(jstr "$version")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
 }
 
 case "${1:-}" in
     probe)        require_tool_root; probe ;;
+    builds)       require_tool_root; builds_verb ;;
+    activate)     require_tool_root; activate_verb ;;
     upstream)     require_tool_root; require_env TOOL_URL TOOL_REF; upstream ;;
     build)        require_tool_root; require_env TOOL_NAME TOOL_URL TOOL_REF; build ;;
     preflight)    preflight ;;

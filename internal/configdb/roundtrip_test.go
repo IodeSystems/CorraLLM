@@ -107,8 +107,10 @@ func union(a, b map[string]any) []string {
 // and tools. Skipped when absent, so this is not a test that only passes here.
 func TestRoundTripLiveConfig(t *testing.T) {
 	path := os.Getenv("HOME") + "/.corrallm/config.yml"
-	if _, err := os.Stat(path); err != nil {
-		t.Skip("no live config on this machine")
+	// An emptied config.yml is what a migrated machine looks like — see the
+	// same guard in config.TestLiveConfigFreeLaneIncludesThePool.
+	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+		t.Skip("no live YAML config on this machine (config lives in the database)")
 	}
 	in, err := config.Load(path)
 	if err != nil {
@@ -234,8 +236,10 @@ func TestUnprojectedFieldsSurvive(t *testing.T) {
 // survives one direction but not the other, which a single round trip does not.
 func TestExportIsAFixedPoint(t *testing.T) {
 	path := os.Getenv("HOME") + "/.corrallm/config.yml"
-	if _, err := os.Stat(path); err != nil {
-		t.Skip("no live config on this machine")
+	// An emptied config.yml is what a migrated machine looks like: since P26 the
+	// database is the config, and stat alone still finds the zero-byte leftover.
+	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+		t.Skip("no live YAML config on this machine (config lives in the database)")
 	}
 	ctx := context.Background()
 
@@ -270,8 +274,10 @@ func TestExportIsAFixedPoint(t *testing.T) {
 // import and FAIL when the stored config has drifted, or it gates nothing.
 func TestVerifyAgainstFile(t *testing.T) {
 	path := os.Getenv("HOME") + "/.corrallm/config.yml"
-	if _, err := os.Stat(path); err != nil {
-		t.Skip("no live config on this machine")
+	// An emptied config.yml is what a migrated machine looks like: since P26 the
+	// database is the config, and stat alone still finds the zero-byte leftover.
+	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+		t.Skip("no live YAML config on this machine (config lives in the database)")
 	}
 	ctx := context.Background()
 	src := &Source{DB: openDB(t)}
@@ -295,8 +301,10 @@ func TestVerifyAgainstFile(t *testing.T) {
 // It did: every extension-provided model was reported as colliding with itself.
 func TestSaveAcceptsAnAlreadyResolvedConfig(t *testing.T) {
 	path := os.Getenv("HOME") + "/.corrallm/config.yml"
-	if _, err := os.Stat(path); err != nil {
-		t.Skip("no live config on this machine")
+	// An emptied config.yml is what a migrated machine looks like: since P26 the
+	// database is the config, and stat alone still finds the zero-byte leftover.
+	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+		t.Skip("no live YAML config on this machine (config lives in the database)")
 	}
 	ctx := context.Background()
 	c, err := config.Load(path) // resolved: extensions expanded into Models

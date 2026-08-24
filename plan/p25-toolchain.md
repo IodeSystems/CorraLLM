@@ -419,6 +419,75 @@ of the config and do survive. Anything worth knowing about a tool goes in
   Absence is deliberately not drift — a declared-but-missing managed tool is not
   auto-installed; first install stays a human action.
 
+## 8b. P27 — versioned builds and rollback (2026-08-23)
+
+A build used to `rm -rf` the install directory and copy the new output over it.
+Two things were wrong with that, and both are the kind that only show up when
+something has already gone wrong:
+
+1. **The working binary was deleted before the new one existed.** A build that
+   died during the install left nothing at all on the path every model spawns
+   against.
+2. **A bad build was unrecoverable.** llama.cpp ships several builds a day, any
+   of which can regress a model; going back meant finding the old commit and
+   spending another twenty minutes compiling it.
+
+The layout now:
+
+```
+<prefix>/src/                              the managed checkout
+<prefix>/builds/20260824-060420-c060ca97/  one directory per build, stamp inside
+<prefix>/builds/legacy-20260824-060420-…/  what bin/ was before versioning
+<prefix>/bin -> builds/20260824-060420-…   the active build (relative symlink)
+```
+
+- `bin` stays the only path anything outside the recipe knows: probe reports
+  through it and `${tool:x}` resolves to it, so a rollback needs no config edit,
+  no reload and no restart. The next spawn follows the link.
+- The swap is `rename(2)` on the symlink, so a spawn racing an install sees the
+  old build or the new one, never a half-copied directory. **`mv tmp bin` is
+  wrong here** and silently so: GNU and BSD both FOLLOW a symlink-to-directory
+  destination and move the temp link *inside* the old build. The flag that means
+  "rename the link itself" is `-T` on GNU and `-h` on BSD; `swap_link` tries
+  both and falls back to unlink-then-rename. The tests caught this.
+- Retention is the newest 5 (`TOOL_KEEP_BUILDS`), and the **active build is
+  never pruned** whatever its age — deleting what is currently serving to
+  satisfy a count would be an outage caused by housekeeping.
+- The pre-versioning install is MIGRATED into `builds/legacy-<id>` at build
+  time, not deleted, so the first versioned build already has a predecessor.
+  Migration happens on build/activate rather than on a listing: a read that
+  reshapes the tree it is describing is a surprise.
+- New verbs `builds` and `activate` (both ~30s, both refused on an adopted
+  entry — corrallm keeps no history of a tree it does not own). The build id
+  travels in `Spec.SelectBuild`, which is already the one thing that reaches the
+  host on every call.
+- `corrallm tools builds <tool>` / `corrallm tools activate <tool> <id>`, plus
+  `--json`. No UI yet — the Tooling panel gets it when the `tool` entry kind
+  does (see §9).
+
+**Verified live on carlsmacbookpro**, which is also where the remote build path
+was proven end to end: forced rebuild in 118s → `adopting the existing install
+as builds/legacy-…` → install → swap; `builds` listed both with the active one
+marked; `activate` rolled back and forward; an unknown id and an adopted entry
+were both refused. box1 is still on the legacy layout and migrates on its next
+build.
+
+**Also fixed here (P26 regression):** every `corrallm tools` command loaded
+`config.yml`, which is an empty leftover since config moved into SQLite — so on
+the live box `tools list` reported "no tools declared" about a host running
+three of them. It reads the database now; `--config` still wins for inspecting a
+file that is not the live one. The same staleness had two tests asserting about
+an empty config (`TestLiveConfigFreeLaneIncludesThePool`,
+`TestVerifyAgainstFile`); they skip on a zero-byte file now.
+
+**Config change, same day:** carlsmacbookpro's `llama.cpp` went from ADOPTED
+(ml-kit's tree, 590 builds behind) to MANAGED. It builds its own copy under
+`~/.corrallm/tools/llama.cpp` in ~2 minutes, and `Qwen3.6-35B-A3B-MTP` was
+verified generating against it (`system_fingerprint: b10603-c060ca974`).
+Consequence to watch: `rebuild:` is tool-level, so the Mac is now enlisted in
+the scheduled rebuild — a laptop compiling unattended when the check finds
+drift. A per-host `rebuild` override is the fix if that becomes unwelcome.
+
 ## 9. Risks and open items
 
 - **risk** A build competes with resident models for the same GPU and CPU. P25c
@@ -447,7 +516,7 @@ of the config and do survive. Anything worth knowing about a tool goes in
 - **note** box1's adopted llama.cpp is **behind master** as of 2026-08-17
   (`10380 (0b1bad14f)` vs `34af94cd9`). That is the LM Studio / Unsloth
   tool-calling motivation showing up as a number, which was the point.
-- **found, not fixed (pre-existing, unrelated to P25):**
+- **fixed 2026-08-23 (was: found, not fixed):**
   `TestLiveConfigFreeLaneIncludesThePool` fails at HEAD — commit `c0b98eb`
   repointed `groq-llama-70b` to gpt-oss-120b in the live config without updating
   the test that asserts on it. Also pre-existing: four `gofmt -l` files

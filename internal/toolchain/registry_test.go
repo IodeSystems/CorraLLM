@@ -209,3 +209,58 @@ func TestSurveyKeepsProbeWhenDriftFails(t *testing.T) {
 		t.Errorf("probe lost when the drift check failed: %+v", st.Probe)
 	}
 }
+
+// Both halves of the rollback pair refuse an adopted entry BEFORE the host is
+// contacted. Refusing after the round trip would be a correct answer for the
+// wrong reason — and on an unreachable host it would report "could not ask"
+// about something that was never allowed anyway.
+func TestBuildsAndActivateRefuseAdoptedWithoutAskingTheHost(t *testing.T) {
+	r := &fakeRunner{answers: map[Verb]any{}}
+	reg := testRegistry(cfgWith(map[string]config.ToolHost{
+		"box1": {InstalledAt: "/opt/somebody-elses/llama.cpp"},
+	}), r)
+
+	if _, err := reg.Builds(context.Background(), "llama.cpp", "box1"); err == nil {
+		t.Error("Builds must refuse an adopted entry")
+	} else if !strings.Contains(err.Error(), "adopted") {
+		t.Errorf("error %q does not say why", err)
+	}
+	if _, err := reg.Activate(context.Background(), "llama.cpp", "box1", "some-build"); err == nil {
+		t.Error("Activate must refuse to repoint an adopted entry")
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("the host was contacted %v for a refusal that needed no round trip", r.calls)
+	}
+}
+
+// The build id is the whole instruction. An empty one must not reach a recipe
+// that would then have to invent a meaning for it.
+func TestActivateRequiresABuildID(t *testing.T) {
+	r := &fakeRunner{answers: map[Verb]any{}}
+	reg := testRegistry(cfgWith(map[string]config.ToolHost{"box1": {}}), r)
+	if _, err := reg.Activate(context.Background(), "llama.cpp", "box1", "  "); err == nil {
+		t.Error("an empty build id must be refused")
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("the host was contacted %v with no build id", r.calls)
+	}
+}
+
+func TestActivatePassesTheIDAndDropsTheResolvedPath(t *testing.T) {
+	r := &fakeRunner{answers: map[Verb]any{
+		VerbActivate: Activation{OK: true, Active: "20260823-1200-abcdef12", Previous: "20260101-0000-00000000"},
+	}}
+	reg := testRegistry(cfgWith(map[string]config.ToolHost{"box1": {}}), r)
+	reg.resolved = map[resolvedKey]string{{"llama.cpp", "box1"}: "/home/test/.corrallm/tools/llama.cpp/bin"}
+
+	res, err := reg.Activate(context.Background(), "llama.cpp", "box1", "20260823-1200-abcdef12")
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if res.Previous != "20260101-0000-00000000" {
+		t.Errorf("previous not carried through: %+v", res)
+	}
+	if _, still := reg.resolved[resolvedKey{"llama.cpp", "box1"}]; still {
+		t.Error("the memoised ${tool:} directory survived an activate; a rollback that changes what is installed must not be served from a stale answer")
+	}
+}

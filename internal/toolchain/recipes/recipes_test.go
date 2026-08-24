@@ -79,7 +79,10 @@ func TestEveryRecipeHandlesTheReadOnlyVerbs(t *testing.T) {
 			t.Fatalf("Script(%s): %v", n, err)
 		}
 		src := string(b)
-		for _, verb := range []string{"probe)", "upstream)", "preflight)", "install-deps)"} {
+		// builds/activate are here too: a recipe that silently lacks them
+		// leaves its tool with no way back off a bad build, which is only
+		// discovered when somebody needs one.
+		for _, verb := range []string{"probe)", "upstream)", "preflight)", "install-deps)", "builds)", "activate)"} {
 			if !strings.Contains(src, verb) {
 				t.Errorf("recipe %s has no %s case", n, strings.TrimSuffix(verb, ")"))
 			}

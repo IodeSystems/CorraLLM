@@ -91,7 +91,8 @@ func (s *Server) toolRun(w http.ResponseWriter, r *http.Request) {
 	verb := toolchain.Verb(req.Verb)
 	switch verb {
 	case toolchain.VerbProbe, toolchain.VerbUpstream, toolchain.VerbPreflight,
-		toolchain.VerbInstallDeps, toolchain.VerbBuild:
+		toolchain.VerbInstallDeps, toolchain.VerbBuild, toolchain.VerbBuilds,
+		toolchain.VerbActivate:
 	default:
 		writeErr(w, http.StatusBadRequest, "unknown verb "+req.Verb)
 		return

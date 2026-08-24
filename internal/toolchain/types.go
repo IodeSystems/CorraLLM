@@ -32,6 +32,14 @@ const (
 	VerbInstallDeps Verb = "install-deps"
 	// VerbBuild compiles and installs. P25c/P25d; the recipes refuse it today.
 	VerbBuild Verb = "build"
+	// VerbBuilds lists the installed builds a host could roll back to. As cheap
+	// as Probe — it reads a directory — and deliberately does not mutate the
+	// tree it describes, so it is safe to call from a listing.
+	VerbBuilds Verb = "builds"
+	// VerbActivate points a tool's bin/ at one of those builds. A rename, not a
+	// compile: the whole point is that reverting a bad upstream costs seconds
+	// rather than the twenty minutes it took to produce it.
+	VerbActivate Verb = "activate"
 )
 
 // Spec is everything a recipe needs to answer about one tool on one host.
@@ -54,6 +62,11 @@ type Spec struct {
 	// InstalledAt ADOPTS an install corrallm does not own: probe reads it and
 	// nothing writes to it. Mutually exclusive with a meaningful Prefix.
 	InstalledAt string `json:"installedAt,omitempty"`
+	// SelectBuild is the build id VerbActivate should make current. It rides
+	// along in the spec rather than in a separate argument because the spec is
+	// already the one thing that travels to the host on every call — a second
+	// channel for one string would be two things to keep in agreement.
+	SelectBuild string `json:"selectBuild,omitempty"`
 }
 
 // Probe is what a host reports about an installed tool.
@@ -129,6 +142,10 @@ type InstallDeps struct {
 // Build is the result of compiling and installing a tool.
 type Build struct {
 	OK bool `json:"ok"`
+	// ID is the build directory this landed in, and what Activate takes to put
+	// it back later. Reported on a skip too, where it names what is already
+	// current.
+	ID string `json:"id"`
 	// Skipped means the stamp already matched — same HEAD, same patch set, same
 	// arch list — so there was nothing to do. Reported rather than hidden,
 	// because "it finished in two seconds" should be explicable.
@@ -138,6 +155,47 @@ type Build struct {
 	Stamp   string `json:"stamp"`
 	Seconds int    `json:"seconds"`
 	Error   string `json:"error,omitempty"`
+}
+
+// BuildEntry is one installed build of a tool on a host.
+type BuildEntry struct {
+	// ID is the build directory's name: a UTC timestamp and the short commit,
+	// so a listing sorts and reads without opening anything.
+	ID string `json:"id"`
+	// Stamp is the full build stamp (head, patch hash, arch list), which is the
+	// only version source for a tool that cannot report one itself.
+	Stamp string `json:"stamp"`
+	Head  string `json:"head"`
+	// At is when the build was installed, unix seconds.
+	At int64 `json:"at"`
+	// Active means bin/ currently points here.
+	Active bool `json:"active"`
+}
+
+// BuildList is what a host can roll back to.
+type BuildList struct {
+	Builds []BuildEntry `json:"builds"`
+	Active string       `json:"active"`
+	// Versioned is false for a prefix that predates versioned installs — bin/
+	// is still a real directory there, and it becomes a build of its own the
+	// next time this tool is built. Reported rather than inferred from an empty
+	// list, because "nothing to roll back to yet" and "this layout does not
+	// track builds" are different answers.
+	Versioned bool `json:"versioned"`
+	// Keep is the host's retention count, so a UI can say what will be pruned
+	// rather than guessing at the default.
+	Keep  int    `json:"keep"`
+	Error string `json:"error,omitempty"`
+}
+
+// Activation is the result of pointing bin/ at a build.
+type Activation struct {
+	OK     bool   `json:"ok"`
+	Active string `json:"active"`
+	// Previous is what was current before, so an operator who rolled back by
+	// accident can roll forward without listing again.
+	Previous string `json:"previous"`
+	Error    string `json:"error,omitempty"`
 }
 
 // State is one tool on one host, as the registry reports it.

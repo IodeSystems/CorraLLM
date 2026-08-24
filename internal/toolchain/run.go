@@ -46,7 +46,9 @@ type Runner interface {
 // enough for a probe, it kills every install.
 func Timeout(v Verb) time.Duration {
 	switch v {
-	case VerbProbe, VerbPreflight:
+	case VerbProbe, VerbPreflight, VerbBuilds, VerbActivate:
+		// Activate is a rename, Builds is a directory read. Both are as cheap
+		// as a probe, and both are on the path a person is watching.
 		return 30 * time.Second
 	case VerbUpstream:
 		// One `git ls-remote` over whatever network the host has.
@@ -185,6 +187,7 @@ func specEnv(spec Spec, force bool) []string {
 	set("TOOL_BIN", spec.Bin)
 	set("TOOL_PREFIX", spec.Prefix)
 	set("TOOL_INSTALLED_AT", spec.InstalledAt)
+	set("TOOL_BUILD_ID", spec.SelectBuild)
 	if force {
 		set("TOOL_FORCE", "1")
 	}
@@ -227,6 +230,16 @@ func RunInstallDeps(ctx context.Context, r Runner, spec Spec) (*InstallDeps, err
 // path (P25f) is opt-in per tool and off by default.
 func RunBuild(ctx context.Context, r Runner, spec Spec) (*Build, error) {
 	return runTyped[Build](ctx, r, spec, VerbBuild)
+}
+
+// RunBuilds lists the builds installed on a host.
+func RunBuilds(ctx context.Context, r Runner, spec Spec) (*BuildList, error) {
+	return runTyped[BuildList](ctx, r, spec, VerbBuilds)
+}
+
+// RunActivate makes one of them current. The build id travels in spec.SelectBuild.
+func RunActivate(ctx context.Context, r Runner, spec Spec) (*Activation, error) {
+	return runTyped[Activation](ctx, r, spec, VerbActivate)
 }
 
 func runTyped[T any](ctx context.Context, r Runner, spec Spec, verb Verb) (*T, error) {

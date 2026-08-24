@@ -28,3 +28,30 @@ Waits on: systems (a second egress) and evidence (a rate-limit that bites).
 
 **Evidence needed before starting.** Count 429s per provider per day from the
 activity log. If the number is small, this is complexity for nothing.
+
+## Toolchain: per-host `rebuild`, and a `tool` entry kind in the dashboard
+
+**What.** Two gaps that P27 (versioned builds, 2026-08-23) surfaced without
+closing:
+
+1. **`rebuild:` is tool-level only.** The scheduled drift check builds every
+   MANAGED host of a tool whose `rebuild: true`, so making carlsmacbookpro
+   managed enlisted a laptop in unattended 10–20 minute compiles. A
+   `rebuild:` on `ToolHost` overriding the tool-level flag is a small change
+   (`config.Tool`/`ToolHost`, `watch.go`'s report path, validation, one test).
+2. **`tools:` cannot be edited from the dashboard at all.** The config entry
+   editor knows `server | lane | group | extension` (`EntryKind` in
+   `ui/src/EntryEditor.tsx`, `EntryYAML` in `internal/api/configyaml.go`), so
+   flipping a host between adopted and managed — the thing that decides whether
+   a build is even possible — is an export/edit/`config load` round trip. The
+   Tooling panel's rollback UI (list builds, activate one) wants the same op
+   surface, so these two land together.
+
+**Why parked.** Neither blocks the capability: the CLI does both
+(`corrallm tools builds|activate`, `corrallm config export|load`), and the
+scheduled rebuild is a config flag away from being off. This is ergonomics, and
+it is a UI + API + codegen slice rather than a one-file change.
+
+**Resume when.** An unattended rebuild on the Mac actually gets in the way, or
+the next time somebody needs to change a tool entry and has to reach for the
+CLI to do it.

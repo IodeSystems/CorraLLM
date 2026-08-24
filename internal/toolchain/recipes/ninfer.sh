@@ -229,8 +229,8 @@ build() {
 
     if [ "${TOOL_FORCE:-0}" != "1" ] && [ -x "$bindir/$BIN_NAME" ] && [ "$(stamp_read "$bindir")" = "$stamp_now" ]; then
         say "up-to-date at $stamp_now; skipping build"
-        printf '{"ok":true,"skipped":true,"head":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
-            "$(jstr "$head")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
+        printf '{"ok":true,"skipped":true,"id":%s,"head":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
+            "$(jstr "$(active_build)")" "$(jstr "$head")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
         return 0
     fi
 
@@ -250,34 +250,44 @@ build() {
         -DCMAKE_CUDA_ARCHITECTURES="$REQUIRED_ARCH" \
         -DCMAKE_CUDA_COMPILER="$nvcc" \
         -DNINFER_BUILD_APPS=ON >&2 || exit 1
-    cmake --build build --config Release --parallel "$(nproc 2>/dev/null || echo 4)" >&2 || exit 1
+    cmake --build build --config Release --parallel "$(cpu_count)" >&2 || exit 1
     ) || die "build failed; see log"
 
     # ninfer has no install target and does not collect its binaries, so they
     # are gathered by name rather than by copying a bin/ that does not exist.
-    mkdir -p "$bindir"
+    # They are staged first and promoted as a unit: a versioned install copies a
+    # DIRECTORY, and half a directory is not a build anyone should be able to
+    # activate.
+    local stage="$src/build/.corrallm-install"
+    rm -rf "$stage"; mkdir -p "$stage"
     local found=0 f
     for f in ninfer ninfer-serve; do
         local built
         built=$(find "$src/build" -type f -name "$f" -perm -u+x 2>/dev/null | head -1)
         if [ -n "$built" ]; then
-            cp -f "$built" "$bindir/$f"
+            cp -f "$built" "$stage/$f"
             found=$((found + 1))
             say "  installed $f"
         fi
     done
     [ "$found" -gt 0 ] || die "build produced no ninfer binaries under $src/build"
 
-    stamp_write "$bindir" "$stamp_now"
+    local id; id=$(build_id "$head")
+    install_build "$stage" "$id"
+    rm -rf "$stage"
+    stamp_write "$(builds_dir)/$id" "$stamp_now"
+    prune_builds
 
     # No --version to ask, so the stamp's head IS the version. See the note at
     # the top of this recipe.
-    printf '{"ok":true,"skipped":false,"head":%s,"version":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
-        "$(jstr "$head")" "$(jstr "$head")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
+    printf '{"ok":true,"skipped":false,"id":%s,"head":%s,"version":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
+        "$(jstr "$id")" "$(jstr "$head")" "$(jstr "$head")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
 }
 
 case "${1:-}" in
     probe)        require_tool_root; probe ;;
+    builds)       require_tool_root; builds_verb ;;
+    activate)     require_tool_root; activate_verb ;;
     upstream)     require_tool_root; require_env TOOL_URL TOOL_REF; upstream ;;
     preflight)    preflight ;;
     install-deps) install_deps ;;

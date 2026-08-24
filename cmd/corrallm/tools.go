@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -28,7 +29,8 @@ func newToolsCmd() *cobra.Command {
 		Use:   "tools",
 		Short: "Report the tools that run the models (llama.cpp, ninfer) per host",
 	}
-	cmd.AddCommand(newToolsListCmd(), newToolsPreflightCmd(), newToolsBuildCmd(), newToolsInstallDepsCmd(), newToolsResolveCmd(), newToolsRecipesCmd())
+	cmd.AddCommand(newToolsListCmd(), newToolsPreflightCmd(), newToolsBuildCmd(), newToolsBuildsCmd(),
+		newToolsActivateCmd(), newToolsInstallDepsCmd(), newToolsResolveCmd(), newToolsRecipesCmd())
 	return cmd
 }
 
@@ -39,8 +41,7 @@ func newToolsCmd() *cobra.Command {
 // machine. Duplicating the rule would be how the two quietly disagree about
 // which box a command ran on.
 func toolsRegistry(configPath string) (*toolchain.Registry, *config.Config, error) {
-	p := derivePaths(defaultHome(), configPath, "")
-	cfg, err := config.Load(p.config)
+	cfg, err := toolsConfig(configPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -62,6 +63,26 @@ func toolsRegistry(configPath string) (*toolchain.Registry, *config.Config, erro
 		},
 	}
 	return reg, cfg, nil
+}
+
+// toolsConfig reads the configuration these commands operate on.
+//
+// The database FIRST, because that is where config has lived since P26 — this
+// read the YAML path unconditionally, so on the production box, whose
+// config.yml is now an empty leftover, every `corrallm tools` command reported
+// "no tools declared" about a host with three of them. An explicit --config
+// still wins, for inspecting a file that is not the live one.
+func toolsConfig(configPath string) (*config.Config, error) {
+	if strings.TrimSpace(configPath) != "" {
+		return config.Load(configPath)
+	}
+	p := derivePaths(defaultHome(), "", "")
+	db, src, err := openConfigDB(p.db)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return src.Load(context.Background())
 }
 
 func newToolsListCmd() *cobra.Command {
@@ -242,6 +263,134 @@ func newToolsBuildCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "rebuild even when the stamp already matches")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress the live build log")
 	return cmd
+}
+
+// `tools builds` and `tools activate` are the rollback pair.
+//
+// A build is expensive and occasionally wrong: llama.cpp ships several a day
+// and any of them can regress a model that was fine an hour ago. Keeping the
+// last few and being able to name one is what turns that from a twenty-minute
+// recompile of a commit you have to go find into a rename.
+
+func newToolsBuildsCmd() *cobra.Command {
+	var configPath, server string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:     "builds <tool>",
+		Aliases: []string{"versions"},
+		Short:   "List the builds installed on a host, newest first",
+		Long: "Every build lands in its own directory and bin/ is a symlink naming the active\n" +
+			"one, so the previous builds are still there to go back to. The last few are kept\n" +
+			"(5 by default); the active build is never pruned, whatever its age.\n\n" +
+			"Adopted installs report nothing: corrallm did not build them and keeps no history\n" +
+			"of somebody else's tree.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reg, _, err := toolsRegistry(configPath)
+			if err != nil {
+				return err
+			}
+			host, err := pickHost(reg, args[0], server)
+			if err != nil {
+				return err
+			}
+			res, err := reg.Builds(cmd.Context(), args[0], host)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if asJSON {
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				return enc.Encode(res)
+			}
+			if !res.Versioned {
+				// Not an error: this is what every prefix looks like until the
+				// first build after versioned installs landed.
+				fmt.Fprintf(out, "%s on %s: not versioned yet — the current install becomes a build on the next `tools build`\n", args[0], host)
+			}
+			if len(res.Builds) == 0 {
+				fmt.Fprintf(out, "no builds recorded on %s\n", host)
+				return nil
+			}
+			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "\tID\tBUILT\tHEAD")
+			for _, b := range res.Builds {
+				mark := " "
+				if b.Active {
+					mark = "*"
+				}
+				built := "-"
+				if b.At > 0 {
+					built = time.Unix(b.At, 0).Format("2006-01-02 15:04")
+				}
+				head := b.Head
+				if len(head) > 12 {
+					head = head[:12]
+				}
+				if head == "" {
+					head = "-"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", mark, b.ID, built, head)
+			}
+			if err := tw.Flush(); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "* = active; keeping the newest %d\n", res.Keep)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "path to the corrallm YAML config")
+	cmd.Flags().StringVar(&server, "server", "", "which host to ask")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable JSON output")
+	return cmd
+}
+
+func newToolsActivateCmd() *cobra.Command {
+	var configPath, server string
+	cmd := &cobra.Command{
+		Use:     "activate <tool> <build-id>",
+		Aliases: []string{"rollback", "use"},
+		Short:   "Point a tool's bin/ at one of its installed builds (seconds; compiles nothing)",
+		Long: "Makes an already-installed build current, by renaming a symlink.\n\n" +
+			"Processes already running keep the binary they started with — they hold the inode,\n" +
+			"not the path — so this takes effect on the NEXT spawn, exactly as a build does.\n" +
+			"Unload the model to make it take effect now.\n\n" +
+			"`tools builds <tool>` lists the ids.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reg, _, err := toolsRegistry(configPath)
+			if err != nil {
+				return err
+			}
+			host, err := pickHost(reg, args[0], server)
+			if err != nil {
+				return err
+			}
+			res, err := reg.Activate(cmd.Context(), args[0], host, args[1])
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if res.Previous == res.Active {
+				fmt.Fprintf(out, "%s on %s: already at %s\n", args[0], host, res.Active)
+				return nil
+			}
+			fmt.Fprintf(out, "%s on %s: %s -> %s (takes effect on the next spawn)\n",
+				args[0], host, orDash(res.Previous), res.Active)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "path to the corrallm YAML config")
+	cmd.Flags().StringVar(&server, "server", "", "which host to act on")
+	return cmd
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 func newToolsInstallDepsCmd() *cobra.Command {
