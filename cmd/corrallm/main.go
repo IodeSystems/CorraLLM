@@ -80,7 +80,12 @@ func newValidateCmd() *cobra.Command {
 		Short: "Parse and validate the config; exit non-zero if it would not start",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, err := config.Load(cfgPath)
+			// Validate what the daemon will actually READ. `service restart`
+			// passes the --config recorded in the unit, which on a migrated
+			// machine is the retired zero-byte config.yml — so this printed
+			// "ok — 0 models, 0 lanes" for every restart and the guard that
+			// exists because of the 2026-07-26 outage was gating nothing.
+			c, src, err := liveConfig(cfgPath)
 			if err != nil {
 				return err
 			}
@@ -90,11 +95,11 @@ func newValidateCmd() *cobra.Command {
 				ext++
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "ok: %s — %d models, %d lanes, %d extensions\n",
-				cfgPath, len(models), len(c.Lanes), ext)
+				describeConfigSource(src), len(models), len(c.Lanes), ext)
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&cfgPath, "config", "corrallm.yaml", "path to the config file")
+	cmd.Flags().StringVar(&cfgPath, "config", "corrallm.yaml", "config file to validate; ignored when it is empty or absent, in which case the database the daemon boots from is validated instead")
 	return cmd
 }
 

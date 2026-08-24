@@ -41,7 +41,7 @@ func newToolsCmd() *cobra.Command {
 // machine. Duplicating the rule would be how the two quietly disagree about
 // which box a command ran on.
 func toolsRegistry(configPath string) (*toolchain.Registry, *config.Config, error) {
-	cfg, err := toolsConfig(configPath)
+	cfg, _, err := liveConfig(configPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -63,26 +63,6 @@ func toolsRegistry(configPath string) (*toolchain.Registry, *config.Config, erro
 		},
 	}
 	return reg, cfg, nil
-}
-
-// toolsConfig reads the configuration these commands operate on.
-//
-// The database FIRST, because that is where config has lived since P26 — this
-// read the YAML path unconditionally, so on the production box, whose
-// config.yml is now an empty leftover, every `corrallm tools` command reported
-// "no tools declared" about a host with three of them. An explicit --config
-// still wins, for inspecting a file that is not the live one.
-func toolsConfig(configPath string) (*config.Config, error) {
-	if strings.TrimSpace(configPath) != "" {
-		return config.Load(configPath)
-	}
-	p := derivePaths(defaultHome(), "", "")
-	db, src, err := openConfigDB(p.db)
-	if err != nil {
-		return nil, err
-	}
-	defer db.Close()
-	return src.Load(context.Background())
 }
 
 func newToolsListCmd() *cobra.Command {
