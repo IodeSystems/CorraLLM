@@ -26,8 +26,9 @@ the free-tier aggregator (P16), pause (P17), token counting (P20), provider cred
 config in SQLite (P26), tickets (P28), and the box1 thermal envelope (P19). Full trees + evidence:
 [`plan/done.md`](done.md).
 
-**Two decisions need you** — [`open-questions.md`](open-questions.md): the agent lease
-self-reap policy, and a boot script that binds GPU power limits by index instead of UUID.
+**Three decisions need you** — [`open-questions.md`](open-questions.md): the agent lease
+self-reap policy, a boot script that binds GPU power limits by index instead of UUID, and
+whether an honest wait estimate is even wanted.
 
 **Open work is §6**, and it is smaller than it looks: the `ramUsage` placement/size split left
 over from P18, P21c budget granularity, the Q8_0-referenced KLD sweep, streaming the trial
@@ -580,12 +581,13 @@ true and still costs something. Optional extensions and out-of-scope items live 
 
 ### Open decisions the USER owns
 
-**They live in [`plan/open-questions.md`](open-questions.md), and there are two.**
+**They live in [`plan/open-questions.md`](open-questions.md), and there are three.**
 
 | # | question | gates | urgency |
 |---|---|---|---|
 | 1 | Agent lease: self-reap on/off, and its TTL | `host.Remote` (§6) | not yet — answer before that step |
 | 2 | `nvidia-power-init.sh` binds power limits by INDEX, not UUID | nothing; it is a live risk | correct today, silently costly if indices swap |
+| 3 | Is an *honest* wait estimate even wanted? | the wait-estimate formula (§6) | not yet — gather a wider traffic mix first |
 
 **Six others were closed on 2026-08-24 by checking the box instead of re-reading the plan.**
 The answers and their evidence are recorded in the §6 slices that needed them, not here:

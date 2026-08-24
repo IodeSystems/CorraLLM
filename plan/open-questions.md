@@ -108,6 +108,46 @@ editing a boot script unasked. Say the word and I will write it; or run it yours
 
 ---
 
-*Nothing else is open.* The six other decisions this file started with were resolved on
+## 3. ❓ Is an *honest* wait estimate even wanted?
+
+**Owner:** you. **Gates:** "Fix the wait estimate" (`plan.md` §6) — the formula change, not the
+measurement. **Status:** open. **Missed in the 2026-08-24 triage** — the §6 slice named it, this
+file did not.
+
+### What is undecided
+
+corrallm's `Retry-After` is short **every single time** — measured 1.7×–11.6× short, median ~4×.
+Fixing the arithmetic is easy. Whether to fix it is not:
+
+- A truthful **25 s** may drive callers away (`gone`) — they give up and the slot that opens goes
+  unused.
+- An optimistic **4 s** keeps them retrying into a slot that does, in fact, open.
+
+That is a product call about what a 429 is FOR — an apology, or an appointment — not an
+arithmetic fix.
+
+### What the data says, and what it cannot
+
+Measured 7 days: **407 rejections, mean 14.2 s, max 15.0 s.** That maximum is not a coincidence —
+it is `maxWait: 15s` truncating. Which is the trap:
+
+> **`realWaitMs` is CENSORED, structurally.** It averages requests that queued *and were then
+> admitted*. Anyone who waited past `maxWait` became a `queue-timeout` and left the sample. The
+> longest waits are exactly the ones removed, so the measured mean is biased LOW and **can never
+> exceed 15 s no matter how bad the queue gets**. First live reading: est 2.0 s · real 4.6 s ·
+> theory 3 m 49 s.
+
+So the honest number is not currently knowable from this box's own telemetry, and any new
+estimator "validated" against `realWaitMs` will be validated against a ceiling.
+
+Behaviour so far argues the optimistic side is not hurting: **zero `early`, one `gone`** — the
+main caller (`dun`) retries, is refused, and backs off more patiently than we asked.
+
+**Not blocking today** — §6's next step is to watch the est-vs-real gap across a wider traffic
+mix first. One caller against one single-slot model is not a sample.
+
+---
+
+*Nothing else is open.* The six decisions this file started with were resolved on
 2026-08-24 against the running system; each answer and its evidence now sits in the plan item
 that needed it. See the `docs(plan)` commit for that pass.
