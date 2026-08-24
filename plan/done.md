@@ -1814,6 +1814,60 @@ exclusive lock.
 
 ---
 
+## ✅ Deployed: the ramUsage split and payload aging, live on box1 (2026-08-24)
+
+One maintenance window, one restart, both changes. Both cards were idle and nothing was in
+flight, which is the cheapest moment this box offers.
+
+**Order, and why.** The running daemon predated `pool:`, and a config field an older binary has
+no struct member for is the P25 failure exactly — it has nowhere to live on the next write and
+vanishes. So: clear payloads → stop → VACUUM → install → start → migrate config. Clearing and
+vacuuming with the daemon DOWN also meant no lock contention at all, which is why the unbounded
+clear was safe to use there (32 s) even though the shipped code chunks it.
+
+Backed up first: `corrallm config export` and a copy of the 5.9 GB database, into
+`~/.corrallm/backup-20260824-160756/`.
+
+**Database: 5,916 MB → 803 MB.** 57,205 rows had their payloads cleared (32 s), VACUUM took 6.4 s,
+`integrity_check` = ok. Every aggregate identical across both operations — rows 65,617, cost
+$6.276954, prompt tokens 1,222,460,967, dwell 522,830,856 ms. 779 MB of payloads remain: the
+last 7 days, which is the point.
+
+**Config: four models migrated**, a 4-line diff through P26's export → validate → load path.
+`Qwen3.8-27B` and `muse-glimmer-30b` to `gpu0`; `chandra-ocr-2` and `nomic-embed-text` to
+`gpu1`. `deepseek-v4-flash` deliberately gets none — it is a real multi-GPU split (`gpu0` 32.5GB
++ `gpu1` 7GB) and has no single pool. The Mac's model gets none either: one unified pool.
+
+**Validation was exercised against the real config, not a fixture**, by deliberately breaking it
+both ways before loading the good one:
+
+    pool: gpu7   -> refused: pool "gpu7" not declared on server "box1" (declares [gpu0 gpu1 system])
+    pool: system -> refused: pool "system" on server "box1" is not a device pool (device pools:
+                   [gpu0 gpu1]). `pool:` names the CARD a model's weights live on
+
+**`pool:` landed in the remainder, as designed** — `config_scalar` rows keyed
+`model.rest.local/<name>` holding `{"pool":"gpu0"}`. No column, no migration, on the existing
+database.
+
+**Verified against the hardware, which is the only verification that counts here.** With Qwen on
+gpu0 and nomic on gpu1:
+
+| pool | corrallm ledger | nvidia-smi |
+|---|---:|---:|
+| gpu0 (5090, `GPU-ee90af07`) | 30,370 MiB | 30,370 MiB |
+| gpu1 (3080, `GPU-76a4c775`) | 812 MiB | 778 MiB |
+
+The gpu0 figure is the MEASURED footprint, not the declared 31,000 MiB — so measurement is
+governing size while `pool:` governs placement, which is the whole split doing its job on real
+hardware. Then served for real: a chat completion through the `chat` lane and a 768-dim
+embedding on gpu1.
+
+No SDL drift, so `ui/dist` was left alone — a UI rebuild is a deploy the instant it finishes,
+and there was nothing to publish.
+
+
+---
+
 # Dashboard & observability
 
 > These six trees were written into the roadmap under phase numbers that **collide with

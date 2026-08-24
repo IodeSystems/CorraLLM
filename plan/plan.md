@@ -310,35 +310,6 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◻ Migrate the live config to `pool:` — the split is BUILT, not deployed
-
-**✅ Code shipped.** `ramUsage` no longer carries two jobs. `pool:` declares placement
-(which card); `ramUsage` is a size hint that measurement supersedes. Full tree in
-[`done.md`](done.md) § ramUsage split.
-
-**Backwards compatible by construction** — an explicit `pool:` wins, ramUsage keys remain the
-fallback, so every model in the live config means today exactly what it meant before. Nothing
-is waiting on this migration; the split simply is not exercised until it happens.
-
-**next** add `pool:` to box1's four single-card models, then deploy + restart. Derived from the
-live config store on 2026-08-24:
-
-| model | server | pool: | why |
-|---|---|---|---|
-| `Qwen3.8-27B` | box1 | `gpu0` | one card |
-| `muse-glimmer-30b` | box1 | `gpu0` | one card |
-| `chandra-ocr-2` | box1 | `gpu1` | one card |
-| `nomic-embed-text` | box1 | `gpu1` | one card |
-| `deepseek-v4-flash` | box1 | **none** | a real multi-GPU split (`gpu0` 32.5GB + `gpu1` 7GB); no single pool exists, and ramUsage naming both stays how that is said |
-| `Qwen3.6-35B-A3B-MTP` | carlsmacbookpro | **none** | one unified `system` pool; declaring it adds nothing |
-
-**risks** the migration is a write to a RUNNING daemon's config store. `pool:` has no column —
-it rides configdb's unprojected remainder, the same as P29's tool pin, because the schema is
-applied with `CREATE TABLE IF NOT EXISTS` and a new column would never appear on the live
-database. `TestModelPoolSurvivesTheStore` pins that round trip.
-**blocking decisions (USER)** none — but this touches production config, so it is yours to
-trigger.
-
 ### ⚠ The claims-nothing rule is live, and the recorded caveat understated it
 
 Shipped with the split, as decided: an unmeasured model on a DEVICE pool now claims **nothing**
@@ -653,20 +624,17 @@ payloads 5,573 MB → 779 MB, and every aggregate byte-identical — rows 65,617
 prompt tokens 1,222,460,967, dwell 522,830,856 ms, cached tokens 1,028,349,212. Second pass
 cleared 0 in 72 ms.
 
-**◻ The file does not shrink on its own, and that is the remaining half.** `auto_vacuum` is off,
-so the freed pages land on the freelist and are reused — growth stops, but the 5.9 GB file stays
-5.9 GB with ~4.9 GB of it free. Measured on the copy: a one-time `VACUUM` takes it to **842 MB in
-6.75 s**, rows and aggregates intact.
+**✅ VACUUM run on the live database 2026-08-24** during the same maintenance window as the
+deploy, with the daemon stopped so nothing contended for the lock. **5,916 MB → 803 MB**, 6.4 s,
+`pragma integrity_check` = ok, and every aggregate identical across the rewrite (rows 65,617,
+cost $6.276954, prompt tokens 1,222,460,967, dwell 522,830,856 ms).
 
-**next** run `VACUUM` on the live database once, during a quiet window. It holds an exclusive
-lock for its duration (~7 s measured) and needs temporary space for the rewrite, so it is an
-operator action — not something to do to a running daemon on a timer. Everything after that is
-automatic.
-**risks** the lock. Requests completing during a VACUUM block on the activity insert, which is
-synchronous on the request path. Seven seconds, once.
+`auto_vacuum` stays off, which is the right default: from here the payload prune keeps the file
+flat by returning pages to the freelist for reuse, and a full rewrite is only ever needed after
+a one-off backlog like this one.
 
-Not taken: compressing the column (~3.8× per row, measured) — the aging above removes the same
-bytes without a format change or a decompress on read.
+Not taken: compressing the column (~3.8× per row, measured) — the aging removes the same bytes
+without a format change or a decompress on read.
 
 ### Open decisions the USER owns
 
