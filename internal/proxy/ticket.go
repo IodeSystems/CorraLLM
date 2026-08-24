@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/iodesystems/corrallm/internal/sched"
 )
 
 // A TICKET is the identity of one caller's attempt to get served, across every
@@ -153,4 +156,20 @@ func ticketAge(t string, now time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 	return age, true
+}
+
+// agedCtx tells the scheduler how long this caller has been trying, when the
+// request carries a ticket we minted.
+//
+// Only OUR signed tickets buy age (see ticketAge): a caller-supplied id is a
+// perfectly good identity for grouping the log, but letting it set the age
+// would make queue priority a header anyone can write. A request with no
+// ticket, or someone else's, gets the context unchanged and is scheduled
+// exactly as it was before tickets existed.
+func agedCtx(ctx context.Context, r *http.Request) context.Context {
+	age, ok := ticketAge(ticketFrom(r), time.Now())
+	if !ok || age <= 0 {
+		return ctx
+	}
+	return sched.WithWaitingSince(ctx, time.Now().Add(-age))
 }

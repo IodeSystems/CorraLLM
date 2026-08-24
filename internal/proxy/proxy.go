@@ -674,7 +674,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		admitStart := time.Now()
 		// group.Interruptible OR the request's own opt-in. A caller can only
 		// widen this, never narrow it — see retryableRequest.
-		release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
+		release, reqCtx, err := p.sched.Admit(agedCtx(ctx, r), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if err == nil {
 			// A slot was taken — lanes load changed. markInflight publishes, so
@@ -1040,7 +1040,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		stage := group.StageFor(backend.Type)
 
 		admitStart := time.Now()
-		release, reqCtx, err := p.sched.Admit(r.Context(), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
+		release, reqCtx, err := p.sched.Admit(agedCtx(r.Context(), r), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
 		queuedMS += time.Since(admitStart).Milliseconds()
 		if err != nil {
 			var bp *sched.BackpressureError

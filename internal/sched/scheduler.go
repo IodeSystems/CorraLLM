@@ -138,9 +138,13 @@ type slot struct {
 	weight        int
 	interruptible bool
 	currency      string // fairshare currency: requests (default) | dwell | cost
-	admitAt       time.Time
-	cancel        context.CancelCauseFunc
-	preempting    bool
+	// since is when this caller's ATTEMPT began — earlier than this request if
+	// it is a retry carrying a ticket we minted on an earlier rejection. Zero
+	// for a first attempt, which is the majority and behaves as it always has.
+	since      time.Time
+	admitAt    time.Time
+	cancel     context.CancelCauseFunc
+	preempting bool
 }
 
 type waiter struct {
@@ -186,7 +190,8 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	}
 
 	sl := &slot{group: group, backendType: backendType, weight: weight,
-		interruptible: interruptible, currency: s.shareCurrency(group), cancel: cancel}
+		interruptible: interruptible, currency: s.shareCurrency(group), cancel: cancel,
+		since: waitingSince(ctx)}
 
 	// Over a per-group / per-(group×type) limit budget? Preemption can't free a
 	// budget, so an over-budget request advances (spill) if the stage allows,
@@ -277,7 +282,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 		// Within a group the numerator is identical, so a newcomer is never
 		// strictly better than its own peers: bumping only ever happens ACROSS
 		// groups, and "which of my peers do I evict" never arises.
-		victim := bs.pickBumpable(s.now(), sl.group, sl.weight)
+		victim := bs.pickBumpable(s.now(), sl)
 		if victim == nil {
 			be := bs.backpressure("rejected")
 			s.mu.Unlock()
@@ -490,17 +495,58 @@ func (s *Scheduler) pickGrantableWaiter(bs *backendState, backend string, now ti
 		}
 	}
 	currency := bs.queueCurrency()
-	best, bestIdx := math.Inf(1), -1
+	bestIdx := -1
 	for i, w := range bs.waiters {
 		if w.preempt || bs.active >= s.effCapLocked(bs, backend, w.slot.group, now) {
 			continue
 		}
-		ratio := bs.numerator(now, currency, w.slot.group) / float64(w.slot.weight)
-		if ratio < best {
-			best, bestIdx = ratio, i
+		if bestIdx < 0 || bs.moreDeserving(now, currency, w.slot, bs.waiters[bestIdx].slot) {
+			bestIdx = i
 		}
 	}
 	return bestIdx
+}
+
+// ratio is how deserving a slot is: fairshare numerator over weight (LOWER is
+// better), discounted by how long the attempt has been going.
+//
+// Every pick goes through here. When only some of them aged, queue admission
+// and slot admission would rank the same two requests differently — a waiter
+// could be bumped out of the queue by an arrival it would have beaten to the
+// next free slot.
+func (bs *backendState) ratio(now time.Time, currency string, sl *slot) float64 {
+	w := sl.weight
+	if w <= 0 {
+		w = 1
+	}
+	return bs.numerator(now, currency, sl.group) / float64(w) / agingBoost(now, sl.since)
+}
+
+// moreDeserving is the full comparison: lower ratio first, and on a TIE the
+// attempt that started earlier.
+//
+// The tie-break is not a nicety, it is the case aging exists for. Two callers
+// in the same group with nothing in flight both have numerator 0, so their
+// ratios are 0 no matter how long either has been trying — a discount cannot
+// separate them, and the pick falls back to list order. That is precisely the
+// one-slot starvation: every time the rejected caller returns, somebody's fresh
+// request scores identically and arrival order decides against it.
+//
+// A slot with no recorded start is treated as beginning NOW, so two fresh
+// requests still fall back to arrival order and nothing changes for them.
+func (bs *backendState) moreDeserving(now time.Time, currency string, a, b *slot) bool {
+	ra, rb := bs.ratio(now, currency, a), bs.ratio(now, currency, b)
+	if ra != rb {
+		return ra < rb
+	}
+	return attemptStart(now, a).Before(attemptStart(now, b))
+}
+
+func attemptStart(now time.Time, sl *slot) time.Time {
+	if sl.since.IsZero() {
+		return now
+	}
+	return sl.since
 }
 
 // pickBumpable returns the queued waiter a new arrival should displace, or nil
@@ -512,20 +558,16 @@ func (s *Scheduler) pickGrantableWaiter(bs *backendState, backend string, now ti
 // Never bumps a preempt waiter: it freed a slot by being preempted and is owed
 // the place. Strictly-greater comparison means ties never bump, which is what
 // keeps same-group arrivals from displacing their own peers.
-func (bs *backendState) pickBumpable(now time.Time, group string, weight int) *waiter {
-	if weight <= 0 {
-		weight = 1
-	}
+func (bs *backendState) pickBumpable(now time.Time, arriving *slot) *waiter {
 	currency := bs.queueCurrency()
-	mine := bs.numerator(now, currency, group) / float64(weight)
+	mine := bs.ratio(now, currency, arriving)
 	var victim *waiter
 	worst := mine
 	for _, w := range bs.waiters {
 		if w.preempt {
 			continue
 		}
-		r := bs.numerator(now, currency, w.slot.group) / float64(w.slot.weight)
-		if r > worst {
+		if r := bs.ratio(now, currency, w.slot); r > worst {
 			worst, victim = r, w
 		}
 	}
@@ -543,11 +585,13 @@ func (bs *backendState) pickWaiter(now time.Time) int {
 		}
 	}
 	currency := bs.queueCurrency()
-	best, bestIdx := math.Inf(1), 0
+	bestIdx := 0
 	for i, w := range bs.waiters {
-		ratio := bs.numerator(now, currency, w.slot.group) / float64(w.slot.weight)
-		if ratio < best {
-			best, bestIdx = ratio, i
+		if i == 0 {
+			continue
+		}
+		if bs.moreDeserving(now, currency, w.slot, bs.waiters[bestIdx].slot) {
+			bestIdx = i
 		}
 	}
 	return bestIdx

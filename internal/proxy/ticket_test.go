@@ -182,3 +182,38 @@ func TestMintedTicketsAreDistinct(t *testing.T) {
 		seen[tk] = true
 	}
 }
+
+// The join between the two halves: our own ticket buys scheduling age, anything
+// else buys nothing. If this seam breaks, priority silently becomes a header
+// anyone can write — or patience stops counting at all, with every unit test on
+// either side still passing.
+func TestOnlyOurTicketBuysSchedulingAge(t *testing.T) {
+	mine := mintTicket(time.Now().Add(-40 * time.Second))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(HeaderRequestID, mine)
+	ctx := agedCtx(context.Background(), req)
+	since := sched.WaitingSinceForTest(ctx)
+	if since.IsZero() {
+		t.Fatal("our own ticket did not reach the scheduler as an attempt start")
+	}
+	if age := time.Since(since); age < 39*time.Second || age > 41*time.Second {
+		t.Errorf("attempt start implies age %s, want ~40s", age)
+	}
+
+	for name, hdr := range map[string]string{
+		"a caller's own id": "req-abc",
+		"a forged ticket":   ticketPrefix + "abc_def_000000000000",
+	} {
+		r2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		r2.Header.Set(HeaderRequestID, hdr)
+		if !sched.WaitingSinceForTest(agedCtx(context.Background(), r2)).IsZero() {
+			t.Errorf("%s bought scheduling age", name)
+		}
+	}
+	// And a request with no ticket at all is untouched.
+	bare := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	if !sched.WaitingSinceForTest(agedCtx(context.Background(), bare)).IsZero() {
+		t.Error("a request with no ticket was aged")
+	}
+}
