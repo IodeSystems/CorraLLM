@@ -1905,6 +1905,34 @@ systemd config is.
 
 ---
 
+## ✅ Per-device VRAM attribution — confirmed in production (2026-08-24)
+
+`b3e70f1` fixed a multi-GPU model's footprint being charged to one card; the live confirmation
+had been abandoned mid-session when an OCR batch kept admission refusing on gpu1. It turns out
+production had already proven it — reading `vram-profile.json` shows `local-deepseek-v4-flash`
+carrying TWO separate per-device profiles, measured 2026-08-17 while serving:
+
+    RTX 5090 (pool gpu0)   30,616 MiB
+    RTX 3080 (pool gpu1)    6,478 MiB
+
+**Those two sum to 37,094 MiB — the exact corrupt figure the bug produced**, when the whole
+process group's footprint was filed under a single device name and a 10 GiB card was recorded as
+holding ~37 GB. The split is now correct on both sides, on real hardware, from a real serving
+load. No deliberate deepseek load was needed, so Qwen was never evicted.
+
+Also visible in the same read: `local-nomic-embed-text` at 812 MiB on the 3080, measured
+2026-08-24 during the `pool:` migration check — matching what the residency ledger reported and
+what nvidia-smi showed.
+
+**Known, expected, not a defect:** stale profiles remain under pre-P24 names (`Qwen3.8-27B`
+alongside `local-Qwen3.8-27B`, and a `nomic-embed-text` entry on the 5090 from 2026-07-18). The
+tune cache keys on served name, and P24 recorded that the rename starts fresh ids rather than
+joining old rows. Harmless — nothing resolves to the old names — and cheap to prune if the file
+ever matters.
+
+
+---
+
 # Dashboard & observability
 
 > These six trees were written into the roadmap under phase numbers that **collide with

@@ -498,48 +498,6 @@ that makes `Server.Agent` a LIST of endpoints) is archived in `done.md` § Multi
 there is a live trap:** `config.IsLocalHost`'s "a private-LAN address is not local" doc comment is
 already wrong under this topology — the predicate is still correct, the comment is not.
 
-### ◻ Verify the per-device VRAM attribution live
-
-Shipped `b3e70f1` (per-device attribution + bounded peak decay; full tree in `done.md`).
-
-**next** one `models/load` of deepseek in a quiet window, then read `vram-profile.json` and
-confirm two per-device profiles. The end-to-end check was abandoned mid-session — a live
-`life-raglit` OCR batch was hammering chandra every few seconds and admission kept refusing
-on gpu1.
-**risks** regression tests cover both fixes and the rebuilt binary is deployed, so this is
-confirmation, not discovery.
-**✅ DECISION RESOLVED 2026-08-24 — it was never a contest; the usage data settles it.** The
-question was framed as a four-way policy call because it was written without measuring demand.
-Seven days of production traffic:
-
-| model | pool | requests / 7d | dwell | last seen |
-|---|---|---:|---:|---|
-| nomic-embed-text | gpu1, persistent, 806 MiB | 2,588 | 4.7 min | now |
-| chandra-ocr-2 | gpu1, sticky, 6,204 base / 8,240 peak | 1,259 | 57.1 min | now |
-| **deepseek-v4-flash** | gpu1, 6,676 MiB | **2** | **0.0 min** | 2026-08-21 |
-
-**nomic + chandra at peak = 9,046 MiB of 9,877 usable — they FIT, with 831 MiB spare.** They are
-also the pair actually serving: 3,847 of the 3,849 gpu1 requests in the window. deepseek-v4-flash
-served **two requests in a week** and is in no lane (opt-in by name only), so it is not competing
-for gpu1 — it is occasionally visiting.
-
-Confirmed live: the 3080 currently holds nomic (806 MiB) + chandra (6,204 MiB) = 7,010 MiB, and
-the 5090 holds Qwen at 30,370 MiB. The Qwen drafter is on gpu0 with Qwen, not on gpu1 — the
-original four-claimant framing counted it on the wrong card.
-
-**So the policy is: nomic + chandra are gpu1's resident working set; deepseek is on-demand.** No
-model needs removing and no priority order needs inventing. What is worth doing is making that
-explicit rather than emergent — deepseek should not be sticky, so a rare visit cannot evict
-chandra mid-OCR-batch.
-
-**next** confirm deepseek carries no `sticky`/`persistent` in the live config, and set the
-explicit `pool:` when the ramUsage split lands (§6, first item) — that is the mechanism that
-turns this from a measured observation into a declared decision.
-**risks** chandra's footprint is INPUT-driven (`--image-max-tokens 16384`), so its 8,240 peak is
-a recent-window maximum, not a ceiling. The 831 MiB margin is real but thin, and a larger page
-than any yet seen would eat it. This is the same class of miscalculation that OOM'd Qwen3-6 in
-production — quote peaks, not bases.
-
 ### ◻ OSS follow-ups (not blockers)
 
 - Auth multi-user accounts/roles + token rotation — today is a single shared admin token.
