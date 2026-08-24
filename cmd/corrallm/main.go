@@ -367,6 +367,7 @@ func newServeCmd() *cobra.Command {
 		home, service, webRoot, configPath, dbPath string
 		agentDir, publicBase                       string
 		healthTimeout, activityRetention           time.Duration
+		payloadRetention                           time.Duration
 		requestTimeout                             time.Duration
 		capturePayloads, convertPDFs, ocrPDFs      bool
 		insecure                                   bool
@@ -403,6 +404,7 @@ func newServeCmd() *cobra.Command {
 				tokenPath:          p.token,
 				insecure:           insecure,
 				activityRetention:  pickDuration(activityRetention, envDuration("CORRALLM_ACTIVITY_RETENTION", 30*24*time.Hour)),
+				payloadRetention:   pickDuration(payloadRetention, envDuration("CORRALLM_PAYLOAD_RETENTION", 7*24*time.Hour)),
 				requestTimeout:     pickDuration(requestTimeout, envDuration("CORRALLM_REQUEST_TIMEOUT", 0)),
 				capturePayloads:    capturePayloads,
 				convertPDFs:        convertPDFs,
@@ -430,9 +432,10 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&dbPath, "db", "", "path to the SQLite database (default <home>/var/corrallm.db or CORRALLM_DB)")
 	f.DurationVar(&healthTimeout, "health-timeout", 0, "max time a cold backend spawn may take to become healthy (default 120s or CORRALLM_HEALTH_TIMEOUT); raise for large models")
 	f.DurationVar(&activityRetention, "activity-retention", 0, "delete activity-log rows older than this (default 720h/30d or CORRALLM_ACTIVITY_RETENTION; 0 disables)")
+	f.DurationVar(&payloadRetention, "payload-retention", 0, "clear captured request/response bodies on activity rows older than this, KEEPING the row and every metric on it (default 168h/7d or CORRALLM_PAYLOAD_RETENTION; 0 disables). Payloads are read only to replay a request in the console; metrics are read for as long as they are retained.")
 	f.DurationVar(&requestTimeout, "request-timeout", 0, "max wall-clock for one proxied request before corrallm cancels it (or CORRALLM_REQUEST_TIMEOUT; 0 = no corrallm deadline, defer to client + backend)")
 	f.BoolVar(&insecure, "insecure", envBool("CORRALLM_INSECURE"), "serve the management API and dashboard with NO admin token — anyone who can reach the port is an operator. For a trusted single-user box or a first look; never on a shared or reachable network.")
-	f.BoolVar(&capturePayloads, "capture-payloads", true, "capture per-request request/response payloads onto the activity log (capped; binary audio summarized; pruned with --activity-retention)")
+	f.BoolVar(&capturePayloads, "capture-payloads", true, "capture per-request request/response payloads onto the activity log (capped; binary audio summarized; cleared at --payload-retention, and dropped with the row at --activity-retention)")
 	f.BoolVar(&convertPDFs, "convert-pdfs", true, "auto-extract PDF attachments in chat requests into injected text (via pdftotext) so text models can read them")
 	f.IntVar(&pdfMaxChars, "pdf-max-chars", 400000, "cap on extracted text per PDF injected into the prompt")
 	f.BoolVar(&ocrPDFs, "ocr-pdfs", true, "OCR fallback for scanned/image PDFs that have no text layer (rasterize via pdftoppm + tesseract); no-op if tesseract is not installed")
@@ -490,6 +493,7 @@ type serveOpts struct {
 	tokenPath                             string
 	insecure                              bool
 	activityRetention                     time.Duration
+	payloadRetention                      time.Duration
 	requestTimeout                        time.Duration
 	capturePayloads, convertPDFs, ocrPDFs bool
 	pdfMaxChars, ocrMaxPages              int
@@ -823,9 +827,18 @@ func serve(ctx context.Context, o serveOpts) error {
 	mgr.StartPauseSweeper(sigCtx)
 	mgr.StartIdleSweeper(sigCtx)
 
+	// A payload retention at or past the row retention can never fire: the row
+	// is deleted first, taking its payload with it. Silently doing nothing is
+	// the wrong answer for a setting an operator deliberately typed.
+	if o.payloadRetention > 0 && o.activityRetention > 0 && o.payloadRetention >= o.activityRetention {
+		slog.Warn("payload-retention is not shorter than activity-retention, so it will never clear anything — "+
+			"rows are deleted at activity-retention and take their payloads with them",
+			"payloadRetention", o.payloadRetention, "activityRetention", o.activityRetention)
+	}
+
 	// Sample instantaneous per-lane queue depth so it's visible before requests
 	// resolve (the activity log is completion-driven). Stops on shutdown.
-	go runQueueSampler(sigCtx, scheduler, st, 5*time.Second, o.activityRetention)
+	go runQueueSampler(sigCtx, scheduler, st, 5*time.Second, o.activityRetention, o.payloadRetention)
 
 	// Publish per-model residency to Prometheus (corrallm_model_loaded +
 	// load-timestamp → uptime). Sampled rather than event-driven so the gauges
@@ -934,7 +947,7 @@ func runResidencySampler(ctx context.Context, mgr *proc.Manager, interval time.D
 	}
 }
 
-func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, interval, activityRetention time.Duration) {
+func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, interval, activityRetention, payloadRetention time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	var sincePrune time.Duration
@@ -974,6 +987,17 @@ func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, 
 						slog.Warn("prune activity", "err", err)
 					} else if n > 0 {
 						slog.Info("pruned activity", "rows", n, "retention", activityRetention)
+					}
+				}
+				// Payloads age out BEFORE rows, and the order here matters only
+				// in that the row prune has already removed anything past
+				// activityRetention — so this never touches a row on its way out.
+				if payloadRetention > 0 {
+					if n, err := st.PrunePayloads(time.Now().Add(-payloadRetention).UnixMilli()); err != nil {
+						slog.Warn("prune payloads", "err", err)
+					} else if n > 0 {
+						slog.Info("cleared captured payloads (rows and their metrics kept)",
+							"rows", n, "retention", payloadRetention)
 					}
 				}
 			}

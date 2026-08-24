@@ -642,17 +642,31 @@ them. The same system prompt and tool schemas are stored thousands of times. The
 knows this — P21's cache work measured a 72.3% prompt-cache hit rate and 231.6M tokens served
 from cache.
 
-**Options, in the order I would consider them:**
-1. **Do nothing.** It has plateaued and costs 0.3% of the disk. This is the honest default.
-2. **Age out payloads before rows.** Keep the activity row (all metrics, all analytics) and null
-   `req_body`/`resp_body` after ~7 days. Replay is only ever useful on recent requests. Today
-   there is one knob — `--activity-retention` drops the whole row at 30 d — so this is a small,
-   additive change with no analytics loss.
-3. **Compress the column.** ~3.9 GB saved, no capability lost, at the cost of CPU on write and a
-   decompress on read.
+**✅ RESOLVED — payload aging shipped (2026-08-24), 7 days by default.**
+`--payload-retention` (`CORRALLM_PAYLOAD_RETENTION`, default 168h, 0 disables) clears
+`req_body`/`resp_body` on rows older than the cutoff and KEEPS the row with every metric on it.
+Runs in the same 5-minute maintenance tick as the row prune. Full tree in
+[`done.md`](done.md) § payload aging.
 
-**next** nothing, unless the user wants (2). It is the best value of the three: it targets
-exactly the bytes nobody reads and leaves every number intact.
+**Verified against a real copy of the production database**, not a fixture: 57,205 rows cleared,
+payloads 5,573 MB → 779 MB, and every aggregate byte-identical — rows 65,617, cost $6.276954,
+prompt tokens 1,222,460,967, dwell 522,830,856 ms, cached tokens 1,028,349,212. Second pass
+cleared 0 in 72 ms.
+
+**◻ The file does not shrink on its own, and that is the remaining half.** `auto_vacuum` is off,
+so the freed pages land on the freelist and are reused — growth stops, but the 5.9 GB file stays
+5.9 GB with ~4.9 GB of it free. Measured on the copy: a one-time `VACUUM` takes it to **842 MB in
+6.75 s**, rows and aggregates intact.
+
+**next** run `VACUUM` on the live database once, during a quiet window. It holds an exclusive
+lock for its duration (~7 s measured) and needs temporary space for the rewrite, so it is an
+operator action — not something to do to a running daemon on a timer. Everything after that is
+automatic.
+**risks** the lock. Requests completing during a VACUUM block on the activity insert, which is
+synchronous on the request path. Seven seconds, once.
+
+Not taken: compressing the column (~3.8× per row, measured) — the aging above removes the same
+bytes without a format change or a decompress on read.
 
 ### Open decisions the USER owns
 

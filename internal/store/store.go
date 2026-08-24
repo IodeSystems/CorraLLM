@@ -755,6 +755,76 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 	return n, nil
 }
 
+// PrunePayloads clears the captured request/response bodies on activity rows
+// older than beforeMS, KEEPING the row. Returns the number of rows cleared.
+//
+// Payloads and metrics age at different rates because they are read for
+// different reasons. Every number on the row — status, dwell, tokens, cost,
+// queue wait, cache hits — feeds rollups, series and the caller roster, and is
+// read for as long as it is retained. The payload feeds exactly one thing:
+// replaying a request in the console, which nobody does to a three-week-old
+// request. Dropping the row to reclaim the payload would take the analytics
+// with it; this takes only the part that has stopped being read.
+//
+// Measured on box1, 2026-08-24: req_body was 5,330 MB of a 5,914 MB database —
+// 90% of the file — against 242 MB of resp_body and ~340 MB of everything else
+// combined. Agentic callers re-send the same system prompt and tool schemas
+// every turn and each turn stores them in full.
+//
+// The condition is deliberately `IS NOT NULL AND != ”` rather than a bare
+// timestamp compare: without it every pass would rewrite every old row it had
+// already cleared, turning a one-off cleanup into a permanent write load on a
+// five-minute timer.
+//
+// The FILE does not shrink. auto_vacuum is off, so cleared pages land on the
+// freelist and are reused by subsequent inserts — which is the point (growth
+// stops) but is not the same as reclaiming. Reclaiming needs a one-time VACUUM,
+// which rewrites the whole database and is an operator action, not something to
+// do to a running daemon on a timer.
+func (s *Store) PrunePayloads(beforeMS int64) (int64, error) {
+	var total int64
+	for {
+		res, err := s.db.Exec(`
+			UPDATE activity SET req_body = '', resp_body = ''
+			 WHERE rowid IN (
+			   SELECT rowid FROM activity
+			    WHERE ts < ? AND (req_body != '' OR resp_body != '')
+			    LIMIT ?)`, beforeMS, payloadPruneChunk)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < payloadPruneChunk {
+			return total, nil
+		}
+	}
+}
+
+// payloadPruneChunk bounds how many rows one UPDATE clears.
+//
+// It exists because InsertActivity is SYNCHRONOUS on the request path
+// (proxy.go: handleInference → logReq → log → InsertActivity), and SQLite
+// serialises writers even in WAL mode. One unbounded UPDATE over the backlog
+// measured **27 seconds** against a real 5.9 GB copy of box1's database — 27
+// seconds during which every completing request would block on the activity
+// insert.
+//
+// Chunking does not make the total work smaller; it makes the LOCK HOLD small,
+// so ordinary inserts interleave between chunks. The steady-state pass clears a
+// day's rows and finishes in one or two chunks; only the first pass after this
+// ships has a backlog to work through.
+//
+// Measured on that same 5.9 GB copy, and it is linear in the chunk — the cost is
+// rewriting pages, ~85 KB per row:
+//
+//	2000 rows → 1.4 s      500 rows → 0.28 s      250 rows → 0.18 s
+//
+// 500 is the pick: a request that lands mid-chunk waits ~0.3 s, which is well
+// inside the noise of a model that takes seconds to answer, and the 57,205-row
+// backlog still drains in ~30 s of wall clock.
+const payloadPruneChunk = 500
+
 // RecentActivity returns the most recent records, newest first. A non-empty
 // served filters to one model's requests (the per-model console usage tab);
 // empty returns every model's activity (the global activity page).

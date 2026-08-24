@@ -1760,6 +1760,60 @@ copylocks hits are pre-existing.
 
 ---
 
+## ✅ Payload aging — metrics and payloads retire on different clocks (2026-08-24)
+
+`req_body` was 5,330 MB of a 5,914 MB database — 90% of the file — against 242 MB of
+`resp_body` and ~340 MB of everything else. Not a leak: retention was working (oldest row 29.7
+days against a 30 d setting), `freelist_count` was 0, and the file had plateaued. It was simply
+the cost of a 256 KiB request cap meeting agentic traffic that re-sends the same system prompt
+and tool schemas every turn.
+
+**The cap is not the thing to lower.** `reqBodyCap` is 256 KiB deliberately, so a full agentic
+request stays VALID JSON and can be replayed in the console; a 4 KiB truncation left it
+unparseable and replay degraded to dumping raw text. (`payloadCap`, the 4 KiB one, bounds a
+RESPONSE — an easy pair to confuse, and I confused them once before measuring.)
+
+**So age the two apart.** Every number on an activity row — status, dwell, tokens, cost, queue
+wait, cache hits — feeds rollups, series and the caller roster, and is read for as long as it is
+retained. The payload feeds exactly one thing: replaying a request in the console, which nobody
+does to a three-week-old request. `--payload-retention` (default 168h/7d) clears the bodies and
+keeps the row; `--activity-retention` (30 d) still drops the row. A payload retention at or past
+the row retention can never fire, and the daemon warns at startup rather than doing nothing
+quietly.
+
+**Cleared to `''`, not NULL.** Both columns are `TEXT NOT NULL DEFAULT ''`, so a NULL would fail
+the constraint on every row and the prune would error on every pass, forever, with the table
+growing anyway. Caught by test — the same shape as the P29 ticket index that crash-looped an
+existing database.
+
+**Chunked at 500 rows, because the activity insert is on the request path.** `InsertActivity` is
+synchronous (`handleInference` → `logReq` → `log`), and SQLite serialises writers even in WAL.
+One unbounded UPDATE over the backlog measured **27 seconds** against a real 5.9 GB copy — 27
+seconds of every completing request blocking. Chunking does not reduce the work, it bounds the
+LOCK HOLD, and the cost is linear in the chunk because it is page rewrites at ~85 KB/row:
+2000 → 1.4 s, 500 → 0.28 s, 250 → 0.18 s. 500 puts a mid-chunk request inside the noise of a
+model that takes seconds to answer, and the backlog still drains in ~30 s.
+
+**The `!= ''` predicate is load-bearing**: matching on timestamp alone would rewrite every old
+row on every pass, turning a one-off cleanup into a permanent write load on a five-minute timer
+against the largest table in the database.
+
+**Verified on a real copy of production, not a fixture.** 57,205 rows cleared in 14.4 s;
+payloads 5,573 MB → 779 MB; second pass 0 rows in 72 ms. Every aggregate byte-identical: rows
+65,617, cost $6.276954, prompt tokens 1,222,460,967, dwell 522,830,856 ms, cached tokens
+1,028,349,212.
+
+Guards mutation-checked: dropping the idempotence predicate, deleting the row instead of
+clearing it, and clearing only `resp_body` (missing the 90%) each fail a test.
+
+**Left open, in `plan.md` §7:** the file does not shrink. `auto_vacuum` is off, so freed pages
+are reused rather than returned — growth stops, the 5.9 GB stays. A one-time `VACUUM` measured
+5.9 GB → **842 MB in 6.75 s** on the copy, and is an operator action because it holds an
+exclusive lock.
+
+
+---
+
 # Dashboard & observability
 
 > These six trees were written into the roadmap under phase numbers that **collide with
