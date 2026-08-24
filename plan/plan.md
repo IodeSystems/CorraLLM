@@ -610,6 +610,50 @@ true and still costs something. Optional extensions and out-of-scope items live 
   is what makes this checkable at all: a 499 now means what it says. Reopen only if 499s reappear
   clustered near a round number.
 
+### The activity DB is 5.9 GB, and it is `req_body` — measured 2026-08-24
+
+**Not a leak, and not urgent.** Recording it so nobody re-derives it.
+
+| | |
+|---|---|
+| database | 5,914 MB, `freelist_count` **0** — no unreclaimed pages, it is all live data |
+| `activity` table | 5,635 MB (95% of the file) |
+| `req_body` column | **5,330 MB (90% of the file)**; `resp_body` is 242 MB |
+| retention | **working** — oldest row is 29.7 days old against a 30 d setting. It has plateaued, not grown |
+| disk | 380 GB free of 1.8 T |
+
+**The cap is 256 KiB, not 4 KiB.** `payloadCap` (4 KiB) bounds a captured RESPONSE;
+`reqBodyCap` is `256<<10`, raised deliberately so a full agentic request — system prompt + tool
+schemas + multi-turn history + tool results — stays VALID JSON and can be replayed in the
+console. A 4 KiB truncation left it unparseable and replay degraded to dumping raw text.
+Overridable with `CORRALLM_REQBODY_CAP`.
+
+**Where the bytes are:** 23,669 requests in the 64 KiB–1 MiB bucket account for 4,718 MB, and
+the largest is 262,172 bytes — exactly the cap. These are agentic turns, where the same
+preamble is re-sent every turn and stored in full every time. `dun` on `Qwen3-6-27B-MPT` alone
+is 11,391 requests / 2,200 MB. (Traffic splits across `Qwen3-6-27B-MPT` and `local-Qwen3.8-27B`
+because activity logs the REQUESTED name and the legacy spelling is an alias — expected, and
+already recorded under P22.)
+
+**Measured, not guessed:** per-row gzip on real payloads is **3.8×** — 5,330 MB would become
+~1,400 MB. Compressing 200 concatenated rows instead gives 254×, which is not an achievable
+column-encoder number but does say where the redundancy lives: **between** rows, not within
+them. The same system prompt and tool schemas are stored thousands of times. The proxy already
+knows this — P21's cache work measured a 72.3% prompt-cache hit rate and 231.6M tokens served
+from cache.
+
+**Options, in the order I would consider them:**
+1. **Do nothing.** It has plateaued and costs 0.3% of the disk. This is the honest default.
+2. **Age out payloads before rows.** Keep the activity row (all metrics, all analytics) and null
+   `req_body`/`resp_body` after ~7 days. Replay is only ever useful on recent requests. Today
+   there is one knob — `--activity-retention` drops the whole row at 30 d — so this is a small,
+   additive change with no analytics loss.
+3. **Compress the column.** ~3.9 GB saved, no capability lost, at the cost of CPU on write and a
+   decompress on read.
+
+**next** nothing, unless the user wants (2). It is the best value of the three: it targets
+exactly the bytes nobody reads and leaves every number intact.
+
 ### Open decisions the USER owns
 
 **They live in [`plan/open-questions.md`](open-questions.md), and there are three.**
