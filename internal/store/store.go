@@ -873,6 +873,77 @@ func (s *Store) RetryPromises(sinceMS int64, limit int, key string) ([]RetryProm
 	return out, rows.Err()
 }
 
+// Journey is one caller's ATTEMPT to get served, from the first time we turned
+// it away to whatever became of it.
+//
+// The rows are already there — a journey is just the activity rows sharing a
+// ticket — but until tickets existed they could not be grouped. "Who is being
+// made to work for an answer" was answerable only as a rejection count, which
+// says nothing about whether those were one caller bounced eight times or eight
+// callers bounced once. Those are very different boxes to be a customer of.
+type Journey struct {
+	Ticket string
+	Key    string
+	Served string
+	// FirstMS is the first attempt, LastMS the most recent one.
+	FirstMS int64
+	LastMS  int64
+	// Attempts counts every request on this ticket; Rejections the ones that
+	// were turned away. Attempts-Rejections is what finally got through.
+	Attempts   int64
+	Rejections int64
+	// Served is true once any attempt on this ticket completed successfully —
+	// the journey ended in an answer rather than in the caller giving up.
+	Succeeded bool
+	// WaitedMS is wall-clock from the first rejection to the last attempt: what
+	// the caller actually spent getting served, including the time they spent
+	// backing off. This is the number a caller would recognise, and it is much
+	// larger than any single request's queued_ms.
+	WaitedMS int64
+}
+
+// Journeys groups activity by ticket, worst first — most rejections, then
+// longest wall clock.
+//
+// Only tickets with a REJECTION in them are journeys: a request that carried a
+// caller-supplied id and sailed straight through is a request, not a story.
+func (s *Store) Journeys(sinceMS int64, limit int) ([]Journey, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT ticket,
+		        MAX(key),
+		        MAX(served),
+		        MIN(ts), MAX(ts),
+		        COUNT(*),
+		        SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END),
+		        MAX(CASE WHEN status < 400 THEN 1 ELSE 0 END)
+		   FROM activity
+		  WHERE ticket <> '' AND ts >= ?
+		  GROUP BY ticket
+		 HAVING SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END) > 0
+		  ORDER BY SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END) DESC, (MAX(ts) - MIN(ts)) DESC
+		  LIMIT ?`, sinceMS, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Journey
+	for rows.Next() {
+		var j Journey
+		var ok int
+		if err := rows.Scan(&j.Ticket, &j.Key, &j.Served, &j.FirstMS, &j.LastMS,
+			&j.Attempts, &j.Rejections, &ok); err != nil {
+			return nil, err
+		}
+		j.Succeeded = ok == 1
+		j.WaitedMS = j.LastMS - j.FirstMS
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
 // QueueWait is the measured cost of arriving at a served model: how long
 // requests that HAD to wait actually waited before getting a slot.
 type QueueWait struct {

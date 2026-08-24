@@ -41,6 +41,8 @@ const UtilizationDoc = graphql(/* GraphQL */ `
         minutes
         rows {
           served
+          lane
+          members
           capacity
           active
           waiting
@@ -164,6 +166,16 @@ export function Utilization({ minutes = 60 }: { minutes?: number }) {
               <TableRow key={r.served} hover>
                 <TableCell>
                   {r.served}
+                  {r.lane && (
+                    // Without this the same busy slot appears twice — once as
+                    // the lane, once as the model it resolves to — and the
+                    // column reads as two slots where there is one.
+                    <Tooltip
+                      title={`A lane, not a backend: the slots below are ${(r.members ?? []).join(', ')}. Its load is theirs, counted once.`}
+                    >
+                      <Chip size="small" variant="outlined" label="lane" sx={{ ml: 1 }} />
+                    </Tooltip>
+                  )}
                   {r.depthUnreachable && (
                     // Two settings that contradict each other. Worth saying out
                     // loud: it means every rejection here will be a timeout, and

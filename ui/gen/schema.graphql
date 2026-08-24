@@ -162,6 +162,12 @@ type CorrallmQueryNamespace {
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
+  journeys(
+    """Max journeys, worst first."""
+    limit: Long
+    """Look back this many minutes."""
+    minutes: Long
+  ): corrallm_JourneysOutputBody @derived(operationId: "journeys")
   keys(
     """Look back this far for keys seen in traffic (0 = all recorded usage)."""
     windowHours: Long
@@ -429,6 +435,12 @@ type CorrallmV1QueryNamespace {
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
+  journeys(
+    """Max journeys, worst first."""
+    limit: Long
+    """Look back this many minutes."""
+    minutes: Long
+  ): corrallm_JourneysOutputBody @derived(operationId: "journeys")
   keys(
     """Look back this far for keys seen in traffic (0 = all recorded usage)."""
     windowHours: Long
@@ -1605,6 +1617,34 @@ input corrallm_HelloInput {
   version: String!
 }
 
+type corrallm_JourneyRecord {
+  """Requests made on this ticket."""
+  attempts: Long!
+  """Unix millis of the first attempt."""
+  firstMs: Long!
+  """Caller identity; empty for an unkeyed caller."""
+  key: String!
+  """Unix millis of the most recent attempt."""
+  lastMs: Long!
+  """How many of them were turned away."""
+  rejections: Long!
+  """Model they were asking for."""
+  served: String!
+  """Whether any attempt finally got an answer."""
+  succeeded: Boolean!
+  """The id linking these attempts: the caller's own request id, or one we minted on the first rejection."""
+  ticket: String!
+  """Wall clock from first attempt to last: what the caller spent getting served, backoff included."""
+  waitedMs: Long!
+}
+
+type corrallm_JourneysOutputBody {
+  """Journeys, most-rejected first."""
+  journeys: [corrallm_JourneyRecord!]!
+  """How many have not ended in an answer yet."""
+  open: Long!
+}
+
 type corrallm_KeyDef {
   """Priority group it resolves to."""
   group: String!
@@ -2730,8 +2770,12 @@ type corrallm_UtilizationRow {
   early: Long!
   """What we would tell a caller arriving right now to wait — the scheduler's own estimate, live. 0 if no dwell sample yet."""
   estWaitMs: Long!
+  """This name is a lane: its live load is the sum of the members below, not separate capacity."""
+  lane: Boolean!
   """Longest measured queue wait in the window."""
   maxWaitMs: Long!
+  """For a lane, the served names whose slots it is reporting."""
+  members: [String!]!
   """Promises whose due time passed with no return — we told them to come back and they never did."""
   notHonored: Long!
   """Utilization reached or passed 1 over the window: arrivals outpaced service and no finite steady-state wait exists."""

@@ -81,3 +81,69 @@ func TestRetryPromises(t *testing.T) {
 		t.Fatalf("wide window: want 4, got %d", len(narrow.Body.Promises))
 	}
 }
+
+// A journey is the story a rejection count cannot tell: whether that was one
+// caller refused four times or four callers refused once.
+func TestJourneysGroupAttemptsByTicket(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UnixMilli()
+	// One caller, rejected three times over 40s, then served.
+	for i, at := range []int64{now - 40_000, now - 30_000, now - 20_000} {
+		if err := st.InsertActivity(store.Activity{
+			TS: at, Served: "chat", Key: "dun", Status: 429, Error: "queue-timeout",
+			RetryAfterMS: 5_000, Ticket: "tkt_one", Path: "/v1/chat/completions",
+		}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	if err := st.InsertActivity(store.Activity{
+		TS: now - 10_000, Served: "chat", Key: "dun", Status: 200,
+		Ticket: "tkt_one", Path: "/v1/chat/completions",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A second caller, rejected once and never seen again.
+	if err := st.InsertActivity(store.Activity{
+		TS: now - 5_000, Served: "chat", Key: "yscr", Status: 429, Error: "queue-timeout",
+		RetryAfterMS: 5_000, Ticket: "tkt_two", Path: "/v1/chat/completions",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// And an ordinary request that was never rejected: not a journey.
+	if err := st.InsertActivity(store.Activity{
+		TS: now - 1_000, Served: "chat", Key: "life", Status: 200,
+		Ticket: "tkt_three", Path: "/v1/chat/completions",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handlers{Store: st}
+	out, err := h.Journeys(context.Background(), &JourneysInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Body.Journeys) != 2 {
+		t.Fatalf("want 2 journeys (the un-rejected request is not one), got %d: %+v",
+			len(out.Body.Journeys), out.Body.Journeys)
+	}
+	worst := out.Body.Journeys[0]
+	if worst.Ticket != "tkt_one" {
+		t.Errorf("worst-first ordering broken: %+v", out.Body.Journeys)
+	}
+	if worst.Attempts != 4 || worst.Rejections != 3 {
+		t.Errorf("attempts=%d rejections=%d, want 4 and 3", worst.Attempts, worst.Rejections)
+	}
+	if !worst.Succeeded {
+		t.Error("the journey ended in an answer and was reported as open")
+	}
+	if worst.WaitedMS < 29_000 || worst.WaitedMS > 31_000 {
+		t.Errorf("waited %dms, want ~30s of wall clock across the attempts", worst.WaitedMS)
+	}
+	if out.Body.Open != 1 {
+		t.Errorf("open = %d, want 1 (yscr never got an answer)", out.Body.Open)
+	}
+}

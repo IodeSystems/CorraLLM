@@ -329,6 +329,71 @@ func classifyPromise(now, dueMS, returnedMS int64) string {
 	}
 }
 
+// --- journeys (P28) ---
+
+// JourneysInput bounds the window and the row count.
+type JourneysInput struct {
+	Limit   int `query:"limit" default:"50" minimum:"1" maximum:"500" doc:"Max journeys, worst first."`
+	Minutes int `query:"minutes" default:"60" minimum:"1" maximum:"10080" doc:"Look back this many minutes."`
+}
+
+// JourneyRecord is one caller's attempt to get served, across every rejection.
+type JourneyRecord struct {
+	Ticket     string `json:"ticket" doc:"The id linking these attempts: the caller's own request id, or one we minted on the first rejection."`
+	Key        string `json:"key" doc:"Caller identity; empty for an unkeyed caller."`
+	Served     string `json:"served" doc:"Model they were asking for."`
+	FirstMS    int64  `json:"firstMs" doc:"Unix millis of the first attempt."`
+	LastMS     int64  `json:"lastMs" doc:"Unix millis of the most recent attempt."`
+	Attempts   int64  `json:"attempts" doc:"Requests made on this ticket."`
+	Rejections int64  `json:"rejections" doc:"How many of them were turned away."`
+	Succeeded  bool   `json:"succeeded" doc:"Whether any attempt finally got an answer."`
+	WaitedMS   int64  `json:"waitedMs" doc:"Wall clock from first attempt to last: what the caller spent getting served, backoff included."`
+}
+
+// JourneysOutput is the worst-first journey list.
+type JourneysOutput struct {
+	Body struct {
+		Journeys []JourneyRecord `json:"journeys" doc:"Journeys, most-rejected first."`
+		Open     int             `json:"open" doc:"How many have not ended in an answer yet."`
+	}
+}
+
+// Journeys groups a caller's attempts by ticket.
+//
+// A rejection count says how many times we said no; it cannot say whether that
+// was one caller refused eight times or eight callers refused once, and those
+// are very different boxes to be a customer of. This is the same activity rows,
+// grouped by the ticket that finally makes them one story.
+func (h *Handlers) Journeys(_ context.Context, in *JourneysInput) (*JourneysOutput, error) {
+	limit, minutes := in.Limit, in.Minutes
+	if limit <= 0 {
+		limit = 50
+	}
+	if minutes <= 0 {
+		minutes = 60
+	}
+	out := &JourneysOutput{}
+	out.Body.Journeys = []JourneyRecord{}
+	if h.Store == nil {
+		return out, nil
+	}
+	rows, err := h.Store.Journeys(time.Now().UnixMilli()-int64(minutes)*60_000, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, j := range rows {
+		out.Body.Journeys = append(out.Body.Journeys, JourneyRecord{
+			Ticket: j.Ticket, Key: j.Key, Served: j.Served,
+			FirstMS: j.FirstMS, LastMS: j.LastMS, Attempts: j.Attempts,
+			Rejections: j.Rejections, Succeeded: j.Succeeded, WaitedMS: j.WaitedMS,
+		})
+		if !j.Succeeded {
+			out.Body.Open++
+		}
+	}
+	return out, nil
+}
+
 // RetryPromises lists the backoffs we handed out and what became of them.
 //
 // The list is the answer to "who did we tell to come back, and when" — a
@@ -386,6 +451,13 @@ type UtilizationInput struct {
 // is full).
 type UtilizationRow struct {
 	Served string `json:"served" doc:"Served model or lane name."`
+	// Lane says this row is an AGGREGATE of other rows, not a thing with slots
+	// of its own. A lane's live load is summed from the members it resolves to,
+	// so `chat` and the model behind it both report the same busy slot — and a
+	// reader with no way to tell them apart sees two slots where there is one,
+	// and a column that sums to nothing real.
+	Lane    bool     `json:"lane" doc:"This name is a lane: its live load is the sum of the members below, not separate capacity."`
+	Members []string `json:"members" doc:"For a lane, the served names whose slots it is reporting."`
 	// Live, instantaneous — from the scheduler, summed over the backends this
 	// served name resolves to.
 	Capacity int `json:"capacity" doc:"Admission slots across this name's backends; 0 if none has been touched since start."`
@@ -472,6 +544,15 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 			return
 		}
 		r := row(served)
+		// A name that resolves to something other than itself is a lane: it owns
+		// no slots, it reports the slots of whatever it resolves to. Recorded so
+		// the reader is not left summing one busy slot twice.
+		for _, c := range cands {
+			if c.Name != served {
+				r.Lane = true
+				r.Members = append(r.Members, c.Name)
+			}
+		}
 		for _, c := range cands {
 			b, ok := byBackend[c.Name]
 			if !ok {

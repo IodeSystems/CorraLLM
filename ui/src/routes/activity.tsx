@@ -3,6 +3,7 @@ import { Box, Button, Chip } from '@mui/material'
 import { ActiveRequests } from '@/ActiveRequests'
 import { ActivityLog } from '@/ActivityLog'
 import { RetryPromises } from '@/RetryPromises'
+import { Journeys } from '@/Journeys'
 import { Utilization } from '@/Utilization'
 import { ServiceProfiles } from '@/ServiceProfiles'
 import { PageHeader } from '@/Panel'
@@ -32,6 +33,9 @@ function Activity() {
       {/* Then the ones we sent away. Both are traffic the completed-request log
           cannot show: one hasn't finished, the other never started. */}
       <RetryPromises filterKey={key} />
+      {/* The same rejections, grouped by who took them: one caller refused four
+          times reads very differently from four callers refused once. */}
+      <Journeys />
       {/* Why the estimates above run short: one dwell EWMA per backend, averaging
           over callers whose work differs several-fold in cost and variability. */}
       <ServiceProfiles />

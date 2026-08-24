@@ -175,6 +175,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.RetryPromises)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "journeys",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/activity/journeys",
+		Summary:     "One caller's attempts grouped by ticket: how many rejections it took, and whether they ever got an answer.",
+		Tags:        []string{"observability"},
+	}, h.Journeys)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "overview",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/overview",
