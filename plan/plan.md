@@ -4,9 +4,10 @@
 > priority/fairshare scheduler with cost-aware overflow. Successor in spirit to
 > llama-swap (clean-room; reuse *patterns* from redline2, not code).
 
-**How this plan works: §0.** Active work: §6. Open decisions and known gaps: §7.
-Deployment: §8. Capacity-parked: §9. Finished trees live in
-[`plan/done.md`](done.md); deferred opt-in next-steps in [`plan/icebox.md`](icebox.md).
+**How this plan works: §0.** Active work: §6. Known gaps: §7. Deployment: §8.
+Capacity-parked: §9. Finished trees live in [`plan/done.md`](done.md); deferred opt-in
+next-steps in [`plan/icebox.md`](icebox.md); **decisions that need you** in
+[`plan/open-questions.md`](open-questions.md).
 
 ## Status — 2026-08-24
 
@@ -22,13 +23,16 @@ PDF auto-conversion (P13), lanes + single-path models (P14), the bench binary (P
 the free-tier aggregator (P16), pause (P17), token counting (P20), provider credentials
 (P21a–i), the Qwen3.8-27B cutover (P22), per-mode samplers (P23), local-as-a-provider
 (P24), the toolchain registry with versioned builds, rollback and pins (P25/P27/P29),
-config in SQLite (P26), and tickets (P28). Full trees + evidence: [`plan/done.md`](done.md).
+config in SQLite (P26), tickets (P28), and the box1 thermal envelope (P19). Full trees + evidence:
+[`plan/done.md`](done.md).
 
-**Open work is §6**, and it is smaller than the list above suggests: the `ramUsage`
-placement/size split left over from P18, the thermal envelope's unwritten next step (P19),
-P21c budget granularity, the P22 KLD baseline, streaming the trial transcript + the add-model
-form, wait-estimate accuracy, `host.Remote` for multi-node, and one live verification of the
-per-device VRAM attribution. Parked on hardware: §9. Parked on a call from you: P9f.
+**Two decisions need you** — [`open-questions.md`](open-questions.md): the agent lease
+self-reap policy, and a boot script that binds GPU power limits by index instead of UUID.
+
+**Open work is §6**, and it is smaller than it looks: the `ramUsage` placement/size split left
+over from P18, P21c budget granularity, the Q8_0-referenced KLD sweep, streaming the trial
+transcript + the add-model form, wait-estimate accuracy, `host.Remote` for multi-node, and one
+live verification of the per-device VRAM attribution. Parked on hardware: §9.
 
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
@@ -51,10 +55,15 @@ update it in the **same commit** as the code it describes.
 A slice is ✅ **only** when its functional unit meets the Definition of done below — and a
 ✅ slice does not stay here: it moves to `done.md` in the same pass.
 
-**Three files.** `plan.md` = current state, active work, conventions/decisions ONLY.
+**Four files.** `plan.md` = current state, active work, conventions ONLY.
 `done.md` = the archive of finished trees, kept for evidence and traps, never a to-do list.
-`icebox.md` = deferred, opt-in next-steps. **Phase numbers come from git history** — the
-next free one is P30.
+`icebox.md` = deferred, opt-in next-steps. `open-questions.md` = decisions that need the USER,
+and **only while they are open** — a resolved question is deleted from it and its answer written
+into the plan item that needed it. **Phase numbers come from git history** — next free is P30.
+
+**Re-check a question against the box before you ask it.** On 2026-08-24, six of eight standing
+"user decisions" turned out to be already answered by the running system, the migrated config, or
+a comment in the code. Verify first; a decision list nobody prunes hides the ones that are real.
 
 **A phase is a functional unit.** Each `Pn` is an independently shippable slice: it
 compiles, its behavior is tested, and the engine still runs with it landed. Don't
@@ -87,7 +96,9 @@ Record assumptions so they are catchable.
 - Improves the product but nothing active requires it → **`icebox.md`**.
 - Out of scope until much later → **`icebox.md`** § Deferred.
 - A shortcut / known gap in code already shipped → **§7 Known gaps**.
-- A decision only the user can make → **§7 Open decisions**, AND beside the work in §6.
+- A decision only the user can make → **`open-questions.md`**, AND named beside the work in §6.
+  When it is answered: write the answer + its evidence into the §6 slice, mark that slice
+  **decision resolved**, and DELETE the question from `open-questions.md`.
 
 ---
 
@@ -317,42 +328,6 @@ oidio reached 119G anon-rss and took corrallm down with it. What saved that was 
 `MemoryMax` cgroup, not the ledger. Do not apply the rule uniformly to `system`.
 **blocking decisions (USER)** none outstanding — the design is agreed.
 
-### ◐ P19 — thermal envelope (box1)
-
-- ◐ **P19 thermal envelope** (box1, 2026-08-05) — the 3080 hit **88°C at 186W with the fan pegged
-  and `0x20 SW Thermal Slowdown` active** during an OCR sweep, while the 5090 sat at 54°C/0%.
-  Measured its thermal response under sustained load rather than guessing: **dT/dP = 0.239 °C/W,
-  intercept 25.8°C** (the intercept recovering intake-air temperature is what says the fit is real).
-  A healthy 3080 is 0.15–0.18 °C/W, so this card's die-to-air path is ~35–60% worse — consistent with
-  five-year-old paste or a packed fin stack, NOT airflow: an airflow/heat-soak problem rises and falls
-  slowly, and this one fell 88→65°C in 30s. The card's own target is 83°C, which the slope puts at
-  ~239W — hence the throttling at a 250W cap. **200W validated over 7 minutes sustained: 71.7°C
-  steady-state (model predicted 73.6), fan 83% not pegged, throttle `0x0004 SW Power Cap` on 193/207
-  samples and ZERO thermal.** At 200W the card is power-limited rather than thermally limited, which
-  is the correct operating point on this cooling. History is persistent in Prometheus —
-  `nvidia_gpu_exporter` on :9835 labels by **GPU UUID**, the same identity the pools bind to, so
-  Grafana joins to pool names for free.
-  **Pulled from Prometheus afterwards, and it corrected the account:** the exposure was not the
-  brief spike a spot `nvidia-smi` reading suggested. Six load episodes, **15.5 cumulative minutes
-  >=80C**, and the two that mattered were a 2.5 min chandra 400 DPI run at a MEAN of 84.9C (during
-  OCR comparison, half an hour before the bench was blamed for it) and the 10.5 min bench sweep at a
-  MEAN of 86.6C. Lesson for any future thermal claim here: query the exporter, do not spot-read.
-  **Do NOT fit the slope across pooled Prometheus episodes** — mixing power caps and soak states
-  gives 0.194 C/W with a 39.6C intercept, and an intercept that is not plausibly intake air is the
-  tell that the fit is contaminated. It predicts 78.4C at 200W against 70.5C actual, where the
-  single continuous ramp (0.239, 25.8C) predicts 73.6C against 71.7C.
-  **consequence for placement:** gpu1 is the thermally-limited card behind the chipset at x4. Bursty
-  OCR there is fine; a sustained sweep is not — bench on gpu0, which idles while gpu1 cooks.
-
-**next — NOT RECORDED, and this item has been ◐ since 2026-08-05.** The measurement is
-complete and the operating point is chosen (200W); what is not written down is whether the
-cap is applied persistently across reboot, or whether the card gets repasted. Name one or
-archive this to `done.md` as a measurement.
-**risks** the fit is only valid from a single continuous ramp — do NOT re-fit across pooled
-Prometheus episodes (see above). Any future thermal claim here must query the exporter, not
-spot-read `nvidia-smi`.
-**blocking decisions (USER)** repaste vs. live with 200W.
-
 ### ◐ P21c — budget granularity
 
 Design doc: **`plan/p21-provider-credentials.md`**. P21a–i shipped (archived in `done.md`);
@@ -368,16 +343,22 @@ tried, which is the intended cure.
 **assumption** browsing uses a credential's STATIC headers, matching what the discovery loop
 does; a credential using `authTokenCommand` reports that it cannot be browsed rather than
 sending an unauthenticated request and blaming the endpoint.
-**blocking decisions (USER)** — two:
-1. **Where secrets live.** corrallm persists no secret today and `/api/v1/config/*` serves
-   config as YAML, so a key-management UI turns that endpoint into a disclosure surface.
-   Recommend a `0600` secrets file, never served. P21f/g wait on this.
-2. **The live config still spells OpenRouter's filter `discover:`.** It loads, warns, and is
-   now treated as a DIRECTORY default (it enrols nothing), so **those 12 models stop being
-   served the moment this deploys.** To get a free tier back, declare
-   `extensions.free.virtual` — the pool spans openrouter/groq/cerebras and feeds a lane.
-   Nothing in the `free` LANE breaks either way: its members are declared by name and never
-   included the discovered 12.
+**✅ BOTH BLOCKING DECISIONS RESOLVED 2026-08-24.**
+
+1. **Where secrets live — a `0600` file, never served.** Taken as recommended; nothing
+   contradicted it and no alternative was ever proposed. The constraint that forces it is
+   unchanged: `/api/v1/config/*` serves config as YAML, so a key-management UI that persisted
+   secrets into config would turn a working endpoint into a disclosure surface. Keep secrets
+   out of the config object entirely — not redacted on read, *absent*, so no future handler can
+   leak them by forgetting to redact. P21f/g are unblocked.
+2. **The `discover:` question is MOOT — it already deployed and the consequence is absorbed.**
+   The live config reads `"directory":{"filter":{...}}`, migrated by P26 into the config store;
+   there is no `discover:` left to warn about. The 12 discovered models are already gone and the
+   `free` lane is already down to its two declared members (`groq-gpt-oss-120b`,
+   `cerebras-gpt-oss-120b`). **Measured cost of that loss: 12 requests in 7 days**, one each to
+   groq and cerebras. Not worth a decision.
+   Whether to build a real free pool (`extensions.free.virtual`) is an **icebox** item, not a
+   blocker — see `icebox.md` § Free pool.
 
 ### ◐ P22 — the open tail (KLD baseline, clean head-to-head, probe scoping)
 
@@ -399,8 +380,18 @@ re-derive them.** Three things stayed open:
   (`bench/probes/mcpshell-instructions/task.yaml`), **not here**. Until then, subtract 4 from
   any headline failure count.
 
-**next** pick the KLD reference (Q8_0 is the cheap answer and should be labelled as relative).
-**blocking decisions (USER)** BF16-on-CPU vs Q8_0-relative for the KLD baseline.
+**✅ DECISION RESOLVED 2026-08-24 — Q8_0 baseline, labelled relative-to-Q8_0.** BF16 is
+46.55 GiB against a 32,607 MiB card, so the "proper" reference is CPU-only and would take the
+box out for the duration to produce one number. Q8_0 fits and runs on the GPU.
+
+The label is the whole of the discipline here: every KLD figure derived this way measures
+**divergence from Q8_0, not from truth**, and Q8_0 carries its own small divergence from BF16.
+That is fine for the question actually being asked — "is a sub-Q5 quant meaningfully worse than
+what we serve today" is a *relative* question — and it is wrong for any absolute claim. Write
+the reference into the result or the number will be read as absolute the first time someone
+quotes it.
+
+**next** run the Q8_0-referenced KLD sweep before any sub-Q5 discussion. Nothing else blocks it.
 **optional extensions** surface aliases in the Overview model form rather than only in
 `advancedFields`; 3.8 past 188k needs one of the priced levers, not more window.
 
@@ -476,14 +467,28 @@ full remote control, box1 spawns onto machine 2 — was decided 2026-07-28.
 
 **next** `host.Remote`, integration-testable by running a second agent on another port on box1.
 Then: switch the daemon's default config to the managed one and retire the hand-written file.
-**blocking decisions (USER), surface before the step that needs them:**
-- **Agent lease self-reap on/off, and its TTL.** Decides whether the ledger may ever be
-  released after a host is lost. The trade is "a network blip kills an in-progress cold load"
-  vs "a partition strands 48 GB".
-- **Transport trust.** The agent executes arbitrary shell strings — it is an RCE surface by
-  design.
-- **Whether to spike `proc_pid_rusage`'s `ri_phys_footprint`** for real per-process measurement
-  on darwin before accepting "unmeasurable → ramUsage becomes authoritative".
+**❓ blocking decision (USER) — ONE, and it is `open-questions.md` #1:** agent lease self-reap
+on/off and its TTL. An agent that loses its primary but stays up keeps its backends running
+(`internal/agent/server.go:307` names this an open decision in so many words). The primary side
+is already settled and shipped — no self-reap, adoption reconciles on heartbeat — but the agent
+side is not. Answer it before `host.Remote`, not now.
+
+**✅ Transport trust — RESOLVED 2026-08-24, and it was already answered in the code.** The agent
+executes arbitrary shell strings because that is its function: the primary sends `sh -c` strings
+and the agent runs them. `internal/agent/wire.go:14` states the position and the mitigation —
+*"a remote-code-execution surface by design, and a token is required unless one is explicitly
+waived. Treat exposing it exactly as you would treat exposing a shell."* Enforced at
+`server.go:110` (`agent token required`).
+There is no new trust to grant: corrallm's config already carries `cmd:` strings it execs
+locally, so the agent widens the *reach* of that trust to a second box, not its kind. Accepted as
+designed. **The standing rule that follows from it:** never expose an agent port anywhere you
+would not expose a shell, and never waive the token outside a test.
+
+**◻ Whether to spike `proc_pid_rusage`'s `ri_phys_footprint`** for real per-process measurement
+on darwin — a task, not a decision. Today the Mac declares `noProcessMemory: true` and `ramUsage`
+becomes authoritative there, with validate-time enforcement so a model omitting it is an error
+rather than a box that silently serves one model at a time. That is a working fallback; the spike
+would only improve it. Not blocking.
 
 **Design + the full shipped ordering** (shape (a) vs (b), the enrollment/agent/darwin/failure
 steps, box2's unified-pool decision and the re-enrol repair path, and the agent-addressing rule
@@ -501,25 +506,37 @@ confirm two per-device profiles. The end-to-end check was abandoned mid-session 
 on gpu1.
 **risks** regression tests cover both fixes and the rebuilt binary is deployed, so this is
 confirmation, not discovery.
-**blocking decisions (USER)** **gpu1 is oversubscribed.** The 10GB 3080 (9,877 MiB usable after
-driver reserve) has four claimants — nomic 816 (persistent), chandra 8,240 (sticky,
-input-variable), deepseek 6,676, and any Qwen drafter. They do not fit; a resident deepseek
-evicts chandra. Policy call is yours.
+**✅ DECISION RESOLVED 2026-08-24 — it was never a contest; the usage data settles it.** The
+question was framed as a four-way policy call because it was written without measuring demand.
+Seven days of production traffic:
 
-### ⏸ P9f — conversational grace / comfort-fill on contention
+| model | pool | requests / 7d | dwell | last seen |
+|---|---|---:|---:|---|
+| nomic-embed-text | gpu1, persistent, 806 MiB | 2,588 | 4.7 min | now |
+| chandra-ocr-2 | gpu1, sticky, 6,204 base / 8,240 peak | 1,259 | 57.1 min | now |
+| **deepseek-v4-flash** | gpu1, 6,676 MiB | **2** | **0.0 min** | 2026-08-21 |
 
-Depends on P9e (shipped); optionally P9b for TTS-generated fillers. When a **speech-OUT** realtime session can't be admitted immediately
-or is preempted, mask the delay instead of stalling/cutting — keyed to corrallm's already-computed
-expected delay (Retry-After EWMA + cold-load time): micro (<~300 ms) → nothing; short (~0.3–2 s) →
-injected disfluency ("um", "one moment"); long (>~2 s) → spoken "hold on…" + hold music, session
-**parked** (not killed) and resumed on free. **Explicit, scoped exception to "transparent
-passthrough"** — corrallm *synthesizes/inserts* audio, justified because it's the only layer that
-knows the delay. Only applies to conversational (speech-out) sessions, not transcription-only.
-Start with **pre-recorded canned clips** (deterministic, no TTS dependency); TTS-generated fillers
-later.
+**nomic + chandra at peak = 9,046 MiB of 9,877 usable — they FIT, with 831 MiB spare.** They are
+also the pair actually serving: 3,847 of the 3,849 gpu1 requests in the window. deepseek-v4-flash
+served **two requests in a week** and is in no lane (opt-in by name only), so it is not competing
+for gpu1 — it is occasionally visiting.
 
-**waits-on:** yours — the transparency-tradeoff call. Nothing is built, and it should not be
-until that call is made: this is the one place corrallm would stop being a byte-pipe.
+Confirmed live: the 3080 currently holds nomic (806 MiB) + chandra (6,204 MiB) = 7,010 MiB, and
+the 5090 holds Qwen at 30,370 MiB. The Qwen drafter is on gpu0 with Qwen, not on gpu1 — the
+original four-claimant framing counted it on the wrong card.
+
+**So the policy is: nomic + chandra are gpu1's resident working set; deepseek is on-demand.** No
+model needs removing and no priority order needs inventing. What is worth doing is making that
+explicit rather than emergent — deepseek should not be sticky, so a rare visit cannot evict
+chandra mid-OCR-batch.
+
+**next** confirm deepseek carries no `sticky`/`persistent` in the live config, and set the
+explicit `pool:` when the ramUsage split lands (§6, first item) — that is the mechanism that
+turns this from a measured observation into a declared decision.
+**risks** chandra's footprint is INPUT-driven (`--image-max-tokens 16384`), so its 8,240 peak is
+a recent-window maximum, not a ceiling. The 831 MiB margin is real but thin, and a larger page
+than any yet seen would eat it. This is the same class of miscalculation that OOM'd Qwen3-6 in
+production — quote peaks, not bases.
 
 ### ◻ OSS follow-ups (not blockers)
 
@@ -529,11 +546,12 @@ until that call is made: this is the one place corrallm would stop being a byte-
 
 ---
 
-## 7. Open decisions & known gaps in shipped code
+## 7. Known gaps in shipped code
 
-Resolved decisions and closed gaps are in [`plan/done.md`](done.md). What follows is only
-what is still true and still costs something. Optional extensions and out-of-scope items
-live in [`plan/icebox.md`](icebox.md).
+Resolved decisions and closed gaps are in [`plan/done.md`](done.md); decisions still needing
+you are in [`plan/open-questions.md`](open-questions.md). What follows is only what is still
+true and still costs something. Optional extensions and out-of-scope items live in
+[`plan/icebox.md`](icebox.md).
 
 ### Known gaps — shipped and live with these
 
@@ -552,26 +570,36 @@ live in [`plan/icebox.md`](icebox.md).
   queued-then-served requests accumulate (rejections + sampled depth are already live).
 
 
-- **The qwen 502s are not fully fixed, and the rest is not ours.** P10a made corrallm report
-  honestly (client/upstream cancel → 499, not a mislabeled backend 502) and removed its own latent
-  130 s cap. The *actual* failures still need the **~120 s timeout upstream of corrallm** raised —
-  the `llm.iodesystems.com` front proxy's `proxy_read_timeout` and/or the client. Outside this
-  repo, still outstanding. Streaming (`stream:true`) masks it, since chunks reset the read timeout.
+- ✅ ~~**The qwen 502s need the upstream ~120 s timeout raised.**~~ **No longer observable —
+  measured 2026-08-24, 7 days of production traffic.** Three 499s in the window, at 3.6 s, 6.0 s
+  and 12.8 s — client cancels, not a 120 s guillotine — and the longest SUCCESSFUL request dwelled
+  **4,676 s (78 minutes)**, which no 120 s cap upstream could have survived. Either the front-proxy
+  `proxy_read_timeout` was raised or the traffic mix stopped reaching it. P10a's honest reporting
+  is what makes this checkable at all: a 499 now means what it says. Reopen only if 499s reappear
+  clustered near a round number.
 
 ### Open decisions the USER owns
 
-Each is stated in full beside the work that needs it (§6) — listed here so none is buried:
+**They live in [`plan/open-questions.md`](open-questions.md), and there are two.**
 
-| decision | needed by | §6 slice |
-|---|---|---|
-| Where secrets live (`0600` file, never served?) | P21f/g | P21c budget granularity |
-| The `discover:` → `directory:` deploy drops 12 served models | next deploy | P21c budget granularity |
-| KLD reference: BF16-on-CPU vs Q8_0-relative | any sub-Q5 discussion | P22 open tail |
-| Agent lease self-reap on/off + TTL | `host.Remote` | multi-node |
-| Transport trust (the agent is an RCE surface by design) | `host.Remote` | multi-node |
-| gpu1 oversubscription policy (4 claimants, 9.8 GiB) | now — it evicts in production | VRAM verification |
-| 3080 repaste vs. live with the 200W cap | P19 | thermal envelope |
-| Comfort-fill: may corrallm synthesize audio? | P9f | P9f |
+| # | question | gates | urgency |
+|---|---|---|---|
+| 1 | Agent lease: self-reap on/off, and its TTL | `host.Remote` (§6) | not yet — answer before that step |
+| 2 | `nvidia-power-init.sh` binds power limits by INDEX, not UUID | nothing; it is a live risk | correct today, silently costly if indices swap |
+
+**Six others were closed on 2026-08-24 by checking the box instead of re-reading the plan.**
+The answers and their evidence are recorded in the §6 slices that needed them, not here:
+secrets location (P21c), the `discover:` filter (P21c — moot, already deployed), the KLD
+reference (P22), gpu1 residency (VRAM slice — settled by 7 days of usage), transport trust
+(multi-node — already answered in `wire.go`), and comfort-fill (P9f — never a decision;
+it moved to `icebox.md`). P19's thermal tree closed with them and archived to `done.md`.
+One known gap closed the same way: the upstream ~120 s timeout is no longer observable.
+
+**The lesson worth keeping.** Six of eight "decisions" had already answered themselves — the
+power cap was applied and persistent, the config had migrated, the trust position was written in
+the code, the usage data made a four-way policy call a non-contest. A decision list that is not
+re-checked against the running system becomes a list of questions nobody needs answered, and it
+hides the two that are real.
 
 ---
 

@@ -1639,6 +1639,60 @@ along with the three decisions still owned by the user.
 
 ---
 
+## ✅ P19 — thermal envelope (box1)
+
+The 200 W operating point is applied and persistent, verified against the box on 2026-08-24.
+The one live thread this left — a boot script that sets power limits by INDEX, which P18
+exists to forbid — is a system-config problem, not a corrallm phase, and lives in
+`plan/open-questions.md` #2.
+
+- ◐ **P19 thermal envelope** (box1, 2026-08-05) — the 3080 hit **88°C at 186W with the fan pegged
+  and `0x20 SW Thermal Slowdown` active** during an OCR sweep, while the 5090 sat at 54°C/0%.
+  Measured its thermal response under sustained load rather than guessing: **dT/dP = 0.239 °C/W,
+  intercept 25.8°C** (the intercept recovering intake-air temperature is what says the fit is real).
+  A healthy 3080 is 0.15–0.18 °C/W, so this card's die-to-air path is ~35–60% worse — consistent with
+  five-year-old paste or a packed fin stack, NOT airflow: an airflow/heat-soak problem rises and falls
+  slowly, and this one fell 88→65°C in 30s. The card's own target is 83°C, which the slope puts at
+  ~239W — hence the throttling at a 250W cap. **200W validated over 7 minutes sustained: 71.7°C
+  steady-state (model predicted 73.6), fan 83% not pegged, throttle `0x0004 SW Power Cap` on 193/207
+  samples and ZERO thermal.** At 200W the card is power-limited rather than thermally limited, which
+  is the correct operating point on this cooling. History is persistent in Prometheus —
+  `nvidia_gpu_exporter` on :9835 labels by **GPU UUID**, the same identity the pools bind to, so
+  Grafana joins to pool names for free.
+  **Pulled from Prometheus afterwards, and it corrected the account:** the exposure was not the
+  brief spike a spot `nvidia-smi` reading suggested. Six load episodes, **15.5 cumulative minutes
+  >=80C**, and the two that mattered were a 2.5 min chandra 400 DPI run at a MEAN of 84.9C (during
+  OCR comparison, half an hour before the bench was blamed for it) and the 10.5 min bench sweep at a
+  MEAN of 86.6C. Lesson for any future thermal claim here: query the exporter, do not spot-read.
+  **Do NOT fit the slope across pooled Prometheus episodes** — mixing power caps and soak states
+  gives 0.194 C/W with a 39.6C intercept, and an intercept that is not plausibly intake air is the
+  tell that the fit is contaminated. It predicts 78.4C at 200W against 70.5C actual, where the
+  single continuous ramp (0.239, 25.8C) predicts 73.6C against 71.7C.
+  **consequence for placement:** gpu1 is the thermally-limited card behind the chipset at x4. Bursty
+  OCR there is fine; a sustained sweep is not — bench on gpu0, which idles while gpu1 cooks.
+
+**✅ DECISION RESOLVED 2026-08-24 — the cap is persistent, and repaste is deferred.** Checked
+against the box rather than the plan: `nvidia-smi.service` is **enabled and active**, running
+`/usr/local/sbin/nvidia-power-init.sh` at boot, and the 3080 reads **200.00 W against a 340 W
+default** right now. The operating point was already applied and already survives reboot — this
+item was ◐ for nineteen days over a question the machine had answered.
+
+Repaste is deferred, not refused: the card is power-limited rather than thermally limited at
+200 W, so the degraded die-to-air path costs throughput on the SECONDARY card only. Revisit if
+gpu1 ever takes sustained work — §9's OCR-vs-bench placement rule already keeps sweeps off it.
+
+**⚠ One live problem came out of the check, and it is `open-questions.md` #2:** the boot script
+sets the limits **by index** (`-pl 200 -i 0`), which is the exact identity trap P18 exists to
+forbid. Correct today; silently catastrophic if the indices ever swap.
+
+**risks** the fit is only valid from a single continuous ramp — do NOT re-fit across pooled
+Prometheus episodes (see above). Any future thermal claim here must query the exporter, not
+spot-read `nvidia-smi`.
+**next** nothing. This tree is a completed measurement; it stays in §6 only until the boot-script
+question closes, then it archives.
+
+---
+
 # Dashboard & observability
 
 > These six trees were written into the roadmap under phase numbers that **collide with

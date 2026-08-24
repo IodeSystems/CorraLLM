@@ -92,3 +92,30 @@ CLI to do it.
 *(Multi-node peer awareness was here; it is no longer deferred — `host.Remote` is the last
 step and it is active in `plan.md` §6.)*
 
+## P9f — conversational grace / comfort-fill on contention
+
+*(Moved out of `plan.md` §6 on 2026-08-24. It was listed as a blocking user decision for
+months; nothing was ever waiting on it.)*
+
+Depends on P9e (shipped); optionally P9b for TTS-generated fillers. When a **speech-OUT** realtime session can't be admitted immediately
+or is preempted, mask the delay instead of stalling/cutting — keyed to corrallm's already-computed
+expected delay (Retry-After EWMA + cold-load time): micro (<~300 ms) → nothing; short (~0.3–2 s) →
+injected disfluency ("um", "one moment"); long (>~2 s) → spoken "hold on…" + hold music, session
+**parked** (not killed) and resumed on free. **Explicit, scoped exception to "transparent
+passthrough"** — corrallm *synthesizes/inserts* audio, justified because it's the only layer that
+knows the delay. Only applies to conversational (speech-out) sessions, not transcription-only.
+Start with **pre-recorded canned clips** (deterministic, no TTS dependency); TTS-generated fillers
+later.
+
+**✅ RESOLVED 2026-08-24 — this is not a decision, it is an icebox item, and calling it a
+blocker was the error.** Nothing is built, nothing depends on it, no user has asked for it, and
+no shipped surface degrades without it. It sat in the decision list for months as though work
+were waiting on an answer; nothing was.
+
+It stays parked here rather than moving to `icebox.md` for one reason worth keeping visible: it
+is the **only** proposal on record that would have corrallm synthesize and insert content into a
+stream it is proxying. Everything else in this codebase is a byte-pipe with accounting. If it is
+ever picked up, that is the property being spent, and the trade should be argued on its own
+terms — not inherited from a checkbox.
+
+**waits-on:** nobody. Revisit only if a speech-out workload actually appears.
