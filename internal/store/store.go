@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS activity (
     predicted_per_sec REAL    NOT NULL DEFAULT 0, -- backend-reported generation speed (tg/s)
     req_body          TEXT    NOT NULL DEFAULT '', -- captured request payload, capped (P10b)
     resp_body         TEXT    NOT NULL DEFAULT '', -- captured response payload, capped (P10b)
-    retry_after_ms    INTEGER NOT NULL DEFAULT 0  -- the Retry-After we PROMISED this caller on a 429 (P15)
+    retry_after_ms    INTEGER NOT NULL DEFAULT 0, -- the Retry-After we PROMISED this caller on a 429 (P15)
+    ticket            TEXT    NOT NULL DEFAULT ''  -- one caller's attempt, across every rejection it took (P28)
 );
 CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
 -- Per-key access, COVERING the rollup behind the Keys page.
@@ -65,6 +66,10 @@ CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
 -- Costs ~3 MB and one index to maintain per insert. It REPLACES
 -- idx_activity_key_ts, whose (key, ts) it contains as a prefix; the migration
 -- below drops that one so inserts do not pay for both.
+-- Grouping a caller's attempts into one journey. PARTIAL: only rejected-and-
+-- retried requests carry a ticket, so indexing the empty string on every other
+-- row would be pure write cost for an entry nothing looks up.
+CREATE INDEX IF NOT EXISTS idx_activity_ticket ON activity(ticket, ts) WHERE ticket <> '';
 CREATE INDEX IF NOT EXISTS idx_activity_key_rollup
     ON activity(key, ts, cost_usd, dwell_ms, prompt_tokens, completion_tokens, cached_tokens);
 
@@ -325,6 +330,7 @@ var migrations = []string{
 	// (key, ts) columns and additionally covers the rollup's sums. Keeping both
 	// would charge every insert twice for one access path.
 	`DROP INDEX IF EXISTS idx_activity_key_ts`,
+	`ALTER TABLE activity ADD COLUMN ticket TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE activity ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`,
@@ -690,6 +696,11 @@ type Activity struct {
 	// when" and — by comparing against the caller's next request — whether the
 	// estimate was honest.
 	RetryAfterMS int64
+	// Ticket identifies one caller's ATTEMPT across the rejections it took to
+	// get served — the caller's own request id, or one we minted when we first
+	// turned it away. Empty for a request that was never rejected and sent no
+	// id of its own, which is most of them.
+	Ticket string
 }
 
 // InsertActivity appends a request record to the activity log.
@@ -698,12 +709,12 @@ func (s *Store) InsertActivity(a Activity) error {
 		`INSERT INTO activity (ts, served, placement, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
-		                       finish_reason, load_ms, retry_after_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       finish_reason, load_ms, retry_after_ms, ticket)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
-		a.FinishReason, a.LoadMS, a.RetryAfterMS,
+		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket,
 	)
 	return err
 }
@@ -717,12 +728,12 @@ func (s *Store) ActivityByID(id int64) (Activity, error) {
 		`SELECT id, ts, served, placement, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
-		        finish_reason, load_ms, retry_after_ms
+		        finish_reason, load_ms, retry_after_ms, ticket
 		 FROM activity WHERE id = ?`, id).Scan(
 		&a.ID, &a.TS, &a.Served, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
 		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody,
-		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS)
+		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS, &a.Ticket)
 	return a, err
 }
 
@@ -757,7 +768,8 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 func (s *Store) RecentActivity(limit int, served, key, placement string) ([]Activity, error) {
 	const cols = `id, ts, served, placement, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
-	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms`
+	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms,
+	        ticket`
 	q := `SELECT ` + cols + ` FROM activity`
 	var args []any
 	var where []string
@@ -789,7 +801,7 @@ func (s *Store) RecentActivity(limit int, served, key, placement string) ([]Acti
 		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
 			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS,
-			&a.RetryAfterMS); err != nil {
+			&a.RetryAfterMS, &a.Ticket); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

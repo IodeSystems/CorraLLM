@@ -689,7 +689,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 					continue // advance to the next backend
 				}
 				// rejected or queue-timeout → terminal backoff.
-				promised := writeBackpressure(w, bp)
+				promised := writeBackpressure(w, bp, ensureTicket(r))
 				p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, ReqBody: reqBody,
@@ -962,7 +962,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// Exhausted the list without serving.
 	if bestBP != nil {
 		bestBP.Reason = "exhausted"
-		promised := writeBackpressure(w, bestBP)
+		promised := writeBackpressure(w, bestBP, ensureTicket(r))
 		p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", ReqBody: reqBody,
@@ -1049,7 +1049,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 					lastBP = keepSoonest(lastBP, bp)
 					continue
 				}
-				promised := writeBackpressure(w, bp)
+				promised := writeBackpressure(w, bp, ensureTicket(r))
 				p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, RetryAfterMS: promised})
@@ -1138,7 +1138,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
-		promised := writeBackpressure(w, lastBP)
+		promised := writeBackpressure(w, lastBP, ensureTicket(r))
 		p.logReq(r, store.Activity{Served: served, Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", RetryAfterMS: promised})
@@ -2075,6 +2075,14 @@ func (p *Proxy) log(a store.Activity) {
 // pass their *http.Request rather than repeating clientIP(r) at each site.
 func (p *Proxy) logReq(r *http.Request, a store.Activity) {
 	a.SourceIP = clientIP(r)
+	// Whatever id this request is carrying — the caller's own, or the one we
+	// minted when we rejected it. Stamped here rather than at each call site
+	// because EVERY row of a journey needs it, including the one that finally
+	// succeeds: a journey with no ending is indistinguishable from a caller who
+	// gave up.
+	if a.Ticket == "" {
+		a.Ticket = ticketFrom(r)
+	}
 	p.log(a)
 }
 
@@ -2135,7 +2143,7 @@ func keepSoonest(cur, next *sched.BackpressureError) *sched.BackpressureError {
 // Returns the promise it actually made, in milliseconds, so the activity row
 // records the number the caller received rather than a second rounding of
 // bp.RetryAfter. The two would drift: this floors sub-second estimates to 1s.
-func writeBackpressure(w http.ResponseWriter, bp *sched.BackpressureError) int64 {
+func writeBackpressure(w http.ResponseWriter, bp *sched.BackpressureError, ticket string) int64 {
 	secs := int(bp.RetryAfter.Round(time.Second) / time.Second)
 	if secs < 1 {
 		secs = 1
@@ -2146,18 +2154,25 @@ func writeBackpressure(w http.ResponseWriter, bp *sched.BackpressureError) int64
 	h.Set("X-RateLimit-Capacity", strconv.Itoa(bp.Capacity))
 	h.Set("X-RateLimit-InFlight", strconv.Itoa(bp.InFlight))
 	h.Set("X-RateLimit-Waiting", strconv.Itoa(bp.Waiting))
+	body := map[string]any{
+		"message":     "backend at capacity; retry after backoff",
+		"type":        "backpressure",
+		"reason":      bp.Reason,
+		"retry_after": secs,
+		"capacity":    bp.Capacity,
+		"in_flight":   bp.InFlight,
+		"waiting":     bp.Waiting,
+	}
+	// The ticket goes back in BOTH places on purpose. The header is what a
+	// proxy-aware client reads; the body is what a human reads in a log line,
+	// and what a client that only ever unmarshals the OpenAI error shape can
+	// still find without special-casing headers.
+	if ticket != "" {
+		h.Set(HeaderTicket, ticket)
+		body["ticket"] = ticket
+	}
 	w.WriteHeader(http.StatusTooManyRequests)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"message":     "backend at capacity; retry after backoff",
-			"type":        "backpressure",
-			"reason":      bp.Reason,
-			"retry_after": secs,
-			"capacity":    bp.Capacity,
-			"in_flight":   bp.InFlight,
-			"waiting":     bp.Waiting,
-		},
-	})
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": body})
 	return int64(secs) * 1000
 }
 
