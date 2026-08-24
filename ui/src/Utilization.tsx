@@ -102,8 +102,17 @@ export function Utilization({ minutes = 60 }: { minutes?: number }) {
         <TableHead>
           <TableRow>
             <TableCell>Model</TableCell>
-            <TableCell align="right">In use</TableCell>
+            <TableCell align="right">
+              <Tooltip title="Slots in service now, over slots that exist. A `+n` is the queue on top of them: demand, not occupancy — 1+1/1 is a full slot with somebody behind it, and it is the moment before a rejection.">
+                <span>In use</span>
+              </Tooltip>
+            </TableCell>
             <TableCell align="right">Queue</TableCell>
+            <TableCell align="right">
+              <Tooltip title="Rejected with a come-back-later in this window: the demand that did not fit. A row reading 1/1 with a queue of 0 and a number here was over capacity for the whole window — the slot state is instantaneous, this is what happened.">
+                <span>Turned away</span>
+              </Tooltip>
+            </TableCell>
             <TableCell align="right">
               <Tooltip title="Promises still outstanding: told to come back at a time that has not arrived yet. These are scheduled arrivals the queue depth cannot see.">
                 <span>Promised</span>
@@ -174,12 +183,20 @@ export function Utilization({ minutes = 60 }: { minutes?: number }) {
                 </TableCell>
                 <TableCell align="right">
                   {cap > 0 ? (
-                    <Chip
-                      size="small"
-                      variant={active >= cap ? 'filled' : 'outlined'}
-                      color={active >= cap ? 'warning' : 'default'}
-                      label={`${active} / ${cap}`}
-                    />
+                    <Tooltip
+                      title={
+                        waiting > 0
+                          ? `${active} in service and ${waiting} queued against ${cap} slot(s) — demand is ${active + waiting}.`
+                          : `${active} in service against ${cap} slot(s).`
+                      }
+                    >
+                      <Chip
+                        size="small"
+                        variant={active >= cap ? 'filled' : 'outlined'}
+                        color={active + waiting > cap ? 'error' : active >= cap ? 'warning' : 'default'}
+                        label={waiting > 0 ? `${active}+${waiting} / ${cap}` : `${active} / ${cap}`}
+                      />
+                    </Tooltip>
                   ) : (
                     // No live scheduler state: the model was called in the window
                     // but nothing has been admitted on it since this process
@@ -191,6 +208,9 @@ export function Utilization({ minutes = 60 }: { minutes?: number }) {
                 </TableCell>
                 <TableCell align="right">
                   <Zeroable n={waiting} color={waiting > 0 ? C.warn : undefined} />
+                </TableCell>
+                <TableCell align="right">
+                  <Zeroable n={Number(r.turnedAway)} color={C.error} />
                 </TableCell>
                 <TableCell align="right">
                   <Zeroable n={Number(r.promised)} />
