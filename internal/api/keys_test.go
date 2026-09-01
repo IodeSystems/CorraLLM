@@ -17,7 +17,7 @@ func boolp(b bool) *bool { return &b }
 func TestKeysDistinguishesAssignedFromFellThrough(t *testing.T) {
 	h := &Handlers{}
 	h.SetConfig(&config.Config{
-		Keys: map[string]string{"aw3": "interactive"},
+		Keys: config.GroupKeys(map[string]string{"aw3": "interactive"}),
 		PriorityGroups: map[string]config.PriorityGroup{
 			"interactive": {Weight: 10},
 			"default":     {Weight: 1},
@@ -67,7 +67,7 @@ func TestUnknownKeyPolicyIsExplicitAndDefaultsToAccepting(t *testing.T) {
 
 	// And the resolver reports recognition, which is what enrollment keys on.
 	cfg := &config.Config{
-		Keys:           map[string]string{"known": "batch"},
+		Keys:           config.GroupKeys(map[string]string{"known": "batch"}),
 		PriorityGroups: map[string]config.PriorityGroup{"batch": {Weight: 1}},
 		UnknownKeys:    config.UnknownKeyPolicy{Group: "quarantine"},
 	}

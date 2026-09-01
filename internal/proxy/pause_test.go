@@ -49,7 +49,7 @@ func pauseLaneFixture(t *testing.T) (*chi.Mux, *proc.Manager) {
 			"m": {Members: []config.LaneMember{{Model: "m-1"}, {Model: "m-2"}}},
 		},
 		PriorityGroups: map[string]config.PriorityGroup{"g": {Weight: 1}},
-		Keys:           map[string]string{"k": "g"},
+		Keys:           config.GroupKeys(map[string]string{"k": "g"}),
 	}
 	mgr := proc.NewManager(cfg)
 	t.Cleanup(mgr.Shutdown)

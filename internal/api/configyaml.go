@@ -245,9 +245,12 @@ func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*Conf
 					group, c.UnknownKeys.FallbackGroup()))
 			}
 			if c.Keys == nil {
-				c.Keys = map[string]string{}
+				c.Keys = map[string]config.KeyPolicy{}
 			}
-			c.Keys[name] = group
+			// Preserve the key's escalations: this endpoint sets where a key
+			// LANDS, and dropping what it may ask for would silently revoke a
+			// permission nobody touched.
+			c.Keys[name] = config.KeyPolicy{Group: group, Allow: c.Keys[name].Allow}
 		default:
 			return huma.Error400BadRequest("kind must be model, server, lane, group, extension, tool or key")
 		}
@@ -383,9 +386,12 @@ func (h *Handlers) DeleteEntry(_ context.Context, in *DeleteEntryInput) (*Config
 			if _, ok := c.PriorityGroups[in.Name]; !ok {
 				return huma.Error404NotFound(fmt.Sprintf("no priority group %q", in.Name))
 			}
+			// A key that may ESCALATE into this group is using it too — deleting
+			// the group would leave that permission naming nothing, which
+			// validation then rejects on the next load.
 			var keys []string
-			for k, g := range c.Keys {
-				if g == in.Name {
+			for k, pol := range c.Keys {
+				if pol.Group == in.Name || pol.Allow[in.Name] {
 					keys = append(keys, k)
 				}
 			}

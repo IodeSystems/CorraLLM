@@ -338,7 +338,7 @@ func TestQualityDegradeRouting(t *testing.T) {
 				OnSaturated: map[string]config.Stage{"local": {Spill: true}},
 			},
 		},
-		Keys: map[string]string{"strict": "strict", "lax": "lax"},
+		Keys: config.GroupKeys(map[string]string{"strict": "strict", "lax": "lax"}),
 	}
 	r := chi.NewRouter()
 	New(cfg, mgr, sched.New(), st).Mount(r)
@@ -415,7 +415,7 @@ func TestFallThroughSpill(t *testing.T) {
 		PriorityGroups: map[string]config.PriorityGroup{
 			"g": {Weight: 1, OnSaturated: map[string]config.Stage{"local": {Spill: true}}},
 		},
-		Keys: map[string]string{"k": "g"},
+		Keys: config.GroupKeys(map[string]string{"k": "g"}),
 	}
 	r := chi.NewRouter()
 	New(cfg, mgr, sched.New(), st).Mount(r)
@@ -470,7 +470,7 @@ func TestExhaustedAllSpill(t *testing.T) {
 		PriorityGroups: map[string]config.PriorityGroup{
 			"g": {Weight: 1, OnSaturated: map[string]config.Stage{"local": {Spill: true}}},
 		},
-		Keys: map[string]string{"k": "g"},
+		Keys: config.GroupKeys(map[string]string{"k": "g"}),
 	}
 	r := chi.NewRouter()
 	New(cfg, mgr, sched.New(), st).Mount(r)
@@ -541,7 +541,7 @@ func TestPreemptionServesHigherGroup(t *testing.T) {
 			"hi": {Weight: 10,
 				OnSaturated: map[string]config.Stage{"local": {Preempt: true}}},
 		},
-		Keys: map[string]string{"lokey": "lo", "hikey": "hi"},
+		Keys: config.GroupKeys(map[string]string{"lokey": "lo", "hikey": "hi"}),
 	}
 	r := chi.NewRouter()
 	New(cfg, mgr, sched.New(), st).Mount(r)
@@ -1570,7 +1570,7 @@ func TestRealtimePreemptAbortsSession(t *testing.T) {
 				OnSaturated: map[string]config.Stage{"default": {Reject: true}}},
 			"hi": {Weight: 10, OnSaturated: map[string]config.Stage{"local": {Preempt: true}}},
 		},
-		Keys: map[string]string{"lokey": "lo", "hikey": "hi"},
+		Keys: config.GroupKeys(map[string]string{"lokey": "lo", "hikey": "hi"}),
 	}
 	r := chi.NewRouter()
 	New(cfg, mgr, sched.New(), st).Mount(r)
@@ -1700,7 +1700,7 @@ func TestCapabilitiesManifest(t *testing.T) {
 		PriorityGroups: map[string]config.PriorityGroup{
 			"interactive": {Weight: 10, Interruptible: false},
 		},
-		Keys: map[string]string{"secret-key-aw3": "interactive"},
+		Keys: config.GroupKeys(map[string]string{"secret-key-aw3": "interactive"}),
 	}
 	st, _ := store.Open(context.Background(), ":memory:")
 	defer func() { _ = st.Close() }()

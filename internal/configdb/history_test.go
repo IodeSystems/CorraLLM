@@ -15,7 +15,7 @@ func cfgWithKeys(keys ...string) *config.Config {
 	}
 	return &config.Config{
 		PriorityGroups: map[string]config.PriorityGroup{"default": {Weight: 1}},
-		Keys:           m,
+		Keys:           config.GroupKeys(m),
 	}
 }
 

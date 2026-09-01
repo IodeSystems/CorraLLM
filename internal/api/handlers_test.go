@@ -173,7 +173,7 @@ func TestOverview(t *testing.T) {
 		PriorityGroups: map[string]config.PriorityGroup{
 			"batch": {Weight: 1, Interruptible: true, OnSaturated: map[string]config.Stage{"local": {Queue: true}}},
 		},
-		Keys: map[string]string{"ragtag": "batch"},
+		Keys: config.GroupKeys(map[string]string{"ragtag": "batch"}),
 	}
 	h := &Handlers{Cfg: cfg}
 	out, err := h.Overview(context.Background(), &OverviewInput{})
@@ -356,7 +356,7 @@ func TestUsageSeriesByGroup(t *testing.T) {
 		PriorityGroups: map[string]config.PriorityGroup{
 			"interactive": {Weight: 10}, "batch": {Weight: 1},
 		},
-		Keys: map[string]string{"aw3": "interactive", "ragtag": "batch"},
+		Keys: config.GroupKeys(map[string]string{"aw3": "interactive", "ragtag": "batch"}),
 	}
 	h := &Handlers{Store: st, Cfg: cfg}
 	out, err := h.UsageSeriesByGroup(context.Background(), &UsageSeriesInput{WindowHours: 2, BucketMinutes: 60})

@@ -43,7 +43,7 @@ func TestEnrolAKeyByAssigningItAGroup(t *testing.T) {
 		t.Fatalf("enrolling a key should succeed: %v", err)
 	}
 	saved := reloadStored(t, h, "after enrolling a key")
-	if saved.Keys["newcomer"] != "batch" {
+	if saved.Keys["newcomer"].Group != "batch" {
 		t.Fatalf("keys = %v, want newcomer→batch persisted", saved.Keys)
 	}
 	name, g, recognized := saved.ResolveGroupRecognized("newcomer")
