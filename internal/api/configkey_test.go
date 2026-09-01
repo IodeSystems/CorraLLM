@@ -73,3 +73,62 @@ func TestAssigningAnUnknownGroupIsRejected(t *testing.T) {
 		t.Error("a rejected assignment must not persist")
 	}
 }
+
+// A key may be written as a policy, not just a group name — otherwise the
+// escalation the config and the database both support has no way in.
+func TestEnrolAKeyWithEscalations(t *testing.T) {
+	h := storeBackedHandlers(t, &config.Config{
+		PriorityGroups: map[string]config.PriorityGroup{
+			"batch": {Weight: 1}, "interactive": {Weight: 10},
+		},
+	})
+	if err := putYAML(t, h, "key", "sk-aw4", "default: batch\ninteractive: true\n"); err != nil {
+		t.Fatalf("enrolling a key with escalations should succeed: %v", err)
+	}
+	saved := reloadStored(t, h, "after enrolling a policy key")
+	pol := saved.Keys["sk-aw4"]
+	if pol.Group != "batch" {
+		t.Errorf("Group = %q, want batch", pol.Group)
+	}
+	if !pol.Allow["interactive"] {
+		t.Errorf("Allow = %+v, want interactive", pol.Allow)
+	}
+	// And it resolves: the whole point is that sk-aw4:interactive is honoured.
+	if cr := saved.ResolveCaller("sk-aw4:interactive"); cr.GroupName != "interactive" || cr.Denied {
+		t.Errorf("resolved %+v, want interactive granted", cr)
+	}
+}
+
+// An escalation to a group that does not exist is refused HERE, where somebody
+// is reading the error, rather than at request time where nothing says why.
+func TestEnrolRejectsUnknownEscalation(t *testing.T) {
+	h := storeBackedHandlers(t, &config.Config{
+		PriorityGroups: map[string]config.PriorityGroup{"batch": {Weight: 1}},
+	})
+	if err := putYAML(t, h, "key", "sk-aw4", "default: batch\nghost: true\n"); err == nil {
+		t.Error("want an error for an escalation to an unknown group")
+	}
+}
+
+// The bare-string form sets where a key LANDS. It must not silently revoke
+// escalations nobody touched.
+func TestBareGroupFormKeepsExistingEscalations(t *testing.T) {
+	h := storeBackedHandlers(t, &config.Config{
+		PriorityGroups: map[string]config.PriorityGroup{
+			"batch": {Weight: 1}, "interactive": {Weight: 10},
+		},
+	})
+	if err := putYAML(t, h, "key", "sk-aw4", "default: batch\ninteractive: true\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := putYAML(t, h, "key", "sk-aw4", "interactive\n"); err != nil {
+		t.Fatal(err)
+	}
+	pol := reloadStored(t, h, "after a bare-group rewrite").Keys["sk-aw4"]
+	if pol.Group != "interactive" {
+		t.Errorf("Group = %q, want the reassignment to interactive", pol.Group)
+	}
+	if !pol.Allow["interactive"] {
+		t.Errorf("Allow = %+v; a bare-group write must not revoke escalations", pol.Allow)
+	}
+}

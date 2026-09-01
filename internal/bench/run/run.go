@@ -1039,7 +1039,7 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		// The implicit-compaction sink carries a full CompactionInfo (before/after
 		// are populated by the Shaper's compactOldest), so the size metric is
 		// captured on both the forceCompact and the budget-pressure paths.
-		OnCompaction: func(ci agent.CompactionInfo) {
+		OnCompactionComplete: func(ci agent.CompactionInfo) {
 			sc.mu.Lock()
 			sc.compactions++
 			sc.compTotal++

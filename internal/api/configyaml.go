@@ -227,30 +227,47 @@ func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*Conf
 			}
 			c.Tools[name] = t
 		case "key":
-			var group string
-			if err := decode(&group); err != nil {
+			// Both written forms, because KeyPolicy.UnmarshalYAML accepts both:
+			// a bare group name, or a policy naming a default group plus the
+			// groups this key may escalate into.
+			var pol config.KeyPolicy
+			if err := decode(&pol); err != nil {
 				return err
 			}
-			group = strings.TrimSpace(group)
-			if group == "" {
-				return huma.Error400BadRequest("a key entry is the GROUP name it belongs to")
+			pol.Group = strings.TrimSpace(pol.Group)
+			if pol.Group == "" {
+				return huma.Error400BadRequest(
+					"a key entry is either a GROUP name, or a mapping with `default: <group>` " +
+						"and `<group>: true` for each escalation it may request")
 			}
-			// Reject an unknown group rather than accepting it: ResolveGroup
+			// Reject an unknown group rather than accepting it: ResolveCaller
 			// falls back silently, so a typo would look like a successful
 			// assignment and quietly leave the caller in the fallback lane at
 			// weight 1 — the failure this endpoint exists to end.
-			if _, ok := c.PriorityGroups[group]; !ok && group != c.UnknownKeys.FallbackGroup() {
+			if _, ok := c.PriorityGroups[pol.Group]; !ok && pol.Group != c.UnknownKeys.FallbackGroup() {
 				return huma.Error400BadRequest(fmt.Sprintf(
 					"no priority group %q; assigning it would silently resolve to %q",
-					group, c.UnknownKeys.FallbackGroup()))
+					pol.Group, c.UnknownKeys.FallbackGroup()))
+			}
+			// Same argument one level down: an escalation naming a group that
+			// does not exist is refused at request time with nothing saying why,
+			// so it is refused here instead, where someone is reading the error.
+			for g := range pol.Allow {
+				if _, ok := c.PriorityGroups[g]; !ok {
+					return huma.Error400BadRequest(fmt.Sprintf(
+						"key %q may not escalate to %q: no such priority group", name, g))
+				}
 			}
 			if c.Keys == nil {
 				c.Keys = map[string]config.KeyPolicy{}
 			}
-			// Preserve the key's escalations: this endpoint sets where a key
-			// LANDS, and dropping what it may ask for would silently revoke a
-			// permission nobody touched.
-			c.Keys[name] = config.KeyPolicy{Group: group, Allow: c.Keys[name].Allow}
+			// The bare-string form carries no escalations, and must not silently
+			// REVOKE the ones a key already had — that endpoint sets where a key
+			// lands. A mapping states the whole policy and replaces it.
+			if len(pol.Allow) == 0 {
+				pol.Allow = c.Keys[name].Allow
+			}
+			c.Keys[name] = pol
 		default:
 			return huma.Error400BadRequest("kind must be model, server, lane, group, extension, tool or key")
 		}
