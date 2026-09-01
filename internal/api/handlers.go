@@ -456,8 +456,8 @@ type UtilizationRow struct {
 	// so `chat` and the model behind it both report the same busy slot — and a
 	// reader with no way to tell them apart sees two slots where there is one,
 	// and a column that sums to nothing real.
-	Lane    bool     `json:"lane" doc:"This name is a lane: its live load is the sum of the members below, not separate capacity."`
-	Members []string `json:"members" doc:"For a lane, the served names whose slots it is reporting."`
+	Lane    bool                `json:"lane" doc:"This name is a lane: its live load is the sum of the members below, not separate capacity."`
+	Members []UtilizationMember `json:"members" doc:"For a lane, the rungs whose slots it is reporting, in fall-through order."`
 	// Live, instantaneous — from the scheduler, summed over the backends this
 	// served name resolves to.
 	Capacity int `json:"capacity" doc:"Admission slots across this name's backends; 0 if none has been touched since start."`
@@ -486,6 +486,34 @@ type UtilizationRow struct {
 	ConfiguredDepth  int  `json:"configuredDepth" doc:"scheduler.maxQueueDepth as configured (0 = unbounded)."`
 	ReachableDepth   int  `json:"reachableDepth" doc:"How deep the queue can get before maxWait times the front waiter out: capacity × maxWait / meanService. 0 if not computable."`
 	DepthUnreachable bool `json:"depthUnreachable" doc:"Configured depth exceeds what maxWait allows — the depth bound is dead config, callers always time out first."`
+}
+
+// UtilizationMember is one rung of a lane, with enough state to answer the two
+// questions a lane name raises: which of these is warm right now, and which one
+// could take the work if it were not.
+//
+// A bare name list could answer neither. `chat` reporting "0/1 in use" says
+// nothing about whether that is one loaded model sitting idle or four models
+// none of which is loaded — and those are opposite situations for the caller
+// arriving next: the first serves immediately, the second pays a cold spawn.
+type UtilizationMember struct {
+	Model string `json:"model" doc:"Served model this rung resolves to."`
+	// State is residency, resolved by PROCESS like everywhere else — an
+	// extension's models share one process and therefore one state.
+	// Empty for a remote rung: residency is not a fact about a host we do not
+	// run, and reporting one as absent would invite a load that means nothing.
+	State     string `json:"state" doc:"absent|loading|ready|failed|evicting, or 'stopping' mid-teardown. Empty when remote."`
+	Remote    bool   `json:"remote" doc:"Served by a host corrallm does not run: nothing to load, always available."`
+	Spawnable bool   `json:"spawnable" doc:"A local process backs it — its own cmd, or its hosting extension's."`
+	// Paused is why a rung that looks loadable is not: the walk skips it until
+	// resumed, so a lane can be entirely "absent" and still not spawn anything.
+	Paused      bool   `json:"paused" doc:"Out of service by operator order: the walk skips it and it will not spawn."`
+	PauseReason string `json:"pauseReason" doc:"Why it is paused (operator-supplied)."`
+	// This rung's share of the lane's live load, so a busy lane says WHICH rung
+	// is busy.
+	Capacity int `json:"capacity" doc:"This rung's admission slots; 0 if it has never been admitted to since start."`
+	Active   int `json:"active" doc:"Slots of this rung in service right now."`
+	Waiting  int `json:"waiting" doc:"Callers queued on this rung right now."`
 }
 
 // UtilizationOutput is the per-model pressure table.
@@ -538,6 +566,52 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 	for _, b := range h.Sched.Snapshot().Backends {
 		byBackend[b.Backend] = b
 	}
+	// Residency and pause state, so a lane can say which rung is warm and which
+	// merely could be. Keyed by PROCESS, matching the manager: an extension's
+	// models share one process, and keying by model name reported whichever
+	// sibling triggered the spawn as ready while the rest read absent.
+	stateByProc := map[string]string{}
+	stoppingProcs := map[string]bool{}
+	pausedProcs := map[string]proc.Pause{}
+	if h.Mgr != nil {
+		snap := h.Mgr.Snapshot()
+		for _, m := range snap.Models {
+			if m.Remote {
+				continue // no local process; State is not a residency fact here
+			}
+			stateByProc[m.ProcKey] = m.State
+		}
+		for _, k := range snap.Stopping {
+			stoppingProcs[k] = true
+		}
+		for _, p := range h.Mgr.Pauses() {
+			pausedProcs[p.Key] = p
+		}
+	}
+	member := func(c config.Candidate, b sched.BackendLoad) UtilizationMember {
+		key := c.Model.ProcKey(c.Name)
+		m := UtilizationMember{
+			Model:     c.Name,
+			Remote:    c.Model.Remote(),
+			Spawnable: c.Model.LocalProcess(),
+			Capacity:  b.Capacity, Active: b.Active, Waiting: b.Waiting,
+		}
+		if !m.Remote {
+			// Mid-teardown is neither resident nor loadable: the pools are freed
+			// but a load aimed at it is refused until the process exits.
+			if stoppingProcs[key] {
+				m.State = "stopping"
+			} else if st, ok := stateByProc[key]; ok {
+				m.State = st
+			} else {
+				m.State = string(proc.StateAbsent)
+			}
+		}
+		if p, ok := pausedProcs[key]; ok {
+			m.Paused, m.PauseReason = true, p.Reason
+		}
+		return m
+	}
 	attach := func(served string) {
 		cands, ok := h.config().ResolveServed(served)
 		if !ok {
@@ -547,11 +621,17 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 		// A name that resolves to something other than itself is a lane: it owns
 		// no slots, it reports the slots of whatever it resolves to. Recorded so
 		// the reader is not left summing one busy slot twice.
+		// Deduplicated by name: a provider with several credentials expands to one
+		// candidate per account, which is a routing fact and not a second rung —
+		// the reader would see the same model listed twice with one residency.
+		listed := map[string]bool{}
 		for _, c := range cands {
-			if c.Name != served {
-				r.Lane = true
-				r.Members = append(r.Members, c.Name)
+			if c.Name == served || listed[c.Name] {
+				continue
 			}
+			listed[c.Name] = true
+			r.Lane = true
+			r.Members = append(r.Members, member(c, byBackend[c.Name]))
 		}
 		for _, c := range cands {
 			b, ok := byBackend[c.Name]

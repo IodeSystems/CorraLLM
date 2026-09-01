@@ -4,7 +4,10 @@ import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import react from '@vitejs/plugin-react-swc'
 
 // UI (Vite) on 6503; Go API on 6502. Proxy every server surface (REST under
-// /api/v1, GraphQL at /api/graphql, schema views under /api/schema).
+// /api/v1, GraphQL at /api/graphql, schema views under /api/schema) — plus
+// /health, which is NOT under /api: the auth gate probes it to learn whether
+// the server runs with --insecure, and unproxied it got Vite's index.html and
+// fell back to demanding a token no insecure server would accept.
 export default defineConfig({
   // The TanStack Router plugin must run before react; it generates src/routeTree.gen.ts
   // from src/routes/ (file-based routing).
@@ -19,6 +22,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': { target: 'http://localhost:6502', changeOrigin: true, ws: true },
+      '/health': { target: 'http://localhost:6502', changeOrigin: true },
     },
   },
 })

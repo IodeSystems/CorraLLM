@@ -42,7 +42,17 @@ const UtilizationDoc = graphql(/* GraphQL */ `
         rows {
           served
           lane
-          members
+          members {
+            model
+            state
+            remote
+            spawnable
+            paused
+            pauseReason
+            capacity
+            active
+            waiting
+          }
           capacity
           active
           waiting
@@ -68,6 +78,121 @@ const UtilizationDoc = graphql(/* GraphQL */ `
     }
   }
 `)
+
+type LaneMember = {
+  model: string
+  state: string
+  remote: boolean
+  spawnable: boolean
+  paused: boolean
+  pauseReason: string
+  capacity: number | string
+  active: number | string
+  waiting: number | string
+}
+
+// What one rung is doing, and whether it could take work if asked.
+//
+// Three outcomes, and they are what the lane chip exists to distinguish:
+// `warm` serves the next caller immediately, `cold` serves it after a spawn,
+// and `blocked` never serves it at all — a lane of four models with three
+// paused is one model wearing a lane's name.
+function rungStatus(m: LaneMember): { kind: 'warm' | 'cold' | 'blocked'; text: string; color: string } {
+  if (m.paused) {
+    return {
+      kind: 'blocked',
+      text: m.pauseReason ? `paused — ${m.pauseReason}` : 'paused — the walk skips it',
+      color: C.warn,
+    }
+  }
+  // Residency is not a fact about a host we do not run: a remote rung is always
+  // available and there is nothing to load, so it is neither warm nor cold.
+  if (m.remote) return { kind: 'warm', text: 'remote — nothing to load', color: C.accent }
+  switch (m.state) {
+    case 'ready':
+      return { kind: 'warm', text: 'loaded', color: C.ok }
+    case 'loading':
+      return { kind: 'cold', text: 'loading now', color: C.warn }
+    case 'evicting':
+      return { kind: 'cold', text: 'unloading', color: C.warn }
+    case 'stopping':
+      return { kind: 'blocked', text: 'stopping — a load is refused until it exits', color: C.warn }
+    case 'failed':
+      return { kind: 'cold', text: 'last load failed', color: C.error }
+    default:
+      return {
+        kind: 'cold',
+        text: m.spawnable ? 'not loaded — spawns on demand' : 'not loaded',
+        color: C.textFaint,
+      }
+  }
+}
+
+// A long ladder (a pool lane resolves to a dozen) would run off the screen as a
+// tooltip. The warm rungs are the answer to "what is loaded", so they are never
+// the ones truncated.
+const RUNGS_SHOWN = 8
+
+function LaneTooltip({ lane, members }: { lane: string; members: readonly LaneMember[] }) {
+  const rows = members.map((m) => ({ m, s: rungStatus(m) }))
+  const warm = rows.filter((r) => r.s.kind === 'warm').length
+  const cold = rows.filter((r) => r.s.kind === 'cold').length
+  const blocked = rows.length - warm - cold
+  // Ladder order is kept — it is the order the walk tries them in, and a list
+  // sorted by state would quietly contradict the line above it. Truncation
+  // takes from the middle instead: a warm rung past the cut is the one fact
+  // this tooltip exists to show, so it is shown out of place rather than lost.
+  const head = rows.slice(0, RUNGS_SHOWN)
+  const tailWarm = rows.slice(RUNGS_SHOWN).filter((r) => r.s.kind === 'warm')
+  const hidden = rows.length - head.length - tailWarm.length
+  const line = ({ m, s }: (typeof rows)[number]) => {
+    const cap = Number(m.capacity)
+    const active = Number(m.active)
+    const waiting = Number(m.waiting)
+    return [
+      <Typography key={`${m.model}-n`} variant="caption" sx={{ color: s.color }}>
+        {s.kind === 'warm' ? '\u25cf' : s.kind === 'cold' ? '\u25cb' : '\u2298'} {m.model}
+      </Typography>,
+      <Typography key={`${m.model}-s`} variant="caption" sx={{ color: C.textMuted }}>
+        {s.text}
+      </Typography>,
+      <Typography key={`${m.model}-l`} variant="caption" sx={{ color: C.textFaint }}>
+        {cap > 0 ? `${active}${waiting > 0 ? `+${waiting}` : ''} / ${cap}` : ''}
+      </Typography>,
+    ]
+  }
+  return (
+    <Box sx={{ py: 0.5 }}>
+      <Typography variant="caption" sx={{ display: 'block', mb: 0.75 }}>
+        <b>{lane}</b> is a lane, not a backend — tried top to bottom, and its load is these
+        rungs&apos; load counted once.
+      </Typography>
+      <Box
+        sx={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', columnGap: 1.5, rowGap: 0.25 }}
+      >
+        {head.map(line)}
+        {hidden > 0 && (
+          <Typography
+            key="hidden"
+            variant="caption"
+            sx={{ gridColumn: '1 / -1', color: C.textFaint }}
+          >
+            … {hidden} more not shown
+          </Typography>
+        )}
+        {tailWarm.map(line)}
+      </Box>
+      <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: C.textMuted }}>
+        {warm === 0
+          ? cold === 0
+            ? 'Nothing here can serve a request.'
+            : `Nothing is loaded — the next caller pays a cold start on one of ${cold}.`
+          : `${warm} ready now, ${cold} more could load.`}
+        {blocked > 0 && ` ${blocked} shut out.`}
+      </Typography>
+    </Box>
+  )
+}
 
 // A dash reads as "nothing here"; a 0 reads as a measurement. Most of these
 // columns are genuinely empty most of the time, so they get the dash.
@@ -166,16 +291,34 @@ export function Utilization({ minutes = 60 }: { minutes?: number }) {
               <TableRow key={r.served} hover>
                 <TableCell>
                   {r.served}
-                  {r.lane && (
-                    // Without this the same busy slot appears twice — once as
-                    // the lane, once as the model it resolves to — and the
-                    // column reads as two slots where there is one.
-                    <Tooltip
-                      title={`A lane, not a backend: the slots below are ${(r.members ?? []).join(', ')}. Its load is theirs, counted once.`}
-                    >
-                      <Chip size="small" variant="outlined" label="lane" sx={{ ml: 1 }} />
-                    </Tooltip>
-                  )}
+                  {r.lane &&
+                    (() => {
+                      // Without this the same busy slot appears twice — once as
+                      // the lane, once as the model it resolves to — and the
+                      // column reads as two slots where there is one.
+                      //
+                      // The count is on the CHIP because "lane" alone said only
+                      // that the row was an aggregate — not of what, nor whether
+                      // any of it was warm. A lane reading 0/1 in use is one
+                      // model idling or four models none of which is loaded, and
+                      // those are opposite answers for the next caller.
+                      const members: readonly LaneMember[] = r.members ?? []
+                      const warm = members.filter((m) => rungStatus(m).kind === 'warm').length
+                      return (
+                        <Tooltip
+                          title={<LaneTooltip lane={r.served} members={members} />}
+                          slotProps={{ tooltip: { sx: { maxWidth: 460 } } }}
+                        >
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            color={warm === 0 ? 'warning' : 'default'}
+                            label={`lane ${warm}/${members.length} ready`}
+                            sx={{ ml: 1 }}
+                          />
+                        </Tooltip>
+                      )
+                    })()}
                   {r.depthUnreachable && (
                     // Two settings that contradict each other. Worth saying out
                     // loud: it means every rejection here will be a timeout, and

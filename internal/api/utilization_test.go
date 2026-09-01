@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
+	"gopkg.in/yaml.v3"
 )
 
 // TestUtilization: the row set is what was ASKED FOR in the window (not the
@@ -90,5 +92,152 @@ func TestUtilization(t *testing.T) {
 	}
 	if out.Body.Minutes != 60 {
 		t.Errorf("minutes = %d, want the 60 default", out.Body.Minutes)
+	}
+}
+
+// TestUtilizationLaneMembers: a lane row carries its rungs in fall-through
+// order, each tagged with whether it can take work — loaded, loadable, remote,
+// or shut out by a pause. Without this the lane chip could only say "this row
+// is an aggregate", which is not the question a lane raises.
+func TestUtilizationLaneMembers(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UnixMilli()
+	if err := st.InsertActivity(store.Activity{TS: now - 60_000, Served: "chat", Status: 200}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Models: map[string]config.Model{
+			// Spawnable, never loaded: the cold rung a caller pays a spawn for.
+			"local-a": {Cmd: "run-a", Server: "box1"},
+			// Paused: still spawnable on paper, but the walk skips it.
+			"local-b": {Cmd: "run-b", Server: "box1"},
+			// Remote: holds no residency, so it reports no state at all.
+			"remote-c": {Proxy: hostNode("https://api.example.com")},
+		},
+		Lanes: map[string]config.Lane{
+			"chat": {Members: []config.LaneMember{{Model: "local-a"}, {Model: "local-b"}, {Model: "remote-c"}}},
+		},
+	}
+	mgr := proc.NewManager(cfg)
+	h := &Handlers{Store: st, Sched: sched.New(), Cfg: cfg, Mgr: mgr}
+	if out, err := h.PauseModel(context.Background(), pauseInput("local-b", "", "gpu needed")); err != nil {
+		t.Fatal(err)
+	} else if !out.Body.OK {
+		t.Fatalf("pause local-b = %+v", out.Body)
+	}
+
+	out, err := h.Utilization(context.Background(), &UtilizationInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lane UtilizationRow
+	for _, r := range out.Body.Rows {
+		if r.Served == "chat" {
+			lane = r
+		}
+	}
+	if !lane.Lane {
+		t.Fatalf("chat is not marked a lane: %+v", out.Body.Rows)
+	}
+	if len(lane.Members) != 3 {
+		t.Fatalf("members = %+v, want 3 rungs", lane.Members)
+	}
+	// Fall-through order, not map order: the first rung is the one tried first.
+	if lane.Members[0].Model != "local-a" || lane.Members[2].Model != "remote-c" {
+		t.Errorf("members out of ladder order: %+v", lane.Members)
+	}
+	if a := lane.Members[0]; a.State != "absent" || !a.Spawnable || a.Remote || a.Paused {
+		t.Errorf("local-a = %+v; want an absent, spawnable, unpaused local rung", a)
+	}
+	if b := lane.Members[1]; !b.Paused || b.PauseReason != "gpu needed" {
+		t.Errorf("local-b = %+v; want paused with the operator's reason", b)
+	}
+	if c := lane.Members[2]; !c.Remote || c.State != "" || c.Spawnable {
+		t.Errorf("remote-c = %+v; want remote with no residency state", c)
+	}
+}
+
+// hostNode builds the scalar `proxy:` node a pure-proxy model carries.
+func hostNode(s string) yaml.Node {
+	var n yaml.Node
+	n.SetString(s)
+	return n
+}
+
+// TestUtilizationLaneDedupesCandidatesByName: a provider holding several
+// credentials expands ONE served name into one candidate per account. That is a
+// routing fact — which key pays — and not a second rung of the ladder.
+//
+// Listed raw, the same model appears twice with one residency between them, so
+// a lane of one model reads "0/2 ready" and the chip's own count contradicts
+// what is loaded.
+func TestUtilizationLaneDedupesCandidatesByName(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UnixMilli()
+	if err := st.InsertActivity(store.Activity{TS: now - 60_000, Served: "chat", Status: 200}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two accounts on one provider, then a lane over the single model they
+	// serve. Loaded through the real resolution path — Validate alone leaves the
+	// provided models unmaterialised, which would assert nothing.
+	cfg, err := config.LoadBytesForTest([]byte(`
+extensions:
+  free:
+    providers:
+      openrouter:
+        proxy: {host: openrouter.ai, port: 443, basePath: /api}
+        provides:
+          m: {type: chat, upstream: vendor/m}
+        credentials:
+          - name: personal
+            headers: {authorization: "Bearer P"}
+          - name: work
+            headers: {authorization: "Bearer W"}
+lanes:
+  chat:
+    members:
+      - model: openrouter-m
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	// Guard the premise: without two candidates this test proves nothing.
+	cands, ok := cfg.ResolveServed("openrouter-m")
+	if !ok || len(cands) != 2 {
+		t.Fatalf("fixture did not expand across credentials: ok=%v cands=%d", ok, len(cands))
+	}
+
+	mgr := proc.NewManager(cfg)
+	h := &Handlers{Store: st, Sched: sched.New(), Cfg: cfg, Mgr: mgr}
+	out, err := h.Utilization(context.Background(), &UtilizationInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lane UtilizationRow
+	for _, r := range out.Body.Rows {
+		if r.Served == "chat" {
+			lane = r
+		}
+	}
+	if !lane.Lane {
+		t.Fatalf("chat is not marked a lane: %+v", out.Body.Rows)
+	}
+	if len(lane.Members) != 1 {
+		t.Fatalf("members = %+v; two credentials on one model must list ONE rung", lane.Members)
+	}
+	if lane.Members[0].Model != "openrouter-m" {
+		t.Errorf("member = %q, want openrouter-m", lane.Members[0].Model)
 	}
 }

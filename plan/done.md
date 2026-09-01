@@ -2020,6 +2020,24 @@ The open follow-on ("fix the estimate", formerly P15b) is active in `plan/plan.m
   Measured wait excludes instant admissions (else a quiet hour drags the mean to zero) and
   rejections (whose `queued_ms` is time spent before being turned AWAY — a different quantity).
 
+- ✅ **P15a.4 — the lane chip answers what a lane is made of.** On Utilization a lane row wore a
+  bare `lane` chip whose tooltip listed member NAMES. That said the row was an aggregate but not of
+  what: a lane reading `0/1 in use` is one loaded model idling or four models none of which is
+  loaded, and those are opposite answers for the caller arriving next (served now vs. paying a cold
+  spawn). `UtilizationRow.members` is now `[]UtilizationMember` — model, residency state, remote,
+  spawnable, paused + reason, and that rung's own capacity/active/waiting — resolved by PROCESS key
+  like every other residency read (an extension's models share one process) and deduplicated by
+  name (a provider with several credentials expands to one candidate per account, which is a
+  routing fact, not a second rung). The chip reads `lane 1/3 ready` and the tooltip lists the
+  ladder in FALL-THROUGH order with ● loaded / ○ could load / ⊘ shut out, closing with
+  "1 ready now, 1 more could load. 1 shut out." Truncation at 8 rungs takes from the middle and
+  always keeps the warm ones — a `free` lane resolves to a dozen, and the loaded one is the fact
+  the tooltip exists to show. Verified end-to-end against a throwaway instance (lane of
+  spawnable + paused + remote rungs).
+  - **trap:** `/health` is NOT under `/api`, so Vite did not proxy it and the auth gate's
+    insecure-mode probe parsed `index.html`, demanding a token no `--insecure` server would accept.
+    `ui/vite.config.ts` now proxies it.
+
 - ✅ **P15a.3 — service-time distribution (measurement only; no behavior change).** The scheduler
   carries ONE dwell EWMA per backend, so every caller of a model is predicted by the same scalar.
   Measured what that scalar averages over, on 24h of real traffic on `Qwen3-6-27B-MPT`:

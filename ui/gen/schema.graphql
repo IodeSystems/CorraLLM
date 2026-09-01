@@ -2816,6 +2816,27 @@ type corrallm_UsageSeriesOutputBody {
   keys: [corrallm_KeySeries!]!
 }
 
+type corrallm_UtilizationMember {
+  """Slots of this rung in service right now."""
+  active: Long!
+  """This rung's admission slots; 0 if it has never been admitted to since start."""
+  capacity: Long!
+  """Served model this rung resolves to."""
+  model: String!
+  """Why it is paused (operator-supplied)."""
+  pauseReason: String!
+  """Out of service by operator order: the walk skips it and it will not spawn."""
+  paused: Boolean!
+  """Served by a host corrallm does not run: nothing to load, always available."""
+  remote: Boolean!
+  """A local process backs it — its own cmd, or its hosting extension's."""
+  spawnable: Boolean!
+  """absent|loading|ready|failed|evicting, or 'stopping' mid-teardown. Empty when remote."""
+  state: String!
+  """Callers queued on this rung right now."""
+  waiting: Long!
+}
+
 type corrallm_UtilizationOutputBody {
   """The window the windowed columns cover."""
   minutes: Long!
@@ -2840,8 +2861,8 @@ type corrallm_UtilizationRow {
   lane: Boolean!
   """Longest measured queue wait in the window."""
   maxWaitMs: Long!
-  """For a lane, the served names whose slots it is reporting."""
-  members: [String!]!
+  """For a lane, the rungs whose slots it is reporting, in fall-through order."""
+  members: [corrallm_UtilizationMember!]!
   """Promises whose due time passed with no return — we told them to come back and they never did."""
   notHonored: Long!
   """Utilization reached or passed 1 over the window: arrivals outpaced service and no finite steady-state wait exists."""
