@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/iodesystems/corrallm/internal/config"
 )
@@ -34,7 +35,24 @@ func Apply(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, historySchema); err != nil {
 		return fmt.Errorf("config history schema: %w", err)
 	}
+	for _, m := range migrations {
+		// "duplicate column" means the ADD already ran. SQLite has no
+		// ADD COLUMN IF NOT EXISTS, and CREATE TABLE IF NOT EXISTS above is a
+		// no-op on an existing database — so without this list a new column
+		// exists only on fresh installs and every write on the production box
+		// fails with "no such column". Same lesson as internal/store.
+		if _, err := db.ExecContext(ctx, m); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("config migrate: %w", err)
+		}
+	}
 	return nil
+}
+
+// migrations upgrade config tables created by an earlier schema in place. Each
+// runs on every Apply and is written to be harmless when already applied.
+var migrations = []string{
+	`ALTER TABLE config_key ADD COLUMN allow TEXT NOT NULL DEFAULT ''`,
 }
 
 // Write replaces the stored configuration with c.

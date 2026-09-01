@@ -51,7 +51,7 @@ func TestRealtimeForwardsUpstreamAlias(t *testing.T) {
 	cfg := &config.Config{
 		Models:         map[string]config.Model{"oidio-realtime-stt": m},
 		PriorityGroups: map[string]config.PriorityGroup{"g": {Weight: 1}},
-		Keys:           map[string]string{"k": "g"},
+		Keys:           config.GroupKeys(map[string]string{"k": "g"}),
 	}
 	mgr := proc.NewManager(cfg)
 	defer mgr.Shutdown()
@@ -94,7 +94,7 @@ func TestRealtimeKeepsServedNameWithoutAlias(t *testing.T) {
 	cfg := &config.Config{
 		Models:         map[string]config.Model{"plain-realtime": modelTo(t, up.URL, "realtime")},
 		PriorityGroups: map[string]config.PriorityGroup{"g": {Weight: 1}},
-		Keys:           map[string]string{"k": "g"},
+		Keys:           config.GroupKeys(map[string]string{"k": "g"}),
 	}
 	mgr := proc.NewManager(cfg)
 	defer mgr.Shutdown()

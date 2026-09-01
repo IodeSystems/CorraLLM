@@ -130,7 +130,12 @@ CREATE TABLE IF NOT EXISTS config_group (
 
 CREATE TABLE IF NOT EXISTS config_key (
     key        TEXT PRIMARY KEY,
-    group_name TEXT NOT NULL
+    group_name TEXT NOT NULL,          -- where the key lands when it asks for nothing
+    -- JSON array of the priority groups this key MAY escalate into, e.g.
+    -- ["interactive"]. Carried with its parent and never joined or filtered on,
+    -- which is this package's stated rule for JSON over a column. '' predates
+    -- the column and means "no escalation", the behaviour every key had before.
+    allow      TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS config_tool (

@@ -37,9 +37,9 @@ func TestConcurrentUpdatesDoNotLoseEachOther(t *testing.T) {
 			key := fmt.Sprintf("k%02d", i)
 			_, errs[i] = src.WithNote("add "+key).Update(ctx, func(c *config.Config) error {
 				if c.Keys == nil {
-					c.Keys = map[string]string{}
+					c.Keys = map[string]config.KeyPolicy{}
 				}
-				c.Keys[key] = "default"
+				c.Keys[key] = config.KeyPolicy{Group: "default"}
 				return nil
 			})
 		}(i)
@@ -76,14 +76,14 @@ func TestRejectedUpdateChangesNothing(t *testing.T) {
 	src := &Source{DB: openDB(t)}
 	if err := src.WithNote("base").Save(ctx, &config.Config{
 		PriorityGroups: map[string]config.PriorityGroup{"default": {Weight: 1}},
-		Keys:           map[string]string{"good": "default"},
+		Keys:           config.GroupKeys(map[string]string{"good": "default"}),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	revsBefore, _ := Revisions(ctx, src.DB, 50)
 
 	_, err := src.WithNote("bad").Update(ctx, func(c *config.Config) error {
-		c.Keys["bad"] = "no-such-group" // fails validation
+		c.Keys["bad"] = config.KeyPolicy{Group: "no-such-group"} // fails validation
 		return nil
 	})
 	if err == nil {
@@ -109,7 +109,7 @@ func TestRejectedUpdateChangesNothing(t *testing.T) {
 func TestUpdatePropagatesCallerErrors(t *testing.T) {
 	ctx := context.Background()
 	src := &Source{DB: openDB(t)}
-	if err := src.Save(ctx, &config.Config{Keys: map[string]string{}}); err != nil {
+	if err := src.Save(ctx, &config.Config{Keys: config.GroupKeys(map[string]string{})}); err != nil {
 		t.Fatal(err)
 	}
 	want := fmt.Errorf("no such model")

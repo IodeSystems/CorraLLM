@@ -87,8 +87,10 @@ type Config struct {
 	// PriorityGroups bundle scheduling policy; a key maps to exactly one group.
 	PriorityGroups map[string]PriorityGroup `yaml:"priorityGroups,omitempty"`
 
-	// Keys maps a caller identity → priorityGroup name.
-	Keys map[string]string `yaml:"keys,omitempty"`
+	// Keys maps a caller identity → what that identity may do. Written either as
+	// a bare group name or as a policy naming a default group plus the groups
+	// the key may escalate into; see KeyPolicy.
+	Keys map[string]KeyPolicy `yaml:"keys,omitempty"`
 
 	// UnknownKeys is the policy for callers this config has never heard of.
 	//
@@ -1712,15 +1714,78 @@ func (c *Config) ResolveGroupRecognized(key string) (string, PriorityGroup, bool
 }
 
 func (c *Config) resolveGroup(key string) (name string, g PriorityGroup, recognized bool) {
-	name = c.Keys[key]
-	if name == "" {
-		name = c.UnknownKeys.FallbackGroup()
+	cr := c.ResolveCaller(key)
+	return cr.GroupName, cr.Group, cr.Recognized
+}
+
+// Caller is one request's resolved identity: who is asking, at which weighting,
+// and whether it got the weighting it wanted.
+type Caller struct {
+	// Key is the caller identity with any group suffix removed. This is what
+	// cost and usage attribute to: a key that can run in three groups is still
+	// one tenant, and a rollup keyed on the raw credential would split its spend
+	// across three rows and answer "what did this caller cost" with a third of it.
+	Key string
+	// GroupName is the priority group actually used.
+	GroupName string
+	// Group is that group's configuration.
+	Group PriorityGroup
+	// Requested is the group the credential asked for, empty if it named none.
+	Requested string
+	// Denied is true when a group was requested and refused. The request still
+	// runs — in the key's default group — because failing a request outright
+	// over a weighting is worse than serving it at the weight the key is
+	// entitled to. Recorded so a caller asking for what it may not have is
+	// visible rather than silently downgraded forever.
+	Denied bool
+	// Recognized reports whether the base key was actually in Keys.
+	Recognized bool
+}
+
+// ResolveCaller maps a credential — optionally carrying a `:group` suffix — to
+// the identity and weighting it runs as.
+//
+// The whole credential is tried as a key FIRST. A key that literally contains
+// the separator must keep resolving to itself, so adding this cannot change
+// what any existing credential means.
+func (c *Config) ResolveCaller(cred string) Caller {
+	cr := Caller{Key: cred}
+
+	pol, known := c.Keys[cred]
+	if !known {
+		// Not a key as written — try it as key + group.
+		if base, g := splitGroup(cred); g != "" {
+			if bp, ok := c.Keys[base]; ok {
+				cr.Key, cr.Requested, pol, known = base, g, bp, true
+			}
+		}
 	}
-	_, recognized = c.Keys[key]
-	if grp, ok := c.PriorityGroups[name]; ok {
-		return name, grp, recognized
+	cr.Recognized = known
+
+	cr.GroupName = pol.Group
+	if cr.GroupName == "" {
+		cr.GroupName = c.UnknownKeys.FallbackGroup()
 	}
-	return c.UnknownKeys.FallbackGroup(), PriorityGroup{Weight: 1}, recognized
+	// Escalate only where the key is permitted AND the group actually exists.
+	// An unknown group name is a config typo, and honouring it would resolve to
+	// a synthesized weight-1 group — quietly WORSE than what the caller already
+	// had, which is the opposite of what it asked for.
+	if cr.Requested != "" {
+		_, exists := c.PriorityGroups[cr.Requested]
+		if exists && pol.Permits(cr.Requested) {
+			cr.GroupName = cr.Requested
+		} else {
+			cr.Denied = true
+		}
+	}
+
+	if grp, ok := c.PriorityGroups[cr.GroupName]; ok {
+		cr.Group = grp
+		return cr
+	}
+	cr.GroupName = c.UnknownKeys.FallbackGroup()
+	cr.Group = PriorityGroup{Weight: 1}
+	return cr
 }
 
 // Load reads and parses the corrallm YAML config at path. A missing file yields
@@ -2313,9 +2378,25 @@ func (c *Config) Validate() error {
 			claimedBy[a] = name
 		}
 	}
-	for key, grp := range c.Keys {
-		if _, ok := c.PriorityGroups[grp]; !ok {
-			return fmt.Errorf("key %q: unknown priorityGroup %q", key, grp)
+	for key, pol := range c.Keys {
+		if _, ok := c.PriorityGroups[pol.Group]; !ok {
+			return fmt.Errorf("key %q: unknown priorityGroup %q", key, pol.Group)
+		}
+		// A permitted group that does not exist is a typo that would otherwise
+		// surface as a silent denial at request time — the key asks for the
+		// weighting it was granted and is refused, with nothing saying why.
+		for g := range pol.Allow {
+			if _, ok := c.PriorityGroups[g]; !ok {
+				return fmt.Errorf("key %q: may escalate to unknown priorityGroup %q", key, g)
+			}
+		}
+		// Such a key still resolves (the whole-credential match runs first), but
+		// it can never escalate: `k:a:b` splits to base `k:a`, so the suffix form
+		// is unreachable for it. Say so at load rather than leaving a permission
+		// that silently never fires.
+		if len(pol.Allow) > 0 && strings.Contains(key, GroupSeparator) {
+			return fmt.Errorf("key %q contains %q, so it cannot use the `key:group` form; "+
+				"rename the key or drop its escalations", key, GroupSeparator)
 		}
 	}
 	if err := c.validateTools(); err != nil {

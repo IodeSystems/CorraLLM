@@ -29,6 +29,16 @@ const (
 	// Unlike the other two this IS execution: it is the model's prompt-eval
 	// latency, offered so a caller can separate that from generation.
 	HeaderTTFBMS = "X-Corrallm-Upstream-Ttfb-Ms"
+
+	// HeaderGroupDenied names a priority group the credential asked for and did
+	// not get. The request is still served, in the key's own group.
+	//
+	// Set because the alternative is a silent downgrade: a caller whose
+	// escalation is refused — a revoked permission, a renamed group, a typo —
+	// otherwise sees a normally-served request that is quietly slower under
+	// load, with nothing anywhere saying why. Absent on every request that got
+	// what it asked for.
+	HeaderGroupDenied = "X-Corrallm-Group-Denied"
 )
 
 // setTimingHeaders stamps the breakdown onto a response.

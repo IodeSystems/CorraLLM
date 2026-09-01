@@ -150,7 +150,7 @@ func TestWriteReplacesRatherThanMerges(t *testing.T) {
 			"box1": {Pools: map[string]string{"gpu0": "24GB"}},
 			"box2": {Pools: map[string]string{"gpu0": "8GB"}},
 		},
-		Keys: map[string]string{"a": "interactive", "b": "batch"},
+		Keys: config.GroupKeys(map[string]string{"a": "interactive", "b": "batch"}),
 	}
 	if err := Write(ctx, db, first); err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestWriteReplacesRatherThanMerges(t *testing.T) {
 
 	second := &config.Config{
 		Servers: map[string]config.Server{"box1": {Pools: map[string]string{"gpu0": "24GB"}}},
-		Keys:    map[string]string{"a": "interactive"},
+		Keys:    config.GroupKeys(map[string]string{"a": "interactive"}),
 	}
 	if err := Write(ctx, db, second); err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestIsEmpty(t *testing.T) {
 		t.Fatalf("a new database should be empty (got %v, %v)", empty, err)
 	}
 	if err := Write(ctx, db, &config.Config{
-		Keys: map[string]string{"k": "default"},
+		Keys: config.GroupKeys(map[string]string{"k": "default"}),
 	}); err != nil {
 		t.Fatal(err)
 	}

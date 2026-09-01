@@ -542,8 +542,18 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cancel()
 
-	key := callerKey(r)
-	groupName, group, recognized := p.config().ResolveGroupRecognized(key)
+	// The credential may carry a `:group` suffix asking for a weighting. Resolve
+	// splits it: `key` is the identity everything downstream attributes to, so a
+	// caller that runs in three groups still rolls up as one tenant.
+	caller := p.config().ResolveCaller(callerKey(r))
+	key, groupName, group, recognized := caller.Key, caller.GroupName, caller.Group, caller.Recognized
+	if caller.Denied {
+		// Served in the key's own group rather than refused: failing a request
+		// over a weighting is worse than serving it at the weight the key is
+		// entitled to. Said out loud so a caller asking for something it may not
+		// have finds out, instead of being quietly downgraded forever.
+		w.Header().Set(HeaderGroupDenied, caller.Requested)
+	}
 	if !recognized && !p.config().UnknownKeys.Allowed() {
 		// Refusing a stranger is a POLICY, off by default: corrallm has always
 		// served any key, and an operator who turns this on is choosing to.
@@ -1012,7 +1022,12 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	} else {
 		cands = kept
 	}
-	groupName, group := p.config().ResolveGroup(key)
+	rtCaller := p.config().ResolveCaller(key)
+	key = rtCaller.Key
+	groupName, group := rtCaller.GroupName, rtCaller.Group
+	if rtCaller.Denied {
+		w.Header().Set(HeaderGroupDenied, rtCaller.Requested)
+	}
 	weight := group.EffectiveWeight()
 	// A realtime session is long-lived by construction — the request that most
 	// deserves to be visible while it runs, and the one an operator is most

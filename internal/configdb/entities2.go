@@ -2,7 +2,9 @@ package configdb
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/iodesystems/corrallm/internal/config"
 )
@@ -442,7 +444,8 @@ func readGroups(ctx context.Context, db querier, c *config.Config) error {
 func writeKeys(ctx context.Context, tx querier, c *config.Config) error {
 	for _, k := range sortedKeys(c.Keys) {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO config_key (key, group_name) VALUES (?, ?)`, k, c.Keys[k]); err != nil {
+			`INSERT INTO config_key (key, group_name, allow) VALUES (?, ?, ?)`,
+			k, c.Keys[k].Group, encodeAllow(c.Keys[k].Allow)); err != nil {
 			return fmt.Errorf("write key: %w", err)
 		}
 	}
@@ -450,18 +453,18 @@ func writeKeys(ctx context.Context, tx querier, c *config.Config) error {
 }
 
 func readKeys(ctx context.Context, db querier, c *config.Config) error {
-	rows, err := db.QueryContext(ctx, `SELECT key, group_name FROM config_key`)
+	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow FROM config_key`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	keys := map[string]string{}
+	keys := map[string]config.KeyPolicy{}
 	for rows.Next() {
-		var k, g string
-		if err := rows.Scan(&k, &g); err != nil {
+		var k, g, allow string
+		if err := rows.Scan(&k, &g, &allow); err != nil {
 			return err
 		}
-		keys[k] = g
+		keys[k] = config.KeyPolicy{Group: g, Allow: decodeAllow(allow)}
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -748,4 +751,47 @@ func readProviders(ctx context.Context, db querier, c *config.Config) error {
 		c.Extensions[xname] = x
 	}
 	return rows.Err()
+}
+
+// encodeAllow renders a key's permitted escalations as a JSON array, sorted so
+// two configs with the same permissions produce byte-identical rows — the
+// revision history diffs these, and an unordered map would show a change on
+// every save.
+func encodeAllow(allow map[string]bool) string {
+	if len(allow) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(allow))
+	for g, ok := range allow {
+		if ok {
+			names = append(names, g)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	b, err := json.Marshal(names)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// decodeAllow reads it back. An empty or unparseable value is no escalation,
+// which is the behaviour every key had before the column existed — failing
+// closed, because the alternative is granting a permission nobody wrote.
+func decodeAllow(s string) map[string]bool {
+	if s == "" {
+		return nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(s), &names); err != nil {
+		return nil
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
 }

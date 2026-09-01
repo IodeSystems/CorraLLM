@@ -73,3 +73,13 @@ priorityGroups:
 keys:
   aw3: interactive
   ragtag: batch
+  # A key may instead name where it LANDS plus the groups it may ASK for, and
+  # then pick per request by sending `sk-aw4:interactive` as the credential.
+  #
+  # For a caller that is mostly autonomous: batch by default, so its own work
+  # yields to whoever is waiting on a person, with the option to say "someone
+  # IS waiting on this one". The permission is checked here; how much it
+  # escalates is bounded by the target group's own limits, not by this flag.
+  sk-aw4:
+    default: batch
+    interactive: true

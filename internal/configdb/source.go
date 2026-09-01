@@ -97,7 +97,7 @@ func (s *Source) Update(ctx context.Context, fn func(*config.Config) error) (*co
 		cur.PriorityGroups = map[string]config.PriorityGroup{}
 	}
 	if cur.Keys == nil {
-		cur.Keys = map[string]string{}
+		cur.Keys = map[string]config.KeyPolicy{}
 	}
 	if cur.Extensions == nil {
 		cur.Extensions = map[string]config.Extension{}

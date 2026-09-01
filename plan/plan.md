@@ -309,6 +309,41 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ✅ Per-request priority group, bounded by the key (2026-08-31)
+
+Asked for by aw4, which is one caller with two very different kinds of traffic:
+an assistant a person is blocked on, and autonomous work nobody is waiting for.
+One key per role would have made it N fairshare claimants against yscr's one —
+key generation boosting a client, structurally, by its own design.
+
+- `keys:` accepts either a bare group name (unchanged, every existing config) or
+  a policy: `{default: batch, interactive: true}`.
+- The credential carries the choice — `sk-aw4:interactive`. In the key rather
+  than a header because every OpenAI-compatible client can set an API key and
+  few can set a header; a weighting the caller cannot express is one it will not
+  use.
+- The whole credential is matched as a key FIRST, so a key that literally
+  contains `:` keeps resolving to itself. Adding this cannot change what any
+  existing credential means. Validation rejects such a key carrying escalations,
+  since the suffix form is unreachable for it.
+- A refused escalation is SERVED in the key's own group, not rejected — failing
+  a request over a weighting is worse than serving it at the weight it is
+  entitled to — and says so with `X-Corrallm-Group-Denied`. A silent downgrade
+  (revoked permission, renamed group, typo) is the failure that costs a day.
+- Cost attributes to the base key. Keyed on the raw credential, one tenant's
+  spend would split across a row per group and `RollupByKey` would answer "what
+  did this caller cost" with a fraction of it.
+- ⚠️ **Permission is not a budget.** The flag says who may ask; nothing bounds
+  how much. "A person is waiting" is a judgement the caller makes about itself,
+  and the likely failure is a bug — a default left interactive, a rule that
+  drifts — which corrallm cannot detect. The guard is `limits` on the escalated
+  group. Set one before granting this to anything autonomous.
+- `config_key` gained an `allow` column (JSON array) plus the first entry in a
+  new `migrations` list — `CREATE TABLE IF NOT EXISTS` is a no-op on the
+  production database, so without it the column would exist only on fresh
+  installs and every write on box1 would die with "no such column". Tested by
+  building the old table and migrating it.
+
 ### ⚠ The claims-nothing rule is live, and the recorded caveat understated it
 
 Shipped with the split, as decided: an unmeasured model on a DEVICE pool now claims **nothing**

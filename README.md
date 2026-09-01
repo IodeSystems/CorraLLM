@@ -30,6 +30,13 @@ It runs in production today, fronting a mixed embeddings and chat workload.
   backend is full a request queues, is rejected, spills to another backend, or
   preempts a lower-priority one. Preemption is cooperative and safe for in-flight
   streams.
+- **Per-request priority, bounded by the key** — a key may be granted other
+  priority groups and choose one per request by sending `sk-aw4:interactive` as
+  the credential. A key not granted a group is served in its own rather than
+  refused, and told so with `X-Corrallm-Group-Denied`. It rides in the credential
+  because every OpenAI client can set an API key and few can set a header. Cost
+  still attributes to the base key, so a caller running in three groups is one
+  tenant in the rollups.
 - **Reservations** — a caller can lease a few slots on a model for its own lane so
   interactive work keeps headroom against saturating batch. The slots are held
   *free* (batch drains into the rest and backs off), the lease is short and

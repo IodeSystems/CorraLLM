@@ -1894,7 +1894,8 @@ type GroupDef struct {
 // KeyDef maps a caller key to its group.
 type KeyDef struct {
 	Key   string `json:"key" doc:"Caller key."`
-	Group string `json:"group" doc:"Priority group it resolves to."`
+	Group string `json:"group" doc:"Priority group it resolves to when it asks for nothing."`
+	Allow []string `json:"allow,omitempty" doc:"Priority groups this key may escalate into via key:group."`
 }
 
 // OverviewInput has no parameters.
@@ -2086,8 +2087,15 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	sort.Slice(out.Body.Groups, func(i, j int) bool { return out.Body.Groups[i].Name < out.Body.Groups[j].Name })
 
-	for k, grp := range h.config().Keys {
-		out.Body.Keys = append(out.Body.Keys, KeyDef{Key: k, Group: grp})
+	for k, pol := range h.config().Keys {
+		allow := make([]string, 0, len(pol.Allow))
+		for g, ok := range pol.Allow {
+			if ok {
+				allow = append(allow, g)
+			}
+		}
+		sort.Strings(allow)
+		out.Body.Keys = append(out.Body.Keys, KeyDef{Key: k, Group: pol.Group, Allow: allow})
 	}
 	sort.Slice(out.Body.Keys, func(i, j int) bool { return out.Body.Keys[i].Key < out.Body.Keys[j].Key })
 

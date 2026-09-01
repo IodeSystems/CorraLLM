@@ -240,8 +240,8 @@ func TestLoadSampleConfig(t *testing.T) {
 	if !ok || len(lane.Members) < 2 {
 		t.Errorf("expected lane chat with ≥2 members, got %+v", lane)
 	}
-	if c.Keys["aw3"] != "interactive" {
-		t.Errorf("key aw3: want interactive, got %q", c.Keys["aw3"])
+	if c.Keys["aw3"].Group != "interactive" {
+		t.Errorf("key aw3: want interactive, got %q", c.Keys["aw3"].Group)
 	}
 }
 
