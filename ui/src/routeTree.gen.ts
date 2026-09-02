@@ -9,73 +9,28 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as UsageRouteImport } from './routes/usage'
-import { Route as QuotaRouteImport } from './routes/quota'
-import { Route as ProvidersRouteImport } from './routes/providers'
-import { Route as ModelRouteImport } from './routes/model'
-import { Route as KeysRouteImport } from './routes/keys'
-import { Route as HostsRouteImport } from './routes/hosts'
-import { Route as HistoryRouteImport } from './routes/history'
-import { Route as GroupsRouteImport } from './routes/groups'
-import { Route as ConfigRouteImport } from './routes/config'
-import { Route as BenchRouteImport } from './routes/bench'
-import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as MNameRouteImport } from './routes/m.$name'
-import { Route as KeysKeyRouteImport } from './routes/keys_.$key'
-import { Route as BenchRunRouteImport } from './routes/bench_.run'
-import { Route as BenchProbeRouteImport } from './routes/bench_.probe'
+import { Route as ActivityRouteImport } from './routes/activity'
+import { Route as BenchRouteImport } from './routes/bench'
+import { Route as ConfigRouteImport } from './routes/config'
+import { Route as GroupsRouteImport } from './routes/groups'
+import { Route as HistoryRouteImport } from './routes/history'
+import { Route as HostsRouteImport } from './routes/hosts'
+import { Route as KeysRouteImport } from './routes/keys'
+import { Route as ModelRouteImport } from './routes/model'
+import { Route as ProvidersRouteImport } from './routes/providers'
+import { Route as QuotaRouteImport } from './routes/quota'
+import { Route as UsageRouteImport } from './routes/usage'
 import { Route as BenchModelRouteImport } from './routes/bench_.model'
+import { Route as BenchProbeRouteImport } from './routes/bench_.probe'
+import { Route as BenchRunRouteImport } from './routes/bench_.run'
+import { Route as KeysKeyRouteImport } from './routes/keys_.$key'
+import { Route as MNameRouteImport } from './routes/m.$name'
 import { Route as MNameActivityRouteImport } from './routes/m.$name.activity'
 
-const UsageRoute = UsageRouteImport.update({
-  id: '/usage',
-  path: '/usage',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const QuotaRoute = QuotaRouteImport.update({
-  id: '/quota',
-  path: '/quota',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ProvidersRoute = ProvidersRouteImport.update({
-  id: '/providers',
-  path: '/providers',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ModelRoute = ModelRouteImport.update({
-  id: '/model',
-  path: '/model',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const KeysRoute = KeysRouteImport.update({
-  id: '/keys',
-  path: '/keys',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const HostsRoute = HostsRouteImport.update({
-  id: '/hosts',
-  path: '/hosts',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const HistoryRoute = HistoryRouteImport.update({
-  id: '/history',
-  path: '/history',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const GroupsRoute = GroupsRouteImport.update({
-  id: '/groups',
-  path: '/groups',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ConfigRoute = ConfigRouteImport.update({
-  id: '/config',
-  path: '/config',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const BenchRoute = BenchRouteImport.update({
-  id: '/bench',
-  path: '/bench',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ActivityRoute = ActivityRouteImport.update({
@@ -83,24 +38,59 @@ const ActivityRoute = ActivityRouteImport.update({
   path: '/activity',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const BenchRoute = BenchRouteImport.update({
+  id: '/bench',
+  path: '/bench',
   getParentRoute: () => rootRouteImport,
 } as any)
-const MNameRoute = MNameRouteImport.update({
-  id: '/m/$name',
-  path: '/m/$name',
+const ConfigRoute = ConfigRouteImport.update({
+  id: '/config',
+  path: '/config',
   getParentRoute: () => rootRouteImport,
 } as any)
-const KeysKeyRoute = KeysKeyRouteImport.update({
-  id: '/keys_/$key',
-  path: '/keys/$key',
+const GroupsRoute = GroupsRouteImport.update({
+  id: '/groups',
+  path: '/groups',
   getParentRoute: () => rootRouteImport,
 } as any)
-const BenchRunRoute = BenchRunRouteImport.update({
-  id: '/bench_/run',
-  path: '/bench/run',
+const HistoryRoute = HistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HostsRoute = HostsRouteImport.update({
+  id: '/hosts',
+  path: '/hosts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const KeysRoute = KeysRouteImport.update({
+  id: '/keys',
+  path: '/keys',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ModelRoute = ModelRouteImport.update({
+  id: '/model',
+  path: '/model',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProvidersRoute = ProvidersRouteImport.update({
+  id: '/providers',
+  path: '/providers',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const QuotaRoute = QuotaRouteImport.update({
+  id: '/quota',
+  path: '/quota',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UsageRoute = UsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BenchModelRoute = BenchModelRouteImport.update({
+  id: '/bench_/model',
+  path: '/bench/model',
   getParentRoute: () => rootRouteImport,
 } as any)
 const BenchProbeRoute = BenchProbeRouteImport.update({
@@ -108,9 +98,19 @@ const BenchProbeRoute = BenchProbeRouteImport.update({
   path: '/bench/probe',
   getParentRoute: () => rootRouteImport,
 } as any)
-const BenchModelRoute = BenchModelRouteImport.update({
-  id: '/bench_/model',
-  path: '/bench/model',
+const BenchRunRoute = BenchRunRouteImport.update({
+  id: '/bench_/run',
+  path: '/bench/run',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const KeysKeyRoute = KeysKeyRouteImport.update({
+  id: '/keys_/$key',
+  path: '/keys/$key',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MNameRoute = MNameRouteImport.update({
+  id: '/m/$name',
+  path: '/m/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MNameActivityRoute = MNameActivityRouteImport.update({
@@ -265,74 +265,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/usage': {
-      id: '/usage'
-      path: '/usage'
-      fullPath: '/usage'
-      preLoaderRoute: typeof UsageRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/quota': {
-      id: '/quota'
-      path: '/quota'
-      fullPath: '/quota'
-      preLoaderRoute: typeof QuotaRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/providers': {
-      id: '/providers'
-      path: '/providers'
-      fullPath: '/providers'
-      preLoaderRoute: typeof ProvidersRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/model': {
-      id: '/model'
-      path: '/model'
-      fullPath: '/model'
-      preLoaderRoute: typeof ModelRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/keys': {
-      id: '/keys'
-      path: '/keys'
-      fullPath: '/keys'
-      preLoaderRoute: typeof KeysRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/hosts': {
-      id: '/hosts'
-      path: '/hosts'
-      fullPath: '/hosts'
-      preLoaderRoute: typeof HostsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/history': {
-      id: '/history'
-      path: '/history'
-      fullPath: '/history'
-      preLoaderRoute: typeof HistoryRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/groups': {
-      id: '/groups'
-      path: '/groups'
-      fullPath: '/groups'
-      preLoaderRoute: typeof GroupsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/config': {
-      id: '/config'
-      path: '/config'
-      fullPath: '/config'
-      preLoaderRoute: typeof ConfigRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/bench': {
-      id: '/bench'
-      path: '/bench'
-      fullPath: '/bench'
-      preLoaderRoute: typeof BenchRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/activity': {
@@ -342,32 +279,81 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ActivityRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/bench': {
+      id: '/bench'
+      path: '/bench'
+      fullPath: '/bench'
+      preLoaderRoute: typeof BenchRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/m/$name': {
-      id: '/m/$name'
-      path: '/m/$name'
-      fullPath: '/m/$name'
-      preLoaderRoute: typeof MNameRouteImport
+    '/config': {
+      id: '/config'
+      path: '/config'
+      fullPath: '/config'
+      preLoaderRoute: typeof ConfigRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/keys_/$key': {
-      id: '/keys_/$key'
-      path: '/keys/$key'
-      fullPath: '/keys/$key'
-      preLoaderRoute: typeof KeysKeyRouteImport
+    '/groups': {
+      id: '/groups'
+      path: '/groups'
+      fullPath: '/groups'
+      preLoaderRoute: typeof GroupsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/bench_/run': {
-      id: '/bench_/run'
-      path: '/bench/run'
-      fullPath: '/bench/run'
-      preLoaderRoute: typeof BenchRunRouteImport
+    '/history': {
+      id: '/history'
+      path: '/history'
+      fullPath: '/history'
+      preLoaderRoute: typeof HistoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/hosts': {
+      id: '/hosts'
+      path: '/hosts'
+      fullPath: '/hosts'
+      preLoaderRoute: typeof HostsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/keys': {
+      id: '/keys'
+      path: '/keys'
+      fullPath: '/keys'
+      preLoaderRoute: typeof KeysRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/model': {
+      id: '/model'
+      path: '/model'
+      fullPath: '/model'
+      preLoaderRoute: typeof ModelRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/providers': {
+      id: '/providers'
+      path: '/providers'
+      fullPath: '/providers'
+      preLoaderRoute: typeof ProvidersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/quota': {
+      id: '/quota'
+      path: '/quota'
+      fullPath: '/quota'
+      preLoaderRoute: typeof QuotaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/usage': {
+      id: '/usage'
+      path: '/usage'
+      fullPath: '/usage'
+      preLoaderRoute: typeof UsageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/bench_/model': {
+      id: '/bench_/model'
+      path: '/bench/model'
+      fullPath: '/bench/model'
+      preLoaderRoute: typeof BenchModelRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/bench_/probe': {
@@ -377,11 +363,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BenchProbeRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/bench_/model': {
-      id: '/bench_/model'
-      path: '/bench/model'
-      fullPath: '/bench/model'
-      preLoaderRoute: typeof BenchModelRouteImport
+    '/bench_/run': {
+      id: '/bench_/run'
+      path: '/bench/run'
+      fullPath: '/bench/run'
+      preLoaderRoute: typeof BenchRunRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/keys_/$key': {
+      id: '/keys_/$key'
+      path: '/keys/$key'
+      fullPath: '/keys/$key'
+      preLoaderRoute: typeof KeysKeyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/m/$name': {
+      id: '/m/$name'
+      path: '/m/$name'
+      fullPath: '/m/$name'
+      preLoaderRoute: typeof MNameRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/m/$name/activity': {
