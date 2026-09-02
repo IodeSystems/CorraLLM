@@ -84,7 +84,9 @@ function ModelBenchPage() {
         <Link to="/model" search={{ name }} style={{ color: 'inherit' }}>
           <Chip size="small" variant="outlined" label="model console →" clickable />
         </Link>
-        <Typography variant="body2" color="text.secondary">
+        <Typography variant="body2" sx={{
+          color: "text.secondary"
+        }}>
           Measurement history
         </Typography>
       </PageHeader>
@@ -97,9 +99,12 @@ function ModelBenchPage() {
             <Panel title="Score over time">
               <Typography
                 variant="caption"
-                color="text.secondary"
-                sx={{ px: 2, pt: 1, display: 'block' }}
-              >
+                sx={{
+                  color: "text.secondary",
+                  px: 2,
+                  pt: 1,
+                  display: 'block'
+                }}>
                 Run-wide pass rate, which mixes every capability this model was measured on. A step
                 here is as likely to be a change in the PROBE SET as in the model — check that the
                 probe count moved with it before reading it as a regression.
@@ -130,9 +135,12 @@ function ModelBenchPage() {
           <Panel title="Runs">
             <Typography
               variant="caption"
-              color="text.secondary"
-              sx={{ px: 2, pt: 1, display: 'block' }}
-            >
+              sx={{
+                color: "text.secondary",
+                px: 2,
+                pt: 1,
+                display: 'block'
+              }}>
               Newest first. Open a run to see this model probe by probe, with the stage-level
               evidence behind each verdict.
             </Typography>
@@ -188,7 +196,7 @@ function ModelBenchPage() {
         </>
       )}
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/bench_/model')({

@@ -219,7 +219,9 @@ export function Utilization({ minutes = 60 }: { minutes?: number }) {
     </Box>
   ) : rows.length === 0 ? (
     <Box sx={{ p: 2 }}>
-      <Typography color="text.secondary">
+      <Typography sx={{
+        color: "text.secondary"
+      }}>
         Nothing has been asked for in the last {minutes} minutes.
       </Typography>
     </Box>

@@ -174,7 +174,9 @@ function ProbePage() {
         </Alert>
       )}
 
-      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+      <Stack direction="row" spacing={2} useFlexGap sx={{
+        flexWrap: "wrap"
+      }}>
         <Chip label={`${h?.models ?? 0} model(s) measured`} />
         <Chip
           color={n(h?.passRate) >= 0.5 ? 'success' : 'warning'}
@@ -254,7 +256,13 @@ function ProbePage() {
                         {r.skipped ? (
                           '—'
                         ) : (
-                          <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
+                          <Stack
+                            direction="row"
+                            spacing={0.5}
+                            sx={{
+                              justifyContent: "flex-end",
+                              alignItems: "center"
+                            }}>
                             <span>{`${r.stagesPassed}/${r.stages}`}</span>
                             {repeatsOf(r) > 1 && (
                               <Chip
@@ -309,12 +317,18 @@ function ProbePage() {
                         )}
                       </TableCell>
                     </TableRow>
-                  )
+                  );
                 })}
               </TableBody>
             </Table>
           </TableContainer>
-          <Typography variant="caption" color="text.secondary" sx={{ p: 2, display: 'block' }}>
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+              p: 2,
+              display: 'block'
+            }}>
             Click a row for the stage-by-stage evidence: prompts, per-check verdicts, the
             transcript and the tool-call journal.
           </Typography>
@@ -330,7 +344,7 @@ function ProbePage() {
         </Paper>
       )}
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/bench_/probe')({

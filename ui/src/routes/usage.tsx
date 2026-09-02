@@ -338,7 +338,9 @@ function Usage() {
         <Chip size="small" variant="outlined" label="last 24h" />
       </PageHeader>
 
-      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+      <Stack direction="row" spacing={2} useFlexGap sx={{
+        flexWrap: "wrap"
+      }}>
         <StatTile label="Requests" value={fmtInt(total?.requests ?? 0)} />
         <StatTile label="Prompt tokens" value={fmtInt(total?.promptTokens ?? 0)} />
         <StatTile label="Completion tokens" value={fmtInt(total?.completionTokens ?? 0)} />
@@ -383,7 +385,9 @@ function Usage() {
               {rollupRows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7}>
-                    <Typography color="text.secondary">No usage in window.</Typography>
+                    <Typography sx={{
+                      color: "text.secondary"
+                    }}>No usage in window.</Typography>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -413,7 +417,9 @@ function Usage() {
           Priority groups
         </Typography>
         {groupSeries.length === 0 ? (
-          <Typography color="text.secondary">No usage in window.</Typography>
+          <Typography sx={{
+            color: "text.secondary"
+          }}>No usage in window.</Typography>
         ) : (
           <Stack spacing={2}>
             <StackedArea title="Throughput — requests/bucket (stacked)" series={groupSeries} fmtTotal={fmtInt} />
@@ -424,7 +430,9 @@ function Usage() {
                 fmtTotal={fmtInt}
               />
             ) : (
-              <Typography variant="caption" color="text.secondary">
+              <Typography variant="caption" sx={{
+                color: "text.secondary"
+              }}>
                 No rejections in window — no group is being starved.
               </Typography>
             )}
@@ -436,7 +444,9 @@ function Usage() {
                 fmtTotal={(n) => n.toFixed(1)}
               />
             ) : (
-              <Typography variant="caption" color="text.secondary">
+              <Typography variant="caption" sx={{
+                color: "text.secondary"
+              }}>
                 Queue depth: no group has queued requests in the sampled window.
               </Typography>
             )}
@@ -449,9 +459,13 @@ function Usage() {
           By key over time
         </Typography>
         {seriesKeys.length === 0 ? (
-          <Typography color="text.secondary">No usage in window.</Typography>
+          <Typography sx={{
+            color: "text.secondary"
+          }}>No usage in window.</Typography>
         ) : (
-          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={2} useFlexGap sx={{
+            flexWrap: "wrap"
+          }}>
             <MetricChart title="Cost ($)" series={mkSeries((p) => p.costUsd)} fmt={fmtUSD} />
             <MetricChart title="Requests" series={mkSeries((p) => Number(p.requests))} fmt={fmtInt} />
             <MetricChart title="Energy" series={mkSeries((p) => p.energyKwh)} fmt={fmtKwh} />
@@ -485,7 +499,9 @@ function Usage() {
               {byKey.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6}>
-                    <Typography color="text.secondary">No keyed usage in window.</Typography>
+                    <Typography sx={{
+                      color: "text.secondary"
+                    }}>No keyed usage in window.</Typography>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -509,9 +525,13 @@ function Usage() {
         </TableContainer>
       </Panel>
 
-      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+      <Stack direction="row" spacing={2} useFlexGap sx={{
+        flexWrap: "wrap"
+      }}>
         {servers.length === 0 ? (
-          <Typography color="text.secondary">No servers configured.</Typography>
+          <Typography sx={{
+            color: "text.secondary"
+          }}>No servers configured.</Typography>
         ) : (
           servers.map((s) => (
             <Box key={s.server} sx={{ minWidth: 280, flex: '1 1 280px' }}>
@@ -558,7 +578,9 @@ function Usage() {
               {models.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8}>
-                    <Typography color="text.secondary">Nothing warm.</Typography>
+                    <Typography sx={{
+                      color: "text.secondary"
+                    }}>Nothing warm.</Typography>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -586,7 +608,7 @@ function Usage() {
         </TableContainer>
       </Panel>
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/usage')({ component: Usage })

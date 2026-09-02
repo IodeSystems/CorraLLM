@@ -100,7 +100,9 @@ export function RetryPromises({
     </Box>
   ) : rows.length === 0 ? (
     <Box sx={{ p: 2 }}>
-      <Typography color="text.secondary">
+      <Typography sx={{
+        color: "text.secondary"
+      }}>
         Nobody has been turned away in the last {minutes} minutes.
       </Typography>
     </Box>

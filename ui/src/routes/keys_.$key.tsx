@@ -80,7 +80,14 @@ function KeyDetail() {
       ) : (
         <Panel title="Caller" subtitle="Lane assignment and what this key has consumed">
           <Stack spacing={2}>
-            <Stack direction="row" spacing={3} flexWrap="wrap" useFlexGap alignItems="center">
+            <Stack
+              direction="row"
+              spacing={3}
+              useFlexGap
+              sx={{
+                flexWrap: "wrap",
+                alignItems: "center"
+              }}>
               <Stat label="Group">
                 {row.recognized ? (
                   <Chip size="small" label={row.group} />
@@ -113,7 +120,9 @@ function KeyDetail() {
             </Stack>
             {/* Weight is on the group, so the honest phrasing is what the lane
                 buys, not what the key has. */}
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="body2" sx={{
+              color: "text.secondary"
+            }}>
               Scheduling weight comes from the <code>{row.group}</code> group, and is compared
               against other groups <b>per backend</b> — heavy traffic on an uncontended model does
               not cost this caller anything on a contended one.
@@ -133,20 +142,25 @@ function KeyDetail() {
         subtitle="Everything this key has run, newest first — click a row for payloads"
       />
     </Box>
-  )
+  );
 }
 
 function Stat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <Box>
-      <Typography variant="caption" color="text.secondary" display="block">
+      <Typography
+        variant="caption"
+        sx={{
+          color: "text.secondary",
+          display: "block"
+        }}>
         {label}
       </Typography>
       <Typography variant="body2" component="div">
         {children}
       </Typography>
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/keys_/$key')({ component: KeyDetail })

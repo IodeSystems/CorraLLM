@@ -74,7 +74,9 @@ export function Journeys({ minutes = 60, limit = 25 }: { minutes?: number; limit
     </Box>
   ) : rows.length === 0 ? (
     <Box sx={{ p: 2 }}>
-      <Typography variant="body2" color="text.secondary">
+      <Typography variant="body2" sx={{
+        color: "text.secondary"
+      }}>
         Nobody has had to work for an answer in the last {minutes} minutes.
       </Typography>
     </Box>

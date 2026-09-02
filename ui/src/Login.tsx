@@ -33,7 +33,9 @@ export function Login() {
       <Box sx={{ maxWidth: 460, width: '100%' }}>
         <Panel title="corrallm — admin sign in">
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" sx={{
+            color: "text.secondary"
+          }}>
             {tokenPath ? (
               <>
                 This instance requires an admin token. Read it on the server and paste it below:{' '}
@@ -71,5 +73,5 @@ export function Login() {
         </Panel>
       </Box>
     </Box>
-  )
+  );
 }

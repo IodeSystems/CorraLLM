@@ -467,7 +467,14 @@ export function ProviderDialog(props: {
             extension instead.
           </Typography>
           {(
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} flexWrap="wrap" useFlexGap>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={2}
+              useFlexGap
+              sx={{
+                alignItems: { sm: 'center' },
+                flexWrap: "wrap"
+              }}>
               <FormControlLabel
                 control={
                   <Switch
@@ -498,5 +505,5 @@ export function ProviderDialog(props: {
         </Button>
       </DialogActions>
     </Dialog>
-  )
+  );
 }

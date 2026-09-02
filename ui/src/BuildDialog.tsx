@@ -240,7 +240,14 @@ export function BuildDialog({
       // minutes, and it would be a nasty surprise if that killed the compile.
     >
       <DialogTitle>
-        <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Stack
+          direction="row"
+          spacing={1.5}
+          useFlexGap
+          sx={{
+            alignItems: "center",
+            flexWrap: "wrap"
+          }}>
           <span>
             Build {tool ?? shown?.tool} <span style={{ color: C.textFaint }}>on</span>{' '}
             {host ?? shown?.host}
@@ -361,19 +368,18 @@ export function BuildDialog({
                   key={String(b.id)}
                   direction="row"
                   spacing={1}
-                  alignItems="baseline"
-                  flexWrap="wrap"
                   useFlexGap
                   onClick={() => setPastId(selected ? null : String(b.id))}
                   sx={{
+                    alignItems: "baseline",
+                    flexWrap: "wrap",
                     cursor: 'pointer',
                     py: 0.5,
                     px: 1,
                     borderRadius: 1,
                     bgcolor: selected ? C.raised : undefined,
-                    '&:hover': { bgcolor: C.raised },
-                  }}
-                >
+                    '&:hover': { bgcolor: C.raised }
+                  }}>
                   <Chip
                     size="small"
                     variant="outlined"
@@ -393,7 +399,7 @@ export function BuildDialog({
                     {b.version || b.error || ''}
                   </Typography>
                 </Stack>
-              )
+              );
             })}
           </Box>
         )}
@@ -428,5 +434,5 @@ export function BuildDialog({
         </Button>
       </DialogActions>
     </Dialog>
-  )
+  );
 }

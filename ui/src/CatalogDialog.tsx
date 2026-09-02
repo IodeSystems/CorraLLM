@@ -244,7 +244,14 @@ export function CatalogDialog(props: {
       </DialogTitle>
       <DialogContent dividers sx={{ p: 0 }}>
         <Box sx={{ p: 2, pb: 1.5 }}>
-          <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Stack
+            direction="row"
+            spacing={2}
+            useFlexGap
+            sx={{
+              alignItems: "center",
+              flexWrap: "wrap"
+            }}>
             <TextField
               size="small"
               autoFocus
@@ -357,7 +364,9 @@ export function CatalogDialog(props: {
                         </TableCell>
                       )}
                       <TableCell>
-                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                        <Stack direction="row" spacing={0.5} useFlexGap sx={{
+                          flexWrap: "wrap"
+                        }}>
                           {e.free && <Chip size="small" color="success" label="free" />}
                           {e.declared && <Chip size="small" variant="outlined" label="declared" />}
                           {e.assigned && (
@@ -393,7 +402,7 @@ export function CatalogDialog(props: {
                         </Stack>
                       </TableCell>
                     </TableRow>
-                  )
+                  );
                 })}
                 {shown.length === 0 && (
                   <TableRow>
@@ -460,5 +469,5 @@ export function CatalogDialog(props: {
         </Button>
       </DialogActions>
     </Dialog>
-  )
+  );
 }

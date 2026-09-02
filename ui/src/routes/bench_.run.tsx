@@ -240,7 +240,14 @@ function RunPage() {
       ) : (
         <>
           <Panel title="Models in this run">
-            <Typography variant="caption" color="text.secondary" sx={{ px: 2, pt: 1, display: 'block' }}>
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+                px: 2,
+                pt: 1,
+                display: 'block'
+              }}>
               One sitting, one probe set, one machine — so unlike the /bench comparison these
               numbers are directly against each other. Skipped probes are excluded from a model's
               score rather than counted as failures.
@@ -282,10 +289,18 @@ function RunPage() {
           {models.map((m) => (
             <Accordion key={m.model} defaultExpanded={models.length === 1}>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Stack direction="row" spacing={1.5} alignItems="center" sx={{ width: '100%' }}>
+                <Stack
+                  direction="row"
+                  spacing={1.5}
+                  sx={{
+                    alignItems: "center",
+                    width: '100%'
+                  }}>
                   <Typography variant="subtitle2">{m.model}</Typography>
                   <Chip size="small" label={pct(n(m.score))} />
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography variant="caption" sx={{
+                    color: "text.secondary"
+                  }}>
                     {m.probes} probe(s){n(m.skipped) > 0 ? `, ${m.skipped} skipped` : ''}
                   </Typography>
                 </Stack>
@@ -298,7 +313,7 @@ function RunPage() {
         </>
       )}
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/bench_/run')({

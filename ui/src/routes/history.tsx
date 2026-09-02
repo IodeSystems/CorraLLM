@@ -178,7 +178,14 @@ export function HistoryPage() {
         )}
         {revisions.map((r) => (
           <Row key={String(r.id)}>
-            <Stack direction="row" spacing={1.5} alignItems="baseline" flexWrap="wrap" useFlexGap>
+            <Stack
+              direction="row"
+              spacing={1.5}
+              useFlexGap
+              sx={{
+                alignItems: "baseline",
+                flexWrap: "wrap"
+              }}>
               <Typography variant="subtitle2" sx={{ minWidth: 48, fontFamily: 'monospace' }}>
                 {String(r.id)}
               </Typography>
@@ -269,7 +276,7 @@ export function HistoryPage() {
         </DialogActions>
       </Dialog>
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/history')({ component: HistoryPage })

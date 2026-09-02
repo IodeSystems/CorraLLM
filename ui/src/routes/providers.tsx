@@ -260,7 +260,14 @@ function AssignedModels() {
       ) : (
         rows.map((r) => (
           <Row key={`${r.provider}/${r.credential}/${r.model}`}>
-            <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Stack
+              direction="row"
+              spacing={1.5}
+              useFlexGap
+              sx={{
+                alignItems: "center",
+                flexWrap: "wrap"
+              }}>
               <Box sx={{ minWidth: 220, flex: 1 }}>
                 <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12.5 }}>
                   {r.model}
@@ -270,7 +277,9 @@ function AssignedModels() {
                   {r.upstream ? ` · ${r.upstream}` : ' · placement only'}
                 </Typography>
               </Box>
-              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+              <Stack direction="row" spacing={0.75} useFlexGap sx={{
+                flexWrap: "wrap"
+              }}>
                 {r.lanes.map((l) => (
                   <Chip key={l.lane} size="small" label={`${l.lane} @ ${l.order}`} />
                 ))}
@@ -307,7 +316,7 @@ function AssignedModels() {
         ))
       )}
     </Panel>
-  )
+  );
 }
 
 function ProvidersPage() {
@@ -468,7 +477,14 @@ function ProvidersPage() {
                 if (g.ext) void openEntry('extension', g.name).then(setEditing)
               }}
             >
-              <Stack direction="row" spacing={1.25} alignItems="baseline" flexWrap="wrap" useFlexGap>
+              <Stack
+                direction="row"
+                spacing={1.25}
+                useFlexGap
+                sx={{
+                  alignItems: "baseline",
+                  flexWrap: "wrap"
+                }}>
                 <Typography variant="subtitle2" sx={{ minWidth: 120 }}>
                   {g.name}
                 </Typography>
@@ -534,7 +550,14 @@ function ProvidersPage() {
           const browseCred = creds[0]?.name ?? 'default'
           return (
             <Row key={`${p.extension}/${p.name}`}>
-              <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Stack
+                direction="row"
+                spacing={1.5}
+                useFlexGap
+                sx={{
+                  alignItems: "center",
+                  flexWrap: "wrap"
+                }}>
                 <Box sx={{ minWidth: 200 }}>
                   {/* No extension label: the row above and the indent say it. */}
                   <Typography variant="subtitle2">{p.name}</Typography>
@@ -544,7 +567,14 @@ function ProvidersPage() {
                   </Typography>
                 </Box>
 
-                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+                <Stack
+                  direction="row"
+                  spacing={0.75}
+                  useFlexGap
+                  sx={{
+                    flexWrap: "wrap",
+                    flex: 1
+                  }}>
                   {/* Where this provider's models come from. A directory filter
                       is NOT one of them — it only changes what Browse opens
                       pre-filtered to. */}
@@ -619,7 +649,7 @@ function ProvidersPage() {
                 </Stack>
               </Stack>
             </Row>
-          )
+          );
         })}
             </Box>
           </Box>
@@ -635,7 +665,14 @@ function ProvidersPage() {
           </Typography>
           {local.map((p) => (
             <Row key={p.name}>
-              <Stack direction="row" spacing={1.5} alignItems="baseline" flexWrap="wrap" useFlexGap>
+              <Stack
+                direction="row"
+                spacing={1.5}
+                useFlexGap
+                sx={{
+                  alignItems: "baseline",
+                  flexWrap: "wrap"
+                }}>
                 <Box sx={{ minWidth: 140 }}>
                   <Typography variant="subtitle2">{p.name}</Typography>
                   <Typography variant="caption" sx={{ color: C.textFaint }}>
@@ -664,7 +701,14 @@ function ProvidersPage() {
                     </Typography>
                   </Tooltip>
                 )}
-                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+                <Stack
+                  direction="row"
+                  spacing={0.75}
+                  useFlexGap
+                  sx={{
+                    flexWrap: "wrap",
+                    flex: 1
+                  }}>
                   {Number(p.barePrecedence) > 0 ? (
                     <Tooltip
                       title={`An unprefixed name that nothing else claims resolves here (precedence ${p.barePrecedence}). This is what keeps callers working after the prefix rename.`}
@@ -701,9 +745,11 @@ function ProvidersPage() {
                   <Stack
                     direction="row"
                     spacing={1}
-                    alignItems="baseline"
-                    sx={{ pl: 2, pt: 0.5 }}
-                  >
+                    sx={{
+                      alignItems: "baseline",
+                      pl: 2,
+                      pt: 0.5
+                    }}>
                     <Typography
                       variant="caption"
                       sx={{ color: C.textMuted, fontWeight: 600, letterSpacing: 0.4 }}
@@ -717,11 +763,15 @@ function ProvidersPage() {
                   key={m.id}
                   direction="row"
                   spacing={1.5}
-                  alignItems="center"
-                  flexWrap="wrap"
                   useFlexGap
-                  sx={{ pl: 2, py: 0.75, borderTop: `1px solid ${C.border}`, mt: 0.75 }}
-                >
+                  sx={{
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    pl: 2,
+                    py: 0.75,
+                    borderTop: `1px solid ${C.border}`,
+                    mt: 0.75
+                  }}>
                   <Box sx={{ minWidth: 220 }}>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12.5 }}>
                       {m.served}
@@ -730,7 +780,14 @@ function ProvidersPage() {
                       {m.bare ? `also answers to ${m.id}` : 'prefixed name only'}
                     </Typography>
                   </Box>
-                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+                  <Stack
+                    direction="row"
+                    spacing={0.75}
+                    useFlexGap
+                    sx={{
+                      flexWrap: "wrap",
+                      flex: 1
+                    }}>
                     {m.type && <Chip size="small" variant="outlined" label={m.type} />}
                     {/* No server chip: the group heading above already says
                         which box, and repeating it on every row was the flat
@@ -828,7 +885,9 @@ function ProvidersPage() {
           Names only. No endpoint returns a value — that is what keeps the config document safe to
           read and share.
         </Typography>
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <Stack direction="row" spacing={1} useFlexGap sx={{
+          flexWrap: "wrap"
+        }}>
           {secrets.map((s) => (
             <Chip key={s} size="small" label={s} />
           ))}
@@ -908,7 +967,7 @@ function ProvidersPage() {
         invalidate={['providers', 'config']}
       />
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/providers')({ component: ProvidersPage })

@@ -126,11 +126,12 @@ export function ToolingPanel() {
             <Stack
               direction="row"
               spacing={1.5}
-              alignItems="baseline"
-              flexWrap="wrap"
               useFlexGap
-              sx={{ width: '100%' }}
-            >
+              sx={{
+                alignItems: "baseline",
+                flexWrap: "wrap",
+                width: '100%'
+              }}>
               <Box sx={{ minWidth: 150 }}>
                 <Typography variant="subtitle2">{t.tool}</Typography>
                 <Typography variant="caption" sx={{ color: C.textFaint }}>
@@ -152,7 +153,14 @@ export function ToolingPanel() {
                     <Chip size="small" color="warning" variant="outlined" label="version unknown" />
                   </Tooltip>
                 ) : (
-                  <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                  <Stack
+                    direction="row"
+                    spacing={0.75}
+                    useFlexGap
+                    sx={{
+                      alignItems: "center",
+                      flexWrap: "wrap"
+                    }}>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12.5 }}>
                       {t.version}
                     </Typography>
@@ -169,7 +177,14 @@ export function ToolingPanel() {
                 )}
               </Box>
 
-              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+              <Stack
+                direction="row"
+                spacing={0.75}
+                useFlexGap
+                sx={{
+                  flexWrap: "wrap",
+                  flex: 1
+                }}>
                 {t.adopted && (
                   <Tooltip title="corrallm does not own this install and will never write to it — no build, no dependency install. Drop installedAt to manage it here.">
                     <Chip size="small" variant="outlined" label="adopted" />
@@ -290,7 +305,7 @@ export function ToolingPanel() {
               )}
             </Stack>
           </Row>
-        )
+        );
       })}
       <ToolVersionDialog
         open={!!versioning}
@@ -315,5 +330,5 @@ export function ToolingPanel() {
         }}
       />
     </Panel>
-  )
+  );
 }

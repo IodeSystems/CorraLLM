@@ -272,7 +272,14 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
 
   return (
     <Box sx={{ p: 3 }}>
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1, flexWrap: 'wrap' }}>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{
+          alignItems: "center",
+          mb: 1,
+          flexWrap: 'wrap'
+        }}>
         <Button onClick={() => navigate({ to: "/" })} size="small">
           ← Overview
         </Button>
@@ -314,7 +321,7 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
       {tab === 3 && <UsageTab name={name} />}
       {tab === 4 && <BenchTab name={name} />}
     </Box>
-  )
+  );
 }
 
 // --- Info ---------------------------------------------------------------
@@ -596,7 +603,9 @@ function InfoTab({
 
       <Box>
         <Typography variant="subtitle2">Example requests</Typography>
-        {examples.length === 0 && <Typography color="text.secondary">No endpoint examples for this model.</Typography>}
+        {examples.length === 0 && <Typography sx={{
+          color: "text.secondary"
+        }}>No endpoint examples for this model.</Typography>}
         {examples.map((e) => (
           <Box key={e.path} sx={{ mb: 1 }}>
             <Typography variant="body2">
@@ -613,7 +622,7 @@ function InfoTab({
         ))}
       </Box>
     </Stack>
-  )
+  );
 }
 
 const preSx = {
@@ -682,7 +691,9 @@ function LogsTab({ backend, ready }: { backend: string; ready: boolean }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
       {!ready && (
-        <Typography variant="caption" color="text.secondary">
+        <Typography variant="caption" sx={{
+          color: "text.secondary"
+        }}>
           Backend is not resident — showing whatever output was captured from its last run.
         </Typography>
       )}
@@ -705,7 +716,7 @@ function LogsTab({ backend, ready }: { backend: string; ready: boolean }) {
         {lines.length ? lines.join('\n') : q.isLoading ? 'loading…' : '(no output captured)'}
       </Box>
     </Box>
-  )
+  );
 }
 
 // --- Usage --------------------------------------------------------------
@@ -751,7 +762,9 @@ function UsageTab({ name }: { name: string }) {
             </TableBody>
           </Table>
         ) : (
-          <Typography color="text.secondary">No usage in the last 24h.</Typography>
+          <Typography sx={{
+            color: "text.secondary"
+          }}>No usage in the last 24h.</Typography>
         )}
       </Box>
 
@@ -761,7 +774,9 @@ function UsageTab({ name }: { name: string }) {
           Recent activity
         </Typography>
         {records.length === 0 ? (
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" sx={{
+            color: "text.secondary"
+          }}>
             No requests recorded for this model.
           </Typography>
         ) : (
@@ -815,7 +830,7 @@ function UsageTab({ name }: { name: string }) {
         )}
       </Box>
     </Stack>
-  )
+  );
 }
 
 // --- Test (playgrounds) -------------------------------------------------
@@ -838,10 +853,11 @@ function TestTab({
   if (capability === 'audio.realtime') return <RealtimeStt model={model} ttsModels={ttsModels} />
   if (capability === 'audio.tts') return <TtsPlayground model={model} />
   return (
-    <Typography color="text.secondary">
-      A {capability} playground is coming. For now see the Info tab's example requests.
-    </Typography>
-  )
+    <Typography sx={{
+      color: "text.secondary"
+    }}>A {capability}playground is coming. For now see the Info tab's example requests.
+          </Typography>
+  );
 }
 
 // SpeakBack: synthesize given text through a chosen TTS model and play it — the
@@ -869,7 +885,9 @@ function SpeakBack({ text, ttsModels }: { text: string; ttsModels: string[] }) {
   }
   if (!ttsModels.length) return null
   return (
-    <Stack direction="row" spacing={1} alignItems="center">
+    <Stack direction="row" spacing={1} sx={{
+      alignItems: "center"
+    }}>
       <Button variant="outlined" onClick={() => void speak()} disabled={!text}>
         🔊 Speak it back
       </Button>
@@ -890,7 +908,7 @@ function SpeakBack({ text, ttsModels }: { text: string; ttsModels: string[] }) {
       </TextField>
       {err && <Typography color="error" variant="caption">{err}</Typography>}
     </Stack>
-  )
+  );
 }
 
 // STT playground: batch (record a clip → upload) or realtime (live ws streaming),
@@ -962,7 +980,9 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" spacing={1} alignItems="center">
+      <Stack direction="row" spacing={1} sx={{
+        alignItems: "center"
+      }}>
         {recording ? (
           <Button variant="contained" color="error" onClick={stop}>
             ■ Stop
@@ -1014,7 +1034,13 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
                   label={s.speaker ? shortId(s.speaker) : '—'}
                   sx={{ ...speakerChipSx(s.speaker ? speakerColor(s.speaker) : C.textFaint), minWidth: 44 }}
                 />
-                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', minWidth: 56 }}>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: "text.secondary",
+                    fontFamily: 'monospace',
+                    minWidth: 56
+                  }}>
                   {fmtTime(s.start)}
                 </Typography>
                 <Typography variant="body2">{s.text}</Typography>
@@ -1028,7 +1054,7 @@ function BatchStt({ model, ttsModels }: { model: string; ttsModels: string[] }) 
       <SpeakBack text={transcript} ttsModels={ttsModels} />
       {err && <Typography color="error" variant="body2">{err}</Typography>}
     </Stack>
-  )
+  );
 }
 
 // Realtime STT: stream mic audio (PCM16 @ 24 kHz, base64) over the OpenAI Realtime
@@ -1131,16 +1157,19 @@ function RealtimeStt({ model, ttsModels }: { model: string; ttsModels: string[] 
   // Live capture needs the mic, which browsers gate behind a secure context.
   if (typeof window !== 'undefined' && !window.isSecureContext) {
     return (
-      <Typography color="warning.main" variant="body2">
-        The microphone needs a <b>secure context</b> — open the dashboard over <b>https</b> (e.g.
-        https://llm.iodesystems.com). Plain http blocks <code>getUserMedia</code>.
-      </Typography>
-    )
+      <Typography variant="body2" sx={{
+        color: "warning.main"
+      }}>The microphone needs a <b>secure context</b>— open the dashboard over <b>https</b>(e.g.
+                https://llm.iodesystems.com). Plain http blocks <code>getUserMedia</code>.
+              </Typography>
+    );
   }
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" spacing={1} alignItems="center">
+      <Stack direction="row" spacing={1} sx={{
+        alignItems: "center"
+      }}>
         {live ? (
           <Button variant="contained" color="error" onClick={stop}>
             ■ Stop
@@ -1162,7 +1191,7 @@ function RealtimeStt({ model, ttsModels }: { model: string; ttsModels: string[] 
       <SpeakBack text={transcript} ttsModels={ttsModels} />
       {err && <Typography color="error" variant="body2">{err}</Typography>}
     </Stack>
-  )
+  );
 }
 
 // Text-to-speech: type text → synthesize → play through the speaker.
@@ -1199,7 +1228,9 @@ function TtsPlayground({ model }: { model: string }) {
   return (
     <Stack spacing={2}>
       <TextField multiline minRows={3} fullWidth value={text} onChange={(e) => setText(e.target.value)} placeholder="Text to speak…" />
-      <Stack direction="row" spacing={1} alignItems="center">
+      <Stack direction="row" spacing={1} sx={{
+        alignItems: "center"
+      }}>
         <Button variant="contained" onClick={() => void speak()} disabled={busy}>
           🔊 Speak
         </Button>
@@ -1208,7 +1239,7 @@ function TtsPlayground({ model }: { model: string }) {
       </Stack>
       {err && <Typography color="error" variant="body2">{err}</Typography>}
     </Stack>
-  )
+  );
 }
 
 type ToolCall = { id: string; name: string; args: string }
@@ -1549,7 +1580,9 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
       {replayTools.length > 0 && (
         <Accordion disableGutters elevation={0} variant="outlined" sx={{ '&:before': { display: 'none' } }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />} sx={{ minHeight: 0, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" sx={{
+              color: "text.secondary"
+            }}>
               Tools ({replayTools.length})
             </Typography>
           </AccordionSummary>
@@ -1561,14 +1594,21 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
                     {t.name}
                   </Typography>
                   {t.description && (
-                    <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: "text.secondary",
+                        whiteSpace: 'pre-wrap'
+                      }}>
                       {t.description}
                     </Typography>
                   )}
                   {t.parameters != null && (
                     <Accordion disableGutters elevation={0} sx={{ bgcolor: 'transparent', '&:before': { display: 'none' } }}>
                       <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />} sx={{ minHeight: 0, px: 0, '& .MuiAccordionSummary-content': { my: 0.25 } }}>
-                        <Typography variant="caption" color="text.disabled">
+                        <Typography variant="caption" sx={{
+                          color: "text.disabled"
+                        }}>
                           parameters ▸
                         </Typography>
                       </AccordionSummary>
@@ -1601,31 +1641,47 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
                     expandIcon={<ExpandMoreIcon fontSize="small" />}
                     sx={{ minHeight: 0, px: 0, '& .MuiAccordionSummary-content': { my: 0.5 } }}
                   >
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography variant="caption" sx={{
+                      color: "text.secondary"
+                    }}>
                       system ▸
                     </Typography>
                   </AccordionSummary>
                   <AccordionDetails sx={{ px: 0, py: 0.5 }}>
-                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        color: "text.secondary",
+                        whiteSpace: 'pre-wrap'
+                      }}>
                       {m.content}
                     </Typography>
                   </AccordionDetails>
                 </Accordion>
-              )
+              );
             }
             if (m.role === 'tool') {
               const preview = m.content.replace(/\s+/g, ' ').trim().slice(0, 80)
               return (
                 <Accordion key={i} disableGutters elevation={0} variant="outlined" sx={{ my: 0.5, '&:before': { display: 'none' } }}>
                   <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />} sx={{ minHeight: 0, '& .MuiAccordionSummary-content': { my: 0.5, alignItems: 'baseline' } }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: "text.secondary",
+                        fontFamily: 'monospace'
+                      }}>
                       → {m.toolName || 'tool'} result
                     </Typography>
                     <Typography
                       variant="caption"
-                      color="text.disabled"
-                      sx={{ ml: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                    >
+                      sx={{
+                        color: "text.disabled",
+                        ml: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}>
                       {preview}
                     </Typography>
                   </AccordionSummary>
@@ -1638,11 +1694,13 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
                     </Box>
                   </AccordionDetails>
                 </Accordion>
-              )
+              );
             }
             return (
               <Box key={i} sx={{ mb: 1 }}>
-                <Typography variant="caption" color="text.secondary">
+                <Typography variant="caption" sx={{
+                  color: "text.secondary"
+                }}>
                   {m.role}
                 </Typography>
                 {m.image && (
@@ -1680,12 +1738,14 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
                   </Box>
                 ))}
               </Box>
-            )
+            );
           })}
         </Box>
       </Paper>
       {image && (
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack direction="row" spacing={1} sx={{
+          alignItems: "center"
+        }}>
           <Box component="img" src={image} sx={{ maxHeight: 48, borderRadius: 1 }} />
           <Button size="small" onClick={() => setImage(null)}>
             remove image
@@ -1693,7 +1753,9 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
         </Stack>
       )}
       {file && (
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack direction="row" spacing={1} sx={{
+          alignItems: "center"
+        }}>
           <Chip size="small" label={`📄 ${file.name}`} />
           <Button size="small" onClick={() => setFile(null)}>
             remove file
@@ -1702,7 +1764,9 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
       )}
       {pending && pending.length > 0 && !busy && (
         <Paper variant="outlined" sx={{ p: 1 }}>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" sx={{
+            color: "text.secondary"
+          }}>
             paste a result for each tool call, then submit to continue
           </Typography>
           <Stack spacing={1} sx={{ mt: 1 }}>
@@ -1725,7 +1789,9 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
         </Paper>
       )}
       {replayTools.length > 0 && !(pending && pending.length > 0) && (
-        <Typography variant="caption" color="text.secondary">
+        <Typography variant="caption" sx={{
+          color: "text.secondary"
+        }}>
           tools are re-offered; when the model calls one, paste a result to continue
         </Typography>
       )}
@@ -1759,7 +1825,7 @@ function ChatPlayground({ model, replayId }: { model: string; replayId?: string 
         </Button>
       </Stack>
     </Stack>
-  )
+  );
 }
 
 export const Route = createFileRoute('/model')({
@@ -1980,13 +2046,26 @@ function CapabilityBreakdown({
   if (caps.length === 0) return null
   return (
     <Paper sx={{ p: 2 }}>
-      <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 1 }}>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{
+          alignItems: "baseline",
+          mb: 1
+        }}>
         <Typography variant="subtitle1">Last run by capability</Typography>
-        <Typography variant="caption" color="text.secondary">
+        <Typography variant="caption" sx={{
+          color: "text.secondary"
+        }}>
           run {data?.runId}
         </Typography>
       </Stack>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+      <Typography
+        variant="body2"
+        sx={{
+          color: "text.secondary",
+          mb: 2
+        }}>
         Each capability is scored only on the probes written for it. Scores across different
         capabilities are not comparable — a speech model passing every speech probe says nothing
         about whether it can hold a conversation.
@@ -1998,10 +2077,18 @@ function CapabilityBreakdown({
         return (
           <Accordion key={c.capability} disableGutters>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Stack direction="row" spacing={1.5} alignItems="center" sx={{ width: '100%' }}>
+              <Stack
+                direction="row"
+                spacing={1.5}
+                sx={{
+                  alignItems: "center",
+                  width: '100%'
+                }}>
                 <Chip size="small" label={capLabel(c.capability)} />
                 {notApplicable ? (
-                  <Typography variant="body2" color="text.secondary">
+                  <Typography variant="body2" sx={{
+                    color: "text.secondary"
+                  }}>
                     not applicable — {skipped.length} probe{skipped.length === 1 ? '' : 's'} skipped
                   </Typography>
                 ) : (
@@ -2012,7 +2099,9 @@ function CapabilityBreakdown({
                 )}
                 <Box sx={{ flexGrow: 1 }} />
                 {!notApplicable && skipped.length > 0 && (
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography variant="caption" sx={{
+                    color: "text.secondary"
+                  }}>
                     {skipped.length} skipped
                   </Typography>
                 )}
@@ -2024,10 +2113,10 @@ function CapabilityBreakdown({
               ))}
             </AccordionDetails>
           </Accordion>
-        )
+        );
       })}
     </Paper>
-  )
+  );
 }
 
 type ProbeArm = NonNullable<
@@ -2069,7 +2158,13 @@ function ProbeRow({
   return (
     <Accordion variant="outlined" disableGutters>
       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Stack direction="row" spacing={1.5} alignItems="center" sx={{ width: '100%' }}>
+        <Stack
+          direction="row"
+          spacing={1.5}
+          sx={{
+            alignItems: "center",
+            width: '100%'
+          }}>
           <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
             {probe.probe}
           </Typography>
@@ -2097,7 +2192,9 @@ function ProbeRow({
           )}
           <Box sx={{ flexGrow: 1 }} />
           {ranArms.length > 1 && (
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" sx={{
+              color: "text.secondary"
+            }}>
               {ranArms.length} arms
             </Typography>
           )}
@@ -2112,7 +2209,9 @@ function ProbeRow({
         {ranArms.length > 1 && (
           <Box>
             <Typography variant="subtitle2">A/B arms</Typography>
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" sx={{
+              color: "text.secondary"
+            }}>
               Delta is against the baseline arm. Token counts are prompt tokens actually
               evaluated, so a cached prefix re-sent every turn is not charged to an arm twice.
             </Typography>
@@ -2135,7 +2234,9 @@ function ProbeRow({
                   {ranArms.map((a) => (
                     <TableRow key={a.label} hover>
                       <TableCell>
-                        <Stack direction="row" spacing={0.5} alignItems="center">
+                        <Stack direction="row" spacing={0.5} sx={{
+                          alignItems: "center"
+                        }}>
                           <Typography variant="caption">{a.label}</Typography>
                           {a.isBaseline && <Chip size="small" label="baseline" />}
                         </Stack>
@@ -2198,7 +2299,7 @@ function ProbeRow({
         )}
       </AccordionDetails>
     </Accordion>
-  )
+  );
 }
 
 /**
@@ -2272,7 +2373,13 @@ function BenchTab({ name }: { name: string }) {
       )}
 
       <Panel title="Run a benchmark on {name}">
-        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
+        <Stack
+          direction="row"
+          spacing={2}
+          sx={{
+            alignItems: "center",
+            flexWrap: "wrap"
+          }}>
           {BENCH_KINDS.map((k) => {
             const p = (plan?.probes ?? []).find((x) => x.kind === k)
             return (
@@ -2328,16 +2435,23 @@ function BenchTab({ name }: { name: string }) {
       )}
       {!!status?.error && <Alert severity="error">{status.error}</Alert>}
 
-      <CapabilityBreakdown data={q.data?.corrallm?.benchProbes} model={name} />
+      <CapabilityBreakdown data={q.data?.corrallm?.benchProbes ?? null} model={name} />
 
       <Panel title="History">
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+            mb: 1
+          }}>
           One pass rate per run, across every probe that ran. Use it to track a model against
           itself over time — not to rank models against each other, since two models rarely run
           the same probe set. The capability breakdown above is the comparable view.
         </Typography>
         {results.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" sx={{
+            color: "text.secondary"
+          }}>
             No benchmark has been run against this model.
           </Typography>
         ) : (
@@ -2404,5 +2518,5 @@ function BenchTab({ name }: { name: string }) {
         </DialogActions>
       </Dialog>
     </Box>
-  )
+  );
 }

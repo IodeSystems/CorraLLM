@@ -109,7 +109,9 @@ export function KeyLaneActions({
 
   return (
     <>
-      <Stack direction="row" spacing={1} justifyContent="flex-end">
+      <Stack direction="row" spacing={1} sx={{
+        justifyContent: "flex-end"
+      }}>
         <Button
           size="small"
           variant={recognized ? 'text' : 'contained'}
@@ -135,7 +137,9 @@ export function KeyLaneActions({
         <DialogTitle>Assign a lane</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="body2" sx={{
+              color: "text.secondary"
+            }}>
               Weight lives on the group, not the key — this chooses which lane{' '}
               <code>{keyName}</code> is scheduled in.
             </Typography>
@@ -166,5 +170,5 @@ export function KeyLaneActions({
         </DialogActions>
       </Dialog>
     </>
-  )
+  );
 }

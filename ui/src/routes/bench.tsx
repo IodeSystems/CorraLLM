@@ -224,7 +224,13 @@ function ActiveRun(props: {
   const tail = log.slice(-200)
   return (
     <Paper sx={{ p: 2, borderLeft: 4, borderColor: 'warning.main' }}>
-      <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
+      <Stack
+        direction="row"
+        spacing={2}
+        sx={{
+          alignItems: "center",
+          mb: 1
+        }}>
         <CircularProgress size={20} />
         <Typography variant="subtitle1">Bench running</Typography>
         {startedAt > 0 && <Chip size="small" label={`elapsed ${elapsed(startedAt)}`} />}
@@ -237,7 +243,9 @@ function ActiveRun(props: {
           holds nothing, evicts nothing and locks nobody out. Left as-is it told
           operators their fleet was being taken down for a measurement that is
           in fact queueing politely alongside everyone else. */}
-      <Typography variant="caption" color="text.secondary">
+      <Typography variant="caption" sx={{
+        color: "text.secondary"
+      }}>
         The run queues for admission like any other caller — nothing is evicted and no one is
         locked out. It competes for slots, so a single-slot model will make both the bench and
         other traffic wait on each other.
@@ -267,7 +275,7 @@ function ActiveRun(props: {
         {tail.length ? tail.join('\n') : 'waiting for output…'}
       </Box>
     </Paper>
-  )
+  );
 }
 
 const KINDS = ['measure', 'capability', 'quality'] as const
@@ -359,7 +367,9 @@ function BenchPage() {
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title="Bench">
         <Chip size="small" variant="outlined" label={`GPU · ${plan?.gpu || 'unknown'}`} />
-        <Typography variant="body2" color="text.secondary">
+        <Typography variant="body2" sx={{
+          color: "text.secondary"
+        }}>
           Cross-model comparison
         </Typography>
       </PageHeader>
@@ -384,7 +394,14 @@ function BenchPage() {
             : `From ${catalog?.source || 'the configured directory'}`
         }
       >
-        <Typography variant="caption" color="text.secondary" component="div" sx={{ p: 2, pb: 1 }}>
+        <Typography
+          variant="caption"
+          component="div"
+          sx={{
+            color: "text.secondary",
+            p: 2,
+            pb: 1
+          }}>
           Every probe the runner would resolve — what could run, as opposed to what did. A probe
           that fails to LOAD is listed here with its error rather than omitted, because a probe
           silently missing from a run looks exactly like a probe that ran and found nothing.
@@ -425,11 +442,15 @@ function BenchPage() {
                   </TableCell>
                   <TableCell>
                     {p.error ? (
-                      <Typography variant="caption" color="error.main">
+                      <Typography variant="caption" sx={{
+                        color: "error.main"
+                      }}>
                         fails to load: {p.error}
                       </Typography>
                     ) : (
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography variant="caption" sx={{
+                        color: "text.secondary"
+                      }}>
                         {p.summary || '—'}
                       </Typography>
                     )}
@@ -453,7 +474,14 @@ function BenchPage() {
 
       {runIndex.length > 0 && (
         <Panel title="Runs">
-          <Typography variant="caption" color="text.secondary" component="div" sx={{ p: 2, pb: 1 }}>
+          <Typography
+            variant="caption"
+            component="div"
+            sx={{
+              color: "text.secondary",
+              p: 2,
+              pb: 1
+            }}>
             The comparisons below use each model&rsquo;s LATEST result, which may come from
             different runs on different days. Open a single run to compare models that actually
             sat the same exam.
@@ -519,7 +547,13 @@ function BenchPage() {
         <>
           {armMatrix.length > 0 && (
             <Panel title="A/B arms across models">
-              <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1 }}>
+              <Typography
+                variant="caption"
+                component="div"
+                sx={{
+                  color: "text.secondary",
+                  mb: 1
+                }}>
                 &ldquo;Did this arm help THIS model&rdquo; is on the model console. This is
                 &ldquo;does it help at all&rdquo;. Comparisons are <b>paired</b>: an arm is credited
                 only on probes where its baseline also ran, so an arm that happened to run against
@@ -529,15 +563,30 @@ function BenchPage() {
               </Typography>
               {armMatrix.map((c) => (
                 <Box key={c.capability} sx={{ mb: 2 }}>
-                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    sx={{
+                      alignItems: "center",
+                      mb: 0.5
+                    }}>
                     <Chip size="small" label={capLabel(c.capability)} />
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography variant="caption" sx={{
+                      color: "text.secondary"
+                    }}>
                       vs {(c.baselineLabels ?? []).join(', ') || 'baseline'}
                     </Typography>
                   </Stack>
                   {(c.arms ?? []).map((a) => (
                     <Box key={a.label} sx={{ mb: 1.5 }}>
-                      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                      <Stack
+                        direction="row"
+                        spacing={1}
+                        useFlexGap
+                        sx={{
+                          alignItems: "center",
+                          flexWrap: "wrap"
+                        }}>
                         <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
                           {a.label}
                         </Typography>
@@ -555,7 +604,9 @@ function BenchPage() {
                         </Typography>
                         {/* Median beside the mean so one pathological probe cannot
                             carry a verdict the rest of the evidence does not support. */}
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography variant="caption" sx={{
+                          color: "text.secondary"
+                        }}>
                           {deltaPct(n(a.medianScoreDelta))} median · {a.wins}W/{a.losses}L/{a.ties}T
                           · {a.probes} paired probe{n(a.probes) === 1 ? '' : 's'} over {a.models}{' '}
                           model{n(a.models) === 1 ? '' : 's'}
@@ -635,11 +686,19 @@ function BenchPage() {
               const withVram = models.filter((m) => (vramByModel.get(m.model) ?? 0) > 0)
               return (
                 <Paper key={c.capability} sx={{ p: 2 }}>
-                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    sx={{
+                      alignItems: "center",
+                      mb: 0.5
+                    }}>
                     <Typography variant="subtitle1">Score —</Typography>
                     <Chip size="small" label={capLabel(c.capability)} />
                   </Stack>
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography variant="caption" sx={{
+                    color: "text.secondary"
+                  }}>
                     Ranked on the probes written for this capability only. A model appears here
                     just when it was actually measured on this surface — one that skipped every
                     probe is absent rather than shown at 0%, which would assert a failure that
@@ -662,7 +721,9 @@ function BenchPage() {
                       <Typography variant="subtitle2" sx={{ mt: 2 }}>
                         vs resident VRAM
                       </Typography>
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography variant="caption" sx={{
+                        color: "text.secondary"
+                      }}>
                         The tradeoff that actually decides what to run: quality on THIS surface
                         against what it costs to keep resident. Up and to the left is better.
                       </Typography>
@@ -725,12 +786,14 @@ function BenchPage() {
                     </Table>
                   </TableContainer>
                 </Paper>
-              )
+              );
             })
           )}
 
           <Panel title="Tokens — processed vs generated">
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" sx={{
+              color: "text.secondary"
+            }}>
               Cache hits are excluded from &ldquo;processed&rdquo;: a model that ran second over the
               same fixtures gets cheap prompt tokens through no merit of its own, so counting
               them would reward the running order rather than the model.
@@ -747,7 +810,9 @@ function BenchPage() {
           </Panel>
 
           <Panel title="Run totals">
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" sx={{
+              color: "text.secondary"
+            }}>
               Whole-run figures per model. The score column mixes every capability a model was
               measured on, so it is <b>not</b> a ranking — two models rarely run the same probe
               set, and a model that skipped most probes scores high on the few it kept. Compare
@@ -838,14 +903,16 @@ function BenchPage() {
                             onChange={() => toggle(m.model, k)}
                           />
                         ) : (
-                          <Typography variant="caption" color="text.disabled">
+                          <Typography variant="caption" sx={{
+                            color: "text.disabled"
+                          }}>
                             n/a
                           </Typography>
                         )}
                       </TableCell>
                     ))}
                   </TableRow>
-                )
+                );
               })}
             </TableBody>
           </Table>
@@ -916,7 +983,7 @@ function BenchPage() {
         <Alert severity="error">{start.data.corrallm.startBenchRun.message}</Alert>
       )}
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/bench')({ component: BenchPage })

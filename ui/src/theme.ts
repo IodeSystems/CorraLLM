@@ -178,11 +178,33 @@ export const theme = createTheme({
     },
     MuiAlert: {
       styleOverrides: {
-        root: { border: `1px solid ${C.border}` },
-        standardWarning: { backgroundColor: alpha(C.warn, 0.12), color: C.text },
-        standardError: { backgroundColor: alpha(C.error, 0.12), color: C.text },
-        standardSuccess: { backgroundColor: alpha(C.ok, 0.12), color: C.text },
-        standardInfo: { backgroundColor: alpha(C.accent, 0.12), color: C.text },
+        // MUI 9 dropped the compound standard<Severity> classes
+        // (standardWarning and friends) in favour of separate `standard`
+        // and `color<Severity>` ones, so a style keyed on both is
+        // expressed against ownerState now.
+        root: ({ ownerState }) => ({
+          border: `1px solid ${C.border}`,
+          ...(ownerState.variant === 'standard' &&
+            ownerState.severity === 'warning' && {
+              backgroundColor: alpha(C.warn, 0.12),
+              color: C.text,
+            }),
+          ...(ownerState.variant === 'standard' &&
+            ownerState.severity === 'error' && {
+              backgroundColor: alpha(C.error, 0.12),
+              color: C.text,
+            }),
+          ...(ownerState.variant === 'standard' &&
+            ownerState.severity === 'success' && {
+              backgroundColor: alpha(C.ok, 0.12),
+              color: C.text,
+            }),
+          ...(ownerState.variant === 'standard' &&
+            ownerState.severity === 'info' && {
+              backgroundColor: alpha(C.accent, 0.12),
+              color: C.text,
+            }),
+        }),
       },
     },
     MuiDialog: { styleOverrides: { paper: { backgroundColor: C.surface } } },

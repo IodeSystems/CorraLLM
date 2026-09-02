@@ -195,7 +195,12 @@ function HostsPage() {
           to a working instance. */}
       {models.length === 0 && servers.length === 0 && (
         <Panel title="Nothing configured yet">
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 2
+            }}>
             This instance is running but serves no models. Declare a host here first — its
             memory budget is what the scheduler admits against — then add models on{' '}
             <b>Providers</b>, which is where a model gets the provider that owns it. A{' '}
@@ -385,7 +390,7 @@ function HostsPage() {
           could only ever render "None". A permanently empty panel is worse than
           no panel: it implies a feature. */}
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/hosts')({ component: HostsPage })

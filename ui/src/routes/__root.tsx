@@ -173,7 +173,7 @@ function NavList({ labels, onNavigate }: { labels: boolean; onNavigate?: () => v
             {labels && (
               <ListItemText
                 primary={n.label}
-                slotProps={{ primary: { fontSize: 13.5, fontWeight: 600 } }}
+                slotProps={{ primary: { sx: { fontSize: 13.5, fontWeight: 600 } } }}
               />
             )}
           </ListItemButton>

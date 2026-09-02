@@ -85,7 +85,9 @@ export function ServiceProfiles({ minutes = 1440 }: { minutes?: number }) {
     </Box>
   ) : rows.length === 0 ? (
     <Box sx={{ p: 2 }}>
-      <Typography color="text.secondary">Nothing served in the last {minutes} minutes.</Typography>
+      <Typography sx={{
+        color: "text.secondary"
+      }}>Nothing served in the last {minutes} minutes.</Typography>
     </Box>
   ) : (
     <TableContainer>

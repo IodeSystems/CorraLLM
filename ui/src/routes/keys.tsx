@@ -154,7 +154,9 @@ function Keys() {
               {keys.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8}>
-                    <Typography color="text.secondary">
+                    <Typography sx={{
+                      color: "text.secondary"
+                    }}>
                       No keys configured, and none seen in traffic yet.
                     </Typography>
                   </TableCell>
@@ -212,7 +214,7 @@ function Keys() {
         </TableContainer>
       </Panel>
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/keys')({ component: Keys })

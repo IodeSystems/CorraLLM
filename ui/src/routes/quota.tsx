@@ -95,13 +95,15 @@ function BucketCell({ b }: { b: Bucket }) {
             </Tooltip>
           )}
         </Typography>
-        <Typography variant="caption" color="text.secondary">
+        <Typography variant="caption" sx={{
+          color: "text.secondary"
+        }}>
           {b.stale ? 'window rolled' : b.resetsIn ? `resets ${b.resetsIn}` : ''}
         </Typography>
       </Box>
       <LinearProgress variant="determinate" value={pct} color={color} />
     </Box>
-  )
+  );
 }
 
 function QuotaPage() {
@@ -116,7 +118,9 @@ function QuotaPage() {
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
       <PageHeader title="Free-tier quota" />
-      <Typography variant="body2" color="text.secondary">
+      <Typography variant="body2" sx={{
+        color: "text.secondary"
+      }}>
         Per-backend budget learned live from each provider's rate-limit headers. A backend goes{' '}
         <b>unavailable</b> when exhausted or cooling from a 429, and the free lane routes around it.
         Counts are a snapshot from the last call — <i>observed N ago</i> — not a live tick.
@@ -169,7 +173,9 @@ function QuotaPage() {
                             {w.resetsIn ? ` · resets ${w.resetsIn}` : ''}
                           </Typography>
                         ))}
-                        <Typography variant="caption" color="text.secondary">counter-mode</Typography>
+                        <Typography variant="caption" sx={{
+                          color: "text.secondary"
+                        }}>counter-mode</Typography>
                       </Box>
                     ) : (
                       <BucketCell b={be.requests} />
@@ -177,14 +183,18 @@ function QuotaPage() {
                   </TableCell>
                   <TableCell>
                     {(be.windows ?? []).length > 0 ? (
-                      <Typography variant="caption" color="text.secondary">—</Typography>
+                      <Typography variant="caption" sx={{
+                        color: "text.secondary"
+                      }}>—</Typography>
                     ) : (
                       <BucketCell b={be.tokens} />
                     )}
                   </TableCell>
                   <TableCell align="right">{fmtInt(n(be.seen))}</TableCell>
                   <TableCell align="right">
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography variant="caption" sx={{
+                      color: "text.secondary"
+                    }}>
                       {n(be.observedAgoSec)}s ago
                     </Typography>
                   </TableCell>
@@ -196,7 +206,7 @@ function QuotaPage() {
         </Panel>
       )}
     </Box>
-  )
+  );
 }
 
 export const Route = createFileRoute('/quota')({ component: QuotaPage })

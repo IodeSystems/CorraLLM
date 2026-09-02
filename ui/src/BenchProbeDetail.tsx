@@ -174,7 +174,13 @@ function ChecksAndStages({ runId, model, probe }: Props) {
           <Chip size="small" label={arm.label} sx={{ mb: 1 }} />
           {(arm.stages ?? []).map((s) => (
             <Paper key={s.stage} variant="outlined" sx={{ p: 1.5, mb: 1 }}>
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+              <Stack
+                direction="row"
+                spacing={1}
+                sx={{
+                  alignItems: "center",
+                  mb: 1
+                }}>
                 <Typography variant="subtitle2">Stage {s.stage}</Typography>
                 <Chip
                   size="small"
@@ -187,7 +193,9 @@ function ChecksAndStages({ runId, model, probe }: Props) {
                   </Tooltip>
                 )}
                 <Box sx={{ flexGrow: 1 }} />
-                <Typography variant="caption" color="text.secondary">
+                <Typography variant="caption" sx={{
+                  color: "text.secondary"
+                }}>
                   {s.turns} turns · {s.toolCalls} tool calls · {fmtInt(n(s.newPromptTokens))} in ·{' '}
                   {fmtInt(n(s.completionTokens))} out · {n(s.tokPerSec).toFixed(0)} tok/s ·{' '}
                   {/* Execution is the honest duration; wall is what a stopwatch
@@ -218,7 +226,14 @@ function ChecksAndStages({ runId, model, probe }: Props) {
               )}
               {/* Failure-shaped counters only when non-zero: a row of zeros is
                   noise on the probes that went fine. */}
-              <Stack direction="row" spacing={1} sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
+              <Stack
+                direction="row"
+                spacing={1}
+                useFlexGap
+                sx={{
+                  flexWrap: "wrap",
+                  mb: 1
+                }}>
                 {n(s.baitCalls) > 0 && (
                   <Tooltip title="Calls to a declared bait tool — what adversarial probes are scored on.">
                     <Chip size="small" color="error" label={`bait calls ${s.baitCalls}`} />
@@ -244,7 +259,9 @@ function ChecksAndStages({ runId, model, probe }: Props) {
               </Stack>
               {!!s.prompt && (
                 <>
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography variant="caption" sx={{
+                    color: "text.secondary"
+                  }}>
                     Prompt
                   </Typography>
                   <Mono>{s.prompt}</Mono>
@@ -291,7 +308,7 @@ function ChecksAndStages({ runId, model, probe }: Props) {
         </Box>
       ))}
     </Stack>
-  )
+  );
 }
 
 function Transcript({ runId, model, probe, toolset, runMode, armLabel }: Props) {
@@ -307,14 +324,18 @@ function Transcript({ runId, model, probe, toolset, runMode, armLabel }: Props) 
   return (
     <Stack spacing={1}>
       {armLabel && (
-        <Typography variant="caption" color="text.secondary">
+        <Typography variant="caption" sx={{
+          color: "text.secondary"
+        }}>
           Arm: <b>{armLabel}</b> — each arm records its own conversation.
         </Typography>
       )}
       {t.truncated && <Alert severity="warning">Transcript truncated — showing the first 2000 entries.</Alert>}
       {(t.entries ?? []).map((e, i) => (
         <Box key={i}>
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={1} sx={{
+            alignItems: "center"
+          }}>
             <Chip
               size="small"
               variant={e.kind === 'user' ? 'filled' : 'outlined'}
@@ -324,12 +345,14 @@ function Transcript({ runId, model, probe, toolset, runMode, armLabel }: Props) 
           <Mono>{e.content}</Mono>
         </Box>
       ))}
-      <Typography variant="caption" color="text.secondary">
+      <Typography variant="caption" sx={{
+        color: "text.secondary"
+      }}>
         Message bodies are capped at 2 KiB each by the recorder, so long tool results appear
         truncated.
       </Typography>
     </Stack>
-  )
+  );
 }
 
 function Journal({ runId, model, probe, toolset, runMode, armLabel }: Props) {
@@ -348,7 +371,9 @@ function Journal({ runId, model, probe, toolset, runMode, armLabel }: Props) {
   return (
     <TableContainer>
       {armLabel && (
-        <Typography variant="caption" color="text.secondary">
+        <Typography variant="caption" sx={{
+          color: "text.secondary"
+        }}>
           Arm: <b>{armLabel}</b>
         </Typography>
       )}
@@ -392,7 +417,7 @@ function Journal({ runId, model, probe, toolset, runMode, armLabel }: Props) {
         </TableBody>
       </Table>
     </TableContainer>
-  )
+  );
 }
 
 /** Tabbed drill-in for one probe: checks and metrics, the conversation, the tool calls. */

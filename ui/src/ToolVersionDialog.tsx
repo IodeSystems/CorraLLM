@@ -172,7 +172,14 @@ export function ToolVersionDialog({
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle>
-        <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Stack
+          direction="row"
+          spacing={1.5}
+          useFlexGap
+          sx={{
+            alignItems: "center",
+            flexWrap: "wrap"
+          }}>
           <span>
             Version of {tool} <span style={{ color: C.textFaint }}>on</span> {host}
           </span>
@@ -205,7 +212,9 @@ export function ToolVersionDialog({
           build checks this out, and anything already running keeps the binary it started with.
         </Typography>
 
-        <Stack direction="row" spacing={1} alignItems="flex-start">
+        <Stack direction="row" spacing={1} sx={{
+          alignItems: "flex-start"
+        }}>
           <TextField
             size="small"
             fullWidth
@@ -272,15 +281,14 @@ export function ToolVersionDialog({
                   key={b.id}
                   direction="row"
                   spacing={1}
-                  alignItems="center"
                   sx={{
+                    alignItems: "center",
                     px: 1,
                     py: 0.75,
                     border: `1px solid ${b.active ? C.borderStrong : C.border}`,
                     borderRadius: 1,
-                    background: b.active ? C.raised : 'transparent',
-                  }}
-                >
+                    background: b.active ? C.raised : 'transparent'
+                  }}>
                   <Typography
                     variant="body2"
                     sx={{ fontFamily: 'monospace', fontSize: 12.5, flex: 1 }}
@@ -333,5 +341,5 @@ export function ToolVersionDialog({
         <Button onClick={onClose}>Close</Button>
       </DialogActions>
     </Dialog>
-  )
+  );
 }

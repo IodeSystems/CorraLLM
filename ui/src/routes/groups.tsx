@@ -138,7 +138,9 @@ function Groups() {
               {groups.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6}>
-                    <Typography color="text.secondary">No groups configured.</Typography>
+                    <Typography sx={{
+                      color: "text.secondary"
+                    }}>No groups configured.</Typography>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -190,7 +192,9 @@ function Groups() {
               {reservations.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={4}>
-                    <Typography color="text.secondary">No active reservations.</Typography>
+                    <Typography sx={{
+                      color: "text.secondary"
+                    }}>No active reservations.</Typography>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -226,7 +230,9 @@ function Groups() {
               {backends.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5}>
-                    <Typography color="text.secondary">No backends under load.</Typography>
+                    <Typography sx={{
+                      color: "text.secondary"
+                    }}>No backends under load.</Typography>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -270,7 +276,7 @@ function Groups() {
         invalidate={['groups', 'config']}
       />
     </Box>
-  )
+  );
 }
 
 // blankGroup seeds a policy unit: who gets served first under load, and what

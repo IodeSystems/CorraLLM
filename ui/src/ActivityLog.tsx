@@ -162,11 +162,15 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
         {rec && (
           <Stack spacing={1.5}>
             <Box>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" sx={{
+                color: "text.secondary"
+              }}>
                 {rec.served} · {rec.placement || '—'} · {rec.path} · {fmtTime(rec.ts)}
                 {rec.sourceIp && <> · from {rec.sourceIp}</>}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" sx={{
+                color: "text.secondary"
+              }}>
                 dwell {fmtDuration(rec.dwellMs)} · ttfb {fmtDuration(rec.ttfbMs)} · queued{' '}
                 {fmtDuration(rec.queuedMs)} · {fmtInt(rec.promptTokens)}→
                 {fmtInt(rec.completionTokens)} tok · {fmtUSD(rec.costUsd)}
@@ -193,7 +197,7 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
         )}
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 function Payload({ title, body }: { title: string; body: string }) {
@@ -307,7 +311,9 @@ export function ActivityLog({
           {records.length === 0 ? (
             <TableRow>
               <TableCell colSpan={16}>
-                <Typography color="text.secondary">
+                <Typography sx={{
+                  color: "text.secondary"
+                }}>
                   {filterKey
                     ? 'No activity recorded for this key.'
                     : filterModel
@@ -392,7 +398,9 @@ export function ActivityLog({
         title={title}
         subtitle={subtitle}
         badge={
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={1} sx={{
+            alignItems: "center"
+          }}>
             <Chip size="small" variant="outlined" label={records.length} />
             {action}
           </Stack>
@@ -403,5 +411,5 @@ export function ActivityLog({
       </Panel>
       {selected && <DetailModal id={selected} onClose={() => setSelected(null)} />}
     </>
-  )
+  );
 }
