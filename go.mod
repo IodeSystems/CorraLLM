@@ -7,7 +7,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/iodesystems/agentkit v0.6.0
 	github.com/iodesystems/gwag/v2 v2.0.0
-	github.com/mark3labs/mcp-go v0.55.1
+	github.com/mark3labs/mcp-go v1.0.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/spf13/cobra v1.10.2
 	go.starlark.net v0.0.0-20260828210309-6dd8f160a37f
