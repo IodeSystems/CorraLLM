@@ -13,16 +13,26 @@ import (
 // to its declared members AND the pool behind them.
 func TestLiveConfigFreeLaneIncludesThePool(t *testing.T) {
 	path := os.Getenv("HOME") + "/.corrallm/config.yml"
-	// Since P26 config lives in the database and this file is a zero-byte
-	// leftover on a machine that has migrated. Stat alone still finds it, and
-	// the test then asserted about an empty config and failed — a red suite
-	// reporting nothing but its own staleness.
-	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+	// Since P26 config lives in the database and this file is a leftover on a
+	// machine that has migrated. Stat alone still finds it, and the test then
+	// asserted about an empty config and failed — a red suite reporting
+	// nothing but its own staleness.
+	//
+	// A size check is not enough. The migrated stub is not zero bytes: it is a
+	// ~1.2 KB comment block whose first line is "NOT READ. Configuration lives
+	// in SQLite (P26)." That sails past a size>0 guard and fails exactly the
+	// way the zero-byte case used to. What actually distinguishes a live
+	// config from a migrated one is whether the YAML declares anything at all,
+	// so ask that instead.
+	if _, err := os.Stat(path); err != nil {
 		t.Skip("no live YAML config on this machine (config lives in the database)")
 	}
 	c, err := Load(path)
 	if err != nil {
 		t.Fatalf("live config failed to load: %v", err)
+	}
+	if len(c.VirtualTargets()) == 0 {
+		t.Skip("live YAML declares no virtual targets — config lives in the database")
 	}
 	var pooled []string
 	for _, vt := range c.VirtualTargets() {

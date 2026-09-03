@@ -275,14 +275,29 @@ func TestExportIsAFixedPoint(t *testing.T) {
 func TestVerifyAgainstFile(t *testing.T) {
 	path := os.Getenv("HOME") + "/.corrallm/config.yml"
 	// An emptied config.yml is what a migrated machine looks like: since P26 the
-	// database is the config, and stat alone still finds the zero-byte leftover.
-	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+	// database is the config, and stat alone still finds the leftover.
+	//
+	// Size is the wrong signal. The migrated stub is ~1.2 KB of comments
+	// beginning "NOT READ. Configuration lives in SQLite (P26)." — it clears a
+	// size>0 guard, imports as an EMPTY config, and then the drift half of this
+	// test cannot work: dropping config_key rows changes nothing when the file
+	// declared no keys, so verification rightly still passes and the test
+	// reports a failure that is only its own staleness. Ask what the import
+	// actually stored instead.
+	if _, err := os.Stat(path); err != nil {
 		t.Skip("no live YAML config on this machine (config lives in the database)")
 	}
 	ctx := context.Background()
 	src := &Source{DB: openDB(t)}
 	if _, err := src.ImportFile(ctx, path); err != nil {
 		t.Fatal(err)
+	}
+	var keys int
+	if err := src.DB.QueryRowContext(ctx, `SELECT count(*) FROM config_key`).Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
+	if keys == 0 {
+		t.Skip("live YAML declares no config keys — config lives in the database")
 	}
 	if err := src.VerifyAgainstFile(ctx, path); err != nil {
 		t.Fatalf("a faithful import failed verification: %v", err)
