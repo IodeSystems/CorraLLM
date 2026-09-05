@@ -196,6 +196,12 @@ type Fault = {
   next: string
   when?: string
   severity: 'error' | 'warning' | 'info'
+  // WHOSE MACHINE, and it decides the headline. Lenny run 3: the box spent its
+  // one "Struggling" on a laptop that had never reported in, and never said
+  // anything about the machine actually serving the team — so a person came
+  // looking for "is my box broken" and left unable to say. A fault somewhere
+  // else is still a fault; it is not this box struggling.
+  scope: 'here' | 'attached'
 }
 
 function faultsOf(
@@ -215,6 +221,7 @@ function faultsOf(
     const last = Number(s.agentLastSeen)
     out.push({
       key: `agent:${s.server}`,
+      scope: 'attached',
       severity: s.agentStatus === 'down' ? 'error' : 'warning',
       what: `${s.server} is not reporting in`,
       whose: 'That machine, not this one.',
@@ -228,6 +235,7 @@ function faultsOf(
     if (m.state !== 'failed') continue
     out.push({
       key: `failed:${m.modelName}`,
+      scope: 'here',
       severity: 'error',
       what: `${m.modelName} failed to start on ${m.server}`,
       whose: 'This box.',
@@ -244,6 +252,7 @@ function faultsOf(
       if (budget <= 0 || used < budget) continue
       out.push({
         key: `full:${s.server}/${p.pool}`,
+        scope: 'here',
         severity: 'warning',
         what: `${s.server} has no room left in ${p.pool}`,
         whose: 'This box — it is full, not broken.',
@@ -263,6 +272,7 @@ function faultsOf(
     if (!m.paused) continue
     out.push({
       key: `paused:${m.name}`,
+      scope: 'here',
       severity: 'info',
       what: `${m.name} is paused — it is not serving anybody`,
       whose: 'Somebody here paused it on purpose.',
@@ -273,6 +283,7 @@ function faultsOf(
     if (!e.paused) continue
     out.push({
       key: `paused-ext:${e.name}`,
+      scope: 'here',
       severity: 'info',
       what: `${e.name} is paused — every model it serves is unavailable`,
       whose: 'Somebody here paused it on purpose.',
@@ -302,7 +313,8 @@ function BoxState(props: {
   version: string
 }) {
   const { faults, stopping, ready, configured, machines, version } = props
-  const bad = faults.filter((f) => f.severity !== 'info').length
+  const bad = faults.filter((f) => f.severity !== 'info' && f.scope === 'here').length
+  const elsewhere = faults.filter((f) => f.severity !== 'info' && f.scope === 'attached').length
   // "Serving" with nothing loaded is TRUE here and has to be said carefully:
   // corrallm loads on demand, so an idle box with zero resident models is
   // healthy and the next request will start one. What is NOT serving is a box
@@ -318,9 +330,14 @@ function BoxState(props: {
         ? `${bad} thing${bad === 1 ? '' : 's'} below need${bad === 1 ? 's' : ''} looking at.`
         : configured === 0
           ? 'No models are configured, so nothing can be served yet. Start on Providers.'
-          : ready === 0
-            ? `Nothing is loaded right now — the next request loads one of ${configured} models. Nothing needs you.`
-            : `${ready} of ${configured} models loaded across ${machines} machine${machines === 1 ? '' : 's'}. Nothing needs you.`
+          : // THIS box is fine and something else is not: say both, in that order.
+            // "Struggling" for a machine that is not serving anybody sends a
+            // person hunting for a fault on the one that is.
+            elsewhere > 0
+            ? `This machine is serving normally. ${elsewhere} attached machine${elsewhere === 1 ? ' is' : 's are'} not, and ${elsewhere === 1 ? 'it is' : 'they are'} below.`
+            : ready === 0
+              ? `Nothing is loaded right now — the next request loads one of ${configured} models. Nothing needs you.`
+              : `${ready} of ${configured} models loaded across ${machines} machine${machines === 1 ? '' : 's'}. Nothing needs you.`
   return (
     <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
       <Typography variant="body1" sx={{ color, fontWeight: 700 }}>

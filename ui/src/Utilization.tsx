@@ -215,6 +215,17 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
 
   const rows = q.data?.corrallm.utilization?.rows ?? []
 
+  // THREE OF THESE COLUMNS ARE LIVE, WHATEVER THE WINDOW SAYS. `In use`, `Queue`
+  // and `Est. wait` come from the scheduler's CURRENT snapshot — there is no
+  // historical record of a slot's occupancy or of an estimate that was offered.
+  // Under a frozen window they were still being drawn, so a page headed "a fixed
+  // span — these numbers will not change" showed an est. wait identical to the
+  // live page's, to the tenth of a second. Lenny run 3 caught it by reading the
+  // two screens against each other, which is the only way it was visible: each
+  // screen alone was plausible. A false number is worse than a missing one
+  // (OB-9), so on a fixed span these three say so instead.
+  const live = window.kind !== 'absolute'
+
   const body = q.isLoading ? (
     <Loading size={20} minHeight={120} />
   ) : q.error ? (
@@ -343,7 +354,9 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                   )}
                 </TableCell>
                 <TableCell align="right">
-                  {cap > 0 ? (
+                  {!live ? (
+                    <span style={{ color: C.textFaint }}>—</span>
+                  ) : cap > 0 ? (
                     <Tooltip
                       title={
                         waiting > 0
@@ -368,7 +381,11 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                   )}
                 </TableCell>
                 <TableCell align="right">
-                  <Zeroable n={waiting} color={waiting > 0 ? C.warn : undefined} />
+                  {live ? (
+                    <Zeroable n={waiting} color={waiting > 0 ? C.warn : undefined} />
+                  ) : (
+                    <span style={{ color: C.textFaint }}>—</span>
+                  )}
                 </TableCell>
                 <TableCell align="right">
                   <Zeroable n={Number(r.turnedAway)} color={C.error} />
@@ -383,7 +400,11 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                   <Zeroable n={Number(r.early)} color={C.warn} />
                 </TableCell>
                 <TableCell align="right">
-                  {est > 0 ? fmtDuration(est) : <span style={{ color: C.textFaint }}>—</span>}
+                  {live && est > 0 ? (
+                    fmtDuration(est)
+                  ) : (
+                    <span style={{ color: C.textFaint }}>—</span>
+                  )}
                 </TableCell>
                 <TableCell align="right">
                   {n > 0 ? (
@@ -434,7 +455,11 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
   return (
     <Panel
       title="Utilization"
-      subtitle={`Models asked for ${windowPhrase(window)} — live load, promises made, and what waiting actually cost`}
+      subtitle={
+        live
+          ? `Models asked for ${windowPhrase(window)} — live load, promises made, and what waiting actually cost`
+          : `Models asked for ${windowPhrase(window)}. In use, Queue and Est. wait are blank: they describe this moment, and nothing recorded what they were then.`
+      }
       badge={<Chip size="small" variant="outlined" label={`${rows.length} models`} />}
       flush
     >

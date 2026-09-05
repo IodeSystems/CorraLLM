@@ -13,9 +13,18 @@ set the software up, about a year ago. You have opened this dashboard perhaps
 five times, always because something was wrong, and each time you closed it again
 without being sure.
 
-Since about nine this morning the assistant in your editor has been answering
-slowly, and twice it gave up entirely. Two other people have said the same thing
-in chat. Nobody has changed anything, as far as you know.
+This morning two people said in chat that the assistant felt slow, and one of
+them thought it gave up on him. You have not seen it yourself. Nobody has changed
+anything, as far as you know. You are here to find out whether they are right —
+and you would be glad of a screen that convinced you they were not.
+
+*(Hearsay on purpose. An earlier version of this scenario stated the failure as
+fact — "twice it gave up entirely" — and the box's own log said otherwise: 384 of
+385 requests served in that hour, nobody turned away, dwell no worse than the
+week's. Lenny dutifully reported the product for lying, which was the SCENARIO
+lying: canon LEN-4, a harness that starts him in an impossible state fails in the
+direction that blames the product. What Ray actually has is a report from
+somebody else, which is what he came to check.)*
 
 ## Your role
 
@@ -27,7 +36,8 @@ what most of the words in it mean.
 
 > I want to know whether this machine is broken, whether it is something I did,
 > and whether it will come right on its own — and if it will not, what I am
-> supposed to do about it before somebody asks me again.
+> supposed to do about it before somebody asks me again. If it is fine, I want to
+> be able to say so and mean it.
 
 ## What would make you stop
 
