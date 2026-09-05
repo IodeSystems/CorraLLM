@@ -35,6 +35,11 @@ if (!chromium) {
 const token = process.env.CORRALLM_UX_TOKEN || ''
 const base = env('CORRALLM_UX_BASE')
 const model = process.env.CORRALLM_UX_MODEL || ''
+// 09:00 and 10:00 local, today — see bin/ux. The scenario's trouble started "about
+// nine this morning", and a walk that cannot go and look at nine this morning
+// cannot measure whether the product answers the question it was opened for.
+const morningFrom = process.env.CORRALLM_UX_MORNING_FROM || ''
+const morningTo = process.env.CORRALLM_UX_MORNING_TO || ''
 const version = process.env.CORRALLM_UX_VERSION || 'unknown'
 const out = env('CORRALLM_UX_OUT')
 const walk = JSON.parse(readFileSync(env('CORRALLM_UX_WALK'), 'utf8'))
@@ -141,7 +146,12 @@ for (const step of walk.steps) {
   }
   const page = await ctx.newPage()
 
-  const url = base + (step.goto || '/').replace('$MODEL', encodeURIComponent(model))
+  const url =
+    base +
+    (step.goto || '/')
+      .replace('$MODEL', encodeURIComponent(model))
+      .replace('$MORNING_FROM', morningFrom)
+      .replace('$MORNING_TO', morningTo)
   // `domcontentloaded`, NOT `networkidle`. Every signed-in page holds the live
   // event stream open, so the network never goes idle and the wait times out on
   // a page that rendered fine seconds earlier — the run would report a blank

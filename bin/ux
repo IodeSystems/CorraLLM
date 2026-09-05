@@ -128,6 +128,17 @@ if [ -n "$MODEL" ]; then
     || die "this daemon serves no model called \"$MODEL\" — update model in $WALKFILE"
 fi
 
+# THE MORNING THE TROUBLE STARTED, as a token the walk can name.
+#
+# `$MORNING_FROM` / `$MORNING_TO` expand to 09:00 and 10:00 local time TODAY. The
+# scenario says the assistant started failing "about nine this morning", so the
+# walk has to be able to go and look at nine this morning — and a hardcoded epoch
+# in a committed walk would point at one particular day and then, after the log's
+# 30-day retention, at nothing at all. A token keeps the walk declarative and the
+# run repeatable (canon LEN-8).
+MORNING_FROM="$(date -d 'today 09:00' +%s000 2>/dev/null || date -v9H -v0M -v0S +%s000)"
+MORNING_TO="$(date -d 'today 10:00' +%s000 2>/dev/null || date -v10H -v0M -v0S +%s000)"
+
 OUT="tmp/ux-run-$WALK-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 
@@ -138,6 +149,8 @@ CORRALLM_UX_CHROME="$CHROME" \
 CORRALLM_UX_TOKEN="$TOKEN" \
 CORRALLM_UX_BASE="$BASE" \
 CORRALLM_UX_MODEL="$MODEL" \
+CORRALLM_UX_MORNING_FROM="$MORNING_FROM" \
+CORRALLM_UX_MORNING_TO="$MORNING_TO" \
 CORRALLM_UX_VERSION="$VERSION" \
 CORRALLM_UX_WALK="$WALKFILE" \
 CORRALLM_UX_OUT="$OUT" \
