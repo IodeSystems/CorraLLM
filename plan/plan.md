@@ -340,6 +340,47 @@ diverged (P30 §5, header fixed) — and Traffic merges (2026-09-05).
 **optional extensions** — a caller-facing surface (decision 5); a second Lenny scenario
 (`icebox.md`).
 
+### ◻ Lenny run 5 — the scenario's success condition, met verbatim — 2026-09-05
+
+Run: `tmp/ux-run-is-my-box-working-20260905-134941`. **Verdict: yes, and unqualified this
+time** — run 4's was "yes, but only as far as Now and Traffic".
+
+The scenario defines success as *"saying one true sentence in the team chat and putting the
+laptop down"*. He wrote it himself, unprompted:
+
+> *"It's not broken, I haven't touched anything, and 9 o'clock this morning looks fine — I
+> don't know why it felt slow, and I'll keep an eye on it."*
+
+**Composition: 23 · 18 · 24 · 19 = 84**, against run 4's 86. Flat, and the flatness is the
+finding: the phase-D work moved the verdict's REASON without moving the score, which is what
+"report the composition, not just the verdict" is for. Several of his OB-3 complaints
+(`lane`, `fairshare lanes`, `default lane`) were fixed AFTER this walk, so run 6 is the first
+to see the vocabulary sweep.
+
+**Fixed from this run:** the `sizes must be declared` chip became a chip plus a sentence
+saying who declares what and that it has nothing to do with reachability (his only Q3=1);
+`settings clash` now says "(how it is configured now, not how it was then)" on a frozen
+window; the blank live columns say **not recorded** rather than a dash that also means zero
+two columns away; `Add host` / `Attach a machine` gained the consequence line `Rebuild`
+already had — he spotted the inconsistency and read it, correctly, as a tell.
+
+**OB-12 is his**, and no existing rule reached it: *a property that reaches live traffic
+explains itself, the same way a control that reaches it does.* He found `sk-aw4` — his own
+team's key, 20,813 requests — in `batch` at weight 1, `interruptible: yes`, beside another
+caller in `interactive` at weight 10, with nothing saying what either word costs a request.
+The Caller groups panel now says.
+
+**He also found something that is not a UI defect at all.** Comparing two screens: 09:00–10:00
+ran 385 requests at 4.5 s mean with 96.5% of prompt tokens served from cache; the hour around
+13:50 ran 264 at 11.3 s with **58.3%**. Confirmed against the database. Same share of requests
+hit cache (94.8% vs 95.8%) — what collapsed is the fraction of each prompt being reused. Worth
+a look on its own: it is the only real evidence of "slow" anywhere in five runs, and it points
+at now, not at this morning.
+
+**Still open from run 5:** `Dwell 882m 16s` has no scale (OB-4, named in three runs now); `CV`
+and `THEORY` columns are unexplained on screen; `Enroll`, `Add group` and the `Add …`/`Edit`
+controls on Setup still say nothing about what changes when they save.
+
 ### ◻ Lenny run 4 — the verdict flipped, and what it left — 2026-09-05
 
 **"Would I come back tomorrow? Yes — but only as far as Now and Traffic."** First yes in four

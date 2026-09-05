@@ -341,7 +341,7 @@ function MachinesPage() {
       {/* Declared first, then what is actually being held against it. */}
       <Panel
         title="Hosts"
-        subtitle="Declared capacity. A budget the scheduler admits against — not a probe."
+        subtitle="Declared capacity: what the scheduler is allowed to fill on each machine, as configured — not a measurement. Add host and editing a row change what it may admit next; neither touches a request already running."
         actions={
           <Button size="small" variant="outlined" onClick={() => setEditing(blankServer())}>
             Add host
@@ -445,7 +445,7 @@ function MachinesPage() {
       {/* Agents: enrolled machines, and the one command that attaches another. */}
       <Panel
         title="Agents"
-        subtitle="Other machines this daemon spawns and evicts on"
+        subtitle="Other machines this daemon spawns and evicts on. Attach a machine issues a one-time code for a NEW machine and changes nothing about the ones already here."
         badge={<Chip size="small" variant="outlined" label={`${agents.length}`} />}
         actions={
           <Button size="small" variant="outlined" disabled={mint.isPending} onClick={() => mint.mutate()}>
@@ -521,15 +521,20 @@ function MachinesPage() {
               </Tooltip>
               {a.noProcessMemory && (
                 <Tooltip title="This host cannot attribute memory to a single process (macOS has no nvidia-smi equivalent). A model here MUST declare ramUsage — nothing can measure it, so a declared size is the only size there is.">
-                  {/* Was `ramUsage required` — a configuration field name on
-                      screen as if it were a sentence (OB-3, Lenny run 4). */}
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    color="warning"
-                    label="every model here must declare its size"
-                  />
+                  {/* Was `ramUsage required`, then a fragment with no verb —
+                      Lenny run 5 could not tell whether it explained why the
+                      machine was unreachable or was an unrelated footnote. A
+                      chip cannot carry this; it is a sentence, so it is one,
+                      below the row (OB-3). */}
+                  <Chip size="small" variant="outlined" color="warning" label="sizes must be declared" />
                 </Tooltip>
+              )}
+              {a.noProcessMemory && (
+                <Typography variant="caption" sx={{ display: 'block', color: C.textMuted, mt: 0.5 }}>
+                  This machine cannot measure how much memory a model is using, so every model
+                  configured to run here has to state its own size. Nothing to do with whether it is
+                  reachable — a model with no size declared simply will not start here.
+                </Typography>
               )}
               {Number(a.agentLastSeen) > 0 && (
                 <Typography variant="caption" sx={{ color: C.textFaint }}>

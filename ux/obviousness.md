@@ -32,6 +32,12 @@ is the standard, not the queue.
 - **OB-8** No screen is a dead end: it names the next thing and can start it.
 - **OB-9** Live and historical are never drawn the same way, and a view that has
   stopped updating says so.
+- **OB-12** A property that reaches live traffic explains itself, the same way a
+  control that reaches it does. A word in a table cell can cost somebody their
+  request — `interruptible: yes`, `weight: 1`, a quality rank — and the reader has
+  no button to hesitate over, so nothing makes the cost visible. Asked for by Lenny
+  run 5, on finding his own team's key in the cheapest, interruptible group with
+  nothing on the page saying what either word does.
 - **OB-11** The answer comes before the explanation. A screen that holds what somebody
   came for puts it above the material that explains, justifies or configures it — a
   person who stops reading at the first paragraph in a vocabulary they do not have never

@@ -125,7 +125,13 @@ export function GroupPanels() {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <Panel
         title="Priority groups"
-        subtitle="Caller groups: the weight each one gets under contention, and what it is running now. Click a row to edit it."
+        // A PROPERTY THAT REACHES LIVE TRAFFIC EXPLAINS ITSELF, the same way a
+        // control that reaches it does. Lenny run 5 found his own team's key in
+        // `batch` — weight 1, interruptible yes — beside another caller in
+        // `interactive` at weight 10, and the page never said what either word
+        // costs a request. He was right that no OB rule covered it: it is not a
+        // control, so OB-1/OB-2 do not reach it. It is OB-12 now.
+        subtitle="Caller groups decide who wins when the box is busy. Weight is the share: a group at 10 gets ten times the turns of one at 1, and only while there is contention — an idle box serves everyone at once. Interruptible means a request from this group can be stopped mid-answer to make room for a higher one; a group that is not interruptible always finishes. Click a row to edit it."
         actions={
           <Button size="small" variant="outlined" onClick={() => setEditing(blankGroup())}>
             Add group

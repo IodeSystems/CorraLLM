@@ -353,7 +353,14 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                         size="small"
                         color="warning"
                         variant="outlined"
-                        label={`settings clash: nobody can queue here, they time out instead`}
+                        // On a frozen window this is still a SETTING, not a
+                        // reading of that hour — run 5 could not tell which, and
+                        // it was the one thing drawn identically on both (OB-9).
+                        label={
+                          live
+                            ? 'settings clash: nobody can queue here, they time out instead'
+                            : 'settings clash (how it is configured now, not how it was then)'
+                        }
                         sx={{ ml: 1 }}
                       />
                     </Tooltip>
@@ -361,7 +368,10 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                 </TableCell>
                 <TableCell align="right">
                   {!live ? (
-                    <span style={{ color: C.textFaint }}>—</span>
+                    // NOT the same dash as a zero elsewhere in this row. Run 5:
+                    // "same glyph, two different reasons, no visual difference
+                    // between them" (OB-9).
+                    <span style={{ color: C.textFaint, fontSize: 11 }}>not recorded</span>
                   ) : cap > 0 ? (
                     <Tooltip
                       title={
@@ -390,7 +400,7 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                   {live ? (
                     <Zeroable n={waiting} color={waiting > 0 ? C.warn : undefined} />
                   ) : (
-                    <span style={{ color: C.textFaint }}>—</span>
+                    <span style={{ color: C.textFaint, fontSize: 11 }}>not recorded</span>
                   )}
                 </TableCell>
                 <TableCell align="right">
@@ -406,10 +416,14 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                   <Zeroable n={Number(r.early)} color={C.warn} />
                 </TableCell>
                 <TableCell align="right">
-                  {live && est > 0 ? (
-                    fmtDuration(est)
+                  {live ? (
+                    est > 0 ? (
+                      fmtDuration(est)
+                    ) : (
+                      <span style={{ color: C.textFaint }}>—</span>
+                    )
                   ) : (
-                    <span style={{ color: C.textFaint }}>—</span>
+                    <span style={{ color: C.textFaint, fontSize: 11 }}>not recorded</span>
                   )}
                 </TableCell>
                 <TableCell align="right">
