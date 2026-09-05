@@ -340,6 +340,56 @@ diverged (P30 §5, header fixed) — and Traffic merges (2026-09-05).
 **optional extensions** — a caller-facing surface (decision 5); a second Lenny scenario
 (`icebox.md`).
 
+### ◻ The 2026-09-05 slowdown: prompt-cache prefix thrash on a one-slot backend
+
+**Diagnosed, not fixed — the fix is a capacity decision that is yours (§9 territory).**
+Found by following up the only real evidence of "slow" in five Lenny runs: he compared two
+screens and noticed cache reuse had fallen.
+
+**What happened, measured three ways.** Between roughly 10:00 and 14:00, each request to
+`local-Qwen3.8-27B` reprocessed **8,000–17,000 prompt tokens** instead of the usual ~1,000–2,000,
+and mean time answering tracked it exactly:
+
+| hour | requests | mean | prompt tokens cached | tokens reprocessed / request |
+|---|---|---|---|---|
+| 09:00 | 384 | 4.5 s | 96.5% | 2,200 |
+| 10:00 | 406 | 6.5 s | 82.6% | 8,506 |
+| 12:00 | 292 | 10.3 s | 68.5% | 14,830 |
+| 13:00 | 270 | 10.8 s | 57.2% | 17,148 |
+| 14:00 | 106 | 2.0 s | 98.5% | 999 |
+
+Yesterday's same hours: 88–97% cached, 860–1,660 tokens, 2.3–3.3 s. So this was a departure,
+and it ended on its own.
+
+**The mechanism is in llama.cpp's own log.** It picks a slot by longest-common-prefix
+similarity, and logs the score: `selected slot by LCP similarity, f_sim_best = 0.999` in the
+good hours. The share of requests that could NOT find a near-exact cached prefix, per hour:
+
+    09:00  30%   10:00  49%   11:00  56%   12:00  62%   13:00  68%   14:00  9%
+
+At 10:06:43 it gave up entirely once — `selected slot by LRU`, no similar slot at all — and at
+10:09:14 the backend reloaded cold (7.9 s load, a 93,318-token prompt reprocessed, 64.5 s dwell).
+
+**What it is NOT** — checked, because these are what an operator would suspect: no rejections
+(zero all day), no queueing (`queued_ms` zero), no configuration change (nothing since
+2026-09-03), no second model competing for the card (only Qwen served all day, one placement),
+and nothing to do with `carlsmacbookpro`, which has been unreachable far longer than this window.
+
+**The cause is the traffic's shape, not the box.** `local-Qwen3.8-27B` runs with **one slot**, so
+one conversation's prefix is cached at a time. Interleaving two conversations with different
+prefixes makes each request reprocess the divergent tail — which is exactly an f_sim of 0.5–0.9.
+
+**The remedy, and the reason it is not applied here:** more slots would give each conversation its
+own cache, and slots cost KV memory. gpu0 is at **96%** (30 GB of 31 GB), so raising `nSlots`
+means lowering per-slot context or moving the model — a capacity trade only you can make.
+
+**The product gap this exposes, which IS ours:** corrallm records `cached_tokens` per request and
+can therefore see this collapse, but no screen says it, and the activity log records that a
+backend loaded without recording WHY. Five runs asked "will it come right on its own" and the
+answer was in the data the whole time. A "prefix reuse" figure beside time-per-request, and a
+reason on every load, would have answered it. Filed as the strongest candidate for the next
+slice — it is the first thing in this whole exercise that would have told Ray *why*.
+
 ### ◻ Lenny run 5 — the scenario's success condition, met verbatim — 2026-09-05
 
 Run: `tmp/ux-run-is-my-box-working-20260905-134941`. **Verdict: yes, and unqualified this
