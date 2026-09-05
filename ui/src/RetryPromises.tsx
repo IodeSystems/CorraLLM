@@ -17,7 +17,7 @@ import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { Panel } from '@/Panel'
 import { C } from '@/theme'
-import { fmtDuration, fmtTime } from '@/format'
+import { fmtDuration, fmtInt, fmtTime } from '@/format'
 import { Loading } from '@/Loading'
 
 /**
@@ -47,6 +47,12 @@ const PromisesDoc = graphql(/* GraphQL */ `
   query RetryPromises($limit: Long!, $minutes: Long!, $key: String, $from: Long, $to: Long) {
     corrallm {
       retryPromises(limit: $limit, minutes: $minutes, key: $key, from: $from, to: $to) {
+        unanswered {
+          served
+          toldToReturn
+          refused
+          endedEarly
+        }
         waiting
         promises {
           id
@@ -65,6 +71,35 @@ const PromisesDoc = graphql(/* GraphQL */ `
     }
   }
 `)
+
+/**
+ * The two endings a "come back later" list cannot show, said in words.
+ *
+ * A promise is a request we turned away AND gave a time to. These are the ones
+ * we gave nothing: a refusal, where nothing could serve it and no time was
+ * offered, and an answer that stopped part-way because the caller's connection
+ * went away. Neither is a promise, so neither appeared here — and the panel's
+ * empty state cheerfully said nobody was turned away while eight refusals sat in
+ * the same window (OB-5: the reader must not be left believing something false).
+ */
+function Unanswered({ refused, endedEarly }: { refused: number; endedEarly: number }) {
+  if (refused === 0 && endedEarly === 0) return null
+  const parts = [
+    refused > 0
+      ? `${fmtInt(refused)} request${refused === 1 ? ' was' : 's were'} refused outright — nothing could serve ${refused === 1 ? 'it' : 'them'}, and no time to come back was offered`
+      : '',
+    endedEarly > 0
+      ? `${fmtInt(endedEarly)} answer${endedEarly === 1 ? '' : 's'} stopped part-way because the caller's connection went away`
+      : '',
+  ].filter(Boolean)
+  return (
+    <Box sx={{ px: 2, pb: 2, pt: refused || endedEarly ? 1 : 0 }}>
+      <Typography variant="body2" sx={{ color: C.warn }}>
+        {parts.join('. ')}. {refused > 0 ? 'A refusal is not a promise: nobody was told when to return.' : ''}
+      </Typography>
+    </Box>
+  )
+}
 
 export function RetryPromises({
   filterKey,
@@ -96,6 +131,15 @@ export function RetryPromises({
   const rows = data?.promises ?? []
   const waiting = Number(data?.waiting ?? 0)
 
+  // EVERY WAY A REQUEST ENDS WITH NOTHING, because the panel used to claim one.
+  // "Nobody was turned away" was said on the 429 count alone, so a window holding
+  // eight `503 no backend available` reported nobody turned away while eight
+  // callers got nothing. A caller scored that sentence 0 — believing something
+  // false — and he was right.
+  const unanswered = data?.unanswered ?? []
+  const refused = unanswered.reduce((n, u) => n + Number(u.refused), 0)
+  const endedEarly = unanswered.reduce((n, u) => n + Number(u.endedEarly), 0)
+
   const body = q.isLoading ? (
     <Loading size={20} minHeight={120} />
   ) : q.error ? (
@@ -107,11 +151,16 @@ export function RetryPromises({
       <Typography sx={{
         color: "text.secondary"
       }}>
-        Nobody was turned away {windowPhrase(window)}.
+        {refused === 0 && endedEarly === 0
+          ? `Everybody got an answer ${windowPhrase(window)} — nobody was told to come back, nothing was refused, and no answer was cut short.`
+          : `Nobody was told to come back ${windowPhrase(window)}.`}
       </Typography>
+      <Unanswered refused={refused} endedEarly={endedEarly} />
     </Box>
   ) : (
-    <TableContainer>
+    <Box>
+      <Unanswered refused={refused} endedEarly={endedEarly} />
+      <TableContainer>
       <Table size="small" stickyHeader>
         <TableHead>
           <TableRow>
@@ -164,7 +213,8 @@ export function RetryPromises({
           })}
         </TableBody>
       </Table>
-    </TableContainer>
+      </TableContainer>
+    </Box>
   )
 
   return (

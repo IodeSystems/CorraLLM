@@ -2482,6 +2482,8 @@ type corrallm_RetryPromiseRecord {
 type corrallm_RetryPromisesOutputBody {
   """Promises, newest first."""
   promises: [corrallm_RetryPromiseRecord!]!
+  """Per served name: requests in the window that ended with no answer, split by why."""
+  unanswered: [corrallm_UnansweredRow!]!
   """How many are still owed a slot — due in the future and not back yet."""
   waiting: Long!
 }
@@ -2844,6 +2846,17 @@ type corrallm_TuneProfileView {
   perSlotMiB: Long!
   """bench (deliberate, isolated) | serving (opportunistic, possibly contended)."""
   source: String!
+}
+
+type corrallm_UnansweredRow {
+  """499: the caller's connection went away before the answer finished."""
+  endedEarly: Long!
+  """5xx: nothing could serve it, and no time was offered."""
+  refused: Long!
+  """Served model or lane."""
+  served: String!
+  """429: asked to come back, and told when."""
+  toldToReturn: Long!
 }
 
 input corrallm_UnassignModelInputBodyInput {

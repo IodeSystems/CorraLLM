@@ -354,7 +354,24 @@ type RetryPromisesOutput struct {
 	Body struct {
 		Promises []RetryPromiseRecord `json:"promises" doc:"Promises, newest first."`
 		Waiting  int                  `json:"waiting" doc:"How many are still owed a slot — due in the future and not back yet."`
+		// EVERY WAY A REQUEST CAN END WITH NOTHING, not just the polite one.
+		//
+		// The panel said "nobody was turned away" on the strength of the 429
+		// count alone, so a window holding eight `503 no backend available`
+		// reported nobody turned away while eight callers got nothing. A caller
+		// scored that sentence 0 — believing something false, not merely being
+		// unsure — and he was right: a 503 is being turned away in any plain
+		// reading, and a stream that dies mid-answer is what he came to ask about.
+		Unanswered []UnansweredRow `json:"unanswered" doc:"Per served name: requests in the window that ended with no answer, split by why."`
 	}
+}
+
+// UnansweredRow is one served name's tally of requests that got nothing.
+type UnansweredRow struct {
+	Served       string `json:"served" doc:"Served model or lane."`
+	ToldToReturn int64  `json:"toldToReturn" doc:"429: asked to come back, and told when."`
+	Refused      int64  `json:"refused" doc:"5xx: nothing could serve it, and no time was offered."`
+	EndedEarly   int64  `json:"endedEarly" doc:"499: the caller's connection went away before the answer finished."`
 }
 
 // classifyPromise is the ONE definition of what became of a "come back later".
@@ -462,11 +479,23 @@ func (h *Handlers) RetryPromises(_ context.Context, in *RetryPromisesInput) (*Re
 		minutes = 60
 	}
 	now := time.Now().UnixMilli()
-	rows, err := h.Store.RetryPromises(windowOf(in.FromMS, in.ToMS, minutes), limit, in.Key)
+	w := windowOf(in.FromMS, in.ToMS, minutes)
+	rows, err := h.Store.RetryPromises(w, limit, in.Key)
 	if err != nil {
 		return nil, err
 	}
 	out := &RetryPromisesOutput{}
+	// The same window, so the tally and the promise list can never describe
+	// different spans of time — the way two panels used to.
+	unanswered, err := h.Store.UnansweredByModel(w)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range unanswered {
+		out.Body.Unanswered = append(out.Body.Unanswered, UnansweredRow{
+			Served: u.Served, ToldToReturn: u.ToldToReturn, Refused: u.Refused, EndedEarly: u.EndedEarly,
+		})
+	}
 	out.Body.Promises = make([]RetryPromiseRecord, 0, len(rows))
 	for _, p := range rows {
 		due := p.TS + p.RetryAfterMS

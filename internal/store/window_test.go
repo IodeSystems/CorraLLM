@@ -98,3 +98,51 @@ func TestWindowZeroValueAndSince(t *testing.T) {
 		t.Fatalf("Window{ToMS: 500} should read only what precedes it, got %+v", older)
 	}
 }
+
+// "Nobody was turned away" used to be said on the strength of the 429 count
+// alone, so a window holding refusals reported nobody turned away while callers
+// got nothing. Each way of ending with no answer is counted separately, because
+// a person reads them differently: told to come back is a promise, a refusal is
+// not, and a connection that went away is not the box's doing at all.
+func TestUnansweredSplitsByWhy(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	for _, a := range []Activity{
+		{TS: 1000, Served: "m", Status: 200},
+		{TS: 1100, Served: "m", Status: 429, RetryAfterMS: 5000},
+		{TS: 1200, Served: "m", Status: 503, Error: "no backend available"},
+		{TS: 1300, Served: "m", Status: 503, Error: "no backend available"},
+		{TS: 1400, Served: "m", Status: 499, Error: "context canceled"},
+		{TS: 9000, Served: "m", Status: 503}, // outside the window
+	} {
+		if err := st.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := st.UnansweredByModel(Between(1000, 2000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want one served name, got %+v", got)
+	}
+	u := got[0]
+	if u.ToldToReturn != 1 || u.Refused != 2 || u.EndedEarly != 1 {
+		t.Errorf("split wrong: told %d refused %d early %d", u.ToldToReturn, u.Refused, u.EndedEarly)
+	}
+
+	// A window with nothing but answered requests reports no rows at all, so the
+	// panel can say "everybody got an answer" without qualification.
+	quiet, err := st.UnansweredByModel(Between(0, 1100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quiet) != 0 {
+		t.Errorf("a clean window should report nothing, got %+v", quiet)
+	}
+}

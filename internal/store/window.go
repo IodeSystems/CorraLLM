@@ -52,3 +52,49 @@ func (w Window) where(col string) (string, []any) {
 
 // ts is the common case: the activity log's own timestamp column.
 func (w Window) ts() (string, []any) { return w.where("ts") }
+
+// Unanswered is one served name's tally of requests that got no answer in a
+// window, split by WHY — because a person reads those three differently and the
+// dashboard used to report only the first.
+//
+// "Nobody was turned away" counted 429s alone, so a window containing eight
+// `503 no backend available` said nobody was turned away while eight callers got
+// nothing (Lenny run: the caller scored that sentence 0 — "I think the page told
+// me something that isn't actually true of my situation"). A 503 is being turned
+// away by any plain reading of the words, and a stream that dies mid-answer is
+// the thing he actually came to ask about.
+type Unanswered struct {
+	Served       string
+	ToldToReturn int64 // 429: we asked them to come back, and said when
+	Refused      int64 // 5xx: nothing could serve it, and we offered no time
+	EndedEarly   int64 // 499: the caller's connection went away mid-answer
+}
+
+// UnansweredByModel counts, per served name, the requests in the window that
+// ended without an answer.
+func (s *Store) UnansweredByModel(w Window) ([]Unanswered, error) {
+	where, args := w.ts()
+	rows, err := s.db.Query(
+		`SELECT served,
+		        SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END),
+		        SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END),
+		        SUM(CASE WHEN status = 499 THEN 1 ELSE 0 END)
+		   FROM activity
+		  WHERE `+where+` AND status >= 429 AND served <> ''
+		  GROUP BY served
+		 HAVING SUM(CASE WHEN status = 429 OR status >= 499 THEN 1 ELSE 0 END) > 0
+		  ORDER BY 2 + 3 + 4 DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Unanswered
+	for rows.Next() {
+		var u Unanswered
+		if err := rows.Scan(&u.Served, &u.ToldToReturn, &u.Refused, &u.EndedEarly); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
