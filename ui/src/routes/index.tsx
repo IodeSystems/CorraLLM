@@ -18,9 +18,8 @@ import {
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { ActiveRequests } from '@/ActiveRequests'
-import { MemoryPanel } from '@/MemoryPanel'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
-import { C, seriesColor } from '@/theme'
+import { C } from '@/theme'
 import { fmtInt, fmtTime } from '@/format'
 import { Loading } from '@/Loading'
 
@@ -36,6 +35,8 @@ const OverviewDoc = graphql(/* GraphQL */ `
           server
           maxConcurrent
           devicePool
+          agentStatus
+          agentLastSeen
           pools {
             pool
             totalBytes
@@ -169,6 +170,207 @@ const OverviewDoc = graphql(/* GraphQL */ `
   }
 `)
 
+
+/**
+ * WHAT IS WRONG RIGHT NOW — the panel this page did not have.
+ *
+ * The first Lenny run (plan.md §6) walked nine screens looking for one true
+ * sentence to put in a team chat and found none: every coloured thing said
+ * green, and the one machine that WAS down was discoverable only as a stack
+ * trace on the Hosts page, three screens in. The facts were all in the product;
+ * no screen collected them.
+ *
+ * Each fault says three things, because a fault that says only the first is the
+ * "red thing you cannot act on" that OB-6 forbids:
+ *   what   — in the operator's words, naming the object
+ *   whose  — this box, another machine, or a person who did it on purpose
+ *   next   — the one thing to do about it
+ *
+ * It is deliberately built from what the Overview query already knows plus agent
+ * reachability. A fault sourced from a page nobody opens is how this got missed.
+ */
+type Fault = {
+  key: string
+  what: string
+  whose: string
+  next: string
+  when?: string
+  severity: 'error' | 'warning' | 'info'
+}
+
+function faultsOf(
+  servers: readonly { server: string; agentStatus: string; agentLastSeen: string }[],
+  resident: readonly { modelName: string; server: string; state: string }[],
+  pools: readonly { server: string; pools: readonly { pool: string; budget: string; used: string }[] }[],
+  models: readonly { name: string; paused: boolean; pauseReason: string; pauseResumeMs: string }[],
+  extensions: readonly { name: string; paused: boolean; pauseReason: string }[],
+): Fault[] {
+  const out: Fault[] = []
+
+  // A machine that stopped reporting in. 'local' is this box and has no agent;
+  // 'unknown' means it has never reported at all, which reads to a person as the
+  // same thing — the models there will not start.
+  for (const s of servers) {
+    if (s.agentStatus === 'up' || s.agentStatus === 'local') continue
+    const last = Number(s.agentLastSeen)
+    out.push({
+      key: `agent:${s.server}`,
+      severity: s.agentStatus === 'down' ? 'error' : 'warning',
+      what: `${s.server} is not reporting in`,
+      whose: 'That machine, not this one.',
+      next: 'Check it is awake and on the network. Nothing new can start there until it reports in; anything already running there is left alone.',
+      when: last > 0 ? `last heard from at ${new Date(last).toLocaleTimeString()}` : 'it has never reported in',
+    })
+  }
+
+  // A backend that tried to start and did not.
+  for (const m of resident) {
+    if (m.state !== 'failed') continue
+    out.push({
+      key: `failed:${m.modelName}`,
+      severity: 'error',
+      what: `${m.modelName} failed to start on ${m.server}`,
+      whose: 'This box.',
+      next: `Open ${m.modelName} and read its log — the reason it gave is there.`,
+    })
+  }
+
+  // No room left. Nothing is broken; nothing new fits either, and that is the
+  // difference between "busy" and "broken" a person cannot otherwise see.
+  for (const s of pools) {
+    for (const p of s.pools) {
+      const budget = Number(p.budget)
+      const used = Number(p.used)
+      if (budget <= 0 || used < budget) continue
+      out.push({
+        key: `full:${s.server}/${p.pool}`,
+        severity: 'warning',
+        what: `${s.server} has no room left in ${p.pool}`,
+        whose: 'This box — it is full, not broken.',
+        next: 'Requests for a model that is not already loaded will wait or be turned away until something unloads.',
+      })
+    }
+  }
+
+  // Paused on purpose. Listed because a person who did not do it cannot tell it
+  // from a fault, and the resume time is the whole answer to "will it clear?".
+  const pausedNote = (reason: string, resumeMs: string) => {
+    const at = Number(resumeMs)
+    const when = at > 0 ? `Resumes at ${new Date(at).toLocaleTimeString()}.` : 'It stays paused until somebody resumes it.'
+    return reason ? `${when} Reason given: “${reason}”.` : when
+  }
+  for (const m of models) {
+    if (!m.paused) continue
+    out.push({
+      key: `paused:${m.name}`,
+      severity: 'info',
+      what: `${m.name} is paused — it is not serving anybody`,
+      whose: 'Somebody here paused it on purpose.',
+      next: pausedNote(m.pauseReason, m.pauseResumeMs),
+    })
+  }
+  for (const e of extensions) {
+    if (!e.paused) continue
+    out.push({
+      key: `paused-ext:${e.name}`,
+      severity: 'info',
+      what: `${e.name} is paused — every model it serves is unavailable`,
+      whose: 'Somebody here paused it on purpose.',
+      next: pausedNote(e.pauseReason, ''),
+    })
+  }
+  return out
+}
+
+/**
+ * The one sentence this page owes on arrival.
+ *
+ * It replaces a chip reading `${health.status} · ${health.version}` that was
+ * hardcoded `color="success"` — and whose text carried no information either:
+ * the schema says status is *"always 'ok' when the process is serving"*, so a
+ * page that renders at all always said ok, in green, including on a box with a
+ * machine down. The state has to be computed from things that can actually be
+ * false. The build stamp stays, demoted: operators need it, it is not the
+ * headline.
+ */
+function BoxState(props: {
+  faults: Fault[]
+  stopping: number
+  ready: number
+  configured: number
+  machines: number
+  version: string
+}) {
+  const { faults, stopping, ready, configured, machines, version } = props
+  const bad = faults.filter((f) => f.severity !== 'info').length
+  // "Serving" with nothing loaded is TRUE here and has to be said carefully:
+  // corrallm loads on demand, so an idle box with zero resident models is
+  // healthy and the next request will start one. What is NOT serving is a box
+  // with no models configured at all — saying "Serving" there would be the
+  // false-belief case OB-5 exists to forbid.
+  const word =
+    stopping > 0 ? 'Stopping' : bad > 0 ? 'Struggling' : configured === 0 ? 'Not set up' : 'Serving'
+  const color = word === 'Serving' ? C.ok : word === 'Struggling' ? C.error : C.warn
+  const detail =
+    word === 'Stopping'
+      ? `${stopping} backend${stopping === 1 ? ' is' : 's are'} shutting down.`
+      : bad > 0
+        ? `${bad} thing${bad === 1 ? '' : 's'} below need${bad === 1 ? 's' : ''} looking at.`
+        : configured === 0
+          ? 'No models are configured, so nothing can be served yet. Start on Providers.'
+          : ready === 0
+            ? `Nothing is loaded right now — the next request loads one of ${configured} models. Nothing needs you.`
+            : `${ready} of ${configured} models loaded across ${machines} machine${machines === 1 ? '' : 's'}. Nothing needs you.`
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+      <Typography variant="body1" sx={{ color, fontWeight: 700 }}>
+        {word}
+      </Typography>
+      <Typography variant="body2" sx={{ color: C.textMuted }}>
+        — {detail}
+      </Typography>
+      <Typography variant="caption" sx={{ color: C.textFaint }}>
+        build {version}
+      </Typography>
+    </Box>
+  )
+}
+
+function WhatIsWrong({ faults }: { faults: Fault[] }) {
+  if (!faults.length) return null
+  return (
+    <Panel
+      title="What needs looking at"
+      badge={<Chip size="small" label={faults.length} />}
+      subtitle="What it is, whose it is, and the one thing to do about it"
+      flush
+    >
+      {faults.map((f) => (
+        <Row key={f.key}>
+          <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+            <Typography
+              variant="body2"
+              sx={{
+                fontWeight: 600,
+                color: f.severity === 'error' ? C.error : f.severity === 'warning' ? C.warn : C.text,
+              }}
+            >
+              {f.what}
+            </Typography>
+            {f.when && (
+              <Typography variant="caption" sx={{ color: C.textFaint }}>
+                {f.when}
+              </Typography>
+            )}
+          </Box>
+          <Typography variant="body2" sx={{ color: C.textMuted, mt: 0.25 }}>
+            {f.whose} {f.next}
+          </Typography>
+        </Row>
+      ))}
+    </Panel>
+  )
+}
 
 /**
  * One action whose meaning follows residency, replacing a Load/Unload pair that
@@ -820,66 +1022,50 @@ function Home() {
   const other = unloaded.filter((m) => !seen.has(m.name))
   if (other.length) sections.push({ title: 'Other', blurb: '', caps: [], groupTypes: [], models: other })
 
-  // Memory attribution colors follow the MODEL, assigned over the full sorted
-  // model list — never over the subset in one bar. Color must not change when a
-  // model loads or unloads, or every bar repaints and the eye reads a change
-  // that did not happen.
-  const colorIndex = new Map(models.map((m) => m.name).sort().map((n, i) => [n, i]))
-  const colorOf = (name: string) => seriesColor(colorIndex.get(name) ?? 0)
   const res = c.residency
-  // Declared reserve lives on the config view, live budget/used on residency —
-  // join them so one bar can say both what is spoken for and what is being held
-  // back, instead of a second near-duplicate "capacity" panel saying half of it.
-  const reserveByPool = new Map(
-    (ov?.servers ?? []).flatMap((s) => s.pools.map((p) => [`${s.server}/${p.pool}`, Number(p.reserveBytes)])),
-  )
-  const memPools = (res?.servers ?? []).flatMap((s) =>
-    s.pools.map((p) => ({
-      server: s.server,
-      pool: p.pool,
-      budget: Number(p.budget),
-      used: Number(p.used),
-      reserve: reserveByPool.get(`${s.server}/${p.pool}`) ?? 0,
+
+  // WHO IS HOLDING MEMORY moved to /machines (was /hosts) with P30 phase A. It
+  // answers "what does the hardware have", which is that page's question; on the
+  // home screen it was the second panel a person read while looking for whether
+  // anything was wrong.
+
+  // The faults this page leads with, and the counts the sentence needs.
+  const readyCount = (res?.models ?? []).filter((m) => m.state === 'ready').length
+  const faults = faultsOf(
+    (ov?.servers ?? []).map((x) => ({
+      server: x.server,
+      agentStatus: x.agentStatus,
+      agentLastSeen: String(x.agentLastSeen),
+    })),
+    (res?.models ?? []).map((m) => ({ modelName: m.modelName, server: m.server, state: m.state })),
+    (res?.servers ?? []).map((x) => ({
+      server: x.server,
+      pools: x.pools.map((p) => ({ pool: p.pool, budget: String(p.budget), used: String(p.used) })),
+    })),
+    models.map((m) => ({
+      name: m.name,
+      paused: !!m.paused,
+      pauseReason: m.pauseReason ?? '',
+      pauseResumeMs: String(m.pauseResumeMs ?? 0),
+    })),
+    (ov?.extensions ?? []).map((e) => ({
+      name: e.name,
+      paused: !!e.paused,
+      pauseReason: e.pauseReason ?? '',
     })),
   )
-  const memModels = (res?.models ?? []).map((m) => ({
-    model: m.modelName,
-    server: m.server,
-    pools: m.usage.map((u) => ({ pool: u.pool, bytes: Number(u.bytes) })),
-    measuredBytes: Number(m.footprintMiB) * 1024 * 1024,
-  }))
-  const memServers = (ov?.servers ?? []).map((s) => ({
-    server: s.server,
-    devicePool: s.devicePool,
-  }))
-  const dev = (d?: { available: boolean; name: string; totalBytes: string; usedBytes: string; freeBytes: string }) => ({
-    available: !!d?.available,
-    name: d?.name ?? '',
-    totalBytes: Number(d?.totalBytes ?? 0),
-    usedBytes: Number(d?.usedBytes ?? 0),
-    freeBytes: Number(d?.freeBytes ?? 0),
-  })
-
-  // Device readings carry the pool they back, which is what pairs each card
-  // with the right ledger row. A card no pool claims keeps pool='' and is shown
-  // as unclaimed rather than dropped — a freshly installed GPU nothing budgets
-  // is precisely the state worth seeing.
-  const devs = (
-    list?: readonly {
-      available: boolean
-      name: string
-      uuid?: string | null
-      pool?: string | null
-      totalBytes: string
-      usedBytes: string
-      freeBytes: string
-    }[],
-  ) => (list ?? []).map((d) => ({ ...dev(d), uuid: d.uuid ?? '', pool: d.pool ?? '' }))
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title="Overview">
-        <Chip size="small" color="success" label={`${c.health?.status} · ${c.health?.version}`} />
+        <BoxState
+          faults={faults}
+          stopping={stoppingProcs.size}
+          ready={readyCount}
+          configured={models.length}
+          machines={(ov?.servers ?? []).length}
+          version={c.health?.version ?? 'unknown'}
+        />
       </PageHeader>
 
       {msg && (
@@ -888,18 +1074,14 @@ function Home() {
         </Alert>
       )}
 
-      {/* What the box is doing right now, above what it merely could do. */}
-      <ActiveRequests />
+      {/* Anything wrong comes first — before what is running, before what could
+          run. This is the panel a person opens the dashboard to read. */}
+      <WhatIsWrong faults={faults} />
 
-      {/* …and what it is HOLDING right now, with attribution. */}
-      <MemoryPanel
-        pools={memPools}
-        models={memModels}
-        servers={memServers}
-        gpus={devs(res?.gpus)}
-        host={dev(res?.host)}
-        colorOf={colorOf}
-      />
+      {/* What the box is doing right now, above what it merely could do. This is
+          in-flight's ONE home: it used to render here AND on /activity, so two
+          pages showed the same live table and neither was the authority. */}
+      <ActiveRequests />
 
       <PauseDialog
         target={pauseFor?.name ?? null}

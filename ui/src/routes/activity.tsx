@@ -1,6 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { Box, Button, Chip } from '@mui/material'
-import { ActiveRequests } from '@/ActiveRequests'
 import { ActivityLog } from '@/ActivityLog'
 import { RetryPromises } from '@/RetryPromises'
 import { Journeys } from '@/Journeys'
@@ -28,10 +27,14 @@ function Activity() {
       {/* The summary line for everything below it: which models are under
           pressure, and what that pressure has cost callers. */}
       <Utilization />
-      {/* In-flight first: the table below only ever holds FINISHED requests. */}
-      <ActiveRequests />
-      {/* Then the ones we sent away. Both are traffic the completed-request log
-          cannot show: one hasn't finished, the other never started. */}
+      {/* IN-FLIGHT LIVES ON THE HOME SCREEN, and only there (P30 phase A). The
+          same live table used to render on both pages, so two screens showed the
+          same requests and neither was the authority — and a person who found one
+          had no way to know the other existed. Everything below this line is
+          traffic that has stopped moving: requests we sent away, and requests
+          that finished. */}
+      {/* The ones we sent away — traffic the completed-request log cannot show,
+          because they never started. */}
       <RetryPromises filterKey={key} />
       {/* The same rejections, grouped by who took them: one caller refused four
           times reads very differently from four callers refused once. */}

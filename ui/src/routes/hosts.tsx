@@ -13,19 +13,23 @@ import {
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { ToolingPanel } from '@/ToolingPanel'
+import { MemoryPanel } from '@/MemoryPanel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { C } from '@/theme'
+import { C, seriesColor } from '@/theme'
 import { fmtBytes, extractMessage } from '@/format'
 import { Loading } from '@/Loading'
 
 /**
- * Config: what corrallm was TOLD, as opposed to what it is currently doing.
+ * The machines: what hardware exists, what it was declared to have, and what is
+ * holding it right now.
  *
- * The Overview answers "what is happening right now" — residency, memory, live
- * requests. This answers "what did I declare", which is the question you have
- * when something is missing or routed somewhere surprising, and the answer is
- * usually in a file rather than in the runtime.
+ * P30 phase A moved the memory ledger here from the Overview. The two halves
+ * belong on one page and were on two: this page had the DECLARED budget ("32 GB
+ * − 1.0 GB reserved") and the home screen had the LIVE reading of the same
+ * pools, so answering "is there room" meant holding one page in your head while
+ * reading the other. The home screen's question is "is it serving"; this page's
+ * question is "what does the hardware have".
  *
  * Editable, but only against the MANAGED config — the one corrallm writes and
  * owns. A hand-written config is still refused (the server checks for its
@@ -94,6 +98,41 @@ const ConfigDoc = graphql(/* GraphQL */ `
           interruptible
           acceptDegrade
           qualityFloor
+        }
+      }
+      residency {
+        servers {
+          server
+          pools {
+            pool
+            budget
+            used
+          }
+        }
+        gpus {
+          available
+          name
+          uuid
+          pool
+          totalBytes
+          usedBytes
+          freeBytes
+        }
+        host {
+          available
+          name
+          totalBytes
+          usedBytes
+          freeBytes
+        }
+        models {
+          modelName
+          server
+          footprintMiB
+          usage {
+            pool
+            bytes
+          }
         }
       }
     }
@@ -170,8 +209,64 @@ function HostsPage() {
   }
 
   const ov = q.data?.corrallm.overview
+  const res = q.data?.corrallm.residency
   const servers = ov?.servers ?? []
   const models = ov?.models ?? []
+
+  // THE LEDGER, moved here from the Overview with P30 phase A. The derivation is
+  // unchanged from the one that lived there — including the reason for each part
+  // of it, which is why it is copied rather than summarised.
+  //
+  // Memory attribution colors follow the MODEL, assigned over the full sorted
+  // model list — never over the subset in one bar. Color must not change when a
+  // model loads or unloads, or every bar repaints and the eye reads a change that
+  // did not happen.
+  const colorIndex = new Map(models.map((m) => m.name).sort().map((n, i) => [n, i]))
+  const colorOf = (name: string) => seriesColor(colorIndex.get(name) ?? 0)
+  // Declared reserve lives on the config view, live budget/used on residency —
+  // join them so one bar can say both what is spoken for and what is being held
+  // back, instead of a second near-duplicate "capacity" panel saying half of it.
+  const reserveByPool = new Map(
+    servers.flatMap((s) => s.pools.map((p) => [`${s.server}/${p.pool}`, Number(p.reserveBytes)])),
+  )
+  const memPools = (res?.servers ?? []).flatMap((s) =>
+    s.pools.map((p) => ({
+      server: s.server,
+      pool: p.pool,
+      budget: Number(p.budget),
+      used: Number(p.used),
+      reserve: reserveByPool.get(`${s.server}/${p.pool}`) ?? 0,
+    })),
+  )
+  const memModels = (res?.models ?? []).map((m) => ({
+    model: m.modelName,
+    server: m.server,
+    pools: m.usage.map((u) => ({ pool: u.pool, bytes: Number(u.bytes) })),
+    measuredBytes: Number(m.footprintMiB) * 1024 * 1024,
+  }))
+  const memServers = servers.map((s) => ({ server: s.server, devicePool: s.devicePool }))
+  const dev = (d?: { available: boolean; name: string; totalBytes: string; usedBytes: string; freeBytes: string }) => ({
+    available: !!d?.available,
+    name: d?.name ?? '',
+    totalBytes: Number(d?.totalBytes ?? 0),
+    usedBytes: Number(d?.usedBytes ?? 0),
+    freeBytes: Number(d?.freeBytes ?? 0),
+  })
+  // Device readings carry the pool they back, which is what pairs each card with
+  // the right ledger row. A card no pool claims keeps pool='' and is shown as
+  // unclaimed rather than dropped — a freshly installed GPU nothing budgets is
+  // precisely the state worth seeing.
+  const devs = (
+    list?: readonly {
+      available: boolean
+      name: string
+      uuid?: string | null
+      pool?: string | null
+      totalBytes: string
+      usedBytes: string
+      freeBytes: string
+    }[],
+  ) => (list ?? []).map((d) => ({ ...dev(d), uuid: d.uuid ?? '', pool: d.pool ?? '' }))
 
   // A server with endpoints is an attached machine; one without is this box.
   const agents = servers.filter((s) => (s.agentEndpoints ?? []).length > 0)
@@ -218,6 +313,7 @@ function HostsPage() {
         </Panel>
       )}
 
+      {/* Declared first, then what is actually being held against it. */}
       <Panel
         title="Hosts"
         subtitle="Declared capacity. A budget the scheduler admits against — not a probe."
@@ -263,6 +359,18 @@ function HostsPage() {
           </Row>
         ))}
       </Panel>
+
+      {/* What is HOLDING that capacity right now — the live half of the two
+          numbers above. Moved here from the Overview (P30 phase A): declared and
+          held are one question and were on two pages. */}
+      <MemoryPanel
+        pools={memPools}
+        models={memModels}
+        servers={memServers}
+        gpus={devs(res?.gpus)}
+        host={dev(res?.host)}
+        colorOf={colorOf}
+      />
 
       {/* Agents: enrolled machines, and the one command that attaches another. */}
       <Panel
