@@ -834,12 +834,12 @@ true and still costs something. Optional extensions and out-of-scope items live 
 
 ### Known gaps — shipped and live with these
 
-- **`/m/<name>/activity` is a route that can never render.** `ui/src/routes/m.$name.activity.tsx`
-  is a full page (the shared activity table, scoped to the model, with `?placement=` narrowing),
-  but `ModelConsole` renders no `<Outlet/>`, so the URL resolves and silently shows the parent's
-  Info tab instead. Nothing in the UI links to it. Found 2026-09-04 while building the Lenny walk:
-  the step captured a screen byte-identical to the previous one. Either place the outlet or delete
-  the file — a URL that answers with the wrong page is worse than a 404.
+- ✅ ~~**`/m/<name>/activity` is a route that can never render.**~~ Deleted 2026-09-05. It was a
+  full page (the shared activity table scoped to the model, with `?placement=` narrowing) that
+  `ModelConsole` never rendered — no `<Outlet/>` — so the URL resolved and silently showed the
+  parent's Info tab, and nothing in the UI linked to it. Deleted rather than wired up: the model
+  page's own Usage tab answers the same question, and Traffic now answers it for any window. A URL
+  that replies with the wrong page is worse than a 404.
 - **`carlsmacbookpro`'s agent is unreachable** (`dial tcp 192.168.1.248:6503: connect: connection
   refused`, observed 2026-09-04). The Hosts page shows it, in the daemon's own words. Same class as
   the known macOS Local Network permission trap; unverified which it is this time.
