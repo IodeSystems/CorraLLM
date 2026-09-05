@@ -340,6 +340,53 @@ diverged (P30 §5, header fixed) — and Traffic merges (2026-09-05).
 **optional extensions** — a caller-facing surface (decision 5); a second Lenny scenario
 (`icebox.md`).
 
+### ◐ `--cache-reuse 256` is live — 2026-09-05 14:36, awaiting a day of traffic
+
+**Applied** (config revision 27, one line, restorable): `local-Qwen3.8-27B` spawns with
+`--cache-reuse 256` beside its existing `--parallel 1`. More slots is the textbook fix for
+prefix thrash and it costs VRAM the box does not have (gpu0 at 96%) — **decided: no more slots
+until the GPUs are paid for**, so this is the free half.
+
+**What it can fix:** llama.cpp re-uses cached chunks by KV-shifting them, so when a caller PRUNES
+the head of a long conversation — everything shifts, no prefix matches, today the whole prompt is
+re-read — the suffix can be reused in place. The 10:00–14:00 window fits that shape: average
+prompt size FELL from 62–80k to 40–49k while reuse collapsed, which is what head-pruning looks
+like. **What it cannot fix:** two genuinely different conversations interleaved on one slot. They
+still trade the cache, and no flag changes that.
+
+**How it was applied, since the obvious ways are wrong here.** `config load` replaces the whole
+configuration and needs `--force`; the entry-YAML API refuses this model (`served name
+"local-Qwen3.8-27B" collides with a model declared elsewhere`) because it is authored under
+`providers.local`, not at the top level. The right door is `upsertModel`, which merges onto the
+existing model via `applySpec` — so `sampling`, `convert`, `modalities`, `aliases`, `pool`,
+`swap` and `contextPerRequest` survive, and `sticky` is re-sent whole (2m / 5m / medium) because
+the form rebuilds that block wholesale. Verified: `config export` differs from the pre-change
+export by exactly one line.
+
+Restarted at a moment with nothing in flight, then loaded deliberately so no caller paid the cold
+start. Verified in `pgrep`: `--parallel 1 --cache-reuse 256 … -c 188000`. A chat request answers
+correctly with speculative decoding still on, and the log is clean of KV-shift errors.
+
+**THE BASELINE TO JUDGE IT AGAINST, frozen here before the change:**
+
+| | value |
+|---|---|
+| prompt-token reuse, 24 h to 14:30 | **92.0%** (10,515 requests) |
+| mean time answering, same window | **5.0 s** |
+| the bad stretch, 13:00–14:00 | 57.2% reuse, 10.8 s, 17,148 tokens re-read/request |
+| requests finding no near-exact prefix (llama.cpp `f_sim_best < 0.95`) | 09:00 **30%** → 13:00 **68%** → 14:00 **9%** |
+
+**How to check it tomorrow** — the instrument exists now, which it did not this morning:
+the reuse figure is on Now (it fires a card when reuse drops a fifth AND time per request rises a
+third), and per hour:
+
+    journalctl --user -u corrallm --since today | grep -oE 'f_sim_best = [0-9.]+'
+
+**What would say it worked:** the `f_sim_best < 0.95` share falls during a head-pruning stretch
+without reuse collapsing with it. **What would say it did nothing:** the next slow window looks
+like this one — reuse down, time up, f_sim low. Either answer is worth having; it is one number
+now instead of an argument.
+
 ### ◻ The 2026-09-05 slowdown: prompt-cache prefix thrash on a one-slot backend
 
 **Diagnosed, not fixed — the fix is a capacity decision that is yours (§9 territory).**
