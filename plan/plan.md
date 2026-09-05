@@ -340,6 +340,53 @@ diverged (P30 §5, header fixed) — and Traffic merges (2026-09-05).
 **optional extensions** — a caller-facing surface (decision 5); a second Lenny scenario
 (`icebox.md`).
 
+### ◻ Lenny run 4 — the verdict flipped, and what it left — 2026-09-05
+
+**"Would I come back tomorrow? Yes — but only as far as Now and Traffic."** First yes in four
+runs. Run: `tmp/ux-run-is-my-box-working-20260905-112653` (live box1, `7a330b5`).
+
+**Composition, which is the part that compares** (the walk changed between 2→3 and 3→4, so these
+are run totals against the four questions, not step-by-step):
+
+| | Q1 what does this do | Q2 how do I proceed | Q3 what is asked of me | Q4 will something come of it | total |
+|---|---|---|---|---|---|
+| run 1 (before any fix) | 10 | 12 | 10 | 10 | 42 |
+| run 2 (phase A) | 17 | 12 | 18 | 13 | 60 |
+| run 3 (phase B) | 15 | 11 | 12 | 4 | 42 |
+| run 4 (phase C + consequences) | **20** | **22** | **23** | **21** | **86** |
+
+Run 3's dip was two defects it found in what phase B had just shipped (a frozen window drawing
+live numbers; the state sentence spending "Struggling" on somebody else's machine) plus a
+scenario that asserted a failure the data contradicted. All three are fixed.
+
+**What he named as good, and a fix must not remove:** the state sentence and its fault card
+("the screen that does its job"), `a fixed span — these numbers will not change`, and the
+Probe/Unload consequence line — "the one place in the whole run that told me, before I ever had
+to guess, exactly what each button would cost."
+
+**What run 4 left, worst first:**
+
+1. **Setup buries the answer under engineer prose.** The one sentence he came for — nothing has
+   changed in two days — is below `P16 free-tier aggregator (plan/p16-free-aggregator.md)`,
+   `virtual.template.freeTier`, `barePrecedence defaults to 100`, `cgo-links sherpa-onnx, whose
+   LDFLAGS bake an absolute RUNPATH…`. Config `notes` render raw. He would have closed the lid
+   at the first paragraph. **No OB rule fits and he is right that one should: the answer comes
+   before the explanation.** File it as OB-11.
+2. **`Delete` beside a running model** (Setup) with nothing saying what it does to it — OB-1 and
+   OB-2. The consequence pass covered Unload/Probe/Cancel/Restore/Rebuild and missed this one.
+3. **`depth 8 unreachable`** — unexplained (OB-3), and drawn identically on the live and the
+   frozen view (OB-9). It is config-derived, not windowed; it needs plain words and the same
+   frozen-window treatment the live columns got.
+4. **`Change` / `Unassign` on a key active "just now"** — OB-2, same miss as (2).
+5. **`ramUsage required`** — a config field name on screen as if it were a sentence (OB-3).
+6. **`QUALITY 2`** — a number with no scale (OB-4).
+
+**next** — (2) and (4), then (1): they are the same fix as the consequence pass and a reordering.
+**risks** — a vocabulary fix is where vocabulary bugs are born; name the object.
+**blocking decisions** — none.
+**he found this himself, unprompted:** mean wait right now (7.0 s) is HIGHER than during the
+09:00–10:00 window everyone complained about (4.5 s). Two screens, no page saying it out loud.
+
 ### ◻ The first Lenny run's fix queue — 2026-09-04
 
 Harness, method and the trade it makes: `done.md` § UX verification. Run:
