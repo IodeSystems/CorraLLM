@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
@@ -14,7 +14,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material'
-import { Panel, PageHeader, Row } from '@/Panel'
+import { Panel, Row } from '@/Panel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
@@ -28,7 +28,7 @@ import { extractMessage } from '@/format'
  * a database is not readable in an editor. Leaving this in the CLI would have
  * traded a bad answer for none.
  *
- * Its own page rather than a panel on Hosts or Providers, because a revision
+ * A panel on Setup as of P30 phase C — it was its own top-level page, because a revision
  * spans all of them: one entry can contain a server, a lane and three models.
  * Filing it under any single one of those would be filing it under a part.
  */
@@ -84,7 +84,15 @@ function fmtBytes(n: number): string {
   return `${(n / 1024).toFixed(1)} KB`
 }
 
-export function HistoryPage() {
+/**
+ * The "what changed" half of Setup (P30 phase C).
+ *
+ * It was /history, a top-level entry of its own. "Is this something I did?" is
+ * the second question anybody asks when a box misbehaves, and the answer lives
+ * with the configuration that changed — so it sits under Setup with the things
+ * whose changes it records. /history redirects.
+ */
+export function HistoryPanels() {
   const qc = useQueryClient()
   const [viewing, setViewing] = useState<string | null>(null)
   const [confirming, setConfirming] = useState<{ id: string; note: string } | null>(null)
@@ -138,14 +146,7 @@ export function HistoryPage() {
   })
 
   return (
-    <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <PageHeader title="Config history">
-        <Chip size="small" variant="outlined" label={`${revisions.length} revisions`} />
-        <Box sx={{ flexGrow: 1 }} />
-        <Button size="small" variant="outlined" disabled={doExport.isPending} onClick={() => doExport.mutate()}>
-          Export current as YAML
-        </Button>
-      </PageHeader>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
 
       {err && <Alert severity="error">{err}</Alert>}
       {notice && (
@@ -161,9 +162,20 @@ export function HistoryPage() {
       )}
 
       <Panel
-        title="Revisions"
+        title="What changed"
+        actions={
+          <Button size="small" variant="outlined" disabled={doExport.isPending} onClick={() => doExport.mutate()}>
+            Export current as YAML
+          </Button>
+        }
+        badge={
+          q.isFetching ? (
+            <CircularProgress size={14} />
+          ) : (
+            <Chip size="small" variant="outlined" label={`${revisions.length}`} />
+          )
+        }
         subtitle="Every save records what the configuration became. Newest first. Restore replaces what is running now with an older version — it takes effect immediately, on whoever is using the box at that moment."
-        badge={q.isFetching ? <CircularProgress size={14} /> : undefined}
         flush
       >
         {q.error && (
@@ -279,4 +291,8 @@ export function HistoryPage() {
   );
 }
 
-export const Route = createFileRoute('/history')({ component: HistoryPage })
+export const Route = createFileRoute('/history')({
+  beforeLoad: () => {
+    throw redirect({ to: '/setup' })
+  },
+})

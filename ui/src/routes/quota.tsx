@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import {
   Alert,
@@ -14,7 +14,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
-import { Panel, PageHeader } from '@/Panel'
+import { Panel } from '@/Panel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtInt } from '@/format'
@@ -106,7 +106,19 @@ function BucketCell({ b }: { b: Bucket }) {
   );
 }
 
-function QuotaPage() {
+/**
+ * The upstream-budget half of Setup (P30 phase C), and a rename.
+ *
+ * It was a top-level entry called "Quota", which is the word a person uses for
+ * "am I about to run out". Three Lenny runs went looking there for exactly that
+ * and found a ledger of remote providers' rate limits — twice after having just
+ * seen a GPU at 96% two screens earlier. The page was honest; its NAME answered
+ * a different question than the one it was filed under.
+ *
+ * So: "Provider budgets", under Setup, beside the providers it describes. What
+ * the box itself is about to run out of is answered on Now and Machines.
+ */
+export function ProviderBudgets() {
   const q = useQuery({
     queryKey: ['quota'],
     queryFn: () => gqlClient.request(QuotaDoc),
@@ -116,8 +128,8 @@ function QuotaPage() {
   const backends = q.data?.corrallm?.quotaLedger?.backends ?? []
 
   return (
-    <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <PageHeader title="Free-tier quota" />
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <Typography variant="subtitle2">Provider budgets</Typography>
       <Typography variant="body2" sx={{
         color: "text.secondary"
       }}>
@@ -209,4 +221,8 @@ function QuotaPage() {
   );
 }
 
-export const Route = createFileRoute('/quota')({ component: QuotaPage })
+export const Route = createFileRoute('/quota')({
+  beforeLoad: () => {
+    throw redirect({ to: '/setup' })
+  },
+})

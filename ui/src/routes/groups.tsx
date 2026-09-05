@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import {
@@ -14,7 +14,7 @@ import {
   TableRow,
   Typography,
 } from '@mui/material'
-import { Panel, PageHeader } from '@/Panel'
+import { Panel } from '@/Panel'
 import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -73,7 +73,20 @@ function fmtCountdown(expiresAt: string, nowMs: number): string {
   return m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`
 }
 
-function Groups() {
+/**
+ * The lane half of Callers (P30 phase C).
+ *
+ * This was the /groups page. A group is a property of the CALLERS in it — a key
+ * maps to exactly one, and the weight that decides who wins under contention
+ * lives here — so asking "who is calling this box and what are they allowed"
+ * meant two pages, one listing the keys and one listing what their lanes get.
+ * They are one page now. /groups redirects.
+ *
+ * Backend load stays with these panels rather than moving to Machines: its rows
+ * break each backend's slots down BY GROUP, which answers "whose work is winning
+ * on that backend", not "what does the hardware have".
+ */
+export function GroupPanels() {
   const q = useQuery({
     queryKey: ['groups'],
     queryFn: () => gqlClient.request(GroupsDoc),
@@ -109,9 +122,7 @@ function Groups() {
   const reservations = q.data?.corrallm.reservations?.reservations ?? []
 
   return (
-    <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <PageHeader title="Groups" />
-
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <Panel
         title="Priority groups"
         subtitle="Weighted fairshare lanes + live load. Click a row to edit it."
@@ -297,4 +308,9 @@ onSaturated:
   }
 }
 
-export const Route = createFileRoute('/groups')({ component: Groups })
+// The old address, kept: links live in notes and chat history.
+export const Route = createFileRoute('/groups')({
+  beforeLoad: () => {
+    throw redirect({ to: '/callers' })
+  },
+})

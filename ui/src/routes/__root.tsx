@@ -22,14 +22,12 @@ import {
 import type { SvgIconComponent } from '@mui/icons-material'
 import CloudOutlined from '@mui/icons-material/CloudOutlined'
 import DashboardOutlined from '@mui/icons-material/DashboardOutlined'
-import DataUsageOutlined from '@mui/icons-material/DataUsageOutlined'
+import LayersOutlined from '@mui/icons-material/LayersOutlined'
 import GroupsOutlined from '@mui/icons-material/GroupsOutlined'
-import HistoryOutlined from '@mui/icons-material/HistoryOutlined'
 import MenuIcon from '@mui/icons-material/Menu'
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined'
 import SpeedOutlined from '@mui/icons-material/SpeedOutlined'
 import TimelineOutlined from '@mui/icons-material/TimelineOutlined'
-import VpnKeyOutlined from '@mui/icons-material/VpnKeyOutlined'
 import { C, theme } from '@/theme'
 import { useLiveEvents } from '@/useLiveEvents'
 import { useAuthGate } from '@/auth'
@@ -110,21 +108,26 @@ function CalibrationBanner() {
   )
 }
 
+// ONE ENTRY PER QUESTION SOMEBODY ARRIVES WITH (P30). Ten entries named after the
+// data they rendered became six plus the lab, each named after what it answers:
+//
+//   Now       is it serving, and if not what is wrong
+//   Models    what can be called, and what state is it in     (was the Overview catalog)
+//   Traffic   what has it been doing, over a span I choose   (was Activity + Usage)
+//   Callers   who is asking and what are they allowed        (was Keys + Groups)
+//   Machines  what hardware exists and what is on it         (was Hosts)
+//   Setup     what is configured, and what changed           (was Providers + History + Quota)
+//   Bench     which model is worth its VRAM
+//
+// Every old address still resolves; each moved page redirects.
 const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
-  { to: '/', label: 'Overview', icon: DashboardOutlined },
-  { to: '/hosts', label: 'Hosts', icon: SettingsOutlined },
-  { to: '/history', label: 'History', icon: HistoryOutlined },
-  // Traffic is the merge of Activity and Usage (P30 phase B): one subject, one
-  // time control. Both old addresses redirect here.
+  { to: '/', label: 'Now', icon: DashboardOutlined },
+  { to: '/models', label: 'Models', icon: LayersOutlined },
   { to: '/traffic', label: 'Traffic', icon: TimelineOutlined },
-  { to: '/groups', label: 'Groups', icon: GroupsOutlined },
-  { to: '/keys', label: 'Keys', icon: VpnKeyOutlined },
+  { to: '/callers', label: 'Callers', icon: GroupsOutlined },
+  { to: '/machines', label: 'Machines', icon: SettingsOutlined },
+  { to: '/setup', label: 'Setup', icon: CloudOutlined },
   { to: '/bench', label: 'Bench', icon: SpeedOutlined },
-  { to: '/quota', label: 'Quota', icon: DataUsageOutlined },
-  // No Approvals entry: models are chosen on the provider that offers them
-  // (Providers → Browse), so a separate page for deciding about them was a
-  // second place to look for one thing.
-  { to: '/providers', label: 'Providers', icon: CloudOutlined },
 ]
 
 const BAR_H = 52

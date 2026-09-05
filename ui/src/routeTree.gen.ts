@@ -12,19 +12,24 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as BenchRouteImport } from './routes/bench'
+import { Route as CallersRouteImport } from './routes/callers'
 import { Route as ConfigRouteImport } from './routes/config'
 import { Route as GroupsRouteImport } from './routes/groups'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as HostsRouteImport } from './routes/hosts'
 import { Route as KeysRouteImport } from './routes/keys'
+import { Route as MachinesRouteImport } from './routes/machines'
 import { Route as ModelRouteImport } from './routes/model'
+import { Route as ModelsRouteImport } from './routes/models'
 import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as QuotaRouteImport } from './routes/quota'
+import { Route as SetupRouteImport } from './routes/setup'
 import { Route as TrafficRouteImport } from './routes/traffic'
 import { Route as UsageRouteImport } from './routes/usage'
 import { Route as BenchModelRouteImport } from './routes/bench_.model'
 import { Route as BenchProbeRouteImport } from './routes/bench_.probe'
 import { Route as BenchRunRouteImport } from './routes/bench_.run'
+import { Route as CallersKeyRouteImport } from './routes/callers_.$key'
 import { Route as KeysKeyRouteImport } from './routes/keys_.$key'
 import { Route as MNameRouteImport } from './routes/m.$name'
 import { Route as MNameActivityRouteImport } from './routes/m.$name.activity'
@@ -42,6 +47,11 @@ const ActivityRoute = ActivityRouteImport.update({
 const BenchRoute = BenchRouteImport.update({
   id: '/bench',
   path: '/bench',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CallersRoute = CallersRouteImport.update({
+  id: '/callers',
+  path: '/callers',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConfigRoute = ConfigRouteImport.update({
@@ -69,9 +79,19 @@ const KeysRoute = KeysRouteImport.update({
   path: '/keys',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MachinesRoute = MachinesRouteImport.update({
+  id: '/machines',
+  path: '/machines',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ModelRoute = ModelRouteImport.update({
   id: '/model',
   path: '/model',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ModelsRoute = ModelsRouteImport.update({
+  id: '/models',
+  path: '/models',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProvidersRoute = ProvidersRouteImport.update({
@@ -82,6 +102,11 @@ const ProvidersRoute = ProvidersRouteImport.update({
 const QuotaRoute = QuotaRouteImport.update({
   id: '/quota',
   path: '/quota',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupRoute = SetupRouteImport.update({
+  id: '/setup',
+  path: '/setup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TrafficRoute = TrafficRouteImport.update({
@@ -109,6 +134,11 @@ const BenchRunRoute = BenchRunRouteImport.update({
   path: '/bench/run',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CallersKeyRoute = CallersKeyRouteImport.update({
+  id: '/callers_/$key',
+  path: '/callers/$key',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const KeysKeyRoute = KeysKeyRouteImport.update({
   id: '/keys_/$key',
   path: '/keys/$key',
@@ -129,19 +159,24 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
   '/bench': typeof BenchRoute
+  '/callers': typeof CallersRoute
   '/config': typeof ConfigRoute
   '/groups': typeof GroupsRoute
   '/history': typeof HistoryRoute
   '/hosts': typeof HostsRoute
   '/keys': typeof KeysRoute
+  '/machines': typeof MachinesRoute
   '/model': typeof ModelRoute
+  '/models': typeof ModelsRoute
   '/providers': typeof ProvidersRoute
   '/quota': typeof QuotaRoute
+  '/setup': typeof SetupRoute
   '/traffic': typeof TrafficRoute
   '/usage': typeof UsageRoute
   '/bench/model': typeof BenchModelRoute
   '/bench/probe': typeof BenchProbeRoute
   '/bench/run': typeof BenchRunRoute
+  '/callers/$key': typeof CallersKeyRoute
   '/keys/$key': typeof KeysKeyRoute
   '/m/$name': typeof MNameRouteWithChildren
   '/m/$name/activity': typeof MNameActivityRoute
@@ -150,19 +185,24 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
   '/bench': typeof BenchRoute
+  '/callers': typeof CallersRoute
   '/config': typeof ConfigRoute
   '/groups': typeof GroupsRoute
   '/history': typeof HistoryRoute
   '/hosts': typeof HostsRoute
   '/keys': typeof KeysRoute
+  '/machines': typeof MachinesRoute
   '/model': typeof ModelRoute
+  '/models': typeof ModelsRoute
   '/providers': typeof ProvidersRoute
   '/quota': typeof QuotaRoute
+  '/setup': typeof SetupRoute
   '/traffic': typeof TrafficRoute
   '/usage': typeof UsageRoute
   '/bench/model': typeof BenchModelRoute
   '/bench/probe': typeof BenchProbeRoute
   '/bench/run': typeof BenchRunRoute
+  '/callers/$key': typeof CallersKeyRoute
   '/keys/$key': typeof KeysKeyRoute
   '/m/$name': typeof MNameRouteWithChildren
   '/m/$name/activity': typeof MNameActivityRoute
@@ -172,19 +212,24 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
   '/bench': typeof BenchRoute
+  '/callers': typeof CallersRoute
   '/config': typeof ConfigRoute
   '/groups': typeof GroupsRoute
   '/history': typeof HistoryRoute
   '/hosts': typeof HostsRoute
   '/keys': typeof KeysRoute
+  '/machines': typeof MachinesRoute
   '/model': typeof ModelRoute
+  '/models': typeof ModelsRoute
   '/providers': typeof ProvidersRoute
   '/quota': typeof QuotaRoute
+  '/setup': typeof SetupRoute
   '/traffic': typeof TrafficRoute
   '/usage': typeof UsageRoute
   '/bench_/model': typeof BenchModelRoute
   '/bench_/probe': typeof BenchProbeRoute
   '/bench_/run': typeof BenchRunRoute
+  '/callers_/$key': typeof CallersKeyRoute
   '/keys_/$key': typeof KeysKeyRoute
   '/m/$name': typeof MNameRouteWithChildren
   '/m/$name/activity': typeof MNameActivityRoute
@@ -195,19 +240,24 @@ export interface FileRouteTypes {
     | '/'
     | '/activity'
     | '/bench'
+    | '/callers'
     | '/config'
     | '/groups'
     | '/history'
     | '/hosts'
     | '/keys'
+    | '/machines'
     | '/model'
+    | '/models'
     | '/providers'
     | '/quota'
+    | '/setup'
     | '/traffic'
     | '/usage'
     | '/bench/model'
     | '/bench/probe'
     | '/bench/run'
+    | '/callers/$key'
     | '/keys/$key'
     | '/m/$name'
     | '/m/$name/activity'
@@ -216,19 +266,24 @@ export interface FileRouteTypes {
     | '/'
     | '/activity'
     | '/bench'
+    | '/callers'
     | '/config'
     | '/groups'
     | '/history'
     | '/hosts'
     | '/keys'
+    | '/machines'
     | '/model'
+    | '/models'
     | '/providers'
     | '/quota'
+    | '/setup'
     | '/traffic'
     | '/usage'
     | '/bench/model'
     | '/bench/probe'
     | '/bench/run'
+    | '/callers/$key'
     | '/keys/$key'
     | '/m/$name'
     | '/m/$name/activity'
@@ -237,19 +292,24 @@ export interface FileRouteTypes {
     | '/'
     | '/activity'
     | '/bench'
+    | '/callers'
     | '/config'
     | '/groups'
     | '/history'
     | '/hosts'
     | '/keys'
+    | '/machines'
     | '/model'
+    | '/models'
     | '/providers'
     | '/quota'
+    | '/setup'
     | '/traffic'
     | '/usage'
     | '/bench_/model'
     | '/bench_/probe'
     | '/bench_/run'
+    | '/callers_/$key'
     | '/keys_/$key'
     | '/m/$name'
     | '/m/$name/activity'
@@ -259,19 +319,24 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActivityRoute: typeof ActivityRoute
   BenchRoute: typeof BenchRoute
+  CallersRoute: typeof CallersRoute
   ConfigRoute: typeof ConfigRoute
   GroupsRoute: typeof GroupsRoute
   HistoryRoute: typeof HistoryRoute
   HostsRoute: typeof HostsRoute
   KeysRoute: typeof KeysRoute
+  MachinesRoute: typeof MachinesRoute
   ModelRoute: typeof ModelRoute
+  ModelsRoute: typeof ModelsRoute
   ProvidersRoute: typeof ProvidersRoute
   QuotaRoute: typeof QuotaRoute
+  SetupRoute: typeof SetupRoute
   TrafficRoute: typeof TrafficRoute
   UsageRoute: typeof UsageRoute
   BenchModelRoute: typeof BenchModelRoute
   BenchProbeRoute: typeof BenchProbeRoute
   BenchRunRoute: typeof BenchRunRoute
+  CallersKeyRoute: typeof CallersKeyRoute
   KeysKeyRoute: typeof KeysKeyRoute
   MNameRoute: typeof MNameRouteWithChildren
 }
@@ -297,6 +362,13 @@ declare module '@tanstack/react-router' {
       path: '/bench'
       fullPath: '/bench'
       preLoaderRoute: typeof BenchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/callers': {
+      id: '/callers'
+      path: '/callers'
+      fullPath: '/callers'
+      preLoaderRoute: typeof CallersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/config': {
@@ -334,11 +406,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KeysRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/machines': {
+      id: '/machines'
+      path: '/machines'
+      fullPath: '/machines'
+      preLoaderRoute: typeof MachinesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/model': {
       id: '/model'
       path: '/model'
       fullPath: '/model'
       preLoaderRoute: typeof ModelRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/models': {
+      id: '/models'
+      path: '/models'
+      fullPath: '/models'
+      preLoaderRoute: typeof ModelsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/providers': {
@@ -353,6 +439,13 @@ declare module '@tanstack/react-router' {
       path: '/quota'
       fullPath: '/quota'
       preLoaderRoute: typeof QuotaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup': {
+      id: '/setup'
+      path: '/setup'
+      fullPath: '/setup'
+      preLoaderRoute: typeof SetupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/traffic': {
@@ -388,6 +481,13 @@ declare module '@tanstack/react-router' {
       path: '/bench/run'
       fullPath: '/bench/run'
       preLoaderRoute: typeof BenchRunRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/callers_/$key': {
+      id: '/callers_/$key'
+      path: '/callers/$key'
+      fullPath: '/callers/$key'
+      preLoaderRoute: typeof CallersKeyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/keys_/$key': {
@@ -428,19 +528,24 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
   BenchRoute: BenchRoute,
+  CallersRoute: CallersRoute,
   ConfigRoute: ConfigRoute,
   GroupsRoute: GroupsRoute,
   HistoryRoute: HistoryRoute,
   HostsRoute: HostsRoute,
   KeysRoute: KeysRoute,
+  MachinesRoute: MachinesRoute,
   ModelRoute: ModelRoute,
+  ModelsRoute: ModelsRoute,
   ProvidersRoute: ProvidersRoute,
   QuotaRoute: QuotaRoute,
+  SetupRoute: SetupRoute,
   TrafficRoute: TrafficRoute,
   UsageRoute: UsageRoute,
   BenchModelRoute: BenchModelRoute,
   BenchProbeRoute: BenchProbeRoute,
   BenchRunRoute: BenchRunRoute,
+  CallersKeyRoute: CallersKeyRoute,
   KeysKeyRoute: KeysKeyRoute,
   MNameRoute: MNameRouteWithChildren,
 }
