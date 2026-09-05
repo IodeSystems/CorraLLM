@@ -128,8 +128,9 @@ const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
 ]
 
 const BAR_H = 52
-const RAIL_W = 56 // icon-only rail: one 24px glyph plus breathing room
+const RAIL_W = 56 // collapsed rail: one 24px glyph plus breathing room
 const OPEN_W = 200
+const RAIL_KEY = 'corrallm_nav_open'
 
 /**
  * The nav itself, shared by the desktop rail and the mobile overlay.
@@ -198,8 +199,26 @@ function RootLayout() {
   // things: on mobile the drawer is an overlay that must start CLOSED, on
   // desktop the rail is always present and only its width toggles.
   const [mobileOpen, setMobileOpen] = useState(false)
-  const [railOpen, setRailOpen] = useState(false)
+  // THE RAIL STARTS WITH ITS WORDS SHOWING, and the tooltips are why.
+  //
+  // It used to start collapsed, on the theory that an icon-only rail is a
+  // label away from being one anyway. It is not: the first Lenny run
+  // (plan.md §6) walked eight screens and reported eleven controls reading
+  // "no words on it — it only says X if you rest the pointer on it, which you
+  // do not". A person who does not hover was shown a product whose navigation
+  // was blank on every page. That is canon LEN-9/OB-10: a tooltip is not a
+  // label.
+  //
+  // The collapse stays, for the operator who wants the width back, and the
+  // choice is remembered — re-collapsing it on every load is its own small
+  // defect. localStorage is read unguarded here, as auth.ts already does.
+  const [railOpen, setRailOpen] = useState(() => localStorage.getItem(RAIL_KEY) !== 'closed')
   const railW = railOpen ? OPEN_W : RAIL_W
+  const toggleRail = () =>
+    setRailOpen((v) => {
+      localStorage.setItem(RAIL_KEY, v ? 'closed' : 'open')
+      return !v
+    })
 
   // Render nothing for the one frame the probe takes. A spinner would flash on
   // every load, and a login screen shown then hidden is worse than a blank.
@@ -213,7 +232,7 @@ function RootLayout() {
             size="small"
             edge="start"
             aria-label="Toggle navigation"
-            onClick={() => (desktop ? setRailOpen((v) => !v) : setMobileOpen((v) => !v))}
+            onClick={() => (desktop ? toggleRail() : setMobileOpen((v) => !v))}
           >
             <MenuIcon fontSize="small" />
           </IconButton>
@@ -224,8 +243,9 @@ function RootLayout() {
         </Toolbar>
       </AppBar>
 
-      {/* Desktop: a permanent rail that sits under the app bar. Icons by
-          default; the hamburger widens it to show labels. */}
+      {/* Desktop: a permanent rail that sits under the app bar. Labelled by
+          default; the hamburger narrows it to icons for whoever wants the
+          width back. */}
       <Drawer
         variant="permanent"
         sx={{

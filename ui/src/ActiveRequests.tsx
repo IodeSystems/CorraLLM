@@ -134,7 +134,12 @@ export function ActiveRequests() {
                 <TableCell>State</TableCell>
                 <TableCell>Served</TableCell>
                 <TableCell>Backend</TableCell>
-                <TableCell>Lane</TableCell>
+                {/* GROUP, not "Lane". The cell is `r.group` — the caller's
+                    priority group. A lane is a different object in this product
+                    (plan.md §3: a named, ordered fallback list over models), and
+                    it is on screen at the same time in the Lanes panel, so the
+                    old header taught a meaning that is wrong two panels away. */}
+                <TableCell>Group</TableCell>
                 <TableCell>Key</TableCell>
                 <TableCell>Source</TableCell>
                 <TableCell>Path</TableCell>
