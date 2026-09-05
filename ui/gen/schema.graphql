@@ -165,10 +165,14 @@ type CorrallmQueryNamespace {
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   journeys(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Max journeys, worst first."""
     limit: Long
     """Look back this many minutes."""
     minutes: Long
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_JourneysOutputBody @derived(operationId: "journeys")
   keys(
     """Look back this far for keys seen in traffic (0 = all recorded usage)."""
@@ -191,11 +195,17 @@ type CorrallmQueryNamespace {
   queueDepth(
     """Bucket width in minutes."""
     bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_QueueDepthOutputBody @derived(operationId: "queueDepth")
   quotaLedger: corrallm_QuotaOutputBody @derived(operationId: "quotaLedger")
   recentActivity(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Filter to one caller key; empty returns all callers."""
     key: String
     """Max records, newest first."""
@@ -204,6 +214,8 @@ type CorrallmQueryNamespace {
     placement: String
     """Filter to one served model; empty returns all models."""
     served: String
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
   requestOverhead(
     """Window start, unix millis, inclusive."""
@@ -218,16 +230,24 @@ type CorrallmQueryNamespace {
   reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
   retryPromises(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Filter to one caller key; empty returns all callers."""
     key: String
     """Max promises, newest first."""
     limit: Long
     """Look back this many minutes."""
     minutes: Long
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_RetryPromisesOutputBody @derived(operationId: "retryPromises")
   serviceProfiles(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
     minutes: Long
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
   toolBuildHistory(
     """Scope to one host. Empty means any."""
@@ -253,36 +273,60 @@ type CorrallmQueryNamespace {
     drift: Boolean
   ): corrallm_ToolStatesOutputBody @derived(operationId: "toolStates")
   usageByKey(
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
   ): corrallm_UsageByKeyOutputBody @derived(operationId: "usageByKey")
   usageRollup(
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
   ): corrallm_UsageRollupOutputBody @derived(operationId: "usageRollup")
   usageSeries(
     """Bucket width in minutes."""
     bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesOutputBody @derived(operationId: "usageSeries")
   usageSeriesByGroup(
     """Bucket width in minutes."""
     bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesByGroupOutputBody @derived(operationId: "usageSeriesByGroup")
   usageSeriesByModel(
     """Bucket width in minutes."""
     bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
     """Narrow to one caller key; empty covers all callers."""
     key: String
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesByModelOutputBody @derived(operationId: "usageSeriesByModel")
   utilization(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Window for the promise and queue-wait columns."""
     minutes: Long
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_UtilizationOutputBody @derived(operationId: "utilization")
   v1: CorrallmV1QueryNamespace!
 }
@@ -446,10 +490,14 @@ type CorrallmV1QueryNamespace {
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   journeys(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Max journeys, worst first."""
     limit: Long
     """Look back this many minutes."""
     minutes: Long
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_JourneysOutputBody @derived(operationId: "journeys")
   keys(
     """Look back this far for keys seen in traffic (0 = all recorded usage)."""
@@ -472,11 +520,17 @@ type CorrallmV1QueryNamespace {
   queueDepth(
     """Bucket width in minutes."""
     bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_QueueDepthOutputBody @derived(operationId: "queueDepth")
   quotaLedger: corrallm_QuotaOutputBody @derived(operationId: "quotaLedger")
   recentActivity(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Filter to one caller key; empty returns all callers."""
     key: String
     """Max records, newest first."""
@@ -485,6 +539,8 @@ type CorrallmV1QueryNamespace {
     placement: String
     """Filter to one served model; empty returns all models."""
     served: String
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_RecentActivityOutputBody @derived(operationId: "recentActivity")
   requestOverhead(
     """Window start, unix millis, inclusive."""
@@ -499,16 +555,24 @@ type CorrallmV1QueryNamespace {
   reservations: corrallm_ReservationsOutputBody @derived(operationId: "reservations")
   residency: corrallm_ResidencyOutputBody @derived(operationId: "residency")
   retryPromises(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Filter to one caller key; empty returns all callers."""
     key: String
     """Max promises, newest first."""
     limit: Long
     """Look back this many minutes."""
     minutes: Long
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_RetryPromisesOutputBody @derived(operationId: "retryPromises")
   serviceProfiles(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Window to profile over. Wider than the utilization window by default — a distribution needs samples."""
     minutes: Long
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
   toolBuildHistory(
     """Scope to one host. Empty means any."""
@@ -534,36 +598,60 @@ type CorrallmV1QueryNamespace {
     drift: Boolean
   ): corrallm_ToolStatesOutputBody @derived(operationId: "toolStates")
   usageByKey(
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
   ): corrallm_UsageByKeyOutputBody @derived(operationId: "usageByKey")
   usageRollup(
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours; 0 = all time."""
     windowHours: Long
   ): corrallm_UsageRollupOutputBody @derived(operationId: "usageRollup")
   usageSeries(
     """Bucket width in minutes."""
     bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesOutputBody @derived(operationId: "usageSeries")
   usageSeriesByGroup(
     """Bucket width in minutes."""
     bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesByGroupOutputBody @derived(operationId: "usageSeriesByGroup")
   usageSeriesByModel(
     """Bucket width in minutes."""
     bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
     """Narrow to one caller key; empty covers all callers."""
     key: String
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
     """Trailing window in hours."""
     windowHours: Long
   ): corrallm_UsageSeriesByModelOutputBody @derived(operationId: "usageSeriesByModel")
   utilization(
+    """Absolute window start, epoch ms (inclusive). Overrides the relative window."""
+    from: Long
     """Window for the promise and queue-wait columns."""
     minutes: Long
+    """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
+    to: Long
   ): corrallm_UtilizationOutputBody @derived(operationId: "utilization")
 }
 

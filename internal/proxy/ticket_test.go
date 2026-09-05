@@ -97,7 +97,7 @@ func TestRejectionMintsATicketAndRecordsIt(t *testing.T) {
 		t.Errorf("minted ticket %q does not carry our prefix", hdr)
 	}
 
-	acts, err := st.RecentActivity(10, "", "", "")
+	acts, err := st.RecentActivity(store.Window{}, 10, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestACallersOwnRequestIDIsKept(t *testing.T) {
 	if hdr != mine || body != mine {
 		t.Errorf("caller id %q was replaced (header %q, body %q)", mine, hdr, body)
 	}
-	acts, _ := st.RecentActivity(10, "", "", "")
+	acts, _ := st.RecentActivity(store.Window{}, 10, "", "", "")
 	for _, a := range acts {
 		if a.Status == http.StatusTooManyRequests && a.Ticket != mine {
 			t.Errorf("logged ticket %q, want the caller's own %q", a.Ticket, mine)

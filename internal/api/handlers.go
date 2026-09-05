@@ -152,6 +152,36 @@ func (h *Handlers) ConfigSummary(_ context.Context, _ *ConfigSummaryInput) (*Con
 
 // --- recent activity (P8) ---
 
+// seriesMinutes is the series endpoints' trailing default: a chart with no
+// window is 24 hours, never all time — an all-time axis on a 30-day log is a
+// flat line with one spike at the right-hand edge.
+func seriesMinutes(windowHours int) int {
+	if windowHours <= 0 {
+		return 24 * 60
+	}
+	return windowHours * 60
+}
+
+// windowOf resolves a request's time bounds.
+//
+// An explicit [from, to) wins; otherwise the endpoint keeps the relative window
+// it has always had. Both shapes exist on purpose: the dashboard's one time
+// control sends absolute bounds so every panel reads the SAME span (a relative
+// window per panel is why "what happened at 09:00" was unanswerable — P30 §0),
+// while a caller that just wants "the last hour" still says minutes and gets it.
+//
+// A from with no to means "from then until now", which is what an operator means
+// by "since 09:00".
+func windowOf(fromMS, toMS int64, relativeMinutes int) store.Window {
+	if fromMS > 0 || toMS > 0 {
+		return store.Between(fromMS, toMS)
+	}
+	if relativeMinutes <= 0 {
+		return store.Window{}
+	}
+	return store.Since(time.Now().UnixMilli() - int64(relativeMinutes)*60_000)
+}
+
 // RecentActivityInput bounds how many records to return, optionally scoped to
 // one served model (the per-model console usage tab).
 type RecentActivityInput struct {
@@ -160,7 +190,14 @@ type RecentActivityInput struct {
 	Key    string `query:"key" doc:"Filter to one caller key; empty returns all callers."`
 	// Placement narrows to ONE way of serving the model. With a model on two
 	// boxes, a figure averaged across both describes neither of them.
-	Placement string `query:"placement" doc:"Filter to one placement (box + cmd); empty returns every placement."`
+	Placement string `query:"placement" doc:"Filter to one placement (box + cmd); empty returns every placement."` // FROM/TO — the absolute window (P30 phase B). Both are epoch milliseconds,
+	// the lower bound inclusive and the upper EXCLUSIVE so adjacent windows tile.
+	// When either is set it wins over the relative window above; when neither is,
+	// nothing about this endpoint changes. That is what lets one time control on
+	// the dashboard drive every panel while the panels that have no control yet
+	// keep their own default.
+	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides the relative window."`
+	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides the relative window."`
 }
 
 // ActivityRecord is one proxied-request row surfaced to the UI. Mirrors
@@ -202,7 +239,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := h.Store.RecentActivity(limit, in.Served, in.Key, in.Placement)
+	rows, err := h.Store.RecentActivity(windowOf(in.FromMS, in.ToMS, 0), limit, in.Served, in.Key, in.Placement)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +323,14 @@ func (h *Handlers) ActivityDetail(_ context.Context, in *ActivityDetailInput) (*
 type RetryPromisesInput struct {
 	Limit   int    `query:"limit" default:"50" minimum:"1" maximum:"500" doc:"Max promises, newest first."`
 	Minutes int    `query:"minutes" default:"60" minimum:"1" maximum:"10080" doc:"Look back this many minutes."`
-	Key     string `query:"key" doc:"Filter to one caller key; empty returns all callers."`
+	Key     string `query:"key" doc:"Filter to one caller key; empty returns all callers."` // FROM/TO — the absolute window (P30 phase B). Both are epoch milliseconds,
+	// the lower bound inclusive and the upper EXCLUSIVE so adjacent windows tile.
+	// When either is set it wins over the relative window above; when neither is,
+	// nothing about this endpoint changes. That is what lets one time control on
+	// the dashboard drive every panel while the panels that have no control yet
+	// keep their own default.
+	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides the relative window."`
+	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides the relative window."`
 }
 
 // RetryPromiseRecord is one "come back later" we handed out, with the verdict on
@@ -334,7 +378,14 @@ func classifyPromise(now, dueMS, returnedMS int64) string {
 // JourneysInput bounds the window and the row count.
 type JourneysInput struct {
 	Limit   int `query:"limit" default:"50" minimum:"1" maximum:"500" doc:"Max journeys, worst first."`
-	Minutes int `query:"minutes" default:"60" minimum:"1" maximum:"10080" doc:"Look back this many minutes."`
+	Minutes int `query:"minutes" default:"60" minimum:"1" maximum:"10080" doc:"Look back this many minutes."` // FROM/TO — the absolute window (P30 phase B). Both are epoch milliseconds,
+	// the lower bound inclusive and the upper EXCLUSIVE so adjacent windows tile.
+	// When either is set it wins over the relative window above; when neither is,
+	// nothing about this endpoint changes. That is what lets one time control on
+	// the dashboard drive every panel while the panels that have no control yet
+	// keep their own default.
+	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides the relative window."`
+	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides the relative window."`
 }
 
 // JourneyRecord is one caller's attempt to get served, across every rejection.
@@ -377,7 +428,7 @@ func (h *Handlers) Journeys(_ context.Context, in *JourneysInput) (*JourneysOutp
 	if h.Store == nil {
 		return out, nil
 	}
-	rows, err := h.Store.Journeys(store.Since(time.Now().UnixMilli()-int64(minutes)*60_000), limit)
+	rows, err := h.Store.Journeys(windowOf(in.FromMS, in.ToMS, minutes), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -411,7 +462,7 @@ func (h *Handlers) RetryPromises(_ context.Context, in *RetryPromisesInput) (*Re
 		minutes = 60
 	}
 	now := time.Now().UnixMilli()
-	rows, err := h.Store.RetryPromises(store.Since(now-int64(minutes)*60_000), limit, in.Key)
+	rows, err := h.Store.RetryPromises(windowOf(in.FromMS, in.ToMS, minutes), limit, in.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +490,14 @@ func (h *Handlers) RetryPromises(_ context.Context, in *RetryPromisesInput) (*Re
 
 // UtilizationInput bounds the window the windowed columns are measured over.
 type UtilizationInput struct {
-	Minutes int `query:"minutes" default:"60" minimum:"1" maximum:"10080" doc:"Window for the promise and queue-wait columns."`
+	Minutes int `query:"minutes" default:"60" minimum:"1" maximum:"10080" doc:"Window for the promise and queue-wait columns."` // FROM/TO — the absolute window (P30 phase B). Both are epoch milliseconds,
+	// the lower bound inclusive and the upper EXCLUSIVE so adjacent windows tile.
+	// When either is set it wins over the relative window above; when neither is,
+	// nothing about this endpoint changes. That is what lets one time control on
+	// the dashboard drive every panel while the panels that have no control yet
+	// keep their own default.
+	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides the relative window."`
+	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides the relative window."`
 }
 
 // UtilizationRow is one served model's pressure: what it is doing right now, and
@@ -538,7 +596,9 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 		minutes = 60
 	}
 	now := time.Now().UnixMilli()
-	since := now - int64(minutes)*60_000
+	// One window for every read below, so the promise, queue-wait and
+	// turned-away columns of a row all describe the same span.
+	w := windowOf(in.FromMS, in.ToMS, minutes)
 
 	rows := map[string]*UtilizationRow{}
 	row := func(served string) *UtilizationRow {
@@ -552,7 +612,7 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 
 	// Row set: everything asked for in the window. A model nobody called is not
 	// "0% utilized", it is absent.
-	seen, err := h.Store.ModelsSeenSince(store.Since(since))
+	seen, err := h.Store.ModelsSeenSince(w)
 	if err != nil {
 		return nil, err
 	}
@@ -666,7 +726,7 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 	}
 
 	// Measured queue wait.
-	waits, err := h.Store.QueueWaitByModel(store.Since(since))
+	waits, err := h.Store.QueueWaitByModel(w)
 	if err != nil {
 		return nil, err
 	}
@@ -680,7 +740,7 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 	// theoretical third opinion beside est (what the scheduler predicts) and real
 	// (what callers measured) — produced from the distribution rather than from
 	// either mechanism, so agreement between any two of them means something.
-	svc, err := h.Store.ServiceStats(store.Since(since), false)
+	svc, err := h.Store.ServiceStats(w, false)
 	if err != nil {
 		return nil, err
 	}
@@ -719,7 +779,7 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 	}
 
 	// Promise outcomes, classified by the same function the promises panel uses.
-	promises, err := h.Store.RetryPromises(store.Since(since), 2000, "")
+	promises, err := h.Store.RetryPromises(w, 2000, "")
 	if err != nil {
 		return nil, err
 	}
@@ -784,7 +844,14 @@ func shrink(sample float64, n int64, prior float64) float64 {
 
 // ServiceProfilesInput bounds the window.
 type ServiceProfilesInput struct {
-	Minutes int `query:"minutes" default:"1440" minimum:"1" maximum:"43200" doc:"Window to profile over. Wider than the utilization window by default — a distribution needs samples."`
+	Minutes int `query:"minutes" default:"1440" minimum:"1" maximum:"43200" doc:"Window to profile over. Wider than the utilization window by default — a distribution needs samples."` // FROM/TO — the absolute window (P30 phase B). Both are epoch milliseconds,
+	// the lower bound inclusive and the upper EXCLUSIVE so adjacent windows tile.
+	// When either is set it wins over the relative window above; when neither is,
+	// nothing about this endpoint changes. That is what lets one time control on
+	// the dashboard drive every panel while the panels that have no control yet
+	// keep their own default.
+	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides the relative window."`
+	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides the relative window."`
 }
 
 // ServiceProfileRow is one caller's service-time profile on one model, next to
@@ -833,9 +900,9 @@ func (h *Handlers) ServiceProfiles(_ context.Context, in *ServiceProfilesInput) 
 	if minutes <= 0 {
 		minutes = 1440
 	}
-	since := time.Now().UnixMilli() - int64(minutes)*60_000
+	w := windowOf(in.FromMS, in.ToMS, minutes)
 
-	priors, err := h.Store.ServiceStats(store.Since(since), false)
+	priors, err := h.Store.ServiceStats(w, false)
 	if err != nil {
 		return nil, err
 	}
@@ -843,7 +910,7 @@ func (h *Handlers) ServiceProfiles(_ context.Context, in *ServiceProfilesInput) 
 	for _, p := range priors {
 		prior[p.Served] = p
 	}
-	perKey, err := h.Store.ServiceStats(store.Since(since), true)
+	perKey, err := h.Store.ServiceStats(w, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1046,7 +1113,11 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 
 // UsageRollupInput bounds the rollup window.
 type UsageRollupInput struct {
-	WindowHours int `query:"windowHours" default:"24" minimum:"0" maximum:"8760" doc:"Trailing window in hours; 0 = all time."`
+	WindowHours int `query:"windowHours" default:"24" minimum:"0" maximum:"8760" doc:"Trailing window in hours; 0 = all time."` // Absolute bounds win over the trailing window (P30 phase B): epoch ms,
+	// lower inclusive, upper exclusive, so one dashboard time control can drive
+	// this panel and every other on the page over the SAME span.
+	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides windowHours."`
+	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides windowHours."`
 }
 
 // RollupRow is aggregated usage for one served model.
@@ -1074,11 +1145,7 @@ type UsageRollupOutput struct {
 
 // UsageRollup aggregates metered activity by served model over a window.
 func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageRollupOutput, error) {
-	var sinceMS int64
-	if in.WindowHours > 0 {
-		sinceMS = time.Now().Add(-time.Duration(in.WindowHours) * time.Hour).UnixMilli()
-	}
-	rows, err := h.Store.RollupByModel(store.Since(sinceMS))
+	rows, err := h.Store.RollupByModel(windowOf(in.FromMS, in.ToMS, in.WindowHours*60))
 	if err != nil {
 		return nil, err
 	}
@@ -1121,7 +1188,11 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 
 // UsageByKeyInput bounds the rollup window.
 type UsageByKeyInput struct {
-	WindowHours int `query:"windowHours" default:"24" minimum:"0" maximum:"8760" doc:"Trailing window in hours; 0 = all time."`
+	WindowHours int `query:"windowHours" default:"24" minimum:"0" maximum:"8760" doc:"Trailing window in hours; 0 = all time."` // Absolute bounds win over the trailing window (P30 phase B): epoch ms,
+	// lower inclusive, upper exclusive, so one dashboard time control can drive
+	// this panel and every other on the page over the SAME span.
+	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides windowHours."`
+	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides windowHours."`
 }
 
 // KeyUsageRow is aggregated usage for one caller key, including energy derived
@@ -1151,11 +1222,7 @@ type UsageByKeyOutput struct {
 // UsageByKey aggregates metered activity by caller key over a window — the data
 // behind the per-key cost/requests/energy/time view.
 func (h *Handlers) UsageByKey(_ context.Context, in *UsageByKeyInput) (*UsageByKeyOutput, error) {
-	var sinceMS int64
-	if in.WindowHours > 0 {
-		sinceMS = time.Now().Add(-time.Duration(in.WindowHours) * time.Hour).UnixMilli()
-	}
-	rows, err := h.Store.RollupByKey(store.Since(sinceMS))
+	rows, err := h.Store.RollupByKey(windowOf(in.FromMS, in.ToMS, in.WindowHours*60))
 	if err != nil {
 		return nil, err
 	}
@@ -1186,7 +1253,11 @@ func (h *Handlers) UsageByKey(_ context.Context, in *UsageByKeyInput) (*UsageByK
 // UsageSeriesInput sets the time window and bucket granularity.
 type UsageSeriesInput struct {
 	WindowHours   int `query:"windowHours" default:"24" minimum:"1" maximum:"8760" doc:"Trailing window in hours."`
-	BucketMinutes int `query:"bucketMinutes" default:"60" minimum:"1" maximum:"1440" doc:"Bucket width in minutes."`
+	BucketMinutes int `query:"bucketMinutes" default:"60" minimum:"1" maximum:"1440" doc:"Bucket width in minutes."` // Absolute bounds win over the trailing window (P30 phase B): epoch ms,
+	// lower inclusive, upper exclusive, so one dashboard time control can drive
+	// this panel and every other on the page over the SAME span.
+	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides windowHours."`
+	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides windowHours."`
 }
 
 // SeriesPoint is one bucket's metrics for a key (aligned to UsageSeriesOutput.Buckets).
@@ -1220,26 +1291,36 @@ const maxSeriesBuckets = 600
 // Shared by the per-key and per-model series so the two charts on a page cannot
 // end up on subtly different axes — same coarsening rule, same alignment, same
 // number of points, so they can be read against each other.
-func seriesAxis(windowHours, bucketMinutes int, now int64) (buckets []int64, index map[int64]int, bucketMS, sinceMS int64) {
-	if windowHours <= 0 {
-		windowHours = 24
-	}
+// It takes the resolved Window rather than a trailing hour count, so an absolute
+// span from the dashboard's time control produces the same axis machinery as the
+// old "last N hours" — one code path, and the two charts on a page still cannot
+// end up on subtly different axes.
+func seriesAxis(w store.Window, bucketMinutes int, now int64) (buckets []int64, index map[int64]int, bucketMS int64) {
 	if bucketMinutes <= 0 {
 		bucketMinutes = 60
 	}
-	windowMS := int64(windowHours) * 3600_000
+	// An open end means "until now"; an open start means the 24 hours before it,
+	// which is what every caller of this axis meant by its default.
+	to := w.ToMS
+	if to <= 0 {
+		to = now
+	}
+	from := w.FromMS
+	if from <= 0 {
+		from = to - 24*3600_000
+	}
 	bucketMS = int64(bucketMinutes) * 60_000
-	for windowMS/bucketMS > maxSeriesBuckets {
+	for (to-from)/bucketMS > maxSeriesBuckets {
 		bucketMS *= 2
 	}
-	end := (now / bucketMS) * bucketMS
-	start := ((now - windowMS) / bucketMS) * bucketMS
+	end := (to / bucketMS) * bucketMS
+	start := (from / bucketMS) * bucketMS
 	index = map[int64]int{}
 	for b := start; b <= end; b += bucketMS {
 		index[b] = len(buckets)
 		buckets = append(buckets, b)
 	}
-	return buckets, index, bucketMS, now - windowMS
+	return buckets, index, bucketMS
 }
 
 // --- per-model usage series (P20) ---
@@ -1249,6 +1330,9 @@ type UsageSeriesByModelInput struct {
 	WindowHours   int    `query:"windowHours" default:"24" minimum:"1" maximum:"8760" doc:"Trailing window in hours."`
 	BucketMinutes int    `query:"bucketMinutes" default:"60" minimum:"1" maximum:"1440" doc:"Bucket width in minutes."`
 	Key           string `query:"key" doc:"Narrow to one caller key; empty covers all callers."`
+	// Absolute bounds win over the trailing window (P30 phase B).
+	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides windowHours."`
+	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides windowHours."`
 }
 
 // ModelSeries is one served model's dense time series.
@@ -1269,8 +1353,9 @@ type UsageSeriesByModelOutput struct {
 // UsageSeriesByModel returns per-model time series over a window, optionally
 // scoped to one caller — the "on what" axis to UsageSeries's "by whom".
 func (h *Handlers) UsageSeriesByModel(_ context.Context, in *UsageSeriesByModelInput) (*UsageSeriesByModelOutput, error) {
-	buckets, index, bucketMS, sinceMS := seriesAxis(in.WindowHours, in.BucketMinutes, time.Now().UnixMilli())
-	rows, err := h.Store.RollupSeriesByModel(store.Since(sinceMS), bucketMS, in.Key)
+	w := windowOf(in.FromMS, in.ToMS, seriesMinutes(in.WindowHours))
+	buckets, index, bucketMS := seriesAxis(w, in.BucketMinutes, time.Now().UnixMilli())
+	rows, err := h.Store.RollupSeriesByModel(w, bucketMS, in.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -1317,8 +1402,9 @@ func (h *Handlers) UsageSeriesByModel(_ context.Context, in *UsageSeriesByModelI
 // window, bucketed for charting. Buckets are dense (0-filled) so every key's
 // Points align to the shared Buckets axis.
 func (h *Handlers) UsageSeries(_ context.Context, in *UsageSeriesInput) (*UsageSeriesOutput, error) {
-	buckets, index, bucketMS, sinceMS := seriesAxis(in.WindowHours, in.BucketMinutes, time.Now().UnixMilli())
-	rows, err := h.Store.RollupSeries(store.Since(sinceMS), bucketMS)
+	w := windowOf(in.FromMS, in.ToMS, seriesMinutes(in.WindowHours))
+	buckets, index, bucketMS := seriesAxis(w, in.BucketMinutes, time.Now().UnixMilli())
+	rows, err := h.Store.RollupSeries(w, bucketMS)
 	if err != nil {
 		return nil, err
 	}

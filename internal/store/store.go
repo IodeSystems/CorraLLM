@@ -841,14 +841,18 @@ const payloadPruneChunk = 500
 // toward: not "how does this model behave" but "how does it behave ON THAT
 // BOX". With one model served from two machines, a mean across both describes
 // neither.
-func (s *Store) RecentActivity(limit int, served, key, placement string) ([]Activity, error) {
+func (s *Store) RecentActivity(w Window, limit int, served, key, placement string) ([]Activity, error) {
 	const cols = `id, ts, served, placement, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
 	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms,
 	        ticket`
 	q := `SELECT ` + cols + ` FROM activity`
-	var args []any
-	var where []string
+	wWhere, wArgs := w.ts()
+	// The window is a WHERE like any other filter, and it goes on first so the
+	// log can answer "this morning" rather than only "the newest N, whenever
+	// they were" — the shape that made a time question unanswerable (P30 §0).
+	args := append([]any{}, wArgs...)
+	where := []string{wWhere}
 	if served != "" {
 		where = append(where, "served = ?")
 		args = append(args, served)
@@ -861,9 +865,7 @@ func (s *Store) RecentActivity(limit int, served, key, placement string) ([]Acti
 		where = append(where, "placement = ?")
 		args = append(args, placement)
 	}
-	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
-	}
+	q += " WHERE " + strings.Join(where, " AND ")
 	q += " ORDER BY ts DESC LIMIT ?"
 	args = append(args, limit)
 	rows, err := s.db.Query(q, args...)

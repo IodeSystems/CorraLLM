@@ -79,7 +79,7 @@ func TestOpenUpgradesAPreTicketDatabase(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	// The history survived.
-	acts, err := st.RecentActivity(10, "", "", "")
+	acts, err := st.RecentActivity(Window{}, 10, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

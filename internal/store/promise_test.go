@@ -133,7 +133,7 @@ func TestRecentActivityFiltersByPlacement(t *testing.T) {
 		{TS: 4, Served: "qwen", Placement: "", DwellMS: 50},
 	})
 
-	box, err := st.RecentActivity(10, "qwen", "", "box1")
+	box, err := st.RecentActivity(Window{}, 10, "qwen", "", "box1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestRecentActivityFiltersByPlacement(t *testing.T) {
 		}
 	}
 
-	mac, err := st.RecentActivity(10, "qwen", "", "mac1")
+	mac, err := st.RecentActivity(Window{}, 10, "qwen", "", "mac1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestRecentActivityFiltersByPlacement(t *testing.T) {
 	// Unfiltered still returns everything, including the pre-column row —
 	// narrowing is opt-in, and a missing placement is not a reason to hide
 	// history.
-	all, err := st.RecentActivity(10, "qwen", "", "")
+	all, err := st.RecentActivity(Window{}, 10, "qwen", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
