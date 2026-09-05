@@ -1673,7 +1673,9 @@ type corrallm_JourneysOutputBody {
 }
 
 type corrallm_KeyDef {
-  """Priority group it resolves to."""
+  """Priority groups this key may escalate into via key:group."""
+  allow: [String!]
+  """Priority group it resolves to when it asks for nothing."""
   group: String!
   """Caller key."""
   key: String!
