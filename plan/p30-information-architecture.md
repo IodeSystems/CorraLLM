@@ -2,8 +2,8 @@
 
 > Opened 2026-09-04, out of the first Lenny run (`plan.md` §6, harness in `done.md`
 > § UX verification) and a full inventory of all 18 dashboard routes.
-> **Status: ◐ phase A landed 2026-09-05; B–D open.** What moved so far: the nav rail's
-> labels, the `Lane`→`Group` column header (§5), and phase A (§6).
+> **Status: ◐ phases A and B landed 2026-09-05; C–D open.** What moved so far: the nav
+> rail's labels, the `Lane`→`Group` column header (§5), phase A and phase B (§6).
 
 ## 0. The finding under the findings
 
@@ -157,8 +157,20 @@ Each phase is a shippable slice; the plan's Definition of done applies to each.
   correctly reported `carlsmacbookpro is not reporting in`.*
   **Not fixed by phase A, deliberately:** the model catalog is still ~80% of the home screen.
   It moves to Models in phase C.
-- **B — Traffic: merge `/activity` + `/usage` behind one time axis. — decision resolved
-  2026-09-05: merge.** The only phase with real backend work: the activity and rollup queries
+- **B — ✅ Traffic: `/activity` + `/usage` merged behind one time axis (2026-09-05).**
+  Decision resolved the same day: merge. Shipped: `store.Window` on all eleven activity
+  reads (exclusive upper bound, so adjacent windows tile), `from`/`to` on eight endpoints
+  (absolute beats relative; a caller sending neither is unaffected), one `TimeWindowPicker`
+  every panel obeys, **the window in the URL** so a span can be sent to somebody, and
+  polling that stops when the window is frozen. KeyCharts lost its own 6h/24h/7d toggle —
+  its bucket width now follows the page's span. Both old addresses redirect, `?key=`
+  included. Verified against a snapshot of the production DB: `[09:00, 10:00)` returned 327
+  rows, 09:00:17–09:50:17, where the old binary answered the same request with rows from
+  08:21.
+  **Left over:** `/usage`'s Resident models table has no home yet (it left Traffic and has
+  not landed on Machines), and a frozen window renders Utilization's live-only columns as
+  `—` with nothing saying why. Both in `plan.md` §6.
+  ~~The only phase with real backend work:~~ The only phase with real backend work: the activity and rollup queries
   take an explicit from/to instead of each panel's constant, and every panel on the page obeys
   one control. Fixes "I cannot get back to 09:00" properly, and collapses the per-key and
   per-model numbers that today disagree because each is measured over a different window.

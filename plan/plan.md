@@ -323,11 +323,13 @@ Measured, not asserted: a caller's cost renders on four pages; every panel carri
 window and there is no page-level control (60 min · 24 h · 6h/24h/7d · newest-100); and the word
 *lane* names two different objects on screen at once.
 
-**next** — phase B: Traffic. **Decision resolved 2026-09-05 — merge `/activity` and `/usage`
-behind one time axis**, the only phase with backend work (the activity and rollup queries take an
-explicit from/to instead of each panel's constant). Phase A ✅ 2026-09-05: the home screen leads
-with a computed state sentence and a "What needs looking at" panel, the memory ledger moved to
-`/hosts`, in-flight deduped to one home.
+**next** — phase C (Callers · Machines · Setup; nav to seven), and two loose ends phase B left:
+the **Resident models** table has no page (it left Traffic; Machines is where it goes), and a
+frozen window draws Utilization's live-only columns as `—` with nothing saying why — a person
+reading a historical span cannot tell "not applicable here" from "no data".
+Phases A ✅ and B ✅ both landed 2026-09-05: the home screen leads with a computed state sentence
+and a "What needs looking at" panel; Traffic is one page under one time axis, and the window is in
+the URL so a span can be sent to somebody.
 **risks** — merging `/activity` and `/usage` (phase B) is the largest single change and needs
 decision 4 first. Old URLs must redirect, not 404 — links live in notes and chat history; the repo
 already does this for `/config` and `/model`. A vocabulary pass is where vocabulary bugs are born.
