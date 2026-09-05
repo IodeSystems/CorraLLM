@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# bin/ux — walk the dashboard as the person who owns the box, and write down only
+# what they could see.
+#
+#   bin/ux                      the default walk (ux/walks/is-my-box-working.json)
+#   bin/ux <walk>               ux/walks/<walk>.json
+#   bin/ux --list               the walks and scenarios on disk
+#   bin/ux --base URL           which daemon to walk (default http://127.0.0.1:8111)
+#   bin/ux --headed             watch it in a real window
+#
+# LENNY IS THE CONSTANT (~/doc/patterns/lenny.md, canon LEN-1..LEN-10). His
+# capability, familiarity and temperament are in ux/lenny.md and are identical in
+# every project; the scenario in ux/scenarios/ varies his goal and role and may
+# not soften him. He is the control variable, which is the only reason two runs of
+# this dashboard are comparable.
+#
+# WHY THIS EXISTS. The Go tests assert on SERVER state and are right to: the bugs
+# they catch are invisible on screen and obvious in the counts. This one asserts
+# on NOTHING. It produces a run directory — a screenshot and the visible words of
+# each screen — for an agent scoped to a persona and denied this codebase, to
+# score against the four questions and the rules in ux/obviousness.md. One checks
+# that corrallm did what it said. This checks that a person could tell what it was
+# saying.
+#
+# THE OUTPUT IS THE POINT AND IT IS SELF-CONTAINED. `BRIEF.md` in the run
+# directory names every file the evaluator may read, so "denied the codebase" is a
+# fact about its input rather than an instruction it is trusted to follow. An
+# evaluator who has read internal/sched cannot un-know what "placement" means and
+# will score OB-3 as fine forever.
+#
+# IT WALKS THE LIVE DAEMON, READ-ONLY, AND THAT IS A DELIBERATE TRADE. corrallm's
+# dashboard is empty without models, attached hosts and traffic, and a person only
+# ever opens it on a box that has all three (canon LEN-4: start him in a state a
+# real user could arrive at). A seeded copy would be reproducible and would also be
+# an install nobody has used. The price is that this run is NOT reproducible —
+# it photographs the box as it was — and that a step which presses anything would
+# press it on traffic the team is waiting on. So a walk carrying a `click` is
+# REFUSED against a live base, and the guard is here rather than in the walk
+# author's memory.
+#
+# It reads whatever ui/dist the daemon is serving, which is not necessarily this
+# checkout: `make deploy` publishes the UI separately. The run records the version
+# the daemon reports, so a run against a stale dashboard is identifiable later.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+WALK="is-my-box-working"
+HEADED=0
+BASE="${CORRALLM_UX_BASE_DEFAULT:-http://127.0.0.1:8111}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --headed) HEADED=1 ;;
+    --base) shift; BASE="${1:-}" ;;
+    --base=*) BASE="${1#--base=}" ;;
+    --list)
+      echo "walks:";     ls ux/walks     2>/dev/null | sed 's/\.json$//;s/^/  /'
+      echo "scenarios:"; ls ux/scenarios 2>/dev/null | sed 's/\.md$//;s/^/  /'
+      echo "constant:  ux/lenny.md (canon LEN-1 — never edited to suit a run)"
+      echo "standard:  ux/obviousness.md"
+      exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -*) echo "bin/ux: unknown option $1" >&2; exit 2 ;;
+    *) WALK="$1" ;;
+  esac
+  shift
+done
+
+die() { echo "bin/ux: $*" >&2; exit 1; }
+
+WALKFILE="ux/walks/$WALK.json"
+[ -f "$WALKFILE" ] || die "no such walk: $WALKFILE (bin/ux --list)"
+
+command -v node >/dev/null || die "node is not on PATH"
+command -v curl >/dev/null || die "curl is not on PATH"
+
+# THE READ-ONLY GUARD. A live base serves other people; a step that presses
+# something presses it on their requests. Refuse before the browser starts, not
+# after the button is gone.
+if node -e 'const w=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(w.steps.some(s=>s.click)?0:1)' "$WALKFILE"; then
+  die "$WALK has a step that presses a control, and $BASE is a live daemon.
+       A press here reaches requests somebody is waiting on. Point --base at a
+       throwaway daemon and remove this guard deliberately, or drop the click."
+fi
+
+# Playwright is resolved rather than depended on: it lives outside this tree and
+# adding it to ui/package.json would put a browser download in every clone's
+# install path.
+PW="$(node -e 'try{console.log(require.resolve("playwright"))}catch(e){}' 2>/dev/null || true)"
+if [ -z "$PW" ]; then
+  PW_DIR="$(find "$HOME/.npm/_npx" -maxdepth 4 -type d -name playwright 2>/dev/null | head -1 || true)"
+  [ -n "$PW_DIR" ] || die "playwright is not resolvable. Run: npx playwright@1.62.1 --version"
+  PW="$(node -e "console.log(require.resolve('playwright',{paths:['$(dirname "$PW_DIR")']}))" 2>/dev/null || true)"
+  [ -n "$PW" ] || die "found playwright at $PW_DIR but could not resolve its entry point"
+fi
+
+CHROME=""
+for c in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+  [ -x "$c" ] && { CHROME="$c"; break; }
+done
+
+HEALTH="$(curl -sf -m 5 "$BASE/health" || true)"
+[ -n "$HEALTH" ] || die "no daemon answering at $BASE/health"
+VERSION="$(printf '%s' "$HEALTH" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).version||"")}catch{console.log("")}})')"
+
+# THE TOKEN COMES OFF DISK, NEVER OFF THE COMMAND LINE. /health reports the path
+# it loaded (to callers on the server itself), which follows --home; a hardcoded
+# ~/.corrallm would be wrong on any install that moved it.
+TOKEN=""
+if printf '%s' "$HEALTH" | grep -q '"insecure":true'; then
+  echo "bin/ux: $BASE is --insecure — no token needed" >&2
+else
+  TOKPATH="$(printf '%s' "$HEALTH" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).tokenPath||"")}catch{console.log("")}})')"
+  [ -n "$TOKPATH" ] || TOKPATH="$HOME/.corrallm/admin.token"
+  [ -r "$TOKPATH" ] || die "cannot read the admin token at $TOKPATH — run this on the box that serves $BASE"
+  TOKEN="$(tr -d '[:space:]' < "$TOKPATH")"
+  [ -n "$TOKEN" ] || die "the admin token at $TOKPATH is empty"
+fi
+
+# THE WALK NAMES ITS MODEL, and a walk that photographs a 404 measures nothing.
+# Named literally in the walk rather than picked off the API, so two runs land on
+# the same page (canon LEN-8) — and checked here, so a renamed model is an error
+# with a name on it instead of nine screenshots of "not found".
+MODEL="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).model||"")' "$WALKFILE")"
+if [ -n "$MODEL" ]; then
+  AUTH=(); [ -n "$TOKEN" ] && AUTH=(-H "Authorization: Bearer $TOKEN")
+  curl -sf -m 10 "${AUTH[@]}" "$BASE/api/v1/overview" \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s).models||[];process.exit(m.some(x=>x.name===process.argv[1])?0:1)})' "$MODEL" \
+    || die "this daemon serves no model called \"$MODEL\" — update model in $WALKFILE"
+fi
+
+OUT="tmp/ux-run-$WALK-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$OUT"
+
+# The token reaches node through the ENVIRONMENT, never argv: argv is visible in
+# `ps` to every process on the box.
+CORRALLM_UX_PLAYWRIGHT="$PW" \
+CORRALLM_UX_CHROME="$CHROME" \
+CORRALLM_UX_TOKEN="$TOKEN" \
+CORRALLM_UX_BASE="$BASE" \
+CORRALLM_UX_MODEL="$MODEL" \
+CORRALLM_UX_VERSION="$VERSION" \
+CORRALLM_UX_WALK="$WALKFILE" \
+CORRALLM_UX_OUT="$OUT" \
+CORRALLM_UX_HEADED="$HEADED" \
+node bin/ux.mjs
+
+cat <<EOF
+
+bin/ux: $OUT   ($BASE, daemon version ${VERSION:-unknown})
+
+  Hand that directory to the scoped evaluator and nothing else:
+
+      Agent(subagent_type: "lenny",
+            prompt: "Evaluate the run in $OUT. Read BRIEF.md first.")
+
+  The standard it scores against is ux/obviousness.md.
+EOF

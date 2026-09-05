@@ -1,0 +1,55 @@
+{
+  "name": "is-my-box-working",
+  "scenario": "is-my-box-working",
+  "model": "local-Qwen3.8-27B",
+  "goal": "Find out whether this machine is broken, whether it is something I did, and whether it will come right on its own — and if not, what I do about it.",
+  "note": "Read-only. Every step arrives at a page and looks; nothing is pressed, because this walk runs against the live daemon serving the team (bin/ux refuses a walk with a click step against a live base).",
+  "steps": [
+    {
+      "name": "the-front-door",
+      "promise": "Somebody who reaches this machine can tell what it is and how to get in.",
+      "anon": true,
+      "goto": "/"
+    },
+    {
+      "name": "is-anything-wrong",
+      "promise": "The first screen after signing in says whether the box is serving, struggling or stopped.",
+      "goto": "/"
+    },
+    {
+      "name": "what-my-machines-are-doing",
+      "promise": "I can see which machines are attached and tell a busy one from a broken one.",
+      "goto": "/hosts"
+    },
+    {
+      "name": "what-just-happened",
+      "promise": "I can see the requests that just ran and tell a normal one from a bad one.",
+      "goto": "/activity"
+    },
+    {
+      "name": "the-model-my-team-uses",
+      "promise": "I can see whether the model my team points at is up, healthy, and what it is doing.",
+      "goto": "/m/$MODEL"
+    },
+    {
+      "name": "was-it-slow-here",
+      "promise": "I can see this one model's traffic and tell whether the slowness is here.",
+      "goto": "/m/$MODEL?tab=usage"
+    },
+    {
+      "name": "who-is-using-it",
+      "promise": "I can see who used what, and whether one caller is crowding out the rest.",
+      "goto": "/usage"
+    },
+    {
+      "name": "am-i-about-to-run-out",
+      "promise": "I can see what is left before something stops working, and when it resets.",
+      "goto": "/quota"
+    },
+    {
+      "name": "did-something-change",
+      "promise": "I can see what changed on this box and when, so I can tell whether this is my doing.",
+      "goto": "/history"
+    }
+  ]
+}
