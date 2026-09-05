@@ -68,7 +68,7 @@ func TestEscalatedRequestIsServedAndAttributedToTheBaseKey(t *testing.T) {
 	if rec := sendAs(t, r, "sk-aw4"); rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	rows, err := st.RollupByKey(0)
+	rows, err := st.RollupByKey(store.Window{})
 	if err != nil {
 		t.Fatalf("rollup: %v", err)
 	}

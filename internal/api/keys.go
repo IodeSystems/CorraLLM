@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"sort"
 	"time"
+
+	"github.com/iodesystems/corrallm/internal/store"
 )
 
 // The caller-key roster: who is talking to this box, what lane they land in,
@@ -119,7 +121,7 @@ func (h *Handlers) Keys(_ context.Context, in *KeysInput) (*KeysOutput, error) {
 		if in != nil && in.WindowHours > 0 {
 			sinceMS = time.Now().Add(-time.Duration(in.WindowHours) * time.Hour).UnixMilli()
 		}
-		if used, err := h.Store.RollupByKey(sinceMS); err == nil {
+		if used, err := h.Store.RollupByKey(store.Since(sinceMS)); err == nil {
 			for _, u := range used {
 				if u.Key == "" {
 					continue // unkeyed traffic is not a key to enroll

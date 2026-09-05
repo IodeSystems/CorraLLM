@@ -917,15 +917,18 @@ type RetryPromise struct {
 // like an instant return. Two hosts sharing one key still collapse into one
 // caller (the return is then the earliest of either), which is conservative: it
 // can report a return sooner than the promised caller made it, never later.
-func (s *Store) RetryPromises(sinceMS int64, limit int, key string) ([]RetryPromise, error) {
+func (s *Store) RetryPromises(w Window, limit int, key string) ([]RetryPromise, error) {
+	// Qualified: this query self-joins the activity table to find each
+	// rejection's return, so a bare `ts` is ambiguous.
+	wWhere, wArgs := w.where("a.ts")
 	q := `SELECT a.id, a.ts, a.key, a.source_ip, a.served, a.error, a.retry_after_ms,
 	             COALESCE((SELECT MIN(b.ts) FROM activity b
 	                        WHERE b.ts > a.ts
 	                          AND CASE WHEN a.key <> '' THEN b.key = a.key
 	                                   ELSE b.key = '' AND b.source_ip = a.source_ip END), 0)
 	      FROM activity a
-	      WHERE a.status = 429 AND a.retry_after_ms > 0 AND a.ts >= ?`
-	args := []any{sinceMS}
+	      WHERE a.status = 429 AND a.retry_after_ms > 0 AND ` + wWhere
+	args := append([]any{}, wArgs...)
 	if key != "" {
 		q += " AND a.key = ?"
 		args = append(args, key)
@@ -983,10 +986,11 @@ type Journey struct {
 //
 // Only tickets with a REJECTION in them are journeys: a request that carried a
 // caller-supplied id and sailed straight through is a request, not a story.
-func (s *Store) Journeys(sinceMS int64, limit int) ([]Journey, error) {
+func (s *Store) Journeys(w Window, limit int) ([]Journey, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	wWhere, wArgs := w.ts()
 	rows, err := s.db.Query(
 		`SELECT ticket,
 		        MAX(key),
@@ -996,11 +1000,11 @@ func (s *Store) Journeys(sinceMS int64, limit int) ([]Journey, error) {
 		        SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END),
 		        MAX(CASE WHEN status < 400 THEN 1 ELSE 0 END)
 		   FROM activity
-		  WHERE ticket <> '' AND ts >= ?
+		  WHERE ticket <> '' AND `+wWhere+`
 		  GROUP BY ticket
 		 HAVING SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END) > 0
 		  ORDER BY SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END) DESC, (MAX(ts) - MIN(ts)) DESC
-		  LIMIT ?`, sinceMS, limit)
+		  LIMIT ?`, append(append([]any{}, wArgs...), limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1040,12 +1044,13 @@ type QueueWait struct {
 // someone waited before being turned AWAY, which is a different quantity from
 // how long it takes to get in — mixing them would let a maxWait timeout masquerade
 // as a service time.
-func (s *Store) QueueWaitByModel(sinceMS int64) ([]QueueWait, error) {
+func (s *Store) QueueWaitByModel(w Window) ([]QueueWait, error) {
+	wWhere, wArgs := w.ts()
 	rows, err := s.db.Query(
 		`SELECT served, AVG(queued_ms), MAX(queued_ms), COUNT(*)
 		   FROM activity
-		  WHERE ts >= ? AND queued_ms > 0 AND status < 400
-		  GROUP BY served`, sinceMS)
+		  WHERE `+wWhere+` AND queued_ms > 0 AND status < 400
+		  GROUP BY served`, wArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1097,7 +1102,8 @@ func (s ServiceStat) CV() float64 {
 //
 // Only requests that were actually served count. A 429 never occupied a slot,
 // and a failed request's duration describes the failure, not the work.
-func (s *Store) ServiceStats(sinceMS int64, byKey bool) ([]ServiceStat, error) {
+func (s *Store) ServiceStats(w Window, byKey bool) ([]ServiceStat, error) {
+	wWhere, wArgs := w.ts()
 	group, keyCol := "served", "''"
 	if byKey {
 		group, keyCol = "served, key", "key"
@@ -1109,8 +1115,8 @@ func (s *Store) ServiceStats(sinceMS int64, byKey bool) ([]ServiceStat, error) {
 		       SQRT(MAX(AVG(svc*svc) - AVG(svc)*AVG(svc), 0)), MAX(svc), SUM(svc)
 		  FROM (SELECT served, key, (dwell_ms - queued_ms - load_ms) AS svc
 		          FROM activity
-		         WHERE ts >= ? AND status < 400 AND (dwell_ms - queued_ms - load_ms) > 0)
-		 GROUP BY `+group, sinceMS)
+		         WHERE `+wWhere+` AND status < 400 AND (dwell_ms - queued_ms - load_ms) > 0)
+		 GROUP BY `+group, wArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1130,9 +1136,10 @@ func (s *Store) ServiceStats(sinceMS int64, byKey bool) ([]ServiceStat, error) {
 // sinceMS. The row set for a utilization view: what the box has actually been
 // asked for lately, not the whole declared catalog (a model nobody called is not
 // "0% utilized", it is absent).
-func (s *Store) ModelsSeenSince(sinceMS int64) ([]string, error) {
+func (s *Store) ModelsSeenSince(w Window) ([]string, error) {
+	wWhere, wArgs := w.ts()
 	rows, err := s.db.Query(
-		`SELECT DISTINCT served FROM activity WHERE ts >= ? AND served <> ''`, sinceMS)
+		`SELECT DISTINCT served FROM activity WHERE `+wWhere+` AND served <> ''`, wArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1178,7 +1185,8 @@ type Rollup struct {
 // RollupByModel aggregates activity at or after sinceMS, grouped by served
 // model, ordered by cost (then request count) descending. sinceMS <= 0 covers
 // all records.
-func (s *Store) RollupByModel(sinceMS int64) ([]Rollup, error) {
+func (s *Store) RollupByModel(w Window) ([]Rollup, error) {
+	wWhere, wArgs := w.ts()
 	rows, err := s.db.Query(
 		`SELECT served,
 		        COUNT(*),
@@ -1189,9 +1197,9 @@ func (s *Store) RollupByModel(sinceMS int64) ([]Rollup, error) {
 		        COALESCE(SUM(cached_tokens), 0),
 		        SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END),
 		        COALESCE(AVG(NULLIF(prompt_per_sec, 0)), 0)
-		 FROM activity WHERE ts >= ?
+		 FROM activity WHERE `+wWhere+`
 		 GROUP BY served
-		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, sinceMS)
+		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, wArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1231,7 +1239,8 @@ type KeyRollup struct {
 // RollupByKey aggregates activity at or after sinceMS, grouped by caller key,
 // ordered by cost (then request count) descending. sinceMS <= 0 covers all
 // records. An empty key means an unkeyed caller.
-func (s *Store) RollupByKey(sinceMS int64) ([]KeyRollup, error) {
+func (s *Store) RollupByKey(w Window) ([]KeyRollup, error) {
+	wWhere, wArgs := w.ts()
 	rows, err := s.db.Query(
 		`SELECT key,
 		        COUNT(*),
@@ -1242,9 +1251,9 @@ func (s *Store) RollupByKey(sinceMS int64) ([]KeyRollup, error) {
 		        COALESCE(SUM(cost_usd), 0),
 		        COALESCE(SUM(cached_tokens), 0),
 		        SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END)
-		 FROM activity WHERE ts >= ?
+		 FROM activity WHERE `+wWhere+`
 		 GROUP BY key
-		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, sinceMS)
+		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, wArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1277,10 +1286,11 @@ type SeriesRow struct {
 // RollupSeries aggregates activity at or after sinceMS into time buckets of
 // bucketMS, grouped by (bucket, caller key), ordered by bucket then key. It is
 // the backing query for per-key time-series graphs.
-func (s *Store) RollupSeries(sinceMS, bucketMS int64) ([]SeriesRow, error) {
+func (s *Store) RollupSeries(w Window, bucketMS int64) ([]SeriesRow, error) {
 	if bucketMS <= 0 {
 		bucketMS = 3600_000 // default 1h
 	}
+	wWhere, wArgs := w.ts()
 	rows, err := s.db.Query(
 		`SELECT (ts / ?) * ?      AS bucket,
 		        key,
@@ -1291,9 +1301,9 @@ func (s *Store) RollupSeries(sinceMS, bucketMS int64) ([]SeriesRow, error) {
 		        COALESCE(SUM(cost_usd), 0),
 		        COALESCE(SUM(queued_ms), 0),
 		        SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END)
-		 FROM activity WHERE ts >= ?
+		 FROM activity WHERE `+wWhere+`
 		 GROUP BY bucket, key
-		 ORDER BY bucket, key`, bucketMS, bucketMS, sinceMS)
+		 ORDER BY bucket, key`, append([]any{bucketMS, bucketMS}, wArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1324,14 +1334,15 @@ type SeriesByModelRow struct {
 // RollupSeriesByModel aggregates activity into time buckets grouped by served
 // model. A non-empty key narrows to one caller — the same chart then answers
 // "what does THIS caller spend it on".
-func (s *Store) RollupSeriesByModel(sinceMS, bucketMS int64, key string) ([]SeriesByModelRow, error) {
+func (s *Store) RollupSeriesByModel(w Window, bucketMS int64, key string) ([]SeriesByModelRow, error) {
 	if bucketMS <= 0 {
 		bucketMS = 3600_000
 	}
+	wWhere, wArgs := w.ts()
 	q := `SELECT (ts / ?) * ? AS bucket, served, COUNT(*),
 	             COALESCE(SUM(dwell_ms), 0), COALESCE(SUM(cost_usd), 0)
-	        FROM activity WHERE ts >= ?`
-	args := []any{bucketMS, bucketMS, sinceMS}
+	        FROM activity WHERE ` + wWhere
+	args := append([]any{bucketMS, bucketMS}, wArgs...)
 	if key != "" {
 		q += " AND key = ?"
 		args = append(args, key)
@@ -1401,16 +1412,17 @@ type LaneDepthRow struct {
 
 // LaneDepthSeries buckets the lane samples at/after sinceMS into bucketMS
 // windows, reporting mean active/waiting and peak waiting per (bucket, group).
-func (s *Store) LaneDepthSeries(sinceMS, bucketMS int64) ([]LaneDepthRow, error) {
+func (s *Store) LaneDepthSeries(w Window, bucketMS int64) ([]LaneDepthRow, error) {
 	if bucketMS <= 0 {
 		bucketMS = 3600_000
 	}
+	wWhere, wArgs := w.ts()
 	rows, err := s.db.Query(
 		`SELECT (ts / ?) * ? AS bucket, grp,
 		        AVG(active), AVG(waiting), MAX(waiting)
-		 FROM lane_samples WHERE ts >= ?
+		 FROM lane_samples WHERE `+wWhere+`
 		 GROUP BY bucket, grp
-		 ORDER BY bucket, grp`, bucketMS, bucketMS, sinceMS)
+		 ORDER BY bucket, grp`, append([]any{bucketMS, bucketMS}, wArgs...)...)
 	if err != nil {
 		return nil, err
 	}

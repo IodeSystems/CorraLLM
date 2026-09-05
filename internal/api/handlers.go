@@ -377,7 +377,7 @@ func (h *Handlers) Journeys(_ context.Context, in *JourneysInput) (*JourneysOutp
 	if h.Store == nil {
 		return out, nil
 	}
-	rows, err := h.Store.Journeys(time.Now().UnixMilli()-int64(minutes)*60_000, limit)
+	rows, err := h.Store.Journeys(store.Since(time.Now().UnixMilli()-int64(minutes)*60_000), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -411,7 +411,7 @@ func (h *Handlers) RetryPromises(_ context.Context, in *RetryPromisesInput) (*Re
 		minutes = 60
 	}
 	now := time.Now().UnixMilli()
-	rows, err := h.Store.RetryPromises(now-int64(minutes)*60_000, limit, in.Key)
+	rows, err := h.Store.RetryPromises(store.Since(now-int64(minutes)*60_000), limit, in.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +552,7 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 
 	// Row set: everything asked for in the window. A model nobody called is not
 	// "0% utilized", it is absent.
-	seen, err := h.Store.ModelsSeenSince(since)
+	seen, err := h.Store.ModelsSeenSince(store.Since(since))
 	if err != nil {
 		return nil, err
 	}
@@ -666,7 +666,7 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 	}
 
 	// Measured queue wait.
-	waits, err := h.Store.QueueWaitByModel(since)
+	waits, err := h.Store.QueueWaitByModel(store.Since(since))
 	if err != nil {
 		return nil, err
 	}
@@ -680,7 +680,7 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 	// theoretical third opinion beside est (what the scheduler predicts) and real
 	// (what callers measured) — produced from the distribution rather than from
 	// either mechanism, so agreement between any two of them means something.
-	svc, err := h.Store.ServiceStats(since, false)
+	svc, err := h.Store.ServiceStats(store.Since(since), false)
 	if err != nil {
 		return nil, err
 	}
@@ -719,7 +719,7 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 	}
 
 	// Promise outcomes, classified by the same function the promises panel uses.
-	promises, err := h.Store.RetryPromises(since, 2000, "")
+	promises, err := h.Store.RetryPromises(store.Since(since), 2000, "")
 	if err != nil {
 		return nil, err
 	}
@@ -835,7 +835,7 @@ func (h *Handlers) ServiceProfiles(_ context.Context, in *ServiceProfilesInput) 
 	}
 	since := time.Now().UnixMilli() - int64(minutes)*60_000
 
-	priors, err := h.Store.ServiceStats(since, false)
+	priors, err := h.Store.ServiceStats(store.Since(since), false)
 	if err != nil {
 		return nil, err
 	}
@@ -843,7 +843,7 @@ func (h *Handlers) ServiceProfiles(_ context.Context, in *ServiceProfilesInput) 
 	for _, p := range priors {
 		prior[p.Served] = p
 	}
-	perKey, err := h.Store.ServiceStats(since, true)
+	perKey, err := h.Store.ServiceStats(store.Since(since), true)
 	if err != nil {
 		return nil, err
 	}
@@ -1078,7 +1078,7 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 	if in.WindowHours > 0 {
 		sinceMS = time.Now().Add(-time.Duration(in.WindowHours) * time.Hour).UnixMilli()
 	}
-	rows, err := h.Store.RollupByModel(sinceMS)
+	rows, err := h.Store.RollupByModel(store.Since(sinceMS))
 	if err != nil {
 		return nil, err
 	}
@@ -1155,7 +1155,7 @@ func (h *Handlers) UsageByKey(_ context.Context, in *UsageByKeyInput) (*UsageByK
 	if in.WindowHours > 0 {
 		sinceMS = time.Now().Add(-time.Duration(in.WindowHours) * time.Hour).UnixMilli()
 	}
-	rows, err := h.Store.RollupByKey(sinceMS)
+	rows, err := h.Store.RollupByKey(store.Since(sinceMS))
 	if err != nil {
 		return nil, err
 	}
@@ -1270,7 +1270,7 @@ type UsageSeriesByModelOutput struct {
 // scoped to one caller — the "on what" axis to UsageSeries's "by whom".
 func (h *Handlers) UsageSeriesByModel(_ context.Context, in *UsageSeriesByModelInput) (*UsageSeriesByModelOutput, error) {
 	buckets, index, bucketMS, sinceMS := seriesAxis(in.WindowHours, in.BucketMinutes, time.Now().UnixMilli())
-	rows, err := h.Store.RollupSeriesByModel(sinceMS, bucketMS, in.Key)
+	rows, err := h.Store.RollupSeriesByModel(store.Since(sinceMS), bucketMS, in.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -1318,7 +1318,7 @@ func (h *Handlers) UsageSeriesByModel(_ context.Context, in *UsageSeriesByModelI
 // Points align to the shared Buckets axis.
 func (h *Handlers) UsageSeries(_ context.Context, in *UsageSeriesInput) (*UsageSeriesOutput, error) {
 	buckets, index, bucketMS, sinceMS := seriesAxis(in.WindowHours, in.BucketMinutes, time.Now().UnixMilli())
-	rows, err := h.Store.RollupSeries(sinceMS, bucketMS)
+	rows, err := h.Store.RollupSeries(store.Since(sinceMS), bucketMS)
 	if err != nil {
 		return nil, err
 	}
@@ -1453,7 +1453,7 @@ func (h *Handlers) UsageSeriesByGroup(_ context.Context, in *UsageSeriesInput) (
 		buckets = append(buckets, b)
 	}
 
-	rows, err := h.Store.RollupSeries(now-windowMS, bucketMS)
+	rows, err := h.Store.RollupSeries(store.Since(now-windowMS), bucketMS)
 	if err != nil {
 		return nil, err
 	}
@@ -1547,7 +1547,7 @@ func (h *Handlers) QueueDepth(_ context.Context, in *UsageSeriesInput) (*QueueDe
 		buckets = append(buckets, b)
 	}
 
-	rows, err := h.Store.LaneDepthSeries(now-windowMS, bucketMS)
+	rows, err := h.Store.LaneDepthSeries(store.Since(now-windowMS), bucketMS)
 	if err != nil {
 		return nil, err
 	}
@@ -1973,8 +1973,8 @@ type GroupDef struct {
 
 // KeyDef maps a caller key to its group.
 type KeyDef struct {
-	Key   string `json:"key" doc:"Caller key."`
-	Group string `json:"group" doc:"Priority group it resolves to when it asks for nothing."`
+	Key   string   `json:"key" doc:"Caller key."`
+	Group string   `json:"group" doc:"Priority group it resolves to when it asks for nothing."`
 	Allow []string `json:"allow,omitempty" doc:"Priority groups this key may escalate into via key:group."`
 }
 

@@ -95,7 +95,7 @@ func TestRollupByModel(t *testing.T) {
 	}
 
 	// Cutoff at ts=100 excludes "old"; pricey outranks cheap by cost.
-	got, err := st.RollupByModel(100)
+	got, err := st.RollupByModel(Since(100))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestRollupByModel(t *testing.T) {
 	}
 
 	// sinceMS=0 includes everything.
-	all, err := st.RollupByModel(0)
+	all, err := st.RollupByModel(Window{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestRollupByKey(t *testing.T) {
 		}
 	}
 
-	got, err := st.RollupByKey(0)
+	got, err := st.RollupByKey(Window{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestRollupSeriesQueueMetrics(t *testing.T) {
 	}
 
 	// One wide bucket covering all three.
-	got, err := st.RollupSeries(0, 3_600_000)
+	got, err := st.RollupSeries(Window{}, 3_600_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestLaneSamples(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := st.LaneDepthSeries(0, 3_600_000)
+	got, err := st.LaneDepthSeries(Window{}, 3_600_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestLaneSamples(t *testing.T) {
 	if err := st.PruneLaneSamples(5000); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := st.LaneDepthSeries(0, 3_600_000); len(got) != 0 {
+	if got, _ := st.LaneDepthSeries(Window{}, 3_600_000); len(got) != 0 {
 		t.Errorf("after prune want 0 rows, got %d", len(got))
 	}
 }

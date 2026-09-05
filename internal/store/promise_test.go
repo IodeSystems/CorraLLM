@@ -36,7 +36,7 @@ func TestRetryPromises(t *testing.T) {
 		}
 	}
 
-	got, err := st.RetryPromises(0, 50, "")
+	got, err := st.RetryPromises(Window{}, 50, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestRetryPromises(t *testing.T) {
 	}
 
 	// The key filter narrows to one caller (the per-key page).
-	one, err := st.RetryPromises(0, 50, "bob")
+	one, err := st.RetryPromises(Window{}, 50, "bob")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestRetryPromises(t *testing.T) {
 	}
 
 	// sinceMS bounds the window: carol's promise is the only one at/after +200.
-	recent, err := st.RetryPromises(base+200, 50, "")
+	recent, err := st.RetryPromises(Since(base+200), 50, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestRetryPromisesUnkeyed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := st.RetryPromises(0, 50, "")
+	got, err := st.RetryPromises(Window{}, 50, "")
 	if err != nil {
 		t.Fatal(err)
 	}
