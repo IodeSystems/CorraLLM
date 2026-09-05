@@ -99,3 +99,14 @@ mix first. One caller against one single-slot model is not a sample.
 *Nothing else is open.* The six decisions this file started with were resolved on 2026-08-24
 against the running system, and the boot-script problem found during that pass was fixed the
 same day. Each answer and its evidence sits in the plan item that needed it.
+
+---
+
+## 3. ❓ P30 — what does a CALLER see?
+
+**Owner:** you. **Gates:** nothing today; it is the scope boundary of P30.
+**Status:** open, deliberately out of P30's scope until you say otherwise.
+
+A person handed an API key currently gets the operator's dashboard, `Unload` and `Restore`
+included. Either they get a filtered view of the same pages, or a separate surface. Bigger than a
+reorganization, and the Lenny scenario for it is already written up in `icebox.md`.

@@ -58,6 +58,21 @@ CLI to do it.
 
 ---
 
+## A second Lenny scenario — the consumer handed a key
+
+**What.** A second scenario and walk beside `is-my-box-working`: the developer who was given an
+API key and a URL and configured nothing. Same Lenny, different job — the front door, Keys, a key's
+own page, Usage, Quota.
+
+**Why it is parked.** Nothing active needs it, and one scenario's fix queue (`plan.md` §6) is
+enough work to be going on with.
+
+**What would make it worth starting.** The moment anyone doubts the constant. caselit's lesson:
+until two scenarios walk the SAME screens and fail DIFFERENTLY, `ux/lenny.md` might be decoration
+and there is no way to tell — its second scenario had the same control refused by two people for
+opposite reasons. Also worth it before any claim that a fix "worked": one scenario cannot show
+whether the fix or the persona moved.
+
 ## Optional extensions — improve the product; nothing active requires them
 
 *(Relocated from `plan.md` §7 during the 2026-08-24 archive pass. Pull in opportunistically.)*

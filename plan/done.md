@@ -2304,3 +2304,44 @@ Struck items are resolved; the ones still live were moved to `plan/plan.md` §7.
   (nomic: single pass → proc 0.000002, gen 0). Verified live: chat ≈ $0.0000068, embed ≈ $0.00000007.
   Re-measure if hardware/models change. *(Field name still says "WattsPerToken" but is Wh/token —
   cosmetic rename deferred.)*
+
+---
+
+# UX verification
+
+## ✅ Lenny — the constant user, wired up and run once (2026-09-04)
+
+The house UX method (`~/doc/patterns/lenny.md`, canon LEN-1..LEN-10) now has a harness here.
+Reference implementation is caselit; this is the port.
+
+| what | where |
+|---|---|
+| the constant — capability, familiarity, temperament | `ux/lenny.md` (byte-identical to caselit's; **never edited to suit a run**) |
+| what varies — role and an external goal | `ux/scenarios/is-my-box-working.md` |
+| the walk, each step named for the promise it keeps | `ux/walks/is-my-box-working.json` |
+| this project's standard, cite-able by a finding | `ux/obviousness.md` (OB-1..OB-10) |
+| the runner | `bin/ux` + `bin/ux.mjs` → `tmp/ux-run-<walk>-<stamp>/` |
+| the scoped evaluator | `.claude/agents/lenny.md` (`tools: Read`) |
+
+**It walks the LIVE daemon, read-only, and that is the deliberate trade.** The dashboard is empty
+without models, attached hosts and traffic, and a person only ever opens it on a box that has all
+three (LEN-4). A seeded copy would be reproducible and would also be an install nobody has used.
+The price: a run photographs the box as it was, so `ACTIONS.md` records base, daemon version and
+timestamp. **A walk carrying a `click` is REFUSED against a live base** — a press reaches requests
+somebody is waiting on — and the guard is in `bin/ux`, not in the walk author's memory.
+
+**Two traps paid for while building it:**
+
+- `waitUntil: 'networkidle'` times out on every signed-in page. The live event stream never idles,
+  so the run would have reported blank screens the person never saw. `domcontentloaded` + a fixed
+  settle is what actually waits for React.
+- The capture must NOT read `aria-label`. Doing so puts a word on Lenny's screen that his screen
+  does not have — the nav rail's labels live in tooltips and he does not hover. It is captured
+  separately and marked unread, which is how OB-10 became the most repeated finding of run 1.
+
+**Run 1 (`1fb3df6-dirty`, 9 steps, live box1):** verdict **"No. Not on my own, anyway."** Report
+and fix queue in `plan.md` §6. Composition, so run 2 is comparable: 8 zeros/ones on *what is being
+asked of me*, one screen scoring 3s (the sign-in), and three sentences named as good —
+"Nobody has been turned away in the last 60 minutes", "Nobody has had to work for an answer in the
+last 60 minutes", and the quota page's "Counts are a snapshot from the last call — observed N ago
+— not a live tick."

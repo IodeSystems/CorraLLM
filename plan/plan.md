@@ -29,6 +29,9 @@ config in SQLite (P26), tickets (P28), and the box1 thermal envelope (P19). Full
 **Two decisions need you** — [`open-questions.md`](open-questions.md): the agent lease
 self-reap policy, and whether an honest wait estimate is even wanted. Neither blocks today.
 
+**A first Lenny run landed 2026-09-04** — the constant user, walking the dashboard as the person
+who owns the box. Verdict: *"No. Not on my own, anyway."* Harness in `ux/`, fix queue in §6.
+
 **Open work is §6**, and it is smaller than it looks: the `ramUsage` placement/size split left
 over from P18, P21c budget granularity, the Q8_0-referenced KLD sweep, streaming the trial
 transcript + the add-model form, wait-estimate accuracy, `host.Remote` for multi-node, and one
@@ -309,6 +312,100 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◻ P30 — information architecture: one page, one question
+
+**The design doc is [`plan/p30-information-architecture.md`](p30-information-architecture.md)**;
+it holds the evidence, the current→proposed map and the sequencing. Summary: pages are named
+after the data they render, not the questions people arrive with, so a question is answered in
+pieces on four pages and no page answers one completely. Ten nav entries become six plus Bench.
+
+Measured, not asserted: a caller's cost renders on four pages; every panel carries its own time
+window and there is no page-level control (60 min · 24 h · 6h/24h/7d · newest-100); and the word
+*lane* names two different objects on screen at once.
+
+**next** — phase B: Traffic. **Decision resolved 2026-09-05 — merge `/activity` and `/usage`
+behind one time axis**, the only phase with backend work (the activity and rollup queries take an
+explicit from/to instead of each panel's constant). Phase A ✅ 2026-09-05: the home screen leads
+with a computed state sentence and a "What needs looking at" panel, the memory ledger moved to
+`/hosts`, in-flight deduped to one home.
+**risks** — merging `/activity` and `/usage` (phase B) is the largest single change and needs
+decision 4 first. Old URLs must redirect, not 404 — links live in notes and chat history; the repo
+already does this for `/config` and `/model`. A vocabulary pass is where vocabulary bugs are born.
+**blocking decisions** — one left, `open-questions.md` §3: what a CALLER (as opposed to an
+operator) is shown at all; it is P30's scope boundary and gates nothing today. Two closed: the
+lane/group vocabulary was never a decision — §3 of this plan settled it at P14 and the UI had
+diverged (P30 §5, header fixed) — and Traffic merges (2026-09-05).
+**optional extensions** — a caller-facing surface (decision 5); a second Lenny scenario
+(`icebox.md`).
+
+### ◻ The first Lenny run's fix queue — 2026-09-04
+
+Harness, method and the trade it makes: `done.md` § UX verification. Run:
+`tmp/ux-run-is-my-box-working-20260904-210034` (live box1, `1fb3df6-dirty`, read-only).
+Scenario: the person who OWNS the box, did not configure it, and whose team says it has been
+slow since 09:00. **Verdict: "No. Not on my own, anyway."** Report the composition against this
+list on run 2, not the verdict — the verdict is sticky and progress reads as none without it.
+
+**Most of this queue is now the tail of a structural problem, not the problem.** The
+inventory of all 18 routes (2026-09-04) found that pages are named after the data they
+render rather than the questions people bring — see
+[`plan/p30-information-architecture.md`](p30-information-architecture.md), which is where
+items 1, 3, 4, 5, 6, 9 and 10 below actually get fixed. Items 2, 7 and 8 stand on their own.
+**Done so far:** item 1 — the nav rail shows its labels (`ui/src/routes/__root.tsx`), the
+collapse kept and remembered. Items 4 and 5, and the half of 9 that is "nothing tells me what is
+wrong" — P30 phase A (the state sentence and the "What needs looking at" panel). The `Lane`
+column that was really a group — P30 §5.
+
+Worst first. Every one of the top group is a 0 or 1 on *what is being asked of me*.
+
+1. **The nav is eleven unlabeled icons on eight of nine screens (OB-10).** The rail is icon-only
+   and its labels are tooltips; he does not hover, so he did not know what most of the product
+   was for, on every screen, for the whole run. Most repeated finding of the run and the cheapest
+   to fix: show the labels, or stop calling a tooltip a label.
+2. **A model's Info tab is a shell script (OB-3).** `local-Qwen3.8-27B` — the model his team
+   points at — leads with `# QUANT LADDER, chosen at spawn from ACTUAL free VRAM.`,
+   `GPU=GPU-ee90af07-…`, `exec ${tool:llama.cpp}/llama-server`. He does not write configuration
+   by hand. The operator's script is the gloss, not the page.
+3. **`Dwell 471m 16s` reads as a duration (OB-4).** It is a 24-hour sum with no per-request
+   average beside it; the window lives in a section heading he had already passed.
+4. **The one sentence on arrival is `ok · 1fb3df6-dirty` (OB-5, OB-7).** "ok" is not
+   serving/struggling/stopped, and a git hash is the most prominent thing on the Overview.
+5. **A host's fault is a stack trace (OB-6).** `no agent endpoint answered for server
+   "carlsmacbookpro": … dial tcp 192.168.1.248:6503: connect: connection refused`. It does not
+   say whose problem it is or what to do. *(And the host really is down — see §7.)*
+6. **Utilization headers are our words, not his (OB-3).** `CV`, `EST. WAIT`, `REAL WAIT`,
+   `THEORY`, and `depth 8 unreachable` beside the model name.
+7. **Usage answers "which key", he asked "which person".** `sk-aw4` and `(unkeyed)` — he has four
+   people and cannot map either to one. Also `~4d 22h saved`: saved against what?
+8. **`Unload` and `Restore` carry no consequence (OB-2).** Both reach live work — one the model
+   four people are using, one a config from a month ago — and neither says so on the control.
+   He refused both, which is the finding; the buttons are fine.
+9. **Nothing lets him get back to 09:00.** Recent activity showed 20:36–20:58 with no date or
+   time filter he could see, and the trouble started this morning.
+10. **Config history names no author.** 26 revisions, all `edited through the dashboard`; the
+    promise was "so I can tell whether this is my doing" and it cannot be told. No OB rule fits —
+    a rule saying *a change says who made it* is the one this run says should exist.
+
+**Keep, and do not let a fix remove them:** "Nobody has been turned away in the last 60 minutes",
+"Nobody has had to work for an answer in the last 60 minutes", and the quota page's "Counts are a
+snapshot from the last call — observed N ago — not a live tick." He named all three unprompted.
+
+**next** — P30 phase A (the home screen answers its question), which carries item 4 with it.
+Item 1 is done. Item 8's consequence lines are independent of P30 and can land any time.
+**risks** — a vocabulary fix is the easiest place to introduce a vocabulary bug (canon: name the
+OBJECT; a shared word is only safe when the objects are the same). Fixing fear exposes the next
+problem and scores may go DOWN on the same step — that is the method working, not a regression.
+**blocking decisions** — none for this queue; **P30 §8 has three that are yours** — the
+lane/group vocabulary, whether Traffic is one page or two, and what a caller (as opposed to an
+operator) is shown at all.
+**optional extensions** — a second scenario (the consumer handed a key) to prove the constant is
+real: until two scenarios walk the same screens and fail DIFFERENTLY, `ux/lenny.md` might be
+decoration and there is no way to tell. Filed in `icebox.md`.
+**assumption made** — step 08 pointed him at `/quota`, which is the free-tier ledger, against a
+promise ("what is left before something stops working") that page never made. His finding there
+is partly this walk's doing. What survives it: **there is no screen that answers "what is my box
+about to run out of"**, and the walk should stop asking that page for it.
+
 ### ✅ Per-request priority group, bounded by the key (2026-08-31)
 
 Asked for by aw4, which is one caller with two very different kinds of traffic:
@@ -549,6 +646,16 @@ true and still costs something. Optional extensions and out-of-scope items live 
 [`plan/icebox.md`](icebox.md).
 
 ### Known gaps — shipped and live with these
+
+- **`/m/<name>/activity` is a route that can never render.** `ui/src/routes/m.$name.activity.tsx`
+  is a full page (the shared activity table, scoped to the model, with `?placement=` narrowing),
+  but `ModelConsole` renders no `<Outlet/>`, so the URL resolves and silently shows the parent's
+  Info tab instead. Nothing in the UI links to it. Found 2026-09-04 while building the Lenny walk:
+  the step captured a screen byte-identical to the previous one. Either place the outlet or delete
+  the file — a URL that answers with the wrong page is worse than a 404.
+- **`carlsmacbookpro`'s agent is unreachable** (`dial tcp 192.168.1.248:6503: connect: connection
+  refused`, observed 2026-09-04). The Hosts page shows it, in the daemon's own words. Same class as
+  the known macOS Local Network permission trap; unverified which it is this time.
 
 - **P6 known gaps:** (1) swap $ is charged to the load *trigger* only — not amortized across the
   coalesced batch; a load whose trigger loses the ctx race goes unbilled. (2) Over-budget with a
