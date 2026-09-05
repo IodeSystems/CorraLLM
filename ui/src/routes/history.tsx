@@ -162,7 +162,7 @@ export function HistoryPage() {
 
       <Panel
         title="Revisions"
-        subtitle="Every save records what the configuration became. Newest first."
+        subtitle="Every save records what the configuration became. Newest first. Restore replaces what is running now with an older version — it takes effect immediately, on whoever is using the box at that moment."
         badge={q.isFetching ? <CircularProgress size={14} /> : undefined}
         flush
       >

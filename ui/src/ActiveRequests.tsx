@@ -117,7 +117,14 @@ export function ActiveRequests() {
           label={rows.length}
         />
       }
-      subtitle={rows.length ? undefined : 'nothing in flight'}
+      // What Cancel costs, on the panel rather than on 30 identical buttons or in
+      // a tooltip nobody hovers: every Lenny run so far has left this control
+      // alone because the row does not say whose request it is ending.
+      subtitle={
+        rows.length
+          ? 'Requests being served right now. Cancel ends one for the caller waiting on it — they get an error, not a shorter answer.'
+          : 'nothing in flight'
+      }
       flush={rows.length > 0}
       dense={rows.length === 0}
     >

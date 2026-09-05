@@ -5,11 +5,11 @@ import {
   Alert,
   AlertTitle,
   AppBar,
+  Button,
   Box,
   Chip,
   CircularProgress,
   Drawer,
-  IconButton,
   List,
   ListItemButton,
   ListItemIcon,
@@ -228,14 +228,18 @@ function RootLayout() {
     <>
       <AppBar position="sticky" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
         <Toolbar variant="dense" sx={{ gap: 1.5, minHeight: BAR_H }}>
-          <IconButton
+          {/* THE BUTTON SAYS ITS OWN NAME. It was an unlabelled glyph whose only
+              text lived in aria-label, and three Lenny runs reported the same
+              thing on every screen: "a button with nothing on it". A label a
+              pointer has to find is not a label (OB-10). */}
+          <Button
             size="small"
-            edge="start"
-            aria-label="Toggle navigation"
             onClick={() => (desktop ? toggleRail() : setMobileOpen((v) => !v))}
+            startIcon={<MenuIcon fontSize="small" />}
+            sx={{ color: 'inherit', textTransform: 'none', minWidth: 0, px: 1 }}
           >
-            <MenuIcon fontSize="small" />
-          </IconButton>
+            Menu
+          </Button>
           <Typography variant="h6" sx={{ letterSpacing: '-0.02em' }}>
             corrallm
           </Typography>

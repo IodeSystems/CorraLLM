@@ -525,7 +525,20 @@ function InfoTab({
               </Box>
 
               {/* Controls act on THIS placement's process, which is why they are
-                  here and not on the model. */}
+                  here and not on the model.
+
+                  WHAT THEY COST, ABOVE THE GROUP AND IN WORDS. Three Lenny runs
+                  refused Unload and Probe, every time, for the same reason: the
+                  buttons say what they are, not what they do to the people using
+                  them. A tooltip does not reach him (he does not hover) and
+                  neither does a confirm dialog (it is behind the press he will
+                  not make) — canon LEN-9. So it goes here, once, above the row it
+                  describes, where it can be read without risking anything. */}
+              <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: C.textMuted }}>
+                {pl?.state === 'ready'
+                  ? 'Probe asks this backend what it can do — it keeps serving while it answers. Unload stops it: anything mid-answer on this box ends there, and the next request has to load it again.'
+                  : 'Probe asks this backend what it can do. Load starts it now instead of waiting for the next request — it takes the memory below.'}
+              </Typography>
               <Box sx={{ display: 'flex', gap: 1, mt: 1, flexWrap: 'wrap' }}>
                 <Button size="small" variant="outlined" onClick={() => probePlacement.mutate(name)}>
                   {probePlacement.isPending ? 'Probing…' : pl?.probed ? 'Re-probe' : 'Probe'}

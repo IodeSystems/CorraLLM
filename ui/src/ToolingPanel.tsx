@@ -58,6 +58,14 @@ const ToolingDoc = graphql(/* GraphQL */ `
   }
 `)
 
+// A 40-character commit hash was the loudest thing on its own card — bolder than
+// the tool's name and its status, and unreadable to anybody who is not going to
+// paste it into git (OB-7, Lenny run 3). A tool whose "version" IS its commit
+// still needs identifying, so it keeps the short form: enough to compare against
+// a pin, not enough to shout.
+const shortVersion = (v: string | null): string =>
+  v && /^[0-9a-f]{20,40}$/.test(v) ? v.slice(0, 9) : (v ?? '')
+
 export function ToolingPanel() {
   const qc = useQueryClient()
   // Which row's build the modal is for. The build itself is a single global
@@ -89,7 +97,10 @@ export function ToolingPanel() {
   return (
     <Panel
       title="Tooling"
-      subtitle="The programs that run the models. A version per host, and whether it is behind its pin."
+      // What the buttons cost, once, above the group — a tooltip does not reach
+      // somebody who does not hover, and Lenny has refused Rebuild every run
+      // because nothing said whether it takes the running model down with it.
+      subtitle="The programs that run the models. A version per host, and whether it is behind its pin. Rebuild compiles a new copy in the background — minutes of full-machine compile — and leaves anything already running alone; models pick it up the next time they start."
       badge={
         q.isFetching ? (
           <CircularProgress size={14} />
@@ -162,7 +173,7 @@ export function ToolingPanel() {
                       flexWrap: "wrap"
                     }}>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12.5 }}>
-                      {t.version}
+                      {shortVersion(t.version)}
                     </Typography>
                     <Tooltip
                       title={
