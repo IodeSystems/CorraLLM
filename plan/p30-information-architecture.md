@@ -2,9 +2,10 @@
 
 > Opened 2026-09-04, out of the first Lenny run (`plan.md` §6, harness in `done.md`
 > § UX verification) and a full inventory of all 18 dashboard routes.
-> **Status: ◐ A, B and C landed 2026-09-05; D partly done.** The nav is seven entries,
-> each named for a question. What is left of D is the vocabulary sweep (§5) — the
-> consequence lines it also covered have shipped.
+> **Status: ✅ A–D landed 2026-09-05.** Seven pages, each named for a question; one time
+> axis; consequence on every control that touches live work; the vocabulary sweep done.
+> What remains is not this plan's: the standing queue in `plan.md` §6, and the next
+> Lenny run.
 
 ## 0. The finding under the findings
 
@@ -183,11 +184,16 @@ Each phase is a shippable slice; the plan's Definition of done applies to each.
   Setup absorbed History and Quota — and Quota became **Provider budgets**, because "quota"
   is the word a person uses for "am I about to run out" and three runs went looking there
   for exactly that. Ten old addresses redirect.
-- **D — ◐ consequence lines shipped; vocabulary sweep open.** `Unload`, `Probe`, `Cancel`,
+- **D — ✅ consequence lines and the vocabulary sweep (2026-09-05).** `Unload`, `Probe`, `Cancel`,
   `Restore` and `Rebuild` now say what they cost, once, above the group, in text a person who
   does not hover can read. The menu button says "Menu". A tool version that is a commit shows
-  nine characters, not forty. What is left: the sweep of §5's rule — name the object, never a
-  bare "lane" — across every screen.
+  nine characters, not forty. The §5 sweep landed too: the caller side says "group"
+  throughout, the model side says "model lane" and says what one IS in words a person
+  already has. `Delete` and `Change`/`Unassign` — the two controls the first consequence pass
+  missed, both beside something live — were closed with the run-4 fixes, along with OB-11
+  (the answer comes before the explanation), `settings clash…` for `depth N unreachable`,
+  `every model here must declare its size` for `ramUsage required`, and a quality figure that
+  says what it ranks.
 
 **How we will know it worked:** Lenny run 2, same scenario, same walk — plus the consumer
 scenario from `icebox.md`, because until two scenarios walk the same screens and fail
