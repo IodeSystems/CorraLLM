@@ -49,8 +49,8 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/iodesystems/agentkit v0.6.0 h1:uHdrqTQzglu1rmv/6RA51u5jJ14oWjRx82siFuLzG3w=
 github.com/iodesystems/agentkit v0.6.0/go.mod h1:3YrLqwl305SCujUXQkim8INHf7y3kaXsqjaUUipGtks=
-github.com/iodesystems/gwag/v2 v2.0.0 h1:8V1CP8/67QYGlt5tc1MYGs5oS27rbcGFBXhdednyX9E=
-github.com/iodesystems/gwag/v2 v2.0.0/go.mod h1:HCkRQfgM9ohujc1lEwoyMWzUaq7fBw+T6bdPEDz93Ko=
+github.com/iodesystems/gwag/v2 v2.1.0 h1:Y7fBcpX9irvyo3Mb6VtxIbjEQCCua9j1MexD0SP+I9g=
+github.com/iodesystems/gwag/v2 v2.1.0/go.mod h1:rIS9cEjTNucbB1AI5UL9QNJkuXu7pJRsAJrmG4qYz+w=
 github.com/klauspost/compress v1.19.2 h1:hMRETovs/pu/dVWN7zIT1PGG8t509MwT6bO7XSi26R8=
 github.com/klauspost/compress v1.19.2/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
