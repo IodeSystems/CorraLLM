@@ -2,8 +2,9 @@
 
 > Opened 2026-09-04, out of the first Lenny run (`plan.md` §6, harness in `done.md`
 > § UX verification) and a full inventory of all 18 dashboard routes.
-> **Status: ◐ phases A and B landed 2026-09-05; C–D open.** What moved so far: the nav
-> rail's labels, the `Lane`→`Group` column header (§5), phase A and phase B (§6).
+> **Status: ◐ A, B and C landed 2026-09-05; D partly done.** The nav is seven entries,
+> each named for a question. What is left of D is the vocabulary sweep (§5) — the
+> consequence lines it also covered have shipped.
 
 ## 0. The finding under the findings
 
@@ -174,9 +175,19 @@ Each phase is a shippable slice; the plan's Definition of done applies to each.
   take an explicit from/to instead of each panel's constant, and every panel on the page obeys
   one control. Fixes "I cannot get back to 09:00" properly, and collapses the per-key and
   per-model numbers that today disagree because each is measured over a different window.
-- **C — Callers, Machines, Setup; nav to seven; old URLs redirect.**
-- **D — the vocabulary pass** (decision above), plus the consequence lines on `Unload`,
-  `Probe` and `Restore`, which are cheap and independent of all of the above.
+- **C — ✅ Callers, Machines, Setup, Models; nav to seven (2026-09-05).** The home screen
+  stopped being four pages: it is the state sentence, the faults behind it, and what is in
+  flight, and it says so on the page so the absence reads as a decision rather than a load
+  failure. Callers absorbed Groups (a key maps to exactly one group; the weight that decides
+  contention lives there). Machines absorbed Resident models, which phase B left homeless.
+  Setup absorbed History and Quota — and Quota became **Provider budgets**, because "quota"
+  is the word a person uses for "am I about to run out" and three runs went looking there
+  for exactly that. Ten old addresses redirect.
+- **D — ◐ consequence lines shipped; vocabulary sweep open.** `Unload`, `Probe`, `Cancel`,
+  `Restore` and `Rebuild` now say what they cost, once, above the group, in text a person who
+  does not hover can read. The menu button says "Menu". A tool version that is a commit shows
+  nine characters, not forty. What is left: the sweep of §5's rule — name the object, never a
+  bare "lane" — across every screen.
 
 **How we will know it worked:** Lenny run 2, same scenario, same walk — plus the consumer
 scenario from `icebox.md`, because until two scenarios walk the same screens and fail
