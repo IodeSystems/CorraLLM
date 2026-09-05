@@ -33,7 +33,7 @@ import { Loading } from '@/Loading'
  *
  * The reason this page exists rather than the Config page covering it: an
  * unassigned key was INVISIBLE. corrallm accepts any key and resolves an unknown
- * one to the fallback lane, so a caller nobody had ever thought about looked
+ * one to the fallback group, so a caller nobody had ever thought about looked
  * exactly like one deliberately placed there. Config can only show you what is
  * written down; this joins that with what has actually been seen, which is the
  * only way to manage keys on a box that mints them freely.
@@ -111,7 +111,7 @@ function Callers() {
       <Alert severity={data?.unknownAllowed ? 'info' : 'warning'}>
         {data?.unknownAllowed ? (
           <>
-            Unrecognized keys are <b>served</b>, in the <code>{data?.unknownGroup}</code> lane.
+            Unrecognized keys are <b>served</b>, in the <code>{data?.unknownGroup}</code> group.
             {unassigned > 0 && (
               <>
                 {' '}
@@ -137,7 +137,7 @@ function Callers() {
         // WHAT THE ROW BUTTONS COST, once above the group. They were explained in
         // tooltips, which reach nobody who does not hover — Lenny run 4 left both
         // alone on a key that had called "just now", for want of this sentence.
-        subtitle="Configured lanes, plus keys seen in traffic that nobody has assigned. Change moves a caller to another lane and Unassign drops it back to the fallback one — neither cuts anybody off, and a request already running is unaffected."
+        subtitle="Callers with a group, plus keys seen in traffic that nobody has assigned. Change moves a caller to another group and Unassign drops it back to the fallback one — neither cuts anybody off, and a request already running is unaffected."
         flush
       >
         <TableContainer>
@@ -180,7 +180,7 @@ function Callers() {
                       {k.recognized ? (
                         <Chip size="small" label={k.group} />
                       ) : (
-                        <Tooltip title="Nobody assigned this key. It is being served in the fallback lane because corrallm accepts any key, not because anyone chose this.">
+                        <Tooltip title="Nobody assigned this key. It is being served in the fallback group because corrallm accepts any key, not because anyone chose this.">
                           <Chip size="small" color="warning" label={`${k.group} (unassigned)`} />
                         </Tooltip>
                       )}

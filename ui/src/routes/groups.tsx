@@ -125,7 +125,7 @@ export function GroupPanels() {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <Panel
         title="Priority groups"
-        subtitle="Weighted fairshare lanes + live load. Click a row to edit it."
+        subtitle="Caller groups: the weight each one gets under contention, and what it is running now. Click a row to edit it."
         actions={
           <Button size="small" variant="outlined" onClick={() => setEditing(blankGroup())}>
             Add group
@@ -186,7 +186,7 @@ export function GroupPanels() {
 
       <Panel
         title="Reservations"
-        subtitle="Slots held free for a lane's headroom — short-lived, heartbeat-renewed, auto-expiring"
+        subtitle="Slots held free for a group's headroom — short-lived, heartbeat-renewed, auto-expiring"
         flush
       >
         <TableContainer>

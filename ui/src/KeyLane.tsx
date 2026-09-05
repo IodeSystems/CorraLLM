@@ -18,7 +18,10 @@ import { extractMessage } from '@/format'
 import { fmtInt } from '@/format'
 
 /**
- * Enroll / change / unassign a key's lane.
+ * Enroll / change / unassign a key's caller GROUP.
+ *
+ * Not "lane": a lane is an ordered fallback list over models (plan.md §3), and
+ * both objects are on screen at once. Name the object (P30 §5).
  *
  * Self-contained because two pages need it — the roster row and the per-key
  * page — and the interesting part is not the buttons but the invariants they
@@ -26,7 +29,7 @@ import { fmtInt } from '@/format'
  *
  *  - Weight lives on the GROUP. A key is a pointer to one, so this is a
  *    dropdown of configured groups, never free text: the server rejects an
- *    unknown group precisely because it would resolve to the fallback lane and
+ *    unknown group precisely because it would resolve to the fallback group and
  *    look like it worked.
  *  - "Unassign", never "Delete". corrallm accepts any key, so removing the
  *    entry drops the lane and the caller keeps working at the fallback weight.
@@ -120,7 +123,7 @@ export function KeyLaneActions({
           {recognized ? 'Change' : 'Enroll'}
         </Button>
         {recognized && (
-          <Tooltip title="Drop the lane assignment. The caller keeps working, in the fallback lane — this does not lock anyone out.">
+          <Tooltip title="Drop the group assignment. The caller keeps working, in the fallback group — this does not lock anyone out.">
             <Button
               size="small"
               color="warning"
@@ -134,7 +137,7 @@ export function KeyLaneActions({
       </Stack>
 
       <Dialog open={draft !== null} onClose={() => setDraft(null)} fullWidth maxWidth="sm">
-        <DialogTitle>Assign a lane</DialogTitle>
+        <DialogTitle>Assign a caller group</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <Typography variant="body2" sx={{
@@ -148,7 +151,7 @@ export function KeyLaneActions({
               label="Group"
               value={draft ?? ''}
               onChange={(e) => setDraft(e.target.value)}
-              helperText="Only configured groups. Assigning an unknown one is refused: it would resolve to the fallback lane and look like it worked."
+              helperText="Only configured groups. Assigning an unknown one is refused: it would resolve to the fallback group and look like it worked."
             >
               {groups.map((g) => (
                 <MenuItem key={g.name} value={g.name}>

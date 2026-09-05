@@ -92,7 +92,7 @@ function KeyDetail() {
                 {row.recognized ? (
                   <Chip size="small" label={row.group} />
                 ) : (
-                  <Tooltip title="Nobody assigned this key. It is being served in the fallback lane because corrallm accepts any key, not because anyone chose this.">
+                  <Tooltip title="Nobody assigned this key. It is being served in the fallback group because corrallm accepts any key, not because anyone chose this.">
                     <Chip size="small" color="warning" label={`${row.group} (unassigned)`} />
                   </Tooltip>
                 )}

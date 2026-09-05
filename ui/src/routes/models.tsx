@@ -1076,8 +1076,8 @@ function ModelsPage() {
       {/* Lanes: named ordered fallback lists over models. */}
       {lanes.length > 0 && (
         <Panel
-          title="Lanes"
-          subtitle="Requestable as a model id; tried left to right. Filled chips are contributed at runtime — a pool, a directory choice, or a selector — and are not in your config's member list."
+          title="Model lanes"
+          subtitle="A name a caller can ask for that stands for several models, tried left to right until one can serve. Filled chips are contributed at runtime — a pool, a directory choice, or a selector — and are not in your config's member list."
           flush
         >
           {lanes.map((l) => {

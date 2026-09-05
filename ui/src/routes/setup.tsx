@@ -871,8 +871,8 @@ function SetupPage() {
           unattached providers — which is three places to look for one thing. */}
 
       <Panel
-        title={`Lanes (${lanes.length})`}
-        subtitle="Named fallback lists. Requesting a lane allows substitution; requesting a model pins it."
+        title={`Model lanes (${lanes.length})`}
+        subtitle="A name a caller can ask for that stands for several models, tried in order until one can serve. Asking for the lane allows a substitute; asking for a model by name pins it to that one."
         actions={
           <Button size="small" variant="outlined" onClick={() => setEditing(blankLane())}>
             Add lane
