@@ -284,12 +284,12 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
             </TableCell>
             <TableCell align="right">
               <Tooltip title="Coefficient of variation of service time. Above 1 the mean is tail-dominated, and the scheduler's position×mean estimate under-predicts badly.">
-                <span>CV</span>
+                <span>How even</span>
               </Tooltip>
             </TableCell>
             <TableCell align="right">
               <Tooltip title="What the measured distribution implies the wait should be: ρ/(1−ρ)·E[S]·(1+CV²)/2 (Pollaczek–Khinchine). A third opinion, derived from neither the scheduler's estimate nor the recorded waits. Assumes steady state, which a bursty hour is not — read it as an order of magnitude.">
-                <span>Theory</span>
+                <span>Wait the maths expects</span>
               </Tooltip>
             </TableCell>
           </TableRow>
@@ -477,7 +477,7 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
       title="Utilization"
       subtitle={
         live
-          ? `Models asked for ${windowPhrase(window)} — live load, promises made, and what waiting actually cost`
+          ? `Models asked for ${windowPhrase(window)} — live load, promises made, and what waiting actually cost. "How even" near 1 means request times vary as much as they average; well above 1 means a few long ones dominate, and every wait estimate under-reads.`
           : `Models asked for ${windowPhrase(window)}. In use, Queue and Est. wait are blank: they describe this moment, and nothing recorded what they were then.`
       }
       badge={<Chip size="small" variant="outlined" label={`${rows.length} models`} />}

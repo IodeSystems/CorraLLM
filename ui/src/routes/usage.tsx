@@ -345,7 +345,10 @@ export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                 <TableCell align="right">Requests</TableCell>
                 <TableCell align="right">Prompt</TableCell>
                 <TableCell align="right">Completion</TableCell>
-                <TableCell align="right">Dwell</TableCell>
+                {/* The per-request figure, not the sum: a sum of dwell reads as
+                    a duration and was misread as one in three runs (OB-4). The
+                    total is still there, under it. */}
+                <TableCell align="right">Time per request</TableCell>
                 <TableCell align="right">
                   <Tooltip title="Prompt tokens served from cache as a share of all prompt tokens. 'n/r' means nothing reported a cache here — not a measured zero.">
                     <span>Cached</span>
@@ -370,7 +373,16 @@ export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                     <TableCell align="right">{fmtInt(r.requests)}</TableCell>
                     <TableCell align="right">{fmtInt(r.promptTokens)}</TableCell>
                     <TableCell align="right">{fmtInt(r.completionTokens)}</TableCell>
-                    <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>
+                    <TableCell align="right">
+                      {fmtDuration(
+                        Number(r.requests) > 0
+                          ? Math.round(Number(r.dwellMs) / Number(r.requests))
+                          : 0,
+                      )}
+                      <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                        {fmtDuration(r.dwellMs)} total
+                      </Typography>
+                    </TableCell>
                     <CacheCell
                       rate={r.cacheHitRate}
                       reports={Number(r.cacheReports)}

@@ -18,6 +18,7 @@ import { Panel } from '@/Panel'
 import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
+import { C } from '@/theme'
 import { fmtInt } from '@/format'
 import { Loading } from '@/Loading'
 
@@ -136,6 +137,13 @@ export function GroupPanels() {
           <Button size="small" variant="outlined" onClick={() => setEditing(blankGroup())}>
             Add group
           </Button>
+        }
+        // Adding a group changes how the existing ones divide the box, which is
+        // not visible from the button (run 5 left it alone for exactly that).
+        badge={
+          <Typography variant="caption" sx={{ color: C.textFaint }}>
+            a new group takes its share from the others; nothing already running stops
+          </Typography>
         }
         flush
       >

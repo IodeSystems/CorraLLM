@@ -455,7 +455,8 @@ function SetupPage() {
         <Typography variant="body2" sx={{ opacity: 0.75 }}>
           An upstream endpoint and the accounts held against it. Secrets live in the credential
           store and are referenced as <code>${'{NAME}'}</code> — this page can set one, never show
-          one.
+          one. <b>Saving anything here takes effect at once</b>, and applies to the next request:
+          a reply already being written is not interrupted.
         </Typography>
       </PageHeader>
 

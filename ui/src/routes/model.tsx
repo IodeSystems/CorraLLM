@@ -768,9 +768,23 @@ function UsageTab({ name }: { name: string }) {
                   {fmtInt(row.promptTokens)} → {fmtInt(row.completionTokens)}
                 </TableCell>
               </TableRow>
+              {/* A SUM NEEDS ITS AVERAGE BESIDE IT, or it reads as a duration.
+                  "Dwell 882m 16s" was named in three Lenny runs (OB-4): fourteen
+                  hours of something, on a page with no scale to read it against.
+                  The number people actually want is the per-request one. */}
               <TableRow>
-                <TableCell>Dwell</TableCell>
-                <TableCell align="right">{fmtDuration(row.dwellMs)}</TableCell>
+                <TableCell>Time answering</TableCell>
+                <TableCell align="right">
+                  {fmtDuration(
+                    Number(row.requests) > 0
+                      ? Math.round(Number(row.dwellMs) / Number(row.requests))
+                      : 0,
+                  )}{' '}
+                  per request
+                  <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                    {fmtDuration(row.dwellMs)} in total across {fmtInt(row.requests)} requests
+                  </Typography>
+                </TableCell>
               </TableRow>
               <TableRow>
                 <TableCell>Cost</TableCell>
