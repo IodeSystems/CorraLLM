@@ -336,18 +336,24 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                         </Tooltip>
                       )
                     })()}
+                  {/* TWO SETTINGS THAT CONTRADICT EACH OTHER, said in words.
+                      It read `depth 8 unreachable`, which Lenny run 4 could not
+                      tell apart from a machine being unreachable — two meanings
+                      of "unreachable" on adjacent screens (OB-3). And it is a
+                      CONFIGURATION fact, not a measurement, so it says which:
+                      drawn identically on a frozen window it looked like a
+                      reading of that hour (OB-9).
+                      The arithmetic behind it stays in the tooltip for whoever
+                      wants it; the sentence does not need it. */}
                   {r.depthUnreachable && (
-                    // Two settings that contradict each other. Worth saying out
-                    // loud: it means every rejection here will be a timeout, and
-                    // the configured depth describes a queue that cannot form.
                     <Tooltip
-                      title={`maxQueueDepth is ${r.configuredDepth}, but maxWait only allows ${r.reachableDepth} waiter(s) at ${fmtDuration(r.serviceMeanMs)} per request on ${cap} slot(s). The depth bound never binds — callers always time out first.`}
+                      title={`maxQueueDepth is ${r.configuredDepth}, but maxWait only allows ${r.reachableDepth} waiter(s) at ${fmtDuration(r.serviceMeanMs)} per request on ${cap} slot(s).`}
                     >
                       <Chip
                         size="small"
                         color="warning"
                         variant="outlined"
-                        label={`depth ${r.configuredDepth} unreachable`}
+                        label={`settings clash: nobody can queue here, they time out instead`}
                         sx={{ ml: 1 }}
                       />
                     </Tooltip>

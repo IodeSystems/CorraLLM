@@ -448,14 +448,18 @@ function InfoTab({
           <TableHead>
             <TableRow>
               <TableCell>type</TableCell>
-              <TableCell>quality</TableCell>
+              {/* A bare "2" with no scale (OB-4, Lenny run 4). The number is a
+                  rank among this box's models, not a score out of anything. */}
+              <TableCell>quality rank</TableCell>
               <TableCell>capability</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             <TableRow>
               <TableCell>{model.type}</TableCell>
-              <TableCell>{model.quality}</TableCell>
+              <TableCell>
+                {model.quality} — higher wins when a lane has to choose between models
+              </TableCell>
               <TableCell>{model.capability}</TableCell>
             </TableRow>
           </TableBody>

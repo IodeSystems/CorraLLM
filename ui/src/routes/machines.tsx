@@ -521,7 +521,14 @@ function MachinesPage() {
               </Tooltip>
               {a.noProcessMemory && (
                 <Tooltip title="This host cannot attribute memory to a single process (macOS has no nvidia-smi equivalent). A model here MUST declare ramUsage — nothing can measure it, so a declared size is the only size there is.">
-                  <Chip size="small" variant="outlined" color="warning" label="ramUsage required" />
+                  {/* Was `ramUsage required` — a configuration field name on
+                      screen as if it were a sentence (OB-3, Lenny run 4). */}
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color="warning"
+                    label="every model here must declare its size"
+                  />
                 </Tooltip>
               )}
               {Number(a.agentLastSeen) > 0 && (

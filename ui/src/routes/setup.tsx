@@ -253,7 +253,12 @@ function AssignedModels() {
   const rows = data?.corrallm?.listSelections?.selections ?? []
 
   return (
-    <Panel title={`Assigned models (${rows.length})`} flush>
+    <Panel
+      title={`Assigned models (${rows.length})`}
+      // Remove is a config change, not a kill: say so where it can be read.
+      subtitle="Models chosen off a provider's catalog. Remove takes one out of the catalog this box serves — anything mid-answer on it finishes, and the next request for it is refused."
+      flush
+    >
       {rows.length === 0 ? (
         <Typography variant="body2" sx={{ p: 2, color: C.textFaint }}>
           None yet. <strong>Browse</strong> a provider above and add the models you want — with a
@@ -454,6 +459,18 @@ function SetupPage() {
         </Typography>
       </PageHeader>
 
+      {/* THE ANSWER FIRST, THEN THE CONFIGURATION (OB-11, asked for by Lenny run
+          4). "Is this something I did?" is why most people open this page, and the
+          dated list that answers it used to sit below every panel of settings and
+          every paragraph of somebody's implementation notes. He found it, said so,
+          and said he would not have on an ordinary day — he would have stopped at
+          the first paragraph in a vocabulary he does not have. */}
+      <HistoryPanels />
+
+      {/* What the upstreams are allowed. Also an answer rather than a setting:
+          it is read, not edited. */}
+      <ProviderBudgets />
+
       <Panel
         title={`Integrations (${byExtension.length})`}
         subtitle="An extension is the container: one integration, its providers, and the models it serves."
@@ -530,7 +547,7 @@ function SetupPage() {
                       color: C.textMuted,
                       whiteSpace: 'pre-wrap',
                       display: '-webkit-box',
-                      WebkitLineClamp: 3,
+                      WebkitLineClamp: 1,
                       WebkitBoxOrient: 'vertical',
                       overflow: 'hidden',
                       mt: 0.5,
@@ -659,7 +676,13 @@ function SetupPage() {
       </Panel>
 
       {local.length > 0 && (
-        <Panel title={`Local (${local.reduce((n, p) => n + p.models.length, 0)} models)`} flush>
+        <Panel
+          title={`Local (${local.reduce((n, p) => n + p.models.length, 0)} models)`}
+          // Delete sat beside a model marked "spawned" with nothing saying what it
+          // does to it (Lenny run 4, OB-1/OB-2).
+          subtitle="Models this box runs itself. Edit changes how one is started; Delete removes it from the configuration — if it is loaded, it is stopped, and anything mid-answer on it ends there."
+          flush
+        >
           <Typography variant="body2" sx={{ px: 2, pt: 1.5, color: C.textMuted }}>
             Models that run on this box. Each owns its process, its GPU budget and its port —
             which is why they are declared rather than browsed: the catalogue is whatever you put
@@ -693,7 +716,7 @@ function SetupPage() {
                         flexBasis: '100%',
                         whiteSpace: 'pre-wrap',
                         display: '-webkit-box',
-                        WebkitLineClamp: 3,
+                        WebkitLineClamp: 1,
                         WebkitBoxOrient: 'vertical',
                         overflow: 'hidden',
                         mt: 0.5,
@@ -962,17 +985,6 @@ function SetupPage() {
           credential={browse.credential}
         />
       )}
-      {/* WHAT THE UPSTREAMS ARE ALLOWED, beside the upstreams themselves. It was
-          a top-level entry called "Quota" — the words a person uses for "am I
-          about to run out" — and three Lenny runs went there asking exactly that
-          about their own hardware. */}
-      <ProviderBudgets />
-
-      {/* AND WHAT CHANGED. "Is this something I did?" is the second question
-          anybody asks when a box misbehaves, and it was four pages away from the
-          configuration it is about. */}
-      <HistoryPanels />
-
       <EntryEditor
         editing={editing}
         onChange={setEditing}

@@ -134,7 +134,10 @@ function Callers() {
 
       <Panel
         title="Caller keys"
-        subtitle="Configured lanes, plus keys seen in traffic that nobody has assigned"
+        // WHAT THE ROW BUTTONS COST, once above the group. They were explained in
+        // tooltips, which reach nobody who does not hover — Lenny run 4 left both
+        // alone on a key that had called "just now", for want of this sentence.
+        subtitle="Configured lanes, plus keys seen in traffic that nobody has assigned. Change moves a caller to another lane and Unassign drops it back to the fallback one — neither cuts anybody off, and a request already running is unaffected."
         flush
       >
         <TableContainer>
