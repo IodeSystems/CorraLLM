@@ -477,7 +477,7 @@ type ToolPinOutput struct {
 // an operation that can fail for reasons unrelated to the decision being
 // recorded. A pin that names a commit no branch reaches fails at the next
 // build, loudly, naming the sha.
-func (h *Handlers) ToolPin(_ context.Context, in *ToolPinInput) (*ToolPinOutput, error) {
+func (h *Handlers) ToolPin(ctx context.Context, in *ToolPinInput) (*ToolPinOutput, error) {
 	name := strings.TrimSpace(in.Body.Tool)
 	if name == "" {
 		return nil, huma.Error400BadRequest("a pin needs a tool")
@@ -488,7 +488,7 @@ func (h *Handlers) ToolPin(_ context.Context, in *ToolPinInput) (*ToolPinOutput,
 	}
 
 	var ref string
-	err := h.mutateConfig(func(c *config.Config) error {
+	err := h.mutateConfig(ctx, "tool "+in.Body.Tool+" pinned", func(c *config.Config) error {
 		t, ok := c.Tools[name]
 		if !ok {
 			return huma.Error404NotFound(fmt.Sprintf("no tool %q declared", name))

@@ -51,7 +51,7 @@ func storeBackedHandlers(t *testing.T, cfg *config.Config) *Handlers {
 	h := &Handlers{}
 	src := testConfigSource(t, cfg)
 	h.ConfigSource = src
-	h.UpdateConfig = func(ctx context.Context, fn func(*config.Config) error) error {
+	h.UpdateConfig = func(ctx context.Context, _ string, fn func(*config.Config) error) error {
 		next, err := src.Update(ctx, fn)
 		if err != nil {
 			return err

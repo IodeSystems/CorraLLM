@@ -142,7 +142,7 @@ func (h *Handlers) adoptEndpoints(server string, srv config.Server, reported []s
 	// the gate failed every time and endpoint refresh was silently dead. A
 	// laptop that changed networks would never have had its addresses updated,
 	// which is the exact case this function exists for.
-	err := h.mutateConfig(func(c *config.Config) error {
+	err := h.mutateConfig(context.Background(), "endpoints adopted for "+server+" (by corrallm, from the agent's own heartbeat)", func(c *config.Config) error {
 		cur, ok := c.Servers[server]
 		if !ok || cur.Agent == nil {
 			return nil

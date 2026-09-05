@@ -281,7 +281,7 @@ type UpsertProviderInput struct {
 // Goes through mutateConfig, the same path the YAML editor uses, so validation,
 // persistence and the live reload are shared rather than reimplemented — a
 // second write path is how two shapes of one config drift apart.
-func (h *Handlers) UpsertProvider(_ context.Context, in *UpsertProviderInput) (*ConfigMutationOutput, error) {
+func (h *Handlers) UpsertProvider(ctx context.Context, in *UpsertProviderInput) (*ConfigMutationOutput, error) {
 	out := &ConfigMutationOutput{}
 	b := in.Body
 	if strings.TrimSpace(b.Extension) == "" || strings.TrimSpace(b.Name) == "" {
@@ -297,7 +297,7 @@ func (h *Handlers) UpsertProvider(_ context.Context, in *UpsertProviderInput) (*
 	if port == 0 {
 		port = 443
 	}
-	err := h.mutateConfig(func(c *config.Config) error {
+	err := h.mutateConfig(ctx, "provider "+in.Body.Name+" saved", func(c *config.Config) error {
 		ext, ok := c.Extensions[b.Extension]
 		if !ok {
 			return fmt.Errorf("unknown extension %q", b.Extension)

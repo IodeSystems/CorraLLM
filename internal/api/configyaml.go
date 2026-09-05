@@ -138,7 +138,7 @@ type PutEntryYAMLInput struct {
 }
 
 // PutEntryYAML parses, validates and applies a model, server or lane.
-func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*ConfigMutationOutput, error) {
+func (h *Handlers) PutEntryYAML(ctx context.Context, in *PutEntryYAMLInput) (*ConfigMutationOutput, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		return nil, huma.Error400BadRequest("an entry needs a name")
@@ -152,7 +152,7 @@ func (h *Handlers) PutEntryYAML(_ context.Context, in *PutEntryYAMLInput) (*Conf
 		return nil
 	}
 
-	err := h.mutateConfig(func(c *config.Config) error {
+	err := h.mutateConfig(ctx, in.Kind+" "+name+" replaced from YAML", func(c *config.Config) error {
 		switch in.Kind {
 		case "model":
 			var m config.Model
@@ -294,8 +294,8 @@ type DeleteEntryInput struct {
 // Validation would catch most of this on save, but naming the dependants is far
 // more useful than "unknown model" — it says what to fix rather than that
 // something is wrong.
-func (h *Handlers) DeleteEntry(_ context.Context, in *DeleteEntryInput) (*ConfigMutationOutput, error) {
-	err := h.mutateConfig(func(c *config.Config) error {
+func (h *Handlers) DeleteEntry(ctx context.Context, in *DeleteEntryInput) (*ConfigMutationOutput, error) {
+	err := h.mutateConfig(ctx, in.Kind+" "+strings.TrimSpace(in.Name)+" deleted", func(c *config.Config) error {
 		switch in.Kind {
 		case "model":
 			if _, ok := c.Models[in.Name]; !ok {

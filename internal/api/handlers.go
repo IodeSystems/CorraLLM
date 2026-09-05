@@ -71,7 +71,7 @@ type Handlers struct {
 	// writes it. It also replaces the read-modify-write this package used to do
 	// itself, where the read happened outside the write and two concurrent edits
 	// silently discarded one another.
-	UpdateConfig func(ctx context.Context, fn func(*config.Config) error) error
+	UpdateConfig func(ctx context.Context, note string, fn func(*config.Config) error) error
 	// ConfigSource backs the history surface: list revisions, read one, restore
 	// one, export the current config. Nil renders an empty history rather than
 	// failing — a daemon with no store is a valid state, not an error.

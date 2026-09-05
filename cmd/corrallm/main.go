@@ -652,8 +652,17 @@ func serve(ctx context.Context, o serveOpts) error {
 		Liveness: liveness, AgentDist: agentDist, Verified: api.NewVerifiedStore(),
 		ConfigPath: o.configPath, PublicBase: o.publicBase,
 		ConfigSource: cfgSource,
-		UpdateConfig: func(c context.Context, fn func(*config.Config) error) error {
-			_, err := cfgSource.WithNote("edited through the dashboard").Update(c, fn)
+		// The note is built per-edit now, not fixed here. It used to read "edited
+		// through the dashboard" for every change ever made, which tells an
+		// operator that SOMETHING changed and nothing about whether it was
+		// theirs — the question they open the page with. One shared admin token
+		// means corrallm cannot know a person; it records what changed and the
+		// address it came from, which is enough to recognise your own machine.
+		UpdateConfig: func(c context.Context, note string, fn func(*config.Config) error) error {
+			if note == "" {
+				note = "configuration changed"
+			}
+			_, err := cfgSource.WithNote(note).Update(c, fn)
 			return err
 		},
 	}
@@ -702,6 +711,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	// actually came from, not one the caller can set.
 	router.Use(captureConnAddr)
 	router.Use(middleware.RealIP)
+	// After RealIP so a config revision records the caller's address rather than
+	// the front proxy's: a revision that says only "edited through the dashboard"
+	// cannot answer "was it me?", which is the question that page exists for.
+	router.Use(api.SourceMiddleware)
 	router.Use(middleware.Recoverer)
 	if !o.insecure {
 		router.Use(auth.Middleware(adminToken)) // gates /api/*; /v1, /upstream, /health, SPA pass through

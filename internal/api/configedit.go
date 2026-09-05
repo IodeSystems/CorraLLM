@@ -18,8 +18,8 @@ import (
 // discovering it is invalid leaves the daemon running something that cannot be
 // reloaded or restarted from, and the operator finds out at the worst possible
 // moment. Here a rejected edit is a 400 and the running system is untouched.
-func (h *Handlers) mutateConfig(fn func(*config.Config) error) error {
-	if err := h.applyEdit(fn); err != nil {
+func (h *Handlers) mutateConfig(ctx context.Context, what string, fn func(*config.Config) error) error {
+	if err := h.applyEdit(ctx, what, fn); err != nil {
 		// The message from Load names the actual problem — a lane pointing at a
 		// model that was just deleted, a devicePool that is not a pool. Pass it
 		// through rather than replacing it with something generic.
@@ -98,12 +98,12 @@ type ConfigMutationOutput struct {
 // form does not model cannot be destroyed by the form, and the two editors can
 // coexist on the same model: change the port in the form, change the sticky
 // policy in YAML, neither undoes the other.
-func (h *Handlers) UpsertModel(_ context.Context, in *UpsertModelInput) (*ConfigMutationOutput, error) {
+func (h *Handlers) UpsertModel(ctx context.Context, in *UpsertModelInput) (*ConfigMutationOutput, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		return nil, huma.Error400BadRequest("a model needs a name")
 	}
-	err := h.mutateConfig(func(c *config.Config) error {
+	err := h.mutateConfig(ctx, "model "+name+" saved", func(c *config.Config) error {
 		prev, existed := c.Models[name]
 		if existed && prev.Extension != "" && prev.ProviderName == "" {
 			// An extension's own `provides` (the oidio shape: one cmd, several
@@ -252,8 +252,8 @@ type UpdateNotesInput struct {
 // Separate from the full upsert so the thing most likely to be edited — writing
 // down why something is the way it is — cannot accidentally rewrite the model's
 // actual configuration.
-func (h *Handlers) UpdateNotes(_ context.Context, in *UpdateNotesInput) (*ConfigMutationOutput, error) {
-	err := h.mutateConfig(func(c *config.Config) error {
+func (h *Handlers) UpdateNotes(ctx context.Context, in *UpdateNotesInput) (*ConfigMutationOutput, error) {
+	err := h.mutateConfig(ctx, "notes on "+in.Kind+" "+in.Name+" edited", func(c *config.Config) error {
 		switch in.Kind {
 		case "model":
 			m, ok := c.Models[in.Name]
@@ -508,9 +508,11 @@ func isAllDigits(s string) bool {
 //
 // Both validate before committing, because a rejected edit must leave the
 // running system untouched. That is the reason this funnel exists at all.
-func (h *Handlers) applyEdit(fn func(*config.Config) error) error {
+func (h *Handlers) applyEdit(ctx context.Context, what string, fn func(*config.Config) error) error {
 	if h.UpdateConfig == nil {
 		return huma.Error503ServiceUnavailable("this daemon has no writable configuration")
 	}
-	return h.UpdateConfig(context.Background(), fn)
+	// The request's own context, not Background: it carries where the change came
+	// from, which is half of what a revision has to record (source.go).
+	return h.UpdateConfig(ctx, noteFor(ctx, what), fn)
 }

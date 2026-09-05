@@ -40,7 +40,7 @@ type AgentEnrollOutput struct {
 // credential, which is the whole point. It presents a one-time enrollment token
 // instead, and that token is consumed atomically so two machines racing it
 // cannot both attach as the same server.
-func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentEnrollOutput, error) {
+func (h *Handlers) AgentEnroll(ctx context.Context, in *AgentEnrollInput) (*AgentEnrollOutput, error) {
 	if h.Store == nil {
 		return nil, huma.Error503ServiceUnavailable("no store: enrollment unavailable")
 	}
@@ -110,7 +110,7 @@ func (h *Handlers) AgentEnroll(_ context.Context, in *AgentEnrollInput) (*AgentE
 	// machine attaching while somebody edited a model in the dashboard could
 	// erase that edit, or be erased by it. The merge happens INSIDE the
 	// transaction now, against whatever the config actually is at that moment.
-	if err := h.applyEdit(func(next *config.Config) error {
+	if err := h.applyEdit(ctx, "machine "+name+" enrolled", func(next *config.Config) error {
 		if next.Servers == nil {
 			next.Servers = map[string]config.Server{}
 		}

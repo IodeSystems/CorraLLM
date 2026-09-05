@@ -162,7 +162,7 @@ func (h *Handlers) ProbeModel(ctx context.Context, in *ProbeModelInput) (*TrialM
 // the peak governs; writing a declaration would re-introduce the stale
 // hand-typed number this all exists to remove.
 func (h *Handlers) applyProbe(name string, res proc.TrialResult) error {
-	return h.mutateConfig(func(c *config.Config) error {
+	return h.mutateConfig(context.Background(), "capabilities recorded for "+name+" (by corrallm, from a probe)", func(c *config.Config) error {
 		m, ok := c.Models[name]
 		if !ok {
 			return huma.Error404NotFound("no such model")
