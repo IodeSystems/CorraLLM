@@ -21,8 +21,33 @@ import { Loading } from '@/Loading'
  * it, and what is in flight.
  */
 const NowDoc = graphql(/* GraphQL */ `
-  query Now {
+  query Now($hourAgo: Long!, $dayAgo: Long!, $now: Long!) {
     corrallm {
+      # THE LAST HOUR AGAINST THE DAY BEFORE IT. Two windows of the same rollup —
+      # possible only since the endpoints took absolute bounds (P30 phase B) — so
+      # the page can say "slower than usual" rather than leaving a person to hold
+      # two screens in their head, which is what it took to find the 2026-09-05
+      # slowdown by hand.
+      recent: usageRollup(from: $hourAgo, to: $now) {
+        rows {
+          served
+          requests
+          dwellMs
+          cacheHitRate
+          cacheReports
+          promptTokens
+          cachedTokens
+        }
+      }
+      baseline: usageRollup(from: $dayAgo, to: $hourAgo) {
+        rows {
+          served
+          requests
+          dwellMs
+          cacheHitRate
+          cacheReports
+        }
+      }
       health {
         version
       }
@@ -63,6 +88,74 @@ const NowDoc = graphql(/* GraphQL */ `
     }
   }
 `)
+/**
+ * "IT FEELS SLOW" — ANSWERED, OR SAID NOT TO BE.
+ *
+ * Five Lenny runs asked the same thing and no screen answered it: will it come
+ * right on its own? The answer was in the data the whole time. On 2026-09-05 this
+ * box spent four hours reprocessing 8,000-17,000 prompt tokens per request instead
+ * of ~1,500, because the callers' prompts stopped sharing a prefix with the last
+ * one; mean time answering went 4.5s → 10.8s and back to 2.0s when it cleared.
+ * Nothing was broken, nothing was queued, nobody was turned away — and nothing on
+ * any screen said so. It took two pages and a database to work out by hand.
+ *
+ * This compares the last hour against the day before it, which is only possible
+ * because the rollup takes absolute bounds (phase B). It reports the mechanism in
+ * the operator's terms and, deliberately, that there is nothing to press: on a
+ * one-slot backend this is the callers' prompting pattern, and it passes.
+ *
+ * Thresholds are deliberately blunt. A fault card that cries on every wobble is
+ * one nobody reads, so: a fifth of the reuse gone AND a third more time per
+ * request, over enough requests to mean anything.
+ */
+type Rollup = {
+  served: string
+  requests: number
+  dwellMs: number
+  cacheHitRate: number
+  cacheReports: number
+  promptTokens?: number
+  cachedTokens?: number
+}
+
+function slowdownFaults(recent: Rollup[], baseline: Rollup[]): Fault[] {
+  const out: Fault[] = []
+  const before = new Map(baseline.map((r) => [r.served, r]))
+  for (const now of recent) {
+    const was = before.get(now.served)
+    if (!was) continue
+    // cacheReports === 0 means NOTHING REPORTED A CACHE, not a measured 0% — an
+    // embedding backend or a remote provider never reports one, and reading that
+    // as a miss rate invents a problem (the schema says so in as many words).
+    if (now.cacheReports === 0 || was.cacheReports === 0) continue
+    if (now.requests < 20 || was.requests < 100) continue
+
+    const nowMean = now.dwellMs / Math.max(1, now.requests)
+    const wasMean = was.dwellMs / Math.max(1, was.requests)
+    const reuseLost = was.cacheHitRate - now.cacheHitRate
+    if (reuseLost < 0.2 || nowMean < wasMean * 1.33) continue
+
+    const pct = (x: number) => `${Math.round(x * 100)}%`
+    const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`
+    const reprocessed =
+      now.promptTokens != null && now.cachedTokens != null
+        ? Math.round((now.promptTokens - now.cachedTokens) / Math.max(1, now.requests))
+        : null
+    out.push({
+      key: `slow:${now.served}`,
+      scope: 'here',
+      severity: 'warning',
+      what: `${now.served} is answering more slowly than usual — ${secs(nowMean)} a request against ${secs(wasMean)} over the last day`,
+      whose: 'This box, and nothing on it is broken.',
+      next:
+        `Callers are sending prompts that share less with the one before, so more of each prompt has to be read again: ${pct(now.cacheHitRate)} of it is being reused now against ${pct(was.cacheHitRate)} normally` +
+        (reprocessed ? `, about ${reprocessed.toLocaleString()} tokens re-read per request` : '') +
+        '. Nothing to press — it comes right on its own when they settle back onto one conversation.',
+    })
+  }
+  return out
+}
+
 /**
  * WHAT IS WRONG RIGHT NOW — the panel this page did not have.
  *
@@ -283,9 +376,17 @@ function WhatIsWrong({ faults }: { faults: Fault[] }) {
 
 
 function Now() {
+  // Rounded to the minute so the query key is stable between renders — an exact
+  // Date.now() would make every render a cache miss and refetch in a loop.
+  const nowMs = Math.floor(Date.now() / 60_000) * 60_000
   const q = useQuery({
-    queryKey: ['now'],
-    queryFn: () => gqlClient.request(NowDoc),
+    queryKey: ['now', nowMs],
+    queryFn: () =>
+      gqlClient.request(NowDoc, {
+        now: String(nowMs),
+        hourAgo: String(nowMs - 3_600_000),
+        dayAgo: String(nowMs - 25 * 3_600_000),
+      }),
     refetchInterval: 10000,
   })
 
@@ -317,6 +418,25 @@ function Now() {
   const stopping = (res?.stopping ?? []).length
   const readyCount = (res?.models ?? []).filter((m) => m.state === 'ready').length
 
+  const slow = slowdownFaults(
+    (c.recent?.rows ?? []).map((r) => ({
+      served: r.served,
+      requests: Number(r.requests),
+      dwellMs: Number(r.dwellMs),
+      cacheHitRate: r.cacheHitRate,
+      cacheReports: Number(r.cacheReports),
+      promptTokens: Number(r.promptTokens),
+      cachedTokens: Number(r.cachedTokens),
+    })),
+    (c.baseline?.rows ?? []).map((r) => ({
+      served: r.served,
+      requests: Number(r.requests),
+      dwellMs: Number(r.dwellMs),
+      cacheHitRate: r.cacheHitRate,
+      cacheReports: Number(r.cacheReports),
+    })),
+  )
+
   const faults = faultsOf(
     (ov?.servers ?? []).map((x) => ({
       server: x.server,
@@ -341,11 +461,13 @@ function Now() {
     })),
   )
 
+  const all = [...slow, ...faults]
+
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title="Now">
         <BoxState
-          faults={faults}
+          faults={all}
           stopping={stopping}
           ready={readyCount}
           configured={models.length}
@@ -356,7 +478,7 @@ function Now() {
 
       {/* Anything wrong comes first — before what is running, before what could
           run. This is the panel a person opens the dashboard to read. */}
-      <WhatIsWrong faults={faults} />
+      <WhatIsWrong faults={all} />
 
       {/* What the box is doing right now. This is in-flight's ONE home: it used
           to render here AND on /activity, so two pages showed the same live
@@ -367,7 +489,7 @@ function Now() {
           /machines, what it has been doing is /traffic. A person who opened this
           page because something felt wrong has their answer above, and a way to
           each of those in the nav. */}
-      {faults.length === 0 && (
+      {all.length === 0 && (
         <Panel title="Nothing else on this page, on purpose" dense>
           <Row>
             <Typography variant="body2" sx={{ color: C.textMuted }}>
