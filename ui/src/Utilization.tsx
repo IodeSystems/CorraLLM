@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { DEFAULT_WINDOW, windowKey, windowPhrase, windowVars, type TimeWindow } from '@/TimeWindow'
 import {
   Box,
   Chip,
@@ -35,9 +36,9 @@ import { Loading } from '@/Loading'
  */
 
 const UtilizationDoc = graphql(/* GraphQL */ `
-  query Utilization($minutes: Long!) {
+  query Utilization($minutes: Long!, $from: Long, $to: Long) {
     corrallm {
-      utilization(minutes: $minutes) {
+      utilization(minutes: $minutes, from: $from, to: $to) {
         minutes
         rows {
           served
@@ -201,12 +202,15 @@ function Zeroable({ n, color }: { n: number; color?: string }) {
   return <span style={color ? { color } : undefined}>{n}</span>
 }
 
-export function Utilization({ minutes = 60 }: { minutes?: number }) {
+export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }) {
+  const vars = windowVars(window)
   const q = useQuery({
     // 'activity' prefix so the SSE listener's invalidation reaches it.
-    queryKey: ['activity', 'utilization', minutes],
-    queryFn: () => gqlClient.request(UtilizationDoc, { minutes: String(minutes) }),
-    refetchInterval: 10000,
+    queryKey: ['activity', 'utilization', windowKey(window)],
+    queryFn: () => gqlClient.request(UtilizationDoc, { minutes: vars.minutes, from: vars.from, to: vars.to }),
+    // A frozen window cannot change, so polling it is pure noise on a box whose
+    // GPU time somebody is waiting for.
+    refetchInterval: window.kind === 'absolute' ? false : 10000,
   })
 
   const rows = q.data?.corrallm.utilization?.rows ?? []
@@ -222,7 +226,7 @@ export function Utilization({ minutes = 60 }: { minutes?: number }) {
       <Typography sx={{
         color: "text.secondary"
       }}>
-        Nothing has been asked for in the last {minutes} minutes.
+        Nothing was asked for {windowPhrase(window)}.
       </Typography>
     </Box>
   ) : (
@@ -430,7 +434,7 @@ export function Utilization({ minutes = 60 }: { minutes?: number }) {
   return (
     <Panel
       title="Utilization"
-      subtitle={`Models asked for in the last ${minutes} minutes — live load, promises made, and what waiting actually cost`}
+      subtitle={`Models asked for ${windowPhrase(window)} — live load, promises made, and what waiting actually cost`}
       badge={<Chip size="small" variant="outlined" label={`${rows.length} models`} />}
       flush
     >

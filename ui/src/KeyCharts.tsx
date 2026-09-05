@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { DEFAULT_WINDOW, windowKey, windowPhrase, windowVars, type TimeWindow } from '@/TimeWindow'
 import { Box, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -29,9 +30,9 @@ const METRICS = {
 type Metric = keyof typeof METRICS
 
 const KeySeriesDoc = graphql(/* GraphQL */ `
-  query KeyUsageSeries($windowHours: Long!, $bucketMinutes: Long!) {
+  query KeyUsageSeries($windowHours: Long!, $bucketMinutes: Long!, $from: Long, $to: Long) {
     corrallm {
-      usageSeries(windowHours: $windowHours, bucketMinutes: $bucketMinutes) {
+      usageSeries(windowHours: $windowHours, bucketMinutes: $bucketMinutes, from: $from, to: $to) {
         buckets
         keys {
           key
@@ -47,9 +48,9 @@ const KeySeriesDoc = graphql(/* GraphQL */ `
 `)
 
 const ModelSeriesDoc = graphql(/* GraphQL */ `
-  query ModelUsageSeries($windowHours: Long!, $bucketMinutes: Long!, $key: String) {
+  query ModelUsageSeries($windowHours: Long!, $bucketMinutes: Long!, $key: String, $from: Long, $to: Long) {
     corrallm {
-      usageSeriesByModel(windowHours: $windowHours, bucketMinutes: $bucketMinutes, key: $key) {
+      usageSeriesByModel(windowHours: $windowHours, bucketMinutes: $bucketMinutes, key: $key, from: $from, to: $to) {
         buckets
         models {
           served
@@ -84,30 +85,52 @@ function pick(p: Point | undefined, m: Metric): number {
  * Narrowing the window instead leaves every mark honestly scaled to its own
  * period.
  */
-const WINDOWS = [
-  { label: '6h', hours: 6, bucket: 10 },
-  { label: '24h', hours: 24, bucket: 60 },
-  { label: '7d', hours: 168, bucket: 240 },
-] as const
+// The bucket rungs the axis used to offer as a toggle. They are now DERIVED from
+// the page's window: the scaling argument above is about how wide a span each
+// mark covers, and the span is chosen once, for the page, in the time control.
+// A second window control inside a windowed page is exactly the drift this merge
+// exists to end (plan/p30-information-architecture.md §0).
+function bucketFor(spanMS: number): number {
+  const hours = spanMS / 3_600_000
+  if (hours <= 6) return 10
+  if (hours <= 24) return 60
+  return 240
+}
 
-export function KeyCharts({ filterKey }: { filterKey?: string }) {
+export function KeyCharts({
+  filterKey,
+  window: pageWindow = DEFAULT_WINDOW,
+}: {
+  filterKey?: string
+  window?: TimeWindow
+}) {
   const [metric, setMetric] = useState<Metric>('requests')
-  const [win, setWin] = useState<number>(1) // index into WINDOWS; 24h default
-  const { hours: windowHours, bucket: bucketMinutes } = WINDOWS[win]
-  const vars = { windowHours: String(windowHours), bucketMinutes: String(bucketMinutes) }
+  const spanMS =
+    pageWindow.kind === 'absolute'
+      ? pageWindow.toMS - pageWindow.fromMS
+      : pageWindow.minutes * 60_000
+  const bucketMinutes = bucketFor(spanMS)
+  const wv = windowVars(pageWindow)
+  const vars = {
+    windowHours: wv.windowHours,
+    bucketMinutes: String(bucketMinutes),
+    from: wv.from,
+    to: wv.to,
+  }
+  const live = pageWindow.kind === 'absolute' ? false : 60000
 
   const byKey = useQuery({
-    queryKey: ['usage', 'series-by-key', windowHours, bucketMinutes],
+    queryKey: ['usage', 'series-by-key', windowKey(pageWindow), bucketMinutes],
     queryFn: () => gqlClient.request(KeySeriesDoc, vars),
     // Only meaningful unfiltered: on a single key's page there is one band, and
     // "who spent it" is already answered by the page you are on.
     enabled: !filterKey,
-    refetchInterval: 60000,
+    refetchInterval: live,
   })
   const byModel = useQuery({
-    queryKey: ['usage', 'series-by-model', windowHours, bucketMinutes, filterKey ?? ''],
+    queryKey: ['usage', 'series-by-model', windowKey(pageWindow), bucketMinutes, filterKey ?? ''],
     queryFn: () => gqlClient.request(ModelSeriesDoc, { ...vars, key: filterKey || undefined }),
-    refetchInterval: 60000,
+    refetchInterval: live,
   })
 
   const loading = byModel.isLoading || (!filterKey && byKey.isLoading)
@@ -141,7 +164,7 @@ export function KeyCharts({ filterKey }: { filterKey?: string }) {
   )
 
   const f = METRICS[metric].fmt
-  const window = windowHours >= 24 ? `${Math.round(windowHours / 24)}d` : `${windowHours}h`
+  const spanLabel = windowPhrase(pageWindow)
 
   const selector = (
     <ToggleButtonGroup
@@ -160,7 +183,7 @@ export function KeyCharts({ filterKey }: { filterKey?: string }) {
 
   const nothing =
     keySeries.length === 0 && modelSeries.length === 0 ? (
-      <Typography sx={{ color: C.textFaint, p: 2 }}>No traffic in the last {window}.</Typography>
+      <Typography sx={{ color: C.textFaint, p: 2 }}>No traffic {spanLabel}.</Typography>
     ) : null
 
   return (
@@ -168,18 +191,6 @@ export function KeyCharts({ filterKey }: { filterKey?: string }) {
       {/* Filters in one row above the charts, not repeated per panel. */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
         {selector}
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={win}
-          onChange={(_, v) => v != null && setWin(v as number)}
-        >
-          {WINDOWS.map((w, i) => (
-            <ToggleButton key={w.label} value={i} sx={{ textTransform: 'none', py: 0.25, px: 1 }}>
-              {w.label}
-            </ToggleButton>
-          ))}
-        </ToggleButtonGroup>
         <Typography variant="caption" sx={{ color: C.textMuted }}>
           {bucketMinutes >= 60 ? `${bucketMinutes / 60}h` : `${bucketMinutes}m`} buckets — hover for
           exact values

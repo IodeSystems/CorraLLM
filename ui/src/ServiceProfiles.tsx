@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { DEFAULT_WINDOW, windowKey, windowPhrase, windowVars, type TimeWindow } from '@/TimeWindow'
 import {
   Box,
   Chip,
@@ -37,9 +38,9 @@ import { Loading } from '@/Loading'
  */
 
 const ProfilesDoc = graphql(/* GraphQL */ `
-  query ServiceProfiles($minutes: Long!) {
+  query ServiceProfiles($minutes: Long!, $from: Long, $to: Long) {
     corrallm {
-      serviceProfiles(minutes: $minutes) {
+      serviceProfiles(minutes: $minutes, from: $from, to: $to) {
         minutes
         rows {
           served
@@ -68,11 +69,13 @@ function cvColor(cv: number): string | undefined {
   return undefined
 }
 
-export function ServiceProfiles({ minutes = 1440 }: { minutes?: number }) {
+export function ServiceProfiles({ window = DEFAULT_WINDOW }: { window?: TimeWindow }) {
+  const vars = windowVars(window)
   const q = useQuery({
-    queryKey: ['activity', 'serviceProfiles', minutes],
-    queryFn: () => gqlClient.request(ProfilesDoc, { minutes: String(minutes) }),
-    refetchInterval: 60000, // a distribution does not move in seconds
+    queryKey: ['activity', 'serviceProfiles', windowKey(window)],
+    queryFn: () => gqlClient.request(ProfilesDoc, { minutes: vars.minutes, from: vars.from, to: vars.to }),
+    // A distribution does not move in seconds, and a frozen window not at all.
+    refetchInterval: window.kind === 'absolute' ? false : 60000,
   })
 
   const rows = q.data?.corrallm.serviceProfiles?.rows ?? []
@@ -87,7 +90,7 @@ export function ServiceProfiles({ minutes = 1440 }: { minutes?: number }) {
     <Box sx={{ p: 2 }}>
       <Typography sx={{
         color: "text.secondary"
-      }}>Nothing served in the last {minutes} minutes.</Typography>
+      }}>Nothing was served {windowPhrase(window)}.</Typography>
     </Box>
   ) : (
     <TableContainer>
@@ -171,7 +174,7 @@ export function ServiceProfiles({ minutes = 1440 }: { minutes?: number }) {
   return (
     <Panel
       title="Caller service profiles"
-      subtitle={`How long each caller's work holds a slot, and how predictable it is — last ${Math.round(minutes / 60)}h`}
+      subtitle={`How long each caller's work holds a slot, and how predictable it is — ${windowPhrase(window)}`}
       badge={<Chip size="small" variant="outlined" label={`${rows.length} callers`} />}
       flush
     >

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { DEFAULT_WINDOW, windowKey, windowPhrase, windowVars, type TimeWindow } from '@/TimeWindow'
 import {
   Box,
   Chip,
@@ -34,9 +35,9 @@ import { Loading } from '@/Loading'
  */
 
 const JourneysDoc = graphql(/* GraphQL */ `
-  query Journeys($limit: Long!, $minutes: Long!) {
+  query Journeys($limit: Long!, $minutes: Long!, $from: Long, $to: Long) {
     corrallm {
-      journeys(limit: $limit, minutes: $minutes) {
+      journeys(limit: $limit, minutes: $minutes, from: $from, to: $to) {
         open
         journeys {
           ticket
@@ -54,12 +55,19 @@ const JourneysDoc = graphql(/* GraphQL */ `
   }
 `)
 
-export function Journeys({ minutes = 60, limit = 25 }: { minutes?: number; limit?: number }) {
+export function Journeys({ window = DEFAULT_WINDOW, limit = 25 }: { window?: TimeWindow; limit?: number }) {
+  const vars = windowVars(window)
   const q = useQuery({
     // 'activity' prefix so the SSE listener's invalidation reaches it.
-    queryKey: ['activity', 'journeys', minutes, limit],
-    queryFn: () => gqlClient.request(JourneysDoc, { minutes: String(minutes), limit: String(limit) }),
-    refetchInterval: 15000,
+    queryKey: ['activity', 'journeys', windowKey(window), limit],
+    queryFn: () =>
+      gqlClient.request(JourneysDoc, {
+        minutes: vars.minutes,
+        from: vars.from,
+        to: vars.to,
+        limit: String(limit),
+      }),
+    refetchInterval: window.kind === 'absolute' ? false : 15000,
   })
 
   const data = q.data?.corrallm?.journeys
@@ -77,7 +85,7 @@ export function Journeys({ minutes = 60, limit = 25 }: { minutes?: number; limit
       <Typography variant="body2" sx={{
         color: "text.secondary"
       }}>
-        Nobody has had to work for an answer in the last {minutes} minutes.
+        Nobody had to work for an answer {windowPhrase(window)}.
       </Typography>
     </Box>
   ) : (

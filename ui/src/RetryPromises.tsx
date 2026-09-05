@@ -1,5 +1,6 @@
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { DEFAULT_WINDOW, windowKey, windowPhrase, windowVars, type TimeWindow } from '@/TimeWindow'
 import {
   Box,
   Chip,
@@ -43,9 +44,9 @@ const OUTCOME: Record<string, { color: 'default' | 'info' | 'success' | 'warning
   }
 
 const PromisesDoc = graphql(/* GraphQL */ `
-  query RetryPromises($limit: Long!, $minutes: Long!, $key: String) {
+  query RetryPromises($limit: Long!, $minutes: Long!, $key: String, $from: Long, $to: Long) {
     corrallm {
-      retryPromises(limit: $limit, minutes: $minutes, key: $key) {
+      retryPromises(limit: $limit, minutes: $minutes, key: $key, from: $from, to: $to) {
         waiting
         promises {
           id
@@ -68,24 +69,27 @@ const PromisesDoc = graphql(/* GraphQL */ `
 export function RetryPromises({
   filterKey,
   limit = 50,
-  minutes = 60,
+  window = DEFAULT_WINDOW,
 }: {
   filterKey?: string
   limit?: number
-  minutes?: number
+  window?: TimeWindow
 }) {
+  const vars = windowVars(window)
   const navigate = useNavigate()
   // Keyed under 'activity' so the SSE listener's invalidation reaches it — a
   // promise is made on the same event that writes an activity row.
   const q = useQuery({
-    queryKey: ['activity', 'promises', filterKey ?? '', limit, minutes],
+    queryKey: ['activity', 'promises', filterKey ?? '', limit, windowKey(window)],
     queryFn: () =>
       gqlClient.request(PromisesDoc, {
         limit: String(limit),
-        minutes: String(minutes),
+        minutes: vars.minutes,
+        from: vars.from,
+        to: vars.to,
         key: filterKey || undefined,
       }),
-    refetchInterval: 15000,
+    refetchInterval: window.kind === 'absolute' ? false : 15000,
   })
 
   const data = q.data?.corrallm.retryPromises
@@ -103,7 +107,7 @@ export function RetryPromises({
       <Typography sx={{
         color: "text.secondary"
       }}>
-        Nobody has been turned away in the last {minutes} minutes.
+        Nobody was turned away {windowPhrase(window)}.
       </Typography>
     </Box>
   ) : (
@@ -131,7 +135,7 @@ export function RetryPromises({
                 hover
                 sx={{ cursor: p.key ? 'pointer' : 'default' }}
                 onClick={() =>
-                  p.key && navigate({ to: '/activity', search: { key: p.key } })
+                  p.key && navigate({ to: '/traffic', search: { key: p.key } })
                 }
               >
                 <TableCell>{fmtTime(p.ts)}</TableCell>
@@ -166,7 +170,7 @@ export function RetryPromises({
   return (
     <Panel
       title="Come back later"
-      subtitle={`Callers we turned away in the last ${minutes} minutes, and when we told them to return`}
+      subtitle={`Callers we turned away ${windowPhrase(window)}, and when we told them to return`}
       badge={
         <Tooltip title="Promises still outstanding: due in the future and not back yet. These are arrivals the queue depth cannot see.">
           <Chip

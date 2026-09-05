@@ -20,6 +20,7 @@ import { Route as KeysRouteImport } from './routes/keys'
 import { Route as ModelRouteImport } from './routes/model'
 import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as QuotaRouteImport } from './routes/quota'
+import { Route as TrafficRouteImport } from './routes/traffic'
 import { Route as UsageRouteImport } from './routes/usage'
 import { Route as BenchModelRouteImport } from './routes/bench_.model'
 import { Route as BenchProbeRouteImport } from './routes/bench_.probe'
@@ -83,6 +84,11 @@ const QuotaRoute = QuotaRouteImport.update({
   path: '/quota',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TrafficRoute = TrafficRouteImport.update({
+  id: '/traffic',
+  path: '/traffic',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const UsageRoute = UsageRouteImport.update({
   id: '/usage',
   path: '/usage',
@@ -131,6 +137,7 @@ export interface FileRoutesByFullPath {
   '/model': typeof ModelRoute
   '/providers': typeof ProvidersRoute
   '/quota': typeof QuotaRoute
+  '/traffic': typeof TrafficRoute
   '/usage': typeof UsageRoute
   '/bench/model': typeof BenchModelRoute
   '/bench/probe': typeof BenchProbeRoute
@@ -151,6 +158,7 @@ export interface FileRoutesByTo {
   '/model': typeof ModelRoute
   '/providers': typeof ProvidersRoute
   '/quota': typeof QuotaRoute
+  '/traffic': typeof TrafficRoute
   '/usage': typeof UsageRoute
   '/bench/model': typeof BenchModelRoute
   '/bench/probe': typeof BenchProbeRoute
@@ -172,6 +180,7 @@ export interface FileRoutesById {
   '/model': typeof ModelRoute
   '/providers': typeof ProvidersRoute
   '/quota': typeof QuotaRoute
+  '/traffic': typeof TrafficRoute
   '/usage': typeof UsageRoute
   '/bench_/model': typeof BenchModelRoute
   '/bench_/probe': typeof BenchProbeRoute
@@ -194,6 +203,7 @@ export interface FileRouteTypes {
     | '/model'
     | '/providers'
     | '/quota'
+    | '/traffic'
     | '/usage'
     | '/bench/model'
     | '/bench/probe'
@@ -214,6 +224,7 @@ export interface FileRouteTypes {
     | '/model'
     | '/providers'
     | '/quota'
+    | '/traffic'
     | '/usage'
     | '/bench/model'
     | '/bench/probe'
@@ -234,6 +245,7 @@ export interface FileRouteTypes {
     | '/model'
     | '/providers'
     | '/quota'
+    | '/traffic'
     | '/usage'
     | '/bench_/model'
     | '/bench_/probe'
@@ -255,6 +267,7 @@ export interface RootRouteChildren {
   ModelRoute: typeof ModelRoute
   ProvidersRoute: typeof ProvidersRoute
   QuotaRoute: typeof QuotaRoute
+  TrafficRoute: typeof TrafficRoute
   UsageRoute: typeof UsageRoute
   BenchModelRoute: typeof BenchModelRoute
   BenchProbeRoute: typeof BenchProbeRoute
@@ -342,6 +355,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof QuotaRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/traffic': {
+      id: '/traffic'
+      path: '/traffic'
+      fullPath: '/traffic'
+      preLoaderRoute: typeof TrafficRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/usage': {
       id: '/usage'
       path: '/usage'
@@ -416,6 +436,7 @@ const rootRouteChildren: RootRouteChildren = {
   ModelRoute: ModelRoute,
   ProvidersRoute: ProvidersRoute,
   QuotaRoute: QuotaRoute,
+  TrafficRoute: TrafficRoute,
   UsageRoute: UsageRoute,
   BenchModelRoute: BenchModelRoute,
   BenchProbeRoute: BenchProbeRoute,

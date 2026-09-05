@@ -20,7 +20,6 @@ import {
   useMediaQuery,
 } from '@mui/material'
 import type { SvgIconComponent } from '@mui/icons-material'
-import BarChartOutlined from '@mui/icons-material/BarChartOutlined'
 import CloudOutlined from '@mui/icons-material/CloudOutlined'
 import DashboardOutlined from '@mui/icons-material/DashboardOutlined'
 import DataUsageOutlined from '@mui/icons-material/DataUsageOutlined'
@@ -115,8 +114,9 @@ const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/', label: 'Overview', icon: DashboardOutlined },
   { to: '/hosts', label: 'Hosts', icon: SettingsOutlined },
   { to: '/history', label: 'History', icon: HistoryOutlined },
-  { to: '/activity', label: 'Activity', icon: TimelineOutlined },
-  { to: '/usage', label: 'Usage', icon: BarChartOutlined },
+  // Traffic is the merge of Activity and Usage (P30 phase B): one subject, one
+  // time control. Both old addresses redirect here.
+  { to: '/traffic', label: 'Traffic', icon: TimelineOutlined },
   { to: '/groups', label: 'Groups', icon: GroupsOutlined },
   { to: '/keys', label: 'Keys', icon: VpnKeyOutlined },
   { to: '/bench', label: 'Bench', icon: SpeedOutlined },

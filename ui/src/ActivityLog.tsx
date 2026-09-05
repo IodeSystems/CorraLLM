@@ -1,5 +1,6 @@
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { windowKey, windowVars, type TimeWindow } from '@/TimeWindow'
 import { useState } from 'react'
 import {
   Box,
@@ -52,9 +53,9 @@ const FINISH_HINT: Record<string, string> = {
 }
 
 const ActivityDoc = graphql(/* GraphQL */ `
-  query Activity($limit: Long!, $key: String, $served: String, $placement: String) {
+  query Activity($limit: Long!, $key: String, $served: String, $placement: String, $from: Long, $to: Long) {
     corrallm {
-      recentActivity(limit: $limit, key: $key, served: $served, placement: $placement) {
+      recentActivity(limit: $limit, key: $key, served: $served, placement: $placement, from: $from, to: $to) {
         records {
           id
           ts
@@ -232,6 +233,7 @@ export function ActivityLog({
   filterPlacement,
   hideModel = false,
   limit = 100,
+  window,
   title = 'Recent',
   subtitle = 'Completed requests, newest first — click a row for payloads',
   action,
@@ -250,6 +252,10 @@ export function ActivityLog({
   filterPlacement?: string
   hideModel?: boolean
   limit?: number
+  // The page's window, when the page has one. Without it the log keeps its old
+  // behaviour — the newest `limit` rows, whenever they were — which is a LIMIT,
+  // not a window, and is why "show me 09:00" was unanswerable here.
+  window?: TimeWindow
   title?: string
   subtitle?: string
   action?: React.ReactNode
@@ -258,15 +264,26 @@ export function ActivityLog({
   const q = useQuery({
     // filterKey is part of the cache key, or switching callers would show the
     // previous one's rows until the refetch landed.
-    queryKey: ['activity', filterKey ?? '', filterModel ?? '', filterPlacement ?? '', limit],
+    queryKey: [
+      'activity',
+      filterKey ?? '',
+      filterModel ?? '',
+      filterPlacement ?? '',
+      limit,
+      window ? windowKey(window) : 'nowindow',
+    ],
     queryFn: () =>
       gqlClient.request(ActivityDoc, {
         limit: String(limit),
         key: filterKey || undefined,
         served: filterModel || undefined,
         placement: filterPlacement || undefined,
+        from: window ? windowVars(window).from : '0',
+        to: window ? windowVars(window).to : '0',
       }),
-    refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
+    // fallback; live updates arrive via SSE (useLiveEvents). A frozen window has
+    // nothing to refetch — new rows are outside it by definition.
+    refetchInterval: window?.kind === 'absolute' ? false : 15000,
   })
 
   const records = q.data?.corrallm.recentActivity?.records ?? []

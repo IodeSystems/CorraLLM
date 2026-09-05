@@ -1,9 +1,8 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { DEFAULT_WINDOW, windowKey, windowVars, type TimeWindow } from '@/TimeWindow'
 import {
   Box,
-  Chip,
-  LinearProgress,
   Stack,
   Table,
   TableBody,
@@ -16,11 +15,11 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { Panel, PageHeader } from '@/Panel'
+import { Panel } from '@/Panel'
 import { MetricChart, StackedArea } from '@/Charts'
 import type { ChartSeries } from '@/Charts'
 import { C, seriesColor } from '@/theme'
-import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
+import { fmtDuration, fmtInt, fmtUSD } from '@/format'
 import { Loading } from '@/Loading'
 
 // BarCell renders a value with a proportional background bar (value / columnMax).
@@ -128,9 +127,9 @@ function fmtLongDuration(ms: number): string {
 }
 
 const UsageDoc = graphql(/* GraphQL */ `
-  query Usage {
+  query Usage($windowHours: Long!, $bucketMinutes: Long!, $from: Long, $to: Long) {
     corrallm {
-      usageRollup(windowHours: "24") {
+      usageRollup(windowHours: $windowHours, from: $from, to: $to) {
         windowHours
         rows {
           served
@@ -156,7 +155,7 @@ const UsageDoc = graphql(/* GraphQL */ `
           cachedSecondsSaved
         }
       }
-      queueDepth(windowHours: "24", bucketMinutes: "60") {
+      queueDepth(windowHours: $windowHours, bucketMinutes: $bucketMinutes) {
         lanes {
           group
           points {
@@ -165,7 +164,7 @@ const UsageDoc = graphql(/* GraphQL */ `
           }
         }
       }
-      usageSeriesByGroup(windowHours: "24", bucketMinutes: "60") {
+      usageSeriesByGroup(windowHours: $windowHours, bucketMinutes: $bucketMinutes) {
         buckets
         groups {
           group
@@ -178,7 +177,7 @@ const UsageDoc = graphql(/* GraphQL */ `
           }
         }
       }
-      usageSeries(windowHours: "24", bucketMinutes: "60") {
+      usageSeries(windowHours: $windowHours, bucketMinutes: $bucketMinutes, from: $from, to: $to) {
         bucketMinutes
         buckets
         keys {
@@ -191,7 +190,7 @@ const UsageDoc = graphql(/* GraphQL */ `
           }
         }
       }
-      usageByKey(windowHours: "24") {
+      usageByKey(windowHours: $windowHours, from: $from, to: $to) {
         rows {
           key
           requests
@@ -205,60 +204,41 @@ const UsageDoc = graphql(/* GraphQL */ `
           cacheHitRate
         }
       }
-      residency {
-        servers {
-          server
-          pools {
-            pool
-            budget
-            used
-          }
-        }
-        models {
-          name
-          modelName
-          server
-          state
-          refs
-          persistent
-          lastUsedMs
-          usage {
-            pool
-            bytes
-          }
-        }
-      }
     }
   }
 `)
 
-function pct(used: string, budget: string): number {
-  const u = Number(used)
-  const b = Number(budget)
-  if (!Number.isFinite(b) || b <= 0) return 0
-  return Math.min(100, (u / b) * 100)
-}
-
-function stateColor(state: string): 'success' | 'info' | 'warning' | 'error' | 'default' {
-  switch (state) {
-    case 'ready':
-      return 'success'
-    case 'loading':
-      return 'info'
-    case 'evicting':
-      return 'warning'
-    case 'failed':
-      return 'error'
-    default:
-      return 'default'
-  }
-}
-
-function Usage() {
+/**
+ * The cost-and-callers half of Traffic (P30 phase B).
+ *
+ * This was the `/usage` page. It is now a section of `/traffic`, under that
+ * page's one time control, because "what is happening" and "what did it cost"
+ * were the same subject measured over two different windows — which is how the
+ * per-key numbers here came to disagree with the per-key numbers on the activity
+ * side. `/usage` still resolves; it redirects.
+ *
+ * What left with the merge: the per-server pool bars and the Resident models
+ * table. Both answer "what does the hardware have", which is /hosts' question,
+ * and the memory ledger there already says the same budget/used WITH attribution.
+ */
+export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }) {
+  const vars = windowVars(window)
+  const spanMS =
+    window.kind === 'absolute' ? window.toMS - window.fromMS : window.minutes * 60_000
+  // The bucket follows the span, so a one-hour window is not one bar.
+  const bucketMinutes = spanMS / 3_600_000 <= 6 ? 10 : spanMS / 3_600_000 <= 24 ? 60 : 240
   const q = useQuery({
-    queryKey: ['usage'],
-    queryFn: () => gqlClient.request(UsageDoc),
-    refetchInterval: 15000, // fallback; live updates arrive via SSE (useLiveEvents)
+    queryKey: ['usage', windowKey(window)],
+    queryFn: () =>
+      gqlClient.request(UsageDoc, {
+        windowHours: vars.windowHours,
+        bucketMinutes: String(bucketMinutes),
+        from: vars.from,
+        to: vars.to,
+      }),
+    // fallback; live updates arrive via SSE (useLiveEvents). A frozen window has
+    // nothing new to fetch.
+    refetchInterval: window.kind === 'absolute' ? false : 15000,
   })
 
   if (q.isLoading) {
@@ -272,9 +252,6 @@ function Usage() {
     )
   }
 
-  const res = q.data?.corrallm.residency
-  const servers = res?.servers ?? []
-  const models = res?.models ?? []
   const rollup = q.data?.corrallm.usageRollup
   const rollupRows = rollup?.rows ?? []
   const total = rollup?.total
@@ -333,11 +310,7 @@ function Usage() {
     }))
 
   return (
-    <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <PageHeader title="Usage">
-        <Chip size="small" variant="outlined" label="last 24h" />
-      </PageHeader>
-
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <Stack direction="row" spacing={2} useFlexGap sx={{
         flexWrap: "wrap"
       }}>
@@ -524,91 +497,14 @@ function Usage() {
           </Table>
         </TableContainer>
       </Panel>
-
-      <Stack direction="row" spacing={2} useFlexGap sx={{
-        flexWrap: "wrap"
-      }}>
-        {servers.length === 0 ? (
-          <Typography sx={{
-            color: "text.secondary"
-          }}>No servers configured.</Typography>
-        ) : (
-          servers.map((s) => (
-            <Box key={s.server} sx={{ minWidth: 280, flex: '1 1 280px' }}>
-              <Panel title={s.server} subtitle="pool usage">
-                <Stack spacing={1.5}>
-                  {s.pools.map((p) => (
-                    <Box key={p.pool}>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                        <Typography variant="body2">{p.pool}</Typography>
-                        <Typography variant="body2" sx={{ color: C.textMuted }}>
-                          {fmtBytes(p.used)} / {fmtBytes(p.budget)}
-                        </Typography>
-                      </Box>
-                      <LinearProgress
-                        variant="determinate"
-                        value={pct(p.used, p.budget)}
-                        sx={{ height: 8, borderRadius: 1 }}
-                      />
-                    </Box>
-                  ))}
-                </Stack>
-              </Panel>
-            </Box>
-          ))
-        )}
-      </Stack>
-
-      <Panel title="Resident models" flush>
-        <TableContainer>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Backend</TableCell>
-                <TableCell>Model</TableCell>
-                <TableCell>Server</TableCell>
-                <TableCell>State</TableCell>
-                <TableCell align="right">Refs</TableCell>
-                <TableCell>Pinned</TableCell>
-                <TableCell>Reserved</TableCell>
-                <TableCell>Last used</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {models.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={8}>
-                    <Typography sx={{
-                      color: "text.secondary"
-                    }}>Nothing warm.</Typography>
-                  </TableCell>
-                </TableRow>
-              ) : (
-                models.map((m) => (
-                  <TableRow key={m.name} hover>
-                    <TableCell>{m.name}</TableCell>
-                    <TableCell>{m.modelName}</TableCell>
-                    <TableCell>{m.server || '—'}</TableCell>
-                    <TableCell>
-                      <Chip size="small" label={m.state} color={stateColor(m.state)} />
-                    </TableCell>
-                    <TableCell align="right">{fmtInt(m.refs)}</TableCell>
-                    <TableCell>{m.persistent ? 'yes' : '—'}</TableCell>
-                    <TableCell>
-                      {m.usage.length === 0
-                        ? '—'
-                        : m.usage.map((u) => `${u.pool}:${fmtBytes(u.bytes)}`).join(', ')}
-                    </TableCell>
-                    <TableCell>{fmtTime(m.lastUsedMs)}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Panel>
     </Box>
   );
 }
 
-export const Route = createFileRoute('/usage')({ component: Usage })
+// The old address, kept: links live in notes and chat history, and a 404 for a
+// page that moved is the worst possible answer. Same trick /config already uses.
+export const Route = createFileRoute('/usage')({
+  beforeLoad: () => {
+    throw redirect({ to: '/traffic' })
+  },
+})
