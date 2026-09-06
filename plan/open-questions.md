@@ -110,3 +110,53 @@ same day. Each answer and its evidence sits in the plan item that needed it.
 A person handed an API key currently gets the operator's dashboard, `Unload` and `Restore`
 included. Either they get a filtered view of the same pages, or a separate surface. Bigger than a
 reorganization, and the Lenny scenario for it is already written up in `icebox.md`.
+
+---
+
+## 4. ❓ Is the free lane overflow capacity, or decoration?
+
+**Owner:** you. **Gates:** nothing built — this is a routing-config decision, and the
+reason to write it down is that the current state *reads* as insurance and is not.
+
+**The claim under test:** remote providers absorb overflow when box1 saturates.
+
+### What is actually true (measured 2026-09-06, live box1 + production database)
+
+Four gates stand between that intent and the mechanism, and each is a deliberate setting.
+
+1. **Nothing asks for a lane.** aw4 requests `local-Qwen3.8-27B` *by name* — 12,294 of the
+   12,300 requests in the last 24 h. `ResolveServed` returns exactly one candidate for a
+   model name (`internal/config/config.go:1324`), so no ladder is ever consulted. Requests
+   that did name a lane exist only from testing: `chat` 148, `free` 35, all-time.
+2. **`chat` is not a ladder.** Its resolved membership is one rung, `local-Qwen3.8-27B`.
+   A caller that *did* ask for the lane would get the same box1 model. `free` resolves to
+   13 rungs (2 declared + 11 from the `free` pool).
+3. **`acceptDegrade=false` on all three groups** (`batch`, `default`, `interactive`). A
+   multi-rung ladder still would not be walked down to a lesser model — the request queues
+   or is refused instead.
+4. **The free rungs are thin and partly unconfigured.** 239 requests served by a remote
+   provider *ever*, last on 2026-09-01. 118 of them failed: 105 were 429 from the providers'
+   own free tiers (groq 83, `openrouter-z-ai-glm-5.2` 22), `cerebras-gpt-oss-120b` 7/7
+   `no backend available`, `openrouter-liquid-lfm-2.5-2.6b` `no permitted credential`.
+
+**And the condition it would insure against is not currently occurring.** Turn-aways per
+day over 14 days run 137, 11, 206, 16, 12, 19, 0, 0, 109, 1, 12, 0, 4, **0** — the last three
+days are 12, 4, 0 against ~25k requests, and queueing caps at 15 s. Today: 4,434 requests,
+nobody turned away.
+
+This is the same shape as the Mac (`done.md`, "The Mac, measured"): capacity that exists
+and sits in no lane. The difference is that here it is four gates deep.
+
+### The fork
+
+- **Wire it** — give `chat` real rungs, set `acceptDegrade` on `batch` (aw4's group), fix the
+  two credential gaps. Cost: an aw4 answer can silently become a free-tier 120b answer, and
+  the 429 evidence says that rung is itself rate-limited, so the fallback can fail too.
+- **Leave it, and stop calling it overflow** — `free` keeps serving deliberate `model: "free"`
+  requests, box1's ladder stays one rung by design, and the strategy note says "spare
+  capacity for work that opts in", not "insurance". Costs nothing; matches what is running.
+- **Neither yet** — revisit when a day's turn-aways go back above ~5%, which is where
+  2026-08-26 sat (206/3,559).
+
+**No evidence favours wiring it today.** The recommendation is the second option, because
+the only thing currently wrong is the belief, not the routing.
