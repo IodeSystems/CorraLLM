@@ -22,7 +22,8 @@ const schema = `
 CREATE TABLE IF NOT EXISTS activity (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     ts                INTEGER NOT NULL,          -- unix millis
-    served            TEXT    NOT NULL,          -- served model name
+    served            TEXT    NOT NULL,          -- the model that ANSWERED (the winning candidate)
+    requested         TEXT    NOT NULL DEFAULT '', -- what the caller ASKED for: a lane, an alias, or the model
     placement         TEXT    NOT NULL DEFAULT '', -- WHICH placement served it (box + cmd); '' predates the column
     key               TEXT    NOT NULL DEFAULT '', -- caller identity
     source_ip         TEXT    NOT NULL DEFAULT '', -- client IP (via middleware.RealIP / X-Forwarded-For)
@@ -327,6 +328,7 @@ var migrations = []string{
 	// would charge every insert twice for one access path.
 	`DROP INDEX IF EXISTS idx_activity_key_ts`,
 	`ALTER TABLE activity ADD COLUMN ticket TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE activity ADD COLUMN requested TEXT NOT NULL DEFAULT ''`,
 	// AFTER the column, and here rather than in `schema`, because on an
 	// existing database the CREATE TABLE above is a no-op: the schema block
 	// runs first and the column it indexes does not exist yet. That crash-looped
@@ -657,9 +659,35 @@ func Open(ctx context.Context, path string) (*Store, error) {
 // 499) record them as zero. A request preempted mid-serve still records the cost
 // actually consumed before the abort (partial tokens + any swap energy spent).
 type Activity struct {
-	ID     int64 // row id (P10b; 0 until persisted, set on read)
-	TS     int64 // unix millis
+	ID int64 // row id (P10b; 0 until persisted, set on read)
+	TS int64 // unix millis
+	// Served is the model that ACTUALLY answered — the candidate that won, not
+	// the name the caller wrote down. Those differ whenever a caller addresses a
+	// lane, and the log used to record the request's name for both.
+	//
+	// That cost the one caller doing it the intended way its entire history:
+	// 4,249 rows said the model was `chat` and carried 19.2M prompt tokens
+	// belonging to no model, while Prometheus (proxy.go, metrics.Request) had
+	// the right name all along. Two accounts of the same request that disagreed.
+	//
+	// Rows written before this say the lane. They are not backfilled: the model
+	// that answered was never recorded, so reconstructing it from config
+	// revisions would be inference wearing the costume of measurement.
+	//
+	// On a request that nobody served — a 429, a 503, a caller who hung up —
+	// there is no serving model, so this repeats Requested rather than naming
+	// the candidate that happened to refuse. A backend that rejected a request
+	// did not serve it, and counting it here would put turn-aways on a model's
+	// row as though it had done work.
 	Served string
+	// Requested is what the caller asked for — a lane name, an alias, or the
+	// model itself. Equal to Served for a pinned request, which is most of them.
+	//
+	// Kept as its own column because "did anyone use the lane" is a question
+	// only this can answer, and the alternative (parsing it back out of
+	// ReqBody) fails on every row whose payload capture was off or truncated —
+	// which was 4,482 of one caller's 12,294 requests in a single day.
+	Requested string
 	// Placement is which way of serving Served handled this request: the box
 	// and the cmd. Empty on rows written before the column existed, and on any
 	// request served by something corrallm does not place (a pure proxy).
@@ -712,12 +740,12 @@ type Activity struct {
 // InsertActivity appends a request record to the activity log.
 func (s *Store) InsertActivity(a Activity) error {
 	_, err := s.db.Exec(
-		`INSERT INTO activity (ts, served, placement, key, source_ip, path, status, dwell_ms,
+		`INSERT INTO activity (ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
 		                       finish_reason, load_ms, retry_after_ms, ticket)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.TS, a.Served, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.TS, a.Served, a.Requested, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
 		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket,
@@ -731,12 +759,12 @@ func (s *Store) InsertActivity(a Activity) error {
 func (s *Store) ActivityByID(id int64) (Activity, error) {
 	var a Activity
 	err := s.db.QueryRow(
-		`SELECT id, ts, served, placement, key, source_ip, path, status, dwell_ms,
+		`SELECT id, ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
 		        finish_reason, load_ms, retry_after_ms, ticket
 		 FROM activity WHERE id = ?`, id).Scan(
-		&a.ID, &a.TS, &a.Served, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
+		&a.ID, &a.TS, &a.Served, &a.Requested, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
 		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody,
 		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS, &a.Ticket)
@@ -842,7 +870,7 @@ const payloadPruneChunk = 500
 // BOX". With one model served from two machines, a mean across both describes
 // neither.
 func (s *Store) RecentActivity(w Window, limit int, served, key, placement string) ([]Activity, error) {
-	const cols = `id, ts, served, placement, key, source_ip, path, status, dwell_ms,
+	const cols = `id, ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
 	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms,
 	        ticket`
@@ -876,7 +904,7 @@ func (s *Store) RecentActivity(w Window, limit int, served, key, placement strin
 	var out []Activity
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
+		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Requested, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
 			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS,
 			&a.RetryAfterMS, &a.Ticket); err != nil {
