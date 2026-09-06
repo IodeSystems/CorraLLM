@@ -164,6 +164,22 @@ export function KeyCharts({
   )
 
   const f = METRICS[metric].fmt
+
+  // NUMBERS FOR SOMEBODY WHO DOES NOT HOVER. The caption used to read "hover for
+  // exact values", which for a person who never hovers means the exact values do
+  // not exist (OB-10, named by the caller: "all I ever get is a shape and one
+  // number"). The total and the busiest bucket are written down; the tooltip
+  // still carries per-bucket detail for whoever wants it.
+  const totals = (series: { values: number[] }[]) => {
+    const perBucket = buckets.map((_, i) => series.reduce((n, s) => n + (s.values[i] ?? 0), 0))
+    const peakAt = perBucket.indexOf(Math.max(0, ...perBucket))
+    return {
+      total: perBucket.reduce((a, b) => a + b, 0),
+      peak: perBucket[peakAt] ?? 0,
+      peakAt: buckets[peakAt],
+    }
+  }
+  const overall = totals(modelSeries.length ? modelSeries : keySeries)
   const spanLabel = windowPhrase(pageWindow)
 
   const selector = (
@@ -192,8 +208,15 @@ export function KeyCharts({
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
         {selector}
         <Typography variant="caption" sx={{ color: C.textMuted }}>
-          {bucketMinutes >= 60 ? `${bucketMinutes / 60}h` : `${bucketMinutes}m`} buckets — hover for
-          exact values
+          {bucketMinutes >= 60 ? `${bucketMinutes / 60}h` : `${bucketMinutes}m`} buckets.{' '}
+          {overall.total > 0
+            ? `${f(overall.total)} in total, busiest ${bucketMinutes >= 60 ? `${bucketMinutes / 60}h` : `${bucketMinutes}m`} was ${f(overall.peak)}${
+                overall.peakAt
+                  ? ` at ${new Date(overall.peakAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                  : ''
+              }.`
+            : 'Nothing in this window.'}{' '}
+          Resting a pointer on a band gives one bucket at a time.
         </Typography>
       </Box>
       {nothing}

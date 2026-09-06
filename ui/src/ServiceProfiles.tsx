@@ -99,7 +99,7 @@ export function ServiceProfiles({ window = DEFAULT_WINDOW }: { window?: TimeWind
           <TableRow>
             <TableCell>Model</TableCell>
             <TableCell>Caller</TableCell>
-            <TableCell align="right">n</TableCell>
+            <TableCell align="right">Requests</TableCell>
             <TableCell align="right">
               <Tooltip title="Mean time this caller's requests occupy a slot. Queue time and cold-load are excluded — those are consequences of contention, not properties of the work.">
                 <span>Mean</span>
@@ -107,18 +107,18 @@ export function ServiceProfiles({ window = DEFAULT_WINDOW }: { window?: TimeWind
             </TableCell>
             <TableCell align="right">
               <Tooltip title="Coefficient of variation (stddev/mean). Near 0, every request costs the same and a mean predicts well. Above 1, the mean is tail-dominated.">
-                <span>CV</span>
+                <span>How even</span>
               </Tooltip>
             </TableCell>
             <TableCell align="right">Max</TableCell>
             <TableCell align="right">
               <Tooltip title="(1+CV²)/2 — the multiple by which this caller's variability alone inflates the wait of whoever queues behind them, versus a mean-only estimate.">
-                <span>×wait</span>
+                <span>Makes others wait</span>
               </Tooltip>
             </TableCell>
             <TableCell align="right">
               <Tooltip title="Blended toward the model's overall profile by sample count (pseudo-count 30), so a handful of requests cannot let one outlier set policy. Converges to the caller's own numbers as evidence accumulates.">
-                <span>Blended</span>
+                <span>Used for estimates</span>
               </Tooltip>
             </TableCell>
             <TableCell align="right">
@@ -174,7 +174,7 @@ export function ServiceProfiles({ window = DEFAULT_WINDOW }: { window?: TimeWind
   return (
     <Panel
       title="Caller service profiles"
-      subtitle={`How long each caller's work holds a slot, and how predictable it is — ${windowPhrase(window)}`}
+      subtitle={`How long each caller's work holds a slot, and how predictable it is — ${windowPhrase(window)}. "How even" near 1 means their requests vary about as much as they average; well above 1 means a few long ones dominate. "Makes others wait" is how much that unevenness stretches the wait for whoever is queued behind them — 1.0× is no worse than their average suggests.`}
       badge={<Chip size="small" variant="outlined" label={`${rows.length} callers`} />}
       flush
     >
