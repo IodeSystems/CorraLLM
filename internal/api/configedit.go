@@ -517,6 +517,75 @@ func (h *Handlers) applyEdit(ctx context.Context, what string, fn func(*config.C
 	return h.UpdateConfig(ctx, noteFor(ctx, what), fn)
 }
 
+// editAuthoredModel applies a change to a model WHERE IT IS WRITTEN DOWN, not
+// to the resolved view of it.
+//
+// c.Models is a flat, derived index — localprovider.go and the extension
+// resolvers build it at load from `providers.<p>.models`,
+// `extensions.<e>.providers.<p>.provides` and the top-level `models:` block.
+// Writing only c.Models produces a mutation that reports success, works until
+// the next save, and then vanishes: the store re-derives from the authored
+// blocks and the change was never in one. That is what the first cut of the
+// queue-depth button did, caught by exporting the config after pressing it.
+//
+// The resolved copy is updated too, because that is what the running proxy and
+// the scheduler read until the next reload — the same thing UpsertModel does
+// after writing an extension provider's entry.
+func editAuthoredModel(c *config.Config, name string, apply func(*config.Model)) error {
+	resolved, ok := c.Models[name]
+	if !ok {
+		return huma.Error404NotFound("no such model")
+	}
+	switch {
+	// An extension's own `provides` is derived FROM the extension; editing the
+	// derived copy is overwritten on the next reload, so it is refused rather
+	// than half-applied (the rule UpsertModel already states).
+	case resolved.Extension != "" && resolved.ProviderName == "":
+		return huma.Error409Conflict(fmt.Sprintf(
+			"%q is provided by extension %q — edit the extension instead", name, resolved.Extension))
+
+	case resolved.Extension != "" && resolved.ProviderName != "":
+		ext, ok := c.Extensions[resolved.Extension]
+		if !ok {
+			return huma.Error500InternalServerError("model names an extension that is not configured")
+		}
+		pv, ok := ext.Providers[resolved.ProviderName]
+		if !ok {
+			return huma.Error500InternalServerError("model names a provider that is not configured")
+		}
+		id := strings.TrimPrefix(name, resolved.ProviderName+"-")
+		authored, ok := pv.Provides[id]
+		if !ok {
+			return huma.Error500InternalServerError("model is not under the provider it names")
+		}
+		apply(&authored)
+		pv.Provides[id] = authored
+		ext.Providers[resolved.ProviderName] = pv
+		c.Extensions[resolved.Extension] = ext
+
+	case resolved.ProviderName != "":
+		lp, ok := c.Providers[resolved.ProviderName]
+		if !ok {
+			return huma.Error500InternalServerError("model names a provider that is not configured")
+		}
+		id := strings.TrimPrefix(name, resolved.ProviderName+"-")
+		authored, ok := lp.Models[id]
+		if !ok {
+			return huma.Error500InternalServerError("model is not under the provider it names")
+		}
+		apply(&authored)
+		lp.Models[id] = authored
+		c.Providers[resolved.ProviderName] = lp
+
+	default:
+		// Written in the top-level `models:` block: the resolved entry IS the
+		// authored one.
+	}
+	apply(&resolved)
+	c.Models[name] = resolved
+	return nil
+}
+
 // SetModelQueueDepthInput sets one model's queue limit.
 type SetModelQueueDepthInput struct {
 	Name string `path:"name"`
@@ -547,28 +616,28 @@ func (h *Handlers) SetModelQueueDepth(ctx context.Context, in *SetModelQueueDept
 		what = "queue limit for model " + in.Name + " cleared — back to the box-wide limit"
 	}
 	err := h.mutateConfig(ctx, what, func(c *config.Config) error {
-		m, ok := c.Models[in.Name]
-		if !ok {
-			return huma.Error404NotFound("no such model")
-		}
-		if in.Body.MaxQueueDepth == 0 {
-			// Clearing the DEPTH must not silently drop a maxWait override that
-			// was set alongside it; only an override with nothing left in it is
-			// removed, so the config says what the operator actually chose.
-			if m.Scheduler != nil {
-				m.Scheduler.MaxQueueDepth = 0
-				if m.Scheduler.MaxWait == "" {
-					m.Scheduler = nil
+		return editAuthoredModel(c, in.Name, func(m *config.Model) {
+			if in.Body.MaxQueueDepth == 0 {
+				// Clearing the DEPTH must not silently drop a maxWait override
+				// set alongside it; only an override with nothing left in it is
+				// removed, so the config says what the operator actually chose.
+				if m.Scheduler != nil {
+					m.Scheduler.MaxQueueDepth = 0
+					if m.Scheduler.MaxWait == "" {
+						m.Scheduler = nil
+					}
 				}
+				return
 			}
-		} else {
-			if m.Scheduler == nil {
-				m.Scheduler = &config.SchedulerConfig{}
+			// A fresh struct per call: the authored and resolved copies must not
+			// end up sharing one pointer, or a later edit to either would
+			// silently change both.
+			sc := config.SchedulerConfig{MaxQueueDepth: in.Body.MaxQueueDepth}
+			if m.Scheduler != nil {
+				sc.MaxWait = m.Scheduler.MaxWait
 			}
-			m.Scheduler.MaxQueueDepth = in.Body.MaxQueueDepth
-		}
-		c.Models[in.Name] = m
-		return nil
+			m.Scheduler = &sc
+		})
 	})
 	if err != nil {
 		return nil, err
