@@ -2653,6 +2653,26 @@ throughout, because it used a flat `Models` map, which is not the shape a real b
 export` still showed no override — while the daemon resolved it correctly and survived a
 restart on it. `bin/corrallm` is a gitignored build artifact, and the one on disk predated the
 `Scheduler` field, so `fromMap` dropped the unknown key on export. The store had been correct
-the whole time; the tool used to check it was not. **`bin/deploy` rebuilds and installs the
-daemon and does not refresh `bin/corrallm`,** so the CLI can silently lag the running server —
-worth a guard, since every `config` subcommand reads through it.
+the whole time; the tool used to check it was not. **`bin/deploy` rebuilt and installed the
+daemon and never refreshed `bin/corrallm`,** so the CLI silently lagged the running server —
+and every `config` subcommand reads through it. Fixed the same day (`ed045c1`).
+
+### The guard existed and missed on two counts
+
+`cmd/corrallm/staleness.go` was already written for exactly this, well argued, with tests. It
+ran in `serve` only, and it disabled itself unless the Makefile had stamped `srcDir` — and the
+two conditions that actually bit were both outside it: a CLI subcommand, from a hand-built
+`go build -o bin/corrallm`.
+
+So: `PersistentPreRun` on the root command checks every subcommand (stderr, so
+`config export > file` is unaffected — verified); an unstamped binary falls back to the module
+root above the executable, which distinguishes a hand-built binary in `./bin` from a release in
+`/usr/local/bin` that still correctly stays silent; and the message says what staleness costs
+for the command being run, because "restart the service" is not the fix when the problem is a
+misread export. `bin/deploy` now rebuilds the CLI with `make build` so it is stamped and can
+warn on its own.
+
+**A regression made while fixing it, worth keeping:** rewriting `bin/deploy` through a
+write-temp-then-rename helper dropped its execute bit, and the commit recorded mode 100644.
+Caught by the next deploy refusing to run. An atomic write does not inherit the mode of the
+file it replaces.
