@@ -404,6 +404,14 @@ depends on which.
   a slowdown covers the symptom, not the cause).
 
 **next** — the caller decision, then `PLACEMENT`, which is cheap and unblocked.
+
+**Slot cache — built, wired, OFF.** `internal/slotcache` + `--slot-cache-dir`, measured before
+it was written (save 643 ms, restore 331 ms, 11x against reprocessing; 36.8 KB per token).
+Turning it on needs the flag plus a restart; the backend precondition is already met.
+`X-Corrallm-Conversation` lets a caller name its conversation rather than have the head of its
+prompt guessed at — **filed with aw4** (`~/local/src/iodesystems/aw4/plan/icebox.md`), because
+aw4 is one caller with many concurrent nodes and is therefore the traffic that thrashes a
+one-slot backend. Inert until the cache is on, so it can land there whenever.
 **risks** — a vocabulary fix is where vocabulary bugs are born; name the object.
 **how we will know** — run 8 on both scenarios, same build, reporting composition against
 `done.md` § Lenny's table.
