@@ -2478,3 +2478,36 @@ backend loaded without recording WHY. Five runs asked "will it come right on its
 answer was in the data the whole time. A "prefix reuse" figure beside time-per-request, and a
 reason on every load, would have answered it. Filed as the strongest candidate for the next
 slice — it is the first thing in this whole exercise that would have told Ray *why*.
+
+---
+
+## ✅ The Mac, measured: capacity that cannot serve this workload (2026-09-06)
+
+`carlsmacbookpro` was dark from July until 2026-09-05 and is now up, heartbeating and
+self-updating (`plan.md` §6 for how, and for the routing workaround it needs). What it can
+actually do was then measured rather than hoped at, on `Qwen3.6-35B-A3B-MTP Q6_K_XL`, a 35B MoE
+with ~3B active — the shape that is supposed to suit Apple Silicon:
+
+| M1 Max, 69 GB, cold prompt of 8,813 tokens | |
+|---|---|
+| prefill | **71 tok/s** |
+| generation | **10.7 tok/s** |
+
+Against box1's measured **731 tok/s** prefill over the same day. One of aw4's ordinary 60k-token
+prompts is ~30 seconds of prefill on box1 and **~14 minutes** on the Mac.
+
+**So it is not overflow capacity for this box's traffic**, and it never was: prefill, not
+generation, is what aw4's 40–120k-token prompts spend their time on. A dense 27B there would be
+worse still (~22 GB of weights against ~400 GB/s).
+
+**It is also not routed anywhere** — the `chat` lane has exactly one rung, `local-Qwen3.8-27B`,
+so nothing would have fallen through to the Mac even if it were fast. Two independent reasons it
+sat idle, and only one of them was the agent being down.
+
+**What it could still be worth**, all short-prompt work where 71 tok/s prefill does not matter and
+which currently competes with chat for box1's single slot: `local-nomic-embed-text`, and the oidio
+audio models. Filed in `icebox.md`.
+
+**Why this is worth keeping.** It converts "the Mac never realised" into two numbers, and those
+numbers are the argument for a second card: the machine that exists is 10x slower at the thing
+this workload is made of.

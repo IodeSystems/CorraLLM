@@ -73,6 +73,21 @@ and there is no way to tell — its second scenario had the same control refused
 opposite reasons. Also worth it before any claim that a fix "worked": one scenario cannot show
 whether the fix or the persona moved.
 
+## Move short-prompt work to the Mac
+
+**What.** Put `local-nomic-embed-text` and the oidio audio models on `carlsmacbookpro` instead of
+box1, and route them there.
+
+**Why it might be worth it.** Measured 2026-09-06: the Mac does 71 tok/s prefill against box1's
+731, which rules it out for chat (a 60k-token prompt is 14 minutes there). Embeddings and audio
+send tens or hundreds of tokens, so prefill speed is irrelevant to them — and every one of those
+requests currently competes for box1's SINGLE chat slot, which is the resource actually under
+pressure.
+
+**Why it is parked.** Nothing is measurably suffering from it yet: embeddings are a small share of
+traffic. It becomes worth doing if the activity log shows embedding or audio requests queueing
+behind chat, which is one query away when somebody wants to check.
+
 ## Optional extensions — improve the product; nothing active requires them
 
 *(Relocated from `plan.md` §7 during the 2026-08-24 archive pass. Pull in opportunistically.)*
