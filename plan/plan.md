@@ -874,7 +874,7 @@ without a format change or a decompress on read.
 | 1 | Agent lease: self-reap on/off, and its TTL | `host.Remote` (§6) | not yet — answer before that step |
 | 2 | Is an *honest* wait estimate even wanted? | the wait-estimate formula (§6) | not yet — gather a wider traffic mix first |
 | 3 | P30 — what does a CALLER see? | four filed UI items (§P30) | **now** — the only one blocking work |
-| 4 | Should aw4 ride the `chat` lane? | nothing built — blocked by the attribution fix | after attribution lands |
+| 4 | Should aw4 ride the `chat` lane? | a deploy — the attribution fix is written (`abfa815`), not running | after that deploy |
 
 **Six others were closed on 2026-08-24 by checking the box instead of re-reading the plan.**
 The answers and their evidence are recorded in the §6 slices that needed them, not here:

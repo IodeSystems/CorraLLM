@@ -115,8 +115,9 @@ reorganization, and the Lenny scenario for it is already written up in `icebox.m
 
 ## 4. ❓ Should aw4 ride the `chat` lane?
 
-**Owner:** you. **Gates:** nothing built. **Blocked by:** the attribution fix below, which
-must land first or answering this costs you the visibility you have today.
+**Owner:** you. **Gates:** nothing built. **Blocked by:** a deploy — the attribution fix
+this question waited on is written and tested (`abfa815`), not yet running. Answering before
+it deploys costs you the per-model visibility you have today.
 
 `chat` being a one-rung ladder is a **design, not a gap** — it is the indirection you
 retarget when you experiment or upgrade, and it means "the best we can do". That makes the
@@ -149,3 +150,17 @@ worth closing whatever you decide here.
 
 Overflow is also not a live pressure: turn-aways over the last three days are 12, 4, **0**
 against ~25k requests, and queueing caps at 15 s.
+
+### What unblocked it
+
+`served` used to be the request's own model field, never reassigned to the candidate that
+won, so every lane-addressed row named the lane. Prometheus had the right name all along
+(`proxy.go:685`), which made one request two disagreeing accounts. Now `served` is the model
+that answered and `requested` is what the caller wrote; a request nobody served repeats the
+requested name rather than crediting a backend that refused. History is not backfilled — the
+answering model was never recorded, so reconstructing it would be inference dressed as
+measurement. Expect a discontinuity in per-model charts at the cutover.
+
+**Optional extension, deliberately out of scope:** `requested` is not on the API or the
+dashboard yet, so "who uses lanes" is an SQL question for now. Worth a panel only if the answer
+to this question is "move aw4".
