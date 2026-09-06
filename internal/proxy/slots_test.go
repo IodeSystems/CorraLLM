@@ -53,6 +53,39 @@ func TestSlotSwapLeavesRemoteBackendsAlone(t *testing.T) {
 	}
 }
 
+// A LOCAL model may carry an upstream too — for it, `upstream:` is the
+// HuggingFace repo it is downloaded from, and ProxyTarget() copies that into
+// Target.Model. Treating a non-empty Target.Model as "this is a remote" shipped
+// once and silently disabled the feature on the only backend that needed it.
+func TestSlotSwapStillActsOnALocalModelWithAnUpstream(t *testing.T) {
+	p := &Proxy{}
+	p.SetSlotCache(t.TempDir(), 1<<30)
+	var actions []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		actions = append(actions, r.URL.Query().Get("action"))
+		_, _ = w.Write([]byte(`{"n_saved":10,"n_written":100}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	// Exactly box1's shape: a spawned local model whose upstream is a HF repo.
+	target := &config.ProxyTarget{URL: u, Model: "unsloth/Qwen3.8-27B-GGUF:UD-Q6_K"}
+	model := config.Model{Cmd: "llama-server -hf unsloth/Qwen3.8-27B-GGUF"}
+	body := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("x", 20<<10) + `"}]}`)
+
+	for _, conv := range []string{"task-a", "task-b"} {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set(slotcache.ConversationHeader, conv)
+		p.swapSlot(r.Context(), target, "local-Qwen3.8-27B", model, "sk-aw4", r, body)
+	}
+	if len(actions) == 0 {
+		t.Fatal("a local model with an upstream was skipped — the bug this test exists for")
+	}
+	if actions[0] != "save" {
+		t.Errorf("expected the outgoing conversation to be saved, got %v", actions)
+	}
+}
+
 // Below the floor, reprocessing is cheaper than remembering, so nothing happens.
 func TestSlotSwapIgnoresShortPrompts(t *testing.T) {
 	p := &Proxy{}

@@ -41,9 +41,17 @@ func (p *Proxy) swapSlot(ctx context.Context, target *config.ProxyTarget, served
 	// Only a backend corrallm STARTED has a slot corrallm may touch. A model with
 	// no cmd is somebody else's endpoint — a remote provider, or a process that
 	// merely happens to be listening — and asking that for /slots would be asking
-	// a stranger about their cache. Target.Model is set on exactly those, and is
-	// checked too because a local model may also carry an upstream id.
-	if backend.Cmd == "" || target.Model != "" {
+	// a stranger about their cache.
+	//
+	// The cmd is the WHOLE test, and it is worth saying why nothing else is. The
+	// obvious second check — "Target.Model is empty, so this is not a remote" —
+	// is wrong: ProxyTarget() copies a model's `upstream:` into Target.Model, and
+	// for a LOCAL model upstream is the HuggingFace repo it is downloaded from
+	// (`unsloth/Qwen3.8-27B-GGUF:UD-Q6_K`), not a provider's model id. That check
+	// shipped, and it silently skipped every request on the one backend this
+	// feature exists for: the cache was on, the flags were right, and nothing
+	// ever happened.
+	if backend.Cmd == "" {
 		return
 	}
 	if len(body) < minSlotBytes {
