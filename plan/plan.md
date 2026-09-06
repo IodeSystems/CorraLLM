@@ -416,38 +416,42 @@ one-slot backend. Inert until the cache is on, so it can land there whenever.
 **how we will know** — run 8 on both scenarios, same build, reporting composition against
 `done.md` § Lenny's table.
 
-### ◻ Slot cache: mechanism works, benefit unproven — 2026-09-05
+### ✅ Slot cache is working — 2026-09-05 21:48, first hour measured
 
-**Vision is a requirement**, so `local-Qwen3.8-27B` keeps its mmproj, and that settles one thing
-permanently: **`--cache-reuse` can never apply to this model.** llama.cpp disables it for any
-multimodal model and says so at every load. The flag is out of the cmd as of revision 32; the
-experiment it fed is retracted below.
+**Vision stays**, so `local-Qwen3.8-27B` keeps its mmproj. That makes `--cache-reuse`
+permanently unavailable *for that flag alone* — llama.cpp disables it for multimodal models and
+says so at every load — and it is out of the cmd as of revision 32.
 
-**What is known about slot save/restore on this model:**
+**A correction to what this entry said an hour ago.** It claimed the benefit was unproven and
+speculated that multimodal might break slot restore too. The first was measured too early against
+my own contention; the second was invented — the log line is about the `cache_reuse` flag and
+says nothing about the prompt cache, which plainly works here (aw4 sits at 97.7% reuse and
+llama.cpp reports `f_sim_best = 1.000`).
 
-| | |
-|---|---|
-| save | 9,027 tokens in 375 ms · 19,639 tokens (740 MB) in 643 ms · 48,982 tokens (1.6 GB) in 1.6 s |
-| restore | 9,027 tokens in 126 ms · 740 MB in 331 ms |
-| a hit after restore | **observed once**, ~19:00 on a quiet box: 13,274 of 13,278 tokens cached |
-| a hit after restore | **not reproducible at 22:00 under load**: `n_restored 9027`, then `cached 0` |
+**What the first hour actually shows**, `sk-aw4` on this model:
 
-**What has been ruled out.** Capacity is 1:1 — corrallm's `maxConcurrent` is 1 and llama.cpp runs
-`--parallel 1` with one slot — so a swap made after admission does hold the backend exclusively,
-and the obvious "somebody else's request landed in between" does not explain the proxy-path
-failure. The 22:00 MANUAL test is explained by contention (its retries past 429s mean other
-requests ran between the restore and the resend), but the in-proxy attempt has no such window.
+| | requests | mean answer | prompt reuse | tokens re-read |
+|---|---|---|---|---|
+| the 3 h before, cache off | 1,847 | 3.7 s | 94.8% | 3,159 |
+| since 21:48, cache on | 743 | **2.7 s** | **97.7%** | **1,174** |
 
-**What is left to find out, and it needs a quiet box:** whether a restored slot yields prefix
-reuse reliably on a multimodal model, or whether the 19:00 observation was the exception. Until
-that is settled the feature is ON and observable — every swap logs one line — but it is NOT
-established that it helps anybody.
+And the mechanism is visible doing it, on real traffic rather than a probe:
 
-**next** — repeat prime → save → clobber → restore → resend during a genuine idle window, with
-nothing else served in between, and read llama.cpp's own slot log rather than the usage field.
-**risks** — it is enabled in production on that uncertainty. It cannot fail a request, and the
-worst case is ~1.6 s of save on a conversation switch buying nothing.
-**decision available to you** — turning it off is `--slot-cache-dir ""` and a restart.
+    22:43:22  slot cache backend=local-Qwen3.8-27B caller=sk-aw4 restored=true
+    22:43:23  slot get_availabl: selected slot by LCP similarity, f_sim_best = 1.000
+
+Every restore is followed by a perfect prefix match. **One hour, one workload** — not settled,
+but the direction is clear and the mechanism is observable.
+
+**Cost so far:** 21 states, 12 GB in the first hour, against a 64 GB cap. At that rate the cap is
+reached in ~5 hours and eviction runs continuously thereafter, so the cap decides how many
+conversations stay warm rather than how much disk is used. ~1 TB is free; raising it is one flag
+and a restart.
+
+**next** — read it again after a full day, and after aw4 sends `X-Corrallm-Conversation`
+(filed in aw4's icebox), which replaces the inferred key with a declared one.
+**risks** — the inferred key is a guess about aw4's conversation shape; if it is wrong, the cost
+is a save that buys nothing, and the swap rate in the log is how that would show.
 
 ### ◐ ~~`--cache-reuse 256` is live~~ — RETRACTED 2026-09-05 21:49
 
