@@ -416,44 +416,43 @@ one-slot backend. Inert until the cache is on, so it can land there whenever.
 **how we will know** — run 8 on both scenarios, same build, reporting composition against
 `done.md` § Lenny's table.
 
-### ✅ Slot cache is working — 2026-09-05 21:48, first hour measured
+### ⏸ Slot cache — built, measured, TURNED OFF 2026-09-06 00:10
 
-**Vision stays**, so `local-Qwen3.8-27B` keeps its mmproj. That makes `--cache-reuse`
-permanently unavailable *for that flag alone* — llama.cpp disables it for multimodal models and
-says so at every load — and it is out of the cmd as of revision 32.
+**It is off in production.** Built, wired, tested, enabled for two hours, measured honestly, and
+switched off because on this box's traffic it was a net cost. The code stays; the flag does not.
 
-**A correction to what this entry said an hour ago.** It claimed the benefit was unproven and
-speculated that multimodal might break slot restore too. The first was measured too early against
-my own contention; the second was invented — the log line is about the `cache_reuse` flag and
-says nothing about the prompt cache, which plainly works here (aw4 sits at 97.7% reuse and
-llama.cpp reports `f_sim_best = 1.000`).
+**Three windows, `sk-aw4` on `local-Qwen3.8-27B`:**
 
-**What the first hour actually shows**, `sk-aw4` on this model:
-
-| | requests | mean answer | prompt reuse | tokens re-read |
+| | requests | mean | reuse | tokens re-read |
 |---|---|---|---|---|
-| the 3 h before, cache off | 1,847 | 3.7 s | 94.8% | 3,159 |
-| since 21:48, cache on | 743 | **2.7 s** | **97.7%** | **1,174** |
+| A — 3 h before, cache off | 1,847 | 3.7 s | 94.8% | 3,159 |
+| B — cache on, first hour | 827 | **2.8 s** | **97.8%** | **1,129** |
+| C — cache on, after a restart | 836 | **4.3 s** | 95.4% | 3,527 |
 
-And the mechanism is visible doing it, on real traffic rather than a probe:
+**What separates B from C, and it is the whole finding.** In B, restores happened — the log shows
+`caller=sk-aw4 restored=true` followed by `f_sim_best = 1.000`. In C, across 836 requests: **15
+saves, 18.7 GB written, and not one restore.** Twenty distinct conversation keys, none repeated.
+Every switch paid ~1.6 s to write a state nothing ever asked for again, and the mean answer time
+went from 3.7 s to 4.3 s — worse than having no cache at all.
 
-    22:43:22  slot cache backend=local-Qwen3.8-27B caller=sk-aw4 restored=true
-    22:43:23  slot get_availabl: selected slot by LCP similarity, f_sim_best = 1.000
+**Why the keys stopped repeating** is the failure predicted when the declared-id header was added
+(`slotcache.ConversationHeader`, and filed in aw4's icebox): the inferred key is the system block
+plus the first turn, and a client that PRUNES the head of a long conversation changes exactly
+those. aw4 does that. B's restores were probably conversations short enough not to have been
+pruned yet, plus my own probes, which sent a declared id.
 
-Every restore is followed by a perfect prefix match. **One hour, one workload** — not settled,
-but the direction is clear and the mechanism is observable.
+**So the mechanism is proven and the KEY is not.** Save, restore, prefix-match after restore, the
+eviction, the sweep — all demonstrated. What is missing is a conversation identity that survives
+the client's own context management, and only the client can supply it.
 
-**Cost so far:** 21 states, 12 GB in the first hour, against a 64 GB cap. At that rate the cap is
-reached in ~5 hours and eviction runs continuously thereafter, so the cap decides how many
-conversations stay warm rather than how much disk is used. ~1 TB is free; raising it is one flag
-and a restart.
+**How to bring it back, in order:** aw4 sends `X-Corrallm-Conversation` (its icebox entry) →
+re-enable with `--slot-cache-dir` → watch the log for a restore rate, not a save rate. **A save
+with no matching restore is the whole cost and none of the benefit**, and the log now shows both.
 
-**next** — read it again after a full day, and after aw4 sends `X-Corrallm-Conversation`
-(filed in aw4's icebox), which replaces the inferred key with a declared one.
-**risks** — the inferred key is a guess about aw4's conversation shape; if it is wrong, the cost
-is a save that buys nothing, and the swap rate in the log is how that would show.
+The 27 GB of states are moved aside at `~/.corrallm/var/slots.disabled-20260906`, deletable at
+any time.
 
-### ◐ ~~`--cache-reuse 256` is live~~ — RETRACTED 2026-09-05 21:49
+### ◐ ~~`--cache-reuse 256` is live~~ — RETRACTED 2026-09-05 21:49### ◐ ~~`--cache-reuse 256` is live~~ — RETRACTED 2026-09-05 21:49
 
 **Applied** (config revision 27, one line, restorable): `local-Qwen3.8-27B` spawns with
 `--cache-reuse 256` beside its existing `--parallel 1`. More slots is the textbook fix for
