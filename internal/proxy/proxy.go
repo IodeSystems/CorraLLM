@@ -668,6 +668,16 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// that frees a slot in 2s is a better answer than a cold one 30s from
 	// resident. Only if EVERY candidate is permanently unusable do we 503.
 	var bestBP *sched.BackpressureError
+	// lastHardFail is what the most recent backend SAID when it refused, kept so
+	// the row a person reads can carry it.
+	//
+	// A spill is invisible by construction: the walk moves to the next candidate
+	// and, if the list runs out, the caller gets "no backend available" — a
+	// statement about corrallm, when the truth was "Cerebras answered 402". That
+	// reason existed only in a log line, so the activity row asserted the box had
+	// nothing to offer while the actual problem was an unpaid account (live box,
+	// 2026-09-06: 8 rows over five days, all saying `no backend available`).
+	var lastHardFail string
 	// Cumulative across the spill walk, not just the terminal backend.
 	//
 	// These were per-candidate assignments, which under-reported whenever a
@@ -862,6 +872,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(proxyErr, errBackendDown) && !sc.wroteHeader {
 			release()
 			slog.Warn("free-tier backend hard-failed, spilling", "backend", name, "status", hardFailStatus)
+			lastHardFail = fmt.Sprintf("%s refused with %d", name, hardFailStatus)
 			p.markInflight(live, inflightQueued, "")
 			continue
 		}
@@ -995,9 +1006,16 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, `{"error":{"message":"no backend available"}}`, http.StatusServiceUnavailable)
+	// The row says WHY when a backend gave a reason. The wire response is left
+	// alone: callers parse it, and the upstream's status is the operator's
+	// business rather than something to hand every caller.
+	exhaustedReason := "no backend available"
+	if lastHardFail != "" {
+		exhaustedReason = lastHardFail
+	}
 	p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
 		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
-		QueuedMS: queuedMS, LoadMS: loadMS, Error: "no backend available", ReqBody: reqBody})
+		QueuedMS: queuedMS, LoadMS: loadMS, Error: exhaustedReason, ReqBody: reqBody})
 }
 
 // handleRealtime is the live-transcription edge (P9e): a WebSocket session that
