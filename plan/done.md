@@ -2559,3 +2559,51 @@ config's word kept in each gloss. `0eb90c2`.
 **What this did NOT settle.** `chat` being a one-rung ladder is a design — the indirection you
 retarget on upgrade, meaning "the best we can do" — not a gap. Whether aw4 should stop pinning
 a model and ride it is now genuinely open and unblocked (`open-questions.md` §4).
+
+## A dead rung now says so, 2026-09-06
+
+Follow-on from the cerebras removal, and an answer to "do we have a way of
+auto-detecting free lanes from various providers".
+
+**We do, and it was already running — for one provider.** `internal/freeroster` refetches a
+provider's `/v1/models`, records which ids are free, and marks a backend stale when its model
+churns out of that set, so the selector routes around it before a request lands. Its package
+doc describes the cerebras case exactly. The virtual extension does the enrolment half — the
+ten OpenRouter rungs were never typed by anyone.
+
+**But `RefreshRoster` skips any model without `freeTier.refresh: true`,** and groq and cerebras
+were declared statically without it. That is the mechanical reason a 402 sat unnoticed for five
+days: the proactive check written for this was never switched on for that rung.
+
+**And it could not have been switched on usefully.** Both catalogues, pulled through corrallm:
+
+| provider | rows | flagged free | priced | modality reported |
+|---|---|---|---|---|
+| groq | 14 | **0** | 9 | 0 |
+| openrouter | 430 | 21 | 409 | 430 |
+
+The free test is a `:free` id suffix or `pricing.prompt == "0" && pricing.completion == "0"`.
+Groq's free tier is a **rate limit on normally-priced models**, not a zero price, so there is
+nothing in its catalogue to detect; cerebras is the same shape. Auto-detection generalises to
+providers that price their catalogue OpenRouter-style and to no others. Enabling refresh on
+groq would be inert rather than harmful — `Roster.Has` returns `known=false` on an empty set,
+so a provider with no free rows cannot be falsely stranded.
+
+**So the gap was never detection — it was that nothing accumulated.** A hard failure was
+spilled past per request and forgotten. The ledger's `hardFails` count could not help and was
+not meant to: it lives in memory, clears on any 2xx, and reset to zero on every restart, so it
+answers "how hard should I back off right now", never "has this been dead a week". Nor is the
+activity log any use — a spill writes no row naming the backend it spilled PAST, since one
+request is one row, so only a rung failing as the LAST candidate leaves a trace.
+
+Now a small durable table holds one row per refusing backend, deleted the moment it serves
+again. `since` is fixed at the first refusal and never advanced: the question is how long it
+has been broken, and when it last failed is already in the log. Surfaced above the ledger on
+Provider budgets, naming the problem and the fix rather than the status — 402 reads "the
+account is unpaid — fund it, or drop this rung from its lane" (OB-3, OB-6). `1bd0052`.
+
+**Verified by test, not by observation.** The end-to-end test drives a real 402 through the
+real proxy stack, including a restart, and asserts the streak survives it and clears on the
+first success after. It could not be watched live: the one backend that produced 402s was
+removed an hour earlier, and the live check confirms only the plumbing — table created,
+endpoint carrying an empty `refusing` list.
