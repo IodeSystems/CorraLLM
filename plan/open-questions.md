@@ -115,9 +115,9 @@ reorganization, and the Lenny scenario for it is already written up in `icebox.m
 
 ## 4. ❓ Should aw4 ride the `chat` lane?
 
-**Owner:** you. **Gates:** nothing built. **Blocked by:** a deploy — the attribution fix
-this question waited on is written and tested (`abfa815`), not yet running. Answering before
-it deploys costs you the per-model visibility you have today.
+**Owner:** you. **Gates:** nothing — **unblocked as of 2026-09-06**. The attribution fix this
+question waited on is deployed and verified on live traffic: a request for `chat` now records
+`served=local-Qwen3.8-27B, requested=chat`. Moving aw4 no longer costs per-model visibility.
 
 `chat` being a one-rung ladder is a **design, not a gap** — it is the indirection you
 retarget when you experiment or upgrade, and it means "the best we can do". That makes the
@@ -144,9 +144,14 @@ The `free` lane is not overflow for `chat` traffic and nothing suggests it shoul
 `acceptDegrade=false` on all three groups, so no ladder is walked down to a lesser model
 regardless. And the free rungs are thin — 239 requests served by a remote provider ever,
 last 2026-09-01, of which 118 failed: 105 were 429 from the providers' own free tiers (groq
-83, `openrouter-z-ai-glm-5.2` 22), `cerebras-gpt-oss-120b` 7/7 `no backend available`,
-`openrouter-liquid-lfm-2.5-2.6b` `no permitted credential`. Two of those are credential gaps
-worth closing whatever you decide here.
+83, `openrouter-z-ai-glm-5.2` 22).
+
+**`cerebras-gpt-oss-120b` is answering 402 Payment Required** — probed 2026-09-06, and it has
+been doing so since at least 2026-09-01. Not a corrallm problem: the account needs paying or
+the rung needs removing. **YOURS to decide, and the only action item on this page that is not
+a routing opinion.** `groq-gpt-oss-120b` was probed at the same moment and serves fine.
+`openrouter-liquid-lfm-2.5-2.6b` returned `no permitted credential` once, on 2026-08-15, and
+has not been asked since; worth a probe before assuming it is broken.
 
 Overflow is also not a live pressure: turn-aways over the last three days are 12, 4, **0**
 against ~25k requests, and queueing caps at 15 s.
@@ -160,6 +165,10 @@ that answered and `requested` is what the caller wrote; a request nobody served 
 requested name rather than crediting a backend that refused. History is not backfilled — the
 answering model was never recorded, so reconstructing it would be inference dressed as
 measurement. Expect a discontinuity in per-model charts at the cutover.
+
+It also caught something nobody was looking for: `life-raglit` addresses models by **alias**
+(`nomic-embed-text` → `local-nomic-embed-text`), which was being mis-recorded the same way
+lanes were. Aliases and lanes are now both visible as indirection.
 
 **Optional extension, deliberately out of scope:** `requested` is not on the API or the
 dashboard yet, so "who uses lanes" is an SQL question for now. Worth a panel only if the answer

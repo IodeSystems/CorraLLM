@@ -2511,3 +2511,42 @@ audio models. Filed in `icebox.md`.
 **Why this is worth keeping.** It converts "the Mac never realised" into two numbers, and those
 numbers are the argument for a second card: the machine that exists is 10x slower at the thing
 this workload is made of.
+
+## Lane and alias traffic became visible, 2026-09-06
+
+Started from "this is why we have openrouter as well" and ended somewhere else.
+
+**The activity log recorded the name asked for, not the model that answered.** `served` was
+the request's own `model` field, never reassigned to the winning candidate, while Prometheus
+had the right name all along (`proxy.go:685`, `metrics.Request(prov, name, …)`) — one request,
+two accounts, disagreeing whenever a caller addressed anything indirect. It cost the callers
+doing it the intended way their whole history: 4,249 rows said the model was `chat` and 48
+said `free`, carrying 19.2M prompt tokens belonging to no model. `yscr` ran 4,070 of them over
+17 days.
+
+Now `served` is the candidate that answered and `requested` is what the caller wrote — its own
+column, not parsed back out of `req_body`, which is absent or truncated on a large fraction of
+rows (4,482 of one caller's 12,294 in a day). A request nobody served repeats the requested
+name rather than crediting a backend that refused; a rejection is not work. History is not
+backfilled, because the answering model was never recorded and reconstructing it from config
+revisions would be inference wearing the costume of measurement — expect a discontinuity in
+per-model charts at the cutover. `abfa815`, verified live: `served=local-Qwen3.8-27B,
+requested=chat`.
+
+**It found an indirection nobody was looking for.** `life-raglit` addresses models by alias
+(`nomic-embed-text` → `local-nomic-embed-text`), mis-recorded exactly like lanes.
+
+**And "no backend available" was a lie about the box.** Probing the free lane found
+`cerebras-gpt-oss-120b` answering **402 Payment Required** since at least 2026-09-01 — an
+unpaid account. corrallm spills past a hard-failing free backend, correctly; but when it was
+the last candidate the row said `no backend available`, a statement about corrallm, while the
+reason lived in one log line. Eight rows over five days said it. The row now says
+`cerebras-gpt-oss-120b refused with 402`. The wire response is unchanged: callers parse it,
+and an upstream's status is the operator's business. `23195f3`, verified live.
+
+**`PLACEMENT` stopped being a label** (OB-3): *Ran on*, *Ways to run this*, *N boxes*, with the
+config's word kept in each gloss. `0eb90c2`.
+
+**What this did NOT settle.** `chat` being a one-rung ladder is a design — the indirection you
+retarget on upgrade, meaning "the best we can do" — not a gap. Whether aw4 should stop pinning
+a model and ride it is now genuinely open and unblocked (`open-questions.md` §4).

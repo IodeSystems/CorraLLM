@@ -396,8 +396,10 @@ depends on which.
 - ◻ *(caller)* **Which model names go in an editor?** The catalog lists thirteen names — models,
   lanes, proxies, absent ones — without saying which are requestable. He only found out by
   accident, from an example `curl` that used `"model":"chat"`.
-- ◻ **`PLACEMENT` is still the label** on three tables and a section heading, and the canon names
-  that exact word as one that must be the gloss and never the label (OB-3). Both personas hit it.
+- ✅ **`PLACEMENT` was the label** on a column head, a section heading, a chip and the prose
+  pointing at it (OB-3, both personas). Now *Ran on*, *Ways to run this*, *N boxes*; the word
+  survives in each gloss, because an operator who reads the config needs the two vocabularies
+  joined somewhere. `0eb90c2`, deployed.
 - ◻ **Machines does not say whether its numbers are a problem.** `gpu0` at `96%`, a tool marked
   `behind` — neither says whether to act. "I left it alone, but I did so guessing, not knowing."
 - ◻ **A backend load records no reason.** The activity log says a backend loaded, never why —
@@ -405,7 +407,9 @@ depends on which.
   product gap the slowdown investigation left (`done.md` § Lenny, and the card that now explains
   a slowdown covers the symptom, not the cause).
 
-**next** — the caller decision, then `PLACEMENT`, which is cheap and unblocked.
+**next** — the caller decision (§3, yours). Of the rest, *a backend load records no reason* is
+the highest value and wants a real slice: it is a design question about what a load event should
+record, not a label fix.
 
 **Slot cache — built, wired, OFF.** `internal/slotcache` + `--slot-cache-dir`, measured before
 it was written (save 643 ms, restore 331 ms, 11x against reprocessing; 36.8 KB per token).
@@ -874,7 +878,7 @@ without a format change or a decompress on read.
 | 1 | Agent lease: self-reap on/off, and its TTL | `host.Remote` (§6) | not yet — answer before that step |
 | 2 | Is an *honest* wait estimate even wanted? | the wait-estimate formula (§6) | not yet — gather a wider traffic mix first |
 | 3 | P30 — what does a CALLER see? | four filed UI items (§P30) | **now** — the only one blocking work |
-| 4 | Should aw4 ride the `chat` lane? | a deploy — the attribution fix is written (`abfa815`), not running | after that deploy |
+| 4 | Should aw4 ride the `chat` lane? | nothing — the attribution fix is deployed and verified | **open now** |
 
 **Six others were closed on 2026-08-24 by checking the box instead of re-reading the plan.**
 The answers and their evidence are recorded in the §6 slices that needed them, not here:
