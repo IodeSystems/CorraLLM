@@ -481,8 +481,22 @@ operation is not that. The `f_sim_best` figure I first reached for (15% below .9
 against 51% for 09:00–14:00) is the same trap wearing different clothes — that 51% IS the
 degradation, not a baseline.
 
-**So the verdict still needs a bad stretch to judge.** Until one happens the flag is neither
-helping nor hurting, and it costs nothing to leave on.
+**THE FLAG WAS NEVER ACTIVE. Retracting the whole experiment, 2026-09-05 21:49.** llama.cpp says
+so at every load, and I did not read its log until something else sent me there:
+
+    W srv load_model: cache_reuse is not supported by multimodal, it will be disabled
+
+`local-Qwen3.8-27B` carries an mmproj for vision, so `--cache-reuse` is disabled the moment the
+backend starts. The "early read" above measured nothing; the honest comparison it corrected was
+also measuring nothing. **Both readings are void** — not "inconclusive", void. The flag can come
+out of the cmd at the next restart; it costs nothing except the impression that something was
+tried.
+
+**What this is worth keeping:** the reason the reading looked plausible is that I compared
+against a window and not against the mechanism. A flag that a backend silently disables produces
+exactly the numbers of a flag that does nothing, and no amount of care with the WINDOWS would
+have found it. The backend's own startup log would have, in one line, before the experiment
+began.
 
 ### ✅ Per-request priority group, bounded by the key (2026-08-31)
 
