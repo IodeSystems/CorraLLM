@@ -217,9 +217,16 @@ func Namespace(model, cmd string, ctxSize int) string {
 	return hex.EncodeToString(h[:])[:16]
 }
 
+// FLAT, AND NOT BY PREFERENCE. llama.cpp validates the filename it is handed and
+// refuses anything containing a path separator — a subdirectory per backend
+// returns `{"error":"Invalid filename"}` on every save and restore, which would
+// have made this whole package silently inert. The namespace is therefore a
+// filename PREFIX, not a directory.
+func name(namespace, key string) string { return namespace + "-" + key }
+
 // Path is where a key's file lives for one backend.
 func (s *Store) Path(namespace, key string) string {
-	return filepath.Join(s.Dir, namespace, key+".bin")
+	return filepath.Join(s.Dir, name(namespace, key)+".bin")
 }
 
 // Has reports whether a state exists, and touches it so eviction sees it as
@@ -240,10 +247,10 @@ func (s *Store) Has(namespace, key string) bool {
 	return true
 }
 
-// Prepare makes the namespace directory. llama.cpp writes into --slot-save-path
-// itself, so the directory has to exist before a save is asked for.
-func (s *Store) Prepare(namespace string) error {
-	return os.MkdirAll(filepath.Join(s.Dir, namespace), 0o700)
+// Prepare makes the store directory. llama.cpp writes into --slot-save-path
+// itself, so it has to exist before a save is asked for.
+func (s *Store) Prepare(string) error {
+	return os.MkdirAll(s.Dir, 0o700)
 }
 
 type entry struct {
@@ -294,7 +301,21 @@ func (s *Store) Evict() (removed int, freed int64, err error) {
 // backend goes away, because its states can never be restored into anything
 // else and would otherwise sit there until eviction gets to them.
 func (s *Store) DropNamespace(namespace string) error {
-	return os.RemoveAll(filepath.Join(s.Dir, namespace))
+	entries, err := os.ReadDir(s.Dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), namespace+"-") && strings.HasSuffix(e.Name(), ".bin") {
+			if err := os.Remove(filepath.Join(s.Dir, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Manager decides nothing about scheduling and everything about safety.
@@ -357,7 +378,7 @@ func (m *Manager) Swap(ctx context.Context, c *Client, backendID, namespace, key
 	// one bug in here that corrupts rather than merely slows.
 	if prev := m.resident[backendID]; prev != "" {
 		sctx, cancel := context.WithTimeout(ctx, timeout)
-		_, _, err := c.Save(sctx, m.Slot, filepath.Join(namespace, prev))
+		_, _, err := c.Save(sctx, m.Slot, name(namespace, prev))
 		cancel()
 		if err != nil {
 			// A backend without --slot-save-path says so on the first attempt.
@@ -378,7 +399,7 @@ func (m *Manager) Swap(ctx context.Context, c *Client, backendID, namespace, key
 		return what, false
 	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)
-	_, _, err := c.Restore(rctx, m.Slot, filepath.Join(namespace, key))
+	_, _, err := c.Restore(rctx, m.Slot, name(namespace, key))
 	cancel()
 	if err != nil {
 		if isUnsupported(err) {

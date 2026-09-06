@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -292,10 +293,10 @@ func TestSwapSavesTheOutgoingBeforeRestoringTheIncoming(t *testing.T) {
 	if len(f.calls) != 2 {
 		t.Fatalf("want a save then a restore, got %v", f.calls)
 	}
-	if f.calls[0] != "save:"+filepath.Join(ns, "conv-a")+".bin" {
+	if f.calls[0] != "save:"+ns+"-conv-a.bin" {
 		t.Errorf("the outgoing conversation was not saved first: %v", f.calls)
 	}
-	if f.calls[1] != "restore:"+filepath.Join(ns, "conv-b")+".bin" {
+	if f.calls[1] != "restore:"+ns+"-conv-b.bin" {
 		t.Errorf("the incoming conversation was not restored second: %v", f.calls)
 	}
 }
@@ -400,5 +401,42 @@ func TestDeclaredIdIsStillPerCaller(t *testing.T) {
 func TestDeclaredIdNeedsNoParseableBody(t *testing.T) {
 	if _, ok := Key("sk-aw4", "task-4711", []byte("{not json")); !ok {
 		t.Error("a declared id should not depend on the body parsing")
+	}
+}
+
+// THE BUG THIS PACKAGE SHIPPED WITH FOR ONE COMMIT. llama.cpp validates the
+// filename it is given and rejects anything with a path separator in it:
+//
+//	{"error":{"code":400,"message":"Invalid filename"}}
+//
+// A directory per backend therefore failed EVERY save and restore, and because
+// this package is built never to fail a request, it would have failed silently —
+// a feature that logs "save failed" forever and helps nobody. The namespace is a
+// filename prefix, and nothing may put a separator back.
+func TestNothingHandsASeparatorToTheBackend(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{Store: &Store{Dir: dir}}
+	f := &fakeBackend{}
+	c := f.server(t)
+	ns := Namespace("local-Qwen3.8-27B", "llama-server -c 188000", 188000)
+
+	_ = m.Store.Prepare(ns)
+	_ = os.WriteFile(m.Store.Path(ns, "conv-b"), []byte("kv"), 0o600)
+	_, _ = m.Swap(context.Background(), c, "b1", ns, "conv-a")
+	_, _ = m.Swap(context.Background(), c, "b1", ns, "conv-b")
+
+	if len(f.calls) == 0 {
+		t.Fatal("expected the backend to be asked something")
+	}
+	for _, call := range f.calls {
+		filename := call[strings.Index(call, ":")+1:]
+		if strings.ContainsAny(filename, "/\\") {
+			t.Errorf("handed the backend a filename it will reject: %q", filename)
+		}
+	}
+	// And the file the store writes has to be the one the backend was told about,
+	// or a save lands somewhere Has() never looks.
+	if got := filepath.Base(m.Store.Path(ns, "conv-b")); got != ns+"-conv-b.bin" {
+		t.Errorf("store path and backend filename disagree: %q", got)
 	}
 }
