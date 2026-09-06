@@ -38,6 +38,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/quota"
 	"github.com/iodesystems/corrallm/internal/sched"
+	"github.com/iodesystems/corrallm/internal/slotcache"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -51,6 +52,9 @@ type Proxy struct {
 	store  *store.Store
 	cost   *cost.Model
 	events *events.Broker // optional: live UI events (P8-beyond)
+	// slots keeps one conversation per backend slot on disk (nil = off). See
+	// slots.go and internal/slotcache.
+	slots *slotcache.Manager
 
 	started int64 // unix seconds at construction — the catalog's "created"
 
@@ -760,6 +764,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// every other model with ErrNoCapacity). done is sync.Once-guarded, so
 		// the inline call on the success path stays a cheap no-op here.
 		defer done()
+
+		// SWAP THE SLOT'S CONVERSATION, if this backend keeps one and a different
+		// conversation is arriving. Here and not earlier: the admission slot is
+		// held, so the backend's slot is ours to save and restore without racing
+		// a request that is mid-answer.
+		//
+		// Cost when it acts: ~0.97 s of backend time against ~10.9 s to reprocess
+		// the same prefix (measured 2026-09-05). Cost when it does not: one map
+		// lookup. Every failure inside is survivable — the request proceeds either
+		// way, at worst as slowly as it would have without any of this.
+		p.swapSlot(reqCtx, pr.Target, name, backend, key, r, body)
 
 		// Restore the buffered body for the proxy, clamping max_tokens to this
 		// backend's cap when it declares one (degrade transform, P7).

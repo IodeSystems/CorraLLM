@@ -375,6 +375,8 @@ func newServeCmd() *cobra.Command {
 		realtimeIdle, realtimeMaxSession           time.Duration
 		reservationMaxTTL                          time.Duration
 		tuneCachePath                              string
+		slotCacheDir                               string
+		slotCacheMaxGB                             int
 		vramMargin                                 int
 		benchBin, benchConfig, benchProbes         string
 	)
@@ -415,6 +417,8 @@ func newServeCmd() *cobra.Command {
 				realtimeMaxSession: pickDuration(realtimeMaxSession, envDuration("CORRALLM_REALTIME_MAX_SESSION", 0)),
 				reservationMaxTTL:  pickDuration(reservationMaxTTL, envDuration("CORRALLM_RESERVATION_MAX_TTL", 5*time.Minute)),
 				tuneCachePath:      pick(tuneCachePath, envOr("CORRALLM_TUNE_CACHE", defaultTuneCachePath(dbPathResolved))),
+				slotCacheDir:       pick(slotCacheDir, envOr("CORRALLM_SLOT_CACHE_DIR", "")),
+				slotCacheMaxGB:     pickInt(slotCacheMaxGB, envInt("CORRALLM_SLOT_CACHE_MAX_GB", 20)),
 				vramMargin:         pickInt(vramMargin, envInt("CORRALLM_VRAM_MARGIN", 512)),
 				benchBin:           benchBin,
 				benchConfig:        pick(benchConfig, defaultBenchConfig(p.home)),
@@ -444,6 +448,8 @@ func newServeCmd() *cobra.Command {
 	f.DurationVar(&realtimeMaxSession, "realtime-max-session", 0, "hard cap on a /v1/realtime ws session's duration (or CORRALLM_REALTIME_MAX_SESSION; 0 disables)")
 	f.DurationVar(&reservationMaxTTL, "reservation-max-ttl", 0, "cap on a /v1/reservations slot lease before it must be renewed (default 5m or CORRALLM_RESERVATION_MAX_TTL)")
 	f.StringVar(&tuneCachePath, "tune-cache", "", "path to the VRAM slot auto-tuner's profile cache (default <db-dir>/vram-profile.json or CORRALLM_TUNE_CACHE)")
+	f.StringVar(&slotCacheDir, "slot-cache-dir", "", "keep each conversation's KV cache here so a backend with one slot can serve several without reprocessing them (or CORRALLM_SLOT_CACHE_DIR). OFF unless set. The backend must also be started with llama.cpp's --slot-save-path pointing at the SAME directory. Costs ~37 KB per prompt token on disk and saves ~10s of reprocessing per conversation switch.")
+	f.IntVar(&slotCacheMaxGB, "slot-cache-max-gb", 0, "cap the slot cache at this many GB, oldest evicted first (default 20 or CORRALLM_SLOT_CACHE_MAX_GB)")
 	f.IntVar(&vramMargin, "vram-margin", 0, "MiB of free VRAM kept back when sizing --parallel from a cached profile (default 512 or CORRALLM_VRAM_MARGIN)")
 	f.StringVar(&benchBin, "bench-bin", envOr("CORRALLM_BENCH_BIN", "llm-bench"), "llm-bench binary spawned by UI-driven bench runs (same binary you run from a shell)")
 	f.StringVar(&benchConfig, "bench-config", envOr("CORRALLM_BENCH_CONFIG", ""), "llm-bench config passed to spawned runs (default: llm-bench's own default)")
@@ -500,6 +506,8 @@ type serveOpts struct {
 	realtimeIdle, realtimeMaxSession      time.Duration
 	reservationMaxTTL                     time.Duration
 	tuneCachePath                         string
+	slotCacheDir                          string
+	slotCacheMaxGB                        int
 	vramMargin                            int
 	benchBin, benchConfig, benchProbes    string
 }
@@ -772,6 +780,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	px.SetBroker(broker)
 	px.SetRequestTimeout(o.requestTimeout)
 	px.SetCapturePayloads(o.capturePayloads)
+	px.SetSlotCache(o.slotCacheDir, int64(o.slotCacheMaxGB)<<30)
 	// Global ingestion config: built-in defaults ← legacy flags ← config `convert:`.
 	convertGlobal := config.DefaultConvert().
 		Merge(config.ConvertConfig{MaxChars: o.pdfMaxChars, MaxPages: o.ocrMaxPages, OCR: &o.ocrPDFs}).
