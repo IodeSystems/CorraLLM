@@ -2544,6 +2544,15 @@ reason lived in one log line. Eight rows over five days said it. The row now say
 `cerebras-gpt-oss-120b refused with 402`. The wire response is unchanged: callers parse it,
 and an upstream's status is the operator's business. `23195f3`, verified live.
 
+**And the dead rung was pulled.** Probing all twelve free-lane rungs found exactly one
+casualty: cerebras. The other eleven answered 200, bar one 429 that is the free tier working
+as sold. Cerebras's provider definition and lane membership are gone (config revision 33,
+rollback at 32), with the reason written into the groq notes beside the sentence it
+invalidated — that note had claimed the duplication was deliberate, which stopped being true
+the moment the second quota stopped paying out. The free lane now serves from
+`groq-gpt-oss-120b` plus ten pool models; verified after the reload with
+`served=groq-gpt-oss-120b, requested=free`.
+
 **`PLACEMENT` stopped being a label** (OB-3): *Ran on*, *Ways to run this*, *N boxes*, with the
 config's word kept in each gloss. `0eb90c2`.
 

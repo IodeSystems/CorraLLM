@@ -146,12 +146,18 @@ regardless. And the free rungs are thin — 239 requests served by a remote prov
 last 2026-09-01, of which 118 failed: 105 were 429 from the providers' own free tiers (groq
 83, `openrouter-z-ai-glm-5.2` 22).
 
-**`cerebras-gpt-oss-120b` is answering 402 Payment Required** — probed 2026-09-06, and it has
-been doing so since at least 2026-09-01. Not a corrallm problem: the account needs paying or
-the rung needs removing. **YOURS to decide, and the only action item on this page that is not
-a routing opinion.** `groq-gpt-oss-120b` was probed at the same moment and serves fine.
-`openrouter-liquid-lfm-2.5-2.6b` returned `no permitted credential` once, on 2026-08-15, and
-has not been asked since; worth a probe before assuming it is broken.
+**Decision resolved 2026-09-06: cerebras removed.** It had been answering 402 Payment
+Required since at least 2026-09-01 — an unpaid account, not a corrallm fault — so the free
+lane's second declared quota was a rung nobody could stand on. Provider definition and lane
+membership deleted (config revision 33; revision 32 rolls it back, and `presets.go` still
+carries Cerebras so re-adding it is a form, not a rewrite). The reason is recorded in the
+groq model's notes, next to the sentence it invalidated.
+
+Every other rung was probed at the same moment and is alive: `groq-gpt-oss-120b` and nine of
+the ten OpenRouter pool models answered 200, `openrouter-poolside-laguna-xs-2.1` answered 429
+(a free-tier rate limit, which is the tier working as sold). `openrouter-liquid-lfm-2.5-2.6b`,
+whose one recorded failure was `no permitted credential` on 2026-08-15, serves fine — that
+record was stale, not a gap.
 
 Overflow is also not a live pressure: turn-aways over the last three days are 12, 4, **0**
 against ~25k requests, and queueing caps at 15 s.
