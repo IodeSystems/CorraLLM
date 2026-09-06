@@ -1,7 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { DEFAULT_WINDOW, windowKey, windowPhrase, windowVars, type TimeWindow } from '@/TimeWindow'
 import {
   Box,
+  Button,
   Chip,
   Table,
   TableBody,
@@ -34,6 +35,17 @@ import { Loading } from '@/Loading'
  * They come from different machinery, and a persistent gap between them means
  * the number we hand callers does not describe this box.
  */
+
+const SetQueueDepthDoc = graphql(/* GraphQL */ `
+  mutation SetQueueDepth($name: String!, $body: corrallm_SetModelQueueDepthInputBodyInput!) {
+    corrallm {
+      setModelQueueDepth(name: $name, body: $body) {
+        ok
+        message
+      }
+    }
+  }
+`)
 
 const UtilizationDoc = graphql(/* GraphQL */ `
   query Utilization($minutes: Long!, $from: Long, $to: Long) {
@@ -204,6 +216,7 @@ function Zeroable({ n, color }: { n: number; color?: string }) {
 
 export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }) {
   const vars = windowVars(window)
+  const qc = useQueryClient()
   const q = useQuery({
     // 'activity' prefix so the SSE listener's invalidation reaches it.
     queryKey: ['activity', 'utilization', windowKey(window)],
@@ -232,6 +245,21 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
   // what to do about it" (the caller). OB-6: a fault names whose it is and the
   // next thing to do, or it is not shown as a fault.
   const clashing = rows.filter((r) => r.depthUnreachable)
+
+  // The fix, as a control rather than as instructions.
+  //
+  // It writes THIS model's queue limit and nothing else. That was impossible
+  // until the bound could be set per model: the reachable depth is one model's
+  // arithmetic, so the value that stops a slow model promising a queue slot it
+  // cannot honour would turn away callers of every fast model if it were set
+  // box-wide — which is why this panel could name the fix for weeks and only
+  // ever describe it.
+  const setDepth = useMutation({
+    mutationFn: (v: { name: string; depth: number }) =>
+      // Long crosses the wire as a string in the generated types.
+      gqlClient.request(SetQueueDepthDoc, { name: v.name, body: { maxQueueDepth: String(v.depth) } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['activity'] }),
+  })
 
   const body = q.isLoading ? (
     <Loading size={20} minHeight={120} />
@@ -497,14 +525,43 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
             so the queue never fills and callers time out instead of being told to come back.
           </Typography>
           <Typography variant="body2" sx={{ color: C.textMuted, mt: 0.5 }}>
-            Yours to change, and nothing is broken meanwhile. Both settings are{' '}
-            <b>box-wide, not this model's</b> — the longest wait a caller may sit in the queue,
-            and the queue limit ({clashing[0].configuredDepth}). Raising the wait makes callers
-            of every model wait longer before they are told to come back; lowering the limit
-            turns away callers of every model, including ones with no clash. That is why there
-            is no one-click fix here: the reading is per model and the settings are not.
-            Leaving it alone costs a clear "come back at 14:02" — callers get a timeout instead.
+            Leaving it alone costs a clear "come back at 14:02" — callers get a timeout
+            instead. The button sets <b>this model's</b> queue limit to{' '}
+            {clashing[0].reachableDepth}, the number it can actually reach. Nobody waits any
+            longer than they do now, no other model changes, and a request already running is
+            unaffected — the next caller past the limit is told to come back instead of
+            waiting for a timeout. It takes effect at once.
           </Typography>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mt: 1, flexWrap: 'wrap' }}>
+            {clashing.map((r) => (
+              <Button
+                key={r.served}
+                size="small"
+                variant="outlined"
+                disabled={setDepth.isPending || Number(r.reachableDepth) < 1}
+                onClick={() => setDepth.mutate({ name: r.served, depth: Number(r.reachableDepth) })}
+              >
+                {setDepth.isPending
+                  ? 'Setting…'
+                  : clashing.length === 1
+                    ? `Set the queue limit to ${r.reachableDepth}`
+                    : `${r.served}: set to ${r.reachableDepth}`}
+              </Button>
+            ))}
+            {/* The other lever stays a sentence, because it is box-wide and
+                should not be one click: raising the wait makes callers of every
+                model wait longer, and llm-bench's stall guard is derived from
+                it. */}
+            <Typography variant="caption" sx={{ color: C.textFaint }}>
+              or raise the longest allowed wait on Setup — box-wide, so it slows every model's
+              "come back" for every caller.
+            </Typography>
+          </Box>
+          {setDepth.isError && (
+            <Typography variant="body2" sx={{ color: C.warn, mt: 1 }}>
+              That did not save: {String(setDepth.error)}. Nothing changed.
+            </Typography>
+          )}
         </Box>
       )}
       {body}

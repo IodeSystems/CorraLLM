@@ -65,6 +65,10 @@ type Scheduler struct {
 	budgets map[string][]rateEvent // "scope\x00dim" → sliding-window events
 	now     func() time.Time       // injectable clock (windows, dwell, decay)
 
+	// maxWait / maxQueueDepth are the BOX-WIDE bounds, and the fallback for any
+	// model that does not override them. Read through boundsFor, never directly:
+	// a model may carry its own, and the reason it may is that the depth a queue
+	// can actually reach is one model's arithmetic, not the box's.
 	maxWait       time.Duration // queue wait before a 429 (0 = bounded only by req ctx)
 	maxQueueDepth int           // reject once this many already wait on a backend (0 = unbounded)
 
@@ -112,6 +116,33 @@ func NewWithConfig(cfg *config.Config) *Scheduler {
 		}
 	}
 	return s
+}
+
+// boundsFor resolves the queue bounds for one model: its own override where it
+// has one, the box-wide values otherwise.
+//
+// Falls back to the scalars rather than re-parsing the global config every call,
+// so a Scheduler built by New() (no config — most tests, and the agent path)
+// behaves exactly as before.
+func (s *Scheduler) boundsFor(model string) (time.Duration, int) {
+	maxWait, depth := s.maxWait, s.maxQueueDepth
+	cfg := s.config()
+	if cfg == nil {
+		return maxWait, depth
+	}
+	m, ok := cfg.Models[model]
+	if !ok || m.Scheduler == nil {
+		return maxWait, depth
+	}
+	if m.Scheduler.MaxWait != "" {
+		if d, err := time.ParseDuration(m.Scheduler.MaxWait); err == nil && d > 0 {
+			maxWait = d
+		}
+	}
+	if m.Scheduler.MaxQueueDepth > 0 {
+		depth = m.Scheduler.MaxQueueDepth
+	}
+	return maxWait, depth
 }
 
 type backendState struct {
@@ -188,6 +219,9 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	if capacity > bs.capacity {
 		bs.capacity = capacity
 	}
+	// Resolved once, here, so both paths that can queue — the preempt waiter and
+	// the ordinary one — bound themselves by the same numbers for this model.
+	modelMaxWait, modelDepth := s.boundsFor(backend)
 
 	sl := &slot{group: group, backendType: backendType, weight: weight,
 		interruptible: interruptible, currency: s.shareCurrency(group), cancel: cancel,
@@ -230,7 +264,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 			w := &waiter{slot: sl, preempt: true, ready: make(chan struct{})}
 			bs.waiters = append(bs.waiters, w)
 			s.mu.Unlock()
-			return s.wait(ctx, backend, w, reqCtx)
+			return s.wait(ctx, backend, w, reqCtx, modelMaxWait)
 		}
 		// No victim — honor the follow-up verb, else queue/reject below.
 		switch {
@@ -268,7 +302,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	// Bound the queue: once maxQueueDepth callers already wait, reject fast with an
 	// informative 429 so the caller can shape, rather than block (the fork's
 	// maxQueueDepth contract). Preempt waiters above bypass this — they freed a slot.
-	if s.maxQueueDepth > 0 && len(bs.waiters) >= s.maxQueueDepth {
+	if modelDepth > 0 && len(bs.waiters) >= modelDepth {
 		// A full queue used to reject the NEWCOMER unconditionally, so a queue
 		// held by low-priority waiters blocked a higher-priority arrival purely
 		// because they got there first. Arrival order outranking fairshare is
@@ -297,16 +331,18 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	w := &waiter{slot: sl, ready: make(chan struct{}), bumped: make(chan struct{})}
 	bs.waiters = append(bs.waiters, w)
 	s.mu.Unlock()
-	return s.wait(ctx, backend, w, reqCtx)
+	return s.wait(ctx, backend, w, reqCtx, modelMaxWait)
 }
 
 // wait blocks until the waiter is granted a slot, maxWait elapses, or ctx ends.
-func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx context.Context) (func(...Done), context.Context, error) {
+func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx context.Context, maxWait time.Duration) (func(...Done), context.Context, error) {
 	// maxWait caps the queue wait so the caller gets a 429 to shape against rather
 	// than blocking up to the request deadline (the fork's maxWait contract).
+	// Passed in rather than read off the Scheduler because it is resolved per
+	// model at admission, under the same lock that read the depth.
 	var maxWaitC <-chan time.Time
-	if s.maxWait > 0 {
-		t := time.NewTimer(s.maxWait)
+	if maxWait > 0 {
+		t := time.NewTimer(maxWait)
 		defer t.Stop()
 		maxWaitC = t.C
 	}

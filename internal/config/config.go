@@ -881,6 +881,23 @@ type Model struct {
 	// unit). For a local llama-server this mirrors --parallel. Default 1.
 	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
 
+	// Scheduler overrides the box-wide queue bounds for THIS model. Unset (nil)
+	// inherits them, which is what almost every model should do.
+	//
+	// It exists because the diagnosis is per model and the setting was not. The
+	// depth a queue can actually reach is capacity × maxWait / meanService — a
+	// model's own numbers — so a box with one slow model and several fast ones
+	// has no single correct global depth: the value that stops the slow one
+	// promising a queue slot it cannot honour starts turning away callers of
+	// the fast ones. The dashboard could diagnose that clash and could only
+	// offer prose about it, because every fix it could name was box-wide.
+	//
+	// Field-by-field inheritance, and a zero field means INHERIT rather than
+	// "unbounded": a model that wants no bound sets a depth larger than it can
+	// reach. Making zero mean unbounded here would make the common case — an
+	// override that sets one field — silently unbound the other.
+	Scheduler *SchedulerConfig `yaml:"scheduler,omitempty"`
+
 	// ContextPerRequest is the context window each REQUEST must get, in tokens.
 	//
 	// llama.cpp's --ctx-size is a TOTAL divided across --parallel slots, so
@@ -2420,4 +2437,29 @@ func LoadBytesForTest(b []byte) (*Config, error) {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// SchedulerFor resolves the queue bounds that apply to one model: its own
+// override where it sets a field, the box-wide setting everywhere else.
+//
+// Resolution is field-by-field rather than whole-struct, because an override
+// almost always means "this model's queue is different" and not "this model
+// opts out of every bound". Replacing the struct would make setting a depth
+// silently drop the wait.
+//
+// An unknown model resolves to the box-wide config, so a caller never has to
+// check membership first.
+func (c *Config) SchedulerFor(model string) SchedulerConfig {
+	out := c.Scheduler
+	m, ok := c.Models[model]
+	if !ok || m.Scheduler == nil {
+		return out
+	}
+	if m.Scheduler.MaxWait != "" {
+		out.MaxWait = m.Scheduler.MaxWait
+	}
+	if m.Scheduler.MaxQueueDepth > 0 {
+		out.MaxQueueDepth = m.Scheduler.MaxQueueDepth
+	}
+	return out
 }

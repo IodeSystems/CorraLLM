@@ -46,6 +46,7 @@ type CorrallmMutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
+  setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   toolActivate(body: corrallm_ToolActivateInputBodyInput!): corrallm_ToolActivateOutputBody @derived(operationId: "toolActivate")
@@ -372,6 +373,7 @@ type CorrallmV1MutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
+  setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   toolActivate(body: corrallm_ToolActivateInputBodyInput!): corrallm_ToolActivateOutputBody @derived(operationId: "toolActivate")
@@ -2629,6 +2631,11 @@ type corrallm_ServiceProfilesOutputBody {
   minutes: Long!
   """One row per (model, caller), heaviest consumer first."""
   rows: [corrallm_ServiceProfileRow!]!
+}
+
+input corrallm_SetModelQueueDepthInputBodyInput {
+  """How many callers may wait on this model before the next is turned away. 0 clears the override and returns it to the box-wide limit."""
+  maxQueueDepth: Long!
 }
 
 input corrallm_SetSecretInputBodyInput {

@@ -774,13 +774,19 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 		return nil, err
 	}
 	windowMS := float64(minutes) * 60_000
-	maxWait, _ := time.ParseDuration(h.config().Scheduler.MaxWait)
-	depth := h.config().Scheduler.MaxQueueDepth
 	for _, s := range svc {
 		r, ok := rows[s.Served]
 		if !ok {
 			continue
 		}
+		// Per model, not box-wide. The clash this reports is one model's
+		// arithmetic — capacity × maxWait / meanService — so reporting it
+		// against the global depth would keep flagging a model whose own
+		// override already fixed it, and would hide one that overrode the
+		// other way.
+		sc := h.config().SchedulerFor(s.Served)
+		maxWait, _ := time.ParseDuration(sc.MaxWait)
+		depth := sc.MaxQueueDepth
 		cv := s.CV()
 		r.ServiceMeanMS, r.ServiceCV, r.ServiceSamples = int64(s.MeanMS), cv, s.N
 		r.ConfiguredDepth = depth

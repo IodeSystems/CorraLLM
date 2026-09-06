@@ -516,3 +516,65 @@ func (h *Handlers) applyEdit(ctx context.Context, what string, fn func(*config.C
 	// from, which is half of what a revision has to record (source.go).
 	return h.UpdateConfig(ctx, noteFor(ctx, what), fn)
 }
+
+// SetModelQueueDepthInput sets one model's queue limit.
+type SetModelQueueDepthInput struct {
+	Name string `path:"name"`
+	Body struct {
+		MaxQueueDepth int `json:"maxQueueDepth" doc:"How many callers may wait on this model before the next is turned away. 0 clears the override and returns it to the box-wide limit."`
+	}
+}
+
+// SetModelQueueDepth gives one model its own queue limit, or clears it.
+//
+// Deliberately one field on one model, in the shape of UpdateNotes rather than
+// the full upsert: this exists to be a BUTTON on a diagnosis, and a button that
+// can rewrite a model's proxy target while claiming to adjust a queue is a
+// worse thing than the problem it fixes.
+//
+// The bound it writes is per model because the diagnosis is. A queue's
+// reachable depth is capacity × maxWait / meanService — that model's numbers —
+// so the value that stops a slow model advertising a queue slot it cannot
+// honour would turn away callers of every fast model if it were set box-wide.
+// That is why the dashboard could describe this clash for weeks and not offer
+// to fix it.
+func (h *Handlers) SetModelQueueDepth(ctx context.Context, in *SetModelQueueDepthInput) (*ConfigMutationOutput, error) {
+	if in.Body.MaxQueueDepth < 0 {
+		return nil, huma.Error400BadRequest("maxQueueDepth cannot be negative")
+	}
+	what := fmt.Sprintf("queue limit for model %s set to %d", in.Name, in.Body.MaxQueueDepth)
+	if in.Body.MaxQueueDepth == 0 {
+		what = "queue limit for model " + in.Name + " cleared — back to the box-wide limit"
+	}
+	err := h.mutateConfig(ctx, what, func(c *config.Config) error {
+		m, ok := c.Models[in.Name]
+		if !ok {
+			return huma.Error404NotFound("no such model")
+		}
+		if in.Body.MaxQueueDepth == 0 {
+			// Clearing the DEPTH must not silently drop a maxWait override that
+			// was set alongside it; only an override with nothing left in it is
+			// removed, so the config says what the operator actually chose.
+			if m.Scheduler != nil {
+				m.Scheduler.MaxQueueDepth = 0
+				if m.Scheduler.MaxWait == "" {
+					m.Scheduler = nil
+				}
+			}
+		} else {
+			if m.Scheduler == nil {
+				m.Scheduler = &config.SchedulerConfig{}
+			}
+			m.Scheduler.MaxQueueDepth = in.Body.MaxQueueDepth
+		}
+		c.Models[in.Name] = m
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &ConfigMutationOutput{}
+	out.Body.OK = true
+	out.Body.Message = what
+	return out, nil
+}

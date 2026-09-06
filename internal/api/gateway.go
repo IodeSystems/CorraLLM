@@ -483,6 +483,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UnassignModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "setModelQueueDepth",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/models/{name}/queue-depth",
+		Summary:     "Give one model its own queue limit (0 clears it, returning the model to the box-wide limit).",
+		Tags:        []string{"config"},
+	}, h.SetModelQueueDepth)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "pauseModel",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/models/pause",
