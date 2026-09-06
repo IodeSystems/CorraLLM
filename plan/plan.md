@@ -317,6 +317,60 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ carlsmacbookpro is back — 51 GB of Metal that was switched off — 2026-09-05
+
+**Up, self-healing, and self-updating.** It had been dark since July with 51 GB of Metal and
+68 GB of system memory idle, and `local-Qwen3.6-35B-A3B-MTP` configured to run there, while box1
+sat at 96% on one slot.
+
+**Why it was dark, and it was two things.** (1) The agent was never installed as a service — no
+LaunchAgent, nothing in `launchctl`; it was started by hand once and died with the session, and
+`corrallm service` is systemd-only so on macOS the tool cannot install itself (a CLI-10 gap).
+(2) On first start it enrolled, self-updated, re-exec'd — and the re-exec inherited the now-spent
+enrollment token and died with "enrollment token was already used". Almost certainly the original
+failure, unwitnessed. The current build already fixes that with a shell-neutral `agent.yml` whose
+`enrollToken` is dropped once exchanged; this machine still had the legacy `agent.env`.
+
+**The blocker that actually cost the time, and the wrong turn I took.** Every heartbeat failed
+with `no route to host` while `curl` reached the same address from the same shell and returned
+200. That is a dead ringer for macOS 26's per-binary Local Network privacy gate, and I built two
+workarounds on that theory — a bash-exec launcher, then a fresh-binary-path-per-start scheme —
+rationalising each failure into a refinement. **`tccutil reset LocalNetwork` ended it: "Service
+name is invalid on this platform."** Local Network is not a TCC service there at all.
+
+The real cause was in the routing table, one command away the whole time:
+
+    default   192.168.1.1   UGScIg    en0
+    default   link#26       UCSIg     bridge101   !     ← REJECT route
+
+Two default routes, the second a reject route via a VM/sharing bridge (192.168.252.1; there is a
+`vboxwebsrv` LaunchAgent). Go's dialer lands on it and gets EHOSTUNREACH; curl picks differently.
+`curl --interface bridge101` returns `000`, en0 and en6 both return 200. Deleting the route needs
+root on that machine, which we do not have.
+
+**What is running now** (host config, untracked by this repo, on box1):
+
+| | |
+|---|---|
+| `corrallm-mac-tunnel.service` | `ssh -N -R 127.0.0.1:18111 → 127.0.0.1:8111`, `Restart=always`. Loopback has no route ambiguity; the agent's `primary` is the tunnel. |
+| `corrallm-mac-agent.timer` | every 2 min, runs `~/.local/bin/corrallm-mac-agent.sh`: starts the agent over SSH if nothing is listening on 6503. Idempotent. |
+
+Verified: killed every agent on the Mac, started nothing by hand, and the timer restored it —
+`up` on the next check. Self-update verified end to end afterwards: it spotted a new build by
+BUILD HASH (the version strings matched), replaced its own binary, re-exec'd and came back
+authenticated on `06e7f72`.
+
+**next** — let the scheduler actually use it: nothing has spilled there yet, and the first real
+test is a saturated box1 falling through to the 35B on Metal.
+**risks** — the tunnel is a single point of failure for the heartbeat, though `Restart=always`
+plus the 2-minute timer covers a restart. `bin/agents/` was rebuilt (`make agents`) to publish
+`06e7f72`, which changes what every attached machine self-updates to — one machine today.
+**how to undo all of it** — delete the reject default route on that Mac (needs root there), point
+`primary` back at `http://192.168.1.76:8111`, and remove both units and the script. Nothing in
+corrallm needs to change.
+**a real gap this exposed** — `corrallm service` supports systemd only. A Mac compute node has no
+supported way to install itself, which is why this one was fragile in the first place.
+
 ### ◻ What the Lenny runs left open — 2026-09-05
 
 Seven runs over two days and two scenarios, the harness, P30 A–D, and everything they fixed are
