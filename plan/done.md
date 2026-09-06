@@ -2607,3 +2607,52 @@ real proxy stack, including a restart, and asserts the streak survives it and cl
 first success after. It could not be watched live: the one backend that produced 402s was
 removed an hour earlier, and the live check confirms only the plumbing — table created,
 endpoint carrying an empty `refusing` list.
+
+## The queue clash got a button, 2026-09-06
+
+"Lame. why not a fix it button?" — about a note Lenny run 8 had just called the best writing
+in the product.
+
+**The prose was worse than lame: it misdirected.** It said "raise the wait it permits or lower
+the queue it advertises, on Setup **under the model**". Both are `Config.Scheduler` — box-wide.
+A model carried `maxConcurrent` and no queue knob at all, so anyone who followed that sentence
+would open the model and find nothing. It scored 3/3/3/3 only because he never went.
+
+**And the reason there was no button was arithmetic, not effort.** A queue's reachable depth is
+capacity × maxWait / meanService — one model's numbers — so on a box with one slow model and
+several fast ones there is no correct global depth: the value that stops the slow one
+advertising a slot it cannot honour starts turning away callers of the fast ones. A button
+writing a box-wide value from a per-model diagnosis would have been a worse defect than the
+prose.
+
+So the bound became per model. `Model.Scheduler` is an optional override resolved
+**field-by-field** over the box-wide one — an override means "this model's queue is different",
+not "this model opts out of every bound", and replacing the struct would make setting a depth
+silently drop the wait. A zero field means INHERIT, not unbounded, for the same reason.
+Resolved once per admission and used by both paths that can queue, the preempt waiter included.
+
+The button sets one field on one model, shaped like `UpdateNotes` rather than the full upsert:
+a control that can rewrite a proxy target while claiming to adjust a queue is worse than the
+problem it fixes. It states the cost before you press it — nobody waits longer, no other model
+changes, requests already running are unaffected. `maxWait` deliberately stays a sentence: it is
+box-wide and llm-bench's stall guard is derived from it, so one click is the wrong shape.
+`da5ef3d`, `c1fe48c`.
+
+### Two traps, both worth keeping
+
+**The first cut wrote to a derived view.** `c.Models` is a flat INDEX built at load from
+`providers.<p>.models`, `extensions.<e>.providers.<p>.provides` and the top-level `models:`
+block. Writing only there survives until the next save and is then re-derived away — and on
+this box every model is authored under a provider, so the button did nothing at all. Caught by
+exporting the config after pressing it, not by a test: the configdb round-trip test passed
+throughout, because it used a flat `Models` map, which is not the shape a real box has.
+`editAuthoredModel` now writes where the model is written down. The tests assert on the
+**authored** entry, which is the assertion the first cut would have failed.
+
+**Then a stale binary faked the same bug a second time.** After the fix, `corrallm config
+export` still showed no override — while the daemon resolved it correctly and survived a
+restart on it. `bin/corrallm` is a gitignored build artifact, and the one on disk predated the
+`Scheduler` field, so `fromMap` dropped the unknown key on export. The store had been correct
+the whole time; the tool used to check it was not. **`bin/deploy` rebuilds and installs the
+daemon and does not refresh `bin/corrallm`,** so the CLI can silently lag the running server —
+worth a guard, since every `config` subcommand reads through it.
