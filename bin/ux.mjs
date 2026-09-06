@@ -156,7 +156,23 @@ const capture = (page) =>
       if (style.overflow === 'visible' && style.overflowY === 'visible' && style.overflowX === 'visible') continue
       const full = (el.textContent || '').trim().replace(/\s+/g, ' ')
       if (full.length < 40) continue
-      el.textContent = full.slice(0, 60) + '… [clipped on screen — the rest was not visible]'
+      // KEEP ROUGHLY WHAT FITS, not a fixed stub. A flat cut understated the
+      // screen as badly as no cut overstated it: a subtitle showing ~150
+      // characters arrived as 60, and the evaluator reported explanations as
+      // "cut off exactly where it would matter" that a person can in fact read.
+      // The text file and the screenshot then disagree about the same page,
+      // which is two sources of truth for the one thing this run measures.
+      //
+      // The visible fraction is the clipped box over the full box — vertical
+      // for a clamp, horizontal for a single-line ellipsis. Proportional to
+      // characters is an approximation (glyphs are not uniform), and it is a
+      // far smaller error than either extreme it replaces.
+      const vFrac = el.scrollHeight > el.clientHeight + 1 ? el.clientHeight / el.scrollHeight : 1
+      const hFrac = el.scrollWidth > el.clientWidth + 1 ? el.clientWidth / el.scrollWidth : 1
+      const frac = Math.min(vFrac, hFrac)
+      const keep = Math.max(40, Math.floor(full.length * frac))
+      if (keep >= full.length) continue
+      el.textContent = full.slice(0, keep) + '… [clipped on screen — the rest was not visible]'
     }
     return { text: document.body.innerText, controls }
   })
