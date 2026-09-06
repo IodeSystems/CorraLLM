@@ -128,6 +128,36 @@ const capture = (page) =>
       seen.add(key)
       controls.push({ kind, label, hidden, disabled: !!el.disabled })
     }
+    // TEXT THE PAGE CLIPS IS NOT TEXT THE PERSON READ.
+    //
+    // innerText honours display:none and visibility:hidden. It does NOT honour
+    // overflow clipping, and this dashboard clamps every notes field to one
+    // line with -webkit-line-clamp — so the full note stayed in the DOM and
+    // reached the evaluator as if it were on screen. Lenny run 8 scored the
+    // Setup page for "an engineer's diary" of LDFLAGS, cgroup ceilings and an
+    // out-of-memory story: 480 lines that a person sees as
+    // "P16 free-tier aggregator (plan/p16-free-aggregator.md). ONE integration…".
+    // The finding was real about the dump and false about the screen, which is
+    // the worst kind for a method whose whole claim is that it measures what a
+    // person could see.
+    //
+    // Leaves the visible beginning and says the rest was cut, rather than
+    // guessing exactly which words survived the clip: the evaluator needs to
+    // know it cannot score what follows, not to be told a precise character
+    // count. Marked in the text so a reader of the run can tell the difference.
+    //
+    // Only LEAF elements are rewritten. Replacing the text of a container would
+    // flatten every child the person could still read.
+    for (const el of document.querySelectorAll('*')) {
+      if (el.childElementCount > 0) continue
+      const clipped = el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1
+      if (!clipped) continue
+      const style = getComputedStyle(el)
+      if (style.overflow === 'visible' && style.overflowY === 'visible' && style.overflowX === 'visible') continue
+      const full = (el.textContent || '').trim().replace(/\s+/g, ' ')
+      if (full.length < 40) continue
+      el.textContent = full.slice(0, 60) + '… [clipped on screen — the rest was not visible]'
+    }
     return { text: document.body.innerText, controls }
   })
 
