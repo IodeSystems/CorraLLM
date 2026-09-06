@@ -28,7 +28,7 @@ config in SQLite (P26), tickets (P28), and the box1 thermal envelope (P19). Full
 
 **Four decisions need you** — [`open-questions.md`](open-questions.md): the agent lease
 self-reap policy, whether an honest wait estimate is even wanted, what a CALLER sees (§3 — it
-blocks four filed UI items), and whether the free lane is overflow capacity or decoration.
+blocks four filed UI items), and whether aw4 should ride the `chat` lane rather than pin a model.
 Only the caller one blocks work today.
 
 **The dashboard was rebuilt around the questions people arrive with, 2026-09-04/05.** Seven Lenny
@@ -874,7 +874,7 @@ without a format change or a decompress on read.
 | 1 | Agent lease: self-reap on/off, and its TTL | `host.Remote` (§6) | not yet — answer before that step |
 | 2 | Is an *honest* wait estimate even wanted? | the wait-estimate formula (§6) | not yet — gather a wider traffic mix first |
 | 3 | P30 — what does a CALLER see? | four filed UI items (§P30) | **now** — the only one blocking work |
-| 4 | Is the free lane overflow capacity, or decoration? | nothing built — a routing-config call | not yet — turn-aways are at 0/day |
+| 4 | Should aw4 ride the `chat` lane? | nothing built — blocked by the attribution fix | after attribution lands |
 
 **Six others were closed on 2026-08-24 by checking the box instead of re-reading the plan.**
 The answers and their evidence are recorded in the §6 slices that needed them, not here:
