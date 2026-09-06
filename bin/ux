@@ -121,6 +121,10 @@ fi
 # the same page (canon LEN-8) — and checked here, so a renamed model is an error
 # with a name on it instead of nine screenshots of "not found".
 MODEL="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).model||"")' "$WALKFILE")"
+# A walk may also name the CALLER it is standing in for — the consumer scenario
+# needs its own key to find itself among everybody else's traffic. Not a secret:
+# it is the key's label, already on screen wherever callers are listed.
+KEY="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).key||"")' "$WALKFILE")"
 if [ -n "$MODEL" ]; then
   AUTH=(); [ -n "$TOKEN" ] && AUTH=(-H "Authorization: Bearer $TOKEN")
   curl -sf -m 10 "${AUTH[@]}" "$BASE/api/v1/overview" \
@@ -149,6 +153,7 @@ CORRALLM_UX_CHROME="$CHROME" \
 CORRALLM_UX_TOKEN="$TOKEN" \
 CORRALLM_UX_BASE="$BASE" \
 CORRALLM_UX_MODEL="$MODEL" \
+CORRALLM_UX_KEY="$KEY" \
 CORRALLM_UX_MORNING_FROM="$MORNING_FROM" \
 CORRALLM_UX_MORNING_TO="$MORNING_TO" \
 CORRALLM_UX_VERSION="$VERSION" \

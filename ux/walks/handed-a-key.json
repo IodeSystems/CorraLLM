@@ -1,0 +1,51 @@
+{
+  "name": "handed-a-key",
+  "scenario": "handed-a-key",
+  "model": "local-Qwen3.8-27B",
+  "key": "sk-aw4",
+  "goal": "Find out whether the slowness is me or the box, whether I am allowed to be using it this much, and whether there is anything I should do differently.",
+  "note": "Read-only, against the live daemon. This caller is walking the OPERATOR's dashboard, because today there is no other one and there is only one credential — which is itself the thing this run is here to measure.",
+  "steps": [
+    {
+      "name": "the-front-door",
+      "promise": "Somebody who was handed a key can tell whether this page is for them.",
+      "anon": true,
+      "goto": "/"
+    },
+    {
+      "name": "is-the-box-alright",
+      "promise": "I can tell whether the machine is having a problem, without knowing how it works.",
+      "goto": "/"
+    },
+    {
+      "name": "what-am-i-allowed-to-call",
+      "promise": "I can see which models I may ask for, by the names I would put in my editor.",
+      "goto": "/models"
+    },
+    {
+      "name": "which-of-these-callers-is-me",
+      "promise": "I can find myself among the callers, and see what my key is allowed.",
+      "goto": "/callers"
+    },
+    {
+      "name": "my-own-calls",
+      "promise": "I can see what I have been asking for, separately from everybody else.",
+      "goto": "/callers/$KEY"
+    },
+    {
+      "name": "did-my-calls-work",
+      "promise": "I can tell a request of mine that failed from one that was merely slow.",
+      "goto": "/traffic?key=$KEY"
+    },
+    {
+      "name": "was-it-me-this-morning",
+      "promise": "I can look at the time it felt slow and tell whether my own calls were the problem.",
+      "goto": "/traffic?key=$KEY&from=$MORNING_FROM&to=$MORNING_TO"
+    },
+    {
+      "name": "the-model-my-editor-uses",
+      "promise": "I can see whether the model I ask for is healthy, without being asked to manage it.",
+      "goto": "/m/$MODEL"
+    }
+  ]
+}

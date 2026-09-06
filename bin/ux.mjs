@@ -40,6 +40,8 @@ const model = process.env.CORRALLM_UX_MODEL || ''
 // cannot measure whether the product answers the question it was opened for.
 const morningFrom = process.env.CORRALLM_UX_MORNING_FROM || ''
 const morningTo = process.env.CORRALLM_UX_MORNING_TO || ''
+// The caller a walk stands in for, when it stands in for one.
+const key = process.env.CORRALLM_UX_KEY || ''
 const version = process.env.CORRALLM_UX_VERSION || 'unknown'
 const out = env('CORRALLM_UX_OUT')
 const walk = JSON.parse(readFileSync(env('CORRALLM_UX_WALK'), 'utf8'))
@@ -152,6 +154,7 @@ for (const step of walk.steps) {
       .replace('$MODEL', encodeURIComponent(model))
       .replace('$MORNING_FROM', morningFrom)
       .replace('$MORNING_TO', morningTo)
+      .replace('$KEY', encodeURIComponent(key))
   // `domcontentloaded`, NOT `networkidle`. Every signed-in page holds the live
   // event stream open, so the network never goes idle and the wait times out on
   // a page that rendered fine seconds earlier — the run would report a blank
