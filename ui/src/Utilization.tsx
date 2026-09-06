@@ -497,9 +497,13 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
             so the queue never fills and callers time out instead of being told to come back.
           </Typography>
           <Typography variant="body2" sx={{ color: C.textMuted, mt: 0.5 }}>
-            Yours to change, and nothing is broken meanwhile: raise the wait it permits or lower
-            the queue it advertises, on <b>Setup</b> under the model. Leaving it alone costs a
-            clear "come back at 14:02" — callers get a timeout instead.
+            Yours to change, and nothing is broken meanwhile. Both settings are{' '}
+            <b>box-wide, not this model's</b> — the longest wait a caller may sit in the queue,
+            and the queue limit ({clashing[0].configuredDepth}). Raising the wait makes callers
+            of every model wait longer before they are told to come back; lowering the limit
+            turns away callers of every model, including ones with no clash. That is why there
+            is no one-click fix here: the reading is per model and the settings are not.
+            Leaving it alone costs a clear "come back at 14:02" — callers get a timeout instead.
           </Typography>
         </Box>
       )}
