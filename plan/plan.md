@@ -29,8 +29,13 @@ config in SQLite (P26), tickets (P28), and the box1 thermal envelope (P19). Full
 **Two decisions need you** — [`open-questions.md`](open-questions.md): the agent lease
 self-reap policy, and whether an honest wait estimate is even wanted. Neither blocks today.
 
-**A first Lenny run landed 2026-09-04** — the constant user, walking the dashboard as the person
-who owns the box. Verdict: *"No. Not on my own, anyway."* Harness in `ux/`, fix queue in §6.
+**The dashboard was rebuilt around the questions people arrive with, 2026-09-04/05.** Seven Lenny
+runs across two scenarios drove it: ten nav entries named after data became seven named after
+questions, Traffic got one time axis, every control that reaches live work says what it costs, and
+the home screen answers "is it serving" and nothing else. The verdict moved from *"No. Not on my
+own, anyway."* to an unqualified yes for the operator; the caller still says no, and what that
+needs is a decision (§6, `open-questions.md` §3). Full tree, composition table and traps:
+[`done.md`](done.md) § Lenny.
 
 **Open work is §6**, and it is smaller than it looks: the `ramUsage` placement/size split left
 over from P18, P21c budget granularity, the Q8_0-referenced KLD sweep, streaming the trial
@@ -312,33 +317,42 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◻ P30 — information architecture: one page, one question
+### ◻ What the Lenny runs left open — 2026-09-05
 
-**The design doc is [`plan/p30-information-architecture.md`](p30-information-architecture.md)**;
-it holds the evidence, the current→proposed map and the sequencing. Summary: pages are named
-after the data they render, not the questions people arrive with, so a question is answered in
-pieces on four pages and no page answers one completely. Ten nav entries become six plus Bench.
+Seven runs over two days and two scenarios, the harness, P30 A–D, and everything they fixed are
+archived in [`done.md`](done.md) § Lenny. This is only what is still true and still costs
+something.
 
-Measured, not asserted: a caller's cost renders on four pages; every panel carries its own time
-window and there is no page-level control (60 min · 24 h · 6h/24h/7d · newest-100); and the word
-*lane* names two different objects on screen at once.
+**The decision, and it gates the three under it** — `open-questions.md` §3: **what does a CALLER
+see?** A person handed an API key today gets the operator's dashboard with one credential. The
+caller run is the evidence: the door asks for an "Admin token" he cannot get (0 on three of four
+questions), the last screen hands him a GPU serial number, and `Change`/`Unassign` follow him
+onto the page that is supposedly his own. Three ways out: filter these pages by role, a separate
+caller page, or close it and let callers ask the operator. Everything below marked *(caller)*
+depends on which.
 
-**next** — phase C (Callers · Machines · Setup; nav to seven), and two loose ends phase B left:
-the **Resident models** table has no page (it left Traffic; Machines is where it goes), and a
-frozen window draws Utilization's live-only columns as `—` with nothing saying why — a person
-reading a historical span cannot tell "not applicable here" from "no data".
-Phases A ✅ and B ✅ both landed 2026-09-05: the home screen leads with a computed state sentence
-and a "What needs looking at" panel; Traffic is one page under one time axis, and the window is in
-the URL so a span can be sent to somebody.
-**risks** — merging `/activity` and `/usage` (phase B) is the largest single change and needs
-decision 4 first. Old URLs must redirect, not 404 — links live in notes and chat history; the repo
-already does this for `/config` and `/model`. A vocabulary pass is where vocabulary bugs are born.
-**blocking decisions** — one left, `open-questions.md` §3: what a CALLER (as opposed to an
-operator) is shown at all; it is P30's scope boundary and gates nothing today. Two closed: the
-lane/group vocabulary was never a decision — §3 of this plan settled it at P14 and the UI had
-diverged (P30 §5, header fixed) — and Traffic merges (2026-09-05).
-**optional extensions** — a caller-facing surface (decision 5); a second Lenny scenario
-(`icebox.md`).
+- ◻ *(caller)* **Nothing says which row is you.** Ten keys listed, none marked as the reader's.
+  He identified himself by luck — the one key that appeared in a live request from an address he
+  recognised.
+- ◻ *(caller)* **The front door speaks only to an admin**: "CORRALLM — ADMIN SIGN IN … `cat
+  /home/nthalk/.corrallm/admin.token`". It never uses the word "key", which is the only thing he
+  was given.
+- ◻ *(caller)* **Which model names go in an editor?** The catalog lists thirteen names — models,
+  lanes, proxies, absent ones — without saying which are requestable. He only found out by
+  accident, from an example `curl` that used `"model":"chat"`.
+- ◻ **`PLACEMENT` is still the label** on three tables and a section heading, and the canon names
+  that exact word as one that must be the gloss and never the label (OB-3). Both personas hit it.
+- ◻ **Machines does not say whether its numbers are a problem.** `gpu0` at `96%`, a tool marked
+  `behind` — neither says whether to act. "I left it alone, but I did so guessing, not knowing."
+- ◻ **A backend load records no reason.** The activity log says a backend loaded, never why —
+  which is why this morning's diagnosis took a database session instead of a glance. The one
+  product gap the slowdown investigation left (`done.md` § Lenny, and the card that now explains
+  a slowdown covers the symptom, not the cause).
+
+**next** — the caller decision, then `PLACEMENT`, which is cheap and unblocked.
+**risks** — a vocabulary fix is where vocabulary bugs are born; name the object.
+**how we will know** — run 8 on both scenarios, same build, reporting composition against
+`done.md` § Lenny's table.
 
 ### ◐ `--cache-reuse 256` is live — 2026-09-05 14:36, awaiting a day of traffic
 
@@ -387,211 +401,26 @@ without reuse collapsing with it. **What would say it did nothing:** the next sl
 like this one — reuse down, time up, f_sim low. Either answer is worth having; it is one number
 now instead of an argument.
 
-### ◻ The 2026-09-05 slowdown: prompt-cache prefix thrash on a one-slot backend
+**Early read, 3 hours in (17:35) — NO MEASURABLE EFFECT, and the flattering version of that
+number is a trap.** Against the 24 h baseline it looks like a win: 96.0% reuse and 2,649 tokens
+re-read per request, against 91.9% and 4,649. That comparison is worthless, because the baseline
+window CONTAINS the degraded stretch. Like for like:
 
-**Diagnosed, not fixed — the fix is a capacity decision that is yours (§9 territory).**
-Found by following up the only real evidence of "slow" in five Lenny runs: he compared two
-screens and noticed cache reuse had fallen.
+| window | reuse | re-read/request | mean |
+|---|---|---|---|
+| 14:00–14:36 — recovered, still no flag | **98.8%** | 1,192 | 2.6 s |
+| 14:36–17:35 — with the flag | 96.0% | 2,649 | 4.1 s |
+| yesterday 15:00–18:00 — normal, no flag | 95.4% | 2,235 | 3.8 s |
 
-**What happened, measured three ways.** Between roughly 10:00 and 14:00, each request to
-`local-Qwen3.8-27B` reprocessed **8,000–17,000 prompt tokens** instead of the usual ~1,000–2,000,
-and mean time answering tracked it exactly:
+Against the honest comparison — the same hours yesterday, both periods healthy — it is 95.4% →
+96.0% and 2,235 → 2,649 tokens re-read. **Nothing.** Which is what the flag's own description
+predicts: it helps a prompt whose head was pruned and whose suffix reappears shifted, and normal
+operation is not that. The `f_sim_best` figure I first reached for (15% below .95 since the flag,
+against 51% for 09:00–14:00) is the same trap wearing different clothes — that 51% IS the
+degradation, not a baseline.
 
-| hour | requests | mean | prompt tokens cached | tokens reprocessed / request |
-|---|---|---|---|---|
-| 09:00 | 384 | 4.5 s | 96.5% | 2,200 |
-| 10:00 | 406 | 6.5 s | 82.6% | 8,506 |
-| 12:00 | 292 | 10.3 s | 68.5% | 14,830 |
-| 13:00 | 270 | 10.8 s | 57.2% | 17,148 |
-| 14:00 | 106 | 2.0 s | 98.5% | 999 |
-
-Yesterday's same hours: 88–97% cached, 860–1,660 tokens, 2.3–3.3 s. So this was a departure,
-and it ended on its own.
-
-**The mechanism is in llama.cpp's own log.** It picks a slot by longest-common-prefix
-similarity, and logs the score: `selected slot by LCP similarity, f_sim_best = 0.999` in the
-good hours. The share of requests that could NOT find a near-exact cached prefix, per hour:
-
-    09:00  30%   10:00  49%   11:00  56%   12:00  62%   13:00  68%   14:00  9%
-
-At 10:06:43 it gave up entirely once — `selected slot by LRU`, no similar slot at all — and at
-10:09:14 the backend reloaded cold (7.9 s load, a 93,318-token prompt reprocessed, 64.5 s dwell).
-
-**What it is NOT** — checked, because these are what an operator would suspect: no rejections
-(zero all day), no queueing (`queued_ms` zero), no configuration change (nothing since
-2026-09-03), no second model competing for the card (only Qwen served all day, one placement),
-and nothing to do with `carlsmacbookpro`, which has been unreachable far longer than this window.
-
-**The cause is the traffic's shape, not the box.** `local-Qwen3.8-27B` runs with **one slot**, so
-one conversation's prefix is cached at a time. Interleaving two conversations with different
-prefixes makes each request reprocess the divergent tail — which is exactly an f_sim of 0.5–0.9.
-
-**The remedy, and the reason it is not applied here:** more slots would give each conversation its
-own cache, and slots cost KV memory. gpu0 is at **96%** (30 GB of 31 GB), so raising `nSlots`
-means lowering per-slot context or moving the model — a capacity trade only you can make.
-
-**The product gap this exposes, which IS ours:** corrallm records `cached_tokens` per request and
-can therefore see this collapse, but no screen says it, and the activity log records that a
-backend loaded without recording WHY. Five runs asked "will it come right on its own" and the
-answer was in the data the whole time. A "prefix reuse" figure beside time-per-request, and a
-reason on every load, would have answered it. Filed as the strongest candidate for the next
-slice — it is the first thing in this whole exercise that would have told Ray *why*.
-
-### ◻ Lenny run 5 — the scenario's success condition, met verbatim — 2026-09-05
-
-Run: `tmp/ux-run-is-my-box-working-20260905-134941`. **Verdict: yes, and unqualified this
-time** — run 4's was "yes, but only as far as Now and Traffic".
-
-The scenario defines success as *"saying one true sentence in the team chat and putting the
-laptop down"*. He wrote it himself, unprompted:
-
-> *"It's not broken, I haven't touched anything, and 9 o'clock this morning looks fine — I
-> don't know why it felt slow, and I'll keep an eye on it."*
-
-**Composition: 23 · 18 · 24 · 19 = 84**, against run 4's 86. Flat, and the flatness is the
-finding: the phase-D work moved the verdict's REASON without moving the score, which is what
-"report the composition, not just the verdict" is for. Several of his OB-3 complaints
-(`lane`, `fairshare lanes`, `default lane`) were fixed AFTER this walk, so run 6 is the first
-to see the vocabulary sweep.
-
-**Fixed from this run:** the `sizes must be declared` chip became a chip plus a sentence
-saying who declares what and that it has nothing to do with reachability (his only Q3=1);
-`settings clash` now says "(how it is configured now, not how it was then)" on a frozen
-window; the blank live columns say **not recorded** rather than a dash that also means zero
-two columns away; `Add host` / `Attach a machine` gained the consequence line `Rebuild`
-already had — he spotted the inconsistency and read it, correctly, as a tell.
-
-**OB-12 is his**, and no existing rule reached it: *a property that reaches live traffic
-explains itself, the same way a control that reaches it does.* He found `sk-aw4` — his own
-team's key, 20,813 requests — in `batch` at weight 1, `interruptible: yes`, beside another
-caller in `interactive` at weight 10, with nothing saying what either word costs a request.
-The Caller groups panel now says.
-
-**He also found something that is not a UI defect at all.** Comparing two screens: 09:00–10:00
-ran 385 requests at 4.5 s mean with 96.5% of prompt tokens served from cache; the hour around
-13:50 ran 264 at 11.3 s with **58.3%**. Confirmed against the database. Same share of requests
-hit cache (94.8% vs 95.8%) — what collapsed is the fraction of each prompt being reused. Worth
-a look on its own: it is the only real evidence of "slow" anywhere in five runs, and it points
-at now, not at this morning.
-
-**Still open from run 5:** `Dwell 882m 16s` has no scale (OB-4, named in three runs now); `CV`
-and `THEORY` columns are unexplained on screen; `Enroll`, `Add group` and the `Add …`/`Edit`
-controls on Setup still say nothing about what changes when they save.
-
-### ◻ Lenny run 4 — the verdict flipped, and what it left — 2026-09-05
-
-**"Would I come back tomorrow? Yes — but only as far as Now and Traffic."** First yes in four
-runs. Run: `tmp/ux-run-is-my-box-working-20260905-112653` (live box1, `7a330b5`).
-
-**Composition, which is the part that compares** (the walk changed between 2→3 and 3→4, so these
-are run totals against the four questions, not step-by-step):
-
-| | Q1 what does this do | Q2 how do I proceed | Q3 what is asked of me | Q4 will something come of it | total |
-|---|---|---|---|---|---|
-| run 1 (before any fix) | 10 | 12 | 10 | 10 | 42 |
-| run 2 (phase A) | 17 | 12 | 18 | 13 | 60 |
-| run 3 (phase B) | 15 | 11 | 12 | 4 | 42 |
-| run 4 (phase C + consequences) | **20** | **22** | **23** | **21** | **86** |
-
-Run 3's dip was two defects it found in what phase B had just shipped (a frozen window drawing
-live numbers; the state sentence spending "Struggling" on somebody else's machine) plus a
-scenario that asserted a failure the data contradicted. All three are fixed.
-
-**What he named as good, and a fix must not remove:** the state sentence and its fault card
-("the screen that does its job"), `a fixed span — these numbers will not change`, and the
-Probe/Unload consequence line — "the one place in the whole run that told me, before I ever had
-to guess, exactly what each button would cost."
-
-**What run 4 left, worst first:**
-
-1. **Setup buries the answer under engineer prose.** The one sentence he came for — nothing has
-   changed in two days — is below `P16 free-tier aggregator (plan/p16-free-aggregator.md)`,
-   `virtual.template.freeTier`, `barePrecedence defaults to 100`, `cgo-links sherpa-onnx, whose
-   LDFLAGS bake an absolute RUNPATH…`. Config `notes` render raw. He would have closed the lid
-   at the first paragraph. **No OB rule fits and he is right that one should: the answer comes
-   before the explanation.** File it as OB-11.
-2. **`Delete` beside a running model** (Setup) with nothing saying what it does to it — OB-1 and
-   OB-2. The consequence pass covered Unload/Probe/Cancel/Restore/Rebuild and missed this one.
-3. **`depth 8 unreachable`** — unexplained (OB-3), and drawn identically on the live and the
-   frozen view (OB-9). It is config-derived, not windowed; it needs plain words and the same
-   frozen-window treatment the live columns got.
-4. **`Change` / `Unassign` on a key active "just now"** — OB-2, same miss as (2).
-5. **`ramUsage required`** — a config field name on screen as if it were a sentence (OB-3).
-6. **`QUALITY 2`** — a number with no scale (OB-4).
-
-**next** — (2) and (4), then (1): they are the same fix as the consequence pass and a reordering.
-**risks** — a vocabulary fix is where vocabulary bugs are born; name the object.
-**blocking decisions** — none.
-**he found this himself, unprompted:** mean wait right now (7.0 s) is HIGHER than during the
-09:00–10:00 window everyone complained about (4.5 s). Two screens, no page saying it out loud.
-
-### ◻ The first Lenny run's fix queue — 2026-09-04
-
-Harness, method and the trade it makes: `done.md` § UX verification. Run:
-`tmp/ux-run-is-my-box-working-20260904-210034` (live box1, `1fb3df6-dirty`, read-only).
-Scenario: the person who OWNS the box, did not configure it, and whose team says it has been
-slow since 09:00. **Verdict: "No. Not on my own, anyway."** Report the composition against this
-list on run 2, not the verdict — the verdict is sticky and progress reads as none without it.
-
-**Most of this queue is now the tail of a structural problem, not the problem.** The
-inventory of all 18 routes (2026-09-04) found that pages are named after the data they
-render rather than the questions people bring — see
-[`plan/p30-information-architecture.md`](p30-information-architecture.md), which is where
-items 1, 3, 4, 5, 6, 9 and 10 below actually get fixed. Items 2, 7 and 8 stand on their own.
-**Done so far:** item 1 — the nav rail shows its labels (`ui/src/routes/__root.tsx`), the
-collapse kept and remembered. Items 4 and 5, and the half of 9 that is "nothing tells me what is
-wrong" — P30 phase A (the state sentence and the "What needs looking at" panel). The `Lane`
-column that was really a group — P30 §5.
-
-Worst first. Every one of the top group is a 0 or 1 on *what is being asked of me*.
-
-1. **The nav is eleven unlabeled icons on eight of nine screens (OB-10).** The rail is icon-only
-   and its labels are tooltips; he does not hover, so he did not know what most of the product
-   was for, on every screen, for the whole run. Most repeated finding of the run and the cheapest
-   to fix: show the labels, or stop calling a tooltip a label.
-2. **A model's Info tab is a shell script (OB-3).** `local-Qwen3.8-27B` — the model his team
-   points at — leads with `# QUANT LADDER, chosen at spawn from ACTUAL free VRAM.`,
-   `GPU=GPU-ee90af07-…`, `exec ${tool:llama.cpp}/llama-server`. He does not write configuration
-   by hand. The operator's script is the gloss, not the page.
-3. **`Dwell 471m 16s` reads as a duration (OB-4).** It is a 24-hour sum with no per-request
-   average beside it; the window lives in a section heading he had already passed.
-4. **The one sentence on arrival is `ok · 1fb3df6-dirty` (OB-5, OB-7).** "ok" is not
-   serving/struggling/stopped, and a git hash is the most prominent thing on the Overview.
-5. **A host's fault is a stack trace (OB-6).** `no agent endpoint answered for server
-   "carlsmacbookpro": … dial tcp 192.168.1.248:6503: connect: connection refused`. It does not
-   say whose problem it is or what to do. *(And the host really is down — see §7.)*
-6. **Utilization headers are our words, not his (OB-3).** `CV`, `EST. WAIT`, `REAL WAIT`,
-   `THEORY`, and `depth 8 unreachable` beside the model name.
-7. **Usage answers "which key", he asked "which person".** `sk-aw4` and `(unkeyed)` — he has four
-   people and cannot map either to one. Also `~4d 22h saved`: saved against what?
-8. **`Unload` and `Restore` carry no consequence (OB-2).** Both reach live work — one the model
-   four people are using, one a config from a month ago — and neither says so on the control.
-   He refused both, which is the finding; the buttons are fine.
-9. **Nothing lets him get back to 09:00.** Recent activity showed 20:36–20:58 with no date or
-   time filter he could see, and the trouble started this morning.
-10. **Config history names no author.** 26 revisions, all `edited through the dashboard`; the
-    promise was "so I can tell whether this is my doing" and it cannot be told. No OB rule fits —
-    a rule saying *a change says who made it* is the one this run says should exist.
-
-**Keep, and do not let a fix remove them:** "Nobody has been turned away in the last 60 minutes",
-"Nobody has had to work for an answer in the last 60 minutes", and the quota page's "Counts are a
-snapshot from the last call — observed N ago — not a live tick." He named all three unprompted.
-
-**next** — P30 phase A (the home screen answers its question), which carries item 4 with it.
-Item 1 is done. Item 8's consequence lines are independent of P30 and can land any time.
-**risks** — a vocabulary fix is the easiest place to introduce a vocabulary bug (canon: name the
-OBJECT; a shared word is only safe when the objects are the same). Fixing fear exposes the next
-problem and scores may go DOWN on the same step — that is the method working, not a regression.
-**blocking decisions** — none for this queue; **P30 §8 has three that are yours** — the
-lane/group vocabulary, whether Traffic is one page or two, and what a caller (as opposed to an
-operator) is shown at all.
-**optional extensions** — a second scenario (the consumer handed a key) to prove the constant is
-real: until two scenarios walk the same screens and fail DIFFERENTLY, `ux/lenny.md` might be
-decoration and there is no way to tell. Filed in `icebox.md`.
-**assumption made** — step 08 pointed him at `/quota`, which is the free-tier ledger, against a
-promise ("what is left before something stops working") that page never made. His finding there
-is partly this walk's doing. What survives it: **there is no screen that answers "what is my box
-about to run out of"**, and the walk should stop asking that page for it.
+**So the verdict still needs a bad stretch to judge.** Until one happens the flag is neither
+helping nor hurting, and it costs nothing to leave on.
 
 ### ✅ Per-request priority group, bounded by the key (2026-08-31)
 

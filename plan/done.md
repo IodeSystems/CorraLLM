@@ -2345,3 +2345,136 @@ asked of me*, one screen scoring 3s (the sign-in), and three sentences named as 
 "Nobody has been turned away in the last 60 minutes", "Nobody has had to work for an answer in the
 last 60 minutes", and the quota page's "Counts are a snapshot from the last call — observed N ago
 — not a live tick."
+
+
+---
+
+## ✅ Lenny — seven runs, two scenarios, and P30 (2026-09-04/05)
+
+The UX method arrived here on 2026-09-04 with no harness (`chore: scaffold the Lenny UX
+harness`). Two days later: seven runs, two scenarios, an information architecture rebuilt
+around them, and two rules the runs asked for that the standard did not have. Design doc:
+[`p30-information-architecture.md`](p30-information-architecture.md). What is still OPEN is in
+`plan.md` §6 — this is the archive.
+
+### The composition, which is the part that compares
+
+| run | what it walked | Q1 | Q2 | Q3 | Q4 | total | verdict |
+|---|---|---|---|---|---|---|---|
+| 1 | before any fix | 10 | 12 | 10 | 10 | 42 | "No. Not on my own, anyway." |
+| 2 | phase A | 17 | 12 | 18 | 13 | 60 | no |
+| 3 | phase B | 15 | 11 | 12 | 4 | 42 | no |
+| 4 | phase C + consequences | 20 | 22 | 23 | 21 | 86 | **yes**, "only as far as Now and Traffic" |
+| 5 | phase D | 23 | 18 | 24 | 19 | 84 | **yes**, unqualified |
+| 6 | after the vocabulary sweep | 22 | 14 | 15 | 10 | 61 | yes, "only as far as one screen" |
+| W | **the caller** — a different scenario | 18 | 12 | 13 | 10 | 53 | no |
+
+The walk changed between 2→3 and 3→4 and again at 6, so those are run totals against the four
+questions, never step-by-step. **Run 3's dip and run 6's are both real and both instructive**:
+run 3 found two defects in what phase B had just shipped, and run 6 found one that this session
+had caused an hour earlier — a config edit with no author, on the afternoon the box felt slow.
+
+### What each phase actually changed
+
+- **A — the home screen answers its question.** A computed state sentence (the chip it replaced
+  was hardcoded `color="success"` AND its text was a tautology — the schema says status is
+  "always ok when the process is serving"), a **What needs looking at** panel collecting faults
+  from three pages, the memory ledger moved to Machines, in-flight deduped to one home.
+- **B — Traffic: one page, one time axis.** `/activity` + `/usage` merged; `store.Window` on
+  every activity read (exclusive upper bound, so adjacent windows tile); `from`/`to` on eight
+  endpoints; the window in the URL so a span can be sent to somebody.
+- **C — seven pages, each named for a question.** Ten nav entries named after data became Now ·
+  Models · Traffic · Callers · Machines · Setup · Bench. Ten old addresses redirect.
+- **D — consequence and vocabulary.** Seven controls that reach live work now say what they cost,
+  above the group, in text (a tooltip reaches nobody who does not hover; a confirm dialog is
+  behind the press he will not make). The caller side says "group", the model side "model lane",
+  matching a schema that had settled it at P14.
+
+### The two rules the runs asked for, which no existing rule reached
+
+- **OB-11 — the answer comes before the explanation.** Asked for on a page whose one useful
+  sentence sat below four paragraphs of implementation notes.
+- **OB-12 — a property that reaches live traffic explains itself, the same way a control does.**
+  Asked for on finding his own team's key in the cheapest, interruptible group with nothing
+  saying what either word costs a request.
+
+### Traps, each paid for once
+
+- **The harness lied and the product got blamed.** The scenario asserted "twice it gave up
+  entirely"; the log for that hour said 384 of 385 served, nobody turned away, dwell no worse
+  than the week's. Lenny dutifully reported the product — canon LEN-4. Ray's complaint is
+  hearsay from colleagues now, which is what he would really have.
+- **A frozen window drew live numbers.** `In use`, `Queue` and `Est. wait` come from the
+  scheduler's current snapshot; under a fixed span they showed an est. wait identical to the live
+  page's, on a page headed "these numbers will not change". Found only by reading two screens
+  against each other.
+- **"Nobody was turned away" was false.** It counted 429s alone, so a window holding eight
+  `503 no backend available` said nobody was turned away. Found by the SECOND scenario — the
+  first never thought to ask.
+- **A fix of ours created a defect within the hour.** `--cache-reuse` was applied through the
+  dashboard API, which recorded "edited through the dashboard" and nothing else; the next run
+  found an unexplained change timed the same afternoon the box felt slow and could not tell
+  whose it was. Revisions now record what changed and the address it came from.
+- **`waitUntil: 'networkidle'` times out on every signed-in page** (the live event stream never
+  idles), and **the capture must not read `aria-label`** — doing so puts a word on his screen
+  that his screen does not have.
+
+### The second scenario earned its keep immediately
+
+Five runs used one goal and one role, so "Lenny is the constant" was an assertion. Wren — handed
+a key a year ago, never opened the dashboard, does not administer the box — walked the same
+screens and failed DIFFERENTLY: the front door scored 3/1/3/1 for Ray and **2/0/0/0** for her;
+the model page cost Ray "how do I proceed" and Wren "is this even addressed to me"; the same two
+controls were refused for opposite reasons. And she found the false statement above.
+
+---
+
+## ✅ The 2026-09-05 slowdown: prompt-cache prefix thrash on a one-slot backend
+
+**Diagnosed, not fixed — the fix is a capacity decision that is yours (§9 territory).**
+Found by following up the only real evidence of "slow" in five Lenny runs: he compared two
+screens and noticed cache reuse had fallen.
+
+**What happened, measured three ways.** Between roughly 10:00 and 14:00, each request to
+`local-Qwen3.8-27B` reprocessed **8,000–17,000 prompt tokens** instead of the usual ~1,000–2,000,
+and mean time answering tracked it exactly:
+
+| hour | requests | mean | prompt tokens cached | tokens reprocessed / request |
+|---|---|---|---|---|
+| 09:00 | 384 | 4.5 s | 96.5% | 2,200 |
+| 10:00 | 406 | 6.5 s | 82.6% | 8,506 |
+| 12:00 | 292 | 10.3 s | 68.5% | 14,830 |
+| 13:00 | 270 | 10.8 s | 57.2% | 17,148 |
+| 14:00 | 106 | 2.0 s | 98.5% | 999 |
+
+Yesterday's same hours: 88–97% cached, 860–1,660 tokens, 2.3–3.3 s. So this was a departure,
+and it ended on its own.
+
+**The mechanism is in llama.cpp's own log.** It picks a slot by longest-common-prefix
+similarity, and logs the score: `selected slot by LCP similarity, f_sim_best = 0.999` in the
+good hours. The share of requests that could NOT find a near-exact cached prefix, per hour:
+
+    09:00  30%   10:00  49%   11:00  56%   12:00  62%   13:00  68%   14:00  9%
+
+At 10:06:43 it gave up entirely once — `selected slot by LRU`, no similar slot at all — and at
+10:09:14 the backend reloaded cold (7.9 s load, a 93,318-token prompt reprocessed, 64.5 s dwell).
+
+**What it is NOT** — checked, because these are what an operator would suspect: no rejections
+(zero all day), no queueing (`queued_ms` zero), no configuration change (nothing since
+2026-09-03), no second model competing for the card (only Qwen served all day, one placement),
+and nothing to do with `carlsmacbookpro`, which has been unreachable far longer than this window.
+
+**The cause is the traffic's shape, not the box.** `local-Qwen3.8-27B` runs with **one slot**, so
+one conversation's prefix is cached at a time. Interleaving two conversations with different
+prefixes makes each request reprocess the divergent tail — which is exactly an f_sim of 0.5–0.9.
+
+**The remedy, and the reason it is not applied here:** more slots would give each conversation its
+own cache, and slots cost KV memory. gpu0 is at **96%** (30 GB of 31 GB), so raising `nSlots`
+means lowering per-slot context or moving the model — a capacity trade only you can make.
+
+**The product gap this exposes, which IS ours:** corrallm records `cached_tokens` per request and
+can therefore see this collapse, but no screen says it, and the activity log records that a
+backend loaded without recording WHY. Five runs asked "will it come right on its own" and the
+answer was in the data the whole time. A "prefix reuse" figure beside time-per-request, and a
+reason on every load, would have answered it. Filed as the strongest candidate for the next
+slice — it is the first thing in this whole exercise that would have told Ray *why*.
