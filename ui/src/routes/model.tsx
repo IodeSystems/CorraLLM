@@ -440,9 +440,9 @@ function InfoTab({
 
       <Box>
         {/* What is true of the MODEL — the routing identity. Anything that
-            differs per box lives in Placements below, because it genuinely
-            differs and a single row would have to pick one and call it the
-            answer. */}
+            differs per box lives in "Ways to run this" below, because it
+            genuinely differs and a single row would have to pick one and call
+            it the answer. */}
         <Typography variant="subtitle2">Serving</Typography>
         <Table size="small">
           <TableHead>
@@ -468,10 +468,11 @@ function InfoTab({
 
       <Box>
         <Typography variant="subtitle2">
-          Placements
+          Ways to run this
           <Typography component="span" variant="caption" sx={{ ml: 1, color: C.textFaint }}>
-            one per (box, cmd) — capabilities are probed per placement, because two
-            boxes are not assumed to agree
+            one per box and command — the config calls each a `placement`.
+            Capabilities are probed per placement, because two boxes are not
+            assumed to agree.
           </Typography>
         </Typography>
         {(model.placements ?? []).length === 0 ? (

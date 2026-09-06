@@ -303,9 +303,11 @@ export function ActivityLog({
             {/* Dropped when the page is already ABOUT one model — the column
                 would repeat the title on every row. */}
             {!hideModel && <TableCell>Served</TableCell>}
-            {/* WHERE it ran. With a model placed on more than one box, backend
-                no longer says which machine, quant or context served it. */}
-            <TableCell>Placement</TableCell>
+            {/* WHERE it ran — one per (box, cmd), the thing the config calls a
+                `placement`. With a model placed on more than one box, the model
+                name no longer says which machine, quant or context served it.
+                The jargon is the gloss, never the column head (OB-3). */}
+            <TableCell>Ran on</TableCell>
             <TableCell>Key</TableCell>
             <TableCell>Source</TableCell>
             <TableCell>Path</TableCell>

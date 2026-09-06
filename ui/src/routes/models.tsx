@@ -778,7 +778,7 @@ function ModelsPage() {
           <Typography variant="subtitle2">{m.name}</Typography>
           {places.length > 1 && (
             <Tooltip title={`Served from ${places.length} boxes — open the model to act on one`}>
-              <Chip size="small" variant="outlined" label={`${places.length} placements`} />
+              <Chip size="small" variant="outlined" label={`${places.length} boxes`} />
             </Tooltip>
           )}
           {places.length === 1 && places[0]?.server && (
