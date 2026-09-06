@@ -1,5 +1,10 @@
 package store
 
+import (
+	"database/sql"
+	"errors"
+)
+
 // Window is the slice of time a read of the activity log covers.
 //
 // It replaces a bare `sinceMS int64` on every windowed query, and the reason is
@@ -97,4 +102,92 @@ func (s *Store) UnansweredByModel(w Window) ([]Unanswered, error) {
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// SlowSpell is the worst stretch inside a window: how many requests ran far
+// past the average, when it started and ended, and the worst single one.
+//
+// It exists because a true summary hid a true incident. An hour on this box
+// reported "Everybody got an answer — nobody was told to come back, nothing was
+// refused, and no answer was cut short" with a 3.8 s mean, while eight
+// consecutive requests between 09:36 and 09:42 took 34.8 s to 40.0 s. Every
+// word of the summary was correct and the box had been unusable for six
+// minutes. The 40.0 s was on screen, in the fourth table down, next to the mean
+// and with nothing saying which of the two was the news (Lenny run 8, which
+// asked for the rule this serves — OB-13).
+//
+// Deliberately NOT a judgement. It reports what happened — this many, this
+// long, between these times — and leaves "is that bad" to the reader, who knows
+// what their box is for. A threshold that declared an incident would be wrong
+// on somebody's batch queue within a week.
+type SlowSpell struct {
+	MeanMS      int64 // mean dwell of served requests in the window
+	ThresholdMS int64 // what counted as "far past" — the multiple of the mean
+	Count       int64 // how many exceeded it
+	FirstMS     int64 // when the first of them landed
+	LastMS      int64 // when the last did
+	WorstMS     int64 // the slowest single request
+	WorstAtMS   int64 // and when it was
+}
+
+// slowSpellMultiple is how far past the mean a request must run to be part of a
+// spell.
+//
+// Three, because it has to clear ordinary spread rather than mark it. This box
+// runs a coefficient of variation near 1.5 — a few long requests already
+// dominate the average — so 2x would flag a normal hour and train the reader to
+// scroll past the one sentence written to stop them scrolling past it.
+const slowSpellMultiple = 3
+
+// SlowSpell finds the slow stretch in a window, if there was one.
+//
+// Two passes rather than one window function: the mean is over SERVED requests
+// only (a 429 is refused in milliseconds and would drag the average down, then
+// make the threshold it defines too easy to clear), and SQLite's older builds
+// in the field cannot be relied on for window functions.
+//
+// Count 0 means nothing stood out, which is the normal answer.
+func (s *Store) SlowSpell(w Window) (SlowSpell, error) {
+	where, args := w.ts()
+	var out SlowSpell
+	var mean sql.NullFloat64
+	err := s.db.QueryRow(
+		`SELECT AVG(dwell_ms) FROM activity
+		  WHERE `+where+` AND status < 400 AND dwell_ms > 0`, args...).Scan(&mean)
+	if err != nil {
+		return out, err
+	}
+	if !mean.Valid || mean.Float64 <= 0 {
+		return out, nil
+	}
+	out.MeanMS = int64(mean.Float64)
+	out.ThresholdMS = int64(mean.Float64 * slowSpellMultiple)
+
+	var count sql.NullInt64
+	var first, last, worst, worstAt sql.NullInt64
+	err = s.db.QueryRow(
+		`SELECT COUNT(*), MIN(ts), MAX(ts), MAX(dwell_ms) FROM activity
+		  WHERE `+where+` AND status < 400 AND dwell_ms > ?`,
+		append(append([]any{}, args...), out.ThresholdMS)...).
+		Scan(&count, &first, &last, &worst)
+	if err != nil {
+		return out, err
+	}
+	if !count.Valid || count.Int64 == 0 {
+		return out, nil
+	}
+	out.Count, out.FirstMS, out.LastMS, out.WorstMS = count.Int64, first.Int64, last.Int64, worst.Int64
+
+	// When the worst one was, which is the part a person can act on: it turns
+	// "something was slow this hour" into a time they can go and look at.
+	err = s.db.QueryRow(
+		`SELECT ts FROM activity
+		  WHERE `+where+` AND status < 400 AND dwell_ms = ?
+		  ORDER BY ts LIMIT 1`,
+		append(append([]any{}, args...), out.WorstMS)...).Scan(&worstAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return out, err
+	}
+	out.WorstAtMS = worstAt.Int64
+	return out, nil
 }

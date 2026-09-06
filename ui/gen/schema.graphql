@@ -2499,6 +2499,7 @@ type corrallm_RetryPromiseRecord {
 type corrallm_RetryPromisesOutputBody {
   """Promises, newest first."""
   promises: [corrallm_RetryPromiseRecord!]!
+  slowSpell: corrallm_SlowSpellView!
   """Per served name: requests in the window that ended with no answer, split by why."""
   unanswered: [corrallm_UnansweredRow!]!
   """How many are still owed a slot — due in the future and not back yet."""
@@ -2643,6 +2644,23 @@ input corrallm_SetSecretInputBodyInput {
   name: String!
   """The secret. Empty clears it. NEVER returned by any endpoint."""
   value: String!
+}
+
+type corrallm_SlowSpellView {
+  """Requests that ran past the threshold. 0 means nothing stood out."""
+  count: Long!
+  """When the first of them landed."""
+  firstMs: Long!
+  """When the last did."""
+  lastMs: Long!
+  """Mean dwell of served requests in the window."""
+  meanMs: Long!
+  """What counted as far past the average."""
+  thresholdMs: Long!
+  """And when it was — the time a person can go and look at."""
+  worstAtMs: Long!
+  """The slowest single request."""
+  worstMs: Long!
 }
 
 type corrallm_StageView {

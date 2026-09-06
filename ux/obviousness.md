@@ -45,3 +45,16 @@ is the standard, not the queue.
   four paragraphs of implementation notes.
 - **OB-10** Nothing exists only on hover. A label that appears when a pointer
   rests on an icon was never written.
+- **OB-13** A summary of a span carries its worst moment, not only its average. A
+  mean, a total and a "nobody was turned away" can all be true of a window the box
+  was unusable in — and a reader who takes the first three things and stops never
+  reaches the row that shows it. Where a screen summarises a span, the summary says
+  what the worst of it was and when, or it is not a summary of that span. Asked for
+  by Lenny run 8, on an hour headed "Everybody got an answer between 09:00 AM and
+  10:00 AM — nobody was told to come back, nothing was refused, and no answer was
+  cut short", in which sixteen requests ran past 11 s and the slowest took 40.0 s
+  against a 3.8 s mean. Every word of the heading was correct. He wrote: "a true
+  average can hide a true incident from someone who reads three things and stops."
+  Note what this rule does NOT ask for: a judgement. Reporting "this many, this much
+  slower, between these times" is the screen's job; deciding whether that is bad
+  belongs to the person who knows what the box is for.

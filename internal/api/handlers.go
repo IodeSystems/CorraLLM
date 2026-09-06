@@ -363,7 +363,33 @@ type RetryPromisesOutput struct {
 		// unsure — and he was right: a 503 is being turned away in any plain
 		// reading, and a stream that dies mid-answer is what he came to ask about.
 		Unanswered []UnansweredRow `json:"unanswered" doc:"Per served name: requests in the window that ended with no answer, split by why."`
+		// The slow stretch this panel's own verdict was hiding.
+		//
+		// "Everybody got an answer — nobody was told to come back, nothing was
+		// refused, and no answer was cut short" is TRUE of an hour in which the
+		// box was unusable for six minutes, and it is the sentence a person
+		// reads before they stop reading (OB-11 put it first; OB-13 is why it
+		// cannot be the whole story). The numbers that showed it were four
+		// panels further down, beside a mean, with nothing saying which was the
+		// news.
+		SlowSpell SlowSpellView `json:"slowSpell"`
 	}
+}
+
+// SlowSpellView is the worst stretch inside the window, or zeroes when there
+// was not one.
+//
+// Reports rather than judges: this many requests, this much slower, between
+// these times. Whether that is bad depends on what the box is for, which the
+// reader knows and this does not.
+type SlowSpellView struct {
+	Count       int64 `json:"count" doc:"Requests that ran past the threshold. 0 means nothing stood out."`
+	ThresholdMS int64 `json:"thresholdMs" doc:"What counted as far past the average."`
+	MeanMS      int64 `json:"meanMs" doc:"Mean dwell of served requests in the window."`
+	FirstMS     int64 `json:"firstMs" doc:"When the first of them landed."`
+	LastMS      int64 `json:"lastMs" doc:"When the last did."`
+	WorstMS     int64 `json:"worstMs" doc:"The slowest single request."`
+	WorstAtMS   int64 `json:"worstAtMs" doc:"And when it was — the time a person can go and look at."`
 }
 
 // UnansweredRow is one served name's tally of requests that got nothing.
@@ -495,6 +521,17 @@ func (h *Handlers) RetryPromises(_ context.Context, in *RetryPromisesInput) (*Re
 		out.Body.Unanswered = append(out.Body.Unanswered, UnansweredRow{
 			Served: u.Served, ToldToReturn: u.ToldToReturn, Refused: u.Refused, EndedEarly: u.EndedEarly,
 		})
+	}
+	// Same window again, for the same reason: the verdict and the thing that
+	// qualifies it must describe one span of time.
+	spell, err := h.Store.SlowSpell(w)
+	if err != nil {
+		return nil, err
+	}
+	out.Body.SlowSpell = SlowSpellView{
+		Count: spell.Count, ThresholdMS: spell.ThresholdMS, MeanMS: spell.MeanMS,
+		FirstMS: spell.FirstMS, LastMS: spell.LastMS,
+		WorstMS: spell.WorstMS, WorstAtMS: spell.WorstAtMS,
 	}
 	out.Body.Promises = make([]RetryPromiseRecord, 0, len(rows))
 	for _, p := range rows {

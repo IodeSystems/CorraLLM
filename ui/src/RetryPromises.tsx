@@ -53,6 +53,15 @@ const PromisesDoc = graphql(/* GraphQL */ `
           refused
           endedEarly
         }
+        slowSpell {
+          count
+          thresholdMs
+          meanMs
+          firstMs
+          lastMs
+          worstMs
+          worstAtMs
+        }
         waiting
         promises {
           id
@@ -101,6 +110,55 @@ function Unanswered({ refused, endedEarly }: { refused: number; endedEarly: numb
   )
 }
 
+/**
+ * What the verdict above it leaves out (OB-13).
+ *
+ * "Everybody got an answer — nobody was told to come back, nothing was refused,
+ * and no answer was cut short" was true of an hour in which sixteen requests ran
+ * past eleven seconds and the worst took forty. Nothing in that sentence is
+ * wrong; it is just not the whole of what happened, and it is the sentence a
+ * person reads before they stop reading. The numbers that showed it were four
+ * panels further down, next to a mean, with nothing saying which was the news.
+ *
+ * It reports and does not judge — this many, this much slower, between these
+ * times. Whether that is bad depends on what the box is for, which the reader
+ * knows and this does not.
+ */
+function SlowStretch({ spell, window }: { spell: SpellShape; window: TimeWindow }) {
+  if (!spell || Number(spell.count) < 1) return null
+  const count = Number(spell.count)
+  const first = Number(spell.firstMs)
+  const last = Number(spell.lastMs)
+  const worstAt = Number(spell.worstAtMs)
+  const clock = (ms: number) =>
+    new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return (
+    <Box sx={{ px: 2, pb: 2 }}>
+      <Typography variant="body2" sx={{ color: C.warn }}>
+        {count === 1 ? 'One request was' : `${count} requests were`} much slower than the rest{' '}
+        {windowPhrase(window)}: over {fmtDuration(Number(spell.thresholdMs))}, against an average
+        of {fmtDuration(Number(spell.meanMs))}.
+        {first > 0 && last > first ? ` Between ${clock(first)} and ${clock(last)}.` : ''}
+      </Typography>
+      <Typography variant="body2" sx={{ color: C.textMuted, mt: 0.5 }}>
+        The slowest took {fmtDuration(Number(spell.worstMs))}
+        {worstAt > 0 ? `, at ${clock(worstAt)}` : ''}. Everyone still got an answer — this is
+        how long some of them waited for it.
+      </Typography>
+    </Box>
+  )
+}
+
+type SpellShape = {
+  count: number | string
+  thresholdMs: number | string
+  meanMs: number | string
+  firstMs: number | string
+  lastMs: number | string
+  worstMs: number | string
+  worstAtMs: number | string
+} | null | undefined
+
 export function RetryPromises({
   filterKey,
   limit = 50,
@@ -139,6 +197,7 @@ export function RetryPromises({
   const unanswered = data?.unanswered ?? []
   const refused = unanswered.reduce((n, u) => n + Number(u.refused), 0)
   const endedEarly = unanswered.reduce((n, u) => n + Number(u.endedEarly), 0)
+  const spell = data?.slowSpell
 
   const body = q.isLoading ? (
     <Loading size={20} minHeight={120} />
@@ -156,10 +215,12 @@ export function RetryPromises({
           : `Nobody was told to come back ${windowPhrase(window)}.`}
       </Typography>
       <Unanswered refused={refused} endedEarly={endedEarly} />
+      <SlowStretch spell={spell} window={window} />
     </Box>
   ) : (
     <Box>
       <Unanswered refused={refused} endedEarly={endedEarly} />
+      <SlowStretch spell={spell} window={window} />
       <TableContainer>
       <Table size="small" stickyHeader>
         <TableHead>
