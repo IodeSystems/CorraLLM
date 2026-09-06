@@ -416,7 +416,40 @@ one-slot backend. Inert until the cache is on, so it can land there whenever.
 **how we will know** — run 8 on both scenarios, same build, reporting composition against
 `done.md` § Lenny's table.
 
-### ◐ `--cache-reuse 256` is live — 2026-09-05 14:36, awaiting a day of traffic
+### ◻ Slot cache: mechanism works, benefit unproven — 2026-09-05
+
+**Vision is a requirement**, so `local-Qwen3.8-27B` keeps its mmproj, and that settles one thing
+permanently: **`--cache-reuse` can never apply to this model.** llama.cpp disables it for any
+multimodal model and says so at every load. The flag is out of the cmd as of revision 32; the
+experiment it fed is retracted below.
+
+**What is known about slot save/restore on this model:**
+
+| | |
+|---|---|
+| save | 9,027 tokens in 375 ms · 19,639 tokens (740 MB) in 643 ms · 48,982 tokens (1.6 GB) in 1.6 s |
+| restore | 9,027 tokens in 126 ms · 740 MB in 331 ms |
+| a hit after restore | **observed once**, ~19:00 on a quiet box: 13,274 of 13,278 tokens cached |
+| a hit after restore | **not reproducible at 22:00 under load**: `n_restored 9027`, then `cached 0` |
+
+**What has been ruled out.** Capacity is 1:1 — corrallm's `maxConcurrent` is 1 and llama.cpp runs
+`--parallel 1` with one slot — so a swap made after admission does hold the backend exclusively,
+and the obvious "somebody else's request landed in between" does not explain the proxy-path
+failure. The 22:00 MANUAL test is explained by contention (its retries past 429s mean other
+requests ran between the restore and the resend), but the in-proxy attempt has no such window.
+
+**What is left to find out, and it needs a quiet box:** whether a restored slot yields prefix
+reuse reliably on a multimodal model, or whether the 19:00 observation was the exception. Until
+that is settled the feature is ON and observable — every swap logs one line — but it is NOT
+established that it helps anybody.
+
+**next** — repeat prime → save → clobber → restore → resend during a genuine idle window, with
+nothing else served in between, and read llama.cpp's own slot log rather than the usage field.
+**risks** — it is enabled in production on that uncertainty. It cannot fail a request, and the
+worst case is ~1.6 s of save on a conversation switch buying nothing.
+**decision available to you** — turning it off is `--slot-cache-dir ""` and a restart.
+
+### ◐ ~~`--cache-reuse 256` is live~~ — RETRACTED 2026-09-05 21:49
 
 **Applied** (config revision 27, one line, restorable): `local-Qwen3.8-27B` spawns with
 `--cache-reuse 256` beside its existing `--parallel 1`. More slots is the textbook fix for
