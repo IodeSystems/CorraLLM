@@ -158,7 +158,7 @@ func TestEvictDropsTheOldestUntilUnderCap(t *testing.T) {
 	}
 	// Three 200-byte states, written oldest first.
 	for i, name := range []string{"old", "middle", "new"} {
-		p := s.Path(ns, name)
+		p := s.Path("m", ns, name)
 		if err := os.WriteFile(p, make([]byte, 200), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -174,10 +174,10 @@ func TestEvictDropsTheOldestUntilUnderCap(t *testing.T) {
 	if removed != 2 || freed != 400 {
 		t.Fatalf("evicted %d files freeing %d bytes; want 2 and 400", removed, freed)
 	}
-	if _, err := os.Stat(s.Path(ns, "new")); err != nil {
+	if _, err := os.Stat(s.Path("m", ns, "new")); err != nil {
 		t.Error("the newest state was evicted")
 	}
-	if _, err := os.Stat(s.Path(ns, "old")); !os.IsNotExist(err) {
+	if _, err := os.Stat(s.Path("m", ns, "old")); !os.IsNotExist(err) {
 		t.Error("the oldest state survived")
 	}
 }
@@ -189,12 +189,12 @@ func TestHasMarksAStateRecentlyUsed(t *testing.T) {
 	s := &Store{Dir: dir}
 	ns := "ns"
 	_ = s.Prepare(ns)
-	p := s.Path(ns, "k")
+	p := s.Path("m", ns, "k")
 	_ = os.WriteFile(p, []byte("x"), 0o600)
 	old := time.Now().Add(-48 * time.Hour)
 	_ = os.Chtimes(p, old, old)
 
-	if !s.Has(ns, "k") {
+	if !s.Has("m", ns, "k") {
 		t.Fatal("Has said no to a file that exists")
 	}
 	fi, err := os.Stat(p)
@@ -204,7 +204,7 @@ func TestHasMarksAStateRecentlyUsed(t *testing.T) {
 	if fi.ModTime().Before(time.Now().Add(-time.Minute)) {
 		t.Error("Has did not refresh the file's recency")
 	}
-	if s.Has(ns, "nope") {
+	if s.Has("m", ns, "nope") {
 		t.Error("Has said yes to a file that does not exist")
 	}
 }
@@ -214,8 +214,8 @@ func TestDropNamespaceRemovesEverythingForOneBackend(t *testing.T) {
 	s := &Store{Dir: dir}
 	_ = s.Prepare("gone")
 	_ = s.Prepare("stays")
-	_ = os.WriteFile(s.Path("gone", "a"), []byte("x"), 0o600)
-	_ = os.WriteFile(s.Path("stays", "b"), []byte("x"), 0o600)
+	_ = os.WriteFile(s.Path("m", "gone", "a"), []byte("x"), 0o600)
+	_ = os.WriteFile(s.Path("m", "stays", "b"), []byte("x"), 0o600)
 
 	if err := s.DropNamespace("gone"); err != nil {
 		t.Fatal(err)
@@ -223,7 +223,7 @@ func TestDropNamespaceRemovesEverythingForOneBackend(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "gone")); !os.IsNotExist(err) {
 		t.Error("the namespace survived")
 	}
-	if _, err := os.Stat(s.Path("stays", "b")); err != nil {
+	if _, err := os.Stat(s.Path("m", "stays", "b")); err != nil {
 		t.Error("dropping one backend removed another's states")
 	}
 }
@@ -285,7 +285,7 @@ func TestSwapSavesTheOutgoingBeforeRestoringTheIncoming(t *testing.T) {
 
 	// Pretend conv-b has a state on disk from earlier.
 	_ = m.Store.Prepare(ns)
-	_ = os.WriteFile(m.Store.Path(ns, "conv-b"), []byte("kv"), 0o600)
+	_ = os.WriteFile(m.Store.Path("b1", ns, "conv-b"), []byte("kv"), 0o600)
 
 	if what, restored := m.Swap(context.Background(), c, "b1", ns, "conv-b"); !restored {
 		t.Fatalf("conv-b had a state and was not restored: %q", what)
@@ -293,10 +293,10 @@ func TestSwapSavesTheOutgoingBeforeRestoringTheIncoming(t *testing.T) {
 	if len(f.calls) != 2 {
 		t.Fatalf("want a save then a restore, got %v", f.calls)
 	}
-	if f.calls[0] != "save:"+ns+"-conv-a.bin" {
+	if f.calls[0] != "save:"+filePrefix("b1")+ns+"-conv-a.bin" {
 		t.Errorf("the outgoing conversation was not saved first: %v", f.calls)
 	}
-	if f.calls[1] != "restore:"+ns+"-conv-b.bin" {
+	if f.calls[1] != "restore:"+filePrefix("b1")+ns+"-conv-b.bin" {
 		t.Errorf("the incoming conversation was not restored second: %v", f.calls)
 	}
 }
@@ -421,7 +421,7 @@ func TestNothingHandsASeparatorToTheBackend(t *testing.T) {
 	ns := Namespace("local-Qwen3.8-27B", "llama-server -c 188000", 188000)
 
 	_ = m.Store.Prepare(ns)
-	_ = os.WriteFile(m.Store.Path(ns, "conv-b"), []byte("kv"), 0o600)
+	_ = os.WriteFile(m.Store.Path("b1", ns, "conv-b"), []byte("kv"), 0o600)
 	_, _ = m.Swap(context.Background(), c, "b1", ns, "conv-a")
 	_, _ = m.Swap(context.Background(), c, "b1", ns, "conv-b")
 
@@ -436,7 +436,37 @@ func TestNothingHandsASeparatorToTheBackend(t *testing.T) {
 	}
 	// And the file the store writes has to be the one the backend was told about,
 	// or a save lands somewhere Has() never looks.
-	if got := filepath.Base(m.Store.Path(ns, "conv-b")); got != ns+"-conv-b.bin" {
+	if got := filepath.Base(m.Store.Path("b1", ns, "conv-b")); got != filePrefix("b1")+ns+"-conv-b.bin" {
 		t.Errorf("store path and backend filename disagree: %q", got)
+	}
+}
+
+// An edited cmd changes the namespace, so every state already on disk becomes
+// unreachable. Removing one flag from box1's model orphaned 16 files and 10 GB,
+// which then waited for eviction to happen upon them. The first swap after such
+// a change clears them on purpose.
+func TestSweepDropsStatesFromAnOlderShapeOfTheBackend(t *testing.T) {
+	dir := t.TempDir()
+	s := &Store{Dir: dir}
+	_ = s.Prepare("")
+	old, live := "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"
+	for _, f := range []string{s.Path("m1", old, "c1"), s.Path("m1", old, "c2"), s.Path("m1", live, "c3")} {
+		if err := os.WriteFile(f, make([]byte, 1<<20), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Another model's states must survive: this sweeps one backend, not the store.
+	other := s.Path("m2", old, "c4")
+	_ = os.WriteFile(other, make([]byte, 1<<20), 0o600)
+
+	removed, freed := s.SweepOthers("m1", live)
+	if removed != 2 || freed != 2<<20 {
+		t.Fatalf("removed %d freeing %d; want 2 and %d", removed, freed, 2<<20)
+	}
+	if _, err := os.Stat(s.Path("m1", live, "c3")); err != nil {
+		t.Error("the live namespace was swept")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Error("another model's states were swept")
 	}
 }

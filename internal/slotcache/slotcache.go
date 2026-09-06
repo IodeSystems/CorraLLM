@@ -222,18 +222,74 @@ func Namespace(model, cmd string, ctxSize int) string {
 // returns `{"error":"Invalid filename"}` on every save and restore, which would
 // have made this whole package silently inert. The namespace is therefore a
 // filename PREFIX, not a directory.
-func name(namespace, key string) string { return namespace + "-" + key }
+func name(model, namespace, key string) string { return filePrefix(model) + namespace + "-" + key }
+
+// SweepOthers deletes every state for a model EXCEPT the namespace given.
+//
+// A namespace is a hash of what the backend is, so any edit to its command —
+// a new quantisation, a flag added or removed — makes every state already on
+// disk unreachable. Correct, and it leaves them there: 16 files and 10 GB were
+// orphaned by removing one flag, and with a 200 GB cap they would sit until
+// eviction happened to reach them. Eviction is oldest-first, so it would take
+// them eventually and by accident; this takes them on purpose, the first time a
+// backend swaps after the change.
+//
+// Files are named <model>~<namespace>-<key>.bin so a model's own states can be
+// found without reading a hash back.
+func (s *Store) SweepOthers(model, keep string) (removed int, freed int64) {
+	entries, err := os.ReadDir(s.Dir)
+	if err != nil {
+		return 0, 0
+	}
+	prefix := filePrefix(model)
+	for _, e := range entries {
+		n := e.Name()
+		if !strings.HasPrefix(n, prefix) || !strings.HasSuffix(n, ".bin") {
+			continue
+		}
+		if strings.HasPrefix(n, prefix+keep+"-") {
+			continue // the live namespace
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.Dir, n)); err == nil {
+			removed++
+			freed += fi.Size()
+		}
+	}
+	return removed, freed
+}
+
+// filePrefix keeps a model's states identifiable on disk. A served name can
+// carry anything a config author typed, so it is reduced to what a filename can
+// hold without becoming a path.
+func filePrefix(model string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, model)
+	if len(safe) > 40 {
+		safe = safe[:40]
+	}
+	return safe + "~"
+}
 
 // Path is where a key's file lives for one backend.
-func (s *Store) Path(namespace, key string) string {
-	return filepath.Join(s.Dir, name(namespace, key)+".bin")
+func (s *Store) Path(model, namespace, key string) string {
+	return filepath.Join(s.Dir, name(model, namespace, key)+".bin")
 }
 
 // Has reports whether a state exists, and touches it so eviction sees it as
 // recently used. A read that does not update recency evicts the file somebody
 // is about to ask for.
-func (s *Store) Has(namespace, key string) bool {
-	p := s.Path(namespace, key)
+func (s *Store) Has(model, namespace, key string) bool {
+	p := s.Path(model, namespace, key)
 	fi, err := os.Stat(p)
 	if err != nil || fi.IsDir() {
 		return false
@@ -343,6 +399,7 @@ type Manager struct {
 	mu          sync.Mutex
 	resident    map[string]string // backend id -> conversation key
 	unsupported map[string]bool   // backend id -> "asked once, it cannot do this"
+	swept       map[string]bool   // backend id -> "already dropped its stale namespaces"
 }
 
 // Swap makes key the resident conversation on a backend, saving whatever was
@@ -360,9 +417,20 @@ func (m *Manager) Swap(ctx context.Context, c *Client, backendID, namespace, key
 	if m.resident == nil {
 		m.resident = map[string]string{}
 		m.unsupported = map[string]bool{}
+		m.swept = map[string]bool{}
 	}
 	if m.resident[backendID] == key {
 		return "", false // already here; the backend's own prefix cache handles it
+	}
+	// First swap for this backend since the daemon started: drop states left by a
+	// PREVIOUS shape of it. An edited cmd changes the namespace, so those can
+	// never be restored — removing one flag from box1's model orphaned 16 files
+	// and 10 GB, which then sat waiting for eviction to happen upon them.
+	if !m.swept[backendID] {
+		m.swept[backendID] = true
+		if n, freed := m.Store.SweepOthers(backendID, namespace); n > 0 {
+			what = fmt.Sprintf("dropped %d state(s) from an older shape of this backend, freeing %d MB", n, freed>>20)
+		}
 	}
 	if err := m.Store.Prepare(namespace); err != nil {
 		return "store unavailable: " + err.Error(), false
@@ -378,7 +446,7 @@ func (m *Manager) Swap(ctx context.Context, c *Client, backendID, namespace, key
 	// one bug in here that corrupts rather than merely slows.
 	if prev := m.resident[backendID]; prev != "" {
 		sctx, cancel := context.WithTimeout(ctx, timeout)
-		_, _, err := c.Save(sctx, m.Slot, name(namespace, prev))
+		_, _, err := c.Save(sctx, m.Slot, name(backendID, namespace, prev))
 		cancel()
 		if err != nil {
 			// A backend without --slot-save-path says so on the first attempt.
@@ -388,18 +456,21 @@ func (m *Manager) Swap(ctx context.Context, c *Client, backendID, namespace, key
 				m.unsupported[backendID] = true
 				return "backend cannot save slots", false
 			}
-			what = "save failed: " + err.Error()
+			if what != "" {
+				what += "; "
+			}
+			what += "save failed: " + err.Error()
 		}
 	}
 
 	// The slot no longer holds what it held, whether or not the save worked.
 	m.resident[backendID] = key
 
-	if !m.Store.Has(namespace, key) {
+	if !m.Store.Has(backendID, namespace, key) {
 		return what, false
 	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)
-	_, _, err := c.Restore(rctx, m.Slot, name(namespace, key))
+	_, _, err := c.Restore(rctx, m.Slot, name(backendID, namespace, key))
 	cancel()
 	if err != nil {
 		if isUnsupported(err) {
