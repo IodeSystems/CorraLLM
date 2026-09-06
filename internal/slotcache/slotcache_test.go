@@ -33,11 +33,11 @@ func TestKeyIsStableAsTheConversationGrows(t *testing.T) {
 	sys := [2]string{"system", "You are a coding agent with tools."}
 	first := [2]string{"user", "Refactor the parser in internal/config."}
 
-	turn1, ok := Key("sk-aw4", chat(sys, first))
+	turn1, ok := Key("sk-aw4", "", chat(sys, first))
 	if !ok {
 		t.Fatal("no key for a normal chat request")
 	}
-	turn4, ok := Key("sk-aw4", chat(sys, first,
+	turn4, ok := Key("sk-aw4", "", chat(sys, first,
 		[2]string{"assistant", "Looking at it."},
 		[2]string{"user", "Now do the same for the loader."},
 		[2]string{"assistant", "Done."},
@@ -55,8 +55,8 @@ func TestKeyIsStableAsTheConversationGrows(t *testing.T) {
 // to the other.
 func TestKeySeparatesTasksThatShareASystemPrompt(t *testing.T) {
 	sys := [2]string{"system", "You are a coding agent with tools."}
-	a, _ := Key("sk-aw4", chat(sys, [2]string{"user", "Refactor the parser."}))
-	b, _ := Key("sk-aw4", chat(sys, [2]string{"user", "Write release notes."}))
+	a, _ := Key("sk-aw4", "", chat(sys, [2]string{"user", "Refactor the parser."}))
+	b, _ := Key("sk-aw4", "", chat(sys, [2]string{"user", "Write release notes."}))
 	if a == b {
 		t.Error("two different first turns produced one key — one task would restore the other's cache")
 	}
@@ -67,8 +67,8 @@ func TestKeySeparatesTasksThatShareASystemPrompt(t *testing.T) {
 // another hands over what they said.
 func TestKeyNeverCrossesCallers(t *testing.T) {
 	msgs := chat([2]string{"system", "shared"}, [2]string{"user", "identical opening"})
-	a, _ := Key("sk-aw4", msgs)
-	b, _ := Key("dun", msgs)
+	a, _ := Key("sk-aw4", "", msgs)
+	b, _ := Key("dun", "", msgs)
 	if a == b {
 		t.Error("two callers with identical prompts share a key — that is a content leak, not a cache hit")
 	}
@@ -85,7 +85,7 @@ func TestKeyRefusesWhatItCannotIdentify(t *testing.T) {
 		{"no messages", []byte(`{"model":"x"}`)},
 		{"system only", chat([2]string{"system", "just a preamble"})},
 	} {
-		if _, ok := Key("sk-aw4", tc.body); ok {
+		if _, ok := Key("sk-aw4", "", tc.body); ok {
 			t.Errorf("%s: expected no key", tc.name)
 		}
 	}
@@ -353,5 +353,52 @@ func TestSwapSurvivesAFailedSave(t *testing.T) {
 	last := f.calls[len(f.calls)-1]
 	if !contains(last, "second") {
 		t.Errorf("saved the wrong conversation after a failure: %v", f.calls)
+	}
+}
+
+// THE CASE THE GUESS CANNOT HANDLE, and the reason a caller should be able to
+// say what conversation this is. A client that prunes the head of a long
+// conversation — the very behaviour that produced 2026-09-05's four-hour
+// slowdown — rewrites the messages the inferred key is built from. The state it
+// saved one turn ago becomes unreachable exactly when it is worth the most.
+func TestDeclaredIdSurvivesTheHeadBeingPruned(t *testing.T) {
+	sys := [2]string{"system", "You are a coding agent with tools."}
+	first := [2]string{"user", "Refactor the parser."}
+	full := chat(sys, first, [2]string{"assistant", "Done."}, [2]string{"user", "Now the loader."})
+	// The client drops the opening turns to stay inside the window.
+	pruned := chat([2]string{"system", "You are a coding agent with tools."},
+		[2]string{"user", "Now the loader."})
+
+	guessBefore, _ := Key("sk-aw4", "", full)
+	guessAfter, _ := Key("sk-aw4", "", pruned)
+	if guessBefore == guessAfter {
+		t.Fatal("this test is pointless if pruning does not change the guess")
+	}
+
+	saidBefore, ok1 := Key("sk-aw4", "task-4711", full)
+	saidAfter, ok2 := Key("sk-aw4", "task-4711", pruned)
+	if !ok1 || !ok2 {
+		t.Fatal("a declared conversation must always produce a key")
+	}
+	if saidBefore != saidAfter {
+		t.Error("a declared id did not survive the head being pruned")
+	}
+}
+
+// A declared id is still the caller's own namespace: naming somebody else's
+// conversation gets you yours, not theirs.
+func TestDeclaredIdIsStillPerCaller(t *testing.T) {
+	a, _ := Key("sk-aw4", "task-4711", nil)
+	b, _ := Key("dun", "task-4711", nil)
+	if a == b {
+		t.Error("two callers naming the same conversation shared a key")
+	}
+}
+
+// A declared id needs no body at all — an embeddings or completions request can
+// say what it belongs to just as well as a chat one.
+func TestDeclaredIdNeedsNoParseableBody(t *testing.T) {
+	if _, ok := Key("sk-aw4", "task-4711", []byte("{not json")); !ok {
+		t.Error("a declared id should not depend on the body parsing")
 	}
 }

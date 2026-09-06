@@ -43,6 +43,21 @@ import (
 	"time"
 )
 
+// ConversationHeader lets a caller NAME the conversation a request belongs to,
+// which is strictly better than corrallm guessing.
+//
+// The guess below reads the conversation's head — the system block and the first
+// turn — because those do not change as it grows. Except in exactly the case
+// this whole package exists for: a client that PRUNES the head of a long
+// conversation to stay inside the context window changes those very messages, so
+// the inferred key changes, the saved state is orphaned, and the request is
+// reprocessed. The mechanism would miss the case it was built for.
+//
+// A declared id has none of that: it survives pruning, summarisation, and a
+// changed tool list. It is still namespaced by the caller, so naming somebody
+// else's conversation gets you your own state and not theirs.
+const ConversationHeader = "X-Corrallm-Conversation"
+
 // Key identifies one conversation's state, and getting it wrong has two
 // different costs.
 //
@@ -56,7 +71,18 @@ import (
 // all: the point is that turn N+1 of a conversation finds what turn N left.
 // So the key is the conversation's HEAD — the parts that do not change as it
 // grows — not the whole prompt.
-func Key(caller string, body []byte) (string, bool) {
+func Key(caller, declared string, body []byte) (string, bool) {
+	// What the caller says it is, when it says. Hashed with the caller for the
+	// same reason the inferred key is: one caller's states are not another's to
+	// address, however they spell the id.
+	if declared = strings.TrimSpace(declared); declared != "" {
+		h := sha256.New()
+		_, _ = io.WriteString(h, caller)
+		_, _ = h.Write([]byte{0})
+		_, _ = io.WriteString(h, "declared:")
+		_, _ = io.WriteString(h, declared)
+		return hex.EncodeToString(h.Sum(nil))[:32], true
+	}
 	var req struct {
 		Messages []struct {
 			Role    string          `json:"role"`
