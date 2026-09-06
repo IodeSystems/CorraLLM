@@ -255,6 +255,31 @@ CREATE TABLE IF NOT EXISTS quota_counter (
     PRIMARY KEY (backend, label)
 );
 
+-- backend_refusal: how long a backend has been refusing outright, across
+-- restarts.
+--
+-- The ledger already counts consecutive hard failures (401/402/403) to space
+-- out retries, but that count lives in memory and clears on any 2xx, so it
+-- answers "how hard should I back off right now" and cannot answer "has this
+-- rung been dead for a week". Every restart reset it to zero, which is why
+-- cerebras-gpt-oss-120b sat on 402 Payment Required from 2026-09-01 to
+-- 2026-09-06 without anything saying so.
+--
+-- Not derivable from the activity log. A spill writes no row naming the backend
+-- it spilled PAST — one request is one row — so a rung that fails mid-ladder is
+-- invisible there, and only a rung that failed as the LAST candidate leaves a
+-- trace. This is the trace for the rest.
+--
+-- One row per refusing backend, deleted the moment it serves again: the table
+-- is a list of what is currently broken, not a history of what once was.
+CREATE TABLE IF NOT EXISTS backend_refusal (
+    backend TEXT    NOT NULL PRIMARY KEY, -- served model name
+    since   INTEGER NOT NULL DEFAULT 0,   -- unix millis of the FIRST refusal in this run
+    last    INTEGER NOT NULL DEFAULT 0,   -- unix millis of the most recent one
+    count   INTEGER NOT NULL DEFAULT 0,   -- how many refusals since then
+    status  INTEGER NOT NULL DEFAULT 0    -- the most recent refusal's HTTP status
+);
+
 CREATE TABLE IF NOT EXISTS model_selection (
     provider    TEXT NOT NULL,          -- the provider whose directory offered it
     credential  TEXT NOT NULL,          -- WHICH account saw it; catalogues differ by key
@@ -2094,6 +2119,64 @@ func scanBenchResults(rows *sql.Rows) ([]BenchResult, error) {
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// BackendRefusal is one backend that is refusing outright, and since when.
+//
+// "Refusing" means a hard failure — 401, 402, 403 — the provider saying no in a
+// way that retrying cannot fix: an expired key, an unpaid account, a revoked
+// permission. A 429 is not one of these; that is the provider working as sold.
+type BackendRefusal struct {
+	Backend string
+	SinceMS int64 // first refusal in this run
+	LastMS  int64 // most recent
+	Count   int64
+	Status  int // the most recent refusal's HTTP status
+}
+
+// NoteBackendRefusal records that a backend refused, starting the clock on the
+// first one and only advancing it after.
+//
+// `since` is deliberately left alone on conflict: the question this exists to
+// answer is "how long has this been broken", and touching `since` on every
+// refusal would answer "when did it last fail", which the log already covers.
+func (s *Store) NoteBackendRefusal(backend string, status int, atMS int64) error {
+	_, err := s.db.Exec(
+		`INSERT INTO backend_refusal (backend, since, last, count, status)
+		 VALUES (?, ?, ?, 1, ?)
+		 ON CONFLICT(backend) DO UPDATE SET
+		   last = excluded.last, count = backend_refusal.count + 1, status = excluded.status`,
+		backend, atMS, atMS, status)
+	return err
+}
+
+// ClearBackendRefusal forgets a backend's refusal streak, called when it serves
+// again. Deleting rather than zeroing keeps the table a list of what is broken
+// now.
+func (s *Store) ClearBackendRefusal(backend string) error {
+	_, err := s.db.Exec(`DELETE FROM backend_refusal WHERE backend = ?`, backend)
+	return err
+}
+
+// RefusingBackends lists what is currently refusing, longest-broken first —
+// which is the order they matter in, since a rung that died a week ago is a
+// different problem from one that died in the last minute.
+func (s *Store) RefusingBackends() ([]BackendRefusal, error) {
+	rows, err := s.db.Query(
+		`SELECT backend, since, last, count, status FROM backend_refusal ORDER BY since ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []BackendRefusal
+	for rows.Next() {
+		var b BackendRefusal
+		if err := rows.Scan(&b.Backend, &b.SinceMS, &b.LastMS, &b.Count, &b.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
 	}
 	return out, rows.Err()
 }

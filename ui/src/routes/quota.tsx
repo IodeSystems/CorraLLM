@@ -2,6 +2,7 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import {
   Alert,
+  AlertTitle,
   Box,
   Chip,
   LinearProgress,
@@ -29,6 +30,13 @@ const QuotaDoc = graphql(/* GraphQL */ `
   query Quota {
     corrallm {
       quotaLedger {
+        refusing {
+          backend
+          status
+          count
+          sinceMs
+          lastMs
+        }
         backends {
           backend
           available
@@ -107,6 +115,41 @@ function BucketCell({ b }: { b: Bucket }) {
 }
 
 /**
+ * What a hard refusal MEANS, in the operator's words rather than the status
+ * code's. 401/402/403 are three different problems with three different fixes,
+ * and "refused with 402" names the wire, not the situation (OB-3, OB-6).
+ */
+function refusalMeaning(status: number): string {
+  if (status === 402) return 'the account is unpaid'
+  if (status === 401) return 'the key is not accepted'
+  if (status === 403) return 'the key is not permitted to use it'
+  return `it answers ${status}`
+}
+
+/** What to do about it — a fault the reader cannot act on is not a fault (OB-6). */
+function refusalAction(status: number): string {
+  if (status === 402) return 'Fund the account, or drop this rung from its lane.'
+  if (status === 401) return 'Replace the credential, or drop this rung from its lane.'
+  if (status === 403)
+    return 'Check what the credential is allowed to reach, or drop this rung from its lane.'
+  return 'Check the provider, or drop this rung from its lane.'
+}
+
+/**
+ * How long it has been broken, which is the number that decides whether this is
+ * news or a standing fact. A date alone makes the reader do the subtraction.
+ */
+function fmtSince(msStr: string | number): string {
+  const ms = typeof msStr === 'string' ? Number(msStr) : msStr
+  if (!Number.isFinite(ms) || ms <= 0) return 'an unknown time'
+  const secs = Math.max(0, (Date.now() - ms) / 1000)
+  const when = new Date(ms).toLocaleString()
+  if (secs < 3600) return `${Math.max(1, Math.floor(secs / 60))} minutes ago (${when})`
+  if (secs < 86400) return `${Math.floor(secs / 3600)} hours ago (${when})`
+  return `${Math.floor(secs / 86400)} days ago (${when})`
+}
+
+/**
  * The upstream-budget half of Setup (P30 phase C), and a rename.
  *
  * It was a top-level entry called "Quota", which is the word a person uses for
@@ -126,6 +169,7 @@ export function ProviderBudgets() {
   })
   if (q.isLoading) return <Loading />
   const backends = q.data?.corrallm?.quotaLedger?.backends ?? []
+  const refusing = q.data?.corrallm?.quotaLedger?.refusing ?? []
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -137,6 +181,23 @@ export function ProviderBudgets() {
         <b>unavailable</b> when exhausted or cooling from a 429, and the free lane routes around it.
         Counts are a snapshot from the last call — <i>observed N ago</i> — not a live tick.
       </Typography>
+
+      {refusing.length > 0 && (
+        <Alert severity="error">
+          <AlertTitle>
+            {refusing.length === 1
+              ? 'A backend is refusing every request'
+              : `${refusing.length} backends are refusing every request`}
+          </AlertTitle>
+          {refusing.map((r) => (
+            <Typography key={r.backend} variant="body2" sx={{ mb: 0.5 }}>
+              <b style={{ fontFamily: 'monospace' }}>{r.backend}</b> — {refusalMeaning(n(r.status))}{' '}
+              since {fmtSince(r.sinceMs)}, {fmtInt(r.count)}{' '}
+              {n(r.count) === 1 ? 'time' : 'times'}. {refusalAction(n(r.status))}
+            </Typography>
+          ))}
+        </Alert>
+      )}
 
       {backends.length === 0 ? (
         <Alert severity="info">

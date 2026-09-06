@@ -2351,6 +2351,7 @@ type corrallm_QuotaEntryView {
 
 type corrallm_QuotaOutputBody {
   backends: [corrallm_QuotaEntryView!]!
+  refusing: [corrallm_RefusingBackendView!]!
 }
 
 type corrallm_QuotaWindowView {
@@ -2368,6 +2369,18 @@ type corrallm_QuotaWindowView {
 type corrallm_RecentActivityOutputBody {
   """Activity rows, newest first."""
   records: [corrallm_ActivityRecord!]!
+}
+
+type corrallm_RefusingBackendView {
+  backend: String!
+  """Refusals since it started. A low count with an old start means nothing is even trying it any more."""
+  count: Long!
+  """Unix millis of the most recent refusal."""
+  lastMs: Long!
+  """Unix millis of the FIRST refusal in this run — how long it has been broken, not when it last failed."""
+  sinceMs: Long!
+  """The most recent refusal's HTTP status: 401 (key), 402 (unpaid), 403 (not permitted)."""
+  status: Long!
 }
 
 type corrallm_RequestOverheadOutputBody {

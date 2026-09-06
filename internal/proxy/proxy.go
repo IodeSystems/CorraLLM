@@ -80,6 +80,75 @@ type Proxy struct {
 	// roster holds each provider's currently-free model set (P16e), refreshed
 	// periodically so a churned-out free model is skipped proactively.
 	roster *freeroster.Roster
+
+	// refusing mirrors the backend_refusal table so clearing a streak costs a
+	// map lookup on the hot path instead of a DELETE on every served request.
+	// The table is the truth; this is the index that keeps consulting it cheap.
+	refusingMu sync.Mutex
+	refusing   map[string]bool
+}
+
+// noteRefusal records that a backend refused outright (401/402/403), starting
+// the clock the first time.
+//
+// Separate from the ledger's hard-fail counter, which exists to space out
+// retries and clears on any success: that answers "how hard should I back off",
+// this answers "how long has this rung been dead". The ledger's count also
+// lives only in memory, so a restart forgot it — which is how a backend refused
+// for five days without anything saying so.
+func (p *Proxy) noteRefusal(backend string, status int) {
+	if p.store == nil {
+		return
+	}
+	p.refusingMu.Lock()
+	if p.refusing == nil {
+		p.refusing = map[string]bool{}
+	}
+	p.refusing[backend] = true
+	p.refusingMu.Unlock()
+	if err := p.store.NoteBackendRefusal(backend, status, time.Now().UnixMilli()); err != nil {
+		slog.Warn("could not record backend refusal", "backend", backend, "err", err)
+	}
+}
+
+// clearRefusal forgets a backend's streak once it serves again. A no-op — and
+// no database work — for the overwhelming majority of requests, which are from
+// backends that were never refusing.
+func (p *Proxy) clearRefusal(backend string) {
+	if p.store == nil {
+		return
+	}
+	p.refusingMu.Lock()
+	was := p.refusing[backend]
+	if was {
+		delete(p.refusing, backend)
+	}
+	p.refusingMu.Unlock()
+	if !was {
+		return
+	}
+	if err := p.store.ClearBackendRefusal(backend); err != nil {
+		slog.Warn("could not clear backend refusal", "backend", backend, "err", err)
+	}
+}
+
+// loadRefusals primes the in-memory mirror from the table at boot, so a streak
+// that began before a restart is still cleared by the first success after it.
+func (p *Proxy) loadRefusals() {
+	if p.store == nil {
+		return
+	}
+	rows, err := p.store.RefusingBackends()
+	if err != nil {
+		slog.Warn("could not load backend refusals", "err", err)
+		return
+	}
+	p.refusingMu.Lock()
+	defer p.refusingMu.Unlock()
+	p.refusing = make(map[string]bool, len(rows))
+	for _, r := range rows {
+		p.refusing[r.Backend] = true
+	}
 }
 
 // RosterSnapshot returns each provider's currently-free model roster (P16e).
@@ -298,6 +367,10 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 	if st != nil {
 		p.quota.UseStore(quotaCounterStore{st})
 	}
+	// A refusal streak outlives a restart on purpose — that is the whole point
+	// of persisting it — so the mirror has to be primed, or the first success
+	// after a restart would not know there was anything to clear.
+	p.loadRefusals()
 	// Seed the ledger from each free-tier backend's config (P16): a self-cap for
 	// header-tracked backends, and the provider limits for counter-mode ones (no
 	// rate-limit headers, so budget is counted locally).
@@ -873,6 +946,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			release()
 			slog.Warn("free-tier backend hard-failed, spilling", "backend", name, "status", hardFailStatus)
 			lastHardFail = fmt.Sprintf("%s refused with %d", name, hardFailStatus)
+			p.noteRefusal(name, hardFailStatus)
 			p.markInflight(live, inflightQueued, "")
 			continue
 		}
@@ -982,6 +1056,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		var ttfbMS int64
 		if !sc.firstWrite.IsZero() {
 			ttfbMS = sc.firstWrite.Sub(start).Milliseconds()
+		}
+		// It served, so whatever it was refusing for, it has stopped.
+		if status >= 200 && status < 300 {
+			p.clearRefusal(name)
 		}
 		p.logReq(r, store.Activity{
 			Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path, Status: status,

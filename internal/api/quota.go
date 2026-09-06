@@ -59,10 +59,27 @@ type QuotaWindowView struct {
 	ResetsIn string `json:"resetsIn,omitempty" doc:"Time until the current level fully drains to zero."`
 }
 
+// RefusingBackendView is one backend that is refusing outright, and for how long.
+//
+// A separate list rather than a field on QuotaEntryView, because the ledger only
+// carries backends it has OBSERVED a response from. A rung that has refused every
+// request since before the last restart may not be in the ledger at all, and the
+// whole point of this list is that such a rung stops being invisible.
+type RefusingBackendView struct {
+	Backend string `json:"backend"`
+	Status  int    `json:"status" doc:"The most recent refusal's HTTP status: 401 (key), 402 (unpaid), 403 (not permitted)."`
+	Count   int64  `json:"count" doc:"Refusals since it started. A low count with an old start means nothing is even trying it any more."`
+	SinceMS int64  `json:"sinceMs" doc:"Unix millis of the FIRST refusal in this run — how long it has been broken, not when it last failed."`
+	LastMS  int64  `json:"lastMs" doc:"Unix millis of the most recent refusal."`
+}
+
 // QuotaOutput lists every tracked backend's budget.
 type QuotaOutput struct {
 	Body struct {
 		Backends []QuotaEntryView `json:"backends"`
+		// Refusing is what is answering 401/402/403 right now, longest-broken
+		// first. Empty is the normal case and means nothing is refusing.
+		Refusing []RefusingBackendView `json:"refusing"`
 	}
 }
 
@@ -70,6 +87,19 @@ type QuotaOutput struct {
 func (h *Handlers) QuotaLedger(_ context.Context, _ *struct{}) (*QuotaOutput, error) {
 	out := &QuotaOutput{}
 	out.Body.Backends = []QuotaEntryView{}
+	out.Body.Refusing = []RefusingBackendView{}
+	if h.Store != nil {
+		rows, err := h.Store.RefusingBackends()
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			out.Body.Refusing = append(out.Body.Refusing, RefusingBackendView{
+				Backend: r.Backend, Status: r.Status, Count: r.Count,
+				SinceMS: r.SinceMS, LastMS: r.LastMS,
+			})
+		}
+	}
 	if h.Proxy == nil {
 		return out, nil
 	}
