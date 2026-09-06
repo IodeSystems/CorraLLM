@@ -2117,6 +2117,8 @@ type corrallm_OverviewOutputBody {
   lanes: [corrallm_LaneDef!]!
   """Served models (one serving path each)."""
   models: [corrallm_ModelDef!]!
+  """Backends answering 401/402/403 right now, longest-broken first."""
+  refusing: [corrallm_RefusingBackendView!]!
   """Declared host capacity."""
   servers: [corrallm_ServerDef!]!
 }

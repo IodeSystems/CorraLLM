@@ -2106,6 +2106,11 @@ type OverviewOutput struct {
 		Extensions []ExtensionDef `json:"extensions" doc:"Integrations that serve several models from one process."`
 		Groups     []GroupDef     `json:"groups" doc:"Priority-group policies."`
 		Keys       []KeyDef       `json:"keys" doc:"Caller key → group mappings."`
+		// Refusing rides along here, rather than only on the budgets page where
+		// it is detailed, because Now builds its fault list from this query and
+		// a fault sourced from a page nobody opens is how the last one got
+		// missed. The operator's walk reaches Now; it does not reach Setup.
+		Refusing []RefusingBackendView `json:"refusing" doc:"Backends answering 401/402/403 right now, longest-broken first."`
 	}
 }
 
@@ -2268,6 +2273,20 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		out.Body.Lanes = append(out.Body.Lanes, ld)
 	}
 	sort.Slice(out.Body.Lanes, func(i, j int) bool { return out.Body.Lanes[i].Name < out.Body.Lanes[j].Name })
+
+	out.Body.Refusing = []RefusingBackendView{}
+	if h.Store != nil {
+		rows, err := h.Store.RefusingBackends()
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			out.Body.Refusing = append(out.Body.Refusing, RefusingBackendView{
+				Backend: r.Backend, Status: r.Status, Count: r.Count,
+				SinceMS: r.SinceMS, LastMS: r.LastMS,
+			})
+		}
+	}
 
 	for name, g := range h.config().PriorityGroups {
 		gd := GroupDef{

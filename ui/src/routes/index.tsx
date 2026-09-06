@@ -68,6 +68,11 @@ const NowDoc = graphql(/* GraphQL */ `
           paused
           pauseReason
         }
+        refusing {
+          backend
+          status
+          sinceMs
+        }
       }
       residency {
         stopping
@@ -195,6 +200,7 @@ function faultsOf(
   pools: readonly { server: string; pools: readonly { pool: string; budget: string; used: string }[] }[],
   models: readonly { name: string; paused: boolean; pauseReason: string; pauseResumeMs: string }[],
   extensions: readonly { name: string; paused: boolean; pauseReason: string }[],
+  refusing: readonly { backend: string; status: number | string; sinceMs: number | string }[],
 ): Fault[] {
   const out: Fault[] = []
 
@@ -273,6 +279,41 @@ function faultsOf(
       what: `${e.name} is paused — every model it serves is unavailable`,
       whose: 'Somebody here paused it on purpose.',
       next: pausedNote(e.pauseReason, ''),
+    })
+  }
+  // A backend refusing outright — 401/402/403, the provider saying no in a way
+  // retrying cannot fix. It reads as a fault here and not only on the budgets
+  // page because that page is under Setup and the owner never opens it: a
+  // remote rung answered 402 for five days and no screen anybody visits said so.
+  //
+  // 'attached', not 'here': the box is serving. Scoping it to this box would
+  // make the headline say the machine is struggling, which would be false and
+  // is exactly the error run 3 caught.
+  for (const r of refusing) {
+    const status = Number(r.status ?? 0) || 0
+    const days = Math.floor(Math.max(0, Date.now() - Number(r.sinceMs ?? 0)) / 86400000)
+    out.push({
+      key: `refusing:${r.backend}`,
+      scope: 'attached',
+      severity: 'warning',
+      what: `${r.backend} is turning down every request${
+        status === 402
+          ? ' — the account is unpaid'
+          : status === 401
+            ? ' — the key is not accepted'
+            : status === 403
+              ? ' — the key is not permitted to use it'
+              : ` — it answers ${status}`
+      }`,
+      whose: 'The provider that runs it, not this box.',
+      next:
+        status === 402
+          ? 'Fund the account, or drop it from its lane. Nothing here is waiting on it.'
+          : 'Check the credential, or drop it from its lane. Nothing here is waiting on it.',
+      when:
+        days >= 1
+          ? `it has been like this for ${days} day${days === 1 ? '' : 's'}`
+          : 'it started refusing today',
     })
   }
   return out
@@ -458,6 +499,11 @@ function Now() {
       name: e.name,
       paused: !!e.paused,
       pauseReason: e.pauseReason ?? '',
+    })),
+    (ov?.refusing ?? []).map((r) => ({
+      backend: r.backend,
+      status: r.status,
+      sinceMs: String(r.sinceMs),
     })),
   )
 
