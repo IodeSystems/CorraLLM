@@ -2676,3 +2676,57 @@ warn on its own.
 write-temp-then-rename helper dropped its execute bit, and the commit recorded mode 100644.
 Caught by the next deploy refusing to run. An atomic write does not inherit the mode of the
 file it replaces.
+
+## OB-13, and a measurement that was lying to us, 2026-09-06
+
+### The rule run 8 asked for
+
+`COME BACK LATER` read "Everybody got an answer between 09:00 AM and 10:00 AM on 9/6/2026 —
+nobody was told to come back, nothing was refused, and no answer was cut short." Every word
+true, of an hour in which sixteen requests ran past 11 s and the slowest took 40.0 s against a
+3.8 s mean. The 40.0 s was on screen — four panels down, beside the mean, with nothing saying
+which of the two was the news. He read the verdict, believed the hour was fine, and closed the
+lid: *"a true average can hide a true incident from someone who reads three things and stops."*
+
+**OB-13**: a summary of a span carries its worst moment, not only its average.
+
+`store.SlowSpell` finds it — how many ran past three times the mean, when it started and ended,
+the worst one and when. Three because it has to clear ordinary spread rather than mark it: this
+box runs a CV near 1.5, so 2× would flag a normal hour and train the reader to scroll past the
+one sentence written to stop them scrolling past it. The mean is over SERVED requests only; a
+429 is refused in milliseconds and would drag the average down, then make the threshold it
+defines too easy to clear.
+
+The verdict keeps its claim — the claim was never wrong — and gains what qualifies it, in the
+panel where the reader stops. It reports and does not judge: whether sixteen slow requests are
+bad depends on what the box is for, which the reader knows and the screen does not. Validated
+against the hour that produced it: 428 rows, 3.8 s mean, 16 over 11.4 s between 09:12 and
+09:47, worst 40.0 s at 09:41. `1b88cae`.
+
+### And then the harness turned out to be lying
+
+The next item was going to be "split Setup — 480 of its 510 lines are notes stacked under the
+change log". **That finding was false, and looking at the screenshot before building anything
+is the only reason it did not get built.**
+
+`bin/ux` promises its text file is "every word visible on that screen", and its own comment
+says a collapsed panel must not reach the evaluator. `innerText` honours `display:none` and
+`visibility:hidden` — it does **not** honour overflow clipping, and this dashboard clamps every
+notes field to one line with `-webkit-line-clamp`. So the full note stayed in the DOM and
+arrived looking like something a person had read. On screen it is one line:
+"P16 free-tier aggregator (plan/p16-free-aggregator.md). ONE integration…". The engineer's
+diary of LDFLAGS, cgroup ceilings and an out-of-memory story was never visible to anybody.
+
+That is the worst kind of false finding for a method whose entire claim is that it measures
+what a person could see. Fixed: leaf elements the page clips now carry their visible beginning
+plus `[clipped on screen — the rest was not visible]`, rather than a guess at which words
+survived. Step 09 drops 510 → 436 lines and the diary is gone. `c956932`.
+
+**Run 8's defect #6 is withdrawn**, and the part of its Q1 score that rested on "buried under a
+wall I'd never read" with it. Runs before `c956932` scored some pages against text that was in
+the DOM and not on the screen; the effect is largest wherever notes are dense, which is Setup.
+
+**Still open, and a real question this exposed:** the full notes exist ONLY on hover, which
+OB-10 says means they were never written. An operator with 12 KB of notes on a model can read
+them by hovering and no other way. Not acted on — it needs a decision about where notes belong,
+not a clamp adjustment.
