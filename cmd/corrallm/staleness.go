@@ -40,27 +40,56 @@ var srcDir = ""
 // warnIfStale logs once at startup when the source tree is newer than this
 // binary. Never fatal, never blocking: being out of date is a nuisance, not a
 // reason to refuse to serve.
-func warnIfStale() {
-	if srcDir == "" {
-		return
-	}
+func warnIfStale() { warnIfStaleFor("serve") }
+
+// warnIfStaleFor is warnIfStale told which command is running, so it can say
+// what being stale actually COSTS here.
+//
+// The two are different failures and want different sentences. A stale daemon
+// serves yesterday's behaviour, which is a nuisance you notice. A stale CLI
+// decodes the stored config into ITS OWN structs and silently drops every field
+// it has never heard of — so it answers confidently with a config that is
+// missing settings the daemon is serving from, which is the kind of answer
+// nobody double-checks. Telling someone to restart the service would not have
+// fixed that, and pointed away from the real cause.
+func warnIfStaleFor(cmdName string) {
 	exe, err := os.Executable()
 	if err != nil {
 		return
+	}
+	dir := srcDir
+	if dir == "" {
+		// Not stamped. That is either a released build — no source tree to
+		// compare against, stay silent — or a plain `go build -o bin/corrallm`,
+		// which is how the trap this whole file exists for actually got built.
+		// Telling them apart is one question: is this binary sitting inside a
+		// module? A release installed to /usr/local/bin is not; a hand-built one
+		// in ./bin is.
+		dir = moduleRootAbove(exe)
+		if dir == "" {
+			return
+		}
 	}
 	st, err := os.Stat(exe)
 	if err != nil {
 		return
 	}
-	newest, name := newestBuildInput(srcDir, st.ModTime())
+	newest, name := newestBuildInput(dir, st.ModTime())
 	if newest.IsZero() {
 		return
 	}
-	slog.Warn("this binary predates the source tree — restarting will not pick up your changes",
+	msg, fix := "this binary predates the source tree — restarting will not pick up your changes",
+		"make install && corrallm service restart"
+	if cmdName != "serve" {
+		msg = "this CLI predates the source tree — it may DROP stored settings it does not know about"
+		fix = "make build"
+	}
+	slog.Warn(msg,
+		"command", cmdName,
 		"built", st.ModTime().Format(time.RFC3339),
 		"newest_source", newest.Format(time.RFC3339),
 		"file", name,
-		"fix", "make install && corrallm service restart")
+		"fix", fix)
 }
 
 // newestBuildInput returns the modtime and path of the newest file under dir
@@ -112,4 +141,32 @@ func buildInput(name string) bool {
 		return true
 	}
 	return strings.HasSuffix(name, ".go")
+}
+
+// moduleRootAbove finds the module directory a binary is sitting in, or "" when
+// it is not in one.
+//
+// The stamped srcDir is better and is preferred: it says where the binary was
+// BUILT from, which is the honest question. This is the fallback for a binary
+// built without the Makefile, where the only evidence available is where it
+// landed — good enough, because the case it catches is `go build -o bin/x` in
+// the tree you are editing.
+//
+// Walks up rather than assuming ./bin, so a binary built to the module root or
+// any subdirectory of it is still checked. Stops at the filesystem root.
+func moduleRootAbove(exe string) string {
+	dir := filepath.Dir(exe)
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	for {
+		if st, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil && !st.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }

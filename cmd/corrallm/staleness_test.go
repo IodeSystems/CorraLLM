@@ -83,11 +83,56 @@ func TestNewestBuildInputSkipsNoise(t *testing.T) {
 	}
 }
 
-// TestWarnIfStaleDisabledWithoutStamp: a plain `go install` or a released build
-// leaves srcDir empty, and must not warn about a tree that is not there.
+// TestWarnIfStaleDisabledWithoutStamp: an unstamped binary must not warn about
+// a tree that is not there, and must not panic looking for one.
 func TestWarnIfStaleDisabledWithoutStamp(t *testing.T) {
 	old := srcDir
 	t.Cleanup(func() { srcDir = old })
 	srcDir = ""
-	warnIfStale() // must not panic, must not consult the filesystem
+	warnIfStale()
+}
+
+// An unstamped binary is either a RELEASE (nothing to compare against) or a
+// hand-built `go build -o bin/corrallm` in the tree someone is editing. Only
+// the second can be stale in a way that matters, and the difference is whether
+// the binary is sitting inside a module.
+//
+// This is not hypothetical: the trap that produced three wrong `config export`
+// answers on 2026-09-06 was exactly a hand-built, unstamped CLI, which the
+// stamped-only check stayed silent about.
+func TestModuleRootAboveFindsTheTreeAHandBuiltBinarySitsIn(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(binDir, "corrallm")
+	if err := os.WriteFile(exe, []byte("#!/bin/true\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got := moduleRootAbove(exe)
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("moduleRootAbove = %q, want the module root %q", got, want)
+	}
+}
+
+// A released binary installed somewhere ordinary has no module above it, and
+// must stay silent — a warning naming a directory that does not exist on that
+// machine is worse than none.
+func TestModuleRootAboveIsEmptyOutsideAModule(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "corrallm")
+	if err := os.WriteFile(exe, []byte("#!/bin/true\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := moduleRootAbove(exe); got != "" {
+		t.Errorf("moduleRootAbove = %q, want empty outside a module", got)
+	}
 }

@@ -94,6 +94,21 @@ fi
 say "installing the binary to \$GOBIN (what the unit runs)"
 make install >/dev/null
 
+# AND ./bin/corrallm, which the unit does not run and everybody types.
+#
+# `make install` refreshes only the daemon, so the CLI beside it kept whatever
+# build it had. That is not cosmetic: every `config` subcommand decodes the
+# stored config into ITS OWN structs, so a CLI older than the daemon silently
+# drops fields it has never heard of and answers confidently with a config that
+# is missing settings the daemon is actively serving from. On 2026-09-06 that
+# produced three consecutive exports with no sign of a per-model setting the
+# daemon had stored, was using, and kept across a restart.
+#
+# `make build` rather than `go build` so it is STAMPED with srcDir and warns on
+# its own once the tree moves past it.
+say "rebuilding ./bin/corrallm (the CLI, so it cannot lag the daemon)"
+make build >/dev/null
+
 say "restarting $SERVICE"
 systemctl --user restart "$SERVICE"
 

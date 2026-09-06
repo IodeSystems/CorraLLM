@@ -60,6 +60,22 @@ func newRoot() *cobra.Command {
 		Short:         "OpenAI-compatible LLM reverse proxy, lifecycle manager, and fairshare scheduler",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// EVERY subcommand, not just serve. The warning was written for the
+		// daemon — "restarting will not pick up your changes" — and the CLI
+		// turned out to be the more dangerous half: a stale `corrallm config
+		// export` silently DROPS fields the running daemon understands, because
+		// decoding a stored model into an older struct discards keys it has
+		// never heard of. That produces a confident, wrong answer rather than a
+		// missing one, and it is the shape of answer nobody double-checks.
+		//
+		// Seen on 2026-09-06: a per-model setting the daemon had stored, was
+		// serving from, and kept across a restart was absent from three
+		// consecutive exports. The store was right the whole time; the tool
+		// used to check it was a build old enough to predate the field.
+		//
+		// Goes to stderr with the rest of slog, so `config export > file` is
+		// unaffected.
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) { warnIfStaleFor(cmd.Name()) },
 	}
 	root.AddCommand(newServeCmd(), newAgentCmd(), newConfigCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd(), newServiceCmd(), newToolsCmd())
 	return root
@@ -389,7 +405,6 @@ func newServeCmd() *cobra.Command {
 			} else if n > 0 {
 				slog.Info("properties loaded", "keys", n, "home", home, "service", service)
 			}
-			warnIfStale()
 			p := derivePaths(home, configPath, dbPath)
 			dbPathResolved := p.db
 			slog.Info("paths resolved", "home", p.home, "config", p.config, "db", p.db)
