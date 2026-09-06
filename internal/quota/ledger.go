@@ -54,8 +54,8 @@ type Entry struct {
 type Window struct {
 	Label    string    `json:"label"` // "1m" | "1d"
 	Limit    int       `json:"limit"`
-	Used     int       `json:"used"`             // decayed fill level, rounded for display
-	Blocked  bool      `json:"blocked,omitempty"` // level has reached the limit
+	Used     int       `json:"used"`               // decayed fill level, rounded for display
+	Blocked  bool      `json:"blocked,omitempty"`  // level has reached the limit
 	ResetsAt time.Time `json:"resetsAt,omitempty"` // when the level fully drains to zero
 }
 

@@ -24,4 +24,3 @@ type Stats struct {
 	AvailableBytes int64
 	UsedBytes      int64 // total - available (i.e. what a new allocation cannot have)
 }
-

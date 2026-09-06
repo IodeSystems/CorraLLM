@@ -97,8 +97,8 @@ type InflightInfo struct {
 	Key       string
 	SourceIP  string
 	Path      string
-	Streaming bool // client asked for a streamed response
-	Retryable bool // request opted in to being preempted by a higher priority
+	Streaming bool  // client asked for a streamed response
+	Retryable bool  // request opted in to being preempted by a higher priority
 	BytesOut  int64 // response bytes relayed so far
 	Chunks    int64 // response writes so far — for a stream, ~tokens
 	State     string
