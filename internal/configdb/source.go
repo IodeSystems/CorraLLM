@@ -230,7 +230,16 @@ func (s *Source) ImportFile(ctx context.Context, path string) (*config.Config, e
 	}
 	src := s
 	if src.Note == "" {
-		src = s.WithNote("loaded from " + path)
+		// Names the ROUTE as well as the file, because the history's job is to
+		// let an owner tell their own doing from somebody else's and every
+		// other row carries an address ("— from 127.0.0.1"). A row with no
+		// origin at all reads as nobody, and it was the LIVE config when a
+		// Lenny run hit it: "it's the one entry I can't tie to a person."
+		//
+		// It does not invent an address. A CLI load has no request behind it,
+		// and a made-up origin is worse than none (see api.noteFor) — so this
+		// says which way in was used, which is the thing that was missing.
+		src = s.WithNote("loaded from " + path + " — at the command line, not through the dashboard")
 	}
 	if err := src.Save(ctx, c); err != nil {
 		return nil, err
