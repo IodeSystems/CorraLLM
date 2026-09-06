@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -268,4 +269,120 @@ func (s *Store) Evict() (removed int, freed int64, err error) {
 // else and would otherwise sit there until eviction gets to them.
 func (s *Store) DropNamespace(namespace string) error {
 	return os.RemoveAll(filepath.Join(s.Dir, namespace))
+}
+
+// Manager decides nothing about scheduling and everything about safety.
+//
+// One backend, one slot, many conversations: it remembers which conversation is
+// resident, and when a different one arrives it saves what is there and restores
+// what is coming — under a lock, so two requests can never be doing that to the
+// same slot at once.
+//
+// EVERY FAILURE IS SURVIVABLE BY DESIGN. A save that fails costs the outgoing
+// conversation its cache; a restore that fails costs the incoming one a reprocess.
+// Both are what happens today, every time, without this. So nothing here returns
+// an error to the request path: it reports what it did, and the request proceeds
+// either way. The one thing it must never do is leave the slot holding a
+// conversation it will later claim is a different one.
+type Manager struct {
+	Store *Store
+	// Slot is the llama.cpp slot id. One, because this exists for --parallel 1.
+	Slot int
+	// Timeout bounds a save or a restore. Measured at 0.6 s and 0.3 s for a
+	// 740 MB state; a bound well above that turns a hung backend into a slow
+	// request rather than a stuck one.
+	Timeout time.Duration
+
+	mu          sync.Mutex
+	resident    map[string]string // backend id -> conversation key
+	unsupported map[string]bool   // backend id -> "asked once, it cannot do this"
+}
+
+// Swap makes key the resident conversation on a backend, saving whatever was
+// there. It returns a short description of what happened, for the log, and
+// whether the incoming conversation's cache was restored.
+func (m *Manager) Swap(ctx context.Context, c *Client, backendID, namespace, key string) (what string, restored bool) {
+	if m == nil || m.Store == nil || key == "" {
+		return "", false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.unsupported[backendID] {
+		return "", false
+	}
+	if m.resident == nil {
+		m.resident = map[string]string{}
+		m.unsupported = map[string]bool{}
+	}
+	if m.resident[backendID] == key {
+		return "", false // already here; the backend's own prefix cache handles it
+	}
+	if err := m.Store.Prepare(namespace); err != nil {
+		return "store unavailable: " + err.Error(), false
+	}
+
+	timeout := m.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	// Save the outgoing conversation FIRST. Doing it after the restore would
+	// write the state we just loaded under the previous conversation's name — the
+	// one bug in here that corrupts rather than merely slows.
+	if prev := m.resident[backendID]; prev != "" {
+		sctx, cancel := context.WithTimeout(ctx, timeout)
+		_, _, err := c.Save(sctx, m.Slot, filepath.Join(namespace, prev))
+		cancel()
+		if err != nil {
+			// A backend without --slot-save-path says so on the first attempt.
+			// Ask once, then stop asking: a per-request error on a backend that
+			// can never do this is noise in every log line.
+			if isUnsupported(err) {
+				m.unsupported[backendID] = true
+				return "backend cannot save slots", false
+			}
+			what = "save failed: " + err.Error()
+		}
+	}
+
+	// The slot no longer holds what it held, whether or not the save worked.
+	m.resident[backendID] = key
+
+	if !m.Store.Has(namespace, key) {
+		return what, false
+	}
+	rctx, cancel := context.WithTimeout(ctx, timeout)
+	_, _, err := c.Restore(rctx, m.Slot, filepath.Join(namespace, key))
+	cancel()
+	if err != nil {
+		if isUnsupported(err) {
+			m.unsupported[backendID] = true
+			return "backend cannot restore slots", false
+		}
+		return "restore failed: " + err.Error(), false
+	}
+	if _, _, err := m.Store.Evict(); err != nil {
+		return "restored, but eviction failed: " + err.Error(), true
+	}
+	return "restored", true
+}
+
+// Forget drops a backend's resident marker — call it when a backend stops, so
+// the next request does not try to save a slot that belongs to a process which
+// no longer exists.
+func (m *Manager) Forget(backendID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.resident, backendID)
+	delete(m.unsupported, backendID)
+}
+
+// isUnsupported spots a backend that was started without --slot-save-path.
+// llama.cpp answers 501 for that, and there is no point asking it again.
+func isUnsupported(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "returned 501") || strings.Contains(s, "slot save is not supported")
 }

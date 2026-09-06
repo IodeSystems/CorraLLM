@@ -239,3 +239,119 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// fakeBackend records the save/restore calls a Manager makes, in order, so the
+// ORDER can be asserted — saving after restoring would write the state just
+// loaded under the previous conversation's name, which corrupts rather than
+// merely slows.
+type fakeBackend struct {
+	calls  []string
+	status int
+	body   string
+}
+
+func (f *fakeBackend) server(t *testing.T) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		f.calls = append(f.calls, r.URL.Query().Get("action")+":"+b["filename"])
+		if f.status != 0 {
+			w.WriteHeader(f.status)
+			_, _ = w.Write([]byte(f.body))
+			return
+		}
+		_, _ = w.Write([]byte(`{"n_saved":10,"n_restored":10,"n_written":100,"n_read":100}`))
+	}))
+	t.Cleanup(srv.Close)
+	return &Client{BaseURL: srv.URL}
+}
+
+func TestSwapSavesTheOutgoingBeforeRestoringTheIncoming(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{Store: &Store{Dir: dir}}
+	f := &fakeBackend{}
+	c := f.server(t)
+	ns := "nsA"
+
+	// First conversation: nothing resident, nothing saved for it.
+	if what, restored := m.Swap(context.Background(), c, "b1", ns, "conv-a"); restored {
+		t.Errorf("nothing was saved yet, so nothing can be restored (%q)", what)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("a first conversation should touch the backend not at all, got %v", f.calls)
+	}
+
+	// Pretend conv-b has a state on disk from earlier.
+	_ = m.Store.Prepare(ns)
+	_ = os.WriteFile(m.Store.Path(ns, "conv-b"), []byte("kv"), 0o600)
+
+	if what, restored := m.Swap(context.Background(), c, "b1", ns, "conv-b"); !restored {
+		t.Fatalf("conv-b had a state and was not restored: %q", what)
+	}
+	if len(f.calls) != 2 {
+		t.Fatalf("want a save then a restore, got %v", f.calls)
+	}
+	if f.calls[0] != "save:"+filepath.Join(ns, "conv-a")+".bin" {
+		t.Errorf("the outgoing conversation was not saved first: %v", f.calls)
+	}
+	if f.calls[1] != "restore:"+filepath.Join(ns, "conv-b")+".bin" {
+		t.Errorf("the incoming conversation was not restored second: %v", f.calls)
+	}
+}
+
+func TestSwapDoesNothingWhenTheConversationIsAlreadyResident(t *testing.T) {
+	m := &Manager{Store: &Store{Dir: t.TempDir()}}
+	f := &fakeBackend{}
+	c := f.server(t)
+	_, _ = m.Swap(context.Background(), c, "b1", "ns", "same")
+	before := len(f.calls)
+	if what, _ := m.Swap(context.Background(), c, "b1", "ns", "same"); what != "" {
+		t.Errorf("a repeat of the resident conversation did something: %q", what)
+	}
+	if len(f.calls) != before {
+		t.Errorf("a repeat touched the backend: %v", f.calls)
+	}
+}
+
+// A backend started without --slot-save-path answers 501. Asking it again on
+// every request would put a failure in the log for something that can never work.
+func TestSwapStopsAskingABackendThatCannot(t *testing.T) {
+	m := &Manager{Store: &Store{Dir: t.TempDir()}}
+	f := &fakeBackend{status: 501, body: `{"error":{"message":"slot save is not supported"}}`}
+	c := f.server(t)
+
+	_, _ = m.Swap(context.Background(), c, "b1", "ns", "one") // becomes resident, no call
+	_, _ = m.Swap(context.Background(), c, "b1", "ns", "two") // tries to save -> 501
+	calls := len(f.calls)
+	_, _ = m.Swap(context.Background(), c, "b1", "ns", "three") // must not ask again
+	if len(f.calls) != calls {
+		t.Errorf("kept asking a backend that said no: %v", f.calls)
+	}
+}
+
+// A failed save must not stop the request, and must not leave the manager
+// believing the old conversation is still resident — it is not, the incoming one
+// is about to overwrite it.
+func TestSwapSurvivesAFailedSave(t *testing.T) {
+	m := &Manager{Store: &Store{Dir: t.TempDir()}}
+	f := &fakeBackend{status: 500, body: `{"error":{"message":"slot is busy"}}`}
+	c := f.server(t)
+
+	_, _ = m.Swap(context.Background(), c, "b1", "ns", "first")
+	what, restored := m.Swap(context.Background(), c, "b1", "ns", "second")
+	if restored {
+		t.Error("nothing was on disk to restore")
+	}
+	if !contains(what, "save failed") {
+		t.Errorf("the failure was not reported: %q", what)
+	}
+	// Third swap must save "second" — not "first" — or the state would be filed
+	// under a conversation that has not been in the slot for two requests.
+	f.status = 0
+	_, _ = m.Swap(context.Background(), c, "b1", "ns", "third")
+	last := f.calls[len(f.calls)-1]
+	if !contains(last, "second") {
+		t.Errorf("saved the wrong conversation after a failure: %v", f.calls)
+	}
+}
