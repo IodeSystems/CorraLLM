@@ -579,9 +579,29 @@ function InfoTab({
                   {pl.target}
                 </Typography>
               )}
+              {/* THE LAUNCH SCRIPT IS NOT THE ANSWER TO ANY QUESTION ASKED HERE.
+                  It was the largest thing on the page — a quant ladder, a GPU
+                  UUID, an nvidia-smi poll — and it was the top defect in two runs
+                  by two different people: the operator could not get past it
+                  ("everything else is somebody's launch script") and the caller
+                  read the whole page as addressed to somebody else ("I asked if
+                  my model was healthy and got a GPU serial number and a bash
+                  script"). The state, the placement and the controls above it
+                  answer "is this model alright". This answers "how does it start",
+                  which is a different question and belongs behind a label that
+                  says so (OB-11). Collapsed, but the label says what is inside —
+                  a control nobody can name is one nobody opens. */}
               {pl?.cmd && (
-                <Box component="pre" sx={preSx}>
-                  {pl.cmd}
+                <Box component="details" sx={{ mt: 1 }}>
+                  <Box
+                    component="summary"
+                    sx={{ cursor: 'pointer', color: C.textMuted, fontSize: 13, py: 0.5 }}
+                  >
+                    How this model is started — the exact command, for whoever tunes it
+                  </Box>
+                  <Box component="pre" sx={preSx}>
+                    {pl.cmd}
+                  </Box>
                 </Box>
               )}
             </Box>

@@ -226,6 +226,13 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
   // (OB-9), so on a fixed span these three say so instead.
   const live = window.kind !== 'absolute'
 
+  // WHOSE PROBLEM IT IS AND WHAT TO DO, once, above the table. The chip alone was
+  // orange text neither persona could act on — "nobody says whose fault or what
+  // to do" (the operator), "it doesn't say whose settings, which settings, or
+  // what to do about it" (the caller). OB-6: a fault names whose it is and the
+  // next thing to do, or it is not shown as a fault.
+  const clashing = rows.filter((r) => r.depthUnreachable)
+
   const body = q.isLoading ? (
     <Loading size={20} minHeight={120} />
   ) : q.error ? (
@@ -356,11 +363,7 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                         // On a frozen window this is still a SETTING, not a
                         // reading of that hour — run 5 could not tell which, and
                         // it was the one thing drawn identically on both (OB-9).
-                        label={
-                          live
-                            ? 'settings clash: nobody can queue here, they time out instead'
-                            : 'settings clash (how it is configured now, not how it was then)'
-                        }
+                        label={live ? 'settings clash' : 'settings clash (a setting, not a reading)'}
                         sx={{ ml: 1 }}
                       />
                     </Tooltip>
@@ -483,6 +486,23 @@ export function Utilization({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
       badge={<Chip size="small" variant="outlined" label={`${rows.length} models`} />}
       flush
     >
+      {clashing.length > 0 && (
+        <Box sx={{ px: 2, py: 1.5, borderTop: `1px solid ${C.border}` }}>
+          <Typography variant="body2" sx={{ color: C.warn }}>
+            {clashing.length === 1
+              ? `${clashing[0].served} has two settings that contradict each other.`
+              : `${clashing.length} models have two settings that contradict each other.`}{' '}
+            Its queue is allowed to hold {clashing[0].configuredDepth} waiters, but the longest
+            wait it permits only fits {clashing[0].reachableDepth} at the speed it is answering —
+            so the queue never fills and callers time out instead of being told to come back.
+          </Typography>
+          <Typography variant="body2" sx={{ color: C.textMuted, mt: 0.5 }}>
+            Yours to change, and nothing is broken meanwhile: raise the wait it permits or lower
+            the queue it advertises, on <b>Setup</b> under the model. Leaving it alone costs a
+            clear "come back at 14:02" — callers get a timeout instead.
+          </Typography>
+        </Box>
+      )}
       {body}
     </Panel>
   )
