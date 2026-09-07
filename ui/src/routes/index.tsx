@@ -7,6 +7,7 @@ import { ActiveRequests } from '@/ActiveRequests'
 import { Panel, PageHeader, Row } from '@/Panel'
 import { C } from '@/theme'
 import { Loading } from '@/Loading'
+import { fmtInt, fmtUSD } from '@/format'
 
 /**
  * NOW — is this box serving, and if not, what is wrong?
@@ -17,8 +18,16 @@ import { Loading } from '@/Loading'
  * because something felt wrong wanted one. The catalog is /models, the ledger is
  * /machines, the lanes are /models.
  *
- * What is left is deliberately three panels: a state sentence, the faults behind
- * it, and what is in flight.
+ * What is left is a state sentence, the faults behind it, what the box is
+ * getting DONE, and what is in flight.
+ *
+ * The throughput strip is a later correction to this page's own doctrine. It
+ * carried a panel headed "Nothing else on this page, on purpose", which was a
+ * defensible answer to "is it broken" and the wrong answer to the question an
+ * owner actually opens a dashboard with — which is two questions, not one: is it
+ * working, AND is it doing anything. A home screen that can only say "nothing
+ * needs you" cannot distinguish a healthy busy box from a healthy idle one, and
+ * those are not the same news to somebody paying for it.
  */
 const NowDoc = graphql(/* GraphQL */ `
   query Now($hourAgo: Long!, $dayAgo: Long!, $now: Long!) {
@@ -37,6 +46,8 @@ const NowDoc = graphql(/* GraphQL */ `
           cacheReports
           promptTokens
           cachedTokens
+          completionTokens
+          costUsd
         }
       }
       baseline: usageRollup(from: $dayAgo, to: $hourAgo) {
@@ -379,6 +390,82 @@ function BoxState(props: {
   )
 }
 
+/**
+ * What the box is GETTING DONE — the second question an owner arrives with.
+ *
+ * Every number carries its unit and its window (OB-4); the window is said once,
+ * on the panel, rather than five times. Counts are the last hour because that is
+ * the span a person means by "at the moment" when something felt wrong — the
+ * same window the slowdown comparison above already reads.
+ *
+ * Deliberately not a chart. A chart of the last hour invites reading a trend off
+ * six points, and what this answers is "how much", not "which way" — Traffic
+ * owns the shape over time and says so at the end of the strip (OB-8).
+ */
+function Throughput({
+  machines,
+  ready,
+  configured,
+  requests,
+  promptTokens,
+  completionTokens,
+  costUsd,
+}: {
+  machines: number
+  ready: number
+  configured: number
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  costUsd: number
+}) {
+  // Idle is a fact, not a blank. A strip of zeroes reads as broken; saying so in
+  // words is the difference between "nothing is wrong" and "nothing is here".
+  const idle = requests === 0
+  const stats: { label: string; value: string; sub?: string }[] = [
+    {
+      label: 'Machines',
+      value: String(machines),
+      sub: machines === 1 ? 'this box' : 'this box and attached',
+    },
+    { label: 'Models loaded', value: `${ready} of ${configured}`, sub: 'the rest load on demand' },
+    { label: 'Requests', value: idle ? 'none' : fmtInt(requests), sub: 'in the last hour' },
+    {
+      label: 'Tokens',
+      value: idle ? '—' : `${fmtInt(promptTokens)} in · ${fmtInt(completionTokens)} out`,
+      sub: 'in the last hour',
+    },
+    { label: 'Cost', value: fmtUSD(costUsd), sub: 'in the last hour' },
+  ]
+  return (
+    <Panel
+      title="What it is getting done"
+      subtitle="Counted over the last hour. Traffic has the same numbers over any span you pick."
+      dense
+    >
+      <Row>
+        <Box sx={{ display: 'flex', gap: 4, flexWrap: 'wrap', py: 0.5 }}>
+          {stats.map((s) => (
+            <Box key={s.label} sx={{ minWidth: 120 }}>
+              <Typography variant="caption" sx={{ color: C.textFaint, display: 'block' }}>
+                {s.label}
+              </Typography>
+              <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
+                {s.value}
+              </Typography>
+              {s.sub && (
+                <Typography variant="caption" sx={{ color: C.textMuted }}>
+                  {s.sub}
+                </Typography>
+              )}
+            </Box>
+          ))}
+        </Box>
+      </Row>
+    </Panel>
+  )
+}
+
 function WhatIsWrong({ faults }: { faults: Fault[] }) {
   if (!faults.length) return null
   return (
@@ -509,6 +596,19 @@ function Now() {
 
   const all = [...slow, ...faults]
 
+  // Summed across served names, because the strip answers "what is this BOX
+  // doing" — per-model is what Traffic is for.
+  const hour = c.recent?.rows ?? []
+  const totals = hour.reduce(
+    (a, r) => ({
+      requests: a.requests + Number(r.requests ?? 0),
+      promptTokens: a.promptTokens + Number(r.promptTokens ?? 0),
+      completionTokens: a.completionTokens + Number(r.completionTokens ?? 0),
+      costUsd: a.costUsd + Number(r.costUsd ?? 0),
+    }),
+    { requests: 0, promptTokens: 0, completionTokens: 0, costUsd: 0 },
+  )
+
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title="Now">
@@ -529,23 +629,21 @@ function Now() {
       {/* What the box is doing right now. This is in-flight's ONE home: it used
           to render here AND on /activity, so two pages showed the same live
           table and neither was the authority. */}
-      <ActiveRequests />
+      {/* What it is GETTING DONE, under what is wrong with it. Both are the
+          home screen's business: an owner arrives asking whether the box works
+          AND whether it is doing anything, and a page that answered only the
+          first could not tell a healthy busy box from a healthy idle one. */}
+      <Throughput
+        machines={(ov?.servers ?? []).length}
+        ready={readyCount}
+        configured={models.length}
+        requests={totals.requests}
+        promptTokens={totals.promptTokens}
+        completionTokens={totals.completionTokens}
+        costUsd={totals.costUsd}
+      />
 
-      {/* Nothing else. What can be called is /models, what the hardware holds is
-          /machines, what it has been doing is /traffic. A person who opened this
-          page because something felt wrong has their answer above, and a way to
-          each of those in the nav. */}
-      {all.length === 0 && (
-        <Panel title="Nothing else on this page, on purpose" dense>
-          <Row>
-            <Typography variant="body2" sx={{ color: C.textMuted }}>
-              This page says whether the box is serving and what needs looking at. What can be
-              called is <b>Models</b>, what the hardware is holding is <b>Machines</b>, and what it
-              has been doing is <b>Traffic</b>.
-            </Typography>
-          </Row>
-        </Panel>
-      )}
+      <ActiveRequests />
     </Box>
   )
 }
