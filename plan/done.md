@@ -2858,3 +2858,58 @@ reasoning into the content, where nothing is labelled as reasoning at all.
 - corrallm's own injection was confirmed by temporarily setting `max: 48`, sending one request
   through the proxy, and watching reasoning come back at 188 characters. Settings restored
   (revision 40).
+
+## Thinking became a property of the caller, 2026-09-07
+
+Turning thinking on was right for the box and wrong for its main caller, and the mode was a
+property of the MODEL so the two could not differ.
+
+**What thinking cost aw4**, measured on a clean 28-minute window against a 2-hour baseline:
+
+| | req/min | avg out | avg dwell |
+|---|---|---|---|
+| instruct | 9.89 | 102 tok | 3.7 s |
+| thinking | **0.85** | 4,440 tok | **70.2 s** |
+
+11.6× fewer requests a minute. Every request was `finish_reason: tool_calls` and a third
+exhausted the 8k reasoning budget in full — aw4 is an agent, and a tool call is a decision the
+model can usually make without deliberating about it. A person at a chat window wants the
+opposite, from the same model.
+
+So `keys.<key>.thinking`, resolving **request > caller > model**. A request still outranks the
+policy: the caller knows which of its own calls is the hard one, and that judgement beats any
+default configured for it.
+
+**The backend is told, not just the sampler picked.** llama-server is launched with one mode, so
+selecting the instruct profile silently would sample for a mode the model is not in — the same
+degradation `sampling.go` exists to prevent, reached from the other side. The override writes
+`chat_template_kwargs.enable_thinking` into the request, which makes the two agree whichever way
+the process was started and leaves the body self-describing for the budget stage. A caller opted
+out therefore gets no reasoning budget either; one would have turned reasoning back on.
+
+**Result, both halves verified live:**
+
+| caller | override | req/min | avg out | avg dwell | reasoning |
+|---|---|---|---|---|---|
+| `sk-aw4` | `thinking: false` | **9.82** | 147 tok | **3.7 s** | none |
+| `yscr` | none — follows the model | — | — | — | 161 chars, present |
+
+aw4 is back to its baseline 9.89 req/min exactly, while the model keeps thinking for everyone
+else. `418e4e5`, `7a1a333`.
+
+### It did not persist the first time
+
+The field parsed, marshalled, and vanished on the next save: `config_key` had columns for the
+group and the escalations and none for this. Caught by exporting the config after loading it —
+the same check that caught the queue-depth button writing to a derived view that morning, and
+the same lesson, because the parse and marshal unit tests both passed.
+
+Stored as `'' | 'true' | 'false'` rather than a boolean, because **unset is not false**: a key
+with no opinion follows the model, and collapsing the two would have pinned every caller on the
+box to instruct at the first save. `thinking` is reserved inside a key policy, where every other
+name means "may escalate into that group", so Validate refuses a priority group of that name
+rather than letting the word mean two things at once.
+
+**A near miss worth keeping:** I was about to preserve an `allow: ['interactive']` on aw4 while
+rewriting its policy. That permission exists only in a unit-test fixture; the live key is plainly
+`batch`. Checking the running config rather than trusting a recollection is what stopped it.
