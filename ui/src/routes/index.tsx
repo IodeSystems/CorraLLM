@@ -402,6 +402,20 @@ function BoxState(props: {
  * six points, and what this answers is "how much", not "which way" — Traffic
  * owns the shape over time and says so at the end of the strip (OB-8).
  */
+/**
+ * Compact for a headline number. "46,840,478 in" is exact and unreadable at a
+ * glance, which is the only way this strip is read; "46.8M in" is the same fact
+ * in the shape a person can take in without counting digit groups. Traffic keeps
+ * the exact figures, where someone is looking rather than glancing.
+ */
+function compact(n: number): string {
+  if (!Number.isFinite(n)) return '—'
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(Math.round(n))
+}
+
 function Throughput({
   machines,
   ready,
@@ -432,7 +446,7 @@ function Throughput({
     { label: 'Requests', value: idle ? 'none' : fmtInt(requests), sub: 'in the last hour' },
     {
       label: 'Tokens',
-      value: idle ? '—' : `${fmtInt(promptTokens)} in · ${fmtInt(completionTokens)} out`,
+      value: idle ? '—' : `${compact(promptTokens)} in · ${compact(completionTokens)} out`,
       sub: 'in the last hour',
     },
     { label: 'Cost', value: fmtUSD(costUsd), sub: 'in the last hour' },
