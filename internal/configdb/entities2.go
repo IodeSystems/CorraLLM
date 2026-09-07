@@ -444,27 +444,53 @@ func readGroups(ctx context.Context, db querier, c *config.Config) error {
 func writeKeys(ctx context.Context, tx querier, c *config.Config) error {
 	for _, k := range sortedKeys(c.Keys) {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO config_key (key, group_name, allow) VALUES (?, ?, ?)`,
-			k, c.Keys[k].Group, encodeAllow(c.Keys[k].Allow)); err != nil {
+			`INSERT INTO config_key (key, group_name, allow, thinking) VALUES (?, ?, ?, ?)`,
+			k, c.Keys[k].Group, encodeAllow(c.Keys[k].Allow),
+			encodeThinking(c.Keys[k].Thinking)); err != nil {
 			return fmt.Errorf("write key: %w", err)
 		}
 	}
 	return nil
 }
 
+// encodeThinking stores THREE states in one column, because unset is not false:
+// a key with no opinion follows the model, and collapsing that into false would
+// silently pin every caller to instruct the first time the config was saved.
+func encodeThinking(b *bool) string {
+	if b == nil {
+		return ""
+	}
+	if *b {
+		return "true"
+	}
+	return "false"
+}
+
+func decodeThinking(s string) *bool {
+	switch s {
+	case "true":
+		t := true
+		return &t
+	case "false":
+		f := false
+		return &f
+	}
+	return nil
+}
+
 func readKeys(ctx context.Context, db querier, c *config.Config) error {
-	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow FROM config_key`)
+	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, thinking FROM config_key`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	keys := map[string]config.KeyPolicy{}
 	for rows.Next() {
-		var k, g, allow string
-		if err := rows.Scan(&k, &g, &allow); err != nil {
+		var k, g, allow, thinking string
+		if err := rows.Scan(&k, &g, &allow, &thinking); err != nil {
 			return err
 		}
-		keys[k] = config.KeyPolicy{Group: g, Allow: decodeAllow(allow)}
+		keys[k] = config.KeyPolicy{Group: g, Allow: decodeAllow(allow), Thinking: decodeThinking(thinking)}
 	}
 	if err := rows.Err(); err != nil {
 		return err

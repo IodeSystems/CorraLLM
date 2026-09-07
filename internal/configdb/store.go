@@ -53,6 +53,7 @@ func Apply(ctx context.Context, db *sql.DB) error {
 // runs on every Apply and is written to be harmless when already applied.
 var migrations = []string{
 	`ALTER TABLE config_key ADD COLUMN allow TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE config_key ADD COLUMN thinking TEXT NOT NULL DEFAULT ''`,
 }
 
 // Write replaces the stored configuration with c.

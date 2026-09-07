@@ -135,7 +135,12 @@ CREATE TABLE IF NOT EXISTS config_key (
     -- ["interactive"]. Carried with its parent and never joined or filtered on,
     -- which is this package's stated rule for JSON over a column. '' predates
     -- the column and means "no escalation", the behaviour every key had before.
-    allow      TEXT NOT NULL DEFAULT ''
+    allow      TEXT NOT NULL DEFAULT '',
+    -- '' | 'true' | 'false'. THREE states, because unset is not false: a key
+    -- with no opinion follows the model's reasoning default, and collapsing
+    -- that into false would pin every caller to instruct the first time the
+    -- config was saved.
+    thinking   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS config_tool (
