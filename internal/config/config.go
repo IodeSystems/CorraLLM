@@ -1475,6 +1475,43 @@ type SamplingConfig struct {
 	// request the wrong sampler, which is the exact failure this type exists to
 	// prevent.
 	Default string `yaml:"default,omitempty"`
+
+	// ReasoningBudget bounds thinking as a share of the context the prompt has
+	// not already used. Nil (the default) leaves it unrestricted, which is
+	// llama.cpp's own default.
+	ReasoningBudget *ReasoningBudget `yaml:"reasoningBudget,omitempty"`
+}
+
+// ReasoningBudget caps how long a model may think, computed per request rather
+// than fixed.
+//
+// A fixed budget is wrong at both ends of the same model's traffic: a number
+// large enough for a short question is most of the window on a 150k-token one,
+// and a number safe for the long prompt makes the short one stop mid-thought.
+// The proxy is the only place that can size it per request — it knows the
+// model's real context (which the caller does not) and it is holding the
+// request (which the backend's launch flags are not).
+//
+// The share is of what is LEFT after the prompt, so the arithmetic also reserves
+// the answer by construction: at 0.2, thinking may use a fifth of the remaining
+// window and four fifths stay available to answer with. No separate reserve to
+// keep in step with it.
+type ReasoningBudget struct {
+	// FractionOfRemaining is the share of the unused context thinking may take,
+	// 0..1. Zero disables the whole feature — an explicit "leave it
+	// unrestricted" rather than "budget of nothing", which is what a 0 token
+	// budget means to llama.cpp and would end reasoning immediately.
+	FractionOfRemaining float64 `yaml:"fractionOfRemaining,omitempty"`
+	// Min is the floor below which no budget is set at all.
+	//
+	// A budget of a few hundred tokens is worse than none: the model stops
+	// mid-thought and answers from a truncated reasoning trace, which reads as
+	// the model being stupid rather than as a limit being hit. Below this, the
+	// request is left unrestricted and the context limit does its own job.
+	Min int `yaml:"min,omitempty"`
+	// Max caps the share on a very large window, where a fifth of the remaining
+	// context can still be more thinking than any answer justifies. 0 = no cap.
+	Max int `yaml:"max,omitempty"`
 }
 
 // ProfileFor returns the profile for a mode: thinking when think is true.

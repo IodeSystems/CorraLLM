@@ -132,3 +132,88 @@ func applySamplingProfile(body []byte, cfg *config.SamplingConfig) ([]byte, bool
 	}
 	return out, true
 }
+
+// bytesPerTokenEstimate is how the proxy guesses a prompt's token count without
+// tokenising it.
+//
+// corrallm has not tokenised anything at this point and will not: the tokenizer
+// lives in the backend, so an exact count costs a round trip to the very process
+// this request is queued for — latency added to every request to size a cap.
+// Four bytes per token is the same approximation slotcache already uses.
+//
+// It errs the SAFE way for this purpose. English is near 4, code and JSON are
+// nearer 3, so a byte count divided by 4 UNDER-estimates tokens on exactly the
+// traffic that dominates here — which over-estimates what is left, which makes
+// the budget too generous rather than too tight. A generous cap costs some
+// latency; a tight one truncates a thought and looks like a stupid model.
+const bytesPerTokenEstimate = 4
+
+// reasoningBudgetFor sizes a thinking budget from what the prompt has left over.
+//
+// Returns 0 when no budget should be set, which is not the same as a budget of
+// zero: llama.cpp reads 0 as "end reasoning immediately".
+func reasoningBudgetFor(bodyBytes, contextTokens int, cfg *config.ReasoningBudget) int {
+	if cfg == nil || cfg.FractionOfRemaining <= 0 || contextTokens <= 0 {
+		return 0
+	}
+	promptEst := bodyBytes / bytesPerTokenEstimate
+	remaining := contextTokens - promptEst
+	if remaining <= 0 {
+		// The prompt is already at or past the window. Nothing to divide, and
+		// the context limit will refuse this request on its own terms with a
+		// better message than a zero budget would produce.
+		return 0
+	}
+	budget := int(float64(remaining) * cfg.FractionOfRemaining)
+	if cfg.Max > 0 && budget > cfg.Max {
+		budget = cfg.Max
+	}
+	if budget < cfg.Min {
+		// Deliberately unrestricted rather than clamped UP to Min: raising it to
+		// the floor would hand a nearly-full window a budget it cannot afford,
+		// which is the opposite of what this is for.
+		return 0
+	}
+	return budget
+}
+
+// applyReasoningBudget fills in reasoning_budget_tokens when the request is
+// going to think and did not say how long for.
+//
+// Called after applySamplingProfile and given the same treatment: THE CALLER
+// ALWAYS WINS. A caller that sent its own budget — including 0, meaning "do not
+// think" — keeps it.
+//
+// Only ever set when thinking is the resolved mode. The value is itself a
+// thinking signal to llama.cpp (a positive budget implies reasoning), so writing
+// one onto an instruct request would turn thinking ON for a caller who never
+// asked, which is a behaviour change wearing the costume of a limit.
+func applyReasoningBudget(body []byte, cfg *config.SamplingConfig, contextTokens int) ([]byte, bool) {
+	if cfg == nil || cfg.ReasoningBudget == nil {
+		return body, false
+	}
+	var req map[string]any
+	if json.Unmarshal(body, &req) != nil {
+		return body, false
+	}
+	if _, present := req["reasoning_budget_tokens"]; present {
+		return body, false
+	}
+	think, stated := requestWantsThinking(req)
+	if !stated {
+		think = cfg.DefaultThinking()
+	}
+	if !think {
+		return body, false
+	}
+	budget := reasoningBudgetFor(len(body), contextTokens, cfg.ReasoningBudget)
+	if budget <= 0 {
+		return body, false
+	}
+	req["reasoning_budget_tokens"] = budget
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}

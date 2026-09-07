@@ -607,6 +607,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				body = nb
 				slog.Debug("sampling profile applied", "model", served)
 			}
+			// AFTER the profile, because it only applies to a request that is
+			// going to think, and the profile is what settles that. Sized from
+			// the context the prompt has not used — the proxy is the only party
+			// holding both numbers: the caller does not know the model's window,
+			// and the launch flag cannot see the request.
+			if nb, did := applyReasoningBudget(body, m.Sampling, m.ContextPerRequest); did {
+				body = nb
+				slog.Debug("reasoning budget set", "model", served, "bodyBytes", len(body))
+			}
 		}
 	}
 	// Only impose a deadline when one is configured. A fixed cap here would turn
