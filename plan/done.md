@@ -2730,3 +2730,44 @@ the DOM and not on the screen; the effect is largest wherever notes are dense, w
 OB-10 says means they were never written. An operator with 12 KB of notes on a model can read
 them by hovering and no other way. Not acted on — it needs a decision about where notes belong,
 not a clamp adjustment.
+
+## Run 9 — the same total, a different shape, 2026-09-06
+
+| run | walked | Q1 | Q2 | Q3 | Q4 | total | verdict |
+|---|---|---|---|---|---|---|---|
+| 8 | before OB-13 | 21 | 18 | 26 | 13 | 78 | yes, "only as far as one screen" |
+| 9 | after OB-13 + the capture fix | 22 | 18 | 21 | 17 | 78 | yes for the read-only part |
+
+**Q4 rose 13 → 17, which is where OB-13 aimed.** He quoted the new sentence as the thing he
+came for: *"16 requests were much slower than the rest between 09:00 AM and 10:00 AM... The
+slowest took 40.0 s, at 09:41 AM. ... I could put this in the team chat word for word."* Step 05
+went 3/3/3/1 → 3/3/3/3.
+
+**Q3 fell 26 → 21 on a single 0**, and it is not a regression — it is a finding that was
+previously masked. See below.
+
+**Two of run 9's defects were my own harness artifact.** The first cut of the clipping fix
+truncated at a flat 60 characters, so subtitles a person reads ~150 characters of arrived as
+stubs and he reported explanations as "cut off exactly where it would matter" that are in fact
+readable — while quoting the fuller text off the screenshot, so the text file and the image
+disagreed about the same page. Fixed to clip proportionally to the visible fraction of the box;
+the capture now ends "and only while there is co…" against the screen's "and only while there
+is …". Defects 4 and 6 of run 9 are discounted accordingly, and step 03's Q1 = 1 with them.
+
+### The Q3 = 0, which is real and now has a factual answer
+
+`sk-aw4` — 35,646 requests, "just now", unmistakably his team — sits in group `batch`, weight
+`1`, and the Priority Groups table says `batch` is **interruptible: yes** while `default` and
+`interactive` show `—`. Nothing on the page says what that word costs. He connected it to a
+teammate saying the assistant "gave up on him" and could not rule it in or out:
+
+> "Until that word is explained somewhere on the page it's attached to, I'm not confident enough
+> to tell the team 'it's fine' — only 'it answered everyone, eventually'."
+
+This is OB-12 exactly — the rule run 5 asked for, still violated on the table that most needs it.
+
+**Checked against the log: it has never happened.** The proxy records a preempted request as
+status 499 with error `preempted`, and there are ZERO such rows in the entire history. aw4's
+eight 499s are client cancellations. So the honest answer to his question is "that word has
+never cost you a request on this box" — which is exactly the sort of thing the screen could say
+and does not.
