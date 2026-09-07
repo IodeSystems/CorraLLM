@@ -40,6 +40,30 @@ type KeyPolicy struct {
 	// permitted — asking by name for the weighting you already have is not an
 	// escalation.
 	Allow map[string]bool
+
+	// Thinking overrides the MODEL's reasoning default for this caller. nil
+	// (the default) follows the model.
+	//
+	// It exists because the two callers on this box want opposite things from
+	// the same model. An agentic client — every request a tool call — is
+	// throttled by reasoning it did not ask for: turning thinking on took
+	// sk-aw4 from 9.89 requests a minute to 0.85, with a third of its requests
+	// exhausting an 8k reasoning budget in full, because a tool call is a
+	// decision the model can usually make without deliberating about it. A
+	// person at a chat window wants the opposite. The mode was a property of
+	// the model, so they could not differ.
+	//
+	// A REQUEST still outranks this. The caller knows which of its own calls is
+	// the hard one, and that judgement is better than any default here.
+	Thinking *bool
+}
+
+// ThinkingPreference reports this key's reasoning override and whether it has one.
+func (k KeyPolicy) ThinkingPreference() (think bool, set bool) {
+	if k.Thinking == nil {
+		return false, false
+	}
+	return *k.Thinking, true
 }
 
 // Permits reports whether this key may run in group g.
@@ -79,6 +103,19 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 		}
 		k.Allow = map[string]bool{}
 		for name, node := range raw {
+			// RESERVED, like `default`, and for the same reason: this mapping's
+			// open form is "any other name permits that group", so a reserved
+			// word is the only way to carry anything that is not a group. A
+			// priority group actually named `thinking` would collide, which
+			// Validate refuses rather than silently reinterpreting.
+			if name == "thinking" {
+				var b bool
+				if err := node.Decode(&b); err != nil {
+					return fmt.Errorf("key policy: `thinking` must be true or false: %w", err)
+				}
+				k.Thinking = &b
+				continue
+			}
 			if name == "default" {
 				var s string
 				if err := node.Decode(&s); err != nil {
@@ -115,7 +152,7 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 // That keeps every existing config byte-identical across a save, so adding this
 // feature does not show up as a diff on every key in the revision history.
 func (k KeyPolicy) MarshalYAML() (any, error) {
-	if len(k.Allow) == 0 {
+	if len(k.Allow) == 0 && k.Thinking == nil {
 		return k.Group, nil
 	}
 	m := map[string]any{"default": k.Group}
@@ -123,6 +160,9 @@ func (k KeyPolicy) MarshalYAML() (any, error) {
 		if ok {
 			m[g] = true
 		}
+	}
+	if k.Thinking != nil {
+		m["thinking"] = *k.Thinking
 	}
 	return m, nil
 }

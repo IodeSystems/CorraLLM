@@ -2211,6 +2211,14 @@ func (c *Config) validatePool(model, placement, server, pool string) error {
 // run. P0 enforces only what's cheap and unambiguous; richer checks land with
 // the phases that consume each section.
 func (c *Config) Validate() error {
+	// `thinking` is reserved inside a key policy (see KeyPolicy.UnmarshalYAML),
+	// where every other name means "may escalate into that group". A priority
+	// group by that name would make `thinking: true` mean two things at once,
+	// so it is refused rather than silently reinterpreted — the reader of such a
+	// config would have no way to tell which meaning applied.
+	if _, clash := c.PriorityGroups["thinking"]; clash {
+		return fmt.Errorf("priority group %q collides with the reserved key-policy field of the same name; rename the group", "thinking")
+	}
 	for srvName, srv := range c.Servers {
 		if _, err := ParseSizes(srv.Pools); err != nil {
 			return fmt.Errorf("server %q pools: %w", srvName, err)

@@ -49,7 +49,7 @@ func TestModeSelectsProfile(t *testing.T) {
 		"negative budget is silent": {`{"messages":[],"reasoning_budget_tokens":-1}`, 0.7},
 	}
 	for name, tc := range cases {
-		out, did := applySamplingProfile([]byte(tc.body), qwenLike())
+		out, did := applySamplingProfile([]byte(tc.body), qwenLike(), config.KeyPolicy{})
 		if !did {
 			t.Errorf("%s: nothing applied", name)
 			continue
@@ -66,7 +66,7 @@ func TestModeSelectsProfile(t *testing.T) {
 // so.
 func TestCallerAlwaysWins(t *testing.T) {
 	body := `{"messages":[],"temperature":0,"top_p":0.1}`
-	out, _ := applySamplingProfile([]byte(body), qwenLike())
+	out, _ := applySamplingProfile([]byte(body), qwenLike(), config.KeyPolicy{})
 	m := decode(t, out)
 	if m["temperature"] != 0.0 {
 		t.Errorf("caller's temperature 0 was overwritten with %v", m["temperature"])
@@ -85,7 +85,7 @@ func TestCallerAlwaysWins(t *testing.T) {
 func TestDefaultThinking(t *testing.T) {
 	cfg := qwenLike()
 	cfg.Default = "thinking"
-	out, _ := applySamplingProfile([]byte(`{"messages":[]}`), cfg)
+	out, _ := applySamplingProfile([]byte(`{"messages":[]}`), cfg, config.KeyPolicy{})
 	if got := decode(t, out)["temperature"]; got != 1.0 {
 		t.Errorf("temperature = %v, want the thinking profile's 1.0", got)
 	}
@@ -95,13 +95,13 @@ func TestDefaultThinking(t *testing.T) {
 // every model behaved that way before this existed.
 func TestNoConfigNoChange(t *testing.T) {
 	body := []byte(`{"messages":[],"temperature":0.3}`)
-	out, did := applySamplingProfile(body, nil)
+	out, did := applySamplingProfile(body, nil, config.KeyPolicy{})
 	if did || string(out) != string(body) {
 		t.Errorf("nil config must not touch the body: did=%v", did)
 	}
 	// An empty profile for the selected mode likewise sends nothing.
 	empty := &config.SamplingConfig{Default: "instruct"}
-	out, did = applySamplingProfile(body, empty)
+	out, did = applySamplingProfile(body, empty, config.KeyPolicy{})
 	if did || string(out) != string(body) {
 		t.Errorf("empty profile must not touch the body: did=%v", did)
 	}
@@ -111,7 +111,7 @@ func TestNoConfigNoChange(t *testing.T) {
 // precondition for serving. A body we cannot read must still reach the backend.
 func TestUnparseableBodyPassesThrough(t *testing.T) {
 	body := []byte(`not json at all`)
-	out, did := applySamplingProfile(body, qwenLike())
+	out, did := applySamplingProfile(body, qwenLike(), config.KeyPolicy{})
 	if did || string(out) != string(body) {
 		t.Errorf("unparseable body must pass through untouched: did=%v", did)
 	}
@@ -125,7 +125,7 @@ func TestZeroValuedProfileFieldIsSent(t *testing.T) {
 		Instruct: config.SamplingProfile{Temperature: f(0), PresencePenalty: f(0)},
 		Default:  "instruct",
 	}
-	out, did := applySamplingProfile([]byte(`{"messages":[]}`), cfg)
+	out, did := applySamplingProfile([]byte(`{"messages":[]}`), cfg, config.KeyPolicy{})
 	if !did {
 		t.Fatal("a profile of zeroes still has an opinion and must be applied")
 	}
@@ -143,7 +143,7 @@ func TestUnsetProfileFieldsAreNotSent(t *testing.T) {
 		Instruct: config.SamplingProfile{Temperature: f(0.7)},
 		Default:  "instruct",
 	}
-	out, _ := applySamplingProfile([]byte(`{"messages":[]}`), cfg)
+	out, _ := applySamplingProfile([]byte(`{"messages":[]}`), cfg, config.KeyPolicy{})
 	m := decode(t, out)
 	for _, k := range []string{"top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "repeat_penalty"} {
 		if _, present := m[k]; present {

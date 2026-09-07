@@ -601,9 +601,18 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// and the caller can flip the mode per request. Fills in ONLY what the
 	// caller left unset. Same placement as the PDF rewrite and for the same
 	// reason — once here, not per backend in the fall-through loop.
+	// The credential may carry a `:group` suffix asking for a weighting. Resolve
+	// splits it: `key` is the identity everything downstream attributes to, so a
+	// caller that runs in three groups still rolls up as one tenant.
+	//
+	// Resolved HERE, before the body rewrites, because the sampler now depends on
+	// who is asking and not only on which model answered: an agentic caller and a
+	// person at a chat window want opposite things from the same model.
+	caller := p.config().ResolveCaller(callerKey(r))
+
 	if r.URL.Path == "/v1/chat/completions" {
 		if m, ok := p.config().Models[served]; ok && m.Sampling != nil {
-			if nb, did := applySamplingProfile(body, m.Sampling); did {
+			if nb, did := applySamplingProfile(body, m.Sampling, p.config().Keys[caller.Key]); did {
 				body = nb
 				slog.Debug("sampling profile applied", "model", served)
 			}
@@ -628,10 +637,6 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cancel()
 
-	// The credential may carry a `:group` suffix asking for a weighting. Resolve
-	// splits it: `key` is the identity everything downstream attributes to, so a
-	// caller that runs in three groups still rolls up as one tenant.
-	caller := p.config().ResolveCaller(callerKey(r))
 	key, groupName, group, recognized := caller.Key, caller.GroupName, caller.Group, caller.Recognized
 	if caller.Denied {
 		// Served in the key's own group rather than refused: failing a request
