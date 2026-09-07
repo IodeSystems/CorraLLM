@@ -2771,3 +2771,34 @@ status 499 with error `preempted`, and there are ZERO such rows in the entire hi
 eight 499s are client cancellations. So the honest answer to his question is "that word has
 never cost you a request on this box" — which is exactly the sort of thing the screen could say
 and does not.
+
+## The home screen answers two questions now, 2026-09-06
+
+It carried a panel headed **"Nothing else on this page, on purpose"**, explaining that Models is
+what can be called, Machines is what the hardware holds, and Traffic is what it has been doing.
+
+That was a defensible answer to "is it broken" and the wrong answer to the question an owner
+actually opens a dashboard with, which is **two** questions: is it working, and is it doing
+anything. A page that can only say "nothing needs you" cannot tell a healthy busy box from a
+healthy idle one — and those are not the same news to somebody paying for the hardware.
+
+**What it is getting done**: machines, models loaded, and the last hour's requests, tokens in
+and out, and cost. Live: `2 machines · 1 of 12 loaded · 619 requests · 47.0M in · 89.0k out ·
+$0.0246`.
+
+- The window is stated once on the panel rather than five times (OB-4).
+- Idle says "none" in words; a strip of zeroes reads as broken rather than quiet.
+- Compact headline numbers — "46,840,478 in" is exact and unreadable at a glance, which is the
+  only way a strip like this is read. Traffic keeps the exact figures, where somebody is looking
+  rather than glancing.
+- Deliberately not a chart: six points of one hour invites reading a trend off noise, and this
+  answers "how much", not "which way". Traffic owns the shape and the panel says so (OB-8).
+
+Nearly free — the page already fetched this hour's rollup to compare against the day before it,
+and used it only to decide whether to say "slower than usual". Two fields added to that query,
+nothing new called. `1f0fdd9`.
+
+**Known duplication, left in deliberately:** the arrival sentence already says "1 of 12 models
+loaded across 2 machines", so machines and models appear twice — once as prose, once as
+scannable stats. Both were asked for. The sentence is the OB-5 arrival line and has scored 3
+in every run, so it was not touched to remove the overlap.
