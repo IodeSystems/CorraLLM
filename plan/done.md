@@ -2802,3 +2802,59 @@ nothing new called. `1f0fdd9`.
 loaded across 2 machines", so machines and models appear twice — once as prose, once as
 scannable stats. Both were asked for. The sentence is the OB-5 arrival line and has scored 3
 in every run, so it was not touched to remove the overlap.
+
+## Thinking back on, with a budget the proxy computes, 2026-09-07
+
+**Sampling was already exactly right.** Both profiles match the Qwen3.8-27B card field-for-field
+— thinking 1.0/0.95/20/0/0/1.0, instruct 0.7/0.80/20/0/1.5/1.0 — verified at the backend via
+`/slots` rather than in config. `presence_penalty: 1.5` looked aggressive from Qwen3 habit and
+is this model's own instruct recommendation.
+
+**Thinking turned back on** (config revision 37): `--reasoning off` → `on`, and
+`sampling.default: instruct` → `thinking`. Both together, because the config's own note already
+carried the invariant — the flag picks the DEFAULT mode and does not lock it, so the sampler
+default must agree or the model thinks while sampled to instruct, the silent degradation
+`sampling.go` exists to prevent. `--reasoning-format deepseek` pinned so thoughts land in
+`message.reasoning_content` and not in `message.content`, because aw4 had never seen thinking
+output. Pinned rather than left on `auto` since what `auto` resolves to is a property of the
+template.
+
+**Measured cost, 27 requests against 1,176 of baseline:**
+
+| | avg out | max out | avg dwell | max dwell |
+|---|---|---|---|---|
+| instruct | 102 tok | 1,532 | 3.7 s | 154.8 s |
+| thinking | 1,525 tok | 6,970 | 22.6 s | 88.6 s |
+
+15× the output, 6× the latency. On a ONE-slot backend with `maxWait` at 15 s, that is everybody
+else's queue.
+
+### The budget, and why a fixed one could not work
+
+At the measured 99.8 tok/s, 20% of a near-empty 188k window is 37,400 thinking tokens — **6¼
+minutes before the answer starts**. A single number is wrong at both ends of the same model's
+traffic anyway: large enough for a short question is most of the window on a 150k-token one.
+
+`budget = (context − prompt) × fractionOfRemaining`, computed per request. The share is of what
+is LEFT, so the answer is reserved by construction — at 0.2, four fifths of the remaining window
+stays to answer with, and there is no separate reserve to keep in step. Live: 0.2, min 2048,
+max 8192.
+
+Prompt length is estimated at 4 bytes/token rather than tokenised: the tokenizer is in the
+backend, so an exact count costs a round trip to the process the request is queued for. It errs
+safe — code and JSON run nearer 3, so dividing by 4 under-counts the prompt and makes the cap
+generous rather than tight.
+
+**Below `min` it goes unrestricted rather than clamping up, and the probe proved why.** A
+direct request with `reasoning_budget_tokens: 16` cut reasoning from 1,315 to 66 characters —
+and grew the ANSWER from 143 to 762. An over-tight budget does not save tokens; it moves the
+reasoning into the content, where nothing is labelled as reasoning at all.
+
+### Verified live, not just tested
+
+- llama.cpp honours `reasoning_budget_tokens` per request — the truncation above.
+- `/slots` reports `reasoning_format` and no budget field at all, so an earlier "reasoning_budget:
+  None" reading proved nothing in either direction. Worth knowing before it is read as evidence.
+- corrallm's own injection was confirmed by temporarily setting `max: 48`, sending one request
+  through the proxy, and watching reasoning come back at 188 characters. Settings restored
+  (revision 40).
