@@ -2913,3 +2913,41 @@ rather than letting the word mean two things at once.
 **A near miss worth keeping:** I was about to preserve an `allow: ['interactive']` on aw4 while
 rewriting its policy. That permission exists only in a unit-test fixture; the live key is plainly
 `batch`. Checking the running config rather than trusting a recollection is what stopped it.
+
+## The scary word got a history, 2026-09-07
+
+Run 9's only 0 on "what is being asked of me". Ray found his own team's key in `batch` — the one
+group marked `interruptible: yes` — right after a colleague said the assistant "gave up on him":
+
+> "Until that word is explained somewhere on the page it's attached to, I'm not confident enough
+> to tell the team 'it's fine' — only 'it answered everyone, eventually'."
+
+**The page did explain it.** The explanation sat in a subtitle the page clips, which run 9 showed
+cut at "and only while there is co…". So more prose there was not the fix, and would have been
+the third time that subtitle was rewritten.
+
+The consequence moved onto the cell instead of the config word, under a column headed by the
+question rather than the jargon:
+
+```
+GROUP        SHARE OF A BUSY BOX      IF A HIGHER GROUP NEEDS THE SLOT
+batch        1 — 1 turn for every 10  can be stopped mid-answer
+default      5 — 1 turn for every 2   always finishes
+interactive  10 — the largest share   always finishes
+```
+
+`1` was a number against nothing; against the busiest group it is a ratio somebody can act on.
+
+**And the half that settles it: whether it has ever happened.** A capability with no history
+reads as a cause. `store.Preemptions` counts from the ERROR REASON, not the status — 499 covers
+both a preemption and a caller that hung up, and those are opposite stories: one is the box
+taking the slot back, the other is the caller leaving. Counting the status would have reported
+every abandoned request as a preemption, which is this reassurance running backwards.
+
+On this box: **zero, all-time**, and the page now says so — a far better thing than a definition
+of the word. Verified in a fresh capture. `OB-12` satisfied on the table that asked for the rule
+in the first place (run 5).
+
+**Still jargon on that table, not addressed:** `SHARE CURRENCY: requests` (OB-3). Left because it
+is a real config field whose values are `requests|dwell|cost`, and renaming it is a decision
+about vocabulary rather than a clipped sentence.
