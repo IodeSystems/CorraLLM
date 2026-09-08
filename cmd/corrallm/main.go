@@ -594,6 +594,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 
 	mgr := proc.NewManager(cfg)
+	// Why each backend came up, kept where somebody can read it later. The
+	// activity log has always carried load_ms — the time a request waited on a
+	// spawn — and never what caused the spawn or what it displaced.
+	mgr.SetLoadRecorder(loadRecorder{st})
 	if o.healthTimeout > 0 {
 		mgr.SetHealthTimeout(o.healthTimeout)
 		slog.Info("health timeout overridden", "timeout", o.healthTimeout)
@@ -1282,4 +1286,26 @@ func loadConfig(ctx context.Context, src *configdb.Source, path string) (*config
 			"path", path, "hint", "corrallm config export > "+path+" to refresh it, or delete it")
 	}
 	return src.Load(ctx)
+}
+
+
+// loadRecorder writes proc's load events to the store.
+//
+// Failures are logged and swallowed: a spawn that worked must never be reported
+// as failed because the note about it could not be written, and this runs on the
+// load path where anything that blocks adds latency to the very thing it is only
+// describing.
+type loadRecorder struct{ st *store.Store }
+
+func (r loadRecorder) RecordLoad(ev proc.ModelLoadEvent) {
+	if r.st == nil {
+		return
+	}
+	if err := r.st.InsertModelLoad(store.ModelLoad{
+		TS: time.Now().UnixMilli(), Model: ev.Model, Server: ev.Server,
+		Requester: ev.Requester, Evicted: strings.Join(ev.Evicted, ","),
+		MS: ev.MS, OK: ev.OK, Err: ev.Err,
+	}); err != nil {
+		slog.Warn("could not record a model load", "model", ev.Model, "err", err)
+	}
 }

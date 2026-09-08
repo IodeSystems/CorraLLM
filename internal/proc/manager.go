@@ -132,6 +132,13 @@ type Process struct {
 	ModelName string
 	Target    *config.ProxyTarget
 
+	// evictedFor and requester are DESCRIPTIVE: nothing about running this
+	// process depends on them. They are carried so the load record can say what
+	// this spawn displaced and who it was for, which is what the activity log
+	// could never answer (see loadrecord.go).
+	evictedFor []string
+	requester  string
+
 	// key is this process's identity in Manager.procs. For an ordinary model it
 	// is the served name; for every model of one extension it is the SAME
 	// "extension:<name>", which is what makes them share a process and therefore
@@ -178,6 +185,8 @@ type Process struct {
 
 // Manager owns all processes and the per-server residency ledger.
 type Manager struct {
+	// loadRecorder is given each completed load; nil disables recording.
+	loadRecorder LoadRecorder
 	// cfg is swapped wholesale on reload rather than mutated. Its maps are read
 	// unlocked from dozens of places, so editing them in place would be a data
 	// race; replacing the pointer atomically means every reader sees one
@@ -449,11 +458,14 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		usage := m.effectiveUsage(name, mdl)
 		// Residency applies to spawned models bound to a server pool; pure
 		// proxies (remote/paid) consume no local pools.
+		var evicted []string
 		if mdl.Server != "" && len(usage) > 0 {
-			if err := m.makeRoomLocked(mdl.Server, usage); err != nil {
+			ev, err := m.makeRoomLocked(mdl.Server, usage)
+			if err != nil {
 				m.mu.Unlock()
 				return nil, nil, false, err
 			}
+			evicted = ev
 			m.reserveLocked(mdl.Server, usage)
 		}
 		st := mdl.Sticky
@@ -480,6 +492,8 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 			logs:       lb,
 			state:      StateAbsent,
 			ready:      make(chan struct{}),
+			evictedFor: evicted,
+			requester:  requesterFrom(ctx),
 		}
 		m.procs[key] = p
 		m.mu.Unlock()
@@ -606,6 +620,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 	p.mu.Lock()
 	p.state = StateLoading
 	p.mu.Unlock()
+	startedAt := time.Now()
 
 	finish := func(st State, err error) {
 		p.mu.Lock()
@@ -615,6 +630,18 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 			p.lastUsed = p.readyAt
 		}
 		p.mu.Unlock()
+		// Recorded on BOTH outcomes. A load that failed is the more interesting
+		// row of the two — it is the one somebody is looking for afterwards —
+		// and a log that only kept the successes would answer "why is this
+		// model not up" with silence.
+		ev := ModelLoadEvent{
+			Model: name, Server: p.server, Requester: p.requester, Evicted: p.evictedFor,
+			MS: time.Since(startedAt).Milliseconds(), OK: st == StateReady,
+		}
+		if err != nil {
+			ev.Err = err.Error()
+		}
+		m.recordLoad(ev)
 		if st == StateFailed {
 			// Release reserved pools and drop the entry so a later request retries.
 			m.onProcExit(name, p)
@@ -1721,9 +1748,13 @@ func (m *Manager) onProcExit(name string, p *Process) {
 // residents constrained to the binding pool(s) if needed. All-or-nothing: it
 // evicts only if the chosen victim set frees enough, else returns ErrNoCapacity
 // without evicting anything (no thrash). Caller holds m.mu.
-func (m *Manager) makeRoomLocked(server string, usage map[string]int64) error {
+// Returns the models it unloaded, which the caller records: "this model keeps
+// reloading" is half a story until you know what keeps pushing it out, and that
+// was the half the 2026-09-05 slowdown had to be reconstructed from a database
+// session because nothing kept it.
+func (m *Manager) makeRoomLocked(server string, usage map[string]int64) ([]string, error) {
 	if m.fitsLocked(server, usage, nil) {
-		return nil
+		return nil, nil
 	}
 	// Candidate victims on this server: idle (refs==0 AND not used within the
 	// activeUse window — between-turn gaps of an agent session don't count as
@@ -1748,14 +1779,17 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64) error {
 	for _, v := range victims {
 		freed[v.Name] = v
 		if m.fitsLocked(server, usage, freed) {
+			names := make([]string, 0, len(freed))
 			for _, e := range freed {
 				m.evictLocked(e)
+				names = append(names, e.Name)
 			}
-			slog.Info("evicted for capacity", "server", server, "count", len(freed))
-			return nil
+			sort.Strings(names) // stable, so the recorded reason reads the same twice
+			slog.Info("evicted for capacity", "server", server, "count", len(freed), "evicted", names)
+			return names, nil
 		}
 	}
-	return m.capacityErrorLocked(server, usage, now)
+	return nil, m.capacityErrorLocked(server, usage, now)
 }
 
 // capacityErrorLocked classifies a failed makeRoom into permanent vs transient.

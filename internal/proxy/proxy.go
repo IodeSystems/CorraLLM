@@ -827,7 +827,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// Proxy under reqCtx so a later preemption (cause ErrPreempted) aborts the
 		// upstream stream and frees this slot.
 		loadStart := time.Now()
-		pr, done, loaded, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky, cand.Credential)
+		pr, done, loaded, err := p.mgr.EnsureReady(proc.WithRequester(reqCtx, key), name, backend, cand.Sticky, cand.Credential)
 		// WHERE this was served. A model can be placed on more than one box, so
 		// the served name no longer says which machine, quantisation or context
 		// window handled the request — and a latency figure that could have come
@@ -1202,7 +1202,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		p.markInflight(live, inflightLoading, name)
 
 		loadStart := time.Now()
-		pr, done, _, err := p.mgr.EnsureReady(reqCtx, name, backend, cand.Sticky, cand.Credential)
+		pr, done, _, err := p.mgr.EnsureReady(proc.WithRequester(reqCtx, key), name, backend, cand.Sticky, cand.Credential)
 		loadMS += time.Since(loadStart).Milliseconds()
 		if err != nil {
 			release()

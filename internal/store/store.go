@@ -667,6 +667,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, modelLoadSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("apply model_load schema: %w", err)
+	}
 	for _, m := range migrations {
 		if _, err := db.ExecContext(ctx, m); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") &&
