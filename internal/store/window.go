@@ -191,3 +191,30 @@ func (s *Store) SlowSpell(w Window) (SlowSpell, error) {
 	out.WorstAtMS = worstAt.Int64
 	return out, nil
 }
+
+// Preemptions counts the requests ever stopped mid-answer to free a slot, and
+// when the last one was.
+//
+// It exists to put a number beside a frightening word. `interruptible: yes` on
+// a caller's own group says a request of theirs CAN be stopped mid-answer, and
+// the screen said nothing about whether that had ever happened — so the reader
+// could neither rule it in nor out. Lenny run 9 found his team's key in the one
+// interruptible group after a colleague said the assistant "gave up on him",
+// and scored the page 0 on "what is being asked of me": not because the fact
+// was wrong, but because a capability with no history reads as a cause.
+//
+// On this box the honest answer is zero, all-time, which is a far better thing
+// for the page to say than a definition of the word.
+//
+// Counted from the error reason rather than the status, because 499 covers both
+// a preemption and a caller that simply hung up, and those are opposite stories:
+// one is the box taking the slot back, the other is the caller leaving.
+func (s *Store) Preemptions() (count int64, lastMS int64, err error) {
+	var last sql.NullInt64
+	err = s.db.QueryRow(
+		`SELECT COUNT(*), MAX(ts) FROM activity WHERE error = 'preempted'`).Scan(&count, &last)
+	if err != nil {
+		return 0, 0, err
+	}
+	return count, last.Int64, nil
+}

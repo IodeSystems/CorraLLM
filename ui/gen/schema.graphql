@@ -1688,6 +1688,10 @@ type corrallm_GroupsOutputBody {
   backends: [corrallm_BackendLoadView!]!
   """Priority groups with aggregated load."""
   groups: [corrallm_GroupView!]!
+  """When the last one was; 0 when there has never been one."""
+  lastPreemptedMs: Long!
+  """Requests ever stopped mid-answer to free a slot, all-time. 0 means it has never happened here."""
+  preemptions: Long!
 }
 
 type corrallm_HealthOutputBody {

@@ -14,7 +14,7 @@ import {
   TableRow,
   Typography,
 } from '@mui/material'
-import { Panel } from '@/Panel'
+import { Panel, Row } from '@/Panel'
 import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -34,6 +34,8 @@ const GroupsDoc = graphql(/* GraphQL */ `
         }
       }
       groups {
+        preemptions
+        lastPreemptedMs
         groups {
           name
           weight
@@ -120,6 +122,10 @@ export function GroupPanels() {
   const live = q.data?.corrallm.groups
   const groups = live?.groups ?? []
   const backends = live?.backends ?? []
+  const topWeight = groups.reduce((m, g) => Math.max(m, Number(g.weight ?? 0)), 0)
+  const preemptions = Number(live?.preemptions ?? 0)
+  const lastPreemptedMs = Number(live?.lastPreemptedMs ?? 0)
+  const anyInterruptible = groups.some((g) => g.interruptible)
   const reservations = q.data?.corrallm.reservations?.reservations ?? []
 
   return (
@@ -132,7 +138,7 @@ export function GroupPanels() {
         // `interactive` at weight 10, and the page never said what either word
         // costs a request. He was right that no OB rule covered it: it is not a
         // control, so OB-1/OB-2 do not reach it. It is OB-12 now.
-        subtitle="Caller groups decide who wins when the box is busy. Weight is the share: a group at 10 gets ten times the turns of one at 1, and only while there is contention — an idle box serves everyone at once. Interruptible means a request from this group can be stopped mid-answer to make room for a higher one; a group that is not interruptible always finishes. Click a row to edit it."
+        subtitle="Who wins when the box is busy — and only while it IS busy; an idle box serves everyone at once. Click a row to edit it."
         actions={
           <Button size="small" variant="outlined" onClick={() => setEditing(blankGroup())}>
             Add group
@@ -152,9 +158,9 @@ export function GroupPanels() {
             <TableHead>
               <TableRow>
                 <TableCell>Group</TableCell>
-                <TableCell align="right">Weight</TableCell>
+                <TableCell align="right">Share of a busy box</TableCell>
                 <TableCell>Share currency</TableCell>
-                <TableCell>Interruptible</TableCell>
+                <TableCell>If a higher group needs the slot</TableCell>
                 <TableCell align="right">Active</TableCell>
                 <TableCell align="right">Waiting</TableCell>
               </TableRow>
@@ -179,9 +185,21 @@ export function GroupPanels() {
                     }}
                   >
                     <TableCell>{g.name}</TableCell>
-                    <TableCell align="right">{fmtInt(g.weight)}</TableCell>
+                    {/* "1" is a number against nothing. Against the busiest
+                        group it is a ratio a person can act on. */}
+                    <TableCell align="right">
+                      {topWeight > 0 && Number(g.weight) < topWeight
+                        ? `${fmtInt(g.weight)} — 1 turn for every ${Math.round(topWeight / Math.max(1, Number(g.weight)))}`
+                        : `${fmtInt(g.weight)} — the largest share`}
+                    </TableCell>
                     <TableCell>{g.shareCurrency}</TableCell>
-                    <TableCell>{g.interruptible ? 'yes' : '—'}</TableCell>
+                    {/* The consequence, not the config word. A reader has no
+                        button to hesitate over here, so nothing else makes the
+                        cost visible (OB-12) — and the explanation that used to
+                        carry it sat in a subtitle the page clips. */}
+                    <TableCell>
+                      {g.interruptible ? 'can be stopped mid-answer' : 'always finishes'}
+                    </TableCell>
                     <TableCell align="right">{fmtInt(g.active)}</TableCell>
                     <TableCell align="right">
                       {Number(g.waiting) > 0 ? (
@@ -196,6 +214,21 @@ export function GroupPanels() {
             </TableBody>
           </Table>
         </TableContainer>
+        {/* THE WORD, AND WHETHER IT HAS EVER MEANT ANYTHING HERE.
+            "can be stopped mid-answer" is a capability, and a capability with no
+            history reads as a cause — which is exactly how it was read by
+            somebody who had just heard the assistant "gave up on" a colleague,
+            and could neither rule it in nor out from this page. The count is the
+            half that settles it, and on this box it is zero. */}
+        {anyInterruptible && (
+          <Row>
+            <Typography variant="body2" sx={{ color: C.textMuted }}>
+              {preemptions === 0
+                ? 'No request has ever been stopped this way on this box — the setting says what could happen, not what has.'
+                : `${fmtInt(preemptions)} request${preemptions === 1 ? ' has' : 's have'} been stopped this way, most recently ${new Date(lastPreemptedMs).toLocaleString()}.`}
+            </Typography>
+          </Row>
+        )}
       </Panel>
 
       <Panel

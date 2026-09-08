@@ -1780,6 +1780,15 @@ type GroupsOutput struct {
 	Body struct {
 		Groups   []GroupView       `json:"groups" doc:"Priority groups with aggregated load."`
 		Backends []BackendLoadView `json:"backends" doc:"Per-backend live load."`
+		// How often the frightening word has actually meant anything here.
+		//
+		// `interruptible: yes` says a request from that group CAN be stopped
+		// mid-answer. Without a history beside it, a reader who has just heard
+		// that the assistant "gave up on" a colleague cannot rule it in or out
+		// — which is how this page earned a 0 on "what is being asked of me"
+		// (Lenny run 9). A capability with no record reads as a cause.
+		Preemptions     int64 `json:"preemptions" doc:"Requests ever stopped mid-answer to free a slot, all-time. 0 means it has never happened here."`
+		LastPreemptedMS int64 `json:"lastPreemptedMs" doc:"When the last one was; 0 when there has never been one."`
 	}
 }
 
@@ -1788,10 +1797,20 @@ type GroupsOutput struct {
 func (h *Handlers) Groups(_ context.Context, _ *GroupsInput) (*GroupsOutput, error) {
 	snap := h.Sched.Snapshot()
 
+	preemptions, lastPreempted := int64(0), int64(0)
+	if h.Store != nil {
+		n, last, err := h.Store.Preemptions()
+		if err != nil {
+			return nil, err
+		}
+		preemptions, lastPreempted = n, last
+	}
+
 	// Aggregate live active/waiting per group across backends.
 	type load struct{ active, waiting int }
 	agg := map[string]*load{}
 	out := &GroupsOutput{}
+	out.Body.Preemptions, out.Body.LastPreemptedMS = preemptions, lastPreempted
 	out.Body.Backends = make([]BackendLoadView, 0, len(snap.Backends))
 	for _, b := range snap.Backends {
 		bv := BackendLoadView{
