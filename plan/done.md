@@ -2951,3 +2951,49 @@ in the first place (run 5).
 **Still jargon on that table, not addressed:** `SHARE CURRENCY: requests` (OB-3). Left because it
 is a real config field whose values are `requests|dwell|cost`, and renaming it is a decision
 about vocabulary rather than a clipped sentence.
+
+## A backend load says why, 2026-09-08
+
+The last of the gaps the 2026-09-05 slowdown left. The activity log carried `load_ms` — the time
+one request spent waiting on a spawn — and nothing about the circumstances, so diagnosing that
+morning took a database session rather than a glance: the numbers showed a model reloading over
+and over, and no screen said what kept displacing it or who kept asking for it.
+
+**Both facts were already known, and both were thrown away.** `makeRoomLocked` picked the victims
+and returned only success; the requester sat in the proxy and never travelled.
+
+```
+model_load: ts, model, server, requester, evicted, ms, ok, err
+```
+
+Recorded on **both outcomes**. A failed load is the more interesting row of the two — it is the
+one somebody goes looking for afterwards — and a log that kept only successes would answer "why
+is this model not up" with silence.
+
+The requester rides the **context**, not `EnsureReady`'s signature: it is descriptive, not
+operative. Nothing about a load depends on who asked, and threading an argument through every
+caller — the agent and the preloader included, neither of which has a requester — to carry a note
+would put the note in the type system's way. The recorder is optional and nil-safe, so a Manager
+without one behaves exactly as before, which is what leaves the agent path and every existing
+test untouched. `ce5e363`.
+
+**Live, first row:**
+
+```
+at                   model              server  requester  evicted  ms     ok
+2026-09-08 16:58:17  local-Qwen3.8-27B  box1    sk-aw4              12402  1
+```
+
+### What is NOT verified live
+
+The `evicted` column. Asking for the other local model to force a displacement did not: it
+loaded onto **carlsmacbookpro**, where there was room, so nothing on box1 moved and the column
+is legitimately empty. Forcing it properly would mean evicting aw4's live model — box1's gpu0 is
+at 31.8 GB of 33.1 GB — and making the team pay a reload to tick a box.
+
+So: exercised by unit tests (`makeRoomLocked` returns the names, the store round-trips them),
+observed live only as the empty case. It will populate the first time box1 actually thrashes,
+which is the situation it exists for.
+
+Incidental finding: the 35B going to the Mac is the residency picker doing the right thing with
+the machine that is otherwise in no lane.
