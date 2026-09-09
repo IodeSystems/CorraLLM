@@ -534,6 +534,14 @@ function SetupPage() {
                     serves {(g.ext?.provides ?? []).join(', ')}
                   </Typography>
                 )}
+                {g.pool?.lanes?.map((l) => (
+                  <Tooltip
+                    key={l.lane}
+                    title="Every model in the pool joins this lane at this priority. Ask for the lane to get the pool."
+                  >
+                    <Chip size="small" variant="outlined" label={`lane ${l.lane}`} />
+                  </Tooltip>
+                ))}
                 {/* Adding a provider FROM the group it joins. The dialog used to
                     ask which one in a dropdown labelled with the config's word
                     for it; asked here, the click is the answer. The global
@@ -547,14 +555,6 @@ function SetupPage() {
                 >
                   + Provider
                 </Button>
-                {g.pool?.lanes?.map((l) => (
-                  <Tooltip
-                    key={l.lane}
-                    title="Every model in the pool joins this lane at this priority. Ask for the lane to get the pool."
-                  >
-                    <Chip size="small" variant="outlined" label={`lane ${l.lane}`} />
-                  </Tooltip>
-                ))}
               </Stack>
               {g.ext?.notes && (
                 <Tooltip title={<span style={{ whiteSpace: 'pre-wrap' }}>{g.ext.notes}</span>}>
