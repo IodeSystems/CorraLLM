@@ -62,6 +62,14 @@ const PresetsDoc = graphql(/* GraphQL */ `
           name
         }
       }
+      listProviders {
+        pools {
+          extension
+          lanes {
+            lane
+          }
+        }
+      }
     }
   }
 `)
@@ -108,7 +116,36 @@ function usePresets() {
     () => (data?.corrallm?.extensions?.extensions ?? []).map((e) => e.name),
     [data],
   )
-  return { data: data?.corrallm?.listProviderPresets, extensions }
+  // WHAT EACH CHOICE DOES TO A REQUEST, which is the only reason to ask.
+  //
+  // The field was labelled "Extension" — the config's word for the block this
+  // ends up in — with the helper "Groups it in config", which describes what
+  // happens to the FILE. The choice is not cosmetic: a provider added to a
+  // POOLING extension has its free models enrolled into that extension's lane
+  // automatically, and one added anywhere else does not. That is the sentence
+  // the field owed and did not say (OB-3, OB-12).
+  const meaning = useMemo(() => {
+    const byName = new Map<string, string>()
+    const pools = data?.corrallm?.listProviders?.pools ?? []
+    for (const p of pools) {
+      const lanes = (p.lanes ?? []).map((l) => l.lane).filter(Boolean)
+      byName.set(
+        p.extension,
+        lanes.length > 0
+          ? `its free models join the ${lanes.join(', ')} lane automatically`
+          : 'it pools its members catalogues',
+      )
+    }
+    for (const e of data?.corrallm?.extensions?.extensions ?? []) {
+      if (byName.has(e.name)) continue
+      // Deliberately says only what is KNOWN here. Whether this extension runs
+      // a local program is not on this query, and guessing it from the process
+      // state would be wrong for anything not currently loaded.
+      byName.set(e.name, 'grouped here — nothing is enrolled into a lane automatically')
+    }
+    return byName
+  }, [data])
+  return { data: data?.corrallm?.listProviderPresets, extensions, meaning }
 }
 
 export type ProviderInitial = {
@@ -170,7 +207,7 @@ export function ProviderDialog(props: {
   // Six sections of form; on a phone a centred dialog turns that into a
   // scroll-in-a-scroll with fields clipped at both edges.
   const wide = useMediaQuery(theme.breakpoints.up('sm'))
-  const { data, extensions } = usePresets()
+  const { data, extensions, meaning } = usePresets()
   const presets = useMemo(() => data?.presets ?? [], [data])
   const [preset, setPreset] = useState<Preset | null>(null)
   const [d, setD] = useState<Draft>(BLANK)
@@ -346,16 +383,21 @@ export function ProviderDialog(props: {
             <TextField
               select
               size="small"
-              label="Extension"
+              label="Add it to"
               value={d.extension}
               onChange={(e) => set({ extension: e.target.value })}
-              sx={{ minWidth: 140 }}
+              sx={{ minWidth: 260 }}
               disabled={editing}
-              helperText="Groups it in config"
+              helperText={meaning.get(d.extension) ?? 'Which group of providers this joins'}
             >
               {extensions.map((x) => (
                 <MenuItem key={x} value={x}>
-                  {x}
+                  <Box>
+                    <Typography variant="body2">{x}</Typography>
+                    <Typography variant="caption" sx={{ color: C.textMuted }}>
+                      {meaning.get(x)}
+                    </Typography>
+                  </Box>
                 </MenuItem>
               ))}
             </TextField>
