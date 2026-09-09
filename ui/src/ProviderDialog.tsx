@@ -208,9 +208,17 @@ export function ProviderDialog(props: {
   onClose: () => void
   /** Editing an existing provider; absent means adding a new one. */
   initial?: ProviderInitial
+  /**
+   * Which group a NEW provider joins, when the dialog was opened from one.
+   *
+   * Separate from `initial` on purpose: `initial` means EDITING, and reusing it
+   * to carry a default would disable the name field on a provider that does not
+   * exist yet.
+   */
+  defaultExtension?: string
   secrets: string[]
 }) {
-  const { open, onClose, initial, secrets } = props
+  const { open, onClose, initial, defaultExtension, secrets } = props
   const qc = useQueryClient()
   // Six sections of form; on a phone a centred dialog turns that into a
   // scroll-in-a-scroll with fields clipped at both edges.
@@ -251,10 +259,13 @@ export function ProviderDialog(props: {
   // this from the reset above.
   useEffect(() => {
     if (!open || extensions.length === 0) return
-    setD((s) =>
-      s.extension ? s : { ...s, extension: extensions.includes('free') ? 'free' : extensions[0] },
-    )
-  }, [open, extensions])
+    // Opened FROM a group, the answer is already given: that is the group. The
+    // fallback only covers the global button, where nobody has said.
+    const fallback = extensions.includes('free') ? 'free' : extensions[0]
+    const wanted =
+      defaultExtension && extensions.includes(defaultExtension) ? defaultExtension : fallback
+    setD((s) => (s.extension ? s : { ...s, extension: wanted }))
+  }, [open, extensions, defaultExtension])
 
   const set = (patch: Partial<Draft>) => setD((s) => ({ ...s, ...patch }))
 

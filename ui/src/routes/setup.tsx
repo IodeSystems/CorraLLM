@@ -329,7 +329,10 @@ function AssignedModels() {
 function SetupPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const [addOpen, setAddOpen] = useState(false)
+  // null = closed. '' = the global button, where nobody has said which group.
+  // A name = opened FROM that group, which answers the question by where the
+  // operator clicked rather than by asking it.
+  const [addTo, setAddTo] = useState<string | null>(null)
   const [edit, setEdit] = useState<ProviderInitial | null>(null)
   const [browse, setBrowse] = useState<{ provider: string; credential: string } | null>(null)
   const [addLocal, setAddLocal] = useState<{
@@ -448,7 +451,7 @@ function SetupPage() {
           size="small"
           variant="contained"
           startIcon={<AddIcon />}
-          onClick={() => setAddOpen(true)}
+          onClick={() => setAddTo('')}
         >
           Add provider
         </Button>
@@ -531,6 +534,19 @@ function SetupPage() {
                     serves {(g.ext?.provides ?? []).join(', ')}
                   </Typography>
                 )}
+                {/* Adding a provider FROM the group it joins. The dialog used to
+                    ask which one in a dropdown labelled with the config's word
+                    for it; asked here, the click is the answer. The global
+                    button above still exists for "I do not know yet". */}
+                <Button
+                  size="small"
+                  onClick={(e) => {
+                    e.stopPropagation() // the row itself opens the extension editor
+                    setAddTo(g.name)
+                  }}
+                >
+                  + Provider
+                </Button>
                 {g.pool?.lanes?.map((l) => (
                   <Tooltip
                     key={l.lane}
@@ -925,7 +941,12 @@ function SetupPage() {
         </Stack>
       </Panel>
 
-      <ProviderDialog open={addOpen} onClose={() => setAddOpen(false)} secrets={secrets} />
+      <ProviderDialog
+        open={addTo !== null}
+        defaultExtension={addTo || undefined}
+        onClose={() => setAddTo(null)}
+        secrets={secrets}
+      />
       <ProviderDialog
         open={edit != null}
         onClose={() => setEdit(null)}
