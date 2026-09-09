@@ -408,7 +408,7 @@ export function ProviderDialog(props: {
               label="Speaks"
               value={wireFormat(preset?.api)}
               slotProps={{ input: { readOnly: true } }}
-              sx={{ width: 190 }}
+              sx={{ width: 220 }}
               helperText="The only format corrallm reaches"
             />
           </Stack>
@@ -523,6 +523,10 @@ export function ProviderDialog(props: {
             onChange={(e) => set({ extension: e.target.value })}
             disabled={editing}
             sx={{ maxWidth: 420 }}
+            // The CLOSED control shows the name alone. Without this it renders
+            // the whole menu item, so the description appeared twice — once
+            // inside the box and again as the helper under it.
+            slotProps={{ select: { renderValue: (v) => String(v) } }}
             helperText={meaning.get(d.extension) ?? 'Which group of providers this joins'}
           >
             {extensions.map((x) => (
