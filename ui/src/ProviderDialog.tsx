@@ -148,6 +148,14 @@ function usePresets() {
   return { data: data?.corrallm?.listProviderPresets, extensions, meaning }
 }
 
+// wireFormat names the protocol in words rather than echoing the config token.
+// Every preset is "openai" today; anything else is shown as itself rather than
+// guessed at, so a second format arriving does not silently read as the first.
+function wireFormat(api?: string | null): string {
+  if (!api || api === 'openai') return 'OpenAI-compatible'
+  return api
+}
+
 export type ProviderInitial = {
   extension: string
   name: string
@@ -381,27 +389,6 @@ export function ProviderDialog(props: {
 
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
             <TextField
-              select
-              size="small"
-              label="Add it to"
-              value={d.extension}
-              onChange={(e) => set({ extension: e.target.value })}
-              sx={{ minWidth: 260 }}
-              disabled={editing}
-              helperText={meaning.get(d.extension) ?? 'Which group of providers this joins'}
-            >
-              {extensions.map((x) => (
-                <MenuItem key={x} value={x}>
-                  <Box>
-                    <Typography variant="body2">{x}</Typography>
-                    <Typography variant="caption" sx={{ color: C.textMuted }}>
-                      {meaning.get(x)}
-                    </Typography>
-                  </Box>
-                </MenuItem>
-              ))}
-            </TextField>
-            <TextField
               size="small"
               label="Name"
               value={d.name}
@@ -409,6 +396,20 @@ export function ProviderDialog(props: {
               disabled={editing}
               fullWidth
               helperText={`Served models become ${d.name || '<name>'}-<model id>`}
+            />
+            {/* The fact somebody expects to see here, rather than a question
+                about the config's own nesting. It is READ-ONLY because it is
+                not a choice: corrallm builds `basePath + "/v1/..."` and reaches
+                one wire format. Gemini and Z.ai are absent from the preset
+                table for exactly that reason, which is why the field exists in
+                the data before anything offers to change it. */}
+            <TextField
+              size="small"
+              label="Speaks"
+              value={wireFormat(preset?.api)}
+              slotProps={{ input: { readOnly: true } }}
+              sx={{ width: 190 }}
+              helperText="The only format corrallm reaches"
             />
           </Stack>
 
@@ -505,9 +506,36 @@ export function ProviderDialog(props: {
           <Typography variant="caption" sx={{ color: C.textFaint, mt: -1 }}>
             Models are chosen from this provider&apos;s directory — nothing is imported
             automatically. These are just what <strong>Browse</strong> opens pre-filtered to, and
-            you can clear them there. To pool free models across several providers, use a virtual
-            extension instead.
+            you can clear them there.
           </Typography>
+          {/* MOVED DOWN HERE, and asked by its consequence.
+              It used to be the second field in the dialog, labelled with the
+              config's word for the block the entry lands in and helped by
+              "Groups it in config" — a question about the file, asked before
+              the operator had said what the thing even was. It belongs beside
+              the pooling it decides, which this section was already describing
+              in prose. */}
+          <TextField
+            select
+            size="small"
+            label="Group it with"
+            value={d.extension}
+            onChange={(e) => set({ extension: e.target.value })}
+            disabled={editing}
+            sx={{ maxWidth: 420 }}
+            helperText={meaning.get(d.extension) ?? 'Which group of providers this joins'}
+          >
+            {extensions.map((x) => (
+              <MenuItem key={x} value={x}>
+                <Box>
+                  <Typography variant="body2">{x}</Typography>
+                  <Typography variant="caption" sx={{ color: C.textMuted }}>
+                    {meaning.get(x)}
+                  </Typography>
+                </Box>
+              </MenuItem>
+            ))}
+          </TextField>
           {(
             <Stack
               direction={{ xs: 'column', sm: 'row' }}
