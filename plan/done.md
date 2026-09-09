@@ -3039,3 +3039,26 @@ opens a dialog. Opening it by hand found, in order:
 browser session dropped and a fresh tab lands on the admin sign-in, which is not a credential to
 type into a browser on its behalf. Clipping is no longer structurally possible (a label and a
 value, `nowrap`, no fixed-width input competing), but that is an argument, not an observation.
+
+## Adding a provider from the group it joins, 2026-09-08
+
+Follow-on from removing the extension dropdown, and the better answer to the same problem:
+extensions are model sources in their own right — `claude` serves the claude-* models, `oidio`
+the audio ones — and the Integrations tree already shows them that way, as containers with their
+providers nested. The only thing missing was being able to ACT on one where it is shown.
+
+`+ Provider` on each extension row opens the dialog already belonging to that group. The click
+is the answer to a question the dialog used to ask in a dropdown labelled with the config's own
+word. The global button stays for "I do not know yet", where the bottom selector still asks by
+consequence.
+
+`defaultExtension` is a separate prop from `initial` on purpose: `initial` means EDITING, and
+reusing it to carry a default would have disabled the name field on a provider that does not
+exist yet. `stopPropagation` because the row itself opens the extension editor, and a button
+inside a clickable row otherwise does both.
+
+**A capture that looked like a regression and was not.** The first re-run showed Setup as nothing
+but the nav — which reads exactly like a crashed React subtree. The screenshot showed a spinner:
+the page was still loading, because the deploy had restarted the daemon moments earlier. Reading
+the image rather than trusting the text dump is the only reason that did not become a bug hunt.
+Second run rendered all three rows.
