@@ -403,14 +403,21 @@ export function ProviderDialog(props: {
                 one wire format. Gemini and Z.ai are absent from the preset
                 table for exactly that reason, which is why the field exists in
                 the data before anything offers to change it. */}
-            <TextField
-              size="small"
-              label="Speaks"
-              value={wireFormat(preset?.api)}
-              slotProps={{ input: { readOnly: true } }}
-              sx={{ width: 220 }}
-              helperText="The only format corrallm reaches"
-            />
+            {/* Not a TextField. It is a fact, not an input, and dressing it
+                as one both invited a click that does nothing and lost the
+                argument for width against the fullWidth Name beside it —
+                clipping "OpenAI-compatible" to "OpenAI-compatib". */}
+            <Box sx={{ minWidth: 170, pt: 0.5 }}>
+              <Typography variant="caption" sx={{ color: C.textFaint, display: 'block' }}>
+                Speaks
+              </Typography>
+              <Typography variant="body2" sx={{ whiteSpace: 'nowrap' }}>
+                {wireFormat(preset?.api)}
+              </Typography>
+              <Typography variant="caption" sx={{ color: C.textMuted }}>
+                The only format corrallm reaches
+              </Typography>
+            </Box>
           </Stack>
 
           <Divider textAlign="left">
