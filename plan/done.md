@@ -2997,3 +2997,45 @@ which is the situation it exists for.
 
 Incidental finding: the 35B going to the Mac is the residency picker doing the right thing with
 the machine that is otherwise in no lane.
+
+## "Add provider" stopped asking about config nesting, 2026-09-08
+
+Its SECOND field asked which extension the entry should be authored under — the config's own
+word for the block it lands in, helped by "Groups it in config". A question about the file, put
+to somebody who had not yet said what they were adding, and directly under a typeahead that had
+already answered "which provider is this".
+
+It is not cosmetic either: a provider added to a POOLING extension has its free models enrolled
+into that extension's lane automatically, and one added anywhere else does not.
+
+**What replaced it, in that slot:** `Speaks: OpenAI-compatible`, read-only. Not a choice —
+corrallm builds `basePath + "/v1/..."` and reaches one wire format, which is why Gemini and Z.ai
+are deliberately absent from the preset table and why the API field exists in the data before
+anything offers to change it. Shown in words rather than echoing the token, and an unknown
+format prints as itself rather than being assumed to be OpenAI.
+
+**Where the question went:** to the bottom, beside the pooling it decides — which that section
+was already describing in prose — asked by consequence:
+
+```
+Group it with
+free                                              ▾
+its free models join the free lane automatically
+```
+
+### Three defects that only a browser could show
+
+The change typechecked, linted, and passed the walk capture — which does not click, so it never
+opens a dialog. Opening it by hand found, in order:
+
+1. The closed select rendered its whole menu item, so the option's explanation appeared inside
+   the box AND again as the helper beneath it. `renderValue` trims the closed state to the name.
+2. `Speaks` clipped to "OpenAI-compa" at 190px, and still to "OpenAI-compatib" at 220px — it was
+   losing the width argument against the `fullWidth` Name beside it.
+3. So it stopped being a TextField. It is a fact, not an input; dressing it as one also invited
+   a click that does nothing.
+
+**Verified:** the select, by screenshot. **Not verified:** the final `Speaks` render — the
+browser session dropped and a fresh tab lands on the admin sign-in, which is not a credential to
+type into a browser on its behalf. Clipping is no longer structurally possible (a label and a
+value, `nowrap`, no fixed-width input competing), but that is an argument, not an observation.
