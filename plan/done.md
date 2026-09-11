@@ -3129,3 +3129,35 @@ have been a product decision made on an artifact.
 access rather than the product (the first: text the screen clips reaching the evaluator). Both
 were caught by checking the premise against the running box. A harness that is more capable than
 the persona it simulates will keep producing findings that are true of the harness.
+
+## A drift marker that says what it costs, 2026-09-11
+
+The last piece of run 9's step 03, and the decision was to KEEP the markers — drift and revisions
+are wanted — while making one of them actionable.
+
+`behind` alone cannot tell an operator whether to act. A tool nothing runs looked exactly like
+one holding six models on an old build, beside a control offering "minutes of full-machine
+compile" either way. The safe reading was to leave it alone, which was right **by luck rather
+than by knowing** — the same OB-6 shape as the memory bar.
+
+Live now:
+
+```
+llama.cpp  box1   not behind   starts 4 models
+ninfer     box1   behind       nothing uses it
+```
+
+`behind` keeps its warning colour when something starts from the tool and drops to plain when
+nothing does: still reported, no longer urgent. Extensions count as users — an extension is one
+process serving several models and starts from a tool exactly as a model does, so missing them
+would report a tool as unused while a process runs from it.
+
+**On cost, which was the actual question.** `BenchmarkUsersOf`: **13.8 µs, 6.2 KB**, on a config
+LARGER than this box runs — 12 models each with a 2 KB quant-ladder cmd plus three extensions. A
+regexp over strings already in memory: no I/O, nothing probed, sitting beside a survey that makes
+a network probe to every agent. Computed per request rather than cached, because a cache here
+could go stale against a config edit and would cost more to get right than the 14 µs it saves.
+
+**ninfer stays** — it is kept deliberately, to compare against llama.cpp for stability and
+throughput. "Nothing uses it" is now a stated fact rather than a silence, which is the difference
+between an unused tool and a forgotten one.
