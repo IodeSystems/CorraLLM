@@ -400,15 +400,19 @@ depends on which.
   pointing at it (OB-3, both personas). Now *Ran on*, *Ways to run this*, *N boxes*; the word
   survives in each gloss, because an operator who reads the config needs the two vocabularies
   joined somewhere. `0eb90c2`, deployed.
-- ◻ **Machines does not say whether its numbers are a problem.** `gpu0` at `96%`, a tool marked
-  `behind` — neither says whether to act. "I left it alone, but I did so guessing, not knowing."
+- ✅ **Machines did not say whether its numbers were a problem.** Shipped 2026-09-10. A full pool
+  now says what being full has COST — "Made room 3 times today — last unloaded X to fit Y" — and
+  says nothing when it has cost nothing, because a device pool at 96% normally means a model is
+  resident. See `done.md` § "A full pool says what it cost". The `behind` tool marker is
+  untouched and is now the only half of run 9's finding still open.
 - ✅ **A backend load records no reason.** Shipped 2026-09-08: `model_load` carries who triggered
   the spawn and what it displaced, on both outcomes. `ce5e363`, and `done.md` § "A backend load
   says why" for the one column not yet seen live.
 
-**next** — the caller decision (§3, yours), which still gates the three *(caller)* items above.
-*Machines does not say whether its numbers are a problem* is the only item left on this side and
-needs no decision: it is OB-6 on a page that draws `96%` and `0%` the same way.
+**next** — the caller decision (§3, yours), which gates the three *(caller)* items above and is
+now the ONLY thing gating work. Everything on this side of the list has shipped; what is left
+without a decision is the `behind` tool marker (run 9, step 03), which is a smaller instance of
+the same OB-6 question and was not part of the memory fix.
 
 **Slot cache — built, wired, OFF.** `internal/slotcache` + `--slot-cache-dir`, measured before
 it was written (save 643 ms, restore 331 ms, 11x against reprocessing; 36.8 KB per token).

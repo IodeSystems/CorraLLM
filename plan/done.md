@@ -3062,3 +3062,32 @@ but the nav — which reads exactly like a crashed React subtree. The screenshot
 the page was still loading, because the deploy had restarted the daemon moments earlier. Reading
 the image rather than trusting the text dump is the only reason that did not become a bug hunt.
 Second run rendered all three rows.
+
+## A full pool says what it cost, 2026-09-10
+
+The last item on this side of the list, and run 9's step 03: `gpu0` at `96%` drawn in the same
+teal as `gpu1` at `0%` — the bar is coloured by which model holds what, so fullness has no colour
+at all and only a small amber percentage hinted at it. *"I left it alone, but I did so guessing,
+not knowing."*
+
+**Making the bar red at 90% would have been the wrong fix.** A device pool at 96% normally means
+a model is RESIDENT, which is the box working as intended — corrallm deliberately fills the card.
+Drawing that as a fault is exactly the red-thing-you-cannot-act-on OB-6 forbids.
+
+Fullness becomes a problem when something ELSE wants the space, and that is an **event, not a
+level**. `model_load` recorded exactly that two days earlier, so the answer was already on disk:
+
+```
+box1   Made room 3 times today — last unloaded chandra-ocr-2 to fit local-Qwen3.8-27B
+```
+
+Silence is the normal case and is the point: a box whose models simply fit says nothing, so a
+full bar stops implying a problem it does not have. Live right now: both servers report 0, and
+the line is absent — verified through the API.
+
+A day is the window, because that is the span over which "this box is thrashing" is a judgement
+somebody can make: an hour reads as noise on a box that loads a model each morning, and a week
+cannot tell yesterday from last Tuesday.
+
+**Not covered:** the `behind` tool marker from the same step, which is a smaller instance of the
+same question and belongs to the toolchain panel rather than the memory one.
