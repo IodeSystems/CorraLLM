@@ -69,6 +69,29 @@ export function Login() {
           <Button variant="contained" onClick={submit} disabled={!val.trim()}>
             Sign in
           </Button>
+          {/* FOR THE PERSON WHO IS NOT THE OPERATOR.
+              This page is everything a caller can reach: every /api/ route is
+              gated on the admin token alone, so an API key gets 401 here and
+              nowhere else to go. The screen said "admin token" three times and
+              never the word they were actually given, leaving them to conclude
+              they had the wrong key rather than the wrong door (Lenny, the
+              handed-a-key scenario).
+              It is deliberately the whole of the answer. A caller surface was
+              considered and closed — callers use the API, not the dashboard —
+              so this sentence is not a signpost to something else. */}
+          <Typography variant="caption" sx={{ color: C.textMuted }}>
+            Given an <strong>API key</strong> rather than an admin token? That key is for making
+            requests, not for this page — it will not sign you in. Use it as your{' '}
+            <Box component="code" sx={{ px: 0.5, bgcolor: C.canvas, borderRadius: 0.5 }}>
+              Authorization: Bearer
+            </Box>{' '}
+            header against{' '}
+            <Box component="code" sx={{ px: 0.5, bgcolor: C.canvas, borderRadius: 0.5 }}>
+              /v1/chat/completions
+            </Box>
+            . The dashboard belongs to whoever runs the box; ask them for anything you need from
+            it.
+          </Typography>
           </Box>
         </Panel>
       </Box>

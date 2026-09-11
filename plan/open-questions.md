@@ -102,41 +102,6 @@ same day. Each answer and its evidence sits in the plan item that needed it.
 
 ---
 
-## 3. ❓ P30 — what does a CALLER see?
-
-**Owner:** you. **Gates:** nothing today; it is the scope boundary of P30.
-**Status:** open, deliberately out of P30's scope until you say otherwise.
-
-**CORRECTED 2026-09-10, and the correction shrinks the question.** This said "a person handed an
-API key currently gets the operator's dashboard, `Unload` and `Restore` included". That is not
-true. `auth.Middleware` gates every `/api/` route on the ADMIN TOKEN alone — probed on the live
-box: a caller key returns 401 as a header and as a Bearer; only the admin token returns 200. A
-person holding an API key cannot see the dashboard at all.
-
-The run that produced the finding was walked with the admin token injected (`bin/ux.mjs` sets
-the cookie and localStorage from `CORRALLM_UX_TOKEN`), so the caller persona toured an
-administrator's dashboard. Its findings are real **for anyone holding the admin token** — which
-is a different population from "callers", and one you choose when you hand that token out.
-
-**So of the three items this gates, only one is reachable by an actual caller today:** the front
-door, which says "CORRALLM — ADMIN SIGN IN" and never uses the word *key* — the only thing they
-were given. The other two (which row is you, which names are requestable) sit behind a login a
-caller cannot pass.
-
-The decision is therefore narrower than it looked:
-
-- **Close it.** Callers reach corrallm through `/v1/*` with their key and never through the
-  dashboard, which is already how it behaves. The only honest fix is the front door telling a
-  key-holder they are in the wrong place, in one sentence.
-- **A separate caller surface**, authenticated by the caller's own key rather than the admin
-  token. That is a new auth path, not a reorganization — nothing today authenticates a person by
-  their API key.
-- **Filter the operator's pages by role**, which needs the same new auth path first and then
-  reaches every page. The most work of the three, and the one the corrected premise argues
-  against: it is filtering a surface callers cannot currently open.
-
----
-
 ## 4. ❓ Should aw4 ride the `chat` lane?
 
 **Owner:** you. **Gates:** nothing — **unblocked as of 2026-09-06**. The attribution fix this

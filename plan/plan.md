@@ -26,10 +26,10 @@ the free-tier aggregator (P16), pause (P17), token counting (P20), provider cred
 config in SQLite (P26), tickets (P28), and the box1 thermal envelope (P19). Full trees + evidence:
 [`plan/done.md`](done.md).
 
-**Four decisions need you** — [`open-questions.md`](open-questions.md): the agent lease
-self-reap policy, whether an honest wait estimate is even wanted, what a CALLER sees (§3 — it
-blocks four filed UI items), and whether aw4 should ride the `chat` lane rather than pin a model.
-Only the caller one blocks work today.
+**Three decisions need you** — [`open-questions.md`](open-questions.md): the agent lease
+self-reap policy, whether an honest wait estimate is even wanted, and whether aw4 should ride the
+`chat` lane rather than pin a model. **None of them blocks work.** The caller question closed on
+2026-09-11 — see §6, where the answer and its evidence live.
 
 **The dashboard was rebuilt around the questions people arrive with, 2026-09-04/05.** Seven Lenny
 runs across two scenarios drove it: ten nav entries named after data became seven named after
@@ -383,17 +383,30 @@ something.
 see?** A person handed an API key today gets the operator's dashboard with one credential. The
 caller run is the evidence: the door asks for an "Admin token" he cannot get (0 on three of four
 questions), the last screen hands him a GPU serial number, and `Change`/`Unassign` follow him
-onto the page that is supposedly his own. Three ways out: filter these pages by role, a separate
-caller page, or close it and let callers ask the operator. Everything below marked *(caller)*
-depends on which.
+onto the page that is supposedly his own.
 
-- ◻ *(caller)* **Nothing says which row is you.** Ten keys listed, none marked as the reader's.
+**✅ DECISION RESOLVED 2026-09-11: closed.** Callers reach corrallm through `/v1/*` with their
+key and never through the dashboard, which is already how it behaves — and the premise this
+question rested on was wrong. `auth.Middleware` gates every `/api/` route on the ADMIN TOKEN
+alone; probed live, a caller key returns 401 as a header and as a Bearer while the admin token
+returns 200. A person holding an API key cannot open the dashboard at all.
+
+The run that produced these findings injected the admin token (`bin/ux.mjs`), so the caller
+persona toured an administrator's dashboard. The findings are real for anyone holding the admin
+token — a population you choose when you hand it out — and not for callers.
+
+So of the three items below, only the front door was ever reachable by a real caller, and it is
+now fixed: the sign-in page tells a key-holder their key is for requests, names the header and
+route it belongs on, and says the dashboard belongs to whoever runs the box. The other two are
+**closed unbuilt**; they describe a surface callers cannot open.
+
+- ⏸ *(caller, closed unbuilt — behind an admin login)* **Nothing says which row is you.** Ten keys listed, none marked as the reader's.
   He identified himself by luck — the one key that appeared in a live request from an address he
   recognised.
-- ◻ *(caller)* **The front door speaks only to an admin**: "CORRALLM — ADMIN SIGN IN … `cat
+- ✅ *(caller — the one a key-holder could actually reach; fixed 2026-09-11)* **The front door spoke only to an admin**: "CORRALLM — ADMIN SIGN IN … `cat
   /home/nthalk/.corrallm/admin.token`". It never uses the word "key", which is the only thing he
   was given.
-- ◻ *(caller)* **Which model names go in an editor?** The catalog lists thirteen names — models,
+- ⏸ *(caller, closed unbuilt — behind an admin login)* **Which model names go in an editor?** The catalog lists thirteen names — models,
   lanes, proxies, absent ones — without saying which are requestable. He only found out by
   accident, from an example `curl` that used `"model":"chat"`.
 - ✅ **`PLACEMENT` was the label** on a column head, a section heading, a chip and the prose
@@ -409,10 +422,10 @@ depends on which.
   the spawn and what it displaced, on both outcomes. `ce5e363`, and `done.md` § "A backend load
   says why" for the one column not yet seen live.
 
-**next** — the caller decision (§3, yours), which gates the three *(caller)* items above and is
-now the ONLY thing gating work. Everything on this side of the list has shipped; what is left
-without a decision is the `behind` tool marker (run 9, step 03), which is a smaller instance of
-the same OB-6 question and was not part of the memory fix.
+**next** — nothing is gated. Every item on this side has shipped and the caller decision is
+closed. What remains unbuilt and undecided: the `behind` tool marker (run 9, step 03), a smaller
+instance of the same OB-6 question on the toolchain panel; and `open-questions.md` §4, whether
+aw4 should ride the `chat` lane, which gates nothing.
 
 **Slot cache — built, wired, OFF.** `internal/slotcache` + `--slot-cache-dir`, measured before
 it was written (save 643 ms, restore 331 ms, 11x against reprocessing; 36.8 KB per token).
@@ -874,14 +887,16 @@ without a format change or a decompress on read.
 
 ### Open decisions the USER owns
 
-**They live in [`plan/open-questions.md`](open-questions.md), and there are four.**
+**They live in [`plan/open-questions.md`](open-questions.md), and there are three.**
 
 | # | question | gates | urgency |
 |---|---|---|---|
 | 1 | Agent lease: self-reap on/off, and its TTL | `host.Remote` (§6) | not yet — answer before that step |
 | 2 | Is an *honest* wait estimate even wanted? | the wait-estimate formula (§6) | not yet — gather a wider traffic mix first |
-| 3 | P30 — what does a CALLER see? | four filed UI items (§P30) | **now** — the only one blocking work |
-| 4 | Should aw4 ride the `chat` lane? | nothing — the attribution fix is deployed and verified | **open now** |
+| 4 | Should aw4 ride the `chat` lane? | nothing — the attribution fix is deployed and verified | whenever you like |
+
+§3 (what a CALLER sees) closed 2026-09-11: **closed**, because the dashboard is admin-only and a
+caller cannot open it. Answer and evidence in §6.
 
 **Six others were closed on 2026-08-24 by checking the box instead of re-reading the plan.**
 The answers and their evidence are recorded in the §6 slices that needed them, not here:
