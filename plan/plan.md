@@ -402,14 +402,13 @@ depends on which.
   joined somewhere. `0eb90c2`, deployed.
 - ◻ **Machines does not say whether its numbers are a problem.** `gpu0` at `96%`, a tool marked
   `behind` — neither says whether to act. "I left it alone, but I did so guessing, not knowing."
-- ◻ **A backend load records no reason.** The activity log says a backend loaded, never why —
-  which is why this morning's diagnosis took a database session instead of a glance. The one
-  product gap the slowdown investigation left (`done.md` § Lenny, and the card that now explains
-  a slowdown covers the symptom, not the cause).
+- ✅ **A backend load records no reason.** Shipped 2026-09-08: `model_load` carries who triggered
+  the spawn and what it displaced, on both outcomes. `ce5e363`, and `done.md` § "A backend load
+  says why" for the one column not yet seen live.
 
-**next** — the caller decision (§3, yours). Of the rest, *a backend load records no reason* is
-the highest value and wants a real slice: it is a design question about what a load event should
-record, not a label fix.
+**next** — the caller decision (§3, yours), which still gates the three *(caller)* items above.
+*Machines does not say whether its numbers are a problem* is the only item left on this side and
+needs no decision: it is OB-6 on a page that draws `96%` and `0%` the same way.
 
 **Slot cache — built, wired, OFF.** `internal/slotcache` + `--slot-cache-dir`, measured before
 it was written (save 643 ms, restore 331 ms, 11x against reprocessing; 36.8 KB per token).
