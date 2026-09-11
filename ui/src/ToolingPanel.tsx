@@ -44,6 +44,7 @@ const ToolingDoc = graphql(/* GraphQL */ `
           version
           versionSource
           commit
+          startedBy
           behind
           remoteHead
           driftError
@@ -240,12 +241,32 @@ export function ToolingPanel() {
                   >
                     <Chip
                       size="small"
-                      color="warning"
+                      color={(t.startedBy ?? []).length > 0 ? 'warning' : 'default'}
                       variant="outlined"
                       label={t.pin ? 'not at pin' : 'behind'}
                     />
                   </Tooltip>
                 )}
+                {/* WHAT BEING BEHIND COSTS, which drift alone cannot say. A
+                    tool nothing runs and one holding six models on an old build
+                    looked identical, beside a control offering minutes of
+                    full-machine compile either way — so the safe reading was to
+                    leave it, right by luck rather than by knowing (OB-6).
+                    The chip above drops its warning colour when nothing starts
+                    from the tool: still reported, no longer urgent. */}
+                <Tooltip
+                  title={
+                    (t.startedBy ?? []).length > 0
+                      ? `${(t.startedBy ?? []).join(', ')} start from this. A rebuild is picked up the next time each one loads.`
+                      : 'No model or extension references ${tool:' + t.tool + '} — rebuilding changes nothing that runs today.'
+                  }
+                >
+                  <Typography variant="caption" sx={{ color: C.textFaint }}>
+                    {(t.startedBy ?? []).length > 0
+                      ? `starts ${(t.startedBy ?? []).length} model${(t.startedBy ?? []).length === 1 ? '' : 's'}`
+                      : 'nothing uses it'}
+                  </Typography>
+                </Tooltip>
                 {!t.behind && t.present && !t.driftError && !t.pinUnsupported && (t.remoteHead || t.pin) && (
                   <Chip
                     size="small"

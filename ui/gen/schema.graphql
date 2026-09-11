@@ -2811,6 +2811,8 @@ type corrallm_ToolStateView {
   present: Boolean!
   ref: String
   remoteHead: String
+  """Models and extensions that start from this tool. Empty means nothing does."""
+  startedBy: [String!]!
   tool: String!
   version: String
   versionSource: String

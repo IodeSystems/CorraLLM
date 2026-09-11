@@ -40,6 +40,19 @@ type ToolStatesInput struct {
 type ToolStateView struct {
 	Tool string `json:"tool"`
 	Host string `json:"host"`
+	// StartedBy names the models and extensions whose cmd references this tool.
+	//
+	// It is what makes `behind` actionable. Drift alone cannot tell an operator
+	// whether to act: a tool nothing runs looks exactly like one holding six
+	// models on an old build, and the control beside it offers "minutes of
+	// full-machine compile" either way — so the safe reading is to leave it,
+	// which was right by luck rather than by knowing (Lenny run 9, on ninfer,
+	// which nothing on this box references).
+	//
+	// Computed per request from the config in memory: 13.8µs on a config larger
+	// than this box runs (BenchmarkUsersOf), against a survey that makes network
+	// probes to every agent. Not worth a cache it could go stale against.
+	StartedBy []string `json:"startedBy" doc:"Models and extensions that start from this tool. Empty means nothing does."`
 	// Declared is false for a host with no entry for this tool. NOT the same as
 	// unavailable — "it can never run here" and "nobody has said yet" are
 	// different facts, and the UI must not render them alike.
@@ -97,10 +110,15 @@ func (h *Handlers) ToolStates(ctx context.Context, in *ToolStatesInput) (*ToolSt
 	if h.Tools == nil {
 		return out, nil
 	}
+	users := toolchain.UsersOf(h.config())
 	for _, s := range h.Tools.SurveyAll(ctx) {
 		v := ToolStateView{
 			Tool: s.Tool, Host: s.Host,
 			Declared: s.Declared, Adopted: s.Adopted, Error: s.Error,
+			StartedBy: users[s.Tool],
+		}
+		if v.StartedBy == nil {
+			v.StartedBy = []string{}
 		}
 		if s.Probe != nil {
 			v.Present = s.Probe.Present

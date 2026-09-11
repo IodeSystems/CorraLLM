@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+
+	"github.com/iodesystems/corrallm/internal/config"
 )
 
 // ${tool:<name>} in a model's cmd resolves, at spawn time, to that tool's
@@ -119,4 +122,54 @@ func (r *Registry) InvalidateResolved(tool, host string) {
 	r.mu.Lock()
 	delete(r.resolved, resolvedKey{tool, host})
 	r.mu.Unlock()
+}
+
+// UsersOf reports which models start from each tool: tool name → model names,
+// sorted, and absent entirely when nothing references it.
+//
+// It exists because "behind" alone cannot tell an operator whether to act. A
+// tool whose drift costs nothing looks exactly like one whose drift is holding
+// six models on an old build, and the control beside it offers "minutes of
+// full-machine compile" either way — so the safe reading is to leave it, which
+// is right by luck rather than by knowing (Lenny run 9, on ninfer).
+//
+// Extension commands count too: an extension is one process serving several
+// models, and it starts from a tool the same way a model does.
+//
+// Cheap on purpose — a regexp over the cmd strings already in memory, no I/O
+// and nothing probed. See BenchmarkUsersOf: the config this box runs costs a
+// few microseconds, which is why this can be computed per request rather than
+// cached and invalidated.
+func UsersOf(cfg *config.Config) map[string][]string {
+	if cfg == nil {
+		return nil
+	}
+	out := map[string]map[string]bool{}
+	note := func(cmd, user string) {
+		if cmd == "" {
+			return
+		}
+		for _, m := range toolRef.FindAllStringSubmatch(cmd, -1) {
+			if out[m[1]] == nil {
+				out[m[1]] = map[string]bool{}
+			}
+			out[m[1]][user] = true
+		}
+	}
+	for name, mdl := range cfg.Models {
+		note(mdl.Cmd, name)
+	}
+	for name, ext := range cfg.Extensions {
+		note(ext.Cmd, name)
+	}
+	res := make(map[string][]string, len(out))
+	for tool, users := range out {
+		names := make([]string, 0, len(users))
+		for u := range users {
+			names = append(names, u)
+		}
+		sort.Strings(names) // stable, so the same config reads the same twice
+		res[tool] = names
+	}
+	return res
 }
