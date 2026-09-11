@@ -3091,3 +3091,41 @@ cannot tell yesterday from last Tuesday.
 
 **Not covered:** the `behind` tool marker from the same step, which is a smaller instance of the
 same question and belongs to the toolchain panel rather than the memory one.
+
+## The caller question, closed, 2026-09-11
+
+Open since P30 and the second Lenny scenario, and it ended on a corrected premise rather than a
+preference.
+
+**The premise was wrong.** `open-questions.md` §3 said a person handed an API key "currently gets
+the operator's dashboard, `Unload` and `Restore` included". `auth.Middleware` gates every `/api/`
+route on the ADMIN TOKEN alone — probed on the live box: a caller key returns 401 both as a
+header and as a Bearer, the admin token returns 200. **A key-holder cannot open the dashboard at
+all.**
+
+The run that produced the findings injected the admin token (`bin/ux.mjs` sets the cookie and
+localStorage from `CORRALLM_UX_TOKEN`), so the caller persona toured an administrator's
+dashboard. Its findings are real for anyone holding the admin token — a population you choose
+when you hand that token out — and not for callers.
+
+So of the three items the question gated, only ONE was ever reachable by a real caller, and it is
+the one fixed:
+
+- ✅ **The front door.** It said "admin token" three times and never the word the caller was
+  actually given, leaving them to conclude they had the wrong key rather than the wrong door. It
+  now says the key is for making requests, names the header and route it belongs on
+  (`Authorization: Bearer` against `/v1/chat/completions`), and says the dashboard belongs to
+  whoever runs the box. Deliberately the WHOLE answer rather than a signpost — with the caller
+  surface closed, there is nothing else to point at. Verified in a browser, signed out.
+- ⏸ **Which row is you** and **which model names are requestable** — closed unbuilt. They
+  describe a surface callers cannot open.
+
+**What was rejected and why.** A separate caller surface, or role-filtering the operator's pages,
+both need something that does not exist: a way to authenticate a person by their API key. Nothing
+today does. Building that to serve findings produced by a harness holding the admin token would
+have been a product decision made on an artifact.
+
+**Method note.** This is the second finding this month that came from the walk runner's own
+access rather than the product (the first: text the screen clips reaching the evaluator). Both
+were caught by checking the premise against the running box. A harness that is more capable than
+the persona it simulates will keep producing findings that are true of the harness.
