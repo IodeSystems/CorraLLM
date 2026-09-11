@@ -2596,6 +2596,14 @@ type corrallm_ServerDef {
 }
 
 type corrallm_ServerView {
+  """Loads in the last 24h that had to unload something first. 0 is the normal case."""
+  madeRoomCount: Long!
+  """What was unloaded, most recently."""
+  madeRoomEvicted: String!
+  """And what it made room for."""
+  madeRoomFor: String!
+  """When the most recent one was."""
+  madeRoomLastMs: Long!
   """Per-pool budget/usage."""
   pools: [corrallm_PoolView!]!
   """Server name."""

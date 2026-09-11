@@ -1027,6 +1027,14 @@ type PoolView struct {
 type ServerView struct {
 	Server string     `json:"server" doc:"Server name."`
 	Pools  []PoolView `json:"pools" doc:"Per-pool budget/usage."`
+	// Whether being full has COST anything here, which is the question a full
+	// bar raises and a percentage cannot settle. A device pool at 96% normally
+	// means a model is resident — the box working — and only becomes a problem
+	// when something else wants the space. That is an event, not a level.
+	MadeRoomCount    int64  `json:"madeRoomCount" doc:"Loads in the last 24h that had to unload something first. 0 is the normal case."`
+	MadeRoomLastMS   int64  `json:"madeRoomLastMs" doc:"When the most recent one was."`
+	MadeRoomEvicted  string `json:"madeRoomEvicted" doc:"What was unloaded, most recently."`
+	MadeRoomFor      string `json:"madeRoomFor" doc:"And what it made room for."`
 }
 
 // PoolUsageView is a resident backend's reservation against one pool.
@@ -1110,9 +1118,28 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 	snap := h.Mgr.Snapshot()
 	out := &ResidencyOutput{}
 	out.Body.Stopping = snap.Stopping
+
+	// A day, because that is the span over which "this box is thrashing" is a
+	// judgement somebody can make. An hour reads as noise on a box that loads a
+	// model each morning; a week cannot tell yesterday from last Tuesday.
+	pressure := map[string]store.EvictionPressure{}
+	if h.Store != nil {
+		rows, err := h.Store.EvictionPressureSince(store.Since(time.Now().Add(-24 * time.Hour).UnixMilli()))
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range rows {
+			pressure[p.Server] = p
+		}
+	}
+
 	out.Body.Servers = make([]ServerView, 0, len(snap.Servers))
 	for _, s := range snap.Servers {
 		sv := ServerView{Server: s.Server, Pools: make([]PoolView, 0, len(s.Pools))}
+		if p, ok := pressure[s.Server]; ok {
+			sv.MadeRoomCount, sv.MadeRoomLastMS = p.Count, p.LastMS
+			sv.MadeRoomEvicted, sv.MadeRoomFor = p.LastEvicted, p.LastFor
+		}
 		for _, p := range s.Pools {
 			sv.Pools = append(sv.Pools, PoolView{Pool: p.Pool, Budget: p.Budget, Used: p.Used})
 		}

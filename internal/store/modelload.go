@@ -1,6 +1,9 @@
 package store
 
-import "database/sql"
+import (
+	"database/sql"
+	"errors"
+)
 
 // Model loads, and WHY.
 //
@@ -97,4 +100,63 @@ func (s *Store) ModelLoads(w Window, model string, limit int) ([]ModelLoad, erro
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+// EvictionPressure is how often a server has had to unload something to fit
+// something else, and the most recent instance.
+//
+// It exists to answer the question a full memory bar raises and could not
+// settle: "96%" and "0%" were drawn the same way, and the number alone cannot
+// say whether it is a problem — because usually it is not. A device pool at 96%
+// normally means a model is RESIDENT, which is the box working. It becomes a
+// problem only when something else wants the space, and that is an event, not a
+// level.
+//
+// Lenny run 9, on the Machines page: "I left it alone, but I did so guessing,
+// not knowing."
+type EvictionPressure struct {
+	Server      string
+	Count       int64
+	LastMS      int64
+	LastEvicted string // what was unloaded
+	LastFor     string // and what it made room for
+}
+
+// EvictionPressureSince reports, per server, the loads in a window that had to
+// evict something first.
+func (s *Store) EvictionPressureSince(w Window) ([]EvictionPressure, error) {
+	where, args := w.where("ts")
+	rows, err := s.db.Query(
+		`SELECT server, COUNT(*), MAX(ts) FROM model_load
+		  WHERE `+where+` AND evicted <> '' AND server <> ''
+		  GROUP BY server ORDER BY 2 DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []EvictionPressure
+	for rows.Next() {
+		var e EvictionPressure
+		if err := rows.Scan(&e.Server, &e.Count, &e.LastMS); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// The most recent instance, named. "Three times" is a rate; "unloaded
+	// chandra-ocr-2 to fit Qwen3.8-27B" is the thing somebody can act on.
+	for i := range out {
+		var evicted, model sql.NullString
+		err := s.db.QueryRow(
+			`SELECT evicted, model FROM model_load
+			  WHERE server = ? AND ts = ? AND evicted <> '' LIMIT 1`,
+			out[i].Server, out[i].LastMS).Scan(&evicted, &model)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		out[i].LastEvicted, out[i].LastFor = evicted.String, model.String
+	}
+	return out, nil
 }

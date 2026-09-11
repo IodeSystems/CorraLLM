@@ -108,6 +108,10 @@ const ConfigDoc = graphql(/* GraphQL */ `
             budget
             used
           }
+          madeRoomCount
+          madeRoomLastMs
+          madeRoomEvicted
+          madeRoomFor
         }
         gpus {
           available
@@ -268,7 +272,19 @@ function MachinesPage() {
     pools: m.usage.map((u) => ({ pool: u.pool, bytes: Number(u.bytes) })),
     measuredBytes: Number(m.footprintMiB) * 1024 * 1024,
   }))
-  const memServers = servers.map((s) => ({ server: s.server, devicePool: s.devicePool }))
+  const pressureByServer = new Map(
+    (res?.servers ?? []).map((s) => [s.server, s]),
+  )
+  const memServers = servers.map((s) => {
+    const live = pressureByServer.get(s.server)
+    return {
+      server: s.server,
+      devicePool: s.devicePool,
+      madeRoomCount: Number(live?.madeRoomCount ?? 0),
+      madeRoomEvicted: live?.madeRoomEvicted ?? '',
+      madeRoomFor: live?.madeRoomFor ?? '',
+    }
+  })
   const resident = res?.models ?? []
   const dev = (d?: { available: boolean; name: string; totalBytes: string; usedBytes: string; freeBytes: string }) => ({
     available: !!d?.available,

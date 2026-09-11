@@ -165,7 +165,23 @@ export type ModelUse = { model: string; server: string; pools: { pool: string; b
 export type DeviceMem = { available: boolean; name: string; totalBytes: number; usedBytes: number; freeBytes: number }
 /** A device reading plus the pool that budgets it ('' when nothing claims it). */
 export type GpuMem = DeviceMem & { uuid: string; pool: string }
-export type ServerShape = { server: string; devicePool: string }
+export type ServerShape = {
+  server: string
+  devicePool: string
+  /**
+   * Whether being full has COST anything here in the last day.
+   *
+   * A full bar was drawn exactly like an empty one, and the percentage alone
+   * cannot settle whether it matters — because usually it does not. A device
+   * pool at 96% normally means a model is RESIDENT, which is the box working
+   * as intended. It becomes a problem when something else wants the space, and
+   * that is an event, not a level (Lenny run 9: "I left it alone, but I did so
+   * guessing, not knowing").
+   */
+  madeRoomCount?: number
+  madeRoomEvicted?: string
+  madeRoomFor?: string
+}
 
 export function MemoryPanel(props: {
   pools: PoolLedger[]
@@ -320,6 +336,25 @@ export function MemoryPanel(props: {
                 }}
               >
                 <Typography variant="subtitle2">{box.server}</Typography>
+                <Box sx={{ flexGrow: 1 }} />
+                {/* SAYS WHETHER FULL IS A PROBLEM, in the only terms that can
+                    answer it: what it cost. Silence is the normal case and is
+                    deliberate — a line here on every healthy box would be the
+                    red-thing-you-cannot-act-on that OB-6 forbids. */}
+                {(() => {
+                  const sv = servers.find((x) => x.server === box.server)
+                  const n = Number(sv?.madeRoomCount ?? 0)
+                  if (n <= 0) return null
+                  const traded =
+                    sv?.madeRoomEvicted && sv?.madeRoomFor
+                      ? ` — last unloaded ${sv.madeRoomEvicted} to fit ${sv.madeRoomFor}`
+                      : ''
+                  return (
+                    <Typography variant="caption" sx={{ color: STATUS.warn }}>
+                      Made room {n} {n === 1 ? 'time' : 'times'} today{traded}
+                    </Typography>
+                  )
+                })()}
               </Box>
 
               {box.pools.map((p) => {
