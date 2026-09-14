@@ -18,6 +18,7 @@ import AddIcon from '@mui/icons-material/Add'
 import { Panel, Row } from '@/Panel'
 import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { ProviderModelDialog } from '@/ProviderModelDialog'
+import { OperatorNote } from '@/OperatorNote'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { extractMessage } from '@/format'
@@ -360,26 +361,14 @@ export function ModelsTab() {
                 </Box>
                 {/* The provider's own notes. A real config field, so unlike a
                     YAML comment it survives the file being rewritten — which is
-                    where an explanation about this provider belongs. */}
-                {p.notes && (
-                  <Tooltip title={<span style={{ whiteSpace: 'pre-wrap' }}>{p.notes}</span>}>
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        color: C.textMuted,
-                        flexBasis: '100%',
-                        whiteSpace: 'pre-wrap',
-                        display: '-webkit-box',
-                        WebkitLineClamp: 1,
-                        WebkitBoxOrient: 'vertical',
-                        overflow: 'hidden',
-                        mt: 0.5,
-                      }}
-                    >
-                      {p.notes}
-                    </Typography>
-                  </Tooltip>
-                )}
+                    where an explanation about this provider belongs.
+
+                    This was the last of the one-line-clamp-plus-tooltip notes:
+                    a rendered half-sentence with the rest reachable only by
+                    hovering (OB-10). Same component as every other note now, so
+                    the attribution and the way to read the rest are the same
+                    wherever a note appears. */}
+                {p.notes && <OperatorNote text={p.notes} />}
                 <Stack
                   direction="row"
                   spacing={0.75}

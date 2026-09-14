@@ -8,6 +8,7 @@ import { ProviderDialog } from '@/ProviderDialog'
 import type { ProviderInitial } from '@/ProviderDialog'
 import { CatalogDialog } from '@/CatalogDialog'
 import { ProviderModelDialog } from '@/ProviderModelDialog'
+import { OperatorNote } from '@/OperatorNote'
 import { C } from '@/theme'
 import { Loading } from '@/Loading'
 import { FilterField, matches } from '@/Paging'
@@ -28,62 +29,6 @@ import { byExtension, useSetupData, type ProviderRow } from '@/SetupData'
  * value is written through a separate write-only endpoint. That is what keeps
  * the config document safe to read, back up and share.
  */
-
-// AN EXTENSION'S NOTES ARE READ, NOT HOVERED.
-//
-// These are the operator's own commentary out of the config — unbounded, often
-// several paragraphs. They were clamped to ONE line with the rest on a tooltip,
-// which put three of them on screen cut mid-word ("P16 free-tier aggregator
-// (plan/p16-free-aggregator.md). …"). Hover reaches nobody who does not hover
-// (OB-10), and half a line is not a summary of anything.
-//
-// Three lines, and a control that says there is more and opens it in place. Not
-// unclamped: the notes on this box run past ten lines, and a wall of somebody
-// else's commentary between two extensions is how the list stops being a list.
-// A collapsed note can still end mid-word, and that is the one place on these
-// screens where it is allowed to: there is a visible way to finish the sentence,
-// and the sentence is not the product telling anyone what a control will do.
-function ExtensionNotes({ text }: { text: string }) {
-  const [open, setOpen] = useState(false)
-  // Rendered lines are not source lines, so this is not a count of what is
-  // hidden — only whether anything can be. Short notes get no control at all.
-  const canOverflow = text.includes('\n') || text.length > 160
-  const clamped = canOverflow && !open
-  return (
-    <Box sx={{ mt: 0.5 }}>
-      <Typography
-        variant="caption"
-        component="div"
-        sx={{
-          color: C.textMuted,
-          whiteSpace: 'pre-wrap',
-          ...(clamped
-            ? {
-                display: '-webkit-box',
-                WebkitLineClamp: 3,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-              }
-            : {}),
-        }}
-      >
-        {text}
-      </Typography>
-      {canOverflow && (
-        <Button
-          size="small"
-          sx={{ px: 0, minWidth: 0 }}
-          onClick={(e) => {
-            e.stopPropagation() // the row itself opens the extension editor
-            setOpen(!open)
-          }}
-        >
-          {open ? 'Show less' : 'Show all notes'}
-        </Button>
-      )}
-    </Box>
-  )
-}
 
 // Blank template for an extension. It lives with the panel that creates one
 // rather than in the editor, because the editor is a text box and this is the
@@ -260,7 +205,10 @@ export function ProvidersTab(props: {
                   + Provider
                 </Button>
               </Stack>
-              {g.ext?.notes && <ExtensionNotes text={g.ext.notes} />}
+              {/* The extension's own commentary out of the config. Attributed
+                  rather than rewritten: the words are the operator's, and the
+                  reader could not tell them from the product's. */}
+              {g.ext?.notes && <OperatorNote text={g.ext.notes} />}
             </Row>
 
             {/* Its providers, indented to say so. */}
