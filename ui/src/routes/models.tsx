@@ -432,7 +432,7 @@ function PauseDialog(props: {
           </Alert>
         )}
         <Typography variant="body2" sx={{ mb: 2, color: C.textMuted }}>
-          Unloads it and keeps it unloaded — no request, lane fall-through or preload will
+          Unloads it and keeps it unloaded — no request, fall-through or preload will
           start it again until it is resumed. Requests naming an affected model fall through
           to the rest of their lane, or fail with 503.
         </Typography>
@@ -1076,11 +1076,11 @@ function ModelsPage() {
       {/* Lanes: named ordered fallback lists over models. */}
       {lanes.length > 0 && (
         <Panel
-          title="Model lanes"
+          title="Fallback lists"
           subtitle="A name standing for several models, tried left to right until one can serve"
           // The chip legend. Without it a filled chip reads as a config entry
           // somebody cannot find, and the header was clipping it.
-          note="Filled chips are contributed at runtime — a pool, a directory choice, or a selector — and are not in your config's member list."
+          note="The config file calls one of these a lane. Filled chips are contributed at runtime — a pool, a directory choice, or a selector — and are not in your config's member list."
           flush
         >
           {lanes.map((l) => {
@@ -1140,7 +1140,7 @@ function ModelsPage() {
                   })}
                   {rungs.length === 0 && (
                     <Typography variant="caption" sx={{ color: C.textFaint }}>
-                      nothing resolves — this lane serves no one
+                      nothing resolves — this list serves no one
                     </Typography>
                   )}
                 </Box>
