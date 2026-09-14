@@ -819,6 +819,12 @@ true and still costs something. Optional extensions and out-of-scope items live 
   no card at all. Since 5741a93 the card at least *rates* itself in tg/s and tp/s and no longer
   claims "nothing is broken" when generation speed has fallen, but detecting a bare tg/s drop is a
   second fault that does not exist yet.
+- **No page of P30 has been looked at.** `/traffic`, `/setup` and `/machines` were rebuilt by
+  three parallel agents and merged on `tsc -b` + eslint + `vite build` + codegen validating every
+  document against the SDL. None of it was rendered against live data — the dashboard is behind
+  an admin-token sign-in and each agent declined to enter one, correctly. So every layout claim
+  in `done.md` § P30 is a claim about code that compiles, not about a page anybody saw. The
+  link-colour trap in that same section is the argument for why that distinction matters.
 - **`ui/` has no test runner.** No vitest, no jest, no `test` script in `ui/package.json` — so
   `slowdownFaults` and every other pure function in the UI is covered by `tsc` and eslint only.
   The DoD's "new behavior has tests" is met on the Go side of a UI change and silently skipped on
