@@ -130,8 +130,15 @@ function AssignedModels() {
   return (
     <Panel
       title={`Assigned models (${filtered.length === all.length ? all.length : `${filtered.length} of ${all.length}`})`}
+      subtitle="Chosen off a provider's catalog"
       // Remove is a config change, not a kill: say so where it can be read.
-      subtitle="Models chosen off a provider's catalog. Remove takes one out of the catalog this box serves — anything mid-answer on it finishes, and the next request for it is refused."
+      // "where it can be read" was a clipping header until now.
+      note={
+        <>
+          <b>Remove</b> takes one out of the catalog this box serves — anything mid-answer on it
+          finishes, and the next request for it is refused.
+        </>
+      }
       actions={
         all.length > 8 ? (
           <FilterField value={q} onChange={setQ} placeholder="model, provider, lane" />
@@ -285,9 +292,17 @@ export function ModelsTab() {
       {local.length > 0 && (
         <Panel
           title={`Local (${localShownCount === localTotal ? localTotal : `${localShownCount} of ${localTotal}`} models)`}
+          subtitle="Models this box runs itself"
           // Delete sat beside a model marked "spawned" with nothing saying what it
-          // does to it (Lenny run 4, OB-1/OB-2).
-          subtitle="Models this box runs itself. Edit changes how one is started; Delete removes it from the configuration — if it is loaded, it is stopped, and anything mid-answer on it ends there."
+          // does to it (Lenny run 4, OB-1/OB-2). The header it was moved to clips
+          // at the reader's window width, and the clause it takes is "ends there".
+          note={
+            <>
+              <b>Edit</b> changes how one is started; <b>Delete</b> removes it from the
+              configuration — if it is loaded, it is stopped, and anything mid-answer on it ends
+              there.
+            </>
+          }
           actions={
             localTotal > 8 ? (
               <FilterField value={localQ} onChange={setLocalQ} placeholder="model, type, host" />
@@ -489,7 +504,10 @@ export function ModelsTab() {
 
       <Panel
         title={`Model lanes (${lanes.length})`}
-        subtitle="A name a caller can ask for that stands for several models, tried in order until one can serve. Asking for the lane allows a substitute; asking for a model by name pins it to that one."
+        subtitle="A name standing for several models, tried in order until one can serve"
+        // Which model answers a request is what this decides, so the sentence
+        // that says so is the panel's, not the header's (OB-12).
+        note="Asking for the lane allows a substitute; asking for a model by name pins the request to that one."
         actions={
           <Button size="small" variant="outlined" onClick={() => setEditing(blankLane())}>
             Add lane

@@ -107,13 +107,20 @@ export function ToolingPanel(props: { host?: string } = {}) {
   return (
     <Panel
       title="Tooling"
+      subtitle={
+        host
+          ? `The programs that run the models on ${host}, and whether each is behind its pin`
+          : 'The programs that run the models — a version per host, and whether it is behind its pin'
+      }
       // What the buttons cost, once, above the group — a tooltip does not reach
       // somebody who does not hover, and Lenny has refused Rebuild every run
       // because nothing said whether it takes the running model down with it.
-      subtitle={
-        host
-          ? `The programs that run the models on ${host}, and whether each is behind its pin. Rebuild compiles a new copy in the background — minutes of full-machine compile — and leaves anything already running alone; models pick it up the next time they start.`
-          : 'The programs that run the models. A version per host, and whether it is behind its pin. Rebuild compiles a new copy in the background — minutes of full-machine compile — and leaves anything already running alone; models pick it up the next time they start.'
+      // A header clips, so this was never reaching him there either.
+      note={
+        <>
+          <b>Rebuild</b> compiles a new copy in the background — minutes of full-machine compile —
+          and leaves anything already running alone; models pick it up the next time they start.
+        </>
       }
       badge={
         q.isFetching ? (

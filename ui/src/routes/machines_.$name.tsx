@@ -246,7 +246,11 @@ function OverviewTab({ m }: { m: Machine }) {
 
       <Panel
         title="Utilisation"
-        subtitle="One bar per pool: the thin rule is what the scheduler may fill, the thick bar is what it has. Hover for the measured reading and whether being full has cost anything."
+        subtitle="One bar per pool"
+        // How to read the bars at all. Losing the tail of this leaves two
+        // shapes with no key, and the clause about what being full has cost is
+        // the one that goes first.
+        note="The thin rule is what the scheduler may fill, the thick bar is what it has. Hover a bar for the measured reading and whether being full has cost anything."
       >
         {m.pools.length === 0 ? (
           <Typography variant="body2" sx={{ color: C.textMuted }}>
@@ -299,7 +303,11 @@ function OverviewTab({ m }: { m: Machine }) {
 
       <Panel
         title="Loaded here"
-        subtitle="What is on this machine right now. Nothing here is a cost — it is what the memory above is being spent on."
+        subtitle="What is on this machine right now"
+        // The second sentence exists to stop this list being read as a fault
+        // list, which is exactly what it looks like under a memory panel, and
+        // it is the half a one-line header drops.
+        note="Nothing here is a cost — it is what the memory above is being spent on."
         badge={
           <Chip
             size="small"

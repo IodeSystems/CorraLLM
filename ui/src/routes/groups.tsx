@@ -100,19 +100,20 @@ export function GroupPanels() {
         // `interactive` at weight 10, and the page never said what either word
         // costs a request. He was right that no OB rule covered it: it is not a
         // control, so OB-1/OB-2 do not reach it. It is OB-12 now.
-        subtitle="Who wins when the box is busy — and only while it IS busy; an idle box serves everyone at once. Click a row to edit it."
+        subtitle="Who wins when the box is busy"
         actions={
           <Button size="small" variant="outlined" onClick={() => setEditing(blankGroup())}>
             Add group
           </Button>
         }
-        // Adding a group changes how the existing ones divide the box, which is
-        // not visible from the button (run 5 left it alone for exactly that).
-        badge={
-          <Typography variant="caption" sx={{ color: C.textFaint }}>
-            a new group takes its share from the others; nothing already running stops
-          </Typography>
-        }
+        // BOTH of these were in the header and both are consequences, so both
+        // are here now. The first was the subtitle and clipped at "Click a row
+        // t…"; the second was in `badge`, which holds a count, not a sentence —
+        // it was put there to escape the subtitle's ellipsis and it made the
+        // bar two lines tall to do it. Adding a group changes how the existing
+        // ones divide the box, which is not visible from the button (run 5 left
+        // it alone for exactly that).
+        note="Only while it IS busy — an idle box serves everyone at once. Click a row to edit a group. Adding one takes its share from the others; nothing already running stops."
         flush
       >
         <TableContainer>

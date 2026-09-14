@@ -12,12 +12,49 @@ import { C } from '@/theme'
 // anchor the box's extent to.
 //
 //   title     the label. Rendered small/uppercase/tracked — a LABEL, not prose.
-//   subtitle  one line of explanation, muted, in the header.
+//   subtitle  a second label fragment, muted, in the header. ONE LINE, clipped
+//             with an ellipsis when it does not fit. See below.
+//   note      prose that belongs to the panel: a band under the header, above
+//             the body, wrapping to as many lines as it needs.
 //   badge     a count or status chip pinned next to the title.
 //   actions   controls, right-aligned in the header bar.
 //   flush     body gets no padding — for a table or list that should meet the
 //             panel's own edges. Default (false) pads the body.
 //   dense     tighter body padding, for panels holding a single line or two.
+//
+// THE HEADER BAR IS A LABEL STRIP, AND `subtitle` STILL TRUNCATES ON PURPOSE.
+//
+// A name, a count and some controls, one line tall, the same height on every
+// panel of a page — that is what makes a dashboard scannable, and clipping a
+// LABEL costs nothing, because a label's tail only restates its head. A long
+// model name losing its last characters is the header working.
+//
+// A SENTENCE losing its tail is the header lying. The clause that goes first is
+// the subject, and the clause that goes last is what happens — so truncation
+// takes the consequence and leaves the topic, which reads as complete. Somebody
+// who came to find out whether Change cuts off a request in flight read
+// "…and a reques…" and closed the lid (OB-2). Nothing on screen said a word was
+// missing, and the width that decided it was his window's, not the author's.
+//
+// So the rule is about what may be PUT there, not about the CSS:
+//
+//   A subtitle stays in the header only if BOTH hold:
+//     1. it is one sentence — no sentence break inside it; and
+//     2. it does not say what happens to a request somebody is waiting on.
+//   Otherwise it is `note`.
+//
+// Test 2 is the one that matters and test 1 is the one a machine can check, so
+// eslint.config.js enforces test 1 (`corrallm/subtitle-is-a-label`) and this
+// comment is the standard for test 2. Widening the bar was rejected: a
+// paragraph wrapped into a tinted strip pushes the thing the reader came for
+// below the explanation of it (OB-11), and makes every panel's height depend on
+// the reader's window.
+//
+// `note` is where the moved sentences go. It is the band callers.tsx and
+// groups.tsx were each hand-rolling out of a Row, and it sits ABOVE the body
+// because a consequence is read before the rows it applies to, once for the
+// group rather than on each of thirty identical buttons (OB-2). It pads itself,
+// so it looks the same on a flush panel and a padded one.
 //
 // Nested surfaces: use `Row` for items INSIDE a panel. Rows are separated by
 // borders, not by their own boxes — a card inside a card is the thing that makes
@@ -26,13 +63,14 @@ import { C } from '@/theme'
 export function Panel(props: {
   title?: ReactNode
   subtitle?: ReactNode
+  note?: ReactNode
   badge?: ReactNode
   actions?: ReactNode
   flush?: boolean
   dense?: boolean
   children: ReactNode
 }) {
-  const { title, subtitle, badge, actions, flush, dense, children } = props
+  const { title, subtitle, note, badge, actions, flush, dense, children } = props
   const hasHeader = title != null || actions != null || badge != null
   return (
     <Paper elevation={0} sx={{ overflow: 'hidden' }}>
@@ -68,6 +106,23 @@ export function Panel(props: {
               {actions}
             </Box>
           )}
+        </Box>
+      )}
+      {note != null && (
+        // Outside the body box, so it carries its own padding and reads the
+        // same whether the body is flush, dense or padded. Muted and body2 —
+        // the size the rest of a panel's prose is set in, not caption: this is
+        // the sentence somebody has to read before pressing something.
+        <Box
+          sx={{
+            px: 1.75,
+            py: 1.25,
+            borderBottom: `1px solid ${C.border}`,
+          }}
+        >
+          <Typography variant="body2" sx={{ color: C.textMuted }}>
+            {note}
+          </Typography>
         </Box>
       )}
       <Box sx={{ p: flush ? 0 : dense ? 1.25 : 2 }}>{children}</Box>
