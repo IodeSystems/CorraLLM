@@ -10,6 +10,7 @@ import { CatalogDialog } from '@/CatalogDialog'
 import { ProviderModelDialog } from '@/ProviderModelDialog'
 import { C } from '@/theme'
 import { Loading } from '@/Loading'
+import { FilterField, matches } from '@/Paging'
 import { byExtension, useSetupData, type ProviderRow } from '@/SetupData'
 
 /**
@@ -61,6 +62,7 @@ export function ProvidersTab(props: {
   const [browse, setBrowse] = useState<{ provider: string; credential: string } | null>(null)
   const [addLocal, setAddLocal] = useState<{ provider: string; extension?: string } | null>(null)
   const [editing, setEditing] = useState<EntryEdit | null>(null)
+  const [q, setQ] = useState('')
 
   const { data, isLoading, error } = useSetupData()
 
@@ -74,7 +76,16 @@ export function ProvidersTab(props: {
   const extensions = ov?.extensions ?? []
   const secrets = list?.secrets ?? []
 
-  const groups = byExtension(extensions, pools, providers)
+  const all = byExtension(extensions, pools, providers)
+  // Filtered, not paged. This is a TREE — an extension and the providers under
+  // it — and a page boundary drawn through it would separate a provider from
+  // the heading that says what it belongs to. A match on either half keeps the
+  // whole group, for the same reason.
+  const groups = all.filter(
+    (g) =>
+      matches(q, g.name) ||
+      g.provs.some((p) => matches(q, p.name, p.host, ...(p.credentials ?? []).map((c) => c.name))),
+  )
 
   const toInitial = (p: ProviderRow): ProviderInitial => ({
     extension: p.extension,
@@ -94,19 +105,31 @@ export function ProvidersTab(props: {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <Panel
-        title={`Integrations (${groups.length})`}
+        title={`Integrations (${groups.length === all.length ? all.length : `${groups.length} of ${all.length}`})`}
         subtitle="An extension is the container: one integration, its providers, and the models it serves."
         actions={
-          <Button size="small" variant="outlined" onClick={() => setEditing(blankExtension())}>
-            Add extension
-          </Button>
+          <>
+            {/* No filter until there is something to filter: a search box over
+                four rows is furniture. */}
+            {all.length > 6 && (
+              <FilterField value={q} onChange={setQ} placeholder="extension, provider, host" />
+            )}
+            <Button size="small" variant="outlined" onClick={() => setEditing(blankExtension())}>
+              Add extension
+            </Button>
+          </>
         }
         flush
       >
-        {groups.length === 0 && (
+        {all.length === 0 && (
           <Typography variant="body2" sx={{ p: 2, color: C.textFaint }}>
             None yet. <strong>Add provider</strong> starts from a table of known OpenAI-compatible
             endpoints, or takes a custom one.
+          </Typography>
+        )}
+        {all.length > 0 && groups.length === 0 && (
+          <Typography variant="body2" sx={{ p: 2, color: C.textFaint }}>
+            No integration or provider matches “{q}”.
           </Typography>
         )}
         {groups.map((g) => (

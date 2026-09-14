@@ -18,6 +18,7 @@ import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
 import { extractMessage } from '@/format'
+import { Pager, usePaging } from '@/Paging'
 
 /**
  * Configuration history — what changed, when, and how to get it back.
@@ -104,6 +105,10 @@ export function HistoryPanels() {
     queryFn: () => gqlClient.request(HistoryDoc),
   })
   const revisions = q.data?.corrallm.configHistory?.revisions ?? []
+  // Ten at a time. The query asks for fifty and an active box burns through
+  // fifty in a fortnight, so the full list is a wall of near-identical dated
+  // rows — and the row anyone wants is almost always in the first ten.
+  const { rows: page, pager } = usePaging(revisions, 10)
 
   // The body is fetched per revision rather than with the list: fifty
   // revisions of a 68KB config is megabytes to render a list of dates.
@@ -191,7 +196,7 @@ export function HistoryPanels() {
             No revisions yet. One is recorded every time the configuration is saved.
           </Typography>
         )}
-        {revisions.map((r) => (
+        {page.map((r) => (
           <Row key={String(r.id)}>
             <Stack
               direction="row"
@@ -232,6 +237,9 @@ export function HistoryPanels() {
             </Stack>
           </Row>
         ))}
+        {/* `capped`: the query asks for the fifty most recent, so the last page
+            is the end of what was FETCHED, not the end of the record. */}
+        <Pager p={pager} unit="revisions" capped />
       </Panel>
 
       <Dialog open={!!viewing} onClose={() => setViewing(null)} maxWidth="md" fullWidth>

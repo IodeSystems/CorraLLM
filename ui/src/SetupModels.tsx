@@ -23,6 +23,7 @@ import { gqlClient } from '@/gqlClient'
 import { extractMessage } from '@/format'
 import { C } from '@/theme'
 import { Loading } from '@/Loading'
+import { FilterField, matches, Pager, usePaging } from '@/Paging'
 import { groupByBox, useSetupData, UNPLACED } from '@/SetupData'
 
 /**
@@ -100,9 +101,14 @@ const UnassignDoc = graphql(/* GraphQL */ `
  * chose across all of them and where each one landed. Both write the same rows
  * — there is no separate approvals page any more, because there is nothing to
  * approve: a model is selected or it is not.
+ *
+ * The list with no ceiling: one row per model per credential per provider, and
+ * a provider's catalogue runs to three hundred. Filtered and paged, because
+ * "did I already add the free Qwen" is a lookup, not a scroll.
  */
 function AssignedModels() {
   const qc = useQueryClient()
+  const [q, setQ] = useState('')
   const { data } = useQuery({
     queryKey: ['selections'],
     queryFn: () => gqlClient.request(SelectionsDoc),
@@ -115,16 +121,30 @@ function AssignedModels() {
       qc.invalidateQueries({ queryKey: ['catalog'] })
     },
   })
-  const rows = data?.corrallm?.listSelections?.selections ?? []
+  const all = data?.corrallm?.listSelections?.selections ?? []
+  const filtered = all.filter((r) =>
+    matches(q, r.model, r.provider, r.credential, r.upstream, ...r.lanes.map((l) => l.lane)),
+  )
+  const { rows, pager } = usePaging(filtered, 15)
 
   return (
     <Panel
-      title={`Assigned models (${rows.length})`}
+      title={`Assigned models (${filtered.length === all.length ? all.length : `${filtered.length} of ${all.length}`})`}
       // Remove is a config change, not a kill: say so where it can be read.
       subtitle="Models chosen off a provider's catalog. Remove takes one out of the catalog this box serves — anything mid-answer on it finishes, and the next request for it is refused."
+      actions={
+        all.length > 8 ? (
+          <FilterField value={q} onChange={setQ} placeholder="model, provider, lane" />
+        ) : undefined
+      }
       flush
     >
-      {rows.length === 0 ? (
+      {all.length > 0 && filtered.length === 0 && (
+        <Typography variant="body2" sx={{ p: 2, color: C.textFaint }}>
+          No assigned model matches “{q}”.
+        </Typography>
+      )}
+      {all.length === 0 ? (
         <Typography variant="body2" sx={{ p: 2, color: C.textFaint }}>
           None yet. <strong>Browse</strong> a provider on the Providers tab and add the models you
           want — with a lane and priority if they should join one.
@@ -193,6 +213,7 @@ function AssignedModels() {
           </Row>
         ))
       )}
+      <Pager p={pager} unit="models" />
     </Panel>
   )
 }
@@ -211,6 +232,7 @@ export function ModelsTab() {
   )
   const [deleteErr, setDeleteErr] = useState('')
   const [editing, setEditing] = useState<EntryEdit | null>(null)
+  const [localQ, setLocalQ] = useState('')
 
   const del = useMutation({
     mutationFn: (name: string) => gqlClient.request(DeleteModelDoc, { name }),
@@ -233,24 +255,44 @@ export function ModelsTab() {
 
   const { data, isLoading, error } = useSetupData()
 
-  if (isLoading) return <Loading />
-  if (error) return <Alert severity="error">{String(error)}</Alert>
-
   const local = data?.corrallm?.listProviders?.local ?? []
+  const localTotal = local.reduce((n, p) => n + p.models.length, 0)
+  // Filtered, not paged: these rows are GROUPED by the box that runs them, and
+  // a page boundary through the groups would cut a heading off its models. The
+  // filter narrows the models and drops a provider left with none.
+  const localShown = !localQ.trim()
+    ? local
+    : local
+        .map((p) => ({
+          ...p,
+          models: p.models.filter((m) => matches(localQ, m.served, m.id, m.type, m.server)),
+        }))
+        .filter((p) => p.models.length > 0)
+  const localShownCount = localShown.reduce((n, p) => n + p.models.length, 0)
+
   // Lanes and extensions moved here from the Config page. Both are about
   // MODELS — a lane is an ordered list of them, an extension is one process
   // serving several — so they belong with the models rather than on a page
   // named after a file.
   const lanes = data?.corrallm?.overview?.lanes ?? []
+  const { rows: lanePage, pager: lanePager } = usePaging(lanes, 10)
+
+  if (isLoading) return <Loading />
+  if (error) return <Alert severity="error">{String(error)}</Alert>
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       {local.length > 0 && (
         <Panel
-          title={`Local (${local.reduce((n, p) => n + p.models.length, 0)} models)`}
+          title={`Local (${localShownCount === localTotal ? localTotal : `${localShownCount} of ${localTotal}`} models)`}
           // Delete sat beside a model marked "spawned" with nothing saying what it
           // does to it (Lenny run 4, OB-1/OB-2).
           subtitle="Models this box runs itself. Edit changes how one is started; Delete removes it from the configuration — if it is loaded, it is stopped, and anything mid-answer on it ends there."
+          actions={
+            localTotal > 8 ? (
+              <FilterField value={localQ} onChange={setLocalQ} placeholder="model, type, host" />
+            ) : undefined
+          }
           flush
         >
           <Typography variant="body2" sx={{ px: 2, pt: 1.5, color: C.textMuted }}>
@@ -258,7 +300,12 @@ export function ModelsTab() {
             is why they are declared rather than browsed: the catalogue is whatever you put on the
             disk. Served as <code>&lt;provider&gt;-&lt;id&gt;</code> like any remote.
           </Typography>
-          {local.map((p) => (
+          {localShown.length === 0 && (
+            <Typography variant="body2" sx={{ px: 2, py: 1.5, color: C.textFaint }}>
+              No local model matches “{localQ}”.
+            </Typography>
+          )}
+          {localShown.map((p) => (
             <Row key={p.name}>
               <Stack
                 direction="row"
@@ -457,7 +504,7 @@ export function ModelsTab() {
             </Typography>
           </Row>
         ) : (
-          lanes.map((l) => (
+          lanePage.map((l) => (
             <Row
               key={l.name}
               onClick={() => {
@@ -473,6 +520,7 @@ export function ModelsTab() {
             </Row>
           ))
         )}
+        <Pager p={lanePager} unit="lanes" />
       </Panel>
 
       {addLocal && (
