@@ -1,12 +1,13 @@
+import type { ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { Box, Chip, CircularProgress, Typography } from '@mui/material'
+import { Box, Chip, Typography } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { ActiveRequests } from '@/ActiveRequests'
 import { Panel, PageHeader, Row } from '@/Panel'
 import { C } from '@/theme'
-import { Loading } from '@/Loading'
+import { NotYet } from '@/NotYet'
 import { fmtInt, fmtUSD } from '@/format'
 
 /**
@@ -453,6 +454,31 @@ function BoxState(props: {
 }
 
 /**
+ * The same line, before the box has answered — because the page owes a sentence
+ * on ARRIVAL (OB-5), and arrival is the moment it has nothing.
+ *
+ * Serving, struggling and stopped are the three states this line may report, and
+ * none of them is true while the query is out. So it reports the fourth thing
+ * that is true: that it is asking. Muted, never the green/amber/red of a state,
+ * because the colour is what gets read first and a colour here would be a
+ * verdict. It also says the panels below are not readings yet, which is the part
+ * a person who stops at the first line needs to know.
+ */
+function BoxStateAsking() {
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+      <Typography variant="body1" sx={{ color: C.textMuted, fontWeight: 700 }}>
+        Checking
+      </Typography>
+      <Typography variant="body2" sx={{ color: C.textMuted }}>
+        — asking this box how it is. Nothing below is a reading yet, and nothing here says it is
+        healthy.
+      </Typography>
+    </Box>
+  )
+}
+
+/**
  * What the box is GETTING DONE — the second question an owner arrives with.
  *
  * Every number carries its unit and its window (OB-4); the window is said once,
@@ -479,39 +505,60 @@ function compact(n: number): string {
 }
 
 function Throughput({
-  machines,
-  ready,
-  configured,
-  requests,
-  promptTokens,
-  completionTokens,
-  costUsd,
+  pending = false,
+  machines = 0,
+  ready = 0,
+  configured = 0,
+  requests = 0,
+  promptTokens = 0,
+  completionTokens = 0,
+  costUsd = 0,
 }: {
-  machines: number
-  ready: number
-  configured: number
-  requests: number
-  promptTokens: number
-  completionTokens: number
-  costUsd: number
+  /** Nothing has been counted yet: the strip renders, the numbers do not. */
+  pending?: boolean
+  machines?: number
+  ready?: number
+  configured?: number
+  requests?: number
+  promptTokens?: number
+  completionTokens?: number
+  costUsd?: number
 }) {
   // Idle is a fact, not a blank. A strip of zeroes reads as broken; saying so in
   // words is the difference between "nothing is wrong" and "nothing is here".
+  //
+  // And "not asked yet" is a third thing again, which is why `pending` is not
+  // folded into `idle`: "none" is a count of zero requests that somebody took,
+  // "not in yet" is no count at all (NotYet.tsx).
   const idle = requests === 0
-  const stats: { label: string; value: string; sub?: string }[] = [
+  const stats: { label: string; value: ReactNode; sub?: string }[] = [
     {
       label: 'Machines',
-      value: String(machines),
-      sub: machines === 1 ? 'this box' : 'this box and attached',
+      value: pending ? <NotYet /> : String(machines),
+      sub: pending ? undefined : machines === 1 ? 'this box' : 'this box and attached',
     },
-    { label: 'Models loaded', value: `${ready} of ${configured}`, sub: 'the rest load on demand' },
-    { label: 'Requests', value: idle ? 'none' : fmtInt(requests), sub: 'in the last hour' },
     {
-      label: 'Tokens',
-      value: idle ? '—' : `${compact(promptTokens)} in · ${compact(completionTokens)} out`,
+      label: 'Models loaded',
+      value: pending ? <NotYet /> : `${ready} of ${configured}`,
+      sub: 'the rest load on demand',
+    },
+    {
+      label: 'Requests',
+      value: pending ? <NotYet /> : idle ? 'none' : fmtInt(requests),
       sub: 'in the last hour',
     },
-    { label: 'Cost', value: fmtUSD(costUsd), sub: 'in the last hour' },
+    {
+      label: 'Tokens',
+      value: pending ? (
+        <NotYet />
+      ) : idle ? (
+        '—'
+      ) : (
+        `${compact(promptTokens)} in · ${compact(completionTokens)} out`
+      ),
+      sub: 'in the last hour',
+    },
+    { label: 'Cost', value: pending ? <NotYet /> : fmtUSD(costUsd), sub: 'in the last hour' },
   ]
   return (
     <Panel
@@ -598,10 +645,10 @@ function Now() {
     refetchInterval: 10000,
   })
 
-  if (q.isLoading) return <Loading />
   if (q.error) {
     return (
-      <Box sx={{ p: 3 }}>
+      <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <PageHeader title="Now" />
         <Panel title="This machine did not answer">
           <Typography variant="body2" sx={{ color: C.textMuted }}>
             The dashboard could not reach corrallm on this box. It is either restarting, stopped, or
@@ -613,10 +660,27 @@ function Now() {
   }
 
   const c = q.data?.corrallm
+  // THE PAGE, WHILE IT IS STILL BEING ANSWERED — not a spinner on an empty
+  // frame. This screen used to return `<Loading />` here, so on a box slow
+  // enough to be worth looking at (6 s to answer, reproducibly) the first thing
+  // an owner saw was a nav rail and nothing else: "the one thing I came here for
+  // and it's blank". Traffic has always degraded properly — header, window
+  // picker and panel chrome first, values as they land — so this was an
+  // inconsistency, not an unsolved problem (OB-5).
+  //
+  // Same shape, same order, same panels; every number says it has not arrived
+  // rather than showing a zero, and the state line says so in one sentence at
+  // the top. What is NOT here is a "What needs looking at" placeholder: an empty
+  // fault panel is the false all-clear this page exists to stop, and the state
+  // line above already says nothing below is a reading.
   if (!c) {
     return (
-      <Box sx={{ p: 3 }}>
-        <CircularProgress />
+      <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <PageHeader title="Now">
+          <BoxStateAsking />
+        </PageHeader>
+        <Throughput pending />
+        <ActiveRequests />
       </Box>
     )
   }

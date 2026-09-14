@@ -8,7 +8,6 @@ import { ToolingPanel } from '@/ToolingPanel'
 import { UtilizationBar } from '@/UtilizationBar'
 import { C } from '@/theme'
 import { fmtBytes, extractMessage } from '@/format'
-import { Loading } from '@/Loading'
 import {
   AGENT_STATUS_HINT,
   agentColor,
@@ -81,7 +80,6 @@ function MachinePage() {
     }
   }
 
-  if (q.isLoading) return <Loading />
   if (q.error) {
     return (
       <Box sx={{ p: 3 }}>
@@ -90,8 +88,32 @@ function MachinePage() {
     )
   }
 
-  const d = derive(q.data)
-  const m = d.machines.find((x) => x.server === name)
+  // The machine's NAME is in the URL, so this page can head itself before it has
+  // asked anything — the same reason /machines and Now now draw their chrome
+  // first rather than returning a spinner onto an empty frame.
+  const d = q.data ? derive(q.data) : null
+  const m = d?.machines.find((x) => x.server === name)
+
+  // "No machine named X is configured" is a finding about an answer that came
+  // back, and it offers a way out of the page. Said while the query is still in
+  // flight it is simply wrong, so the two states are separate.
+  if (!d) {
+    return (
+      <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+          <Button size="small" onClick={() => nav({ to: '/machines' })}>
+            ← Machines
+          </Button>
+          <PageHeader title={name} />
+        </Stack>
+        <Panel title="Health">
+          <Typography variant="body2" sx={{ color: C.textFaint }}>
+            Asking this box about {name} — nothing here is a reading yet.
+          </Typography>
+        </Panel>
+      </Box>
+    )
+  }
 
   if (!m) {
     return (
