@@ -3161,3 +3161,63 @@ could go stale against a config edit and would cost more to get right than the 1
 **ninfer stays** — it is kept deliberately, to compare against llama.cpp for stability and
 throughput. "Nothing uses it" is now a stated fact rather than a silence, which is the difference
 between an unused tool and a forgotten one.
+
+---
+
+## P30 — the pages people actually open are too long to use (2026-09-13)
+
+Four reports of one failure: the page rendered everything it knew in whatever order the data
+happened to exist, so the thing you opened it for was under a screen and a half of something
+else. Run as parallel worktree branches merged by an orchestrating session.
+
+**Why the split had that shape.** `ui/gen/schema.graphql` and `ui/src/gql/*` are GENERATED, so
+two branches that touch the schema collide there rather than in code anyone wrote — and
+`theme.ts` / `Charts.tsx` / `Panel.tsx` are imported by all three big pages. So the shared
+surface went first, alone, and the page reworks then fanned out over disjoint files. It held:
+zero merge conflicts across six branches.
+
+**Wave 0 — shared surface.** `281b62c` link colour (body colour + underline; `:visited` pinned
+so history never repaints purple) · `33e5a7d` the five `bench.tsx` links an inline `style`
+outranked, which the theme rule could not reach · `648f5bb` activity paging · `0bfacb3` chart
+axes.
+
+**Wave 1 — the pages.** `e784799`+merge Machines · `4f1079f` Setup · `e00a203` Traffic.
+
+### Decisions kept, with their reasons
+
+- **`hasMore`, not a total count** (`store.RecentActivityPage`). A `COUNT(*)` is a second scan
+  over the same filter on every page-turn, answering a question a pager does not ask. Asking
+  for `limit+1` gets it from the query already paying for the page.
+- **Deep offset is only cheap where the index covers it.** Measured on a 60k-row/940 MB table:
+  unfiltered or key-filtered at offset 50,000 = 0.002s; **served**- or **placement**-filtered =
+  0.091s (45×), because neither column is indexed so SQLite heap-fetches every skipped row
+  including ~85 KB of captured req/resp body. It degrades silently. Traffic therefore offers a
+  pager ONLY when model and placement filters are empty, and prints `newest 25` otherwise.
+- **The utilisation bar has no threshold colour.** A device pool at 96% normally means a model
+  is resident — the box working — so amber there would flag the healthy steady state on every
+  working box. Error colour is reserved for over-budget. The tooltip closes with the made-room
+  line, which is what actually answers whether full matters here.
+- **Tooling gets no nav entry.** A toolchain is a question about a machine and is useless
+  without that machine's memory beside it. Recorded in `__root.tsx` so it is not "fixed" later.
+- **A fault does not go inside a tab.** Setup's refusing-backend warning is a banner above the
+  tab bar; a fault inside a tab is a fault nobody sees.
+- **Setup defaults to Providers, not History** — decided by the user 2026-09-13, against the
+  OB-11/Lenny-run-4 note at the old `setup.tsx:466`. The argument that won: OB-11 was about the
+  answer sitting BELOW a screen of settings, and a labelled tab at the top is not below
+  anything. `/history` still deep-links straight to it.
+- **tg/s renders `n/r`, never 0.** Only llama.cpp backends report timings, so 0 means unreported.
+  There is deliberately NO tg/s tile on the totals: the schema pins both rates to 0 on the grand
+  total, and a mean-of-means across models is not a rate.
+
+### Traps
+
+- **A green typecheck proves nothing about a visual change.** The link-colour agent reported
+  "nothing the task description got wrong" with tsc and lint clean, having missed five links
+  whose inline `style` outranked its CssBaseline rule — on the page you would check first.
+- **Worktrees inherit neither `ui/node_modules` nor the gitignored `ui/src/gql`.** One agent
+  burned minutes on `pnpm install` before it could typecheck. Link the modules and copy `gql`
+  per worktree — a *shared* symlinked `gql` would race two agents regenerating into it.
+- **Worktrees branch from session start, not from current main.** The paging agent would have
+  regenerated the SDL without `predictedPerSec`, silently reverting it. Rebase onto main first.
+- **Agents run `bin/gen` when they mean `pnpm gen`.** The former also rewrites the tracked SDL
+  snapshot — the exact collision the DAG exists to avoid.

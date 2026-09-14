@@ -319,52 +319,11 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P30 — the pages people actually open are too long to use — 2026-09-13
+### ✅ P30 — the pages people actually open are too long to use — 2026-09-13
 
-Four reports, all the same shape: the page shows everything it knows, in the order the data
-happens to exist, so what you came for is buried. Run as parallel worktree branches merged
-into main by the orchestrating session — the DAG below exists because `ui/gen/schema.graphql`
-and `ui/src/gql/*` are GENERATED, so any two branches that touch the schema collide there,
-and `theme.ts` / `Charts.tsx` / `Panel.tsx` are imported by all three big pages.
-
-**Wave 0 — the shared surface, merged before anything else starts.**
-- ◐ **Link colour on dark.** Links render `primary.main` (#4f9cf9) and are hard to read.
-  theme.ts has no `MuiLink` override, and links are TanStack Router `<Link>` (a plain `<a>`),
-  so a MuiLink override alone fixes almost nothing — the global `a` rule is the real fix.
-  Scope: `ui/src/theme.ts`.
-- ◐ **Activity pagination.** `RecentActivity` takes a limit and nothing else — no OFFSET in
-  the store query, no offset field on the input. Traffic pulls 100 rows and the user reports
-  it "takes forever to load". Go + SDL only; the UI wiring belongs to the Traffic slice.
-  Scope: `internal/store/store.go`, `internal/api/handlers.go`.
-- ◐ **Chart axes.** `ui/src/Charts.tsx` is a dependency-free SVG kit with no ticks or
-  gridlines — "they just look like lines". Units already arrive as `fmt`/`fmtTotal`
-  callbacks, so the formatter for the axis is already in hand. Scope: `ui/src/Charts.tsx`.
-
-**Wave 1 — the three page reworks, disjoint file sets, after Wave 0 merges.**
-- ◻ **Traffic.** Wants: a header of charts + active sessions + warnings, journeys and
-  comebacks MERGED, model tg/s + tp/s and total tokens cached/processed/generated, and a
-  paginated recent-requests list. Drop resident models from this page. Scope: `traffic.tsx`,
-  `Utilization`, `RetryPromises`, `Journeys`, `ServiceProfiles`, `ActivityLog`, `usage.tsx`.
-- ◻ **Setup.** 1020 lines of stacked panels, zero tabs. (`config.tsx` is only a redirect —
-  the page people mean is `/setup`.) Scope: `setup.tsx`, `history.tsx`, `quota.tsx`.
-- ✅ **Machines & Tooling** — merged 2026-09-13. `/machines` is a list that answers only "is
-  everything healthy"; `/machines/$name` carries health, utilisation, residency and that
-  machine's tooling behind URL-held tabs. New `UtilizationBar` (4px track = scheduler budget,
-  10px bar = used) is deliberately **uncoloured by threshold**: per the `ServerView.MadeRoomCount`
-  note, a device pool at 96% is normally a model resident — the box working — so an amber
-  threshold would flag the healthy steady state on every working box. Error colour is reserved
-  for over-budget. `available: false` renders as "not measured", never as zero.
-  **Tooling gets no nav entry** — a toolchain is a question about a machine and is useless
-  without that machine's memory beside it; recorded in `__root.tsx` so it is not "fixed" later.
-  **Constraint found:** `toolStates` takes no host argument, so the per-machine Tooling filter
-  is client-side. That is the better trade — the survey is fleet-wide either way, so the cache
-  survives switching machines — but a host-scoped query is the fix if the survey ever gets big.
-
-**next** merge Wave 0, then launch Wave 1. **risks** three branches regenerate `ui/src/gql/*`;
-resolution is to take either side and re-run `bin/gen`, not to hand-merge. Deep OFFSET paging
-may be pathological on a large activity table — the pagination slice reports on the index.
-**blocking decisions** none open; the four reports are the brief. **optional extensions** a
-bare tg/s-drop fault (§7), and a UI test runner (§7) — both out of scope here.
+Shipped. `/traffic`, `/setup` and `/machines` rebuilt; link colour, chart axes and activity
+paging landed first as the shared surface. Full tree, the merge DAG, and the decisions worth
+not re-litigating: [`done.md`](done.md) § P30. **Not visually verified** — see §7.
 
 ### ◐ carlsmacbookpro is back — 51 GB of Metal that was switched off — 2026-09-05
 
