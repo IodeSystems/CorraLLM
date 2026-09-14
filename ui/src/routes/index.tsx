@@ -380,10 +380,16 @@ function faultsOf(
               : ` — it answers ${status}`
       }`,
       whose: 'The provider that runs it, not this box.',
+      // TWO FIXES, IN WORDS THE READER OWNS. "Drop it from its lane" named a
+      // thing the home screen never introduces and OB-3 keeps off labels
+      // outright: "I don't own a rung and I don't know what a lane is." The
+      // second half now describes the action instead of naming the object, and
+      // points at the panel that does it — which Setup titles "Model lanes" and
+      // explains, in the same words, as models tried in order.
       next:
         status === 402
-          ? 'Fund the account, or drop it from its lane. Nothing here is waiting on it.'
-          : 'Check the credential, or drop it from its lane. Nothing here is waiting on it.',
+          ? 'Fund the account, or stop sending requests to it: on Setup, take it out of the lists of models that are tried in order. Nothing here is waiting on it.'
+          : 'Check the credential, or stop sending requests to it: on Setup, take it out of the lists of models that are tried in order. Nothing here is waiting on it.',
       when:
         days >= 1
           ? `it has been like this for ${days} day${days === 1 ? '' : 's'}`
