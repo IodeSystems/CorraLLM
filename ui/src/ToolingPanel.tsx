@@ -29,6 +29,13 @@ import { C } from '@/theme'
  * remotely, plus a git ls-remote each. Folding that into the page query would
  * make host capacity wait on a sleeping laptop to render. Here it can spin on
  * its own while everything else is already on screen.
+ *
+ * `host` scopes it to one machine, which is where it now lives: a tab on that
+ * machine's page rather than a table at the bottom of a page about every
+ * machine. The filter is in the client because `toolStates` surveys the fleet
+ * either way — and that is the right trade, because it means switching between
+ * two machines' Tooling tabs re-reads one cached survey instead of paying for a
+ * second round of git ls-remote per tool.
  */
 const ToolingDoc = graphql(/* GraphQL */ `
   query Tooling {
@@ -67,7 +74,8 @@ const ToolingDoc = graphql(/* GraphQL */ `
 const shortVersion = (v: string | null): string =>
   v && /^[0-9a-f]{20,40}$/.test(v) ? v.slice(0, 9) : (v ?? '')
 
-export function ToolingPanel() {
+export function ToolingPanel(props: { host?: string } = {}) {
+  const { host } = props
   const qc = useQueryClient()
   // Which row's build the modal is for. The build itself is a single global
   // slot on the daemon; this only decides what a fresh Build click targets.
@@ -93,7 +101,8 @@ export function ToolingPanel() {
     staleTime: 60_000,
   })
 
-  const tools = q.data?.corrallm.toolStates?.tools ?? []
+  const all = q.data?.corrallm.toolStates?.tools ?? []
+  const tools = host ? all.filter((t) => t.host === host) : all
 
   return (
     <Panel
@@ -101,7 +110,11 @@ export function ToolingPanel() {
       // What the buttons cost, once, above the group — a tooltip does not reach
       // somebody who does not hover, and Lenny has refused Rebuild every run
       // because nothing said whether it takes the running model down with it.
-      subtitle="The programs that run the models. A version per host, and whether it is behind its pin. Rebuild compiles a new copy in the background — minutes of full-machine compile — and leaves anything already running alone; models pick it up the next time they start."
+      subtitle={
+        host
+          ? `The programs that run the models on ${host}, and whether each is behind its pin. Rebuild compiles a new copy in the background — minutes of full-machine compile — and leaves anything already running alone; models pick it up the next time they start.`
+          : 'The programs that run the models. A version per host, and whether it is behind its pin. Rebuild compiles a new copy in the background — minutes of full-machine compile — and leaves anything already running alone; models pick it up the next time they start.'
+      }
       badge={
         q.isFetching ? (
           <CircularProgress size={14} />
@@ -119,10 +132,24 @@ export function ToolingPanel() {
 
       {!q.isLoading && !q.error && tools.length === 0 && (
         <Typography variant="body2" sx={{ px: 2, py: 1.5, color: C.textMuted }}>
-          No tools declared. A <code>tools:</code> entry names a program (llama.cpp, ninfer), where
-          it comes from, and which hosts have it — after which a model&apos;s cmd can say{' '}
-          <code>{'${tool:llama.cpp}/llama-server'}</code> instead of an absolute path that differs
-          per machine.
+          {/* Scoped, with tools declared elsewhere, this is a DIFFERENT fact
+              from having none at all: the entries exist, they just do not list
+              this machine among their hosts. Saying "no tools declared" there
+              would send someone to write one that is already written. */}
+          {host && all.length > 0 ? (
+            <>
+              No tool lists {host} among its hosts. A <code>tools:</code> entry names which machines
+              have the program; add this one to a tool&apos;s hosts and a model here can say{' '}
+              <code>{'${tool:llama.cpp}/llama-server'}</code> instead of an absolute path.
+            </>
+          ) : (
+            <>
+              No tools declared. A <code>tools:</code> entry names a program (llama.cpp, ninfer),
+              where it comes from, and which hosts have it — after which a model&apos;s cmd can say{' '}
+              <code>{'${tool:llama.cpp}/llama-server'}</code> instead of an absolute path that
+              differs per machine.
+            </>
+          )}
         </Typography>
       )}
 
@@ -146,9 +173,13 @@ export function ToolingPanel() {
               }}>
               <Box sx={{ minWidth: 150 }}>
                 <Typography variant="subtitle2">{t.tool}</Typography>
-                <Typography variant="caption" sx={{ color: C.textFaint }}>
-                  {t.host}
-                </Typography>
+                {/* The host is the page when scoped to one; repeating it on
+                    every row is a column of the same word. */}
+                {!host && (
+                  <Typography variant="caption" sx={{ color: C.textFaint }}>
+                    {t.host}
+                  </Typography>
+                )}
               </Box>
 
               <Box sx={{ minWidth: 230 }}>
