@@ -347,12 +347,18 @@ and `theme.ts` / `Charts.tsx` / `Panel.tsx` are imported by all three big pages.
   `Utilization`, `RetryPromises`, `Journeys`, `ServiceProfiles`, `ActivityLog`, `usage.tsx`.
 - ◻ **Setup.** 1020 lines of stacked panels, zero tabs. (`config.tsx` is only a redirect —
   the page people mean is `/setup`.) Scope: `setup.tsx`, `history.tsx`, `quota.tsx`.
-- ◻ **Machines & Tooling.** Machines should be a LIST; the machine page should carry tooling,
-  health, device utilisation (one bar, thin capacity / thick usage, real tooltips) and
-  model+plugin residency. There is no Tooling route at all today — it is a panel at the
-  bottom of `machines.tsx`, which is why it reads as jumbled. Copy the tabs+subroute pattern
-  from `m.$name.tsx` + `model.tsx:303`. Scope: `machines.tsx`, `MemoryPanel`, `ToolingPanel`,
-  new `machines_.$name.tsx`, and `__root.tsx` NAV (this slice owns NAV exclusively).
+- ✅ **Machines & Tooling** — merged 2026-09-13. `/machines` is a list that answers only "is
+  everything healthy"; `/machines/$name` carries health, utilisation, residency and that
+  machine's tooling behind URL-held tabs. New `UtilizationBar` (4px track = scheduler budget,
+  10px bar = used) is deliberately **uncoloured by threshold**: per the `ServerView.MadeRoomCount`
+  note, a device pool at 96% is normally a model resident — the box working — so an amber
+  threshold would flag the healthy steady state on every working box. Error colour is reserved
+  for over-budget. `available: false` renders as "not measured", never as zero.
+  **Tooling gets no nav entry** — a toolchain is a question about a machine and is useless
+  without that machine's memory beside it; recorded in `__root.tsx` so it is not "fixed" later.
+  **Constraint found:** `toolStates` takes no host argument, so the per-machine Tooling filter
+  is client-side. That is the better trade — the survey is fleet-wide either way, so the cache
+  survives switching machines — but a host-scoped query is the fix if the survey ever gets big.
 
 **next** merge Wave 0, then launch Wave 1. **risks** three branches regenerate `ui/src/gql/*`;
 resolution is to take either side and re-run `bin/gen`, not to hand-merge. Deep OFFSET paging
