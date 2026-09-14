@@ -21,6 +21,7 @@ import type { ChartSeries } from '@/Charts'
 import { C, seriesColor } from '@/theme'
 import { fmtDuration, fmtInt, fmtUSD } from '@/format'
 import { Loading } from '@/Loading'
+import { useModelStats } from '@/ModelStats'
 
 // BarCell renders a value with a proportional background bar (value / columnMax).
 function BarCell({ value, max, label }: { value: number; max: number; label: string }) {
@@ -129,32 +130,6 @@ function fmtLongDuration(ms: number): string {
 const UsageDoc = graphql(/* GraphQL */ `
   query Usage($windowHours: Long!, $bucketMinutes: Long!, $from: Long, $to: Long) {
     corrallm {
-      usageRollup(windowHours: $windowHours, from: $from, to: $to) {
-        windowHours
-        rows {
-          served
-          requests
-          promptTokens
-          completionTokens
-          dwellMs
-          costUsd
-          cachedTokens
-          cacheReports
-          cacheHitRate
-          cachedSecondsSaved
-        }
-        total {
-          requests
-          promptTokens
-          completionTokens
-          dwellMs
-          costUsd
-          cachedTokens
-          cacheReports
-          cacheHitRate
-          cachedSecondsSaved
-        }
-      }
       queueDepth(windowHours: $windowHours, bucketMinutes: $bucketMinutes, from: $from, to: $to) {
         buckets
         lanes {
@@ -242,6 +217,11 @@ export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
     refetchInterval: window.kind === 'absolute' ? false : 15000,
   })
 
+  // The window's totals come from the By-model query rather than a second
+  // usageRollup of our own: React Query dedupes on the key, so the tiles and
+  // that table are one request and cannot drift apart mid-window.
+  const total = useModelStats(window).data?.corrallm.usageRollup?.total
+
   if (q.isLoading) {
     return <Loading />
   }
@@ -253,9 +233,6 @@ export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
     )
   }
 
-  const rollup = q.data?.corrallm.usageRollup
-  const rollupRows = rollup?.rows ?? []
-  const total = rollup?.total
   const byKey = q.data?.corrallm.usageByKey?.rows ?? []
   const kMax = {
     cost: Math.max(0, ...byKey.map((r) => r.costUsd)),
@@ -345,67 +322,6 @@ export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
           hint="Share of prompt tokens the backends served from cache instead of reprocessing, weighted by tokens across every model — not an average of per-model rates. The saved figure estimates the prompt-processing time avoided at the observed tokens/sec, so it moves with batch size and context."
         />
       </Stack>
-
-      <Panel title="By model" flush>
-        <TableContainer>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Model</TableCell>
-                <TableCell align="right">Requests</TableCell>
-                <TableCell align="right">Prompt</TableCell>
-                <TableCell align="right">Completion</TableCell>
-                {/* The per-request figure, not the sum: a sum of dwell reads as
-                    a duration and was misread as one in three runs (OB-4). The
-                    total is still there, under it. */}
-                <TableCell align="right">Time per request</TableCell>
-                <TableCell align="right">
-                  <Tooltip title="Prompt tokens served from cache as a share of all prompt tokens. 'n/r' means nothing reported a cache here — not a measured zero.">
-                    <span>Cached</span>
-                  </Tooltip>
-                </TableCell>
-                <TableCell align="right">Cost</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {rollupRows.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7}>
-                    <Typography sx={{
-                      color: "text.secondary"
-                    }}>No usage in window.</Typography>
-                  </TableCell>
-                </TableRow>
-              ) : (
-                rollupRows.map((r) => (
-                  <TableRow key={r.served} hover>
-                    <TableCell>{r.served}</TableCell>
-                    <TableCell align="right">{fmtInt(r.requests)}</TableCell>
-                    <TableCell align="right">{fmtInt(r.promptTokens)}</TableCell>
-                    <TableCell align="right">{fmtInt(r.completionTokens)}</TableCell>
-                    <TableCell align="right">
-                      {fmtDuration(
-                        Number(r.requests) > 0
-                          ? Math.round(Number(r.dwellMs) / Number(r.requests))
-                          : 0,
-                      )}
-                      <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
-                        {fmtDuration(r.dwellMs)} total
-                      </Typography>
-                    </TableCell>
-                    <CacheCell
-                      rate={r.cacheHitRate}
-                      reports={Number(r.cacheReports)}
-                      cached={Number(r.cachedTokens)}
-                    />
-                    <TableCell align="right">{fmtUSD(r.costUsd)}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Panel>
 
       <Box>
         <Typography variant="overline" sx={{ color: C.textMuted, display: 'block', mb: 1 }}>

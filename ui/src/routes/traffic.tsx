@@ -4,7 +4,7 @@ import { PageHeader } from '@/Panel'
 import { ActivityLog } from '@/ActivityLog'
 import { TurnedAway } from '@/TurnedAway'
 import { ServiceProfiles } from '@/ServiceProfiles'
-import { Utilization } from '@/Utilization'
+import { ModelStats } from '@/ModelStats'
 import { UsagePanels } from '@/routes/usage'
 import { TimeWindowPicker, windowPhrase, type TimeWindow } from '@/TimeWindow'
 
@@ -62,8 +62,9 @@ function Traffic() {
         </Box>
       )}
 
-      {/* What is under pressure, and what that pressure cost callers. */}
-      <Utilization window={window} />
+      {/* One row per model: what it did, what it cost, and what reaching it
+          cost callers. Was two tables over the same models. */}
+      <ModelStats window={window} />
       {/* The ones we sent away — traffic the completed-request log cannot show,
           because they never started. One panel with two readings of it: by
           caller, and promise by promise. */}
