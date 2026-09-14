@@ -2,6 +2,8 @@ import { Box, Chip, Tooltip, Typography } from '@mui/material'
 import { Panel, Row } from '@/Panel'
 import { C, STATUS } from '@/theme'
 import { fmtBytes } from '@/format'
+import { localServer, pairDevice } from '@/MachineData'
+import type { DeviceMem, GpuMem, ModelUse, PoolLedger, ServerShape } from '@/MachineData'
 
 // Memory: what is holding the box's RAM and VRAM right now, and WHO.
 //
@@ -160,28 +162,9 @@ function PoolRow(props: { pool: string; role: string; device?: string; children:
   )
 }
 
-export type PoolLedger = { server: string; pool: string; budget: number; used: number; reserve: number }
-export type ModelUse = { model: string; server: string; pools: { pool: string; bytes: number }[]; measuredBytes: number }
-export type DeviceMem = { available: boolean; name: string; totalBytes: number; usedBytes: number; freeBytes: number }
-/** A device reading plus the pool that budgets it ('' when nothing claims it). */
-export type GpuMem = DeviceMem & { uuid: string; pool: string }
-export type ServerShape = {
-  server: string
-  devicePool: string
-  /**
-   * Whether being full has COST anything here in the last day.
-   *
-   * A full bar was drawn exactly like an empty one, and the percentage alone
-   * cannot settle whether it matters — because usually it does not. A device
-   * pool at 96% normally means a model is RESIDENT, which is the box working
-   * as intended. It becomes a problem when something else wants the space, and
-   * that is an event, not a level (Lenny run 9: "I left it alone, but I did so
-   * guessing, not knowing").
-   */
-  madeRoomCount?: number
-  madeRoomEvicted?: string
-  madeRoomFor?: string
-}
+// The shapes this panel speaks live in MachineData, beside the derivation that
+// builds them and the device-pairing rule they are read with — one definition
+// for the pages and the panel both.
 
 export function MemoryPanel(props: {
   pools: PoolLedger[]
@@ -190,8 +173,16 @@ export function MemoryPanel(props: {
   gpus: GpuMem[]
   host: DeviceMem
   colorOf: (model: string) => string
+  /**
+   * Scoped to a single machine's own page, where the machine is already named
+   * by the page. Drops the per-server header bar — a second copy of the name
+   * two lines under the first reads as a nested object, not a heading — and
+   * drops the unclaimed-GPU badge, which belongs to no machine and so is the
+   * list's to report.
+   */
+  scoped?: boolean
 }) {
-  const { pools, models, servers, gpus, host, colorOf } = props
+  const { pools, models, servers, gpus, host, colorOf, scoped } = props
 
   // Accounted: one bar per (server, pool), segmented by the models holding it.
   const accounted = pools.map((p) => {
@@ -251,11 +242,10 @@ export function MemoryPanel(props: {
   const unclaimed = gpus.filter((g) => g.available && !g.pool)
   const anyGpu = gpus.some((g) => g.available)
 
-  // The device probes read THIS machine. Attributing them to a server is only
-  // honest while exactly one server is local, which is the case until a server
-  // can be bound to a remote agent. With several, say nothing rather than pick
-  // one — a measured bar under the wrong box is worse than no measured bar.
-  const soleServer = servers.length === 1 ? servers[0] : undefined
+  // Which server the device probes may be attributed to, and which card backs
+  // which pool, are both decided in MachineData — the same rule the machine
+  // pages draw their utilisation bars with.
+  const local = localServer(servers)
   const devicePoolOf = (server: string) =>
     servers.find((s) => s.server === server)?.devicePool ?? 'gpu0'
 
@@ -294,7 +284,7 @@ export function MemoryPanel(props: {
       badge={
         !anyGpu ? (
           <Chip size="small" variant="outlined" label="no GPU probe" />
-        ) : unclaimed.length > 0 ? (
+        ) : !scoped && unclaimed.length > 0 ? (
           <Tooltip
             title={`Present but no pool budgets ${unclaimed.length === 1 ? 'it' : 'them'}: ${unclaimed
               .map((g) => `${g.name} (${fmtBytes(g.totalBytes)})`)
@@ -320,42 +310,47 @@ export function MemoryPanel(props: {
       ) : (
         boxes.map((box) => {
           const dp = devicePoolOf(box.server)
-          const local = soleServer?.server === box.server
+          const isLocal = local === box.server
           return (
             <Box key={box.server}>
-              <Box
-                sx={{
-                  px: 2,
-                  py: 1,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 1,
-                  bgcolor: C.raised,
-                  borderTop: `1px solid ${C.border}`,
-                  borderBottom: `1px solid ${C.border}`,
-                }}
-              >
-                <Typography variant="subtitle2">{box.server}</Typography>
-                <Box sx={{ flexGrow: 1 }} />
-                {/* SAYS WHETHER FULL IS A PROBLEM, in the only terms that can
-                    answer it: what it cost. Silence is the normal case and is
-                    deliberate — a line here on every healthy box would be the
-                    red-thing-you-cannot-act-on that OB-6 forbids. */}
-                {(() => {
-                  const sv = servers.find((x) => x.server === box.server)
-                  const n = Number(sv?.madeRoomCount ?? 0)
-                  if (n <= 0) return null
-                  const traded =
-                    sv?.madeRoomEvicted && sv?.madeRoomFor
-                      ? ` — last unloaded ${sv.madeRoomEvicted} to fit ${sv.madeRoomFor}`
-                      : ''
-                  return (
-                    <Typography variant="caption" sx={{ color: STATUS.warn }}>
-                      Made room {n} {n === 1 ? 'time' : 'times'} today{traded}
-                    </Typography>
-                  )
-                })()}
-              </Box>
+              {/* The machine's own page already names it in the page header, so
+                  the header bar only earns its place when several boxes are
+                  stacked in one panel. */}
+              {!scoped && (
+                <Box
+                  sx={{
+                    px: 2,
+                    py: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    bgcolor: C.raised,
+                    borderTop: `1px solid ${C.border}`,
+                    borderBottom: `1px solid ${C.border}`,
+                  }}
+                >
+                  <Typography variant="subtitle2">{box.server}</Typography>
+                  <Box sx={{ flexGrow: 1 }} />
+                  {/* SAYS WHETHER FULL IS A PROBLEM, in the only terms that can
+                      answer it: what it cost. Silence is the normal case and is
+                      deliberate — a line here on every healthy box would be the
+                      red-thing-you-cannot-act-on that OB-6 forbids. */}
+                  {(() => {
+                    const sv = servers.find((x) => x.server === box.server)
+                    const n = Number(sv?.madeRoomCount ?? 0)
+                    if (n <= 0) return null
+                    const traded =
+                      sv?.madeRoomEvicted && sv?.madeRoomFor
+                        ? ` — last unloaded ${sv.madeRoomEvicted} to fit ${sv.madeRoomFor}`
+                        : ''
+                    return (
+                      <Typography variant="caption" sx={{ color: STATUS.warn }}>
+                        Made room {n} {n === 1 ? 'time' : 'times'} today{traded}
+                      </Typography>
+                    )
+                  })()}
+                </Box>
+              )}
 
               {box.pools.map((p) => {
                 // A pool is a device pool if a card declares itself its backing
@@ -367,18 +362,13 @@ export function MemoryPanel(props: {
                 // so rather than implying a GPU pool that does not exist.
                 const isUnified = isDevice && box.pools.length === 1
                 const role = isUnified ? 'device + system' : isDevice ? 'device' : 'system'
-                // With several cards, the reading paired to this row is the one
-                // BOUND to it. Falling back to "the only card" is right only
-                // when there is one — the assumption that broke when a second
-                // GPU arrived and every reading silently described the new card.
-                const soleCard = gpus.length === 1 && gpus[0].available ? gpus[0] : undefined
-                const dev = card ?? (p.pool === dp ? soleCard : undefined)
+                const dev = pairDevice({ gpus, servers, server: box.server, pool: p.pool })
                 return (
                   <PoolRow
                     key={`${box.server}/${p.pool}`}
                     pool={p.pool}
                     role={role}
-                    device={local && dev?.available ? dev.name : undefined}
+                    device={dev?.available ? dev.name : undefined}
                   >
                     <Reading
                       kind="accounted"
@@ -392,7 +382,7 @@ export function MemoryPanel(props: {
                     />
                     {/* The measured reading of the SAME pool, nested under it —
                         this pairing is what stops it reading as a second pool. */}
-                    {local && dev?.available && (
+                    {dev?.available && (
                       <Reading
                         kind="measured"
                         hint="on device"
@@ -400,7 +390,7 @@ export function MemoryPanel(props: {
                         total={dev.totalBytes}
                       />
                     )}
-                    {local && (!isDevice || isUnified) && p.pool === 'system' && host.available && (
+                    {isLocal && (!isDevice || isUnified) && p.pool === 'system' && host.available && (
                       <Reading
                         kind="measured"
                         hint="on host · MemAvailable"
