@@ -834,8 +834,23 @@ true and still costs something. Optional extensions and out-of-scope items live 
     screens. He noted no OB rule covers this and that one is owed.
   - **`/m/$name?tab=usage` has no time picker** — a fixed "Rollup (24h)" only, so the one screen
     scoped to a model cannot be asked about the hour that went wrong.
-  - **`lane` and `rung` still appear as bare labels** on three screens, including a literal
-    `lane free` badge. OB-3 says they are gloss, never label.
+  - ✅ **`lane` and `rung` as bare labels** — fixed. The object is a **fallback list**, which the
+    panel already said in prose two lines under the word it was refusing; `lane` survives only as
+    a gloss beside it, per the `placement` precedent, so an operator reading the YAML keeps the
+    join. Zero bare `lane`/`rung` labels remain in the product.
+    **Correction to an earlier finding:** the `groups.tsx` Reservations column was reported here
+    as a `Group` header over `lane` data. It is the reverse — `reservation.go:75` resolves that
+    value with `ResolveGroup` and the schema documents it as a priority group, so the HEADER is
+    right and the WIRE FIELD is misnamed. Renaming the column would teach a meaning that is wrong
+    two panels away. Fixing the field is a server change nobody has made.
+  - ✅ **Two screens rendered an empty frame while loading, and tiles asserted a zero they had
+    not measured** — fixed. Found by a walk that happened to hit a busy box; reproduced
+    deterministically by holding every GraphQL reply 6s in Playwright. Three states now render
+    differently: **never asked** = `not in yet`, **asked and no such figure** = `n/r`, **genuinely
+    zero** = the number. Deliberately two idioms, not one — `n/r` is settled and a remote provider
+    will never report one; `not in yet` may be a number a second later. The same gate also gives a
+    FAILED query somewhere to report itself: a dead totals query used to look exactly like an idle
+    box.
   - **`box1` carries no status badge** while `carlsmacbookpro` shows `up`; `96%` has no framing.
   - **Setup opens on Providers, not History** — flagged by the same persona that generated OB-11.
     Decided deliberately by the user 2026-09-13; recorded here because the evidence came back.
@@ -855,6 +870,14 @@ true and still costs something. Optional extensions and out-of-scope items live 
   `Read` tool, which is what makes "denied the codebase" a fact about its input rather than an
   instruction. It reported reading nothing outside the run directory. Re-run properly before
   treating any of this as a baseline.
+- **More tiles on `/traffic` still assert a zero they have not measured.** `RECENT REQUESTS 0`
+  (`ActivityLog.tsx`), `TURNED AWAY 0 unanswered · 0 due back` (`TurnedAway.tsx`), and a bare `…`
+  from `TrafficWarnings.tsx`. Same defect as the totals strip, same fix available — `NotYet` is
+  exported and ready. Left undone because they were outside the branch's file scope.
+- **`ProviderDialog.tsx:135` still says "its free models join the … lane automatically"** — now
+  inconsistent with the badge one panel away, which the vocabulary sweep could not reach.
+- **`refusalMeaning`'s "the key is not accepted" means a PROVIDER credential**, while "key" means
+  a caller's API key on `/callers`. One word, two things, pre-existing.
 - **`ui/` has no test runner.** No vitest, no jest, no `test` script in `ui/package.json` — so
   `slowdownFaults` and every other pure function in the UI is covered by `tsc` and eslint only.
   The DoD's "new behavior has tests" is met on the Go side of a UI change and silently skipped on
