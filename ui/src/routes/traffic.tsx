@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { Box, Button, Chip } from '@mui/material'
-import { PageHeader, Panel } from '@/Panel'
+import { Box, Button, Chip, Typography } from '@mui/material'
+import { PageHeader } from '@/Panel'
 import { ActivityLog } from '@/ActivityLog'
 import { ActiveRequests } from '@/ActiveRequests'
 import { ModelStats } from '@/ModelStats'
@@ -10,6 +10,7 @@ import { TrafficWarnings } from '@/TrafficWarnings'
 import { TurnedAway } from '@/TurnedAway'
 import { CallerSpend, MoreCharts, TrafficHeadline } from '@/routes/usage'
 import { TimeWindowPicker, windowPhrase, type TimeWindow } from '@/TimeWindow'
+import { C } from '@/theme'
 
 /**
  * TRAFFIC — what this box has been doing, over a span you choose.
@@ -117,27 +118,33 @@ function Traffic() {
 
       {/* ── Diagnostics, on request ──────────────────────────────────────── */}
 
-      <Panel
-        title="Queueing detail"
-        subtitle="Why the waits above are what they are — per-caller service distributions, and the scheduler's own behaviour over time"
-        actions={
-          <Button size="small" onClick={() => setDetail((d) => !d)}>
-            {detail ? 'Hide' : 'Show'}
+      {/* A LABEL, not a panel. What it holds is panels, and a card inside a card
+          is how a dense dashboard turns to mud (Panel.tsx). Same overline the
+          chart groups already use. */}
+      <Box>
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, mb: 1, flexWrap: 'wrap' }}>
+          <Typography variant="overline" sx={{ color: C.textMuted }}>
+            Queueing detail
+          </Typography>
+          <Button size="small" onClick={() => setDetail((d) => !d)} sx={{ textTransform: 'none' }}>
+            {detail ? 'hide' : 'show'}
           </Button>
-        }
-        dense={!detail}
-      >
+          <Typography variant="caption" sx={{ color: C.textFaint }}>
+            Why the waits above are what they are — per-caller service distributions, and the
+            scheduler&apos;s own behaviour over time. The two heaviest queries on the page, so
+            neither runs until you ask.
+          </Typography>
+        </Box>
         {/* Mounted only when open, which is also when either query is issued.
-            These are the two heaviest aggregations on the page and the two
-            fewest people want — paying for them on every load was a real part of
-            "this page takes forever". */}
-        {detail ? (
+            Paying for both on every load was a real part of "this page takes
+            forever to load". */}
+        {detail && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             <ServiceProfiles window={window} />
             <MoreCharts window={window} />
           </Box>
-        ) : null}
-      </Panel>
+        )}
+      </Box>
     </Box>
   )
 }
