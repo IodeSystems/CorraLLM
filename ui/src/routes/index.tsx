@@ -388,8 +388,8 @@ function faultsOf(
       // explains, in the same words, as models tried in order.
       next:
         status === 402
-          ? 'Fund the account, or stop sending requests to it: on Setup, take it out of the lists of models that are tried in order. Nothing here is waiting on it.'
-          : 'Check the credential, or stop sending requests to it: on Setup, take it out of the lists of models that are tried in order. Nothing here is waiting on it.',
+          ? 'Fund the account, or stop sending requests to it: on Setup, take it out of its fallback list. Nothing here is waiting on it.'
+          : 'Check the credential, or stop sending requests to it: on Setup, take it out of its fallback list. Nothing here is waiting on it.',
       when:
         days >= 1
           ? `it has been like this for ${days} day${days === 1 ? '' : 's'}`

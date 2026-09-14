@@ -379,8 +379,8 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                     // reads as two slots where there is one. What the lane is
                     // MADE OF lives on /machines; here it only needs to stop the
                     // row being misread as one backend.
-                    <Tooltip title="A lane, not a backend: tried top to bottom, and its load is its rungs' load counted once. /machines has the ladder.">
-                      <Chip size="small" variant="outlined" label="lane" sx={{ ml: 1 }} />
+                    <Tooltip title="A fallback list, not one backend: its models are tried top to bottom, and the load here is theirs counted once. /machines shows what it is made of. The config file calls this a lane.">
+                      <Chip size="small" variant="outlined" label="fallback list" sx={{ ml: 1 }} />
                     </Tooltip>
                   )}
                   {u?.depthUnreachable && (
