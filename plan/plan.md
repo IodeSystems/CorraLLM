@@ -822,9 +822,13 @@ true and still costs something. Optional extensions and out-of-scope items live 
 - **P30's pages were walked once (Lenny, 2026-09-13, run `tmp/ux-run-is-my-box-working-20260913-193558`,
   daemon 97325f6).** Q3 "do I know what is being asked of me" scored **1 on five of nine steps**.
   Open findings, none yet fixed:
-  - **`sk-aw4` is in `batch` and no screen says what that costs.** The group table says
-    `can be stopped mid-answer`; nothing connects that to the key doing all the traffic. OB-12.
-    He closed the lid still owing his team an answer. ◐ in progress.
+  - ✅ **`sk-aw4` is in `batch` and no screen says what that costs** — fixed. The roster now
+    names the callers a higher group outranks, and the key page says it in prose before the
+    numbers. Gated on another group actually outranking this one, so the top group's callers
+    see nothing: a weight is a ratio, and a group nothing outranks cannot be stopped for one.
+    "Can be stopped mid-answer" (the setting) and amber (an event happened) stay separate
+    sentences; where the preemption ledger is box-wide the wording says "on this box", never
+    "yours".
   - **"1 attached machine is not [serving]" is a remote credential, not a machine** — and
     `/machines` says `all reachable` for both real hosts. The same word means two things on two
     screens. He noted no OB rule covers this and that one is owed.
@@ -835,7 +839,17 @@ true and still costs something. Optional extensions and out-of-scope items live 
   - **`box1` carries no status badge** while `carlsmacbookpro` shows `up`; `96%` has no framing.
   - **Setup opens on Providers, not History** — flagged by the same persona that generated OB-11.
     Decided deliberately by the user 2026-09-13; recorded here because the evidence came back.
-  Fixed out of this run: the two window-deaf series resolvers (`3f53b56`).
+  - ✅ **Sentences describing a control were clipped mid-word** — fixed as a class, not as
+    instances. `Panel`'s subtitle keeps `nowrap`/ellipsis (a one-line bar is what makes a dense
+    page scannable, and clipping a LABEL costs nothing because its tail restates its head); a new
+    `note` prop carries prose. A sentence truncates asymmetrically — subject first, consequence
+    last — so the cut takes the consequence and leaves something that still reads as finished.
+    Twelve subtitles moved, not the four a walk happened to photograph. **Enforced by
+    `corrallm/subtitle-is-a-label` in `ui/eslint.config.js`, not by a comment** — a comment
+    already failed here once (`6906b46` fixed one instance and the class came back). Clipped
+    lines across three walks: 5 → 4 → 3; the three that remain are the operator's OWN config
+    notes, collapsed behind a visible "Show all notes" button rather than a hover tooltip.
+  Also fixed out of this run: the two window-deaf series resolvers (`3f53b56`).
   **Caveat on the run:** the `lenny` agent type did not register from `.claude/agents/lenny.md`,
   so it ran as a general-purpose agent with the definition inlined. The real one gets ONLY a
   `Read` tool, which is what makes "denied the codebase" a fact about its input rather than an
