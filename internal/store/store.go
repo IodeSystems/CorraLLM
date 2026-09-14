@@ -1239,6 +1239,19 @@ type Rollup struct {
 	// PromptPerSec is the mean backend-reported prompt-processing speed over the
 	// requests that reported one, for estimating the time cache hits avoided.
 	PromptPerSec float64
+	// PredictedPerSec is the mean backend-reported generation speed (tg/s).
+	//
+	// It is the discriminator time-per-request cannot supply. Prompt-cache reuse
+	// collapsing and the box itself degrading BOTH raise seconds per request, and
+	// only this separates them: reuse loss leaves generation speed flat and grows
+	// the prompt, a degraded box slows generation itself. Without it the Overview
+	// slowdown card had to guess, and it guessed "nothing is broken" every time.
+	//
+	// BOTH rates are an unweighted mean over the requests that REPORTED one, not a
+	// throughput. A backend that reports no timings contributes nothing rather
+	// than a zero, so these compare one window against another honestly and must
+	// not be read as capacity.
+	PredictedPerSec float64
 }
 
 // RollupByModel aggregates activity at or after sinceMS, grouped by served
@@ -1255,7 +1268,8 @@ func (s *Store) RollupByModel(w Window) ([]Rollup, error) {
 		        COALESCE(SUM(cost_usd), 0),
 		        COALESCE(SUM(cached_tokens), 0),
 		        SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END),
-		        COALESCE(AVG(NULLIF(prompt_per_sec, 0)), 0)
+		        COALESCE(AVG(NULLIF(prompt_per_sec, 0)), 0),
+		        COALESCE(AVG(NULLIF(predicted_per_sec, 0)), 0)
 		 FROM activity WHERE `+wWhere+`
 		 GROUP BY served
 		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, wArgs...)
@@ -1267,7 +1281,8 @@ func (s *Store) RollupByModel(w Window) ([]Rollup, error) {
 	for rows.Next() {
 		var r Rollup
 		if err := rows.Scan(&r.Served, &r.Requests, &r.PromptTokens, &r.CompletionTokens,
-			&r.DwellMS, &r.CostUSD, &r.CachedTokens, &r.CacheReports, &r.PromptPerSec); err != nil {
+			&r.DwellMS, &r.CostUSD, &r.CachedTokens, &r.CacheReports,
+			&r.PromptPerSec, &r.PredictedPerSec); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

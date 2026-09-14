@@ -119,6 +119,61 @@ func TestRollupByModel(t *testing.T) {
 	}
 }
 
+// TestRollupByModelSpeeds covers the tp/s and tg/s means, and the one thing that
+// makes them trustworthy: a request that reported NO rate must not be averaged in
+// as a zero. Only llama.cpp backends report timings — every remote provider and
+// every embedding model leaves both columns at their 0 default — so counting
+// those would drag a healthy 42 tg/s toward 0 in exact proportion to how much
+// remote traffic the box carried that hour, and the Overview slowdown card would
+// read the box as degrading whenever callers shifted to a paid backend.
+func TestRollupByModelSpeeds(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	rows := []Activity{
+		// Two requests that reported: means are 3000 tp/s and 40 tg/s.
+		{TS: 100, Served: "local", Status: 200, PromptPerSec: 2000, PredictedPerSec: 30},
+		{TS: 200, Served: "local", Status: 200, PromptPerSec: 4000, PredictedPerSec: 50},
+		// A third that reported nothing. It must be skipped, not averaged as 0.
+		{TS: 300, Served: "local", Status: 200},
+		// A backend that never reports at all reads as 0 = "unreported".
+		{TS: 400, Served: "remote", Status: 200},
+	}
+	for _, a := range rows {
+		if err := st.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := st.RollupByModel(Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]Rollup{}
+	for _, r := range got {
+		by[r.Served] = r
+	}
+
+	local := by["local"]
+	if local.Requests != 3 {
+		t.Fatalf("local requests = %d, want 3", local.Requests)
+	}
+	// 3000, not 2000: the silent request is excluded from the mean but still
+	// counted as a request.
+	if local.PromptPerSec != 3000 {
+		t.Errorf("tp/s = %v, want 3000 (silent request must not average in as 0)", local.PromptPerSec)
+	}
+	if local.PredictedPerSec != 40 {
+		t.Errorf("tg/s = %v, want 40 (silent request must not average in as 0)", local.PredictedPerSec)
+	}
+	if r := by["remote"]; r.PromptPerSec != 0 || r.PredictedPerSec != 0 {
+		t.Errorf("a backend that reports no timings = %+v, want both 0 (unreported)", r)
+	}
+}
+
 // TestRollupByKey aggregates per caller key, ordered by cost desc.
 func TestRollupByKey(t *testing.T) {
 	st, err := Open(context.Background(), ":memory:")

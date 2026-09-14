@@ -2525,6 +2525,10 @@ type corrallm_RollupRow {
   costUsd: Float!
   """Total dwell, milliseconds."""
   dwellMs: Long!
+  """Mean backend-reported generation speed, tokens/sec (tg/s). Separates a slowdown caused by more prompt to read (this holds steady) from one caused by the box itself (this falls). Same caveats as promptPerSec."""
+  predictedPerSec: Float!
+  """Mean backend-reported prompt-processing speed, tokens/sec (tp/s). An unweighted mean over the requests that REPORTED a rate, not a throughput — 0 means nothing reported one, not a measured zero. Always 0 on the grand total, which cannot average rates honestly."""
+  promptPerSec: Float!
   """Total prompt tokens."""
   promptTokens: Long!
   """Request count."""

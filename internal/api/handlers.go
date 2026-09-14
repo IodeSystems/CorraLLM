@@ -1231,6 +1231,8 @@ type RollupRow struct {
 	CacheReports       int64   `json:"cacheReports" doc:"Requests that reported any cache hit. ZERO MEANS UNKNOWN, NOT 0% — a backend with no prompt cache (embeddings, most remote providers) never reports, and showing that as a measured miss rate invents a problem."`
 	CacheHitRate       float64 `json:"cacheHitRate" doc:"cachedTokens / promptTokens, 0..1. Only meaningful when cacheReports > 0."`
 	CachedSecondsSaved float64 `json:"cachedSecondsSaved" doc:"Estimated prompt-processing time avoided: cachedTokens / mean observed prompt tokens-per-second. An estimate — the speed varies with batch and context."`
+	PromptPerSec       float64 `json:"promptPerSec" doc:"Mean backend-reported prompt-processing speed, tokens/sec (tp/s). An unweighted mean over the requests that REPORTED a rate, not a throughput — 0 means nothing reported one, not a measured zero. Always 0 on the grand total, which cannot average rates honestly."`
+	PredictedPerSec    float64 `json:"predictedPerSec" doc:"Mean backend-reported generation speed, tokens/sec (tg/s). Separates a slowdown caused by more prompt to read (this holds steady) from one caused by the box itself (this falls). Same caveats as promptPerSec."`
 }
 
 // UsageRollupOutput is per-model usage plus a grand total over the window.
@@ -1257,6 +1259,7 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 			PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens,
 			DwellMS: r.DwellMS, CostUSD: r.CostUSD,
 			CachedTokens: r.CachedTokens, CacheReports: r.CacheReports,
+			PromptPerSec: r.PromptPerSec, PredictedPerSec: r.PredictedPerSec,
 		}
 		if r.PromptTokens > 0 {
 			row.CacheHitRate = float64(r.CachedTokens) / float64(r.PromptTokens)
@@ -1274,6 +1277,12 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		out.Body.Total.CacheReports += row.CacheReports
 		out.Body.Total.CachedSecondsSaved += row.CachedSecondsSaved
 	}
+	// PromptPerSec and PredictedPerSec are DELIBERATELY absent from the total.
+	// Summing them is meaningless and averaging them is a mean of means; the
+	// honest recomputation needs per-request prefill/decode times, which the
+	// rollup does not carry. They stay 0, which the schema documents as
+	// "unreported" — the same reading every other unreported rate here gets.
+	//
 	// The grand total's rate is recomputed from the totals, not averaged across
 	// rows: a model with 12 requests must not weigh as much as one with 14,000.
 	if out.Body.Total.PromptTokens > 0 {
