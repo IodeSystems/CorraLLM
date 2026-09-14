@@ -155,7 +155,8 @@ const UsageDoc = graphql(/* GraphQL */ `
           cachedSecondsSaved
         }
       }
-      queueDepth(windowHours: $windowHours, bucketMinutes: $bucketMinutes) {
+      queueDepth(windowHours: $windowHours, bucketMinutes: $bucketMinutes, from: $from, to: $to) {
+        buckets
         lanes {
           group
           points {
@@ -164,7 +165,7 @@ const UsageDoc = graphql(/* GraphQL */ `
           }
         }
       }
-      usageSeriesByGroup(windowHours: $windowHours, bucketMinutes: $bucketMinutes) {
+      usageSeriesByGroup(windowHours: $windowHours, bucketMinutes: $bucketMinutes, from: $from, to: $to) {
         buckets
         groups {
           group
@@ -264,6 +265,15 @@ export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
   }
   const fmtKwh = (k: number) =>
     !Number.isFinite(k) || k === 0 ? '—' : k < 1 ? `${(k * 1000).toFixed(1)} Wh` : `${k.toFixed(3)} kWh`
+
+  // THE X-AXIS THE CHARTS ALREADY HAD THE DATA FOR. Charts draws a time axis
+  // from `buckets` and nothing else, and these queries have been fetching bucket
+  // timestamps all along — they just were not handed over, so every chart on
+  // this page plotted against a blank axis and, as the report put it, "just
+  // looked like lines". Long crosses the wire as a string, hence the Number map.
+  const groupBuckets = (q.data?.corrallm.usageSeriesByGroup?.buckets ?? []).map(Number)
+  const depthBuckets = (q.data?.corrallm.queueDepth?.buckets ?? []).map(Number)
+  const keyBuckets = (q.data?.corrallm.usageSeries?.buckets ?? []).map(Number)
 
   const pgroups = q.data?.corrallm.usageSeriesByGroup?.groups ?? []
   const groupColor = (i: number) => seriesColor(i)
@@ -407,12 +417,18 @@ export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
           }}>No usage in window.</Typography>
         ) : (
           <Stack spacing={2}>
-            <StackedArea title="Throughput — requests/bucket (stacked)" series={groupSeries} fmtTotal={fmtInt} />
+            <StackedArea
+              title="Throughput — requests/bucket (stacked)"
+              series={groupSeries}
+              fmtTotal={fmtInt}
+              buckets={groupBuckets}
+            />
             {anyRejections ? (
               <StackedArea
                 title="Queue pressure — 429s/bucket by group"
                 series={rejectSeries}
                 fmtTotal={fmtInt}
+                buckets={groupBuckets}
               />
             ) : (
               <Typography variant="caption" sx={{
@@ -421,12 +437,22 @@ export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
                 No rejections in window — no group is being starved.
               </Typography>
             )}
-            <MetricChart title="Avg queue wait / request" series={waitSeries} fmt={(n) => fmtDuration(n)} />
+            <MetricChart
+              title="Avg queue wait / request"
+              series={waitSeries}
+              fmt={(n) => fmtDuration(n)}
+              buckets={groupBuckets}
+            />
             {anyDepth ? (
               <StackedArea
                 title="Queue depth — avg waiting by group (sampled)"
                 series={depthSeries}
                 fmtTotal={(n) => n.toFixed(1)}
+                // Its OWN buckets: queueDepth samples the scheduler rather than
+                // aggregating activity rows, so it can return a different number
+                // of them. Borrowing the group series' timestamps would label
+                // this plot with another query's clock.
+                buckets={depthBuckets}
               />
             ) : (
               <Typography variant="caption" sx={{
@@ -451,13 +477,19 @@ export function UsagePanels({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
           <Stack direction="row" spacing={2} useFlexGap sx={{
             flexWrap: "wrap"
           }}>
-            <MetricChart title="Cost ($)" series={mkSeries((p) => p.costUsd)} fmt={fmtUSD} />
-            <MetricChart title="Requests" series={mkSeries((p) => Number(p.requests))} fmt={fmtInt} />
-            <MetricChart title="Energy" series={mkSeries((p) => p.energyKwh)} fmt={fmtKwh} />
+            <MetricChart title="Cost ($)" series={mkSeries((p) => p.costUsd)} fmt={fmtUSD} buckets={keyBuckets} />
+            <MetricChart
+              title="Requests"
+              series={mkSeries((p) => Number(p.requests))}
+              fmt={fmtInt}
+              buckets={keyBuckets}
+            />
+            <MetricChart title="Energy" series={mkSeries((p) => p.energyKwh)} fmt={fmtKwh} buckets={keyBuckets} />
             <MetricChart
               title="Time"
               series={mkSeries((p) => Number(p.dwellMs))}
               fmt={(n) => fmtDuration(n)}
+              buckets={keyBuckets}
             />
           </Stack>
         )}
