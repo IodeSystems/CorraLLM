@@ -14,7 +14,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
-import { Panel, PageHeader } from '@/Panel'
+import { Panel, PageHeader, Row } from '@/Panel'
 import { KeyLaneActions } from '@/KeyLane'
 import { KeyCharts } from '@/KeyCharts'
 import { GroupPanels } from '@/routes/groups'
@@ -134,12 +134,23 @@ function Callers() {
 
       <Panel
         title="Caller keys"
-        // WHAT THE ROW BUTTONS COST, once above the group. They were explained in
-        // tooltips, which reach nobody who does not hover — Lenny run 4 left both
-        // alone on a key that had called "just now", for want of this sentence.
-        subtitle="Callers with a group, plus keys seen in traffic that nobody has assigned. Change moves a caller to another group and Unassign drops it back to the fallback one — neither cuts anybody off, and a request already running is unaffected."
+        // Panel's subtitle is one line, nowrap, ellipsis — shared by every page,
+        // so what fits there is a LABEL. Only the label is here now.
+        subtitle="Who is calling, and what their group gets them"
         flush
       >
+        {/* WHAT THE ROW BUTTONS COST, once above the group (OB-2). This was the
+            subtitle and truncated at "and a reques…", losing exactly the clause
+            that lets somebody press a control that reaches live traffic. The
+            tooltips do not carry it either: they reach nobody who does not
+            hover, which is the reader this sentence is for. */}
+        <Row>
+          <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+            Rows include keys seen in traffic that nobody has assigned. <b>Change</b> moves a caller
+            to another group and <b>Unassign</b> drops it back to the fallback one — neither cuts
+            anybody off, and a request already running is unaffected.
+          </Typography>
+        </Row>
         <TableContainer>
           <Table size="small">
             <TableHead>
