@@ -819,12 +819,28 @@ true and still costs something. Optional extensions and out-of-scope items live 
   no card at all. Since 5741a93 the card at least *rates* itself in tg/s and tp/s and no longer
   claims "nothing is broken" when generation speed has fallen, but detecting a bare tg/s drop is a
   second fault that does not exist yet.
-- **No page of P30 has been looked at.** `/traffic`, `/setup` and `/machines` were rebuilt by
-  three parallel agents and merged on `tsc -b` + eslint + `vite build` + codegen validating every
-  document against the SDL. None of it was rendered against live data — the dashboard is behind
-  an admin-token sign-in and each agent declined to enter one, correctly. So every layout claim
-  in `done.md` § P30 is a claim about code that compiles, not about a page anybody saw. The
-  link-colour trap in that same section is the argument for why that distinction matters.
+- **P30's pages were walked once (Lenny, 2026-09-13, run `tmp/ux-run-is-my-box-working-20260913-193558`,
+  daemon 97325f6).** Q3 "do I know what is being asked of me" scored **1 on five of nine steps**.
+  Open findings, none yet fixed:
+  - **`sk-aw4` is in `batch` and no screen says what that costs.** The group table says
+    `can be stopped mid-answer`; nothing connects that to the key doing all the traffic. OB-12.
+    He closed the lid still owing his team an answer. ◐ in progress.
+  - **"1 attached machine is not [serving]" is a remote credential, not a machine** — and
+    `/machines` says `all reachable` for both real hosts. The same word means two things on two
+    screens. He noted no OB rule covers this and that one is owed.
+  - **`/m/$name?tab=usage` has no time picker** — a fixed "Rollup (24h)" only, so the one screen
+    scoped to a model cannot be asked about the hour that went wrong.
+  - **`lane` and `rung` still appear as bare labels** on three screens, including a literal
+    `lane free` badge. OB-3 says they are gloss, never label.
+  - **`box1` carries no status badge** while `carlsmacbookpro` shows `up`; `96%` has no framing.
+  - **Setup opens on Providers, not History** — flagged by the same persona that generated OB-11.
+    Decided deliberately by the user 2026-09-13; recorded here because the evidence came back.
+  Fixed out of this run: the two window-deaf series resolvers (`3f53b56`).
+  **Caveat on the run:** the `lenny` agent type did not register from `.claude/agents/lenny.md`,
+  so it ran as a general-purpose agent with the definition inlined. The real one gets ONLY a
+  `Read` tool, which is what makes "denied the codebase" a fact about its input rather than an
+  instruction. It reported reading nothing outside the run directory. Re-run properly before
+  treating any of this as a baseline.
 - **`ui/` has no test runner.** No vitest, no jest, no `test` script in `ui/package.json` — so
   `slowdownFaults` and every other pure function in the UI is covered by `tsc` and eslint only.
   The DoD's "new behavior has tests" is met on the Go side of a UI change and silently skipped on
