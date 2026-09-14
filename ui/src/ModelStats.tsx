@@ -18,7 +18,6 @@ import { gqlClient } from '@/gqlClient'
 import { Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtDuration, fmtInt, fmtUSD } from '@/format'
-import { Loading } from '@/Loading'
 
 /**
  * ONE ROW PER MODEL, saying what it did and what it cost to reach it.
@@ -282,7 +281,14 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
   const live = window.kind !== 'absolute'
 
   const body = q.isLoading ? (
-    <Loading size={20} minHeight={120} />
+    // A sentence, not a spinner. A spinner says "wait"; this says what is being
+    // waited on and that the emptiness above it is not a reading — which is the
+    // half a reader takes away if they stop here.
+    <Box sx={{ p: 2 }}>
+      <Typography variant="body2" sx={{ color: C.textFaint }}>
+        Asking this box what each model did {windowPhrase(window)} — nothing has been counted yet.
+      </Typography>
+    </Box>
   ) : q.error ? (
     <Box sx={{ p: 2 }}>
       <Typography color="error">{String(q.error)}</Typography>
@@ -555,7 +561,16 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
           </>
         )
       }
-      badge={<Chip size="small" variant="outlined" label={`${rows.length} models`} />}
+      // "0 models" while the query is still out is the same lie the tiles above
+      // used to tell: the count has not arrived, and a badge is read before the
+      // body that would have explained it. The body says which it is.
+      badge={
+        <Chip
+          size="small"
+          variant="outlined"
+          label={q.data ? `${rows.length} models` : 'not in yet'}
+        />
+      }
       flush
     >
       {/* The clash CALLOUT — the sentence and the button — is not here. It is

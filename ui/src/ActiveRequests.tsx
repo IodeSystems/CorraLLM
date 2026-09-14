@@ -114,6 +114,12 @@ export function ActiveRequests({ compact = false }: { compact?: boolean } = {}) 
   })
 
   const rows = q.data?.corrallm.activeRequests?.requests ?? []
+  // AN EMPTY LIST AND AN UNANSWERED QUESTION ARE NOT THE SAME PANEL. Until this
+  // query returns, `rows` is `[]` for want of anything else — and the panel was
+  // reading that as the news, badging a confident 0 and saying "Idle — no
+  // requests in flight" about a box it had not yet asked. That is the one claim
+  // this panel exists to make, and it was making it first and checking after.
+  const answered = q.data != null
 
   return (
     <Panel
@@ -123,10 +129,19 @@ export function ActiveRequests({ compact = false }: { compact?: boolean } = {}) 
           size="small"
           color={rows.length ? 'success' : 'default'}
           variant={rows.length ? 'filled' : 'outlined'}
-          label={rows.length}
+          // A faint dash, not a 0: the count is the thing that has not arrived.
+          label={answered ? rows.length : '—'}
         />
       }
-      subtitle={rows.length ? 'Being served right now' : 'nothing in flight'}
+      subtitle={
+        q.error
+          ? 'no answer'
+          : !answered
+            ? 'not in yet'
+            : rows.length
+              ? 'Being served right now'
+              : 'nothing in flight'
+      }
       // What Cancel costs, on the panel rather than on 30 identical buttons or in
       // a tooltip nobody hovers: every Lenny run so far has left this control
       // alone because the row does not say whose request it is ending. In the
@@ -140,10 +155,19 @@ export function ActiveRequests({ compact = false }: { compact?: boolean } = {}) 
           </>
         ) : undefined
       }
-      flush={rows.length > 0}
-      dense={rows.length === 0}
+      flush={answered && rows.length > 0}
+      dense={!answered || rows.length === 0}
     >
-      {rows.length === 0 ? (
+      {q.error ? (
+        <Typography variant="body2" sx={{ color: C.warn }}>
+          This box did not answer, so nothing here is current — it may still be serving:{' '}
+          {String(q.error)}
+        </Typography>
+      ) : !answered ? (
+        <Typography variant="body2" sx={{ color: C.textFaint }}>
+          Asking this box what it is serving. Not an empty list — an unanswered question.
+        </Typography>
+      ) : rows.length === 0 ? (
         <Typography variant="body2" sx={{ color: C.textFaint }}>
           Idle — no requests in flight.
         </Typography>
