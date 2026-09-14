@@ -14,7 +14,7 @@ import {
 } from '@mui/material'
 import { LineChart } from '@mui/x-charts'
 import { Panel, PageHeader } from '@/Panel'
-import { C, SERIES } from '@/theme'
+import { SERIES } from '@/theme'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtTime, fmtDuration, fmtInt } from '@/format'
@@ -167,7 +167,6 @@ function ModelBenchPage() {
                         <Link
                           to="/bench/run"
                           search={{ id: r.runId, model: name }}
-                          style={{ color: C.accent }}
                         >
                           <Typography variant="caption">{r.runId}</Typography>
                         </Link>

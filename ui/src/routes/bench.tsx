@@ -430,7 +430,7 @@ function BenchPage() {
               {(catalog?.probes ?? []).map((p) => (
                 <TableRow key={p.dir} hover>
                   <TableCell>
-                    <Link to="/bench/probe" search={{ name: p.name }} style={{ color: C.accent }}>
+                    <Link to="/bench/probe" search={{ name: p.name }}>
                       {p.name}
                     </Link>
                     {p.source !== 'builtin' && (
@@ -504,7 +504,7 @@ function BenchPage() {
                 {runIndex.map((r) => (
                   <TableRow key={r.runId} hover>
                     <TableCell>
-                      <Link to="/bench/run" search={{ id: r.runId }} style={{ color: C.accent }}>
+                      <Link to="/bench/run" search={{ id: r.runId }}>
                         <Typography variant="caption">{r.runId}</Typography>
                       </Link>
                     </TableCell>
@@ -764,7 +764,6 @@ function BenchPage() {
                               <Link
                                 to="/bench/model"
                                 search={{ name: m.model }}
-                                style={{ color: C.accent }}
                               >
                                 {m.model}
                               </Link>
@@ -838,7 +837,7 @@ function BenchPage() {
                 {ranked.map((r) => (
                   <TableRow key={r.model} hover>
                     <TableCell>
-                      <Link to="/bench/model" search={{ name: r.model }} style={{ color: C.accent }}>
+                      <Link to="/bench/model" search={{ name: r.model }}>
                         {r.model}
                       </Link>
                     </TableCell>
