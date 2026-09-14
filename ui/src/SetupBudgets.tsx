@@ -1,0 +1,325 @@
+import { useQuery } from '@tanstack/react-query'
+import {
+  Alert,
+  AlertTitle,
+  Box,
+  Chip,
+  LinearProgress,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Tooltip,
+  Typography,
+} from '@mui/material'
+import { Panel } from '@/Panel'
+import { graphql } from '@/gql'
+import { gqlClient } from '@/gqlClient'
+import { fmtInt } from '@/format'
+import { Loading } from '@/Loading'
+
+/**
+ * Free-tier quota ledger (P16): each remote backend's remaining rate-limit
+ * budget, learned live from the provider's X-Ratelimit-* headers. The selector
+ * routes around a backend that shows unavailable here before it 429s.
+ */
+const QuotaDoc = graphql(/* GraphQL */ `
+  query Quota {
+    corrallm {
+      quotaLedger {
+        refusing {
+          backend
+          status
+          count
+          sinceMs
+          lastMs
+        }
+        backends {
+          backend
+          available
+          stale
+          coolingInSec
+          observedAgoSec
+          seen
+          windows {
+            label
+            limit
+            used
+            resetsIn
+          }
+          requests {
+            limit
+            remaining
+            cap
+            effRemaining
+            resetsIn
+            stale
+          }
+          tokens {
+            limit
+            remaining
+            cap
+            effRemaining
+            resetsIn
+            stale
+          }
+        }
+      }
+    }
+  }
+`)
+
+type Bucket = {
+  limit: string | number
+  remaining: string | number
+  cap?: string | number | null
+  effRemaining?: string | number | null
+  resetsIn?: string | null
+  stale?: boolean | null
+}
+
+const n = (v: unknown): number => Number(v ?? 0) || 0
+
+/**
+ * One ledger, two readers at different speeds. The budgets tab watches it tick;
+ * the page banner only needs to know whether something is broken, and polling a
+ * whole ledger every four seconds to keep an alert warm is not worth it.
+ */
+function useLedger(refetchInterval: number) {
+  return useQuery({
+    queryKey: ['quota'],
+    queryFn: () => gqlClient.request(QuotaDoc),
+    refetchInterval,
+  })
+}
+
+/** A budget bar: effective (capped) remaining over the ceiling that governs it. */
+function BucketCell({ b }: { b: Bucket }) {
+  const capped = n(b.cap) > 0 && n(b.cap) < n(b.limit)
+  // The number availability is judged on: effective remaining when capped, else
+  // the provider's own remaining.
+  const rem = capped ? n(b.effRemaining) : n(b.remaining)
+  const ceil = capped ? n(b.cap) : n(b.limit)
+  const pct = ceil > 0 ? Math.max(0, Math.min(100, (rem / ceil) * 100)) : 0
+  const color = pct > 40 ? 'success' : pct > 10 ? 'warning' : 'error'
+  return (
+    <Box sx={{ minWidth: 160 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.3 }}>
+        <Typography variant="caption">
+          {fmtInt(rem)} / {fmtInt(ceil)}
+          {capped && (
+            <Tooltip
+              title={`Self-capped at ${fmtInt(n(b.cap))} of the provider's ${fmtInt(n(b.limit))}`}
+            >
+              <Chip size="small" label="cap" sx={{ ml: 0.5, height: 16 }} />
+            </Tooltip>
+          )}
+        </Typography>
+        <Typography
+          variant="caption"
+          sx={{
+            color: 'text.secondary',
+          }}
+        >
+          {b.stale ? 'window rolled' : b.resetsIn ? `resets ${b.resetsIn}` : ''}
+        </Typography>
+      </Box>
+      <LinearProgress variant="determinate" value={pct} color={color} />
+    </Box>
+  )
+}
+
+/**
+ * What a hard refusal MEANS, in the operator's words rather than the status
+ * code's. 401/402/403 are three different problems with three different fixes,
+ * and "refused with 402" names the wire, not the situation (OB-3, OB-6).
+ */
+function refusalMeaning(status: number): string {
+  if (status === 402) return 'the account is unpaid'
+  if (status === 401) return 'the key is not accepted'
+  if (status === 403) return 'the key is not permitted to use it'
+  return `it answers ${status}`
+}
+
+/** What to do about it — a fault the reader cannot act on is not a fault (OB-6). */
+function refusalAction(status: number): string {
+  if (status === 402) return 'Fund the account, or drop this rung from its lane.'
+  if (status === 401) return 'Replace the credential, or drop this rung from its lane.'
+  if (status === 403)
+    return 'Check what the credential is allowed to reach, or drop this rung from its lane.'
+  return 'Check the provider, or drop this rung from its lane.'
+}
+
+/**
+ * How long it has been broken, which is the number that decides whether this is
+ * news or a standing fact. A date alone makes the reader do the subtraction.
+ */
+function fmtSince(msStr: string | number): string {
+  const ms = typeof msStr === 'string' ? Number(msStr) : msStr
+  if (!Number.isFinite(ms) || ms <= 0) return 'an unknown time'
+  const secs = Math.max(0, (Date.now() - ms) / 1000)
+  const when = new Date(ms).toLocaleString()
+  if (secs < 3600) return `${Math.max(1, Math.floor(secs / 60))} minutes ago (${when})`
+  if (secs < 86400) return `${Math.floor(secs / 3600)} hours ago (${when})`
+  return `${Math.floor(secs / 86400)} days ago (${when})`
+}
+
+/**
+ * A backend that refuses EVERY request is a fault, not a reading, so it is not
+ * allowed to live inside a tab. Setup renders this above the tab bar, where it
+ * is visible whichever tab is open — the alert was previously buried partway
+ * down a scroll, and putting a scroll behind a tab would have buried it twice.
+ */
+export function RefusingBanner() {
+  const q = useLedger(20000)
+  const refusing = q.data?.corrallm?.quotaLedger?.refusing ?? []
+  if (refusing.length === 0) return null
+  return (
+    <Alert severity="error">
+      <AlertTitle>
+        {refusing.length === 1
+          ? 'A backend is refusing every request'
+          : `${refusing.length} backends are refusing every request`}
+      </AlertTitle>
+      {refusing.map((r) => (
+        <Typography key={r.backend} variant="body2" sx={{ mb: 0.5 }}>
+          <b style={{ fontFamily: 'monospace' }}>{r.backend}</b> — {refusalMeaning(n(r.status))}{' '}
+          since {fmtSince(r.sinceMs)}, {fmtInt(r.count)} {n(r.count) === 1 ? 'time' : 'times'}.{' '}
+          {refusalAction(n(r.status))}
+        </Typography>
+      ))}
+    </Alert>
+  )
+}
+
+/**
+ * The upstream-budget tab of Setup, and a rename.
+ *
+ * It was a top-level entry called "Quota", which is the word a person uses for
+ * "am I about to run out". Three Lenny runs went looking there for exactly that
+ * and found a ledger of remote providers' rate limits — twice after having just
+ * seen a GPU at 96% two screens earlier. The page was honest; its NAME answered
+ * a different question than the one it was filed under.
+ *
+ * So: "Budgets", under Setup, beside the providers it describes. What the box
+ * itself is about to run out of is answered on Now and Machines.
+ *
+ * Being a tab also means it stops polling when nobody is reading it: this is the
+ * only four-second query on the page, and it used to run whether or not the
+ * reader had scrolled anywhere near it.
+ */
+export function ProviderBudgets() {
+  const q = useLedger(4000)
+  if (q.isLoading) return <Loading />
+  const backends = q.data?.corrallm?.quotaLedger?.backends ?? []
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <Typography
+        variant="body2"
+        sx={{
+          color: 'text.secondary',
+        }}
+      >
+        Per-backend budget learned live from each provider's rate-limit headers. A backend goes{' '}
+        <b>unavailable</b> when exhausted or cooling from a 429, and the free lane routes around it.
+        Counts are a snapshot from the last call — <i>observed N ago</i> — not a live tick.
+      </Typography>
+
+      {backends.length === 0 ? (
+        <Alert severity="info">
+          No remote free backend has been called yet. The ledger learns a backend's budget from its
+          first response, so it stays empty until traffic flows.
+        </Alert>
+      ) : (
+        <Panel title="Backends" subtitle="Budget per provider window" flush>
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Backend</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Requests</TableCell>
+                  <TableCell>Tokens</TableCell>
+                  <TableCell align="right">Seen</TableCell>
+                  <TableCell align="right">Observed</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {backends.map((be) => (
+                  <TableRow key={be.backend} hover>
+                    <TableCell sx={{ fontFamily: 'monospace' }}>{be.backend}</TableCell>
+                    <TableCell>
+                      {be.available ? (
+                        <Chip size="small" color="success" label="available" />
+                      ) : be.stale ? (
+                        <Tooltip title="Model churned out of the provider's free roster (P16e)">
+                          <Chip size="small" color="warning" variant="outlined" label="stale" />
+                        </Tooltip>
+                      ) : n(be.coolingInSec) > 0 ? (
+                        <Tooltip title="Cooling down after a 429">
+                          <Chip size="small" color="error" label={`cooling ${be.coolingInSec}s`} />
+                        </Tooltip>
+                      ) : (
+                        <Chip size="small" color="warning" label="exhausted" />
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {(be.windows ?? []).length > 0 ? (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
+                          {(be.windows ?? []).map((w) => (
+                            <Typography key={w.label} variant="caption">
+                              {w.used}/{w.limit} /{w.label}
+                              {w.resetsIn ? ` · resets ${w.resetsIn}` : ''}
+                            </Typography>
+                          ))}
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              color: 'text.secondary',
+                            }}
+                          >
+                            counter-mode
+                          </Typography>
+                        </Box>
+                      ) : (
+                        <BucketCell b={be.requests} />
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {(be.windows ?? []).length > 0 ? (
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: 'text.secondary',
+                          }}
+                        >
+                          —
+                        </Typography>
+                      ) : (
+                        <BucketCell b={be.tokens} />
+                      )}
+                    </TableCell>
+                    <TableCell align="right">{fmtInt(n(be.seen))}</TableCell>
+                    <TableCell align="right">
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color: 'text.secondary',
+                        }}
+                      >
+                        {n(be.observedAgoSec)}s ago
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Panel>
+      )}
+    </Box>
+  )
+}
