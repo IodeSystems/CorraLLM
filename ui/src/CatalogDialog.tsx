@@ -46,8 +46,8 @@ import { fmtInt } from '@/format'
  * There is no approval step and no queue. Ticking a row and pressing Add writes
  * a SELECTION carrying the provider's own model id — which is what makes the
  * model exist, since nothing else knows the id to put on the wire — plus the
- * lane and priority you chose. Remove deletes that row. Those two operations
- * are the entire vocabulary.
+ * fallback list and position you chose. Remove deletes that row. Those two
+ * operations are the entire vocabulary.
  */
 const CatalogDoc = graphql(/* GraphQL */ `
   query BrowseCatalog($provider: String!, $credential: String) {
@@ -427,10 +427,13 @@ export function CatalogDialog(props: {
         <TextField
           select
           size="small"
-          label="Lane"
+          label="Fallback list"
           value={lane}
           onChange={(e) => setLane(e.target.value)}
-          sx={{ minWidth: 130 }}
+          // Wider than the 130 that held "Lane": a select's label sits in a
+          // notch cut out of its own border, and a label longer than the field
+          // is clipped by it.
+          sx={{ minWidth: 170 }}
         >
           <MenuItem value="">(none)</MenuItem>
           {lanes.map((l) => (
@@ -439,7 +442,7 @@ export function CatalogDialog(props: {
             </MenuItem>
           ))}
         </TextField>
-        <Tooltip title="Position in that lane's ladder; lower is tried first.">
+        <Tooltip title="Where in that list the model sits; lower is tried first. The config file calls this the lane order.">
           <TextField
             size="small"
             label="Order"

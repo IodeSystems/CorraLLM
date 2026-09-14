@@ -232,12 +232,17 @@ export function ProvidersTab(props: {
                     serves {(g.ext?.provides ?? []).join(', ')}
                   </Typography>
                 )}
+                {/* This badge read `lane free` — the config's word for the
+                    object, as the label, with the operator's name for it
+                    trailing after (OB-3). The name is the readable half and
+                    goes first; `lane` survives in the gloss, because the
+                    person who opens the YAML needs the two words joined. */}
                 {g.pool?.lanes?.map((l) => (
                   <Tooltip
                     key={l.lane}
-                    title="Every model in the pool joins this lane at this priority. Ask for the lane to get the pool."
+                    title={`Every model in this pool joins the ${l.lane} fallback list at position ${l.order}, so asking for ${l.lane} reaches the pool. The config file calls this a lane.`}
                   >
-                    <Chip size="small" variant="outlined" label={`lane ${l.lane}`} />
+                    <Chip size="small" variant="outlined" label={`${l.lane} · fallback list`} />
                   </Tooltip>
                 ))}
                 {/* Adding a provider FROM the group it joins. The dialog used to

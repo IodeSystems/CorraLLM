@@ -32,18 +32,27 @@ import { groupByBox, useSetupData, UNPLACED } from '@/SetupData'
  * Three panels that used to be scattered down the Setup scroll with a page of
  * provider configuration between them, though they answer one question each
  * about the same object: the models running HERE, the models taken off somebody
- * else's catalogue, and the lane names a caller can ask for instead of either.
+ * else's catalogue, and the fallback lists a caller can ask for instead of
+ * either.
+ *
+ * THE OBJECT IS A FALLBACK LIST. The config file calls it a `lane` and so does
+ * the API, and OB-3 says that word is the gloss and never the label: it is the
+ * config's word for the thing, not a word anybody arrives already knowing. It
+ * survives in the gloss on each label, because an operator reading the YAML
+ * needs the two vocabularies joined somewhere — the same trade `placement` took
+ * in 0eb90c2.
  */
 
-// Blank template for a lane, kept with the panel that creates one: the editor
-// is a text box, this is the domain's opinion about what to type in it.
+// Blank template for a fallback list, kept with the panel that creates one: the
+// editor is a text box, this is the domain's opinion about what to type in it.
 function blankLane(): EntryEdit {
   return {
     kind: 'lane',
     existing: false,
     name: '',
-    yaml: `# A lane is an ORDERED fallback list. Requesting the lane allows
-# substitution across its members; requesting a model pins that model.
+    yaml: `# A fallback list — a "lane" in this file — is an ORDERED list of
+# models. Asking for its name allows a substitute from further down;
+# asking for a model by name pins the request to that model.
 members:
   - some-local-model      # best first
   - some-remote-model     # spilled to when the local one is full
@@ -133,15 +142,22 @@ function AssignedModels() {
       subtitle="Chosen off a provider's catalog"
       // Remove is a config change, not a kill: say so where it can be read.
       // "where it can be read" was a clipping header until now.
+      //
+      // The second sentence is what the `chat @ 50` chips on these rows mean.
+      // It is said once for the group rather than hidden on a tooltip per row
+      // (OB-2, OB-10): a number in a chip is unreadable without it, and a
+      // hovered gloss is not written.
       note={
         <>
           <b>Remove</b> takes one out of the catalog this box serves — anything mid-answer on it
-          finishes, and the next request for it is refused.
+          finishes, and the next request for it is refused. A chip like <code>chat @ 50</code> says
+          which fallback list the model joined and where it sits in that list&apos;s order, lower
+          tried first.
         </>
       }
       actions={
         all.length > 8 ? (
-          <FilterField value={q} onChange={setQ} placeholder="model, provider, lane" />
+          <FilterField value={q} onChange={setQ} placeholder="model, provider, list" />
         ) : undefined
       }
       flush
@@ -154,7 +170,7 @@ function AssignedModels() {
       {all.length === 0 ? (
         <Typography variant="body2" sx={{ p: 2, color: C.textFaint }}>
           None yet. <strong>Browse</strong> a provider on the Providers tab and add the models you
-          want — with a lane and priority if they should join one.
+          want — with a fallback list and a position if they should join one.
         </Typography>
       ) : (
         rows.map((r) => (
@@ -172,9 +188,14 @@ function AssignedModels() {
                 <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12.5 }}>
                   {r.model}
                 </Typography>
+                {/* `placement only` was the other bare OB-3 label on this row.
+                    It means the selection carries no upstream id: a discover
+                    filter already contributes the model, and this row only says
+                    which fallback list it joins — "I did not choose this one,
+                    but I do choose where it goes" (internal/config/selection.go). */}
                 <Typography variant="caption" sx={{ color: C.textFaint }}>
                   {r.provider} / {r.credential}
-                  {r.upstream ? ` · ${r.upstream}` : ' · placement only'}
+                  {r.upstream ? ` · ${r.upstream}` : ' · only says where it goes'}
                 </Typography>
               </Box>
               <Stack
@@ -189,8 +210,8 @@ function AssignedModels() {
                   <Chip key={l.lane} size="small" label={`${l.lane} @ ${l.order}`} />
                 ))}
                 {r.lanes.length === 0 && (
-                  <Tooltip title="Servable by name, but in no lane — nothing routes to it automatically.">
-                    <Chip size="small" variant="outlined" label="no lane" />
+                  <Tooltip title="Servable by name, but in no fallback list (no `lane` in the config) — nothing reaches it unless a caller asks for it by name.">
+                    <Chip size="small" variant="outlined" label="no fallback list" />
                   </Tooltip>
                 )}
                 {Number(r.quality ?? 0) > 0 && (
@@ -245,9 +266,9 @@ export function ModelsTab() {
     mutationFn: (name: string) => gqlClient.request(DeleteModelDoc, { name }),
     onSuccess: (r) => {
       const res = r.corrallm?.deleteEntry
-      // The server refuses to delete a lane member and says which lane. That is
-      // the useful half of the answer, so it goes on screen rather than being
-      // collapsed into a generic failure.
+      // The server refuses to delete a model a fallback list still names, and
+      // says which list. That is the useful half of the answer, so it goes on
+      // screen rather than being collapsed into a generic failure.
       if (!res?.ok) {
         setDeleteErr(res?.message ?? 'delete refused')
         return
@@ -277,10 +298,10 @@ export function ModelsTab() {
         .filter((p) => p.models.length > 0)
   const localShownCount = localShown.reduce((n, p) => n + p.models.length, 0)
 
-  // Lanes and extensions moved here from the Config page. Both are about
-  // MODELS — a lane is an ordered list of them, an extension is one process
-  // serving several — so they belong with the models rather than on a page
-  // named after a file.
+  // Fallback lists and extensions moved here from the Config page. Both are
+  // about MODELS — a list is an ordered set of them, an extension is one
+  // process serving several — so they belong with the models rather than on a
+  // page named after a file.
   const lanes = data?.corrallm?.overview?.lanes ?? []
   const { rows: lanePage, pager: lanePager } = usePaging(lanes, 10)
 
@@ -503,14 +524,16 @@ export function ModelsTab() {
       <AssignedModels />
 
       <Panel
-        title={`Model lanes (${lanes.length})`}
+        title={`Fallback lists (${lanes.length})`}
         subtitle="A name standing for several models, tried in order until one can serve"
         // Which model answers a request is what this decides, so the sentence
-        // that says so is the panel's, not the header's (OB-12).
-        note="Asking for the lane allows a substitute; asking for a model by name pins the request to that one."
+        // that says so is the panel's, not the header's (OB-12). The second
+        // sentence is the gloss that joins this label to the config file, which
+        // is the only place the word `lane` now appears in front of a reader.
+        note="Asking for the list by name allows a substitute; asking for a model by name pins the request to that one. The config file calls one of these a lane."
         actions={
           <Button size="small" variant="outlined" onClick={() => setEditing(blankLane())}>
-            Add lane
+            Add fallback list
           </Button>
         }
         flush
@@ -518,7 +541,7 @@ export function ModelsTab() {
         {lanes.length === 0 ? (
           <Row>
             <Typography variant="body2" sx={{ color: C.textFaint }}>
-              No lanes declared.
+              None declared.
             </Typography>
           </Row>
         ) : (
@@ -538,7 +561,7 @@ export function ModelsTab() {
             </Row>
           ))
         )}
-        <Pager p={lanePager} unit="lanes" />
+        <Pager p={lanePager} unit="fallback lists" />
       </Panel>
 
       {addLocal && (
@@ -565,8 +588,8 @@ export function ModelsTab() {
             </Typography>
           )}
           <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: C.textFaint }}>
-            A lane member cannot be deleted until it is removed from the lane; the server will say
-            which lane.
+            A model cannot be deleted while a fallback list still names it; the server will say
+            which list.
           </Typography>
           {deleteErr && (
             <Alert severity="error" sx={{ mt: 2 }}>

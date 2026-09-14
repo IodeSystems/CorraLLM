@@ -15,15 +15,15 @@ import { gqlClient } from '@/gqlClient'
 import { extractMessage } from '@/format'
 
 /**
- * The YAML editor for one config entry — a host, lane, priority group or
- * extension.
+ * The YAML editor for one config entry — a host, fallback list, priority group
+ * or extension.
  *
  * It was inlined in the Config page, which is why every one of those things had
  * to live on that page: the panel and the only editor that could open it were
  * the same component. Splitting them is what lets each entry sit on the page it
- * belongs to — lanes and extensions with the models they compose, groups with
- * the live group view — instead of all four collecting on a page named after a
- * file.
+ * belongs to — fallback lists and extensions with the models they compose,
+ * groups with the live group view — instead of all four collecting on a page
+ * named after a file.
  *
  * MODELS ARE NOT HERE. They have a real form (ModelForm) with a trial runner,
  * and they are authored on Providers, where the provider that owns the model is
@@ -67,6 +67,22 @@ const DeleteEntryDoc = graphql(/* GraphQL */ `
 
 /** The config sections this editor can edit. Models are excluded on purpose. */
 export type EntryKind = 'server' | 'lane' | 'group' | 'extension'
+
+// WHAT THE READER IS EDITING, in the reader's words.
+//
+// `kind` is the wire value — the config section name, and what the API is
+// addressed by — and it was being printed straight into the dialog title and
+// the helper text, so opening a fallback list said "Edit lane chat". `lane` is
+// the config's word for the object and OB-3 says it is the gloss, never the
+// label. The map is here rather than at each call site because both strings in
+// this file need the same answer, and a second translation is how two screens
+// start disagreeing about what one object is called.
+const KIND_LABEL: Record<EntryKind, string> = {
+  server: 'server',
+  lane: 'fallback list',
+  group: 'priority group',
+  extension: 'extension',
+}
 
 export type EntryEdit = {
   kind: EntryKind
@@ -133,7 +149,9 @@ export function EntryEditor({
   return (
     <Dialog open onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle>
-        {editing.existing ? `Edit ${editing.kind} ${editing.name}` : `Add a ${editing.kind}`}
+        {editing.existing
+          ? `Edit ${KIND_LABEL[editing.kind]} ${editing.name}`
+          : `Add a ${KIND_LABEL[editing.kind]}`}
       </DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
@@ -152,7 +170,7 @@ export function EntryEditor({
             multiline
             minRows={18}
             slotProps={{ input: { sx: { fontFamily: 'monospace', fontSize: 12.5 } } }}
-            helperText={`The ${editing.kind} exactly as it appears in the config file. Checked twice on save: unknown keys are rejected, then the whole config is validated — an unknown server, or a lane this would break, is caught here rather than at the next restart.`}
+            helperText={`The ${KIND_LABEL[editing.kind]} exactly as it appears in the config file, where its section is called \`${editing.kind}\`. Checked twice on save: unknown keys are rejected, then the whole config is validated — an unknown server, or a fallback list this would break, is caught here rather than at the next restart.`}
           />
         </Stack>
       </DialogContent>
@@ -160,8 +178,9 @@ export function EntryEditor({
           scrolling content, which made a rejected Delete look like a dead
           button: the YAML is long, so you are scrolled to the bottom when you
           reach Delete, and the server's reason ("member of lane(s) chat —
-          remove it there first") rendered somewhere above the fold. The error
-          has to sit next to the control that produced it. */}
+          remove it there first", in the config's vocabulary) rendered somewhere
+          above the fold. The error has to sit next to the control that produced
+          it. */}
       {err && (
         <Alert severity="error" sx={{ mx: 3, mb: 1 }}>
           {err}
