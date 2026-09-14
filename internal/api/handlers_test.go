@@ -339,6 +339,82 @@ func TestUsageSeries(t *testing.T) {
 	}
 }
 
+// TestSeriesHonoursAbsoluteWindow is the regression for a bug a UX run found
+// before any test did: UsageSeriesByGroup and QueueDepth built their own bucket
+// axis from WindowHours and time.Now() and never read FromMS/ToMS, so a page
+// asking for 09:00-10:00 got the trailing hour instead — silently, with a
+// plausible-looking chart. UsageSeries, three functions away, had always used
+// windowOf+seriesAxis and was right.
+//
+// The damage was not the wrong chart, it was the DISAGREEMENT: the tile beside
+// it honoured the window, so one screen showed "0 requests, a fixed span" above
+// a chart peaking at 212. A page-level time control exists precisely so two
+// panels cannot argue about what "now" means, and two of its resolvers were
+// opted out of it.
+//
+// Asserted the way the bug presented: ask for a window that ENDED long ago and
+// require the axis to land there, because a trailing-window bug answers with
+// today and passes any test that only checks bucket COUNT.
+func TestSeriesHonoursAbsoluteWindow(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	const hour = int64(3600_000)
+	now := time.Now().UnixMilli()
+	// Three days back, so "the trailing window" and "the asked-for window" can
+	// never overlap and a pass cannot be luck.
+	from := now - 72*hour
+	to := from + hour
+
+	_ = st.InsertActivity(store.Activity{TS: from + 60_000, Served: "m", Key: "aw3", Status: 200, CostUSD: 0.1})
+	_ = st.InsertActivity(store.Activity{TS: now, Served: "m", Key: "aw3", Status: 200, CostUSD: 0.9})
+
+	cfg := &config.Config{
+		PriorityGroups: map[string]config.PriorityGroup{"interactive": {Weight: 10}},
+		Keys:           config.GroupKeys(map[string]string{"aw3": "interactive"}),
+	}
+	h := &Handlers{Store: st, Cfg: cfg}
+	in := &UsageSeriesInput{WindowHours: 1, BucketMinutes: 10, FromMS: from, ToMS: to}
+
+	grp, err := h.UsageSeriesByGroup(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAxisIn := func(what string, buckets []int64) {
+		t.Helper()
+		if len(buckets) == 0 {
+			t.Fatalf("%s returned no buckets", what)
+		}
+		// One bucket of slack at each end: seriesAxis floors to the bucket grid.
+		if buckets[0] < from-10*60_000 || buckets[len(buckets)-1] > to+10*60_000 {
+			t.Errorf("%s ignored the absolute window: axis %d..%d, asked %d..%d (%.1f h away)",
+				what, buckets[0], buckets[len(buckets)-1], from, to,
+				float64(buckets[0]-from)/float64(hour))
+		}
+	}
+	assertAxisIn("UsageSeriesByGroup", grp.Body.Buckets)
+
+	// The row inside the window is counted; the one three days later is not.
+	var got int64
+	for _, gs := range grp.Body.Groups {
+		for _, p := range gs.Points {
+			got += p.Requests
+		}
+	}
+	if got != 1 {
+		t.Errorf("requests in window = %d, want 1 (the row outside it must not be counted)", got)
+	}
+
+	depth, err := h.QueueDepth(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAxisIn("QueueDepth", depth.Body.Buckets)
+}
+
 // TestUsageSeriesByGroup resolves keys to groups and buckets per group.
 func TestUsageSeriesByGroup(t *testing.T) {
 	st, err := store.Open(context.Background(), ":memory:")

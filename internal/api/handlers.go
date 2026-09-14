@@ -1643,31 +1643,15 @@ type UsageSeriesByGroupOutput struct {
 // caller key to its group. Stacked over time it reveals whether a high-priority
 // lane (e.g. interactive) is being starved under contention.
 func (h *Handlers) UsageSeriesByGroup(_ context.Context, in *UsageSeriesInput) (*UsageSeriesByGroupOutput, error) {
-	windowHours := in.WindowHours
-	if windowHours <= 0 {
-		windowHours = 24
-	}
-	bucketMin := in.BucketMinutes
-	if bucketMin <= 0 {
-		bucketMin = 60
-	}
-	windowMS := int64(windowHours) * 3600_000
-	bucketMS := int64(bucketMin) * 60_000
-	for windowMS/bucketMS > maxSeriesBuckets {
-		bucketMS *= 2
-	}
+	// seriesAxis, NOT a hand-rolled axis off time.Now(): this used to build its
+	// own buckets from windowHours and never read FromMS/ToMS, so asking for
+	// 09:00-10:00 silently answered with the trailing hour. The tile beside it
+	// honoured the window, so the page showed two different spans as one — which
+	// is exactly what a page-level time control exists to prevent.
+	w := windowOf(in.FromMS, in.ToMS, seriesMinutes(in.WindowHours))
+	buckets, index, bucketMS := seriesAxis(w, in.BucketMinutes, time.Now().UnixMilli())
 
-	now := time.Now().UnixMilli()
-	end := (now / bucketMS) * bucketMS
-	start := ((now - windowMS) / bucketMS) * bucketMS
-	var buckets []int64
-	index := map[int64]int{}
-	for b := start; b <= end; b += bucketMS {
-		index[b] = len(buckets)
-		buckets = append(buckets, b)
-	}
-
-	rows, err := h.Store.RollupSeries(store.Since(now-windowMS), bucketMS)
+	rows, err := h.Store.RollupSeries(w, bucketMS)
 	if err != nil {
 		return nil, err
 	}
@@ -1737,31 +1721,15 @@ type QueueDepthOutput struct {
 // QueueDepth returns sampled per-lane queue depth (active/waiting) over time —
 // instantaneous pressure that the completion-driven activity log can't show.
 func (h *Handlers) QueueDepth(_ context.Context, in *UsageSeriesInput) (*QueueDepthOutput, error) {
-	windowHours := in.WindowHours
-	if windowHours <= 0 {
-		windowHours = 24
-	}
-	bucketMin := in.BucketMinutes
-	if bucketMin <= 0 {
-		bucketMin = 60
-	}
-	windowMS := int64(windowHours) * 3600_000
-	bucketMS := int64(bucketMin) * 60_000
-	for windowMS/bucketMS > maxSeriesBuckets {
-		bucketMS *= 2
-	}
+	// seriesAxis, NOT a hand-rolled axis off time.Now(): this used to build its
+	// own buckets from windowHours and never read FromMS/ToMS, so asking for
+	// 09:00-10:00 silently answered with the trailing hour. The tile beside it
+	// honoured the window, so the page showed two different spans as one — which
+	// is exactly what a page-level time control exists to prevent.
+	w := windowOf(in.FromMS, in.ToMS, seriesMinutes(in.WindowHours))
+	buckets, index, bucketMS := seriesAxis(w, in.BucketMinutes, time.Now().UnixMilli())
 
-	now := time.Now().UnixMilli()
-	end := (now / bucketMS) * bucketMS
-	start := ((now - windowMS) / bucketMS) * bucketMS
-	var buckets []int64
-	index := map[int64]int{}
-	for b := start; b <= end; b += bucketMS {
-		index[b] = len(buckets)
-		buckets = append(buckets, b)
-	}
-
-	rows, err := h.Store.LaneDepthSeries(store.Since(now-windowMS), bucketMS)
+	rows, err := h.Store.LaneDepthSeries(w, bucketMS)
 	if err != nil {
 		return nil, err
 	}
