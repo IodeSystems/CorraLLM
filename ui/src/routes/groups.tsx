@@ -16,49 +16,11 @@ import {
 } from '@mui/material'
 import { Panel, Row } from '@/Panel'
 import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
-import { graphql } from '@/gql'
+import { GroupsDoc } from '@/GroupCost'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
 import { fmtInt } from '@/format'
 import { Loading } from '@/Loading'
-
-const GroupsDoc = graphql(/* GraphQL */ `
-  query Groups {
-    corrallm {
-      reservations {
-        reservations {
-          model
-          lane
-          slots
-          expiresAt
-        }
-      }
-      groups {
-        preemptions
-        lastPreemptedMs
-        groups {
-          name
-          weight
-          shareCurrency
-          interruptible
-          active
-          waiting
-        }
-        backends {
-          backend
-          capacity
-          active
-          waiting
-          groups {
-            group
-            active
-            waiting
-          }
-        }
-      }
-    }
-  }
-`)
 
 function capPct(active: string, capacity: string): number {
   const a = Number(active)

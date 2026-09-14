@@ -15,11 +15,13 @@ import {
   Typography,
 } from '@mui/material'
 import { Panel, PageHeader, Row } from '@/Panel'
+import { GroupCostTag, preemptionHistory, useGroupCosts } from '@/GroupCost'
 import { KeyLaneActions } from '@/KeyLane'
 import { KeyCharts } from '@/KeyCharts'
 import { GroupPanels } from '@/routes/groups'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
+import { C } from '@/theme'
 import { fmtAgo, fmtInt, fmtUSD } from '@/format'
 import { Loading } from '@/Loading'
 
@@ -73,6 +75,10 @@ export const KeysDoc = graphql(/* GraphQL */ `
 function Callers() {
   const [err, setErr] = useState('')
 
+  // What each group costs the callers in it, from the groups query the panels
+  // at the bottom of this page already issue. Shared cache, no extra request.
+  const { costOf, preemptions, lastPreemptedMs } = useGroupCosts()
+
   const q = useQuery({
     queryKey: ['keys'],
     queryFn: () => gqlClient.request(KeysDoc),
@@ -94,6 +100,11 @@ function Callers() {
   const keys = data?.keys ?? []
   const groups = q.data?.corrallm.groups?.groups ?? []
   const unassigned = keys.filter((k) => !k.recognized).length
+  // The worst thing a placement on this page does, and exactly who it is done to
+  // (OB-13: a summary carries its worst case, not a count of everything). Being
+  // outranked costs you latency; being stoppable costs you the answer, so the
+  // summary names the second group's callers and leaves the first to the rows.
+  const stoppable = keys.filter((k) => costOf(k.group).canBeStopped).map((k) => k.key)
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -139,6 +150,23 @@ function Callers() {
         subtitle="Who is calling, and what their group gets them"
         flush
       >
+        {/* THE WORST THING A PLACEMENT ON THIS PAGE DOES, above the roster that
+            explains it (OB-11, OB-12). Lenny run 5 recognised his own key here
+            and had nothing telling him it was in the group that gets cut off
+            first — so the keys are NAMED, and the last sentence separates what
+            the setting permits from what the box has actually done. Silent when
+            no group can be stopped at all. */}
+        {stoppable.length > 0 && (
+          <Row>
+            <Typography variant="body2" sx={{ color: preemptions > 0 ? C.warn : C.textMuted }}>
+              {stoppable.length === 1 ? 'One caller is' : `${fmtInt(stoppable.length)} callers are`}{' '}
+              in a group whose answers can be stopped part-way when a higher group needs the slot:{' '}
+              <b>{stoppable.slice(0, 8).join(', ')}</b>
+              {stoppable.length > 8 ? ` and ${fmtInt(stoppable.length - 8)} more` : ''}.{' '}
+              {preemptionHistory(preemptions, lastPreemptedMs)}
+            </Typography>
+          </Row>
+        )}
         {/* WHAT THE ROW BUTTONS COST, once above the group (OB-2). This was the
             subtitle and truncated at "and a reques…", losing exactly the clause
             that lets somebody press a control that reaches live traffic. The
@@ -195,6 +223,11 @@ function Callers() {
                           <Chip size="small" color="warning" label={`${k.group} (unassigned)`} />
                         </Tooltip>
                       )}
+                      {/* The group name is an identifier; this is what being in
+                          it does to this caller's requests (OB-12). Silent when
+                          nothing outranks the group — that caller pays nothing
+                          for its placement and must not be drawn as if it did. */}
+                      <GroupCostTag cost={costOf(k.group)} />
                     </TableCell>
                     <TableCell align="right">{fmtInt(Number(k.weight))}</TableCell>
                     <TableCell align="right">{fmtInt(Number(k.requests))}</TableCell>
