@@ -2,8 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { Box, Chip } from '@mui/material'
 import { PageHeader } from '@/Panel'
 import { ActivityLog } from '@/ActivityLog'
-import { RetryPromises } from '@/RetryPromises'
-import { Journeys } from '@/Journeys'
+import { TurnedAway } from '@/TurnedAway'
 import { ServiceProfiles } from '@/ServiceProfiles'
 import { Utilization } from '@/Utilization'
 import { UsagePanels } from '@/routes/usage'
@@ -66,11 +65,9 @@ function Traffic() {
       {/* What is under pressure, and what that pressure cost callers. */}
       <Utilization window={window} />
       {/* The ones we sent away — traffic the completed-request log cannot show,
-          because they never started. */}
-      <RetryPromises filterKey={key} window={window} />
-      {/* The same rejections, grouped by who took them: one caller refused four
-          times reads very differently from four callers refused once. */}
-      <Journeys window={window} />
+          because they never started. One panel with two readings of it: by
+          caller, and promise by promise. */}
+      <TurnedAway filterKey={key} window={window} />
       {/* Why the estimates above run short: one dwell EWMA per backend, averaging
           over callers whose work differs several-fold in cost and variability. */}
       <ServiceProfiles window={window} />
