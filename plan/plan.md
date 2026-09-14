@@ -807,6 +807,17 @@ true and still costs something. Optional extensions and out-of-scope items live 
   refused`, observed 2026-09-04). The Hosts page shows it, in the daemon's own words. Same class as
   the known macOS Local Network permission trap; unverified which it is this time.
 
+- **The Overview slowdown card only fires on reuse loss.** Its trigger is still
+  `reuseLost >= 0.2 AND meanTime >= 1.33x` (`ui/src/routes/index.tsx` `slowdownFaults`), so a box
+  that slowed with its prompt-cache reuse intact — a thermal event under a steady caller — raises
+  no card at all. Since 5741a93 the card at least *rates* itself in tg/s and tp/s and no longer
+  claims "nothing is broken" when generation speed has fallen, but detecting a bare tg/s drop is a
+  second fault that does not exist yet.
+- **`ui/` has no test runner.** No vitest, no jest, no `test` script in `ui/package.json` — so
+  `slowdownFaults` and every other pure function in the UI is covered by `tsc` and eslint only.
+  The DoD's "new behavior has tests" is met on the Go side of a UI change and silently skipped on
+  the TS side. Adding a runner is a decision, not a chore: it is the first test dependency the UI
+  would carry.
 - **P6 known gaps:** (1) swap $ is charged to the load *trigger* only — not amortized across the
   coalesced batch; a load whose trigger loses the ctx race goes unbilled. (2) Over-budget with a
   `queue` stage degrades to back-off (reason `over-budget` + Retry-After), not an internal
