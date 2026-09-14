@@ -32,6 +32,7 @@ import { Route as BenchRunRouteImport } from './routes/bench_.run'
 import { Route as CallersKeyRouteImport } from './routes/callers_.$key'
 import { Route as KeysKeyRouteImport } from './routes/keys_.$key'
 import { Route as MNameRouteImport } from './routes/m.$name'
+import { Route as MachinesNameRouteImport } from './routes/machines_.$name'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -148,6 +149,11 @@ const MNameRoute = MNameRouteImport.update({
   path: '/m/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MachinesNameRoute = MachinesNameRouteImport.update({
+  id: '/machines_/$name',
+  path: '/machines/$name',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -173,6 +179,7 @@ export interface FileRoutesByFullPath {
   '/callers/$key': typeof CallersKeyRoute
   '/keys/$key': typeof KeysKeyRoute
   '/m/$name': typeof MNameRoute
+  '/machines/$name': typeof MachinesNameRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -198,6 +205,7 @@ export interface FileRoutesByTo {
   '/callers/$key': typeof CallersKeyRoute
   '/keys/$key': typeof KeysKeyRoute
   '/m/$name': typeof MNameRoute
+  '/machines/$name': typeof MachinesNameRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -224,6 +232,7 @@ export interface FileRoutesById {
   '/callers_/$key': typeof CallersKeyRoute
   '/keys_/$key': typeof KeysKeyRoute
   '/m/$name': typeof MNameRoute
+  '/machines_/$name': typeof MachinesNameRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -251,6 +260,7 @@ export interface FileRouteTypes {
     | '/callers/$key'
     | '/keys/$key'
     | '/m/$name'
+    | '/machines/$name'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -276,6 +286,7 @@ export interface FileRouteTypes {
     | '/callers/$key'
     | '/keys/$key'
     | '/m/$name'
+    | '/machines/$name'
   id:
     | '__root__'
     | '/'
@@ -301,6 +312,7 @@ export interface FileRouteTypes {
     | '/callers_/$key'
     | '/keys_/$key'
     | '/m/$name'
+    | '/machines_/$name'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -327,6 +339,7 @@ export interface RootRouteChildren {
   CallersKeyRoute: typeof CallersKeyRoute
   KeysKeyRoute: typeof KeysKeyRoute
   MNameRoute: typeof MNameRoute
+  MachinesNameRoute: typeof MachinesNameRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -492,6 +505,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MNameRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/machines_/$name': {
+      id: '/machines_/$name'
+      path: '/machines/$name'
+      fullPath: '/machines/$name'
+      preLoaderRoute: typeof MachinesNameRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -519,6 +539,7 @@ const rootRouteChildren: RootRouteChildren = {
   CallersKeyRoute: CallersKeyRoute,
   KeysKeyRoute: KeysKeyRoute,
   MNameRoute: MNameRoute,
+  MachinesNameRoute: MachinesNameRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

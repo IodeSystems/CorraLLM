@@ -1,153 +1,42 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
-import {
-  Alert,
-  Box,
-  Button,
-  Chip,
-  Stack,
-  Tooltip,
-  Typography,
-} from '@mui/material'
-import { Panel, PageHeader, Row, Stat } from '@/Panel'
-import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
-import { ToolingPanel } from '@/ToolingPanel'
-import { MemoryPanel } from '@/MemoryPanel'
+import { Alert, Box, Button, Chip, Stack, Tooltip, Typography } from '@mui/material'
+import { Panel, PageHeader, Row } from '@/Panel'
+import { EntryEditor, type EntryEdit } from '@/EntryEditor'
+import { UtilizationBar } from '@/UtilizationBar'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { C, seriesColor } from '@/theme'
+import { C } from '@/theme'
 import { fmtBytes, extractMessage } from '@/format'
 import { Loading } from '@/Loading'
+import {
+  AGENT_STATUS_HINT,
+  agentColor,
+  derive,
+  madeRoomNote,
+  useMachines,
+  type Machine,
+} from '@/MachineData'
 
 /**
- * The machines: what hardware exists, what it was declared to have, and what is
- * holding it right now.
+ * /machines — the LIST. One row per machine, and nothing else.
  *
- * P30 phase A moved the memory ledger here from the Overview. The two halves
- * belong on one page and were on two: this page had the DECLARED budget ("32 GB
- * − 1.0 GB reserved") and the home screen had the LIVE reading of the same
- * pools, so answering "is there room" meant holding one page in your head while
- * reading the other. The home screen's question is "is it serving"; this page's
- * question is "what does the hardware have".
+ * It used to be six stacked panels: declared capacity, the live memory ledger,
+ * every resident model on every box, the agents, and the fleet's whole toolchain
+ * table. Every one of those is per-machine, so the page rendered each of them
+ * once with a machine column, and answering anything about ONE box meant
+ * reading five tables and joining them by eye. The report was blunt about it:
+ * "too many things, not organized well, and obvious tab/subrouting solutions".
  *
- * Editable, but only against the MANAGED config — the one corrallm writes and
- * owns. A hand-written config is still refused (the server checks for its
- * header), because rewriting it would silently drop the comments its author
- * put there.
+ * So the machine became the subject and got its own address. This page is the
+ * index: what boxes exist, whether each is reachable, and how full it is. The
+ * rest — memory attribution, residency, tooling — is at /machines/<name>, where
+ * it is about one machine and can be read without a join.
  *
- * Models are edited through a form; everything else, and any model field the
- * form does not cover, through YAML. See the note on the save mutation for why
- * that split is now safe when it previously was not.
+ * What stays here is what belongs to no single machine: adding a host, attaching
+ * an agent, and a GPU no pool has claimed.
  */
-const ConfigDoc = graphql(/* GraphQL */ `
-  query Config {
-    corrallm {
-      overview {
-        servers {
-          server
-          maxConcurrent
-          devicePool
-          agentEndpoints
-          agentStatus
-          agentLastSeen
-          noProcessMemory
-          pools {
-            pool
-            totalBytes
-            reserveBytes
-          }
-        }
-        models {
-          name
-          notes
-          server
-          spawnable
-          remote
-          quality
-          type
-          capability
-          cmd
-          upstream
-          target
-          maxConcurrent
-          persistent
-          ttl
-          idleUnload
-          modalities {
-            modality
-          }
-          contextPerRequest
-        }
-        lanes {
-          name
-          members {
-            model
-          }
-        }
-        extensions {
-          name
-          cmd
-          server
-          provides
-          notes
-        }
-        groups {
-          name
-          weight
-          interruptible
-          acceptDegrade
-          qualityFloor
-        }
-      }
-      residency {
-        servers {
-          server
-          pools {
-            pool
-            budget
-            used
-          }
-          madeRoomCount
-          madeRoomLastMs
-          madeRoomEvicted
-          madeRoomFor
-        }
-        gpus {
-          available
-          name
-          uuid
-          pool
-          totalBytes
-          usedBytes
-          freeBytes
-        }
-        host {
-          available
-          name
-          totalBytes
-          usedBytes
-          freeBytes
-        }
-        models {
-          name
-          modelName
-          server
-          state
-          refs
-          persistent
-          lastUsedMs
-          footprintMiB
-          usage {
-            pool
-            bytes
-          }
-        }
-      }
-    }
-  }
-`)
-
 const MintTokenDoc = graphql(/* GraphQL */ `
   mutation MintEnrollmentToken($body: corrallm_MintEnrollmentTokenInputBodyInput!) {
     corrallm {
@@ -160,31 +49,90 @@ const MintTokenDoc = graphql(/* GraphQL */ `
   }
 `)
 
-// The states a resident backend can be in. Same colours the rest of the dashboard
-// uses for them, defined here rather than imported from a page that no longer
-// exists (the old /usage).
-function residentColor(state: string): 'success' | 'info' | 'warning' | 'error' | 'default' {
-  switch (state) {
-    case 'ready':
-      return 'success'
-    case 'loading':
-      return 'info'
-    case 'evicting':
-    case 'draining':
-      return 'warning'
-    case 'failed':
-      return 'error'
-    default:
-      return 'default'
-  }
+/**
+ * One machine, at a glance: is it reachable, how full is it, what is on it.
+ *
+ * The utilisation bars are the row's body rather than a number in a column
+ * because "how full" is the question that decides whether you click in, and a
+ * percentage in a table cell cannot be compared across two boxes with different
+ * pool sizes the way two bars can.
+ */
+function MachineRow({ m, onOpen }: { m: Machine; onOpen: () => void }) {
+  const resident = m.resident.length
+  const busy = m.resident.reduce((n, r) => n + r.refs, 0)
+  const note = madeRoomNote(m)
+  return (
+    <Row onClick={onOpen}>
+      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+        <Typography variant="subtitle2">{m.server}</Typography>
+        {/* 'local' is this machine and needs no chip — it would be on every row
+            of a single-box install, saying nothing. A configured agent gets one
+            because whether it is heartbeating decides if anything can start
+            there. */}
+        {m.agentStatus !== 'local' && (
+          <Tooltip title={AGENT_STATUS_HINT[m.agentStatus] ?? m.agentStatus}>
+            <Chip size="small" label={m.agentStatus} color={agentColor(m.agentStatus)} />
+          </Tooltip>
+        )}
+        {m.maxConcurrent > 0 && (
+          <Chip size="small" variant="outlined" label={`max ${m.maxConcurrent}`} />
+        )}
+        <Box sx={{ flexGrow: 1 }} />
+        <Typography variant="caption" sx={{ color: C.textMuted }}>
+          {resident === 0
+            ? 'nothing loaded'
+            : `${resident} loaded${busy > 0 ? ` · ${busy} in flight` : ''}`}
+        </Typography>
+      </Box>
+
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', md: 'repeat(auto-fit, minmax(240px, 1fr))' },
+          gap: 1.5,
+          mt: 1,
+        }}
+      >
+        {m.pools.map((p) => (
+          <UtilizationBar
+            key={p.pool}
+            label={p.pool}
+            role={p.role}
+            used={p.used}
+            capacity={p.budget}
+            reserve={p.reserve}
+            note={note}
+            lines={[
+              ...(p.device?.available
+                ? [`${p.device.name} reports ${fmtBytes(p.device.usedBytes)} actually in use`]
+                : []),
+              resident > 0
+                ? `Holding it: ${m.resident.map((r) => r.modelName).join(', ')}`
+                : 'Nothing is loaded here right now.',
+            ]}
+          />
+        ))}
+        {m.pools.length === 0 && (
+          <Typography variant="caption" sx={{ color: C.textFaint }}>
+            No pools declared, so the scheduler will not admit anything here.
+          </Typography>
+        )}
+      </Box>
+
+      {/* Said out loud, not only in a tooltip: it changes what an operator has
+          to write for every model that runs here. */}
+      {m.noProcessMemory && (
+        <Typography variant="caption" sx={{ display: 'block', color: C.textMuted, mt: 0.75 }}>
+          This machine cannot measure how much memory a model is using, so every model configured
+          to run here has to state its own size.
+        </Typography>
+      )}
+    </Row>
+  )
 }
 
 function MachinesPage() {
-  const q = useQuery({
-    queryKey: ['config'],
-    queryFn: () => gqlClient.request(ConfigDoc),
-    refetchInterval: 30000,
-  })
+  const q = useMachines()
 
   // Hooks BEFORE the early returns: React counts them per render, and a hook
   // that only runs on the success path changes that count between renders —
@@ -193,16 +141,6 @@ function MachinesPage() {
   const [editing, setEditing] = useState<EntryEdit | null>(null)
   const [err, setErr] = useState('')
   const [minted, setMinted] = useState<{ command: string; expires: string } | null>(null)
-
-  // openEditor loads an entry's stored YAML and opens the shared editor.
-  const openEditor = async (kind: 'server' | 'lane' | 'group' | 'extension', name: string) => {
-    setErr('')
-    try {
-      setEditing(await openEntry(kind, name))
-    } catch (e) {
-      setErr(extractMessage(e))
-    }
-  }
 
   const mint = useMutation({
     mutationFn: () =>
@@ -236,92 +174,52 @@ function MachinesPage() {
     )
   }
 
-  const ov = q.data?.corrallm.overview
-  const res = q.data?.corrallm.residency
-  const servers = ov?.servers ?? []
-  const models = ov?.models ?? []
+  const { machines, unclaimed, modelCount } = derive(q.data)
 
-  // THE LEDGER, moved here from the Overview with P30 phase A. The derivation is
-  // unchanged from the one that lived there — including the reason for each part
-  // of it, which is why it is copied rather than summarised.
-  //
-  // Memory attribution colors follow the MODEL, assigned over the full sorted
-  // model list — never over the subset in one bar. Color must not change when a
-  // model loads or unloads, or every bar repaints and the eye reads a change that
-  // did not happen.
-  const colorIndex = new Map(models.map((m) => m.name).sort().map((n, i) => [n, i]))
-  const colorOf = (name: string) => seriesColor(colorIndex.get(name) ?? 0)
-  // Declared reserve lives on the config view, live budget/used on residency —
-  // join them so one bar can say both what is spoken for and what is being held
-  // back, instead of a second near-duplicate "capacity" panel saying half of it.
-  const reserveByPool = new Map(
-    servers.flatMap((s) => s.pools.map((p) => [`${s.server}/${p.pool}`, Number(p.reserveBytes)])),
-  )
-  const memPools = (res?.servers ?? []).flatMap((s) =>
-    s.pools.map((p) => ({
-      server: s.server,
-      pool: p.pool,
-      budget: Number(p.budget),
-      used: Number(p.used),
-      reserve: reserveByPool.get(`${s.server}/${p.pool}`) ?? 0,
-    })),
-  )
-  const memModels = (res?.models ?? []).map((m) => ({
-    model: m.modelName,
-    server: m.server,
-    pools: m.usage.map((u) => ({ pool: u.pool, bytes: Number(u.bytes) })),
-    measuredBytes: Number(m.footprintMiB) * 1024 * 1024,
-  }))
-  const pressureByServer = new Map(
-    (res?.servers ?? []).map((s) => [s.server, s]),
-  )
-  const memServers = servers.map((s) => {
-    const live = pressureByServer.get(s.server)
-    return {
-      server: s.server,
-      devicePool: s.devicePool,
-      madeRoomCount: Number(live?.madeRoomCount ?? 0),
-      madeRoomEvicted: live?.madeRoomEvicted ?? '',
-      madeRoomFor: live?.madeRoomFor ?? '',
-    }
-  })
-  const resident = res?.models ?? []
-  const dev = (d?: { available: boolean; name: string; totalBytes: string; usedBytes: string; freeBytes: string }) => ({
-    available: !!d?.available,
-    name: d?.name ?? '',
-    totalBytes: Number(d?.totalBytes ?? 0),
-    usedBytes: Number(d?.usedBytes ?? 0),
-    freeBytes: Number(d?.freeBytes ?? 0),
-  })
-  // Device readings carry the pool they back, which is what pairs each card with
-  // the right ledger row. A card no pool claims keeps pool='' and is shown as
-  // unclaimed rather than dropped — a freshly installed GPU nothing budgets is
-  // precisely the state worth seeing.
-  const devs = (
-    list?: readonly {
-      available: boolean
-      name: string
-      uuid?: string | null
-      pool?: string | null
-      totalBytes: string
-      usedBytes: string
-      freeBytes: string
-    }[],
-  ) => (list ?? []).map((d) => ({ ...dev(d), uuid: d.uuid ?? '', pool: d.pool ?? '' }))
-
-  // A server with endpoints is an attached machine; one without is this box.
-  const agents = servers.filter((s) => (s.agentEndpoints ?? []).length > 0)
-
-  // What the form needs to keep an operator from writing an unspellable
-  // footprint: each server's OWN pool names, and whether it can measure itself.
+  // IS EVERYTHING HEALTHY — the question a bare /machines still has to answer
+  // now that the detail lives a click away. Only two things here are a fault:
+  // a configured agent that stopped reporting in, and a pool holding more than
+  // its own budget. Fullness is not one of them (see UtilizationBar), so it is
+  // deliberately absent from this count.
+  const unreachable = machines.filter((m) => m.agentStatus === 'down')
+  const overBudget = machines.filter((m) => m.pools.some((p) => p.budget > 0 && p.used > p.budget))
+  const resident = machines.reduce((n, m) => n + m.resident.length, 0)
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       {err && <Alert severity="error">{err}</Alert>}
 
       <PageHeader title="Machines">
-        <Chip size="small" variant="outlined" label={`${models.length} models`} />
-        <Chip size="small" variant="outlined" label={`${servers.length} servers`} />
+        <Chip size="small" variant="outlined" label={`${machines.length} machines`} />
+        <Chip size="small" variant="outlined" label={`${resident} of ${modelCount} loaded`} />
+        {unreachable.length === 0 && overBudget.length === 0 ? (
+          <Tooltip title="Every configured machine is reporting in, and no pool is holding more than its budget. How FULL a box is is not a fault — see a bar's tooltip.">
+            <Chip size="small" color="success" variant="outlined" label="all reachable" />
+          </Tooltip>
+        ) : (
+          <>
+            {unreachable.length > 0 && (
+              <Tooltip title={`Stopped reporting in: ${unreachable.map((m) => m.server).join(', ')}. Nothing new will start there; whatever is already running is left alone.`}>
+                <Chip
+                  size="small"
+                  color="error"
+                  variant="outlined"
+                  label={`${unreachable.length} unreachable`}
+                />
+              </Tooltip>
+            )}
+            {overBudget.length > 0 && (
+              <Tooltip title={`Holding more than the declared budget: ${overBudget.map((m) => m.server).join(', ')}. The ledger and the machine disagree — open the machine's Memory tab for which pool.`}>
+                <Chip
+                  size="small"
+                  color="error"
+                  variant="outlined"
+                  label={`${overBudget.length} over budget`}
+                />
+              </Tooltip>
+            )}
+          </>
+        )}
       </PageHeader>
 
       {/* First run. Every panel below renders empty on a fresh install, which
@@ -329,19 +227,14 @@ function MachinesPage() {
           show yet — and says nothing about which of the two "Add" buttons to
           press first. A proxy model needs no host, so it is the shortest path
           to a working instance. */}
-      {models.length === 0 && servers.length === 0 && (
+      {machines.length === 0 && modelCount === 0 && (
         <Panel title="Nothing configured yet">
-          <Typography
-            variant="body2"
-            sx={{
-              color: "text.secondary",
-              mb: 2
-            }}>
-            This instance is running but serves no models. Declare a host here first — its
-            memory budget is what the scheduler admits against — then add models on{' '}
-            <b>Setup</b>, which is where a model gets the provider that owns it. A{' '}
-            <code>proxy:</code> model (an upstream API such as Groq or OpenRouter) needs no host
-            at all, so that is the shortest path to a working instance.
+          <Typography variant="body2" sx={{ color: 'text.secondary', mb: 2 }}>
+            This instance is running but serves no models. Declare a host here first — its memory
+            budget is what the scheduler admits against — then add models on <b>Setup</b>, which is
+            where a model gets the provider that owns it. A <code>proxy:</code> model (an upstream
+            API such as Groq or OpenRouter) needs no host at all, so that is the shortest path to a
+            working instance.
           </Typography>
           <Stack direction="row" spacing={1}>
             <Button size="small" variant="contained" onClick={() => setEditing(blankServer())}>
@@ -354,119 +247,25 @@ function MachinesPage() {
         </Panel>
       )}
 
-      {/* Declared first, then what is actually being held against it. */}
       <Panel
-        title="Hosts"
-        subtitle="Declared capacity: what the scheduler is allowed to fill on each machine, as configured — not a measurement. Add host and editing a row change what it may admit next; neither touches a request already running."
+        title="Machines"
+        subtitle="What hardware exists, whether it is reachable, and how much of it is spoken for. Open one for its memory, what is loaded on it, and the tools it builds with."
         actions={
-          <Button size="small" variant="outlined" onClick={() => setEditing(blankServer())}>
-            Add host
-          </Button>
-        }
-        flush
-      >
-        {servers.map((s) => (
-          <Row key={s.server} onClick={() => openEditor('server', s.server)}>
-            <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
-              <Typography variant="subtitle2">{s.server}</Typography>
-              {/* No "local" chip: every server IS local until a server can be
-                  bound to an agent, so it would carry no information now and be
-                  wrong the moment one can. The Agents panel says where that
-                  distinction will appear. */}
-              {Number(s.maxConcurrent) > 0 && (
-                <Chip size="small" variant="outlined" label={`max ${s.maxConcurrent}`} />
-              )}
-            </Box>
-            <Box sx={{ display: 'flex', gap: 3, mt: 0.75, flexWrap: 'wrap' }}>
-              {s.pools.map((p) => (
-                <Stat
-                  key={p.pool}
-                  label={
-                    p.pool === s.devicePool ? `${p.pool} · device` : p.pool
-                  }
-                  value={
-                    Number(p.reserveBytes) > 0
-                      ? `${fmtBytes(Number(p.totalBytes))} − ${fmtBytes(Number(p.reserveBytes))} reserved`
-                      : fmtBytes(Number(p.totalBytes))
-                  }
-                  title={
-                    p.pool === s.devicePool
-                      ? 'A measured footprint is charged against this pool. Unified-memory hosts point it at their single system pool.'
-                      : undefined
-                  }
-                />
-              ))}
-            </Box>
-          </Row>
-        ))}
-      </Panel>
-
-      {/* What is HOLDING that capacity right now — the live half of the two
-          numbers above. Moved here from the Overview (P30 phase A): declared and
-          held are one question and were on two pages. */}
-      <MemoryPanel
-        pools={memPools}
-        models={memModels}
-        servers={memServers}
-        gpus={devs(res?.gpus)}
-        host={dev(res?.host)}
-        colorOf={colorOf}
-      />
-
-      {/* WHAT IS ACTUALLY ON THE HARDWARE right now. It used to sit at the bottom
-          of /usage, a page otherwise about cost — an operator asking "what is
-          loaded on box1" had to go to the billing screen to find out. It came off
-          Traffic with the phase B merge and lands here, under the memory it is
-          holding. */}
-      <Panel
-        title="Resident models"
-        subtitle="What is loaded right now, and on which machine. Nothing here is a cost — it is what the memory above is being spent on."
-        badge={<Chip size="small" variant="outlined" label={`${resident.length}`} />}
-        flush
-      >
-        {resident.length === 0 ? (
-          <Row>
-            <Typography variant="body2" sx={{ color: C.textMuted }}>
-              Nothing is loaded. corrallm starts a model when a request asks for one, so an idle
-              box holds nothing — this is the normal state between requests, not a fault.
-            </Typography>
-          </Row>
-        ) : (
-          resident.map((m) => (
-            <Row key={m.name}>
-              <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
-                <Typography variant="subtitle2">{m.modelName}</Typography>
-                <Chip size="small" label={m.state} color={residentColor(m.state)} />
-                <Typography variant="caption" sx={{ color: C.textFaint }}>
-                  on {m.server || 'this machine'}
-                </Typography>
-                {m.persistent && <Chip size="small" variant="outlined" label="kept loaded" />}
-                {Number(m.refs) > 0 && (
-                  <Chip size="small" variant="outlined" label={`${m.refs} in flight`} />
-                )}
-              </Box>
-              <Box sx={{ display: 'flex', gap: 2, mt: 0.5, flexWrap: 'wrap' }}>
-                <Typography variant="caption" sx={{ color: C.textMuted }}>
-                  holding {m.usage.map((u) => `${fmtBytes(u.bytes)} of ${u.pool}`).join(', ') || '—'}
-                </Typography>
-                <Typography variant="caption" sx={{ color: C.textFaint }}>
-                  last used {Number(m.lastUsedMs) > 0 ? new Date(Number(m.lastUsedMs)).toLocaleString() : 'not since this daemon started'}
-                </Typography>
-              </Box>
-            </Row>
-          ))
-        )}
-      </Panel>
-
-      {/* Agents: enrolled machines, and the one command that attaches another. */}
-      <Panel
-        title="Agents"
-        subtitle="Other machines this daemon spawns and evicts on. Attach a machine issues a one-time code for a NEW machine and changes nothing about the ones already here."
-        badge={<Chip size="small" variant="outlined" label={`${agents.length}`} />}
-        actions={
-          <Button size="small" variant="outlined" disabled={mint.isPending} onClick={() => mint.mutate()}>
-            Attach a machine
-          </Button>
+          <>
+            <Button size="small" variant="outlined" onClick={() => setEditing(blankServer())}>
+              Add host
+            </Button>
+            <Tooltip title="Issues a one-time code for a NEW machine. Changes nothing about the ones already here.">
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={mint.isPending}
+                onClick={() => mint.mutate()}
+              >
+                Attach a machine
+              </Button>
+            </Tooltip>
+          </>
         }
         flush
       >
@@ -497,8 +296,8 @@ function MachinesPage() {
               </Button>
               <Typography variant="caption" sx={{ color: C.textFaint }}>
                 {/* Both properties are load-bearing and easy to be surprised by. */}
-                Single use, expires {new Date(Number(minted.expires)).toLocaleTimeString()}. The token is
-                shown once — mint another if you lose it.
+                Single use, expires {new Date(Number(minted.expires)).toLocaleTimeString()}. The
+                token is shown once — mint another if you lose it.
               </Typography>
               <Box sx={{ flexGrow: 1 }} />
               <Button size="small" onClick={() => setMinted(null)}>
@@ -508,110 +307,47 @@ function MachinesPage() {
           </Row>
         )}
 
-        {agents.length === 0 && !minted && (
+        {machines.length === 0 && !minted && (
           <Row>
             <Typography variant="body2" sx={{ color: C.textMuted }}>
-              No machines attached yet. <b>Attach a machine</b> mints a single-use token and shows the
-              one command to run there — it installs the agent, registers the machine, and sizes it
-              from its own memory probe.
+              No machines declared. <b>Add host</b> writes one by hand; <b>Attach a machine</b>{' '}
+              mints a single-use token and shows the one command to run on another box — it
+              installs the agent, registers the machine, and sizes it from its own memory probe.
             </Typography>
           </Row>
         )}
 
-        {agents.map((a) => (
-          <Row key={a.server}>
-            <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
-              <Typography variant="subtitle2">{a.server}</Typography>
-              <Tooltip title={AGENT_STATUS_HINT[a.agentStatus] ?? a.agentStatus}>
-                <Chip
-                  size="small"
-                  label={a.agentStatus}
-                  color={
-                    a.agentStatus === 'up'
-                      ? 'success'
-                      : a.agentStatus === 'down'
-                        ? 'error'
-                        : 'warning'
-                  }
-                />
-              </Tooltip>
-              {a.noProcessMemory && (
-                <Tooltip title="This host cannot attribute memory to a single process (macOS has no nvidia-smi equivalent). A model here MUST declare ramUsage — nothing can measure it, so a declared size is the only size there is.">
-                  {/* Was `ramUsage required`, then a fragment with no verb —
-                      Lenny run 5 could not tell whether it explained why the
-                      machine was unreachable or was an unrelated footnote. A
-                      chip cannot carry this; it is a sentence, so it is one,
-                      below the row (OB-3). */}
-                  <Chip size="small" variant="outlined" color="warning" label="sizes must be declared" />
-                </Tooltip>
-              )}
-              {a.noProcessMemory && (
-                <Typography variant="caption" sx={{ display: 'block', color: C.textMuted, mt: 0.5 }}>
-                  This machine cannot measure how much memory a model is using, so every model
-                  configured to run here has to state its own size. Nothing to do with whether it is
-                  reachable — a model with no size declared simply will not start here.
-                </Typography>
-              )}
-              {Number(a.agentLastSeen) > 0 && (
-                <Typography variant="caption" sx={{ color: C.textFaint }}>
-                  last seen {new Date(Number(a.agentLastSeen)).toLocaleTimeString()}
-                </Typography>
-              )}
-            </Box>
-            <Box sx={{ mt: 0.5 }}>
-              {(a.agentEndpoints ?? []).map((e) => (
-                <Typography key={e} variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                  {e}
-                </Typography>
-              ))}
-            </Box>
-          </Row>
+        {machines.map((m) => (
+          <MachineRow
+            key={m.server}
+            m={m}
+            onOpen={() => nav({ to: '/machines/$name', params: { name: m.server } })}
+          />
         ))}
       </Panel>
 
-      {/* Per-machine, like the two panels above it — what each host can RUN
-          the models with. Its own query, because a survey asks every host and
-          would otherwise make capacity wait on a sleeping laptop. */}
-      <ToolingPanel />
+      {/* Belongs to no machine row, so if it is not here it is nowhere — and a
+          GPU the scheduler cannot see looks exactly like a GPU that is not
+          installed. */}
+      {unclaimed.length > 0 && (
+        <Panel title="Unclaimed GPUs" dense>
+          <Typography variant="body2" sx={{ color: C.textMuted }}>
+            Present in this machine, but no pool budgets{' '}
+            {unclaimed.length === 1 ? 'it' : 'them'}, so the scheduler cannot use{' '}
+            {unclaimed.length === 1 ? 'it' : 'them'}:{' '}
+            {unclaimed.map((g) => `${g.name} (${fmtBytes(g.totalBytes)})`).join(', ')}. Declare a
+            pool and a <code>devices:</code> entry on the machine that holds{' '}
+            {unclaimed.length === 1 ? 'it' : 'them'}.
+          </Typography>
+        </Panel>
+      )}
 
-      {/* The per-box model list moved to Setup (was Providers). A model belongs to the
-          provider that owns it — that is what decides its served prefix and
-          what it falls back to — and having a second list here meant two places
-          to add one thing, which disagreed about which fields mattered. Boxes
-          are still the grouping there; this page keeps what a box IS, not what
-          runs on it. */}
-
-      {/* Lanes, Extensions and Priority groups moved off this page. A lane is
-          a list of models and an extension serves models, so both belong with
-          the models on Setup; priority groups belong beside the live group
-          view on Groups. What is left is what a MACHINE is: its declared
-          capacity, the agent that reaches it, and the tools it can run models
-          with. The editor they shared is now a component, which is what made
-          moving them possible at all. */}
       <EntryEditor editing={editing} onChange={setEditing} onClose={() => setEditing(null)} />
-
-      {/* The "Included files" panel is gone. `include:` was a way to keep a
-          hand-written config safe from the daemon's rewrites; configuration
-          lives in the database now, so includes are refused and that panel
-          could only ever render "None". A permanently empty panel is worse than
-          no panel: it implies a feature. */}
     </Box>
-  );
+  )
 }
 
 export const Route = createFileRoute('/machines')({ component: MachinesPage })
-
-// specFromGql fills the gaps a nullable schema leaves, so the form always has a
-// value to render. A null quality is 0, not "unset" — the form has to put
-// SOMETHING in the box, and 0 is what the config means by absent.
-
-// What each agent state means for whether anything can run there.
-const AGENT_STATUS_HINT: Record<string, string> = {
-  up: 'heartbeating; models can be spawned here',
-  down: 'stopped reporting in — new spawns are refused here, but its config and any running backends are left alone',
-  unknown: 'configured but has never reported in; a spawn will be attempted and will say why if it fails',
-  local: 'this machine',
-}
 
 // blankServer seeds a host. Pools are the part people get wrong, so the
 // template shows both shapes: a discrete card, and unified memory where one
@@ -637,4 +373,3 @@ devicePool: gpu0       # the pool a MEASURED footprint is charged against
 `,
   }
 }
-

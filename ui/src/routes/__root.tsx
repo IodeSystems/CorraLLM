@@ -120,6 +120,14 @@ function CalibrationBanner() {
 //   Bench     which model is worth its VRAM
 //
 // Every old address still resolves; each moved page redirects.
+//
+// TOOLING IS DELIBERATELY NOT AN ENTRY. It is a tab on /machines/<name>,
+// because a toolchain belongs to a machine — "which llama.cpp is on box1" is a
+// question about box1, and its answer is useless without box1's memory and
+// residency beside it. An eighth entry would put half of one machine's answer
+// behind a different door, which is exactly the fragmentation these entries
+// were collapsed to fix. /machines is a LIST now and the machine page hangs off
+// it; the fuzzy match below already lights this entry up there.
 const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/', label: 'Now', icon: DashboardOutlined },
   { to: '/models', label: 'Models', icon: LayersOutlined },
