@@ -211,6 +211,8 @@ type CorrallmQueryNamespace {
     key: String
     """Max records, newest first."""
     limit: Long
+    """Records to skip, newest first, before taking limit."""
+    offset: Long
     """Filter to one placement (box + cmd); empty returns every placement."""
     placement: String
     """Filter to one served model; empty returns all models."""
@@ -537,6 +539,8 @@ type CorrallmV1QueryNamespace {
     key: String
     """Max records, newest first."""
     limit: Long
+    """Records to skip, newest first, before taking limit."""
+    offset: Long
     """Filter to one placement (box + cmd); empty returns every placement."""
     placement: String
     """Filter to one served model; empty returns all models."""
@@ -2375,6 +2379,8 @@ type corrallm_QuotaWindowView {
 }
 
 type corrallm_RecentActivityOutputBody {
+  """Whether another page follows this one. NOT a total count — asking for the total would cost a second scan over this same filter on every page-turn; a pager only needs to know whether to enable Next."""
+  hasMore: Boolean!
   """Activity rows, newest first."""
   records: [corrallm_ActivityRecord!]!
 }
