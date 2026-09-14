@@ -249,7 +249,10 @@ function MachinesPage() {
 
       <Panel
         title="Machines"
-        subtitle="What hardware exists, whether it is reachable, and how much of it is spoken for. Open one for its memory, what is loaded on it, and the tools it builds with."
+        subtitle="What hardware exists, whether it is reachable, and how much of it is spoken for"
+        // The second sentence is the page's only statement of where to go next
+        // (OB-8), and the header was cutting it off before it named anything.
+        note="Open one for its memory, what is loaded on it, and the tools it builds with."
         actions={
           <>
             <Button size="small" variant="outlined" onClick={() => setEditing(blankServer())}>

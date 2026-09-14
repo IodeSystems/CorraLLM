@@ -1077,7 +1077,10 @@ function ModelsPage() {
       {lanes.length > 0 && (
         <Panel
           title="Model lanes"
-          subtitle="A name a caller can ask for that stands for several models, tried left to right until one can serve. Filled chips are contributed at runtime — a pool, a directory choice, or a selector — and are not in your config's member list."
+          subtitle="A name standing for several models, tried left to right until one can serve"
+          // The chip legend. Without it a filled chip reads as a config entry
+          // somebody cannot find, and the header was clipping it.
+          note="Filled chips are contributed at runtime — a pool, a directory choice, or a selector — and are not in your config's member list."
           flush
         >
           {lanes.map((l) => {

@@ -516,7 +516,11 @@ function Throughput({
   return (
     <Panel
       title="What it is getting done"
-      subtitle="Counted over the last hour. Traffic has the same numbers over any span you pick."
+      subtitle="Counted over the last hour"
+      // The window stays in the header, because a number without its window is
+      // not a number (OB-4) and the head of the sentence survives a clip. Where
+      // to get another window is the next step, and goes where it is readable.
+      note="Traffic has the same numbers over any span you pick."
       dense
     >
       <Row>

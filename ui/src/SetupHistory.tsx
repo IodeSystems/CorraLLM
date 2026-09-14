@@ -183,7 +183,15 @@ export function HistoryPanels() {
             <Chip size="small" variant="outlined" label={`${revisions.length}`} />
           )
         }
-        subtitle="Every save records what the configuration became. Newest first. Restore replaces what is running now with an older version — it takes effect immediately, on whoever is using the box at that moment."
+        subtitle="What the configuration became at each save, newest first"
+        // Restore is the control on this page that reaches live traffic, and
+        // the header clipped the half that says when it lands and on whom.
+        note={
+          <>
+            <b>Restore</b> replaces what is running now with an older version — it takes effect
+            immediately, on whoever is using the box at that moment.
+          </>
+        }
         flush
       >
         {q.error && (

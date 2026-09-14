@@ -537,10 +537,23 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
   return (
     <Panel
       title="By model"
-      subtitle={
-        live
-          ? `What each model did ${windowPhrase(window)}, and what reaching it cost. tp/s reads, tg/s writes — "n/r" means no backend here reports timings, which is every remote provider.`
-          : `What each model did ${windowPhrase(window)}. "In use" is blank: it describes this moment, and nothing recorded what it was then.`
+      subtitle={`What each model did ${windowPhrase(window)}, and what reaching it cost`}
+      // The column glossary, which is prose and was clipping. Which sentence
+      // depends on whether the window is the live one: "in use" is a reading of
+      // this moment, so on a past window the column is blank for a reason the
+      // reader would otherwise have to guess at (OB-9).
+      note={
+        live ? (
+          <>
+            tp/s reads, tg/s writes — &ldquo;n/r&rdquo; means no backend here reports timings,
+            which is every remote provider.
+          </>
+        ) : (
+          <>
+            &ldquo;In use&rdquo; is blank: it describes this moment, and nothing recorded what it
+            was then.
+          </>
+        )
       }
       badge={<Chip size="small" variant="outlined" label={`${rows.length} models`} />}
       flush
