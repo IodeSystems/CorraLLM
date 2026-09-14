@@ -11,6 +11,7 @@ import {
 } from '@mui/material'
 import { Panel, PageHeader } from '@/Panel'
 import { ActivityLog } from '@/ActivityLog'
+import { GroupCostNote, useGroupCosts } from '@/GroupCost'
 import { KeyLaneActions } from '@/KeyLane'
 import { KeyCharts } from '@/KeyCharts'
 import { KeysDoc } from './callers'
@@ -35,6 +36,7 @@ import { Loading } from '@/Loading'
 function KeyDetail() {
   const { key } = Route.useParams()
   const [err, setErr] = useState('')
+  const { costOf } = useGroupCosts()
 
   const q = useQuery({
     queryKey: ['keys'],
@@ -71,15 +73,23 @@ function KeyDetail() {
           {roster?.unknownAllowed ? (
             <>
               {' '}
-              in the <code>{roster?.unknownGroup}</code> lane, like any unrecognized key.
+              in the <code>{roster?.unknownGroup}</code> group, like any unrecognized key.
             </>
           ) : (
             <> — no: unrecognized keys are refused (401) on this box.</>
           )}
         </Alert>
       ) : (
-        <Panel title="Caller" subtitle="Lane assignment and what this key has consumed">
+        <Panel title="Caller" subtitle="Group, what the group gets it, and what it has consumed">
           <Stack spacing={2}>
+            {/* THE ANSWER FIRST (OB-11). Somebody arrives here having recognised
+                this key as their own team's, asking whether the box is broken or
+                whether it is something they did. "Your traffic is in a group
+                other groups outrank" is the answer to that, and it used to exist
+                only as the word `batch` and the number 1 on a row, with the
+                arithmetic left to the reader (OB-12). Renders nothing at all when
+                nothing outranks the group. */}
+            <GroupCostNote group={row.group} cost={costOf(row.group)} />
             <Stack
               direction="row"
               spacing={3}
