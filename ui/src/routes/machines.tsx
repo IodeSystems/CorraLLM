@@ -9,7 +9,6 @@ import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
 import { fmtBytes, extractMessage } from '@/format'
-import { Loading } from '@/Loading'
 import {
   AGENT_STATUS_HINT,
   agentColor,
@@ -163,18 +162,30 @@ function MachinesPage() {
     onError: (e: unknown) => setErr(extractMessage(e)),
   })
 
-  if (q.isLoading) {
-    return <Loading />
-  }
   if (q.error) {
     return (
-      <Box sx={{ p: 3 }}>
+      <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <PageHeader title="Machines" />
         <Alert severity="error">{String(q.error)}</Alert>
       </Box>
     )
   }
 
-  const { machines, unclaimed, modelCount } = derive(q.data)
+  // THE PAGE RENDERS BEFORE THE ANSWER DOES. It used to return `<Loading />`
+  // here, which on a busy box is a nav rail and an empty frame for as long as
+  // the query takes — and this is the second screen an owner opens when
+  // something feels wrong (OB-5). The header, the panel and its note are known
+  // without asking anything, so they are drawn straight away and the body says
+  // what it is waiting for.
+  //
+  // `pending` is carried rather than duplicating the panel in a second branch:
+  // two copies of a header drift, and this one holds the page's only statement
+  // of where to go next (OB-8).
+  const d = q.data ? derive(q.data) : null
+  const pending = d == null
+  const machines = d?.machines ?? []
+  const unclaimed = d?.unclaimed ?? []
+  const modelCount = d?.modelCount ?? 0
 
   // IS EVERYTHING HEALTHY — the question a bare /machines still has to answer
   // now that the detail lives a click away. Only two things here are a fault:
@@ -190,33 +201,44 @@ function MachinesPage() {
       {err && <Alert severity="error">{err}</Alert>}
 
       <PageHeader title="Machines">
-        <Chip size="small" variant="outlined" label={`${machines.length} machines`} />
-        <Chip size="small" variant="outlined" label={`${resident} of ${modelCount} loaded`} />
-        {unreachable.length === 0 && overBudget.length === 0 ? (
-          <Tooltip title="Every configured machine is reporting in, and no pool is holding more than its budget. How FULL a box is is not a fault — see a bar's tooltip.">
-            <Chip size="small" color="success" variant="outlined" label="all reachable" />
-          </Tooltip>
+        {/* NOT three chips reading 0, 0 of 0 and a green "all reachable" — the
+            last of those is a verdict, and it would be the first thing read on a
+            page that has not asked yet. */}
+        {pending ? (
+          <Typography variant="body2" sx={{ color: C.textMuted }}>
+            Asking this box what hardware it has — nothing here is a reading yet.
+          </Typography>
         ) : (
           <>
-            {unreachable.length > 0 && (
-              <Tooltip title={`Stopped reporting in: ${unreachable.map((m) => m.server).join(', ')}. Nothing new will start there; whatever is already running is left alone.`}>
-                <Chip
-                  size="small"
-                  color="error"
-                  variant="outlined"
-                  label={`${unreachable.length} unreachable`}
-                />
+            <Chip size="small" variant="outlined" label={`${machines.length} machines`} />
+            <Chip size="small" variant="outlined" label={`${resident} of ${modelCount} loaded`} />
+            {unreachable.length === 0 && overBudget.length === 0 ? (
+              <Tooltip title="Every configured machine is reporting in, and no pool is holding more than its budget. How FULL a box is is not a fault — see a bar's tooltip.">
+                <Chip size="small" color="success" variant="outlined" label="all reachable" />
               </Tooltip>
-            )}
-            {overBudget.length > 0 && (
-              <Tooltip title={`Holding more than the declared budget: ${overBudget.map((m) => m.server).join(', ')}. The ledger and the machine disagree — open the machine's Memory tab for which pool.`}>
-                <Chip
-                  size="small"
-                  color="error"
-                  variant="outlined"
-                  label={`${overBudget.length} over budget`}
-                />
-              </Tooltip>
+            ) : (
+              <>
+                {unreachable.length > 0 && (
+                  <Tooltip title={`Stopped reporting in: ${unreachable.map((m) => m.server).join(', ')}. Nothing new will start there; whatever is already running is left alone.`}>
+                    <Chip
+                      size="small"
+                      color="error"
+                      variant="outlined"
+                      label={`${unreachable.length} unreachable`}
+                    />
+                  </Tooltip>
+                )}
+                {overBudget.length > 0 && (
+                  <Tooltip title={`Holding more than the declared budget: ${overBudget.map((m) => m.server).join(', ')}. The ledger and the machine disagree — open the machine's Memory tab for which pool.`}>
+                    <Chip
+                      size="small"
+                      color="error"
+                      variant="outlined"
+                      label={`${overBudget.length} over budget`}
+                    />
+                  </Tooltip>
+                )}
+              </>
             )}
           </>
         )}
@@ -227,7 +249,7 @@ function MachinesPage() {
           show yet — and says nothing about which of the two "Add" buttons to
           press first. A proxy model needs no host, so it is the shortest path
           to a working instance. */}
-      {machines.length === 0 && modelCount === 0 && (
+      {!pending && machines.length === 0 && modelCount === 0 && (
         <Panel title="Nothing configured yet">
           <Typography variant="body2" sx={{ color: 'text.secondary', mb: 2 }}>
             This instance is running but serves no models. Declare a host here first — its memory
@@ -310,7 +332,17 @@ function MachinesPage() {
           </Row>
         )}
 
-        {machines.length === 0 && !minted && (
+        {/* "No machines declared" is a finding about a box that answered. Until
+            it has, the list is not empty — it is unasked. */}
+        {pending && (
+          <Row>
+            <Typography variant="body2" sx={{ color: C.textFaint }}>
+              Waiting for the list — no machine has been counted yet.
+            </Typography>
+          </Row>
+        )}
+
+        {!pending && machines.length === 0 && !minted && (
           <Row>
             <Typography variant="body2" sx={{ color: C.textMuted }}>
               No machines declared. <b>Add host</b> writes one by hand; <b>Attach a machine</b>{' '}

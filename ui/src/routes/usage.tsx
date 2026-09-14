@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { DEFAULT_WINDOW, windowKey, windowPhrase, windowVars, type TimeWindow } from '@/TimeWindow'
@@ -21,6 +22,7 @@ import type { ChartSeries } from '@/Charts'
 import { C, seriesColor } from '@/theme'
 import { fmtDuration, fmtInt, fmtUSD } from '@/format'
 import { Loading } from '@/Loading'
+import { NotYet } from '@/NotYet'
 import { useModelStats } from '@/ModelStats'
 
 // BarCell renders a value with a proportional background bar (value / columnMax).
@@ -46,6 +48,10 @@ function BarCell({ value, max, label }: { value: number; max: number; label: str
 
 // A headline number is its own kind of panel: the label IS the panel title, so
 // the tile carries one value and nothing competing with it.
+//
+// `value` is a node, not a string, because half of what a tile has to say is not
+// a number: `n/r` when the backend reported none, `not in yet` when this box has
+// not answered. Both carry a tooltip of their own (see NotYet.tsx).
 function StatTile({
   label,
   value,
@@ -53,7 +59,7 @@ function StatTile({
   hint,
 }: {
   label: string
-  value: string
+  value: ReactNode
   sub?: string
   hint?: string
 }) {
@@ -251,7 +257,8 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
   const q = useUsage(window)
   // Totals ride the By-model query rather than a usageRollup of our own: same
   // fetch, so a tile and the table under it cannot drift apart mid-window.
-  const total = useModelStats(window).data?.corrallm.usageRollup?.total
+  const stats = useModelStats(window)
+  const total = stats.data?.corrallm.usageRollup?.total
 
   const groupBuckets = (q.data?.corrallm.usageSeriesByGroup?.buckets ?? []).map(Number)
   const keyBuckets = (q.data?.corrallm.usageSeries?.buckets ?? []).map(Number)
@@ -269,36 +276,58 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
   }))
 
   const reports = Number(total?.cacheReports ?? 0)
+  // NOTHING HAS BEEN COUNTED UNTIL THE TOTAL ARRIVES. `?? 0` on these five put a
+  // measured-looking zero on every tile for as long as the query took — six
+  // seconds on a box busy enough to be worth opening the page for — and the
+  // strip is the part of the page that gets read. The Cached tile already knew
+  // the difference; the other four now say it the same way (NotYet.tsx).
+  //
+  // `total == null` covers a query still in flight AND one that failed, and the
+  // sentence behind the token is true of both: this box has not returned a
+  // figure. A failure also says so in words under the tiles.
+  const counted = total != null
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
-        <StatTile label="Requests" value={fmtInt(total?.requests ?? 0)} />
+        <StatTile label="Requests" value={counted ? fmtInt(total.requests) : <NotYet />} />
         <StatTile
           label="Processed"
-          value={fmtInt(total?.promptTokens ?? 0)}
+          value={counted ? fmtInt(total.promptTokens) : <NotYet />}
           sub="prompt tokens read"
           hint="Every prompt token the backends were handed in this window, cached ones included."
         />
         <StatTile
           label="Generated"
-          value={fmtInt(total?.completionTokens ?? 0)}
+          value={counted ? fmtInt(total.completionTokens) : <NotYet />}
           sub="completion tokens written"
         />
         <StatTile
           label="Cached"
-          value={reports > 0 ? fmtInt(total?.cachedTokens ?? 0) : 'n/r'}
+          value={!counted ? <NotYet /> : reports > 0 ? fmtInt(total.cachedTokens) : 'n/r'}
           sub={
-            reports > 0
-              ? `${((total?.cacheHitRate ?? 0) * 100).toFixed(1)}% of prompt, ~${fmtLongDuration(
-                  (total?.cachedSecondsSaved ?? 0) * 1000,
-                )} saved`
-              : 'nothing reported a cache'
+            !counted
+              ? undefined
+              : reports > 0
+                ? `${(total.cacheHitRate * 100).toFixed(1)}% of prompt, ~${fmtLongDuration(
+                    total.cachedSecondsSaved * 1000,
+                  )} saved`
+                : 'nothing reported a cache'
           }
           hint="Prompt tokens the backends served from cache instead of reprocessing, and their share of all prompt tokens — weighted by tokens across every model, not an average of per-model rates. 'n/r' means nothing reported a cache at all, which is not a measured zero. The saved figure estimates the prompt-processing time avoided at the observed tokens/sec, so it moves with batch size and context."
         />
-        <StatTile label="Cost" value={fmtUSD(total?.costUsd ?? 0)} />
+        <StatTile label="Cost" value={counted ? fmtUSD(total.costUsd) : <NotYet />} />
       </Stack>
+
+      {/* A tile that says "not in yet" forever is a screen that has stopped
+          updating without saying so (OB-9), and the fetch these five ride on
+          had nowhere to report a failure. */}
+      {stats.error && (
+        <Typography variant="body2" sx={{ color: C.warn }}>
+          The totals above did not arrive: {String(stats.error)}. Nothing was counted, and nothing
+          above is a reading.
+        </Typography>
+      )}
 
       {q.isLoading ? (
         <Loading />
