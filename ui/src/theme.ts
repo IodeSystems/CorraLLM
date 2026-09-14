@@ -103,6 +103,18 @@ export const theme = createTheme({
         '::-webkit-scrollbar': { width: 10, height: 10 },
         '::-webkit-scrollbar-thumb': { background: C.borderStrong, borderRadius: 8 },
         '::-webkit-scrollbar-track': { background: 'transparent' },
+        // Most links are TanStack Router's <Link>, a plain <a> that MuiLink's
+        // styleOverrides never touch. Body-color-and-underline reads as text
+        // that happens to be clickable, not as accent-blue that fights every
+        // other blue accent on the page. `:visited` is pinned to the same
+        // color so history doesn't repaint old links purple.
+        a: {
+          color: C.text,
+          textDecorationColor: alpha(C.text, 0.4),
+          textUnderlineOffset: '2px',
+        },
+        'a:visited': { color: C.text, textDecorationColor: alpha(C.text, 0.4) },
+        'a:hover, a:focus-visible': { color: C.accent, textDecorationColor: C.accent },
       },
     },
     MuiPaper: {
@@ -220,5 +232,19 @@ export const theme = createTheme({
     },
     MuiTab: { styleOverrides: { root: { textTransform: 'none', fontWeight: 600 } } },
     MuiDivider: { styleOverrides: { root: { borderColor: C.border } } },
+    // MuiLink's own class beats the CssBaseline `a` rule above, so the two
+    // places that use it (model.tsx, ProviderDialog.tsx) need the same
+    // body-color-and-underline treatment repeated here.
+    MuiLink: {
+      styleOverrides: {
+        root: {
+          color: C.text,
+          textDecorationColor: alpha(C.text, 0.4),
+          textUnderlineOffset: '2px',
+          '&:visited': { color: C.text, textDecorationColor: alpha(C.text, 0.4) },
+          '&:hover, &:focus-visible': { color: C.accent, textDecorationColor: C.accent },
+        },
+      },
+    },
   },
 })
