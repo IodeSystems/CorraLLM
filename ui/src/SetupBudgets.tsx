@@ -143,13 +143,26 @@ function refusalMeaning(status: number): string {
   return `it answers ${status}`
 }
 
-/** What to do about it — a fault the reader cannot act on is not a fault (OB-6). */
+/**
+ * What to do about it — a fault the reader cannot act on is not a fault (OB-6).
+ *
+ * This said "drop this rung from its lane", which is two config words in one
+ * clause and is the whole of what a reader took from the banner: "I don't own a
+ * rung and I don't know what a lane is." A `rung` is the backend the sentence
+ * already names, and a `lane` is a fallback list — both are gloss, never label
+ * (OB-3).
+ *
+ * The second half also now says WHERE, because "take it out" with no room named
+ * is a dead end the banner cannot be acted on from (OB-8). Both halves are
+ * offered because the choice is the reader's: pay for the account, or stop
+ * reaching for it.
+ */
 function refusalAction(status: number): string {
-  if (status === 402) return 'Fund the account, or drop this rung from its lane.'
-  if (status === 401) return 'Replace the credential, or drop this rung from its lane.'
-  if (status === 403)
-    return 'Check what the credential is allowed to reach, or drop this rung from its lane.'
-  return 'Check the provider, or drop this rung from its lane.'
+  const drop = 'or take this backend out of its fallback list on the Models tab.'
+  if (status === 402) return `Fund the account, ${drop}`
+  if (status === 401) return `Replace the credential, ${drop}`
+  if (status === 403) return `Check what the credential is allowed to reach, ${drop}`
+  return `Check the provider, ${drop}`
 }
 
 /**
@@ -224,7 +237,8 @@ export function ProviderBudgets() {
         }}
       >
         Per-backend budget learned live from each provider's rate-limit headers. A backend goes{' '}
-        <b>unavailable</b> when exhausted or cooling from a 429, and the free lane routes around it.
+        <b>unavailable</b> when exhausted or cooling from a 429, and a request that can fall back to
+        another backend does.
         Counts are a snapshot from the last call — <i>observed N ago</i> — not a live tick.
       </Typography>
 

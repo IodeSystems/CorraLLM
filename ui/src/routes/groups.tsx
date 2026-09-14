@@ -39,12 +39,12 @@ function fmtCountdown(expiresAt: string, nowMs: number): string {
 }
 
 /**
- * The lane half of Callers (P30 phase C).
+ * The group half of Callers (P30 phase C).
  *
  * This was the /groups page. A group is a property of the CALLERS in it — a key
  * maps to exactly one, and the weight that decides who wins under contention
  * lives here — so asking "who is calling this box and what are they allowed"
- * meant two pages, one listing the keys and one listing what their lanes get.
+ * meant two pages, one listing the keys and one listing what their groups get.
  * They are one page now. /groups redirects.
  *
  * Backend load stays with these panels rather than moving to Machines: its rows
@@ -194,6 +194,19 @@ export function GroupPanels() {
         )}
       </Panel>
 
+      {/* GROUP, AND THE CELL NOW AGREES WITH THE HEADER.
+          The header said Group and the cell rendered `r.lane`, which reads as
+          the header being wrong about its own column. It was not: the scheduler
+          reserves against the axis it calls a lane, and the value the resolver
+          puts there is `config.ResolveGroup(callerKey)` — the caller's PRIORITY
+          GROUP, the same string the Priority groups table above lists and the
+          Backend load table below breaks down by. The schema says so too
+          ("Priority group the slots are held for").
+          So the header keeps the right word and the field is unwrapped once,
+          here, with the reason attached. Renaming the column to match the
+          field would have taught a meaning that is wrong two panels away, the
+          way ActiveRequests' did before it. The field itself is the server's to
+          rename. */}
       <Panel
         title="Reservations"
         subtitle="Slots held free for a group's headroom — short-lived, heartbeat-renewed, auto-expiring"
@@ -220,6 +233,7 @@ export function GroupPanels() {
                 </TableRow>
               ) : (
                 reservations.map((r) => (
+                  // `r.lane` IS the priority group — see the note above the panel.
                   <TableRow key={`${r.model}/${r.lane}`} hover>
                     <TableCell>{r.model}</TableCell>
                     <TableCell>
