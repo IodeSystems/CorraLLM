@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Box, Button, Typography } from '@mui/material'
 import { Panel } from '@/Panel'
 import { C, seriesColor } from '@/theme'
@@ -216,6 +216,161 @@ function HoverCard({
   )
 }
 
+// --- Axis helpers ---------------------------------------------------------
+//
+// A line with no scale reads as a shape, not a measurement — hence "just look
+// like lines". Ticks are picked from ROUND values, not raw min/max fractions:
+// "1,240" and "3,720" are read at a glance, "1,187.33" and "3,561.99" are not.
+// The plotted scale extends to the rounded ceiling (headroom above the data),
+// so the top gridline is always a value worth reading, not the exact peak.
+//
+// Axis text is never drawn as SVG <text>: the plot is stretched to fill its
+// box (preserveAspectRatio="none", same as the polylines above), which would
+// warp glyphs non-uniformly with the container's aspect ratio. Labels are
+// HTML overlays instead, positioned by fraction of the (fixed-height,
+// fluid-width) box — the trick HoverCard already uses for the tooltip.
+
+// niceTicks returns ascending round tick values from 0 to a ceiling >= max,
+// stepping by 1/2/5 × 10^n. `count` is a target, not a guarantee — rounding
+// can land one tick short or long of it.
+function niceTicks(max: number, count: number): number[] {
+  if (!(max > 0)) return [0]
+  const rawStep = max / Math.max(1, count)
+  const mag = 10 ** Math.floor(Math.log10(rawStep))
+  const norm = rawStep / mag
+  const step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag
+  const ceilMax = Math.ceil(max / step) * step
+  const out: number[] = []
+  for (let v = 0; v <= ceilMax + step / 1e6; v += step) out.push(v)
+  return out
+}
+
+// Width-aware x-tick count. A narrow panel (mobile, a 3-up grid) gets fewer
+// labels — colliding timestamps are worse than sparse ones.
+function xTickCountFor(width: number): number {
+  if (width <= 0) return 3
+  if (width < 360) return 2
+  if (width < 520) return 3
+  if (width < 720) return 4
+  return 5
+}
+
+// Evenly spaced bucket indices, always including both ends.
+function pickTickIndices(n: number, count: number): number[] {
+  if (n <= 1) return [0]
+  const c = Math.max(2, Math.min(count, n))
+  const seen = new Set<number>()
+  for (let k = 0; k < c; k++) seen.add(Math.round((k / (c - 1)) * (n - 1)))
+  return [...seen].sort((a, b) => a - b)
+}
+
+// Short axis label for a bucket timestamp — a clock time within roughly one
+// day's span, a date once the range crosses it. The tooltip (fmtTime) still
+// gives the full date+time on hover.
+function fmtAxisTime(ms: number, spanMs: number): string {
+  const d = new Date(ms)
+  return spanMs > 36 * 3_600_000
+    ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+}
+
+// Tracks an element's content width via ResizeObserver — the input to
+// xTickCountFor, since the SVG is stretched to its container rather than
+// sized by its own viewBox.
+function useWidth(ref: React.RefObject<HTMLElement | null>): number {
+  const [w, setW] = useState(0)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const update = () => setW(el.getBoundingClientRect().width)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [ref])
+  return w
+}
+
+// YAxisLabels renders round tick values as an HTML column left of the plot,
+// high-to-low top-to-bottom. Ticks step evenly, so a plain space-between flex
+// column lands each label at its gridline's height without per-label math.
+function YAxisLabels({
+  ticks,
+  fmt,
+  height,
+}: {
+  ticks: number[]
+  fmt: (n: number) => string
+  height: number
+}) {
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: ticks.length > 1 ? 'space-between' : 'flex-end',
+        height,
+        flexShrink: 0,
+        pr: 0.75,
+      }}
+    >
+      {[...ticks].reverse().map((t) => (
+        <Typography
+          key={t}
+          variant="caption"
+          sx={{
+            color: C.textFaint,
+            fontSize: 10,
+            lineHeight: 1,
+            fontVariantNumeric: 'tabular-nums',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {fmt(t)}
+        </Typography>
+      ))}
+    </Box>
+  )
+}
+
+// XAxisLabels renders bucket timestamps under the plot at the same x
+// fractions as the vertical gridlines. The first/last labels anchor to their
+// own edge instead of centering, so they stay inside the panel instead of
+// overhanging it.
+function XAxisLabels({
+  indices,
+  buckets,
+  spanMs,
+  xPct,
+}: {
+  indices: number[]
+  buckets: number[]
+  spanMs: number
+  xPct: (i: number) => number
+}) {
+  return (
+    <Box sx={{ position: 'relative', height: 14, mt: 0.5 }}>
+      {indices.map((i, k) => (
+        <Typography
+          key={i}
+          variant="caption"
+          sx={{
+            position: 'absolute',
+            left: `${xPct(i)}%`,
+            transform:
+              k === 0 ? 'none' : k === indices.length - 1 ? 'translateX(-100%)' : 'translateX(-50%)',
+            color: C.textFaint,
+            fontSize: 10,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {fmtAxisTime(buckets[i], spanMs)}
+        </Typography>
+      ))}
+    </Box>
+  )
+}
+
 /**
  * StackedArea draws bands summed bottom-to-top, with a crosshair + tooltip on
  * hover.
@@ -246,14 +401,23 @@ export function StackedArea({
   const boxRef = useRef<HTMLDivElement | null>(null)
   const [hover, setHover] = useState<{ i: number; x: number } | null>(null)
 
+  const width = useWidth(boxRef)
+
   const n = series[0]?.values.length ?? 0
   if (n === 0) return null
   const totals = Array.from({ length: n }, (_, i) =>
     series.reduce((s, ser) => s + (ser.values[i] || 0), 0),
   )
   const max = Math.max(0, ...totals)
+  // The y-scale climbs to the rounded ceiling, not the raw max, so the top
+  // gridline is a round number and the data sits a little short of the edge.
+  const yTicks = niceTicks(max, 4)
+  const axisMax = yTicks[yTicks.length - 1] || 0
   const x = (i: number) => (n <= 1 ? pad : (i / (n - 1)) * (W - 2 * pad) + pad)
-  const y = (v: number) => (max <= 0 ? H - pad : H - pad - (v / max) * (H - 2 * pad))
+  const y = (v: number) => (axisMax <= 0 ? H - pad : H - pad - (v / axisMax) * (H - 2 * pad))
+  const spanMs = buckets && buckets.length > 1 ? buckets[buckets.length - 1] - buckets[0] : 0
+  const xIdx =
+    buckets && buckets.length === n && n > 1 ? pickTickIndices(n, xTickCountFor(width)) : []
 
   const cum = new Array<number>(n).fill(0)
   const bands = series.map((ser) => {
@@ -289,64 +453,99 @@ export function StackedArea({
       }
       dense
     >
-      <Box
-        ref={boxRef}
-        sx={{ position: 'relative' }}
-        onMouseMove={onMove}
-        onMouseLeave={() => setHover(null)}
-      >
-        <Box
-          component="svg"
-          viewBox={`0 0 ${W} ${H}`}
-          preserveAspectRatio="none"
-          sx={{ width: '100%', height: 180, display: 'block' }}
-        >
-          {/* Each band is stroked in the SURFACE color, not its own: a 2px gap
-              between adjacent fills is what keeps two similar hues from reading as
-              one shape where they touch. The top edge is then drawn in the series
-              color so the band still has an identity line. */}
-          {bands.map((b) => (
-            <polygon
-              key={b.key}
-              points={b.pts}
-              fill={b.color}
-              fillOpacity={0.45}
-              stroke={C.surface}
-              strokeWidth={2}
-              vectorEffect="non-scaling-stroke"
-            />
-          ))}
-          {bands.map((b) => (
-            <polyline
-              key={`${b.key}-edge`}
-              points={b.top}
-              fill="none"
-              stroke={b.color}
-              strokeWidth={2}
-              vectorEffect="non-scaling-stroke"
-            />
-          ))}
-          {hover && (
-            <line
-              x1={x(hover.i)}
-              x2={x(hover.i)}
-              y1={pad}
-              y2={H - pad}
-              stroke={C.textMuted}
-              strokeWidth={1}
-              vectorEffect="non-scaling-stroke"
-            />
+      <Box sx={{ display: 'flex', alignItems: 'stretch', gap: 0.75 }}>
+        <YAxisLabels ticks={yTicks} fmt={fmtTotal} height={180} />
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Box
+            ref={boxRef}
+            sx={{ position: 'relative' }}
+            onMouseMove={onMove}
+            onMouseLeave={() => setHover(null)}
+          >
+            <Box
+              component="svg"
+              viewBox={`0 0 ${W} ${H}`}
+              preserveAspectRatio="none"
+              sx={{ width: '100%', height: 180, display: 'block' }}
+            >
+              {/* Gridlines are drawn first (painted under the data) and stay in
+                  the same recessive border color as everywhere else — a grid
+                  that reads before the lines it measures has it backwards. */}
+              {yTicks.map((t) => (
+                <line
+                  key={`grid-${t}`}
+                  x1={pad}
+                  x2={W - pad}
+                  y1={y(t)}
+                  y2={y(t)}
+                  stroke={C.border}
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+              {xIdx.map((i) => (
+                <line
+                  key={`vgrid-${i}`}
+                  x1={x(i)}
+                  x2={x(i)}
+                  y1={pad}
+                  y2={H - pad}
+                  stroke={C.border}
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+              {/* Each band is stroked in the SURFACE color, not its own: a 2px gap
+                  between adjacent fills is what keeps two similar hues from reading as
+                  one shape where they touch. The top edge is then drawn in the series
+                  color so the band still has an identity line. */}
+              {bands.map((b) => (
+                <polygon
+                  key={b.key}
+                  points={b.pts}
+                  fill={b.color}
+                  fillOpacity={0.45}
+                  stroke={C.surface}
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+              {bands.map((b) => (
+                <polyline
+                  key={`${b.key}-edge`}
+                  points={b.top}
+                  fill="none"
+                  stroke={b.color}
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+              {hover && (
+                <line
+                  x1={x(hover.i)}
+                  x2={x(hover.i)}
+                  y1={pad}
+                  y2={H - pad}
+                  stroke={C.textMuted}
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+            </Box>
+            {hover && (
+              <HoverCard
+                series={series}
+                i={hover.i}
+                at={buckets?.[hover.i]}
+                fmt={fmtTotal}
+                x={hover.x}
+              />
+            )}
+          </Box>
+          {xIdx.length > 0 && buckets && (
+            <XAxisLabels indices={xIdx} buckets={buckets} spanMs={spanMs} xPct={(i) => (x(i) / W) * 100} />
           )}
         </Box>
-        {hover && (
-          <HoverCard
-            series={series}
-            i={hover.i}
-            at={buckets?.[hover.i]}
-            fmt={fmtTotal}
-            x={hover.x}
-          />
-        )}
       </Box>
       <Legend series={series} collapsible={collapsibleLegend} />
     </Panel>
@@ -354,22 +553,37 @@ export function StackedArea({
 }
 
 // MetricChart draws one metric over time, one line per key (dependency-free SVG).
+//
+// `buckets` is optional and new: existing callers that only pass a value
+// series keep getting a y-axis with no x labels, same as today's blank x-axis.
+// A caller that also has the bucket timestamps (usage's queries already fetch
+// them, see usage.tsx's usageSeries.buckets) can pass them through to get a
+// real time axis instead of wiring its own.
 export function MetricChart({
   title,
   series,
   fmt,
+  buckets,
 }: {
   title: string
   series: ChartSeries[]
   fmt: (n: number) => string
+  buckets?: number[]
 }) {
   const W = 600
   const H = 120
   const pad = 4
+  const boxRef = useRef<HTMLDivElement | null>(null)
+  const width = useWidth(boxRef)
   const n = series[0]?.values.length ?? 0
   const max = Math.max(0, ...series.flatMap((s) => s.values))
+  const yTicks = niceTicks(max, 3)
+  const axisMax = yTicks[yTicks.length - 1] || 0
   const x = (i: number) => (n <= 1 ? pad : (i / (n - 1)) * (W - 2 * pad) + pad)
-  const y = (v: number) => (max <= 0 ? H - pad : H - pad - (v / max) * (H - 2 * pad))
+  const y = (v: number) => (axisMax <= 0 ? H - pad : H - pad - (v / axisMax) * (H - 2 * pad))
+  const spanMs = buckets && buckets.length > 1 ? buckets[buckets.length - 1] - buckets[0] : 0
+  const xIdx =
+    buckets && buckets.length === n && n > 1 ? pickTickIndices(n, xTickCountFor(width)) : []
   return (
     <Box sx={{ flex: '1 1 380px', minWidth: 320 }}>
       <Panel
@@ -381,23 +595,57 @@ export function MetricChart({
         }
         dense
       >
-        <Box
-          component="svg"
-          viewBox={`0 0 ${W} ${H}`}
-          preserveAspectRatio="none"
-          sx={{ width: '100%', height: 130, display: 'block' }}
-        >
-          {series.map((s) => (
-            <polyline
-              key={s.key}
-              fill="none"
-              stroke={s.color}
-              strokeWidth={2}
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-              points={s.values.map((v, i) => `${x(i)},${y(v)}`).join(' ')}
-            />
-          ))}
+        <Box sx={{ display: 'flex', alignItems: 'stretch', gap: 0.75 }}>
+          <YAxisLabels ticks={yTicks} fmt={fmt} height={130} />
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Box ref={boxRef}>
+              <Box
+                component="svg"
+                viewBox={`0 0 ${W} ${H}`}
+                preserveAspectRatio="none"
+                sx={{ width: '100%', height: 130, display: 'block' }}
+              >
+                {yTicks.map((t) => (
+                  <line
+                    key={`grid-${t}`}
+                    x1={pad}
+                    x2={W - pad}
+                    y1={y(t)}
+                    y2={y(t)}
+                    stroke={C.border}
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+                {xIdx.map((i) => (
+                  <line
+                    key={`vgrid-${i}`}
+                    x1={x(i)}
+                    x2={x(i)}
+                    y1={pad}
+                    y2={H - pad}
+                    stroke={C.border}
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+                {series.map((s) => (
+                  <polyline
+                    key={s.key}
+                    fill="none"
+                    stroke={s.color}
+                    strokeWidth={2}
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                    points={s.values.map((v, i) => `${x(i)},${y(v)}`).join(' ')}
+                  />
+                ))}
+              </Box>
+            </Box>
+            {xIdx.length > 0 && buckets && (
+              <XAxisLabels indices={xIdx} buckets={buckets} spanMs={spanMs} xPct={(i) => (x(i) / W) * 100} />
+            )}
+          </Box>
         </Box>
         <Legend series={series} dot />
       </Panel>
