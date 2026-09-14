@@ -36,9 +36,10 @@ import { Loading } from '@/Loading'
  * saying a key did 9,971 requests invites "doing what", and before the filter
  * existed the only way to answer was to read every row and squint.
  *
- * Filtering happens in SQL, not here: a client-side filter over the newest 100
- * rows shows nothing at all for a key that has been quiet while a busier one
- * filled the window.
+ * Filtering happens in SQL, not here: a client-side filter over the newest page
+ * of rows shows nothing at all for a key that has been quiet while a busier one
+ * filled the window. Paging happens in SQL too, and only where it is cheap —
+ * see `pageable` below, which is the load-bearing comment in this file.
  */
 
 // What each finish_reason means for an operator. "length" is the one that
@@ -53,9 +54,26 @@ const FINISH_HINT: Record<string, string> = {
 }
 
 const ActivityDoc = graphql(/* GraphQL */ `
-  query Activity($limit: Long!, $key: String, $served: String, $placement: String, $from: Long, $to: Long) {
+  query Activity(
+    $limit: Long!
+    $offset: Long!
+    $key: String
+    $served: String
+    $placement: String
+    $from: Long
+    $to: Long
+  ) {
     corrallm {
-      recentActivity(limit: $limit, key: $key, served: $served, placement: $placement, from: $from, to: $to) {
+      recentActivity(
+        limit: $limit
+        offset: $offset
+        key: $key
+        served: $served
+        placement: $placement
+        from: $from
+        to: $to
+      ) {
+        hasMore
         records {
           id
           ts
@@ -232,7 +250,7 @@ export function ActivityLog({
   filterModel,
   filterPlacement,
   hideModel = false,
-  limit = 100,
+  limit = 25,
   window,
   title = 'Recent',
   subtitle = 'Completed requests, newest first — click a row for payloads',
@@ -261,32 +279,64 @@ export function ActivityLog({
   action?: React.ReactNode
 }) {
   const [selected, setSelected] = useState<string | null>(null)
+  const [page, setPage] = useState(0)
+
+  // PAGING IS OFFERED ONLY WHERE AN INDEX COVERS THE FILTER, and that is not a
+  // style choice — it is the difference between a page-turn costing 0.002s and
+  // costing 0.091s and climbing.
+  //
+  // The window (ts) and key filters ride idx_activity_ts and
+  // idx_activity_key_rollup's (key, ts) prefix, so SQLite skips the offset's
+  // worth of rows in the index without touching the heap. `served` and
+  // `placement` are in NEITHER index, so the same skip fetches every passed-over
+  // heap row — captured req/resp bodies included, ~85 KB each in production —
+  // on the way to a page nobody will read. Measured at offset 50,000 on a
+  // 60k-row/940 MB table: 0.002s covered, 0.091s not, and the gap widens with
+  // depth. It fails SILENTLY, which is exactly why the guard is here and not in
+  // a comment telling somebody to be careful.
+  //
+  // So the model/placement views keep the old shape — the newest `limit` rows,
+  // no pager — and say so, rather than offering a control that gets slower the
+  // more it is used. (store.RecentActivityPage's doc comment carries the
+  // measurement; a served-covering index is the fix if that view ever needs one.)
+  const pageable = !filterModel && !filterPlacement
+
+  const windowK = window ? windowKey(window) : 'nowindow'
+  // A filter change means a different list, so page 2 of the old one is not page
+  // 2 of the new one. Reset during render rather than in an effect: an effect
+  // would paint one frame of the wrong offset's rows first.
+  const [pageScope, setPageScope] = useState('')
+  const scope = `${filterKey ?? ''}|${filterModel ?? ''}|${filterPlacement ?? ''}|${windowK}`
+  if (scope !== pageScope) {
+    setPageScope(scope)
+    if (page !== 0) setPage(0)
+  }
+  const offset = pageable ? page * limit : 0
+
   const q = useQuery({
     // filterKey is part of the cache key, or switching callers would show the
     // previous one's rows until the refetch landed.
-    queryKey: [
-      'activity',
-      filterKey ?? '',
-      filterModel ?? '',
-      filterPlacement ?? '',
-      limit,
-      window ? windowKey(window) : 'nowindow',
-    ],
+    queryKey: ['activity', filterKey ?? '', filterModel ?? '', filterPlacement ?? '', limit, offset, windowK],
     queryFn: () =>
       gqlClient.request(ActivityDoc, {
         limit: String(limit),
+        offset: String(offset),
         key: filterKey || undefined,
         served: filterModel || undefined,
         placement: filterPlacement || undefined,
         from: window ? windowVars(window).from : '0',
         to: window ? windowVars(window).to : '0',
       }),
+    // Keep the previous page on screen while the next one loads. Without it
+    // every page-turn blanks the table to a spinner, which reads as a reload.
+    placeholderData: (prev) => prev,
     // fallback; live updates arrive via SSE (useLiveEvents). A frozen window has
     // nothing to refetch — new rows are outside it by definition.
     refetchInterval: window?.kind === 'absolute' ? false : 15000,
   })
 
   const records = q.data?.corrallm.recentActivity?.records ?? []
+  const hasMore = q.data?.corrallm.recentActivity?.hasMore ?? false
 
   const body = q.isLoading ? (
     <Loading size={20} minHeight={120} />
@@ -333,11 +383,13 @@ export function ActivityLog({
                 <Typography sx={{
                   color: "text.secondary"
                 }}>
-                  {filterKey
-                    ? 'No activity recorded for this key.'
-                    : filterModel
-                      ? 'No activity recorded for this model.'
-                      : 'No activity yet.'}
+                  {offset > 0
+                    ? 'Nothing further back in this window.'
+                    : filterKey
+                      ? 'No activity recorded for this key.'
+                      : filterModel
+                        ? 'No activity recorded for this model.'
+                        : 'No activity yet.'}
                 </Typography>
               </TableCell>
             </TableRow>
@@ -411,6 +463,12 @@ export function ActivityLog({
     </TableContainer>
   )
 
+  // "Rows 26–50", not "page 2 of ?". There is no total — deliberately, because a
+  // COUNT(*) is a second scan over the same filter on every page-turn — so the
+  // label says what is on screen rather than inventing a denominator.
+  const first = records.length === 0 ? 0 : offset + 1
+  const last = offset + records.length
+
   return (
     <>
       <Panel
@@ -420,9 +478,31 @@ export function ActivityLog({
           <Stack direction="row" spacing={1} sx={{
             alignItems: "center"
           }}>
-            <Chip size="small" variant="outlined" label={records.length} />
+            <Chip
+              size="small"
+              variant="outlined"
+              label={pageable && offset > 0 ? `${fmtInt(first)}–${fmtInt(last)}` : records.length}
+            />
             {action}
           </Stack>
+        }
+        actions={
+          pageable ? (
+            <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+              {q.isFetching && <Typography variant="caption" sx={{ color: C.textFaint }}>loading…</Typography>}
+              <Button size="small" disabled={page === 0 || q.isFetching} onClick={() => setPage((p) => p - 1)}>
+                Newer
+              </Button>
+              <Button size="small" disabled={!hasMore || q.isFetching} onClick={() => setPage((p) => p + 1)}>
+                Older
+              </Button>
+            </Stack>
+          ) : (
+            // Not a pager it cannot afford: see `pageable` above.
+            <Typography variant="caption" sx={{ color: C.textFaint }}>
+              newest {limit}
+            </Typography>
+          )
         }
         flush
       >
