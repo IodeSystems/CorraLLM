@@ -448,3 +448,76 @@ func TestSupersededKeyIndexIsDroppedOnUpgrade(t *testing.T) {
 		t.Error("idx_activity_key_ts survived the upgrade; every insert now maintains two indexes for one access path")
 	}
 }
+
+// TestRecentActivityPageOffsetsThroughPages pages through a known set of rows
+// a few at a time and checks both the ordering within each page and hasMore's
+// transition from true to false, including the boundary where the offset
+// lands past the last row.
+func TestRecentActivityPageOffsetsThroughPages(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	const total = 7
+	for i := 1; i <= total; i++ {
+		if err := st.InsertActivity(Activity{TS: int64(i), Served: "m", Status: 200}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const pageSize = 3
+	var seen []int64
+	offset := 0
+	for pages := 0; ; pages++ {
+		if pages > total { // guard against an infinite loop if hasMore never clears
+			t.Fatal("paged past the row count without hasMore going false")
+		}
+		page, hasMore, err := st.RecentActivityPage(Window{}, pageSize, offset, "", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range page {
+			seen = append(seen, a.TS)
+		}
+		wantMore := offset+len(page) < total
+		if hasMore != wantMore {
+			t.Fatalf("offset %d: hasMore = %v, want %v (returned %d rows)", offset, hasMore, wantMore, len(page))
+		}
+		if !hasMore {
+			break
+		}
+		if len(page) != pageSize {
+			t.Fatalf("offset %d: got %d rows on a non-final page, want %d", offset, len(page), pageSize)
+		}
+		offset += len(page)
+	}
+	want := []int64{7, 6, 5, 4, 3, 2, 1} // newest (highest ts) first, across every page
+	if len(seen) != len(want) {
+		t.Fatalf("saw %d rows across all pages, want %d: %v", len(seen), len(want), seen)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Errorf("row %d across pages: got ts %d, want %d (full sequence %v)", i, seen[i], want[i], seen)
+		}
+	}
+
+	// Offset landing past the end: no rows, and definitely no more of them.
+	past, hasMore, err := st.RecentActivityPage(Window{}, pageSize, total+5, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(past) != 0 || hasMore {
+		t.Errorf("offset past the end: got %d rows, hasMore %v, want 0 rows and hasMore false", len(past), hasMore)
+	}
+
+	// Offset landing exactly on the last row boundary: one row, no more after it.
+	last, hasMore, err := st.RecentActivityPage(Window{}, pageSize, total-1, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(last) != 1 || last[0].TS != 1 || hasMore {
+		t.Errorf("offset at the last row: got %d rows (ts %v), hasMore %v, want 1 row (ts 1), hasMore false", len(last), last, hasMore)
+	}
+}

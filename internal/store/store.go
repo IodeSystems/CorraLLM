@@ -899,6 +899,36 @@ const payloadPruneChunk = 500
 // BOX". With one model served from two machines, a mean across both describes
 // neither.
 func (s *Store) RecentActivity(w Window, limit int, served, key, placement string) ([]Activity, error) {
+	out, _, err := s.RecentActivityPage(w, limit, 0, served, key, placement)
+	return out, err
+}
+
+// RecentActivityPage is RecentActivity with an offset, for a UI that pages
+// rather than just showing the newest N.
+//
+// It reports hasMore instead of a total count. A COUNT(*) is a second scan
+// over whatever the WHERE clause matches, paid again on every page-turn; a
+// pager never needs the true total, only "is there another page". Asking for
+// one row past limit gets that answer from the SAME query plan already
+// paying for the page — one extra row, not a second scan — and the trailing
+// row is trimmed before it reaches the caller.
+//
+// Deep offset is only cheap when the filter is indexed. The window (ts) and
+// key filters are: idx_activity_ts and idx_activity_key_rollup's (key, ts)
+// prefix let SQLite skip the offset's worth of rows using the index alone,
+// without touching the heap. served and placement are in NEITHER index, so a
+// served- or placement-filtered page at a deep offset makes SQLite fetch the
+// full heap row — captured req_body/resp_body included, ~85 KB per row in
+// production (see idx_activity_key_rollup's comment) — for every row it
+// walks past on the way to the offset, not just the ones returned. Measured
+// on a 60k-row/940 MB table: offset 50,000 filtered by served took 0.091s
+// against 0.002s for the same offset unfiltered or filtered by key. That gap
+// widens with both offset depth and row size, and it fails silently — no
+// error, just a slower and slower page turn the further in someone pages. A
+// served- or placement-covering index is a follow-up if that access pattern
+// gets a UI; today's console pages only need "all activity" or "one key's",
+// both of which the existing indexes already serve.
+func (s *Store) RecentActivityPage(w Window, limit, offset int, served, key, placement string) ([]Activity, bool, error) {
 	const cols = `id, ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
 	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms,
@@ -923,11 +953,13 @@ func (s *Store) RecentActivity(w Window, limit int, served, key, placement strin
 		args = append(args, placement)
 	}
 	q += " WHERE " + strings.Join(where, " AND ")
-	q += " ORDER BY ts DESC LIMIT ?"
-	args = append(args, limit)
+	q += " ORDER BY ts DESC LIMIT ? OFFSET ?"
+	// One extra row so the caller can tell whether another page follows
+	// without a separate COUNT(*) — see the doc comment above.
+	args = append(args, limit+1, offset)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = rows.Close() }()
 	var out []Activity
@@ -937,11 +969,18 @@ func (s *Store) RecentActivity(w Window, limit int, served, key, placement strin
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
 			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS,
 			&a.RetryAfterMS, &a.Ticket); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 // RetryPromise is one "come back later" we handed a caller: who we turned away,

@@ -185,7 +185,15 @@ func windowOf(fromMS, toMS int64, relativeMinutes int) store.Window {
 // RecentActivityInput bounds how many records to return, optionally scoped to
 // one served model (the per-model console usage tab).
 type RecentActivityInput struct {
-	Limit  int    `query:"limit" default:"50" minimum:"1" maximum:"500" doc:"Max records, newest first."`
+	Limit int `query:"limit" default:"50" minimum:"1" maximum:"500" doc:"Max records, newest first."`
+	// Offset pages past the newest rows. Cheap for the unfiltered or
+	// key-filtered case (idx_activity_ts / idx_activity_key_rollup let SQLite
+	// skip the offset using the index alone); a served or placement filter at
+	// a deep offset is NOT — neither column is indexed, so SQLite must fetch
+	// the full row (captured req/resp bodies included, ~85 KB each in
+	// production) for every row it walks past, not just the ones returned.
+	// See store.RecentActivityPage's doc comment for the measurement.
+	Offset int    `query:"offset" default:"0" minimum:"0" doc:"Records to skip, newest first, before taking limit."`
 	Served string `query:"served" doc:"Filter to one served model; empty returns all models."`
 	Key    string `query:"key" doc:"Filter to one caller key; empty returns all callers."`
 	// Placement narrows to ONE way of serving the model. With a model on two
@@ -226,24 +234,36 @@ type ActivityRecord struct {
 	RetryAfterMS     int64   `json:"retryAfterMs" doc:"The Retry-After we promised this caller on a 429, milliseconds; 0 when no promise was made. ts + retryAfterMs is when we told them to come back."`
 }
 
-// RecentActivityOutput is the newest-first activity list.
+// RecentActivityOutput is the newest-first activity list, one page of it.
 type RecentActivityOutput struct {
 	Body struct {
 		Records []ActivityRecord `json:"records" doc:"Activity rows, newest first."`
+		// hasMore, not a total count: a COUNT(*) is a second scan over
+		// whatever served/key/placement/window already narrowed the query to,
+		// paid again on every page-turn, to answer a question a pager does not
+		// ask ("how many, total") instead of the one it does ("is there
+		// another page"). Requesting one row past limit gets that from the
+		// SAME query already paying for the page.
+		HasMore bool `json:"hasMore" doc:"Whether another page follows this one. NOT a total count — asking for the total would cost a second scan over this same filter on every page-turn; a pager only needs to know whether to enable Next."`
 	}
 }
 
-// RecentActivity returns the most recent proxied-request records.
+// RecentActivity returns one page of the most recent proxied-request records.
 func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*RecentActivityOutput, error) {
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := h.Store.RecentActivity(windowOf(in.FromMS, in.ToMS, 0), limit, in.Served, in.Key, in.Placement)
+	offset := in.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	rows, hasMore, err := h.Store.RecentActivityPage(windowOf(in.FromMS, in.ToMS, 0), limit, offset, in.Served, in.Key, in.Placement)
 	if err != nil {
 		return nil, err
 	}
 	out := &RecentActivityOutput{}
+	out.Body.HasMore = hasMore
 	out.Body.Records = make([]ActivityRecord, 0, len(rows))
 	for _, a := range rows {
 		out.Body.Records = append(out.Body.Records, ActivityRecord{
