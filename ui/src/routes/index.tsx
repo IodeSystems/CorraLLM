@@ -48,6 +48,8 @@ const NowDoc = graphql(/* GraphQL */ `
           cachedTokens
           completionTokens
           costUsd
+          promptPerSec
+          predictedPerSec
         }
       }
       baseline: usageRollup(from: $dayAgo, to: $hourAgo) {
@@ -57,6 +59,10 @@ const NowDoc = graphql(/* GraphQL */ `
           dwellMs
           cacheHitRate
           cacheReports
+          promptTokens
+          cachedTokens
+          promptPerSec
+          predictedPerSec
         }
       }
       health {
@@ -116,13 +122,32 @@ const NowDoc = graphql(/* GraphQL */ `
  * any screen said so. It took two pages and a database to work out by hand.
  *
  * This compares the last hour against the day before it, which is only possible
- * because the rollup takes absolute bounds (phase B). It reports the mechanism in
- * the operator's terms and, deliberately, that there is nothing to press: on a
- * one-slot backend this is the callers' prompting pattern, and it passes.
+ * because the rollup takes absolute bounds (phase B).
+ *
+ * IT IS RATED IN tg/s AND tp/s, NOT SECONDS A REQUEST. Seconds a request is what
+ * an operator feels, but it is a compound of three things — how much prompt came
+ * in, how much of it could be reused, and how fast the box ran — and it moves when
+ * ANY of them moves. Two incompatible situations push it the same direction:
+ *
+ *   reuse collapsed   → tg/s and tp/s hold, the prompt grew. Nothing to press.
+ *   the box degraded  → tg/s FELL. Thermals, contention, something else resident.
+ *
+ * Generation speed is the only thing here that separates them, and until it was
+ * carried on the rollup this card could not, so it asserted "nothing is broken"
+ * on both — confident, and wrong on the second. The rates come from llama.cpp's
+ * own timings (usage.PromptPerSec / PredictedPerSec), which is why they are 0 for
+ * a remote provider: unreported, NOT a measured zero, and the card falls back to
+ * seconds a request rather than claiming a speed it was never told.
  *
  * Thresholds are deliberately blunt. A fault card that cries on every wobble is
  * one nobody reads, so: a fifth of the reuse gone AND a third more time per
- * request, over enough requests to mean anything.
+ * request, over enough requests to mean anything. Generation is called slow only
+ * once it is off by more than a seventh, which is wider than the run-to-run
+ * wobble of a busy box.
+ *
+ * KNOWN GAP: reuse loss is still the trigger, so a box that slowed with its reuse
+ * intact — a thermal event under a steady caller — does not raise this card at
+ * all. That is a second fault, not this one.
  */
 type Rollup = {
   served: string
@@ -132,6 +157,11 @@ type Rollup = {
   cacheReports: number
   promptTokens?: number
   cachedTokens?: number
+  // Backend-reported, and 0 means NOTHING REPORTED ONE. Same trap as
+  // cacheReports: reading an unreported rate as a measured 0 invents a
+  // catastrophic slowdown for every remote provider on the box.
+  promptPerSec?: number
+  predictedPerSec?: number
 }
 
 function slowdownFaults(recent: Rollup[], baseline: Rollup[]): Fault[] {
@@ -153,20 +183,52 @@ function slowdownFaults(recent: Rollup[], baseline: Rollup[]): Fault[] {
 
     const pct = (x: number) => `${Math.round(x * 100)}%`
     const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`
-    const reprocessed =
-      now.promptTokens != null && now.cachedTokens != null
-        ? Math.round((now.promptTokens - now.cachedTokens) / Math.max(1, now.requests))
+    // One formatter for both rates: tg/s lands near 40 and wants a decimal, tp/s
+    // lands in the thousands and does not.
+    const rate = (x: number) => (x >= 100 ? Math.round(x).toLocaleString() : x.toFixed(1))
+    const reread = (r: Rollup) =>
+      r.promptTokens != null && r.cachedTokens != null
+        ? Math.round((r.promptTokens - r.cachedTokens) / Math.max(1, r.requests))
         : null
+
+    const nowTg = now.predictedPerSec ?? 0
+    const wasTg = was.predictedPerSec ?? 0
+    const nowTp = now.promptPerSec ?? 0
+    const wasTp = was.promptPerSec ?? 0
+    // BOTH windows must have reported, or there is nothing to compare. A backend
+    // that reported an hour ago and not now has changed what it is, not how fast
+    // it is, and comparing across that is worse than saying nothing.
+    const rated = nowTg > 0 && wasTg > 0 && nowTp > 0 && wasTp > 0
+    // Generation itself slowed. This is the box, not the callers.
+    const boxSlowed = rated && nowTg < wasTg * 0.85
+
+    const nowRe = reread(now)
+    const wasRe = reread(was)
+    const reread_ =
+      nowRe != null && wasRe != null
+        ? `, over ${nowRe.toLocaleString()} tokens re-read per request against ${wasRe.toLocaleString()}`
+        : nowRe != null
+          ? `, about ${nowRe.toLocaleString()} tokens re-read per request`
+          : ''
+
+    // Rated where the backend told us, seconds a request where it did not. The
+    // fallback is not a lesser card: it is the honest one when the only number
+    // anybody measured is wall time.
+    const what = rated
+      ? `${now.served} is generating at ${rate(nowTg)} tg/s against ${rate(wasTg)}, reading prompt at ${rate(nowTp)} tp/s against ${rate(wasTp)}${reread_}`
+      : `${now.served} is answering more slowly than usual — ${secs(nowMean)} a request against ${secs(wasMean)} over the last day${reread_} (this backend reports no tg/s/tp/s, so the cause is not separable here)`
+
     out.push({
       key: `slow:${now.served}`,
       scope: 'here',
       severity: 'warning',
-      what: `${now.served} is answering more slowly than usual — ${secs(nowMean)} a request against ${secs(wasMean)} over the last day`,
-      whose: 'This box, and nothing on it is broken.',
-      next:
-        `Callers are sending prompts that share less with the one before, so more of each prompt has to be read again: ${pct(now.cacheHitRate)} of it is being reused now against ${pct(was.cacheHitRate)} normally` +
-        (reprocessed ? `, about ${reprocessed.toLocaleString()} tokens re-read per request` : '') +
-        '. Nothing to press — it comes right on its own when they settle back onto one conversation.',
+      what,
+      whose: boxSlowed ? 'This box.' : 'This box, and nothing on it is broken.',
+      next: boxSlowed
+        ? `Generation itself slowed, so this is not the callers' prompts — a shorter prompt would not fix it. Check the device's thermals and what else is resident on it. Reuse is down too (${pct(now.cacheHitRate)} against ${pct(was.cacheHitRate)}), which is adding to the wait but is not the cause.`
+        : `Callers are sending prompts that share less with the one before, so more of each prompt has to be read again: ${pct(now.cacheHitRate)} of it is being reused now against ${pct(was.cacheHitRate)} normally.` +
+          (rated ? ' The box is running at its normal speed.' : '') +
+          ' Nothing to press — it comes right on its own when they settle back onto one conversation.',
     })
   }
   return out
@@ -569,6 +631,8 @@ function Now() {
       cacheReports: Number(r.cacheReports),
       promptTokens: Number(r.promptTokens),
       cachedTokens: Number(r.cachedTokens),
+      promptPerSec: r.promptPerSec,
+      predictedPerSec: r.predictedPerSec,
     })),
     (c.baseline?.rows ?? []).map((r) => ({
       served: r.served,
@@ -576,6 +640,10 @@ function Now() {
       dwellMs: Number(r.dwellMs),
       cacheHitRate: r.cacheHitRate,
       cacheReports: Number(r.cacheReports),
+      promptTokens: Number(r.promptTokens),
+      cachedTokens: Number(r.cachedTokens),
+      promptPerSec: r.promptPerSec,
+      predictedPerSec: r.predictedPerSec,
     })),
   )
 
