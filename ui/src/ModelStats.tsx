@@ -534,8 +534,6 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
     </TableContainer>
   )
 
-  const clashing = util.filter((r) => r.depthUnreachable)
-
   return (
     <Panel
       title="By model"
@@ -547,11 +545,10 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
       badge={<Chip size="small" variant="outlined" label={`${rows.length} models`} />}
       flush
     >
-      {clashing.length > 0 && (
-        <Box sx={{ px: 2, py: 1.5, borderBottom: `1px solid ${C.border}` }}>
-          <QueueDepthClash rows={clashing} />
-        </Box>
-      )}
+      {/* The clash CALLOUT — the sentence and the button — is not here. It is
+          the one fault on this page with a control attached, so it belongs in
+          the warnings panel at the top, which reads it from this same query. The
+          per-row chip stays, because that is the part that says WHICH model. */}
       {body}
     </Panel>
   )

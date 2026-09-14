@@ -81,7 +81,16 @@ const STATE_HINT: Record<string, string> = {
   streaming: 'proxying to/from the backend',
 }
 
-export function ActiveRequests() {
+/**
+ * `compact` drops the four columns that answer "where exactly": backend, group,
+ * source IP and path. On Traffic this table is a HEADER — "who is being served
+ * right now", read in a glance above everything the page is actually about —
+ * and four more columns there push the model and the elapsed time off the fold,
+ * which is the burial the whole rework exists to undo. The Overview keeps the
+ * full table: that page IS the live view, so it is the one that should answer
+ * the follow-up question without a click.
+ */
+export function ActiveRequests({ compact = false }: { compact?: boolean } = {}) {
   const q = useQuery({
     queryKey: ['active'],
     queryFn: () => gqlClient.request(ActiveDoc),
@@ -108,7 +117,7 @@ export function ActiveRequests() {
 
   return (
     <Panel
-      title="Active requests"
+      title={compact ? 'Active sessions' : 'Active requests'}
       badge={
         <Chip
           size="small"
@@ -140,16 +149,16 @@ export function ActiveRequests() {
                 <TableCell align="right">Elapsed</TableCell>
                 <TableCell>State</TableCell>
                 <TableCell>Served</TableCell>
-                <TableCell>Backend</TableCell>
+                {!compact && <TableCell>Backend</TableCell>}
                 {/* GROUP, not "Lane". The cell is `r.group` — the caller's
                     priority group. A lane is a different object in this product
                     (plan.md §3: a named, ordered fallback list over models), and
                     it is on screen at the same time in the Lanes panel, so the
                     old header taught a meaning that is wrong two panels away. */}
-                <TableCell>Group</TableCell>
+                {!compact && <TableCell>Group</TableCell>}
                 <TableCell>Key</TableCell>
-                <TableCell>Source</TableCell>
-                <TableCell>Path</TableCell>
+                {!compact && <TableCell>Source</TableCell>}
+                {!compact && <TableCell>Path</TableCell>}
                 {/* Live output size. A reply still growing at tens of thousands
                     of chunks is not slow, it is looping — the distinction the
                     metadata-only view could not make. */}
@@ -182,11 +191,13 @@ export function ActiveRequests() {
                         </Tooltip>
                       )}
                     </TableCell>
-                    <TableCell>{r.backend || '—'}</TableCell>
-                    <TableCell>{r.group || '—'}</TableCell>
+                    {!compact && <TableCell>{r.backend || '—'}</TableCell>}
+                    {!compact && <TableCell>{r.group || '—'}</TableCell>}
                     <TableCell>{r.key || '—'}</TableCell>
-                    <TableCell sx={{ fontFamily: 'monospace' }}>{r.sourceIp || '—'}</TableCell>
-                    <TableCell>{r.path}</TableCell>
+                    {!compact && (
+                      <TableCell sx={{ fontFamily: 'monospace' }}>{r.sourceIp || '—'}</TableCell>
+                    )}
+                    {!compact && <TableCell>{r.path}</TableCell>}
                     <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
                       <Tooltip
                         title={`${fmtInt(Number(r.bytesOut))} bytes relayed so far. For a streamed reply the chunk count is roughly the tokens generated — a normal answer is hundreds to a few thousand.`}

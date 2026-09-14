@@ -1,40 +1,51 @@
+import { useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { Box, Chip } from '@mui/material'
-import { PageHeader } from '@/Panel'
+import { Box, Button, Chip } from '@mui/material'
+import { PageHeader, Panel } from '@/Panel'
 import { ActivityLog } from '@/ActivityLog'
-import { TurnedAway } from '@/TurnedAway'
-import { ServiceProfiles } from '@/ServiceProfiles'
+import { ActiveRequests } from '@/ActiveRequests'
 import { ModelStats } from '@/ModelStats'
-import { UsagePanels } from '@/routes/usage'
+import { ServiceProfiles } from '@/ServiceProfiles'
+import { TrafficWarnings } from '@/TrafficWarnings'
+import { TurnedAway } from '@/TurnedAway'
+import { CallerSpend, MoreCharts, TrafficHeadline } from '@/routes/usage'
 import { TimeWindowPicker, windowPhrase, type TimeWindow } from '@/TimeWindow'
 
 /**
  * TRAFFIC — what this box has been doing, over a span you choose.
  *
- * The merge of `/activity` and `/usage` (P30 phase B). They were one subject on
- * two pages: per-key cost, per-model dwell and backend pressure were rendered on
- * both, each over its OWN window — 60 minutes here, 24 hours there, a 6h/24h/7d
- * toggle on the charts, the newest hundred rows in the log. So the two pages
- * disagreed about the same caller, nothing said why, and neither could answer the
- * question a person actually arrives with: "was it slow at nine this morning, and
- * is it still?"
+ * The merge of `/activity` and `/usage` (P30 phase B), reordered around what a
+ * person opens it for (P30 wave 1). It had become eight panels in the order the
+ * data happened to exist: six unbounded lists, each fetched separately, with the
+ * charts and the live sessions buried under two tables of rejections and a
+ * hundred log rows. "This page looks like it's way too long to find what a user
+ * wants."
  *
- * One window, at the top, obeyed by every panel. The order is the order the
- * questions get asked: what is under pressure, who we turned away, who had to
- * work for an answer, how long each caller holds a slot, what it cost, and then
- * the log itself.
+ * The page now has a HEADER and a BODY, and the split is the point.
  *
- * IN-FLIGHT IS NOT HERE. It lives on the home screen, which is the page that
- * answers "right now" (P30 phase A). Everything on this page has stopped moving.
+ *   Header — what you need without scrolling. Anything wrong, the window's five
+ *   totals, two charts, and who is being served right now. Same rule the home
+ *   screen already follows: faults first, then what it is getting done.
+ *
+ *   Body — one panel per question, in the order the questions get asked. What
+ *   each model did and how fast it did it; the requests themselves, paged; who
+ *   we turned away; who spent the money.
+ *
+ * Under it, collapsed, the queueing diagnostics — the per-caller service
+ * distributions and six charts about the scheduler's own behaviour. Not deleted:
+ * they explain the waits above, and somebody investigating a bad hour needs
+ * them. They are just not what the page is for, and they are the two heaviest
+ * aggregations on it, so they are not fetched until asked for.
+ *
+ * WINDOW IN THE URL, so it can be sent to somebody. "Look at nine this morning"
+ * is a link, not an instruction to click four things. State that only exists in
+ * a component cannot be shared or repeated.
  */
 function Traffic() {
   const { key, from, to, minutes } = Route.useSearch()
   const navigate = useNavigate()
+  const [detail, setDetail] = useState(false)
 
-  // THE WINDOW LIVES IN THE URL, so it can be sent to somebody. "Look at nine
-  // this morning" is a link, not an instruction to click four things — and it is
-  // the same reason the walk that measures this page can photograph a fixed span
-  // at all. State that only exists in a component cannot be shared or repeated.
   const window: TimeWindow =
     from && to ? { kind: 'absolute', fromMS: from, toMS: to } : { kind: 'relative', minutes: minutes ?? 60 }
   const setWindow = (w: TimeWindow) =>
@@ -62,29 +73,71 @@ function Traffic() {
         </Box>
       )}
 
-      {/* One row per model: what it did, what it cost, and what reaching it
-          cost callers. Was two tables over the same models. */}
+      {/* ── Header ───────────────────────────────────────────────────────── */}
+
+      {/* Anything wrong comes first, with the sentence and the button, not the
+          table. Each line is lifted from the panel that measured it — the panels
+          are still below for whoever wants the rows. */}
+      <TrafficWarnings window={window} filterKey={key} />
+
+      {/* What it did and what it cost: five totals and two charts. */}
+      <TrafficHeadline window={window} />
+
+      {/* Who is being served RIGHT NOW. It is also on the home screen, which is
+          the page that answers "right now" — but a person watching a bad hour on
+          this page should not have to leave it to see whether anything is still
+          moving. One component, so the two cannot drift; compact here, because
+          on this page it is a header and not the subject. */}
+      <ActiveRequests compact />
+
+      {/* ── Body ─────────────────────────────────────────────────────────── */}
+
+      {/* One row per model: requests, tp/s and tg/s, tokens processed, generated
+          and cached, cost, and what reaching it cost callers. */}
       <ModelStats window={window} />
-      {/* The ones we sent away — traffic the completed-request log cannot show,
-          because they never started. One panel with two readings of it: by
-          caller, and promise by promise. */}
-      <TurnedAway filterKey={key} window={window} />
-      {/* Why the estimates above run short: one dwell EWMA per backend, averaging
-          over callers whose work differs several-fold in cost and variability. */}
-      <ServiceProfiles window={window} />
 
-      {/* What it cost, and who spent it — the old /usage page, same window. */}
-      <UsagePanels window={window} />
-
+      {/* The requests themselves, a page at a time. */}
       <ActivityLog
-        filterKey={key}
+        title="Recent requests"
         window={window}
+        filterKey={key}
         subtitle={
           key
             ? `Everything ${key} ran ${windowPhrase(window)} — click a row for payloads`
             : `Completed requests ${windowPhrase(window)}, newest first — click a row for payloads`
         }
       />
+
+      {/* The ones we sent away — traffic the completed-request log cannot show,
+          because they never started. One panel, two readings: by caller, and
+          promise by promise. */}
+      <TurnedAway window={window} filterKey={key} />
+
+      <CallerSpend window={window} />
+
+      {/* ── Diagnostics, on request ──────────────────────────────────────── */}
+
+      <Panel
+        title="Queueing detail"
+        subtitle="Why the waits above are what they are — per-caller service distributions, and the scheduler's own behaviour over time"
+        actions={
+          <Button size="small" onClick={() => setDetail((d) => !d)}>
+            {detail ? 'Hide' : 'Show'}
+          </Button>
+        }
+        dense={!detail}
+      >
+        {/* Mounted only when open, which is also when either query is issued.
+            These are the two heaviest aggregations on the page and the two
+            fewest people want — paying for them on every load was a real part of
+            "this page takes forever". */}
+        {detail ? (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <ServiceProfiles window={window} />
+            <MoreCharts window={window} />
+          </Box>
+        ) : null}
+      </Panel>
     </Box>
   )
 }

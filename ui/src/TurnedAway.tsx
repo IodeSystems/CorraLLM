@@ -392,19 +392,13 @@ export function TurnedAway({
     </Box>
   )
 
+  // Refusals, dropped connections and the slow stretch are NOT rendered here.
+  // They are facts about the window rather than about a rejection, and they are
+  // the first thing a person needs to see, so they are lifted to the warnings
+  // panel at the top of the page — which reads them from this same query.
   const totals = unansweredTotals(q.data)
-  // The endings neither table can hold, above whichever one is showing. They are
-  // true of the window, not of a view, so switching the toggle must not make a
-  // refusal disappear.
-  const prose =
-    totals.refused > 0 || totals.endedEarly > 0 || Number(promiseData?.slowSpell?.count ?? 0) > 0 ? (
-      <Stack spacing={1} sx={{ px: 2, py: 1.5, borderBottom: `1px solid ${C.border}` }}>
-        <Unanswered refused={totals.refused} endedEarly={totals.endedEarly} />
-        <SlowStretch spell={promiseData?.slowSpell} window={window} />
-      </Stack>
-    ) : null
 
-  const table = q.isLoading ? (
+  const body = q.isLoading ? (
     <Loading size={20} minHeight={120} />
   ) : q.error ? (
     <Box sx={{ p: 2 }}>
@@ -430,13 +424,6 @@ export function TurnedAway({
     empty(`Nobody was told to come back ${windowPhrase(window)}.`)
   ) : (
     promiseTable
-  )
-
-  const body = (
-    <>
-      {prose}
-      {table}
-    </>
   )
 
   return (
