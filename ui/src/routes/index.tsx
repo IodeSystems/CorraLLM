@@ -8,6 +8,7 @@ import { ActiveRequests } from '@/ActiveRequests'
 import { Panel, PageHeader, Row } from '@/Panel'
 import { C } from '@/theme'
 import { NotYet } from '@/NotYet'
+import { FleetPanel, type FleetResident, type FleetServer } from '@/FleetPanel'
 import { fmtInt, fmtUSD } from '@/format'
 
 /**
@@ -74,9 +75,18 @@ const NowDoc = graphql(/* GraphQL */ `
           server
           agentStatus
           agentLastSeen
+          # WHICH POOL IS THE DEVICE. Only used to say 'device' or 'system'
+          # beside a bar — the word that tells a reader whether 51 GB idle is a
+          # graphics card or spare RAM.
+          devicePool
         }
         models {
           name
+          # WHAT COULD RUN WHERE. A machine holding nothing reads very
+          # differently depending on whether anything is configured to run
+          # there at all, and that is the difference between idle and pointless.
+          server
+          remote
           paused
           pauseReason
           pauseResumeMs
@@ -92,6 +102,12 @@ const NowDoc = graphql(/* GraphQL */ `
           sinceMs
         }
       }
+      # THE FLEET, ON THE QUERY THIS PAGE ALREADY MAKES. Everything the
+      # utilisation panel reads is added to the request that was going out
+      # anyway — no second fetch on the home screen, which is the thing P30 was
+      # protecting. The alternative was MachineData's Config query, which is a
+      # survey of every host (agent endpoints, extensions, notes, toolchains)
+      # and would have cost a second round trip to render three bars.
       residency {
         stopping
         servers {
@@ -101,11 +117,39 @@ const NowDoc = graphql(/* GraphQL */ `
             budget
             used
           }
+          # Whether being full here has COST anything. UtilizationBar's contract
+          # is explicit that a percentage cannot settle that and a made-room
+          # count can, so the bars are given one rather than a threshold.
+          madeRoomCount
+          madeRoomEvicted
+          madeRoomFor
+        }
+        # LOCAL BOX ONLY — the attached MacBook's Metal device is not in here.
+        # Read for one thing: which pool names are backed by a card, so a second
+        # GPU the declaration does not name still reads as device memory. Never
+        # for a number; the numbers on this page are all the fleet-wide ledger
+        # above. An unavailable reading means the probe could not answer, so the
+        # record says nothing about its pool either (see FleetPanel.roleOf).
+        gpus {
+          available
+          pool
         }
         models {
           modelName
           server
           state
+          refs
+          remote
+          # What this backend has reserved, per pool — the same ledger the bars
+          # are drawn from, so the parts add up to the whole. Deliberately NOT
+          # footprintMiB: that is the live process measurement, a second and
+          # different reading of the same quantity, and putting it beside a
+          # ledger bar would render two meanings as one. /machines shows both,
+          # side by side, where the difference is the point.
+          usage {
+            pool
+            bytes
+          }
         }
       }
     }
@@ -686,6 +730,7 @@ function Now() {
           <BoxStateAsking />
         </PageHeader>
         <Throughput pending />
+        <FleetPanel pending />
         <ActiveRequests />
       </Box>
     )
@@ -752,6 +797,50 @@ function Now() {
 
   const all = [...slow, ...faults]
 
+  // THE FLEET, JOINED ONCE. The declared side (which pool is the device, what
+  // could run where) comes from overview; the live side (budget, held, what made
+  // room) from residency; the holders from the resident list. All three are in
+  // the one response above.
+  const num = (v: string | number | null | undefined) => Number(v ?? 0)
+  const liveByServer = new Map((res?.servers ?? []).map((s) => [s.server, s]))
+  const fleetServers: FleetServer[] = (ov?.servers ?? []).map((s) => {
+    const live = liveByServer.get(s.server)
+    return {
+      server: s.server,
+      devicePool: s.devicePool ?? '',
+      agentStatus: s.agentStatus,
+      pools: (live?.pools ?? []).map((p) => ({
+        pool: p.pool,
+        budget: num(p.budget),
+        used: num(p.used),
+      })),
+      madeRoomCount: num(live?.madeRoomCount),
+      madeRoomEvicted: live?.madeRoomEvicted ?? '',
+      madeRoomFor: live?.madeRoomFor ?? '',
+    }
+  })
+  // A remote model is served by a host corrallm does not run. It holds no
+  // residency and must never be counted as loaded on one of your machines.
+  const fleetResident: FleetResident[] = (res?.models ?? [])
+    .filter((m) => !m.remote)
+    .map((m) => ({
+      modelName: m.modelName,
+      server: m.server,
+      state: m.state,
+      refs: num(m.refs),
+      usage: m.usage.map((u) => ({ pool: u.pool, bytes: num(u.bytes) })),
+    }))
+  const declaredByServer = new Map<string, number>()
+  for (const m of models) {
+    if (m.remote || !m.server) continue
+    declaredByServer.set(m.server, (declaredByServer.get(m.server) ?? 0) + 1)
+  }
+  const gpus = res?.gpus ?? []
+  const boundPools = new Set(
+    gpus.filter((g) => g.available && g.pool).map((g) => g.pool as string),
+  )
+  const probeIncomplete = gpus.some((g) => !g.available)
+
   // Summed across served names, because the strip answers "what is this BOX
   // doing" — per-model is what Traffic is for.
   const hour = c.recent?.rows ?? []
@@ -797,6 +886,22 @@ function Now() {
         promptTokens={totals.promptTokens}
         completionTokens={totals.completionTokens}
         costUsd={totals.costUsd}
+      />
+
+      {/* WHERE THE HARDWARE IS GOING, directly under the two tiles that raise
+          the question. The strip says "2 machines" and "1 of 12 models loaded";
+          this is the same two facts with a shape, and it is the only thing on
+          the page that can show a fleet which is simultaneously nearly full and
+          almost entirely idle. It sits BELOW what the box is getting done,
+          because an owner asks "is it working" and "is it doing anything"
+          before "where is it doing it" — and above what is in flight, which is
+          the most volatile thing here and stays last. */}
+      <FleetPanel
+        servers={fleetServers}
+        resident={fleetResident}
+        declaredByServer={declaredByServer}
+        boundPools={boundPools}
+        probeIncomplete={probeIncomplete}
       />
 
       <ActiveRequests />
