@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   Alert,
   Button,
@@ -188,18 +188,36 @@ export function PauseCostNote({ cost }: { cost: PauseCost }) {
  * replaces a fixed sentence that hedged — "fall through to the rest of their
  * lane, or fail with 503" — which is both outcomes at once and therefore no
  * answer to the only question the reader has.
+ *
+ * `defaultReason` and `resumeHelp` exist for a caller that already knows more
+ * about why than the operator should have to retype. Both are prefill: the
+ * reason field stays editable and the resume time stays empty, because a
+ * default resume time is a promise about when a fault will be fixed and no
+ * screen is in a position to make one.
  */
 export function PauseDialog(props: {
   target: string | null
   warning?: string
   consequence?: ReactNode
+  defaultReason?: string
+  resumeHelp?: string
   busy: boolean
   onClose: () => void
   onConfirm: (resumeAt: string | null, reason: string) => void
 }) {
-  const { target, warning, consequence, busy, onClose, onConfirm } = props
+  const { target, warning, consequence, defaultReason, resumeHelp, busy, onClose, onConfirm } =
+    props
   const [until, setUntil] = useState('')
   const [reason, setReason] = useState('')
+
+  // Seed on OPEN, not on mount. The dialog is mounted closed for the life of
+  // the page it sits on, so a useState initialiser would capture the first
+  // target's prefill and hand it to every target after it.
+  useEffect(() => {
+    if (!target) return
+    setUntil('')
+    setReason(defaultReason ?? '')
+  }, [target, defaultReason])
 
   // Local-time "now" in the format the input wants, sliced to minutes.
   const nowLocal = () => {
@@ -245,7 +263,11 @@ export function PauseDialog(props: {
           onChange={(e) => setUntil(e.target.value)}
           slotProps={{ inputLabel: { shrink: true }, htmlInput: { min: nowLocal() } }}
           error={invalid}
-          helperText={invalid ? 'Must be in the future' : 'Leave empty to pause until resumed by hand'}
+          helperText={
+            invalid
+              ? 'Must be in the future'
+              : (resumeHelp ?? 'Leave empty to pause until resumed by hand')
+          }
           sx={{ mb: 2 }}
         />
         <TextField
