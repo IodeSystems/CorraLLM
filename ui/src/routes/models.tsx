@@ -11,7 +11,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
@@ -21,6 +20,7 @@ import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { C } from '@/theme'
 import { fmtInt, fmtTime } from '@/format'
 import { Loading } from '@/Loading'
+import { PauseDialog, PauseModelDoc, UnpauseModelDoc } from '@/Pause'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -353,128 +353,6 @@ const ExtUnpauseDoc = graphql(/* GraphQL */ `
   }
 `)
 
-const PauseDoc = graphql(/* GraphQL */ `
-  mutation PauseModel($model: String!, $resumeAt: String, $reason: String) {
-    corrallm {
-      pauseModel(body: { model: $model, resumeAt: $resumeAt, reason: $reason }) {
-        ok
-        message
-        target
-        affected
-        evicted
-        draining
-      }
-    }
-  }
-`)
-
-const UnpauseDoc = graphql(/* GraphQL */ `
-  mutation UnpauseModel($model: String!) {
-    corrallm {
-      unpauseModel(body: { model: $model }) {
-        ok
-        message
-      }
-    }
-  }
-`)
-
-/**
- * PauseDialog collects the optional resume time and reason for a pause.
- *
- * The input is `datetime-local`, whose value is a LOCAL wall-clock string with
- * no zone ("2026-08-02T09:00"). The server takes RFC3339 and enforces
- * "in the future", so the conversion has to happen here, through a Date — which
- * is exactly right: the operator means 9am where they are, not 9am UTC.
- *
- * `min` is now, not midnight tonight: "after today" in the sense that matters is
- * "not in the past", and forbidding a pause that lifts in two hours because it
- * is still today would be the wrong reading.
- *
- * `warning` carries the blast radius when it is wider than the thing named —
- * pausing one model of an extension pauses all of them, and that must be on the
- * screen BEFORE the click, not in the result message after it.
- */
-function PauseDialog(props: {
-  target: string | null
-  warning?: string
-  busy: boolean
-  onClose: () => void
-  onConfirm: (resumeAt: string | null, reason: string) => void
-}) {
-  const { target, warning, busy, onClose, onConfirm } = props
-  const [until, setUntil] = useState('')
-  const [reason, setReason] = useState('')
-
-  // Local-time "now" in the format the input wants, sliced to minutes.
-  const nowLocal = () => {
-    const d = new Date()
-    d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
-    return d.toISOString().slice(0, 16)
-  }
-
-  const close = () => {
-    setUntil('')
-    setReason('')
-    onClose()
-  }
-
-  const parsed = until ? new Date(until) : null
-  const invalid = !!parsed && !(parsed.getTime() > Date.now())
-
-  return (
-    <Dialog open={!!target} onClose={close} maxWidth="xs" fullWidth>
-      <DialogTitle>Pause {target}</DialogTitle>
-      <DialogContent>
-        {warning && (
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            {warning}
-          </Alert>
-        )}
-        <Typography variant="body2" sx={{ mb: 2, color: C.textMuted }}>
-          Unloads it and keeps it unloaded — no request, fall-through or preload will
-          start it again until it is resumed. Requests naming an affected model fall through
-          to the rest of their lane, or fail with 503.
-        </Typography>
-        <TextField
-          fullWidth
-          size="small"
-          type="datetime-local"
-          label="Resume automatically at"
-          value={until}
-          onChange={(e) => setUntil(e.target.value)}
-          slotProps={{ inputLabel: { shrink: true }, htmlInput: { min: nowLocal() } }}
-          error={invalid}
-          helperText={invalid ? 'Must be in the future' : 'Leave empty to pause until resumed by hand'}
-          sx={{ mb: 2 }}
-        />
-        <TextField
-          fullWidth
-          size="small"
-          label="Reason (optional)"
-          placeholder="e.g. freeing the GPU for the 70B eval"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-        />
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={close}>Cancel</Button>
-        <Button
-          variant="contained"
-          color="warning"
-          disabled={busy || invalid}
-          onClick={() => {
-            onConfirm(parsed ? parsed.toISOString() : null, reason.trim())
-            close()
-          }}
-        >
-          Pause
-        </Button>
-      </DialogActions>
-    </Dialog>
-  )
-}
-
 /**
  * ConfirmDialog is the guard on an action whose blast radius is wider than the
  * row it was clicked from.
@@ -627,12 +505,12 @@ function ModelsPage() {
 
   const pause = useMutation({
     mutationFn: (v: { model: string; resumeAt: string | null; reason: string }) =>
-      gqlClient.request(PauseDoc, { model: v.model, resumeAt: v.resumeAt, reason: v.reason }),
+      gqlClient.request(PauseModelDoc, { model: v.model, resumeAt: v.resumeAt, reason: v.reason }),
     onSuccess: (d) => done(d.corrallm.pauseModel?.message, d.corrallm.pauseModel?.ok),
     onError: fail,
   })
   const unpause = useMutation({
-    mutationFn: (model: string) => gqlClient.request(UnpauseDoc, { model }),
+    mutationFn: (model: string) => gqlClient.request(UnpauseModelDoc, { model }),
     onSuccess: (d) => done(d.corrallm.unpauseModel?.message, d.corrallm.unpauseModel?.ok),
     onError: fail,
   })
