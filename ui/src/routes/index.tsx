@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Box, Chip, Typography } from '@mui/material'
 import { graphql } from '@/gql'
@@ -304,6 +304,11 @@ type FaultBody = {
   next: string
   when?: string
   severity: 'error' | 'warning' | 'info'
+  // WHERE THE NEXT THING IS, when it is a control somewhere rather than
+  // something to go and understand. OB-8 asks a screen to name the next thing
+  // AND be able to start it; a fault whose `next` describes a button on another
+  // page and leaves the reader to find it has only done the first half.
+  where?: { label: string; to: string }
 }
 
 // WHOSE MACHINE, and it decides the headline. Lenny run 3: the box spent its
@@ -449,10 +454,26 @@ function faultsOf(
       // second half now describes the action instead of naming the object, and
       // points at the panel that does it — which Setup titles "Model lanes" and
       // explains, in the same words, as models tried in order.
+      // "Take it out of its fallback list" was an instruction to edit
+      // configuration by hand, and it went stale the moment Setup grew a Pause
+      // for exactly this: pausing is reversible, records why, and leaves the
+      // config alone, which the edit does none of. The sentence names the
+      // action and the link lands on it.
+      //
+      // The button itself stays on Setup rather than being repeated here. This
+      // panel is a census of unlike things — a machine, a full pool, a
+      // slowdown, a pause somebody set on purpose — and it is readable because
+      // every row has the same shape. One row carrying a control makes the
+      // others look inert, and invites a control on each of them, which is the
+      // accretion P30 took off this page. A pause also has to show what it will
+      // cost before it is pressed, and that is counted from the fallback lists
+      // and their ladders — which Now does not fetch, and the one thing P30
+      // protected here is this page's single round trip.
       next:
         status === 402
-          ? 'Fund the account, or stop sending requests to it: on Setup, take it out of its fallback list. Nothing here is waiting on it.'
-          : 'Check the credential, or stop sending requests to it: on Setup, take it out of its fallback list. Nothing here is waiting on it.',
+          ? 'Fund the account, or stop calling it — pausing it is reversible and leaves your config alone. Nothing here is waiting on it.'
+          : 'Check the credential, or stop calling it — pausing it is reversible and leaves your config alone. Nothing here is waiting on it.',
+      where: { label: 'Pause it on Setup', to: '/setup' },
       when:
         days >= 1
           ? `it has been like this for ${days} day${days === 1 ? '' : 's'}`
@@ -731,7 +752,10 @@ function WhatIsWrong({ faults }: { faults: Fault[] }) {
             )}
           </Box>
           <Typography variant="body2" sx={{ color: C.textMuted, mt: 0.25 }}>
-            {f.whose} {f.next}
+            {f.whose} {f.next}{' '}
+            {/* Unstyled on purpose: theme.ts paints a router Link as text that
+                happens to be clickable rather than accent blue. */}
+            {f.where && <Link to={f.where.to}>{f.where.label}</Link>}
           </Typography>
         </Row>
       ))}

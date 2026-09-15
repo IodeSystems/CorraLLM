@@ -11,7 +11,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
@@ -21,6 +20,7 @@ import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { C } from '@/theme'
 import { fmtInt, fmtTime } from '@/format'
 import { Loading } from '@/Loading'
+import { PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost, PauseCostNote } from '@/Pause'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -119,6 +119,12 @@ const OverviewDoc = graphql(/* GraphQL */ `
         keys {
           key
           group
+        }
+        # WHAT CANNOT SERVE TODAY EITHER. A pause's fall-through is only real if
+        # the rungs behind it work, and a backend answering 401/402/403 does not.
+        # One extra field on a request this page already makes.
+        refusing {
+          backend
         }
       }
       residency {
@@ -353,128 +359,6 @@ const ExtUnpauseDoc = graphql(/* GraphQL */ `
   }
 `)
 
-const PauseDoc = graphql(/* GraphQL */ `
-  mutation PauseModel($model: String!, $resumeAt: String, $reason: String) {
-    corrallm {
-      pauseModel(body: { model: $model, resumeAt: $resumeAt, reason: $reason }) {
-        ok
-        message
-        target
-        affected
-        evicted
-        draining
-      }
-    }
-  }
-`)
-
-const UnpauseDoc = graphql(/* GraphQL */ `
-  mutation UnpauseModel($model: String!) {
-    corrallm {
-      unpauseModel(body: { model: $model }) {
-        ok
-        message
-      }
-    }
-  }
-`)
-
-/**
- * PauseDialog collects the optional resume time and reason for a pause.
- *
- * The input is `datetime-local`, whose value is a LOCAL wall-clock string with
- * no zone ("2026-08-02T09:00"). The server takes RFC3339 and enforces
- * "in the future", so the conversion has to happen here, through a Date — which
- * is exactly right: the operator means 9am where they are, not 9am UTC.
- *
- * `min` is now, not midnight tonight: "after today" in the sense that matters is
- * "not in the past", and forbidding a pause that lifts in two hours because it
- * is still today would be the wrong reading.
- *
- * `warning` carries the blast radius when it is wider than the thing named —
- * pausing one model of an extension pauses all of them, and that must be on the
- * screen BEFORE the click, not in the result message after it.
- */
-function PauseDialog(props: {
-  target: string | null
-  warning?: string
-  busy: boolean
-  onClose: () => void
-  onConfirm: (resumeAt: string | null, reason: string) => void
-}) {
-  const { target, warning, busy, onClose, onConfirm } = props
-  const [until, setUntil] = useState('')
-  const [reason, setReason] = useState('')
-
-  // Local-time "now" in the format the input wants, sliced to minutes.
-  const nowLocal = () => {
-    const d = new Date()
-    d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
-    return d.toISOString().slice(0, 16)
-  }
-
-  const close = () => {
-    setUntil('')
-    setReason('')
-    onClose()
-  }
-
-  const parsed = until ? new Date(until) : null
-  const invalid = !!parsed && !(parsed.getTime() > Date.now())
-
-  return (
-    <Dialog open={!!target} onClose={close} maxWidth="xs" fullWidth>
-      <DialogTitle>Pause {target}</DialogTitle>
-      <DialogContent>
-        {warning && (
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            {warning}
-          </Alert>
-        )}
-        <Typography variant="body2" sx={{ mb: 2, color: C.textMuted }}>
-          Unloads it and keeps it unloaded — no request, fall-through or preload will
-          start it again until it is resumed. Requests naming an affected model fall through
-          to the rest of their lane, or fail with 503.
-        </Typography>
-        <TextField
-          fullWidth
-          size="small"
-          type="datetime-local"
-          label="Resume automatically at"
-          value={until}
-          onChange={(e) => setUntil(e.target.value)}
-          slotProps={{ inputLabel: { shrink: true }, htmlInput: { min: nowLocal() } }}
-          error={invalid}
-          helperText={invalid ? 'Must be in the future' : 'Leave empty to pause until resumed by hand'}
-          sx={{ mb: 2 }}
-        />
-        <TextField
-          fullWidth
-          size="small"
-          label="Reason (optional)"
-          placeholder="e.g. freeing the GPU for the 70B eval"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-        />
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={close}>Cancel</Button>
-        <Button
-          variant="contained"
-          color="warning"
-          disabled={busy || invalid}
-          onClick={() => {
-            onConfirm(parsed ? parsed.toISOString() : null, reason.trim())
-            close()
-          }}
-        >
-          Pause
-        </Button>
-      </DialogActions>
-    </Dialog>
-  )
-}
-
 /**
  * ConfirmDialog is the guard on an action whose blast radius is wider than the
  * row it was clicked from.
@@ -613,9 +497,14 @@ function ModelsPage() {
   })
   // What the pause dialog is collecting a resume time for. `kind` decides which
   // mutation fires; `warning` is the blast radius shown before the click.
-  const [pauseFor, setPauseFor] = useState<{ kind: 'model' | 'extension'; name: string; warning?: string } | null>(
-    null,
-  )
+  const [pauseFor, setPauseFor] = useState<{
+    kind: 'model' | 'extension'
+    name: string
+    // Every served name that goes out with it — one for a model, all of them
+    // for an extension, because an extension is one process.
+    taking: string[]
+    warning?: string
+  } | null>(null)
   // A pending unload whose blast radius is wider than its row (a hosted model).
   const [confirmUnload, setConfirmUnload] = useState<{ title: string; body: string; run: () => void } | null>(null)
 
@@ -627,12 +516,12 @@ function ModelsPage() {
 
   const pause = useMutation({
     mutationFn: (v: { model: string; resumeAt: string | null; reason: string }) =>
-      gqlClient.request(PauseDoc, { model: v.model, resumeAt: v.resumeAt, reason: v.reason }),
+      gqlClient.request(PauseModelDoc, { model: v.model, resumeAt: v.resumeAt, reason: v.reason }),
     onSuccess: (d) => done(d.corrallm.pauseModel?.message, d.corrallm.pauseModel?.ok),
     onError: fail,
   })
   const unpause = useMutation({
-    mutationFn: (model: string) => gqlClient.request(UnpauseDoc, { model }),
+    mutationFn: (model: string) => gqlClient.request(UnpauseModelDoc, { model }),
     onSuccess: (d) => done(d.corrallm.unpauseModel?.message, d.corrallm.unpauseModel?.ok),
     onError: fail,
   })
@@ -698,6 +587,12 @@ function ModelsPage() {
   const lanes = ov?.lanes ?? []
   const groups = ov?.groups ?? []
   const keys = ov?.keys ?? []
+  // Backends that already cannot serve, so a pause is not allowed to count them
+  // as somewhere to fall through to.
+  const alreadyOut = new Set<string>([
+    ...models.filter((m) => m.paused).map((m) => m.name),
+    ...(ov?.refusing ?? []).map((r) => r.backend),
+  ])
   // Residency keyed by the BACKING PROCESS, and remote backends dropped before
   // the map is built. Two bugs fixed at once:
   //   - an extension's models share one process, so keying by modelName made
@@ -847,6 +742,11 @@ function ModelsPage() {
       <PauseDialog
         target={pauseFor?.name ?? null}
         warning={pauseFor?.warning}
+        // Counted, not asserted: which fallback lists survive this pause depends
+        // on what is in them right now (OB-1).
+        consequence={
+          pauseFor ? <PauseCostNote cost={pauseCost(pauseFor.taking, lanes, alreadyOut)} /> : undefined
+        }
         busy={busy}
         onClose={() => setPauseFor(null)}
         onConfirm={(resumeAt, reason) => {
@@ -1057,6 +957,7 @@ function ModelsPage() {
                             setPauseFor({
                               kind: 'extension',
                               name: e.name,
+                              taking: e.provides,
                               warning: `Takes every model ${e.name} serves out of service: ${e.provides.join(', ')}.`,
                             })
                           }

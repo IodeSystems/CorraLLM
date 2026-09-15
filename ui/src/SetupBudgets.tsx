@@ -1,8 +1,10 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
   AlertTitle,
   Box,
+  Button,
   Chip,
   LinearProgress,
   Table,
@@ -19,6 +21,15 @@ import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { fmtInt } from '@/format'
 import { Loading } from '@/Loading'
+import {
+  PauseDialog,
+  PauseCostNote,
+  PauseModelDoc,
+  UnpauseModelDoc,
+  pauseCost,
+  type LaneShape,
+  type PauseCost,
+} from '@/Pause'
 
 /**
  * Free-tier quota ledger (P16): each remote backend's remaining rate-limit
@@ -143,26 +154,32 @@ function refusalMeaning(status: number): string {
   return `it answers ${status}`
 }
 
+/** The half of the fix that happens at the provider, not here. */
+function refusalFix(status: number): string {
+  if (status === 402) return 'Fund the account'
+  if (status === 401) return 'Replace the credential'
+  if (status === 403) return 'Check what the credential is allowed to reach'
+  return 'Check the provider'
+}
+
 /**
  * What to do about it — a fault the reader cannot act on is not a fault (OB-6).
  *
- * This said "drop this rung from its lane", which is two config words in one
- * clause and is the whole of what a reader took from the banner: "I don't own a
- * rung and I don't know what a lane is." A `rung` is the backend the sentence
- * already names, and a `lane` is a fallback list — both are gloss, never label
- * (OB-3).
+ * The second half used to read "or take this backend out of its fallback list
+ * on the Models tab": an instruction to go and edit configuration by hand, in
+ * another room, which is what the owner was looking at when he asked "possibly
+ * disable backend as an option?". It stood for two days.
  *
- * The second half also now says WHERE, because "take it out" with no room named
- * is a dead end the banner cannot be acted on from (OB-8). Both halves are
- * offered because the choice is the reader's: pay for the account, or stop
- * reaching for it.
+ * It is now a button, so the sentence hands off to it instead of describing an
+ * errand. The old wording survives for the one case the button cannot cover —
+ * a refusing backend that is not a model configured here, which nothing on this
+ * box can pause. And once it IS paused, the second half is already done: the
+ * sentence stops offering it and the row underneath says so.
  */
-function refusalAction(status: number): string {
-  const drop = 'or take this backend out of its fallback list on the Models tab.'
-  if (status === 402) return `Fund the account, ${drop}`
-  if (status === 401) return `Replace the credential, ${drop}`
-  if (status === 403) return `Check what the credential is allowed to reach, ${drop}`
-  return `Check the provider, ${drop}`
+function refusalAction(status: number, offer: 'pause' | 'paused' | 'none'): string {
+  if (offer === 'pause') return `${refusalFix(status)}. Or stop calling it:`
+  if (offer === 'paused') return `${refusalFix(status)}.`
+  return `${refusalFix(status)}, or take this backend out of its fallback list on the Models tab.`
 }
 
 /**
@@ -174,9 +191,57 @@ function fmtSince(msStr: string | number): string {
   if (!Number.isFinite(ms) || ms <= 0) return 'an unknown time'
   const secs = Math.max(0, (Date.now() - ms) / 1000)
   const when = new Date(ms).toLocaleString()
-  if (secs < 3600) return `${Math.max(1, Math.floor(secs / 60))} minutes ago (${when})`
-  if (secs < 86400) return `${Math.floor(secs / 3600)} hours ago (${when})`
-  return `${Math.floor(secs / 86400)} days ago (${when})`
+  const ago = (v: number, unit: string) => `${v} ${unit}${v === 1 ? '' : 's'} ago (${when})`
+  if (secs < 3600) return ago(Math.max(1, Math.floor(secs / 60)), 'minute')
+  if (secs < 86400) return ago(Math.floor(secs / 3600), 'hour')
+  return ago(Math.floor(secs / 86400), 'day')
+}
+
+/**
+ * What the banner needs to know beyond "it is refusing": whether the thing
+ * refusing is a model this box can pause, what else goes with it, and which
+ * fallback lists would lose a rung.
+ *
+ * A separate query rather than fields on the ledger, and `enabled` on there
+ * being something wrong, because the banner renders on every Setup tab: the
+ * normal case is nothing refusing, and the normal case should cost nothing.
+ */
+const RefusingContextDoc = graphql(/* GraphQL */ `
+  query RefusingContext {
+    corrallm {
+      overview {
+        models {
+          name
+          # THE PROCESS, which is what a pause is actually keyed on. An
+          # extension hosts several models in one process, so a pause aimed at
+          # any of them takes all of them; every other model is its own process
+          # and takes only itself. Asking procKey gets both cases right without
+          # the UI having to know which is which.
+          procKey
+          paused
+          pausedAtMs
+        }
+        lanes {
+          name
+          members {
+            model
+          }
+          ladder {
+            model
+          }
+        }
+      }
+    }
+  }
+`)
+
+/** What one press of Pause is aimed at, assembled before the press (OB-1). */
+type PauseTarget = {
+  name: string
+  warning?: string
+  reason: string
+  resumeHelp: string
+  cost: PauseCost
 }
 
 /**
@@ -184,11 +249,73 @@ function fmtSince(msStr: string | number): string {
  * allowed to live inside a tab. Setup renders this above the tab bar, where it
  * is visible whichever tab is open — the alert was previously buried partway
  * down a scroll, and putting a scroll behind a tab would have buried it twice.
+ *
+ * IT NOW CARRIES THE ACTION. It described one instead: "take this backend out
+ * of its fallback list on the Models tab" — a config edit, in another room, to
+ * be done by hand, offered to somebody who had just been told the box was
+ * broken. On this box it said that for two days about a Groq key answering 403.
+ * A banner that can only issue errands is the dead end OB-8 forbids, and the
+ * owner read it exactly that way: "possibly disable backend as an option?"
+ *
+ * Pause is that option and already existed. It is the right one rather than the
+ * config edit because it is reversible, takes effect at once, leaves the
+ * configuration alone, and shows up as paused on Now and Models — where an edit
+ * deletes the rung, records nothing about why, and has to be undone from memory.
  */
 export function RefusingBanner() {
+  const qc = useQueryClient()
   const q = useLedger(20000)
   const refusing = q.data?.corrallm?.quotaLedger?.refusing ?? []
+
+  const ctx = useQuery({
+    queryKey: ['refusingContext'],
+    queryFn: () => gqlClient.request(RefusingContextDoc),
+    enabled: refusing.length > 0,
+    refetchInterval: 20000,
+  })
+
+  const [target, setTarget] = useState<PauseTarget | null>(null)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  // Both keys: the ledger decides whether this banner renders at all, the
+  // context decides whether it offers Pause or Resume.
+  const done = (text?: string | null, ok?: boolean | null) => {
+    setMsg({ ok: !!ok, text: text ?? '' })
+    void qc.invalidateQueries({ queryKey: ['quota'] })
+    void qc.invalidateQueries({ queryKey: ['refusingContext'] })
+    void qc.invalidateQueries({ queryKey: ['overview'] })
+  }
+  const fail = (e: unknown) => setMsg({ ok: false, text: String(e) })
+
+  const pause = useMutation({
+    mutationFn: (v: { model: string; resumeAt: string | null; reason: string }) =>
+      gqlClient.request(PauseModelDoc, v),
+    onSuccess: (d) => done(d.corrallm.pauseModel?.message, d.corrallm.pauseModel?.ok),
+    onError: fail,
+  })
+  const unpause = useMutation({
+    mutationFn: (model: string) => gqlClient.request(UnpauseModelDoc, { model }),
+    onSuccess: (d) => done(d.corrallm.unpauseModel?.message, d.corrallm.unpauseModel?.ok),
+    onError: fail,
+  })
+  const busy = pause.isPending || unpause.isPending
+
   if (refusing.length === 0) return null
+
+  const ov = ctx.data?.corrallm?.overview
+  const models = ov?.models ?? []
+  const lanes: LaneShape[] = (ov?.lanes ?? []).map((l) => ({
+    name: l.name,
+    ladder: l.ladder,
+    members: l.members,
+  }))
+  // Nothing already out of service counts as somewhere to fall through to —
+  // including the other backends on this very list.
+  const alreadyOut = new Set<string>([
+    ...models.filter((m) => m.paused).map((m) => m.name),
+    ...refusing.map((r) => r.backend),
+  ])
+
   return (
     <Alert severity="error">
       <AlertTitle>
@@ -196,13 +323,107 @@ export function RefusingBanner() {
           ? 'A backend is refusing every request'
           : `${refusing.length} backends are refusing every request`}
       </AlertTitle>
-      {refusing.map((r) => (
-        <Typography key={r.backend} variant="body2" sx={{ mb: 0.5 }}>
-          <b style={{ fontFamily: 'monospace' }}>{r.backend}</b> — {refusalMeaning(n(r.status))}{' '}
-          since {fmtSince(r.sinceMs)}, {fmtInt(r.count)} {n(r.count) === 1 ? 'time' : 'times'}.{' '}
-          {refusalAction(n(r.status))}
-        </Typography>
-      ))}
+      {msg && (
+        <Alert severity={msg.ok ? 'success' : 'error'} sx={{ mb: 1 }} onClose={() => setMsg(null)}>
+          {msg.text}
+        </Alert>
+      )}
+      {refusing.map((r) => {
+        const status = n(r.status)
+        const model = models.find((m) => m.name === r.backend)
+        // Everything on the same process, which is exactly what the server's
+        // pause takes out. Matching on the integration that lists a model would
+        // have been wrong here: `free` lists groq-gpt-oss-120b and is a remote
+        // integration, not a process, so a pause aimed at that model takes
+        // nothing else with it.
+        const siblings = model
+          ? models.filter((m) => m.procKey === model.procKey).map((m) => m.name)
+          : [r.backend]
+        const host = siblings.length > 1 ? model?.procKey.replace(/^extension:/, '') : undefined
+
+        return (
+          <Box key={r.backend} sx={{ mb: 1.5 }}>
+            <Typography variant="body2">
+              <b style={{ fontFamily: 'monospace' }}>{r.backend}</b> — {refusalMeaning(status)} since{' '}
+              {fmtSince(r.sinceMs)}, {fmtInt(r.count)} {n(r.count) === 1 ? 'time' : 'times'}.{' '}
+              {refusalAction(status, !model ? 'none' : model.paused ? 'paused' : 'pause')}
+            </Typography>
+
+            {model?.paused ? (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.5 }}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="success"
+                  disabled={busy}
+                  onClick={() => unpause.mutate(r.backend)}
+                >
+                  Resume it
+                </Button>
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                  {/* A paused backend cannot be reached through this box, so a
+                      refusal dated after the pause is not a caller — it is
+                      something else holding the same key, and saying so is the
+                      difference between a stale count and a live one. */}
+                  {n(r.lastMs) > n(model.pausedAtMs)
+                    ? `Paused ${fmtSince(model.pausedAtMs)}, and it refused again after that — a pause stops requests through this box, not anything else using the same key.`
+                    : `Paused ${fmtSince(model.pausedAtMs)}. This box is not calling it; the refusals counted above are from before that.`}
+                </Typography>
+              </Box>
+            ) : model ? (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.5 }}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="warning"
+                  disabled={busy || ctx.isLoading}
+                  onClick={() =>
+                    setTarget({
+                      name: r.backend,
+                      warning: host
+                        ? `${r.backend} shares the ${host} process with its siblings, so pausing it takes all of them out of service: ${siblings.join(', ')}.`
+                        : undefined,
+                      // The fault, already known, so nobody has to retype it —
+                      // and so the reason shows up on Now as the sentence that
+                      // explains a paused model somebody else may not have
+                      // paused.
+                      reason: `refusing every request — ${status} since ${new Date(n(r.sinceMs)).toLocaleString()}`,
+                      // LEFT INDEFINITE ON PURPOSE. A 401/402/403 does not heal
+                      // on a clock; it lifts when a person changes something at
+                      // the provider. A resume time would put the same dead
+                      // credential back in the rotation at an hour chosen for no
+                      // reason, and refill this very banner.
+                      resumeHelp: `Empty on purpose: a ${status} clears when somebody fixes the account or the key, not on a clock. It stays listed as paused on Now until it is resumed.`,
+                      cost: pauseCost(siblings, lanes, alreadyOut),
+                    })
+                  }
+                >
+                  Pause it
+                </Button>
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                  Stops this box calling it: callers are told the model is paused instead of getting
+                  its {status}, and nothing more is spent on a credential that cannot answer. It
+                  stays in your configuration, and resuming it is one press here.
+                </Typography>
+              </Box>
+            ) : null}
+          </Box>
+        )
+      })}
+
+      <PauseDialog
+        target={target?.name ?? null}
+        warning={target?.warning}
+        consequence={target ? <PauseCostNote cost={target.cost} /> : undefined}
+        defaultReason={target?.reason}
+        resumeHelp={target?.resumeHelp}
+        busy={busy}
+        onClose={() => setTarget(null)}
+        onConfirm={(resumeAt, reason) => {
+          if (target) pause.mutate({ model: target.name, resumeAt, reason })
+          setTarget(null)
+        }}
+      />
     </Alert>
   )
 }
