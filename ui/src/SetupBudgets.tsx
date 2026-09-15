@@ -316,12 +316,32 @@ export function RefusingBanner() {
     ...refusing.map((r) => r.backend),
   ])
 
+  // A BACKEND YOU PAUSED IS NOT A FAULT, IT IS A DECISION YOU MADE.
+  //
+  // The ledger keeps its row after a pause on purpose — ClearBackendRefusal
+  // only fires on a SUCCESSFUL response, and a paused backend is never called,
+  // so nothing can ever clear it. That is right for the record and wrong for
+  // this banner, which was rendering severity="error" and the present tense
+  // "is refusing every request" over a backend the reader had just switched
+  // off, with its own "Paused" row directly underneath. The owner's words:
+  // "it still shows errors, and it shows that it is paused - kinda pointless".
+  //
+  // He is right, and the rule is OB-6's: a fault the reader cannot act on is
+  // not a fault. There is nothing left to do about a backend you have already
+  // stopped calling, so it stops being red and starts being past tense.
+  const live = refusing.filter((r) => !models.find((m) => m.name === r.backend)?.paused)
+  const allQuiet = live.length === 0
+
   return (
-    <Alert severity="error">
+    <Alert severity={allQuiet ? 'info' : 'error'}>
       <AlertTitle>
-        {refusing.length === 1
-          ? 'A backend is refusing every request'
-          : `${refusing.length} backends are refusing every request`}
+        {allQuiet
+          ? refusing.length === 1
+            ? 'A backend is paused after refusing requests'
+            : `${refusing.length} backends are paused after refusing requests`
+          : live.length === 1
+            ? 'A backend is refusing every request'
+            : `${live.length} backends are refusing every request`}
       </AlertTitle>
       {msg && (
         <Alert severity={msg.ok ? 'success' : 'error'} sx={{ mb: 1 }} onClose={() => setMsg(null)}>
@@ -344,8 +364,15 @@ export function RefusingBanner() {
         return (
           <Box key={r.backend} sx={{ mb: 1.5 }}>
             <Typography variant="body2">
-              <b style={{ fontFamily: 'monospace' }}>{r.backend}</b> — {refusalMeaning(status)} since{' '}
-              {fmtSince(r.sinceMs)}, {fmtInt(r.count)} {n(r.count) === 1 ? 'time' : 'times'}.{' '}
+              <b style={{ fontFamily: 'monospace' }}>{r.backend}</b> —{' '}
+              {model?.paused ? 'it refused' : refusalMeaning(status)}
+              {model?.paused ? ' until you paused it' : ''} since {fmtSince(r.sinceMs)},{' '}
+              {fmtInt(r.count)} {n(r.count) === 1 ? 'time' : 'times'}
+              {/* The last refusal, not the first, is what says whether this is
+                  news. One 403 two days ago and nothing since reads very
+                  differently from one a minute ago, and the row was showing
+                  only `since`, which made a single old event look ongoing. */}
+              {model?.paused && n(r.lastMs) > 0 ? `, last ${fmtSince(r.lastMs)}` : ''}.{' '}
               {refusalAction(status, !model ? 'none' : model.paused ? 'paused' : 'pause')}
             </Typography>
 

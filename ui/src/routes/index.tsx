@@ -428,6 +428,20 @@ function faultsOf(
   // make the headline say the machine is struggling, which would be false and
   // is exactly the error run 3 caught.
   for (const r of refusing) {
+    // A PAUSED BACKEND ALREADY HAS ITS CARD, AND IT IS THE RIGHT ONE.
+    //
+    // The ledger cannot clear a refusal for a backend nobody calls — the clear
+    // only fires on a successful response — so a paused rung keeps its row
+    // forever. Raising this fault too put the SAME backend on this panel twice:
+    // "X is turning down every request" in warning, directly above "X is paused"
+    // in info. The owner paused it from the banner and got both: "it still shows
+    // errors, and it shows that it is paused - kinda pointless".
+    //
+    // The paused card wins because it is the one with something to say: the
+    // pause reason is prefilled with the refusal that caused it, so it already
+    // reads "paused — refusing every request, 403 since <date>". Two cards for
+    // one backend is how a fault panel becomes something people scroll past.
+    if (models.some((m) => m.name === r.backend && m.paused)) continue
     const status = Number(r.status ?? 0) || 0
     const days = Math.floor(Math.max(0, Date.now() - Number(r.sinceMs ?? 0)) / 86400000)
     out.push({
