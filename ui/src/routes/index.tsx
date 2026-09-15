@@ -297,20 +297,34 @@ function slowdownFaults(recent: Rollup[], baseline: Rollup[]): Fault[] {
  * It is deliberately built from what the Overview query already knows plus agent
  * reachability. A fault sourced from a page nobody opens is how this got missed.
  */
-type Fault = {
+type FaultBody = {
   key: string
   what: string
   whose: string
   next: string
   when?: string
   severity: 'error' | 'warning' | 'info'
-  // WHOSE MACHINE, and it decides the headline. Lenny run 3: the box spent its
-  // one "Struggling" on a laptop that had never reported in, and never said
-  // anything about the machine actually serving the team — so a person came
-  // looking for "is my box broken" and left unable to say. A fault somewhere
-  // else is still a fault; it is not this box struggling.
-  scope: 'here' | 'attached'
 }
+
+// WHOSE MACHINE, and it decides the headline. Lenny run 3: the box spent its
+// one "Struggling" on a laptop that had never reported in, and never said
+// anything about the machine actually serving the team — so a person came
+// looking for "is my box broken" and left unable to say. A fault somewhere
+// else is still a fault; it is not this box struggling.
+//
+// AND WHAT KIND OF THING IT IS, which is a SEPARATE question the state line
+// used to answer by guessing. Everything scoped 'attached' was counted as a
+// machine, so a Groq credential answering 403 made the one sentence this page
+// owes on arrival read "1 attached machine is not [serving normally]" — while
+// /machines correctly said every machine was reachable. A reader sent to look
+// for a down box would have found none, because there was none: the thing that
+// was not serving is a provider, which the rest of the product calls a provider
+// (OB-3 — the screen speaks one word for one thing, on every page).
+//
+// It is a discriminated union rather than an optional field so the omission
+// cannot recur: a new 'attached' fault does not compile until it says which.
+type AttachedFault = FaultBody & { scope: 'attached'; subject: 'machine' | 'provider' }
+type Fault = (FaultBody & { scope: 'here' }) | AttachedFault
 
 function faultsOf(
   servers: readonly { server: string; agentStatus: string; agentLastSeen: string }[],
@@ -331,6 +345,7 @@ function faultsOf(
     out.push({
       key: `agent:${s.server}`,
       scope: 'attached',
+      subject: 'machine',
       severity: s.agentStatus === 'down' ? 'error' : 'warning',
       what: `${s.server} is not reporting in`,
       whose: 'That machine, not this one.',
@@ -413,6 +428,10 @@ function faultsOf(
     out.push({
       key: `refusing:${r.backend}`,
       scope: 'attached',
+      // Not a machine. It is a credential at somebody else's API, and calling
+      // it one sent a reader hunting for a down box on a fleet where every box
+      // was up.
+      subject: 'provider',
       severity: 'warning',
       what: `${r.backend} is turning down every request${
         status === 402
@@ -454,6 +473,35 @@ function faultsOf(
  * false. The build stamp stays, demoted: operators need it, it is not the
  * headline.
  */
+/**
+ * The half of the state sentence about things that are not this box.
+ *
+ * It used to be one count and one noun: every 'attached' fault was "an attached
+ * machine". A UX walk read *"This machine is serving normally. 1 attached
+ * machine is not, and it is below"* on a fleet where /machines said both boxes
+ * were reachable — and it was right, because the thing not serving was
+ * `groq-gpt-oss-120b`, a provider credential. The one sentence this page owes on
+ * arrival named the wrong kind of object, and sent a reader to the one screen
+ * that could not show it.
+ *
+ * Machines and providers are said separately because they are fixed in
+ * different places: a machine on /machines, a provider's credential on Setup.
+ * Neither is described in terms of the other.
+ */
+function attachedPhrase(machines: number, providers: number): string {
+  const m =
+    machines > 0
+      ? `${machines} attached machine${machines === 1 ? ' is' : 's are'} not`
+      : ''
+  const p =
+    providers > 0
+      ? `${providers} provider${providers === 1 ? ' is' : 's are'} turning down requests`
+      : ''
+  if (m && p) return `${m}, and ${p}. They are all below.`
+  const one = (m || p) && machines + providers === 1
+  return `${m || p}, and ${one ? 'it is' : 'they are'} below.`
+}
+
 function BoxState(props: {
   faults: Fault[]
   stopping: number
@@ -464,7 +512,14 @@ function BoxState(props: {
 }) {
   const { faults, stopping, ready, configured, machines, version } = props
   const bad = faults.filter((f) => f.severity !== 'info' && f.scope === 'here').length
-  const elsewhere = faults.filter((f) => f.severity !== 'info' && f.scope === 'attached').length
+  // Counted by WHAT THEY ARE, not just where they are. One number covering both
+  // is what made a remote credential read as a machine.
+  const away = faults.filter(
+    (f): f is AttachedFault => f.severity !== 'info' && f.scope === 'attached',
+  )
+  const downMachines = away.filter((f) => f.subject === 'machine').length
+  const badProviders = away.filter((f) => f.subject === 'provider').length
+  const elsewhere = away.length
   // "Serving" with nothing loaded is TRUE here and has to be said carefully:
   // corrallm loads on demand, so an idle box with zero resident models is
   // healthy and the next request will start one. What is NOT serving is a box
@@ -483,8 +538,13 @@ function BoxState(props: {
           : // THIS box is fine and something else is not: say both, in that order.
             // "Struggling" for a machine that is not serving anybody sends a
             // person hunting for a fault on the one that is.
+            //
+            // AND THE WORD FOR IT IS THE WORD THE REST OF THE PRODUCT USES. A
+            // machine is a box you own; a provider is a credential at somebody
+            // else's API. Both can stop serving, they are fixed in different
+            // places, and only one of them is findable on /machines.
             elsewhere > 0
-            ? `This machine is serving normally. ${elsewhere} attached machine${elsewhere === 1 ? ' is' : 's are'} not, and ${elsewhere === 1 ? 'it is' : 'they are'} below.`
+            ? `This machine is serving normally. ${attachedPhrase(downMachines, badProviders)}`
             : ready === 0
               ? `Nothing is loaded right now — the next request loads one of ${configured} models. Nothing needs you.`
               : `${ready} of ${configured} models loaded across ${machines} machine${machines === 1 ? '' : 's'}. Nothing needs you.`
