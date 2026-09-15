@@ -20,7 +20,7 @@ import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { C } from '@/theme'
 import { fmtInt, fmtTime } from '@/format'
 import { Loading } from '@/Loading'
-import { PauseDialog, PauseModelDoc, UnpauseModelDoc } from '@/Pause'
+import { PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost, PauseCostNote } from '@/Pause'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -119,6 +119,12 @@ const OverviewDoc = graphql(/* GraphQL */ `
         keys {
           key
           group
+        }
+        # WHAT CANNOT SERVE TODAY EITHER. A pause's fall-through is only real if
+        # the rungs behind it work, and a backend answering 401/402/403 does not.
+        # One extra field on a request this page already makes.
+        refusing {
+          backend
         }
       }
       residency {
@@ -491,9 +497,14 @@ function ModelsPage() {
   })
   // What the pause dialog is collecting a resume time for. `kind` decides which
   // mutation fires; `warning` is the blast radius shown before the click.
-  const [pauseFor, setPauseFor] = useState<{ kind: 'model' | 'extension'; name: string; warning?: string } | null>(
-    null,
-  )
+  const [pauseFor, setPauseFor] = useState<{
+    kind: 'model' | 'extension'
+    name: string
+    // Every served name that goes out with it — one for a model, all of them
+    // for an extension, because an extension is one process.
+    taking: string[]
+    warning?: string
+  } | null>(null)
   // A pending unload whose blast radius is wider than its row (a hosted model).
   const [confirmUnload, setConfirmUnload] = useState<{ title: string; body: string; run: () => void } | null>(null)
 
@@ -576,6 +587,12 @@ function ModelsPage() {
   const lanes = ov?.lanes ?? []
   const groups = ov?.groups ?? []
   const keys = ov?.keys ?? []
+  // Backends that already cannot serve, so a pause is not allowed to count them
+  // as somewhere to fall through to.
+  const alreadyOut = new Set<string>([
+    ...models.filter((m) => m.paused).map((m) => m.name),
+    ...(ov?.refusing ?? []).map((r) => r.backend),
+  ])
   // Residency keyed by the BACKING PROCESS, and remote backends dropped before
   // the map is built. Two bugs fixed at once:
   //   - an extension's models share one process, so keying by modelName made
@@ -725,6 +742,11 @@ function ModelsPage() {
       <PauseDialog
         target={pauseFor?.name ?? null}
         warning={pauseFor?.warning}
+        // Counted, not asserted: which fallback lists survive this pause depends
+        // on what is in them right now (OB-1).
+        consequence={
+          pauseFor ? <PauseCostNote cost={pauseCost(pauseFor.taking, lanes, alreadyOut)} /> : undefined
+        }
         busy={busy}
         onClose={() => setPauseFor(null)}
         onConfirm={(resumeAt, reason) => {
@@ -935,6 +957,7 @@ function ModelsPage() {
                             setPauseFor({
                               kind: 'extension',
                               name: e.name,
+                              taking: e.provides,
                               warning: `Takes every model ${e.name} serves out of service: ${e.provides.join(', ')}.`,
                             })
                           }
