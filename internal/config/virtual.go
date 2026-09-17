@@ -186,6 +186,9 @@ func (c *Config) virtualLaneMembers(lane string) []Candidate {
 			// of a churning pool.
 			continue
 		}
+		if m.Disabled {
+			continue
+		}
 		out = append(out, Candidate{Name: h.name, Model: m})
 	}
 	return out
@@ -302,6 +305,16 @@ type LaneEntry struct {
 	Origin string
 	// Pool names the virtual extension, when Origin is "pool".
 	Pool string
+	// Disabled marks a rung the walk will NOT try, kept in the ladder anyway.
+	//
+	// Only a DECLARED member can be one. A declared member is written into the
+	// lane by hand, and letting it vanish from the panel that renders the lane
+	// would hide the operator's own decision from them — the `free` lane
+	// declares exactly one backend, so disabling it would leave a lane that
+	// looks like it was never configured. A rung that came from a selector, a
+	// selection or a pool was never written here, so its absence reads as the
+	// churn those sources already produce and nothing is lost by dropping it.
+	Disabled bool
 }
 
 // LaneLadder returns a lane's resolved membership, in the order the walk will
@@ -323,29 +336,29 @@ func (c *Config) LaneLadder(lane string) []LaneEntry {
 	}
 	origin := map[string]LaneEntry{}
 	var order []string
-	add := func(name, o, pool string) {
-		if name == "" {
+	add := func(e LaneEntry) {
+		if e.Name == "" {
 			return
 		}
-		if _, seen := origin[name]; seen {
+		if _, seen := origin[e.Name]; seen {
 			return
 		}
-		origin[name] = LaneEntry{Name: name, Origin: o, Pool: pool}
-		order = append(order, name)
+		origin[e.Name] = e
+		order = append(order, e.Name)
 	}
 	for _, mem := range l.Members {
 		if mem.IsSelector() {
 			for _, cd := range c.selectorMembers(mem) {
-				add(cd.Name, "selector", "")
+				add(LaneEntry{Name: cd.Name, Origin: "selector"})
 			}
 			continue
 		}
-		if _, ok := c.Models[mem.Model]; ok {
-			add(mem.Model, "declared", "")
+		if m, ok := c.Models[mem.Model]; ok {
+			add(LaneEntry{Name: mem.Model, Origin: "declared", Disabled: m.Disabled})
 		}
 	}
 	for _, cd := range c.selectedLaneMembers(lane) {
-		add(cd.Name, "selection", "")
+		add(LaneEntry{Name: cd.Name, Origin: "selection"})
 	}
 	// Which pool a name came from, so the panel can say "from the free pool"
 	// rather than the unhelpfully vague "not in your config".
@@ -368,7 +381,7 @@ func (c *Config) LaneLadder(lane string) []LaneEntry {
 	}
 	c.mu.RUnlock()
 	for _, cd := range c.virtualLaneMembers(lane) {
-		add(cd.Name, "pool", poolOf[cd.Name])
+		add(LaneEntry{Name: cd.Name, Origin: "pool", Pool: poolOf[cd.Name]})
 	}
 	out := make([]LaneEntry, 0, len(order))
 	for _, n := range order {

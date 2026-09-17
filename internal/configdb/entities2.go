@@ -28,6 +28,7 @@ func writeModelRow(ctx context.Context, tx querier, provider, name string, mdl c
 	maxConc := takeInt(m, "maxConcurrent")
 	ctxPerReq := takeInt(m, "contextPerRequest")
 	persistent := takeBool(m, "persistent")
+	disabled := takeBool(m, "disabled")
 	notes := takeString(m, "notes")
 
 	jsons := map[string]string{}
@@ -46,12 +47,12 @@ func writeModelRow(ctx context.Context, tx querier, provider, name string, mdl c
 
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO config_model (provider, name, type, quality, cmd, server, upstream,
-		   max_concurrent, context_per_request, persistent, notes,
+		   max_concurrent, context_per_request, persistent, disabled, notes,
 		   proxy_json, aliases_json, sticky_json, swap_json, ram_usage_json,
 		   modalities_json, convert_json, limits_json, placements_json, sampling_json)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		provider, name, typ, quality, cmd, server, upstream,
-		maxConc, ctxPerReq, boolInt(persistent), notes,
+		maxConc, ctxPerReq, boolInt(persistent), boolInt(disabled), notes,
 		jsons["proxy"], jsons["aliases"], jsons["sticky"], jsons["swap"], jsons["ramUsage"],
 		jsons["modalities"], jsons["convert"], jsons["limits"], jsons["placements"], jsons["sampling"])
 	if err != nil {
@@ -92,7 +93,7 @@ func writeModels(ctx context.Context, tx querier, c *config.Config) error {
 func readModels(ctx context.Context, db querier, c *config.Config) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT provider, name, type, quality, cmd, server, upstream,
-		        max_concurrent, context_per_request, persistent, notes,
+		        max_concurrent, context_per_request, persistent, disabled, notes,
 		        proxy_json, aliases_json, sticky_json, swap_json, ram_usage_json,
 		        modalities_json, convert_json, limits_json, placements_json, sampling_json
 		 FROM config_model`)
@@ -105,10 +106,10 @@ func readModels(ctx context.Context, db querier, c *config.Config) error {
 	for rows.Next() {
 		var provider, name, typ, cmd, server, upstream, notes string
 		var quality float64
-		var maxConc, ctxPerReq, persistent int64
+		var maxConc, ctxPerReq, persistent, disabled int64
 		var proxy, aliases, sticky, swap, ram, modal, conv, limits, placements, sampling string
 		if err := rows.Scan(&provider, &name, &typ, &quality, &cmd, &server, &upstream,
-			&maxConc, &ctxPerReq, &persistent, &notes,
+			&maxConc, &ctxPerReq, &persistent, &disabled, &notes,
 			&proxy, &aliases, &sticky, &swap, &ram,
 			&modal, &conv, &limits, &placements, &sampling); err != nil {
 			return err
@@ -122,6 +123,7 @@ func readModels(ctx context.Context, db querier, c *config.Config) error {
 		putInt(m, "maxConcurrent", maxConc)
 		putInt(m, "contextPerRequest", ctxPerReq)
 		putBool(m, "persistent", persistent != 0)
+		putBool(m, "disabled", disabled != 0)
 		putStr(m, "notes", notes)
 		for k, raw := range map[string]string{
 			"proxy": proxy, "aliases": aliases, "sticky": sticky, "swap": swap,

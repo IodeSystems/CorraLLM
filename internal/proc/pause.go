@@ -435,7 +435,11 @@ func (m *Manager) repin(ctx context.Context, key string) {
 	}
 	name := served[0]
 	mdl, ok := cfg.Effective(name)
-	if !ok || !mdl.Persistent || mdl.Cmd == "" {
+	// Disabled included: EnsureReady refuses it anyway, but going that far
+	// would log a "re-pin failed" warning for a model nobody expects back —
+	// resuming a pause on something that has since left the setup is a no-op,
+	// not a failure.
+	if !ok || !mdl.Persistent || mdl.Disabled || mdl.Cmd == "" {
 		return
 	}
 	// Detach from the caller's context. An unpause arrives on an HTTP request

@@ -82,6 +82,11 @@ CREATE TABLE IF NOT EXISTS config_model (
     max_concurrent      INTEGER NOT NULL DEFAULT 0,
     context_per_request INTEGER NOT NULL DEFAULT 0,
     persistent          INTEGER NOT NULL DEFAULT 0,
+    -- Out of the setup: never resolved, never spawned, out of every ladder.
+    -- A column and not part of the JSON remainder, by this package's own rule:
+    -- resolution filters on it, so it is something the config is queried and
+    -- validated by rather than a value merely carried along with its model.
+    disabled            INTEGER NOT NULL DEFAULT 0,
     notes               TEXT NOT NULL DEFAULT '',
     proxy_json          TEXT NOT NULL DEFAULT '',  -- port | host:port | {host,port,headers}
     aliases_json        TEXT NOT NULL DEFAULT '',

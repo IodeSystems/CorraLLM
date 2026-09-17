@@ -297,15 +297,32 @@ func (c *Config) Discovered() map[string]Model {
 // AllModels is the served registry: everything declared in the file plus
 // whatever discovery has contributed. Use this anywhere the full catalog is
 // meant (listings, capability views); c.Models alone omits discovered models.
+//
+// SERVED is the operative word, so a disabled model is not in it. Unlike a
+// pause — which keeps its model listed, in state "paused", because it is
+// coming back and hiding it would make it look deleted — a disabled model is
+// not part of the setup, and advertising it in /v1/models would hand a client
+// a name that answers 404 on the next call. Config.Models is still the whole
+// document, for the editor and anything else that must see what is written
+// down.
 func (c *Config) AllModels() map[string]Model {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make(map[string]Model, len(c.Models)+len(c.discovered))
 	for k, v := range c.Models {
+		if v.Disabled {
+			continue
+		}
 		out[k] = v
 	}
 	for k, v := range c.discovered {
-		if _, static := out[k]; !static {
+		if v.Disabled {
+			continue
+		}
+		// Against c.Models, not against `out`: a disabled declared model is no
+		// longer in `out`, and testing there would let discovery's copy of the
+		// same name take its place — resurrecting precisely what was disabled.
+		if _, static := c.Models[k]; !static {
 			out[k] = v
 		}
 	}
@@ -734,6 +751,31 @@ func (c *Config) DevicePoolsNamedBy(server, pool string, ramUsage map[string]str
 // (remote/paid endpoint, or another process's surface). The same weights served
 // two ways = two models with distinct names; fallback across them is a lane.
 type Model struct {
+	// Disabled takes this model out of the setup. It is never resolved, never
+	// spawned, never preloaded, and is not a rung of any lane — by name, by
+	// alias, by lane membership, by selector, by selection, by a provider's
+	// pool, or by a glob template.
+	//
+	// NOT A PAUSE, and the difference is the whole reason it exists. A pause is
+	// OPERATIONAL state: temporary by intent, reversible, kept outside the
+	// config in its own table (proc.Pause), and it deliberately nags — a paused
+	// model raises a card on the fault panel because you are meant to come back
+	// to it. That is right for "the GPU is needed elsewhere this afternoon" and
+	// wrong for a backend whose credential was revoked in July: the card is a
+	// fault nobody can act on, and it never clears, because a refusal record is
+	// only cleared by a successful response and a model out of service is never
+	// called.
+	//
+	// Disabled is a CONFIGURATION statement: "this is not part of my setup". It
+	// belongs in the config document and its revision history, which is the
+	// record of who decided it and when — not on a fault panel. So it is
+	// silent: a disabled model raises nothing, and the refusal that prompted it
+	// stops being reported (the row itself survives; see the API's Overview).
+	//
+	// The definition is kept intact rather than deleted, so enabling the model
+	// again restores exactly what was there. That is the reason to reach for
+	// this over removing the entry.
+	Disabled   bool    `yaml:"disabled,omitempty"`
 	Sticky     *Sticky `yaml:"sticky,omitempty"`
 	Persistent bool    `yaml:"persistent,omitempty"`
 	// Convert overrides the global attachment-ingestion config for this model
@@ -1135,7 +1177,7 @@ func (lm LaneMember) matches(m Model) bool {
 func (c *Config) selectorMembers(lm LaneMember) []Candidate {
 	var out []Candidate
 	add := func(name string, m Model) {
-		if !lm.matches(m) {
+		if m.Disabled || !lm.matches(m) {
 			return
 		}
 		out = append(out, Candidate{Name: name, Model: m, Sticky: lm.Sticky})
@@ -1309,6 +1351,18 @@ func (c *Config) expandCredentials(in []Candidate) []Candidate {
 // name yields its members (fallback allowed), a model name yields exactly that
 // model (pinned). Unknown lane members are skipped (Validate rejects them at
 // load; skipping keeps a hand-built Config safe).
+//
+// A DISABLED model is skipped on every branch below, which is what makes
+// `disabled` mean what it says rather than "mostly unreachable". Resolution is
+// the single funnel every serving path goes through — the request path, the
+// lane walk, /v1/realtime, count_tokens, the model listing's lane expansion —
+// so closing it here closes all of them, and a route added later inherits the
+// rule instead of having to remember it.
+//
+// Skipped, not refused: a lane whose top rung is disabled falls through to the
+// next one exactly as it would if that rung had never been written down, which
+// is the point of taking something out of the setup. A model named DIRECTLY
+// resolves to nothing — see DisabledServed for the answer a caller gets.
 func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	if lane, ok := c.Lanes[served]; ok {
 		cands := make([]Candidate, 0, len(lane.Members))
@@ -1321,7 +1375,7 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 				continue
 			}
 			m, ok := c.Models[mem.Model]
-			if !ok {
+			if !ok || m.Disabled {
 				continue
 			}
 			cands = append(cands, Candidate{Name: mem.Model, Model: m, Sticky: mem.Sticky})
@@ -1339,6 +1393,13 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 		return c.expandCredentials(cands), len(cands) > 0
 	}
 	if m, ok := c.Models[served]; ok {
+		if m.Disabled {
+			// Return, do NOT fall through to the branches below. An exact model
+			// hit is authoritative, and continuing would let a glob template or
+			// a bare-name match re-serve the very name just taken out of the
+			// setup, under a definition the operator never pointed it at.
+			return nil, false
+		}
 		return c.expandCredentials([]Candidate{{Name: served, Model: m}}), true
 	}
 	// An alias is a declared, exact, hand-written name, so it outranks both a
@@ -1351,6 +1412,9 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	// invalidating against discovery for no measurable gain.
 	for canonical, m := range c.Models {
 		if slices.Contains(m.Aliases, served) {
+			if m.Disabled {
+				return nil, false // same reason as the exact hit above
+			}
 			return c.expandCredentials([]Candidate{{Name: canonical, Model: m}}), true
 		}
 	}
@@ -1361,6 +1425,13 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	dm, dok := c.discovered[served]
 	c.mu.RUnlock()
 	if dok {
+		// A discovered model carries `disabled` when the provider's discover
+		// template sets it — a filter that contributes a whole catalogue as
+		// disabled, which is the only way a model with no authored entry can
+		// hold the flag.
+		if dm.Disabled {
+			return nil, false
+		}
 		return c.expandCredentials([]Candidate{{Name: served, Model: dm}}), true
 	}
 	// Template models: a model key containing '*' is a glob pattern. When no
@@ -1380,6 +1451,14 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	sort.Strings(patterns)
 	for _, p := range patterns {
 		if globMatch(p, served) {
+			// A disabled template takes its whole family out at once — every
+			// dated Opus variant, not one spelling of one. That is what
+			// disabling the entry that DEFINES them has to mean; skipping to
+			// the next pattern would serve the family from a template the
+			// operator did not disable and never chose for it.
+			if c.Models[p].Disabled {
+				return nil, false
+			}
 			return []Candidate{{Name: served, Model: c.Models[p]}}, true
 		}
 	}
@@ -1393,11 +1472,55 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	// residency, metrics and quota all stay on one id rather than splitting
 	// between the prefixed and bare spellings of one model.
 	if canonical, ok := c.resolveBare(served); ok {
-		if m, ok := c.Models[canonical]; ok {
+		if m, ok := c.Models[canonical]; ok && !m.Disabled {
 			return c.expandCredentials([]Candidate{{Name: canonical, Model: m}}), true
 		}
 	}
 	return nil, false
+}
+
+// DisabledServed reports whether a served name resolves to nothing BECAUSE the
+// setup disabled it, rather than because nothing by that name exists.
+//
+// The distinction is the whole answer a caller gets. ResolveServed returns the
+// same (nil, false) for both, because every ladder path wants a disabled rung
+// to behave exactly like an absent one; this is what lets the one place that
+// has to explain itself — the 404 — say which it was. "unknown model
+// groq-gpt-oss-120b" sends an operator hunting for a typo in a name that is
+// spelled correctly and sitting in their config.
+//
+// True for a disabled model by name or by alias, and for a lane whose every
+// rung is disabled — a lane emptied that way is not an unknown lane.
+func (c *Config) DisabledServed(served string) bool {
+	if lane, ok := c.Lanes[served]; ok {
+		if cands, ok := c.ResolveServed(served); ok && len(cands) > 0 {
+			return false
+		}
+		// Declared members only. A rung a selector or a pool stopped
+		// contributing is churn, not a decision, and calling that "disabled"
+		// would blame the operator for the provider's catalogue.
+		any := false
+		for _, mem := range lane.Members {
+			m, ok := c.Models[mem.Model]
+			if !ok {
+				continue
+			}
+			if !m.Disabled {
+				return false
+			}
+			any = true
+		}
+		return any
+	}
+	if m, ok := c.Models[served]; ok {
+		return m.Disabled
+	}
+	for _, m := range c.Models {
+		if slices.Contains(m.Aliases, served) {
+			return m.Disabled
+		}
+	}
+	return false
 }
 
 // globMatch reports whether s matches a '*'-wildcard pattern (each '*' matches

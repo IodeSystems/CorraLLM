@@ -380,6 +380,31 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		}
 	}
 
+	// A disabled model is refused here, before anything is resolved on its
+	// behalf — no target, no placement, no pool reservation. This is the same
+	// door the pause below uses and for the same reason: it is the one place
+	// every load comes through, so the request path, boot preload, an explicit
+	// /load and an extension load all obey it without each needing a check.
+	//
+	// Resolution already keeps a disabled model out of every ladder, so nothing
+	// routed should ARRIVE here. What does arrive are the callers that never
+	// went through resolution — LoadModel, LoadExtension, Preload — and this is
+	// what closes them.
+	//
+	// Keyed on the MODEL, not the process, unlike the pause. `disabled` is a
+	// statement about one entry in the config, and an extension serving five
+	// models is five entries; disabling one must not take its four siblings
+	// down. That blast radius belongs to a pause, which has it because a pause
+	// frees a process — which is not what this is for.
+	//
+	// Permanent, so a lane's walk does not retry it and a caller is not told to
+	// come back: nothing about a disabled model changes until somebody edits
+	// the config.
+	if mdl.Disabled {
+		return nil, nil, false, &CapacityError{Permanent: true,
+			Reason: fmt.Sprintf("model %q is disabled in this configuration", name)}
+	}
+
 	// TargetFor, not ProxyTarget: a model on an agent-bound server writes
 	// `proxy: <port>` meaning "the port MY backend listens on", which resolves
 	// to loopback — this machine. Routing there would forward its traffic to
@@ -2216,6 +2241,14 @@ func (m *Manager) Preload(ctx context.Context) {
 		// nothing would preload.
 		model, ok := m.config().Effective(name)
 		if !ok || !model.Persistent {
+			continue
+		}
+		// Disabled outranks pinned, and silently. A pin is a statement about
+		// WHERE this model should be when it is in the setup; disabling says it
+		// is not, and the pin is simply not reached. Nothing is logged because
+		// there is nothing to come back to — that is the difference from the
+		// pause below, which says "until" and means it.
+		if model.Disabled {
 			continue
 		}
 		// EnsureReady would refuse it anyway; skipping here keeps boot quiet

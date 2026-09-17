@@ -203,6 +203,14 @@ func (c *Config) selectedLaneMembers(lane string) []Candidate {
 		if !ok {
 			continue // selected, then churned away entirely
 		}
+		if m.Disabled {
+			// Choosing a model and then disabling it is not a contradiction:
+			// the selection records what was picked off the directory, the
+			// disable is the later decision about whether it serves. The later
+			// one wins, and the selection survives so enabling restores the
+			// lane placement it came with.
+			continue
+		}
 		if h.quality > 0 {
 			// The operator's rank replaces the discovery template's uniform
 			// guess, which p16 flagged as "an ASSUMPTION applied to every

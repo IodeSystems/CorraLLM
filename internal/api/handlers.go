@@ -2025,10 +2025,16 @@ type ModelDef struct {
 	Cmd               string  `json:"cmd" doc:"Spawn command (empty for pure-proxy)."`
 	Notes             string  `json:"notes" doc:"Free text kept with this model — why it is configured the way it is. Carried in config and editable in the dashboard."`
 	Upstream          string  `json:"upstream" doc:"The id the BACKEND knows this model by, when it differs from the served name. Empty means the backend uses the served name. Outbound only — the inbound counterpart is 'aliases', which are extra names CALLERS may use for this model."`
+	// Disabled is a CONFIGURATION statement, not an operational state, and the
+	// difference decides how the dashboard must render it. A pause belongs on a
+	// fault panel; this belongs beside the model's definition, in whatever the
+	// UI uses to say "you turned this off". It raises nothing, and the pause and
+	// refusal fields below go quiet with it.
+	Disabled bool `json:"disabled" doc:"Out of the setup by configuration: never resolved, never spawned, out of every fallback list, and silent — no fault, no refusing entry. Its definition is kept, so enabling restores it."`
 	// Pause state rides on the model definition rather than on the residency
 	// snapshot because a paused model has no process to snapshot — that is the
 	// whole point of it — and would therefore be invisible there.
-	Paused            bool   `json:"paused" doc:"Out of service by operator order: never spawned until resumed."`
+	Paused            bool   `json:"paused" doc:"Out of service by operator order: never spawned until resumed. Always false while disabled — a decision that is already recorded in the config does not also need a fault card."`
 	PauseScope        string `json:"pauseScope" doc:"model | extension — whether this model was paused on its own or by its hosting extension. Empty when not paused."`
 	PausedByExtension string `json:"pausedByExtension" doc:"The extension whose pause covers this model, when pauseScope is 'extension'."`
 	PauseReason       string `json:"pauseReason" doc:"Why it is paused (operator-supplied)."`
@@ -2153,6 +2159,15 @@ type LaneRungDef struct {
 	Model  string `json:"model"`
 	Origin string `json:"origin" doc:"declared | selector | selection | pool."`
 	Pool   string `json:"pool" doc:"The virtual extension it came from, when origin is pool."`
+	// Disabled is a rung listed but NOT walked. It is here so a dialog that has
+	// to count what a change will cost can count only the rungs that would
+	// actually take the work — the pause dialog already walks this ladder for
+	// exactly that, and counting a disabled rung as a survivor would tell an
+	// operator a lane has cover it does not have.
+	//
+	// Only a declared member is ever listed while disabled; see
+	// config.LaneEntry.
+	Disabled bool `json:"disabled" doc:"Written into this lane but out of the setup: shown so the decision is visible, never tried, and never counted as a surviving rung."`
 }
 
 // StageView summarizes a group's saturation policy for one backend type.
@@ -2289,7 +2304,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	for name, m := range h.config().Models {
 		md := ModelDef{
-			Name: name, Persistent: m.Persistent, Capability: config.ModelCapability(m),
+			Name: name, Persistent: m.Persistent, Disabled: m.Disabled, Capability: config.ModelCapability(m),
 			ContextPerRequest: m.ContextPerRequest,
 			Placements:        h.placementViews(name, m),
 			Modalities:        modalityViews(m.EffectiveModalities(name, costModel.IsAudioType(m.Type))),
@@ -2303,7 +2318,18 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		if m.Sticky != nil {
 			md.TTL, md.IdleUnload, md.EvictCost = m.Sticky.TTL, m.Sticky.IdleUnload, m.Sticky.EvictCost
 		}
-		if p, ok := pauses[md.ProcKey]; ok {
+		// A pause on a disabled model is not reported. The row survives in the
+		// pause table — clearing it would be wrong, since disabling is
+		// reversible and enabling must give the operator back exactly the state
+		// they left, including a pause they set on purpose — but a pause that
+		// enforces nothing has nothing to say: a disabled model is never
+		// resolved and never spawned, so the pause is already redundant, and
+		// rendering it would put a fault card on the screen this change exists
+		// to clear.
+		//
+		// An extension pause still reports on its siblings that are not
+		// disabled. It covers the process; this covers one config entry.
+		if p, ok := pauses[md.ProcKey]; ok && !m.Disabled {
 			md.Paused, md.PauseReason, md.PausedAtMS = true, p.Reason, p.At.UnixMilli()
 			// PauseScope tells the UI whether this model was paused on its own
 			// or swept up by its extension — without it a hosted model reads as
@@ -2354,25 +2380,17 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 			ld.Members = append(ld.Members, lm)
 		}
 		for _, e := range h.config().LaneLadder(name) {
-			ld.Ladder = append(ld.Ladder, LaneRungDef{Model: e.Name, Origin: e.Origin, Pool: e.Pool})
+			ld.Ladder = append(ld.Ladder, LaneRungDef{Model: e.Name, Origin: e.Origin, Pool: e.Pool, Disabled: e.Disabled})
 		}
 		out.Body.Lanes = append(out.Body.Lanes, ld)
 	}
 	sort.Slice(out.Body.Lanes, func(i, j int) bool { return out.Body.Lanes[i].Name < out.Body.Lanes[j].Name })
 
-	out.Body.Refusing = []RefusingBackendView{}
-	if h.Store != nil {
-		rows, err := h.Store.RefusingBackends()
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range rows {
-			out.Body.Refusing = append(out.Body.Refusing, RefusingBackendView{
-				Backend: r.Backend, Status: r.Status, Count: r.Count,
-				SinceMS: r.SinceMS, LastMS: r.LastMS,
-			})
-		}
+	refusing, err := h.refusingViews()
+	if err != nil {
+		return nil, err
 	}
+	out.Body.Refusing = refusing
 
 	for name, g := range h.config().PriorityGroups {
 		gd := GroupDef{

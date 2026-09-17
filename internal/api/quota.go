@@ -73,6 +73,49 @@ type RefusingBackendView struct {
 	LastMS  int64  `json:"lastMs" doc:"Unix millis of the most recent refusal."`
 }
 
+// refusingViews renders the refusal ledger, minus whatever the configuration
+// has disabled. One implementation, because both readers of this list — the
+// budgets page and Overview, which is where Now builds its fault list — have to
+// agree about what counts as a fault.
+//
+// DROPPED HERE, NOT AT THE SOURCE, and that is the decision worth defending.
+// backend_refusal is a record of what happened: this backend answered 403, at
+// this time, this many times. Deleting the row on disable would falsify that
+// record, and it would destroy exactly the evidence the decision rests on — the
+// operator disables a backend BECAUSE of the refusal, so the refusal is the
+// justification, not the noise. It is also the wrong layer: the store has no
+// config and no business asking one whether a fact is worth keeping.
+//
+// The API is where the question is actually being asked, and the question is
+// not "did this refuse" but "is there something here that needs attention".
+// Nothing is calling a disabled backend, so nothing about it can change, and a
+// fault the reader cannot act on is not a fault (OB-6). The row survives, so
+// enabling the model brings back the honest answer: this is still the thing
+// that was broken, and for how long.
+func (h *Handlers) refusingViews() ([]RefusingBackendView, error) {
+	out := []RefusingBackendView{}
+	if h.Store == nil {
+		return out, nil
+	}
+	rows, err := h.Store.RefusingBackends()
+	if err != nil {
+		return nil, err
+	}
+	cfg := h.config()
+	for _, r := range rows {
+		// The ledger keys on the served model name (proxy.noteRefusal records
+		// the candidate's name), so the config lookup is direct.
+		if cfg != nil && cfg.Models[r.Backend].Disabled {
+			continue
+		}
+		out = append(out, RefusingBackendView{
+			Backend: r.Backend, Status: r.Status, Count: r.Count,
+			SinceMS: r.SinceMS, LastMS: r.LastMS,
+		})
+	}
+	return out, nil
+}
+
 // QuotaOutput lists every tracked backend's budget.
 type QuotaOutput struct {
 	Body struct {
@@ -87,19 +130,11 @@ type QuotaOutput struct {
 func (h *Handlers) QuotaLedger(_ context.Context, _ *struct{}) (*QuotaOutput, error) {
 	out := &QuotaOutput{}
 	out.Body.Backends = []QuotaEntryView{}
-	out.Body.Refusing = []RefusingBackendView{}
-	if h.Store != nil {
-		rows, err := h.Store.RefusingBackends()
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range rows {
-			out.Body.Refusing = append(out.Body.Refusing, RefusingBackendView{
-				Backend: r.Backend, Status: r.Status, Count: r.Count,
-				SinceMS: r.SinceMS, LastMS: r.LastMS,
-			})
-		}
+	refusing, err := h.refusingViews()
+	if err != nil {
+		return nil, err
 	}
+	out.Body.Refusing = refusing
 	if h.Proxy == nil {
 		return out, nil
 	}
