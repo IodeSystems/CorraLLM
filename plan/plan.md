@@ -325,6 +325,43 @@ Shipped. `/traffic`, `/setup` and `/machines` rebuilt; link colour, chart axes a
 paging landed first as the shared surface. Full tree, the merge DAG, and the decisions worth
 not re-litigating: [`done.md`](done.md) § P30. **Not visually verified** — see §7.
 
+### ◐ P31 — disabled: the statement pause could not make — 2026-09-17
+
+Pausing a permanently-broken backend left it on screen, deliberately. The owner: *"Perhaps we
+need a more aggressive pause, like disable — that prevents it from ever being loaded again? And
+is more intentional that doesn't get a warning for."*
+
+**The distinction, which is the whole feature.** A **pause** is operational: temporary by intent,
+reversible, keyed on a PROCESS (an extension's models pause together), and it SHOULD keep showing,
+because you are meant to come back to it. **Disabled** is a configuration statement — "this is not
+part of my setup" — keyed on the MODEL, recorded in config history rather than on a fault panel,
+and silent by design.
+
+Checked before building, and both corrected an assumption: a pause IS durable (`model_pause`,
+`store.go:327`) and already blocks request, fall-through and preload, so the only thing missing was
+silence. And `groq-gpt-oss-120b` is not a bare discovered id — it is authored under
+`extensions.free.providers.groq.provides`, so the flag has a home and the existing config endpoint
+writes it back.
+
+- ✅ **Server** — merged, live on `92ad07d`, migration applied to the production config DB
+  (verified independently against a copy first: column added, idempotent over three runs, all four
+  models `disabled=0`). Twelve resolution paths closed, including three that would have leaked:
+  `/upstream/<model>` bypasses resolution entirely and needed its own guard, `AllModels()` had to
+  check `c.Models` rather than the partly-built output or discovery resurrected it, and post-resume
+  `repin` would have warned about a model nobody expected back.
+  **404, not 503**, for a disabled model asked by name: 503 says it exists and may come back and
+  invites a retry — which a pause earns and this does not — and "unknown model" sends somebody
+  hunting for a typo in a name that is spelled correctly and sitting in their config.
+  A pause survives a disable and stops being reported: enabling must hand back the state you left,
+  and silently dropping it would return a known-broken backend to rotation.
+- ◐ **UI** — in progress. **next** merge, then disable `groq-gpt-oss-120b` (the owner asked).
+  **risks** the feature's own failure mode is that *silent becomes lost*: a disabled model raises
+  nothing anywhere, so if the only record is a config file it will be rediscovered months later as
+  a fallback list mysteriously one rung short. Enable must be as reachable as Disable, and there
+  must be somewhere that answers "what have I disabled". **blocking decisions** none open.
+  **optional extensions** a disabled model with no authored entry (a pure pool contribution) has
+  nowhere to put the flag — `filter.exclude` is the statement there; not unified, deliberately.
+
 ### ◐ carlsmacbookpro is back — 51 GB of Metal that was switched off — 2026-09-05
 
 **Up, self-healing, and self-updating.** It had been dark since July with 51 GB of Metal and
