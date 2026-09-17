@@ -575,7 +575,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 	cands, ok := p.config().ResolveServed(served)
 	if !ok {
-		http.Error(w, `{"error":{"message":"unknown model \"`+served+`\""}}`, http.StatusNotFound)
+		http.Error(w, `{"error":{"message":"`+p.noSuchModel(served)+`"}}`, http.StatusNotFound)
 		return
 	}
 
@@ -1125,7 +1125,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	}
 	cands, ok := p.config().ResolveServed(served)
 	if !ok {
-		http.Error(w, `{"error":{"message":"unknown model \"`+served+`\""}}`, http.StatusNotFound)
+		http.Error(w, `{"error":{"message":"`+p.noSuchModel(served)+`"}}`, http.StatusNotFound)
 		return
 	}
 
@@ -1798,14 +1798,38 @@ func (p *Proxy) nextRR(served string) uint64 {
 	return v
 }
 
+// noSuchModel is what to tell a caller whose served name will not be served.
+//
+// 404 for both, because neither names anything this box will serve — but they
+// are different problems and the message has to say which. A disabled model is
+// spelled correctly and sitting in the operator's config; reporting it as
+// "unknown model" sends them hunting for a typo that is not there, which is the
+// two days this whole change exists to stop repeating.
+//
+// 404 and not 503, deliberately. A 503 says the thing exists and may come back,
+// which invites a retry; a disabled model comes back when somebody edits the
+// config and not before. That is also what separates it from a pause, which
+// DOES 503 — and carries a Retry-After when the pause is timed — because a
+// pause is a temporary state with an end.
+func (p *Proxy) noSuchModel(served string) string {
+	if p.config().DisabledServed(served) {
+		return "model \"" + served + "\" is disabled in this configuration"
+	}
+	return "unknown model \"" + served + "\""
+}
+
 // handleUpstream proxies /upstream/<model>/<rest> to the backend, stripping the
 // prefix. Untracked: no model resolution from body, no activity log.
 func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/upstream/")
 	served, tail, _ := strings.Cut(rest, "/")
 	model, ok := p.config().Models[served]
-	if !ok {
-		http.Error(w, "unknown model", http.StatusNotFound)
+	// Disabled checked here and not left to EnsureReady: this door bypasses
+	// resolution entirely, and EnsureReady's refusal would surface as "backend
+	// unavailable", a 503 about capacity for something that is a config
+	// decision.
+	if !ok || model.Disabled {
+		http.Error(w, p.noSuchModel(served), http.StatusNotFound)
 		return
 	}
 	pr, done, _, err := p.mgr.EnsureReady(r.Context(), served, model, nil, nil)
@@ -1859,7 +1883,7 @@ func (p *Proxy) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	cands, ok := p.config().ResolveServed(req.Model)
 	if !ok || len(cands) == 0 {
-		http.Error(w, "unknown model: "+req.Model, http.StatusNotFound)
+		http.Error(w, p.noSuchModel(req.Model), http.StatusNotFound)
 		return
 	}
 	// A lane resolves to several candidates; token counts are a property of one
