@@ -88,6 +88,10 @@ const OverviewDoc = graphql(/* GraphQL */ `
             model
             origin
             pool
+            # Listed but never walked. The lane panel draws it so the decision
+            # has somewhere to be seen and undone; pauseCost drops it so a list
+            # is not credited with cover it does not have.
+            disabled
           }
         }
         extensions {

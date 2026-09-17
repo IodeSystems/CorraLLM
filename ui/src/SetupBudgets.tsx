@@ -227,7 +227,11 @@ const RefusingContextDoc = graphql(/* GraphQL */ `
             model
           }
           ladder {
+            # A rung the setup has taken out is still LISTED here so the
+            # decision stays visible, and is never walked. pauseCost drops it
+            # rather than counting it as cover this list does not have.
             model
+            disabled
           }
         }
       }

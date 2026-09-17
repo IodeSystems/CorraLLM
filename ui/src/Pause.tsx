@@ -60,17 +60,22 @@ export const UnpauseModelDoc = graphql(/* GraphQL */ `
  * selector or a directory choice contributes a rung — on this box `free`
  * declares one member and resolves to eleven — so a consequence computed from
  * `members` would tell the reader the opposite of the truth.
+ *
+ * A rung carries `disabled` because the ladder still LISTS a declared rung the
+ * setup has taken out — deliberately, so the decision stays visible and has
+ * somewhere to be undone — while never walking it. Counting it is the same
+ * error as counting `members`, one rung further in.
  */
 export type LaneShape = {
   name: string
-  ladder: readonly { model: string }[]
+  ladder: readonly { model: string; disabled?: boolean }[]
   members: readonly { model: string }[]
 }
 
 /** One fallback list's fate under a pause. */
 export type LaneCost = {
   lane: string
-  /** How many rungs the list resolves to right now. */
+  /** How many rungs the list resolves to right now that would take work. */
   rungs: number
   /** Rungs this pause removes from it. */
   taken: string[]
@@ -98,6 +103,14 @@ export type PauseCost = {
  * refusing every request. They are not survivors: counting them would promise a
  * fall-through to a backend that is itself broken, which is the same lie in a
  * politer form.
+ *
+ * A DISABLED RUNG IS NOT COUNTED AT ALL, which is different from being in
+ * `alreadyOut`. Paused and refusing rungs are rungs: they are on the ladder, a
+ * request walks past them, and one of them coming back is what the reader is
+ * waiting for — so they belong in the denominator and not among the survivors.
+ * A rung the setup has taken out is not on the ladder in any sense a request
+ * can see; it is listed only so the decision is visible. Leaving it in `rungs`
+ * would report "1 of its 2 backends is left" about a list with exactly one.
  */
 export function pauseCost(
   taking: readonly string[],
@@ -107,7 +120,9 @@ export function pauseCost(
   const gone = new Set(taking)
   const out: LaneCost[] = []
   for (const l of lanes) {
-    const rungs = (l.ladder.length > 0 ? l.ladder : l.members).map((r) => r.model)
+    const walked: readonly { model: string; disabled?: boolean }[] =
+      l.ladder.length > 0 ? l.ladder : l.members
+    const rungs = walked.filter((r) => !r.disabled).map((r) => r.model)
     if (!rungs.some((r) => gone.has(r))) continue
     out.push({
       lane: l.name,
