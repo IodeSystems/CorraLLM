@@ -773,7 +773,10 @@ function ModelsPage() {
             size="small"
             variant="outlined"
             color="warning"
-            label={`${outOfSetup.length} out of the setup`}
+            // "taken out", not "out of" — beside "11 configured" the shorter
+            // phrasing reads as the start of "1 out of 11", which is a
+            // proportion and the opposite of what this counts.
+            label={`${outOfSetup.length} taken out of the setup`}
           />
         )}
       </PageHeader>
