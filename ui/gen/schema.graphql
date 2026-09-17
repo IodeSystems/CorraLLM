@@ -1871,6 +1871,8 @@ input corrallm_LaneRefViewInput {
 }
 
 type corrallm_LaneRungDef {
+  """Written into this lane but out of the setup: shown so the decision is visible, never tried, and never counted as a surviving rung."""
+  disabled: Boolean!
   model: String!
   """declared | selector | selection | pool."""
   origin: String!
@@ -1978,6 +1980,8 @@ type corrallm_ModelDef {
   cmd: String!
   """Context window guaranteed per request (0 = whatever the backend was launched with, undivided)."""
   contextPerRequest: Long!
+  """Out of the setup by configuration: never resolved, never spawned, out of every fallback list, and silent — no fault, no refusing entry. Its definition is kept, so enabling restores it."""
+  disabled: Boolean!
   """Eviction resistance (sticky): the tiebreak among candidates once TTL ordering is applied."""
   evictCost: String!
   """Quiet period after which the backend unloads itself, with nothing else needing its memory (sticky). Empty = never. Counts only while no request is in flight."""
@@ -1998,7 +2002,7 @@ type corrallm_ModelDef {
   pauseResumeMs: Long!
   """model | extension — whether this model was paused on its own or by its hosting extension. Empty when not paused."""
   pauseScope: String!
-  """Out of service by operator order: never spawned until resumed."""
+  """Out of service by operator order: never spawned until resumed. Always false while disabled — a decision that is already recorded in the config does not also need a fault card."""
   paused: Boolean!
   """Unix millis the pause was set (0 if not paused)."""
   pausedAtMs: Long!
@@ -2045,6 +2049,8 @@ type corrallm_ModelSeries {
 type corrallm_ModelSpec {
   """Spawn command; empty makes it a pure proxy."""
   cmd: String
+  """Out of the setup: never resolved, never spawned, out of every fallback list, and silent — it raises no fault and is dropped from the refusing list. Not a pause: a pause is temporary and nags on purpose; this is a configuration statement, and the definition is kept so enabling restores it."""
+  disabled: Boolean
   """Admission slots."""
   maxConcurrent: Long
   """max_tokens clamp when degraded onto (0 = none)."""
@@ -2078,6 +2084,8 @@ type corrallm_ModelSpec {
 input corrallm_ModelSpecInput {
   """Spawn command; empty makes it a pure proxy."""
   cmd: String
+  """Out of the setup: never resolved, never spawned, out of every fallback list, and silent — it raises no fault and is dropped from the refusing list. Not a pause: a pause is temporary and nags on purpose; this is a configuration statement, and the definition is kept so enabling restores it."""
+  disabled: Boolean
   """Admission slots."""
   maxConcurrent: Long
   """max_tokens clamp when degraded onto (0 = none)."""

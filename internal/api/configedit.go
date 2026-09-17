@@ -50,6 +50,7 @@ type ModelSpec struct {
 	MaxConcurrent int     `json:"maxConcurrent" required:"false" doc:"Admission slots."`
 	MaxTokens     int     `json:"maxTokens" required:"false" doc:"max_tokens clamp when degraded onto (0 = none)."`
 	Persistent    bool    `json:"persistent" required:"false" doc:"Pinned: preloaded and never evicted. Overrides the sticky fields below — a pinned model is never a victim and never idle-unloads."`
+	Disabled      bool    `json:"disabled" required:"false" doc:"Out of the setup: never resolved, never spawned, out of every fallback list, and silent — it raises no fault and is dropped from the refusing list. Not a pause: a pause is temporary and nags on purpose; this is a configuration statement, and the definition is kept so enabling restores it."`
 	// Sticky is flattened into three scalars rather than nested, because that is
 	// what a form edits: three text inputs, each independently clearable. All
 	// three empty means no sticky block at all.
@@ -302,7 +303,7 @@ func specToModel(s ModelSpec, inheritsProxy bool) (config.Model, error) {
 		Cmd: strings.TrimSpace(s.Cmd), Server: strings.TrimSpace(s.Server),
 		Upstream: strings.TrimSpace(s.Upstream), Type: strings.TrimSpace(s.Type),
 		Quality: s.Quality, MaxConcurrent: s.MaxConcurrent, MaxTokens: s.MaxTokens,
-		Persistent: s.Persistent, RAMUsage: s.RAMUsage, Notes: s.Notes,
+		Persistent: s.Persistent, Disabled: s.Disabled, RAMUsage: s.RAMUsage, Notes: s.Notes,
 		Sticky: specSticky(s),
 	}
 	p := strings.TrimSpace(s.Proxy)
@@ -348,6 +349,7 @@ func applySpec(prev, next config.Model) config.Model {
 	prev.MaxConcurrent = next.MaxConcurrent
 	prev.MaxTokens = next.MaxTokens
 	prev.Persistent = next.Persistent
+	prev.Disabled = next.Disabled
 	prev.RAMUsage = next.RAMUsage
 	prev.Notes = next.Notes
 	// All three cleared means the operator removed the sticky block, not that
@@ -410,7 +412,7 @@ func modelToSpec(name string, m config.Model) ModelSpec {
 		Proxy:    proxyToString(m.Proxy),
 		Upstream: m.Upstream, Type: m.Type, Quality: m.Quality,
 		MaxConcurrent: m.MaxConcurrent, MaxTokens: m.MaxTokens,
-		Persistent: m.Persistent, RAMUsage: m.RAMUsage, Notes: m.Notes,
+		Persistent: m.Persistent, Disabled: m.Disabled, RAMUsage: m.RAMUsage, Notes: m.Notes,
 		StickyTTL:        stickyField(m.Sticky, func(s config.Sticky) string { return s.TTL }),
 		StickyIdleUnload: stickyField(m.Sticky, func(s config.Sticky) string { return s.IdleUnload }),
 		StickyEvictCost:  stickyField(m.Sticky, func(s config.Sticky) string { return s.EvictCost }),
