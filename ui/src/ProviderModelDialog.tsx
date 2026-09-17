@@ -65,6 +65,12 @@ const LocalModelSpecDoc = graphql(/* GraphQL */ `
           maxConcurrent
           maxTokens
           persistent
+          # WITHOUT THIS THE SAVE BUTTON SILENTLY RE-ENABLES. applySpec assigns
+          # every form-owned field from the request, so a flag this dialog never
+          # read is one it sends back as false — and a model taken out of the
+          # setup quietly returns to it because somebody edited its notes.
+          # Read it, carry it, send it back unchanged.
+          disabled
           stickyTtl
           stickyIdleUnload
           stickyEvictCost
@@ -189,6 +195,7 @@ export function ProviderModelDialog(props: {
           maxConcurrent: String(spec.maxConcurrent),
           maxTokens: String(spec.maxTokens),
           persistent: spec.persistent,
+          disabled: spec.disabled,
           stickyTtl: spec.stickyTtl,
           stickyIdleUnload: spec.stickyIdleUnload,
           stickyEvictCost: spec.stickyEvictCost,

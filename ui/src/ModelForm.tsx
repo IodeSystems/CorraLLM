@@ -33,6 +33,12 @@ export type ModelSpec = {
   maxConcurrent: number
   maxTokens: number
   persistent: boolean
+  // Carried, never edited here. This form does not offer a disable switch —
+  // taking a model out of the setup is a decision made where its evidence is,
+  // on the refusing banner, not a toggle buried in an edit form. But the value
+  // has to survive a round trip through this shape or saving an unrelated field
+  // puts a disabled model back into service.
+  disabled: boolean
   stickyTtl: string
   stickyIdleUnload: string
   stickyEvictCost: string
@@ -52,6 +58,7 @@ export function blankSpec(): ModelSpec {
     maxConcurrent: 1,
     maxTokens: 0,
     persistent: false,
+    disabled: false,
     stickyTtl: '',
     stickyIdleUnload: '',
     stickyEvictCost: '',
@@ -416,6 +423,7 @@ export function specFromGql(s: {
   maxConcurrent?: string | number | null
   maxTokens?: string | number | null
   persistent?: boolean | null
+  disabled?: boolean | null
   stickyTtl?: string | null
   stickyIdleUnload?: string | null
   stickyEvictCost?: string | null
@@ -423,6 +431,9 @@ export function specFromGql(s: {
   notes?: string | null
 }): ModelSpec {
   return {
+    // Absent reads as enabled, which is the only safe default: a caller that
+    // does not select the field must not be able to turn a model back on.
+    disabled: s.disabled ?? false,
     name: s.name ?? '',
     cmd: s.cmd ?? '',
     server: s.server ?? '',
