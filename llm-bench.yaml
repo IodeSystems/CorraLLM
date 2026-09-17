@@ -1,0 +1,30 @@
+# llm-bench config for the abliteration A/B (P32).
+#
+# Not the example: this names the two arms of the comparison and nothing else,
+# because `--models` is a FILTER over this list — a model absent here cannot be
+# selected on the command line, which is how the first attempt at this run
+# produced zero rows.
+llm:
+  baseURL: "http://127.0.0.1:8111"
+  apiKeyEnv: LLM_BENCH_LLM_KEY
+  # Without this, llm-bench reports "overhead correction unavailable" and every
+  # stage timing carries admission queueing and cold-load time inside it. On a
+  # one-GPU box where the two arms take turns being evicted, that is the whole
+  # difference between a timing and a coin toss.
+  adminTokenFile: /home/nthalk/.corrallm/admin.token
+
+models:
+  - local-Qwen3.8-27B
+  - local-Qwen3.8-27B-Uncensored
+
+# Off for this comparison. The judge runs on the `chat` lane, which resolves to
+# the incumbent — so enabling it would make one arm grade both, and on a single
+# GPU it would also evict whichever arm is mid-run to load itself.
+judge:
+  model: "chat"
+  maxTranscriptBytes: 65536
+
+# Baseline only. The comparison's one factor is the WEIGHTS; adding a toolset
+# axis would multiply the run and confound the thing being measured.
+toolsets:
+  baseline: []
