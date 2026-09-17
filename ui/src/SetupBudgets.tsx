@@ -30,6 +30,7 @@ import {
   type LaneShape,
   type PauseCost,
 } from '@/Pause'
+import { DisableDialog, disableCost, useSetDisabled } from '@/Disable'
 
 /**
  * Free-tier quota ledger (P16): each remote backend's remaining rate-limit
@@ -175,9 +176,14 @@ function refusalFix(status: number): string {
  * a refusing backend that is not a model configured here, which nothing on this
  * box can pause. And once it IS paused, the second half is already done: the
  * sentence stops offering it and the row underneath says so.
+ *
+ * TWO WAYS TO STOP CALLING IT, so the sentence now says there are two rather
+ * than leading into a single button. "For now, or for good" is the whole fork
+ * in five words, and the reader meets it before either control — which is the
+ * only way a person picks correctly without being told to go and read about it.
  */
 function refusalAction(status: number, offer: 'pause' | 'paused' | 'none'): string {
-  if (offer === 'pause') return `${refusalFix(status)}. Or stop calling it:`
+  if (offer === 'pause') return `${refusalFix(status)}. Or stop calling it — for now, or for good:`
   if (offer === 'paused') return `${refusalFix(status)}.`
   return `${refusalFix(status)}, or take this backend out of its fallback list on the Models tab.`
 }
@@ -227,7 +233,11 @@ const RefusingContextDoc = graphql(/* GraphQL */ `
             model
           }
           ladder {
+            # A rung the setup has taken out is still LISTED here so the
+            # decision stays visible, and is never walked. pauseCost drops it
+            # rather than counting it as cover this list does not have.
             model
+            disabled
           }
         }
       }
@@ -261,6 +271,30 @@ type PauseTarget = {
  * config edit because it is reversible, takes effect at once, leaves the
  * configuration alone, and shows up as paused on Now and Models — where an edit
  * deletes the rung, records nothing about why, and has to be undone from memory.
+ *
+ * AND NOW THE OTHER OPTION, WHICH IS THE ONE THE OWNER ACTUALLY ASKED FOR.
+ * "Possibly disable backend" was answered with a pause because a pause was what
+ * existed, and it is the wrong answer for this row: a pause nags by design so
+ * you come back to it, and nobody is coming back to a Groq key that has
+ * answered 403 since September. What was missing is the statement "this is not
+ * part of my setup", which belongs in the config document and is silent.
+ *
+ * THE TWO CONTROLS ARE SIDE BY SIDE ON PURPOSE, AND THIS IS THE RISK IN IT. Two
+ * buttons that both mean "off", distinguished by a sentence nobody reads, would
+ * be worse than one button. Three things keep them apart, in the order a person
+ * meets them: the fork is named before either of them ("for now, or for good"),
+ * the labels do not share a verb ("Pause it" against "Take it out of the
+ * setup"), and each caption opens with what KIND of thing it is rather than
+ * with what it does. The dialogs then differ in shape — one asks when and why,
+ * the other asks nothing — so the difference survives into the second screen.
+ *
+ * WHY THE CONTROL LIVES HERE AND NOT ON /models. This is the one place in the
+ * product that already knows a backend is finished with: the fault, how long it
+ * has stood, and how many times. A reader deciding whether something is over is
+ * standing here, holding the evidence, and moving the control to the page that
+ * lists models would put the decision three clicks from its reason. /models
+ * carries the WAY BACK instead — which has to be permanent, where this banner
+ * disappears the moment the decision is made.
  */
 export function RefusingBanner() {
   const qc = useQueryClient()
@@ -275,15 +309,24 @@ export function RefusingBanner() {
   })
 
   const [target, setTarget] = useState<PauseTarget | null>(null)
+  // What one press of "Take it out of the setup" is aimed at, counted before
+  // the press. Separate state from `target` so the two dialogs cannot both be
+  // open, and so neither one inherits the other's prefill.
+  const [outTarget, setOutTarget] = useState<{ name: string; cost: PauseCost } | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   // Both keys: the ledger decides whether this banner renders at all, the
   // context decides whether it offers Pause or Resume.
+  //
+  // `providers` joins them for the config write: Setup's own model lists read
+  // from that key, and a model that just left the setup must not still be drawn
+  // as part of it one tab over.
   const done = (text?: string | null, ok?: boolean | null) => {
     setMsg({ ok: !!ok, text: text ?? '' })
     void qc.invalidateQueries({ queryKey: ['quota'] })
     void qc.invalidateQueries({ queryKey: ['refusingContext'] })
     void qc.invalidateQueries({ queryKey: ['overview'] })
+    void qc.invalidateQueries({ queryKey: ['providers'] })
   }
   const fail = (e: unknown) => setMsg({ ok: false, text: String(e) })
 
@@ -298,9 +341,31 @@ export function RefusingBanner() {
     onSuccess: (d) => done(d.corrallm.unpauseModel?.message, d.corrallm.unpauseModel?.ok),
     onError: fail,
   })
-  const busy = pause.isPending || unpause.isPending
+  const setDisabled = useSetDisabled({
+    onDone: (text, ok) => done(text, ok),
+    onFail: (text) => setMsg({ ok: false, text }),
+  })
+  const busy = pause.isPending || unpause.isPending || setDisabled.isPending
 
-  if (refusing.length === 0) return null
+  // THE CONFIRMATION HAS TO OUTLIVE THE ROWS IT WAS RAISED ON.
+  //
+  // A backend that leaves the setup also leaves the refusing ledger — that is
+  // the feature — so the last refusing row disappears on success and this whole
+  // banner unmounts with it. The reader pressed a control and watched the panel
+  // it was in vanish, with nothing on screen saying what had happened or where
+  // the model went. For a change whose entire risk is "silent becomes lost",
+  // that is the worst possible acknowledgement.
+  //
+  // So an empty ledger with a message still renders the message. An empty
+  // ledger with nothing to say renders nothing, as before.
+  if (refusing.length === 0) {
+    if (!msg) return null
+    return (
+      <Alert severity={msg.ok ? 'success' : 'error'} onClose={() => setMsg(null)}>
+        {msg.text}
+      </Alert>
+    )
+  }
 
   const ov = ctx.data?.corrallm?.overview
   const models = ov?.models ?? []
@@ -377,61 +442,128 @@ export function RefusingBanner() {
             </Typography>
 
             {model?.paused ? (
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.5 }}>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  color="success"
-                  disabled={busy}
-                  onClick={() => unpause.mutate(r.backend)}
-                >
-                  Resume it
-                </Button>
-                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                  {/* A paused backend cannot be reached through this box, so a
-                      refusal dated after the pause is not a caller — it is
-                      something else holding the same key, and saying so is the
-                      difference between a stale count and a live one. */}
-                  {n(r.lastMs) > n(model.pausedAtMs)
-                    ? `Paused ${fmtSince(model.pausedAtMs)}, and it refused again after that — a pause stops requests through this box, not anything else using the same key.`
-                    : `Paused ${fmtSince(model.pausedAtMs)}. This box is not calling it; the refusals counted above are from before that.`}
-                </Typography>
+              <Box sx={{ mt: 0.5, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="success"
+                    disabled={busy}
+                    onClick={() => unpause.mutate(r.backend)}
+                    sx={{ minWidth: 190, justifyContent: 'center' }}
+                  >
+                    Resume it
+                  </Button>
+                  <Typography
+                    variant="caption"
+                    sx={{ color: 'text.secondary', flex: 1, minWidth: 280 }}
+                  >
+                    {/* A paused backend cannot be reached through this box, so a
+                        refusal dated after the pause is not a caller — it is
+                        something else holding the same key, and saying so is the
+                        difference between a stale count and a live one. */}
+                    {n(r.lastMs) > n(model.pausedAtMs)
+                      ? `Paused ${fmtSince(model.pausedAtMs)}, and it refused again after that — a pause stops requests through this box, not anything else using the same key.`
+                      : `Paused ${fmtSince(model.pausedAtMs)}. This box is not calling it; the refusals counted above are from before that.`}
+                  </Typography>
+                </Box>
+                {/* THE SECOND OFFER IS BIGGEST HERE, not on the un-paused row.
+                    A pause that has stood for days over a credential nobody is
+                    going to fix is exactly the state this feature exists to end,
+                    and this row is where a person is looking at one. Offering
+                    only Resume left them with a control that puts a dead
+                    backend back and nothing that agrees with them. */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={busy || ctx.isLoading}
+                    onClick={() =>
+                      setOutTarget({ name: r.backend, cost: disableCost(r.backend, lanes, alreadyOut) })
+                    }
+                    sx={{ minWidth: 190, justifyContent: 'center' }}
+                  >
+                    Take it out of the setup
+                  </Button>
+                  <Typography
+                    variant="caption"
+                    sx={{ color: 'text.secondary', flex: 1, minWidth: 280 }}
+                  >
+                    If it is not coming back: writes the decision into your configuration and stops
+                    reporting it, here and on Now. The pause is kept underneath — put the model back
+                    and you get it back exactly as it is now, still paused.
+                  </Typography>
+                </Box>
               </Box>
             ) : model ? (
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.5 }}>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  color="warning"
-                  disabled={busy || ctx.isLoading}
-                  onClick={() =>
-                    setTarget({
-                      name: r.backend,
-                      warning: host
-                        ? `${r.backend} shares the ${host} process with its siblings, so pausing it takes all of them out of service: ${siblings.join(', ')}.`
-                        : undefined,
-                      // The fault, already known, so nobody has to retype it —
-                      // and so the reason shows up on Now as the sentence that
-                      // explains a paused model somebody else may not have
-                      // paused.
-                      reason: `refusing every request — ${status} since ${new Date(n(r.sinceMs)).toLocaleString()}`,
-                      // LEFT INDEFINITE ON PURPOSE. A 401/402/403 does not heal
-                      // on a clock; it lifts when a person changes something at
-                      // the provider. A resume time would put the same dead
-                      // credential back in the rotation at an hour chosen for no
-                      // reason, and refill this very banner.
-                      resumeHelp: `Empty on purpose: a ${status} clears when somebody fixes the account or the key, not on a clock. It stays listed as paused on Now until it is resumed.`,
-                      cost: pauseCost(siblings, lanes, alreadyOut),
-                    })
-                  }
-                >
-                  Pause it
-                </Button>
-                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                  Stops this box calling it: callers are told the model is paused instead of getting
-                  its {status}, and nothing more is spent on a credential that cannot answer. It
-                  stays in your configuration, and resuming it is one press here.
-                </Typography>
+              <Box sx={{ mt: 0.5, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                {/* TWO CONTROLS, AND THE CAPTIONS OPEN WITH WHAT KIND OF THING
+                    EACH ONE IS. "Temporary and reversible" against "A decision
+                    about what your setup contains" is the whole choice in the
+                    first four words of each, which is as far as a person reads
+                    while deciding which button to press. What each one DOES to
+                    callers comes second, because it is the answer to a question
+                    they have not asked yet. */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="warning"
+                    disabled={busy || ctx.isLoading}
+                    onClick={() =>
+                      setTarget({
+                        name: r.backend,
+                        warning: host
+                          ? `${r.backend} shares the ${host} process with its siblings, so pausing it takes all of them out of service: ${siblings.join(', ')}.`
+                          : undefined,
+                        // The fault, already known, so nobody has to retype it —
+                        // and so the reason shows up on Now as the sentence that
+                        // explains a paused model somebody else may not have
+                        // paused.
+                        reason: `refusing every request — ${status} since ${new Date(n(r.sinceMs)).toLocaleString()}`,
+                        // LEFT INDEFINITE ON PURPOSE. A 401/402/403 does not heal
+                        // on a clock; it lifts when a person changes something at
+                        // the provider. A resume time would put the same dead
+                        // credential back in the rotation at an hour chosen for no
+                        // reason, and refill this very banner.
+                        resumeHelp: `Empty on purpose: a ${status} clears when somebody fixes the account or the key, not on a clock. It stays listed as paused on Now until it is resumed.`,
+                        cost: pauseCost(siblings, lanes, alreadyOut),
+                      })
+                    }
+                    sx={{ minWidth: 190, justifyContent: 'center' }}
+                  >
+                    Pause it
+                  </Button>
+                  <Typography
+                    variant="caption"
+                    sx={{ color: 'text.secondary', flex: 1, minWidth: 280 }}
+                  >
+                    Temporary and reversible. Stops this box calling it — callers are told the model
+                    is paused instead of getting its {status} — and it stays listed on Now until
+                    somebody resumes it, so it is not forgotten.
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={busy || ctx.isLoading}
+                    onClick={() =>
+                      setOutTarget({ name: r.backend, cost: disableCost(r.backend, lanes, alreadyOut) })
+                    }
+                    sx={{ minWidth: 190, justifyContent: 'center' }}
+                  >
+                    Take it out of the setup
+                  </Button>
+                  <Typography
+                    variant="caption"
+                    sx={{ color: 'text.secondary', flex: 1, minWidth: 280 }}
+                  >
+                    A decision about what your setup contains. It leaves every fallback list and
+                    stops being reported anywhere, including here. The definition is kept — Models
+                    lists it under &ldquo;Out of this setup&rdquo;, which is where you put it back.
+                  </Typography>
+                </Box>
               </Box>
             ) : null}
           </Box>
@@ -449,6 +581,17 @@ export function RefusingBanner() {
         onConfirm={(resumeAt, reason) => {
           if (target) pause.mutate({ model: target.name, resumeAt, reason })
           setTarget(null)
+        }}
+      />
+
+      <DisableDialog
+        target={outTarget?.name ?? null}
+        cost={outTarget?.cost ?? null}
+        busy={busy}
+        onClose={() => setOutTarget(null)}
+        onConfirm={() => {
+          if (outTarget) setDisabled.mutate({ model: outTarget.name, disabled: true })
+          setOutTarget(null)
         }}
       />
     </Alert>

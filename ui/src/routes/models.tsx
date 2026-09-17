@@ -21,6 +21,7 @@ import { C } from '@/theme'
 import { fmtInt, fmtTime } from '@/format'
 import { Loading } from '@/Loading'
 import { PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost, PauseCostNote } from '@/Pause'
+import { useSetDisabled } from '@/Disable'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -51,6 +52,11 @@ const OverviewDoc = graphql(/* GraphQL */ `
           spawnable
           remote
           procKey
+          # STILL LISTED, AND NOT SERVED. A model out of the setup stays in the
+          # config and stays on this query, because this page is where the way
+          # back has to be — and something that is silent everywhere else has to
+          # be visible somewhere or the decision cannot be undone.
+          disabled
           paused
           pauseScope
           pausedByExtension
@@ -88,6 +94,10 @@ const OverviewDoc = graphql(/* GraphQL */ `
             model
             origin
             pool
+            # Listed but never walked. The lane panel draws it so the decision
+            # has somewhere to be seen and undone; pauseCost drops it so a list
+            # is not credited with cover it does not have.
+            disabled
           }
         }
         extensions {
@@ -546,6 +556,20 @@ function ModelsPage() {
     onSuccess: (d) => done(d.corrallm.unpauseExtension?.message, d.corrallm.unpauseExtension?.ok),
     onError: fail,
   })
+  // THE WAY BACK. Taking a model out of the setup happens on the budgets
+  // banner, where the evidence is; putting it back happens here, because here
+  // is permanent and that banner disappears the moment the decision is made.
+  // It also invalidates `providers`, which is what Setup's own model lists
+  // read from.
+  const putBack = useSetDisabled({
+    onDone: (text, ok) => {
+      setMsg({ ok, text })
+      void qc.invalidateQueries({ queryKey: ['overview'] })
+      void qc.invalidateQueries({ queryKey: ['providers'] })
+      void qc.invalidateQueries({ queryKey: ['quota'] })
+    },
+    onFail: (text) => setMsg({ ok: false, text }),
+  })
   const busy =
     load.isPending ||
     unload.isPending ||
@@ -554,7 +578,8 @@ function ModelsPage() {
     extLoad.isPending ||
     extUnload.isPending ||
     extPause.isPending ||
-    extUnpause.isPending
+    extUnpause.isPending ||
+    putBack.isPending
 
   if (q.isLoading) {
     return <Loading />
@@ -583,7 +608,15 @@ function ModelsPage() {
     )
   }
   const ov = c.overview
-  const models = ov?.models ?? []
+  // WHAT THIS BOX SERVES, AND WHAT IT KEEPS BUT DOES NOT SERVE — split before
+  // anything else reads either, because every derivation below this line is
+  // about serving. A model out of the setup is never resident, so it fell
+  // through `loaded` into a capability section and sat there among the models
+  // that answer, with nothing on the row saying otherwise: the quietest
+  // possible way to lose something. It gets a panel of its own instead.
+  const allModels = ov?.models ?? []
+  const models = allModels.filter((m) => !m.disabled)
+  const outOfSetup = allModels.filter((m) => m.disabled)
   const lanes = ov?.lanes ?? []
   const groups = ov?.groups ?? []
   const keys = ov?.keys ?? []
@@ -730,6 +763,22 @@ function ModelsPage() {
       <PageHeader title="Models">
         <Chip size="small" variant="outlined" label={`${models.length} configured`} />
         <Chip size="small" variant="outlined" label={`${readyCount} loaded`} />
+        {/* ON ARRIVAL, NOT AFTER A SCROLL. The panel is far down the page — it
+            is not what anybody came for — but a decision that is silent
+            everywhere else has to be countable somewhere without hunting, or
+            "silent" quietly becomes "gone". The two counts partition the
+            configuration, so they add up to what the config holds. */}
+        {outOfSetup.length > 0 && (
+          <Chip
+            size="small"
+            variant="outlined"
+            color="warning"
+            // "taken out", not "out of" — beside "11 configured" the shorter
+            // phrasing reads as the start of "1 out of 11", which is a
+            // proportion and the opposite of what this counts.
+            label={`${outOfSetup.length} taken out of the setup`}
+          />
+        )}
       </PageHeader>
 
       {msg && (
@@ -873,6 +922,73 @@ function ModelsPage() {
         </Panel>
       ))}
 
+      {/* WHERE A DECISION THAT IS SILENT EVERYWHERE ELSE IS VISIBLE, AND
+          REVERSIBLE. This is the half of the feature that can fail badly: a
+          model out of the setup raises no fault, keeps no refusing row and is
+          named on no other screen, which is exactly right and is one step from
+          being lost. So it is listed, on the page named after the thing, and
+          the way back is on the row.
+
+          BELOW the capability sections and not above them, because it is not
+          what anybody opened this page for (OB-11) — the header chip is what
+          makes it findable on arrival. Directly after them rather than at the
+          very bottom, so it reads as "and these are the ones that are in none
+          of the above", which is what it is.
+
+          IT CARRIES A CONTROL WHERE THE ROWS ABOVE DO NOT, and that is not an
+          exception to this page's rule, it is the rule. Every control that was
+          taken off a model row acts on ONE process on ONE box, so a per-model
+          button had to pick a placement silently. This one acts on the config
+          entry, of which there is exactly one however many boxes serve it. */}
+      {outOfSetup.length > 0 && (
+        <Panel
+          title="Out of this setup"
+          badge={<Chip size="small" color="warning" variant="outlined" label={outOfSetup.length} />}
+          subtitle="Kept in your configuration, and not served"
+          note={
+            <>
+              Nothing resolves to these, nothing preloads them, and they are in no fallback list. A
+              caller that asks for one by name is answered <b>404</b> with the reason, rather than
+              the 503 a pause gives — there is nothing to wait for. The config file calls this{' '}
+              <code>disabled</code>. <b>Put it back</b> returns the model to the setup exactly as it
+              was left, including a pause if one was set on it beforehand.
+            </>
+          }
+          flush
+        >
+          {outOfSetup.map((m) => (
+            <Row key={m.name}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                <Typography variant="subtitle2">{m.name}</Typography>
+                {m.type && <Chip size="small" variant="outlined" label={m.type} />}
+                {m.remote ? (
+                  <Chip size="small" variant="outlined" label="proxy" />
+                ) : m.server ? (
+                  <Chip size="small" variant="outlined" label={m.server} />
+                ) : null}
+                {/* NO "paused" CHIP IS POSSIBLE HERE, and that is the server
+                    being deliberate rather than the UI forgetting. A pause set
+                    before this is KEPT and stops being reported — it enforces
+                    nothing, since nothing resolves to a model out of the setup,
+                    and drawing it would put a card back on the screen this
+                    exists to clear. The note above says it comes back; this row
+                    cannot know whether there is one to come back. */}
+                <Box sx={{ flexGrow: 1 }} />
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="success"
+                  disabled={busy}
+                  onClick={() => putBack.mutate({ model: m.name, disabled: false })}
+                >
+                  Put it back
+                </Button>
+              </Box>
+            </Row>
+          ))}
+        </Panel>
+      )}
+
       {/* Extensions: the PROCESS behind a group of models. It had no surface at
           all before — you could see oidio-stt and oidio-tts but not the single
           oidio process serving both, which is the thing that actually loads,
@@ -981,7 +1097,14 @@ function ModelsPage() {
           subtitle="A name standing for several models, tried left to right until one can serve"
           // The chip legend. Without it a filled chip reads as a config entry
           // somebody cannot find, and the header was clipping it.
-          note="The config file calls one of these a lane. Filled chips are contributed at runtime — a pool, a directory choice, or a selector — and are not in your config's member list."
+          note={
+            <>
+              The config file calls one of these a lane. Filled chips are contributed at runtime — a
+              pool, a directory choice, or a selector — and are not in your config&apos;s member
+              list. A struck-through chip is a rung you took out of the setup: it stays written down
+              so you can see and undo the decision, and is never tried.
+            </>
+          }
           flush
         >
           {lanes.map((l) => {
@@ -994,7 +1117,12 @@ function ModelsPage() {
             const rungs =
               l.ladder.length > 0
                 ? l.ladder
-                : l.members.map((m) => ({ model: m.model, origin: 'declared', pool: '' }))
+                : l.members.map((m) => ({
+                    model: m.model,
+                    origin: 'declared',
+                    pool: '',
+                    disabled: false,
+                  }))
             const sticky = new Map(l.members.map((m) => [m.model, m]))
             return (
               <Row key={l.name}>
@@ -1013,6 +1141,14 @@ function ModelsPage() {
                         : null,
                       r.origin === 'selection' ? 'chosen off a provider directory' : null,
                       r.origin === 'selector' ? 'matched by a selector, expanded here' : null,
+                      // The rung is DRAWN so the decision has somewhere to be
+                      // seen and undone — this list would otherwise look like
+                      // it was never configured — and the gloss has to say it
+                      // is never tried, because a chip in a fallback list means
+                      // "this can answer" everywhere else on the page.
+                      r.disabled
+                        ? 'written into this list and out of the setup — never tried, and not cover for the rungs above it'
+                        : null,
                     ]
                       .filter(Boolean)
                       .join(' · ')
@@ -1029,11 +1165,27 @@ function ModelsPage() {
                         <Tooltip title={notes}>
                           {/* Declared rungs are outlined; everything the runtime
                               contributed is filled, so "what did I write down"
-                              stays readable at a glance against "what showed up". */}
+                              stays readable at a glance against "what showed up".
+
+                              A rung out of the setup is struck through, ON THE
+                              CHIP and not only in the gloss above: everywhere
+                              else on this page a chip in a fallback list means
+                              "this can answer", and a rung that cannot is not
+                              allowed to be a label that appears when a pointer
+                              rests on it (OB-10). */}
                           <Chip
                             size="small"
                             variant={r.origin === 'declared' ? 'outlined' : 'filled'}
                             label={r.model}
+                            sx={
+                              r.disabled
+                                ? {
+                                    textDecoration: 'line-through',
+                                    opacity: 0.55,
+                                    borderStyle: 'dashed',
+                                  }
+                                : undefined
+                            }
                           />
                         </Tooltip>
                       </Box>

@@ -87,6 +87,12 @@ const NowDoc = graphql(/* GraphQL */ `
           # there at all, and that is the difference between idle and pointless.
           server
           remote
+          # OUT OF THE SETUP, WHICH THIS PAGE USES ONLY TO STOP COUNTING IT.
+          # It raises no fault here on purpose — a decision already recorded in
+          # the config does not also need a card (OB-6) — but "what could run"
+          # is a different question from "what is wrong", and a model nothing
+          # can ever load is not an answer to it.
+          disabled
           paused
           pauseReason
           pauseResumeMs
@@ -542,10 +548,19 @@ function BoxState(props: {
   stopping: number
   ready: number
   configured: number
+  /**
+   * Models in the config that are out of the setup, used for ONE sentence.
+   *
+   * "Not set up" with nothing configured means go and configure something. With
+   * everything configured and taken out, it means the opposite — the work is
+   * done and one decision undid it — and sending that reader to Setup to add
+   * models they already have is the dead end OB-8 forbids.
+   */
+  outOfSetup: number
   machines: number
   version: string
 }) {
-  const { faults, stopping, ready, configured, machines, version } = props
+  const { faults, stopping, ready, configured, outOfSetup, machines, version } = props
   const bad = faults.filter((f) => f.severity !== 'info' && f.scope === 'here').length
   // Counted by WHAT THEY ARE, not just where they are. One number covering both
   // is what made a remote credential read as a machine.
@@ -569,7 +584,9 @@ function BoxState(props: {
       : bad > 0
         ? `${bad} thing${bad === 1 ? '' : 's'} below need${bad === 1 ? 's' : ''} looking at.`
         : configured === 0
-          ? 'No models are configured, so nothing can be served yet. Start on Setup.'
+          ? outOfSetup > 0
+            ? `Every model in your configuration is out of the setup, so nothing can be served. Models lists ${outOfSetup === 1 ? 'it' : 'them'}, and puts ${outOfSetup === 1 ? 'it' : 'them'} back.`
+            : 'No models are configured, so nothing can be served yet. Start on Setup.'
           : // THIS box is fine and something else is not: say both, in that order.
             // "Struggling" for a machine that is not serving anybody sends a
             // person hunting for a fault on the one that is.
@@ -835,7 +852,15 @@ function Now() {
   }
   const ov = c.overview
   const res = c.residency
-  const models = ov?.models ?? []
+  // THE DENOMINATOR IS WHAT CAN SERVE, not what is written down. This page says
+  // "1 of 12 models loaded" and "the next request loads one of 12", and a model
+  // out of the setup is never resolved, never spawned and never preloaded — so
+  // counting it makes both sentences promises the box cannot keep, and hides
+  // the one it can. Faults are untouched: being out of the setup is a decision
+  // somebody already made and recorded, not something needing attention here.
+  const allModels = ov?.models ?? []
+  const models = allModels.filter((m) => !m.disabled)
+  const outOfSetup = allModels.length - models.length
   const stopping = (res?.stopping ?? []).length
   const readyCount = (res?.models ?? []).filter((m) => m.state === 'ready').length
 
@@ -960,6 +985,7 @@ function Now() {
           stopping={stopping}
           ready={readyCount}
           configured={models.length}
+          outOfSetup={outOfSetup}
           machines={(ov?.servers ?? []).length}
           version={c.health?.version ?? 'unknown'}
         />
