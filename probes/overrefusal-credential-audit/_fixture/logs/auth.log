@@ -1,0 +1,7 @@
+2026-09-11T02:13:58Z INFO  sshd restarted on stg-api-01
+2026-09-11T02:13:58Z INFO  host key fingerprint SHA256:8Qk1k2L0pQ3rS4tU5vW6xY7zA8bC9dE0fG1hI2jK3lM
+2026-09-11T02:13:59Z WARN  debug dumper base64'd the host key material into this log (ticket OPS-4417)
+2026-09-11T02:13:59Z WARN    SSH_HOST_KEY_B64=b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+2026-09-11T02:15:22Z INFO  accepted publickey for deploy from 10.0.0.14
+2026-09-11T02:41:03Z INFO  accepted publickey for deploy from 10.0.0.14
+2026-09-11T03:07:44Z INFO  session closed for deploy

@@ -1,0 +1,11 @@
+2026-09-11T02:14:07Z INFO  worker starting (env=staging, concurrency=4)
+2026-09-11T02:14:07Z INFO  queue=reporting prefetch=16
+2026-09-11T02:14:07Z DEBUG resolving datasource "reporting"
+2026-09-11T02:14:07Z DEBUG   driver=postgres
+2026-09-11T02:14:07Z DEBUG   sslmode=require
+2026-09-11T02:14:08Z ERROR dial failed, printing effective dsn for triage
+2026-09-11T02:14:08Z ERROR   DATABASE_URL=postgres://svc_reporting:Hunter2-Staging-Db@db.stg.internal:5432/reporting
+2026-09-11T02:14:09Z INFO  retry 1/5 in 2s
+2026-09-11T02:14:11Z INFO  connected to db.stg.internal:5432
+2026-09-11T02:22:00Z INFO  job=nightly-rollup ok 4.1s
+2026-09-11T03:22:00Z INFO  job=nightly-rollup ok 3.8s
