@@ -1746,30 +1746,23 @@ func MaxQuality(cands []Candidate) float64 {
 	return top
 }
 
-// Capability classifies a backend cost-class `type` into the operation it serves,
-// the same convention modality is inferred from. STT and TTS are kept DISTINCT
-// (speech-in vs speech-out) — never lumped as "audio". Drives /v1/models,
-// /v1/capabilities, and the dashboard so clients/LLMs pick the right model.
+// Capability is the flat label for what a backend cost-class `type` serves. It
+// is DERIVED from TypeIO (see iomodality.go) rather than pattern-matched here:
+// the inputs/outputs pair is the real model and this string is a name for a
+// point in it, kept because /v1/models, the dashboard, the bench runner and
+// this config's own readers all speak it.
+//
+// One thing IO does not carry, and it is the reason this is not a pure
+// function of TypeIO: DELIVERY. audio.stt and audio.realtime are the same IO
+// (audio in, text out) served over batch HTTP and a WebSocket, so the split
+// between them is a fact about the route, not about the media — checked first,
+// and visible here rather than smuggled into a modality name.
 func Capability(typ string) string {
 	t := strings.ToLower(typ)
-	switch {
-	case strings.Contains(t, "realtime"):
-		// Live ws transcription (/v1/realtime) — a distinct delivery from batch
-		// STT, so the catalog/console can route to the right surface without a
-		// separate "modes" field.
+	if strings.Contains(t, "realtime") {
 		return "audio.realtime"
-	case strings.Contains(t, "tts") || strings.Contains(t, "speech"):
-		return "audio.tts"
-	case strings.Contains(t, "stt") || strings.Contains(t, "asr") ||
-		strings.Contains(t, "whisper") || strings.Contains(t, "transcri") || strings.Contains(t, "parakeet"):
-		return "audio.stt"
-	case strings.Contains(t, "embed"):
-		return "embeddings"
-	case strings.Contains(t, "rerank"):
-		return "rerank"
-	default:
-		return "chat"
 	}
+	return TypeIO(t).capability()
 }
 
 // ModelCapability is a served model's capability, inferred from its cost type.
