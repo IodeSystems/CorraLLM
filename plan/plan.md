@@ -1048,6 +1048,18 @@ true and still costs something. Optional extensions and out-of-scope items live 
   inconsistent with the badge one panel away, which the vocabulary sweep could not reach.
 - **`refusalMeaning`'s "the key is not accepted" means a PROVIDER credential**, while "key" means
   a caller's API key on `/callers`. One word, two things, pre-existing.
+- **The Mac's agent cannot build anything: `cmake` is not on its PATH.** `tools preflight
+  llama.cpp --server carlsmacbookpro` reports `BLOCKED, missing: cmake` — with no "(have …)", so
+  it is ABSENT, not too old; a direct ssh preflight on the same host finds cmake 4.4.3. Homebrew
+  on Apple Silicon installs to `/opt/homebrew/bin`, which a launchd-spawned agent does not
+  inherit. Same class as the Local Network permission trap: the agent's environment differs from
+  a login shell and nothing surfaces it.
+  **The cost is already paid and was invisible:** `rebuild: true` is tool-level, so the Mac is
+  enlisted and compiles unattended — it has been trying and failing (`tool_build` row 114,
+  `failed`), and its llama.cpp sits at build 10630 against box1's 11065, roughly 435 behind.
+  It can RUN what is already installed and cannot build anything new, which is why
+  stable-diffusion.cpp had to be installed over ssh rather than through `tools build`.
+  Fix is the agent's environment, not the recipes.
 - **`ui/` has no test runner.** No vitest, no jest, no `test` script in `ui/package.json` — so
   `slowdownFaults` and every other pure function in the UI is covered by `tsc` and eslint only.
   The DoD's "new behavior has tests" is met on the Go side of a UI change and silently skipped on

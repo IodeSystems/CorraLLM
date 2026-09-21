@@ -45,3 +45,6 @@ home/*.token
 bin/agents/
 go.work
 go.work.sum
+
+# Machine-specific: a baseURL and an absolute admin-token path.
+llm-bench.yaml
