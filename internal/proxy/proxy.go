@@ -518,6 +518,12 @@ func (p *Proxy) Mount(mux interface {
 		"/v1/audio/transcriptions", // STT (parakeet); multipart in, JSON/SSE out
 		"/v1/audio/translations",   // STT → English; same shape
 		"/v1/audio/speech",         // TTS (kokoro); JSON in, binary audio out
+		// Text-to-image (P9h). sd-server (stable-diffusion.cpp) already speaks
+		// this shape, so corrallm FORWARDS it rather than adapting anything.
+		// Mounted here and not as its own edge precisely so it inherits what
+		// every other inference route gets: an admission slot, fairshare,
+		// residency, cost and an activity row.
+		"/v1/images/generations",
 	} {
 		mux.Handle(path, http.HandlerFunc(p.handleInference))
 	}
@@ -555,6 +561,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// meters as audio (by output bytes — see below).
 	audio := strings.HasPrefix(r.URL.Path, "/v1/audio/")
 	tts := r.URL.Path == "/v1/audio/speech"
+	// Text-to-image (P9h): JSON in, JSON out, but the out is megabytes of
+	// base64 and carries no usage block — so it is metered and captured like
+	// TTS rather than like chat. Default body cap: the request is a prompt and
+	// a few numbers.
+	image := r.URL.Path == "/v1/images/generations"
 	maxBody := int64(32 << 20)
 	if audio && !tts {
 		maxBody = 64 << 20
@@ -698,6 +709,39 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// members; a lane (or a directly-named model) with nothing left is a 503,
 	// not backpressure: a pause is a decision, not congestion, and there is no
 	// retry interval that would be honest for one.
+	// THE ROUTE SAYS WHAT IT NEEDS BACK, and a model either returns it or does
+	// not (P9h). /v1/images/generations requires out:image. A vision chat model
+	// takes images and returns text, so it fails this without any rule naming
+	// vision — which is the whole reason the check is on IO rather than on a
+	// capability string. See config.IO.
+	//
+	// Enforced HERE and not on every route, deliberately. The other surfaces
+	// have always forwarded whatever model they were handed and tightening them
+	// is a separate, behaviour-changing slice; routeEmits is the map that slice
+	// would fill in. This route is gated now because getting it wrong is not
+	// free: the audio routes front the SAME llama-server a chat request would
+	// have reached, so a misroute costs one 404 from a resident process, while
+	// /v1/images/generations fronts sd-server — a different binary — and a chat
+	// model sent here pays an admission slot, an eviction and a multi-GB cold
+	// load before llama-server 404s on a path it has never served.
+	//
+	// 400, not 404: the model exists and is spelled right. Not 503: nothing is
+	// congested and no amount of retrying makes a chat model paint.
+	if want, gated := routeEmits[r.URL.Path]; gated {
+		kept := p.filterByOutput(cands, want)
+		if len(kept) == 0 {
+			io := p.modelIO(cands[0])
+			msg := fmt.Sprintf("model %q returns %v, and %s returns %q; "+
+				"it accepts %v, which is not the same thing as producing one",
+				served, io.Out, r.URL.Path, want, io.In)
+			http.Error(w, `{"error":{"message":"`+msg+`"}}`, http.StatusBadRequest)
+			p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+				Status: http.StatusBadRequest, DwellMS: time.Since(start).Milliseconds(),
+				Error: "model does not return " + want, ReqBody: reqBody})
+			return
+		}
+		cands = kept
+	}
 	if kept := p.filterByPaused(cands); len(kept) != len(cands) {
 		if len(kept) == 0 {
 			// cands, NOT kept: the pauses that produced this 503 are the ones
@@ -898,6 +942,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		r.ContentLength = int64(len(outBody))
 		p.markInflight(live, inflightStreaming, name)
 		sc := &statusCapture{ResponseWriter: w, code: http.StatusOK, streaming: streaming, live: live}
+		if image {
+			// Nothing reads an image reply's body for usage — it has none — and
+			// the only body worth retaining is a small JSON error. Retaining
+			// the default 1 MiB would hold a megabyte of base64 per in-flight
+			// generation for no reader.
+			sc.bufLimit = errorCaptureLimit
+		}
 		// Capture the proxy error so the activity log can say WHY a request failed
 		// (P10a) and map it to an honest status: a canceled connection (client or an
 		// upstream front-proxy giving up) is 499, not a backend 502; corrallm's own
@@ -984,7 +1035,22 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		var costUSD float64
 		var audioBytes int64
 		var cCost, pCost, gCost float64 // per-class $ (cached, processed, generated)
+		images := 0
 		switch {
+		case image:
+			// Per IMAGE, from the request's `n` (default 1) — see
+			// cost.ImageRequestUSD for why not per byte. Read from the request
+			// rather than counted out of the response because the response is
+			// megabytes of base64 that nothing else here needs to parse, and a
+			// backend that honoured `n` partially is a backend bug rather than a
+			// discount. Billed only on success: a 4xx/5xx generated no pixels,
+			// and unlike TTS (whose byte meter goes to ~0 by itself on an error)
+			// a count taken from the request would bill the full ask for a
+			// failure.
+			if status >= 200 && status < 300 {
+				images = imagesFromBody(body)
+				costUSD = p.cost.ImageRequestUSD(backend.Type, images)
+			}
 		case tts:
 			audioBytes = sc.written
 			costUSD = p.cost.AudioRequestUSD(backend.Type, int(sc.written))
@@ -1043,7 +1109,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		prov := backend.Provider()
 		statusStr := strconv.Itoa(status)
 		metrics.Request(prov, name, statusStr)
-		if tts || audio {
+		if image {
+			metrics.Cost(prov, name, "image", costUSD)
+		} else if tts || audio {
 			metrics.Cost(prov, name, "audio", costUSD)
 		} else {
 			proc := u.PromptTokens - u.CachedTokens
@@ -1060,7 +1128,27 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		metrics.Cost(prov, name, "load", loadCost)
 
 		var respBody string
-		if tts {
+		if image && status >= 200 && status < 300 {
+			// A SUCCESSFUL image response is {data:[{b64_json:"iVBOR…"}]} — one
+			// 1024² PNG is ~1.5 MB of base64. capturePayload would cut it at
+			// payloadCap and store 4 KiB of base64 that is neither a picture nor
+			// valid JSON: unviewable, unreplayable, and indistinguishable at a
+			// glance from a real captured reply. Summarize instead, the way TTS
+			// summarizes its binary.
+			//
+			// A FAILED one falls through to the normal capture on purpose. That
+			// body is a small JSON error and it is the only thing in the row
+			// that says what went wrong, so it is exactly what must not be
+			// dropped. This is the difference from TTS, which summarizes
+			// unconditionally and loses its errors.
+			if p.capturePayloads {
+				n := images
+				if n == 0 {
+					n = imagesFromBody(body)
+				}
+				respBody = fmt.Sprintf("<%d image(s), %d bytes>", n, sc.written)
+			}
+		} else if tts {
 			if p.capturePayloads {
 				respBody = fmt.Sprintf("<audio, %d bytes>", sc.written)
 			}
@@ -1533,6 +1621,38 @@ func (p *Proxy) filterByPaused(cands []config.Candidate) []config.Candidate {
 	return kept
 }
 
+// routeEmits is what each gated inference route requires a model to RETURN
+// (P9h). One entry today: this is the shape the rest of the surface would move
+// onto, not a table that is already authoritative — see the gate in
+// handleInference for why the audio and chat routes are deliberately absent.
+var routeEmits = map[string]string{
+	"/v1/images/generations": config.ModalityImage,
+}
+
+// modelIO is a candidate's inputs/outputs. The cost model is the one that knows
+// whether a type is audio, which is what EffectiveModalities needs to default
+// an undeclared, unprobed model's inputs — so this lives on the Proxy rather
+// than in config.
+func (p *Proxy) modelIO(c config.Candidate) config.IO {
+	return config.ModelIO(c.Name, c.Model, p.cost.IsAudioType(c.Model.Type))
+}
+
+// filterByOutput keeps only the candidates that RETURN the given modality.
+//
+// A filter and not a single check because a lane may mix members: a lane
+// holding one generator alongside chat models still answers an image request,
+// on the generator, instead of being refused because its primary member was
+// listed first.
+func (p *Proxy) filterByOutput(cands []config.Candidate, want string) []config.Candidate {
+	kept := make([]config.Candidate, 0, len(cands))
+	for _, c := range cands {
+		if p.modelIO(c).Emits(want) {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
 // filterByCredential drops candidates whose credential this caller may not use.
 //
 // Beside filterByPaused/filterByQuota rather than a new exit, so it composes
@@ -1959,7 +2079,13 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		// Modalities: accepted input modalities keyed by name (text|image|audio),
 		// each with optional metadata (image maxResolution/formats, text maxTokens).
 		Modalities map[string]config.ModalitySpec `json:"modalities"`
-		Capability string                         `json:"capability"` // chat|embeddings|audio.stt|audio.tts|rerank
+		// Outputs: what the model RETURNS (text|image|audio|vector|ranking).
+		// Beside `modalities` and not folded into it, because the field above
+		// answers only "what does it accept" and reading it as the whole story
+		// is what makes a vision model look like an image generator. `outputs`
+		// is inferred from the cost type — see config.TypeIO.
+		Outputs    []string `json:"outputs"`
+		Capability string   `json:"capability"` // chat|embeddings|audio.stt|audio.tts|image.generate|rerank
 	}
 	// Data starts non-nil so an empty config serialises as [] rather than null.
 	// OpenAI clients iterate the list without a nil check, and a fresh install
@@ -1988,6 +2114,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 			Persistent: mc.Persistent,
 			Slots:      p.mgr.TunedSlots(name, mc.Slots()),
 			Modalities: mc.EffectiveModalities(name, p.cost.IsAudioType(mc.Type)),
+			Outputs:    config.ModelIO(name, mc, p.cost.IsAudioType(mc.Type)).Out,
 			Capability: config.ModelCapability(mc),
 		}
 		// A remote model has no residency to report. It used to inherit the
@@ -2024,12 +2151,14 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		// Lane modalities/capability follow the PRIMARY member: a lane advertises
 		// what its first-choice model accepts (a fallback may support less).
 		var modalities map[string]config.ModalitySpec
+		var outputs []string
 		capability, state := "chat", "absent"
 		for i, c := range cands {
 			members = append(members, c.Name)
 			if i == 0 {
 				capability = config.ModelCapability(c.Model)
 				modalities = c.Model.EffectiveModalities(c.Name, p.cost.IsAudioType(c.Model.Type))
+				outputs = p.modelIO(c).Out
 			}
 			// A remote member contributes "proxy", not residency; a real resident
 			// member's state outranks it, since that one is measurably up.
@@ -2050,7 +2179,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 		out.Data = append(out.Data, model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: state, Quality: config.MaxQuality(cands), Kind: "lane",
-			Members: members, Slots: laneSlots, Modalities: modalities, Capability: capability,
+			Members: members, Slots: laneSlots, Modalities: modalities, Outputs: outputs, Capability: capability,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -2121,27 +2250,46 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 
 	chatM, embM, ttsM := pick("chat"), pick("embeddings"), pick("audio.tts")
+	imgM := pick("image.generate")
 	sttM := first(sttBatch, pick("audio.stt"))        // batch example (transcriptions)
 	rtM := first(sttRealtime, pick("audio.realtime")) // realtime example (ws)
 	type endpoint struct {
-		Path        string         `json:"path"`
-		Method      string         `json:"method"`
-		Capability  string         `json:"capability"`
+		Path       string `json:"path"`
+		Method     string `json:"method"`
+		Capability string `json:"capability"`
+		// Accepts/Emits are what this ROUTE takes and returns, in corrallm's
+		// modality vocabulary. The route stating its own IO is what lets a
+		// client match models to it without decoding a capability string:
+		// /v1/images/generations emits image, and a model whose `outputs` on
+		// /v1/models contains image serves it. A vision chat model ACCEPTS
+		// image and emits text, so it matches the chat routes and not this one
+		// — the distinction a single capability name cannot make.
+		Accepts     []string       `json:"accepts,omitempty"`
+		Emits       []string       `json:"emits,omitempty"`
 		Description string         `json:"description"`
 		Models      []string       `json:"models,omitempty"`
 		Streaming   bool           `json:"streaming,omitempty"`
 		Example     map[string]any `json:"example,omitempty"`
 	}
+	txt := []string{config.ModalityText}
+	img := []string{config.ModalityImage}
+	aud := []string{config.ModalityAudio}
+	vec := []string{config.ModalityVector}
+	rank := []string{config.ModalityRanking}
+	// Chat takes images too — on a vision model. The route accepting a modality
+	// and a given model accepting it are different claims, which is why
+	// /v1/models carries the per-model answer.
+	txtImg := []string{config.ModalityImage, config.ModalityText}
 	endpoints := []endpoint{
-		{"/v1/chat/completions", "POST", "chat", "OpenAI chat completions; set \"stream\":true for SSE token streaming.", byCap["chat"], true,
+		{"/v1/chat/completions", "POST", "chat", txtImg, txt, "OpenAI chat completions; set \"stream\":true for SSE token streaming.", byCap["chat"], true,
 			jsonExample("/v1/chat/completions", map[string]any{"model": chatM, "messages": []map[string]string{{"role": "user", "content": "Hello"}}})},
-		{"/v1/completions", "POST", "chat", "Legacy text completions.", byCap["chat"], true,
+		{"/v1/completions", "POST", "chat", txt, txt, "Legacy text completions.", byCap["chat"], true,
 			jsonExample("/v1/completions", map[string]any{"model": chatM, "prompt": "Hello"})},
-		{"/v1/embeddings", "POST", "embeddings", "Text embeddings.", byCap["embeddings"], false,
+		{"/v1/embeddings", "POST", "embeddings", txt, vec, "Text embeddings.", byCap["embeddings"], false,
 			jsonExample("/v1/embeddings", map[string]any{"model": embM, "input": "Hello world"})},
-		{"/v1/rerank", "POST", "rerank", "Rerank documents against a query.", byCap["rerank"], false,
+		{"/v1/rerank", "POST", "rerank", txt, rank, "Rerank documents against a query.", byCap["rerank"], false,
 			jsonExample("/v1/rerank", map[string]any{"model": pick("rerank", "chat"), "query": "what is corrallm", "documents": []string{"a proxy", "a database"}})},
-		{"/v1/audio/transcriptions", "POST", "audio.stt", "Speech-to-text (Whisper-compatible). multipart/form-data upload; supports response_format and stream. Some models also return speaker-diarized output.", sttBatch, true,
+		{"/v1/audio/transcriptions", "POST", "audio.stt", aud, txt, "Speech-to-text (Whisper-compatible). multipart/form-data upload; supports response_format and stream. Some models also return speaker-diarized output.", sttBatch, true,
 			map[string]any{
 				"curl": fmt.Sprintf("curl -sS %s/v1/audio/transcriptions -H 'Authorization: Bearer <key>' -F model=%s -F file=@examples/audio/speech.wav", base, sttM),
 				// A real, shipped sample: the manifest previously pointed at a
@@ -2151,12 +2299,20 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 				"note":        "multipart/form-data: model + file fields",
 				"diarization": "A diarizing model additionally returns `segments:[{speaker,start,end,text}]` and `num_speakers` alongside the OpenAI `text`. Plain clients ignore the extra fields and read `.text`.",
 			}},
-		{"/v1/audio/translations", "POST", "audio.stt", "Speech-to-English translation; same shape as transcriptions.", sttBatch, false,
+		{"/v1/audio/translations", "POST", "audio.stt", aud, txt, "Speech-to-English translation; same shape as transcriptions.", sttBatch, false,
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/audio/translations -H 'Authorization: Bearer <key>' -F model=%s -F file=@examples/audio/speech.wav", base, sttM)}},
-		{"/v1/audio/speech", "POST", "audio.tts", "Text-to-speech; returns binary audio (audio/mpeg by default).", byCap["audio.tts"], true,
+		{"/v1/audio/speech", "POST", "audio.tts", txt, aud, "Text-to-speech; returns binary audio (audio/mpeg by default).", byCap["audio.tts"], true,
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/audio/speech -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"input\":\"Hello from corrallm\",\"voice\":\"af_heart\"}' --output speech.mp3", base, ttsM),
 				"body": map[string]any{"model": ttsM, "input": "Hello from corrallm", "voice": "af_heart", "response_format": "mp3"}}},
-		{"/v1/realtime", "GET", "audio.stt", "Live transcription over WebSocket (OpenAI Realtime transcription schema). Holds one fairshare slot for the session.", sttRealtime, true,
+		{"/v1/images/generations", "POST", "image.generate", txt, img, "Text-to-image. Returns OpenAI's {\"data\":[{\"b64_json\":\"…\"}]}; forwarded verbatim from the backend (stable-diffusion.cpp's sd-server already speaks this shape). Not streaming — one generation holds its fairshare slot for the whole run, which is tens of seconds of GPU. Only models that EMIT image are accepted; anything else is refused 400 at the door rather than cold-loaded first.", byCap["image.generate"], false,
+			map[string]any{
+				"curl":     fmt.Sprintf("curl -sS %s/v1/images/generations -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"prompt\":\"a red fox in snow, studio lighting\",\"n\":1,\"size\":\"1024x1024\"}'", base, imgM),
+				"body":     map[string]any{"model": imgM, "prompt": "a red fox in snow, studio lighting", "n": 1, "size": "1024x1024"},
+				"decode":   fmt.Sprintf("curl -sS %s/v1/images/generations -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"prompt\":\"a red fox in snow\"}' | jq -r '.data[0].b64_json' | base64 -d > image.png", base, imgM),
+				"metering": "Billed per generated image (the request's `n`, default 1), not per byte — a PNG's size measures the picture, not the diffusion. Successful responses are NOT captured to the activity log: the row records a `<N image(s), M bytes>` summary instead, because 4 KiB of truncated base64 is neither viewable nor valid JSON. A failed response IS captured, whole.",
+				"note":     "Matching is on OUTPUT: a model serves this route iff its `outputs` on /v1/models contains \"image\". A vision chat model has \"image\" in its `modalities` (what it ACCEPTS) and \"text\" in its `outputs`, so it is refused here — accepting a picture and producing one are different claims. Outputs are inferred from the model's cost type, which must name a generator (`diffusion`, `txt2img`, `sdxl`).",
+			}},
+		{"/v1/realtime", "GET", "audio.stt", aud, txt, "Live transcription over WebSocket (OpenAI Realtime transcription schema). Holds one fairshare slot for the session.", sttRealtime, true,
 			map[string]any{
 				"ws_url":   fmt.Sprintf("%s/v1/realtime?model=%s&intent=transcription", wsBase, rtM),
 				"protocol": "OpenAI Realtime transcription schema. Send PCM16 mono @ 24kHz, base64-encoded inside JSON frames.",
@@ -2167,11 +2323,11 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 					"receive {\"type\":\"conversation.item.input_audio_transcription.completed\",\"transcript\":\"...\"}",
 				},
 			}},
-		{"/v1/models", "GET", "meta", "OpenAI model catalog enriched with corrallm metadata (state, modality, types, context length).", nil, false,
+		{"/v1/models", "GET", "meta", nil, nil, "OpenAI model catalog enriched with corrallm metadata (state, modality, types, context length).", nil, false,
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/models", base)}},
-		{"/v1/capabilities", "GET", "meta", "This manifest.", nil, false,
+		{"/v1/capabilities", "GET", "meta", nil, nil, "This manifest.", nil, false,
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/capabilities", base)}},
-		{"/v1/reservations", "POST", "meta", "Reserve slots on a model for your lane so interactive work has headroom against saturating batch. Short-lived (max 5m) and must be renewed by re-POSTing (heartbeat); auto-expires. DELETE ?model= to release; GET to list.", nil, false,
+		{"/v1/reservations", "POST", "meta", nil, nil, "Reserve slots on a model for your lane so interactive work has headroom against saturating batch. Short-lived (max 5m) and must be renewed by re-POSTing (heartbeat); auto-expires. DELETE ?model= to release; GET to list.", nil, false,
 			map[string]any{
 				"curl": fmt.Sprintf("curl -sS %s/v1/reservations -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"slots\":1,\"ttl\":\"5m\"}'", base, chatM),
 				"note": "Your key selects the lane the slots are held for. Re-POST every few minutes to keep the lease; stop to let batch reclaim.",
@@ -2204,7 +2360,16 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"description": "Send your API key as `Authorization: Bearer <key>` (or `X-Corrallm-Key: <key>`). The key selects your fairshare lane; unkeyed callers use the default lane.",
 			"headers":     []string{"Authorization: Bearer <key>", "X-Corrallm-Key: <key>"},
 		},
-		"endpoints":            endpoints,
+		"endpoints": endpoints,
+		// How to match a model to a route without parsing a capability name.
+		// Stated because the capability strings cannot express it: `chat` covers
+		// both a text model and a vision model, and only the second accepts an
+		// image — while neither returns one.
+		"modalities": map[string]any{
+			"description": "Every endpoint declares `accepts` and `emits`; every model on /v1/models declares `modalities` (what it accepts) and `outputs` (what it returns). A model serves a route when its outputs cover the route's `emits` and it accepts what you are sending.",
+			"vocabulary":  []string{config.ModalityText, config.ModalityImage, config.ModalityAudio, config.ModalityVector, config.ModalityRanking},
+			"note":        "Inputs are PROBED where the backend can be asked; outputs are inferred from the model's cost type, because no backend corrallm talks to reports what it emits yet.",
+		},
 		"models_by_capability": byCap,
 		"lanes":                lanes,
 		"backpressure": map[string]any{
@@ -2542,6 +2707,21 @@ func modelFromBody(body []byte) string {
 	return probe.Model
 }
 
+// imagesFromBody is how many images an /v1/images/generations request asked for
+// — OpenAI's `n`, which defaults to 1 when absent. A non-positive or absent `n`
+// reads as 1: the request still produces a picture, and metering it as zero
+// would make "omit n" the cheap way to generate for free.
+func imagesFromBody(body []byte) int {
+	var probe struct {
+		N int `json:"n"`
+	}
+	_ = json.Unmarshal(body, &probe)
+	if probe.N <= 0 {
+		return 1
+	}
+	return probe.N
+}
+
 // streamFromBody reports whether the request asked for an SSE stream, which
 // decides how usage is recovered from the response.
 func streamFromBody(body []byte) bool {
@@ -2686,6 +2866,11 @@ func extractFinishReason(buf []byte, streaming bool) string {
 // a stream (usage rides in the final event).
 const usageCaptureLimit = 1 << 20 // 1 MiB
 
+// errorCaptureLimit is the retention used where the only body worth keeping is
+// an error. Comfortably over payloadCap, so what is stored is what is capped for
+// the activity row rather than what the capture happened to hold.
+const errorCaptureLimit = 8 << 10 // 8 KiB
+
 // statusCapture records the response status and a bounded slice of the body for
 // activity logging + usage metering, while preserving streaming.
 type statusCapture struct {
@@ -2699,6 +2884,18 @@ type statusCapture struct {
 	buf         []byte    // bounded captured body for usage extraction
 	written     int64     // total response bytes — TTS (P9b) is metered by output size
 	firstWrite  time.Time // time of the first body write — for TTFB (P10b)
+	// bufLimit overrides usageCaptureLimit for this response. 0 = the default.
+	// Set small on surfaces whose body is never parsed for usage and whose only
+	// interesting case is a short error (images, P9h).
+	bufLimit int
+}
+
+// limit is how many body bytes this capture retains.
+func (s *statusCapture) limit() int {
+	if s.bufLimit > 0 {
+		return s.bufLimit
+	}
+	return usageCaptureLimit
 }
 
 func (s *statusCapture) WriteHeader(code int) {
@@ -2729,13 +2926,13 @@ func (s *statusCapture) Write(b []byte) (int, error) {
 		// 2× the cap so a long stream stays amortized O(n), not O(n²): the tail
 		// we retain still covers the final event (well under one cap's worth).
 		s.buf = append(s.buf, b...)
-		if len(s.buf) > 2*usageCaptureLimit {
-			s.buf = append([]byte(nil), s.buf[len(s.buf)-usageCaptureLimit:]...)
+		if lim := s.limit(); len(s.buf) > 2*lim {
+			s.buf = append([]byte(nil), s.buf[len(s.buf)-lim:]...)
 		}
-	} else if len(s.buf) < usageCaptureLimit {
+	} else if len(s.buf) < s.limit() {
 		// Non-streaming: capture from the front up to the cap (usage is in the
 		// single JSON object; a reply larger than the cap meters as $0).
-		if n := usageCaptureLimit - len(s.buf); n < len(b) {
+		if n := s.limit() - len(s.buf); n < len(b) {
 			s.buf = append(s.buf, b[:n]...)
 		} else {
 			s.buf = append(s.buf, b...)
