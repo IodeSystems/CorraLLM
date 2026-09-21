@@ -319,6 +319,36 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P9h — the image surface, and capabilities as inputs/outputs — 2026-09-21
+
+`/v1/images/generations` is mounted and goes through `handleInference`, so it takes an
+admission slot, is fairshared, is metered and logs activity like every other route.
+stable-diffusion.cpp's `sd-server` already speaks this shape, so corrallm forwards; nothing
+is translated.
+
+The capability model changed underneath it. A flat string (`chat`, `audio.tts`) cannot say
+that a vision model ACCEPTS images while a diffusion model EMITS one, so `config.IO`
+(`internal/config/iomodality.go`) carries both lists and the strings are now derived from it
+(`Capability` → `TypeIO().capability()`). The route states what it needs back
+(`routeEmits`), and a model matches or does not — no rule names vision anywhere.
+
+**next** — register a Qwen-Image model on carlsmacbookpro and get a PNG out. Needs
+the ~14 GB pull, a `cmd:` for `sd-server`, and `commandCosts.diffusion.imageWhPerImage`
+measured rather than guessed.
+
+**risks** — nothing has run against a real `sd-server`; the whole slice is tested against a
+mock. Outputs are INFERRED from the cost type, which is a declaration: an operator who types
+a generator `chat` gets a 400 they will read as a corrallm bug.
+
+**blocking decisions** — none taken; the three design calls (slot held for the whole
+generation · billed per image · successful responses summarized, not captured) are argued in
+the commits and can be reversed.
+
+**optional extensions** — out of scope now: filling `routeEmits` for the audio and chat
+routes (behaviour-changing for existing callers); probing outputs by asking which ROUTES a
+backend answers, which would replace the inference above with an observation; `/v1/images/edits`,
+whose IO (`in [text image] out [image]`) the model already expresses.
+
 ### ✅ P30 — the pages people actually open are too long to use — 2026-09-13
 
 Shipped. `/traffic`, `/setup` and `/machines` rebuilt; link colour, chart axes and activity
