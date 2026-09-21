@@ -437,8 +437,7 @@ say so in their own comments. Four new probes, each arguing its own legitimacy, 
 ladder that separates a refusal from incompetence, because an outcome check fails for both.
 
 **Result, 5 runs each, `--pin-sampling`, one arm at a time with a forced unload between**
-(corrallm will not evict an idle model to admit the other — 4.4 GiB free against a 30.3 GiB need
-— so `--models a,b` would have spun on 429s):
+(one arm at a time was UNNECESSARY — see the correction below):
 
 | | valid rows | passed | failed |
 |---|---|---|---|
@@ -473,6 +472,28 @@ lack of one was wrong.
 `UD-Q6_K`, the challenger is orcarouter `Q5_K_M`. It does not touch the refusal result, and the
 verbosity gap is far too large to be a quant step, so it was not worth a third arm. The
 uncensored model stays registered and out of every fallback list; nothing routes to it.
+
+### ✅ P33 — a correction: eviction works — 2026-09-21
+
+**Recorded because it was written into this plan twice as fact, and it is false.**
+
+The claim was "corrallm will not evict an idle model to admit another", used to justify driving the
+P32 bench one arm at a time with a manual `unload-all` between. It does evict. Proven on box1
+2026-09-21: Swift resident, a request for `local-Qwen3.8-27B` arrived, and the ledger recorded
+`made room 1x — evicted local-Swift-Qwen3.8-27B for local-Qwen3.8-27B`, `model_load` row
+`evicted=local-Swift-Qwen3.8-27B ms=16444`.
+
+**What was actually observed** was BACKOFF, not a refusal to evict. A spill sets
+`retry_after≈30s` (`no capacity: retry_after=29.85s (blocking=[local-Qwen3.8-27B])`), and a
+request landing inside that window gets `exhausted` and gives up. Every "it won't evict" datum
+came from inside a window I had opened moments earlier with my own test. The P32 results stand —
+the scaffolding around them was unnecessary.
+
+**The real cost is thrash, not failure.** Two models that cannot co-reside (30.7 GiB each against
+a 31.5 GiB budget) alternate at ~16s per swap. That is fine when one name wins and pathological
+when traffic splits across two — which is the state today: `chat` resolves to Swift, while 27k
+requests/day ask for `local-Qwen3.8-27B` by name. Settling on ONE name is the fix; the lane
+ordering is not.
 
 ### ◐ carlsmacbookpro is back — 51 GB of Metal that was switched off — 2026-09-05
 
