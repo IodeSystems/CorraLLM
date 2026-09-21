@@ -1090,6 +1090,24 @@ true and still costs something. Optional extensions and out-of-scope items live 
   It can RUN what is already installed and cannot build anything new, which is why
   stable-diffusion.cpp had to be installed over ssh rather than through `tools build`.
   Fix is the agent's environment, not the recipes.
+- **`PutEntryYAML` and `UpdateNotes` silently discard edits to a provider-authored model.**
+  Both write only the folded `c.Models[name]`; for a model under `providers.local.models` the
+  AUTHORED block is untouched and the reload that follows rebuilds the folded copy from it.
+  `PUT /api/v1/config/notes/model/<name>` returns `{"ok":true,"message":"notes saved"}` and
+  changes nothing. `PutEntryYAML` is worse — it leaves the model declared in BOTH places, which
+  the next Load refuses as a collision. `UpsertModel` (configedit.go:219) is the only one of the
+  three with the write-back branch. **This matters more since 2026-09-21**: every model was just
+  migrated to `providers.local.models`, so the broken path is now the normal path, and the YAML
+  endpoint was what this session used for every config edit.
+- **Every spawned backend is gated on `/health`, which is a llama.cpp assumption.**
+  `proc.waitHealthy` (manager.go:2199) requires a 2xx from `<target>/health`. sd-server has no
+  such route — its surface is `/v1/…`, `/sdapi/v1/…`, `/`. The model loads perfectly and corrallm
+  declares the spawn `StateFailed`, and there is no per-model health-path field to say otherwise.
+  Worked around 2026-09-21 with a stdlib shim on the Mac that answers `/health` once `/v1/models`
+  does. The cost of the workaround: corrallm measures the SHIM's footprint, not the backend's
+  (trial reported 2 MiB), so `ramUsage` must be hand-declared — which is exactly the stale
+  hand-typed number the measured-footprint work exists to remove. The fix is a health-path field
+  on the model, or upstream adding `/health`.
 - **`ui/` has no test runner.** No vitest, no jest, no `test` script in `ui/package.json` — so
   `slowdownFaults` and every other pure function in the UI is covered by `tsc` and eslint only.
   The DoD's "new behavior has tests" is met on the Go side of a UI change and silently skipped on
