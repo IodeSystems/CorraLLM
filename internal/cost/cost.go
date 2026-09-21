@@ -36,6 +36,17 @@ type typeCost struct {
 	// type bills audioWhPerMiB (processing energy → kWh × costPerKwh).
 	audioWhPerMiB  float64 // local: processing energy per MiB of audio (Wh/MiB)
 	audioUSDPerMiB float64 // paid: $ per MiB of audio (>0 ⇒ paid audio type)
+
+	// Image coefficients (P9h). Same structure as the audio pair — a paid rate,
+	// else local energy → kWh × costPerKwh — but the UNIT is one generated
+	// image, not a byte. Audio bytes track the work because a second of speech
+	// is a fixed number of samples either way; a PNG's size tracks the picture's
+	// entropy, not the diffusion that made it, so a flat image and a detailed
+	// one at identical steps and resolution would bill an order of magnitude
+	// apart for the same GPU-seconds. Per image is what the request asks for
+	// (`n`) and what every paid provider charges by.
+	imageWhPerImage  float64 // local: generation energy per image (Wh/image)
+	imageUSDPerImage float64 // paid: $ per generated image (>0 ⇒ paid image type)
 }
 
 // NewModel builds the cost model from config. Unknown/missing coefficients are
@@ -48,6 +59,9 @@ func NewModel(c *config.Config) *Model {
 			procWhPerTok:   toFloat(params["processWattsPerToken"]),
 			audioWhPerMiB:  toFloat(params["audioWhPerMiB"]),
 			audioUSDPerMiB: toFloat(params["audioUSDPerMiB"]),
+
+			imageWhPerImage:  toFloat(params["imageWhPerImage"]),
+			imageUSDPerImage: toFloat(params["imageUSDPerImage"]),
 		}
 		// Paid factors are nested under <type>.extract. costFactor is the legacy
 		// single rate; the per-class rates enable the cost breakdown.
@@ -120,6 +134,30 @@ func (m *Model) IsAudioType(typ string) bool {
 	tc := m.byType[typ]
 	return tc.audioWhPerMiB > 0 || tc.audioUSDPerMiB > 0
 }
+
+// ImageRequestUSD is the dollar cost of one image-generation request on a
+// backend of the given type, costed per generated image (P9h — an image reply
+// carries no token usage and its byte size measures the picture rather than the
+// work). A paid type bills imageUSDPerImage; a local type bills the generation
+// energy imageWhPerImage → kWh × costPerKwh. An unpriced type costs $0.
+func (m *Model) ImageRequestUSD(typ string, images int) float64 {
+	if images <= 0 {
+		return 0
+	}
+	tc := m.byType[typ]
+	n := float64(images)
+	if tc.imageUSDPerImage > 0 {
+		return n * tc.imageUSDPerImage
+	}
+	return n * tc.imageWhPerImage / 1000 * m.costPerKwh
+}
+
+// No IsImageType mirroring IsAudioType, deliberately. IsAudioType exists to
+// DEFAULT an undeclared model's input modality to "audio", and the equivalent
+// default for an image generator is wrong: a text-to-image model's input is
+// text. What a model returns is answered by config.TypeIO, which reads the
+// type name; adding a second, cost-shaped answer to the same question is how
+// the two drift apart.
 
 // SwapUSD is the dollar cost of one cold load: load energy (loadSeconds ×
 // loadWatts → Wh) → kWh × costPerKwh. With no loadWatts configured it is $0 —
