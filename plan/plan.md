@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P33.**
+**Next free number: P35.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -69,7 +69,7 @@ A slice is ✅ **only** when its functional unit meets the Definition of done be
 `done.md` = the archive of finished trees, kept for evidence and traps, never a to-do list.
 `icebox.md` = deferred, opt-in next-steps. `open-questions.md` = decisions that need the USER,
 and **only while they are open** — a resolved question is deleted from it and its answer written
-into the plan item that needed it. **Phase numbers come from git history** — next free is P30.
+into the plan item that needed it. **Phase numbers come from git history** — next free is P35.
 
 **Re-check a question against the box before you ask it.** On 2026-08-24, six of eight standing
 "user decisions" turned out to be already answered by the running system, the migrated config, or
@@ -524,6 +524,51 @@ a 31.5 GiB budget) alternate at ~16s per swap. That is fine when one name wins a
 when traffic splits across two — which is the state today: `chat` resolves to Swift, while 27k
 requests/day ask for `local-Qwen3.8-27B` by name. Settling on ONE name is the fix; the lane
 ordering is not.
+
+### ◻ P34 — taking turns: a residency-level queue — 2026-09-22
+
+Design doc: **[`plan/p34-residency-timeshare.md`](p34-residency-timeshare.md)**. Nothing built.
+
+The owner: *"I'd like the image/embeddings to take turns with load/unload cycles.
+However, we don't have any good contention strategies and load throughput queue flushes
+between load/unload timeshares."*
+
+corrallm queues inside a backend (`sched`, fair between GROUPS) and nowhere across them
+(`proc.Manager` returns `ErrNoCapacity`, `manager.go:488`). A request for a non-resident
+model either evicts and waits out 16s, or takes `retry_after=29.85s` and leaves. Nothing
+holds a request across a swap. The design puts the arbiter in `sched` — which already owns
+waiters, fairshare, aging, depth bounds and honest backoff — over `(server, pool)`, leaving
+`proc` the bytes and the processes.
+
+**Two findings from the read, both verified and usable now.** `minResidency` (10s,
+`manager.go:103`) is **not a filter anywhere** — the victim test at `manager.go:1794` uses
+only `activeUse`, and its `max()` term at `:1863` can never win because `lastUsed >= readyAt`
+always and 10s < 30s. Today's de-facto anti-thrash floor is `activeUse` = 30s, by accident,
+and the number meant to be the floor has never once fired. And **gpu1 has four claimants of
+which no pair fits**: 9,877 usable, nomic 816 pinned, chandra 8,240, deepseek 6,676, image
+~6,144.
+
+**next** answer §11 questions 1-3 (turn floor, turn ceiling, gpu1 composition), then phase 1:
+turn floor as a real victim filter, `capacityErrorLocked` returning when the turn ends rather
+than when protection lapses, turn reason on the existing `model_load` row. No queue, no
+request-path risk, testable in `internal/proc` alone.
+
+**risks** `maxWait` is 15s and a turn is 60s+, so phase 2 only helps the request at the head;
+everything behind it still queue-times-out, and that is correct rather than fixable — a card
+holding one of three models cannot promise three models' worth of service. A turn cannot be
+revoked from an in-flight request, so a 5-minute generation makes `maxTurn` a target, not a
+guarantee. The image model's ~6 GB footprint is ESTIMATED, not measured; the whole gpu1
+arithmetic moves if it is wrong.
+
+**blocking decisions** six, in `p34-residency-timeshare.md` §11. Three gate phase 1: `k`
+(swap-overhead ratio, hence `minTurn`), `maxTurn`, and what gpu1 holds. Question 5 is
+`open-questions.md` §2 with teeth — if an honest wait estimate is not wanted, phase 1 is the
+entire feature.
+
+**optional extensions** out of scope: cross-pool arbitration (no observed coupling);
+preemptible generation; a `timeshare:` config block (only `minTurn`/`maxTurn` are new and
+they belong on `servers.<s>`). Phase 4 — validating that the `persistent` set fits its pool —
+is independent of everything else and is the smallest thing in the document.
 
 ### ◐ carlsmacbookpro is back — 51 GB of Metal that was switched off — 2026-09-05
 
