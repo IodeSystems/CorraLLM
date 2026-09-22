@@ -72,13 +72,28 @@ gpu1 usable                     9,877 MiB
   ---------------------------   so 9,061 MiB timeshared
   chandra-ocr-2     8,240 MiB   sticky, input-driven peak
   deepseek          6,676 MiB
-  image (CPU text encoder)  ~6,144 MiB   estimated, UNMEASURED
-  image (full)             ~16,384 MiB   > 9,877 even with nomic evicted
+  image (te=cpu, CUDA)    7,360 MiB   MEASURED on the 3080, 2026-09-22
 ```
 
-chandra+deepseek 14,916 · chandra+image 14,384 · deepseek+image 12,820 — every pair
-exceeds 9,061. **gpu1 is one pinned embedder plus exactly one of three rotating
-models.** That is a three-way timeshare, not a two-way one.
+**Corrected 2026-09-22 by measurement.** The ~6,144 MiB above was an estimate and it was
+low; the real figure is 7,360 MiB, and it does NOT scale with resolution (1024x1024 peaks
+at the same number — the 2048 MiB DiT compute reserve is preallocated, so this is a
+ceiling, not a 512-only value).
+
+Pool is 10,240 MiB. `chandra-ocr-2` declares 8GB = 7,629 MiB and `nomic-embed-text` 1.5GB
+= 1,431 MiB (corrallm parses `GB` as 10^9, `MiB` as 2^20).
+
+| pairing | MiB | verdict |
+|---|---|---|
+| image + nomic | 8,791 | **fits, 1,449 spare** |
+| image + chandra | 14,989 | over by 4,749 |
+| chandra + nomic (today) | 9,060 | fits, 1,180 spare |
+
+So the shape is simpler than this document first assumed: **the image model is an exact
+drop-in for `chandra-ocr-2`'s slot.** Declared at 8GB it covers the measurement with 269
+MiB of margin and reproduces the same 9.5-of-10 GiB the pool already carries. gpu1 is one
+pinned embedder plus exactly one of {chandra, image}, and the timeshare is two-way, not
+three.
 
 gpu0 is the degenerate case: two 30.7 GiB models against a 31.5 GiB budget, strictly
 one at a time. P33 already answered it — **settle on one name; scheduling is not the
@@ -352,8 +367,10 @@ bytes. Independent of 1-3, may land any time, and is the smallest thing here.
 3. **gpu1 composition.** nomic stays pinned (816 MiB) — confirm. Then which of chandra
    (8,240) / deepseek (6,676) / image (~6,144) rotate, and whether any should also be
    pinned. Pinning chandra means the image model never runs on gpu1.
-4. **Image model variant.** ~6 GB with the text encoder on CPU (timeshares on gpu1) or
-   ~16 GB (does not fit gpu1 at all — it would have to displace a 27B on gpu0).
+4. **Image model variant.** ANSWERED by measurement 2026-09-22: `--backend te=cpu
+   --diffusion-fa` on the 3080, 7,360 MiB, **22.1 s per 512x512** against the Mac's 322 s
+   — 14.6x faster on a card that was doing nothing. It fits beside the pinned embedder.
+   What remains of this decision is only whether `chandra-ocr-2` yields its slot.
 5. **Wait, or come back?** Phase 2 assumes waiting is wanted. This is
    `open-questions.md` §2 with the numbers made concrete: the honest answer becomes
    minutes. If the answer is "come back", phase 1 is the whole feature and phases 2-3

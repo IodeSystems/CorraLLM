@@ -557,8 +557,10 @@ request-path risk, testable in `internal/proc` alone.
 everything behind it still queue-times-out, and that is correct rather than fixable — a card
 holding one of three models cannot promise three models' worth of service. A turn cannot be
 revoked from an in-flight request, so a 5-minute generation makes `maxTurn` a target, not a
-guarantee. The image model's ~6 GB footprint is ESTIMATED, not measured; the whole gpu1
-arithmetic moves if it is wrong.
+guarantee. The image model's footprint is now MEASURED at 7,360 MiB on the 3080 (not the
+~6 GB estimated here first), and does not grow with resolution. It fits beside the pinned
+embedder with 1,449 MiB spare and cannot coexist with `chandra-ocr-2` — so the gpu1
+timeshare is two-way between image and OCR, not three-way.
 
 **blocking decisions** six, in `p34-residency-timeshare.md` §11. Three gate phase 1: `k`
 (swap-overhead ratio, hence `minTurn`), `maxTurn`, and what gpu1 holds. Question 5 is
