@@ -831,9 +831,21 @@ the schema should reserve the field name now.
    `speech.wav` and `num_speakers` — "no STT backend on this box streams", which
    §12.10.1 had already disproved. It is gone.
 
-**Still wrong, out of scope, not fixed here:** `modelFromMultipart` reads the
-`stream` form field as `strings.TrimSpace(v) == "true"`, so a client sending
-`True`, `TRUE` or `1` silently gets a non-streaming reply. That is an
-accept-generously gap on the way IN (§9.0b), it applies to every multipart audio
-route including `/v1/audio/speech`, and widening it is a behaviour change on a
-route §9.1 deliberately left alone. Filed, not fixed.
+**✅ FIXED 2026-09-23, after the merge** — `modelFromMultipart` read the `stream`
+form field as `strings.TrimSpace(v) == "true"`, so a client sending `True`, `TRUE`
+or `1` silently got a non-streaming reply: the flag was read, found wanting and
+dropped without a word. It now uses `strconv.ParseBool`, which is the documented
+Go spelling of the same tolerance a JSON body already got for free — the
+asymmetry was never intended, it was the difference between a real boolean and a
+text field nobody re-read.
+
+Filed as out of scope by the agent that found it, and that was the right call at
+the time. It is in scope now because §9.0b is exactly this: accept generously on
+the way IN. An unparseable value (`yes`, `on`) still resolves false, as before —
+generosity is not guessing.
+
+**It does reach `/v1/audio/speech`, and that is not a §9.1 reversal.** On the
+speech route `streaming` only labels the activity row; the SSE gate is
+`audioUploadRoute`, which excludes speech structurally. So a `stream=True` speech
+request is metered correctly now and still returns binary audio. What §9.1 left
+open — whether TTS should stream audio chunks at all — is untouched.

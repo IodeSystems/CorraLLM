@@ -514,3 +514,31 @@ func TestSTTStreamPassthroughNotRequested(t *testing.T) {
 		t.Errorf("unrequested stream was rewritten: %s", rec.body.String())
 	}
 }
+
+// TestStreamFlagAcceptedGenerously: the flag arrives as form TEXT, not as a
+// JSON boolean, and an exact match on "true" served a non-streaming reply to a
+// client that wrote it any other way (P35 §9.0b, accept generously).
+func TestStreamFlagAcceptedGenerously(t *testing.T) {
+	for _, tc := range []struct {
+		val  string
+		want bool
+	}{
+		{"true", true}, {"True", true}, {"TRUE", true}, {"1", true}, {"t", true},
+		{" true ", true},
+		{"false", false}, {"False", false}, {"0", false}, {"", false},
+		{"yes", false}, // not a bool: unreadable stays false, as it did
+	} {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		_ = mw.WriteField("model", "m")
+		_ = mw.WriteField("stream", tc.val)
+		_ = mw.Close()
+		model, streaming := modelFromMultipart(buf.Bytes(), mw.Boundary())
+		if model != "m" {
+			t.Fatalf("%q: model = %q", tc.val, model)
+		}
+		if streaming != tc.want {
+			t.Errorf("stream=%q: got %v, want %v", tc.val, streaming, tc.want)
+		}
+	}
+}

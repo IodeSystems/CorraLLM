@@ -2802,7 +2802,14 @@ func modelFromMultipart(body []byte, boundary string) (model string, streaming b
 			model = strings.TrimSpace(string(v))
 		case "stream":
 			v, _ := io.ReadAll(io.LimitReader(part, 16))
-			streaming = strings.TrimSpace(string(v)) == "true"
+			// Accept generously (P35 §9.0b). A JSON body gets its `stream` flag
+			// parsed as a real boolean; a multipart form field arrives as text,
+			// and an exact match on "true" silently served a NON-streaming reply
+			// to a client that wrote True, TRUE or 1 — the flag was read, found
+			// wanting, and dropped without a word. strconv.ParseBool is the
+			// documented Go spelling of the same tolerance, and an unparseable
+			// value stays false, as it did.
+			streaming, _ = strconv.ParseBool(strings.TrimSpace(string(v)))
 		}
 		_ = part.Close()
 	}
