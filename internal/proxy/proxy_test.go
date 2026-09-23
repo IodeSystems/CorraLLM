@@ -1748,6 +1748,69 @@ func TestCapabilitiesManifest(t *testing.T) {
 	}
 }
 
+// TestCapabilitiesDiarizationNote holds the diarization note to the response a
+// backend actually returns. The manifest twice promised things nothing served —
+// a speech.wav that existed nowhere, then a `num_speakers` no backend emits —
+// and both were caught by a reader rather than by a test. This is that test:
+// the named fields are the ones a live oidio-stt-diarize transcription came
+// back with, so the note fails here instead of failing a client.
+func TestCapabilitiesDiarizationNote(t *testing.T) {
+	cfg := &config.Config{
+		CommandCosts: map[string]map[string]any{"stt": {"audioWhPerMiB": 0.03}},
+		Models:       map[string]config.Model{"oidio-stt-diarize": {Type: "stt"}},
+	}
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+	r := chi.NewRouter()
+	New(cfg, mgr, sched.New(), st).Mount(r)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var m struct {
+		Endpoints []struct {
+			Path    string         `json:"path"`
+			Example map[string]any `json:"example"`
+		} `json:"endpoints"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	var note string
+	for _, ep := range m.Endpoints {
+		if ep.Path == "/v1/audio/transcriptions" {
+			note, _ = ep.Example["diarization"].(string)
+		}
+	}
+	if note == "" {
+		t.Fatal("no diarization note on /v1/audio/transcriptions")
+	}
+	// The note names num_speakers once, to DENY it — a client built against
+	// the old manifest needs to be told the field is gone. Nowhere else in
+	// the manifest may mention it, so strip the note and check the rest.
+	if !strings.Contains(note, "no `num_speakers`") {
+		t.Error("note does not retract num_speakers for clients built on the old text")
+	}
+	if rest := strings.ReplaceAll(rec.Body.String(), note, ""); strings.Contains(rest, "num_speakers") {
+		t.Error("manifest promises num_speakers, which no backend returns")
+	}
+	// The shape belongs to the backend, and the note must say so — otherwise
+	// it reads as a corrallm guarantee for every STT model on the route.
+	if !strings.Contains(note, "BACKEND-SPECIFIC") {
+		t.Error("note asserts a shape without naming whose it is")
+	}
+	// Each of these is on the wire of a real diarize response.
+	for _, field := range []string{"speakers", "embedding", "similarity", "words", "UUID"} {
+		if !strings.Contains(note, field) {
+			t.Errorf("note omits %q, which a diarize response carries", field)
+		}
+	}
+}
+
 // TestExtractUsageTelemetry covers the backend-measured telemetry (cached
 // tokens + tp/s + tg/s) extractUsage derives alongside token accounting, for
 // both non-streaming and streaming replies, plus the cache_n fallback.
