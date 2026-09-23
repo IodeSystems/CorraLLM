@@ -363,12 +363,29 @@ Measured against the real `oidio-stt-diarize` through a second corrallm on `:651
 the last leave together, because the body was complete before either existed. What it
 buys is one client code path. It is also **lossy — 5,640 bytes of JSON become 442 bytes
 of events** — because the event schema has no carrier for `language`, `task`, `words[]`
-or `speakers[]`; the manifest says to set `stream=false` to keep them. A real stream is
-untouched (`oidio-stt`, the NON-diarize path, does stream, and passes through byte for
-byte). Metering is unchanged by construction — the writer sits outside `statusCapture`,
-verified at 200 / 123,388 audio bytes / ttfb 298 ms with oidio's own JSON on the row.
+or `speakers[]`; the manifest says to set `stream=false` to keep them. Metering is
+unchanged by construction — the writer sits outside `statusCapture`, verified at 200 /
+123,388 audio bytes / ttfb 298 ms with oidio's own JSON on the row.
 **`/v1/audio/speech` was NOT touched** (§9.1 leaves it open; live `{"stream":true}` there
 still returns `audio/mpeg`). The live `:8111` was not restarted or reconfigured.
+
+✅ **And the route now has ONE output contract — §12.10.2, shipped under §9.0b.** The
+real stream (`oidio-stt`, the NON-diarize path) was measured first: **ten
+`transcript.text.delta` events, one `transcript.text.done`, no usage block, no
+terminator.** Two divergences from the synthesised shape, not the one that was filed. The
+event types and field names already matched, so nothing was renamed. **The terminator is
+appended; the usage block deliberately is NOT** — a real stream measured no duration, and
+computing one is what §9.0b(f) already forbade, so `usage` is now an explicitly optional
+field of the published contract. A passed-through stream is **completed, never
+rewritten**: its bytes go downstream unbuffered and unaltered, and a backend that already
+sent `[DONE]` or its own `done` event gets no second one. Live on a second daemon on
+`:6510` proxying the already-running oidio — nothing spawned, loaded or evicted:
+`oidio-stt` ends `data: [DONE]` with its ten deltas intact, `oidio-stt-diarize` still
+synthesises the same 442 bytes. The activity row records oidio's 648 bytes while the
+client receives 662, so the terminator is corrallm's and is not metered. **The
+capabilities manifest's `streaming` note is now normative** and was rewritten as a
+specification — it had carried a third false claim ("no STT backend on this box streams")
+of the same family as `speech.wav` and `num_speakers`.
 
 ◻ **The canonical audio schema is DESIGNED and awaits the owner** —
 [`p35-corral-layer.md`](p35-corral-layer.md) §12, with measured field-by-field mapping
@@ -385,10 +402,13 @@ independent of the remap and could go first.
 
 **risks, contract 2** — (1) **Nothing has been run against a backend that emits real SSE
 on the DIARIZE path**, because none exists; the passthrough is covered by a unit test and
-by `oidio-stt`, not by a diarizing streamer. (2) corrallm's synthesised stream ends with
-`data: [DONE]` and oidio's real one does not, so one route terminates two ways —
-recorded in §12.10, not fixed, because normalising a backend's own stream is out of
-§9.1's scope. (3) A diarize body over 2 MiB would be captured to the activity row as a
+by `oidio-stt`, not by a diarizing streamer. (2) ~~one route terminates two ways~~ —
+**closed 2026-09-23 by §9.0b, shipped as §12.10.2**: a passed-through stream is now
+completed with the `[DONE]` the backend omits, so both halves of the route end the same
+way, verified live against `oidio-stt` and `oidio-stt-diarize`. The remaining exposure is
+narrow and named: **a real stream that sends deltas and NO `transcript.text.done` gets one
+built from those deltas, and no backend on this box does that** — unit coverage only.
+(3) A diarize body over 2 MiB would be captured to the activity row as a
 tail rather than a head, since `statusCapture.streaming` follows the CALLER's flag; the
 sample is 5.6 KB and this has not been hit.
 
