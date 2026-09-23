@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,9 @@ func sseEvents(t *testing.T, body string) ([]map[string]any, bool) {
 	var out []map[string]any
 	done := false
 	for _, frame := range strings.Split(strings.TrimSpace(body), "\n\n") {
-		data := strings.TrimPrefix(strings.TrimSpace(frame), "data: ")
+		// The space after `data:` is optional in SSE, and a passed-through
+		// stream is the backend's bytes — this helper reads both forms.
+		data := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(frame), "data:"))
 		if data == "[DONE]" {
 			done = true
 			continue
@@ -324,5 +327,190 @@ func TestIsJSONContentType(t *testing.T) {
 		if got := isJSONContentType(ct); got != want {
 			t.Errorf("isJSONContentType(%q) = %v", ct, got)
 		}
+	}
+}
+
+func TestIsEventStreamContentType(t *testing.T) {
+	for ct, want := range map[string]bool{
+		"text/event-stream":                true,
+		"text/event-stream; charset=utf-8": true,
+		"TEXT/EVENT-STREAM":                true,
+		"application/json":                 false,
+		"audio/mpeg":                       false,
+		"":                                 false,
+	} {
+		if got := isEventStreamContentType(ct); got != want {
+			t.Errorf("isEventStreamContentType(%q) = %v", ct, got)
+		}
+	}
+}
+
+// sseStream serves a real event stream, one flush per frame, as oidio-stt does.
+func sseStream(frames ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, f := range frames {
+			_, _ = io.WriteString(w, f+"\n\n")
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
+		}
+	}
+}
+
+// oidioRealStream is what oidio-stt actually put on the wire for
+// examples/audio/speech.wav on 2026-09-23: ten transcript.text.delta events, a
+// transcript.text.done with NO usage block, and NO terminator. Reproduced here
+// field for field, key order included — this is the shape §12.10.2 is about.
+var oidioRealStream = []string{
+	`data: {"delta":" The","type":"transcript.text.delta"}`,
+	`data: {"delta":" quick","type":"transcript.text.delta"}`,
+	`data: {"delta":" brown","type":"transcript.text.delta"}`,
+	`data: {"delta":" fox","type":"transcript.text.delta"}`,
+	`data: {"delta":" jumps","type":"transcript.text.delta"}`,
+	`data: {"delta":" over","type":"transcript.text.delta"}`,
+	`data: {"delta":" the","type":"transcript.text.delta"}`,
+	`data: {"delta":" lazy","type":"transcript.text.delta"}`,
+	`data: {"delta":" dog","type":"transcript.text.delta"}`,
+	`data: {"delta":".","type":"transcript.text.delta"}`,
+	`data: {"text":"The quick brown fox jumps over the lazy dog.","type":"transcript.text.done"}`,
+}
+
+// TestSTTStreamPassthroughGetsTerminator is P35 §12.10.2 under §9.0b: one route,
+// one output contract. oidio's real stream ends without [DONE]; corrallm's
+// synthesised stream ends with it. A client must be able to use [DONE] as its
+// end-of-stream test whichever half answered, so a real stream is COMPLETED.
+func TestSTTStreamPassthroughGetsTerminator(t *testing.T) {
+	rec := sttRig(t, "/v1/audio/transcriptions", true, sseStream(oidioRealStream...))
+	if rec.code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.code, rec.body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	body := rec.body.String()
+	evs, done := sseEvents(t, body)
+	if !done {
+		t.Fatalf("no [DONE] appended to a real stream: %s", body)
+	}
+	if n := strings.Count(body, "[DONE]"); n != 1 {
+		t.Errorf("terminator count = %d", n)
+	}
+	// Every backend event survives, in order, unaltered. The completion ADDS;
+	// it does not rewrite.
+	if len(evs) != len(oidioRealStream) {
+		t.Fatalf("events = %d, want the backend's %d: %s", len(evs), len(oidioRealStream), body)
+	}
+	if n := strings.Count(body, `"transcript.text.done"`); n != 1 {
+		t.Errorf("done events = %d: %s", n, body)
+	}
+	if evs[0]["delta"] != " The" || evs[9]["delta"] != "." {
+		t.Errorf("deltas altered: %+v", evs)
+	}
+	if evs[10]["text"] != "The quick brown fox jumps over the lazy dog." {
+		t.Errorf("done event altered: %+v", evs[10])
+	}
+	// Still a stream, not a buffer: the backend's flushes reached the client.
+	if rec.flushes == 0 {
+		t.Error("real stream was buffered")
+	}
+}
+
+// TestSTTStreamPassthroughKeepsOwnTerminator is accept-generously applied to
+// what the backend already did: a stream that terminates correctly must not end
+// up with two terminators, or two done events.
+func TestSTTStreamPassthroughKeepsOwnTerminator(t *testing.T) {
+	frames := append(append([]string{}, oidioRealStream...), `data: [DONE]`)
+	rec := sttRig(t, "/v1/audio/transcriptions", true, sseStream(frames...))
+	body := rec.body.String()
+	if n := strings.Count(body, "[DONE]"); n != 1 {
+		t.Fatalf("terminator count = %d: %s", n, body)
+	}
+	if n := strings.Count(body, `"transcript.text.done"`); n != 1 {
+		t.Errorf("done events = %d", n)
+	}
+}
+
+// TestSTTStreamPassthroughGetsDone: a backend that streams deltas and stops
+// still owes the route a done event. It is built from the deltas the backend
+// itself sent — concatenation of returned data, not a guess — and carries no
+// usage block, because a real stream reports no duration and computing one
+// would emit a number nobody measured (§9.0b, the same ruling as words[].end).
+//
+// NOT EXERCISED BY ANY LIVE BACKEND: oidio-stt sends its own done. Unit
+// coverage only.
+func TestSTTStreamPassthroughGetsDone(t *testing.T) {
+	rec := sttRig(t, "/v1/audio/transcriptions", true, sseStream(
+		`data: {"type":"transcript.text.delta","delta":"Hello"}`,
+		`data: {"type":"transcript.text.delta","delta":" world"}`,
+	))
+	evs, done := sseEvents(t, rec.body.String())
+	if !done {
+		t.Fatalf("no terminator: %s", rec.body.String())
+	}
+	if len(evs) != 3 {
+		t.Fatalf("events = %d, want 2 deltas + a done: %s", len(evs), rec.body.String())
+	}
+	last := evs[2]
+	if last["type"] != "transcript.text.done" || last["text"] != "Hello world" {
+		t.Fatalf("done event = %+v", last)
+	}
+	if _, ok := last["usage"]; ok {
+		t.Errorf("usage invented for a stream that measured none: %+v", last)
+	}
+}
+
+// TestSTTStreamPassthroughSplitFrames: an event cut in half by a write boundary
+// is still one event. The observation holds the partial line rather than
+// reading it as two, and the bytes reach the client either way.
+func TestSTTStreamPassthroughSplitFrames(t *testing.T) {
+	rec := sttRig(t, "/v1/audio/transcriptions", true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl, _ := w.(http.Flusher)
+		for _, chunk := range []string{
+			`data: {"type":"transcript.text.de`,
+			`lta","delta":"Hel`,
+			"lo\"}\n\ndata:{\"type\":\"transcript.text.delta\",\"delta\":\" world\"}\n\n",
+		} {
+			_, _ = io.WriteString(w, chunk)
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+	})
+	evs, done := sseEvents(t, rec.body.String())
+	if !done {
+		t.Fatalf("no terminator: %s", rec.body.String())
+	}
+	if len(evs) != 3 || evs[2]["text"] != "Hello world" {
+		t.Fatalf("split frame misread: %+v (%s)", evs, rec.body.String())
+	}
+}
+
+// TestSTTStreamPassthroughNoDeltas: a stream carrying nothing this can read
+// gets the terminator and nothing else. corrallm does not assert a transcript
+// was produced when no backend said one was.
+func TestSTTStreamPassthroughNoDeltas(t *testing.T) {
+	rec := sttRig(t, "/v1/audio/transcriptions", true, sseStream(
+		`data: {"type":"transcript.text.something_else"}`,
+	))
+	body := rec.body.String()
+	if !strings.Contains(body, "[DONE]") {
+		t.Fatalf("no terminator: %s", body)
+	}
+	if strings.Contains(body, "transcript.text.done") {
+		t.Errorf("done event invented: %s", body)
+	}
+}
+
+// TestSTTStreamPassthroughNotRequested: the completion belongs to the contract
+// the caller opted into with stream=true. A caller that did not ask gets the
+// backend's bytes exactly as before.
+func TestSTTStreamPassthroughNotRequested(t *testing.T) {
+	rec := sttRig(t, "/v1/audio/transcriptions", false, sseStream(oidioRealStream...))
+	if strings.Contains(rec.body.String(), "[DONE]") {
+		t.Errorf("unrequested stream was rewritten: %s", rec.body.String())
 	}
 }

@@ -27,12 +27,27 @@ import (
 // manifest says the same sentence to anyone who asks the API, and P35 §12 says
 // it to anyone who reads the design.
 //
-// A REAL STREAM IS NEVER TOUCHED. The decision is made on the backend's own
-// Content-Type: text/event-stream forwards byte for byte (the passthrough
-// TestAudioTranscriptionStreaming covers), and synthesis is the fallback for a
+// A REAL STREAM IS FORWARDED EVENT FOR EVENT, AND TERMINATED THE SAME WAY. The
+// decision is made on the backend's own Content-Type: text/event-stream is
+// passed through unaltered and unbuffered, and synthesis is the fallback for a
 // backend that answered with a finished body. Anything that is not a 200 JSON
 // object forwards too — an error must stay a JSON error with its own status,
 // which is what an OpenAI client expects before a stream opens.
+//
+// ONE ROUTE, ONE OUTPUT CONTRACT (P35 §9.0b, §12.10.2). Until this, the two
+// halves of this route ended differently: the synthesised stream terminated
+// with `data: [DONE]`, and oidio's real stream — measured on the wire, ten
+// `transcript.text.delta` events and a `transcript.text.done` — sent no
+// terminator at all, so a client could not use [DONE] as its end-of-stream
+// test. Produce-strictly makes that a broken contract rather than a quirk, so a
+// passed-through stream is now COMPLETED, not rewritten: corrallm appends only
+// what the backend left out.
+//
+// Accept generously is the other half, and it is what stops the completion
+// doubling anything. A backend that already sent [DONE] gets no second one; a
+// backend that already sent `transcript.text.done` gets no second one either.
+// Nothing the backend emitted is dropped, reordered, re-serialised or counted —
+// the observation reads the bytes on their way past and appends at the end.
 //
 // NOT /v1/audio/speech. TTS streams AUDIO chunks, not SSE events: chunking a
 // finished mp3 is a different mechanism with a different honesty problem, and
@@ -58,6 +73,17 @@ type sttStreamWriter struct {
 	body      bytes.Buffer
 	// synthesized records what finish() actually did, for the log line.
 	synthesized bool
+
+	// passing is the OTHER mode: the backend answered with a real event stream,
+	// which is forwarded as it arrives and only COMPLETED at finish(). The
+	// fields below are observation of bytes already written downstream — they
+	// never gate, delay or alter a single one.
+	passing    bool
+	tail       []byte          // an SSE line split across two Writes
+	sawTerm    bool            // the backend sent `data: [DONE]` itself
+	sawDone    bool            // the backend sent its own transcript.text.done
+	deltas     strings.Builder // delta text, for a done event no backend sent
+	normalized bool            // finish() appended something, for the log line
 }
 
 func (s *sttStreamWriter) WriteHeader(code int) {
@@ -74,9 +100,16 @@ func (s *sttStreamWriter) WriteHeader(code int) {
 		return
 	}
 	s.decided, s.code = true, code
-	if code == http.StatusOK && isJSONContentType(s.Header().Get("Content-Type")) {
+	switch {
+	case code == http.StatusOK && isJSONContentType(s.Header().Get("Content-Type")):
 		s.buffering = true
 		return // headers held — see the type comment
+	case code == http.StatusOK && isEventStreamContentType(s.Header().Get("Content-Type")):
+		s.passing = true
+		// finish() may append a terminator the backend's Content-Length did not
+		// count, which would truncate the reply. An event stream is chunked in
+		// practice (oidio's is); deleting a stray header is the cheap guard.
+		s.Header().Del("Content-Length")
 	}
 	s.ResponseWriter.WriteHeader(code)
 }
@@ -87,6 +120,9 @@ func (s *sttStreamWriter) Write(b []byte) (int, error) {
 	}
 	if s.buffering {
 		return s.body.Write(b)
+	}
+	if s.passing {
+		s.observe(b)
 	}
 	return s.ResponseWriter.Write(b)
 }
@@ -103,9 +139,105 @@ func (s *sttStreamWriter) Flush() {
 	}
 }
 
-// finish emits the synthesised stream, or the original body unchanged. Safe to
-// call on any exit path; a no-op when nothing was held.
+// observe reads the event lines going past and records what the backend has
+// already said, so finish() can add only what is missing. It parses nothing it
+// does not need and changes nothing: b has already been handed downstream.
+//
+// The tail holds a line split across two Writes. SSE frames arrive whole in
+// practice — a backend flushes per event — but "in practice" is not a contract,
+// and a delta cut in half by a TCP boundary would otherwise be read as two.
+func (s *sttStreamWriter) observe(b []byte) {
+	// Bound the tail: a backend emitting an unterminated megabyte is not a
+	// stream this can characterise, and holding it would be the only place
+	// passthrough allocates without limit. Drop it and keep forwarding.
+	const maxTail = 1 << 20
+	buf := b
+	if len(s.tail) > 0 {
+		buf = append(s.tail, b...)
+		s.tail = nil
+	}
+	for {
+		i := bytes.IndexByte(buf, '\n')
+		if i < 0 {
+			break
+		}
+		s.observeLine(buf[:i])
+		buf = buf[i+1:]
+	}
+	if len(buf) > 0 && len(buf) <= maxTail {
+		s.tail = append([]byte(nil), buf...)
+	}
+}
+
+// observeLine records one SSE line. Only `data:` matters here; `event:`, `id:`,
+// `retry:`, comments and the blank frame separator are somebody else's business
+// and are forwarded without being read.
+func (s *sttStreamWriter) observeLine(line []byte) {
+	t := bytes.TrimRight(line, "\r")
+	if !bytes.HasPrefix(t, []byte("data:")) {
+		return
+	}
+	// Accept generously: the single space after `data:` is optional in SSE, and
+	// a backend that omits it is emitting the same event.
+	data := bytes.TrimSpace(t[len("data:"):])
+	if bytes.Equal(data, []byte("[DONE]")) {
+		s.sawTerm = true
+		return
+	}
+	var ev struct {
+		Type  string `json:"type"`
+		Delta string `json:"delta"`
+	}
+	if json.Unmarshal(data, &ev) != nil {
+		return // not an event this needs to understand
+	}
+	switch ev.Type {
+	case "transcript.text.done":
+		s.sawDone = true
+	case "transcript.text.delta":
+		s.deltas.WriteString(ev.Delta)
+	}
+}
+
+// completePassthrough appends what the backend left off, and nothing else.
+//
+// The done event is built only from the deltas the backend itself emitted —
+// concatenation of returned data, not a guess (P35 §9.0). It carries no usage
+// block: a real stream reports no duration, and computing one from the upload
+// would emit a number nobody measured, which is the same ruling §9.0b made for
+// words[].end. A stream that sent no deltas and no done gets the terminator
+// only; there is nothing to say a transcript was produced.
+func (s *sttStreamWriter) completePassthrough() {
+	if len(s.tail) > 0 {
+		s.observeLine(s.tail)
+		s.tail = nil
+	}
+	if s.sawTerm {
+		return // the backend terminated its own stream; adding a second is not tolerance
+	}
+	var out bytes.Buffer
+	if !s.sawDone && s.deltas.Len() > 0 {
+		writeSSEData(&out, sseTranscriptDone{
+			Type: "transcript.text.done", Text: s.deltas.String(),
+		})
+	}
+	out.WriteString("data: [DONE]\n\n")
+	_, _ = s.ResponseWriter.Write(out.Bytes())
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+	s.normalized = true
+}
+
+// finish emits the synthesised stream, completes a passed-through one, or
+// releases the original body unchanged. Safe to call on any exit path; a no-op
+// when nothing was held and nothing needs finishing.
 func (s *sttStreamWriter) finish() {
+	if s.passing {
+		s.passing = false
+		s.completePassthrough()
+		return
+	}
 	if !s.buffering {
 		return
 	}
@@ -143,6 +275,15 @@ func isJSONContentType(ct string) bool {
 		ct = ct[:i]
 	}
 	return strings.EqualFold(strings.TrimSpace(ct), "application/json")
+}
+
+// isEventStreamContentType is true for a backend that is really streaming, and
+// it is what selects completion over synthesis.
+func isEventStreamContentType(ct string) bool {
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	return strings.EqualFold(strings.TrimSpace(ct), "text/event-stream")
 }
 
 // The OpenAI transcription stream events, as published. Field names are theirs,
