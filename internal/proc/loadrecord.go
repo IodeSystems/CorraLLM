@@ -15,8 +15,8 @@ import "context"
 
 // ModelLoadEvent is one backend coming up, and the circumstances.
 type ModelLoadEvent struct {
-	Model    string
-	Server   string
+	Model  string
+	Server string
 	// Requester is the caller whose request triggered the spawn, empty for a
 	// preload at boot. It is what turns "this reloads constantly" into "this
 	// reloads constantly because of that caller".

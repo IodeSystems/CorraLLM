@@ -1051,10 +1051,10 @@ type ServerView struct {
 	// bar raises and a percentage cannot settle. A device pool at 96% normally
 	// means a model is resident — the box working — and only becomes a problem
 	// when something else wants the space. That is an event, not a level.
-	MadeRoomCount    int64  `json:"madeRoomCount" doc:"Loads in the last 24h that had to unload something first. 0 is the normal case."`
-	MadeRoomLastMS   int64  `json:"madeRoomLastMs" doc:"When the most recent one was."`
-	MadeRoomEvicted  string `json:"madeRoomEvicted" doc:"What was unloaded, most recently."`
-	MadeRoomFor      string `json:"madeRoomFor" doc:"And what it made room for."`
+	MadeRoomCount   int64  `json:"madeRoomCount" doc:"Loads in the last 24h that had to unload something first. 0 is the normal case."`
+	MadeRoomLastMS  int64  `json:"madeRoomLastMs" doc:"When the most recent one was."`
+	MadeRoomEvicted string `json:"madeRoomEvicted" doc:"What was unloaded, most recently."`
+	MadeRoomFor     string `json:"madeRoomFor" doc:"And what it made room for."`
 }
 
 // PoolUsageView is a resident backend's reservation against one pool.

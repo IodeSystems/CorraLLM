@@ -18,10 +18,10 @@ import (
 
 // ModelLoad is one backend coming up, and the circumstances.
 type ModelLoad struct {
-	ID       int64
-	TS       int64
-	Model    string
-	Server   string
+	ID        int64
+	TS        int64
+	Model     string
+	Server    string
 	Requester string // the caller whose request triggered it; empty for a preload
 	// Evicted names what was unloaded to make room, comma-separated and empty
 	// when the model simply fit. This is the field the slowdown needed: a model

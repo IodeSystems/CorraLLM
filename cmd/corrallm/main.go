@@ -1301,7 +1301,6 @@ func loadConfig(ctx context.Context, src *configdb.Source, path string) (*config
 	return src.Load(ctx)
 }
 
-
 // loadRecorder writes proc's load events to the store.
 //
 // Failures are logged and swallowed: a spawn that worked must never be reported

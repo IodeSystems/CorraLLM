@@ -16,6 +16,7 @@ llm:
 models:
   - local-Qwen3.8-27B
   - local-Qwen3.8-27B-Uncensored
+  - local-Swift-Qwen3.8-27B
 
 # Off for this comparison. The judge runs on the `chat` lane, which resolves to
 # the incumbent — so enabling it would make one arm grade both, and on a single
