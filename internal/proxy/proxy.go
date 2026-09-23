@@ -607,6 +607,49 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			body = nb
 		}
 	}
+	// Audio transcode-in (P35 phase 1): an STT backend may read only some
+	// containers, and an OpenAI client sends whatever it has. Convert only when
+	// the backend has said it cannot take what arrived — see audio.go for why
+	// the answer comes from ModalitySpec.Formats and not a new concept.
+	//
+	// HERE, beside the PDF rewrite, for the same two reasons and one more.
+	// Once rather than per candidate in the fall-through loop; against the
+	// first lane member, as ConvertFor resolves; and BEFORE admission, because
+	// the three refusals below are validation — a caller whose file was never
+	// going to be servable must not queue behind a saturated backend first to
+	// find that out. The cost of that placement is named rather than hidden:
+	// a request that is later refused for capacity has already spent its
+	// transcode, and will spend it again when the caller retries.
+	var transcodeMS int64
+	if audioUploadRoute(r.URL.Path) {
+		eff := p.config().ConvertFor(p.convertGlobal, served)
+		if eff.AudioEnabled() {
+			t0 := time.Now()
+			nb, nct, terr := transcodeAudioUpload(r.Context(), body, r.Header.Get("Content-Type"),
+				p.audioFormatsFor(p.config(), served), eff)
+			switch {
+			case terr != nil:
+				var te *transcodeError
+				status := http.StatusBadRequest
+				msg := terr.Error()
+				if errors.As(terr, &te) {
+					status = te.status
+				}
+				slog.Warn("audio transcode refused", "model", served, "status", status, "err", msg)
+				http.Error(w, `{"error":{"message":`+jsonString(msg)+`,"type":"invalid_request_error"}}`, status)
+				return
+			case nb != nil:
+				transcodeMS = time.Since(t0).Milliseconds()
+				// One line per actual transcode, at info: this is CPU spent on
+				// a caller's latency, and an unexplained pause is the kind of
+				// mystery the timing headers exist to stop creating.
+				slog.Info("audio transcoded", "model", served, "inBytes", len(body),
+					"outBytes", len(nb), "ms", transcodeMS)
+				body, r.ContentLength = nb, int64(len(nb))
+				r.Header.Set("Content-Type", nct)
+			}
+		}
+	}
 	// Per-mode sampler substitution: a reasoning model wants different sampling
 	// while thinking than while not, the backend was launched with only one set,
 	// and the caller can flip the mode per request. Fills in ONLY what the
@@ -975,7 +1018,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			// available (the body has not been streamed yet) and is deliberately
 			// not offered — the client subtracts these from its own total, which
 			// works for streaming and non-streaming alike.
-			setTimingHeaders(resp.Header, queuedMS, loadMS, time.Since(upstreamStart).Milliseconds())
+			setTimingHeaders(resp.Header, queuedMS, loadMS, time.Since(upstreamStart).Milliseconds(), transcodeMS)
 			for _, sc := range cand.QuotaScopes(p.config()) {
 				p.quota.ObserveResponse(sc, resp.StatusCode, resp.Header)
 			}

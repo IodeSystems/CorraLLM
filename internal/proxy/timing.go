@@ -29,6 +29,16 @@ const (
 	// Unlike the other two this IS execution: it is the model's prompt-eval
 	// latency, offered so a caller can separate that from generation.
 	HeaderTTFBMS = "X-Corrallm-Upstream-Ttfb-Ms"
+	// HeaderTranscodeMS is time corrallm spent converting an upload into a
+	// format the backend can read (P35). Zero on every request that arrived
+	// in an accepted format, which is nearly all of them.
+	//
+	// Its own header rather than a share of the others, for the reason the
+	// whole set exists. A transcode is neither queueing nor loading nor
+	// execution: it is corrallm's own CPU, it scales with the length of the
+	// audio and not with the model, and folded into loadMS it would make a
+	// bench read a 20-second ffmpeg as a slow backend.
+	HeaderTranscodeMS = "X-Corrallm-Transcode-Ms"
 
 	// HeaderGroupDenied names a priority group the credential asked for and did
 	// not get. The request is still served, in the key's own group.
@@ -46,8 +56,9 @@ const (
 // Always set, including the zeros: a caller that has to distinguish "no queue"
 // from "this corrallm is too old to report" needs the header's presence to mean
 // something, and an omitted-when-zero header makes those two cases identical.
-func setTimingHeaders(h http.Header, queuedMS, loadMS, ttfbMS int64) {
+func setTimingHeaders(h http.Header, queuedMS, loadMS, ttfbMS, transcodeMS int64) {
 	h.Set(HeaderQueuedMS, strconv.FormatInt(queuedMS, 10))
 	h.Set(HeaderLoadMS, strconv.FormatInt(loadMS, 10))
 	h.Set(HeaderTTFBMS, strconv.FormatInt(ttfbMS, 10))
+	h.Set(HeaderTranscodeMS, strconv.FormatInt(transcodeMS, 10))
 }
