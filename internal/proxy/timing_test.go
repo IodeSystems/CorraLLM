@@ -53,7 +53,7 @@ func TestTimingHeadersReachTheClient(t *testing.T) {
 	}
 	// Present even at zero: absence has to mean "corrallm too old to report",
 	// which it cannot if a zero queue also omits the header.
-	for _, h := range []string{HeaderQueuedMS, HeaderLoadMS, HeaderTTFBMS} {
+	for _, h := range []string{HeaderQueuedMS, HeaderLoadMS, HeaderTTFBMS, HeaderTranscodeMS} {
 		v := rec.Header().Get(h)
 		if v == "" {
 			t.Errorf("%s missing", h)
@@ -72,11 +72,12 @@ func TestTimingHeadersReachTheClient(t *testing.T) {
 
 func TestSetTimingHeadersFormatsIntegers(t *testing.T) {
 	h := http.Header{}
-	setTimingHeaders(h, 1200, 34000, 87)
+	setTimingHeaders(h, 1200, 34000, 87, 940)
 	for header, want := range map[string]string{
-		HeaderQueuedMS: "1200",
-		HeaderLoadMS:   "34000",
-		HeaderTTFBMS:   "87",
+		HeaderQueuedMS:    "1200",
+		HeaderLoadMS:      "34000",
+		HeaderTTFBMS:      "87",
+		HeaderTranscodeMS: "940",
 	} {
 		if got := h.Get(header); got != want {
 			t.Errorf("%s = %q, want %q", header, got, want)

@@ -168,3 +168,54 @@ lanes were. Aliases and lanes are now both visible as indirection.
 **Optional extension, deliberately out of scope:** `requested` is not on the API or the
 dashboard yet, so "who uses lanes" is an SQL question for now. Worth a panel only if the answer
 to this question is "move aw4".
+
+---
+
+## 5. ❓ The remap out: six calls, none of which corrallm may guess
+
+**Owner:** you. **Gates:** P35 phases 3–4 (`plan.md` §6, design in
+[`p35-corral-layer.md`](p35-corral-layer.md) §8–§9). **Status:** open. Phase 1 (transcode in)
+shipped without needing any of these; phase 4 must not start until they are answered.
+
+**Why they are decisions and not chores.** Four of the five divergences below are renames.
+**Two require corrallm to produce something the backend never returned** — an SSE stream from
+a complete body, a translation from a transcription, speaker turns joined out of words. That is
+not compatibility, it is invention, and inventing without being asked is how a corral layer
+starts lying about what it is fronting.
+
+Each is verified against the wire or the source; do not re-derive them.
+
+1. **`stream=true` on a path that cannot stream.** oidio's `transcriptions.go:45` dispatches to
+   `handleDiarize` before the stream check, and `handleDiarize` never reads the flag. Confirmed
+   live 2026-09-23: `stream=true` to `oidio-stt-diarize` returned **200 with
+   `Content-Type: application/json`** and a complete non-SSE body. Synthesise SSE from the
+   finished body (honours the contract; the latency benefit is a fiction), refuse 400 (honest;
+   breaks a caller who set the flag defensively), or keep ignoring it (today, and the only
+   option that is silently wrong). **Per endpoint** — `/v1/audio/speech` may want a different
+   answer from `/v1/audio/transcriptions`.
+2. **`/v1/audio/translations` does not translate.** oidio maps it straight onto
+   `handleTranscriptions`, so it transcribes in the source language. The shape claim is true and
+   the behaviour claim is false. Route it to something that translates, refuse it as
+   unimplemented, document the lie — or have corrallm translate the transcript with a chat
+   model, which is a real option and changes what the endpoint costs.
+3. **Whose diarization shape is canonical?** OpenAI publishes none, so "the OpenAI shape" does
+   not settle it. oidio returns per-request speaker UUIDs, 512-float embeddings, a similarity
+   matrix and `words[]` with no `end`; NeMo-Speech.cpp returns an integer `speaker` on `words[]`
+   (verbose_json only, 400 otherwise) or textless `{segments:[{start,end,speaker:int}]}`, and
+   never serialises `num_speakers`. Normalising NeMo onto oidio means **joining words into
+   speaker turns**; normalising oidio onto NeMo means renumbering and dropping the embeddings.
+   Both lossy, in opposite directions.
+4. **Is a per-request speaker UUID a bug or a fact?** oidio mints a new one per call — three
+   calls on the same audio gave three different UUIDs — so any client treating it as an identity
+   is already wrong. Corrallm could stabilise it from the embeddings, but that is speaker
+   recognition: a feature, not a remap.
+5. **`response_format: url` on `/v1/images/generations`.** OpenAI defaults to `url` and honours
+   the field; corrallm only ever emits `b64_json`. Serving a URL means corrallm hosts the bytes —
+   a store, a lifetime, a retention policy. Worth it, or is `b64_json`-only the documented limit?
+6. **`/v1/realtime`'s advertised audio format.** corrallm hardcodes "PCM16 mono @ 24 kHz". That
+   is oidio's default (`engine/realtime.go:56`) but is per-model configurable, and its WebRTC
+   transport decodes Opus at 48 kHz regardless. Report what the model is actually configured
+   with (requires asking oidio), or keep the constant and say it is a default?
+
+**Not blocking today** — phase 1 is shipped and self-contained, and P35 phase 2 (PCM bounds on
+`ModalitySpec`) needs none of these.

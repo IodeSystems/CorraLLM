@@ -386,8 +386,10 @@ func newServeCmd() *cobra.Command {
 		payloadRetention                           time.Duration
 		requestTimeout                             time.Duration
 		capturePayloads, convertPDFs, ocrPDFs      bool
+		audioTranscode                             bool
 		insecure                                   bool
 		pdfMaxChars, ocrMaxPages                   int
+		audioMaxSecs                               int
 		realtimeIdle, realtimeMaxSession           time.Duration
 		reservationMaxTTL                          time.Duration
 		tuneCachePath                              string
@@ -428,6 +430,8 @@ func newServeCmd() *cobra.Command {
 				pdfMaxChars:        pdfMaxChars,
 				ocrPDFs:            ocrPDFs,
 				ocrMaxPages:        ocrMaxPages,
+				audioTranscode:     audioTranscode,
+				audioMaxSecs:       audioMaxSecs,
 				realtimeIdle:       pickDuration(realtimeIdle, envDuration("CORRALLM_REALTIME_IDLE_TIMEOUT", 5*time.Minute)),
 				realtimeMaxSession: pickDuration(realtimeMaxSession, envDuration("CORRALLM_REALTIME_MAX_SESSION", 0)),
 				reservationMaxTTL:  pickDuration(reservationMaxTTL, envDuration("CORRALLM_RESERVATION_MAX_TTL", 5*time.Minute)),
@@ -459,6 +463,8 @@ func newServeCmd() *cobra.Command {
 	f.IntVar(&pdfMaxChars, "pdf-max-chars", 400000, "cap on extracted text per PDF injected into the prompt")
 	f.BoolVar(&ocrPDFs, "ocr-pdfs", true, "OCR fallback for scanned/image PDFs that have no text layer (rasterize via pdftoppm + tesseract); no-op if tesseract is not installed")
 	f.IntVar(&ocrMaxPages, "ocr-max-pages", 20, "max pages to OCR per scanned PDF (bounds latency)")
+	f.BoolVar(&audioTranscode, "transcode-audio", true, "convert an STT upload (mp3/m4a/webm/flac/…) into 16 kHz mono wav when the backend has declared which audio formats it reads (via ffmpeg). A no-op for a backend that declares none, which is every backend until an operator says otherwise.")
+	f.IntVar(&audioMaxSecs, "transcode-audio-max-seconds", 1800, "longest audio corrallm will convert in one request; longer uploads are refused with 413 rather than truncated. 1800s is 57.6 MB of 16 kHz mono wav, just inside the route's 64 MiB body cap.")
 	f.DurationVar(&realtimeIdle, "realtime-idle-timeout", 0, "reap a /v1/realtime ws session after this long with no traffic (default 5m or CORRALLM_REALTIME_IDLE_TIMEOUT; 0 disables)")
 	f.DurationVar(&realtimeMaxSession, "realtime-max-session", 0, "hard cap on a /v1/realtime ws session's duration (or CORRALLM_REALTIME_MAX_SESSION; 0 disables)")
 	f.DurationVar(&reservationMaxTTL, "reservation-max-ttl", 0, "cap on a /v1/reservations slot lease before it must be renewed (default 5m or CORRALLM_RESERVATION_MAX_TTL)")
@@ -517,7 +523,9 @@ type serveOpts struct {
 	payloadRetention                      time.Duration
 	requestTimeout                        time.Duration
 	capturePayloads, convertPDFs, ocrPDFs bool
+	audioTranscode                        bool
 	pdfMaxChars, ocrMaxPages              int
+	audioMaxSecs                          int
 	realtimeIdle, realtimeMaxSession      time.Duration
 	reservationMaxTTL                     time.Duration
 	tuneCachePath                         string
@@ -801,8 +809,13 @@ func serve(ctx context.Context, o serveOpts) error {
 	px.SetCapturePayloads(o.capturePayloads)
 	px.SetSlotCache(o.slotCacheDir, int64(o.slotCacheMaxGB)<<30)
 	// Global ingestion config: built-in defaults ← legacy flags ← config `convert:`.
+	audioSwitch := "on"
+	if !o.audioTranscode {
+		audioSwitch = "off"
+	}
 	convertGlobal := config.DefaultConvert().
-		Merge(config.ConvertConfig{MaxChars: o.pdfMaxChars, MaxPages: o.ocrMaxPages, OCR: &o.ocrPDFs}).
+		Merge(config.ConvertConfig{MaxChars: o.pdfMaxChars, MaxPages: o.ocrMaxPages, OCR: &o.ocrPDFs,
+			Audio: audioSwitch, AudioMaxSeconds: o.audioMaxSecs}).
 		Merge(cfg.Convert)
 	px.SetConvert(o.convertPDFs, convertGlobal)
 	px.SetRealtimeTimeouts(o.realtimeIdle, o.realtimeMaxSession)

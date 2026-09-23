@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P35.**
+**Next free number: P36.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -69,7 +69,7 @@ A slice is ✅ **only** when its functional unit meets the Definition of done be
 `done.md` = the archive of finished trees, kept for evidence and traps, never a to-do list.
 `icebox.md` = deferred, opt-in next-steps. `open-questions.md` = decisions that need the USER,
 and **only while they are open** — a resolved question is deleted from it and its answer written
-into the plan item that needed it. **Phase numbers come from git history** — next free is P35.
+into the plan item that needed it. **Phase numbers come from git history** — next free is P36.
 
 **Re-check a question against the box before you ask it.** On 2026-08-24, six of eight standing
 "user decisions" turned out to be already answered by the running system, the migrated config, or
@@ -318,6 +318,72 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P35 — the corral layer: transcode in, remap out — 2026-09-23
+
+The owner: *"we also need a transcode layer into it, so that we can maintain compatibility,
+and we need a remapping layer out for the same reason."* The product is the framing he gave
+earlier — *"speech, like image generation, has odd, non-standard backends, and we intend to
+'corral' them into a standard OpenAI interface"* — so corrallm owns the OpenAI shape and a
+backend is whatever it is. Design, both directions, with its evidence:
+[`p35-corral-layer.md`](p35-corral-layer.md).
+
+✅ **Phase 1 — transcode in — is built and live-verified.** An STT upload is converted to
+16 kHz mono wav when, and only when, the backend has DECLARED which audio formats it reads.
+The declaration is `config.ModalitySpec.Formats`, which already existed, is already
+probed-beats-declared, and is already on `/v1/models` — audio format is the finer grain under
+the `audio` modality `config.IO` names coarsely, not a new concept. An empty list means no
+constraint is known, so the layer is invisible against today's config: **oidio ingests every
+format an OpenAI client sends** (wav/mp3/m4a/flac/webm and a 48 kHz stereo wav all 200 on the
+live `:8111`, 2026-09-23), and normalising for it would be CPU spent to make a request no
+better. Placed beside the PDF rewrite and BEFORE admission, following `pdf.go`, with one
+reason of its own: the refusals are validation, and a caller whose file was never servable
+must not queue first to find out. `X-Corrallm-Transcode-Ms` so a bench does not read ffmpeg
+as a slow model.
+
+**Proven against a stub reproducing NeMo-Speech.cpp's `audio_file.cpp:38` and forwarding
+what it accepts to the real `oidio-stt`** — so an accepted request returns a real
+transcription. mp3/m4a/flac/webm: **400 "not a RIFF/WAVE file" before, 200 with the right
+text after, 112–135 ms each.** The same mp3 to a second model pointing at the *same stub*
+with nothing declared: still 400, Transcode-Ms 0 — the capability is per backend. A 2-hour
+m4a: **413 in 0.205 s**, refused off ffprobe without decoding. ffmpeg off PATH: **415**
+naming the format, the accepted list and the missing tool. The live `:8111` was not
+touched, restarted or reconfigured.
+
+**next** — nothing, until the §9 decisions land. Phase 2 (PCM bounds on `ModalitySpec`) is
+independent of the remap and could go first.
+
+**risks** — (1) The declaration is per CONTAINER. A 48 kHz stereo **24-bit** wav satisfies
+`formats: [wav]` and would still be refused by a real NeMo, which checks PCM format and
+depth at `audio_file.cpp:89`. Reproduced deliberately in the proof above (200,
+Transcode-Ms 0) so the gap is visible rather than assumed away. (2) Formats resolve against
+a lane's FIRST member, matching `ConvertFor`. Since the target is always wav, converting for
+a strict first member is safe for every other candidate; the reverse — permissive first,
+strict fallback — is not covered. (3) A request refused for capacity after its transcode has
+already spent it, and spends it again on retry: 4.24 s for a 30-minute file, measured.
+(4) **Nothing has run against a real NeMo-Speech.cpp** — the PR is unmerged; the stub
+reproduces one documented check, not the backend.
+
+**assumptions** — that 16 kHz mono is right for every restricted STT backend (true for NeMo,
+whisper.cpp and parakeet, which all resample to it internally; `audioSampleRate` exists for
+the backend that proves otherwise), and that `-fs` plus an ffprobe pre-check is a sufficient
+bound on ffmpeg (a file whose duration ffprobe will not state is caught on output size, not
+on its claim).
+
+**blocking decisions** — none for phase 1. **Six for the remap out**, all in
+[`p35-corral-layer.md`](p35-corral-layer.md) §9 and filed in
+[`open-questions.md`](open-questions.md): `stream=true` on a path that cannot stream ·
+what `/v1/audio/translations` should do given it does not translate · whose diarization
+shape is canonical when OpenAI has none · whether a per-request speaker UUID is a bug or a
+fact · whether `response_format: url` is worth corrallm hosting bytes · whether `/v1/realtime`
+should report the model's real audio format. **Phase 4 must not start before these are
+answered** — two of them require corrallm to compute something the backend never returned,
+which is where a compatibility layer starts lying.
+
+**optional extensions** — out of scope now: PCM bounds on `ModalitySpec` (phase 2); a route
+probe that asks a backend what it ingests instead of reading a declaration; transcoding on
+`/v1/images/edits` and `/v1/audio/speech`'s OUTPUT, both of which are remap-out questions;
+a per-caller transcode budget, if ffmpeg CPU ever shows up on the box.
 
 ### ◐ P9h — the image surface, and capabilities as inputs/outputs — 2026-09-21
 
@@ -1056,6 +1122,12 @@ true and still costs something. Optional extensions and out-of-scope items live 
   parent's Info tab, and nothing in the UI linked to it. Deleted rather than wired up: the model
   page's own Usage tab answers the same question, and Traffic now answers it for any window. A URL
   that replies with the wrong page is worse than a 404.
+- **An oversized request body is silently truncated, not refused.** `handleInference` reads
+  through `io.LimitReader(r.Body, maxBody)` (64 MiB on the STT routes, 32 MiB elsewhere) and
+  never notices that it stopped early, so a 74 MB upload becomes a 67 MB one and the backend
+  is handed a file that ends mid-frame. Found while bounding the P35 transcode, which refuses
+  over-long audio with a 413 and a number — this path does not. Pre-existing and untouched.
+
 - **`carlsmacbookpro`'s agent is unreachable** (`dial tcp 192.168.1.248:6503: connect: connection
   refused`, observed 2026-09-04). The Hosts page shows it, in the daemon's own words. Same class as
   the known macOS Local Network permission trap; unverified which it is this time.

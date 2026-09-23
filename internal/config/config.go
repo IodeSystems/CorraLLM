@@ -1656,12 +1656,33 @@ type ConvertConfig struct {
 	MaxPages int    `yaml:"maxPages,omitempty"` // page cap (vision rasterize / OCR)
 	MaxChars int    `yaml:"maxChars,omitempty"` // injected-text cap (text)
 	OCR      *bool  `yaml:"ocr,omitempty"`      // OCR fallback for scanned PDFs (text)
+
+	// Audio transcode-in (P35). An STT upload arrives in whatever an OpenAI
+	// client had — flac/mp3/mp4/m4a/ogg/wav/webm are all in the API's own
+	// documented set — and a backend may read only some of them. These live
+	// here rather than in a `transcode:` block of their own because this type
+	// IS corrallm's ingestion config: it already resolves defaults → global →
+	// per-model through Merge and ConvertFor, and audio needs exactly that
+	// resolution. A second block would be a second copy of the same machinery.
+	Audio string `yaml:"audio,omitempty"` // on | off (default on)
+	// AudioSampleRate is the rate of the WAV a transcode produces. 16 kHz is
+	// what every ASR frontend in this class resamples to internally; raise it
+	// only for a backend that demonstrably wants more, and know that the bytes
+	// scale with it.
+	AudioSampleRate int `yaml:"audioSampleRate,omitempty"`
+	// AudioMaxSeconds is the most audio corrallm will convert in one request.
+	// It is a SIZE bound wearing a duration's clothes: the product is
+	// rate x 2 bytes per second, so 1800 s at 16 kHz is 57.6 MB, just inside
+	// the 64 MiB cap the STT route already puts on an upload. Exceeding it is
+	// refused — with the number — not truncated.
+	AudioMaxSeconds int `yaml:"audioMaxSeconds,omitempty"`
 }
 
 // DefaultConvert is the built-in base every resolution starts from.
 func DefaultConvert() ConvertConfig {
 	on := true
-	return ConvertConfig{PDF: "text", DPI: 200, Quality: 85, Format: "jpeg", MaxPages: 20, MaxChars: 400000, OCR: &on}
+	return ConvertConfig{PDF: "text", DPI: 200, Quality: 85, Format: "jpeg", MaxPages: 20, MaxChars: 400000, OCR: &on,
+		Audio: "on", AudioSampleRate: 16000, AudioMaxSeconds: 1800}
 }
 
 // Merge returns c with the set (non-zero) fields of over applied on top.
@@ -1687,11 +1708,29 @@ func (c ConvertConfig) Merge(over ConvertConfig) ConvertConfig {
 	if over.OCR != nil {
 		c.OCR = over.OCR
 	}
+	if over.Audio != "" {
+		c.Audio = over.Audio
+	}
+	if over.AudioSampleRate != 0 {
+		c.AudioSampleRate = over.AudioSampleRate
+	}
+	if over.AudioMaxSeconds != 0 {
+		c.AudioMaxSeconds = over.AudioMaxSeconds
+	}
 	return c
 }
 
 // OCREnabled reports whether the OCR fallback is on (defaults to true if unset).
 func (c ConvertConfig) OCREnabled() bool { return c.OCR == nil || *c.OCR }
+
+// AudioEnabled reports whether the STT transcode-in layer may act.
+//
+// Unset reads as ON, and that is safe rather than presumptuous: the layer
+// cannot fire on a backend that has not declared which audio formats it
+// ingests, so "on" against today's config converts nothing at all. The switch
+// exists for the operator who has declared a restriction and would still
+// rather see the backend's own refusal than have corrallm intervene.
+func (c ConvertConfig) AudioEnabled() bool { return !strings.EqualFold(c.Audio, "off") }
 
 // ConvertFor resolves the effective ingestion config for a served name: the
 // global default overridden by the model's own block. A lane inherits its
