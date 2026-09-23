@@ -1155,6 +1155,18 @@ true and still costs something. Optional extensions and out-of-scope items live 
   (trial reported 2 MiB), so `ramUsage` must be hand-declared — which is exactly the stale
   hand-typed number the measured-footprint work exists to remove. The fix is a health-path field
   on the model, or upstream adding `/health`.
+- **`/v1/capabilities` describes a diarization response that nothing returns.**
+  `proxy.go:2300` promises *"a diarizing model additionally returns
+  `segments:[{speaker,start,end,text}]` and `num_speakers` alongside the OpenAI `text`"*.
+  oidio's own manifest (`internal/server/capabilities.go:73`) says it adds speaker **UUIDs**
+  on verbose_json segments plus a stateless `speakers` array of uuid + voiceprint +
+  similarity — and `num_speakers` appears nowhere. The manifest is describing an older
+  oidio. This matters more than a stale comment: `/v1/capabilities` exists so a client or
+  an LLM can build against it without reading code, so a wrong field name there is acted
+  on rather than ignored. Checked 2026-09-23 while verifying a candidate replacement
+  backend; NeMo-Speech.cpp returns a third shape again (words with an integer `speaker`,
+  or textless segments, and never `num_speakers`), so whatever the manifest says next has
+  to be true of the backend actually serving, not of the family in general.
 - **`ui/` has no test runner.** No vitest, no jest, no `test` script in `ui/package.json` — so
   `slowdownFaults` and every other pure function in the UI is covered by `tsc` and eslint only.
   The DoD's "new behavior has tests" is met on the Go side of a UI change and silently skipped on
