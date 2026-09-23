@@ -265,6 +265,71 @@ What it settles, and what it does not:
   speaker across calls (§9.4) is speaker recognition, and no amount of portability
   makes that a remap.
 
+### 9.0b The robustness principle — answered 2026-09-23
+
+> "I've found that these various implementations have differences. I prefer the
+> Berkeley method: accept generously, produce and document strictly."
+
+The robustness principle, applied to a corral layer. §9.0 said corrallm publishes one
+shape; this says what publishing owes, and it is sharper than §9.0 because it is
+ASYMMETRIC — the tolerance is on the way in only.
+
+**In: accept every form of the same request.** Any container a backend cannot read
+(phase 1). `stream=true` where the backend ignores it (§9.1). A backend's `id` as int
+or as string. A parameter OpenAI defines that our backend spells differently.
+Tolerance here costs one mapping and buys every client that was written against
+someone else.
+
+**Out: emit exactly one shape, and let the manifest be normative.** Not "usually this
+shape". Not "this shape, plus whatever the backend added". Where two published specs
+disagree, corrallm picks one, emits it everywhere, and says which — mirroring an
+upstream's inconsistency is not compatibility, it is forwarding a bug with a new
+hostname on it.
+
+**Where it does NOT reach, and this is where it will be misapplied.** Accept generously
+governs the FORM of a request, never a capability the model does not have. Accepting a
+request for data no backend produced and answering it with something plausible is not
+generosity — it is §9.0's "may not invent" wearing a friendlier word. Phase 1's 415 and
+413 are not violations: they accept every format that CAN be converted and refuse, early
+and by name, only what cannot be served at all. Refusing at the door beats accepting and
+failing after the queue.
+
+**What it settles outright:**
+
+- **(f) `words[].end` when unreported → OMIT.** Computing it from the next word's start
+  emits a number nobody measured. Produce-strictly forbids it.
+- **(d) the `backend` sidecar → `include[]=backend`, opt-in.** The DEFAULT response is
+  the documented canonical shape and nothing else. Extras are available, never ambient.
+- **(c) `segments[].id` → ONE type, everywhere, documented.** OpenAI contradicts itself
+  (string in the `transcript.text.segment` event, integer in `whisper-1`'s
+  `verbose_json`); corrallm may not. Accept either from a backend, emit one. **String**,
+  as §9.1 shipped, because the diarized event schema is the one actually specifying
+  diarized output.
+- **(g) `diarized_json` to a non-diarizing model → 400 stands.** This is the
+  misapplication case above, and it is why that boundary is written down.
+- **§12.10.2 — `data: [DONE]` — REOPENED, now IN SCOPE.** Filed as "outside §9.1", which
+  was right at the time. Under produce-strictly it is not: corrallm's output terminates
+  the same way whichever backend answered, so oidio's real stream gets normalised too. A
+  client must be able to use `[DONE]` as its end-of-stream test on this route. This is
+  the principle's first real cost — it means touching a backend's own stream, which §9.1
+  deliberately did not.
+
+**What it sharpens but does not answer:**
+
+- **(a)** one live answer remains rather than a decision made. Produce-strictly plus a
+  portable API points at adopting a published spec over inventing one — but adopting
+  `diarized_json` is still the owner's ratification, and still gates phases 3–4.
+- **(b)** letters vs `speaker_0` stays open. What the principle adds: "what happens at
+  27" belongs IN the schema, not discovered at runtime.
+- **(e)** the join rule must be written and ratified, not observed. Restated, unchanged.
+- **(h)** accept-generously leans toward taking `known_speaker_names[]` under OpenAI's
+  name even where the mechanism beneath differs. Reserve the field now.
+
+**A standing obligation, not a one-off.** "Document strictly" promotes the capabilities
+manifest from description to specification. It has twice shipped claims that were false
+(`speech.wav`, `num_speakers`). Under this principle that is a broken contract, not
+sloppiness — the manifest is now what a client is entitled to rely on.
+
 ### 9.1 `stream=true` on a path that cannot stream — ANSWERED 2026-09-23, and BUILT
 
 **Synthesise SSE from the complete body**, on `/v1/audio/transcriptions` and

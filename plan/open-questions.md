@@ -192,6 +192,17 @@ the measurements live in `plan.md` §6 and [`p35-corral-layer.md`](p35-corral-la
 §9.1. **`/v1/audio/speech` was deliberately NOT included and is still open** — TTS streams
 audio chunks, not SSE events, and that answer must not travel by momentum.
 
+**Answered — the robustness principle.** "I prefer the Berkeley method: accept generously,
+produce and document strictly." Asymmetric on purpose: tolerance on the way IN, exactly one
+documented shape on the way OUT. It settles four of the schema's sub-choices outright
+(`words[].end` omitted rather than computed · the `backend` sidecar opt-in via
+`include[]` · one `segments[].id` type everywhere, string · `diarized_json` to a
+non-diarizing model stays 400) and **reopens the `data: [DONE]` divergence as in-scope** —
+corrallm's output must terminate identically whichever backend answered, so oidio's own
+stream gets normalised too. It does NOT reach capability: accepting a request for data no
+backend produced is not generosity. Reasoning and the boundary:
+[`p35-corral-layer.md`](p35-corral-layer.md) §9.0b.
+
 **Why the rest are decisions and not chores.** Two of the five still open below (5 and 6)
 are renames; 3 is folded into 3a and kept only for its backend facts. **The
 others require corrallm to produce something the backend never returned** — a translation
