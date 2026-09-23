@@ -174,8 +174,17 @@ to this question is "move aw4".
 ## 5. ❓ The remap out: six calls, none of which corrallm may guess
 
 **Owner:** you. **Gates:** P35 phases 3–4 (`plan.md` §6, design in
-[`p35-corral-layer.md`](p35-corral-layer.md) §8–§9). **Status:** open. Phase 1 (transcode in)
-shipped without needing any of these; phase 4 must not start until they are answered.
+[`p35-corral-layer.md`](p35-corral-layer.md) §8–§9). **Status:** ◐ two answered 2026-09-23,
+four open. Phase 1 (transcode in) shipped without needing any of these.
+
+**Answered — the governing principle.** "We aim to take the mish mash of non standard audio
+tools and corrall them into a common, portable API." So **no backend's shape is canonical;
+corrallm publishes one and maps every backend onto it.** That re-frames (3) rather than
+answering it: the choice was never oidio-or-NeMo, and the lossiness does not vanish, it just
+stops being one backend's accident imposed on another. It also opens a NEW gating question —
+**(3a) what that schema actually is** — since a mandate to define one is not a definition.
+
+**Answered — (1): synthesise.** See below.
 
 **Why they are decisions and not chores.** Four of the five divergences below are renames.
 **Two require corrallm to produce something the backend never returned** — an SSE stream from
@@ -185,14 +194,22 @@ starts lying about what it is fronting.
 
 Each is verified against the wire or the source; do not re-derive them.
 
-1. **`stream=true` on a path that cannot stream.** oidio's `transcriptions.go:45` dispatches to
-   `handleDiarize` before the stream check, and `handleDiarize` never reads the flag. Confirmed
-   live 2026-09-23: `stream=true` to `oidio-stt-diarize` returned **200 with
-   `Content-Type: application/json`** and a complete non-SSE body. Synthesise SSE from the
-   finished body (honours the contract; the latency benefit is a fiction), refuse 400 (honest;
-   breaks a caller who set the flag defensively), or keep ignoring it (today, and the only
-   option that is silently wrong). **Per endpoint** — `/v1/audio/speech` may want a different
-   answer from `/v1/audio/transcriptions`.
+1. ✅ **`stream=true` on a path that cannot stream — SYNTHESISE.** oidio's
+   `transcriptions.go:45` dispatches to `handleDiarize` before the stream check, and
+   `handleDiarize` never reads the flag. Confirmed live 2026-09-23: `stream=true` to
+   `oidio-stt-diarize` returned **200 with `Content-Type: application/json`** and a complete
+   non-SSE body. **Decided:** corrallm synthesises SSE from the finished body on
+   `/v1/audio/transcriptions` and `/v1/audio/translations`. The latency benefit is a fiction
+   and gets documented as one. **`/v1/audio/speech` stays open** — TTS streams audio chunks,
+   not SSE events; that is a different mechanism and must not inherit this answer by momentum.
+
+3a. ❓ **What IS the canonical schema? — NEW, now the gating question for phases 3–4.** The
+   principle mandates one; nothing defines one. It must fix: the speaker label's type and
+   scope (stable within a response, explicitly not across calls); where backend extras live
+   (oidio's 512-float embeddings and similarity matrix are real data — dropping them is a
+   decision, a `backend` sidecar is the alternative); whether `words[]` is in the contract when
+   only one backend produces it; and what a plain non-diarizing STT model returns for those
+   fields. Phases 3 and 4 have no target until this exists.
 2. **`/v1/audio/translations` does not translate.** oidio maps it straight onto
    `handleTranscriptions`, so it transcribes in the source language. The shape claim is true and
    the behaviour claim is false. Route it to something that translates, refuse it as

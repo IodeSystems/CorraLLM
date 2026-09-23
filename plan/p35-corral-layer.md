@@ -235,15 +235,48 @@ require synthesis, and synthesis needs a decision.
 
 ## 9. Decisions the owner owns
 
+### 9.0 The governing principle — answered 2026-09-23
+
+> "We aim to take the mish mash of non standard audio tools and corrall them into a
+> common, portable API."
+
+**No backend's shape is canonical. corrallm publishes one, and every backend is mapped
+onto it.** This is the project's purpose, stated by the owner, and it is not a
+per-question preference — it decides the FRAMING of every question below rather than
+any one of their answers.
+
+What it settles, and what it does not:
+
+- **§9.3 was posed wrongly.** "oidio's shape or NeMo's?" has no third column in it, and
+  the third column is the answer. Both are mapped onto corrallm's. The lossiness the
+  question described is real and does not go away — it moves. Mapping oidio onto a
+  canonical shape still drops or relocates the embeddings; mapping NeMo onto it still
+  joins words into turns. What changes is that neither backend gets to impose its
+  accidents on the other, and a third backend costs one mapping instead of N.
+- **It does NOT decide the schema.** "corrallm's shape" is a mandate to define one, not
+  a definition. That is design work, and it is §9.3a below.
+- **It raises the bar on synthesis, it does not lower it.** A portable API may compute
+  what a backend did not return — that is the job. It may not INVENT what no backend
+  knows. Joining words into turns is arithmetic on data NeMo returned. Stabilising a
+  speaker across calls (§9.4) is speaker recognition, and no amount of portability
+  makes that a remap.
+
+### 9.1 `stream=true` on a path that cannot stream — ANSWERED 2026-09-23: synthesise
+
+**Synthesise SSE from the complete body**, on `/v1/audio/transcriptions` and
+`/v1/audio/translations`. The client set a flag the spec defines; a corral layer that
+drops it is the silently-wrong option, and refusing 400 punishes a caller for defensive
+correctness. The latency benefit is a fiction and must be documented as one — the body
+is complete before the first event goes out.
+
+**`/v1/audio/speech` is still open.** The question is per endpoint by construction: TTS
+streams AUDIO chunks, not SSE events, and chunking a finished mp3 is a different
+mechanism with a different honesty problem. Do not let the transcription answer travel
+there by momentum.
+
 **Phase 1 (built) took three, all reversible and all argued in the commits:** convert
 only on a declared mismatch · convert before admission · refuse rather than pass
-through. **These are the open ones, and phase 2 must not start before they are answered:**
-
-1. **`stream=true` on a path that cannot stream.** Synthesise SSE from the complete body
-   (the client's contract is honoured, the latency benefit is a fiction), refuse 400
-   (honest, breaks a caller who set the flag defensively), or keep ignoring it
-   (today's behaviour, and the only one that is silently wrong). **Per endpoint, not
-   globally** — the same question has a different answer on `/v1/audio/speech`.
+through. **Still open, and phase 4 must not start on these before they are answered:**
 2. **`/v1/audio/translations`.** Route it to a translating backend, refuse it as
    unimplemented, or keep transcribing and document the lie. Corrallm could also
    translate the transcript with a chat model — a real option, and one that changes what
@@ -252,6 +285,14 @@ through. **These are the open ones, and phase 2 must not start before they are a
    "the OpenAI shape" does not settle it. If oidio's is canonical, corrallm must
    compute speaker turns for NeMo. If NeMo's is, oidio's per-request UUIDs must be
    renumbered and its embeddings dropped. Both are lossy, in opposite directions.
+3a. **The canonical schema itself — NEW, and now the gating question.** §9.0 mandates
+   one; nothing has defined it. It must name: the speaker label's type and scope (stable
+   within a response, explicitly not across); where a backend's extras go (oidio's
+   embeddings and similarity matrix are real data a caller may want — dropping them is a
+   choice, and a `backend` sidecar object is the other one); whether `words[]` is part of
+   the contract when only one backend returns it; and what a NON-diarizing STT model
+   returns for the same fields. Until this exists, phases 3 and 4 have no target.
+
 4. **Is a per-request speaker UUID a bug to fix or a fact to expose?** It cannot be
    correlated across calls, so any client that treats it as an identity is already
    wrong. Corrallm could stabilise it from the embeddings — that is speaker
