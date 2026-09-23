@@ -171,11 +171,13 @@ to this question is "move aw4".
 
 ---
 
-## 5. ❓ The remap out: six calls, none of which corrallm may guess
+## 5. ❓ The remap out: the calls corrallm may not guess
 
 **Owner:** you. **Gates:** P35 phases 3–4 (`plan.md` §6, design in
-[`p35-corral-layer.md`](p35-corral-layer.md) §8–§9). **Status:** ◐ two answered 2026-09-23,
-four open. Phase 1 (transcode in) shipped without needing any of these.
+[`p35-corral-layer.md`](p35-corral-layer.md) §8–§9, §12). **Status:** ◐ `stream=true`
+answered AND shipped 2026-09-23 (deleted from the list below); the gating one — the
+canonical schema — is now designed and awaiting ratification; four open. Phase 1
+(transcode in) shipped without needing any of these.
 
 **Answered — the governing principle.** "We aim to take the mish mash of non standard audio
 tools and corrall them into a common, portable API." So **no backend's shape is canonical;
@@ -184,44 +186,52 @@ answering it: the choice was never oidio-or-NeMo, and the lossiness does not van
 stops being one backend's accident imposed on another. It also opens a NEW gating question —
 **(3a) what that schema actually is** — since a mandate to define one is not a definition.
 
-**Answered — (1): synthesise.** See below.
+**Answered and SHIPPED — (1) `stream=true` on a path that cannot stream: synthesise.**
+Deleted from this list per the contract at the top of this file. The answer, the code and
+the measurements live in `plan.md` §6 and [`p35-corral-layer.md`](p35-corral-layer.md)
+§9.1. **`/v1/audio/speech` was deliberately NOT included and is still open** — TTS streams
+audio chunks, not SSE events, and that answer must not travel by momentum.
 
-**Why they are decisions and not chores.** Four of the five divergences below are renames.
-**Two require corrallm to produce something the backend never returned** — an SSE stream from
-a complete body, a translation from a transcription, speaker turns joined out of words. That is
-not compatibility, it is invention, and inventing without being asked is how a corral layer
-starts lying about what it is fronting.
+**Why the rest are decisions and not chores.** Two of the five still open below (5 and 6)
+are renames; 3 is folded into 3a and kept only for its backend facts. **The
+others require corrallm to produce something the backend never returned** — a translation
+from a transcription, speaker turns joined out of words. That is not compatibility, it is
+invention, and inventing without being asked is how a corral layer starts lying about what
+it is fronting.
 
 Each is verified against the wire or the source; do not re-derive them.
 
-1. ✅ **`stream=true` on a path that cannot stream — SYNTHESISE.** oidio's
-   `transcriptions.go:45` dispatches to `handleDiarize` before the stream check, and
-   `handleDiarize` never reads the flag. Confirmed live 2026-09-23: `stream=true` to
-   `oidio-stt-diarize` returned **200 with `Content-Type: application/json`** and a complete
-   non-SSE body. **Decided:** corrallm synthesises SSE from the finished body on
-   `/v1/audio/transcriptions` and `/v1/audio/translations`. The latency benefit is a fiction
-   and gets documented as one. **`/v1/audio/speech` stays open** — TTS streams audio chunks,
-   not SSE events; that is a different mechanism and must not inherit this answer by momentum.
-
-3a. ❓ **What IS the canonical schema? — NEW, now the gating question for phases 3–4.** The
-   principle mandates one; nothing defines one. It must fix: the speaker label's type and
-   scope (stable within a response, explicitly not across calls); where backend extras live
-   (oidio's 512-float embeddings and similarity matrix are real data — dropping them is a
-   decision, a `backend` sidecar is the alternative); whether `words[]` is in the contract when
-   only one backend produces it; and what a plain non-diarizing STT model returns for those
-   fields. Phases 3 and 4 have no target until this exists.
+3a. ❓ **What IS the canonical schema? — the gating question for phases 3–4. DESIGNED,
+   awaiting your ratification: [`p35-corral-layer.md`](p35-corral-layer.md) §12.** It fixes
+   all four things this entry asked for, with measured mapping tables from both backends:
+   the speaker label is a **string**, `"A"`/`"B"` by order of first appearance, stable within
+   one response and explicitly NOT across calls; oidio's voiceprints go to a **`backend`
+   sidecar** rather than being dropped (~5.2 KB per speaker, measured); **`words[]` is in the
+   contract** — the premise that only one backend produces it was wrong, both do — with `end`
+   OPTIONAL because oidio reports only when a word starts; and a non-diarizing model returns
+   those fields **absent**, never null, with `diarized_json` to one a 400.
+   **§9.3's premise expired:** OpenAI now publishes `diarized_json` and a
+   `transcript.text.segment` event, so "the OpenAI shape" IS the third column §9.0 asked for,
+   and the proposal is to adopt it rather than invent a third spelling.
+   **What is left for you: eight sub-choices in §12.9**, of which **(a) — is OpenAI's
+   `diarized_json` the canonical shape? — is the only one that gates phases 3–4.** The other
+   seven are the letter-vs-`speaker_0` labelling, `segments[].id` string-vs-int (OpenAI
+   contradicts itself), whether the `backend` sidecar ships and whether it needs
+   `include[]=backend`, the word-to-segment join rule for NeMo's textless segments,
+   `words[].end` when unreported, `diarized_json` to a non-diarizing model, and whether to
+   reserve `known_speaker_names[]` now.
 2. **`/v1/audio/translations` does not translate.** oidio maps it straight onto
    `handleTranscriptions`, so it transcribes in the source language. The shape claim is true and
    the behaviour claim is false. Route it to something that translates, refuse it as
    unimplemented, document the lie — or have corrallm translate the transcript with a chat
    model, which is a real option and changes what the endpoint costs.
-3. **Whose diarization shape is canonical?** OpenAI publishes none, so "the OpenAI shape" does
-   not settle it. oidio returns per-request speaker UUIDs, 512-float embeddings, a similarity
-   matrix and `words[]` with no `end`; NeMo-Speech.cpp returns an integer `speaker` on `words[]`
-   (verbose_json only, 400 otherwise) or textless `{segments:[{start,end,speaker:int}]}`, and
-   never serialises `num_speakers`. Normalising NeMo onto oidio means **joining words into
-   speaker turns**; normalising oidio onto NeMo means renumbering and dropping the embeddings.
-   Both lossy, in opposite directions.
+3. ~~**Whose diarization shape is canonical?**~~ **Folded into 3a.** The premise —
+   "OpenAI publishes none" — expired: it publishes `diarized_json` now (§12.0). The backend
+   facts still hold and are the mapping tables' input: oidio returns per-request speaker
+   UUIDs, 512-float embeddings, a similarity matrix and `words[]` with no `end`;
+   NeMo-Speech.cpp returns an integer `speaker` on `words[]` (verbose_json only, 400
+   otherwise) or textless `{segments:[{start,end,speaker:int}]}`, and never serialises
+   `num_speakers`. Neither is canonical; both map onto §12's shape.
 4. **Is a per-request speaker UUID a bug or a fact?** oidio mints a new one per call — three
    calls on the same audio gave three different UUIDs — so any client treating it as an identity
    is already wrong. Corrallm could stabilise it from the embeddings, but that is speaker
@@ -234,5 +244,6 @@ Each is verified against the wire or the source; do not re-derive them.
    transport decodes Opus at 48 kHz regardless. Report what the model is actually configured
    with (requires asking oidio), or keep the constant and say it is a default?
 
-**Not blocking today** — phase 1 is shipped and self-contained, and P35 phase 2 (PCM bounds on
-`ModalitySpec`) needs none of these.
+**Not blocking today** — phase 1 and the `stream=true` contract are shipped and
+self-contained, and P35 phase 2 (PCM bounds on `ModalitySpec`) needs none of these.
+**Blocking the moment phase 3 starts: 3a(a).** The schema is written; it needs a yes.

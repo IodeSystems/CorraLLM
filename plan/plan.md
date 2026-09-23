@@ -350,10 +350,49 @@ m4a: **413 in 0.205 s**, refused off ffprobe without decoding. ffmpeg off PATH: 
 naming the format, the accepted list and the missing tool. The live `:8111` was not
 touched, restarted or reconfigured.
 
-**next** — nothing, until the §9 decisions land. Phase 2 (PCM bounds on `ModalitySpec`) is
+✅ **Contract 2 of the remap out — `stream=true` on STT — is built and live-verified.**
+`stream=true` on `/v1/audio/transcriptions` and `/v1/audio/translations` now returns
+`text/event-stream`: OpenAI's `transcript.text.delta`, a `transcript.text.segment` per
+diarized segment, `transcript.text.done` with a duration usage block, then `[DONE]`.
+oidio's diarize path dispatches before the stream check and never reads the flag, so a
+client that set it was handed `application/json` while parsing SSE.
+
+**The latency benefit is a fiction and the code, the manifest and the design all say so.**
+Measured against the real `oidio-stt-diarize` through a second corrallm on `:6510`:
+**ttfb 0.296 s / total 0.296 s**, three runs, widest gap **0.9 ms**. The first event and
+the last leave together, because the body was complete before either existed. What it
+buys is one client code path. It is also **lossy — 5,640 bytes of JSON become 442 bytes
+of events** — because the event schema has no carrier for `language`, `task`, `words[]`
+or `speakers[]`; the manifest says to set `stream=false` to keep them. A real stream is
+untouched (`oidio-stt`, the NON-diarize path, does stream, and passes through byte for
+byte). Metering is unchanged by construction — the writer sits outside `statusCapture`,
+verified at 200 / 123,388 audio bytes / ttfb 298 ms with oidio's own JSON on the row.
+**`/v1/audio/speech` was NOT touched** (§9.1 leaves it open; live `{"stream":true}` there
+still returns `audio/mpeg`). The live `:8111` was not restarted or reconfigured.
+
+◻ **The canonical audio schema is DESIGNED and awaits the owner** —
+[`p35-corral-layer.md`](p35-corral-layer.md) §12, with measured field-by-field mapping
+tables from both backends. It settles the speaker label (string, `"A"`/`"B"` by order of
+first appearance, stable within one response and explicitly NOT across calls), where
+oidio's voiceprints live (a `backend` sidecar; ~5.2 KB per speaker, measured), `words[]`
+(in, with `end` optional because oidio does not report it) and what a non-diarizing model
+returns (absent fields, never null). **§9.3's premise expired:** OpenAI now publishes
+`diarized_json`, so "the OpenAI shape" IS the third column §9.0 asked for.
+
+**next** — the owner rules on §12.9(a): is OpenAI's `diarized_json` the canonical shape?
+Phases 3 and 4 have no target until then. Phase 2 (PCM bounds on `ModalitySpec`) is
 independent of the remap and could go first.
 
-**risks** — (1) The declaration is per CONTAINER. A 48 kHz stereo **24-bit** wav satisfies
+**risks, contract 2** — (1) **Nothing has been run against a backend that emits real SSE
+on the DIARIZE path**, because none exists; the passthrough is covered by a unit test and
+by `oidio-stt`, not by a diarizing streamer. (2) corrallm's synthesised stream ends with
+`data: [DONE]` and oidio's real one does not, so one route terminates two ways —
+recorded in §12.10, not fixed, because normalising a backend's own stream is out of
+§9.1's scope. (3) A diarize body over 2 MiB would be captured to the activity row as a
+tail rather than a head, since `statusCapture.streaming` follows the CALLER's flag; the
+sample is 5.6 KB and this has not been hit.
+
+**risks, phase 1** — (1) The declaration is per CONTAINER. A 48 kHz stereo **24-bit** wav satisfies
 `formats: [wav]` and would still be refused by a real NeMo, which checks PCM format and
 depth at `audio_file.cpp:89`. Reproduced deliberately in the proof above (200,
 Transcode-Ms 0) so the gap is visible rather than assumed away. (2) Formats resolve against
@@ -370,15 +409,14 @@ the backend that proves otherwise), and that `-fs` plus an ffprobe pre-check is 
 bound on ffmpeg (a file whose duration ffprobe will not state is caught on output size, not
 on its claim).
 
-**blocking decisions** — none for phase 1. **Six for the remap out**, all in
-[`p35-corral-layer.md`](p35-corral-layer.md) §9 and filed in
-[`open-questions.md`](open-questions.md): `stream=true` on a path that cannot stream ·
-what `/v1/audio/translations` should do given it does not translate · whose diarization
-shape is canonical when OpenAI has none · whether a per-request speaker UUID is a bug or a
-fact · whether `response_format: url` is worth corrallm hosting bytes · whether `/v1/realtime`
-should report the model's real audio format. **Phase 4 must not start before these are
-answered** — two of them require corrallm to compute something the backend never returned,
-which is where a compatibility layer starts lying.
+**blocking decisions** — none for phase 1, and none left for contract 2. **Still open**,
+in [`p35-corral-layer.md`](p35-corral-layer.md) §9/§12 and filed in
+[`open-questions.md`](open-questions.md): **the canonical schema's eight sub-choices
+(§12.9), of which (a) gates phases 3–4** · what `/v1/audio/translations` should do given
+it does not translate · whether a per-request speaker UUID is a bug or a fact · whether
+`response_format: url` is worth corrallm hosting bytes · whether `/v1/realtime` should
+report the model's real audio format. **Phase 4 must not start before these are
+answered** — it is where a compatibility layer starts lying if it guesses.
 
 **optional extensions** — out of scope now: PCM bounds on `ModalitySpec` (phase 2); a route
 probe that asks a backend what it ingests instead of reading a declaration; transcoding on
