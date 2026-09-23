@@ -307,12 +307,18 @@ failing after the queue.
   diarized output.
 - **(g) `diarized_json` to a non-diarizing model → 400 stands.** This is the
   misapplication case above, and it is why that boundary is written down.
-- **§12.10.2 — `data: [DONE]` — REOPENED, now IN SCOPE.** Filed as "outside §9.1", which
-  was right at the time. Under produce-strictly it is not: corrallm's output terminates
-  the same way whichever backend answered, so oidio's real stream gets normalised too. A
-  client must be able to use `[DONE]` as its end-of-stream test on this route. This is
-  the principle's first real cost — it means touching a backend's own stream, which §9.1
-  deliberately did not.
+- **§12.10.2 — `data: [DONE]` — REOPENED, and ✅ SHIPPED 2026-09-23.** Filed as "outside
+  §9.1", which was right at the time. Under produce-strictly it is not: corrallm's output
+  terminates the same way whichever backend answered, so oidio's real stream gets
+  normalised too. A client must be able to use `[DONE]` as its end-of-stream test on this
+  route. This was the principle's first real cost — it meant touching a backend's own
+  stream, which §9.1 deliberately did not. **What it actually cost, measured first:
+  TWO divergences, not the one that was filed** — the missing terminator, and a
+  `transcript.text.done` with no usage block. The second was answered by NOT
+  normalising it: a real stream measured no duration, and computing one is what (f)
+  already forbade, so `usage` becomes an explicitly optional field of the published
+  contract. The shape the principle takes on a backend's own stream is COMPLETION —
+  append what is missing, rewrite nothing, double nothing. Details in §12.10.2.
 
 **What it sharpens but does not answer:**
 
@@ -328,7 +334,12 @@ failing after the queue.
 **A standing obligation, not a one-off.** "Document strictly" promotes the capabilities
 manifest from description to specification. It has twice shipped claims that were false
 (`speech.wav`, `num_speakers`). Under this principle that is a broken contract, not
-sloppiness — the manifest is now what a client is entitled to rely on.
+sloppiness — the manifest is now what a client is entitled to rely on. **A THIRD was
+found the moment the obligation was applied**: the `streaming` note claimed "no STT
+backend on this box streams", which §12.10.1 had already disproved. Three false claims
+in one manifest is a pattern, not three accidents — the note is now written as a
+specification (§12.10.3), and the next one should be checked against the wire before it
+ships rather than after.
 
 ### 9.1 `stream=true` on a path that cannot stream — ANSWERED 2026-09-23, and BUILT
 
@@ -365,10 +376,13 @@ in `/v1/capabilities`, and in §12.8.
 `language`, `task`, `words[]` or `speakers[]`. The manifest tells a caller to set
 `stream=false` to keep them.
 
-**A real stream is untouched**, keyed on the backend's own `Content-Type`. The live
-box has one — `oidio-stt` (§12.10) — and its events pass through byte for byte,
-including its own missing `[DONE]`. Synthesis is the fallback for a finished body,
-never a rewrite of every reply. An error stays a JSON error with its own status.
+**A real stream's EVENTS are untouched**, keyed on the backend's own `Content-Type`.
+The live box has one — `oidio-stt` (§12.10) — and its events pass through byte for
+byte, unbuffered. ~~including its own missing `[DONE]`~~ — that half expired: §9.0b
+reopened it and §12.10.2 shipped the fix, so a real stream is now COMPLETED with the
+terminator it omits. Nothing it did send is altered. Synthesis is still the fallback
+for a finished body, never a rewrite of every reply. An error stays a JSON error with
+its own status.
 
 **Metering is unchanged by construction.** The writer sits OUTSIDE `statusCapture`, so
 the activity row still records the backend's body: verified live at 200, 123,388 audio
@@ -753,16 +767,73 @@ caller kept. They are different mechanisms with the same purpose, and mapping on
 onto the other is not a rename. Out of scope for the schema; in scope for whether
 the schema should reserve the field name now.
 
-### 12.10 Two findings from building §9.1, recorded here because they touch this
+### 12.10 Findings from building §9.1 — two filed, and both now closed by §9.0b
 
 1. **`oidio-stt` — the NON-diarize path — DOES stream for real.** §8.2 says
    "`stream=true` is silently ignored on oidio's diarize path", which is precise and
    is easy to read as broader than it is. Verified 2026-09-23: `oidio-stt` with
    `stream=true` returns `text/event-stream` and ten real `transcript.text.delta`
-   events. corrallm passes them through untouched, which is the shipped behaviour.
-2. **oidio's real stream does NOT send `data: [DONE]`.** corrallm's synthesised
-   stream does. So the two forms of the same route terminate differently, and a
-   client reading corrallm cannot use `[DONE]` as its end-of-stream test unless
-   corrallm normalises a real stream too — which is rewriting a backend's own
-   stream, deliberately out of scope for §9.1. Filed rather than fixed. It is small
-   and it is the kind of thing that costs someone an afternoon.
+   events. corrallm forwards them byte for byte and unbuffered, which is the shipped
+   behaviour — and, since 12.10.2 below, terminates them.
+2. **oidio's real stream did NOT send `data: [DONE]`. ✅ FIXED 2026-09-23** —
+   reopened by §9.0b, which made it a broken contract rather than a filed quirk.
+   Shipped: `internal/proxy/sttstream.go`, the `passing` mode.
+
+   **Measured before anything was written**, against the live `oidio-stt` with
+   `examples/audio/speech.wav`. The real stream is:
+
+   ```
+   10 × data: {"delta":" The"|" quick"|…|".","type":"transcript.text.delta"}
+    1 × data: {"text":"The quick brown fox jumps over the lazy dog.",
+               "type":"transcript.text.done"}
+   (nothing else)
+   ```
+
+   **TWO divergences from the synthesised shape, not one.** The missing
+   terminator, and a `transcript.text.done` with **no usage block**. The event
+   TYPES and FIELD names already matched what `sttstream.go` synthesises —
+   `type`+`delta`, `type`+`text` — so nothing had to be renamed or reordered.
+
+   **What was normalised, and what deliberately was not.** The terminator is
+   appended. The usage block is NOT: a real stream reports no duration, and
+   computing one from the upload emits a number nobody measured — the ruling
+   §9.0b already made for `words[].end` (f). `usage` is therefore an explicitly
+   OPTIONAL field of the published contract, present only when the backend
+   measured the audio, and the manifest now says so rather than promising it.
+
+   **Completed, never rewritten.** A passed-through stream's bytes go downstream
+   as they arrive, unbuffered and unaltered; corrallm observes them on the way
+   past and appends at the end only what the backend left out. Accept generously
+   is what keeps that from doubling anything: a backend that already sent
+   `[DONE]`, or its own `transcript.text.done`, gets no second one. A stream that
+   sends deltas and no done gets one built from those deltas — concatenation of
+   returned data, not a guess — and **that case is unit-covered only; no backend
+   on this box behaves that way.**
+
+   **§9.1's three properties survive.** Headers are still held for a JSON body,
+   the mode is still decided from status + `Content-Type`, and the writer still
+   sits OUTSIDE `statusCapture`. Verified live: the activity row records oidio's
+   648 bytes while the client receives 662, so the 14-byte terminator is
+   corrallm's and is not metered.
+
+   **Verified on a second daemon on `:6510`** proxying the already-running oidio
+   on `:5806` — no `cmd`, so nothing was spawned, loaded or evicted, and
+   production was not touched. `oidio-stt` ends `data: [DONE]` with its ten
+   deltas and one done intact; `oidio-stt-diarize` still synthesises the same 442
+   bytes §9.1 recorded. Both halves of the route now terminate identically.
+
+3. **The capabilities manifest's `streaming` note is now NORMATIVE** (§9.0b's
+   standing obligation), and was rewritten as a specification: the full event
+   sequence, `[DONE]` named as always-last and usable as the end-of-stream test,
+   `usage` named as optional, `logprobs`/`languages` named as never emitted, and
+   the two producers behind the one contract described as differing in timing
+   only. The old text also carried a THIRD false claim of the same family as
+   `speech.wav` and `num_speakers` — "no STT backend on this box streams", which
+   §12.10.1 had already disproved. It is gone.
+
+**Still wrong, out of scope, not fixed here:** `modelFromMultipart` reads the
+`stream` form field as `strings.TrimSpace(v) == "true"`, so a client sending
+`True`, `TRUE` or `1` silently gets a non-streaming reply. That is an
+accept-generously gap on the way IN (§9.0b), it applies to every multipart audio
+route including `/v1/audio/speech`, and widening it is a behaviour change on a
+route §9.1 deliberately left alone. Filed, not fixed.

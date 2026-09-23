@@ -197,10 +197,14 @@ produce and document strictly." Asymmetric on purpose: tolerance on the way IN, 
 documented shape on the way OUT. It settles four of the schema's sub-choices outright
 (`words[].end` omitted rather than computed · the `backend` sidecar opt-in via
 `include[]` · one `segments[].id` type everywhere, string · `diarized_json` to a
-non-diarizing model stays 400) and **reopens the `data: [DONE]` divergence as in-scope** —
-corrallm's output must terminate identically whichever backend answered, so oidio's own
-stream gets normalised too. It does NOT reach capability: accepting a request for data no
-backend produced is not generosity. Reasoning and the boundary:
+non-diarizing model stays 400) and **reopened the `data: [DONE]` divergence as in-scope**
+— corrallm's output must terminate identically whichever backend answered, so oidio's own
+stream gets normalised too. **That one is now SHIPPED** (§12.10.2): the real stream was
+measured first and had TWO divergences, not one — the missing terminator, and a
+`transcript.text.done` with no usage block. The terminator is appended; the usage block is
+not, because a real stream measured no duration and computing one is what this same
+principle already forbade for `words[].end`. It does NOT reach capability: accepting a
+request for data no backend produced is not generosity. Reasoning and the boundary:
 [`p35-corral-layer.md`](p35-corral-layer.md) §9.0b.
 
 **Why the rest are decisions and not chores.** Two of the five still open below (5 and 6)
