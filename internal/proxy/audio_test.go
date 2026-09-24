@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -1119,5 +1120,42 @@ func TestCanonicalWAVHeaderIsLosslessAndIdempotent(t *testing.T) {
 	// The samples themselves are untouched — 1 s of mono float32 at 16 kHz.
 	if want := 16000 * 4; len(once) < want {
 		t.Errorf("%d bytes out, want at least %d of audio: the rewrite lost samples", len(once), want)
+	}
+}
+
+// TestOversizeBodyIs413NotTruncation: the body cap used to cut a multipart
+// upload mid-part and hand the remains to the backend, so the caller learned
+// about it as `400 "not multipart"` from inside somebody else's program.
+// Measured against a real 44-minute hearing before it was fixed.
+func TestOversizeBodyIs413NotTruncation(t *testing.T) {
+	p := &Proxy{}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", "m")
+	fw, _ := mw.CreateFormFile("file", "big.wav")
+	// One byte past the route's 64 MiB cap is enough: the point is the
+	// boundary, not the size.
+	_, _ = fw.Write(make([]byte, (64<<20)+1))
+	_ = mw.Close()
+
+	r := httptest.NewRequest("POST", "/v1/audio/transcriptions", bytes.NewReader(buf.Bytes()))
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	p.handleInference(w, r)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413 (a truncated upload must not reach a backend)", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "json") {
+		t.Errorf("Content-Type = %q, want JSON: an error envelope is part of the contract", ct)
+	}
+	var env struct {
+		Error struct{ Message, Type string } `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("body is not a JSON error envelope: %v (%q)", err, w.Body.String())
+	}
+	if env.Error.Type != "invalid_request_error" {
+		t.Errorf("error.type = %q, want invalid_request_error", env.Error.Type)
 	}
 }

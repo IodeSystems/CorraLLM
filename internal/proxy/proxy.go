@@ -552,6 +552,24 @@ func (p *Proxy) Mount(mux interface {
 	mux.Handle("/upstream/*", http.HandlerFunc(p.handleUpstream))
 }
 
+// writeJSONError answers with OpenAI's error envelope, and with a Content-Type
+// that says so.
+//
+// http.Error stamps text/plain on whatever it is given, so every hand-built
+// envelope on these paths went out labelled as prose — the body parsed, the
+// header said not to try. A client that switches on Content-Type saw a string
+// where the contract promises an object.
+//
+// type is the OpenAI field, not decoration: it and message are what a client
+// branches on. param and code stay absent rather than guessed — an absent
+// field is honest about what corrallm knows, an empty one is a claim.
+func writeJSONError(w http.ResponseWriter, status int, kind, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, `{"error":{"message":`+jsonString(msg)+`,"type":`+jsonString(kind)+`}}`)
+}
+
 // handleInference resolves the served model from the JSON body's "model" field,
 // ensures its first backend is ready, and reverse-proxies the (buffered) body.
 func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
@@ -570,10 +588,31 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if audio && !tts {
 		maxBody = 64 << 20
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	// Read ONE byte past the cap, so a body that hits it is distinguishable
+	// from one that merely ends there.
+	//
+	// It used to read exactly maxBody and never look. A 76.8 MB wav then
+	// reached the backend as a multipart body cut off mid-part, and the caller
+	// got `400 "not multipart"` from inside a process it has never heard of —
+	// measured on the wire against a real 44-minute hearing. That is the exact
+	// late failure this layer exists to remove, and it arrived as a complaint
+	// about the wrong thing: the upload was not malformed, it was truncated
+	// HERE and then described by somebody else.
+	//
+	// It matters more now that --transcode-audio-max-seconds is 3600. The two
+	// caps bound different bodies — this one what ARRIVES, that one what is
+	// PRODUCED — and a duration cap that admits longer audio admits larger
+	// uploads to carry it.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	_ = r.Body.Close()
 	if err != nil {
-		http.Error(w, "read body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "read body")
+		return
+	}
+	if int64(len(body)) > maxBody {
+		msg := fmt.Sprintf("request body is larger than the %d MiB limit on %s", maxBody>>20, r.URL.Path)
+		slog.Warn("body over cap", "path", r.URL.Path, "capBytes", maxBody)
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", msg)
 		return
 	}
 	// Resolve the served model + stream flag. JSON bodies carry both as top-level
@@ -636,7 +675,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 					status = te.status
 				}
 				slog.Warn("audio transcode refused", "model", served, "status", status, "err", msg)
-				http.Error(w, `{"error":{"message":`+jsonString(msg)+`,"type":"invalid_request_error"}}`, status)
+				writeJSONError(w, status, "invalid_request_error", msg)
 				return
 			case nb != nil:
 				transcodeMS = time.Since(t0).Milliseconds()
