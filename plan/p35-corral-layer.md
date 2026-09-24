@@ -341,6 +341,41 @@ in one manifest is a pattern, not three accidents — the note is now written as
 specification (§12.10.3), and the next one should be checked against the wire before it
 ships rather than after.
 
+### 9.0c The mission is OpenAI compatibility — ANSWERED 2026-09-23, and it closes §12.9(a)
+
+> "Yes, project mission statement is openai compatible. Ensure that is the case."
+
+**§12.9(a) is ratified: OpenAI's `diarized_json` IS the canonical shape.** Phases 3 and 4
+are unblocked. This is the third and last of the framing decisions, and it removes §9.3
+rather than answering it — corrallm does not invent a schema, it implements a published
+one and maps every backend onto it.
+
+Read together, the three now say one thing:
+
+- **§9.0** — no backend's shape is canonical; corrallm publishes one.
+- **§9.0b** — accept generously; produce and document strictly.
+- **§9.0c** — and the one it publishes is OpenAI's, wherever OpenAI has published one.
+
+**What ratification settles beyond (a), because the answer is now "whatever OpenAI does":**
+
+- **(b) speaker labels → `"A"`, `"B"`, …** OpenAI's. The 27-speaker rollover still needs a
+  written rule (§9.0b put it in the schema, not in a runtime surprise), but the label
+  FORM is no longer a choice.
+- **(h) `known_speaker_names[]` → accept it.** OpenAI defines it; accept-generously plus
+  OpenAI-compatibility both point the same way. Mapping it onto oidio's UUID-based
+  `known_speakers` is a separate piece of work and may be refused for now — but the
+  parameter name is OpenAI's and corrallm must not spell it differently.
+
+**Still a real rule to write, not a choice to make:** **(e)** the NeMo word→segment join.
+OpenAI says what the OUTPUT looks like; it says nothing about how to build a segment from
+a backend that only returns words. The rule is ours, it must be written into the schema,
+and it must be ratified as a rule rather than discovered as behaviour.
+
+**"Ensure that is the case" is the larger half of this instruction.** It is not scoped to
+diarization or to audio. Every surface corrallm serves is a compatibility claim, and the
+manifest is now normative (§9.0b), so an unaudited claim is a liability rather than a
+gap. Tracked as §13.
+
 ### 9.1 `stream=true` on a path that cannot stream — ANSWERED 2026-09-23, and BUILT
 
 **Synthesise SSE from the complete body**, on `/v1/audio/transcriptions` and
