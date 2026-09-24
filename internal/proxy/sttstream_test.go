@@ -23,6 +23,18 @@ import (
 // exactly as oidio ignores it.
 func sttRig(t *testing.T, path string, stream bool, h http.HandlerFunc) *flushRecorder {
 	t.Helper()
+	fields := map[string][]string{}
+	if stream {
+		fields["stream"] = []string{"true"}
+	}
+	return sttRigForm(t, path, fields, h)
+}
+
+// sttRigForm is the same rig with the caller's form fields spelled out, for
+// the remap tests: response_format and include[] are what a caller sets and
+// what corrallm has to answer for.
+func sttRigForm(t *testing.T, path string, fields map[string][]string, h http.HandlerFunc) *flushRecorder {
+	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
 			w.WriteHeader(http.StatusOK)
@@ -46,8 +58,10 @@ func sttRig(t *testing.T, path string, stream bool, h http.HandlerFunc) *flushRe
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	_ = mw.WriteField("model", "stt-mock")
-	if stream {
-		_ = mw.WriteField("stream", "true")
+	for k, vals := range fields {
+		for _, v := range vals {
+			_ = mw.WriteField(k, v)
+		}
 	}
 	fw, _ := mw.CreateFormFile("file", "speech.wav")
 	_, _ = fw.Write([]byte("fake-wav"))
@@ -145,11 +159,14 @@ func TestSTTStreamSynthesisDiarized(t *testing.T) {
 	if got := events[0]["segment_id"]; got != "0" {
 		t.Errorf("delta segment_id = %v, want \"0\"", got)
 	}
-	// The speaker label is the backend's, rendered as a string, not renumbered:
-	// stabilising or relabelling it is a §12 decision, not this transform's.
+	// The speaker label is CANONICAL, not the backend's. §12.4 is ratified:
+	// the event carries "A", and oidio's per-request UUID — which is not an
+	// identity and changes every call — stays out of a field a client would
+	// key a database on. The streaming and non-streaming forms agree because
+	// the remap runs inside the synthesiser (P35 §12).
 	seg := events[1]
-	if seg["speaker"] != "3f1c2a10-0000-4000-8000-000000000001" {
-		t.Errorf("speaker = %v", seg["speaker"])
+	if seg["speaker"] != "A" {
+		t.Errorf("speaker = %v, want the canonical label A", seg["speaker"])
 	}
 	if seg["id"] != "0" || seg["start"] != 0.0 || seg["end"] != 1.2 {
 		t.Errorf("segment id/start/end = %v/%v/%v", seg["id"], seg["start"], seg["end"])
@@ -207,22 +224,25 @@ func TestSTTStreamSegmentsWithoutSpeaker(t *testing.T) {
 }
 
 // TestSTTStreamIntegerSpeaker: NeMo-Speech.cpp labels a speaker with an
-// integer, oidio with a UUID. Both are legal in; the event schema's `speaker`
-// is a label, so both come out as a string.
+// integer, oidio with a UUID. Both are legal IN — that is §9.0b's tolerance —
+// and both come out as the one canonical label, by order of first appearance.
+// An integer 2 is the first speaker seen here, so it is "A" and not "2":
+// forwarding a backend's numbering would be letting that backend's accident
+// out through a portable API.
 func TestSTTStreamIntegerSpeaker(t *testing.T) {
 	rec := sttRig(t, "/v1/audio/transcriptions", true, jsonBody(
-		`{"text":"hi","segments":[{"id":0,"start":0,"end":1,"text":"hi","speaker":2}]}`))
+		`{"text":"hi ho","segments":[{"id":0,"start":0,"end":1,"text":"hi","speaker":2},`+
+			`{"id":1,"start":1,"end":2,"text":"ho","speaker":0}]}`))
 	events, _ := sseEvents(t, rec.body.String())
+	var labels []string
 	for _, e := range events {
-		if e["type"] != "transcript.text.segment" {
-			continue
+		if e["type"] == "transcript.text.segment" {
+			labels = append(labels, e["speaker"].(string))
 		}
-		if e["speaker"] != "2" {
-			t.Fatalf("speaker = %#v, want the string \"2\"", e["speaker"])
-		}
-		return
 	}
-	t.Fatalf("no segment event: %v", events)
+	if strings.Join(labels, ",") != "A,B" {
+		t.Fatalf("speakers = %v, want A,B by order of first appearance", labels)
+	}
 }
 
 // TestSTTStreamNotRequested: without the flag the body is forwarded verbatim.
@@ -236,9 +256,13 @@ func TestSTTStreamNotRequested(t *testing.T) {
 	if strings.Contains(rec.body.String(), "data: ") {
 		t.Fatalf("unrequested stream: %s", rec.body.String())
 	}
-	// The voiceprints a stream=true request loses are still here.
-	if !strings.Contains(rec.body.String(), "embedding") {
-		t.Errorf("body was rewritten: %s", rec.body.String())
+	// It is still NOT verbatim, and that changed with §12: the default
+	// response_format is `json`, whose canonical body is `{"text":…}` and
+	// nothing else. The voiceprints are not lost — they are behind
+	// include[]=backend, where 5.2 KB per speaker is a caller's choice rather
+	// than every caller's cost.
+	if got := rec.body.String(); got != `{"text":"The quick brown fox. Jumps over the lazy dog."}` {
+		t.Errorf("body = %s", got)
 	}
 }
 

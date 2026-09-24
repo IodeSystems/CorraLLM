@@ -1748,12 +1748,17 @@ func TestCapabilitiesManifest(t *testing.T) {
 	}
 }
 
-// TestCapabilitiesDiarizationNote holds the diarization note to the response a
-// backend actually returns. The manifest twice promised things nothing served —
-// a speech.wav that existed nowhere, then a `num_speakers` no backend emits —
-// and both were caught by a reader rather than by a test. This is that test:
-// the named fields are the ones a live oidio-stt-diarize transcription came
-// back with, so the note fails here instead of failing a client.
+// TestCapabilitiesDiarizationNote holds the audio notes to what corrallm
+// actually serves. The manifest THREE times promised things nothing served — a
+// speech.wav that existed nowhere, a `num_speakers` no backend emits, and "no
+// STT backend on this box streams" — and every one was caught by a reader
+// rather than by a test. This is that test.
+//
+// What it checks changed with P35 §12, and the change is the point: the body
+// on this route is no longer the backend's, forwarded, but corrallm's, mapped.
+// A note that still said "BACKEND-SPECIFIC: corrallm forwards the body
+// verbatim" would be the fourth false claim, so that phrase is now a
+// FAILURE rather than a requirement.
 func TestCapabilitiesDiarizationNote(t *testing.T) {
 	cfg := &config.Config{
 		CommandCosts: map[string]map[string]any{"stt": {"audioWhPerMiB": 0.03}},
@@ -1780,33 +1785,62 @@ func TestCapabilitiesDiarizationNote(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
 		t.Fatal(err)
 	}
-	var note string
+	var note, formats string
 	for _, ep := range m.Endpoints {
 		if ep.Path == "/v1/audio/transcriptions" {
 			note, _ = ep.Example["diarization"].(string)
+			formats, _ = ep.Example["response_format"].(string)
 		}
 	}
-	if note == "" {
-		t.Fatal("no diarization note on /v1/audio/transcriptions")
+	if note == "" || formats == "" {
+		t.Fatal("no diarization/response_format note on /v1/audio/transcriptions")
 	}
-	// The note names num_speakers once, to DENY it — a client built against
-	// the old manifest needs to be told the field is gone. Nowhere else in
-	// the manifest may mention it, so strip the note and check the rest.
-	if !strings.Contains(note, "no `num_speakers`") {
-		t.Error("note does not retract num_speakers for clients built on the old text")
+	// num_speakers is named once, to DENY it — a client built against the old
+	// manifest needs to be told the field is gone. Nowhere else may mention it.
+	if !strings.Contains(formats, "no `num_speakers`") {
+		t.Error("the manifest does not retract num_speakers for clients built on the old text")
 	}
-	if rest := strings.ReplaceAll(rec.Body.String(), note, ""); strings.Contains(rest, "num_speakers") {
+	// Strip the note in its ENCODED form: it carries quotes, so the decoded
+	// string does not appear in the body byte for byte.
+	enc, err := json.Marshal(formats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest := strings.ReplaceAll(rec.Body.String(), strings.Trim(string(enc), `"`), "")
+	if strings.Contains(rest, "num_speakers") {
 		t.Error("manifest promises num_speakers, which no backend returns")
 	}
-	// The shape belongs to the backend, and the note must say so — otherwise
-	// it reads as a corrallm guarantee for every STT model on the route.
-	if !strings.Contains(note, "BACKEND-SPECIFIC") {
-		t.Error("note asserts a shape without naming whose it is")
+	// The body is corrallm's now. A note that still hands the shape to the
+	// backend is describing a proxy that no longer exists.
+	for _, dead := range []string{"BACKEND-SPECIFIC", "forwards the transcription body verbatim"} {
+		if strings.Contains(note, dead) {
+			t.Errorf("note still says %q; the remap makes the shape corrallm's", dead)
+		}
 	}
-	// Each of these is on the wire of a real diarize response.
-	for _, field := range []string{"speakers", "embedding", "similarity", "words", "UUID"} {
-		if !strings.Contains(note, field) {
-			t.Errorf("note omits %q, which a diarize response carries", field)
+	// The three rulings a client is entitled to hold corrallm to, each
+	// verified on the wire 2026-09-23 through a daemon in front of live oidio.
+	for _, claim := range []string{
+		"\"A\", \"B\"",           // the label form
+		"NOT ACROSS CALLS",       // its scope
+		"AA\", \"AB",             // the 27-speaker rollover, in the schema
+		"include[]=backend",      // the sidecar is opt-in
+		"embedding:[512 floats]", // and what it carries
+		"label",                  // the back-reference from voiceprint to label
+	} {
+		if !strings.Contains(note, claim) {
+			t.Errorf("diarization note omits %q", claim)
+		}
+	}
+	for _, claim := range []string{
+		"diarized_json", "verbose_json",
+		"OMITTED", // words[].end
+		"ABSENT",  // a field a model cannot answer
+		"STRING",  // segments[].id
+		"400",     // the refusals
+		"known_speaker_names",
+	} {
+		if !strings.Contains(formats, claim) {
+			t.Errorf("response_format note omits %q", claim)
 		}
 	}
 }

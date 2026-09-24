@@ -9,10 +9,15 @@
 > interface."*
 >
 > **Phase 1 (transcode in) is BUILT and verified live — see §7.** Of the remap out,
-> **contract 2 (`stream=true` on STT) is BUILT and verified live — see §9.1.** The
-> rest is design only; each remaining contract carries a policy call that is the
-> owner's, named in §9. **§12 is the canonical schema, written and awaiting
-> ratification — it is the gate on phases 3 and 4.**
+> **contract 2 (`stream=true` on STT) is BUILT — §9.1 — and contract 1 (the canonical
+> transcription body) is BUILT — §12, ratified by §9.0c and shipped 2026-09-23. What
+> actually ships, with its measurements and its gaps, is §12.11.**
+>
+> **Still open and still design only: contract 3** (`/v1/audio/translations` does not
+> translate), **contract 4** (`response_format: url` on images) and **contract 5**
+> (`/v1/realtime`'s hardcoded audio format). Each carries a policy call that is the
+> owner's — `open-questions.md` §5, items 2, 5 and 6 — and §12.9(a) did NOT unblock
+> them: they were never waiting on the schema.
 
 ## 0. The problem in one sentence
 
@@ -201,21 +206,25 @@ mp3, ffmpeg off PATH     415                     "…corrallm can convert it but
 48 kHz stereo 24-bit wav 200, Transcode-Ms: 0    the §2 gap, visible: the container matched, the PCM was not checked
 ```
 
-## 8. Coming out: five contracts, each verified, none implemented
+## 8. Coming out: five contracts, each verified — TWO now built, three still open
 
-**Deliberately not built.** Every one of these needs corrallm to *decide* something, and
-two of them need it to DO something the backend does not — which is not renaming, and
-not a call to make inside an implementation commit.
+~~none implemented~~. **1 and 2 are BUILT** (§12.11 and §9.1). **3, 4 and 5 are
+deliberately not built**, and each still needs corrallm to *decide* something that is
+the owner's call — `open-questions.md` §5 items 2, 5 and 6.
 
-1. **Diarization shape differs per backend.** oidio returns
+1. ✅ **BUILT 2026-09-23.** **Diarization shape differs per backend.** oidio returns
    `segments[]{id,start,end,text,speaker:UUID,overlap?}` plus top-level
    `speakers[]{uuid,embedding[512],similarity{uuid→cosine},clean_seconds,total_seconds,blended?}`
    and `words[]{word,start,speaker}` with **no `end`** — and **the UUID is minted per
    request**: three calls on the same audio gave three different ones. NeMo-Speech.cpp
    instead puts an integer `speaker` on `words[]` (verbose_json only; 400 otherwise),
    or returns textless `{"segments":[{start,end,speaker:int}]}`, and never serialises
-   `num_speakers` at all. **Normalising NeMo onto oidio's shape means joining words
-   into speaker turns — computing something the backend never returned.**
+   `num_speakers` at all. ~~Normalising NeMo onto oidio's shape means joining words
+   into speaker turns~~ — and the premise there was wrong twice over: neither shape is
+   canonical (§9.0), and the join is arithmetic on returned data rather than an
+   invention (§9.0's own boundary). **Both are now mapped onto OpenAI's
+   `diarized_json`; the join is RULE 2 in §12.9(e) and the NeMo half of it is
+   unit-covered only, because nothing on this box runs NeMo-Speech.cpp.**
 2. ✅ **BUILT.** **`stream=true` is silently ignored on oidio's diarize path.**
    `transcriptions.go:45` dispatches to `handleDiarize` before the stream check, and
    `handleDiarize` never reads it. **Re-verified on the wire 2026-09-23:** `stream=true`
@@ -440,15 +449,15 @@ through. **Still open, and phase 4 must not start on these before they are answe
    **that premise expired; see §12.0.** OpenAI now publishes `diarized_json` and a
    `transcript.text.segment` event, which makes "the OpenAI shape" an available answer
    and the third column §9.0 asked for. Folded into 3a rather than answered on its own.
-3a. **The canonical schema itself — the gating question. DESIGNED, awaiting
-   ratification: §12.** It fixes the speaker label's type and scope (string, `"A"`/`"B"`
-   by order of first appearance, stable within one response and explicitly NOT across
-   calls — §12.4); where a backend's extras go (a `backend` sidecar, measured at ~5.2 KB
-   per speaker — §12.5); `words[]` (in the contract, with `end` optional because oidio
-   does not report it — §12.6); and what a NON-diarizing model returns (absent fields,
-   never null, never a placeholder; `diarized_json` to one is a 400 — §12.7). **Eight
-   sub-choices are left for the owner in §12.9**, and (a) is the one phases 3 and 4 wait
-   on.
+3a. ✅ **The canonical schema itself — RATIFIED §9.0c and BUILT 2026-09-23: §12,
+   as-built in §12.11.** All eight sub-choices in §12.9 are closed, and the two rules
+   ratification left open are written: the 27-speaker rollover (§12.4, bijective
+   base-26) and the NeMo word→segment join (§12.9(e), six clauses plus a 2b for a
+   backend with no segments at all). The label is a string, `"A"`/`"B"` by order of
+   first appearance, stable within one response and NOT across calls; the extras ride
+   an opt-in `backend` sidecar (`include[]=backend`, 665 → 6,097 bytes measured);
+   `words[].end` is omitted when unreported; a non-diarizing model's fields are absent
+   and `diarized_json` to one is a 400.
 
 4. **Is a per-request speaker UUID a bug to fix or a fact to expose?** It cannot be
    correlated across calls, so any client that treats it as an identity is already
@@ -485,22 +494,32 @@ case from §4; a route probe that asks a backend what it ingests instead of read
 declaration. Independent of phase 3, and worth doing whether or not the remap happens.
 
 **Phase 3 — remap out, the renames.** Contracts 4 and 5 (§8): field-for-field, no
-synthesis, no decisions beyond §9.5 and §9.6. The smallest shippable slice of the other
-half.
+synthesis, no decisions beyond §9.5 and §9.6. ❓ **STILL BLOCKED, and §9.0c did not
+unblock it.** Ratifying `diarized_json` settled the AUDIO schema; contract 4 is
+`response_format: url` on images (which means corrallm hosts bytes — a store, a
+lifetime, a retention policy) and contract 5 is `/v1/realtime`'s advertised audio
+format. Both are `open-questions.md` §5 items 5 and 6, both still open, and neither
+was ever waiting on §12.
 
-**Phase 4 — remap out, the synthesis.** Contracts 1 and 3; **contract 2 is done** (§9.1).
-**Blocked on §12.9(a)** — the canonical schema is written but not ratified — and on
-§9.2/§9.4. Do not start it before those are answered; this is the part where a
-compatibility layer starts lying if it guesses.
+**Phase 4 — remap out, the synthesis.** ✅ **Contract 1 (the canonical transcription
+body) is DONE** — §12, built 2026-09-23, as-built record in §12.11. **Contract 2 is
+done** (§9.1). ❓ **Contract 3 — `/v1/audio/translations` does not translate — is
+NOT done and is not started.** It is `open-questions.md` §5 item 2 and it is the one
+place left on this route where the shape claim is true and the behaviour claim is
+false: the canonical body now comes back from `/v1/audio/translations` field for
+field, still reporting `"task":"transcribe"`, verified live 2026-09-23. **§9.4
+(stabilising a speaker across calls) stays out of scope by §9.0's own rule.**
 
 ---
 
-## 12. The canonical audio schema (§9.3a) — DESIGN ONLY, the owner ratifies it
+## 12. The canonical audio schema (§9.3a) — RATIFIED §9.0c, and ✅ BUILT 2026-09-23
 
-**Nothing here is implemented, and nothing here should be implemented before it is
-ratified.** §9.0 mandates a canonical shape; this is the proposal for what it is,
-written so it can be argued with rather than discovered in a diff. Phases 3 and 4
-have no target until §12.9 is ruled on.
+~~DESIGN ONLY, the owner ratifies it~~ — ratified, then built. §12.9 is ruled on in
+full (every sub-choice now carries its answer), the two rules the ratification left
+open are WRITTEN (§12.4's rollover and §12.9(e)'s join), and the code is
+`internal/proxy/sttremap.go`. **What actually shipped, what was measured on the wire,
+and what is unit-covered only: §12.11.** Read that before trusting a number here —
+§12.1–§12.9 are the design as argued, and §12.11 is the design as built.
 
 Everything in §12.1–§12.3 was read off the wire on **2026-09-23** against the live
 `oidio-stt` and `oidio-stt-diarize` (through a second corrallm on `:6510`; the
@@ -553,7 +572,14 @@ sidecar, on any model. This is the floor and it is already true on the box today
 | `text` | string | always |
 | `segments[]` | `{id, start, end, text}` + `speaker?` | when the backend segments |
 | `words[]` | `{word, start}` + `end?` + `speaker?` | when the backend reports words |
-| `usage` | `{type:"duration", seconds}` | always |
+| `usage` | `{type:"duration", seconds}` | ~~always~~ **when the backend MEASURED a duration** |
+
+**Correction, made while building:** `usage` was written "always" here and that was
+wrong by this document's own rule. §12.10.2 already made it optional in the streaming
+form, for the reason §12.6 gives — a backend that measured no duration would force
+corrallm to compute one. The non-streaming form must agree with the streaming form, so
+`usage` is optional in both. oidio always reports a duration, so nothing on this box
+sees the difference; a backend that does not would have made the manifest lie.
 
 **`response_format: diarized_json`** — OpenAI's name, new to corrallm:
 
@@ -630,6 +656,32 @@ Two things NeMo forces that oidio does not:
 `known_speaker_names[]` value; an integer cannot without a breaking type change.
 
 **Value: `"A"`, `"B"`, `"C"`, … by order of first appearance in the transcript.**
+"Order of first appearance" is the BACKEND'S OWN DOCUMENT ORDER — every `segments[]`
+entry in array order, then every `words[]` entry in array order. Nothing is sorted by
+time: re-ordering a backend's arrays would be corrallm asserting a chronology the
+backend did not.
+
+**RULE 1 — THE 27-SPEAKER ROLLOVER. Bijective base-26: after `"Z"` come `"AA"`,
+`"AB"`, … `"AZ"`, `"BA"`, … `"ZZ"`, `"AAA"`.** Spreadsheet columns. §9.0b said this
+belongs IN the schema rather than in a runtime surprise, and this is it.
+
+Why this one:
+
+- It agrees with OpenAI **exactly** over the whole range OpenAI specifies (1–26). A
+  scheme that diverges before 27 would be a different label form wearing OpenAI's
+  clothes.
+- One character class, no separator, unbounded. A client's parser does not need a
+  second branch at 27.
+- Every value is distinct. Unit-covered to 1,000 speakers, because the failure that
+  matters is not "ugly at 27" but "two speakers share a label".
+
+Rejected: **`speaker_27` after `Z`** — two label forms in one response, so every
+client parses both forever. **Wrapping back to `"A"`** — two speakers, one label; the
+schema lying, which is the specific failure §9.0's last paragraph names. **Refusing
+the 27th speaker** — a refusal for a transcript the backend produced correctly.
+
+**Not measured, and it cannot be honestly claimed as measured:** no 27-speaker
+recording exists on this box. The rule is unit-tested and nothing more.
 
 **Scope, stated in the manifest and not only here: STABLE WITHIN ONE RESPONSE,
 EXPLICITLY NOT ACROSS CALLS.** `"A"` in two responses is two different assertions.
@@ -663,9 +715,18 @@ not mean the same thing as this one's. A namespace makes "this is oidio's, and i
 may be gone tomorrow" a property of where the data sits rather than of a paragraph
 someone has to have read.
 
-**What it costs, measured:** the one-speaker sample is **5,640 bytes with the
-voiceprint and 442 bytes without it** — ~5.2 KB per speaker, and it scales with
-speaker count, not with audio length. That is why `json` never carries it.
+**What it costs, measured.** The design wrote this as "5,640 bytes with the voiceprint
+and 442 without" — which compared oidio's raw body against a SYNTHESISED STREAM, two
+things that differ in more than the sidecar. **Re-measured against what actually
+ships, same 2.56 s single-speaker file, `diarized_json` both times: 665 bytes without
+the sidecar, 6,097 with it.** ~5.4 KB per speaker, scaling with speaker count and not
+with audio length. The conclusion is unchanged and the number is now the right one.
+
+**`backend.name` is the MODEL that served the request** (`oidio-stt-diarize`), not a
+vendor string. §12.2 wrote `"oidio"`; corrallm has no vendor field to read, and
+inventing one would be this manifest's fourth false claim. The served model name is a
+fact corrallm knows for certain and a caller can correlate with `/v1/models`, and it
+namespaces just as well — better, for a fleet running two builds of the same vendor.
 
 **Rejected: drop the extras.** It is the cheapest option and it destroys the only
 data that answers §9.4. A corral layer that narrows what a backend can say, with no
@@ -735,8 +796,12 @@ in the wrong turn and nothing in the response says so.
 
 **Canonical → the wire on `stream=true`, and this is SHIPPED, not proposed:** the
 event schema has no carrier for `language`, `task`, `words[]` or `speakers[]`, so a
-synthesised stream drops all of them. **Measured: 5,640 bytes of JSON become 442
-bytes of events.** The manifest tells a caller to set `stream=false` to keep them.
+synthesised stream drops all of them. ~~Measured: 5,640 bytes of JSON become 442
+bytes of events~~ — that pair compared oidio's RAW body against the stream, and half
+of it stopped being true when the canonical shipped. **Re-measured against what
+ships, same request both ways: 665 bytes of canonical `diarized_json` against 407
+bytes of events.** The loss is the same loss; only the numbers moved.
+The manifest tells a caller to set `stream=false` to keep them.
 This is the largest loss in the whole layer and the one a caller is most likely to
 trip over, because they asked for a stream and got a smaller answer.
 
@@ -749,58 +814,119 @@ local socket and it is not worth a second mechanism.
 **`num_speakers` is not published.** Neither backend serialises it. It is
 `len(distinct labels)` — arithmetic on returned data, which the caller can do as
 easily as corrallm can, and publishing a derived count as though it were measured is
-the kind of small lie this section exists to catch. The manifest already says "take
-`speakers.length`"; under the canonical it becomes "count the distinct
+the kind of small lie this section exists to catch. ~~The manifest already says "take
+`speakers.length`"~~ — shipped: the manifest now says "count the distinct
 `segments[].speaker`".
 
-### 12.9 Open sub-choices — the owner rules on these
+### 12.9 Open sub-choices — ✅ ALL EIGHT CLOSED 2026-09-23
 
-Phases 3 and 4 stay blocked until (a) is answered. The rest can be answered in any
-order, but all of them before phase 4 writes a line.
+Nothing here is open. (a) was the gate and the owner ratified it; (c), (d), (f) and
+(g) were settled by §9.0b; (b) and (h) by §9.0c; (e) is ruled on above and its rule is
+written. Kept rather than deleted because each records WHY, and the code points here.
 
-**(a) Is OpenAI's `diarized_json` the canonical shape?** §12.0 says the premise that
-it does not exist is out of date. Recommendation: **yes** — it removes §9.3 entirely
-rather than answering it. The cost of yes: corrallm carries a third
-`response_format` and relabels oidio's UUIDs on every diarized request.
+**(a) Is OpenAI's `diarized_json` the canonical shape?** ✅ **YES** — *"Yes, project
+mission statement is openai compatible."* (§9.0c). It removes §9.3 entirely rather
+than answering it. The cost of yes, paid: corrallm carries a third `response_format`
+and relabels oidio's UUIDs on every diarized request.
 
-**(b) `"A"`/`"B"` or `speaker_0`/`speaker_1`?** Letters are OpenAI's and run out at
-26. Twenty-seven speakers in one recording is not a real case for this box, but
-"what happens at 27" needs an answer in the schema rather than in a panic later.
+**(b) `"A"`/`"B"` or `speaker_0`/`speaker_1`?** ✅ **Letters** — OpenAI's, per §9.0c,
+so the label FORM was never a choice. What was: what happens at 27. **Answered as
+RULE 1 in §12.4** — bijective base-26, `"AA"` after `"Z"`.
 
 **(c) `segments[].id` — string or integer?** OpenAI is inconsistent with itself: the
 `transcript.text.segment` EVENT carries a string `id`, `whisper-1`'s `verbose_json`
 carries an integer. oidio carries an integer. They cannot both be canonical, and the
-streaming and non-streaming forms must agree with each other. The shipped §9.1 code
-renders it as a **string** in the event, matching the event schema; if the answer is
-integer, that is a one-line change and a test.
+streaming and non-streaming forms must agree with each other. ✅ **STRING**, settled
+by §9.0b: accept either from a backend, emit one, and the event schema wins because it
+is the one actually specifying diarized output. Built: an integer `0` from oidio comes
+out as `"0"` in both forms, verified live.
 
-**(d) The `backend` sidecar: does it ship, and if so always or on request?** Three
-options: always present in `verbose_json`/`diarized_json`; only when the caller
-passes `include[]=backend` (OpenAI's own opt-in mechanism, used for `logprobs`); or
-not at all. Recommendation: `include[]=backend`, because 5.2 KB per speaker on every
-response is a real cost for data most callers will not read — but that adds a
-request-side parameter corrallm owns and no backend knows about, which is a new kind
-of thing in this layer.
+**(d) The `backend` sidecar: does it ship, and if so always or on request?** ✅
+**`include[]=backend`, opt-in**, settled by §9.0b: the default response is the
+documented canonical shape and nothing else. It does add a request-side parameter
+corrallm owns and no backend knows about — which is why the parameter is STRIPPED
+before the request goes upstream, and why an `include[]` value corrallm cannot serve
+is a 400 at the door rather than a silent drop.
 
-**(e) NeMo's textless segments: join the words, or `text: ""`?** If join, the rule
-must be written into the schema: *a word belongs to the segment whose
-`[start, end)` contains the word's `start`; a word matching no segment is appended
-to the nearest preceding one.* That rule is a guess at a boundary and should be
-ratified as a rule, not discovered as behaviour.
+**(e) NeMo's textless segments: join the words, or `text: ""`?** ✅ **ANSWERED —
+JOIN, and here is the rule.** The proposal was right and underspecified: it left
+three cases without an answer, and two implementations would have disagreed at
+exactly those. **RULE 2, as built and as published:**
 
-**(f) `words[].end` when the backend does not report it.** Recommendation: omit
-(§12.6). The alternative is to compute it from the next word's start and say so in
-the manifest.
+1. A word belongs to the **FIRST** segment, in `segments[]` **document order**,
+   whose **half-open** `[start, end)` contains the word's `start`. Half-open, so a
+   word starting exactly on a boundary belongs to the segment that is STARTING, not
+   the one that is ending. First-in-document-order, so overlapping segments resolve
+   deterministically rather than by whichever the loop reached last.
+2. A segment with **no `end`** runs to the **next segment's `start`**, or to
+   infinity when it is the last. A backend that reports where a turn begins and not
+   where it ends has still said where the next one starts.
+3. A word matching **no** segment is appended to the nearest segment **starting at
+   or before** it. A word starting **before every** segment goes to the **first** —
+   "nearest preceding" has no referent there, and dropping the word would lose
+   transcript text to a gap in the backend's own segmentation.
+4. A word with **no `start`** cannot be placed and is not placed. It still appears
+   in `words[]`; it is absent from every segment's text.
+5. A segment's text is its words in the order they were **RETURNED**, not re-sorted.
+   A single space joins two only when the left does not already end with whitespace
+   and the right does not begin with it — oidio writes `"The"` and the same
+   recogniser's stream writes `" The"`, and a caller must not be able to tell which
+   by counting spaces. The result is trimmed.
+6. A segment that gathers **no** words keeps `text: ""`. That is the honest
+   rendering of "no word landed here", and it is the only case where a canonical
+   segment's text is empty.
 
-**(g) `diarized_json` to a non-diarizing model: 400, or degrade?** Recommendation:
-400. It is the same class of decision as §9.1 and should not be answered differently
-without a reason.
+**RULE 2b — the case the question did not cover.** A backend can answer "who spoke
+when" entirely in `words[]`, with no `segments[]` at all; NeMo's verbose_json does.
+The canonical requires `segments[]`, so they are DERIVED: each **maximal run of
+consecutive words sharing a speaker** becomes one segment — `start` from the run's
+first word, `end` from its last word **when the backend reported one and OMITTED
+otherwise** (never the next run's start, which nobody measured), `text` by rule 5,
+`id` the run's zero-based index as a string. Consecutive in RETURNED order, not in
+time, for rule 5's reason.
 
-**(h) Does corrallm accept OpenAI's `known_speaker_names[]`?** OpenAI takes names
-plus reference audio. oidio takes `known_speakers` — UUIDs, from a previous call the
-caller kept. They are different mechanisms with the same purpose, and mapping one
-onto the other is not a rename. Out of scope for the schema; in scope for whether
-the schema should reserve the field name now.
+**Nothing here is invented.** Every character emitted was returned by the backend;
+this is arithmetic on returned data, which §9.0 permits, and it is the whole of what
+§9.0 permits. **Untested against the backend that motivates it** — NeMo-Speech.cpp's
+PR is unmerged and nothing on this box runs it, so rules 2 and 2b are unit-covered
+and nothing more. If the rule is wrong at a boundary a word lands in the wrong turn
+and nothing in the response says so; that exposure is unchanged by writing the rule
+down, but it is now reviewable.
+
+**(f) `words[].end` when the backend does not report it.** ✅ **OMIT** (§9.0b(f),
+§12.6). Verified live: a canonical `words[]` from oidio carries no `end` KEY at all,
+not a null.
+
+**(g) `diarized_json` to a non-diarizing model: 400, or degrade?** ✅ **400** (§9.0b).
+Built — with one compromise that is named rather than hidden, because it was not
+visible until the code was written: **the refusal happens at RESPONSE time, not at the
+door.** Nothing in corrallm's model record declares that a model diarizes. `capability`
+is derived from the cost `type` string (`config.TypeIO`), and a substring check for
+"diarize" would 400 a NeMo-backed model that diarizes under a different type name —
+worse than a late refusal. So the only honest signal available is what the backend
+actually returned. The consequence, measured live: the caller gets 400 while the
+activity row records the backend's 200 and its 213-byte body, because the work was
+really done and really cost GPU time. Moving this to the door needs a model to be able
+to DECLARE diarization — a `config` change, tracked in `open-questions.md` §5.
+
+**(h) Does corrallm accept OpenAI's `known_speaker_names[]`?** ✅ **The NAME is
+reserved; a request that USES it is refused 400 at the door.** §9.0c settled the
+spelling — OpenAI defines it, so corrallm must not spell it differently, and the
+parameter is recognised by name rather than falling through as an unknown form field.
+The mechanism is not implemented, and that is the half this had to decide: OpenAI
+pairs names with reference audio, oidio takes `known_speakers` UUIDs a caller kept
+from a previous call, and mapping one onto the other is speaker recognition (§9.4),
+not a rename.
+
+**Why 400 rather than accept-and-ignore.** Accepting names and answering `"A"` is
+accept-generously misapplied to a capability — the exact boundary §9.0b drew, and
+the same failure as §12.7's silent degrade. Refusing at the door costs the caller one
+error message and no GPU time; accepting costs them a transcript they think is
+labelled with names. **An EMPTY `known_speaker_names[]` is a no-op, not a refusal** —
+reserving a field must not break a client that sends it empty by construction. Both
+halves verified live: 400 in 0.6 ms with no backend call, and an empty value 200.
+
+oidio's own `known_speakers` is untouched and still forwarded, under its own name.
 
 ### 12.10 Findings from building §9.1 — two filed, and both now closed by §9.0b
 
@@ -884,3 +1010,126 @@ speech route `streaming` only labels the activity row; the SSE gate is
 `audioUploadRoute`, which excludes speech structurally. So a `stream=True` speech
 request is metered correctly now and still returns binary audio. What §9.1 left
 open — whether TTS should stream audio chunks at all — is untouched.
+
+### 12.11 As BUILT — what shipped, what was measured, what is unit-covered only
+
+`internal/proxy/sttremap.go`, wired in `proxy.go`. Covers
+`/v1/audio/transcriptions` and `/v1/audio/translations`; `/v1/audio/speech` is
+excluded structurally by `audioUploadRoute`, unchanged.
+
+**Where it sits, and why that order.** The response path is
+`w ← sttStreamWriter ← sttRemapWriter ← statusCapture ← ReverseProxy`. INSIDE the
+SSE writer, so events are synthesised from corrallm's canonical body and carry
+canonical speaker labels — the streaming and non-streaming forms cannot drift
+because one is built from the other. OUTSIDE `statusCapture`, so the activity row
+still records the BACKEND's body and metering is untouched, exactly as §9.1
+arranged. Both writers hold headers until the body is complete, so a body that
+does not parse leaves with its original headers and status.
+
+**Request side, before admission** (beside the transcode, for the same three
+reasons): read `response_format` / `include[]` / `known_speaker_names[]` once,
+refuse what cannot be served, rewrite the upstream `response_format` to
+`verbose_json`, strip `include[]`.
+
+#### Measured live, 2026-09-23
+
+A second daemon on `:6510` with its own home and DB, oidio configured as a pure
+proxy onto the already-running `:5806` with no `cmd` — nothing spawned, loaded or
+evicted. Production `:8111` was asked for transcriptions (which is what keeps
+oidio resident) and was never restarted, stopped or reconfigured.
+`examples/audio/speech.wav`, 2.56 s, one speaker.
+
+| request | before the remap | after |
+|---|---|---|
+| `oidio-stt-diarize` `json` | 5,640 B, segments+speakers+voiceprints | **55 B** — `{"text":…}` and nothing else |
+| `oidio-stt-diarize` `verbose_json` | 6,348 B | **665 B** — labels `"A"`, ids `"0"`, words with no `end` |
+| `oidio-stt-diarize` `diarized_json` | (did not exist; oidio ignored it) | **665 B**, `speaker` required |
+| … `+ include[]=backend` | — | **6,097 B** — 512-float voiceprint + `label:"A"` |
+| `oidio-stt` `json` / `verbose_json` | 56 B / 213 B | **55 B / 261 B** (`usage` added) |
+| `oidio-stt` `diarized_json` | 200, silently plain | **400**, naming the model |
+| `text` / `srt` | forwarded | **forwarded, byte for byte** (44 B / 89 B) |
+| `diarized_json` + `stream=true` | 442 B of events, speaker = a UUID | **407 B, speaker `"A"`** |
+| `json` + `stream=true`, `oidio-stt` | 662 B passed through + `[DONE]` | **662 B, unchanged** |
+| `known_speaker_names[]=Alice` | forwarded and ignored | **400 in 0.6 ms, no backend call** |
+| `include[]=logprobs` | forwarded and ignored | **400 in 0.6 ms, no backend call** |
+
+Also verified: `/v1/audio/translations` returns the same canonical body (665 B,
+`diarized_json`) — and still reports `"task":"transcribe"`, which is contract 3,
+still open and untouched. oidio's own request args (`num_clusters`,
+`speaker_min_duration`, `known_speakers`) still reach it and still 200.
+
+**Metering.** `audio_bytes` bills the caller's upload, not corrallm's rewrite —
+the upstream form gains a `response_format` field the caller did not send, and
+charging for it would bill a caller for corrallm's compatibility layer. The
+activity row's captured response is still oidio's (4,120 B of a 6,348 B body at the
+capture cap) while the client receives 665, so the meter reads the backend.
+
+#### Unit-covered only — say so rather than implying otherwise
+
+- **Both join rules (§12.9(e), rules 2 and 2b).** NeMo-Speech.cpp's PR is unmerged
+  and nothing on this box runs it. Every NeMo column in §12.3 is source-read, and
+  every line of code written for it is exercised by tests and by no backend.
+- **The 27-speaker rollover (§12.4, rule 1).** No 27-speaker recording exists here.
+  Unit-tested to 1,000 labels for distinctness.
+- **An integer speaker key** (NeMo's shape) reaching the canonical as a letter.
+- **A backend that reports `words[].end`.** oidio does not; NeMo is said to.
+- **A backend returning `segments[]` with extra keys** (oidio's documented
+  `overlap` never appeared in any sample), so `backend.segments[]` has never been
+  populated on the wire.
+
+#### Known gaps, all named rather than fixed
+
+1. **The `diarized_json` refusal is late** — §12.9(g). The caller gets 400; the
+   activity row records the backend's 200. It needs a model to be able to declare
+   that it diarizes, which is a `config` change.
+2. **NeMo's `json` still asks upstream for `verbose_json`** and projects down, which
+   is what §12.8 ruled — but that ruling is now load-bearing for a backend nobody
+   has run. If a third backend 400s on `verbose_json`, this is where it breaks.
+3. **`text`/`srt`/`vtt` are not normalised.** oidio writes `Speaker 1:` into an SRT
+   cue — its spelling, not corrallm's ordinal label. Documented in the manifest as a
+   backend's text rather than quietly rewritten, because rewriting inside a subtitle
+   cue is editing a transcript.
+4. **`include[]=logprobs` is now a 400 where it was silently ignored.** That is the
+   intended direction (§9.0b) and it is a behaviour change for any caller that was
+   sending it.
+5. **A diarizing client reading oidio's extras out of a plain `json` body will
+   break.** That is the whole point of §12.1's floor, and it is the largest
+   compatibility change in this commit. The manifest says so in its first sentence.
+
+---
+
+## 13. "Ensure that is the case" — the compatibility audit. ◻ UNSTARTED
+
+§9.0c referenced this section and it did not exist. It does now, empty of findings
+and honest about that, because a dangling forward reference is how a plan starts
+describing work nobody did.
+
+**The instruction.** *"Yes, project mission statement is openai compatible. Ensure
+that is the case."* The second sentence is the larger half and it is NOT scoped to
+diarization or to audio. Every surface corrallm serves is a compatibility claim, the
+manifest is normative under §9.0b, and an unaudited claim is a liability rather than
+a gap.
+
+**Why it is a real tree and not a chore.** This manifest has shipped four false
+claims that anyone would have caught by trying them: a `speech.wav` that existed
+nowhere, a `num_speakers` nothing returns, "no STT backend on this box streams" —
+which §12.10.1 had already disproved — and, until 2026-09-23, a diarization note
+promising the caller oidio's raw body. Four is a pattern. The audit's product is not
+prose; it is **a check per claim, run against the wire**, and the claims that cannot
+be checked get deleted rather than softened.
+
+**What is already known to be false or unstated, from the work so far:**
+
+- `/v1/audio/translations` **does not translate** (`open-questions.md` §5 item 2).
+  The shape claim is true and the behaviour claim is false. Re-verified live
+  2026-09-23 through the canonical remap: `"task":"transcribe"`.
+- `/v1/images/generations` **never honours `response_format`** — OpenAI defaults to
+  `url` and corrallm only ever emits `b64_json` (item 5). Nothing says so.
+- `/v1/realtime` **advertises a hardcoded "PCM16 mono @ 24 kHz"** that is oidio's
+  default, per-model configurable, and decoded from Opus at 48 kHz anyway (item 6).
+
+**next** — nothing scheduled; this needs a decision about scope before it needs code.
+**risks** — an audit that produces a document instead of tests is the fifth false
+claim waiting to happen. **blocking decisions** — none to start, but items 2, 5 and 6
+are each a policy call the owner owns, and the audit will surface more of the same
+kind rather than resolving them.
