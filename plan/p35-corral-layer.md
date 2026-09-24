@@ -442,9 +442,19 @@ live `{"stream":true}` to `/v1/audio/speech` still returns `audio/mpeg`.
 only on a declared mismatch · convert before admission · refuse rather than pass
 through. **Still open, and phase 4 must not start on these before they are answered:**
 2. **`/v1/audio/translations`.** Route it to a translating backend, refuse it as
-   unimplemented, or keep transcribing and document the lie. Corrallm could also
+   unimplemented, or keep transcribing and document the lie. ~~Corrallm could also
    translate the transcript with a chat model — a real option, and one that changes what
-   the endpoint costs.
+   the endpoint costs.~~ **CORRECTED 2026-09-23, by the owner: the chat-model option is
+   dominated and should not have been listed as real.** NeMo-Speech.cpp translates
+   NATIVELY — `src/nmt/translator.h` wraps llama.cpp to run the Riva Translate 4B
+   Instruct v2 decoder, `src/speech/speech_translator.h` does streaming speech
+   translation, and its README lists composed ASR→NMT→TTS as a first-class application.
+   Routing audio through a general chat model for a job a purpose-built NMT does inside
+   the backend we are already adopting costs chat tokens for a worse answer. **This does
+   not close the question** — oidio is what serves the route TODAY and it does not
+   translate, so "refuse" and "document the lie" are still live for the present. It
+   removes one option and makes the answer conditional on NeMo landing (`~/inflight`,
+   PR unmerged).
 3. **Diarization: whose shape is canonical?** ~~OpenAI has no diarization schema~~ —
    **that premise expired; see §12.0.** OpenAI now publishes `diarized_json` and a
    `transcript.text.segment` event, which makes "the OpenAI shape" an available answer

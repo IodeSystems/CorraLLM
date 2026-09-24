@@ -235,8 +235,16 @@ Each is verified against the wire or the source; do not re-derive them.
    the behaviour claim is false — **re-verified 2026-09-23 through the canonical remap: the
    route now returns the canonical body field for field and still reports
    `"task":"transcribe"`.** Route it to something that translates, refuse it as
-   unimplemented, document the lie — or have corrallm translate the transcript with a chat
-   model, which is a real option and changes what the endpoint costs.
+   unimplemented, or document the lie. ~~Or have corrallm translate the transcript with a
+   chat model.~~ **The chat-model option is struck 2026-09-23 — the owner caught it, and
+   it should never have been on the list.** NeMo-Speech.cpp translates natively
+   (`src/nmt/translator.h` → Riva Translate 4B Instruct v2; `src/speech/speech_translator.h`
+   for streaming; composed ASR→NMT→TTS in its README), and it fits the 3080: ASR +
+   diarization ≈ 1.5 GB, + NMT at Q4 ≈ 3.9 GB, against 4,970 MiB free today on a 10 GB
+   card. **Estimates from parameter counts, not measurements — nothing here has run
+   NeMo.** The question stays open because oidio serves the route today and does not
+   translate; what changed is that its answer is now conditional on NeMo landing rather
+   than on a build-vs-buy call corrallm gets to make.
 5. **`response_format: url` on `/v1/images/generations`.** OpenAI defaults to `url` and honours
    the field; corrallm only ever emits `b64_json`. Serving a URL means corrallm hosts the bytes —
    a store, a lifetime, a retention policy. Worth it, or is `b64_json`-only the documented limit?
