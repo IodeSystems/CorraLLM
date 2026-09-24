@@ -577,7 +577,7 @@ sidecar, on any model. This is the floor and it is already true on the box today
 | field | type | when |
 |---|---|---|
 | `task` | string | always |
-| `language` | string | always |
+| `language` | string | ~~always~~ **when the backend IDENTIFIED one, or the caller named one** |
 | `duration` | number (s) | always |
 | `text` | string | always |
 | `segments[]` | `{id, start, end, text}` + `speaker?` | when the backend segments |
@@ -591,11 +591,25 @@ corrallm to compute one. The non-streaming form must agree with the streaming fo
 `usage` is optional in both. oidio always reports a duration, so nothing on this box
 sees the difference; a backend that does not would have made the manifest lie.
 
+**Second correction, made after running a second backend (`p35-nemo-live.md` §5.2).**
+`language` was written "always" and a backend that does not identify one now exists on
+this box. NeMo-Speech.cpp echoes `""` when the caller named no language;
+`canonTranscription.Language` is `omitempty`, so the key vanishes — and a client
+reading `.language` got a string from oidio and `undefined` from NeMo on the same route
+and the same format. This is the call `usage` already made, for the reason §9.0b(f)
+gave for `words[].end`: emitting `"language": ""` would publish a language nobody
+identified. So **`language` is OPTIONAL — present when the backend identified one or
+the caller named one in the `language` form field, absent otherwise, and never guessed
+by corrallm.** **Who reports it:** oidio, on every transcription; NeMo-Speech.cpp, only
+back to a caller who sent `language=`. The remap is unchanged — the manifest was what
+was wrong.
+
 **`response_format: diarized_json`** — OpenAI's name, new to corrallm:
 
 | field | type | when |
 |---|---|---|
-| `task`, `language`, `duration`, `text`, `usage` | as above | always |
+| `task`, `duration`, `text` | as above | always |
+| `language`, `usage` | as above | **optional, exactly as above** |
 | `segments[]` | `{id, speaker, text, start, end}` — `speaker` REQUIRED | always |
 | `words[]` | as above, `speaker` present | when the backend reports words |
 | `backend` | `{name, …}` | when the backend returned data the canonical has no home for |
