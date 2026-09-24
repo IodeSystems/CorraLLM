@@ -187,7 +187,7 @@ func TestSniffAudioFormat(t *testing.T) {
 // which ingests every format a client sends — from paying for a re-encode.
 func TestTranscodeSkippedWhenNothingDeclared(t *testing.T) {
 	body, ct := sttUpload(t, "stt", "speech.mp3", []byte("ID3\x04junk"), nil)
-	out, newCT, err := transcodeAudioUpload(context.Background(), body, ct, nil, config.DefaultConvert())
+	out, newCT, err := transcodeAudioUpload(context.Background(), body, ct, audioIntake{}, config.DefaultConvert())
 	if err != nil || out != nil || newCT != "" {
 		t.Fatalf("declared nothing → out=%v ct=%q err=%v, want a no-op", out != nil, newCT, err)
 	}
@@ -197,7 +197,7 @@ func TestTranscodeSkippedWhenNothingDeclared(t *testing.T) {
 func TestTranscodeSkippedWhenFormatAccepted(t *testing.T) {
 	body, ct := sttUpload(t, "stt", "speech.wav", tinyWAV(1), nil)
 	out, _, err := transcodeAudioUpload(context.Background(), body, ct,
-		[]string{"wav", "flac"}, config.DefaultConvert())
+		containers("wav", "flac"), config.DefaultConvert())
 	if err != nil || out != nil {
 		t.Fatalf("accepted format → out=%v err=%v, want a no-op", out != nil, err)
 	}
@@ -214,7 +214,7 @@ func TestTranscodeMP3ToWAV(t *testing.T) {
 		map[string]string{"response_format": "verbose_json", "language": "en"})
 
 	out, newCT, err := transcodeAudioUpload(context.Background(), body, ct,
-		[]string{"wav"}, config.DefaultConvert())
+		wavOnly(), config.DefaultConvert())
 	if err != nil {
 		t.Fatalf("transcode: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestTranscodeFromEveryClientFormat(t *testing.T) {
 			src := encodeWith(t, wav, tc.ext, tc.args...)
 			body, ct := sttUpload(t, "nemo", "speech."+tc.ext, src, nil)
 			out, newCT, err := transcodeAudioUpload(context.Background(), body, ct,
-				[]string{"wav"}, config.DefaultConvert())
+				wavOnly(), config.DefaultConvert())
 			if err != nil {
 				t.Fatalf("transcode %s: %v", tc.ext, err)
 			}
@@ -279,7 +279,7 @@ func TestTranscodeWithoutFFmpegRefuses(t *testing.T) {
 	noFFmpeg(t)
 	body, ct := sttUpload(t, "nemo", "speech.mp3", []byte("ID3\x04junk"), nil)
 	_, _, err := transcodeAudioUpload(context.Background(), body, ct,
-		[]string{"wav"}, config.DefaultConvert())
+		wavOnly(), config.DefaultConvert())
 	var te *transcodeError
 	if !asTranscodeError(err, &te) {
 		t.Fatalf("err = %v, want a transcodeError", err)
@@ -302,7 +302,7 @@ func TestTranscodeUndecodableRefuses(t *testing.T) {
 	}
 	body, ct := sttUpload(t, "nemo", "speech.mp3", bytes.Repeat([]byte{0x01, 0x02}, 512), nil)
 	_, _, err := transcodeAudioUpload(context.Background(), body, ct,
-		[]string{"wav"}, config.DefaultConvert())
+		wavOnly(), config.DefaultConvert())
 	var te *transcodeError
 	if !asTranscodeError(err, &te) {
 		t.Fatalf("err = %v, want a transcodeError", err)
@@ -320,7 +320,7 @@ func TestTranscodeDurationCapRefuses(t *testing.T) {
 	cfg := config.DefaultConvert()
 	cfg.AudioMaxSeconds = 1
 	body, ct := sttUpload(t, "nemo", "speech.mp3", src, nil)
-	_, _, err := transcodeAudioUpload(context.Background(), body, ct, []string{"wav"}, cfg)
+	_, _, err := transcodeAudioUpload(context.Background(), body, ct, wavOnly(), cfg)
 	var te *transcodeError
 	if !asTranscodeError(err, &te) {
 		t.Fatalf("err = %v, want a transcodeError", err)
@@ -340,7 +340,7 @@ func TestTranscodeHonoursSampleRate(t *testing.T) {
 	cfg := config.DefaultConvert()
 	cfg.AudioSampleRate = 8000
 	body, ct := sttUpload(t, "nemo", "speech.mp3", src, nil)
-	out, newCT, err := transcodeAudioUpload(context.Background(), body, ct, []string{"wav"}, cfg)
+	out, newCT, err := transcodeAudioUpload(context.Background(), body, ct, wavOnly(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestProxyTranscodesUploadForRestrictedBackend(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	rec := postSTT(t, upstream.URL, []string{"wav"}, "speech.mp3", src)
+	rec := postSTT(t, upstream.URL, wavOnly(), "speech.mp3", src)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -421,7 +421,7 @@ func TestProxyLeavesUploadAloneWhenNothingDeclared(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	rec := postSTT(t, upstream.URL, nil, "speech.mp3", src)
+	rec := postSTT(t, upstream.URL, audioIntake{}, "speech.mp3", src)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -449,7 +449,7 @@ func TestProxyRefusalReachesCaller(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	rec := postSTT(t, upstream.URL, []string{"wav"}, "speech.mp3", []byte("ID3\x04junk"))
+	rec := postSTT(t, upstream.URL, wavOnly(), "speech.mp3", []byte("ID3\x04junk"))
 	if rec.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("status = %d, want 415; body = %s", rec.Code, rec.Body.String())
 	}
@@ -462,6 +462,12 @@ func TestProxyRefusalReachesCaller(t *testing.T) {
 }
 
 // --- helpers -------------------------------------------------------------
+
+// containers is a declaration at the phase 1 grain: containers only, nothing
+// below them. wavOnly is the common case of it.
+func containers(names ...string) audioIntake { return audioIntake{formats: names} }
+
+func wavOnly() audioIntake { return containers("wav") }
 
 func asTranscodeError(err error, out **transcodeError) bool {
 	te, ok := err.(*transcodeError)
@@ -507,7 +513,7 @@ func wavChannels(b []byte) uint16 {
 
 // postSTT runs one transcription request through a proxy whose single model
 // declares `formats` (or does not), and returns the recorded response.
-func postSTT(t *testing.T, upstreamURL string, formats []string, filename string, audio []byte) *httptest.ResponseRecorder {
+func postSTT(t *testing.T, upstreamURL string, intake audioIntake, filename string, audio []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	st, err := store.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -520,9 +526,9 @@ func postSTT(t *testing.T, upstreamURL string, formats []string, filename string
 	cfg := mkConfig(t, "nemo", upstreamURL)
 	m := cfg.Models["nemo"]
 	m.Type = "stt"
-	m.Modalities = map[string]config.ModalitySpec{
-		config.ModalityAudio: {Formats: formats},
-	}
+	spec := intake.bounds
+	spec.Formats = intake.formats
+	m.Modalities = map[string]config.ModalitySpec{config.ModalityAudio: spec}
 	cfg.Models["nemo"] = m
 
 	r := chi.NewRouter()
@@ -714,10 +720,21 @@ func TestNeMoIntakeSpecIsNotVacuous(t *testing.T) {
 	}
 }
 
-// nemoIntake is what an operator would declare for NeMo-Speech.cpp today: the
-// one container its reader opens. It is deliberately NOT enough — see the
-// 24-bit case below, which is the gap phase 2 closes.
-func nemoIntake() []string { return []string{"wav"} }
+// nemoIntake is NeMo-Speech.cpp's contract as an operator would write it into
+// `modalities:` — the one container its reader opens (R3), and the bounds it
+// enforces inside that container (R6, R7, R8). The container line alone is
+// what phase 1 could express, and it is not enough: see the 24-bit case below.
+func nemoIntake() audioIntake {
+	return audioIntake{
+		formats: []string{"wav"},
+		bounds: config.ModalitySpec{
+			MinSampleRate: 8000,                   // R7
+			MaxSampleRate: 96000,                  // R7
+			MaxChannels:   2,                      // R6
+			PCM:           []string{"s16", "f32"}, // R8, in NeMo's own order
+		},
+	}
+}
 
 // What corrallm produces has to be loadable by the backend it produced it for.
 // Sniffing "wav" is not that test: RIFF/WAVE is rule R3 of ten.
@@ -782,5 +799,325 @@ func TestWAVOutsideNeMoPCMBoundsIsHandledAtTheDoor(t *testing.T) {
 	got, _ := filePartOf(t, out, newCT)
 	if err := nemoAccepts(got); err != nil {
 		t.Errorf("NeMo would still refuse what corrallm produced: %v", err)
+	}
+}
+
+// --- phase 2: the bounds below the container ------------------------------
+
+// A wav already inside the declared bounds costs nothing. The layer is a
+// per-backend capability check, not a normaliser, and that does not change
+// because the check got finer.
+func TestBoundsInRangeWAVIsUntouched(t *testing.T) {
+	body, ct := sttUpload(t, "nemo", "speech.wav", wavPCM(1, 2, 16, 44100, 1000), nil)
+	out, _, err := transcodeAudioUpload(context.Background(), body, ct, nemoIntake(), config.DefaultConvert())
+	if err != nil || out != nil {
+		t.Fatalf("44.1 kHz stereo s16 is inside NeMo's bounds → out=%v err=%v, want a no-op", out != nil, err)
+	}
+}
+
+// §9.0b, the half that is easy to forget: a backend that declares nothing
+// below the container gets NO new constraint. Phase 2 gives an operator a way
+// to say what NeMo needs; it does not start guessing it for every backend.
+func TestBoundsSilenceAddsNoConstraint(t *testing.T) {
+	body, ct := sttUpload(t, "nemo", "speech.wav", wavPCM(1, 2, 24, 48000, 1000), nil)
+	out, _, err := transcodeAudioUpload(context.Background(), body, ct, wavOnly(), config.DefaultConvert())
+	if err != nil || out != nil {
+		t.Fatalf("containers-only declaration → out=%v err=%v, want phase 1's behaviour unchanged", out != nil, err)
+	}
+}
+
+// Each bound refuses the file that trips it and only that file.
+func TestBoundsCatchEachParameter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   []byte
+		want bool // satisfied?
+	}{
+		{"16-bit mono 16 kHz", wavPCM(1, 1, 16, 16000, 100), true},
+		{"float32, which NeMo also reads", wavPCM(3, 1, 32, 48000, 100), true},
+		{"24-bit trips the encoding bound", wavPCM(1, 2, 24, 48000, 100), false},
+		{"8-bit trips the encoding bound", wavPCM(1, 1, 8, 16000, 100), false},
+		{"32-bit integer trips the encoding bound", wavPCM(1, 1, 32, 16000, 100), false},
+		{"EXTENSIBLE is not format 1 or 3", wavPCM(0xFFFE, 1, 16, 16000, 100), false},
+		{"5.1 trips the channel bound", wavPCM(1, 6, 16, 48000, 100), false},
+		{"192 kHz trips the rate ceiling", wavPCM(1, 1, 16, 192000, 100), false},
+		{"4 kHz trips the rate floor", wavPCM(1, 1, 16, 4000, 100), false},
+		{"an unreadable header is never 'fine'", []byte("RIFF????WAVE"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The two must agree: corrallm's answer about this file is only
+			// worth anything if it matches what the backend would do with it.
+			if got := nemoIntake().satisfiedBy(sniffAudioFormat(tc.in), tc.in); got != tc.want {
+				t.Errorf("satisfiedBy = %v, want %v", got, tc.want)
+			}
+			if tc.want && nemoAccepts(tc.in) != nil {
+				t.Errorf("corrallm would forward a file NeMo refuses: %v", nemoAccepts(tc.in))
+			}
+		})
+	}
+}
+
+// ACCEPT GENEROUSLY (§9.0b) where it costs something: corrallm's preferred
+// 16 kHz mono s16 is a default, not a demand. A backend that wants 44.1 kHz
+// float32 gets 44.1 kHz float32 rather than a refusal explaining that
+// corrallm likes 16 kHz.
+func TestTranscodeConvertsIntoDeclaredBounds(t *testing.T) {
+	if !haveFFmpeg() {
+		t.Skip("ffmpeg not installed")
+	}
+	picky := audioIntake{
+		formats: []string{"wav"},
+		bounds: config.ModalitySpec{
+			MinSampleRate: 44100, MaxSampleRate: 44100, MaxChannels: 1,
+			PCM: []string{"f32"},
+		},
+	}
+	src := encodeWith(t, tinyWAV(1), "mp3")
+	body, ct := sttUpload(t, "picky", "speech.mp3", src, nil)
+	out, newCT, err := transcodeAudioUpload(context.Background(), body, ct, picky, config.DefaultConvert())
+	if err != nil {
+		t.Fatalf("refused a conversion it can make: %v", err)
+	}
+	got, _ := filePartOf(t, out, newCT)
+	rate, channels, encoding, ok := parseWAVParams(got)
+	if !ok {
+		t.Fatal("produced a wav corrallm cannot read back")
+	}
+	if rate != 44100 || channels != 1 || encoding != "f32" {
+		t.Errorf("produced %d Hz / %d ch / %s, want 44100 / 1 / f32", rate, channels, encoding)
+	}
+	if !picky.satisfiedBy("wav", got) {
+		t.Error("produced a file that does not satisfy the bounds it was produced for")
+	}
+}
+
+// The duration cap follows the target. 44.1 kHz float32 is 5.5x the bytes of
+// 16 kHz s16, and a cap computed off the default would let the 64 MiB body
+// limit be crossed without anything saying so.
+func TestBoundsCapFollowsTheTarget(t *testing.T) {
+	def, err := wavOnly().chooseTarget("mp3", config.DefaultConvert())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := def.bytesPerSecond(); got != 32000 {
+		t.Errorf("default target = %d B/s, want 32000", got)
+	}
+	picky := audioIntake{formats: []string{"wav"}, bounds: config.ModalitySpec{
+		MinSampleRate: 44100, MaxSampleRate: 44100, PCM: []string{"f32"}}}
+	tgt, err := picky.chooseTarget("mp3", config.DefaultConvert())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tgt.bytesPerSecond(); got != 44100*4 {
+		t.Errorf("f32 44.1 kHz target = %d B/s, want %d", got, 44100*4)
+	}
+}
+
+// REFUSE ONLY WHAT CANNOT BE SERVED, and then at the door and by name. Three
+// declarations no conversion corrallm can make would satisfy.
+func TestBoundsRefusalsNameTheProblem(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		intake audioIntake
+		want   []string // substrings the caller must be able to read
+	}{
+		{
+			// corrallm converts to wav and only to wav; a flac-only backend was
+			// previously handed a wav it could not open, and found out by 400.
+			name:   "a container corrallm cannot produce",
+			intake: containers("flac"),
+			want:   []string{"mp3", "flac", "ffmpeg", "wav"},
+		},
+		{
+			// Only reachable from a probe record: Validate refuses this in config.
+			name: "a rate window with nothing in it",
+			intake: audioIntake{formats: []string{"wav"}, bounds: config.ModalitySpec{
+				MinSampleRate: 48000, MaxSampleRate: 16000}},
+			want: []string{"mp3", "48000", "16000"},
+		},
+		{
+			// Also probe-only: Validate refuses an unknown pcm name at load, so
+			// the list can only end up empty of producible names that way.
+			name: "no sample encoding corrallm can produce",
+			intake: audioIntake{formats: []string{"wav"}, bounds: config.ModalitySpec{
+				PCM: []string{"adpcm_ima_wav"}}},
+			want: []string{"mp3", "adpcm_ima_wav", "ffmpeg", "s16"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, ct := sttUpload(t, "picky", "speech.mp3", []byte("ID3\x04junk"), nil)
+			_, _, err := transcodeAudioUpload(context.Background(), body, ct, tc.intake, config.DefaultConvert())
+			var te *transcodeError
+			if !asTranscodeError(err, &te) {
+				t.Fatalf("err = %v, want a transcodeError", err)
+			}
+			if te.status != http.StatusUnsupportedMediaType {
+				t.Errorf("status = %d, want 415", te.status)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(te.msg, w) {
+					t.Errorf("message %q does not name %q", te.msg, w)
+				}
+			}
+		})
+	}
+}
+
+// End to end: a 24-bit wav posted to a backend declaring NeMo's real contract
+// reaches that backend as something it can load — and the backend, standing in
+// for parse_wav, says so itself.
+func TestProxyHonoursPCMBounds(t *testing.T) {
+	if !haveFFmpeg() {
+		t.Skip("ffmpeg not installed")
+	}
+	var refusal error
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		f, _, err := formFile(r)
+		if err != nil {
+			t.Errorf("upstream file part: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		b, _ := io.ReadAll(f)
+		// parse_wav, transcribed: the full intake contract, not just the magic
+		// number phase 1's stub checked.
+		if refusal = nemoAccepts(b); refusal != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"` + refusal.Error() + `"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"ok"}`))
+	}))
+	defer upstream.Close()
+
+	rec := postSTT(t, upstream.URL, nemoIntake(), "speech.wav", wavPCM(1, 2, 24, 48000, 16000))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if refusal != nil {
+		t.Errorf("the backend refused what corrallm sent it: %v", refusal)
+	}
+	if v := rec.Header().Get(HeaderTranscodeMS); v == "" || v == "0" {
+		t.Errorf("%s = %q; the conversion happened and must be visible", HeaderTranscodeMS, v)
+	}
+}
+
+// Probed BEATS declared, for the new fields as for the old. A second way of
+// answering "what does this backend ingest" is exactly what §2 refused to add.
+func TestPCMBoundsRespectProbedOverride(t *testing.T) {
+	cfg := mkConfig(t, "nemo", "http://127.0.0.1:1")
+	m := cfg.Models["nemo"]
+	m.Type = "stt"
+	m.Modalities = map[string]config.ModalitySpec{
+		config.ModalityAudio: {Formats: []string{"wav"}, PCM: []string{"s16"}},
+	}
+	cfg.Models["nemo"] = m
+	px := New(cfg, proc.NewManager(&config.Config{}), sched.New(), nil)
+
+	if got := px.audioFormatsFor(cfg, "nemo"); len(got.bounds.PCM) != 1 || got.bounds.PCM[0] != "s16" {
+		t.Fatalf("declared bounds = %v, want [s16]", got.bounds.PCM)
+	}
+	config.ProbedModalities = func(string) (map[string]config.ModalitySpec, bool) {
+		return map[string]config.ModalitySpec{
+			config.ModalityAudio: {Formats: []string{"wav"}, PCM: []string{"f32"}, MaxChannels: 1},
+		}, true
+	}
+	t.Cleanup(func() { config.ProbedModalities = nil })
+	got := px.audioFormatsFor(cfg, "nemo")
+	if len(got.bounds.PCM) != 1 || got.bounds.PCM[0] != "f32" || got.bounds.MaxChannels != 1 {
+		t.Errorf("probed bounds = %+v, want the probe's f32 / 1 channel", got.bounds)
+	}
+}
+
+// ffmpeg's own wav muxer is the last thing between corrallm and the backend,
+// and on two settings it writes a header a strict reader refuses:
+// WAVE_FORMAT_EXTENSIBLE for anything over 16 bits or over 48 kHz. Both are
+// reachable only from a declared bound — which is to say, only when a backend
+// asked for them — so this is the case where honouring a request would have
+// produced a file the requester cannot read.
+func TestProducedWAVIsPlainPCMEvenWhereFFmpegWouldNotBe(t *testing.T) {
+	if !haveFFmpeg() {
+		t.Skip("ffmpeg not installed")
+	}
+	src := encodeWith(t, tinyWAV(1), "mp3")
+	for _, tc := range []struct {
+		name   string
+		bounds config.ModalitySpec
+		pcm    string
+		rate   int
+	}{
+		{"float32", config.ModalitySpec{PCM: []string{"f32"}}, "f32", 16000},
+		{"24-bit", config.ModalitySpec{PCM: []string{"s24"}}, "s24", 16000},
+		{"96 kHz s16", config.ModalitySpec{MinSampleRate: 96000}, "s16", 96000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := audioIntake{formats: []string{"wav"}, bounds: tc.bounds}
+			body, ct := sttUpload(t, "picky", "speech.mp3", src, nil)
+			out, newCT, err := transcodeAudioUpload(context.Background(), body, ct, in, config.DefaultConvert())
+			if err != nil {
+				t.Fatalf("refused a conversion it can make: %v", err)
+			}
+			got, _ := filePartOf(t, out, newCT)
+			rate, channels, encoding, ok := parseWAVParams(got)
+			if !ok {
+				t.Fatal("produced a wav corrallm cannot read back")
+			}
+			if encoding != tc.pcm || rate != tc.rate || channels != 1 {
+				t.Errorf("produced %d Hz / %d ch / %q, want %d / 1 / %q", rate, channels, encoding, tc.rate, tc.pcm)
+			}
+			if !in.satisfiedBy("wav", got) {
+				t.Error("produced a file that does not satisfy the bounds it was produced for")
+			}
+			// s24 is outside NeMo's own contract, so only the two NeMo reads are
+			// held to it — the point is that the FORMAT TAG is plain, not 0xFFFE.
+			if tc.pcm == "f32" || tc.pcm == "s16" {
+				if rate <= 96000 {
+					if err := nemoAccepts(got); err != nil {
+						t.Errorf("a reader that checks the format tag would refuse this: %v", err)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The rewrite must move no audio and must leave a file that was already plain
+// exactly as it was.
+func TestCanonicalWAVHeaderIsLosslessAndIdempotent(t *testing.T) {
+	plain := wavPCM(1, 1, 16, 16000, 100)
+	if got := canonicalWAVHeader(plain); !bytes.Equal(got, plain) {
+		t.Error("rewrote a header that was already canonical")
+	}
+	for _, junk := range [][]byte{nil, []byte("RIFF"), []byte("not a wav at all"), []byte("RIFF????WAVEfmt ")} {
+		if got := canonicalWAVHeader(junk); !bytes.Equal(got, junk) {
+			t.Errorf("rearranged %q, which it cannot understand", junk)
+		}
+	}
+	if !haveFFmpeg() {
+		t.Skip("ffmpeg not installed")
+	}
+	ext := encodeWith(t, tinyWAV(1), "wav", "-ac", "1", "-ar", "16000", "-c:a", "pcm_f32le")
+	if _, _, enc, _ := parseWAVParams(ext); enc != "" {
+		t.Skipf("ffmpeg no longer writes EXTENSIBLE here (got %q); the case this guards is gone", enc)
+	}
+	once := canonicalWAVHeader(ext)
+	rate, channels, encoding, ok := parseWAVParams(once)
+	if !ok || encoding != "f32" || rate != 16000 || channels != 1 {
+		t.Fatalf("rewrote to %d Hz / %d ch / %q (ok=%v), want 16000 / 1 / f32", rate, channels, encoding, ok)
+	}
+	if err := nemoAccepts(once); err != nil {
+		t.Errorf("rewritten file is still refused: %v", err)
+	}
+	if twice := canonicalWAVHeader(once); !bytes.Equal(twice, once) {
+		t.Error("not idempotent: a second pass changed the file")
+	}
+	// The samples themselves are untouched — 1 s of mono float32 at 16 kHz.
+	if want := 16000 * 4; len(once) < want {
+		t.Errorf("%d bytes out, want at least %d of audio: the rewrite lost samples", len(once), want)
 	}
 }

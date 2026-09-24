@@ -1031,12 +1031,38 @@ type FreeLimits struct {
 
 // ModalitySpec is optional client-facing metadata for one accepted input
 // modality. Only the fields relevant to that modality are set: image uses
-// maxResolution + formats, audio uses formats, text may cap generation with
-// maxTokens; the rest stay zero and are omitted from output.
+// maxResolution + formats, audio uses formats plus the PCM bounds below, text
+// may cap generation with maxTokens; the rest stay zero and are omitted from
+// output.
 type ModalitySpec struct {
 	MaxResolution int      `yaml:"maxResolution,omitempty" json:"maxResolution,omitempty"` // image: longest-edge px cap
 	Formats       []string `yaml:"formats,omitempty" json:"formats,omitempty"`             // image/audio: accepted encodings
 	MaxTokens     int      `yaml:"maxTokens,omitempty" json:"maxTokens,omitempty"`         // text: generation-length cap
+
+	// AUDIO, ONE LEVEL BELOW THE CONTAINER (P35 phase 2). Formats names what a
+	// backend's reader will OPEN; these name what it will then accept INSIDE
+	// it, and the difference is not academic — NeMo-Speech.cpp opens any
+	// RIFF/WAVE and then refuses everything that is not 16-bit PCM or 32-bit
+	// float, mono or stereo, 8–96 kHz (src/common/audio_file.cpp:77-89). A
+	// 24-bit wav satisfies `formats: [wav]` and is still unreadable, so a
+	// container list alone cannot answer "can this backend ingest this file".
+	//
+	// EVERY ONE IS ZERO-MEANS-SILENT, exactly as Formats is. A backend that
+	// declares none of them gets no constraint it did not have before, which
+	// is what keeps this invisible for oidio and for every model that has
+	// never been described.
+	MinSampleRate int      `yaml:"minSampleRate,omitempty" json:"minSampleRate,omitempty"` // audio: Hz, inclusive; 0 = no floor
+	MaxSampleRate int      `yaml:"maxSampleRate,omitempty" json:"maxSampleRate,omitempty"` // audio: Hz, inclusive; 0 = no ceiling
+	MaxChannels   int      `yaml:"maxChannels,omitempty" json:"maxChannels,omitempty"`     // audio: 0 = no limit
+	PCM           []string `yaml:"pcm,omitempty" json:"pcm,omitempty"`                     // audio: accepted sample encodings (s16|s24|s32|f32|f64|u8); empty = no limit
+}
+
+// AudioBounded reports whether anything below the container level was declared.
+// Used to decide if a wav's header is worth parsing at all: with nothing
+// declared there is nothing to compare it against, and phase 1's behaviour —
+// forward it — stays exactly as it was.
+func (s ModalitySpec) AudioBounded() bool {
+	return s.MinSampleRate > 0 || s.MaxSampleRate > 0 || s.MaxChannels > 0 || len(s.PCM) > 0
 }
 
 // KnownModalities is the accepted set of modality keys (typo guard in Validate).
@@ -2443,9 +2469,12 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("model %q: sticky/persistent/ramUsage/swap/server only apply to cmd models", name)
 			}
 		}
-		for k := range m.Modalities {
+		for k, spec := range m.Modalities {
 			if !KnownModalities[k] {
 				return fmt.Errorf("model %q: unknown modality %q (want text|image|audio)", name, k)
+			}
+			if err := validateAudioSpec(name, k, spec); err != nil {
+				return err
 			}
 		}
 		// Placement rules first: a badly-shaped placement list makes every
