@@ -650,6 +650,43 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Remap-out, the canonical STT body (P35 §12). The caller's
+	// response_format, include[] and known_speaker_names[] are read ONCE here,
+	// beside the transcode and for the same three reasons: once rather than per
+	// candidate, against the request as it arrived, and BEFORE admission —
+	// refusing at the door beats accepting and failing after the queue (§9.0b).
+	//
+	// The upstream request is then normalised to a single response_format. See
+	// sttUpstreamFormat: `diarized_json` is corrallm's name and oidio silently
+	// answers its model default for a format it does not know, which is exactly
+	// the silently-wrong failure this layer exists to end.
+	//
+	// METERING BILLS THE CALLER'S UPLOAD, NOT CORRALLM'S REWRITE. The transcode
+	// above deliberately moves the meter — those bytes are what the backend
+	// really processed. This rewrite only adds a form field the caller did not
+	// send, and charging for it would bill a caller for corrallm's own
+	// compatibility layer. audioBillBytes holds the pre-rewrite size; 0 means
+	// nothing was rewritten and len(body) is the answer.
+	var sttReq sttRequest
+	audioBillBytes := 0
+	if audioUploadRoute(r.URL.Path) {
+		q, refusal := parseSTTRequest(body, r.Header.Get("Content-Type"))
+		if refusal != nil {
+			slog.Warn("stt request refused", "model", served, "param", refusal.param)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(refusal.status)
+			_, _ = w.Write(sttErrorBody(refusal))
+			return
+		}
+		sttReq = q
+		if sttReq.remaps() {
+			if nb, nct, ok := rewriteSTTUpstream(body, r.Header.Get("Content-Type")); ok {
+				audioBillBytes = len(body)
+				body, r.ContentLength = nb, int64(len(nb))
+				r.Header.Set("Content-Type", nct)
+			}
+		}
+	}
 	// Per-mode sampler substitution: a reasoning model wants different sampling
 	// while thinking than while not, the backend was launched with only one set,
 	// and the caller can flip the mode per request. Fills in ONLY what the
@@ -1003,6 +1040,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			sttSSE = &sttStreamWriter{ResponseWriter: w}
 			out = sttSSE
 		}
+		// The canonical remap (P35 §12) sits BETWEEN the two, and the order is
+		// the design rather than an accident. Inside the SSE writer, so the
+		// events are synthesised from corrallm's canonical body and carry the
+		// canonical speaker labels — "A", not a UUID a client must not key on.
+		// Outside statusCapture, so the activity row still records the
+		// BACKEND's body and metering is untouched, exactly as §9.1 arranged.
+		var sttRemap *sttRemapWriter
+		if sttReq.remaps() {
+			sttRemap = &sttRemapWriter{ResponseWriter: out, req: sttReq, model: served, streaming: streaming}
+			out = sttRemap
+		}
 		sc := &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: streaming, live: live}
 		if image {
 			// Nothing reads an image reply's body for usage — it has none — and
@@ -1081,6 +1129,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// held body is released now — as events if it parsed, verbatim if not —
 		// and a passed-through event stream gets the terminator the route
 		// promises whether or not the backend sent one.
+		// The remap releases first: its output is what the SSE writer reads.
+		if sttRemap != nil {
+			sttRemap.finish()
+			switch {
+			case sttRemap.refused:
+				slog.Debug("stt remap refused", "model", name, "format", sttReq.Format)
+			case sttRemap.remapped:
+				slog.Debug("stt body remapped", "model", name, "format", sttReq.Format,
+					"backendBytes", sc.written, "includeBackend", sttReq.IncludeBackend)
+			}
+		}
 		if sttSSE != nil {
 			sttSSE.finish()
 			switch {
@@ -1134,8 +1193,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			audioBytes = sc.written
 			costUSD = p.cost.AudioRequestUSD(backend.Type, int(sc.written))
 		case audio:
-			audioBytes = int64(len(body))
-			costUSD = p.cost.AudioRequestUSD(backend.Type, len(body))
+			n := len(body)
+			if audioBillBytes > 0 {
+				n = audioBillBytes // see the STT form rewrite: corrallm's added bytes are not the caller's
+			}
+			audioBytes = int64(n)
+			costUSD = p.cost.AudioRequestUSD(backend.Type, n)
 		default:
 			u = extractUsage(sc.buf, streaming)
 			finishReason = extractFinishReason(sc.buf, streaming)
@@ -2368,7 +2431,7 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			jsonExample("/v1/embeddings", map[string]any{"model": embM, "input": "Hello world"})},
 		{"/v1/rerank", "POST", "rerank", txt, rank, "Rerank documents against a query.", byCap["rerank"], false,
 			jsonExample("/v1/rerank", map[string]any{"model": pick("rerank", "chat"), "query": "what is corrallm", "documents": []string{"a proxy", "a database"}})},
-		{"/v1/audio/transcriptions", "POST", "audio.stt", aud, txt, "Speech-to-text (Whisper-compatible). multipart/form-data upload; supports response_format and stream. Some models also return speaker-diarized output.", sttBatch, true,
+		{"/v1/audio/transcriptions", "POST", "audio.stt", aud, txt, "Speech-to-text (OpenAI-compatible). multipart/form-data upload. corrallm publishes ONE transcription shape and maps every backend onto it (P35 §12), so the body you get is corrallm's and not the backend's: read the response_format note before the diarization one. response_format json | verbose_json | diarized_json | text | srt | vtt, plus stream.", sttBatch, true,
 			map[string]any{
 				"curl": fmt.Sprintf("curl -sS %s/v1/audio/transcriptions -H 'Authorization: Bearer <key>' -F model=%s -F file=@examples/audio/speech.wav", base, sttM),
 				// A real, shipped sample: the manifest previously pointed at a
@@ -2384,34 +2447,34 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 				// corrallm's STT is incremental; and the route has TWO
 				// producers behind it, which until §12.10.2 terminated
 				// differently.
-				"streaming": "stream=true returns text/event-stream, and ONE event contract whichever model answers: zero or more `transcript.text.delta` (each a `delta` string, plus `segment_id` when the response is speaker-labelled), a `transcript.text.segment` per diarized segment (id/start/end/text/speaker), then exactly one `transcript.text.done` carrying the whole transcript, terminated by `data: [DONE]`. `[DONE]` IS ALWAYS THE LAST FRAME — use it as your end-of-stream test. The `{type:duration,seconds}` usage block on `transcript.text.done` is OPTIONAL: present only when the backend measured the audio duration, absent otherwise, and never computed by corrallm. No `logprobs` and no `languages`: no backend here reports them, and an absent field must not be read as a value. TWO PRODUCERS SIT BEHIND THIS ONE CONTRACT, and which one served you is visible only in timing. A backend that really streams (oidio-stt, the non-diarize path) has its events forwarded byte for byte and unbuffered; corrallm only ADDS the `transcript.text.done` and `[DONE]` it left out, never a second one it already sent. A backend that ignores the flag and answers with a finished body (oidio-stt-diarize) has the events SYNTHESISED from it — and for that half THE LATENCY BENEFIT IS A FICTION: the whole transcript exists before the first event is sent, there is no progressive delivery, and time-to-first-event equals time-to-whole-answer. What stream=true buys is one client code path, not speed. It is also LOSSY against the same request without the flag: the event schema has no carrier for `language`, `task`, `words[]` or oidio's `speakers[]` voiceprints, so those are dropped. Set stream=false to keep them. Not applicable to /v1/audio/speech, which returns binary audio rather than events.",
-				// The second lie of the same kind as the speech.wav above, and
-				// worse: the old text promised `num_speakers` (nothing returns
-				// it) and an integer-ish `speaker`, describing an oidio that
-				// has not existed for some time.
+				"streaming": "stream=true returns text/event-stream, and ONE event contract whichever model answers: zero or more `transcript.text.delta` (each a `delta` string, plus `segment_id` when the response is speaker-labelled), a `transcript.text.segment` per diarized segment (id/start/end/text/speaker, the speaker being the same ordinal label the non-streaming body carries — see the diarization note), then exactly one `transcript.text.done` carrying the whole transcript, terminated by `data: [DONE]`. `[DONE]` IS ALWAYS THE LAST FRAME — use it as your end-of-stream test. The `{type:duration,seconds}` usage block on `transcript.text.done` is OPTIONAL: present only when the backend measured the audio duration, absent otherwise, and never computed by corrallm. No `logprobs` and no `languages`: no backend here reports them, and an absent field must not be read as a value. TWO PRODUCERS SIT BEHIND THIS ONE CONTRACT, and which one served you is visible only in timing. A backend that really streams (oidio-stt, the non-diarize path) has its events forwarded byte for byte and unbuffered; corrallm only ADDS the `transcript.text.done` and `[DONE]` it left out, never a second one it already sent. A backend that ignores the flag and answers with a finished body (oidio-stt-diarize) has the events SYNTHESISED from it — and for that half THE LATENCY BENEFIT IS A FICTION: the whole transcript exists before the first event is sent, there is no progressive delivery, and time-to-first-event equals time-to-whole-answer. What stream=true buys is one client code path, not speed. It is also LOSSY against the same request without the flag: the event schema has no carrier for `language`, `task`, `words[]` or oidio's `speakers[]` voiceprints, so those are dropped. Set stream=false to keep them. Not applicable to /v1/audio/speech, which returns binary audio rather than events.",
+				// THE PREMISE OF THE OLD NOTE EXPIRED, and the note went with
+				// it. It said the shape was the BACKEND's and that corrallm
+				// forwarded the STT body verbatim, which was true when it was
+				// written and stopped being true the moment the remap shipped.
+				// It also carried the second of this manifest's three false
+				// claims — a `num_speakers` nothing returns — which is why the
+				// retraction is still spelled out below rather than deleted.
 				//
-				// The shape is the BACKEND's, not corrallm's — corrallm
-				// forwards the STT body verbatim. oidio returns speaker UUIDs
-				// plus voiceprints; NVIDIA's NeMo-Speech.cpp returns words[]
-				// with an integer speaker. So the note names the backend it
-				// describes instead of asserting one shape for every STT
-				// model, and a fleet serving something else gets no sentence
-				// rather than a confident wrong one.
-				//
-				// Written from a live oidio-stt-diarize transcription, not
-				// copied from oidio's own manifest, which is itself stale: it
-				// calls the field `voiceprint` when the wire name is
-				// `embedding`, and says speaker data rides verbose_json when
-				// plain json carries it too.
-				"diarization": "Additive and BACKEND-SPECIFIC: corrallm forwards the transcription body verbatim, so this describes oidio-backed diarizing models and not every model on this route. Alongside the OpenAI `text`, oidio returns `segments:[{id,start,end,text,speaker,overlap?}]` — `speaker` is a UUID minted PER REQUEST (not an index, not stable across calls) — and a top-level `speakers:[{uuid,embedding:[512 floats],similarity:{uuid:cosine},clean_seconds,total_seconds,blended?}]` carrying each voiceprint, so the caller owns persistence and any UUID↔name mapping. There is no `num_speakers`: take `speakers.length`. response_format `json` (the default) and `verbose_json` both carry segments+speakers; `verbose_json` adds `words:[{word,start,speaker}]` (no `end` — the recogniser reports only when a word starts); `text`/`srt`/`vtt` return the plain forms. Request args: speaker_confidence, known_speakers, cluster_threshold, num_clusters, speaker_merge_threshold, speaker_min_duration, speaker_rescue_confidence, unattributed_fragments, timestamp_granularities[]. Plain clients ignore the extra fields and read `.text`.",
+				// NORMATIVE (P35 §9.0b, §9.0c). The body on this route is
+				// corrallm's published shape, not a forwarded backend body,
+				// and every sentence below was checked against the wire on
+				// 2026-09-23 through a second daemon in front of the live
+				// oidio. The claim it REPLACES was false in the way this
+				// manifest has been false three times before: it described
+				// oidio's raw body as what a caller receives, which stopped
+				// being true the moment the remap shipped.
+				"response_format": "ONE SHAPE, WHICHEVER MODEL ANSWERS. `json` (the default) returns `{\"text\":\"…\"}` and NOTHING ELSE — no speaker, no segments, no sidecar, on any model, including a diarizing one. `verbose_json` returns `{task, language, duration, text, segments[], words[]?, usage?}`. `diarized_json` (OpenAI's `gpt-4o-transcribe-diarize` format) returns the same with `speaker` REQUIRED on every segment. `text`, `srt` and `vtt` are plain text forms and are forwarded from the backend UNCHANGED — corrallm does not normalise what a backend writes inside a subtitle cue (oidio prefixes \"Speaker 1:\", which is its spelling and not corrallm's). FIELD RULES, and they are rules rather than observations: `segments[].id` is a STRING everywhere, streaming and not. `words[].end` is OMITTED when the backend does not report when a word ended — never computed from the next word's start, never null. `usage` is `{type:\"duration\",seconds}` and is present only when the backend MEASURED the audio; absent otherwise. A field a model cannot answer is ABSENT, never null and never a placeholder: `segments[]` from a non-diarizing model carries no `speaker` key at all. There is no `num_speakers` and there will not be: count the distinct `segments[].speaker`. REFUSALS, all 400 with an OpenAI-shaped error naming the parameter: `diarized_json` to a model that returns no speaker labels (the caller asked for speakers; a 200 without them is a lie, so use verbose_json instead); `include[]` with any value but `backend`; a non-empty `known_speaker_names[]` — the name is reserved under OpenAI's spelling and the mechanism is NOT implemented, because no backend corrallm fronts maps a name onto a voice. WHAT CORRALLM ASKS THE BACKEND FOR: `verbose_json`, on every one of the three canonical formats, and then projects down. A backend that only speaks its own default for an unknown format therefore never sees one.",
+				"diarization":     "WHO SPOKE, in corrallm's vocabulary. `segments[].speaker` and `words[].speaker` are ORDINAL LABELS — \"A\", \"B\", \"C\", … by order of first appearance in the transcript — and they are STABLE WITHIN ONE RESPONSE AND EXPLICITLY NOT ACROSS CALLS. \"A\" in two responses is two different assertions; nothing here makes a speaker identity persist, and no field in this body should be used as a database key. Past 26 speakers the labels continue \"AA\", \"AB\", … \"AZ\", \"BA\", … \"ZZ\", \"AAA\" (bijective base-26, spreadsheet columns) — that is a rule in the schema, not a runtime surprise, and it is the only label form this route emits. THE BACKEND'S OWN IDENTIFIERS ARE NOT IN THE DEFAULT BODY: oidio mints a fresh speaker UUID on every request (three calls on one file gave three different ones), and a shape that invites a client to key on a value that changes every call manufactures bugs. Pass `include[]=backend` to get them: the response then carries a `backend` object, namespaced by the model that produced it, holding whatever the canonical has no home for — for oidio that is `speakers:[{uuid, label, embedding:[512 floats], similarity:{uuid:cosine}, clean_seconds, total_seconds, blended?}]`, with `label` as the back-reference from the voiceprint to \"A\". MEASURED on a 2.56 s single-speaker file: 665 bytes without the sidecar, 6,097 with it — roughly 5.4 KB per speaker, scaling with speaker count and not with audio length, which is why it is opt-in and why `json` never carries it. Backend request args oidio accepts and corrallm forwards untouched: speaker_confidence, known_speakers, cluster_threshold, num_clusters, speaker_merge_threshold, speaker_min_duration, speaker_rescue_confidence, unattributed_fragments, timestamp_granularities[]. These are oidio's names, not OpenAI's, and a fleet serving something else will not have them.",
 			}},
 		// Streaming is true for the same reason as transcriptions and under the
 		// same contract: the two routes were answered together (§9.1) and
 		// normalised together (§12.10.2).
 		{"/v1/audio/translations", "POST", "audio.stt", aud, txt, "Speech-to-English translation; same shape as transcriptions.", sttBatch, true,
 			map[string]any{
-				"curl":      fmt.Sprintf("curl -sS %s/v1/audio/translations -H 'Authorization: Bearer <key>' -F model=%s -F file=@examples/audio/speech.wav", base, sttM),
-				"streaming": "The same single SSE contract as /v1/audio/transcriptions, terminator included: read that note. Where the backend does not stream, the same fiction applies — the body is complete before the first event is sent.",
+				"curl":            fmt.Sprintf("curl -sS %s/v1/audio/translations -H 'Authorization: Bearer <key>' -F model=%s -F file=@examples/audio/speech.wav", base, sttM),
+				"streaming":       "The same single SSE contract as /v1/audio/transcriptions, terminator included: read that note. Where the backend does not stream, the same fiction applies — the body is complete before the first event is sent.",
+				"response_format": "The same canonical body as /v1/audio/transcriptions, field for field, including the ordinal speaker labels and the include[]=backend sidecar: read that note.",
 			}},
 		{"/v1/audio/speech", "POST", "audio.tts", txt, aud, "Text-to-speech; returns binary audio (audio/mpeg by default).", byCap["audio.tts"], true,
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/audio/speech -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"input\":\"Hello from corrallm\",\"voice\":\"af_heart\"}' --output speech.mp3", base, ttsM),
