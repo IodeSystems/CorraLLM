@@ -48,3 +48,6 @@ go.work.sum
 
 # Machine-specific: a baseURL and an absolute admin-token path.
 llm-bench.yaml
+
+# Agent worktrees — checkouts of this repo, never content of it.
+.claude/worktrees/
