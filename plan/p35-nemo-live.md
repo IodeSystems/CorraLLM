@@ -347,3 +347,312 @@ because §12.1 belongs to another slice.
   because it is a quality question, not a corral-layer one.
 - a `nemo-speech`-shaped entry in `internal/config` presets, so the intake
   declaration in §5's config does not have to be retyped.
+
+---
+
+# P35 — Nemotron 3 Diarization, the run yesterday was one commit short of
+
+> **2026-09-24.** Everything above is the **Sortformer v2 baseline** and is
+> deliberately not rewritten: its value is being the thing this section is
+> compared against. Same seven files, same labels, same rig, same table
+> columns. Read §1–§6 first; this section only records what MOVED.
+
+## 7. What changed upstream, and what it cost to build
+
+Yesterday's build was `302ebc9`, the **parent of PR #50**. Overnight two
+commits landed and both are merged:
+
+- **`8c15060`** — `feat(diar): Nemotron 3 Diarization` (#50), the V3 31-layer
+  RoPE encoder.
+- **`97a15af`** — `feat(diar): make Nemotron 3 Diarization the default
+  diarizer` (#52).
+
+No release past `v0.1.0`, so this is a source build from merged `main` at
+`97a15af`, in a fresh copy at `/tmp/claude-1000/p35nemo2/src`.
+
+**§2's configure line is unchanged and still correct** — it was pasted verbatim
+and configured clean on the first try. All three environment traps still apply
+and all three were still needed: `gcc-13`/`g++-13` pinned for BOTH languages,
+`-DCMAKE_CUDA_ARCHITECTURES=86-real`, and `CUDA_VISIBLE_DEVICES` set to the
+3080's UUID. Nothing about the build itself moved.
+
+**What #50/#52 changed about the build, concretely:**
+
+| | |
+|---|---|
+| ggml submodule pin | **unchanged** — `.gitmodules` and the gitlink are byte-identical across `302ebc9..97a15af` |
+| ggml patch series | **21 → 23**. New: `0022-cuda-q8-gelu-fusion`, `0023-cuda-skinny-q8-cache-lifetime` |
+| applying them | `scripts/apply-ggml-patches.sh` refuses a partially-patched tree — it compares the WHOLE worktree against the pinned commit plus the full series. The 21-patch tree had to be reset to the pin and all 23 re-applied from clean. §2's per-patch `git apply` shortcut no longer works |
+| CMake cache | not relocatable — it stores absolute source/build paths, so a copied build tree needs `build/` deleted before reconfiguring |
+| new encoder | `src/asr/encoder/rope_transformer.{cpp,h}`, 250 lines, new to the ASR library |
+| build time | **4 m 29 s wall** at `-j 20`, 235 targets, exit 0, no errors |
+| SentencePiece | the existing static `.deps/sentencepiece` was found unchanged; no rebuild |
+
+**Model.** `models/index.json` now ships a **prebuilt q8_0 GGUF** —
+`nvidia/Nemotron-3-Diarization`, rev `f667ed73`,
+`Nemotron-3-Diarization.q8_0.gguf`, **107,012,128 B**, sha256 verified against
+the index after download. **The shelf entry's "No GGUF, no ONNX, no
+safetensors — conversion is `conversion/diarization.py`" is now stale**: no
+conversion step is needed. #52 also flipped `defaults.diarization` in that index
+from `diar_streaming_sortformer_4spk-v2` to `Nemotron-3-Diarization`.
+
+**Capacity.** `include/nemo_speech/diar.h`: V2 is **4 speakers at an 80 ms**
+output cadence, V3 is **8 speakers at 10 ms**. The geometry preset is resolved
+from the model file itself (`v3-streaming` / `v3-offline`), so passing only
+`--diar-model <the v3 gguf>` is enough — no flag change in `serve`.
+
+## 8. VRAM — it fits, and it is SMALLER resident than v2
+
+| | v2 (2026-09-23) | v3 (2026-09-24) |
+|---|---|---|
+| diarizer file | 147,075,776 B | **107,012,128 B** |
+| weights resident, both models | 1,141 MiB | **1,101 MiB** |
+| free on the 3080 before | 4,970 MiB | 4,970 MiB |
+| peak observed across the sweep | 9,821 MiB of 10,240 | **9,851 MiB of 10,240** |
+
+**It fits, with 389 MiB of headroom at the peak.** The 31-layer encoder does not
+cost more resident memory than the 17-layer one — its q8_0 file is 27% smaller.
+Peak is dominated by Parakeet TDT's full-context attention compute buffer, not
+by the diarizer, which is why the ceiling barely moved.
+
+Nothing was evicted, the 5090 was never touched (1,458–1,466 MiB free
+throughout), and production `:8111` answered 200 on `/v1/models` before, during
+and after. No `vite build` ran.
+
+## 9. The headline — speaker counts, three diarizers, same seven files
+
+Same isolated corrallm on `:6513`, own `--home`/`--web-root`/SQLite, every model
+a bare proxy target. NeMo on `:6534`, restarted fresh per file. oidio reached as
+a pure proxy through `:8111` — nothing spawned, loaded or evicted.
+
+| file | s | **Sortformer v2** | **Nemotron 3** | **oidio** |
+|---|---|---|---|---|
+| call A (m4a) | 1451 | 2 | **2** | **10** |
+| hearing B (mp4) | 2523 | 4 | **8** | **8** |
+| hearing B (opus, same recording) | 2523 | 4 | **7** | **7** |
+| hearing C (mp4) | 725 | 2 | **2** | **6** |
+| hearing D (mp4) | 2650 | 4 | **5** | **15** |
+| hearing E (mp4) | 841 | 2 | **3** | **5** |
+| hearing F (m4a) | 1302 | 4 | **4** | **9** |
+
+**Seven of seven at 200 for all three.** Word counts are **identical between v2
+and v3 on every file** (3105 / 5211 / 5170 / 1748 / 5810 / 2330 / 3260) — same
+ASR, same decode; only the labels moved. oidio's word counts are its own and
+lower throughout.
+
+**The shelf entry's argument does not survive contact with this corpus.** It
+says Sortformer "has no clustering step, so over-splitting is not a failure mode
+it has". Per-speaker segment TIME says otherwise for V3:
+
+| file | Nemotron 3, time per speaker | oidio, time per speaker |
+|---|---|---|
+| hearing B (mp4) | A 2249 s, then **81 / 21 / 19 / 14 / 12 / 6 / 1 s** | A 1637, C 598, then 154 / 98 / 14 / 10 / 6 / 4 s |
+| hearing D | A 1777, B 695, C 105, D 58, **E 1 s** | B 1194, C 433, H 366, M 191, then 11 more ≤ 153 s |
+| hearing F | B 769, A 481, C 13, **D 0 s** | A 953, B 144, then 7 more ≤ 75 s |
+
+V3's extra labels over V2 are **slivers**: seven of hearing B's eight speakers
+hold 81 s or less between them, and hearing D's fifth speaker holds **one
+second**. That is over-splitting, in the same shape the shelf blamed oidio for
+(hearing C: one cluster of 588.7 s and four under 31 s). It is far milder than
+oidio's — oidio invents 15 speakers on hearing D and 10 on a two-party call —
+but it is the same failure mode, and the claim that Sortformer cannot have it is
+now measured false.
+
+**The mp4/opus pair is the control, and V3 fails it where V2 passed.** It is one
+recording in two containers.
+
+| | v2 | v3 | oidio |
+|---|---|---|---|
+| speakers, mp4 vs opus | **4 / 4** | **8 / 7** | 8 / 7 |
+| segments | 54 / 53 | 72 / 51 | 120 / 127 |
+| largest speaker | 2250 s / 2254 s | 2249 s / 2238 s | A 1637 s / **B 1214 s** |
+
+V2 agreed with itself to within one segment. V3 disagrees by one whole speaker
+and by 21 segments on audio that differs only by codec. oidio is worse again: it
+does not even agree on the partition, splitting 2523 s as 1637+598 one way and
+1214+722+242+233 the other. **The 41-word transcode difference between the two
+containers is enough to move V3's speaker count. That is a stability result, and
+it is not a good one.**
+
+## 10. Ground truth — the only place a DER can honestly be computed
+
+The private corpus has no reference, so no DER claim is made about it. #50 ships
+**`test_files/diar/ami_en2002d_2132.wav`** — 60 s of AMI EN2002d, CC BY 4.0,
+with a word-aligned RTTM. Public data, four reference speakers (the fourth
+speaks only a few words). Frame-level 10 ms scoring, collar 0, overlap counted,
+best injective reference→hypothesis map.
+
+**On NeMo's own `/v1/audio/diarizations` — a like-for-like diarizer test:**
+
+| diarizer | DER | miss | false alarm | speakers found |
+|---|---|---|---|---|
+| Sortformer v2 | 29.73 % | 957 fr | 427 fr | 3 of 4 |
+| **Nemotron 3** | **27.56 %** | 740 fr | 543 fr | 3 of 4 |
+
+**V3 is better by 2.2 points where there is ground truth.** Both miss the fourth
+speaker. This is one 60 s clip and is not a benchmark; it is the only honest
+number available on this box.
+
+**Through corrallm's canonical `segments[]`, all three:**
+
+| model | DER | speakers found |
+|---|---|---|
+| NeMo + Sortformer v2 | 50.11 % | 3 |
+| NeMo + Nemotron 3 | 52.41 % | 3 |
+| oidio | **135.01 %** | 6 |
+
+**These three numbers do not measure diarizers and must not be quoted as if they
+did.** RULE 2b's canonical segment is a maximal same-speaker run of ASR WORDS,
+so it spans the silences between them; scored against an RTTM it produces false
+alarm by construction (1,721–3,776 frames here). The projection dominates the
+error and it reverses the v2/v3 ordering. **`oidio verify score` against the
+three hearing truth files — §6's optional extension and the shelf's "first step
+on resume" — must therefore be run on a diarization-only output, not on a
+corrallm transcription body.** That is a correction to how that task was
+specified, and it is worth more than the numbers above.
+
+## 11. Timings, against yesterday's
+
+`--transcode-audio-max-seconds 3600`, `diarized_json` + `diarization=true`.
+
+| file | s | transcode ms | rate | **v3 ttfb ms** | rate | wall s | words | segs | spk |
+|---|---|---|---|---|---|---|---|---|---|
+| call A (m4a) | 1451 | 3087 | 470x | 40266 | 36x | 43.5 | 3105 | 74 | 2 |
+| hearing B (mp4) | 2523 | 6856 | 368x | 82470 | 31x | 89.6 | 5211 | 72 | 8 |
+| hearing B (opus) | 2523 | 5288 | 477x | 81658 | 31x | 87.2 | 5170 | 51 | 7 |
+| hearing C (mp4) | 725 | 1625 | 446x | 18021 | 40x | 19.7 | 1748 | 54 | 2 |
+| hearing D (mp4) | 2650 | 5553 | 477x | 88252 | 30x | 94.1 | 5810 | 30 | 5 |
+| hearing E (mp4) | 841 | 1646 | 511x | 21686 | 39x | 23.4 | 2330 | 97 | 3 |
+| hearing F (m4a) | 1302 | 4270 | 305x | 37820 | 34x | 42.3 | 3260 | 45 | 4 |
+
+**V3 costs 6–15 % more time than V2** — ttfb ratio 1.06 / 1.14 / 1.14 / 1.06 /
+1.15 / 1.09 / 1.13, mean 1.11. §5.4's v2 rates were 35–43x realtime; v3 is
+30–40x. Transcode is ffmpeg and unrelated to the diarizer; its spread here is
+disk noise.
+
+**oidio, for scale, on the same seven files through the same corrallm:**
+354.5 / 626.4 / 643.0 / 182.1 / 652.1 / 219.3 / 338.6 s wall — a flat **~4x
+realtime**. NeMo is **8–9x faster than oidio on identical input**, and that gap
+is the same for both diarizers.
+
+## 12. §4's four corrections, re-checked against `97a15af`
+
+`http_server.cpp` is untouched by `302ebc9..97a15af`, and it shows: **all four
+hold, none moved.**
+
+| correction | verdict at `97a15af` |
+|---|---|
+| `/v1/audio/transcriptions` returns **no `segments[]`** | ✅ **holds.** Top-level keys are exactly `duration, language, task, text, words`. `/v1/audio/diarizations` still returns the textless `{"segments":[{end,speaker,start}]}` with a 1-based speaker. **§12.9(e) RULE 2 therefore still never fires for NeMo, and RULE 2b is still the rule that does** |
+| `words[].confidence` present, and destroyed | ✅ **holds.** On the wire: `{confidence, end, speaker, start, word}`. Through corrallm: `{end, speaker, start, word}`. `include[]=backend` returns `{name, speakers:[{index,label}]}` and does **not** recover it — §6's risk 2 is unchanged |
+| intake refusals are **500**, not 400 | ✅ **holds.** 24-bit 48 kHz stereo wav → 500 `unsupported WAV encoding`; 192 kHz → 500 `sample rate must be between 8 and 96 kHz`; mp3 → 500 `unsupported container`. All three still **200 through corrallm**, transcoded |
+| NeMo serves five `response_format`s, not `verbose_json` only | ✅ **holds.** `json` / `verbose_json` / `text` / `srt` / `vtt` all 200 direct; `diarized_json` and an unknown value both 400 |
+
+**§5.3's whole matrix reproduces byte for byte** on `examples/audio/speech.wav`:
+`json` 55 B, `verbose_json` 527 B, `diarized_json` without the flag **400**,
+`verbose_json`+diar 766 B, `diarized_json`+diar 766 B, `+include[]=backend`
+841 B, `text`/`srt` 45/78 B, stream → delta/segment/done/`[DONE]`. Both §5.2
+divergences also reproduce: only oidio has `language`, only NeMo has
+`words[].end`, and `segments[]` item keys are identical across the two backends
+at `{end, id, speaker, start, text}`.
+
+**RULE 2b passes all eight clauses on all seven files under V3**, checked
+mechanically with the same `checkjoin.py`. V3 is the first thing on this box to
+exercise more than four labels: hearing B returns **`A` through `H`** on both
+`segments[].speaker` and `words[].speaker`, ordinal by first appearance, `id` a
+string. §6's risk 5 is narrowed — the label ladder is now real-data-tested to 8,
+though the 27-speaker rollover remains unit-covered only.
+
+## 13. The `language` contract error is FIXED, in the manifest
+
+§5.2's contract error reproduces exactly at `97a15af`: oidio returns
+`"language":"en"`, NeMo returns no `language` key at all, same route and same
+`diarized_json`. Sending `language=en-US` makes NeMo's key appear with
+`"en-US"`.
+
+**Fixed as §12.1 already fixed `usage` — by correcting the manifest, not the
+remap.** `language` is now stated **OPTIONAL: present when the backend
+identified one or the caller named one, absent otherwise, never guessed by
+corrallm**, and the manifest now names who reports it (oidio always; NeMo only
+back to a caller who sent `language=`). Two edits, and only these two:
+
+- `plan/p35-corral-layer.md` §12.1 — the `verbose_json` row, a correction
+  paragraph beside the `usage` one, and the `diarized_json` row split so
+  `language` and `usage` are no longer lumped under "always".
+- `internal/proxy/proxy.go` — the `/v1/capabilities` `response_format` note:
+  `{task, language?, …}` and a FIELD RULE sentence next to `usage`'s.
+
+**§6's blocking decision is closed.** The recommended option was taken.
+
+## 14. The one real regression — a V3 OOM kills the server
+
+§6's risk 1 (the retained CUDA compute buffer) is **worse under V3, and in a
+different way.** Same sequence both times on one server — hearing C (725 s),
+then hearing E (841 s), then hearing D (2650 s) — both diarizers on **the same
+`97a15af` build**, so the build is not the variable:
+
+| diarizer | 725 s | 841 s | 2650 s | server afterwards |
+|---|---|---|---|---|
+| Sortformer v2 | 200 | 200 | **500** `failed to allocate named-tensor buffer … (out of device memory?)` | **alive, 200 on `/ready`** |
+| **Nemotron 3** | 200 | 200 | **502 from corrallm** | **DEAD — process gone, port closed** |
+
+Under V3 the allocation fails inside `SortformerModel::SortformerBatcher::execute`
+→ `ggml_cuda_graph_evaluate_and_capture` → `cudaGraphLaunch` → **`CUDA error:
+out of memory` → `ggml_abort` → the whole process aborts.** corrallm answers 502
+because the connection dropped mid-request, and every later request to that
+backend fails too.
+
+**This is a behaviour change, not a capacity change.** V2 turns an OOM into a
+per-request 500 and keeps serving; V3 turns the same OOM into a fatal abort. On
+a box where the fit depends on what the backend served previously — which
+corrallm cannot predict — that is the difference between one bad answer and an
+outage. A fresh server serves the 2650 s file fine under both (94.1 s, 200).
+
+## 15. Active work
+
+**◻ next** — nothing in this slice. Both sweeps are complete and the manifest
+fix is in.
+
+**blocking decision (owner)** — **is Nemotron 3 actually the diarizer to
+adopt?** The evidence now cuts both ways and the call is a product one.
+*For*: 2.2 points better DER on the only ground truth available, 8 speakers
+instead of 4, smaller resident, still 8–9x faster than oidio, and upstream's own
+default. *Against*: it over-splits into sub-second speakers on real recordings,
+it does not reproduce its own speaker count across two containers of one
+recording, it costs 11% more time, and its OOM kills the server. **oidio is
+worse on every one of those axes**, so "replace oidio's segmenter" is still the
+right direction; "Nemotron 3 rather than Sortformer v2" is the part that is not
+established.
+
+**risks**
+
+1. **A V3 OOM aborts the process** (§14). New, V3-specific, and the most serious
+   thing in this section.
+2. **V3 does not reproduce its own speaker count across containers** (§9). V2
+   did. Nothing downstream should treat the count as stable.
+3. **V3 emits sub-second speakers** (§9) — a 1 s speaker and a 0 s speaker in
+   this corpus. A caller counting distinct `segments[].speaker` will be wrong.
+4. **`words[].confidence` is still destroyed** (§12). Unchanged.
+5. **RULE 2 is still unexercised** (§12). Unchanged, and still for the same
+   reason.
+6. **`/v1/audio/translations` still untested** — `NEMO_SPEECH_BUILD_NMT=OFF`
+   here too.
+7. **The DER numbers are one 60 s public clip** (§10). They are not a benchmark,
+   and the private corpus still has no reference on this box.
+
+**assumptions recorded**
+- that the label mapping to A–F is the duration+container match §5.4 already
+  used. It was re-verified mechanically against that table before any file was
+  opened, and no basename appears in this document or in any output.
+- that oidio through the `:8111` proxy is a fair oidio reading. It is §5's rig
+  unchanged.
+- that yesterday's v2 column is comparable. Same files, same rig, same columns,
+  same host; only the diarizer and the upstream commit differ.
+
+**optional extensions, explicitly out of scope**
+- report the V3 abort-on-OOM upstream. It reproduces in ~2 minutes on a 10 GB
+  card, and the v2 path on the same build shows the graceful behaviour is
+  achievable.
+- run `oidio verify score` on **diarization-only** output (§10's correction) for
+  a same-corpus DER against the 55.8 / 55.0 / 27.9 baseline.
+- `--preset v3-offline`, and the V3 geometry overrides, are untouched here —
+  every V3 number above is the model's own default preset.
