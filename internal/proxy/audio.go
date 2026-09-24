@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -102,25 +103,51 @@ func audioUploadRoute(path string) bool {
 	return path == "/v1/audio/transcriptions" || path == "/v1/audio/translations"
 }
 
-// audioFormatsFor is what the backend behind a served name ingests, as
-// canonical container names. Empty = no constraint known → never transcode.
+// audioIntake is everything a backend has said about what it can ingest,
+// resolved for one served name and canonicalised: the containers its reader
+// opens, and — phase 2 — the PCM parameters it will accept inside them.
+//
+// One struct rather than a widening parameter list because the two levels are
+// one question ("can this backend read this file") answered at two depths, and
+// because a target has to satisfy BOTH at once: choosing wav to satisfy the
+// container and then s16 to satisfy the encoding is one decision, not two.
+type audioIntake struct {
+	formats []string // canonical container names; empty = nothing declared
+	bounds  config.ModalitySpec
+}
+
+// known reports whether the backend said anything at all. Nothing said =
+// nothing known = hands off, which is the honest reading of silence and is
+// what keeps this layer invisible for a backend nobody has described.
+func (a audioIntake) known() bool { return len(a.formats) > 0 || a.bounds.AudioBounded() }
+
+// audioFormatsFor is what the backend behind a served name ingests. An empty
+// intake means no constraint is known → never transcode.
+//
+// (The name predates the PCM bounds it now also carries; it is kept because
+// proxy.go names it, and renaming that call site belongs to whoever owns that
+// file.)
 //
 // Resolved against a lane's FIRST member, exactly as Config.ConvertFor does and
 // for the same reason: the rewrite happens once, before the candidate walk, so
 // the top-preference member's needs are the ones that can be honoured. The
 // mismatch that leaves is real and bounded — see the note on the call site.
-func (p *Proxy) audioFormatsFor(cfg *config.Config, served string) []string {
+//
+// Resolution goes through EffectiveModalities, so probed BEATS declared here
+// exactly as it does everywhere else. Phase 2 adds fields to the spec it
+// returns; it does not add a second way of answering the question.
+func (p *Proxy) audioFormatsFor(cfg *config.Config, served string) audioIntake {
 	name := served
 	if lane, ok := cfg.Lanes[served]; ok && len(lane.Members) > 0 {
 		name = lane.Members[0].Model
 	}
 	m, ok := cfg.Models[name]
 	if !ok {
-		return nil
+		return audioIntake{}
 	}
 	spec, ok := m.EffectiveModalities(name, p.cost.IsAudioType(m.Type))[config.ModalityAudio]
 	if !ok {
-		return nil
+		return audioIntake{}
 	}
 	out := make([]string, 0, len(spec.Formats))
 	for _, f := range spec.Formats {
@@ -128,7 +155,7 @@ func (p *Proxy) audioFormatsFor(cfg *config.Config, served string) []string {
 			out = append(out, c)
 		}
 	}
-	return out
+	return audioIntake{formats: out, bounds: spec}
 }
 
 // canonAudioFormat folds the spellings a client or an operator might use onto
@@ -207,6 +234,323 @@ func acceptsFormat(accepts []string, format string) bool {
 	return false
 }
 
+// parseWAVParams reads the fmt chunk of a RIFF/WAVE: sample rate, channel
+// count, and the sample encoding as one of config's canonical PCM names.
+// ok=false means the header could not be read, which the caller must treat as
+// "not verified" and never as "fine" — an unparseable header is exactly the
+// kind of file a strict reader refuses.
+//
+// It walks the chunks rather than reading a fixed offset because a real wav
+// from a real encoder carries LIST/fact/id3 chunks before `fmt `, and a
+// fixed-offset read of one of those produces a confident wrong answer.
+// WAVE_FORMAT_EXTENSIBLE (0xFFFE) deliberately yields "" rather than being
+// unwrapped to its sub-format: a backend that names format 1 or 3 is checking
+// exactly that field (NeMo-Speech.cpp audio_file.cpp:83-89), so reporting the
+// sub-format would claim an acceptance the backend does not grant.
+func parseWAVParams(b []byte) (rate, channels int, encoding string, ok bool) {
+	if len(b) < 12 || string(b[0:4]) != "RIFF" || string(b[8:12]) != "WAVE" {
+		return 0, 0, "", false
+	}
+	for pos := 12; pos+8 <= len(b); {
+		size := int64(binary.LittleEndian.Uint32(b[pos+4 : pos+8]))
+		body := pos + 8
+		if string(b[pos:pos+4]) == "fmt " {
+			if size < 16 || int64(len(b)-body) < 16 {
+				return 0, 0, "", false
+			}
+			p := b[body:]
+			format := binary.LittleEndian.Uint16(p[0:2])
+			channels = int(binary.LittleEndian.Uint16(p[2:4]))
+			rate = int(binary.LittleEndian.Uint32(p[4:8]))
+			bits := int(binary.LittleEndian.Uint16(p[14:16]))
+			return rate, channels, pcmNameFor(format, bits), true
+		}
+		next := int64(body) + size + (size & 1)
+		if next <= int64(pos) || next > int64(len(b)) {
+			break
+		}
+		pos = int(next)
+	}
+	return 0, 0, "", false
+}
+
+// canonicalWAVHeader rewrites a WAVE_FORMAT_EXTENSIBLE fmt chunk into the
+// plain 16-byte PCMWAVEFORMAT its sub-format names, and returns the input
+// untouched when there is nothing to do.
+//
+// THIS IS WHERE PRODUCE-STRICTLY COSTS SOMETHING (§9.0b). ffmpeg's wav muxer
+// emits EXTENSIBLE — format tag 0xFFFE with the real encoding hidden in a
+// sub-format GUID — for anything over 16 bits or over 48 kHz
+// (libavformat/riffenc.c). Both are legal WAV and both are refused by a reader
+// that checks the format tag, which NeMo-Speech.cpp does at
+// audio_file.cpp:83-89. So corrallm would have honoured a backend's request
+// for float32 by handing it a file that backend cannot open: a conversion
+// that looks like generosity and lands as a 400 from inside somebody else's
+// program, which is the exact failure this layer exists to remove.
+//
+// The rewrite is lossless. EXTENSIBLE's sub-format GUID begins with the very
+// format tag PCMWAVEFORMAT would carry, and every other field is already in
+// the same place; what is dropped is the valid-bits count and the channel
+// mask, neither of which means anything for mono or stereo integer/float PCM.
+// Declining to rewrite anything else — an unknown sub-format, a malformed
+// chunk — is deliberate: the file goes on as it is rather than being
+// rearranged on a guess.
+func canonicalWAVHeader(b []byte) []byte {
+	if len(b) < 12 || string(b[0:4]) != "RIFF" || string(b[8:12]) != "WAVE" {
+		return b
+	}
+	for pos := 12; pos+8 <= len(b); {
+		size := int64(binary.LittleEndian.Uint32(b[pos+4 : pos+8]))
+		body := pos + 8
+		if string(b[pos:pos+4]) != "fmt " {
+			next := int64(body) + size + (size & 1)
+			if next <= int64(pos) || next > int64(len(b)) {
+				return b
+			}
+			pos = int(next)
+			continue
+		}
+		// The fmt chunk, at last. Anything but EXTENSIBLE is already canonical.
+		if size < 40 || int64(len(b)-body) < 40 {
+			return b
+		}
+		f := b[body:]
+		if binary.LittleEndian.Uint16(f[0:2]) != 0xFFFE {
+			return b
+		}
+		sub := binary.LittleEndian.Uint16(f[24:26]) // first field of the sub-format GUID
+		if sub != 1 && sub != 3 {
+			return b
+		}
+		next := int64(body) + size + (size & 1)
+		if next > int64(len(b)) {
+			return b
+		}
+		var out bytes.Buffer
+		out.Grow(len(b))
+		out.WriteString("RIFF")
+		_ = binary.Write(&out, binary.LittleEndian, uint32(0)) // patched below
+		out.WriteString("WAVE")
+		out.Write(b[12:pos]) // whatever chunks preceded fmt, in place
+		// The 16-byte form: the sub-format's tag, then the fields EXTENSIBLE
+		// already carries, in the same order and at the same offsets.
+		out.WriteString("fmt ")
+		_ = binary.Write(&out, binary.LittleEndian, uint32(16))
+		_ = binary.Write(&out, binary.LittleEndian, sub)
+		out.Write(f[2:16]) // channels, rate, byte rate, block align, bits
+		out.Write(b[next:])
+		res := out.Bytes()
+		binary.LittleEndian.PutUint32(res[4:8], uint32(len(res)-8))
+		return res
+	}
+	return b
+}
+
+// pcmNameFor maps a WAV format tag and bit depth onto config's PCM vocabulary.
+// "" = a combination corrallm has no name for, which is never treated as
+// accepted.
+func pcmNameFor(format uint16, bits int) string {
+	switch {
+	case format == 1 && bits == 8:
+		return "u8"
+	case format == 1 && bits == 16:
+		return "s16"
+	case format == 1 && bits == 24:
+		return "s24"
+	case format == 1 && bits == 32:
+		return "s32"
+	case format == 3 && bits == 32:
+		return "f32"
+	case format == 3 && bits == 64:
+		return "f64"
+	default:
+		return ""
+	}
+}
+
+// satisfiedBy reports whether the file can go to this backend untouched.
+//
+// Two levels, and the second is what phase 2 added. The container is checked
+// from the magic number as before; then, where the backend has declared what
+// it wants INSIDE that container, the wav header is read and compared. A
+// 48 kHz stereo 24-bit wav passes the first check and fails the second, which
+// is the whole point: before this, corrallm forwarded it and the caller was
+// told about it by the backend.
+func (a audioIntake) satisfiedBy(have string, audio []byte) bool {
+	if len(a.formats) > 0 && (have == "" || !acceptsFormat(a.formats, have)) {
+		return false
+	}
+	if !a.bounds.AudioBounded() {
+		return true // nothing declared below the container → phase 1, unchanged
+	}
+	switch have {
+	case "wav":
+		rate, channels, encoding, ok := parseWAVParams(audio)
+		return ok && a.allowsPCM(rate, channels, encoding)
+	case "":
+		// Unidentified bytes, and the backend has said something specific it
+		// needs. Nothing here can confirm it, so convert rather than forward on
+		// a hope.
+		return false
+	default:
+		// A compressed container states its PCM parameters only after a decode,
+		// and every backend that has ever declared bounds accepts only wav
+		// anyway. Passing it through is phase 1's behaviour, unchanged; the
+		// case is named in plan/p35-phase2-intake.md rather than guessed at.
+		return true
+	}
+}
+
+// allowsPCM checks one file's parameters against the declared bounds. Every
+// bound is zero-means-silent, so a backend that declared two of the four is
+// held to two.
+func (a audioIntake) allowsPCM(rate, channels int, encoding string) bool {
+	b := a.bounds
+	if b.MinSampleRate > 0 && rate < b.MinSampleRate {
+		return false
+	}
+	if b.MaxSampleRate > 0 && rate > b.MaxSampleRate {
+		return false
+	}
+	if b.MaxChannels > 0 && channels > b.MaxChannels {
+		return false
+	}
+	if len(b.PCM) > 0 {
+		if encoding == "" {
+			return false
+		}
+		for _, p := range b.PCM {
+			if config.CanonPCMEncoding(p) == encoding {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// describe renders the declaration in the words a refusal has to use. The
+// container list alone stopped being the whole answer in phase 2, and a 415
+// that names half of what the backend asked for sends the operator looking in
+// the wrong place.
+func (a audioIntake) describe() []string {
+	out := append([]string(nil), a.formats...)
+	b := a.bounds
+	if len(b.PCM) > 0 {
+		out = append(out, strings.Join(b.PCM, "/")+" samples")
+	}
+	switch {
+	case b.MinSampleRate > 0 && b.MaxSampleRate > 0:
+		out = append(out, fmt.Sprintf("%d-%d Hz", b.MinSampleRate, b.MaxSampleRate))
+	case b.MinSampleRate > 0:
+		out = append(out, fmt.Sprintf("%d Hz and up", b.MinSampleRate))
+	case b.MaxSampleRate > 0:
+		out = append(out, fmt.Sprintf("up to %d Hz", b.MaxSampleRate))
+	}
+	if b.MaxChannels > 0 {
+		out = append(out, fmt.Sprintf("up to %d channels", b.MaxChannels))
+	}
+	return out
+}
+
+// transcodeTarget is the one file corrallm will produce for this backend.
+type transcodeTarget struct {
+	rate     int
+	channels int
+	pcm      string // canonical name, for the log line and the refusal
+	codec    string // the ffmpeg -c:a that produces it
+}
+
+// bytesPerSecond is the size arithmetic the duration cap is expressed in.
+func (t transcodeTarget) bytesPerSecond() int64 {
+	return int64(t.rate) * int64(t.channels) * int64(pcmWidth(t.pcm))
+}
+
+func pcmWidth(pcm string) int {
+	switch pcm {
+	case "u8":
+		return 1
+	case "s16":
+		return 2
+	case "s24":
+		return 3
+	case "s32", "f32":
+		return 4
+	case "f64":
+		return 8
+	}
+	return 2
+}
+
+// chooseTarget picks the file corrallm will make, so that it satisfies
+// everything the backend declared.
+//
+// §9.0b, applied where it actually costs something: ACCEPT GENEROUSLY means
+// that anything corrallm can convert INTO the declared bounds it converts,
+// rather than refusing because its favourite target happens not to fit. So a
+// backend that wants 44.1 kHz gets 44.1 kHz and a backend that wants float32
+// gets float32 — the preferred 16 kHz mono s16 is a default, not a demand.
+// Only a backend corrallm genuinely cannot produce a file for is refused, and
+// then at the door and by name.
+func (a audioIntake) chooseTarget(have string, cfg config.ConvertConfig) (transcodeTarget, error) {
+	described := have
+	if described == "" {
+		described = "an unrecognised format"
+	}
+	// Container first: corrallm makes wav and nothing else. A backend that
+	// reads only flac was previously handed a wav it could not open — a
+	// conversion that could never have worked, discovered by the caller as a
+	// 400 from inside the backend.
+	if len(a.formats) > 0 && !acceptsFormat(a.formats, "wav") {
+		return transcodeTarget{}, &transcodeError{status: 415, msg: fmt.Sprintf(
+			"audio is %s and this model accepts only %s; corrallm converts audio with ffmpeg to wav, "+
+				"which this model does not accept", described, strings.Join(a.formats, ", "))}
+	}
+
+	t := transcodeTarget{channels: 1, pcm: "s16"}
+	t.rate = cfg.AudioSampleRate
+	if t.rate <= 0 {
+		t.rate = defaultTranscodeSampleRate
+	}
+	b := a.bounds
+	if b.MinSampleRate > 0 && t.rate < b.MinSampleRate {
+		t.rate = b.MinSampleRate
+	}
+	if b.MaxSampleRate > 0 && t.rate > b.MaxSampleRate {
+		t.rate = b.MaxSampleRate
+	}
+	if b.MinSampleRate > 0 && t.rate < b.MinSampleRate {
+		// Only reachable from a min above a max, which Validate rejects in
+		// config and a probe record could still carry. An empty window accepts
+		// nothing, and saying so beats producing a file that cannot satisfy it.
+		return transcodeTarget{}, &transcodeError{status: 415, msg: fmt.Sprintf(
+			"audio is %s and this model accepts only %d-%d Hz, a range that contains no sample rate; "+
+				"corrallm cannot convert into it", described, b.MinSampleRate, b.MaxSampleRate)}
+	}
+
+	if len(b.PCM) > 0 && !a.allowsPCM(t.rate, t.channels, t.pcm) {
+		t.pcm = ""
+		for _, p := range b.PCM {
+			c := config.CanonPCMEncoding(p)
+			if c != "" && config.FFmpegPCMCodec(c) != "" {
+				t.pcm = c
+				break
+			}
+		}
+		if t.pcm == "" {
+			return transcodeTarget{}, &transcodeError{status: 415, msg: fmt.Sprintf(
+				"audio is %s and this model accepts only %s sample encodings; corrallm converts audio with "+
+					"ffmpeg and can produce %s, none of which this model accepts",
+				described, strings.Join(b.PCM, ", "), strings.Join(config.KnownPCMEncodings(), ", "))}
+		}
+	}
+	t.codec = config.FFmpegPCMCodec(t.pcm)
+	if t.codec == "" {
+		return transcodeTarget{}, &transcodeError{status: 500, msg: "audio transcode: no encoder for " + t.pcm}
+	}
+	return t, nil
+}
+
 // transcodeAudioUpload rewrites a multipart STT body so its file part is in a
 // container the backend can read, returning the new body and the new
 // Content-Type (the boundary changes).
@@ -216,8 +560,8 @@ func acceptsFormat(accepts []string, format string) bool {
 // part, a backend that declared nothing, and a file already in an accepted
 // format. Only a request that genuinely cannot be served as it stands produces
 // a *transcodeError.
-func transcodeAudioUpload(ctx context.Context, body []byte, contentType string, accepts []string, cfg config.ConvertConfig) ([]byte, string, error) {
-	if len(accepts) == 0 {
+func transcodeAudioUpload(ctx context.Context, body []byte, contentType string, accepts audioIntake, cfg config.ConvertConfig) ([]byte, string, error) {
+	if !accepts.known() {
 		return nil, "", nil // nothing declared → nothing known → hands off
 	}
 	_, params, err := mime.ParseMediaType(contentType)
@@ -229,7 +573,7 @@ func transcodeAudioUpload(ctx context.Context, body []byte, contentType string, 
 		return nil, "", nil
 	}
 	have := sniffAudioFormat(audio)
-	if have != "" && acceptsFormat(accepts, have) {
+	if accepts.satisfiedBy(have, audio) {
 		return nil, "", nil // the common case, and it costs one memcmp
 	}
 
@@ -244,11 +588,20 @@ func transcodeAudioUpload(ctx context.Context, body []byte, contentType string, 
 	return out, newCT, nil
 }
 
-// transcodeToWAV shells out to ffmpeg for 16 kHz mono PCM s16 WAV.
-func transcodeToWAV(ctx context.Context, audio []byte, have string, accepts []string, cfg config.ConvertConfig) ([]byte, error) {
+// transcodeToWAV shells out to ffmpeg for the target chosen above — 16 kHz
+// mono PCM s16 WAV unless the backend declared bounds that ask for something
+// else.
+func transcodeToWAV(ctx context.Context, audio []byte, have string, accepts audioIntake, cfg config.ConvertConfig) ([]byte, error) {
 	described := have
 	if described == "" {
 		described = "an unrecognised format"
+	}
+	// What corrallm would make, BEFORE asking whether it can. A backend no
+	// conversion could ever satisfy is refused for that reason and not for the
+	// missing tool, which would be true but not the fault.
+	target, err := accepts.chooseTarget(have, cfg)
+	if err != nil {
+		return nil, err
 	}
 	if !haveFFmpeg() {
 		// Named, not swallowed. The operator declared that this backend reads
@@ -258,21 +611,20 @@ func transcodeToWAV(ctx context.Context, audio []byte, have string, accepts []st
 		// backend would not.
 		return nil, &transcodeError{status: 415, msg: fmt.Sprintf(
 			"audio is %s and this model accepts only %s; corrallm can convert it but ffmpeg is not installed on this host",
-			described, strings.Join(accepts, ", "))}
+			described, strings.Join(accepts.describe(), ", "))}
 	}
 
-	rate := cfg.AudioSampleRate
-	if rate <= 0 {
-		rate = defaultTranscodeSampleRate
-	}
 	maxSec := cfg.AudioMaxSeconds
 	if maxSec <= 0 {
 		maxSec = defaultTranscodeMaxSeconds
 	}
-	// bytes(t) = t * rate * 2 (mono, s16). The cap is carried in bytes from
-	// here down so the two enforcement points — the cheap pre-check and
-	// ffmpeg's own -fs — are the same number rather than two that can drift.
-	maxBytes := int64(maxSec) * int64(rate) * 2
+	// bytes(t) = t * rate * channels * sampleWidth. The cap is carried in
+	// bytes from here down so the two enforcement points — the cheap
+	// pre-check and ffmpeg's own -fs — are the same number rather than two
+	// that can drift. It follows the TARGET: a backend that asked for 44.1 kHz
+	// float32 produces 5.5x the bytes of the default, and a cap computed off
+	// the default would let the 64 MiB body limit be crossed silently.
+	maxBytes := int64(maxSec) * target.bytesPerSecond()
 
 	dir, err := os.MkdirTemp("", "corrallm-audio-")
 	if err != nil {
@@ -305,9 +657,9 @@ func transcodeToWAV(ctx context.Context, audio []byte, have string, accepts []st
 		"-i", in,
 		"-vn",           // drop cover art; an mp3's embedded JPEG is not audio
 		"-map", "0:a:0", // first audio stream only — a webm may carry video
-		"-ac", "1", // mono: every accepting backend takes it, and it halves the bytes
-		"-ar", strconv.Itoa(rate),
-		"-c:a", "pcm_s16le", // the one PCM encoding NeMo-Speech.cpp's format 1 branch reads
+		"-ac", strconv.Itoa(target.channels), // mono: every accepting backend takes it, and it halves the bytes
+		"-ar", strconv.Itoa(target.rate),
+		"-c:a", target.codec, // s16 by default: what NeMo-Speech.cpp's format 1 branch reads
 		"-f", "wav",
 		"-fs", strconv.FormatInt(maxBytes+1, 10), // stop rather than fill the disk
 		outPath)
@@ -333,7 +685,14 @@ func transcodeToWAV(ctx context.Context, audio []byte, have string, accepts []st
 		return nil, &transcodeError{status: 413, msg: fmt.Sprintf(
 			"audio exceeds the %ds corrallm converts per request; send a shorter file, or split it", maxSec)}
 	}
-	return os.ReadFile(outPath)
+	wav, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, err
+	}
+	// What corrallm SAYS it produced has to be what it produced — see
+	// canonicalWAVHeader for the one place ffmpeg and a strict reader disagree.
+	// A no-op for the 16 kHz s16 default, which is every request today.
+	return canonicalWAVHeader(wav), nil
 }
 
 // probeDurationSeconds asks ffprobe how long the file is. ok=false when
