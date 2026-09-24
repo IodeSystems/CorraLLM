@@ -16,18 +16,27 @@ is the thing this layer exists to prevent.
 
 ## 1. Status
 
-**✅ BUILT and live-verified (§5).** Two commits: the conformance test, then the
-implementation. Nothing in phase 3 or 4 is touched, and no schema question is
-answered here.
+**✅ BUILT and live-verified (§5), and the spec is now checked against NeMo's
+real parser rather than against its own author (§5b).** Nothing in phase 3 or 4
+is touched, and no schema question is answered here. One thing §5b turned up is
+NOT fixed and is the owner's call: the 1800 s duration default refuses three of
+seven real hearings.
 
-## 2. NeMo-Speech.cpp's intake contract — read, cited, and NOT run
+## 2. NeMo-Speech.cpp's intake contract — read, cited, and now DIFFERENTIALLY CHECKED
 
-**No NeMo backend was ever contacted.** The PR is unmerged, nothing on this box
-builds or runs it, and no request in any proof below reached one. What exists is
-its SOURCE, read at one named commit, and the rules transcribed into Go with the
-line each came from. The test that carries them says this about itself in its own
-header, because a conformance test that reads like an integration test is a claim
-nobody made.
+**No NeMo MODEL has ever run.** What runs now is NeMo's real PARSER. Its
+`src/common/audio_file.cpp` includes only its own header and the standard
+library — no ggml, no CUDA, no model — so it compiles standalone and does not
+need the unmerged PR #50. That parser IS the intake:
+`server/http/http_server.cpp` calls `audio::load_wav_memory` on the uploaded
+multipart body directly, with no decoder in front of it
+(`src/common/audio_decoder.*` is a streaming PCM16 path used only by the gRPC
+services). So this is the door, and recognition is still untested.
+
+The rules below were transcribed from that source into Go. They are no longer
+only a reading of it: `internal/proxy/audio_nemodiff_test.go` links the real
+`audio_file.cpp` and compares verdicts over the same bytes. See
+`internal/proxy/testdata/nemoconformance/README.md`.
 
     source: NVIDIA/NeMo-Speech.cpp @ 302ebc93f096d03395e5d86c643897b8bf0fd9a8
             (2026-09-21), read 2026-09-23
@@ -135,16 +144,84 @@ Also verified live: the bounds survive SQLite (`config export` round-trips them)
 `/v1/models` publishes them, and `corrallm validate` refuses
 `pcm: [s16be]` with *"unknown audio pcm encoding … (want f32|f64|s16|s24|s32|u8)"*.
 
+## 5b. The differential check, and what the real hearings did to it
+
+The §3 conformance test was written from the same reading as §2's table, so it
+could only confirm what its author already believed. `audio_nemodiff_test.go`
+now links NeMo's real `audio_file.cpp` and compares verdicts and rules over the
+same bytes.
+
+**Result: no disagreements.** 41 named vectors and 5000 mutated headers, all
+agreeing on both the verdict and which rule refused. The named set adds the
+cases §2 states a rule for and nothing had exercised: `WAVE_FORMAT_EXTENSIBLE`
+with a real 40-byte fmt chunk, `fmt ` of 15/18/40 bytes, odd padding present and
+missing, a truncated `data` chunk, `data` declaring `0xFFFFFFFF`, chunks before
+`fmt `, duplicate `fmt `/`data`, and R6/R7's bounds hit exactly and missed by
+one. R7's second citation was re-checked too: `supported_input_sample_rate`
+(`audio_resampler.cpp:63-65`) is the same 8000–96000, so the intake and the
+recognizer agree. The differential is itself checked for vacuity — moving R7's
+lower bound to 7000 makes it fail on the 7999 Hz vector.
+
+**Seven real hearings, through the real transcode, into the real parser.** Three
+containers, four `.mp4` (not three), two `.m4a`, one `.opus`; all audio-only,
+all 48 kHz AAC/Opus. Four convert and NeMo loads all four at 16 kHz mono.
+**Three are refused 413 before they start** — they are 2523 s, 2523 s and 2650 s
+against a 1800 s default. A real court hearing does not fit through the door.
+
+**The 1800 s default's justification does not hold.** The constant's comment
+reasons that 1800 s is 57.6 MB, "just inside the 64 MiB cap handleInference
+already imposes on an STT upload". Those are two different bodies: the 64 MiB
+`io.LimitReader` governs what ARRIVES (compressed — the largest real upload here
+is 23.0 MiB, and at 66–133 kbps 64 MiB holds 1.4–2.25 hours), while 57.6 MB is
+what corrallm PRODUCES, and the produced wav is never checked against it.
+Verified: at `--transcode-audio-max-seconds 3600` all seven pass, and 76.99 MiB
+and 80.87 MiB wav bodies forward with no refusal. **The duration cap binds; the
+64 MiB cap does not come near.**
+
+**A defensible default is 3600 s**, which covers every file here (max 2650 s)
+with a hearing's worth of headroom. It costs 115.2 MB of wav per request
+(buffered in corrallm and again in the backend) and ~8 s of ffmpeg — measured at
+434–555x realtime, so `transcodeTimeout` (2 min) keeps an order of magnitude of
+headroom. **Not changed here: the default is the owner's call**, because the
+cost is memory per concurrent request, not CPU.
+
+**Found while measuring: the 64 MiB cap truncates silently.**
+`io.ReadAll(io.LimitReader(r.Body, maxBody))` returns the first 64 MiB with no
+error, so a larger upload reaches the backend as a malformed multipart and the
+caller gets a 400 phrased by a foreign program about a file they sent whole —
+the exact late failure §0 says this layer exists to prevent. Proven with a
+76.8 MB wav: HTTP 400 `"not multipart"` from the backend, no 413 from corrallm.
+It matters more if the duration cap rises, since that makes long wav uploads
+plausible; the two caps have to move together.
+
+**`.mp4` is classified as `m4a`,** and the brand is never read —
+`sniffAudioFormat` returns `"m4a"` for any `ftyp` at offset 4, so `isom` (what
+all four `.mp4` carry) and `M4A ` are indistinguishable. For a wav-only backend
+this is harmless: the file is transcoded either way and NeMo accepts the output,
+including an mp4 that carries a video stream (`-vn -map 0:a:0` drops it —
+verified synthetically, since none of the real files have video). It is only
+visible to a backend that DECLARES `formats: [m4a]`, where every ISO-BMFF file
+is passed through unconverted; whether that backend then accepts an `isom` brand
+is its business, and corrallm has not asked.
+
 ## 6. Active work
 
 **◻ next** — nothing in this slice. It is complete and committed. The remaining
 phase 2 items from `p35-corral-layer.md` §11 are below, untouched.
 
+**blocking decision (owner)** — `--transcode-audio-max-seconds` default.
+1800 s refuses 3 of 7 real hearings. 3600 s admits all of them and costs 115 MB
+of buffered wav per concurrent request. Raising it without also refusing (rather
+than truncating) oversized uploads moves the failure rather than fixing it.
+
 **risks**
 
-1. **No NeMo backend was ever contacted.** The conformance spec is a reading of
-   source at one commit. If upstream loosens or tightens `parse_wav`, this file and
-   the test go stale silently; the citations are the mitigation, not a guarantee.
+1. **No NeMo MODEL has run — only its parser.** The intake is now checked
+   against the real `parse_wav` (§5b), but recognition, the resampler in
+   anger, and everything downstream of loading are still untested. If upstream
+   changes `parse_wav`, the differential catches it on the next run rather than
+   going stale silently — including a refusal message no rule covers, which the
+   test reports rather than scoring as agreement.
 2. **R1 is not enforced.** `replaceFilePart` puts the audio back under the field
    name the client used, so a client uploading under something other than `file`
    is forwarded and refused by NeMo at `http_server.cpp:197`. Named, not fixed —
