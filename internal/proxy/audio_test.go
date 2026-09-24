@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -535,4 +537,250 @@ func postSTT(t *testing.T, upstreamURL string, formats []string, filename string
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	return rec
+}
+
+// --- NeMo-Speech.cpp intake conformance -----------------------------------
+//
+// THIS IS NOT AN INTEGRATION TEST, AND NOTHING HERE HAS EVER CONTACTED A NeMo
+// BACKEND. NeMo-Speech.cpp is not built, installed or running on this box; its
+// PR is unmerged. What follows is a CONFORMANCE test against its intake
+// contract: the rules were read out of its source at one named commit and
+// restated in Go below, each carrying the line it came from so a later reader
+// can re-verify them instead of trusting this comment. When upstream changes
+// the contract this file goes stale silently — the citations are the only
+// defence against that, which is why every rule has one.
+//
+//	source: NVIDIA/NeMo-Speech.cpp @ 302ebc93f096d03395e5d86c643897b8bf0fd9a8
+//	        (2026-09-21), read 2026-09-23
+//
+//	R1  the multipart field must literally be named "file"
+//	      server/http/http_server.cpp:195-198 (uploaded_file)
+//	R2  at least 12 bytes                       src/common/audio_file.cpp:36-37
+//	R3  RIFF....WAVE magic — both words         src/common/audio_file.cpp:38-39
+//	R4  no chunk may declare more than remains  src/common/audio_file.cpp:53-54
+//	R5  a "fmt " chunk of >= 16 bytes, and a "data" chunk
+//	      src/common/audio_file.cpp:55-57, 75-76
+//	R6  channels is 1 or 2                      src/common/audio_file.cpp:77-78
+//	R7  8000 <= sampleRate <= 96000             src/common/audio_file.cpp:79-80
+//	      and again on the recognizer: src/asr/recognizer.cpp:351 →
+//	      supported_input_sample_rate, src/common/audio_resampler.cpp:15-16,63-65
+//	R8  (format 1 and 16 bits) or (format 3 and 32 bits), and NOTHING else —
+//	    8-, 24- and 32-bit integer PCM and WAVE_FORMAT_EXTENSIBLE (0xFFFE) are
+//	    all refused here                        src/common/audio_file.cpp:83-89
+//	R9  blockAlign == bytesPerSample*channels, and dataSize divides by it
+//	      src/common/audio_file.cpp:90-92
+//	R10 at least one frame                      src/common/audio_file.cpp:110-111
+//
+// R1 is stated for completeness and is NOT asserted against corrallm here:
+// replaceFilePart puts the audio back under the field name the client used, so
+// a client that uploads under another name is passed through unchanged and
+// would still be refused by R1. Named as a gap rather than fixed by guessing —
+// see plan/p35-phase2-intake.md.
+
+// nemoAccepts reports what NeMo-Speech.cpp's parse_wav would do with these
+// bytes: nil when it would load them, an error naming the rule when it would
+// throw. A transcription of the C++, kept in the same order as the C++ so the
+// two can be read side by side.
+func nemoAccepts(b []byte) error {
+	if len(b) < 12 { // R2
+		return fmt.Errorf("R2: %d bytes, too small to be a RIFF/WAVE file", len(b))
+	}
+	if string(b[0:4]) != "RIFF" || string(b[8:12]) != "WAVE" { // R3
+		return fmt.Errorf("R3: unsupported container (magic %q/%q)", b[0:4], b[8:12])
+	}
+	var format, channels, bits, blockAlign uint16
+	var rate, dataSize uint32
+	haveFormat, haveData := false, false
+	for pos := 12; pos+8 <= len(b); {
+		declared := binary.LittleEndian.Uint32(b[pos+4 : pos+8])
+		body := pos + 8
+		if int64(declared) > int64(len(b)-body) { // R4
+			return fmt.Errorf("R4: truncated WAV chunk %q", b[pos:pos+4])
+		}
+		switch {
+		case string(b[pos:pos+4]) == "fmt ":
+			if declared < 16 { // R5
+				return fmt.Errorf("R5: invalid WAV format chunk (%d bytes)", declared)
+			}
+			p := b[body:]
+			format = binary.LittleEndian.Uint16(p[0:2])
+			channels = binary.LittleEndian.Uint16(p[2:4])
+			rate = binary.LittleEndian.Uint32(p[4:8])
+			blockAlign = binary.LittleEndian.Uint16(p[12:14])
+			bits = binary.LittleEndian.Uint16(p[14:16])
+			haveFormat = true
+		case string(b[pos:pos+4]) == "data" && !haveData:
+			dataSize = declared
+			haveData = true
+		}
+		next := int64(body) + int64(declared) + int64(declared&1)
+		if next > int64(len(b)) {
+			break
+		}
+		pos = int(next)
+	}
+	if !haveFormat || !haveData { // R5
+		return fmt.Errorf("R5: WAV file is missing a format or data chunk")
+	}
+	if channels != 1 && channels != 2 { // R6
+		return fmt.Errorf("R6: %d channels; only mono and stereo are supported", channels)
+	}
+	if rate < 8000 || rate > 96000 { // R7
+		return fmt.Errorf("R7: sample rate %d must be between 8 and 96 kHz", rate)
+	}
+	var bytesPerSample uint16 // R8
+	switch {
+	case format == 1 && bits == 16:
+		bytesPerSample = 2
+	case format == 3 && bits == 32:
+		bytesPerSample = 4
+	default:
+		return fmt.Errorf("R8: unsupported WAV encoding (format %d, %d-bit)", format, bits)
+	}
+	align := bytesPerSample * channels // R9
+	if blockAlign != align || dataSize%uint32(align) != 0 {
+		return fmt.Errorf("R9: invalid or truncated WAV sample data (blockAlign %d, want %d; %d bytes of data)",
+			blockAlign, align, dataSize)
+	}
+	if dataSize/uint32(align) == 0 { // R10
+		return fmt.Errorf("R10: audio data is empty")
+	}
+	return nil
+}
+
+// wavPCM builds a RIFF/WAVE with the fmt parameters asked for, so the intake
+// rules can be exercised one at a time. The samples are a ramp rather than
+// silence — some of these files are fed through ffmpeg for real, and encoders
+// are allowed to be clever about digital silence.
+func wavPCM(formatCode, channels, bits uint16, rate uint32, frames int) []byte {
+	align := int(bits) / 8 * int(channels)
+	data := make([]byte, frames*align)
+	for i := range data {
+		data[i] = byte(i * 7)
+	}
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(36+len(data)))
+	b.WriteString("WAVEfmt ")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(16))
+	_ = binary.Write(&b, binary.LittleEndian, formatCode)
+	_ = binary.Write(&b, binary.LittleEndian, channels)
+	_ = binary.Write(&b, binary.LittleEndian, rate)
+	_ = binary.Write(&b, binary.LittleEndian, rate*uint32(align)) // byte rate
+	_ = binary.Write(&b, binary.LittleEndian, uint16(align))
+	_ = binary.Write(&b, binary.LittleEndian, bits)
+	b.WriteString("data")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(len(data)))
+	b.Write(data)
+	return b.Bytes()
+}
+
+// The checker must not be vacuous. Every rule corrallm can trip is exercised
+// in both directions here, so a later "corrallm's output is accepted"
+// assertion means something.
+func TestNeMoIntakeSpecIsNotVacuous(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   []byte
+		rule string // "" = must be accepted
+	}{
+		{"16-bit mono 16 kHz", wavPCM(1, 1, 16, 16000, 100), ""},
+		{"16-bit stereo 44.1 kHz", wavPCM(1, 2, 16, 44100, 100), ""},
+		{"float32 mono 48 kHz", wavPCM(3, 1, 32, 48000, 100), ""},
+		{"too small", []byte("RIFF"), "R2"},
+		{"not RIFF/WAVE", []byte("RIFF....AVI LIST...."), "R3"},
+		// The §2 gap, stated the way NeMo states it: the container is right and
+		// the encoding inside it is not.
+		{"24-bit stereo 48 kHz", wavPCM(1, 2, 24, 48000, 100), "R8"},
+		{"8-bit mono", wavPCM(1, 1, 8, 16000, 100), "R8"},
+		{"32-bit integer PCM", wavPCM(1, 1, 32, 16000, 100), "R8"},
+		{"WAVE_FORMAT_EXTENSIBLE", wavPCM(0xFFFE, 1, 16, 16000, 100), "R8"},
+		{"5.1 channels", wavPCM(1, 6, 16, 48000, 100), "R6"},
+		{"192 kHz", wavPCM(1, 1, 16, 192000, 100), "R7"},
+		{"4 kHz", wavPCM(1, 1, 16, 4000, 100), "R7"},
+		{"no frames", wavPCM(1, 1, 16, 16000, 0), "R10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := nemoAccepts(tc.in)
+			switch {
+			case tc.rule == "" && err != nil:
+				t.Errorf("NeMo would refuse a file it accepts: %v", err)
+			case tc.rule != "" && err == nil:
+				t.Errorf("checker accepted what NeMo refuses at %s", tc.rule)
+			case tc.rule != "" && err != nil && !strings.HasPrefix(err.Error(), tc.rule+":"):
+				t.Errorf("refused as %v, want rule %s", err, tc.rule)
+			}
+		})
+	}
+}
+
+// nemoIntake is what an operator would declare for NeMo-Speech.cpp today: the
+// one container its reader opens. It is deliberately NOT enough — see the
+// 24-bit case below, which is the gap phase 2 closes.
+func nemoIntake() []string { return []string{"wav"} }
+
+// What corrallm produces has to be loadable by the backend it produced it for.
+// Sniffing "wav" is not that test: RIFF/WAVE is rule R3 of ten.
+func TestTranscodeOutputSatisfiesNeMoIntake(t *testing.T) {
+	wav := tinyWAV(1)
+	for _, tc := range []struct {
+		name string
+		ext  string
+		args []string
+	}{
+		{"mp3", "mp3", nil},
+		{"m4a", "m4a", []string{"-c:a", "aac"}},
+		{"flac", "flac", nil},
+		{"webm", "webm", []string{"-c:a", "libopus"}},
+		{"ogg", "ogg", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := encodeWith(t, wav, tc.ext, tc.args...)
+			body, ct := sttUpload(t, "nemo", "speech."+tc.ext, src, nil)
+			out, newCT, err := transcodeAudioUpload(context.Background(), body, ct,
+				nemoIntake(), config.DefaultConvert())
+			if err != nil {
+				t.Fatalf("transcode %s: %v", tc.ext, err)
+			}
+			got, _ := filePartOf(t, out, newCT)
+			if err := nemoAccepts(got); err != nil {
+				t.Errorf("NeMo would refuse what corrallm produced from %s: %v", tc.ext, err)
+			}
+		})
+	}
+}
+
+// THE GAP, AS A TEST. A 48 kHz stereo 24-bit wav satisfies `formats: [wav]`,
+// so phase 1 forwards it untouched — and NeMo refuses it at R8, from inside a
+// process the caller has never heard of. corrallm must settle this at its own
+// door: either convert the file into something the backend loads, or refuse it
+// by name. Passing it on is the one outcome this layer exists to remove.
+func TestWAVOutsideNeMoPCMBoundsIsHandledAtTheDoor(t *testing.T) {
+	if !haveFFmpeg() {
+		t.Skip("ffmpeg not installed")
+	}
+	src := wavPCM(1, 2, 24, 48000, 16000)
+	if err := nemoAccepts(src); err == nil {
+		t.Fatal("fixture is not the problem case: NeMo would accept it")
+	}
+	body, ct := sttUpload(t, "nemo", "speech.wav", src, nil)
+	out, newCT, err := transcodeAudioUpload(context.Background(), body, ct,
+		nemoIntake(), config.DefaultConvert())
+	if err != nil {
+		// A refusal is an acceptable answer, as long as it is corrallm's own
+		// and it names what is wrong.
+		var te *transcodeError
+		if !asTranscodeError(err, &te) {
+			t.Fatalf("err = %v, want a transcodeError", err)
+		}
+		return
+	}
+	if out == nil {
+		t.Fatal("forwarded untouched: the backend refuses this at audio_file.cpp:89, and " +
+			"the caller reads somebody else's error about an encoding they never chose")
+	}
+	got, _ := filePartOf(t, out, newCT)
+	if err := nemoAccepts(got); err != nil {
+		t.Errorf("NeMo would still refuse what corrallm produced: %v", err)
+	}
 }
