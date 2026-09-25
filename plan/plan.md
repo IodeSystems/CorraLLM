@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P36.**
+**Next free number: P37.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -69,7 +69,7 @@ A slice is ✅ **only** when its functional unit meets the Definition of done be
 `done.md` = the archive of finished trees, kept for evidence and traps, never a to-do list.
 `icebox.md` = deferred, opt-in next-steps. `open-questions.md` = decisions that need the USER,
 and **only while they are open** — a resolved question is deleted from it and its answer written
-into the plan item that needed it. **Phase numbers come from git history** — next free is P36.
+into the plan item that needed it. **Phase numbers come from git history** — next free is P37.
 
 **Re-check a question against the box before you ask it.** On 2026-08-24, six of eight standing
 "user decisions" turned out to be already answered by the running system, the migrated config, or
@@ -178,12 +178,20 @@ lanes:
 ### Cost model — everything resolves to $
 ```yaml
 costPerKwh: 0.14          # configurable; converts local energy → $
+costBaseline: anthropic-sonnet  # optional: which paid type the dashboard's
+                                # "would have cost" compares against. Unset →
+                                # the CHEAPEST configured paid type, so the
+                                # claimed saving is a floor (P36).
 commandCosts:
   local:  { generateWattsPerToken: 0.9, processWattsPerToken: 0.3 }   # → kWh → $
   claude: { extract: { costFactor: 0.8 } }                            # $ from response usage
 ```
 - **Local** cost = (gen_tokens·genW + prompt_tokens·procW) → kWh × `costPerKwh` → $.
 - **Paid** cost = extracted usage × `costFactor` → $.
+- **Which kind a row is** is resolved from the served model's type, not stored:
+  energy-priced + a model corrallm runs = electricity; a type with per-token rates = a
+  provider's bill; energy-priced + a host we do not run = **unattributed**, which is a config
+  gap rather than a reading (§7). `internal/api/costkind.go`.
 - **Swap/load** cost = load energy → kWh × `costPerKwh` → $ (plus latency, a scheduling input).
   Charged to whoever triggered the load (or amortized across the coalesced batch).
 - Two *uses* of cost, kept distinct:
@@ -318,6 +326,89 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P36 — true costs: electricity, a comparison, and the cache read — 2026-09-25
+
+The owner: *"On the main page we have cost — we should report that it's cost in electricity.
+Additionally, if like a comparison cost, and I'd like to know cache reads."* And the
+vocabulary, given in the same breath: *"Tokens are always measured in cached, processed, and
+generated."*
+
+✅ **Built and verified against the live activity log.** Three things, on the dashboard's
+existing rollup — no new store column, no migration, no metering change.
+
+**1. Local cost is named as electricity, with its rate.** `internal/api/costkind.go` resolves
+each rollup row's served model to its `commandCosts` type and splits `costUsd` into
+`energyUsd` / `paidUsd` / `unattributedUsd`. The Now strip and Traffic's tiles now read
+**Electricity** (`$0.5030`, sub-label `3.593 kWh at $0.14/kWh`) beside **Paid APIs**, and
+`ModelStats` puts the kind under every per-model figure. A counted `$0` on Paid APIs is kept
+rather than hidden: it says no request went to a provider, which a missing tile does not.
+
+**2. A "would have cost on a paid API" panel** (`ui/src/PaidComparison.tsx`), on Now and on
+Traffic from one component. Priced from the `commandCosts` table already in config, never a
+hardcoded rate list. **The baseline is `config.CostBaseline` (`costBaseline:`), defaulting to
+the cheapest configured paid type by generated-token rate** — a floor, not a flattering pick —
+and its name is on the panel header. It round-trips through config export/restore, verified.
+
+**3. Cached · processed · generated, everywhere tokens are reported.** `processed =
+promptTokens − cachedTokens`, the subtraction the Overview's re-read figure already used. Now,
+Traffic, `ModelStats`, `ActivityLog` and the model page's Usage tab. The cache hit rate rides
+the cached cell rather than taking a fourteenth column.
+
+**THE SPLIT FOUND A REAL CONFIG GAP, and the number is visible rather than folded away.**
+Every remote model except the three anthropic ones carries `type: chat`, which is an
+ENERGY-priced type — so `openrouter-*` traffic is billed at this box's watt-hour coefficients
+for tokens processed on somebody else's hardware. Verified arithmetic: 13,352 processed ×
+0.00005 Wh + 2,155 generated × 0.0013 Wh = 3.469 Wh × $0.14/kWh = **$0.000486, to the cent**.
+That is neither electricity nor a bill, so it reports as `unattributed` with a sub-label
+naming the fix (declare a paid type). It is $0.00049 of a $0.50 day — small, and the point is
+that it is not silently inside the electricity figure.
+
+**Live numbers, 24 h to 2026-09-25 15:55** — a second daemon on `:6513` over the live config
+(via the read-only `config/export`) and the day's activity rows copied out read-only.
+Production `:8111` was never restarted, reconfigured or written to.
+
+| | |
+|---|---|
+| Electricity | **$0.5030** = 3.593 kWh at $0.14/kWh |
+| Paid APIs | $0 (one `claude-haiku-*` request, no tokens) |
+| Unattributed | $0.00049 (8 openrouter requests) |
+| Tokens | 47,900,005 cached · 11,185,858 processed · 2,336,045 generated — **81.1%** of prompt from cache |
+| On `anthropic-haiku` (the default baseline) | **$27.71** — 55× |
+| On `anthropic-sonnet` (`costBaseline:` set) | **$82.90** — 165×, of which **$14.37 is cache reads alone** |
+
+**next** — nothing required. The comparison covers what it says it covers and says so.
+
+**risks / what is untested** — (1) **The comparison's honest scope is smaller than the
+headline.** Of 2,616 requests in the day it prices **1,910**; the other 706 are 690 served by
+a model no longer in the config (queue-timeout 429s against the name the Swift cutover
+retired), 8 off-box, 5 with no tokens, 2 speech, 1 already paid. The panel's note lists every
+group with its count — but a reader who takes "$82.90" and stops has taken a figure about 73%
+of the window's requests. (2) **Images are excluded and the reason is a gap, not a rounding**:
+`imageWhPerImage` is unset, so a generated image costs $0 locally and there is nothing to
+compare. Named in the note; nothing on this box generated one in the window, so the exclusion
+path for images is **unit-tested only**. (3) A **paid** audio provider would read as paid spend
+and still sit outside the comparison — correct, and also unexercised: no paid audio type is
+configured. (4) The classification is recomputed per request from the CURRENT config, so
+repricing a type moves history — deliberate, and the same property §8's calibration backfill
+already relied on, but a model renamed today makes yesterday's rows read `unknown-model`. (5)
+`Remote()` is the energy boundary: an enrolled Mac's models carry a `cmd` so they read as this
+fleet's electricity, which is right, but **a LAN box we do not manage would read as
+unattributed** and none exists here to check.
+
+**assumptions** — that the cheapest paid type is the right default baseline (a floor beats a
+flattering number, and the owner can name another); that a cached prompt token is free locally
+(the cost model already asserted this — `RequestUSDByClass` returns 0 for it — and the
+comparison now makes the consequence visible).
+
+**blocking decisions** — none. **One worth an answer when convenient:** `costBaseline` is unset
+on the live box, so it defaults to `anthropic-haiku` and reports 55×. If the honest alternative
+to this box is Sonnet, saying `costBaseline: anthropic-sonnet` triples the figure to 165× — and
+which of those is true is a fact about the owner's workload, not about corrallm.
+
+**optional extensions** — out of scope: a per-caller comparison on the Callers page (the same
+rows exist per key); a cost-over-time chart split by kind; renaming the `WattsPerToken` config
+fields to `WhPerToken` (§7 already carries this).
 
 ### ◐ P35 — the corral layer: transcode in, remap out — 2026-09-23
 
@@ -1241,6 +1332,23 @@ true and still costs something. Optional extensions and out-of-scope items live 
   parent's Info tab, and nothing in the UI linked to it. Deleted rather than wired up: the model
   page's own Usage tab answers the same question, and Traffic now answers it for any window. A URL
   that replies with the wrong page is worse than a 404.
+- **Every remote model except the three anthropic ones carries `type: chat`, an ENERGY-priced
+  type.** So `openrouter-*` (and `groq-*`, when enabled) traffic is costed with this box's
+  watt-hour coefficients for tokens processed on somebody else's hardware. Verified exactly:
+  7 openrouter requests, 13,352 processed × 0.00005 Wh + 2,155 generated × 0.0013 Wh =
+  3.469 Wh × $0.14/kWh = **$0.000486**, which is what the row records. These are free-tier
+  models, so the true figure is $0 and the error is small — but the same type on a PAID
+  openrouter model would mis-bill it silently. Since P36 the dashboard reports these as
+  **unattributed** rather than hiding them inside the electricity total, and names the fix: give
+  those models a type declaring `cachedCostFactor` / `processCostFactor` / `generateCostFactor`.
+  Found by the P36 split; the config change has NOT been made.
+
+- **690 of one day's requests are 429s against `local-Qwen3.8-27B`, a model the Swift cutover
+  removed from the config.** Every one is a `queue-timeout` on `/v1/chat/completions` from
+  `sk-aw4`. The name still resolves far enough to queue and time out, and the rollup can no
+  longer say what type priced it (P36 reports the row as `unknown-model`). Whether the caller
+  is pinned to a retired name or a fallback list still names it has not been traced.
+
 - **An oversized request body is silently truncated, not refused.** `handleInference` reads
   through `io.LimitReader(r.Body, maxBody)` (64 MiB on the STT routes, 32 MiB elsewhere) and
   never notices that it stopped early, so a 74 MB upload becomes a 67 MB one and the backend

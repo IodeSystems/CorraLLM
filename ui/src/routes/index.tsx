@@ -9,7 +9,8 @@ import { Panel, PageHeader, Row } from '@/Panel'
 import { C } from '@/theme'
 import { NotYet } from '@/NotYet'
 import { FleetPanel, type FleetResident, type FleetServer } from '@/FleetPanel'
-import { fmtInt, fmtUSD } from '@/format'
+import { fmtInt, fmtKwh, fmtUSD } from '@/format'
+import { PaidComparison, type ComparisonRow } from '@/PaidComparison'
 
 /**
  * NOW — is this box serving, and if not, what is wrong?
@@ -40,6 +41,12 @@ const NowDoc = graphql(/* GraphQL */ `
       # two screens in their head, which is what it took to find the 2026-09-05
       # slowdown by hand.
       recent: usageRollup(from: $hourAgo, to: $now) {
+        # THE RATE AND THE BASELINE, ON THE SAME FETCH. An energy figure without
+        # its $/kWh is a number with no basis, and "would have cost $X" without
+        # the type it was priced against is not a claim anybody can check. Both
+        # are window-level, so they ride the query the tiles already make.
+        costPerKwh
+        baselineType
         rows {
           served
           requests
@@ -50,6 +57,18 @@ const NowDoc = graphql(/* GraphQL */ `
           cachedTokens
           completionTokens
           costUsd
+          # WHAT KIND OF MONEY. A single "Cost" over a mixed fleet is neither
+          # electricity nor a bill; these three are the same total, split by what
+          # actually charges it.
+          energyUsd
+          energyKwh
+          paidUsd
+          unattributedUsd
+          baselineUsd
+          baselineCachedUsd
+          baselineProcessedUsd
+          baselineGeneratedUsd
+          baselineExcluded
           promptPerSec
           predictedPerSec
         }
@@ -673,8 +692,14 @@ function Throughput({
   configured = 0,
   requests = 0,
   promptTokens = 0,
+  cachedTokens = 0,
   completionTokens = 0,
-  costUsd = 0,
+  cacheReports = 0,
+  energyUsd = 0,
+  energyKwh = 0,
+  paidUsd = 0,
+  unattributedUsd = 0,
+  costPerKwh = 0,
 }: {
   /** Nothing has been counted yet: the strip renders, the numbers do not. */
   pending?: boolean
@@ -683,8 +708,14 @@ function Throughput({
   configured?: number
   requests?: number
   promptTokens?: number
+  cachedTokens?: number
   completionTokens?: number
-  costUsd?: number
+  cacheReports?: number
+  energyUsd?: number
+  energyKwh?: number
+  paidUsd?: number
+  unattributedUsd?: number
+  costPerKwh?: number
 }) {
   // Idle is a fact, not a blank. A strip of zeroes reads as broken; saying so in
   // words is the difference between "nothing is wrong" and "nothing is here".
@@ -710,18 +741,67 @@ function Throughput({
       sub: 'in the last hour',
     },
     {
+      // CACHED · PROCESSED · GENERATED — the three classes tokens are always
+      // measured in, and the vocabulary the cost model, the metrics and the
+      // owner all already use. "in · out" was two of the three with the
+      // interesting one folded into the first: promptTokens INCLUDES the cached
+      // prefix, so "in" was silently the sum of the work done and the work
+      // avoided, and the cache read — the number that says whether prefix
+      // caching is working at all — was queried here and never shown.
       label: 'Tokens',
       value: pending ? (
         <NotYet />
       ) : idle ? (
         '—'
       ) : (
-        `${compact(promptTokens)} in · ${compact(completionTokens)} out`
+        `${cacheReports > 0 ? compact(cachedTokens) : 'n/r'} · ${compact(
+          Math.max(0, promptTokens - cachedTokens),
+        )} · ${compact(completionTokens)}`
       ),
-      sub: 'in the last hour',
+      // The label strip is what makes the three readable; without it the value
+      // is three numbers in an order nobody was told.
+      sub:
+        pending || idle
+          ? 'cached · processed · generated'
+          : cacheReports > 0
+            ? `cached · processed · generated — ${((cachedTokens / Math.max(1, promptTokens)) * 100).toFixed(0)}% of prompt from cache`
+            : 'cached · processed · generated — nothing reported a cache',
     },
-    { label: 'Cost', value: pending ? <NotYet /> : fmtUSD(costUsd), sub: 'in the last hour' },
+    {
+      // ELECTRICITY, SAID SO, WITH ITS RATE. A local backend's cost IS energy:
+      // token work → Wh → kWh × $/kWh, and the screen never said either half.
+      // The rate is on the tile rather than in a tooltip because a cost figure
+      // whose rate is invisible cannot be checked (OB-4, OB-10).
+      label: 'Electricity',
+      value: pending ? <NotYet /> : fmtUSD(energyUsd),
+      sub:
+        costPerKwh > 0
+          ? `${fmtKwh(energyKwh)} at $${costPerKwh}/kWh`
+          : 'no $/kWh configured — every energy figure is $0 by omission',
+    },
+    {
+      // AND THE PART THAT IS NOT ELECTRICITY. The fleet is mixed: the anthropic
+      // types bill per token and a total over both kinds is neither. A counted
+      // $0 here is a real answer ("nothing went to a paid provider this hour"),
+      // which is why the tile is not hidden when it is zero.
+      label: 'Paid APIs',
+      value: pending ? <NotYet /> : fmtUSD(paidUsd),
+      sub: paidUsd > 0 ? 'billed per token by a provider' : 'nothing billed per token',
+    },
   ]
+  // A THIRD KIND, AND IT IS A CONFIG GAP RATHER THAN A READING. An energy-priced
+  // type on a model corrallm does not run: the tokens were processed on somebody
+  // else's hardware and then charged against this box's watt-hour coefficients.
+  // Not electricity anybody paid here, not the provider's rate either. It gets a
+  // tile only when it is nonzero — a permanent $0 fourth tile teaches nobody
+  // anything, and this one names an action (OB-6).
+  if (unattributedUsd > 0) {
+    stats.push({
+      label: 'Unattributed',
+      value: fmtUSD(unattributedUsd),
+      sub: 'off-box models priced as our own energy — declare a paid type for them',
+    })
+  }
   return (
     <Panel
       title="What it is getting done"
@@ -971,11 +1051,43 @@ function Now() {
     (a, r) => ({
       requests: a.requests + Number(r.requests ?? 0),
       promptTokens: a.promptTokens + Number(r.promptTokens ?? 0),
+      cachedTokens: a.cachedTokens + Number(r.cachedTokens ?? 0),
       completionTokens: a.completionTokens + Number(r.completionTokens ?? 0),
-      costUsd: a.costUsd + Number(r.costUsd ?? 0),
+      cacheReports: a.cacheReports + Number(r.cacheReports ?? 0),
+      // Summed per KIND, never into one figure. The three are the same
+      // costUsd the row already carries, split by what charges it.
+      energyUsd: a.energyUsd + Number(r.energyUsd ?? 0),
+      energyKwh: a.energyKwh + Number(r.energyKwh ?? 0),
+      paidUsd: a.paidUsd + Number(r.paidUsd ?? 0),
+      unattributedUsd: a.unattributedUsd + Number(r.unattributedUsd ?? 0),
     }),
-    { requests: 0, promptTokens: 0, completionTokens: 0, costUsd: 0 },
+    {
+      requests: 0,
+      promptTokens: 0,
+      cachedTokens: 0,
+      completionTokens: 0,
+      cacheReports: 0,
+      energyUsd: 0,
+      energyKwh: 0,
+      paidUsd: 0,
+      unattributedUsd: 0,
+    },
   )
+  // The comparison reads the same rows the strip does, so the two cannot
+  // disagree about the hour.
+  const comparisonRows: ComparisonRow[] = hour.map((r) => ({
+    served: r.served,
+    requests: Number(r.requests ?? 0),
+    cachedTokens: Number(r.cachedTokens ?? 0),
+    promptTokens: Number(r.promptTokens ?? 0),
+    completionTokens: Number(r.completionTokens ?? 0),
+    energyUsd: Number(r.energyUsd ?? 0),
+    baselineUsd: Number(r.baselineUsd ?? 0),
+    baselineCachedUsd: Number(r.baselineCachedUsd ?? 0),
+    baselineProcessedUsd: Number(r.baselineProcessedUsd ?? 0),
+    baselineGeneratedUsd: Number(r.baselineGeneratedUsd ?? 0),
+    baselineExcluded: r.baselineExcluded ?? '',
+  }))
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -1008,8 +1120,29 @@ function Now() {
         configured={models.length}
         requests={totals.requests}
         promptTokens={totals.promptTokens}
+        cachedTokens={totals.cachedTokens}
         completionTokens={totals.completionTokens}
-        costUsd={totals.costUsd}
+        cacheReports={totals.cacheReports}
+        energyUsd={totals.energyUsd}
+        energyKwh={totals.energyKwh}
+        paidUsd={totals.paidUsd}
+        unattributedUsd={totals.unattributedUsd}
+        costPerKwh={c.recent?.costPerKwh ?? 0}
+      />
+
+      {/* WHAT RUNNING IT HERE IS WORTH, directly under what it cost. The strip
+          above says the electricity; this says what the same tokens would have
+          been billed at on a paid API, and names which one. It sits below rather
+          than inside the strip because its scope is a sentence, not a tile's
+          sub-label: the comparison covers token-billed traffic on our own
+          hardware and nothing else, and a figure whose scope is invisible is the
+          one thing worse than no figure. */}
+      <PaidComparison
+        when="in the last hour"
+        baselineType={c.recent?.baselineType ?? ''}
+        costPerKwh={c.recent?.costPerKwh ?? 0}
+        rows={comparisonRows}
+        pending={q.isLoading}
       />
 
       {/* WHERE THE HARDWARE IS GOING, directly under the two tiles that raise

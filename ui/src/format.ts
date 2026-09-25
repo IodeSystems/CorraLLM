@@ -41,6 +41,29 @@ export function fmtUSD(n: number): string {
   return `$${n.toFixed(4)}`
 }
 
+/**
+ * A dollar figure big enough to read as money. fmtUSD is tuned for the fractions
+ * of a cent a local request costs and prints four decimals, which turns a
+ * comparison against a paid API — tens of dollars — into "$27.6056". Cents are
+ * the unit anybody checks a bill in above a dollar.
+ */
+export function fmtMoney(n: number): string {
+  if (!Number.isFinite(n)) return '—'
+  if (Math.abs(n) < 1) return fmtUSD(n)
+  return `$${n.toFixed(2)}`
+}
+
+/**
+ * Energy, in the unit the figure is actually in. A local hour is single-digit
+ * kWh and a quiet one is milliwatt-hours; printing "0.004 kWh" for the latter
+ * makes it read as nothing at all. 0 is '—' because an unset costPerKwh makes
+ * every energy figure 0 by omission, not by being small.
+ */
+export function fmtKwh(k: number): string {
+  if (!Number.isFinite(k) || k === 0) return '—'
+  return k < 1 ? `${(k * 1000).toFixed(1)} Wh` : `${k.toFixed(3)} kWh`
+}
+
 export function fmtBytes(nStr: string | number): string {
   const n = typeof nStr === 'string' ? Number(nStr) : nStr
   if (!Number.isFinite(n)) return '—'

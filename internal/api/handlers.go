@@ -1253,6 +1253,21 @@ type RollupRow struct {
 	CachedSecondsSaved float64 `json:"cachedSecondsSaved" doc:"Estimated prompt-processing time avoided: cachedTokens / mean observed prompt tokens-per-second. An estimate — the speed varies with batch and context."`
 	PromptPerSec       float64 `json:"promptPerSec" doc:"Mean backend-reported prompt-processing speed, tokens/sec (tp/s). An unweighted mean over the requests that REPORTED a rate, not a throughput — 0 means nothing reported one, not a measured zero. Always 0 on the grand total, which cannot average rates honestly."`
 	PredictedPerSec    float64 `json:"predictedPerSec" doc:"Mean backend-reported generation speed, tokens/sec (tg/s). Separates a slowdown caused by more prompt to read (this holds steady) from one caused by the box itself (this falls). Same caveats as promptPerSec."`
+
+	// WHAT KIND OF MONEY THIS IS. costUsd alone cannot say, and the two kinds it
+	// mixes are unrelated: energy is kWh × $/kWh on hardware we run, paid spend
+	// is a provider's invoice. See costkind.go.
+	Type             string  `json:"type" doc:"The model's cost class — its commandCosts key. Empty when the model is no longer in the config."`
+	Billing          string  `json:"billing" doc:"How this row's cost was arrived at: \"energy\" (this fleet's electricity, kWh × costPerKwh), \"paid\" (a provider's per-token rates), or \"unattributed\" (this box's energy coefficients applied to a model corrallm does not run, or to one that has left the config — neither electricity nor a bill, and a config gap to fix by declaring a paid type)."`
+	EnergyUSD        float64 `json:"energyUsd" doc:"The part of costUsd that is electricity: nonzero only when billing is \"energy\"."`
+	EnergyKwh        float64 `json:"energyKwh" doc:"energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset."`
+	PaidUSD          float64 `json:"paidUsd" doc:"The part of costUsd that is a provider's bill: nonzero only when billing is \"paid\"."`
+	UnattributedUSD  float64 `json:"unattributedUsd" doc:"The part of costUsd that is neither: nonzero only when billing is \"unattributed\"."`
+	BaselineUSD      float64 `json:"baselineUsd" doc:"What this row's tokens would have cost on the baseline paid type (usageRollup.baselineType) — the sum of the three class figures below. 0 when baselineExcluded is set."`
+	BaselineCached   float64 `json:"baselineCachedUsd" doc:"Of baselineUsd, the cache-read charge: cached tokens × the baseline's cached rate. Locally these tokens are free (served from the KV cache, no recompute); on a paid API they are billed at a reduced but nonzero rate, so this is a real part of the difference."`
+	BaselineProcess  float64 `json:"baselineProcessedUsd" doc:"Of baselineUsd, the input charge: processed tokens (promptTokens − cachedTokens) × the baseline's processed rate."`
+	BaselineGenerate float64 `json:"baselineGeneratedUsd" doc:"Of baselineUsd, the output charge: completionTokens × the baseline's generated rate."`
+	BaselineExcluded string  `json:"baselineExcluded" doc:"Empty when the comparison covers this row. Otherwise why it does not: \"audio\" (billed per MiB, not per token), \"image\" (billed per image; the local coefficient is unset on this box, so these already cost $0), \"paid\" (already on a paid provider), \"off-box\" (a configured model served elsewhere — its local figure is not a local figure), \"unknown-model\" (the served model has left the config, so nothing says what priced it), \"no-tokens\" (no tokens were recorded, and $0 on any rate table is not a measurement)."`
 }
 
 // UsageRollupOutput is per-model usage plus a grand total over the window.
@@ -1260,7 +1275,14 @@ type UsageRollupOutput struct {
 	Body struct {
 		WindowHours int         `json:"windowHours" doc:"Window applied (0 = all time)."`
 		Rows        []RollupRow `json:"rows" doc:"Per-model usage, costliest first."`
-		Total       RollupRow   `json:"total" doc:"Grand total across all models (served=\"\")."`
+		Total       RollupRow   `json:"total" doc:"Grand total across all models (served=\"\"). Its billing is \"\" — a total spans kinds — and the split lives in energyUsd/paidUsd/unattributedUsd."`
+		// THE RATE, WITH THE COST. kWh × $/kWh is the entire derivation of an
+		// energy figure, and a dollar number whose rate is invisible cannot be
+		// checked by the person reading it.
+		CostPerKwh float64 `json:"costPerKwh" doc:"The configured electricity rate, $ per kWh, that energyUsd was computed at. 0 means no rate is configured, so every energy figure is $0 by omission rather than by being small."`
+		// WHICH PAID API THE COMPARISON IS AGAINST. An unattributed "would have
+		// cost $X" is not a claim anybody can check.
+		BaselineType string `json:"baselineType" doc:"The commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."`
 	}
 }
 
@@ -1270,8 +1292,22 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 	if err != nil {
 		return nil, err
 	}
+	cfg := h.config()
+	costModel := cost.NewModel(cfg)
+	// A Handlers with no config prices nothing and knows no models; every row
+	// then classifies as unattributed, which is the truthful answer — nothing
+	// left says what billed it.
+	var known map[string]config.Model
+	if cfg != nil {
+		known = cfg.AllModels()
+	}
+	rate := costModel.CostPerKwh()
+	baseline := baselineType(cfg, costModel)
+
 	out := &UsageRollupOutput{}
 	out.Body.WindowHours = in.WindowHours
+	out.Body.CostPerKwh = rate
+	out.Body.BaselineType = baseline
 	out.Body.Rows = make([]RollupRow, 0, len(rows))
 	for _, r := range rows {
 		row := RollupRow{
@@ -1287,6 +1323,44 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		if r.PromptPerSec > 0 {
 			row.CachedSecondsSaved = float64(r.CachedTokens) / r.PromptPerSec
 		}
+
+		// Which kind of money, and whether the comparison can speak for it.
+		k := classify(known, costModel, r.Served)
+		row.Type, row.Billing, row.BaselineExcluded = k.Type, k.Billing, k.Exclude
+		switch k.Billing {
+		case BillEnergy:
+			row.EnergyUSD = r.CostUSD
+			if rate > 0 {
+				row.EnergyKwh = r.CostUSD / rate
+			}
+		case BillPaid:
+			row.PaidUSD = r.CostUSD
+		default:
+			row.UnattributedUSD = r.CostUSD
+		}
+
+		// processed = prompt − cached. prompt_tokens INCLUDES the cached prefix,
+		// so subtracting is the only way to get the tokens actually recomputed —
+		// the same convention the Overview's re-read figure already uses. It is
+		// done here rather than shipped as a fourth token column because the
+		// three classes must not be able to disagree with promptTokens.
+		processed := r.PromptTokens - r.CachedTokens
+		if processed < 0 {
+			processed = 0
+		}
+		// The LAST reason, applying only when the backend itself gave none: the
+		// window recorded no tokens, so there is nothing to price. It does not
+		// outrank the others — an audio row always has no tokens, and "billed by
+		// size" is the reason worth reading there.
+		if row.BaselineExcluded == "" && r.PromptTokens == 0 && r.CompletionTokens == 0 {
+			row.BaselineExcluded = ExcludeNoTokens
+		}
+		if row.BaselineExcluded == "" && baseline != "" {
+			row.BaselineCached, row.BaselineProcess, row.BaselineGenerate = costModel.RequestUSDByClass(
+				baseline, int(r.CachedTokens), int(processed), int(r.CompletionTokens))
+			row.BaselineUSD = row.BaselineCached + row.BaselineProcess + row.BaselineGenerate
+		}
+
 		out.Body.Rows = append(out.Body.Rows, row)
 		out.Body.Total.Requests += row.Requests
 		out.Body.Total.PromptTokens += row.PromptTokens
@@ -1296,7 +1370,19 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		out.Body.Total.CachedTokens += row.CachedTokens
 		out.Body.Total.CacheReports += row.CacheReports
 		out.Body.Total.CachedSecondsSaved += row.CachedSecondsSaved
+		out.Body.Total.EnergyUSD += row.EnergyUSD
+		out.Body.Total.EnergyKwh += row.EnergyKwh
+		out.Body.Total.PaidUSD += row.PaidUSD
+		out.Body.Total.UnattributedUSD += row.UnattributedUSD
+		out.Body.Total.BaselineUSD += row.BaselineUSD
+		out.Body.Total.BaselineCached += row.BaselineCached
+		out.Body.Total.BaselineProcess += row.BaselineProcess
+		out.Body.Total.BaselineGenerate += row.BaselineGenerate
 	}
+	// Type/Billing/BaselineExcluded stay empty on the total, deliberately: a sum
+	// across models spans every kind, and naming one of them on the total would
+	// assert that the whole window was that kind. The split is the four dollar
+	// fields above, which is the honest form of the same answer.
 	// PromptPerSec and PredictedPerSec are DELIBERATELY absent from the total.
 	// Summing them is meaningless and averaging them is a mean of means; the
 	// honest recomputation needs per-request prefill/decode times, which the
