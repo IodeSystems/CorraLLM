@@ -1159,3 +1159,56 @@ func TestOversizeBodyIs413NotTruncation(t *testing.T) {
 		t.Errorf("error.type = %q, want invalid_request_error", env.Error.Type)
 	}
 }
+
+// TestUnknownModelEnvelopeIsValidJSON: the model name is the CALLER's, and it
+// used to be concatenated raw into a JSON string literal at four sites. A name
+// carrying a quote injected structure into the error object, so the body a
+// client is told to parse was not parseable. Found by audit, reproduced live
+// on 2026-09-23 against the production box.
+func TestUnknownModelEnvelopeIsValidJSON(t *testing.T) {
+	for _, name := range []string{
+		`nope-xyz`,
+		`a","injected":"yes`, // the reproducer
+		`back\slash`,
+		"new\nline",
+		`emoji-🎤`,
+	} {
+		st, err := store.Open(context.Background(), ":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mgr := proc.NewManager(&config.Config{})
+		router := chi.NewRouter()
+		New(mkConfig(t, "mock", "http://127.0.0.1:1"), mgr, sched.New(), st).Mount(router)
+
+		body, _ := json.Marshal(map[string]any{"model": name, "messages": []any{}})
+		r := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		mgr.Shutdown()
+		_ = st.Close()
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%q: status = %d, want 404", name, w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "json") {
+			t.Errorf("%q: Content-Type = %q, want JSON", name, ct)
+		}
+		var env struct {
+			Error struct{ Message, Type string } `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("%q: envelope is not valid JSON: %v\nbody: %s", name, err, w.Body.String())
+		}
+		if env.Error.Type != "invalid_request_error" {
+			t.Errorf("%q: error.type = %q", name, env.Error.Type)
+		}
+		// The injected key must be text inside message, never a field.
+		var raw map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &raw)
+		if _, leaked := raw["injected"]; leaked {
+			t.Errorf("%q: caller injected a top-level key into the envelope", name)
+		}
+	}
+}

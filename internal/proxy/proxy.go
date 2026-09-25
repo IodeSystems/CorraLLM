@@ -625,7 +625,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 	cands, ok := p.config().ResolveServed(served)
 	if !ok {
-		http.Error(w, `{"error":{"message":"`+p.noSuchModel(served)+`"}}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "invalid_request_error", p.noSuchModel(served))
 		return
 	}
 
@@ -1394,7 +1394,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	}
 	cands, ok := p.config().ResolveServed(served)
 	if !ok {
-		http.Error(w, `{"error":{"message":"`+p.noSuchModel(served)+`"}}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "invalid_request_error", p.noSuchModel(served))
 		return
 	}
 
@@ -2130,7 +2130,7 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	// unavailable", a 503 about capacity for something that is a config
 	// decision.
 	if !ok || model.Disabled {
-		http.Error(w, p.noSuchModel(served), http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "invalid_request_error", p.noSuchModel(served))
 		return
 	}
 	pr, done, _, err := p.mgr.EnsureReady(r.Context(), served, model, nil, nil)
@@ -2184,7 +2184,7 @@ func (p *Proxy) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	cands, ok := p.config().ResolveServed(req.Model)
 	if !ok || len(cands) == 0 {
-		http.Error(w, p.noSuchModel(req.Model), http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "invalid_request_error", p.noSuchModel(req.Model))
 		return
 	}
 	// A lane resolves to several candidates; token counts are a property of one
