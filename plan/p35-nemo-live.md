@@ -592,6 +592,43 @@ back to a caller who sent `language=`). Two edits, and only these two:
 
 **§6's blocking decision is closed.** The recommended option was taken.
 
+## 14b. The OOM does NOT reproduce on demand — corrected 2026-09-25
+
+§14's table is two observations from runs where the 3080 had **~4.9 GB free**
+(chandra-ocr-2 and nomic resident). Re-run today at **8.7 GB free**, with one
+server and the identical sequence, it does not reproduce:
+
+| diarizer | 725 s | 841 s | 2650 s | server |
+|---|---|---|---|---|
+| Sortformer v2 | 200, held 4560 | 200, held 4710 | 200, held 4874 | alive |
+| Nemotron 3 | 200, held 4790 | 200, held 4938 | 200, held 5100 | alive |
+
+**The retained buffer does not STACK, and the orchestrator's arithmetic about it
+was wrong.** It grows to a plateau and is reused: 4,560 → 4,874 across the whole
+sequence, about **300 MiB** of growth, not two 4,600 MiB allocations summing to
+9,300. The claim that "retained buffer plus a fresh allocation ≈ 9,300–9,600,
+which is exactly where it tipped over" was invented arithmetic that happened to
+land near the card's size.
+
+**What the numbers actually say.** NeMo's steady-state footprint is
+4,874–5,100 MiB. Free memory in the failing runs was 4,900–4,970 MiB.
+Accumulation adds ~300 MiB over a fresh allocation — which is why a FRESH server
+served the 2650 s file at 4.9 GB free and an accumulated one did not. **The OOM
+needs the card within roughly 300 MiB of NeMo's plateau.** That is a knife edge,
+and co-residency with chandra is what creates it.
+
+**So the OOM is a PLACEMENT symptom, not a capacity law** — and §16's budget math
+already rejects that placement on its own terms (chandra + NeMo = 12,750 MiB
+against a 9,728 budget). Give NeMo ~6 GB it does not share and neither the 500
+nor the abort has been shown to arise.
+
+**What this does NOT overturn.** The V3 abort in §14 was observed — process gone,
+port closed — and the SIGABRT test in §16 separately proved corrallm recovers in
+one lost request. But **it is not currently triggerable on demand**, so "it
+reproduces in ~2 minutes on a 10 GB card" is withdrawn: reproducing it needs the
+card deliberately constrained to within ~300 MiB of the plateau, and that
+recipe has not been demonstrated. An upstream report should say so.
+
 ## 14. The one real regression — a V3 OOM kills the server
 
 §6's risk 1 (the retained CUDA compute buffer) is **worse under V3, and in a
