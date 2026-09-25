@@ -39,7 +39,16 @@ import { C, seriesColor } from '@/theme'
 import { graphql } from '@/gql'
 import type { ModelBenchQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
-import { capLabel, fmtDuration, fmtInt, fmtMiB, fmtTime as fmtTs, fmtUSD } from '@/format'
+import {
+  capLabel,
+  fmtDuration,
+  fmtInt,
+  fmtKwh,
+  fmtMiB,
+  fmtMoney,
+  fmtTime as fmtTs,
+  fmtUSD,
+} from '@/format'
 import { BenchProbeDetail } from '@/BenchProbeDetail'
 
 // --- data ---------------------------------------------------------------
@@ -137,13 +146,26 @@ const UsageDoc = graphql(/* GraphQL */ `
   query ConsoleUsage {
     corrallm {
       usageRollup(windowHours: "24") {
+        costPerKwh
+        baselineType
         rows {
           served
           requests
           promptTokens
+          cachedTokens
+          cacheReports
+          cacheHitRate
           completionTokens
           dwellMs
           costUsd
+          # What kind of money, and what the same tokens would have been billed
+          # at on a paid API. Per model this page is the only place the two are
+          # side by side.
+          billing
+          energyUsd
+          energyKwh
+          baselineUsd
+          baselineExcluded
         }
       }
     }
@@ -165,6 +187,7 @@ const ConsoleActivityDoc = graphql(/* GraphQL */ `
           status
           dwellMs
           promptTokens
+          cachedTokens
           completionTokens
           costUsd
           error
@@ -768,6 +791,8 @@ function UsageTab({ name }: { name: string }) {
     refetchInterval: 5000,
   })
   const row = (q.data?.corrallm.usageRollup?.rows ?? []).find((r) => r.served === name)
+  const rate = q.data?.corrallm.usageRollup?.costPerKwh ?? 0
+  const baselineType = q.data?.corrallm.usageRollup?.baselineType ?? ''
   const records = act.data?.corrallm.recentActivity?.records ?? []
   return (
     <Stack spacing={3}>
@@ -783,11 +808,44 @@ function UsageTab({ name }: { name: string }) {
                 <TableCell>Requests</TableCell>
                 <TableCell align="right">{fmtInt(row.requests)}</TableCell>
               </TableRow>
+              {/* CACHED · PROCESSED · GENERATED, one row each. It was
+                  "Prompt → completion", which hid the cache read entirely and
+                  counted it inside the prompt figure besides. */}
               <TableRow>
-                <TableCell>Prompt → completion tokens</TableCell>
+                <TableCell>Cached tokens</TableCell>
                 <TableCell align="right">
-                  {fmtInt(row.promptTokens)} → {fmtInt(row.completionTokens)}
+                  {Number(row.cacheReports) > 0 ? (
+                    <>
+                      {fmtInt(row.cachedTokens)}
+                      <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                        {(row.cacheHitRate * 100).toFixed(1)}% of prompt, served from the
+                        backend's cache instead of reprocessed
+                      </Typography>
+                    </>
+                  ) : (
+                    <>
+                      n/r
+                      <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                        nothing here reported a cache — not a measured zero
+                      </Typography>
+                    </>
+                  )}
                 </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>Processed tokens</TableCell>
+                <TableCell align="right">
+                  {fmtInt(
+                    Math.max(0, Number(row.promptTokens) - Number(row.cachedTokens)),
+                  )}
+                  <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                    prompt tokens actually recomputed
+                  </Typography>
+                </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>Generated tokens</TableCell>
+                <TableCell align="right">{fmtInt(row.completionTokens)}</TableCell>
               </TableRow>
               {/* A SUM NEEDS ITS AVERAGE BESIDE IT, or it reads as a duration.
                   "Dwell 882m 16s" was named in three Lenny runs (OB-4): fourteen
@@ -807,10 +865,36 @@ function UsageTab({ name }: { name: string }) {
                   </Typography>
                 </TableCell>
               </TableRow>
+              {/* WHICH KIND OF MONEY, AND WHAT THE ALTERNATIVE WOULD BE.
+                  "Cost $0.50" is unreadable without knowing whether that is
+                  electricity this fleet burned or a provider's invoice, and the
+                  comparison is the answer to "is running it here worth it". The
+                  rate is on the row because kWh × $/kWh is the whole
+                  derivation. */}
               <TableRow>
                 <TableCell>Cost</TableCell>
-                <TableCell align="right">{fmtUSD(row.costUsd)}</TableCell>
+                <TableCell align="right">
+                  {fmtUSD(row.costUsd)}
+                  <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                    {row.billing === 'energy'
+                      ? `electricity — ${fmtKwh(row.energyKwh)}${rate > 0 ? ` at $${rate}/kWh` : ''}`
+                      : row.billing === 'paid'
+                        ? 'billed per token by a provider'
+                        : 'unattributed — an off-box model priced with this box\u2019s energy coefficients'}
+                  </Typography>
+                </TableCell>
               </TableRow>
+              {row.baselineExcluded === '' && baselineType !== '' && (
+                <TableRow>
+                  <TableCell>On a paid API</TableCell>
+                  <TableCell align="right">
+                    {fmtMoney(row.baselineUsd)}
+                    <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                      the same cached, processed and generated tokens at {baselineType} rates
+                    </Typography>
+                  </TableCell>
+                </TableRow>
+              )}
             </TableBody>
           </Table>
         ) : (
@@ -840,7 +924,10 @@ function UsageTab({ name }: { name: string }) {
                   <TableCell>Backend</TableCell>
                   <TableCell align="right">Status</TableCell>
                   <TableCell>Path</TableCell>
-                  <TableCell align="right">Tokens (p→c)</TableCell>
+                  {/* "p→c" was a two-letter gloss for a three-class
+                      measurement, and the class it omitted was the cache read
+                      (OB-3: the screen speaks the operator's words). */}
+                  <TableCell align="right">Cached · processed · generated</TableCell>
                   <TableCell align="right">Dwell</TableCell>
                   <TableCell align="right">Cost</TableCell>
                 </TableRow>
@@ -870,7 +957,9 @@ function UsageTab({ name }: { name: string }) {
                       )}
                     </TableCell>
                     <TableCell align="right">
-                      {fmtInt(r.promptTokens)} → {fmtInt(r.completionTokens)}
+                      {fmtInt(r.cachedTokens)} ·{' '}
+                      {fmtInt(Math.max(0, Number(r.promptTokens) - Number(r.cachedTokens)))} ·{' '}
+                      {fmtInt(r.completionTokens)}
                     </TableCell>
                     <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>
                     <TableCell align="right">{fmtUSD(r.costUsd)}</TableCell>

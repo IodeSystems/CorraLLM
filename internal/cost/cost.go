@@ -6,7 +6,11 @@
 // request.
 package cost
 
-import "github.com/iodesystems/corrallm/internal/config"
+import (
+	"sort"
+
+	"github.com/iodesystems/corrallm/internal/config"
+)
 
 // Model is the cost model resolved from config: a $/kWh rate plus per-backend-
 // type coefficients. It is immutable after NewModel and safe for concurrent use.
@@ -51,7 +55,14 @@ type typeCost struct {
 
 // NewModel builds the cost model from config. Unknown/missing coefficients are
 // zero — an unpriced type simply costs $0, never an error.
+// A nil config yields a model that prices nothing — the same answer an unpriced
+// type already gets, and the honest one for a Handlers constructed without a
+// config. It is a constructor, not a validator: refusing here would only move
+// the panic.
 func NewModel(c *config.Config) *Model {
+	if c == nil {
+		return &Model{byType: map[string]typeCost{}}
+	}
 	m := &Model{costPerKwh: c.CostPerKwh, byType: map[string]typeCost{}}
 	for typ, params := range c.CommandCosts {
 		tc := typeCost{
@@ -85,6 +96,54 @@ func (m *Model) RequestUSD(typ string, promptTokens, completionTokens int) float
 	return c + p + g
 }
 
+// CostPerKwh is the configured electricity rate, $ per kWh. Reporting an energy
+// cost without it is reporting a number with no basis: kWh × $/kWh is the whole
+// derivation, and a reader who cannot see the rate cannot check the dollars.
+func (m *Model) CostPerKwh() float64 { return m.costPerKwh }
+
+// IsPaidType reports whether a backend type bills a provider's per-token rates
+// rather than this fleet's electricity. The same predicate RequestUSDByClass
+// branches on, exported because the difference is not cosmetic: energy and a
+// provider's invoice are different kinds of money, and a total over both is
+// neither.
+func (m *Model) IsPaidType(typ string) bool { return m.byType[typ].paid() }
+
+// PaidTypes lists the configured types that bill per token, sorted cheapest
+// first by generated-token rate. The order is the whole point: it is what a
+// "would have cost" comparison defaults to, and defaulting to the cheapest
+// alternative makes the claimed saving a floor rather than a flattering pick.
+func (m *Model) PaidTypes() []string {
+	out := make([]string, 0, len(m.byType))
+	for typ, tc := range m.byType {
+		if tc.paid() {
+			out = append(out, typ)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		gi, gj := m.byType[out[i]].generateRate(), m.byType[out[j]].generateRate()
+		if gi != gj {
+			return gi < gj
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
+// paid reports whether this type declares any per-token rate. A type is paid iff
+// it names one; otherwise it bills local energy.
+func (c typeCost) paid() bool {
+	return c.costFactor > 0 || c.genFactor > 0 || c.procFactor > 0 || c.cachedFactor > 0
+}
+
+// generateRate is the $/token charged for a generated token, after the
+// costFactor fallback — the class that dominates a chat bill.
+func (c typeCost) generateRate() float64 {
+	if c.genFactor > 0 {
+		return c.genFactor
+	}
+	return c.costFactor
+}
+
 // RequestUSDByClass splits one text request's cost into (cached, processed,
 // generated) dollars. Paid types bill each class at its per-token rate (per-class
 // rates fall back to costFactor; cached falls back to the processed rate). Local
@@ -93,8 +152,7 @@ func (m *Model) RequestUSD(typ string, promptTokens, completionTokens int) float
 // cache, no recompute). An unpriced type costs $0.
 func (m *Model) RequestUSDByClass(typ string, cached, processed, generated int) (cachedUSD, processedUSD, generatedUSD float64) {
 	tc := m.byType[typ]
-	paid := tc.costFactor > 0 || tc.genFactor > 0 || tc.procFactor > 0 || tc.cachedFactor > 0
-	if paid {
+	if tc.paid() {
 		pf := tc.procFactor
 		if pf == 0 {
 			pf = tc.costFactor

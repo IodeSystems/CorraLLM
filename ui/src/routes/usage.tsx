@@ -20,10 +20,11 @@ import { Panel } from '@/Panel'
 import { MetricChart, StackedArea } from '@/Charts'
 import type { ChartSeries } from '@/Charts'
 import { C, seriesColor } from '@/theme'
-import { fmtDuration, fmtInt, fmtUSD } from '@/format'
+import { fmtDuration, fmtInt, fmtKwh, fmtUSD } from '@/format'
 import { Loading } from '@/Loading'
 import { NotYet } from '@/NotYet'
 import { useModelStats } from '@/ModelStats'
+import { PaidComparison, type ComparisonRow } from '@/PaidComparison'
 
 // BarCell renders a value with a proportional background bar (value / columnMax).
 function BarCell({ value, max, label }: { value: number; max: number; label: string }) {
@@ -234,8 +235,9 @@ function useUsage(window: TimeWindow) {
   })
 }
 
-const fmtKwh = (k: number) =>
-  !Number.isFinite(k) || k === 0 ? '—' : k < 1 ? `${(k * 1000).toFixed(1)} Wh` : `${k.toFixed(3)} kWh`
+// fmtKwh moved to format.ts when the Now page and the paid-API comparison
+// needed the same rule. One copy, so an hour's energy reads identically on
+// three screens.
 
 const groupColor = (i: number) => seriesColor(i)
 
@@ -276,6 +278,29 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
   }))
 
   const reports = Number(total?.cacheReports ?? 0)
+  const rate = stats.data?.corrallm.usageRollup?.costPerKwh ?? 0
+  const baselineType = stats.data?.corrallm.usageRollup?.baselineType ?? ''
+  // processed = prompt − cached. The store records prompt_tokens INCLUDING the
+  // cached prefix, so this is the only figure that says what was recomputed.
+  const processedTokens = Math.max(
+    0,
+    Number(total?.promptTokens ?? 0) - Number(total?.cachedTokens ?? 0),
+  )
+  const comparisonRows: ComparisonRow[] = (stats.data?.corrallm.usageRollup?.rows ?? []).map(
+    (r) => ({
+      served: r.served,
+      requests: Number(r.requests ?? 0),
+      cachedTokens: Number(r.cachedTokens ?? 0),
+      promptTokens: Number(r.promptTokens ?? 0),
+      completionTokens: Number(r.completionTokens ?? 0),
+      energyUsd: Number(r.energyUsd ?? 0),
+      baselineUsd: Number(r.baselineUsd ?? 0),
+      baselineCachedUsd: Number(r.baselineCachedUsd ?? 0),
+      baselineProcessedUsd: Number(r.baselineProcessedUsd ?? 0),
+      baselineGeneratedUsd: Number(r.baselineGeneratedUsd ?? 0),
+      baselineExcluded: r.baselineExcluded ?? '',
+    }),
+  )
   // NOTHING HAS BEEN COUNTED UNTIL THE TOTAL ARRIVES. `?? 0` on these five put a
   // measured-looking zero on every tile for as long as the query took — six
   // seconds on a box busy enough to be worth opening the page for — and the
@@ -291,17 +316,13 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
         <StatTile label="Requests" value={counted ? fmtInt(total.requests) : <NotYet />} />
-        <StatTile
-          label="Processed"
-          value={counted ? fmtInt(total.promptTokens) : <NotYet />}
-          sub="prompt tokens read"
-          hint="Every prompt token the backends were handed in this window, cached ones included."
-        />
-        <StatTile
-          label="Generated"
-          value={counted ? fmtInt(total.completionTokens) : <NotYet />}
-          sub="completion tokens written"
-        />
+        {/* CACHED · PROCESSED · GENERATED, in that order, because that is the
+            order the work happens in and the vocabulary every other layer
+            already speaks. The Cached tile used to come THIRD and Processed
+            carried promptTokens — which INCLUDES the cached prefix, so the tile
+            headed "Processed" was the sum of the tokens processed and the tokens
+            deliberately not processed. Processed is now prompt − cached, the
+            same subtraction the Now page's re-read figure uses. */}
         <StatTile
           label="Cached"
           value={!counted ? <NotYet /> : reports > 0 ? fmtInt(total.cachedTokens) : 'n/r'}
@@ -316,8 +337,59 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
           }
           hint="Prompt tokens the backends served from cache instead of reprocessing, and their share of all prompt tokens — weighted by tokens across every model, not an average of per-model rates. 'n/r' means nothing reported a cache at all, which is not a measured zero. The saved figure estimates the prompt-processing time avoided at the observed tokens/sec, so it moves with batch size and context."
         />
-        <StatTile label="Cost" value={counted ? fmtUSD(total.costUsd) : <NotYet />} />
+        <StatTile
+          label="Processed"
+          value={counted ? fmtInt(processedTokens) : <NotYet />}
+          sub="prompt tokens actually read"
+          hint="Prompt tokens the backends really recomputed: promptTokens minus the cached prefix. The prompt total itself counts the cached tokens too, so this is the one of the two that measures work done."
+        />
+        <StatTile
+          label="Generated"
+          value={counted ? fmtInt(total.completionTokens) : <NotYet />}
+          sub="completion tokens written"
+        />
+        {/* ELECTRICITY AND A PROVIDER'S BILL, NOT ONE "COST". The fleet is mixed:
+            local backends bill kWh × $/kWh and the anthropic types bill per
+            token, and one figure over both is neither. */}
+        <StatTile
+          label="Electricity"
+          value={counted ? fmtUSD(total.energyUsd) : <NotYet />}
+          sub={
+            rate > 0 ? `${fmtKwh(total?.energyKwh ?? 0)} at $${rate}/kWh` : 'no $/kWh configured'
+          }
+          hint="What local backends spent in energy: token work → watt-hours → kWh × the configured electricity rate. Cached prompt tokens contribute nothing here — they are served from the KV cache with no recompute."
+        />
+        <StatTile
+          label="Paid APIs"
+          value={counted ? fmtUSD(total.paidUsd) : <NotYet />}
+          sub={
+            !counted ? undefined : total.paidUsd > 0 ? 'billed per token' : 'nothing billed per token'
+          }
+          hint="What backends with a per-token rate table cost in this window. A counted $0 means no request went to one — not that the figure is missing."
+        />
+        {/* Only when nonzero: an energy-priced type on a model corrallm does not
+            run. Neither electricity paid here nor the provider's rate, and the
+            fix is a config declaration, which the sub-label names (OB-6). */}
+        {counted && total.unattributedUsd > 0 && (
+          <StatTile
+            label="Unattributed"
+            value={fmtUSD(total.unattributedUsd)}
+            sub="declare a paid type for these"
+            hint="Requests served by a machine corrallm does not run, priced with this box's watt-hour coefficients because their backend type declares no per-token rates. The figure is neither electricity anybody paid here nor the provider's bill. Fix it by giving those models a type with cachedCostFactor / processCostFactor / generateCostFactor."
+          />
+        )}
       </Stack>
+
+      {/* The same comparison the home screen shows, over whatever window this
+          page is set to. One component so the two cannot drift; the scope
+          sentence and the baseline's name travel with it. */}
+      <PaidComparison
+        when={windowPhrase(window)}
+        baselineType={baselineType}
+        costPerKwh={rate}
+        rows={comparisonRows}
+        pending={!counted}
+      />
 
       {/* A tile that says "not in yet" forever is a screen that has stopped
           updating without saying so (OB-9), and the fetch these five ride on

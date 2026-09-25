@@ -17,7 +17,7 @@ import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { Panel } from '@/Panel'
 import { C } from '@/theme'
-import { fmtDuration, fmtInt, fmtUSD } from '@/format'
+import { fmtDuration, fmtInt, fmtKwh, fmtUSD } from '@/format'
 
 /**
  * ONE ROW PER MODEL, saying what it did and what it cost to reach it.
@@ -82,6 +82,11 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
         }
       }
       usageRollup(windowHours: $windowHours, from: $from, to: $to) {
+        # The rate every energy figure below was computed at, and the paid type
+        # the comparison prices against. Window-level, so they belong here and
+        # not on each row.
+        costPerKwh
+        baselineType
         rows {
           served
           requests
@@ -94,6 +99,19 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           cacheHitRate
           promptPerSec
           predictedPerSec
+          # What kind of money this row is, and what the same tokens would have
+          # been billed at on a paid API.
+          type
+          billing
+          energyUsd
+          energyKwh
+          paidUsd
+          unattributedUsd
+          baselineUsd
+          baselineCachedUsd
+          baselineProcessedUsd
+          baselineGeneratedUsd
+          baselineExcluded
         }
         total {
           requests
@@ -105,6 +123,11 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           cacheReports
           cacheHitRate
           cachedSecondsSaved
+          energyUsd
+          energyKwh
+          paidUsd
+          unattributedUsd
+          baselineUsd
         }
       }
     }
@@ -264,12 +287,54 @@ export function QueueDepthClash({ rows }: { rows: readonly ClashRow[] }) {
   )
 }
 
+/**
+ * The word under a cost figure saying what kind of money it is.
+ *
+ * Electricity carries its kWh: a dollar figure derived from energy without the
+ * energy is the derivation hidden, and the rate is in the header of the panel
+ * this table sits under.
+ */
+function billingWord(billing: string, kwh: number, excluded: string): string {
+  switch (billing) {
+    case 'energy':
+      // Below a tenth of a watt-hour fmtKwh prints "0.0 Wh", which reads as a
+      // measured nothing rather than as a rounding. The word alone is truer.
+      return kwh >= 0.0001 ? `${fmtKwh(kwh)} of power` : 'electricity'
+    case 'paid':
+      return 'paid per token'
+    case 'unattributed':
+      // "Unattributed" answers "which kind of money"; for a model that has left
+      // the config there is a more useful answer, and it names the fix.
+      return excluded === 'unknown-model' ? 'model not in the config' : 'unattributed'
+    default:
+      return ''
+  }
+}
+
+function billingHint(billing: string, type: string, rate: number): string {
+  const t = type ? ` Backend type: ${type}.` : ' The model is no longer in the config.'
+  switch (billing) {
+    case 'energy':
+      return `Electricity: token work → watt-hours → kWh${rate > 0 ? ` × $${rate}/kWh` : ''}. Cached prompt tokens cost nothing here — they come from the KV cache with no recompute.${t}`
+    case 'paid':
+      return `A provider's bill: cached, processed and generated tokens each at their own $/token rate.${t}`
+    case 'unattributed':
+      if (type === '') {
+        return "This served name is not in the config any more, so nothing says what priced these rows or where they ran. They survive here because activity is retained for 30 days and a model can be removed inside that."
+      }
+      return `Neither electricity nor a bill. This model is served by a machine corrallm does not run, but its type declares no per-token rates, so the figure is this box's watt-hour coefficients applied to somebody else's hardware. Give it a type with cachedCostFactor / processCostFactor / generateCostFactor.${t}`
+    default:
+      return t.trim()
+  }
+}
+
 export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow }) {
   const q = useModelStats(window)
 
   const util = q.data?.corrallm.utilization?.rows ?? []
   const spend = q.data?.corrallm.usageRollup?.rows ?? []
   const rows = joinRows(util, spend)
+  const rate = q.data?.corrallm.usageRollup?.costPerKwh ?? 0
 
   // TWO OF THESE COLUMNS ARE LIVE, WHATEVER THE WINDOW SAYS. `In use` and the
   // est. wait behind the Wait tooltip come from the scheduler's CURRENT
@@ -326,19 +391,23 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                 <span>tg/s</span>
               </Tooltip>
             </TableCell>
+            {/* CACHED · PROCESSED · GENERATED, in the order the work happens.
+                Cached used to sit third, AFTER a column headed "Processed" that
+                carried promptTokens — which includes the cached prefix, so the
+                two columns overlapped and the header said otherwise. */}
             <TableCell align="right">
-              <Tooltip title="Prompt tokens processed — what callers sent it to read.">
+              <Tooltip title="Prompt tokens served from cache instead of reprocessed, and their share of this model's prompt. 'n/r' means nothing here reported a cache — not a measured zero.">
+                <span>Cached</span>
+              </Tooltip>
+            </TableCell>
+            <TableCell align="right">
+              <Tooltip title="Prompt tokens the backend really recomputed: prompt minus cached. The prompt total counts the cached prefix too, so this is the one that measures work.">
                 <span>Processed</span>
               </Tooltip>
             </TableCell>
             <TableCell align="right">
               <Tooltip title="Completion tokens generated — what it wrote back.">
                 <span>Generated</span>
-              </Tooltip>
-            </TableCell>
-            <TableCell align="right">
-              <Tooltip title="Prompt tokens served from cache instead of reprocessed. 'n/r' means nothing here reported a cache — not a measured zero.">
-                <span>Cached</span>
               </Tooltip>
             </TableCell>
             <TableCell align="right">
@@ -463,10 +532,6 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                 <TableCell align="right">
                   <Rate v={Number(s?.predictedPerSec ?? 0)} what="generation" />
                 </TableCell>
-                <TableCell align="right">{requests > 0 ? fmtInt(s?.promptTokens ?? 0) : '—'}</TableCell>
-                <TableCell align="right">
-                  {requests > 0 ? fmtInt(s?.completionTokens ?? 0) : '—'}
-                </TableCell>
                 <TableCell align="right">
                   {cacheReports > 0 ? (
                     <Tooltip
@@ -474,6 +539,18 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                     >
                       <span style={{ color: (s?.cacheHitRate ?? 0) >= 0.5 ? C.ok : undefined }}>
                         {fmtInt(s?.cachedTokens ?? 0)}
+                        {/* THE HIT RATE, ON THE ROW. Whether prefix caching is
+                            working is the question a cache column is asked, and
+                            cachedTokens alone cannot answer it — 47M means
+                            nothing without the prompt it is a share of. It rides
+                            the cell it qualifies rather than a column of its own
+                            (the table is already thirteen wide). */}
+                        <Typography
+                          variant="caption"
+                          sx={{ display: 'block', color: C.textFaint }}
+                        >
+                          {((s?.cacheHitRate ?? 0) * 100).toFixed(0)}% of prompt
+                        </Typography>
                       </span>
                     </Tooltip>
                   ) : (
@@ -481,6 +558,16 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                       <span style={{ color: C.textFaint }}>n/r</span>
                     </Tooltip>
                   )}
+                </TableCell>
+                <TableCell align="right">
+                  {requests > 0
+                    ? fmtInt(
+                        Math.max(0, Number(s?.promptTokens ?? 0) - Number(s?.cachedTokens ?? 0)),
+                      )
+                    : '—'}
+                </TableCell>
+                <TableCell align="right">
+                  {requests > 0 ? fmtInt(s?.completionTokens ?? 0) : '—'}
                 </TableCell>
                 <TableCell align="right">
                   {requests > 0 ? (
@@ -531,7 +618,24 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                     </Tooltip>
                   )}
                 </TableCell>
-                <TableCell align="right">{fmtUSD(s?.costUsd ?? 0)}</TableCell>
+                {/* THE COST, AND WHAT KIND OF COST IT IS. Per model the answer is
+                    one word, so it goes under the figure rather than into a
+                    tooltip (OB-10): electricity is kWh this fleet paid for, paid
+                    is a provider's invoice, and unattributed is neither. */}
+                <TableCell align="right">
+                  <Tooltip title={billingHint(s?.billing ?? '', s?.type ?? '', rate)}>
+                    <span>
+                      {fmtUSD(s?.costUsd ?? 0)}
+                      <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                        {billingWord(
+                          s?.billing ?? '',
+                          Number(s?.energyKwh ?? 0),
+                          s?.baselineExcluded ?? '',
+                        )}
+                      </Typography>
+                    </span>
+                  </Tooltip>
+                </TableCell>
               </TableRow>
             )
           })}
@@ -549,17 +653,28 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
       // this moment, so on a past window the column is blank for a reason the
       // reader would otherwise have to guess at (OB-9).
       note={
-        live ? (
-          <>
-            tp/s reads, tg/s writes — &ldquo;n/r&rdquo; means no backend here reports timings,
-            which is every remote provider.
-          </>
-        ) : (
-          <>
-            &ldquo;In use&rdquo; is blank: it describes this moment, and nothing recorded what it
-            was then.
-          </>
-        )
+        <>
+          {live ? (
+            <>
+              tp/s reads, tg/s writes — &ldquo;n/r&rdquo; means no backend here reports timings,
+              which is every remote provider.
+            </>
+          ) : (
+            <>
+              &ldquo;In use&rdquo; is blank: it describes this moment, and nothing recorded what
+              it was then.
+            </>
+          )}{' '}
+          {/* THE RATE, ONCE, FOR THE WHOLE COLUMN. Every "electricity" figure in
+              the Cost column is kWh × this, and thirteen rows each repeating it
+              would be thirteen copies of one fact. Said here rather than in a
+              tooltip because a cost whose rate is invisible cannot be checked. */}
+          {rate > 0 ? (
+            <>Electricity is billed at ${rate}/kWh.</>
+          ) : (
+            <>No $/kWh is configured, so every electricity figure is $0 by omission.</>
+          )}
+        </>
       }
       // "0 models" while the query is still out is the same lie the tiles above
       // used to tell: the count has not arrived, and a badge is read before the

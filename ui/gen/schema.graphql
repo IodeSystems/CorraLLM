@@ -2525,6 +2525,18 @@ type corrallm_RetryPromisesOutputBody {
 }
 
 type corrallm_RollupRow {
+  """Of baselineUsd, the cache-read charge: cached tokens × the baseline's cached rate. Locally these tokens are free (served from the KV cache, no recompute); on a paid API they are billed at a reduced but nonzero rate, so this is a real part of the difference."""
+  baselineCachedUsd: Float!
+  """Empty when the comparison covers this row. Otherwise why it does not: "audio" (billed per MiB, not per token), "image" (billed per image; the local coefficient is unset on this box, so these already cost $0), "paid" (already on a paid provider), "off-box" (unattributed — its local figure is not a local figure), "no-tokens" (no tokens were recorded, and $0 on any rate table is not a measurement)."""
+  baselineExcluded: String!
+  """Of baselineUsd, the output charge: completionTokens × the baseline's generated rate."""
+  baselineGeneratedUsd: Float!
+  """Of baselineUsd, the input charge: processed tokens (promptTokens − cachedTokens) × the baseline's processed rate."""
+  baselineProcessedUsd: Float!
+  """What this row's tokens would have cost on the baseline paid type (usageRollup.baselineType) — the sum of the three class figures below. 0 when baselineExcluded is set."""
+  baselineUsd: Float!
+  """How this row's cost was arrived at: "energy" (this fleet's electricity, kWh × costPerKwh), "paid" (a provider's per-token rates), or "unattributed" (this box's energy coefficients applied to a model corrallm does not run, or to one that has left the config — neither electricity nor a bill, and a config gap to fix by declaring a paid type)."""
+  billing: String!
   """cachedTokens / promptTokens, 0..1. Only meaningful when cacheReports > 0."""
   cacheHitRate: Float!
   """Requests that reported any cache hit. ZERO MEANS UNKNOWN, NOT 0% — a backend with no prompt cache (embeddings, most remote providers) never reports, and showing that as a measured miss rate invents a problem."""
@@ -2539,6 +2551,12 @@ type corrallm_RollupRow {
   costUsd: Float!
   """Total dwell, milliseconds."""
   dwellMs: Long!
+  """energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset."""
+  energyKwh: Float!
+  """The part of costUsd that is electricity: nonzero only when billing is "energy"."""
+  energyUsd: Float!
+  """The part of costUsd that is a provider's bill: nonzero only when billing is "paid"."""
+  paidUsd: Float!
   """Mean backend-reported generation speed, tokens/sec (tg/s). Separates a slowdown caused by more prompt to read (this holds steady) from one caused by the box itself (this falls). Same caveats as promptPerSec."""
   predictedPerSec: Float!
   """Mean backend-reported prompt-processing speed, tokens/sec (tp/s). An unweighted mean over the requests that REPORTED a rate, not a throughput — 0 means nothing reported one, not a measured zero. Always 0 on the grand total, which cannot average rates honestly."""
@@ -2549,6 +2567,10 @@ type corrallm_RollupRow {
   requests: Long!
   """Served model name."""
   served: String!
+  """The model's cost class — its commandCosts key. Empty when the model is no longer in the config."""
+  type: String!
+  """The part of costUsd that is neither: nonzero only when billing is "unattributed"."""
+  unattributedUsd: Float!
 }
 
 type corrallm_RosterOutputBody {
@@ -2957,6 +2979,10 @@ type corrallm_UsageByKeyOutputBody {
 }
 
 type corrallm_UsageRollupOutputBody {
+  """The commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."""
+  baselineType: String!
+  """The configured electricity rate, $ per kWh, that energyUsd was computed at. 0 means no rate is configured, so every energy figure is $0 by omission rather than by being small."""
+  costPerKwh: Float!
   """Per-model usage, costliest first."""
   rows: [corrallm_RollupRow!]!
   total: corrallm_RollupRow!

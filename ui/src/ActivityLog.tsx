@@ -191,9 +191,9 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
                 color: "text.secondary"
               }}>
                 dwell {fmtDuration(rec.dwellMs)} · ttfb {fmtDuration(rec.ttfbMs)} · queued{' '}
-                {fmtDuration(rec.queuedMs)} · {fmtInt(rec.promptTokens)}→
-                {fmtInt(rec.completionTokens)} tok · {fmtUSD(rec.costUsd)}
-                {Number(rec.cachedTokens) > 0 && <> · {fmtInt(rec.cachedTokens)} cached</>}
+                {fmtDuration(rec.queuedMs)} · {fmtInt(rec.cachedTokens)} cached ·{' '}
+                {fmtInt(Math.max(0, Number(rec.promptTokens) - Number(rec.cachedTokens)))}{' '}
+                processed · {fmtInt(rec.completionTokens)} generated · {fmtUSD(rec.costUsd)}
                 {Number(rec.promptPerSec) > 0 && <> · {Number(rec.promptPerSec).toFixed(1)} tp/s</>}
                 {Number(rec.predictedPerSec) > 0 && (
                   <> · {Number(rec.predictedPerSec).toFixed(1)} tg/s</>
@@ -367,9 +367,26 @@ export function ActivityLog({
                 max_tokens, which is invisible from status alone (all 200). */}
             <TableCell>Finish</TableCell>
             <TableCell align="right">Dwell</TableCell>
-            <TableCell align="right">Prompt</TableCell>
-            <TableCell align="right">Completion</TableCell>
-            <TableCell align="right">Cached</TableCell>
+            {/* CACHED · PROCESSED · GENERATED. The headers were "Prompt",
+                "Completion" and "Cached" in that order, which is two problems in
+                three words: Prompt INCLUDES the cached prefix, so the first two
+                columns overlapped, and the vocabulary was not the one the cost
+                model, the metrics and the operator use. */}
+            <TableCell align="right">
+              <Tooltip title="Prompt tokens this request got from the backend's cache instead of having reprocessed. A dash means it reported none.">
+                <span>Cached</span>
+              </Tooltip>
+            </TableCell>
+            <TableCell align="right">
+              <Tooltip title="Prompt tokens actually recomputed for this request: prompt minus cached.">
+                <span>Processed</span>
+              </Tooltip>
+            </TableCell>
+            <TableCell align="right">
+              <Tooltip title="Completion tokens written back.">
+                <span>Generated</span>
+              </Tooltip>
+            </TableCell>
             <TableCell align="right">tp/s</TableCell>
             <TableCell align="right">tg/s</TableCell>
             <TableCell align="right">Audio</TableCell>
@@ -437,13 +454,17 @@ export function ActivityLog({
                 </TableCell>
                 <TableCell align="right">{fmtDuration(r.dwellMs)}</TableCell>
                 <TableCell align="right">
-                  {Number(r.audioBytes) > 0 ? '—' : fmtInt(r.promptTokens)}
+                  {Number(r.cachedTokens) > 0 ? fmtInt(r.cachedTokens) : '—'}
+                </TableCell>
+                <TableCell align="right">
+                  {Number(r.audioBytes) > 0
+                    ? '—'
+                    : fmtInt(
+                        Math.max(0, Number(r.promptTokens) - Number(r.cachedTokens)),
+                      )}
                 </TableCell>
                 <TableCell align="right">
                   {Number(r.audioBytes) > 0 ? '—' : fmtInt(r.completionTokens)}
-                </TableCell>
-                <TableCell align="right">
-                  {Number(r.cachedTokens) > 0 ? fmtInt(r.cachedTokens) : '—'}
                 </TableCell>
                 <TableCell align="right">
                   {Number(r.promptPerSec) > 0 ? Number(r.promptPerSec).toFixed(1) : '—'}

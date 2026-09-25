@@ -40,6 +40,20 @@ type Config struct {
 	// CostPerKwh converts local energy → $ (cost model, P6).
 	CostPerKwh float64 `yaml:"costPerKwh,omitempty"`
 
+	// CostBaseline names the `commandCosts` type the dashboard's "would have
+	// cost" comparison prices local traffic against — the answer to "what is
+	// running this myself worth". It must be a type that declares per-token
+	// rates; a local, energy-priced type would compare electricity to
+	// electricity and report a saving of nothing.
+	//
+	// It is a CONFIG KEY rather than a constant because the honest baseline is
+	// the provider the operator would otherwise have used, and nothing in the
+	// code knows that. Unset, it falls back to the cheapest configured paid type
+	// by generated-token rate (cost.Model.PaidTypes) — a floor rather than a
+	// flattering pick, and the UI names whichever type it landed on, because an
+	// unattributed "would have cost $X" says nothing.
+	CostBaseline string `yaml:"costBaseline,omitempty"`
+
 	// Limits budget the WHOLE box, whatever the caller or backend. The
 	// blast-radius guard: "this machine never spends more than $50/day
 	// regardless of what is misconfigured below". Every narrower scope can be
