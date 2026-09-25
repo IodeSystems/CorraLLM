@@ -656,3 +656,268 @@ established.
   a same-corpus DER against the 55.8 / 55.0 / 27.9 baseline.
 - `--preset v3-offline`, and the V3 geometry overrides, are untouched here —
   every V3 number above is the model's own default preset.
+
+---
+
+# P35 — NeMo-Speech.cpp is a corrallm BACKEND, not a thing in /tmp
+
+> **2026-09-25.** §1–§15 are two measurement runs against a hand-started server
+> in `/tmp`. This section is what makes it reproducible: a toolchain recipe, a
+> config entry, and the placement arithmetic for the card it has to live on.
+> **Nothing here was written to the production config DB.**
+
+## 16. The recipe — `internal/toolchain/recipes/nemo-speech.cpp.sh`
+
+Shaped on `stable-diffusion.cpp.sh` (submodules, a backend that is off unless
+asked for, a banner on the wrong stream). **Five things are not inherited from
+it**, each because copying would produce a build that fails or an answer that
+lies:
+
+| | |
+|---|---|
+| **the tree patches its own ggml** | `scripts/apply-ggml-patches.sh` edits the ggml submodule's WORKTREE (23 patches). A dirty submodule makes the SUPERPROJECT's `git diff --quiet` exit 1 — **verified** — which is exactly what `align_tree` refuses to move. Unhandled, the checkout freezes at the patched commit on the SECOND build and silently stops taking upstream, while every verb keeps answering. `reset_vendored_ggml` runs BEFORE `align_tree`; sd.cpp's `sync_submodules` runs only after. A recipe test asserts that ordering |
+| **`-real` on every arch** | `86;120` becomes `86-real;120-real`. The driver is CUDA 13.2, the only toolkit is 13.3, so any PTX is newer than the driver can consume. llama.cpp passes the bare list on this same box and is right to — every card has SASS and nothing JITs — so this cannot be inherited, it has to be decided. `CUDA_ARCHS` is passed through verbatim for anyone who wants the PTX back |
+| **`cmake --preset`, not `scripts/configure.sh`** | configure.sh demands the `llama.cpp` submodule for EVERY ASR preset (`scripts/configure.sh:142-144`), for `vendor/miniaudio/miniaudio.h`, which only `NEMO_SPEECH_BUILD_MIC_CAPTURE=ON` compiles. The recipe does configure.sh's two useful jobs itself and skips the clone |
+| **a dependency that is not a submodule** | SentencePiece is REQUIRED by `src/asr/CMakeLists.txt:71-103` and is not vendored. Built static ONCE per prefix into `<prefix>/deps`, not upstream's `<src>/.deps` default — `git clean -xdf` deletes that (`-x` takes ignored files too), so every build would re-clone and recompile it |
+| **the banner carries no commit** | `nemo-speech --version` prints `nemo-speech 0.1.0` to stdout and nothing else. `CMakeLists.txt:12-22` reads the VERSION file; there is no `git describe`. A third answer to the question llama.cpp (stderr, with a commit) and sd.cpp (stdout, with a commit) answer differently. **The stamp is the only thing that identifies a build**, so an ADOPTED install can never be told it is behind |
+
+Also: `preflight` requires **ninja** (every preset sets `"generator": "Ninja"`
+and a preset's generator cannot be overridden on the command line) with the
+right package name per manager; it reports the `cc`/`c++` disagreement by
+COMPILER FAMILY, because box1's `cc` introduces itself as `cc (Ubuntu 13.3.0…)`
+and never says "gcc". The toolchain is pinned to **gcc/g++**, where llama.cpp
+and sd.cpp pin clang — not a preference, it is the toolchain this tree has
+actually been compiled with, twice.
+
+`preflight` on box1 today returns `ok:false` for exactly one reason: **ninja is
+not installed.** Everything else passes.
+
+## 17. The config, and the intake it declares
+
+Verified end to end on an isolated daemon (`:6514`, own `--home`/`--web-root`/
+SQLite/tune-cache, NeMo on `:6541`), with the tool ADOPTED at the existing
+`/tmp` build so no 4m29s compile was needed to test the config.
+
+```yaml
+tools:
+    nemo-speech.cpp:
+        url: https://github.com/NVIDIA/NeMo-Speech.cpp.git
+        ref: main
+        pin: 97a15afa5caa9bce5baaa86c1184103877af4101   # #50 + #52
+        bin: nemo-speech
+        hosts:
+            box1: {}          # managed: corrallm clones and builds
+
+providers:
+    local:
+        models:
+            nemo-stt-diarize:
+                sticky: { ttl: 2m, evictCost: low, idleUnload: 5m }
+                cmd: |-
+                    CUDA_VISIBLE_DEVICES=GPU-76a4c775-a47f-61b9-3a9f-9c7d5edfc544 \
+                    NEMO_SPEECH_MODEL_DIR=/home/nthalk/.corrallm/models/nemo-speech \
+                    exec ${tool:nemo-speech.cpp}/nemo-speech serve \
+                        --host 127.0.0.1 --port 5820 \
+                        --asr-model nvidia/parakeet-tdt-0.6b-v3 \
+                        --diar-model nvidia/Nemotron-3-Diarization \
+                        --gpu 0 --no-ui --threads 2 \
+                        --max-upload-mb 512 \
+                        --read-timeout 900 --write-timeout 900
+                server: box1
+                pool: gpu1
+                ramUsage: { gpu1: 4900MiB, system: 1GB }
+                swap: { loadSeconds: 3 }
+                proxy: 5820
+                type: stt
+                maxConcurrent: 1
+                contextPerRequest: 0
+                modalities:
+                    audio:
+                        formats: [wav]
+                        minSampleRate: 8000
+                        maxSampleRate: 96000
+                        maxChannels: 2
+                        pcm: [s16, f32]
+```
+
+**Every bound is read off `src/common/audio_file.cpp` at `97a15af`**, the
+function corrallm's phase 2 was written against, and matches `nemoIntake()` in
+`internal/proxy/audio_test.go:727-737` field for field:
+
+| field | value | source |
+|---|---|---|
+| `formats` | `[wav]` | `parse_wav:38` — RIFF/WAVE or `unsupported container` |
+| `maxChannels` | `2` | `audio_file.cpp:77` — `channels != 1 && channels != 2` |
+| `minSampleRate` / `maxSampleRate` | `8000` / `96000` | `audio_file.cpp:79` |
+| `pcm` | `[s16, f32]` | `audio_file.cpp:82-89` — format 1 @ 16 bits, format 3 @ 32 bits, everything else `unsupported WAV encoding` |
+
+`type: stt` is what makes it `audio.stt`: `config.TypeIO` matches `stt` (also
+`asr`/`parakeet`/`transcri*`) — audio in, text out — then `IO.capability()`
+(`internal/config/iomodality.go:83-120`). There is no `capability:` field to set.
+
+`maxConcurrent: 1`, unlike oidio's `stt-diarize: 2`. The compute buffer is
+per-process and per-request; two 44-minute requests in flight would double
+§14's allocation on a card that has 389 MiB of headroom at one.
+
+**The intake works against the real backend, from this entry.** Isolated
+`:6514`, `local-nemo-stt-diarize`:
+
+| input | DIRECT to NeMo | through corrallm |
+|---|---|---|
+| 16 kHz mono s16 wav | 200 | **200** (11.1 s, cold; the transcript is correct) |
+| 24-bit stereo 48 kHz wav | **500** `unsupported WAV encoding` | **200**, correct transcript |
+| mp3 | (`unsupported container`) | **200**, correct transcript |
+| 726 s wav, `diarized_json` + `diarization=true` | — | **200 in 18.6 s**, 1447 words, canonical `segments[]` = `{end,id,speaker,start,text}`, `usage: {type:duration, seconds:726}` |
+
+`/v1/models` reports `"capability":"audio.stt"` and echoes all four PCM bounds.
+
+## 18. What fits on the 3080 — it displaces chandra, and that is the whole answer
+
+**Measured today, not carried over.** gpu1 is the RTX 3080 (gpu0 is the 5090);
+gpu1 declares **10240MiB and NO reserve**, and `--vram-margin` keeps 512 MiB
+back, so the admission budget is **9728 MiB**.
+
+Peaks from the tune cache (`~/.corrallm/var/vram-profile.json`) and from this
+slice's own run:
+
+| model | PeakMiB on the 3080 |
+|---|---|
+| `chandra-ocr-2` | 8240 |
+| `nomic-embed-text` | 822 |
+| **`nemo-stt-diarize`** | **4510** — measured here on a 726 s file, Parakeet TDT v3 + Nemotron 3 |
+
+| combination | MiB | verdict |
+|---|---|---|
+| nomic + chandra (today) | 9062 | fits, 666 MiB spare |
+| nomic + **NeMo** | 5332 | **fits, 4396 MiB spare** |
+| chandra + NeMo | 12750 | **over by 3022 MiB — never** |
+| all three | 13572 | over by 3844 MiB |
+
+**NeMo and chandra-ocr-2 cannot be co-resident on this card, at any quant of
+either, by 3 GB.** That is not a tuning question. The owner's options, with
+costs, and this slice does not choose between them:
+
+1. **Let them evict each other.** chandra is already `evictCost: low`,
+   `ttl: 2m`, `idleUnload: 5m` — it is built to be thrown off. NeMo with the
+   same profile means whichever was used last holds the card. **Cost:**
+   interleaved OCR and STT traffic thrashes — chandra's cold start is a 5.2 GB
+   GGUF load, NeMo's is ~1.8 s (measured). Cheapest, and reversible.
+2. **Move chandra to the 5090.** It has a measured gpu0 profile (Peak 7080). But
+   gpu0 holds `local-Swift-Qwen3.8-27B` at Peak 30688 of a 32095 budget, so
+   chandra can only land there by evicting the chat model. **Cost:** moves the
+   problem onto the card that serves chat.
+3. **Bound NeMo's peak.** `nemotron-3.5-asr-streaming-0.6b` has a limited
+   attention window and measured 2005 MiB (§3). **Cost:** it still does not fit
+   beside chandra (2005 + 8240 = 10245 > 9728) — it only buys more spare next to
+   nomic. It buys nothing against the constraint that actually binds.
+4. **Do not adopt it on box1.** oidio keeps serving STT from the `system` pool.
+   **Cost:** oidio is 8–9x slower and over-splits speakers far worse (§9, §11).
+
+**A footnote that matters for option 1.** The compute buffer is RETAINED after
+a request — verified: the process still held 4510 MiB minutes after the 726 s
+file finished. `idleUnload: 5m` is therefore not just residency hygiene, it is
+the mitigation for §6's risk 1: a quiet backend gives the buffer back instead of
+ratcheting into the next long request.
+
+**And a real caveat about `ramUsage`.** corrallm does NOT trust it: at the first
+spawn it measures and logs `using measured VRAM footprint instead of configured
+ramUsage … config=over-declared configuredMiB=4900 measuredMiB=1198`. **1198 is
+weights only.** Admission charges that until `sampleVRAMPeak`'s 15 s ticker has
+seen a long request — after which PeakMiB ratchets to 4510 and stays (verified,
+and it survives a respawn). So there IS a window, on a cold tune cache, where
+corrallm believes NeMo costs 1.2 GB and would happily co-schedule chandra
+beside it. **Warming the profile with one long file before real traffic closes
+it permanently.** (`tune.Cache.BumpPeak` mutates in memory and does not write
+the file; `vram-profile.json` catches up at the next spawn. `corrallm
+introspect` reads the file, so it can lag the daemon by one spawn.)
+
+## 19. §14's abort IS survivable, and it costs exactly one 502
+
+Measured on the isolated rig by sending the backend **SIGABRT**, which is what
+`ggml_abort` raises:
+
+```
+INFO backend exited name=local-nemo-stt-diarize err="signal: aborted (core dumped)"
+INFO backend spawned name=local-nemo-stt-diarize id=pgid:2605004
+INFO backend ready  name=local-nemo-stt-diarize
+```
+
+| moment | what the caller sees |
+|---|---|
+| the request that races the exit | **502 in 1.7 ms** |
+| the next request | **200 in 1.8 s** — cold respawn, model load included |
+| every request after | normal |
+
+**How, and its limit.** There is no supervisor and no restart policy —
+`Manager.onProcExit` (`internal/proc/manager.go:1761`) only drops the process
+from the ledger and frees its pools. What makes this survivable is that
+`EnsureReady` then takes the cold-spawn path on the NEXT demand. So recovery is
+**lazy, not proactive**: nothing notices the death until a caller does, and that
+caller pays for it. `waitHealthy` polls `GET /health` (NeMo serves it,
+`server/http/http_server.cpp:448`) only during a spawn, never while resident.
+
+**This is as good as the existing machinery gets, and it is good enough**: one
+lost request per abort, no operator action, no outage. What it cannot do is
+prevent the abort — that still depends on what the backend served before, which
+corrallm cannot predict. §18's `idleUnload: 5m` is the only lever that reduces
+how often the condition arises.
+
+## 20. Adopting it in production
+
+Nothing below was run. `:8111` was never restarted, stopped, reconfigured or
+installed over, and answered 200 on `/v1/models` before, during and after. No
+`vite build` ran. Both GPUs were returned empty.
+
+```bash
+sudo apt-get install -y ninja-build          # preflight's one failure on box1
+corrallm config export > ~/corrallm-pre-nemo.yaml   # rollback point
+# edit that file: add §17's tools: and providers.local.models: entries
+corrallm validate --config ~/corrallm-pre-nemo.yaml
+corrallm config load ~/corrallm-pre-nemo.yaml
+corrallm tools preflight nemo-speech.cpp     # expect ok:true once ninja is in
+corrallm tools build nemo-speech.cpp         # ~4m29s + a one-time SentencePiece build
+# warm the VRAM profile before real traffic (see §18's caveat):
+curl -F model=local-nemo-stt-diarize -F response_format=json \
+     -F file=@<a file over ~10 minutes> http://127.0.0.1:8111/v1/audio/transcriptions
+```
+
+Rollback is `corrallm config restore <revision>` (`corrallm config history`).
+
+## 21. Active work
+
+**◻ next** — nothing. The recipe and the config exist and are exercised.
+
+**blocking decision (owner)** — **§18's placement.** NeMo displaces
+`chandra-ocr-2` on the 3080 by 3 GB. Four options with their costs are listed;
+none was taken.
+
+**risks**
+
+1. **The recipe has never performed a build.** Every verb but `build` ran on
+   this host (`preflight` correctly found the one missing package); the config
+   was exercised against an ADOPTED tree instead, because a real run would clone
+   NeMo-Speech.cpp and SentencePiece and compile for ~4m30s. The steps `build`
+   takes are each verified against the upstream scripts and against the git
+   semantics they depend on, but the end-to-end compile through this recipe is
+   UNTESTED.
+2. **The `-real` decision is box-shaped.** It is right here and right on any box
+   whose driver is older than its toolkit; on a matched box it costs the JIT
+   fallback for an unlisted arch and buys nothing.
+3. **The cpu-asr and metal-asr paths are untested.** Both are reachable from
+   `backend_spec` and neither has been built. Vulkan is deliberately not offered.
+4. **`maxConcurrent: 1` is reasoning, not measurement.** Concurrency against
+   NeMo has never been run.
+5. **Everything §15 lists is unchanged** — V3 over-splits, does not reproduce
+   its speaker count across containers, and destroys `words[].confidence`.
+
+**assumptions recorded**
+- that `ramUsage: 4900MiB` is the right bootstrap. Measured peak is 4510 on a
+  726 s file; a 2650 s file measured higher in §8. It is deliberately on the
+  conservative side and corrallm overrides it with measurement anyway.
+- that the served name is `local-nemo-stt-diarize` (provider prefix), matching
+  every other local model. `aliases:` can add a bare name if a caller needs one.
+
+**optional extensions, explicitly out of scope**
+- run `corrallm tools build nemo-speech.cpp` for real and close risk 1.
+- `tune.Cache.BumpPeak` does not persist; `vram-profile.json` and `corrallm
+  introspect` lag the daemon by one spawn. Harmless here, surprising elsewhere.

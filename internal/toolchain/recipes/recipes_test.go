@@ -25,7 +25,7 @@ func TestNamesExcludesTheSharedLibrary(t *testing.T) {
 }
 
 func TestTheShippedToolsHaveRecipes(t *testing.T) {
-	for _, want := range []string{"llama.cpp", "ninfer", "stable-diffusion.cpp"} {
+	for _, want := range []string{"llama.cpp", "ninfer", "stable-diffusion.cpp", "nemo-speech.cpp"} {
 		if !Has(want) {
 			t.Errorf("no recipe for %q (have: %v)", want, Names())
 		}
@@ -257,6 +257,21 @@ func TestProbeReadsTheVersionEachToolActuallyPrints(t *testing.T) {
 			wantCommit:  "c678dfe",
 		},
 		{
+			// A THIRD ANSWER to the same question. nemo-speech prints to
+			// stdout like sd-server, but its banner carries NO COMMIT at all:
+			// CMakeLists.txt parses the VERSION file and bakes the string in,
+			// with no `git describe` anywhere. A recipe that copied sd.cpp's
+			// two-part parse would report an empty version on a working binary.
+			name:   "nemo-speech prints a bare release to stdout and no commit",
+			recipe: "nemo-speech.cpp",
+			bin:    "nemo-speech",
+			script: "#!/bin/sh\n" +
+				"echo 'nemo-speech 0.1.0'\n",
+			wantPresent: true,
+			wantVersion: "0.1.0",
+			wantCommit:  "", // nothing to read; the stamp is the only source
+		},
+		{
 			name:        "nothing installed",
 			recipe:      "stable-diffusion.cpp",
 			bin:         "sd-server",
@@ -351,5 +366,144 @@ func TestStableDiffusionBuildAnswersTheThingsLlamaCppDoesNotHaveToo(t *testing.T
 		if !strings.Contains(src, want.needle) {
 			t.Error(want.why)
 		}
+	}
+}
+
+// The stamp is the ONLY thing that identifies a NeMo-Speech.cpp build.
+//
+// Its banner is `nemo-speech 0.1.0` and always will be — upstream has published
+// no release past v0.1.0 and the string comes from a checked-in VERSION file,
+// not from `git describe`. So a tree at the pinned commit and a tree months
+// ahead of it answer identically, and everything drift-shaped (`tools
+// upstream`, the scheduled check) reads the commit out of the stamp instead.
+//
+// Checked here rather than on a host because the failure is invisible: a recipe
+// that dropped the stamp would still print a version, still print valid JSON,
+// and would simply never report drift again.
+func TestNemoSpeechTakesItsCommitFromTheStampBecauseTheBinaryHasNone(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("no bash; the recipes are bash and cannot be exercised here")
+	}
+	dir := t.TempDir()
+	if err := Extract(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	prefix := t.TempDir()
+	bindir := filepath.Join(prefix, "bin")
+	if err := os.MkdirAll(bindir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bindir, "nemo-speech"),
+		[]byte("#!/bin/sh\necho 'nemo-speech 0.1.0'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const head = "97a15af0d4f6b1c2e3a4b5c6d7e8f90123456789"
+	if err := os.WriteFile(filepath.Join(bindir, ".corrallm-stamp"),
+		[]byte("head="+head+" patches=none archs=cuda:86-real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", filepath.Join(dir, "nemo-speech.cpp.sh"), "probe")
+	cmd.Env = append(os.Environ(),
+		"TOOL_NAME=nemo-speech.cpp", "TOOL_PREFIX="+prefix,
+		"TOOL_BIN=nemo-speech", "TOOL_INSTALLED_AT=")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	var got struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+		Source  string `json:"source"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("probe printed unparseable JSON %q: %v", out, err)
+	}
+	if got.Version != "0.1.0" {
+		t.Errorf("version = %q, want %q — the release string the binary prints", got.Version, "0.1.0")
+	}
+	if got.Commit != head {
+		t.Errorf("commit = %q, want %q — the stamp is the only source of it", got.Commit, head)
+	}
+	if got.Source != "binary" {
+		t.Errorf("source = %q, want \"binary\": the version came from the binary even though the commit did not", got.Source)
+	}
+}
+
+// The ways NeMo-Speech.cpp's build is not stable-diffusion.cpp's.
+//
+// Each is checked against the script rather than a host, because the
+// alternative is a four-and-a-half-minute CUDA build plus a SentencePiece
+// compile and two submodule clones, and each failure looks like something else:
+//
+//	THE TREE PATCHES ITS OWN ggml SUBMODULE (23 patches, in-tree, applied to
+//	the worktree). A dirty submodule makes the superproject's `git diff` report
+//	a tracked change, which align_tree refuses to move — so without an explicit
+//	reset BEFORE the align, the second build freezes the checkout permanently
+//	while every verb keeps answering normally.
+//
+//	PTX IS UNUSABLE on a box whose driver is older than its only toolkit: the
+//	first kernel that JITs dies with "the provided PTX was compiled with an
+//	unsupported toolchain". -real emits SASS and nothing to JIT. llama.cpp's
+//	recipe passes the bare arch list on the same box and is right to, so this
+//	cannot be inherited — it has to be decided here.
+//
+//	scripts/configure.sh DEMANDS THE llama.cpp SUBMODULE for every ASR preset,
+//	for one header that only NEMO_SPEECH_BUILD_MIC_CAPTURE compiles. The recipe
+//	drives cmake --preset itself to avoid a large clone it will not use.
+//
+//	SENTENCEPIECE IS NOT VENDORED and src/asr/CMakeLists.txt makes it REQUIRED.
+//	Upstream's helper defaults its prefix to <src>/.deps, which `git clean -xdf`
+//	deletes — so it must be built somewhere the clean does not reach.
+//
+//	cpp-httplib IS A SEPARATE SUBMODULE and the configure fails by name without
+//	it as soon as NEMO_SPEECH_BUILD_HTTP is on, which for corrallm is always.
+func TestNemoSpeechBuildAnswersTheThingsStableDiffusionDoesNotHaveTo(t *testing.T) {
+	b, err := Script("nemo-speech.cpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	for _, want := range []struct{ needle, why string }{
+		{"reset_vendored_ggml",
+			"the recipe never restores the vendored ggml worktree — the in-tree patch series leaves it dirty, align_tree then refuses to move the tree, and the checkout freezes at the patched commit from the second build onward"},
+		{"scripts/apply-ggml-patches.sh",
+			"the recipe never runs the tree's own ggml series — the CUDA preset sets NEMO_SPEECH_GGML_PATCHED=ON and compiles against ops that are not there"},
+		{"-real",
+			"the recipe never asks for SASS-only CUDA architectures — with PTX in the binary, a driver older than the toolkit dies at the first JIT with \"the provided PTX was compiled with an unsupported toolchain\""},
+		{"-DNEMO_SPEECH_BUILD_HTTP=ON",
+			"the recipe never turns the HTTP server on — corrallm proxies /v1/audio/transcriptions and there is nothing to proxy without it"},
+		{"-DNEMO_SPEECH_BUILD_MIC_CAPTURE=OFF",
+			"the recipe never turns mic capture off — it is the only ASR-side consumer of llama.cpp/vendor/miniaudio, and leaving it on makes a large submodule mandatory for a header this build does not need"},
+		{"third_party/cpp-httplib",
+			"the recipe never checks out cpp-httplib — CMakeLists.txt fails the configure by name once NEMO_SPEECH_BUILD_HTTP is on"},
+		{"build_sentencepiece",
+			"the recipe never builds SentencePiece — src/asr/CMakeLists.txt makes it REQUIRED and nothing in the tree vendors it"},
+		{"NEMO_SPEECH_DEPENDENCY_PREFIX",
+			"the recipe never points cmake at the SentencePiece it built — upstream's default prefix is <src>/.deps, which the build's own `git clean -xdf` deletes, so it would be recompiled every time"},
+		{"cmake --preset",
+			"the recipe does not drive cmake --preset itself — scripts/configure.sh demands the llama.cpp submodule for every ASR preset, for a header this build does not compile"},
+	} {
+		if !strings.Contains(src, want.needle) {
+			t.Error(want.why)
+		}
+	}
+
+	// Ordering is load-bearing and a strings.Contains cannot see it: the ggml
+	// reset has to happen BEFORE align_tree, or align_tree is the thing that
+	// refuses. Compare positions inside build().
+	at := strings.Index(src, "\nbuild() {")
+	if at < 0 {
+		t.Fatal("no build() in the recipe")
+	}
+	body := src[at:]
+	reset := strings.Index(body, "reset_vendored_ggml \"$src\"")
+	align := strings.Index(body, "align_tree \"$src\"")
+	if reset < 0 || align < 0 {
+		t.Fatal("build() no longer calls both reset_vendored_ggml and align_tree by name")
+	}
+	if reset > align {
+		t.Error("build() resets the vendored ggml AFTER align_tree — by then align_tree has already refused to move a tree with tracked changes, warned once, and left the checkout frozen at the patched commit")
 	}
 }
