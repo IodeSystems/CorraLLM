@@ -911,11 +911,10 @@ time, for rule 5's reason.
 
 **Nothing here is invented.** Every character emitted was returned by the backend;
 this is arithmetic on returned data, which §9.0 permits, and it is the whole of what
-§9.0 permits. **Untested against the backend that motivates it** — NeMo-Speech.cpp's
-PR is unmerged and nothing on this box runs it, so rules 2 and 2b are unit-covered
-and nothing more. If the rule is wrong at a boundary a word lands in the wrong turn
-and nothing in the response says so; that exposure is unchanged by writing the rule
-down, but it is now reviewable.
+§9.0 permits. ~~**Untested against the backend that motivates it**~~ — **RULE 2 IS
+NOW EXERCISED ON REAL DATA, and it took a second upstream call to get there.** See
+§12.12; the join's exposure is unchanged in kind (a wrong boundary moves a word and
+nothing in the response says so) and is now measurable rather than hypothetical.
 
 **(f) `words[].end` when the backend does not report it.** ✅ **OMIT** (§9.0b(f),
 §12.6). Verified live: a canonical `words[]` from oidio carries no `end` KEY at all,
@@ -1119,6 +1118,167 @@ capture cap) while the client receives 665, so the meter reads the backend.
 5. **A diarizing client reading oidio's extras out of a plain `json` body will
    break.** That is the whole point of §12.1's floor, and it is the largest
    compatibility change in this commit. The manifest says so in its first sentence.
+
+---
+
+### 12.12 The two-call diarized join — ✅ BUILT 2026-09-25, and it is what makes RULE 2 fire
+
+> The owner, 2026-09-25: *"As for the incompatibility, do the two call variant.
+> Remember, we are supposed to be an adapter on these wild West audio systems into a
+> reliable OpenAI API."*
+
+**It settles a tension §9.0 left open, and the answer is that there was no tension.**
+"May compute what a backend did not return, may not invent what no backend knows"
+reads, at first glance, as forbidding a second upstream call. It does not. Joining a
+backend's own words to that same backend's own speaker segments is arithmetic on
+returned data whether they arrive in one response or two. Which endpoint the data
+came through is not a moral fact about it.
+
+#### What was broken, and it is measurable on PUBLIC audio
+
+NeMo-Speech.cpp answers "who spoke when" twice and the two answers disagree.
+
+| endpoint | what it returns | verdict |
+|---|---|---|
+| `/v1/audio/diarizations` | `{"segments":[{start,end,speaker:int}]}`, textless, overlapping | **correct at every length tried** |
+| `/v1/audio/transcriptions?diarization=true` | the same fused onto `words[]` | **wrong on long audio** |
+
+The failure was first seen on a private 1451 s call (first 634 s / 1,387 words on one
+speaker). **It reproduces on CC-BY audio, which is what makes it reportable**: NeMo's
+own `test_files/diar/ami_en2002d_2132.wav` — 60 s of AMI meeting EN2002d, three
+speakers, real overlap — concatenated to 1440 s.
+
+```
+fused, per 120 s block, 1440 s:        the diarizations endpoint, same file:
+   0- 120s {3: 277}                       0- 120s {1: 11, 2: 18, 3:  8}
+ 120- 240s {3: 275}                     120- 240s {1: 11, 2: 18, 3: 10}
+ 240- 360s {3: 281}                     240- 360s {1: 10, 2: 19, 3: 10}
+ 360- 480s {3: 278}                     360- 480s {1: 13, 2: 19, 3: 11}
+ 480- 600s {3: 261, 2: 8}               480- 600s {1: 12, 2: 19, 3: 12}
+ 600- 720s {1: 134, 2: 103, 3: 35}      600- 720s {1: 13, 2: 18, 3: 10}   …uniform to 1440
+```
+
+**The first 597.6 s — 1,372 words — on one speaker**, then plausible behaviour, against
+a recording that is literally the same minute twelve times over. The two endpoints
+agree on **97.1% of words at 720 s and 62.1% at 1440 s**, so this is a LENGTH failure
+in the fusion, not a bad diarizer. Remapping the fused body faithfully publishes that
+in OpenAI's shape, where nothing downstream can see it — worse than an ugly shape.
+
+#### The rule that fires, and what overlap does
+
+**RULE 2, unchanged.** It was written for exactly this shape (§12.3 read it off the
+source) and then recorded as unexercised because the FUSED endpoint returns no
+`segments[]`. The second call supplies them; RULE 2b stays for backends that answer
+entirely in speaker-bearing words.
+
+**Overlap is a TIE-BREAK, and clause 1 is it: the first candidate in the backend's own
+document order.** Simultaneous speech is real and this diarizer reports it — 80 words
+of 3,284 (2.4%) at 1440 s start inside two segments at once. For those the backend has
+said two people were talking and has not said which produced the word, so every answer
+is arbitrary; the requirements are that it be deterministic and written down. For a
+diarizer emitting segments in start order (NeMo's are, verified) that means **the
+speaker whose turn began earlier keeps the word**.
+
+**Rejected: prefer a candidate that also contains the word's `end`.** Defensible, uses
+more returned data, and measured on the same audio it moves **3 words of 3,284**
+(0.09%). A second rule every reimplementation must get right, for that, is not a
+trade. Recorded because the alternative was considered and priced, not overlooked.
+
+**The segments are the AUTHORITY.** Every word's speaker is re-derived from the segment
+that owns it and the fused `words[].speaker` is discarded — publishing both would be
+two answers to one question. A word RULE 2 declines to place (clause 4) carries no
+speaker rather than a guessed one.
+
+#### Opt-in per backend, declared, not global
+
+`ModalitySpec.DiarizationPath` — `modalities.audio.diarizationPath`, a PATH not a bool
+because corrallm has to call it and no two backends spell it alike. Modelled on how
+`Formats` and the PCM bounds already carry per-backend audio facts, so it inherits
+`EffectiveModalities`'s probed-beats-declared precedence and appears on `/v1/models`
+without new plumbing. Refused at LOAD if it does not begin with `/`.
+
+**Empty everywhere by default, and that is the whole off switch.** oidio's fused output
+is internally consistent, one call is cheaper than two, and nothing about oidio's path
+changes. No model name is hardcoded anywhere.
+
+#### What it costs, measured
+
+NeMo at `97a15af` on the 3080, AMI loops, wall clock:
+
+| audio | ASR only | fused (1 call) | diarizations | two calls | delta |
+|---|---|---|---|---|---|
+| 720 s | 7.49 s | 16.77 s | 11.51 s | 19.00 s | **+13.3%** |
+| 1440 s | 15.31 s | 36.49 s | 25.85 s | 41.16 s | **+12.8%** |
+| 1440 s, end to end through corrallm | — | 36.62 s | — | 40.99 s | **+11.9%** |
+
+**+13% and not +100%, because the transcription leg stops asking for diarization at
+all.** corrallm strips the caller's `diarization` flag on that leg, so it pays for one
+ASR pass and one diarizer pass — the same two the fused call already ran. Kept naive,
+the identical work costs **+69%**. The words are unaffected: the transcription bodies
+with and without the flag were compared word for word and timestamp for timestamp on
+both files and are **identical**.
+
+**A second pass is spent only when the answer can carry a speaker**: `diarized_json`,
+or a backend's own diarization flag on `verbose_json`, or either under `stream=true`.
+Plain `json` returns `{"text":…}` and makes one call.
+
+#### Two allocations are never live at once
+
+The second call is issued from the RESPONSE path, after the transcription body is read
+to completion and BEFORE the residency ref is dropped. Strictly sequential, never
+concurrent; the admission slot is still held, so a `maxConcurrent: 1` backend does not
+see a neighbour land in the gap. Measured across both 1440 s requests: the 3080 rose to
+a **4,772 MiB** plateau and the diarization call added nothing on top — the compute
+buffer is retained and reused, which is what §14 of `p35-nemo-live.md` already
+established and what makes a concurrent second call the dangerous option on a backend
+that ABORTS rather than 500s when it cannot allocate.
+
+#### A failure is a refusal, not a fallback
+
+A diarization call that fails, 404s, or returns nothing readable → **502 naming the
+endpoint**. Falling back to the fused labels would serve the known-bad answer under the
+good one's name, which is §9.0b's "forwarding a bug with a new hostname on it" with the
+bug now documented. Verified live against a model declaring a path that is not there.
+
+#### The compatibility win nobody asked for
+
+`diarized_json` against NeMo used to require the caller to also know NeMo's own
+`diarization=true`, or get §12.7's 400. With a declared endpoint corrallm fetches the
+speakers itself, so **`response_format=diarized_json` alone now works** — a plain
+OpenAI client needs no backend-specific parameter. Verified live.
+
+#### Turn structure, fused vs joined, same 1440 s file through corrallm
+
+| | fused | joined |
+|---|---|---|
+| segments | 133 | 491 |
+| longest segment | **597.4 s, 1,372 words** | 7.7 s, 33 words |
+| median segment | 2.24 s | 1.67 s |
+| segments in 240–480 s | **0** | 82 |
+| empty-text segments | 0 | 49 |
+| top-level and item keys | identical | identical |
+
+The 49 empty segments are RULE 2 clause 6 working: a diarizer heard a backchannel the
+recogniser did not transcribe, and `text: ""` is the honest rendering of that.
+
+#### What is untested
+
+- **No private audio was used, and none is referenced.** The corpus is NeMo's own
+  CC-BY AMI excerpt, looped. A LOOP is not a 24-minute conversation: it repeats one
+  minute, so it cannot show drift, topic change, or a speaker who leaves.
+- **One backend.** Only NeMo-Speech.cpp has a separate diarization endpoint on this
+  box. The `wireSegment` reader accepts a string speaker and a segment `id`, but
+  nothing has sent either.
+- **Nemotron 3 was not re-run.** The Sortformer v2 diarizer served every measurement
+  here. §14's V3 abort-on-OOM is untouched by this work and is not made better by it.
+- **No DER.** The AMI RTTM ground truth was not used to score either answer; the
+  comparison is structural and an agreement percentage, not an accuracy claim.
+- **The 502 refusal is not reachable from `/v1/models`.** A caller cannot tell in
+  advance that a model's diarization endpoint is misconfigured — same shape as §12.9(g)'s
+  late refusal, same fix (a model that can DECLARE what it does), same open question.
+- **`stripDiarizationFlag` assumes the flag's only effect is the diarizer pass.** True
+  for NeMo at `97a15af` (verified: identical words). A backend where the flag also
+  changes segmentation or punctuation would be silently altered by the strip.
 
 ---
 

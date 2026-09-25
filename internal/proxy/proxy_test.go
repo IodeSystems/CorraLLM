@@ -1785,15 +1785,33 @@ func TestCapabilitiesDiarizationNote(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
 		t.Fatal(err)
 	}
-	var note, formats string
+	var note, formats, cost string
 	for _, ep := range m.Endpoints {
 		if ep.Path == "/v1/audio/transcriptions" {
 			note, _ = ep.Example["diarization"].(string)
 			formats, _ = ep.Example["response_format"].(string)
+			cost, _ = ep.Example["speaker_cost"].(string)
 		}
 	}
 	if note == "" || formats == "" {
 		t.Fatal("no diarization/response_format note on /v1/audio/transcriptions")
+	}
+	// P35 §12.9(e), the two-call join. §9.0b makes the manifest normative, and
+	// a caller paying for a second pass over their own audio is entitled to
+	// know it, what it buys, and when it is not charged.
+	if cost == "" {
+		t.Fatal("no speaker_cost note: the second upstream call is unannounced")
+	}
+	for _, claim := range []string{
+		"TWO UPSTREAM CALLS", // what happens
+		"diarizationPath",    // how a caller tells which models do it
+		"+13%",               // what it costs, measured
+		"SEQUENTIAL",         // and that it is not two allocations at once
+		"502",                // the refusal, rather than a silent fallback
+	} {
+		if !strings.Contains(cost, claim) {
+			t.Errorf("speaker_cost note omits %q", claim)
+		}
 	}
 	// num_speakers is named once, to DENY it — a client built against the old
 	// manifest needs to be told the field is gone. Nowhere else may mention it.
