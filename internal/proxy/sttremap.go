@@ -73,6 +73,37 @@ type sttRequest struct {
 	// `backend` value (§12.5, §12.9(d)): the sidecar is available, never
 	// ambient. 5.2 KB of voiceprint per speaker is not a default.
 	IncludeBackend bool
+	// Diarize records that the caller asked a BACKEND for speaker labels under
+	// the backend's own parameter name — NeMo-Speech.cpp's `diarization=true`,
+	// which corrallm forwards untouched like every other backend request arg.
+	//
+	// READ, NOT OWNED. corrallm does not define this parameter and does not
+	// refuse it; it reads it because `verbose_json` alone does not say whether
+	// the caller wants speakers, and the two-call join must not spend a second
+	// pass over the audio on a caller who never asked for one.
+	Diarize bool
+	// Stream is the caller's stream=true, which decides whether the RESPONSE
+	// can carry a speaker at all on response_format=json: the non-streaming
+	// `json` floor is `{"text":…}` and nothing else (§12.1), while the
+	// streaming form's output contract is the EVENT schema (§9.1) and that
+	// does carry segments.
+	Stream bool
+}
+
+// wantsSpeakers reports whether this request asked for speaker-labelled output
+// AND will get a body that can carry it.
+//
+// Both halves matter, because this is what decides whether a second pass over
+// the audio is spent (sttdiarize.go). `diarized_json` always wants them;
+// `verbose_json` wants them when the caller asked a backend for them under its
+// own flag; plain `json` returns text and nothing else, so paying a diarizer
+// for it would buy the caller nothing — unless the caller is streaming, where
+// the event schema is the contract and does carry segments.
+func (q sttRequest) wantsSpeakers() bool {
+	if q.Format == sttFormatJSON && !q.Stream {
+		return false
+	}
+	return q.Format == sttFormatDiarizedJSON || q.Diarize
 }
 
 // remaps reports whether a response to this request gets the canonical
@@ -128,6 +159,17 @@ func parseSTTRequest(body []byte, contentType string) (sttRequest, *sttRefusal) 
 		switch name {
 		case "response_format":
 			q.Format = strings.ToLower(val)
+		case "diarization":
+			// Accept generously on the FORM: a flag is a flag however the
+			// client spelled it. Anything that is not an explicit falsehood
+			// reads as asked-for, which is the same reading the backend gives
+			// it — corrallm must not decide a caller wanted speakers when the
+			// backend will not produce them, or the reverse.
+			switch strings.ToLower(val) {
+			case "", "0", "false", "no", "off":
+			default:
+				q.Diarize = true
+			}
 		case "include", "include[]":
 			// Accept generously on the FORM: OpenAI repeats `include[]`, some
 			// clients send `include`, some send one comma-separated value.
@@ -171,7 +213,8 @@ func parseSTTRequest(body []byte, contentType string) (sttRequest, *sttRefusal) 
 
 func sttFormField(name string) bool {
 	switch name {
-	case "response_format", "include", "include[]", "known_speaker_names", "known_speaker_names[]":
+	case "response_format", "include", "include[]", "known_speaker_names", "known_speaker_names[]",
+		"diarization":
 		return true
 	}
 	return false
@@ -417,9 +460,12 @@ func (l *speakerLabeller) any() bool { return len(l.order) > 0 }
 // backend; this is arithmetic on returned data, which §9.0 permits, and it is
 // the whole of what it permits.
 //
-// UNTESTED AGAINST THE BACKEND THAT MOTIVATES IT. NeMo-Speech.cpp's PR is
-// unmerged and nothing on this box runs it, so this path is covered by unit
-// test and by nothing else.
+// NO LONGER UNEXERCISED. It was recorded as unit-covered-only because the
+// backend that motivated it answers /v1/audio/transcriptions with no
+// `segments[]` at all (p35-nemo-live §4), so only RULE 2b ever fired. The
+// two-call join (sttdiarize.go) is what makes RULE 2 fire on real data: the
+// segments come from the backend's own /v1/audio/diarizations and the words
+// from its transcription, and this is the rule that marries them.
 func joinWordsIntoSegments(segs []canonSegment, words []canonWord) {
 	if len(segs) == 0 || len(words) == 0 {
 		return
@@ -434,6 +480,54 @@ func joinWordsIntoSegments(segs []canonSegment, words []canonWord) {
 	if !need {
 		return
 	}
+	owner := assignWordsToSegments(segs, words)
+	buckets := make([][]string, len(segs))
+	for wi, idx := range owner {
+		if idx >= 0 {
+			buckets[idx] = append(buckets[idx], words[wi].Word)
+		}
+	}
+	for i := range segs {
+		if segs[i].Text == "" {
+			segs[i].Text = joinWordText(buckets[i]) // rule 5, rule 6
+		}
+	}
+}
+
+// assignWordsToSegments is RULE 2 clauses 1–4 on their own: which segment owns
+// each word, by index, or -1 for a word the rule declines to place.
+//
+// SEPARATE FROM THE TEXT JOIN because two callers want two different halves of
+// the same answer. joinWordsIntoSegments wants the words, to fill a textless
+// segment. The two-call join (sttdiarize.go) also wants the SPEAKER, because
+// there the segments are the authority on who spoke and the word's own
+// speaker field — if the backend even set one — is the thing being replaced.
+//
+// OVERLAPPING SEGMENTS, DELIBERATELY. Simultaneous speech is real and a
+// diarizer that reports it emits segments that overlap in time: measured on
+// 1440 s of AMI meeting audio, 80 words of 3,284 (2.4%) start inside two
+// segments at once. For those words the backend has said two people were
+// talking and has NOT said which one produced the word, so corrallm cannot
+// know — every possible answer is a tie-break, and the only real requirements
+// are that it be deterministic and written down. RULE 2 clause 1 is that
+// tie-break: the FIRST candidate in the backend's own document order wins,
+// which for a diarizer that emits segments in start order means the speaker
+// whose turn began EARLIER keeps the word.
+//
+// The alternative considered and rejected: prefer a candidate that also
+// contains the word's END (more of the word inside it). It is defensible and
+// it is not worth a second rule — measured on the same audio it moves 3 words
+// of 3,284, it only applies when the backend reports word ends, and a rule
+// that fires on 0.09% of words is a second thing every reimplementation has to
+// get right for no measurable gain.
+func assignWordsToSegments(segs []canonSegment, words []canonWord) []int {
+	owner := make([]int, len(words))
+	if len(segs) == 0 {
+		for i := range owner {
+			owner[i] = -1
+		}
+		return owner
+	}
 	// Rule 2: a missing end runs to the next segment's start.
 	ends := make([]float64, len(segs))
 	const inf = 1e308
@@ -447,10 +541,10 @@ func joinWordsIntoSegments(segs []canonSegment, words []canonWord) {
 			ends[i] = inf
 		}
 	}
-	buckets := make([][]string, len(segs))
 	for wi := range words {
 		if words[wi].Start == nil {
-			continue // rule 4
+			owner[wi] = -1 // rule 4: cannot be placed, so it is not placed
+			continue
 		}
 		at := *words[wi].Start
 		idx := -1
@@ -458,12 +552,16 @@ func joinWordsIntoSegments(segs []canonSegment, words []canonWord) {
 			if segs[i].Start == nil {
 				continue
 			}
-			if at >= *segs[i].Start && at < ends[i] { // rule 1, half-open
+			// Rule 1, half-open, FIRST match in document order: a word
+			// starting exactly on a boundary belongs to the segment that is
+			// starting, and a word inside two overlapping segments belongs to
+			// the one the backend listed first. The break is the tie-break.
+			if at >= *segs[i].Start && at < ends[i] {
 				idx = i
 				break
 			}
 		}
-		if idx < 0 { // rule 3
+		if idx < 0 { // rule 3: the nearest segment starting at or before it
 			for i := range segs {
 				if segs[i].Start != nil && *segs[i].Start <= at {
 					idx = i
@@ -473,13 +571,9 @@ func joinWordsIntoSegments(segs []canonSegment, words []canonWord) {
 		if idx < 0 {
 			idx = 0 // before every segment
 		}
-		buckets[idx] = append(buckets[idx], words[wi].Word)
+		owner[wi] = idx
 	}
-	for i := range segs {
-		if segs[i].Text == "" {
-			segs[i].Text = joinWordText(buckets[i]) // rule 5, rule 6
-		}
-	}
+	return owner
 }
 
 // segmentsFromWords derives segments for a backend that returned
@@ -567,7 +661,13 @@ func itoaString(n int) string { return strconv.Itoa(n) }
 // contract there (§9.1), not response_format, so the body is relabelled and
 // type-normalised but never projected down to `{"text":…}` — a client that
 // asked for a stream still gets its segment events.
-func remapTranscription(raw []byte, q sttRequest, model string, normalizeOnly bool) (out []byte, refusal *sttRefusal, ok bool) {
+//
+// join carries the second upstream call (sttdiarize.go) when the model
+// declared a separate diarization endpoint. When it is armed, that call's
+// segments REPLACE whatever speaker information the transcription carried,
+// and a failure to get them is a refusal rather than a quiet fallback.
+func remapTranscription(raw []byte, q sttRequest, model string, normalizeOnly bool,
+	join sttDiarizeJoin) (out []byte, refusal *sttRefusal, ok bool) {
 	var top map[string]json.RawMessage
 	if json.Unmarshal(raw, &top) != nil {
 		return nil, nil, false
@@ -606,9 +706,45 @@ func remapTranscription(raw []byte, q sttRequest, model string, normalizeOnly bo
 			c.Segments[i].ID = itoaString(i)
 		}
 	}
-	if len(c.Segments) == 0 && len(c.Words) > 0 && lab.any() {
+	// THE TWO-CALL JOIN COMES FIRST, because it is the authority on who spoke
+	// and everything below would otherwise derive segments from words whose
+	// speakers are the ones being replaced. A model that declared no
+	// diarization endpoint never reaches this branch.
+	joined := false
+	if join.wanted(q) {
+		diarLab, applied := (*speakerLabeller)(nil), false
+		if join.Err == nil {
+			diarLab, applied = applyDiarization(&c, join.Raw)
+		}
+		switch {
+		case join.Err != nil:
+			return nil, &sttRefusal{http.StatusBadGateway,
+				"model " + model + " serves speaker segments from a separate endpoint and " +
+					"that call failed, so this response cannot be speaker-labelled: " +
+					join.Err.Error() + ". The transcript itself succeeded — retry, or ask " +
+					"for response_format=verbose_json without diarization.", "response_format"}, true
+		case !applied:
+			return nil, &sttRefusal{http.StatusBadGateway,
+				"model " + model + " serves speaker segments from a separate endpoint and " +
+					"that endpoint returned no readable segments, so this response cannot " +
+					"be speaker-labelled. The transcript itself succeeded — retry, or ask " +
+					"for response_format=verbose_json without diarization.", "response_format"}, true
+		default:
+			joined = true
+			// The labels now come from the diarization document, so the
+			// labeller that read the transcription body no longer describes
+			// the response. Anything downstream that asks it (the §12.7
+			// refusal, the backend sidecar's back-references) must ask the
+			// diarization endpoint's labeller instead.
+			lab = diarLab
+		}
+	}
+	switch {
+	case joined:
+		// Already done: segments from the separate call, text by RULE 2.
+	case len(c.Segments) == 0 && len(c.Words) > 0 && lab.any():
 		c.Segments = segmentsFromWords(c.Words) // rule 2b
-	} else {
+	default:
 		joinWordsIntoSegments(c.Segments, c.Words) // rule 2
 	}
 
@@ -820,6 +956,10 @@ type sttRemapWriter struct {
 	// streaming: the caller asked for a stream, so the event schema is the
 	// output contract and the body is normalised rather than projected down.
 	streaming bool
+	// join is the second upstream call, for a model that declared a separate
+	// diarization endpoint (sttdiarize.go). Zero value = this model did not
+	// opt in and nothing about its path changes.
+	join sttDiarizeJoin
 
 	decided   bool
 	buffering bool
@@ -879,7 +1019,7 @@ func (s *sttRemapWriter) finish() {
 	}
 	s.buffering = false
 	raw := s.body.Bytes()
-	out, refusal, ok := remapTranscription(raw, s.req, s.model, s.streaming)
+	out, refusal, ok := remapTranscription(raw, s.req, s.model, s.streaming, s.join)
 	h := s.Header()
 	switch {
 	case refusal != nil:

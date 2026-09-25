@@ -419,6 +419,25 @@ placed; text joins in returned order with one space only where neither side has
 whitespace; an empty bucket keeps `""`), plus a 2b for a backend that returns
 speaker-bearing words and no segments at all.
 
+✅ **The two-call diarized join — built and live-verified 2026-09-25.** The owner: *"do
+the two call variant … we are supposed to be an adapter on these wild West audio systems
+into a reliable OpenAI API."* When a backend declares `modalities.audio.diarizationPath`
+and the caller asks for speakers, corrallm calls that endpoint too and does the
+word→segment join itself (RULE 2), rather than trusting what the backend fused onto its
+own words. **It is not a refinement, it is a correctness fix**: NeMo-Speech.cpp's fused
+output puts the first **597.6 s — 1,372 words — on a single speaker** at 1440 s, while
+its own diarization endpoint answers correctly, and the two agree on 97.1% of words at
+720 s but only 62.1% at 1440 s. Reproduced on **CC-BY AMI meeting audio the backend
+itself ships**, so nothing here rests on private material. **+13% wall clock, not
++100%**, because the transcription leg stops asking for the diarizer pass whose answer
+is discarded (identical words, verified); **two compute buffers are never live at once**
+— the second call is issued after the first response is complete and before the
+residency ref is dropped. **Opt-in per backend, declared like every other audio fact**;
+oidio's path is unchanged and no model name is hardcoded. A failed second call is a
+**502 naming the endpoint**, never a quiet fallback to the labels it exists to distrust.
+Design, measurements and the overlap tie-break:
+[`p35-corral-layer.md`](p35-corral-layer.md) §12.12.
+
 **next** — nothing on this tree. The three unbuilt contracts each need an owner decision
 first: `open-questions.md` §5 items 2 (translations do not translate), 5 (`url` on
 images) and 6 (`/v1/realtime`'s audio format). **§9.0c's larger half — "ensure that is
@@ -429,9 +448,11 @@ the case" across every surface, not just audio — is P35 §13 and is unstarted.
 corrallm's model record declares that a model diarizes, so the only honest signal is
 what the backend returned: the caller gets 400 while the activity row records the
 backend's 200 and the GPU time it really spent. Verified live. Fixing it needs a config
-declaration — `open-questions.md` §5 item 7, new. (2) **Every NeMo path is untested
-against NeMo.** Its PR is unmerged and nothing on this box runs it, so both join rules,
-the integer speaker key and `words[].end` are unit-covered and nothing more. (3) **The
+declaration — `open-questions.md` §5 item 7, new. (2) ~~**Every NeMo path is untested
+against NeMo**~~ — **closed**: RULE 2b on 2026-09-23 (`p35-nemo-live.md` §5.1, seven
+files) and RULE 2 on 2026-09-25 (§12.12, 491 segments joined on a 1440 s file). What is
+still unrun is a SECOND backend with a separate diarization endpoint; the wire reader
+accepts a string speaker and a segment `id` and nothing has sent either. (3) **The
 27-speaker rollover has never run on 27 speakers** — no such recording exists here;
 unit-tested to 1,000 labels for distinctness. (4) **`json` is now a breaking change for
 anyone reading oidio's extras out of it** — that is §12.1's floor working as designed,

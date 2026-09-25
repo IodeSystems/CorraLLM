@@ -36,7 +36,7 @@ const oidioPlainVerbose = `{"duration":2.560625,"language":"en",
 
 func remapOK(t *testing.T, raw string, q sttRequest, model string, stream bool) canonTranscription {
 	t.Helper()
-	out, refusal, ok := remapTranscription([]byte(raw), q, model, stream)
+	out, refusal, ok := remapTranscription([]byte(raw), q, model, stream, sttDiarizeJoin{})
 	if refusal != nil {
 		t.Fatalf("unexpected refusal: %s", refusal.msg)
 	}
@@ -118,7 +118,7 @@ func TestRemapOidioDiarizeVerbose(t *testing.T) {
 		t.Errorf("backend sidecar present without include[]=backend: %v", c.Backend)
 	}
 	// The raw JSON must carry no `end` key at all — absent, never null.
-	out, _, _ := remapTranscription([]byte(oidioDiarizeVerbose), sttRequest{Format: sttFormatVerboseJSON}, "m", false)
+	out, _, _ := remapTranscription([]byte(oidioDiarizeVerbose), sttRequest{Format: sttFormatVerboseJSON}, "m", false, sttDiarizeJoin{})
 	var probe struct {
 		Words []map[string]any `json:"words"`
 	}
@@ -134,7 +134,7 @@ func TestRemapOidioDiarizeVerbose(t *testing.T) {
 // segments, no sidecar, on any model.
 func TestRemapJSONIsTheFloor(t *testing.T) {
 	out, refusal, ok := remapTranscription([]byte(oidioDiarizeVerbose),
-		sttRequest{Format: sttFormatJSON, IncludeBackend: true}, "oidio-stt-diarize", false)
+		sttRequest{Format: sttFormatJSON, IncludeBackend: true}, "oidio-stt-diarize", false, sttDiarizeJoin{})
 	if refusal != nil || !ok {
 		t.Fatal("remap failed")
 	}
@@ -187,7 +187,7 @@ func TestRemapBackendSidecarIsOptIn(t *testing.T) {
 // Degrading silently is the stream=true bug with a different field name.
 func TestRemapDiarizedJSONOnPlainModelRefuses(t *testing.T) {
 	_, refusal, ok := remapTranscription([]byte(oidioPlainVerbose),
-		sttRequest{Format: sttFormatDiarizedJSON}, "oidio-stt", false)
+		sttRequest{Format: sttFormatDiarizedJSON}, "oidio-stt", false, sttDiarizeJoin{})
 	if !ok || refusal == nil {
 		t.Fatal("want a refusal")
 	}
@@ -202,7 +202,7 @@ func TestRemapDiarizedJSONOnPlainModelRefuses(t *testing.T) {
 	if c.Segments[0].Speaker != "" {
 		t.Errorf("a non-diarizing model got a speaker label: %q", c.Segments[0].Speaker)
 	}
-	out, _, _ := remapTranscription([]byte(oidioPlainVerbose), sttRequest{Format: sttFormatVerboseJSON}, "oidio-stt", false)
+	out, _, _ := remapTranscription([]byte(oidioPlainVerbose), sttRequest{Format: sttFormatVerboseJSON}, "oidio-stt", false, sttDiarizeJoin{})
 	var probe struct {
 		Segments []map[string]any `json:"segments"`
 	}
@@ -361,7 +361,7 @@ func TestSegmentsDerivedFromWords(t *testing.T) {
 // for a transform that could not run.
 func TestRemapForwardsUnreadableBody(t *testing.T) {
 	for _, raw := range []string{`{"error":{"message":"boom"}}`, `not json`, `{}`, `[]`} {
-		if _, _, ok := remapTranscription([]byte(raw), sttRequest{Format: sttFormatJSON}, "m", false); ok {
+		if _, _, ok := remapTranscription([]byte(raw), sttRequest{Format: sttFormatJSON}, "m", false, sttDiarizeJoin{}); ok {
 			t.Errorf("remap claimed it could read %q", raw)
 		}
 	}

@@ -73,6 +73,16 @@ func TestValidateAudioSpec(t *testing.T) {
 			MinSampleRate: 48000, MaxSampleRate: 16000}, true},
 		{"a negative rate", ModalityAudio, ModalitySpec{MinSampleRate: -1}, true},
 		{"audio bounds on the image modality", ModalityImage, ModalitySpec{PCM: []string{"s16"}}, true},
+		// The two-call diarized join's opt-in (P35 §12.9(e)). A path corrallm
+		// cannot build a URL from is refused at LOAD, because the failure it
+		// causes otherwise is quiet: the second call 404s and a caller who
+		// asked for speakers gets an error hours after the typo.
+		{"a diarization endpoint", ModalityAudio, ModalitySpec{
+			Formats: []string{"wav"}, DiarizationPath: "/v1/audio/diarizations"}, false},
+		{"a relative diarization endpoint", ModalityAudio, ModalitySpec{
+			DiarizationPath: "v1/audio/diarizations"}, true},
+		{"a diarization endpoint on the image modality", ModalityImage, ModalitySpec{
+			DiarizationPath: "/v1/audio/diarizations"}, true},
 		{"an image spec, untouched", ModalityImage, ModalitySpec{
 			Formats: []string{"png"}, MaxResolution: 1024}, false},
 	} {

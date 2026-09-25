@@ -1055,6 +1055,37 @@ type ModalitySpec struct {
 	MaxSampleRate int      `yaml:"maxSampleRate,omitempty" json:"maxSampleRate,omitempty"` // audio: Hz, inclusive; 0 = no ceiling
 	MaxChannels   int      `yaml:"maxChannels,omitempty" json:"maxChannels,omitempty"`     // audio: 0 = no limit
 	PCM           []string `yaml:"pcm,omitempty" json:"pcm,omitempty"`                     // audio: accepted sample encodings (s16|s24|s32|f32|f64|u8); empty = no limit
+
+	// DiarizationPath is the backend's SEPARATE speaker-segmentation endpoint,
+	// and setting it means: when the caller asks for speaker-labelled output,
+	// get the speaker segments from HERE and do the word→segment join in
+	// corrallm, instead of trusting whatever the backend fused onto its own
+	// words (P35 §12.9(e) RULE 2).
+	//
+	// WHY THIS IS A DECLARATION AND NOT A BEHAVIOUR. A backend whose fused
+	// output is internally consistent must keep using it: oidio's is, one call
+	// is cheaper than two, and a global switch would spend a second pass over
+	// the audio on every backend to fix one. So the field is empty everywhere
+	// by default and nothing changes for a model that does not set it.
+	//
+	// WHY A BACKEND WOULD SET IT. Measured 2026-09-25 against
+	// NeMo-Speech.cpp at 97a15af, on 1440 s of CC-BY AMI meeting audio
+	// (test_files/diar/ami_en2002d_2132.wav, looped 24x — three speakers, real
+	// overlap): /v1/audio/transcriptions?diarization=true put the first
+	// 597.6 s, 1,372 words, on ONE speaker and behaved plausibly afterwards,
+	// while /v1/audio/diarizations on the same file returned 491 segments
+	// evenly distributed across all twelve two-minute blocks. Remapping the
+	// fused body faithfully would have published that error in OpenAI's shape,
+	// where nothing downstream can see it. The same two endpoints agree on
+	// 97.1% of words at 720 s and on 62.1% at 1440 s, so this is a LENGTH
+	// failure in the fusion and not a bad diarizer.
+	//
+	// It is a PATH, not a bool, because corrallm has to call it and no two
+	// backends will spell it the same. Must begin with "/". The endpoint is
+	// expected to take the same multipart `file` and answer
+	// {"segments":[{start,end,speaker}]} — the textless shape §12.3 describes
+	// and RULE 2 was written for.
+	DiarizationPath string `yaml:"diarizationPath,omitempty" json:"diarizationPath,omitempty"`
 }
 
 // AudioBounded reports whether anything below the container level was declared.

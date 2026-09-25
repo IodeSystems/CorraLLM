@@ -707,6 +707,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// compatibility layer. audioBillBytes holds the pre-rewrite size; 0 means
 	// nothing was rewritten and len(body) is the answer.
 	var sttReq sttRequest
+	var sttJoin sttDiarizeJoin
 	audioBillBytes := 0
 	if audioUploadRoute(r.URL.Path) {
 		q, refusal := parseSTTRequest(body, r.Header.Get("Content-Type"))
@@ -718,11 +719,35 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sttReq = q
+		sttReq.Stream = streaming
 		if sttReq.remaps() {
 			if nb, nct, ok := rewriteSTTUpstream(body, r.Header.Get("Content-Type")); ok {
 				audioBillBytes = len(body)
 				body, r.ContentLength = nb, int64(len(nb))
 				r.Header.Set("Content-Type", nct)
+			}
+			// The two-call diarized join (P35 §12.9(e) RULE 2, sttdiarize.go).
+			// Armed HERE, beside the other request-side rewrites and for the
+			// same reasons, but the CALL itself happens in the response path —
+			// after the transcription body is complete, so two compute buffers
+			// are never live at once on a backend that allocates per request.
+			//
+			// Opt-in per backend and per request: a model that declares no
+			// diarizationPath gets the zero value and nothing changes for it,
+			// and a caller who asked for no speakers never pays for a second
+			// pass over the audio.
+			sttJoin.Path = p.sttDiarizePath(p.config(), served)
+			if sttJoin.wanted(sttReq) {
+				// The backend's fused diarizer pass is about to be superseded,
+				// so stop paying for it. Measured: this is what makes the
+				// second call cost +13% rather than +69%.
+				if nb, nct, ok := stripDiarizationFlag(body, r.Header.Get("Content-Type")); ok {
+					if audioBillBytes == 0 {
+						audioBillBytes = len(body)
+					}
+					body, r.ContentLength = nb, int64(len(nb))
+					r.Header.Set("Content-Type", nct)
+				}
 			}
 		}
 	}
@@ -1087,7 +1112,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// BACKEND's body and metering is untouched, exactly as §9.1 arranged.
 		var sttRemap *sttRemapWriter
 		if sttReq.remaps() {
-			sttRemap = &sttRemapWriter{ResponseWriter: out, req: sttReq, model: served, streaming: streaming}
+			sttRemap = &sttRemapWriter{ResponseWriter: out, req: sttReq, model: served,
+				streaming: streaming, join: sttJoin}
 			out = sttRemap
 		}
 		sc := &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: streaming, live: live}
@@ -1151,6 +1177,49 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			rw.WriteHeader(code)
 		}
 		rp.ServeHTTP(sc, r.WithContext(reqCtx))
+		// THE SECOND UPSTREAM CALL (P35 §12.9(e) RULE 2, sttdiarize.go): the
+		// caller asked for speaker labels and this backend serves them from a
+		// separate endpoint whose answer corrallm joins to the transcription
+		// itself, rather than trusting what the backend fused onto its own
+		// words. Measured +13% wall on a NeMo backend, because the
+		// transcription leg no longer runs the diarizer at all.
+		//
+		// HERE — after the transcription response is complete, and BEFORE
+		// done() — and both halves of that are the design:
+		//
+		//   - after, so the backend is never asked to hold two compute buffers
+		//     at once. On a backend that allocates per request and retains the
+		//     buffer (NeMo-Speech.cpp: ~3.6 GiB above weights, and an abort,
+		//     not a 500, when it cannot get more) a concurrent second call is
+		//     the difference between a slow answer and a dead server.
+		//   - before, so the residency ref and the admission slot are both
+		//     still held: the model cannot be evicted between the two calls,
+		//     and a maxConcurrent:1 backend does not see a neighbour's request
+		//     land in the gap.
+		//
+		// A FAILURE HERE IS CARRIED, NOT SWALLOWED. remapTranscription turns
+		// it into a 502 naming the endpoint, because falling back to the fused
+		// labels would serve the known-bad answer under the good one's name.
+		if sttRemap != nil && sttJoin.wanted(sttReq) && sc.code == http.StatusOK && !errors.Is(proxyErr, errBackendDown) {
+			// Built HERE and not before the request, so the audio is copied a
+			// second time only for a transcription that actually succeeded —
+			// on an hour of 16 kHz wav that copy is 115 MB. `outBody` is the
+			// body this candidate sent (after transcode-in, the upstream
+			// format rewrite and the model rewrite) and the proxy read from a
+			// reader over it rather than consuming it.
+			diarBody, diarCT, built := diarizationBody(outBody, r.Header.Get("Content-Type"))
+			if !built {
+				sttRemap.join.Err = errors.New("the upload could not be re-read for the diarization call")
+			} else {
+				dctx, dcancel := context.WithTimeout(reqCtx, diarizeTimeout)
+				t0 := time.Now()
+				raw, derr := fetchDiarization(dctx, pr.Target, sttJoin.Path, diarBody, diarCT)
+				dcancel()
+				sttRemap.join.Raw, sttRemap.join.Err = raw, derr
+				slog.Info("stt diarization call", "model", name, "path", sttJoin.Path,
+					"ms", time.Since(t0).Milliseconds(), "bytes", len(raw), "err", derr)
+			}
+		}
 		done()
 		// Hard-fail spill: the response was aborted before anything reached the
 		// client (wroteHeader guards that), so free the slot and try the next
@@ -2505,6 +2574,14 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 				// being true the moment the remap shipped.
 				"response_format": "ONE SHAPE, WHICHEVER MODEL ANSWERS. `json` (the default) returns `{\"text\":\"…\"}` and NOTHING ELSE — no speaker, no segments, no sidecar, on any model, including a diarizing one. `verbose_json` returns `{task, language?, duration, text, segments[], words[]?, usage?}`. `diarized_json` (OpenAI's `gpt-4o-transcribe-diarize` format) returns the same with `speaker` REQUIRED on every segment. `text`, `srt` and `vtt` are plain text forms and are forwarded from the backend UNCHANGED — corrallm does not normalise what a backend writes inside a subtitle cue (oidio prefixes \"Speaker 1:\", which is its spelling and not corrallm's). FIELD RULES, and they are rules rather than observations: `segments[].id` is a STRING everywhere, streaming and not. `words[].end` is OMITTED when the backend does not report when a word ended — never computed from the next word's start, never null. `usage` is `{type:\"duration\",seconds}` and is present only when the backend MEASURED the audio; absent otherwise. `language` is OPTIONAL for the same reason: present only when the backend IDENTIFIED a language or the caller named one in the `language` form field, absent otherwise, and never guessed by corrallm. oidio reports one on every transcription; a NeMo-Speech.cpp model echoes only what the caller sent, so it answers with no `language` key at all unless you sent one — do not read the absent field as a value. A field a model cannot answer is ABSENT, never null and never a placeholder: `segments[]` from a non-diarizing model carries no `speaker` key at all. There is no `num_speakers` and there will not be: count the distinct `segments[].speaker`. REFUSALS, all 400 with an OpenAI-shaped error naming the parameter: `diarized_json` to a model that returns no speaker labels (the caller asked for speakers; a 200 without them is a lie, so use verbose_json instead); `include[]` with any value but `backend`; a non-empty `known_speaker_names[]` — the name is reserved under OpenAI's spelling and the mechanism is NOT implemented, because no backend corrallm fronts maps a name onto a voice. WHAT CORRALLM ASKS THE BACKEND FOR: `verbose_json`, on every one of the three canonical formats, and then projects down. A backend that only speaks its own default for an unknown format therefore never sees one.",
 				"diarization":     "WHO SPOKE, in corrallm's vocabulary. `segments[].speaker` and `words[].speaker` are ORDINAL LABELS — \"A\", \"B\", \"C\", … by order of first appearance in the transcript — and they are STABLE WITHIN ONE RESPONSE AND EXPLICITLY NOT ACROSS CALLS. \"A\" in two responses is two different assertions; nothing here makes a speaker identity persist, and no field in this body should be used as a database key. Past 26 speakers the labels continue \"AA\", \"AB\", … \"AZ\", \"BA\", … \"ZZ\", \"AAA\" (bijective base-26, spreadsheet columns) — that is a rule in the schema, not a runtime surprise, and it is the only label form this route emits. THE BACKEND'S OWN IDENTIFIERS ARE NOT IN THE DEFAULT BODY: oidio mints a fresh speaker UUID on every request (three calls on one file gave three different ones), and a shape that invites a client to key on a value that changes every call manufactures bugs. Pass `include[]=backend` to get them: the response then carries a `backend` object, namespaced by the model that produced it, holding whatever the canonical has no home for — for oidio that is `speakers:[{uuid, label, embedding:[512 floats], similarity:{uuid:cosine}, clean_seconds, total_seconds, blended?}]`, with `label` as the back-reference from the voiceprint to \"A\". MEASURED on a 2.56 s single-speaker file: 665 bytes without the sidecar, 6,097 with it — roughly 5.4 KB per speaker, scaling with speaker count and not with audio length, which is why it is opt-in and why `json` never carries it. Backend request args oidio accepts and corrallm forwards untouched: speaker_confidence, known_speakers, cluster_threshold, num_clusters, speaker_merge_threshold, speaker_min_duration, speaker_rescue_confidence, unattributed_fragments, timestamp_granularities[]. These are oidio's names, not OpenAI's, and a fleet serving something else will not have them.",
+				// NORMATIVE (P35 §9.0b): the manifest is what a client is
+				// entitled to rely on, and a caller paying for a second pass
+				// over their audio has to be able to find out. Every number
+				// here was measured on 2026-09-25 against NeMo-Speech.cpp at
+				// 97a15af on an RTX 3080, using 720 s and 1440 s of CC-BY AMI
+				// meeting audio (the 60 s excerpt NeMo ships in
+				// test_files/diar, looped).
+				"speaker_cost": "SOME MODELS COST TWO UPSTREAM CALLS FOR SPEAKER LABELS, and which ones is visible on /v1/models: a model whose modalities.audio carries a `diarizationPath` serves speaker segments from a SEPARATE endpoint, and corrallm calls it and does the word→segment join itself rather than trusting what the backend fused onto its own words. It does that because on at least one backend the fused answer is WRONG ON LONG AUDIO in a way nothing downstream can see: measured 2026-09-25 on 1440 s of CC-BY AMI meeting audio, NeMo-Speech.cpp's transcription+diarization put the first 597.6 s — 1,372 words — on a single speaker, while its own diarization endpoint returned 491 segments spread evenly across the whole recording. The two agree on 97.1% of words at 720 s and on 62.1% at 1440 s. WHAT IT COSTS YOU: +13% wall clock, not +100% — 36.4 s becomes 41.7 s on 1440 s of audio end to end — because the transcription call no longer runs the backend's diarizer at all. The two calls are strictly SEQUENTIAL, never concurrent, so the backend is never asked to hold two compute buffers at once. YOU PAY IT ONLY WHEN YOU ASK FOR SPEAKERS: response_format=diarized_json, or a backend's own diarization flag on verbose_json. Plain `json` and plain `verbose_json` make one call, as they always did. IF THE SECOND CALL FAILS the request is refused 502 naming the endpoint — corrallm does not quietly fall back to the fused labels it went to this trouble to avoid. A model with no `diarizationPath` (oidio's, and every model that has not opted in) is untouched by all of this: one call, the backend's own fused answer, exactly as before.",
 			}},
 		// Streaming is true for the same reason as transcriptions and under the
 		// same contract: the two routes were answered together (§9.1) and

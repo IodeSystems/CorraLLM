@@ -128,7 +128,7 @@ The real `verbose_json` body, `/v1/audio/transcriptions`, diarization on:
 |---|---|---|
 | `words[].word`, `.start`, `.end` → identity; **NeMo DOES report `end`** | ✅ **right** | seconds, both present on every word. Verified identical through the remap on 1,748 words |
 | `words[].speaker` (int) → `"A"`, `"B"`, … by first appearance | ✅ **right**, with a detail | the integer is **1-based**, not 0-based (`recognizer.cpp:453`, `spk + 1`). Ordinal-by-first-appearance makes the base irrelevant; `{1:"A", 2:"B"}` verified |
-| `{"segments":[{start,end,speaker:int}]}` — **textless** | ❌ **WRONG ENDPOINT** | that is `/v1/audio/diarizations` (`http_server.cpp:1001-1002`), which corrallm never calls. **`/v1/audio/transcriptions` returns NO `segments[]` at all** — so §12.9(e) **RULE 2 never fires for NeMo, and RULE 2b is the rule that does.** Confirmed live: `{"segments":[{"end":2.64,"speaker":1,"start":0}]}` from the diarizations route, 1-based speaker |
+| `{"segments":[{start,end,speaker:int}]}` — **textless** | ❌ **WRONG ENDPOINT** | that is `/v1/audio/diarizations` (`http_server.cpp:1001-1002`), which corrallm never calls. **`/v1/audio/transcriptions` returns NO `segments[]` at all** — so §12.9(e) **RULE 2 never fires for NeMo, and RULE 2b is the rule that does.** Confirmed live: `{"segments":[{"end":2.64,"speaker":1,"start":0}]}` from the diarizations route, 1-based speaker. **"which corrallm never calls" expired 2026-09-25** — it does now, on a model that declares the endpoint, and §12.3's row turns out to have been right about the SHAPE and merely pointed at the route corrallm had not yet been told to use (`p35-corral-layer.md` §12.12) |
 | verbose_json ONLY (400 otherwise) | ❌ **WRONG** | NeMo serves `json`, `verbose_json`, `text`, `srt`, `vtt` (`http_server.cpp:651`). All five measured 200 direct. It 400s only on a value outside that set — `diarized_json` included |
 | *(never serialises `num_speakers`)* | ✅ **right** | top-level keys are exactly `duration, language, task, text, words` |
 | — | ➕ **MISSING ROW** | **`words[].confidence`** is on every word and the canonical **drops it entirely** — it is not in `wireWord`, and `buildBackendSidecar` only harvests TOP-LEVEL unknown keys, so `include[]=backend` does not recover it either. §12.8's lossiness section does not mention it |
@@ -191,6 +191,15 @@ exercises it** — see §4, it was written for the wrong endpoint.
 
 `backend.speakers[].index` (§12.8's "the integer survives") works on real data:
 `{"name":"nemo-asr-diarize","speakers":[{"index":1,"label":"A"},{"index":2,"label":"B"}]}`.
+
+> **Superseded for a backend that opts in, 2026-09-25.** RULE 2b is still the
+> rule for the FUSED body, and everything above still holds for it. But the
+> fused body is now known to be wrong on long audio — 597.6 s / 1,372 words on
+> one speaker at 1440 s, reproduced on this repo's own CC-BY AMI fixture — so
+> a model that declares `modalities.audio.diarizationPath` gets its speaker
+> segments from `/v1/audio/diarizations` and **RULE 2** instead.
+> `p35-corral-layer.md` §12.12 has the measurement, the cost (+13% wall), and
+> the overlap tie-break.
 
 > **Labels.** The seven files are the owner's legal matters and are labelled
 > A–F here by container and duration alone. Case numbers, party names and
@@ -632,8 +641,13 @@ established.
 3. **V3 emits sub-second speakers** (§9) — a 1 s speaker and a 0 s speaker in
    this corpus. A caller counting distinct `segments[].speaker` will be wrong.
 4. **`words[].confidence` is still destroyed** (§12). Unchanged.
-5. **RULE 2 is still unexercised** (§12). Unchanged, and still for the same
-   reason.
+5. ~~**RULE 2 is still unexercised**~~ — **CLOSED 2026-09-25.** corrallm now
+   calls `/v1/audio/diarizations` itself and joins its segments to the
+   transcription's words, so RULE 2 is the rule that fires. It also fixes
+   something this document did not know was broken: see
+   `p35-corral-layer.md` §12.12 — the FUSED endpoint puts the first ~600 s of
+   long audio on one speaker, reproduced on the CC-BY AMI clip this repo's own
+   backend ships.
 6. **`/v1/audio/translations` still untested** — `NEMO_SPEECH_BUILD_NMT=OFF`
    here too.
 7. **The DER numbers are one 60 s public clip** (§10). They are not a benchmark,
@@ -738,6 +752,15 @@ providers:
                         maxSampleRate: 96000
                         maxChannels: 2
                         pcm: [s16, f32]
+                        # ADDED 2026-09-25 — the two-call diarized join.
+                        # Without it this model's speaker labels are the
+                        # FUSED ones, which put the first ~600 s of long
+                        # audio on a single speaker. With it corrallm calls
+                        # the endpoint below and does the word→segment join
+                        # itself: +13% wall on a diarized request, nothing at
+                        # all on a request that asked for no speakers.
+                        # p35-corral-layer.md §12.12.
+                        diarizationPath: /v1/audio/diarizations
 ```
 
 **Every bound is read off `src/common/audio_file.cpp` at `97a15af`**, the

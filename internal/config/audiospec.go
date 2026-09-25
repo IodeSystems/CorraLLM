@@ -75,7 +75,19 @@ func validateAudioSpec(model, modality string, s ModalitySpec) error {
 		if s.AudioBounded() {
 			return fmt.Errorf("model %q: minSampleRate/maxSampleRate/maxChannels/pcm apply to the audio modality, not %q", model, modality)
 		}
+		if s.DiarizationPath != "" {
+			return fmt.Errorf("model %q: diarizationPath applies to the audio modality, not %q", model, modality)
+		}
 		return nil
+	}
+	// A path corrallm cannot build a URL from is refused at LOAD, not at the
+	// first diarized request. The failure it prevents is quiet: a relative
+	// path resolves against nothing, the second call 404s, and a caller who
+	// asked for speakers gets an error hours later for a typo an operator was
+	// still in the room for.
+	if s.DiarizationPath != "" && !strings.HasPrefix(s.DiarizationPath, "/") {
+		return fmt.Errorf("model %q: audio diarizationPath %q must begin with \"/\" (e.g. /v1/audio/diarizations)",
+			model, s.DiarizationPath)
 	}
 	for _, p := range s.PCM {
 		if CanonPCMEncoding(p) == "" {
