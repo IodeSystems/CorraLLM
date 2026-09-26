@@ -364,6 +364,83 @@ That is neither electricity nor a bill, so it reports as `unattributed` with a s
 naming the fix (declare a paid type). It is $0.00049 of a $0.50 day — small, and the point is
 that it is not silently inside the electricity figure.
 
+✅ **CLOSED by P36b below** — and the fix it named ("declare a paid type") was the wrong
+one. These models are free, so a paid type would misprice them in the other direction; the
+class they needed did not exist yet.
+
+### ✅ P36b — the fourth kind: free, and priced against what it would have cost — 2026-09-26
+
+`unattributed` was carrying two unrelated things: a genuine config gap, and traffic a
+provider gives away. **`BillFree`** separates them. The declaration is the model's own
+`freeTier:` block, tested only for a remote whose type names no per-token rate, in ONE
+predicate — `cost.NoCharge` — read by both the dashboard and the proxy's meter, so a stored
+row and the screen reporting it cannot disagree. Rejected: a flag on the cost type (`chat` is
+shared by local models and pooled remotes, so it cannot separate them without a migration,
+and on a local type it would call this box's own power free); all-zero factors (`typeCost.paid()`
+reads them as unpriced and bills LOCAL ENERGY, so the row comes back mispriced and
+unattributed all over again); a provider-level flag (a provider serves free and paid models
+at once — and `providers.openrouter.directory.filter.free` enrols nothing, it is a browse
+default an operator can clear, so billing read off it would be a guess).
+
+**The comparison now PRICES free rows** (`ExcludeOffBox` no longer catches them). It is the
+traffic the question is most worth asking about — real work, billed to nobody — and unlike an
+unattributed row there is no junk figure to compare against: $0 is the price, not an estimate.
+Counted in its own panel figure, because a return earned by this box and one earned by a
+provider's generosity are different claims about the machine.
+
+**Money cannot vanish.** The meter lets a PROVIDER-REPORTED cost outrank the rate table, so a
+pooled model that quietly goes paid under its own free-tier declaration records real spend.
+The energy table is the ceiling of what the phantom can be: at or under it the dollars are
+dropped (kept visible in `mispricedUsd`); above it they are real money and the row reverts to
+`unattributed`, keeping its figure and its call to action. Unit-tested both ways.
+
+**Verified on the live activity log**, 24 h to 2026-09-26 01:05 — isolated daemon on `:6515`,
+own `--home`/`--db`/`--web-root`, config from the read-only `config/export`, activity rows
+copied out of production read-only. Production `:8111` was never restarted, reconfigured or
+written to, and `ui/dist` was never built into (scratch `--outDir`).
+
+| | before | after |
+|---|---|---|
+| `openrouter-cohere-north-mini-code` (7 req) | `unattributed` $0.000486, **excluded** from the comparison | `free` **$0**, `mispricedUsd` $0.000486, **priced at $0.0241** |
+| `openrouter-nvidia-nemotron-3-super-120b-a12b` (1 req) | `unattributed` $0 | `free` $0, excluded `no-tokens` (it recorded none) |
+| Unattributed total | $0.000486 | **$0** — only `local-Qwen3.8-27B` remains, the model the Swift cutover retired |
+| `claude-haiku-*` | `paid` | `paid`, unchanged |
+
+**NO CONFIG CHANGE WAS NEEDED** for the live box, and the reason corrects the brief's premise:
+these nine models are not selections off the `directory` filter (`model_selection` is empty) —
+they are the **virtual pool**, `extensions.free.virtual`, whose `template.freeTier` is copied
+onto every contributed model by `VirtualModelFor`. The isolated daemon logged `virtual pool
+refreshed virtual=free models=9 members=2 of=2` and classified them free on the next request.
+
+**Also fixed, and it is behaviour-changing:** `modelForSelection` read `pv.Discover.Template`
+— the RETIRED key — so a `template:` written under `directory:` was silently ignored, and the
+one field that shapes a selected model's cost class only worked if you spelled the key the
+deprecation warning tells you to stop using. It now reads `pv.Directory`. Nothing on this box
+is affected (no selections exist), but any config that DID carry a directory template starts
+having it applied.
+
+**next** — nothing required.
+
+**risks / what is untested** — (1) **The model page cannot open a pooled model at all**:
+`/m/openrouter-cohere-north-mini-code` renders "Unknown model", so its new `free` wording is
+the one surface not seen rendering. Pre-existing and unrelated to this slice — the page
+resolves from a source that excludes the discovered overlay — but it means a free model has no
+detail page. (2) A **free AUDIO or IMAGE** backend would have a token-derived phantom ceiling
+of $0, so its recorded per-MiB/per-image dollars would read as a real charge and revert to
+`unattributed`. None exists; the arithmetic for it was never written. (3) `mispricedUsd`
+decays to $0 as pre-fix rows leave the 30-day window, so the sub-label that names it
+disappears on its own — correct, and unobserved over that span. (4) **The Unattributed tile is
+gated on dollars, not on requests**, so this window's 1,460 requests against the retired
+`local-Qwen3.8-27B` — 32% of the traffic — show NO tile, because they recorded $0. The
+comparison's exclusion note names them with their count and `ModelStats` shows the row, so they
+are not invisible; but the tile that exists to be actionable is silent about the largest
+actionable thing in the window. **Blocking decision (the user owns it):** give Unattributed a
+request count the way Free tier has one, or leave the dollar gate as P36 chose it.
+
+**assumptions** — that a `freeTier:` block plus a rate-free type is a sound assertion of $0.
+The block can carry a `usd` spend cap, which is why the paid test runs FIRST: a backend whose
+type names rates is paid whatever else is declared about it.
+
 **Live numbers, 24 h to 2026-09-25 15:55** — a second daemon on `:6513` over the live config
 (via the read-only `config/export`) and the day's activity rows copied out read-only.
 Production `:8111` was never restarted, reconfigured or written to.
@@ -1332,16 +1409,20 @@ true and still costs something. Optional extensions and out-of-scope items live 
   parent's Info tab, and nothing in the UI linked to it. Deleted rather than wired up: the model
   page's own Usage tab answers the same question, and Traffic now answers it for any window. A URL
   that replies with the wrong page is worse than a 404.
-- **Every remote model except the three anthropic ones carries `type: chat`, an ENERGY-priced
-  type.** So `openrouter-*` (and `groq-*`, when enabled) traffic is costed with this box's
-  watt-hour coefficients for tokens processed on somebody else's hardware. Verified exactly:
-  7 openrouter requests, 13,352 processed × 0.00005 Wh + 2,155 generated × 0.0013 Wh =
-  3.469 Wh × $0.14/kWh = **$0.000486**, which is what the row records. These are free-tier
-  models, so the true figure is $0 and the error is small — but the same type on a PAID
-  openrouter model would mis-bill it silently. Since P36 the dashboard reports these as
-  **unattributed** rather than hiding them inside the electricity total, and names the fix: give
-  those models a type declaring `cachedCostFactor` / `processCostFactor` / `generateCostFactor`.
-  Found by the P36 split; the config change has NOT been made.
+- ✅ ~~**Every remote model except the three anthropic ones carries `type: chat`, an
+  ENERGY-priced type.**~~ **Closed 2026-09-26 by P36b (§6), and no config change was needed.**
+  The gap was real — 7 openrouter requests costed at 13,352 processed × 0.00005 Wh + 2,155
+  generated × 0.0013 Wh = 3.469 Wh × $0.14/kWh = **$0.000486** of this box's electricity for
+  work done on OpenRouter's hardware — but the fix this entry named was wrong. These models are
+  FREE, so declaring a paid type would have mispriced them in the other direction. They now
+  report as a fourth billing kind, `free`, off the `freeTier:` the virtual pool's template
+  already puts on every model it contributes; their cost is $0 because that is the price, and
+  the comparison prices them ($0.0241 at anthropic-haiku rates) instead of excluding them.
+  `unattributed` is back to meaning only a genuine gap: on the live box it is now $0 and holds
+  nothing but `local-Qwen3.8-27B`, the entry below. A PAID openrouter model still needs a type
+  with `cachedCostFactor` / `processCostFactor` / `generateCostFactor` — but it would no longer
+  be silent, because a provider-reported charge above the energy ceiling reverts the row to
+  `unattributed` rather than being written off as the phantom.
 
 - **690 of one day's requests are 429s against `local-Qwen3.8-27B`, a model the Swift cutover
   removed from the config.** Every one is a `queue-timeout` on `/v1/chat/completions` from
