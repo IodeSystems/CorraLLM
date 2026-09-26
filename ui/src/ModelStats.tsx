@@ -107,6 +107,11 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           energyKwh
           paidUsd
           unattributedUsd
+          # Free-tier traffic carries no dollars — that is what free means — so
+          # the count is what says the $0 was measured, and mispricedUsd is what
+          # the store had charged it before the kind existed.
+          freeRequests
+          mispricedUsd
           baselineUsd
           baselineCachedUsd
           baselineProcessedUsd
@@ -127,6 +132,8 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           energyKwh
           paidUsd
           unattributedUsd
+          freeRequests
+          mispricedUsd
           baselineUsd
         }
       }
@@ -302,6 +309,11 @@ function billingWord(billing: string, kwh: number, excluded: string): string {
       return kwh >= 0.0001 ? `${fmtKwh(kwh)} of power` : 'electricity'
     case 'paid':
       return 'paid per token'
+    case 'free':
+      // NOT "free" on its own. Under a $0 that word reads as "we got away with
+      // it"; what a reader needs is WHOSE hardware did the work, because that is
+      // the thing that is true of the row and the thing that could change.
+      return 'free tier — not our hardware'
     case 'unattributed':
       // "Unattributed" answers "which kind of money"; for a model that has left
       // the config there is a more useful answer, and it names the fix.
@@ -311,18 +323,30 @@ function billingWord(billing: string, kwh: number, excluded: string): string {
   }
 }
 
-function billingHint(billing: string, type: string, rate: number): string {
+function billingHint(billing: string, type: string, rate: number, mispriced = 0): string {
   const t = type ? ` Backend type: ${type}.` : ' The model is no longer in the config.'
   switch (billing) {
     case 'energy':
       return `Electricity: token work → watt-hours → kWh${rate > 0 ? ` × $${rate}/kWh` : ''}. Cached prompt tokens cost nothing here — they come from the KV cache with no recompute.${t}`
     case 'paid':
       return `A provider's bill: cached, processed and generated tokens each at their own $/token rate.${t}`
+    case 'free':
+      // The fix these rows used to be told to make was "declare a paid type",
+      // and for a free tier that would have been a lie in the other direction.
+      // The hint says what the $0 rests on — a declaration in config — so a
+      // reader can go and check it rather than trust the word.
+      return (
+        `$0 because the provider charges nothing, not because a rate is missing. This model is served off this box and its config declares a free tier (freeTier:), so there is no electricity of ours and no invoice of theirs.` +
+        (mispriced > 0
+          ? ` ${fmtUSD(mispriced)} had been recorded against it from this box's watt-hour coefficients; that is not charged here.`
+          : '') +
+        t
+      )
     case 'unattributed':
       if (type === '') {
         return "This served name is not in the config any more, so nothing says what priced these rows or where they ran. They survive here because activity is retained for 30 days and a model can be removed inside that."
       }
-      return `Neither electricity nor a bill. This model is served by a machine corrallm does not run, but its type declares no per-token rates, so the figure is this box's watt-hour coefficients applied to somebody else's hardware. Give it a type with cachedCostFactor / processCostFactor / generateCostFactor.${t}`
+      return `Neither electricity nor a bill. This model is served by a machine corrallm does not run, its type declares no per-token rates, and nothing says it is free either — so the figure is this box's watt-hour coefficients applied to somebody else's hardware. Say what it charges: a type with cachedCostFactor / processCostFactor / generateCostFactor if it bills, or freeTier: on the model if it does not.${t}`
     default:
       return t.trim()
   }
@@ -621,9 +645,17 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                 {/* THE COST, AND WHAT KIND OF COST IT IS. Per model the answer is
                     one word, so it goes under the figure rather than into a
                     tooltip (OB-10): electricity is kWh this fleet paid for, paid
-                    is a provider's invoice, and unattributed is neither. */}
+                    is a provider's invoice, free tier is somebody else's hardware
+                    at no charge, and unattributed is none of the three. */}
                 <TableCell align="right">
-                  <Tooltip title={billingHint(s?.billing ?? '', s?.type ?? '', rate)}>
+                  <Tooltip
+                    title={billingHint(
+                      s?.billing ?? '',
+                      s?.type ?? '',
+                      rate,
+                      Number(s?.mispricedUsd ?? 0),
+                    )}
+                  >
                     <span>
                       {fmtUSD(s?.costUsd ?? 0)}
                       <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>

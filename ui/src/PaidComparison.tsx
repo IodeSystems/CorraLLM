@@ -26,6 +26,14 @@ import { fmtInt, fmtKwh, fmtMoney } from '@/format'
  *   is not a figure, and scope is a window), with the request count, so a reader
  *   can see how much of the hour the claim speaks for.
  *
+ *   It does NOT exclude free-tier traffic, and that is a change from the first
+ *   version. A declared free tier's cost is $0 — not a missing coefficient, the
+ *   actual price — so unlike an unattributed off-box row there is nothing junk to
+ *   compare against, and it is the traffic the question is most worth asking
+ *   about: real work, billed to nobody. It is counted in its own figure rather
+ *   than folded in, because a return earned by this box's hardware and one earned
+ *   by a provider's generosity are different claims about the machine.
+ *
  *   It does not present the saving as the whole story. The multiple is the
  *   headline because that is what somebody arrives asking; the three classes are
  *   under it because that is where the answer is checkable — and because cache
@@ -38,6 +46,8 @@ import { fmtInt, fmtKwh, fmtMoney } from '@/format'
 /** One rollup row, as much of it as the comparison reads. */
 export type ComparisonRow = {
   served: string
+  /** Which kind of money — the comparison covers two of them, and says which. */
+  billing: string
   requests: number
   cachedTokens: number
   promptTokens: number
@@ -55,7 +65,8 @@ const EXCLUSION_WORDS: Record<string, string> = {
   audio: 'speech, billed by size rather than by token',
   image: 'image generation, billed per picture — and unpriced on this box, so it already reads $0',
   paid: 'already served by a paid provider',
-  'off-box': 'served by a machine we do not run, so their local figure is not one',
+  'off-box':
+    'served by a machine we do not run, with nothing in the config saying what it charges — so their local figure is not one',
   'unknown-model': 'served by a model that is no longer in the config',
   'no-tokens': 'recorded no tokens at all',
 }
@@ -89,6 +100,16 @@ export function PaidComparison({
   const coveredReqs = sum((r) => r.requests)
   const excludedReqs = excluded.reduce((a, r) => a + r.requests, 0)
   const kwh = costPerKwh > 0 ? actual / costPerKwh : 0
+
+  // FREE-TIER TRAFFIC IS COVERED, AND NAMED. It is the traffic this question is
+  // most worth asking about — real work, billed to nobody — and it is also the
+  // one part of "here" that is not electricity, so folding it silently into a
+  // figure labelled "in electricity" would make the label wrong. Counted
+  // separately so the composition of both numbers stays visible.
+  const freeRows = covered.filter((r) => r.billing === 'free')
+  const freeCost = freeRows.reduce((a, r) => a + r.baselineUsd, 0)
+  const freeReqs = freeRows.reduce((a, r) => a + r.requests, 0)
+  const localReqs = coveredReqs - freeReqs
 
   // Group the excluded by reason so the sentence names kinds, not thirty model
   // names. A reason the server sends that this UI has no words for is passed
@@ -129,9 +150,16 @@ export function PaidComparison({
       // what the numbers below are of.
       subtitle={`${baselineType} rates · ${when}`}
       note={
-        excludedReqs > 0
-          ? `Priced from the tokens of ${fmtInt(coveredReqs)} request(s) run on our own hardware. ${fmtInt(excludedReqs)} more are NOT in these figures — ${reasonList.join('; ')}.`
-          : `Priced from the tokens of ${fmtInt(coveredReqs)} request(s) run on our own hardware — every request in the window.`
+        // The scope sentence names WHOSE hardware, because the covered set is no
+        // longer one thing: our own boxes, plus free-tier traffic that cost
+        // nothing to anybody. "Run on our own hardware" was true when it was
+        // written and would now be false of some of the requests it counts.
+        (freeReqs > 0
+          ? `Priced from the tokens of ${fmtInt(coveredReqs)} request(s) — ${fmtInt(localReqs)} on our own hardware, ${fmtInt(freeReqs)} given away by a provider's free tier.`
+          : `Priced from the tokens of ${fmtInt(coveredReqs)} request(s) run on our own hardware.`) +
+        (excludedReqs > 0
+          ? ` ${fmtInt(excludedReqs)} more are NOT in these figures — ${reasonList.join('; ')}.`
+          : ' That is every request in the window.')
       }
       dense
     >
@@ -154,6 +182,11 @@ export function PaidComparison({
                 <NotYet />
               ) : multiple > 0 ? (
                 `${multiple < 10 ? multiple.toFixed(1) : Math.round(multiple)}×`
+              ) : wouldCost > 0 ? (
+                // Nothing was spent, so there is no multiple — dividing by zero
+                // is not "0×", and a dash here would hide a real figure. The
+                // money is the answer.
+                fmtMoney(wouldCost)
               ) : (
                 '—'
               )
@@ -161,9 +194,23 @@ export function PaidComparison({
             sub={
               multiple > 0
                 ? `${fmtMoney(wouldCost - actual)} not spent`
-                : 'nothing metered to compare'
+                : wouldCost > 0
+                  ? 'not spent — none of this traffic was billed to anybody'
+                  : 'nothing metered to compare'
             }
           />
+          {/* WHERE THE FREE PART OF IT CAME FROM. Without this, a reader cannot
+              tell a figure earned by this box's own hardware from one earned by
+              a provider giving tokens away — and only the first is a return on
+              the machine. Shown only when there is free traffic: a permanent
+              "$0.00 / 0 requests" teaches nobody anything. */}
+          {freeReqs > 0 && (
+            <Figure
+              label="Of that, free tier"
+              value={pending ? <NotYet /> : fmtMoney(freeCost)}
+              sub={`${fmtInt(freeReqs)} request(s) another provider served at no charge`}
+            />
+          )}
         </Box>
       </Row>
       {/* The breakdown, in the three classes tokens are always measured in. It

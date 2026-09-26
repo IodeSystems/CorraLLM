@@ -289,6 +289,7 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
   const comparisonRows: ComparisonRow[] = (stats.data?.corrallm.usageRollup?.rows ?? []).map(
     (r) => ({
       served: r.served,
+      billing: r.billing ?? '',
       requests: Number(r.requests ?? 0),
       cachedTokens: Number(r.cachedTokens ?? 0),
       promptTokens: Number(r.promptTokens ?? 0),
@@ -367,15 +368,33 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
           }
           hint="What backends with a per-token rate table cost in this window. A counted $0 means no request went to one — not that the figure is missing."
         />
+        {/* SOMEBODY ELSE'S HARDWARE, AT NO CHARGE — a third kind of money, and
+            the only one whose figure is $0 on purpose. It needs the request
+            count beside it: $0 over 7 requests is a reading, $0 over none is an
+            empty category, and only the second should be off the page. Shown
+            whenever there was free traffic, hidden when there was not. */}
+        {counted && Number(total.freeRequests) > 0 && (
+          <StatTile
+            label="Free tier"
+            value={fmtUSD(0)}
+            sub={`${fmtInt(Number(total.freeRequests))} request(s) — not our hardware`}
+            hint={`Requests served by a remote backend whose config declares a free tier (freeTier:) and whose type names no per-token rates. $0 is the price the provider charges, not a missing coefficient — which is what separates this from Unattributed.${
+              Number(total.mispricedUsd) > 0
+                ? ` ${fmtUSD(Number(total.mispricedUsd))} had been recorded against these rows from this box's watt-hour coefficients and is charged to no kind here; that figure shrinks to $0 as those rows age out of the 30-day window.`
+                : ''
+            } What this traffic WOULD have cost is in the comparison below — it is the traffic that question is most worth asking about.`}
+          />
+        )}
         {/* Only when nonzero: an energy-priced type on a model corrallm does not
-            run. Neither electricity paid here nor the provider's rate, and the
-            fix is a config declaration, which the sub-label names (OB-6). */}
+            run, with nothing said about what it charges. Neither electricity paid
+            here nor the provider's rate, and the fix is a config declaration,
+            which the sub-label names (OB-6). */}
         {counted && total.unattributedUsd > 0 && (
           <StatTile
             label="Unattributed"
             value={fmtUSD(total.unattributedUsd)}
-            sub="declare a paid type for these"
-            hint="Requests served by a machine corrallm does not run, priced with this box's watt-hour coefficients because their backend type declares no per-token rates. The figure is neither electricity anybody paid here nor the provider's bill. Fix it by giving those models a type with cachedCostFactor / processCostFactor / generateCostFactor."
+            sub="say what these cost"
+            hint="Requests served by a machine corrallm does not run, priced with this box's watt-hour coefficients because their backend type declares no per-token rates and nothing declares them free. The figure is neither electricity anybody paid here nor the provider's bill. Fix it by saying what the backend charges: a type with cachedCostFactor / processCostFactor / generateCostFactor if it bills, or freeTier: on the model if it does not."
           />
         )}
       </Stack>

@@ -59,11 +59,15 @@ const NowDoc = graphql(/* GraphQL */ `
           costUsd
           # WHAT KIND OF MONEY. A single "Cost" over a mixed fleet is neither
           # electricity nor a bill; these three are the same total, split by what
-          # actually charges it.
+          # actually charges it — and free-tier traffic is a fourth kind that
+          # carries no dollars at all, so it is counted rather than summed.
+          billing
           energyUsd
           energyKwh
           paidUsd
           unattributedUsd
+          freeRequests
+          mispricedUsd
           baselineUsd
           baselineCachedUsd
           baselineProcessedUsd
@@ -699,6 +703,8 @@ function Throughput({
   energyKwh = 0,
   paidUsd = 0,
   unattributedUsd = 0,
+  freeRequests = 0,
+  mispricedUsd = 0,
   costPerKwh = 0,
 }: {
   /** Nothing has been counted yet: the strip renders, the numbers do not. */
@@ -715,6 +721,10 @@ function Throughput({
   energyKwh?: number
   paidUsd?: number
   unattributedUsd?: number
+  /** How many requests cost nothing. The free-tier tile's dollar figure is $0
+   *  by definition, so this is what says whether the $0 was measured. */
+  freeRequests?: number
+  mispricedUsd?: number
   costPerKwh?: number
 }) {
   // Idle is a fact, not a blank. A strip of zeroes reads as broken; saying so in
@@ -789,17 +799,37 @@ function Throughput({
       sub: paidUsd > 0 ? 'billed per token by a provider' : 'nothing billed per token',
     },
   ]
-  // A THIRD KIND, AND IT IS A CONFIG GAP RATHER THAN A READING. An energy-priced
-  // type on a model corrallm does not run: the tokens were processed on somebody
-  // else's hardware and then charged against this box's watt-hour coefficients.
-  // Not electricity anybody paid here, not the provider's rate either. It gets a
-  // tile only when it is nonzero — a permanent $0 fourth tile teaches nobody
-  // anything, and this one names an action (OB-6).
+  // A THIRD KIND: SOMEBODY ELSE'S HARDWARE, AT NO CHARGE. The only tile here
+  // whose $0 is the answer rather than the absence of one — the provider charges
+  // nothing, so nothing is what it cost. That is why it is gated on the request
+  // COUNT and not on the dollars: $0 over seven requests is a reading, $0 over
+  // none is an empty category, and only the second belongs off the page.
+  //
+  // The sub-label says whose hardware, because that is the fact a reader can
+  // check and the one that can change — a free tier is a gift, not a property of
+  // this box, and it ends without warning.
+  if (freeRequests > 0) {
+    stats.push({
+      label: 'Free tier',
+      value: fmtUSD(0),
+      sub:
+        mispricedUsd > 0
+          ? `${fmtInt(freeRequests)} requests on another provider, at no charge — ${fmtUSD(mispricedUsd)} of it had been billed as ours`
+          : `${fmtInt(freeRequests)} requests on another provider, at no charge`,
+    })
+  }
+  // A FOURTH, AND IT IS A CONFIG GAP RATHER THAN A READING. An energy-priced
+  // type on a model corrallm does not run, with nothing declaring what that host
+  // charges: the tokens were processed on somebody else's hardware and then
+  // charged against this box's watt-hour coefficients. Not electricity anybody
+  // paid here, not the provider's rate, and not declared free either. It gets a
+  // tile only when it is nonzero — a permanent $0 tile teaches nobody anything,
+  // and this one names an action (OB-6).
   if (unattributedUsd > 0) {
     stats.push({
       label: 'Unattributed',
       value: fmtUSD(unattributedUsd),
-      sub: 'off-box models priced as our own energy — declare a paid type for them',
+      sub: 'off-box models priced as our own energy — say what they charge, or declare their free tier',
     })
   }
   return (
@@ -1060,6 +1090,11 @@ function Now() {
       energyKwh: a.energyKwh + Number(r.energyKwh ?? 0),
       paidUsd: a.paidUsd + Number(r.paidUsd ?? 0),
       unattributedUsd: a.unattributedUsd + Number(r.unattributedUsd ?? 0),
+      // Free traffic is COUNTED, not summed: its dollar figure is $0 by
+      // definition, so the count is the only thing that distinguishes a measured
+      // $0 from no such traffic at all.
+      freeRequests: a.freeRequests + Number(r.freeRequests ?? 0),
+      mispricedUsd: a.mispricedUsd + Number(r.mispricedUsd ?? 0),
     }),
     {
       requests: 0,
@@ -1071,12 +1106,15 @@ function Now() {
       energyKwh: 0,
       paidUsd: 0,
       unattributedUsd: 0,
+      freeRequests: 0,
+      mispricedUsd: 0,
     },
   )
   // The comparison reads the same rows the strip does, so the two cannot
   // disagree about the hour.
   const comparisonRows: ComparisonRow[] = hour.map((r) => ({
     served: r.served,
+    billing: r.billing ?? '',
     requests: Number(r.requests ?? 0),
     cachedTokens: Number(r.cachedTokens ?? 0),
     promptTokens: Number(r.promptTokens ?? 0),
@@ -1127,6 +1165,8 @@ function Now() {
         energyKwh={totals.energyKwh}
         paidUsd={totals.paidUsd}
         unattributedUsd={totals.unattributedUsd}
+        freeRequests={totals.freeRequests}
+        mispricedUsd={totals.mispricedUsd}
         costPerKwh={c.recent?.costPerKwh ?? 0}
       />
 

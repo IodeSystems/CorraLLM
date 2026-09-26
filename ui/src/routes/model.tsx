@@ -164,6 +164,10 @@ const UsageDoc = graphql(/* GraphQL */ `
           billing
           energyUsd
           energyKwh
+          # What the store had charged a free-tier row before the kind existed.
+          # Named on the page so a $0 beside a remembered nonzero figure is
+          # explained rather than merely correct.
+          mispricedUsd
           baselineUsd
           baselineExcluded
         }
@@ -880,7 +884,18 @@ function UsageTab({ name }: { name: string }) {
                       ? `electricity — ${fmtKwh(row.energyKwh)}${rate > 0 ? ` at $${rate}/kWh` : ''}`
                       : row.billing === 'paid'
                         ? 'billed per token by a provider'
-                        : 'unattributed — an off-box model priced with this box\u2019s energy coefficients'}
+                        : row.billing === 'free'
+                          ? // $0 IS THE PRICE HERE, not a missing rate. The
+                            // declaration is named so a reader can go and check
+                            // it, and the figure the store had recorded is named
+                            // so somebody who remembers a nonzero cost on this
+                            // model is not left wondering where it went.
+                            `free tier — served off this box at no charge (freeTier: in its config)${
+                              Number(row.mispricedUsd ?? 0) > 0
+                                ? `; ${fmtUSD(Number(row.mispricedUsd))} had been recorded as our own energy`
+                                : ''
+                            }`
+                          : 'unattributed — an off-box model priced with this box\u2019s energy coefficients, and nothing says what it charges'}
                   </Typography>
                 </TableCell>
               </TableRow>
