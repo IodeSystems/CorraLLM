@@ -2527,7 +2527,7 @@ type corrallm_RetryPromisesOutputBody {
 type corrallm_RollupRow {
   """Of baselineUsd, the cache-read charge: cached tokens × the baseline's cached rate. Locally these tokens are free (served from the KV cache, no recompute); on a paid API they are billed at a reduced but nonzero rate, so this is a real part of the difference."""
   baselineCachedUsd: Float!
-  """Empty when the comparison covers this row. Otherwise why it does not: "audio" (billed per MiB, not per token), "image" (billed per image; the local coefficient is unset on this box, so these already cost $0), "paid" (already on a paid provider), "off-box" (unattributed — its local figure is not a local figure), "no-tokens" (no tokens were recorded, and $0 on any rate table is not a measurement)."""
+  """Empty when the comparison covers this row. Otherwise why it does not: "audio" (billed per MiB, not per token), "image" (billed per image; the local coefficient is unset on this box, so these already cost $0), "paid" (already on a paid provider), "off-box" (a configured model served elsewhere — its local figure is not a local figure), "unknown-model" (the served model has left the config, so nothing says what priced it), "no-tokens" (no tokens were recorded, and $0 on any rate table is not a measurement)."""
   baselineExcluded: String!
   """Of baselineUsd, the output charge: completionTokens × the baseline's generated rate."""
   baselineGeneratedUsd: Float!
@@ -2535,7 +2535,7 @@ type corrallm_RollupRow {
   baselineProcessedUsd: Float!
   """What this row's tokens would have cost on the baseline paid type (usageRollup.baselineType) — the sum of the three class figures below. 0 when baselineExcluded is set."""
   baselineUsd: Float!
-  """How this row's cost was arrived at: "energy" (this fleet's electricity, kWh × costPerKwh), "paid" (a provider's per-token rates), or "unattributed" (this box's energy coefficients applied to a model corrallm does not run, or to one that has left the config — neither electricity nor a bill, and a config gap to fix by declaring a paid type)."""
+  """How this row's cost was arrived at: "energy" (this fleet's electricity, kWh × costPerKwh), "paid" (a provider's per-token rates), "free" (a remote backend with a declared freeTier and no per-token rates — somebody else's hardware at no charge, so the cost is $0 because that is the price), or "unattributed" (this box's energy coefficients applied to a model corrallm does not run and nothing says what it charges, or to one that has left the config — neither electricity nor a bill, and a config gap to fix by declaring what that backend costs)."""
   billing: String!
   """cachedTokens / promptTokens, 0..1. Only meaningful when cacheReports > 0."""
   cacheHitRate: Float!
@@ -2555,6 +2555,10 @@ type corrallm_RollupRow {
   energyKwh: Float!
   """The part of costUsd that is electricity: nonzero only when billing is "energy"."""
   energyUsd: Float!
+  """Requests served at no charge by a backend with a declared freeTier and no per-token rates. Equals requests when billing is "free", else 0; on the total, how many of the window's requests cost nothing. The gate for showing a free-tier figure: its dollar value is always $0, so the count is the only thing that says whether the $0 was measured."""
+  freeRequests: Long!
+  """What the store had RECORDED against this row that is charged to no kind here: nonzero only when billing is "free". These rows were metered with this box's watt-hour coefficients for tokens processed elsewhere, so the figure is neither electricity nor a bill and costUsd reports 0 instead. It is surfaced rather than dropped because a total that quietly shrank cannot be checked. Metering itself now bills a declared free tier $0 (cost.NoCharge), so this decays to 0 as the 30-day retention window turns over — a nonzero value means rows recorded before that fix are still in the window."""
+  mispricedUsd: Float!
   """The part of costUsd that is a provider's bill: nonzero only when billing is "paid"."""
   paidUsd: Float!
   """Mean backend-reported generation speed, tokens/sec (tg/s). Separates a slowdown caused by more prompt to read (this holds steady) from one caused by the box itself (this falls). Same caveats as promptPerSec."""

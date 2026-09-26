@@ -1257,12 +1257,20 @@ type RollupRow struct {
 	// WHAT KIND OF MONEY THIS IS. costUsd alone cannot say, and the two kinds it
 	// mixes are unrelated: energy is kWh × $/kWh on hardware we run, paid spend
 	// is a provider's invoice. See costkind.go.
-	Type             string  `json:"type" doc:"The model's cost class — its commandCosts key. Empty when the model is no longer in the config."`
-	Billing          string  `json:"billing" doc:"How this row's cost was arrived at: \"energy\" (this fleet's electricity, kWh × costPerKwh), \"paid\" (a provider's per-token rates), or \"unattributed\" (this box's energy coefficients applied to a model corrallm does not run, or to one that has left the config — neither electricity nor a bill, and a config gap to fix by declaring a paid type)."`
-	EnergyUSD        float64 `json:"energyUsd" doc:"The part of costUsd that is electricity: nonzero only when billing is \"energy\"."`
-	EnergyKwh        float64 `json:"energyKwh" doc:"energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset."`
-	PaidUSD          float64 `json:"paidUsd" doc:"The part of costUsd that is a provider's bill: nonzero only when billing is \"paid\"."`
-	UnattributedUSD  float64 `json:"unattributedUsd" doc:"The part of costUsd that is neither: nonzero only when billing is \"unattributed\"."`
+	Type            string  `json:"type" doc:"The model's cost class — its commandCosts key. Empty when the model is no longer in the config."`
+	Billing         string  `json:"billing" doc:"How this row's cost was arrived at: \"energy\" (this fleet's electricity, kWh × costPerKwh), \"paid\" (a provider's per-token rates), \"free\" (a remote backend with a declared freeTier and no per-token rates — somebody else's hardware at no charge, so the cost is $0 because that is the price), or \"unattributed\" (this box's energy coefficients applied to a model corrallm does not run and nothing says what it charges, or to one that has left the config — neither electricity nor a bill, and a config gap to fix by declaring what that backend costs)."`
+	EnergyUSD       float64 `json:"energyUsd" doc:"The part of costUsd that is electricity: nonzero only when billing is \"energy\"."`
+	EnergyKwh       float64 `json:"energyKwh" doc:"energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset."`
+	PaidUSD         float64 `json:"paidUsd" doc:"The part of costUsd that is a provider's bill: nonzero only when billing is \"paid\"."`
+	UnattributedUSD float64 `json:"unattributedUsd" doc:"The part of costUsd that is neither: nonzero only when billing is \"unattributed\"."`
+	// FREE TRAFFIC IS COUNTED, NOT PRICED. There is no "freeUsd" beside the
+	// three above on purpose: it would be 0 in every row of every window, and a
+	// field that can only ever hold one value is not a reading. What a screen
+	// needs instead is whether there WAS any such traffic — a $0 with 7 requests
+	// behind it is an answer, a $0 with none is an empty category that should not
+	// be on the page at all.
+	FreeRequests     int64   `json:"freeRequests" doc:"Requests served at no charge by a backend with a declared freeTier and no per-token rates. Equals requests when billing is \"free\", else 0; on the total, how many of the window's requests cost nothing. The gate for showing a free-tier figure: its dollar value is always $0, so the count is the only thing that says whether the $0 was measured."`
+	MispricedUSD     float64 `json:"mispricedUsd" doc:"What the store had RECORDED against this row that is charged to no kind here: nonzero only when billing is \"free\". These rows were metered with this box's watt-hour coefficients for tokens processed elsewhere, so the figure is neither electricity nor a bill and costUsd reports 0 instead. It is surfaced rather than dropped because a total that quietly shrank cannot be checked. Metering itself now bills a declared free tier $0 (cost.NoCharge), so this decays to 0 as the 30-day retention window turns over — a nonzero value means rows recorded before that fix are still in the window."`
 	BaselineUSD      float64 `json:"baselineUsd" doc:"What this row's tokens would have cost on the baseline paid type (usageRollup.baselineType) — the sum of the three class figures below. 0 when baselineExcluded is set."`
 	BaselineCached   float64 `json:"baselineCachedUsd" doc:"Of baselineUsd, the cache-read charge: cached tokens × the baseline's cached rate. Locally these tokens are free (served from the KV cache, no recompute); on a paid API they are billed at a reduced but nonzero rate, so this is a real part of the difference."`
 	BaselineProcess  float64 `json:"baselineProcessedUsd" doc:"Of baselineUsd, the input charge: processed tokens (promptTokens − cachedTokens) × the baseline's processed rate."`
@@ -1275,7 +1283,7 @@ type UsageRollupOutput struct {
 	Body struct {
 		WindowHours int         `json:"windowHours" doc:"Window applied (0 = all time)."`
 		Rows        []RollupRow `json:"rows" doc:"Per-model usage, costliest first."`
-		Total       RollupRow   `json:"total" doc:"Grand total across all models (served=\"\"). Its billing is \"\" — a total spans kinds — and the split lives in energyUsd/paidUsd/unattributedUsd."`
+		Total       RollupRow   `json:"total" doc:"Grand total across all models (served=\"\"). Its billing is \"\" — a total spans kinds — and the split lives in energyUsd/paidUsd/unattributedUsd, with free traffic counted in freeRequests (it adds $0 by definition). energyUsd + paidUsd + unattributedUsd = costUsd; mispricedUsd is outside that sum and is what free rows had been recorded at."`
 		// THE RATE, WITH THE COST. kWh × $/kWh is the entire derivation of an
 		// energy figure, and a dollar number whose rate is invisible cannot be
 		// checked by the person reading it.
@@ -1326,19 +1334,6 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 
 		// Which kind of money, and whether the comparison can speak for it.
 		k := classify(known, costModel, r.Served)
-		row.Type, row.Billing, row.BaselineExcluded = k.Type, k.Billing, k.Exclude
-		switch k.Billing {
-		case BillEnergy:
-			row.EnergyUSD = r.CostUSD
-			if rate > 0 {
-				row.EnergyKwh = r.CostUSD / rate
-			}
-		case BillPaid:
-			row.PaidUSD = r.CostUSD
-		default:
-			row.UnattributedUSD = r.CostUSD
-		}
-
 		// processed = prompt − cached. prompt_tokens INCLUDES the cached prefix,
 		// so subtracting is the only way to get the tokens actually recomputed —
 		// the same convention the Overview's re-read figure already uses. It is
@@ -1348,6 +1343,50 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		if processed < 0 {
 			processed = 0
 		}
+
+		row.Type, row.Billing, row.BaselineExcluded = k.Type, k.Billing, k.Exclude
+		switch k.Billing {
+		case BillEnergy:
+			row.EnergyUSD = r.CostUSD
+			if rate > 0 {
+				row.EnergyKwh = r.CostUSD / rate
+			}
+		case BillPaid:
+			row.PaidUSD = r.CostUSD
+		case BillFree:
+			// $0 BECAUSE THAT IS THE PRICE — after checking that the dollars on
+			// the row really are the phantom, and not a bill.
+			//
+			// A declared-free row can carry money two ways, and they must not be
+			// treated alike. Almost always it is this box's watt-hour
+			// coefficients applied to somebody else's hardware, recorded before
+			// metering learned to skip it; that is not a cost, so it is dropped
+			// — though kept visible in mispricedUsd, because a total that
+			// quietly shrank cannot be checked. But the meter also lets a
+			// PROVIDER-REPORTED cost outrank the table, so a model that quietly
+			// went paid under its own free-tier declaration records real spend.
+			// Zeroing that would hide a bill: the same failure this kind was
+			// built to fix, pointed the other way.
+			//
+			// The energy table is the CEILING of what the phantom can be, which
+			// makes the test one-sided and needs no tolerance pulled out of the
+			// air: anything at or under it is the phantom, anything above it is
+			// money somebody actually charged, and unexplained money on a
+			// backend declared free is the plainest case of unattributed there
+			// is — so it keeps that name, that figure, and that call to action.
+			c, p, g := costModel.RequestUSDByClass(k.Type, int(r.CachedTokens), int(processed), int(r.CompletionTokens))
+			if ceiling := c + p + g; r.CostUSD <= ceiling*(1+1e-6) {
+				row.CostUSD, row.MispricedUSD = 0, r.CostUSD
+				row.FreeRequests = r.Requests
+			} else {
+				row.Billing = BillUnattributed
+				row.UnattributedUSD = r.CostUSD
+				row.BaselineExcluded = ExcludeOffBox
+			}
+		default:
+			row.UnattributedUSD = r.CostUSD
+		}
+
 		// The LAST reason, applying only when the backend itself gave none: the
 		// window recorded no tokens, so there is nothing to price. It does not
 		// outrank the others — an audio row always has no tokens, and "billed by
@@ -1374,6 +1413,8 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		out.Body.Total.EnergyKwh += row.EnergyKwh
 		out.Body.Total.PaidUSD += row.PaidUSD
 		out.Body.Total.UnattributedUSD += row.UnattributedUSD
+		out.Body.Total.FreeRequests += row.FreeRequests
+		out.Body.Total.MispricedUSD += row.MispricedUSD
 		out.Body.Total.BaselineUSD += row.BaselineUSD
 		out.Body.Total.BaselineCached += row.BaselineCached
 		out.Body.Total.BaselineProcess += row.BaselineProcess

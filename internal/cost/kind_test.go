@@ -3,6 +3,8 @@ package cost
 import (
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/iodesystems/corrallm/internal/config"
 )
 
@@ -100,4 +102,44 @@ func TestCachedTokensFreeLocallyBilledRemotely(t *testing.T) {
 	approx(t, c, 0.1)
 	approx(t, p, 0)
 	approx(t, g, 0)
+}
+
+// NoCharge is the third answer to "what kind of money is this", and it is not a
+// rate — which is why it cannot be expressed as one. Each case below is a way
+// the rate table alone gets it wrong.
+func TestNoChargeNeedsBothADeclarationAndSomebodyElsesHardware(t *testing.T) {
+	m := model()
+	remote := func(mo config.Model) config.Model {
+		var n yaml.Node
+		n.SetString("openrouter.ai:443")
+		mo.Proxy = n
+		return mo
+	}
+	free := &config.FreeTier{Provider: "openrouter"}
+
+	// The case this exists for: a declared free tier on an energy-priced type.
+	// Every pooled free model carries `type: chat`, so without the declaration
+	// the rate table bills this box's watt-hours for OpenRouter's work.
+	if !m.NoCharge(remote(config.Model{Type: "local", FreeTier: free})) {
+		t.Error("a declared free tier on an energy-priced remote charges nothing")
+	}
+	// No declaration: nothing says what the host charges, so nothing may claim
+	// it charges zero. This stays a config gap, and is reported as one.
+	if m.NoCharge(remote(config.Model{Type: "local"})) {
+		t.Error("an undeclared remote must not read as free — that is the gap, not the answer")
+	}
+	// A type that names rates wins. A `freeTier` block can carry a usd spend cap
+	// (config.FreeTier.Limits), so the block alone cannot assert $0.
+	if m.NoCharge(remote(config.Model{Type: "claude", FreeTier: free})) {
+		t.Error("a backend whose type bills per token is paid, whatever else is declared")
+	}
+	// OUR OWN HARDWARE IS NEVER FREE. The electricity is real however the config
+	// is written, and reporting it as somebody's gift is the worst failure here.
+	if m.NoCharge(config.Model{Type: "local", Cmd: "llama-server", FreeTier: free}) {
+		t.Error("a model this box runs burns power; a freeTier block does not change that")
+	}
+	// An unpriced type is not a free tier either — it is a type nobody costed.
+	if m.NoCharge(remote(config.Model{Type: "nonesuch"})) {
+		t.Error("an unconfigured type is unpriced, not declared free")
+	}
 }
