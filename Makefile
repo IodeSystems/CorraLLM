@@ -1,4 +1,4 @@
-.PHONY: install gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps verify-docker
+.PHONY: hooks install gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps verify-docker
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -9,6 +9,11 @@ LDFLAGS := -X main.version=$(VERSION) -X main.srcDir=$(SRCDIR)
 AGENT_LDFLAGS := -X main.version=$(VERSION)
 
 ## --- codegen ---
+hooks:            ## Install the repo's git hooks (regenerate ui/src/gql when the schema moves)
+	@cp scripts/githooks/post-merge scripts/githooks/post-checkout .git/hooks/
+	@chmod +x .git/hooks/post-merge .git/hooks/post-checkout
+	@echo "installed post-merge + post-checkout (ui/src/gql is gitignored; a schema change via merge leaves it stale)"
+
 gen:              ## All codegen: dump SDL + typed TS client + lint (no DB/server)
 	./bin/gen
 
