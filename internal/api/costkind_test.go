@@ -63,10 +63,38 @@ func costFixtureConfig() *config.Config {
 			"oidio-stt":    {Type: "stt", Cmd: "oidio serve"},
 			"local-image":  {Type: "diffusion", Cmd: "sd-server"},
 			"claude-haiku": {Type: "anthropic-haiku", Proxy: proxyNode("api.anthropic.com", 443)},
-			// THE GAP: a third-party host on an energy-priced type. Its tokens
-			// were processed on somebody else's hardware and then charged against
-			// this box's watt-hour coefficients.
+			// THE GAP: a third-party host on an energy-priced type, with NOTHING
+			// declared about what it charges. Its tokens were processed on somebody
+			// else's hardware and then charged against this box's watt-hour
+			// coefficients.
 			"openrouter-something": {Type: "chat", Proxy: proxyNode("openrouter.ai", 443)},
+			// DECLARED FREE. The shape config.VirtualModelFor produces for a pooled
+			// model: the source provider's proxy, the template's `type: chat`, and
+			// the template's freeTier block copied onto it. Same energy-priced type
+			// as the row above — the declaration is the only difference, which is
+			// the point.
+			"openrouter-free-thing": {
+				Type:     "chat",
+				Proxy:    proxyNode("openrouter.ai", 443),
+				FreeTier: &config.FreeTier{Provider: "openrouter", Refresh: true},
+			},
+			// A freeTier block does NOT outrank a type that names rates: if the
+			// backend bills, it is paid, whatever else is declared about it. This
+			// is what keeps a `usd` spend cap under freeTier from reading as $0.
+			"claude-with-freetier": {
+				Type:     "anthropic-haiku",
+				Proxy:    proxyNode("api.anthropic.com", 443),
+				FreeTier: &config.FreeTier{Provider: "anthropic"},
+			},
+			// A freeTier block on a model THIS BOX RUNS is not free — the
+			// electricity is real. Remote() is the guard, and it is tested because
+			// the honest failure here would be silently reporting our own power as
+			// somebody's gift.
+			"local-with-freetier": {
+				Type:     "chat",
+				Cmd:      "llama-server --port 5801",
+				FreeTier: &config.FreeTier{Provider: "confused"},
+			},
 		},
 	}
 }
@@ -86,6 +114,17 @@ func TestClassifyBillingKinds(t *testing.T) {
 		{"oidio-stt", BillEnergy, ExcludeAudio},
 		{"local-image", BillEnergy, ExcludeImage},
 		{"openrouter-something", BillUnattributed, ExcludeOffBox},
+		// DECLARED FREE, AND IN THE COMPARISON. No exclusion: what it cost is
+		// $0 and $0 is not an estimate, so "what would this have cost on a paid
+		// API" is answerable — and it is the traffic the question is most worth
+		// asking about, since the work was real and nobody was billed.
+		{"openrouter-free-thing", BillFree, ""},
+		// The paid test runs first, so a declaration cannot talk a billing
+		// backend into being free.
+		{"claude-with-freetier", BillPaid, ExcludePaid},
+		// Free is about SOMEBODY ELSE's hardware. Ours burns power whatever the
+		// config claims.
+		{"local-with-freetier", BillEnergy, ""},
 		// A model that has left the config. Activity is retained 30 days and a
 		// model can be removed inside that, so nothing is left to say what
 		// priced its rows.
@@ -154,6 +193,18 @@ func TestUsageRollupSplitsCostAndPricesBaseline(t *testing.T) {
 		TS: now.UnixMilli(), Served: "oidio-stt", Status: 200,
 		AudioBytes: 1 << 20, CostUSD: 0.000004,
 	}))
+	// THE LIVE ROW'S NUMBERS, to the cent: openrouter-cohere-north-mini-code over
+	// 24 h to 2026-09-26 recorded 13,352 prompt / 2,155 completion at
+	// $0.000485674 — which is 13,352 × 0.00005 Wh + 2,155 × 0.0013 Wh = 3.469 Wh
+	// × $0.14/kWh, i.e. this box's coefficients on OpenRouter's hardware.
+	//
+	// The window's seven requests are collapsed into one metered row: the rollup
+	// sums rows, so the per-request split changes no figure under test, and
+	// keeping the token counts exact is what makes the arithmetic checkable.
+	must(t, st.InsertActivity(store.Activity{
+		TS: now.UnixMilli(), Served: "openrouter-free-thing", Status: 200,
+		PromptTokens: 13_352, CompletionTokens: 2_155, CostUSD: 0.000485674,
+	}))
 
 	h := &Handlers{Store: st, Cfg: costFixtureConfig()}
 	out, err := h.UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 1})
@@ -203,6 +254,31 @@ func TestUsageRollupSplitsCostAndPricesBaseline(t *testing.T) {
 		t.Errorf("openrouter baselineExcluded = %q, want off-box", off.BaselineExcluded)
 	}
 
+	// DECLARED FREE: $0 BECAUSE THAT IS THE PRICE, and the comparison prices it.
+	// The recorded dollars are not charged to any kind — they were this box's
+	// watt-hours applied to OpenRouter's hardware — but they are not discarded
+	// either: mispricedUsd carries them so a total that shrank can be checked.
+	free := byName["openrouter-free-thing"]
+	if free.Billing != BillFree {
+		t.Errorf("free-tier billing = %q, want free", free.Billing)
+	}
+	near(t, "free costUsd", free.CostUSD, 0)
+	near(t, "free energyUsd", free.EnergyUSD, 0)
+	near(t, "free unattributedUsd", free.UnattributedUSD, 0)
+	near(t, "free mispricedUsd", free.MispricedUSD, 0.000485674)
+	if free.FreeRequests != free.Requests || free.FreeRequests == 0 {
+		t.Errorf("freeRequests = %d, want requests (%d) — the $0 needs a count behind it",
+			free.FreeRequests, free.Requests)
+	}
+	// IN the comparison, and this is the whole reason free traffic is not
+	// excluded: 13,352 processed × 1e-6 + 2,155 generated × 5e-6, nothing cached.
+	if free.BaselineExcluded != "" {
+		t.Errorf("free baselineExcluded = %q, want covered — $0 is not an estimate", free.BaselineExcluded)
+	}
+	near(t, "free baseline processed", free.BaselineProcess, 0.013352)
+	near(t, "free baseline generated", free.BaselineGenerate, 0.010775)
+	near(t, "free baseline total", free.BaselineUSD, 0.024127)
+
 	// Audio bills per MiB. It is real electricity, and it has no term in a
 	// per-token rate table, so it counts as energy and NOT in the comparison.
 	stt := byName["oidio-stt"]
@@ -219,9 +295,55 @@ func TestUsageRollupSplitsCostAndPricesBaseline(t *testing.T) {
 	near(t, "total energyUsd", tot.EnergyUSD, 0.350004)
 	near(t, "total unattributedUsd", tot.UnattributedUSD, 0.0005)
 	near(t, "total paidUsd", tot.PaidUSD, 0)
-	near(t, "total baselineUsd", tot.BaselineUSD, 0.53)
-	// And the three kinds still add up to the one figure they were split from.
+	// The free row adds its baseline to the comparison and nothing to the spend.
+	near(t, "total baselineUsd", tot.BaselineUSD, 0.53+0.024127)
+	near(t, "total mispricedUsd", tot.MispricedUSD, 0.000485674)
+	if tot.FreeRequests != 1 {
+		t.Errorf("total freeRequests = %d, want 1", tot.FreeRequests)
+	}
+	// And the three PRICED kinds still add up to the one figure they were split
+	// from. Free is outside the sum by construction, which is why costUsd on that
+	// row is 0 — a "free" row carrying dollars would contradict its own label.
 	near(t, "split sums to costUsd", tot.EnergyUSD+tot.PaidUSD+tot.UnattributedUSD, tot.CostUSD)
+}
+
+// A DECLARED FREE TIER THAT STARTED CHARGING MUST NOT READ AS $0.
+//
+// The meter lets a provider-reported cost outrank the rate table, so a pooled
+// model that quietly went paid under its own freeTier declaration records real
+// spend. Dropping that as "the phantom" would hide a bill — the failure this
+// whole split exists to prevent, pointed the other way. The energy table is the
+// ceiling of what the phantom can be, so anything above it is somebody's charge
+// and keeps the name for money nothing explains.
+func TestUsageRollupKeepsARealChargeOnADeclaredFreeBackend(t *testing.T) {
+	st := openTestStore(t)
+	// Same tokens as the live row, whose energy-table figure is $0.000485674 —
+	// but recorded at a hundred times that, which no watt-hour coefficient here
+	// could produce.
+	must(t, st.InsertActivity(store.Activity{
+		TS: time.Now().UnixMilli(), Served: "openrouter-free-thing", Status: 200,
+		PromptTokens: 13_352, CompletionTokens: 2_155, CostUSD: 0.05,
+	}))
+	h := &Handlers{Store: st, Cfg: costFixtureConfig()}
+	out, err := h.UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.Body.Rows[0]
+	if got.Billing != BillUnattributed {
+		t.Errorf("billing = %q, want unattributed — a charge above the energy ceiling is real money", got.Billing)
+	}
+	near(t, "the charge survives in costUsd", got.CostUSD, 0.05)
+	near(t, "and is reported as unattributed", got.UnattributedUSD, 0.05)
+	near(t, "nothing is written off", got.MispricedUSD, 0)
+	if got.FreeRequests != 0 {
+		t.Errorf("freeRequests = %d, want 0 — this traffic was not free", got.FreeRequests)
+	}
+	// And it leaves the comparison, because its figure is a provider's number on
+	// a backend nothing here can price.
+	if got.BaselineExcluded != ExcludeOffBox {
+		t.Errorf("baselineExcluded = %q, want off-box", got.BaselineExcluded)
+	}
 }
 
 // A window whose model recorded no tokens is not a $0 saving. Pricing zero

@@ -119,8 +119,15 @@ func (c *Config) modelForSelection(s Selection) (Model, bool) {
 		return Model{}, false
 	}
 	var m Model
-	if pv.Discover != nil {
-		m = pv.Discover.Template // value copy; the template is never mutated
+	// Directory, NOT Discover. `discover:` is the retired spelling and load
+	// carries it over into Directory (config.go), so Directory is set whichever
+	// key the operator wrote — while Discover is nil for every config using the
+	// current name. Reading Discover here meant a `template:` under `directory:`
+	// was silently ignored, so the one field that shapes a selected model's cost
+	// class only worked if you spelled the key the deprecation warning tells you
+	// to stop using.
+	if pv.Directory != nil {
+		m = pv.Directory.Template // value copy; the template is never mutated
 	}
 	if m.Type == "" {
 		m.Type = "chat"

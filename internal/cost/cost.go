@@ -108,6 +108,35 @@ func (m *Model) CostPerKwh() float64 { return m.costPerKwh }
 // neither.
 func (m *Model) IsPaidType(typ string) bool { return m.byType[typ].paid() }
 
+// NoCharge reports whether a backend bills NOTHING AT ALL: a remote the
+// operator has declared a free tier for, on a type that names no per-token
+// rates.
+//
+// This is a third answer to "what kind of money is this", and it is not
+// expressible as a rate. A type with all-zero factors is not "free" — paid()
+// reads it as unpriced and RequestUSDByClass then bills it as LOCAL ENERGY, so
+// an all-zero declaration produces this box's watt-hour coefficients applied to
+// somebody else's hardware, which is the very mistake this predicate exists to
+// stop.
+//
+// WHY `freeTier` IS THE DECLARATION. config.Model.FreeTier already means exactly
+// this ("marks a remote backend as a P16 free-tier member … nil for local/paid
+// models") and the proxy already reads it as the free/paid boundary — a hard
+// 401/402/403 from a FreeTier backend takes it out of rotation, because a free
+// tier answering "payment required" has stopped being one. A second,
+// cost-shaped field answering the same question is how two answers drift apart.
+// It is also the right GRANULARITY: a provider serves free and paid models at
+// once, so "this provider is free" would mis-bill the paid ones, which is the
+// bug rather than the fix.
+//
+// The paid test comes first and is not a formality. A `freeTier` block may carry
+// a `usd` spend cap (config.FreeTier.Limits), so the block alone cannot assert
+// $0; what asserts it is the block PLUS a type that names no rate. A backend
+// whose type does name rates is paid, whatever else is declared about it.
+func (m *Model) NoCharge(b config.Model) bool {
+	return b.FreeTier != nil && b.Remote() && !m.IsPaidType(b.Type)
+}
+
 // PaidTypes lists the configured types that bill per token, sorted cheapest
 // first by generated-token rate. The order is the whole point: it is what a
 // "would have cost" comparison defaults to, and defaulting to the cheapest

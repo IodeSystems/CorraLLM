@@ -27,17 +27,63 @@ const (
 	BillEnergy = "energy"
 	// BillPaid — a provider's bill. The type declares per-token rates.
 	BillPaid = "paid"
+	// BillFree — somebody else's hardware, at no charge.
+	//
+	// A remote backend the operator has DECLARED a free tier for (`freeTier:`),
+	// on a type naming no per-token rates. Not electricity — the tokens were
+	// processed off this box. Not an invoice — nobody sends one. $0 because $0
+	// is the price, which is the whole difference from BillUnattributed, where
+	// $0 would mean a coefficient is missing.
+	//
+	// THE DECLARATION IS `freeTier`, AND cost.NoCharge IS THE ONE PLACE THAT
+	// SAYS SO — the proxy's meter reads the same predicate, so what a request is
+	// charged and what the dashboard calls it cannot disagree. What was rejected:
+	//
+	//   A flag on the cost TYPE. The type is a rate table — "how much" — and
+	//   free is a fact about who serves it. On the live box `type: chat` is
+	//   shared by local models and by every pooled remote, so a flag there
+	//   cannot separate them without minting a new type and repointing models:
+	//   a config migration to express something the model entry already carries.
+	//   Put that flag on a type a LOCAL model uses and the box's own electricity
+	//   reads as free.
+	//
+	//   All-zero cost factors. They do not express it at all — cost.paid() reads
+	//   all-zero as unpriced and RequestUSDByClass then bills LOCAL ENERGY, so
+	//   the row comes back priced at this box's watt-hours and classified here as
+	//   unattributed all over again. Right number, wrong kind, nothing fixed.
+	//
+	//   A provider-level `free: true`. Wrong granularity: a provider serves free
+	//   and paid models at once, and declaring the provider free mis-bills the
+	//   paid ones — the bug, not the fix. Note in particular that the OpenRouter
+	//   provider's `directory: {filter: {free: true}}` is NOT evidence of this:
+	//   config.Provider.Directory enrols nothing, it is the default filter a
+	//   person browsing the catalogue starts on and can clear, and the provider
+	//   is `manual: true`, so models are hand-picked one at a time and a
+	//   hand-picked paid one sits behind that same filter. Billing read off a
+	//   browse default would be a guess.
+	//
+	// What DOES carry it by construction is the virtual pool: `extensions.free.
+	// virtual.template.freeTier` is copied onto every contributed model by
+	// config.VirtualModelFor, and `refresh: true` marks one stale when it stops
+	// being free. So the pool needs no config change to classify correctly.
+	BillFree = "free"
 	// BillUnattributed — neither, and a config gap rather than a reading.
 	//
-	// An energy-priced type on a model served by a host corrallm does not run:
-	// the tokens were processed on somebody else's hardware and then charged
-	// against this box's watt-hour coefficients. It is not electricity anybody
-	// paid here and it is not the provider's rate either. Also the answer for a
-	// model that has left the config, where the type cannot be looked up at all
-	// — activity is retained 30 days and a model can be removed inside that.
+	// An energy-priced type on a model served by a host corrallm does not run,
+	// with NOTHING said about what that host charges: the tokens were processed
+	// on somebody else's hardware and then charged against this box's watt-hour
+	// coefficients. It is not electricity anybody paid here, it is not the
+	// provider's rate, and — unlike BillFree — nothing in the config claims it
+	// is free either. Also the answer for a model that has left the config,
+	// where the type cannot be looked up at all — activity is retained 30 days
+	// and a model can be removed inside that.
 	//
 	// It exists so the number is visible and actionable (OB-6): the fix is to
-	// declare a paid type for that model, and the screen can say so.
+	// declare what that backend charges — a paid type if it bills, `freeTier:`
+	// if it does not — and the screen can say so. Since BillFree took the
+	// declared-free traffic, everything left here is a real gap, which is what
+	// makes the tile worth showing at all; it is hidden when empty, because an
+	// empty category is not a reading.
 	BillUnattributed = "unattributed"
 )
 
@@ -60,6 +106,16 @@ const (
 	// ExcludeOffBox — an unattributed row on a model that IS in the config but
 	// runs elsewhere (see BillUnattributed). Its local figure is not a local
 	// figure, so a saving computed against it is not a saving.
+	//
+	// DECLARED-FREE TRAFFIC IS NOT EXCLUDED, deliberately, and this is the one
+	// place the two off-box cases part. The reason this exclusion exists is that
+	// the figure being compared against is junk — an energy number for work done
+	// elsewhere — so the difference means nothing. A BillFree row has no such
+	// problem: what it cost is $0, and $0 is not an estimate. It is also the
+	// traffic the question is most worth asking about, since real work was done
+	// for nothing, so "what would this have cost on a paid API" is the entire
+	// value of the free tier stated in dollars. What remains excluded here is
+	// only the genuine gap.
 	ExcludeOffBox = "off-box"
 	// ExcludeUnknownModel — the served model is not in the config any more, so
 	// nothing says what priced its rows or where they ran.
@@ -106,6 +162,11 @@ func classify(known map[string]config.Model, cm *cost.Model, served string) cost
 	switch {
 	case cm.IsPaidType(m.Type):
 		k.Billing, k.Exclude = BillPaid, ExcludePaid
+	case cm.NoCharge(m):
+		// Declared free, so the cost is $0 and the comparison SPEAKS for it —
+		// no Exclude. The audio/image test below still applies: a free backend
+		// billing per MiB or per picture has no token term either.
+		k.Billing = BillFree
 	case m.Remote():
 		// Remote is the predicate for "a host corrallm does not run", and it is
 		// deliberately false for an enrolled machine's models: those carry a cmd

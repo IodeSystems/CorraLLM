@@ -1332,6 +1332,22 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}
 			costUSD = cCost + pCost + gCost
 		}
+		// A DECLARED FREE TIER CHARGES NOTHING, and this box's coefficients are
+		// not its bill. Without this, a remote on an energy-priced type (every
+		// pooled free model carries `type: chat`) is metered at this box's
+		// watt-hours for tokens processed on somebody else's hardware — a small
+		// phantom charge, and a silent mis-billing at any real rate.
+		//
+		// The predicate is cost.NoCharge, the same one the dashboard classifies
+		// with, so a stored row and the screen reporting it cannot disagree.
+		//
+		// `u.Cost <= 0` keeps the provider-reported override above authoritative:
+		// if the upstream says a request cost money, it costs money whatever the
+		// config declares, and that is the path a `freeTier` usd cap is charged
+		// through. Only the TABLE-DERIVED figure is dropped.
+		if u.Cost <= 0 && p.cost.NoCharge(backend) {
+			costUSD, cCost, pCost, gCost = 0, 0, 0, 0
+		}
 		var loadCost float64
 		if loaded && backend.Swap != nil {
 			loadCost = p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
