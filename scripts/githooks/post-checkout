@@ -1,8 +1,0 @@
-#!/bin/sh
-# Same reason as post-merge. $3 is 1 for a branch checkout, 0 for a file one.
-[ "$3" = "1" ] || exit 0
-if git diff --name-only "$1" "$2" 2>/dev/null | grep -q '^ui/gen/schema.graphql$'; then
-  echo "post-checkout: schema.graphql moved -> make gen"
-  make gen >/dev/null 2>&1 || echo "post-checkout: make gen failed — run it before tsc" >&2
-fi
-exit 0

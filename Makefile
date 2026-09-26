@@ -9,10 +9,10 @@ LDFLAGS := -X main.version=$(VERSION) -X main.srcDir=$(SRCDIR)
 AGENT_LDFLAGS := -X main.version=$(VERSION)
 
 ## --- codegen ---
-hooks:            ## Install the repo's git hooks (regenerate ui/src/gql when the schema moves)
-	@cp scripts/githooks/post-merge scripts/githooks/post-checkout .git/hooks/
-	@chmod +x .git/hooks/post-merge .git/hooks/post-checkout
-	@echo "installed post-merge + post-checkout (ui/src/gql is gitignored; a schema change via merge leaves it stale)"
+hooks:            ## Point git at scripts/hooks (pre-push, and post-merge/checkout codegen)
+	@git config core.hooksPath scripts/hooks
+	@chmod +x scripts/hooks/*
+	@echo "core.hooksPath=scripts/hooks — hooks live in the repo, so there is nothing to copy"
 
 gen:              ## All codegen: dump SDL + typed TS client + lint (no DB/server)
 	./bin/gen

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# post-merge: regenerate the typed GraphQL client when the schema moves under you.
+#
+# ui/src/gql is GITIGNORED — generated, never committed. So a merge that moves
+# ui/gen/schema.graphql leaves the typed documents describing the OLD schema,
+# and the failure does not look like a stale generated file: tsc reports dozens
+# of "implicitly has an 'any' type" errors in files the merge never touched, so
+# it reads like the incoming branch was broken.
+#
+# Cost, 2026-09-25: a branch whose own gates were green arrived with a red tsc,
+# and working out why took longer than `make gen` did.
+#
+# Never fails the merge. The merge was fine; only the derived files were stale.
+set -uo pipefail
+if git diff --name-only ORIG_HEAD HEAD 2>/dev/null | grep -q '^ui/gen/schema.graphql$'; then
+  echo "post-merge: ui/gen/schema.graphql moved -> make gen"
+  make gen || echo "post-merge: make gen FAILED — run it before tsc, or typecheck will blame the wrong files" >&2
+fi
+exit 0
