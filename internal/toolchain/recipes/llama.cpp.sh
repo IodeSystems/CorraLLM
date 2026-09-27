@@ -207,7 +207,12 @@ build() {
         say "  toolchain: CC=${CC:-<default>} CXX=${CXX:-<default>} (from the environment)"
     fi
 
-    local args=(-DCMAKE_BUILD_TYPE=Release)
+    # $ORIGIN, not the absolute build tree, as the build RPATH: install_build
+    # copies build/bin into builds/<id>, and the copy must load the libraries
+    # beside it. With cmake's default the copy loaded them from src/build/bin,
+    # which the next rebuild's `git clean -xdf` deletes — every spawn during a
+    # rebuild then failed with exit 127 (box1, 2026-09-26).
+    local args=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON)
     if have nvidia-smi && [ "$archs" != "cpu" ]; then
         nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader 2>/dev/null | sed 's/^/  /' >&2
         args+=(

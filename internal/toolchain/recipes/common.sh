@@ -517,7 +517,51 @@ activate_build() {
     ) || return 1
 }
 
-# install_build copies a finished build into its own directory and activates it.
+# verify_build refuses a build whose binary would not run from its own
+# directory. It runs BEFORE the switch, so a refused build never becomes active
+# and bin/ keeps pointing at the build that was already serving.
+#
+# The case it exists for (box1, 2026-09-26): cmake's default build RPATH is the
+# absolute build tree, so the installed llama-server loaded its libraries from
+# <prefix>/src/build/bin. The next rebuild starts with `git clean -xdf` there,
+# and every spawn failed with exit 127 until that build finished. A copy that
+# resolves ANY library under the prefix but outside its own directory depends
+# on a tree that changes, so it is refused.
+#
+# Linux only for the library check (ldd); everywhere, the binary must start far
+# enough to answer --version. Only 126/127 (cannot execute / cannot load) are
+# failures: what --version itself returns differs per tool.
+verify_build() {
+    local dst=$1 prefix; prefix=$(tool_prefix)
+    local bin="$dst/$BIN_NAME"
+    [ -x "$bin" ] || { say "  verify: $bin is missing or not executable"; return 1; }
+    if [ "$(uname -s)" = "Linux" ] && have ldd; then
+        local f bad
+        bad=$(for f in "$dst"/*; do
+            [ -f "$f" ] && [ ! -L "$f" ] || continue
+            case "$f" in *.so|*.so.*) ;; *) [ -x "$f" ] || continue ;; esac
+            ldd "$f" 2>/dev/null | awk -v p="$prefix/" -v d="$dst/" -v f="$(basename "$f")" '
+                /not found/ { print "  " f ": " $1 " not found"; next }
+                $2 == "=>" && index($3, p) == 1 && index($3, d) != 1 { print "  " f ": " $1 " => " $3 }'
+        done)
+        if [ -n "$bad" ]; then
+            say "  verify: $dst loads libraries from outside itself:"
+            say "$bad"
+            return 1
+        fi
+    fi
+    local rc=0
+    if have timeout; then timeout 60 "$bin" --version >/dev/null 2>&1 || rc=$?
+    else "$bin" --version >/dev/null 2>&1 || rc=$?; fi
+    if [ "$rc" = 126 ] || [ "$rc" = 127 ]; then
+        say "  verify: $bin --version exited $rc (cannot execute or cannot load a library)"
+        return 1
+    fi
+}
+
+# install_build copies a finished build into its own directory, verifies the
+# copy, and only then activates it. A refused copy is removed — left in builds/
+# it would be a rollback target that does not run — and bin/ is not touched.
 install_build() {
     local src=$1 id=$2 prefix; prefix=$(tool_prefix)
     local dst="$prefix/builds/$id"
@@ -526,6 +570,10 @@ install_build() {
     rm -rf "$dst"
     mkdir -p "$dst"
     cp -a "$src"/. "$dst"/ || die "could not install the build output into $dst"
+    if ! verify_build "$dst"; then
+        rm -rf "$dst"
+        die "built $id, but it does not run from $dst; kept the active build ($(active_build))"
+    fi
     activate_build "$id" || die "built and installed $id, but could not point $prefix/bin at it"
 }
 
