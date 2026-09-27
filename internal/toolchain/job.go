@@ -34,6 +34,14 @@ type Builder struct {
 	// is somebody else's decision.
 	History BuildHistory
 
+	// Check, when set, runs something real on the build a job just activated.
+	// A failure puts bin/ back on the build that was active before, so a build
+	// becomes current only if it works. ran=false means nothing could be run
+	// (no idle model uses the tool there, no free room): the new build stays,
+	// and the log says it went unchecked. A function rather than a
+	// *proc.Manager so this package stays unaware of spawning.
+	Check func(ctx context.Context, tool, host string, log io.Writer) (ran bool, err error)
+
 	mu      sync.Mutex
 	current *Job
 	last    *Job
@@ -208,7 +216,17 @@ func (b *Builder) run(j *Job, force bool) {
 		}
 	}()
 
+	// What is serving now, so a build that fails its check can be put back.
+	var prev string
+	if b.Check != nil {
+		if l, err := b.Reg.Builds(ctx, j.Tool, j.Host); err == nil {
+			prev = l.Active
+		}
+	}
 	res, err := b.Reg.Build(ctx, j.Tool, j.Host, force, pw)
+	if err == nil && res != nil && !res.Skipped && b.Check != nil {
+		err = b.check(j, res.ID, prev, pw)
+	}
 	_ = pw.Close()
 	<-done
 
@@ -237,6 +255,38 @@ func (b *Builder) run(j *Job, force bool) {
 				"tool", j.Tool, "host", j.Host, "err", err)
 		}
 	}
+}
+
+// checkTimeout bounds the post-build check. A model the check picks is already
+// configured, so its weights are cached; this is a load, not a download.
+const checkTimeout = 20 * time.Minute
+
+// check runs Check on the build just activated, and on a failure activates
+// prev again. The returned error fails the job and names both builds.
+func (b *Builder) check(j *Job, id, prev string, log io.Writer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+	defer cancel()
+	_, _ = fmt.Fprintf(log, "=== checking %s on %s before keeping it\n", id, j.Host)
+	ran, err := b.Check(ctx, j.Tool, j.Host, log)
+	switch {
+	case err == nil:
+		_, _ = fmt.Fprintf(log, "  check passed; %s stays active\n", id)
+		return nil
+	case !ran:
+		_, _ = fmt.Fprintf(log, "  NOT CHECKED, %s stays active: %v\n", id, err)
+		slog.Warn("a new tool build went unchecked", "tool", j.Tool, "host", j.Host, "build", id, "err", err)
+		return nil
+	}
+	if prev == "" || prev == id {
+		return fmt.Errorf("build %s failed its check and there is no previous build to return to: %w", id, err)
+	}
+	actx, acancel := context.WithTimeout(context.Background(), Timeout(VerbActivate))
+	defer acancel()
+	if _, aerr := b.Reg.Activate(actx, j.Tool, j.Host, prev); aerr != nil {
+		return fmt.Errorf("build %s failed its check (%v), and rolling back to %s failed too: %w", id, err, prev, aerr)
+	}
+	_, _ = fmt.Fprintf(log, "  rolled back to %s\n", prev)
+	return fmt.Errorf("build %s failed its check; rolled back to %s: %w", id, prev, err)
 }
 
 // State returns the running job (if any) and the last finished one.
