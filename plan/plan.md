@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P38.**
+**Next free number: P39.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -69,7 +69,7 @@ A slice is ✅ **only** when its functional unit meets the Definition of done be
 `done.md` = the archive of finished trees, kept for evidence and traps, never a to-do list.
 `icebox.md` = deferred, opt-in next-steps. `open-questions.md` = decisions that need the USER,
 and **only while they are open** — a resolved question is deleted from it and its answer written
-into the plan item that needed it. **Phase numbers come from git history** — next free is P38.
+into the plan item that needed it. **Phase numbers come from git history** — next free is P39.
 
 **Re-check a question against the box before you ask it.** On 2026-08-24, six of eight standing
 "user decisions" turned out to be already answered by the running system, the migrated config, or
@@ -326,6 +326,25 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P38 — a machine that comes and goes is away, not broken — 2026-09-29
+
+The owner, on Now's "carlsmacbookpro is not reporting in … it has never reported in": *"we
+should be able to mark this guy as ephemeral."* Two findings: the Mac really was off the network
+(`corrallm-mac-agent`: `ssh … No route to host`), and "never" was false — agent last-seen lives in
+memory, so after a restart it means "not since corrallm started".
+
+Built: `Server.Ephemeral` (rides configdb's server remainder column — round-trip tested);
+`agentStatus` = `away` when ephemeral and not up; `setServerEphemeral` op; a *Mark as coming and
+going* toggle on the machine page; Now skips `away`; Fleet shows it muted. "never" → "not since
+corrallm started" in the fault line, the machine page, and the status hint.
+
+- **next:** deploy (restart), mark carlsmacbookpro, check Now has no fault for it, commit.
+- **risks:** an ephemeral machine that DIED reads the same as one that left (owner chose no
+  long-absence fault).
+- **blocking decisions:** none.
+- **optional extensions:** persist agent last-seen so a restart does not forget it; a fault after a
+  long absence (the option the owner declined for now).
 
 ### ◐ P37 — every warning can be hidden or tuned; the queue clash gets its wait fix — 2026-09-29
 

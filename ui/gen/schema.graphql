@@ -49,6 +49,7 @@ type CorrallmMutationNamespace {
   setModelMaxWait(body: corrallm_SetModelMaxWaitInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelMaxWait")
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
+  setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
@@ -382,6 +383,7 @@ type CorrallmV1MutationNamespace {
   setModelMaxWait(body: corrallm_SetModelMaxWaitInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelMaxWait")
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
+  setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
@@ -2631,10 +2633,12 @@ type corrallm_ServerDef {
   agentEndpoints: [String!]!
   """Unix millis of the last heartbeat; 0 if never."""
   agentLastSeen: Long!
-  """up | down | unknown | local. 'unknown' means an agent is configured but has never reported in; 'down' means it stopped."""
+  """up | down | unknown | away | local. 'unknown' means an agent is configured but has not reported in since corrallm started (last-seen is not persisted); 'down' means it stopped; 'away' is down or unknown on a machine marked ephemeral."""
   agentStatus: String!
   """Pool holding accelerator memory on this server — the one a measured device reading describes. Unified-memory hosts point it at their single system pool."""
   devicePool: String!
+  """This machine comes and goes; its absence is not a fault."""
+  ephemeral: Boolean!
   """Optional host concurrency cap (0 = none)."""
   maxConcurrent: Long!
   """This host cannot attribute memory per process (macOS), so a model's ramUsage is required and authoritative rather than advisory."""
@@ -2713,6 +2717,11 @@ input corrallm_SetSecretInputBodyInput {
   name: String!
   """The secret. Empty clears it. NEVER returned by any endpoint."""
   value: String!
+}
+
+input corrallm_SetServerEphemeralInputBodyInput {
+  """true: while it is not reporting in, it reads as away, not as a fault."""
+  ephemeral: Boolean!
 }
 
 input corrallm_SetWarningThresholdInputBodyInput {

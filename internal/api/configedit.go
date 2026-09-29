@@ -588,6 +588,40 @@ func editAuthoredModel(c *config.Config, name string, apply func(*config.Model))
 	return nil
 }
 
+// SetServerEphemeralInput marks a machine as one that comes and goes.
+type SetServerEphemeralInput struct {
+	Name string `path:"name"`
+	Body struct {
+		Ephemeral bool `json:"ephemeral" doc:"true: while it is not reporting in, it reads as away, not as a fault."`
+	}
+}
+
+// SetServerEphemeral sets one field on one server, for the same reason
+// SetModelQueueDepth is one field on one model: it is a button, and a button
+// must not be able to rewrite a machine's pools while claiming to relabel it.
+func (h *Handlers) SetServerEphemeral(ctx context.Context, in *SetServerEphemeralInput) (*ConfigMutationOutput, error) {
+	what := "machine " + in.Name + " marked as coming and going"
+	if !in.Body.Ephemeral {
+		what = "machine " + in.Name + " marked as always on"
+	}
+	err := h.mutateConfig(ctx, what, func(c *config.Config) error {
+		s, ok := c.Servers[in.Name]
+		if !ok {
+			return huma.Error404NotFound("no such server")
+		}
+		s.Ephemeral = in.Body.Ephemeral
+		c.Servers[in.Name] = s
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &ConfigMutationOutput{}
+	out.Body.OK = true
+	out.Body.Message = what
+	return out, nil
+}
+
 // SetModelQueueDepthInput sets one model's queue limit.
 type SetModelQueueDepthInput struct {
 	Name string `path:"name"`

@@ -334,3 +334,24 @@ func TestSaveAcceptsAnAlreadyResolvedConfig(t *testing.T) {
 		t.Fatalf("reading it back: %v", err)
 	}
 }
+
+// A field the server mapper does not project must still come back — ephemeral
+// rides the remainder column, and a button that saves it only for the next
+// reload to drop it would report success and do nothing.
+func TestServerEphemeralSurvives(t *testing.T) {
+	db := openDB(t)
+	ctx := context.Background()
+	in := &config.Config{
+		Servers: map[string]config.Server{"laptop": {Pools: map[string]string{"system": "48GB"}, Ephemeral: true}},
+	}
+	if err := Write(ctx, db, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Read(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Servers["laptop"].Ephemeral {
+		t.Errorf("ephemeral lost in the round trip: %+v", out.Servers["laptop"])
+	}
+}

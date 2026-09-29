@@ -601,6 +601,15 @@ type Server struct {
 	// host silently serves one model at a time forever.
 	NoProcessMemory bool `yaml:"noProcessMemory,omitempty"`
 
+	// Ephemeral marks a machine that comes and goes — a laptop that sleeps,
+	// travels, or leaves the network. While it is not reporting in, the
+	// dashboard reads it as "away", not as a fault.
+	//
+	// It changes what is SAID, not what is done: scheduling already skips a
+	// machine that stopped reporting in, and models placed there fall through
+	// to the next rung exactly as before.
+	Ephemeral bool `yaml:"ephemeral,omitempty"`
+
 	// Notes is free-text the operator keeps ABOUT this entry, carried in the
 	// config and surfaced in the UI beside it.
 	//

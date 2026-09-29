@@ -73,6 +73,7 @@ const ConfigDoc = graphql(/* GraphQL */ `
           agentStatus
           agentLastSeen
           noProcessMemory
+          ephemeral
           notes
           pools {
             pool
@@ -201,10 +202,12 @@ export type Machine = {
   devicePool: string
   maxConcurrent: number
   agentEndpoints: string[]
-  /** up | down | unknown | local. */
+  /** up | down | unknown | away | local. */
   agentStatus: string
   agentLastSeen: number
   noProcessMemory: boolean
+  /** Comes and goes (a laptop): not reporting in is 'away', not a fault. */
+  ephemeral: boolean
   notes: string
   pools: MachinePool[]
   resident: MachineResident[]
@@ -369,6 +372,7 @@ export function derive(data?: Data) {
       agentStatus: s.agentStatus,
       agentLastSeen: num(s.agentLastSeen),
       noProcessMemory: !!s.noProcessMemory,
+      ephemeral: !!s.ephemeral,
       notes: s.notes ?? '',
       pools,
       // A remote model is served by a host corrallm does not run: it holds no
@@ -446,14 +450,17 @@ export function madeRoomNote(m: Machine): string {
 export const AGENT_STATUS_HINT: Record<string, string> = {
   up: 'heartbeating; models can be spawned here',
   down: 'stopped reporting in — new spawns are refused here, but its config and any running backends are left alone',
-  unknown: 'configured but has never reported in; a spawn will be attempted and will say why if it fails',
+  // Last-seen lives in memory, so "unknown" is "not since corrallm started",
+  // not "never" — after a restart a machine that reported in all week reads so.
+  unknown: 'configured but has not reported in since corrallm started; a spawn will be attempted and will say why if it fails',
+  away: 'marked as coming and going, and not here now — its models fall through to the next choice until it reports in',
   local: 'this machine',
 }
 
 export function agentColor(status: string): 'success' | 'error' | 'warning' | 'default' {
   if (status === 'up') return 'success'
   if (status === 'down') return 'error'
-  if (status === 'local') return 'default'
+  if (status === 'local' || status === 'away') return 'default'
   return 'warning'
 }
 

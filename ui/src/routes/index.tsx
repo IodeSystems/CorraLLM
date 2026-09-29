@@ -374,7 +374,9 @@ function faultsOf(
   // 'unknown' means it has never reported at all, which reads to a person as the
   // same thing — the models there will not start.
   for (const s of servers) {
-    if (s.agentStatus === 'up' || s.agentStatus === 'local') continue
+    // 'away' is a machine the operator marked as coming and going: its
+    // absence is expected, so it is not a fault.
+    if (s.agentStatus === 'up' || s.agentStatus === 'local' || s.agentStatus === 'away') continue
     const last = Number(s.agentLastSeen)
     out.push({
       key: `agent:${s.server}`,
@@ -384,7 +386,12 @@ function faultsOf(
       what: `${s.server} is not reporting in`,
       whose: 'That machine, not this one.',
       next: 'Check it is awake and on the network. Nothing new can start there until it reports in; anything already running there is left alone.',
-      when: last > 0 ? `last heard from at ${new Date(last).toLocaleTimeString()}` : 'it has never reported in',
+      // Last-seen is not persisted: 0 means "not since corrallm started", and
+      // saying "never" about a machine that reported in all week is false.
+      when:
+        last > 0
+          ? `last heard from at ${new Date(last).toLocaleTimeString()}`
+          : 'not heard from since corrallm started',
     })
   }
 

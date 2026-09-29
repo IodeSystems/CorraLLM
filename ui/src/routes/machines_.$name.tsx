@@ -1,5 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { graphql } from '@/gql'
+import { gqlClient } from '@/gqlClient'
 import { Alert, Box, Button, Chip, Stack, Tab, Tabs, Tooltip, Typography } from '@mui/material'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
@@ -42,6 +45,57 @@ import {
  * The tab is in the URL (?tab=memory) so it is linkable and survives a reload —
  * the same pattern as /m/<name>.
  */
+
+const SetEphemeralDoc = graphql(/* GraphQL */ `
+  mutation SetServerEphemeral($name: String!, $body: corrallm_SetServerEphemeralInputBodyInput!) {
+    corrallm {
+      setServerEphemeral(name: $name, body: $body) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
+/**
+ * A laptop is not a server that keeps failing. Marking it as coming and going
+ * turns its absence from a fault into "away" — on Now, here, and on /machines.
+ * Scheduling does not change: its models already fall through while it is gone.
+ */
+function EphemeralButton({ m }: { m: Machine }) {
+  const qc = useQueryClient()
+  const set = useMutation({
+    mutationFn: (ephemeral: boolean) =>
+      gqlClient.request(SetEphemeralDoc, { name: m.server, body: { ephemeral } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['config'] }),
+  })
+  if (m.agentStatus === 'local') return null
+  return (
+    <>
+      <Tooltip
+        title={
+          m.ephemeral
+            ? 'Treat it as always on again: while it is not reporting in, that is a fault on Now.'
+            : 'For a machine that sleeps or leaves the network. While it is not reporting in, it reads as away, not as a fault. Nothing about scheduling changes.'
+        }
+      >
+        <Button
+          size="small"
+          variant="outlined"
+          disabled={set.isPending}
+          onClick={() => set.mutate(!m.ephemeral)}
+        >
+          {m.ephemeral ? 'Mark as always on' : 'Mark as coming and going'}
+        </Button>
+      </Tooltip>
+      {set.isError && (
+        <Typography variant="caption" sx={{ color: C.warn }}>
+          Did not save: {extractMessage(set.error)}
+        </Typography>
+      )}
+    </>
+  )
+}
 
 const TABS = ['overview', 'memory', 'tooling'] as const
 type TabName = (typeof TABS)[number]
@@ -149,6 +203,7 @@ function MachinePage() {
           </Tooltip>
         )}
         <Box sx={{ flexGrow: 1 }} />
+        <EphemeralButton m={m} />
         <Tooltip title="Edit this machine's declared pools and reserve. Changes what it may admit NEXT; nothing already running is touched.">
           <Button size="small" variant="outlined" onClick={openEditor}>
             Edit host
@@ -204,9 +259,11 @@ function OverviewTab({ m }: { m: Machine }) {
             <Stat
               label="last heard from"
               value={
-                m.agentLastSeen > 0 ? new Date(m.agentLastSeen).toLocaleTimeString() : 'never'
+                m.agentLastSeen > 0
+                  ? new Date(m.agentLastSeen).toLocaleTimeString()
+                  : 'not since corrallm started'
               }
-              title="The last heartbeat. A machine that has never reported in is configured but unproven."
+              title="The last heartbeat. It is kept in memory only, so a restart of corrallm forgets it until the machine next reports in."
             />
           )}
           <Stat

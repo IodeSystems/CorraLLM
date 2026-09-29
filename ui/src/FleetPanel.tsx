@@ -158,10 +158,17 @@ function MachineLine({ s, resident, declared }: { s: FleetServer; resident: Flee
           the scheduler's own accounting and is not wrong — but it is no longer
           being corrected by the machine it describes, and a bar that looks live
           when it is not is the thing that rule exists to stop. */}
-      {s.agentStatus !== 'local' && s.agentStatus !== 'up' && (
-        <Typography variant="caption" sx={{ color: C.warn }}>
-          not reporting in — this is the last accounting, not a live reading
+      {s.agentStatus === 'away' ? (
+        <Typography variant="caption" sx={{ color: C.textFaint }}>
+          away — it comes and goes; this is the last accounting, not a live reading
         </Typography>
+      ) : (
+        s.agentStatus !== 'local' &&
+        s.agentStatus !== 'up' && (
+          <Typography variant="caption" sx={{ color: C.warn }}>
+            not reporting in — this is the last accounting, not a live reading
+          </Typography>
+        )
       )}
       <Box sx={{ flexGrow: 1 }} />
       <Typography variant="caption" sx={{ color: C.textMuted }}>

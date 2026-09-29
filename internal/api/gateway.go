@@ -491,6 +491,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.SetModelQueueDepth)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "setServerEphemeral",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/servers/{name}/ephemeral",
+		Summary:     "Mark a machine as one that comes and goes (a laptop): while it is not reporting in it reads as away, not as a fault. Scheduling is unchanged.",
+		Tags:        []string{"config"},
+	}, h.SetServerEphemeral)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "setModelMaxWait",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/models/{name}/max-wait",
