@@ -18,6 +18,7 @@ import { gqlClient } from '@/gqlClient'
 import { Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtDuration, fmtInt, fmtKwh, fmtUSD } from '@/format'
+import { SuppressButton } from '@/WarningControls'
 
 /**
  * ONE ROW PER MODEL, saying what it did and what it cost to reach it.
@@ -52,6 +53,17 @@ const SetQueueDepthDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const SetMaxWaitDoc = graphql(/* GraphQL */ `
+  mutation SetMaxWait($name: String!, $body: corrallm_SetModelMaxWaitInputBodyInput!) {
+    corrallm {
+      setModelMaxWait(name: $name, body: $body) {
+        ok
+        message
+      }
+    }
+  }
+`)
+
 const ModelStatsDoc = graphql(/* GraphQL */ `
   query ModelStats($minutes: Long!, $windowHours: Long!, $from: Long, $to: Long) {
     corrallm {
@@ -79,6 +91,8 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           configuredDepth
           reachableDepth
           depthUnreachable
+          allowedWaitMs
+          waitForDepthMs
         }
       }
       usageRollup(windowHours: $windowHours, from: $from, to: $to) {
@@ -174,7 +188,12 @@ type SpendRow = NonNullable<
 
 export type ClashRow = Pick<
   UtilRow,
-  'served' | 'configuredDepth' | 'reachableDepth' | 'depthUnreachable'
+  | 'served'
+  | 'configuredDepth'
+  | 'reachableDepth'
+  | 'depthUnreachable'
+  | 'allowedWaitMs'
+  | 'waitForDepthMs'
 >
 
 /** Models the window knows about, from either side, busiest first. */
@@ -226,68 +245,96 @@ function Rate({ v, what }: { v: number; what: string }) {
 }
 
 /**
- * TWO SETTINGS THAT CONTRADICT EACH OTHER, and the control that ends it.
+ * TWO SETTINGS THAT CONTRADICT EACH OTHER, and the controls that end it.
  *
- * It writes THIS model's queue limit and nothing else. That was impossible until
- * the bound could be set per model: the reachable depth is one model's
- * arithmetic, so the value that stops a slow model promising a queue slot it
- * cannot honour would turn away callers of every fast model if it were set
- * box-wide — which is why this could name the fix for weeks and only describe it.
+ * A queue clash is one model's arithmetic — reachable depth is capacity ×
+ * maxWait / meanService — so both ways out are per model: lower THIS model's
+ * queue limit to what its wait allows, or raise THIS model's wait to what its
+ * limit needs. Neither touches the box-wide settings or any other model. The
+ * wait used to be named here as a box-wide Setup change and left as a
+ * sentence; a per-model maxWait override made it a button.
+ *
+ * Lowering the limit is not offered when the reachable depth is 0: a limit of
+ * 0 means "inherit the box-wide limit", so the button would write the clash
+ * straight back.
  */
 export function QueueDepthClash({ rows }: { rows: readonly ClashRow[] }) {
   const qc = useQueryClient()
+  const onSuccess = () => qc.invalidateQueries({ queryKey: ['activity'] })
   const setDepth = useMutation({
     mutationFn: (v: { name: string; depth: number }) =>
       // Long crosses the wire as a string in the generated types.
       gqlClient.request(SetQueueDepthDoc, { name: v.name, body: { maxQueueDepth: String(v.depth) } }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['activity'] }),
+    onSuccess,
+  })
+  const setWait = useMutation({
+    mutationFn: (v: { name: string; waitMs: number }) =>
+      gqlClient.request(SetMaxWaitDoc, {
+        name: v.name,
+        body: { maxWait: `${Math.round(v.waitMs / 1000)}s` },
+      }),
+    onSuccess,
   })
   if (rows.length === 0) return null
-  const first = rows[0]
+  const busy = setDepth.isPending || setWait.isPending
+  const error = setDepth.error ?? setWait.error
   return (
     <Box>
       <Typography variant="body2" sx={{ color: C.warn }}>
         {rows.length === 1
-          ? `${first.served} has two settings that contradict each other.`
+          ? `${rows[0].served} has two settings that contradict each other.`
           : `${rows.length} models have two settings that contradict each other.`}{' '}
-        Its queue is allowed to hold {first.configuredDepth} waiters, but the longest wait it
-        permits only fits {first.reachableDepth} at the speed it is answering — so the queue never
-        fills and callers time out instead of being told to come back.
+        A model&apos;s queue limit says how many callers may wait; its longest allowed wait says
+        how long each may wait. When the wait runs out before the queue fills, callers time out
+        instead of being told when to come back.
       </Typography>
       <Typography variant="body2" sx={{ color: C.textMuted, mt: 0.5 }}>
-        Leaving it alone costs a clear &quot;come back at 14:02&quot; — callers get a timeout
-        instead. The button sets <b>this model&apos;s</b> queue limit to {first.reachableDepth}, the
-        number it can actually reach. Nobody waits any longer than they do now, no other model
-        changes, and a request already running is unaffected — the next caller past the limit is
-        told to come back instead of waiting for a timeout. It takes effect at once.
+        Two fixes, each for that model only. <b>Lower the queue limit</b> to what the wait allows:
+        the next caller past it is told to come back at a set time. <b>Raise the longest wait</b>{' '}
+        to what the limit needs: every waiter fits, and each may wait up to the new time. Other
+        models keep their settings. A request already running is unaffected. Both take effect at
+        once.
       </Typography>
-      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mt: 1, flexWrap: 'wrap' }}>
-        {rows.map((r) => (
-          <Button
-            key={r.served}
-            size="small"
-            variant="outlined"
-            disabled={setDepth.isPending || Number(r.reachableDepth) < 1}
-            onClick={() => setDepth.mutate({ name: r.served, depth: Number(r.reachableDepth) })}
-          >
-            {setDepth.isPending
-              ? 'Setting…'
-              : rows.length === 1
-                ? `Set the queue limit to ${r.reachableDepth}`
-                : `${r.served}: set to ${r.reachableDepth}`}
-          </Button>
-        ))}
-        {/* The other lever stays a sentence, because it is box-wide and should
-            not be one click: raising the wait makes callers of every model wait
-            longer, and llm-bench's stall guard is derived from it. */}
-        <Typography variant="caption" sx={{ color: C.textFaint }}>
-          or raise the longest allowed wait on Setup — box-wide, so it slows every model&apos;s
-          &quot;come back&quot; for every caller.
-        </Typography>
-      </Box>
-      {setDepth.isError && (
+      {rows.map((r) => {
+        const reach = Number(r.reachableDepth)
+        const need = Number(r.waitForDepthMs)
+        return (
+          <Box key={r.served} sx={{ mt: 1 }}>
+            <Typography variant="body2">
+              <b>{r.served}</b>: limit {r.configuredDepth}, longest wait{' '}
+              {Number(r.allowedWaitMs) > 0 ? fmtDuration(Number(r.allowedWaitMs)) : 'unbounded'}, which
+              fits {reach} at the speed it is answering.
+              {reach < 1 && ' It cannot hold even one waiter, so only a longer wait fixes it.'}
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mt: 0.5, flexWrap: 'wrap' }}>
+              {reach >= 1 && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={busy}
+                  onClick={() => setDepth.mutate({ name: r.served, depth: reach })}
+                >
+                  {setDepth.isPending ? 'Setting…' : `Lower the queue limit to ${reach}`}
+                </Button>
+              )}
+              {need > 0 && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={busy}
+                  onClick={() => setWait.mutate({ name: r.served, waitMs: need })}
+                >
+                  {setWait.isPending ? 'Setting…' : `Raise the longest wait to ${fmtDuration(need)}`}
+                </Button>
+              )}
+              <SuppressButton kind="queue-clash" subject={r.served} />
+            </Box>
+          </Box>
+        )
+      })}
+      {error && (
         <Typography variant="body2" sx={{ color: C.warn, mt: 1 }}>
-          That did not save: {String(setDepth.error)}. Nothing changed.
+          That did not save: {String(error)}. Nothing changed.
         </Typography>
       )}
     </Box>

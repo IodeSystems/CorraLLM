@@ -403,13 +403,14 @@ type RetryPromisesOutput struct {
 // these times. Whether that is bad depends on what the box is for, which the
 // reader knows and this does not.
 type SlowSpellView struct {
-	Count       int64 `json:"count" doc:"Requests that ran past the threshold. 0 means nothing stood out."`
-	ThresholdMS int64 `json:"thresholdMs" doc:"What counted as far past the average."`
-	MeanMS      int64 `json:"meanMs" doc:"Mean dwell of served requests in the window."`
-	FirstMS     int64 `json:"firstMs" doc:"When the first of them landed."`
-	LastMS      int64 `json:"lastMs" doc:"When the last did."`
-	WorstMS     int64 `json:"worstMs" doc:"The slowest single request."`
-	WorstAtMS   int64 `json:"worstAtMs" doc:"And when it was — the time a person can go and look at."`
+	Multiple    float64 `json:"multiple" doc:"The multiple of the mean that counted as far past it: the default, or the operator's tolerance."`
+	Count       int64   `json:"count" doc:"Requests that ran past the threshold. 0 means nothing stood out."`
+	ThresholdMS int64   `json:"thresholdMs" doc:"What counted as far past the average."`
+	MeanMS      int64   `json:"meanMs" doc:"Mean dwell of served requests in the window."`
+	FirstMS     int64   `json:"firstMs" doc:"When the first of them landed."`
+	LastMS      int64   `json:"lastMs" doc:"When the last did."`
+	WorstMS     int64   `json:"worstMs" doc:"The slowest single request."`
+	WorstAtMS   int64   `json:"worstAtMs" doc:"And when it was — the time a person can go and look at."`
 }
 
 // UnansweredRow is one served name's tally of requests that got nothing.
@@ -544,12 +545,21 @@ func (h *Handlers) RetryPromises(_ context.Context, in *RetryPromisesInput) (*Re
 	}
 	// Same window again, for the same reason: the verdict and the thing that
 	// qualifies it must describe one span of time.
-	spell, err := h.Store.SlowSpell(w)
+	// The operator's tolerance, if they set one from the warning.
+	multiple, err := h.Store.WarningThreshold(WarnSlowStretch)
+	if err != nil {
+		return nil, err
+	}
+	if multiple <= 0 {
+		multiple = store.SlowSpellMultiple
+	}
+	spell, err := h.Store.SlowSpell(w, multiple)
 	if err != nil {
 		return nil, err
 	}
 	out.Body.SlowSpell = SlowSpellView{
-		Count: spell.Count, ThresholdMS: spell.ThresholdMS, MeanMS: spell.MeanMS,
+		Multiple: multiple,
+		Count:    spell.Count, ThresholdMS: spell.ThresholdMS, MeanMS: spell.MeanMS,
 		FirstMS: spell.FirstMS, LastMS: spell.LastMS,
 		WorstMS: spell.WorstMS, WorstAtMS: spell.WorstAtMS,
 	}
@@ -627,9 +637,11 @@ type UtilizationRow struct {
 	PKSaturated    bool    `json:"pkSaturated" doc:"Utilization reached or passed 1 over the window: arrivals outpaced service and no finite steady-state wait exists."`
 
 	// Whether the configured queue bound can ever actually bind here.
-	ConfiguredDepth  int  `json:"configuredDepth" doc:"scheduler.maxQueueDepth as configured (0 = unbounded)."`
-	ReachableDepth   int  `json:"reachableDepth" doc:"How deep the queue can get before maxWait times the front waiter out: capacity × maxWait / meanService. 0 if not computable."`
-	DepthUnreachable bool `json:"depthUnreachable" doc:"Configured depth exceeds what maxWait allows — the depth bound is dead config, callers always time out first."`
+	ConfiguredDepth  int   `json:"configuredDepth" doc:"scheduler.maxQueueDepth as configured (0 = unbounded)."`
+	ReachableDepth   int   `json:"reachableDepth" doc:"How deep the queue can get before maxWait times the front waiter out: capacity × maxWait / meanService. 0 if not computable."`
+	DepthUnreachable bool  `json:"depthUnreachable" doc:"Configured depth exceeds what maxWait allows — the depth bound is dead config, callers always time out first."`
+	AllowedWaitMS    int64 `json:"allowedWaitMs" doc:"The longest queue wait that applies to this model — its own override, or the box-wide one. 0 = unbounded."`
+	WaitForDepthMS   int64 `json:"waitForDepthMs" doc:"The maxWait at which the configured depth becomes reachable: depth × meanService / capacity, rounded up to a whole second. 0 if not computable."`
 }
 
 // UtilizationMember is one rung of a lane, with enough state to answer the two
@@ -867,6 +879,8 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 				// cannot exist.
 				r.DepthUnreachable = depth > 0 && depth > r.ReachableDepth
 			}
+			r.AllowedWaitMS = maxWait.Milliseconds()
+			r.WaitForDepthMS = waitForDepthMS(depth, r.Capacity, s.MeanMS)
 		}
 	}
 

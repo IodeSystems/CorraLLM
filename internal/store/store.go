@@ -7,6 +7,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -329,6 +330,25 @@ CREATE TABLE IF NOT EXISTS model_pause (
     reason    TEXT    NOT NULL DEFAULT '',  -- free text: why it is off
     at        INTEGER NOT NULL DEFAULT 0,   -- unix millis the pause was set
     resume_at INTEGER NOT NULL DEFAULT 0    -- unix millis it lifts; 0 = indefinite
+);
+
+-- warning_pref: what the operator said about one dashboard warning — hide it
+-- for a while, or only raise it past a threshold. Operational state, not config:
+-- it changes nothing about how a request is served, only what the Warnings panel
+-- chooses to say.
+--
+-- The key is (kind, subject). Subject is a served model name for a warning that
+-- belongs to one model (a queue clash), and '' for one that is box-wide. A
+-- suppression on one model does not hide the same kind of warning on another:
+-- a second model clashing is new information.
+--
+-- A row with both columns at their zero values says nothing and is deleted.
+CREATE TABLE IF NOT EXISTS warning_pref (
+    kind           TEXT    NOT NULL,
+    subject        TEXT    NOT NULL DEFAULT '',
+    suppress_until INTEGER NOT NULL DEFAULT 0, -- unix millis; 0 = not suppressed; -1 = forever
+    threshold      REAL    NOT NULL DEFAULT 0, -- 0 = the built-in default
+    PRIMARY KEY (kind, subject)
 );
 `
 
@@ -1633,6 +1653,85 @@ func (s *Store) LoadPauses() ([]ModelPause, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// SuppressForever is the suppress_until value that never lapses.
+const SuppressForever int64 = -1
+
+// WarningPref is one row of warning_pref.
+type WarningPref struct {
+	Kind            string
+	Subject         string
+	SuppressUntilMS int64   // 0 = not suppressed; SuppressForever = never lapses
+	Threshold       float64 // 0 = the built-in default
+}
+
+// SuppressedAt reports whether the suppression is in force at nowMS.
+func (p WarningPref) SuppressedAt(nowMS int64) bool {
+	return p.SuppressUntilMS == SuppressForever || p.SuppressUntilMS > nowMS
+}
+
+// SetWarningSuppress hides one warning until untilMS (SuppressForever for
+// good), or lifts the suppression when untilMS is 0. The threshold on the same
+// row is kept.
+func (s *Store) SetWarningSuppress(kind, subject string, untilMS int64) error {
+	if _, err := s.db.Exec(`
+INSERT INTO warning_pref (kind, subject, suppress_until) VALUES (?,?,?)
+ON CONFLICT(kind, subject) DO UPDATE SET suppress_until=excluded.suppress_until`,
+		kind, subject, untilMS); err != nil {
+		return err
+	}
+	return s.dropEmptyWarningPref(kind, subject)
+}
+
+// SetWarningThreshold sets what a warning must reach before it is raised, or
+// returns it to the built-in default when threshold is 0. A suppression on the
+// same row is kept.
+func (s *Store) SetWarningThreshold(kind, subject string, threshold float64) error {
+	if _, err := s.db.Exec(`
+INSERT INTO warning_pref (kind, subject, threshold) VALUES (?,?,?)
+ON CONFLICT(kind, subject) DO UPDATE SET threshold=excluded.threshold`,
+		kind, subject, threshold); err != nil {
+		return err
+	}
+	return s.dropEmptyWarningPref(kind, subject)
+}
+
+func (s *Store) dropEmptyWarningPref(kind, subject string) error {
+	_, err := s.db.Exec(`DELETE FROM warning_pref
+		WHERE kind = ? AND subject = ? AND suppress_until = 0 AND threshold = 0`, kind, subject)
+	return err
+}
+
+// WarningPrefs returns every row, lapsed suppressions included: whether a
+// suppression is still in force is a question about the clock, and the caller
+// owns the clock.
+func (s *Store) WarningPrefs() ([]WarningPref, error) {
+	rows, err := s.db.Query(`SELECT kind, subject, suppress_until, threshold FROM warning_pref
+		ORDER BY kind, subject`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []WarningPref
+	for rows.Next() {
+		var p WarningPref
+		if err := rows.Scan(&p.Kind, &p.Subject, &p.SuppressUntilMS, &p.Threshold); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// WarningThreshold is one kind's box-wide threshold, or 0 when none is set.
+func (s *Store) WarningThreshold(kind string) (float64, error) {
+	var v float64
+	err := s.db.QueryRow(`SELECT threshold FROM warning_pref WHERE kind = ? AND subject = ''`, kind).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return v, err
 }
 
 // DB exposes the underlying handle for query layers added in later phases.

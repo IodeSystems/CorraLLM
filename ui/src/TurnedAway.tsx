@@ -71,6 +71,7 @@ const TurnedAwayDoc = graphql(/* GraphQL */ `
           endedEarly
         }
         slowSpell {
+          multiple
           count
           thresholdMs
           meanMs
@@ -188,6 +189,7 @@ export function Unanswered({ refused, endedEarly }: { refused: number; endedEarl
 }
 
 export type SpellShape = {
+  multiple?: number
   count: number | string
   thresholdMs: number | string
   meanMs: number | string

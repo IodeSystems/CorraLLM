@@ -130,14 +130,17 @@ type SlowSpell struct {
 	WorstAtMS   int64 // and when it was
 }
 
-// slowSpellMultiple is how far past the mean a request must run to be part of a
+// SlowSpellMultiple is how far past the mean a request must run to be part of a
 // spell.
 //
 // Three, because it has to clear ordinary spread rather than mark it. This box
 // runs a coefficient of variation near 1.5 — a few long requests already
 // dominate the average — so 2x would flag a normal hour and train the reader to
 // scroll past the one sentence written to stop them scrolling past it.
-const slowSpellMultiple = 3
+//
+// It is the DEFAULT. The operator can raise it from the warning itself, because
+// "far past" on a batch queue is not "far past" on an interactive one.
+const SlowSpellMultiple = 3
 
 // SlowSpell finds the slow stretch in a window, if there was one.
 //
@@ -146,8 +149,13 @@ const slowSpellMultiple = 3
 // make the threshold it defines too easy to clear), and SQLite's older builds
 // in the field cannot be relied on for window functions.
 //
+// multiple is how far past the mean counts; 0 or less uses SlowSpellMultiple.
+//
 // Count 0 means nothing stood out, which is the normal answer.
-func (s *Store) SlowSpell(w Window) (SlowSpell, error) {
+func (s *Store) SlowSpell(w Window, multiple float64) (SlowSpell, error) {
+	if multiple <= 0 {
+		multiple = SlowSpellMultiple
+	}
 	where, args := w.ts()
 	var out SlowSpell
 	var mean sql.NullFloat64
@@ -161,7 +169,7 @@ func (s *Store) SlowSpell(w Window) (SlowSpell, error) {
 		return out, nil
 	}
 	out.MeanMS = int64(mean.Float64)
-	out.ThresholdMS = int64(mean.Float64 * slowSpellMultiple)
+	out.ThresholdMS = int64(mean.Float64 * multiple)
 
 	var count sql.NullInt64
 	var first, last, worst, worstAt sql.NullInt64

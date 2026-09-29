@@ -46,9 +46,12 @@ type CorrallmMutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
+  setModelMaxWait(body: corrallm_SetModelMaxWaitInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelMaxWait")
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
+  setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
   toolActivate(body: corrallm_ToolActivateInputBodyInput!): corrallm_ToolActivateOutputBody @derived(operationId: "toolActivate")
   toolBuildStart(body: corrallm_ToolBuildStartInputBodyInput!): corrallm_ToolBuildStartOutputBody @derived(operationId: "toolBuildStart")
   toolPin(body: corrallm_ToolPinInputBodyInput!): corrallm_ToolPinOutputBody @derived(operationId: "toolPin")
@@ -332,6 +335,7 @@ type CorrallmQueryNamespace {
     to: Long
   ): corrallm_UtilizationOutputBody @derived(operationId: "utilization")
   v1: CorrallmV1QueryNamespace!
+  warningPrefs: corrallm_WarningPrefsOutputBody @derived(operationId: "warningPrefs")
 }
 
 type CorrallmV1MutationNamespace {
@@ -375,9 +379,12 @@ type CorrallmV1MutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
+  setModelMaxWait(body: corrallm_SetModelMaxWaitInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelMaxWait")
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
+  setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
+  suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
   toolActivate(body: corrallm_ToolActivateInputBodyInput!): corrallm_ToolActivateOutputBody @derived(operationId: "toolActivate")
   toolBuildStart(body: corrallm_ToolBuildStartInputBodyInput!): corrallm_ToolBuildStartOutputBody @derived(operationId: "toolBuildStart")
   toolPin(body: corrallm_ToolPinInputBodyInput!): corrallm_ToolPinOutputBody @derived(operationId: "toolPin")
@@ -659,6 +666,7 @@ type CorrallmV1QueryNamespace {
     """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
     to: Long
   ): corrallm_UtilizationOutputBody @derived(operationId: "utilization")
+  warningPrefs: corrallm_WarningPrefsOutputBody @derived(operationId: "warningPrefs")
 }
 
 """Untyped JSON value (used as a fallback for OpenAPI schemas that can't be mapped exactly)."""
@@ -2690,6 +2698,11 @@ type corrallm_ServiceProfilesOutputBody {
   rows: [corrallm_ServiceProfileRow!]!
 }
 
+input corrallm_SetModelMaxWaitInputBodyInput {
+  """A Go duration, e.g. "45s". Empty clears the override and returns the model to the box-wide wait."""
+  maxWait: String!
+}
+
 input corrallm_SetModelQueueDepthInputBodyInput {
   """How many callers may wait on this model before the next is turned away. 0 clears the override and returns it to the box-wide limit."""
   maxQueueDepth: Long!
@@ -2702,6 +2715,12 @@ input corrallm_SetSecretInputBodyInput {
   value: String!
 }
 
+input corrallm_SetWarningThresholdInputBodyInput {
+  kind: String!
+  """turned-away / unanswered / open-callers: raise it only above this many. slow-stretch: the multiple of the mean a request must pass. 0 returns to the default."""
+  threshold: Float!
+}
+
 type corrallm_SlowSpellView {
   """Requests that ran past the threshold. 0 means nothing stood out."""
   count: Long!
@@ -2711,6 +2730,8 @@ type corrallm_SlowSpellView {
   lastMs: Long!
   """Mean dwell of served requests in the window."""
   meanMs: Long!
+  """The multiple of the mean that counted as far past it: the default, or the operator's tolerance."""
+  multiple: Float!
   """What counted as far past the average."""
   thresholdMs: Long!
   """And when it was — the time a person can go and look at."""
@@ -2724,6 +2745,18 @@ type corrallm_StageView {
   policy: String!
   """Backend type (or "default")."""
   type: String!
+}
+
+input corrallm_SuppressWarningInputBodyInput {
+  """Hide it with no end."""
+  forever: Boolean
+  kind: String!
+  """Show it again now. Overrides minutes and forever."""
+  lift: Boolean
+  """How long to hide it. 0 with forever unset uses the default of one day."""
+  minutes: Long
+  """Served model, for a per-model kind."""
+  subject: String
 }
 
 input corrallm_ToolActivateInputBodyInput {
@@ -3052,6 +3085,8 @@ type corrallm_UtilizationOutputBody {
 type corrallm_UtilizationRow {
   """Slots in use right now."""
   active: Long!
+  """The longest queue wait that applies to this model — its own override, or the box-wide one. 0 = unbounded."""
+  allowedWaitMs: Long!
   """Admission slots across this name's backends; 0 if none has been touched since start."""
   capacity: Long!
   """scheduler.maxQueueDepth as configured (0 = unbounded)."""
@@ -3094,6 +3129,8 @@ type corrallm_UtilizationRow {
   serviceSamples: Long!
   """Total promises made in the window, whatever became of them."""
   turnedAway: Long!
+  """The maxWait at which the configured depth becomes reachable: depth × meanService / capacity, rounded up to a whole second. 0 if not computable."""
+  waitForDepthMs: Long!
   """Callers queued right now."""
   waiting: Long!
 }
@@ -3144,4 +3181,25 @@ type corrallm_VirtualProviderView {
   models: Long!
   """Member providers whose catalogues it draws on."""
   sources: [String!]!
+}
+
+type corrallm_WarningPrefView {
+  """queue-clash | turned-away | unanswered | slow-stretch | open-callers."""
+  kind: String!
+  """Served model for a per-model kind; empty for a box-wide one."""
+  subject: String!
+  """Hidden from the Warnings panel right now."""
+  suppressed: Boolean!
+  """Suppressed with no end."""
+  suppressedForever: Boolean!
+  """When the suppression lapses, unix millis. 0 when not suppressed or suppressed forever."""
+  suppressedUntilMs: Long!
+  """What the warning must reach before it is raised. 0 = the built-in default."""
+  threshold: Float!
+}
+
+type corrallm_WarningPrefsOutputBody {
+  prefs: [corrallm_WarningPrefView!]!
+  """The built-in slow-stretch multiple of the mean."""
+  slowStretchDefault: Float!
 }

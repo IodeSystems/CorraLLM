@@ -39,7 +39,7 @@ func TestSlowSpellFindsTheStretchTheMeanHides(t *testing.T) {
 		add(t, st, base+500_000+i*1000, 36_000, 200)
 	}
 
-	got, err := st.SlowSpell(Window{})
+	got, err := st.SlowSpell(Window{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestSlowSpellIsSilentOnAnOrdinaryWindow(t *testing.T) {
 		// Ordinary spread, nothing past 3x the mean.
 		add(t, st, base+i*1000, 1_000+(i%5)*300, 200)
 	}
-	got, err := st.SlowSpell(Window{})
+	got, err := st.SlowSpell(Window{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestSlowSpellIgnoresRejectionsWhenAveraging(t *testing.T) {
 	for i := int64(0); i < 500; i++ {
 		add(t, st, base+100_000+i*100, 2, 429) // turned away instantly
 	}
-	got, err := st.SlowSpell(Window{})
+	got, err := st.SlowSpell(Window{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestSlowSpellIgnoresRejectionsWhenAveraging(t *testing.T) {
 // An empty window is not an incident.
 func TestSlowSpellOnNothing(t *testing.T) {
 	st := spellStore(t)
-	got, err := st.SlowSpell(Window{})
+	got, err := st.SlowSpell(Window{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

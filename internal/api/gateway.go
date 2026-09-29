@@ -491,6 +491,38 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.SetModelQueueDepth)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "setModelMaxWait",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/models/{name}/max-wait",
+		Summary:     "Give one model its own longest queue wait (empty clears it, returning the model to the box-wide wait).",
+		Tags:        []string{"config"},
+	}, h.SetModelMaxWait)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "warningPrefs",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/warnings/prefs",
+		Summary:     "Dashboard warnings the operator has hidden or given a threshold.",
+		Tags:        []string{"observability"},
+	}, h.WarningPrefs)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "suppressWarning",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/warnings/suppress",
+		Summary:     "Hide one dashboard warning for a while or for good, or show it again. Changes nothing the box does.",
+		Tags:        []string{"observability"},
+	}, h.SuppressWarning)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "setWarningThreshold",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/warnings/threshold",
+		Summary:     "Set what a box-wide dashboard warning must reach before it is raised (0 = default). Changes nothing the box does.",
+		Tags:        []string{"observability"},
+	}, h.SetWarningThreshold)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "pauseModel",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/models/pause",

@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P37.**
+**Next free number: P38.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -69,7 +69,7 @@ A slice is ✅ **only** when its functional unit meets the Definition of done be
 `done.md` = the archive of finished trees, kept for evidence and traps, never a to-do list.
 `icebox.md` = deferred, opt-in next-steps. `open-questions.md` = decisions that need the USER,
 and **only while they are open** — a resolved question is deleted from it and its answer written
-into the plan item that needed it. **Phase numbers come from git history** — next free is P37.
+into the plan item that needed it. **Phase numbers come from git history** — next free is P38.
 
 **Re-check a question against the box before you ask it.** On 2026-08-24, six of eight standing
 "user decisions" turned out to be already answered by the running system, the migrated config, or
@@ -326,6 +326,46 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P37 — every warning can be hidden or tuned; the queue clash gets its wait fix — 2026-09-29
+
+The owner, on a clash with reachable depth 0: *"I don't have the action to increase wait time as
+a solution. Also, I'd like a suppress (forever, time (default 1 day)) … We should be allowed to
+suppress, or increase tolerance."* The only button was "set the queue limit to 0", disabled below
+1 — and a limit of 0 means *inherit*, so it would have written the clash back. The text also
+called the wait fix "box-wide"; it is not, `Model.Scheduler.MaxWait` is a per-model override.
+
+Built, deployed 2026-09-29 (`bin/deploy -y`):
+- `warning_pref` table (kind, subject → suppress_until, threshold). Operational state, not config.
+  Subject = served model for `queue-clash`, `''` for the box-wide kinds.
+- API: `warningPrefs` (GET), `suppressWarning` (minutes | forever | lift; default 1 day),
+  `setWarningThreshold`, `setModelMaxWait` (`/models/{name}/max-wait`).
+- Utilization rows carry `allowedWaitMs` + `waitForDepthMs` (depth × meanService / capacity,
+  rounded up to a second). Slow-stretch multiple (was const 3) reads the operator's threshold.
+- UI: every Warnings row has *Hide for 1 day ▾* (1 h / 1 day / 1 week / until shown); count kinds
+  (turned-away, unanswered, open-callers) take "warn only above N"; slow-stretch takes the
+  multiple; the clash row gets *Raise the longest wait to Xs* per model. Hidden warnings list at
+  the bottom with *Show again*.
+
+- UI: the footer ("Changed here, still in the tables below") also lists every threshold with
+  *Back to the default*. Found in the browser check: a threshold hides its own line, and the
+  line's controls leave with it, so without the footer it could only be undone via the API.
+
+Verified live, 24 h window: the clash row for local-Swift-Qwen3.8-27B reads limit 1, wait 15.0 s,
+fits 0, and offers only *Raise the longest wait to 20.0 s* (the 60-min window has no clash:
+mean 14.6 s fits). Hide 1 hour → count 5→4, footer entry, *Show again* restores it. Turned-away
+threshold 5000 → line gone, footer entry, *Back to the default* restores it. Store empty after.
+
+- **next:** the owner presses *Raise the longest wait* (a live config change, not pressed in
+  the check); confirm the clash clears on the next utilization read. Then → done.md.
+- **risks:** thresholds hide only the panel line — the tables below still show everything
+  (intended). The slow-stretch multiple also changes the Turned-away panel's own slow-stretch
+  line, since both read the same server field. `waitForDepthMs` uses the window's mean service
+  time; a shifting mean can re-open the clash after the fix.
+- **blocking decisions:** none.
+- **assumptions:** thresholds are box-wide per kind (owner chose this); suppression is per kind +
+  model only for queue-clash, the others are sums over the box.
+- **optional extensions:** per-model thresholds; a note field on a suppression (why it was hidden).
 
 ### ◐ P36 — true costs: electricity, a comparison, and the cache read — 2026-09-25
 

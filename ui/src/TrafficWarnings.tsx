@@ -1,10 +1,12 @@
-import { Chip, Stack, Typography } from '@mui/material'
+import type React from 'react'
+import { Box, Chip, Stack, Typography } from '@mui/material'
 import { DEFAULT_WINDOW, windowPhrase, type TimeWindow } from '@/TimeWindow'
 import { Panel, Row } from '@/Panel'
 import { C } from '@/theme'
 import { fmtInt } from '@/format'
 import { QueueDepthClash, useModelStats } from '@/ModelStats'
 import { SlowStretch, Unanswered, unansweredTotals, useTurnedAway } from '@/TurnedAway'
+import { HiddenWarnings, SuppressButton, ThresholdButton, useWarningPrefs } from '@/WarningControls'
 
 /**
  * WHAT WENT WRONG IN THIS WINDOW, at the top, before anything it went wrong to.
@@ -21,7 +23,10 @@ import { SlowStretch, Unanswered, unansweredTotals, useTurnedAway } from '@/Turn
  * each one still has its table further down for whoever wants the rows.
  *
  * It reports and does not judge. Whether four rejections in an hour is bad
- * depends on what the box is for, which the reader knows and this does not.
+ * depends on what the box is for, which the reader knows and this does not —
+ * so every line can be hidden for a while, and every count can be given a
+ * threshold it must pass. Both change only this panel; the tables below it
+ * still show every row.
  */
 export function TrafficWarnings({
   window = DEFAULT_WINDOW,
@@ -32,9 +37,12 @@ export function TrafficWarnings({
 }) {
   const models = useModelStats(window)
   const away = useTurnedAway({ window, filterKey })
+  const prefs = useWarningPrefs()
 
   const util = models.data?.corrallm.utilization?.rows ?? []
-  const clashing = util.filter((r) => r.depthUnreachable)
+  const clashing = util.filter(
+    (r) => r.depthUnreachable && !prefs.suppressed('queue-clash', r.served),
+  )
   const turnedAway = util.reduce((n, r) => n + Number(r.turnedAway), 0)
   const notHonored = util.reduce((n, r) => n + Number(r.notHonored), 0)
 
@@ -44,27 +52,56 @@ export function TrafficWarnings({
   const slow = Number(spell?.count ?? 0)
   const open = Number(away.data?.corrallm.journeys?.open ?? 0)
 
+  // A count threshold of N means "warn only above N"; 0 is the default, which
+  // warns on the first one. The slow-stretch threshold is a multiple of the
+  // mean and is applied server-side, so `slow` already honours it.
+  const shows = (kind: 'turned-away' | 'unanswered' | 'open-callers', n: number) =>
+    n > prefs.threshold(kind) && !prefs.suppressed(kind)
+  const showTurned = shows('turned-away', turnedAway)
+  const showUnanswered = shows('unanswered', refused + endedEarly)
+  const showOpen = shows('open-callers', open)
+  const showSlow = slow > 0 && !prefs.suppressed('slow-stretch')
+
   const count =
     (clashing.length > 0 ? 1 : 0) +
-    (turnedAway > 0 ? 1 : 0) +
-    (refused > 0 || endedEarly > 0 ? 1 : 0) +
-    (slow > 0 ? 1 : 0) +
-    (open > 0 ? 1 : 0)
+    (showTurned ? 1 : 0) +
+    (showUnanswered ? 1 : 0) +
+    (showSlow ? 1 : 0) +
+    (showOpen ? 1 : 0)
 
-  // Both queries still in flight: say nothing rather than "all clear", which
-  // would be a verdict delivered before the evidence arrived.
-  const settled = !models.isLoading && !away.isLoading
+  // Queries still in flight: say nothing rather than "all clear", which would
+  // be a verdict delivered before the evidence arrived.
+  const settled = !models.isLoading && !away.isLoading && !prefs.isLoading
 
   if (settled && count === 0) {
     return (
       <Panel title="Warnings" badge={<Chip size="small" variant="outlined" label="clear" />} dense>
         <Typography variant="body2" sx={{ color: C.textMuted }}>
-          Nothing to flag {windowPhrase(window)} — nobody was turned away or refused, no caller is
-          still waiting on an answer, and no run of requests came in much slower than the rest.
+          {prefs.prefs.length === 0
+            ? `Nothing to flag ${windowPhrase(window)} — nobody was turned away or refused, no caller is still waiting on an answer, and no run of requests came in much slower than the rest.`
+            : `Nothing to flag ${windowPhrase(window)} past the thresholds and hidden warnings set here.`}
         </Typography>
+        <HiddenWarnings prefs={prefs.prefs} />
       </Panel>
     )
   }
+
+  const countThreshold = (
+    kind: 'turned-away' | 'unanswered' | 'open-callers',
+    what: string,
+  ) => (
+    <ThresholdButton
+      kind={kind}
+      current={prefs.threshold(kind)}
+      isDefault={prefs.threshold(kind) === 0}
+      label={`Warn only above this many ${what}`}
+    />
+  )
+  const controls = (children: React.ReactNode) => (
+    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mt: 0.5, flexWrap: 'wrap' }}>
+      {children}
+    </Box>
+  )
 
   return (
     <Panel
@@ -88,7 +125,7 @@ export function TrafficWarnings({
         </Row>
       )}
 
-      {turnedAway > 0 && (
+      {showTurned && (
         <Row>
           <Typography variant="body2" sx={{ color: C.warn }}>
             {fmtInt(turnedAway)} request{turnedAway === 1 ? ' was' : 's were'} told to come back
@@ -104,22 +141,48 @@ export function TrafficWarnings({
           <Typography variant="body2" sx={{ color: C.textMuted, mt: 0.25 }}>
             Who, and how many tries it took them, is in <b>Turned away</b> below.
           </Typography>
+          {controls(
+            <>
+              {countThreshold('turned-away', 'requests')}
+              <SuppressButton kind="turned-away" />
+            </>,
+          )}
         </Row>
       )}
 
-      {(refused > 0 || endedEarly > 0) && (
+      {showUnanswered && (
         <Row>
           <Unanswered refused={refused} endedEarly={endedEarly} />
+          {controls(
+            <>
+              {countThreshold('unanswered', 'refused or cut-short requests')}
+              <SuppressButton kind="unanswered" />
+            </>,
+          )}
         </Row>
       )}
 
-      {slow > 0 && (
+      {showSlow && (
         <Row>
           <SlowStretch spell={spell} window={window} />
+          {controls(
+            <>
+              <ThresholdButton
+                kind="slow-stretch"
+                current={Number(spell?.multiple ?? prefs.slowStretchDefault)}
+                isDefault={prefs.threshold('slow-stretch') === 0}
+                label="Times the average that counts as slow"
+                min={1}
+                minExclusive
+                step={0.5}
+              />
+              <SuppressButton kind="slow-stretch" />
+            </>,
+          )}
         </Row>
       )}
 
-      {open > 0 && (
+      {showOpen && (
         <Row>
           <Stack direction="row" spacing={1} sx={{ alignItems: 'baseline', flexWrap: 'wrap' }}>
             <Typography variant="body2" sx={{ color: C.warn }}>
@@ -130,6 +193,18 @@ export function TrafficWarnings({
               backing off and due to return.
             </Typography>
           </Stack>
+          {controls(
+            <>
+              {countThreshold('open-callers', 'callers')}
+              <SuppressButton kind="open-callers" />
+            </>,
+          )}
+        </Row>
+      )}
+
+      {prefs.prefs.length > 0 && (
+        <Row>
+          <HiddenWarnings prefs={prefs.prefs} />
         </Row>
       )}
     </Panel>
