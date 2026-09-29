@@ -86,15 +86,11 @@ export function TrafficWarnings({
     )
   }
 
-  const countThreshold = (
-    kind: 'turned-away' | 'unanswered' | 'open-callers',
-    what: string,
-  ) => (
+  const countThreshold = (kind: 'turned-away' | 'unanswered' | 'open-callers') => (
     <ThresholdButton
       kind={kind}
       current={prefs.threshold(kind)}
       isDefault={prefs.threshold(kind) === 0}
-      label={`Warn only above this many ${what}`}
     />
   )
   const controls = (children: React.ReactNode) => (
@@ -143,7 +139,7 @@ export function TrafficWarnings({
           </Typography>
           {controls(
             <>
-              {countThreshold('turned-away', 'requests')}
+              {countThreshold('turned-away')}
               <SuppressButton kind="turned-away" />
             </>,
           )}
@@ -155,7 +151,7 @@ export function TrafficWarnings({
           <Unanswered refused={refused} endedEarly={endedEarly} />
           {controls(
             <>
-              {countThreshold('unanswered', 'refused or cut-short requests')}
+              {countThreshold('unanswered')}
               <SuppressButton kind="unanswered" />
             </>,
           )}
@@ -171,7 +167,6 @@ export function TrafficWarnings({
                 kind="slow-stretch"
                 current={Number(spell?.multiple ?? prefs.slowStretchDefault)}
                 isDefault={prefs.threshold('slow-stretch') === 0}
-                label="Times the average that counts as slow"
                 min={1}
                 minExclusive
                 step={0.5}
@@ -195,7 +190,7 @@ export function TrafficWarnings({
           </Stack>
           {controls(
             <>
-              {countThreshold('open-callers', 'callers')}
+              {countThreshold('open-callers')}
               <SuppressButton kind="open-callers" />
             </>,
           )}

@@ -1,6 +1,15 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Box, Button, ButtonGroup, Menu, MenuItem, TextField, Typography } from '@mui/material'
+import {
+  Box,
+  Button,
+  ButtonGroup,
+  InputAdornment,
+  Menu,
+  MenuItem,
+  TextField,
+  Typography,
+} from '@mui/material'
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -169,6 +178,31 @@ export function SuppressButton({ kind, subject }: { kind: WarningKind; subject?:
 }
 
 /**
+ * What a threshold's number counts, per kind. A bare "3" on screen was the bug
+ * this exists for: 3 requests, 3 callers and 3× the average all read the same.
+ *
+ * The count kinds are per window — "above 5 requests" means in whatever span
+ * the page is showing, so the same threshold is stricter on a 1-hour view than
+ * on a 7-day one.
+ */
+const THRESHOLD_UNIT: Record<WarningKind, { field: string; unit: string } | undefined> = {
+  'queue-clash': undefined,
+  'turned-away': { field: 'Warn only above', unit: 'requests in the window' },
+  unanswered: { field: 'Warn only above', unit: 'requests in the window' },
+  'open-callers': { field: 'Warn only above', unit: 'callers' },
+  'slow-stretch': { field: 'Slow means longer than', unit: '× the average request' },
+}
+
+/** A threshold in words, with its unit. 0 on a count kind is the default. */
+export function describeThreshold(kind: WarningKind, value: number): string {
+  if (kind === 'slow-stretch') return `slow means longer than ${value}× the average request`
+  const u = THRESHOLD_UNIT[kind]
+  if (!u) return String(value)
+  if (value === 0) return `warns on the first one (default)`
+  return `warns only above ${value} ${u.unit}`
+}
+
+/**
  * Raise the bar a warning must clear. `current` is what is in force now — the
  * operator's value or the default — so the field starts from what the reader
  * is changing.
@@ -177,7 +211,6 @@ export function ThresholdButton({
   kind,
   current,
   isDefault,
-  label,
   min = 0,
   minExclusive = false,
   step = 1,
@@ -185,8 +218,6 @@ export function ThresholdButton({
   kind: WarningKind
   current: number
   isDefault: boolean
-  /** Says what the number is, e.g. "Warn only above this many requests". */
-  label: string
   min?: number
   /** The value must be above `min`, not at or above it. */
   minExclusive?: boolean
@@ -208,7 +239,7 @@ export function ThresholdButton({
           setOpen(true)
         }}
       >
-        Raise the threshold
+        Threshold: {describeThreshold(kind, current)}
       </Button>
     )
   }
@@ -217,11 +248,18 @@ export function ThresholdButton({
       <TextField
         size="small"
         type="number"
-        label={label}
+        label={THRESHOLD_UNIT[kind]?.field}
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        slotProps={{ htmlInput: { min, step } }}
-        sx={{ width: 260 }}
+        slotProps={{
+          htmlInput: { min, step },
+          input: {
+            endAdornment: (
+              <InputAdornment position="end">{THRESHOLD_UNIT[kind]?.unit}</InputAdornment>
+            ),
+          },
+        }}
+        sx={{ width: 340 }}
       />
       <Button
         size="small"
@@ -284,10 +322,6 @@ export function HiddenWarnings({ prefs }: { prefs: readonly WarningPref[] }) {
           hour: '2-digit',
           minute: '2-digit',
         })}`
-  const bar = (p: WarningPref) =>
-    p.kind === 'slow-stretch'
-      ? `counts as slow past ${p.threshold}× the average`
-      : `warns only above ${p.threshold}`
   const line = (key: string, text: string, action: ReactNode) => (
     <Box key={key} sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
       <Typography variant="caption" sx={{ color: C.textMuted }}>
@@ -321,7 +355,7 @@ export function HiddenWarnings({ prefs }: { prefs: readonly WarningPref[] }) {
       {tuned.map((p) =>
         line(
           `tune/${p.kind}`,
-          `${KIND_NAME[p.kind] ?? p.kind}: ${bar(p)}`,
+          `${KIND_NAME[p.kind] ?? p.kind}: ${describeThreshold(p.kind as WarningKind, p.threshold)}`,
           <Button
             size="small"
             variant="text"
