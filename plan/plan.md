@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P40.**
+**Next free number: P41.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -326,6 +326,43 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P40 — Swift 1.5 (uncensored) as a comparison arm; EXL3 via ninfer-ext — 2026-10-01
+
+Owner: "Swift 1.5 was released, let's upgrade our swift. Let's try out uncensored." Then: try EXL3
+on ninfer for a smaller footprint, more context, more tok/s. Owner chose a comparison arm first, not
+a cutover.
+
+Registered (config rev 115, SIGHUP reload): `local-Swift-1.5-Uncensored-Qwen3.8-27B`, port 5805, no
+lane, no aliases; flags/policy copied from Swift 1.0. Weights mradermacher
+`Swift-1.5-Qwen3.8-27B-Uncensored-MTP.i1-Q6_K` (20.9 GiB) + static-repo mmproj-f16, both sha256 =
+HF lfs oid. Base: ajgazin's abliteration of ukisai/Swift-1.5-Qwen3.8-27b.
+
+Smoke test 2026-10-01 08:25 (box1, idle card): loads in ~9 s; 30,077–30,193 MiB resident (1.0:
+30,444); 17*23 → 391; tool call `get_weather{"city":"Paris"}` ✓; image red|blue → "Red, blue" ✓;
+MTP acceptance 0.69–0.80; 111–117 tg/s, ~95 tp/s on short prompts (1.0 on By model: ~91 tg/s).
+**Red flag:** "600-word story", max_tokens 8192 → finish=length, 8192 tokens, ALL reasoning
+(3,519 words), no answer. One sample; Swift 1.0 on the same prompt was not obtained (below).
+
+**Incident:** the arm shares gpu0 with production and cannot co-reside. While it held its 2 m
+sticky, aw4 got 59 × 429 (08:27:15–08:27:52); served again 08:28:42. Every A/B switch costs aw4
+about that much.
+
+EXL3: upstream ninfer has none. `giveen/ninfer-ext` (fork, Apache-2.0, 9 stars, tracks upstream)
+has its OWN EXL3 format (`exl3_mul1`), not exllamav3's — HF Swift EXL3 uploads (erlidev, tiktits)
+will not load. Its published EXL3 artifacts are base Qwen3.8-27B only: 4.0 bpw 15.68 GiB, KLD 0.0332
+(vs its nvfp4 0.0510), 137 tok/s MTP K=3. Swift needs our own quantization: build ninfer-ext, BF16
+source (~51 GiB), calibration trace via ninfer-serve, `ninfer-quantize` on the 5090 (production off
+the card for the run; duration unknown). Ready-made alternative: `2beng2/...-Uncensored-NVFP4-NInfer`
+(21.2 GiB, claims 197 tok/s DFlash2 K7, 128–256K configured ctx, vision) on stock/ext ninfer.
+
+- **next:** owner decides A/B timing and the EXL3 path (blocking decisions below).
+- **risks:** the thinking runaway may be the abliteration, Swift 1.5 itself, or the reasoningBudget
+  (max 8192 = the test's max_tokens) — untested which. Uploader quality claims unverified.
+- **blocking decisions:** (1) when aw4 may lose the card for A/B runs; (2) EXL3 self-quantize vs the
+  ready NVFP4 .ninfer first.
+- **optional extensions:** ninfer as a corrallm backend (no model uses `${tool:ninfer}` yet; box1
+  build a05746a is behind).
 
 ### ✅ P39 — context size per turn and per conversation end — 2026-09-30 → [`done.md`](done.md) § P39
 
