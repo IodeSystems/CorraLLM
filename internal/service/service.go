@@ -127,6 +127,12 @@ OOMPolicy=continue
 # scopes are outside this cgroup anyway and are reaped by corrallm regardless.
 KillMode=mixed
 
+# "systemctl --user reload corrallm" re-reads the config. To the MAIN process
+# only: "systemctl kill -s HUP" signals the whole cgroup by default, and a
+# llama-server child that receives SIGHUP exits — six resident models were
+# killed that way in one afternoon (2026-10-01), production included.
+ExecReload=/bin/kill -HUP $MAINPID
+
 # A drain waits for in-flight work, and a long transcription can hold it open.
 # Too short here converts a graceful shutdown into a SIGKILL that strands VRAM.
 TimeoutStopSec=90

@@ -21,6 +21,8 @@ func TestRenderCarriesTheLaunchersGuarantees(t *testing.T) {
 		// corrallm reaps its own backends; signalling the whole cgroup would
 		// turn a graceful drain into a stampede.
 		"KillMode=mixed",
+		// A reload must signal corrallm alone; a backend that gets SIGHUP exits.
+		"ExecReload=/bin/kill -HUP $MAINPID",
 		// A drain waits on in-flight work; too short strands VRAM.
 		"TimeoutStopSec=90",
 		"Restart=on-failure",
