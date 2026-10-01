@@ -327,111 +327,11 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P42 — Swift 1.5 + speculation + thinking-reduction bench — 2026-10-01
+### ✅ P42 — Swift 1.5 Q6_K_S at medium effort is production; bench of thinking/speculation levers — 2026-10-01 → [`done.md`](done.md)
 
-One window, production paused (Swift 1.0 + Stock, 10:27–13:25 PDT, aw4 got 32 × 429
-retry-after-300 and honored them; first 200 after resume 13:29:41). llm-bench, built-in probes,
-classes coding/tooluse/adversarial (16 probes, 27 stages), NOT `--pin-sampling` (production
-samplers; greedy changes how reasoning models think). Arms on box1 5090, Q6_K targets.
-Raw: scratchpad `p42/` runs.jsonl (session-local) + activity rows `key=bench-p42`.
+### ✅ P41 — a paused model answers 429 retry-after; Pause button restored — 2026-10-01 → [`done.md`](done.md)
 
-| arm | runs | stages pass | completion tok | exec min | decode tg/s |
-|---|---|---|---|---|---|
-| A Swift 1.0 + MTP3 (prod clone) | 3 | 77/81 | 169k | 30.8 | 113 |
-| B Swift 1.5 official + MTP3 | 3 | 78/81 | 168k | 29.6 | 119 |
-| C Swift 1.5 uncensored (i1-Q6_K) + MTP3 | 3 | 78/81 | 151k | 26.8 | 119 |
-| D B + ngram-map-k4v | 1 | 26/27 | 54k | 9.5 | 118 |
-| E B + DFlash2 Q8_0 (5090, ctx 131072) | 1 | 26/27 | 55k | 10.0 | 126 |
-| F B + reasoning_effort=low | 3 | 75/81 | 92k | 15.7 | 126 |
-| G B + logit_bias −2 on hedge tokens | 3 | 77/81 | 167k | 28.9 | 119 |
-
-Findings:
-- **Time is decode, decode is thinking.** ~85% of request time is decode; ~78% of generated tokens
-  are reasoning (completion minus visible tool-call/answer text, ~3.8 chars/token). Tool calls take
-  µs; harness gaps 3%.
-- **Production runs at reasoning_effort=xhigh** — the Qwen3.8/Swift template default, which injects
-  "validate key assumptions, consider plausible alternatives". Nothing overrode it.
-- B ≈ A on quality and tokens (Swift 1.5's thinking-reduction claim does not show on this set),
-  +5% decode. C: same pass rate, −10% tokens; the 8k-token runaway from the smoke test did not
-  recur on the probes.
-- **F (low): −45% tokens, −47% time, 2 real regressions** (`overrefusal-port-scan` stage 1 code
-  fails `go vet` 2/3; xhigh 0/3) + 1 cold-load artifact. medium untested.
-- G: no effect. Swift's training already suppresses those tokens (research warned of redundancy).
-  Token IDs: Wait 13784/13428, Hmm 77264/85152, Alternatively 88842/37201, Actually 50821/32645,
-  " maybe" 6970, " perhaps" 8106.
-- D: no gain (+~1 GiB VRAM); output here is mostly new text, aw4 may repeat more.
-- E: +6% decode, mean accepted len 3.6 (z-lab's 5.1 was on base Qwen); costs 57k context. Cross-GPU
-  drafter (3080) ABORTS in this build: the DFlash drafter shares the target's output.weight
-  (`pre-allocated tensor (output.weight) in a buffer (CUDA0) that cannot run the operation`).
-- `codex-plan-3-violation` fails 3/3 on every arm (calls ask_user_question) — probe or shared limit.
-
-- **next:** owner decisions below; then delete bench clones (A, D, E, F, G entries).
-- **blocking decisions:** (1) production weights: Swift 1.5 official vs uncensored vs stay 1.0;
-  (2) reasoning effort for aw4: xhigh / low / bench medium first. Applying it needs either a cmd
-  flag (`--reasoning-effort`, model-wide) or per-key `chat_template_kwargs.reasoning_effort` in the
-  sampling profile (code: sampling.go sets only enable_thinking today — unverified for effort).
-- **risks:** 1-run arms (D, E) are speed-only; 3-run pass deltas of 1–3 stages are within noise
-  except where the same check fails repeatedly (F's go vet).
-
-### ✅ P41 — a paused model answers 429 "retry after 5 minutes"; Pause is back in the UI — 2026-10-01
-
-Owner wanted to borrow the card for tests while the box is in use: callers get a 429 to try back in
-5 minutes, repeated until unpaused, and a visible control. Found: pause existed (P17) but answered a
-bare 503 (Retry-After only on a timed pause), and the per-model button was lost in the P30 rebuild
-(`7920ff1`; the dialog was still wired in models.tsx, nothing opened it).
-
-Built (`ceedea2`, deployed): `writePaused` → 429, `Retry-After` = min(time left on a timed pause,
-300 s), body `{"error":{"type":"paused","retry_after":N,...}}`, activity row `retry_after_ms` set.
-Pause/Resume + "paused until …" chip on the model page header (`/m/$name`), reusing PauseDialog and
-the lane-cost note. P17's 503 rationale reversed by the owner; `pauseError` in proc is now only the
-backstop for a pause landing mid-request. Verified live on the test arm: 429, `Retry-After: 300`,
-resume OK; button renders.
-- **risks:** pausing Swift 1.0 sends `chat`-lane callers to its fallback `local-Qwen3.8-27B-Stock`,
-  which then LOADS on gpu0 — pause both to free the card. aw4 reaches Swift by alias, so it gets
-  the 429.
-
-### ◐ P40 — Swift 1.5 (uncensored) as a comparison arm; EXL3 via ninfer-ext — 2026-10-01
-
-Owner: "Swift 1.5 was released, let's upgrade our swift. Let's try out uncensored." Then: try EXL3
-on ninfer for a smaller footprint, more context, more tok/s. Owner chose a comparison arm first, not
-a cutover.
-
-Registered (config rev 115, SIGHUP reload): `local-Swift-1.5-Uncensored-Qwen3.8-27B`, port 5805, no
-lane, no aliases; flags/policy copied from Swift 1.0. Weights mradermacher
-`Swift-1.5-Qwen3.8-27B-Uncensored-MTP.i1-Q6_K` (20.9 GiB) + static-repo mmproj-f16, both sha256 =
-HF lfs oid. Base: ajgazin's abliteration of ukisai/Swift-1.5-Qwen3.8-27b.
-
-Smoke test 2026-10-01 08:25 (box1, idle card): loads in ~9 s; 30,077–30,193 MiB resident (1.0:
-30,444); 17*23 → 391; tool call `get_weather{"city":"Paris"}` ✓; image red|blue → "Red, blue" ✓;
-MTP acceptance 0.69–0.80; 111–117 tg/s, ~95 tp/s on short prompts (1.0 on By model: ~91 tg/s).
-**Red flag:** "600-word story", max_tokens 8192 → finish=length, 8192 tokens, ALL reasoning
-(3,519 words), no answer. One sample; Swift 1.0 on the same prompt was not obtained (below).
-
-**Incident:** the arm shares gpu0 with production and cannot co-reside. While it held its 2 m
-sticky, aw4 got 59 × 429 (08:27:15–08:27:52); served again 08:28:42. Every A/B switch costs aw4
-about that much.
-
-EXL3: upstream ninfer has none. `giveen/ninfer-ext` (fork, Apache-2.0, 9 stars, tracks upstream)
-has its OWN EXL3 format (`exl3_mul1`), not exllamav3's — HF Swift EXL3 uploads (erlidev, tiktits)
-will not load. Its published EXL3 artifacts are base Qwen3.8-27B only: 4.0 bpw 15.68 GiB, KLD 0.0332
-(vs its nvfp4 0.0510), 137 tok/s MTP K=3. Swift needs our own quantization: build ninfer-ext, BF16
-source (~51 GiB), calibration trace via ninfer-serve, `ninfer-quantize` on the 5090 (production off
-the card for the run; duration unknown). Ready-made alternative: `2beng2/...-Uncensored-NVFP4-NInfer`
-(21.2 GiB, claims 197 tok/s DFlash2 K7, 128–256K configured ctx, vision) on stock/ext ninfer.
-
-EXL3 DROPPED 2026-10-01 (owner: "ignore it"). Tried base Qwen3.8-27B EXL3 4 bpw
-(`jabbatheduck/ninfer-ext-models`, sha256 ✓, kept at `~/.corrallm/models/ninfer/`, 16 GiB) on
-ninfer-ext: the build needs GCC 15 — `<flat_map>` (libstdc++ 15); box1 has GCC 13, Ubuntu 24.04
-ships none, and the fork's own Dockerfile (24.04, GCC 13) cannot build current master either.
-clang 18 failed the same way plus a cudafe `= default` friend error. The `ninfer-ext` tool entry was
-added then removed (config); its failed checkout is at `~/.corrallm/tools/ninfer-ext` (151 MB).
-
-- **next:** owner decides A/B timing (blocking decision 1).
-- **risks:** the thinking runaway may be the abliteration, Swift 1.5 itself, or the reasoningBudget
-  (max 8192 = the test's max_tokens) — untested which. Uploader quality claims unverified.
-- **blocking decisions:** (1) when aw4 may lose the card for A/B runs.
-- **optional extensions:** ninfer as a corrallm backend (no model uses `${tool:ninfer}` yet; box1
-  build a05746a is behind).
+### ✅ P40 — Swift 1.5 uncensored arm; EXL3 dropped (needs GCC 15) — 2026-10-01 → [`done.md`](done.md)
 
 ### ✅ P39 — context size per turn and per conversation end — 2026-09-30 → [`done.md`](done.md) § P39
 
