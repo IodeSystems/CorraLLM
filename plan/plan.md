@@ -356,11 +356,17 @@ source (~51 GiB), calibration trace via ninfer-serve, `ninfer-quantize` on the 5
 the card for the run; duration unknown). Ready-made alternative: `2beng2/...-Uncensored-NVFP4-NInfer`
 (21.2 GiB, claims 197 tok/s DFlash2 K7, 128–256K configured ctx, vision) on stock/ext ninfer.
 
-- **next:** owner decides A/B timing and the EXL3 path (blocking decisions below).
+EXL3 DROPPED 2026-10-01 (owner: "ignore it"). Tried base Qwen3.8-27B EXL3 4 bpw
+(`jabbatheduck/ninfer-ext-models`, sha256 ✓, kept at `~/.corrallm/models/ninfer/`, 16 GiB) on
+ninfer-ext: the build needs GCC 15 — `<flat_map>` (libstdc++ 15); box1 has GCC 13, Ubuntu 24.04
+ships none, and the fork's own Dockerfile (24.04, GCC 13) cannot build current master either.
+clang 18 failed the same way plus a cudafe `= default` friend error. The `ninfer-ext` tool entry was
+added then removed (config); its failed checkout is at `~/.corrallm/tools/ninfer-ext` (151 MB).
+
+- **next:** owner decides A/B timing (blocking decision 1).
 - **risks:** the thinking runaway may be the abliteration, Swift 1.5 itself, or the reasoningBudget
   (max 8192 = the test's max_tokens) — untested which. Uploader quality claims unverified.
-- **blocking decisions:** (1) when aw4 may lose the card for A/B runs; (2) EXL3 self-quantize vs the
-  ready NVFP4 .ninfer first.
+- **blocking decisions:** (1) when aw4 may lose the card for A/B runs.
 - **optional extensions:** ninfer as a corrallm backend (no model uses `${tool:ninfer}` yet; box1
   build a05746a is behind).
 
