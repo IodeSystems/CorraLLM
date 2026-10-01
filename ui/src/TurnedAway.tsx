@@ -72,6 +72,7 @@ const TurnedAwayDoc = graphql(/* GraphQL */ `
         }
         slowSpell {
           multiple
+          countAtDefault
           count
           thresholdMs
           meanMs

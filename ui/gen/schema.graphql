@@ -2733,6 +2733,8 @@ input corrallm_SetWarningThresholdInputBodyInput {
 type corrallm_SlowSpellView {
   """Requests that ran past the threshold. 0 means nothing stood out."""
   count: Long!
+  """Requests the built-in multiple would have counted. Equals count unless the operator set their own multiple."""
+  countAtDefault: Long!
   """When the first of them landed."""
   firstMs: Long!
   """When the last did."""

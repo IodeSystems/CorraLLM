@@ -7,9 +7,10 @@ import { ProvidersTab } from '@/SetupProviders'
 import { ModelsTab } from '@/SetupModels'
 import { ProviderBudgets, RefusingBanner } from '@/SetupBudgets'
 import { HistoryPanels } from '@/SetupHistory'
+import { WarningSettings } from '@/WarningControls'
 
 /**
- * Setup: four questions, four tabs, one page.
+ * Setup: five questions, five tabs, one page.
  *
  * It was 1020 lines of stacked panels and no tabs — every integration, every
  * local model, every catalogue selection, every lane, the credential store, the
@@ -31,6 +32,9 @@ import { HistoryPanels } from '@/SetupHistory'
  *   Budgets    what the upstreams have left. Read, not edited — and the only
  *              4-second poll on the page, which now runs when someone is
  *              looking at it rather than always.
+ *   Warnings   what Traffic's Warnings panel holds back: thresholds and hides.
+ *              The panel itself shows a setting only while it is holding a
+ *              warning back, so this is the one place they are all listed.
  *   History    what changed, and the undo.
  *
  * History used to be rendered FIRST on the scroll, because "is this something I
@@ -53,6 +57,7 @@ const TABS = [
   { key: 'providers', label: 'Providers' },
   { key: 'models', label: 'Models' },
   { key: 'budgets', label: 'Budgets' },
+  { key: 'warnings', label: 'Warnings' },
   { key: 'history', label: 'History' },
 ] as const
 
@@ -110,6 +115,7 @@ function SetupPage() {
       {tab === 'providers' && <ProvidersTab addTo={addTo} onAddTo={setAddTo} />}
       {tab === 'models' && <ModelsTab />}
       {tab === 'budgets' && <ProviderBudgets />}
+      {tab === 'warnings' && <WarningSettings />}
       {tab === 'history' && <HistoryPanels />}
     </Box>
   )

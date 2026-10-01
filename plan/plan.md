@@ -375,6 +375,12 @@ fits 0, and offers only *Raise the longest wait to 20.0 s* (the 60-min window ha
 mean 14.6 s fits). Hide 1 hour → count 5→4, footer entry, *Show again* restores it. Turned-away
 threshold 5000 → line gone, footer entry, *Back to the default* restores it. Store empty after.
 
+- 2026-09-30, owner: *"we don't need to see this if there are no issues"*. The panel renders
+  nothing when no warning shows (and nothing while loading). Its footer lists a setting only while
+  it holds back a warning that would show at the defaults (slow-stretch needs `countAtDefault`
+  from the server for that). Every setting is listed on **Setup → Warnings**. "Back to the default"
+  now names the value: *Reset to 3× (default)* / *Reset: warn on the first one (default)*.
+
 - **next:** the owner presses *Raise the longest wait* (a live config change, not pressed in
   the check); confirm the clash clears on the next utilization read. Then → done.md.
 - **risks:** thresholds hide only the panel line — the tables below still show everything

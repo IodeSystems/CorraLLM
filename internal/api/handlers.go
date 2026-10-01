@@ -403,14 +403,15 @@ type RetryPromisesOutput struct {
 // these times. Whether that is bad depends on what the box is for, which the
 // reader knows and this does not.
 type SlowSpellView struct {
-	Multiple    float64 `json:"multiple" doc:"The multiple of the mean that counted as far past it: the default, or the operator's tolerance."`
-	Count       int64   `json:"count" doc:"Requests that ran past the threshold. 0 means nothing stood out."`
-	ThresholdMS int64   `json:"thresholdMs" doc:"What counted as far past the average."`
-	MeanMS      int64   `json:"meanMs" doc:"Mean dwell of served requests in the window."`
-	FirstMS     int64   `json:"firstMs" doc:"When the first of them landed."`
-	LastMS      int64   `json:"lastMs" doc:"When the last did."`
-	WorstMS     int64   `json:"worstMs" doc:"The slowest single request."`
-	WorstAtMS   int64   `json:"worstAtMs" doc:"And when it was — the time a person can go and look at."`
+	Multiple       float64 `json:"multiple" doc:"The multiple of the mean that counted as far past it: the default, or the operator's tolerance."`
+	Count          int64   `json:"count" doc:"Requests that ran past the threshold. 0 means nothing stood out."`
+	CountAtDefault int64   `json:"countAtDefault" doc:"Requests the built-in multiple would have counted. Equals count unless the operator set their own multiple."`
+	ThresholdMS    int64   `json:"thresholdMs" doc:"What counted as far past the average."`
+	MeanMS         int64   `json:"meanMs" doc:"Mean dwell of served requests in the window."`
+	FirstMS        int64   `json:"firstMs" doc:"When the first of them landed."`
+	LastMS         int64   `json:"lastMs" doc:"When the last did."`
+	WorstMS        int64   `json:"worstMs" doc:"The slowest single request."`
+	WorstAtMS      int64   `json:"worstAtMs" doc:"And when it was — the time a person can go and look at."`
 }
 
 // UnansweredRow is one served name's tally of requests that got nothing.
@@ -557,9 +558,21 @@ func (h *Handlers) RetryPromises(_ context.Context, in *RetryPromisesInput) (*Re
 	if err != nil {
 		return nil, err
 	}
+	// What the built-in multiple would have flagged. A raised multiple can
+	// hold a stretch back, and the panel only lists a setting that is holding
+	// something back — it cannot work that out from the raised count alone.
+	countAtDefault := spell.Count
+	if multiple != store.SlowSpellMultiple {
+		def, err := h.Store.SlowSpell(w, store.SlowSpellMultiple)
+		if err != nil {
+			return nil, err
+		}
+		countAtDefault = def.Count
+	}
 	out.Body.SlowSpell = SlowSpellView{
-		Multiple: multiple,
-		Count:    spell.Count, ThresholdMS: spell.ThresholdMS, MeanMS: spell.MeanMS,
+		Multiple:       multiple,
+		CountAtDefault: countAtDefault,
+		Count:          spell.Count, ThresholdMS: spell.ThresholdMS, MeanMS: spell.MeanMS,
 		FirstMS: spell.FirstMS, LastMS: spell.LastMS,
 		WorstMS: spell.WorstMS, WorstAtMS: spell.WorstAtMS,
 	}

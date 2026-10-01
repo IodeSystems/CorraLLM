@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Box,
@@ -193,6 +194,13 @@ const THRESHOLD_UNIT: Record<WarningKind, { field: string; unit: string } | unde
   'slow-stretch': { field: 'Slow means longer than', unit: '× the average request' },
 }
 
+/** What "reset" returns a kind to, said as the value — not as "the default". */
+export function resetLabel(kind: WarningKind, slowDefault = 3): string {
+  return kind === 'slow-stretch'
+    ? `Reset to ${slowDefault}× (default)`
+    : 'Reset: warn on the first one (default)'
+}
+
 /** A threshold in words, with its unit. 0 on a count kind is the default. */
 export function describeThreshold(kind: WarningKind, value: number): string {
   if (kind === 'slow-stretch') return `slow means longer than ${value}× the average request`
@@ -280,7 +288,7 @@ export function ThresholdButton({
             setThreshold.mutate({ kind, threshold: 0 }, { onSuccess: () => setOpen(false) })
           }
         >
-          Back to the default
+          {resetLabel(kind)}
         </Button>
       )}
       <Button size="small" variant="text" onClick={() => setOpen(false)}>
@@ -334,7 +342,10 @@ export function HiddenWarnings({ prefs }: { prefs: readonly WarningPref[] }) {
   return (
     <Box>
       <Typography variant="caption" sx={{ color: C.textFaint }}>
-        Changed here, still in the tables below:
+        Held back by a setting here — still in the tables below. All settings:{' '}
+        <Link to="/setup" search={{ tab: 'warnings' }}>
+          Setup → Warnings
+        </Link>
       </Typography>
       {hidden.map((p) =>
         line(
@@ -362,10 +373,119 @@ export function HiddenWarnings({ prefs }: { prefs: readonly WarningPref[] }) {
             disabled={busy}
             onClick={() => setThreshold.mutate({ kind: p.kind as WarningKind, threshold: 0 })}
           >
-            Back to the default
+            {resetLabel(p.kind as WarningKind)}
           </Button>,
         ),
       )}
+    </Box>
+  )
+}
+
+const TUNABLE: { kind: WarningKind; minExclusive?: boolean; min?: number; step?: number }[] = [
+  { kind: 'turned-away' },
+  { kind: 'unanswered' },
+  { kind: 'open-callers' },
+  { kind: 'slow-stretch', min: 1, minExclusive: true, step: 0.5 },
+]
+
+/**
+ * Setup → Warnings: every standing order on the Warnings panel, in one place.
+ *
+ * The panel shows a setting only while it holds a warning back, and shows
+ * nothing at all when no warning is up — so a threshold or a hide can be in
+ * force with no line anywhere on Traffic saying so. This is where they all are,
+ * whether or not anything is being held back right now.
+ */
+export function WarningSettings() {
+  const prefs = useWarningPrefs()
+  const { suppress } = useWarningMutations()
+  if (prefs.isLoading) {
+    return (
+      <Typography variant="body2" sx={{ color: C.textFaint }}>
+        Asking this box for its warning settings — nothing is listed yet.
+      </Typography>
+    )
+  }
+  const hidden = prefs.prefs.filter((p) => p.suppressed)
+  const until = (p: WarningPref) =>
+    p.suppressedForever
+      ? 'until shown again'
+      : `until ${new Date(Number(p.suppressedUntilMs)).toLocaleString([], {
+          weekday: 'short',
+          hour: '2-digit',
+          minute: '2-digit',
+        })}`
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <Typography variant="body2" sx={{ color: C.textMuted }}>
+        What the Warnings panel on Traffic holds back. None of this changes what the box does — only
+        which lines that panel shows. The tables on Traffic still show every row.
+      </Typography>
+
+      <Box>
+        <Typography variant="subtitle2">Thresholds</Typography>
+        {TUNABLE.map((t) => {
+          const custom = prefs.threshold(t.kind)
+          const current = t.kind === 'slow-stretch' && custom === 0 ? prefs.slowStretchDefault : custom
+          return (
+            <Box
+              key={t.kind}
+              sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap', mt: 0.5 }}
+            >
+              <Typography variant="body2" sx={{ minWidth: 260 }}>
+                {KIND_NAME[t.kind]}
+                {custom > 0 && (
+                  <Typography component="span" variant="caption" sx={{ color: C.warn, ml: 1 }}>
+                    custom
+                  </Typography>
+                )}
+              </Typography>
+              <ThresholdButton
+                kind={t.kind}
+                current={current}
+                isDefault={custom === 0}
+                min={t.min}
+                minExclusive={t.minExclusive}
+                step={t.step}
+              />
+            </Box>
+          )
+        })}
+      </Box>
+
+      <Box>
+        <Typography variant="subtitle2">Hidden</Typography>
+        {hidden.length === 0 ? (
+          <Typography variant="body2" sx={{ color: C.textMuted }}>
+            Nothing is hidden. Use <b>Hide for 1 day ▾</b> on a warning to hide it.
+          </Typography>
+        ) : (
+          hidden.map((p) => (
+            <Box
+              key={`${p.kind}/${p.subject}`}
+              sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap', mt: 0.5 }}
+            >
+              <Typography variant="body2" sx={{ minWidth: 260 }}>
+                {KIND_NAME[p.kind] ?? p.kind}
+                {p.subject ? ` — ${p.subject}` : ''}
+              </Typography>
+              <Typography variant="body2" sx={{ color: C.textMuted }}>
+                hidden {until(p)}
+              </Typography>
+              <Button
+                size="small"
+                variant="text"
+                disabled={suppress.isPending}
+                onClick={() =>
+                  suppress.mutate({ kind: p.kind as WarningKind, subject: p.subject, lift: true })
+                }
+              >
+                Show again
+              </Button>
+            </Box>
+          ))
+        )}
+      </Box>
     </Box>
   )
 }

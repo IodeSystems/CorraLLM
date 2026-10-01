@@ -73,18 +73,27 @@ export function TrafficWarnings({
   // be a verdict delivered before the evidence arrived.
   const settled = !models.isLoading && !away.isLoading && !prefs.isLoading
 
-  if (settled && count === 0) {
-    return (
-      <Panel title="Warnings" badge={<Chip size="small" variant="outlined" label="clear" />} dense>
-        <Typography variant="body2" sx={{ color: C.textMuted }}>
-          {prefs.prefs.length === 0
-            ? `Nothing to flag ${windowPhrase(window)} — nobody was turned away or refused, no caller is still waiting on an answer, and no run of requests came in much slower than the rest.`
-            : `Nothing to flag ${windowPhrase(window)} past the thresholds and hidden warnings set here.`}
-        </Typography>
-        <HiddenWarnings prefs={prefs.prefs} />
-      </Panel>
-    )
-  }
+  // NO ISSUES, NO PANEL. The owner: "we don't need to see this if there are
+  // no issues". It used to say "clear" in a panel of its own, and while the
+  // queries ran it drew an empty one that then vanished; both are gone. A
+  // warning held back by a threshold or a hide is not an issue here — that
+  // is what the setting was for.
+  if (!settled || count === 0) return null
+
+  // A setting is listed only while it is HOLDING SOMETHING BACK: the warning
+  // it names would show at the defaults and does not now. A threshold that
+  // hides nothing is noise under the warnings, and its own row's controls
+  // cover the case where its warning is showing.
+  const held = new Set<string>()
+  if (turnedAway > 0 && !showTurned) held.add('turned-away')
+  if (refused + endedEarly > 0 && !showUnanswered) held.add('unanswered')
+  if (open > 0 && !showOpen) held.add('open-callers')
+  if (Number(spell?.countAtDefault ?? 0) > 0 && !showSlow) held.add('slow-stretch')
+  const holding = prefs.prefs.filter((p) =>
+    p.kind === 'queue-clash'
+      ? p.suppressed && util.some((r) => r.served === p.subject && r.depthUnreachable)
+      : held.has(p.kind),
+  )
 
   const countThreshold = (kind: 'turned-away' | 'unanswered' | 'open-callers') => (
     <ThresholdButton
@@ -103,12 +112,7 @@ export function TrafficWarnings({
     <Panel
       title="Warnings"
       badge={
-        <Chip
-          size="small"
-          color={count > 0 ? 'warning' : 'default'}
-          variant={count > 0 ? 'filled' : 'outlined'}
-          label={settled ? count : '…'}
-        />
+<Chip size="small" color="warning" variant="filled" label={count} />
       }
       subtitle={`Everything below is drawn from ${windowPhrase(window)} — the tables that produced these lines are further down`}
       flush
@@ -197,9 +201,9 @@ export function TrafficWarnings({
         </Row>
       )}
 
-      {prefs.prefs.length > 0 && (
+      {holding.length > 0 && (
         <Row>
-          <HiddenWarnings prefs={prefs.prefs} />
+          <HiddenWarnings prefs={holding} />
         </Row>
       )}
     </Panel>

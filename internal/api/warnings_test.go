@@ -123,3 +123,30 @@ func TestWarningKindRules(t *testing.T) {
 		t.Error("a slow-stretch multiple of 1 was accepted")
 	}
 }
+
+// A raised slow-stretch multiple must still report what the default would have
+// flagged: the panel lists the setting only while it holds something back.
+func TestSlowSpellReportsTheDefaultCount(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UnixMilli()
+	for i := int64(0); i < 100; i++ {
+		_ = st.InsertActivity(store.Activity{TS: now - 100_000 + i, Served: "m", Status: 200, DwellMS: 1_000})
+	}
+	_ = st.InsertActivity(store.Activity{TS: now - 1_000, Served: "m", Status: 200, DwellMS: 5_000}) // ~5x
+	if err := st.SetWarningThreshold(WarnSlowStretch, "", 8); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handlers{Store: st}
+	out, err := h.RetryPromises(context.Background(), &RetryPromisesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := out.Body.SlowSpell
+	if sp.Count != 0 || sp.CountAtDefault != 1 || sp.Multiple != 8 {
+		t.Errorf("spell = %+v, want count 0 at 8x and 1 at the default 3x", sp)
+	}
+}
