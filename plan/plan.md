@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P41.**
+**Next free number: P42.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -326,6 +326,23 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ✅ P41 — a paused model answers 429 "retry after 5 minutes"; Pause is back in the UI — 2026-10-01
+
+Owner wanted to borrow the card for tests while the box is in use: callers get a 429 to try back in
+5 minutes, repeated until unpaused, and a visible control. Found: pause existed (P17) but answered a
+bare 503 (Retry-After only on a timed pause), and the per-model button was lost in the P30 rebuild
+(`7920ff1`; the dialog was still wired in models.tsx, nothing opened it).
+
+Built (`ceedea2`, deployed): `writePaused` → 429, `Retry-After` = min(time left on a timed pause,
+300 s), body `{"error":{"type":"paused","retry_after":N,...}}`, activity row `retry_after_ms` set.
+Pause/Resume + "paused until …" chip on the model page header (`/m/$name`), reusing PauseDialog and
+the lane-cost note. P17's 503 rationale reversed by the owner; `pauseError` in proc is now only the
+backstop for a pause landing mid-request. Verified live on the test arm: 429, `Retry-After: 300`,
+resume OK; button renders.
+- **risks:** pausing Swift 1.0 sends `chat`-lane callers to its fallback `local-Qwen3.8-27B-Stock`,
+  which then LOADS on gpu0 — pause both to free the card. aw4 reaches Swift by alias, so it gets
+  the 429.
 
 ### ◐ P40 — Swift 1.5 (uncensored) as a comparison arm; EXL3 via ninfer-ext — 2026-10-01
 
