@@ -18,6 +18,32 @@ to find.
 
 # Engine
 
+## ✅ P39 — context size per turn and per conversation end, on Traffic — 2026-09-30
+
+The owner asked for avg + p90 context length on /traffic, noting requests are cumulative. Two
+readings, both chosen by the owner: **per request** (every served chat turn's prompt + completion —
+one turn's prompt IS the conversation's size then) and **per session tail** (each conversation once,
+at its last turn). Sums across turns (`promptTokens`) are not a context size.
+
+Built: `activity_conversation` side table (activity_id, ts, served, conversation = `slotcache.Key`,
+messages, ctx_tokens) + covering index; the proxy stamps it from the request context in `logReq`;
+`store.CtxStats` (a message count that drops under one key = a new session); six `ctx*` fields on
+`usageRollup` rows + total; two columns on By model. `BackfillConversations` runs at boot, newest
+first, 50 rows / 250 ms, resumes from MIN(activity_id), stops where payloads were pruned (7 d).
+Measured on box1 before building (24 h, SQL prototype): per turn avg 35.8k / p90 50.3k tokens; 181
+conversations, tail avg 40.4k / p90 56.0k. JSON-in-SQL took 12.8 s/day — why the key is stored.
+
+- **deployed + verified 2026-09-30:** backfill took 6m6s for 49,825 rows (back to 2026-09-24, the payload horizon). 24 h via API: per turn avg 36.4k / p90 51.0k, 176 conversations, tail avg 40.6k / p90 56.4k — matches the SQL prototype. Page renders both columns.
+- **risks:** a side table, not columns, because UPDATE on activity rewrites ~120 KB payload rows
+  (~18 GB for a backfill). Compaction and a restarted task both drop the message count and both
+  read as a new session — not separable here. A backfilled row has no declared
+  `X-Corrallm-Conversation` header, so a caller that sends one gets a new key at the cutover.
+  Bodies over the 256 KiB capture cap (the largest prompts, ~12/day) cannot be backfilled.
+- **blocking decisions:** none.
+- **optional extensions:** a "conversations running now" list (owner's "what lines we are
+  running" — not confirmed what that meant); ctx vs the model's configured window.
+
+
 ## P0–P8 — proxy, scheduler, residency, preemption, cost, degrade, observability
 - ✅ **P0 — Scaffold.** `fdf90b9`. Go module `github.com/iodesystems/corrallm`, Huma+gat wired,
   `dump-graphql`, React/Vite/codegen, `bin/gen`, YAML config loader + `.properties` layering,
