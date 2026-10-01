@@ -50,6 +50,7 @@ import {
   fmtUSD,
 } from '@/format'
 import { BenchProbeDetail } from '@/BenchProbeDetail'
+import { PauseCostNote, PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost } from '@/Pause'
 
 // --- data ---------------------------------------------------------------
 
@@ -77,6 +78,9 @@ const ConsoleDoc = graphql(/* GraphQL */ `
           remote
           procKey
           maxConcurrent
+          paused
+          pauseReason
+          pauseResumeMs
           placements {
             name
             server
@@ -93,6 +97,21 @@ const ConsoleDoc = graphql(/* GraphQL */ `
             memoryMiB
             upstream
           }
+        }
+        # For the pause dialog: which fallback lists keep serving without this
+        # model, counted the same way /models counts them.
+        lanes {
+          name
+          members {
+            model
+          }
+          ladder {
+            model
+            disabled
+          }
+        }
+        refusing {
+          backend
         }
       }
       residency {
@@ -279,6 +298,35 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
   // for an STT model) until it loaded.
   const capability = model?.capability ?? capabilityOf(caps.data, name)
 
+  // PAUSE, on the model and not a placement: a pause is a routing decision
+  // about the NAME — every caller of it, through any alias, gets 429 "retry
+  // after 5 minutes" until it lifts — so it has no box to choose.
+  const qc = useQueryClient()
+  const [pauseOpen, setPauseOpen] = useState(false)
+  const [pauseMsg, setPauseMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const pauseDone = (r: { ok?: boolean | null; message?: string | null } | null | undefined) => {
+    setPauseMsg({ ok: !!r?.ok, text: r?.message ?? '' })
+    void qc.invalidateQueries({ queryKey: ['console'] })
+    void qc.invalidateQueries({ queryKey: ['overview'] })
+  }
+  const pauseFail = (e: unknown) => setPauseMsg({ ok: false, text: String(e) })
+  const pause = useMutation({
+    mutationFn: (v: { resumeAt: string | null; reason: string }) =>
+      gqlClient.request(PauseModelDoc, { model: name, resumeAt: v.resumeAt, reason: v.reason }),
+    onSuccess: (d) => pauseDone(d.corrallm.pauseModel),
+    onError: pauseFail,
+  })
+  const unpause = useMutation({
+    mutationFn: () => gqlClient.request(UnpauseModelDoc, { model: name }),
+    onSuccess: (d) => pauseDone(d.corrallm.unpauseModel),
+    onError: pauseFail,
+  })
+  const ovAll = ov.data?.corrallm.overview
+  const alreadyOut = new Set<string>([
+    ...(ovAll?.models ?? []).filter((m) => m.paused).map((m) => m.name),
+    ...(ovAll?.refusing ?? []).map((r) => r.backend),
+  ])
+
   if (ov.isLoading) {
     return (
       <Box sx={{ p: 3 }}>
@@ -325,7 +373,57 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
           <Chip key={md.modality} size="small" variant="outlined" label={modalityLabel(md)} />
         ))}
         {model.persistent && <Chip size="small" variant="outlined" label="pinned" />}
+        {model.paused && (
+          <Tooltip title={model.pauseReason ? `Reason: ${model.pauseReason}` : 'No reason given'}>
+            <Chip
+              size="small"
+              color="warning"
+              label={
+                'paused' +
+                (Number(model.pauseResumeMs) > 0 ? ` until ${fmtTs(model.pauseResumeMs ?? 0)}` : ' until resumed')
+              }
+            />
+          </Tooltip>
+        )}
+        {model.paused ? (
+          <Button
+            size="small"
+            variant="outlined"
+            color="success"
+            disabled={unpause.isPending}
+            onClick={() => unpause.mutate()}
+          >
+            Resume
+          </Button>
+        ) : (
+          <Tooltip title="Take this model out of service for a while: it unloads, and every request for it is answered 429 &quot;retry after 5 minutes&quot; until you resume it.">
+            <Button
+              size="small"
+              variant="outlined"
+              color="warning"
+              disabled={pause.isPending}
+              onClick={() => setPauseOpen(true)}
+            >
+              Pause
+            </Button>
+          </Tooltip>
+        )}
       </Stack>
+      {pauseMsg && (
+        <Alert severity={pauseMsg.ok ? 'success' : 'error'} onClose={() => setPauseMsg(null)} sx={{ mb: 1 }}>
+          {pauseMsg.text}
+        </Alert>
+      )}
+      <PauseDialog
+        target={pauseOpen ? name : null}
+        consequence={<PauseCostNote cost={pauseCost([name], ovAll?.lanes ?? [], alreadyOut)} />}
+        busy={pause.isPending}
+        onClose={() => setPauseOpen(false)}
+        onConfirm={(resumeAt, reason) => {
+          pause.mutate({ resumeAt, reason })
+          setPauseOpen(false)
+        }}
+      />
 
       <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
         <Tab label="Info" />

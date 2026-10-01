@@ -73,7 +73,7 @@ func TestDisabledMemberIsNotEvenTried(t *testing.T) {
 
 // Named directly, it is a 404 that says WHICH kind of nothing this is.
 //
-// 404 and not the pause's 503: a 503 says the thing exists and may come back,
+// 404 and not the pause's 429: a 429 says the thing exists and will come back,
 // which invites a retry, and a disabled model comes back when somebody edits
 // the config and not before. The word "disabled" is the load-bearing part —
 // "unknown model m-1" would send an operator hunting for a typo in a name that

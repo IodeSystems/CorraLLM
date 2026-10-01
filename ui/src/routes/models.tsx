@@ -949,7 +949,7 @@ function ModelsPage() {
             <>
               Nothing resolves to these, nothing preloads them, and they are in no fallback list. A
               caller that asks for one by name is answered <b>404</b> with the reason, rather than
-              the 503 a pause gives — there is nothing to wait for. The config file calls this{' '}
+              the 429 &ldquo;come back later&rdquo; a pause gives — there is nothing to wait for. The config file calls this{' '}
               <code>disabled</code>. <b>Put it back</b> returns the model to the setup exactly as it
               was left, including a pause if one was set on it beforehand.
             </>

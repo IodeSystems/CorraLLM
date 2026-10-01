@@ -897,10 +897,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 	if kept := p.filterByPaused(cands); len(kept) != len(cands) {
 		if len(kept) == 0 {
-			// cands, NOT kept: the pauses that produced this 503 are the ones
+			// cands, NOT kept: the pauses that produced this 429 are the ones
 			// on the candidates just filtered OUT, so the resume time has to be
 			// read before the list is narrowed.
-			p.writePaused(w, r, served, key, cands, start, reqBody, "model is paused")
+			p.writePaused(w, r, served, key, cands, start, reqBody)
 			return
 		}
 		cands = kept
@@ -1505,7 +1505,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	// the walk never queues for an admission slot on a model that will not
 	// serve, and 503 when the lane has nothing left.
 	if kept := p.filterByPaused(cands); len(kept) == 0 {
-		p.writePaused(w, r, served, key, cands, start, "", `{"error":{"message":"model is paused"}}`)
+		p.writePaused(w, r, served, key, cands, start, "")
 		return
 	} else {
 		cands = kept
@@ -1857,33 +1857,45 @@ func (p *Proxy) pauseResumeIn(cands []config.Candidate, now time.Time) (time.Dur
 	return time.Second, true
 }
 
+// pauseRetryAfter is what a paused model tells callers when nothing says when
+// it lifts: come back in five minutes, and again after that, until it does.
+const pauseRetryAfter = 5 * time.Minute
+
 // writePaused answers a request whose every candidate is paused.
 //
-// 503, not 429: a pause is an operator decision, not the caller's fault, and
-// 429 would additionally be read as congestion by anything watching queue
-// pressure. Retry-After is valid on a 503 and is the honest way to say "come
-// back then" — but ONLY for a timed pause. An indefinite pause keeps the bare
-// 503 it always had, because nothing but a human knows when it lifts.
+// 429 with a Retry-After, on every request until the pause lifts. A pause is
+// how an operator borrows the card for a while — a test, a measurement — and
+// the caller's job meanwhile is to wait and come back, which is exactly what a
+// 429 + Retry-After tells every OpenAI client. It was a bare 503 until
+// 2026-10-01, on the reasoning that a pause is a decision rather than
+// congestion; in practice that read as "broken" to the caller, which then
+// either gave up or retried on its own schedule.
+//
+// The interval is the time left on a timed pause when that is sooner than
+// pauseRetryAfter, else pauseRetryAfter: a pause lifting in two minutes says
+// two, one lifting tomorrow (or never) says five and keeps saying it.
 //
 // Deliberately NOT routed through writeBackpressure: that path is EWMA
-// guesswork about congestion, and a scheduled resume is a fact. It also emits
-// the X-RateLimit-* family, which would be a lie here — no rate limit is
-// involved.
+// guesswork about congestion and emits the X-RateLimit-* family, neither of
+// which describes a pause.
 func (p *Proxy) writePaused(w http.ResponseWriter, r *http.Request, served, key string,
-	cands []config.Candidate, start time.Time, reqBody, body string) {
-	retryMS := int64(0)
-	if d, ok := p.pauseResumeIn(cands, time.Now()); ok {
-		secs := int(d.Round(time.Second) / time.Second)
-		if secs < 1 {
-			secs = 1
-		}
-		w.Header().Set("Retry-After", strconv.Itoa(secs))
-		retryMS = int64(secs) * 1000
+	cands []config.Candidate, start time.Time, reqBody string) {
+	wait := pauseRetryAfter
+	if d, ok := p.pauseResumeIn(cands, time.Now()); ok && d < wait {
+		wait = d
 	}
-	http.Error(w, body, http.StatusServiceUnavailable)
+	secs := int(wait.Round(time.Second) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"paused","retry_after":%d}}`,
+		jsonString(fmt.Sprintf("%s is paused by the operator; retry after %d seconds", served, secs)), secs)
 	p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
-		Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
-		Error: "model paused", ReqBody: reqBody, RetryAfterMS: retryMS})
+		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+		Error: "model paused", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
 }
 
 func (p *Proxy) filterByPaused(cands []config.Candidate) []config.Candidate {
@@ -2204,8 +2216,8 @@ func (p *Proxy) nextRR(served string) uint64 {
 // 404 and not 503, deliberately. A 503 says the thing exists and may come back,
 // which invites a retry; a disabled model comes back when somebody edits the
 // config and not before. That is also what separates it from a pause, which
-// DOES 503 — and carries a Retry-After when the pause is timed — because a
-// pause is a temporary state with an end.
+// answers 429 + Retry-After (writePaused) because a pause is a temporary state
+// with an end.
 func (p *Proxy) noSuchModel(served string) string {
 	if p.config().DisabledServed(served) {
 		return "model \"" + served + "\" is disabled in this configuration"

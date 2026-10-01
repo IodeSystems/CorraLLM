@@ -96,7 +96,7 @@ export type PauseCost = {
  *
  * The same click is harmless on one box and an outage on another, and the
  * difference is not visible in the button: a fallback list with four healthy
- * rungs falls through, a list with one refuses every caller with 503. So the
+ * rungs falls through, a list with one turns every caller away. So the
  * answer is computed per press and never written into the copy.
  *
  * `alreadyOut` is the rungs that cannot serve today either — paused, or
@@ -165,7 +165,7 @@ export function PauseCostNote({ cost }: { cost: PauseCost }) {
               : `Its other ${l.rungs - l.taken.length} ${
                   l.rungs - l.taken.length === 1 ? 'backend is' : 'backends are'
                 } already paused or refusing.`}{' '}
-            Every request for <b>{l.lane}</b> is refused with 503 until this is resumed.
+            Every request for <b>{l.lane}</b> is answered 429 &ldquo;retry after 5 minutes&rdquo; until this is resumed.
           </Alert>
         ),
       )}
@@ -177,7 +177,8 @@ export function PauseCostNote({ cost }: { cost: PauseCost }) {
       <Typography variant="body2" sx={{ mb: 2, color: C.textMuted }}>
         Anything that asks for{' '}
         {cost.taking.length === 1 ? <b>{cost.taking[0]}</b> : 'one of them'} by name, rather than
-        through a fallback list, is refused with 503 while the pause holds.
+        through a fallback list, is answered 429 &ldquo;retry after 5 minutes&rdquo; (or the time left, if
+        sooner) on every request until the pause lifts.
       </Typography>
     </>
   )

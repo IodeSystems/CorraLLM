@@ -91,10 +91,9 @@ func TestPausedMemberFallsThrough(t *testing.T) {
 	}
 }
 
-// TestAllMembersPaused503: a lane with nothing unpaused left is a 503, not a
-// 429. There is no retry interval that would be honest about an operator
-// decision, so telling the client to come back in N seconds would be a lie.
-func TestAllMembersPaused503(t *testing.T) {
+// TestAllMembersPaused429: a lane with nothing unpaused left is a 429 telling
+// the caller to come back in five minutes — the pause's standing answer.
+func TestAllMembersPaused429(t *testing.T) {
 	r, mgr := pauseLaneFixture(t)
 	for _, m := range []string{"m-1", "m-2"} {
 		if _, err := mgr.PauseModel(m, "", time.Time{}); err != nil {
@@ -102,24 +101,27 @@ func TestAllMembersPaused503(t *testing.T) {
 		}
 	}
 	rec := sendToLane(t, r, "m")
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("want 503, got %d (%s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d (%s)", rec.Code, rec.Body.String())
 	}
-	if rec.Header().Get("Retry-After") != "" {
-		t.Error("a pause must not advertise a Retry-After")
+	if ra := rec.Header().Get("Retry-After"); ra != "300" {
+		t.Errorf("Retry-After = %q, want 300", ra)
+	}
+	if !strings.Contains(rec.Body.String(), `"type":"paused"`) || !strings.Contains(rec.Body.String(), `"retry_after":300`) {
+		t.Errorf("body = %s, want a paused error carrying retry_after", rec.Body.String())
 	}
 }
 
-// TestPausedModelDirect503: naming a paused model directly (no lane to fall
-// through to) fails immediately rather than queueing behind it.
-func TestPausedModelDirect503(t *testing.T) {
+// TestPausedModelDirect429: naming a paused model directly (no lane to fall
+// through to) is answered immediately rather than queueing behind it.
+func TestPausedModelDirect429(t *testing.T) {
 	r, mgr := pauseLaneFixture(t)
 	if _, err := mgr.PauseModel("m-1", "", time.Time{}); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
 	rec := sendToLane(t, r, "m-1")
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("want 503, got %d (%s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d (%s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -191,27 +193,31 @@ func postChat(t *testing.T, r *chi.Mux, model string) *httptest.ResponseRecorder
 
 // TestPausedIndefiniteHasNoRetryAfter: the original behavior, and the case the
 // "no retry interval would be honest" comment was written for. Nothing but a
-// human knows when an indefinite pause lifts, so promising a time would lie.
-func TestPausedIndefiniteHasNoRetryAfter(t *testing.T) {
+// TestPausedIndefiniteRetriesInFiveMinutes: nothing says when an indefinite
+// pause lifts, so the caller is told five minutes — and told it again on every
+// request until it does.
+func TestPausedIndefiniteRetriesInFiveMinutes(t *testing.T) {
 	r, mgr := pauseLaneFixture(t)
 	for _, m := range []string{"m-1", "m-2"} {
 		if _, err := mgr.PauseModel(m, "", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	w := postChat(t, r, "m")
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", w.Code)
-	}
-	if ra := w.Header().Get("Retry-After"); ra != "" {
-		t.Errorf("Retry-After = %q, want absent for an indefinite pause", ra)
+	for i := 0; i < 2; i++ {
+		w := postChat(t, r, "m")
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("request %d: status = %d, want 429", i, w.Code)
+		}
+		if ra := w.Header().Get("Retry-After"); ra != "300" {
+			t.Errorf("request %d: Retry-After = %q, want 300", i, ra)
+		}
 	}
 }
 
-// TestPausedTimedAdvertisesRetryAfter: a pause with a known ResumeAt DOES have
-// an honest interval — the most honest one in the system, since it is a fact
-// rather than the EWMA estimate the contention path emits.
-func TestPausedTimedAdvertisesRetryAfter(t *testing.T) {
+// TestPausedTimedCapsAtFiveMinutes: a timed pause lifting an hour from now
+// still says five minutes — the caller keeps checking in rather than going
+// quiet for the whole hour.
+func TestPausedTimedCapsAtFiveMinutes(t *testing.T) {
 	r, mgr := pauseLaneFixture(t)
 	resume := time.Now().Add(time.Hour)
 	for _, m := range []string{"m-1", "m-2"} {
@@ -220,15 +226,15 @@ func TestPausedTimedAdvertisesRetryAfter(t *testing.T) {
 		}
 	}
 	w := postChat(t, r, "m")
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 (a pause is not the caller's fault, so not 429)", w.Code)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", w.Code)
 	}
 	secs, err := strconv.Atoi(w.Header().Get("Retry-After"))
 	if err != nil {
 		t.Fatalf("Retry-After = %q, want an integer second count: %v", w.Header().Get("Retry-After"), err)
 	}
-	if secs < 3500 || secs > 3600 {
-		t.Errorf("Retry-After = %ds, want ~3600 (the hour the operator asked for)", secs)
+	if secs != 300 {
+		t.Errorf("Retry-After = %ds, want 300 (capped; the pause has an hour left)", secs)
 	}
 }
 
@@ -239,7 +245,7 @@ func TestPausedLaneUsesSoonestResume(t *testing.T) {
 	if _, err := mgr.PauseModel("m-1", "", time.Now().Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(10*time.Minute)); err != nil {
+	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	w := postChat(t, r, "m")
@@ -247,8 +253,8 @@ func TestPausedLaneUsesSoonestResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Retry-After = %q: %v", w.Header().Get("Retry-After"), err)
 	}
-	if secs < 500 || secs > 600 {
-		t.Errorf("Retry-After = %ds, want ~600 — the SOONEST member, not the 2h one", secs)
+	if secs < 170 || secs > 180 {
+		t.Errorf("Retry-After = %ds, want ~180 — the SOONEST member, under the 5 minute cap", secs)
 	}
 }
 
@@ -260,7 +266,7 @@ func TestPausedMixedIndefiniteAndTimed(t *testing.T) {
 	if _, err := mgr.PauseModel("m-1", "", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(30*time.Minute)); err != nil {
+	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	w := postChat(t, r, "m")
@@ -268,7 +274,7 @@ func TestPausedMixedIndefiniteAndTimed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Retry-After = %q, want the timed sibling's interval: %v", w.Header().Get("Retry-After"), err)
 	}
-	if secs < 1700 || secs > 1800 {
-		t.Errorf("Retry-After = %ds, want ~1800", secs)
+	if secs < 110 || secs > 120 {
+		t.Errorf("Retry-After = %ds, want ~120", secs)
 	}
 }

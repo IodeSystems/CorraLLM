@@ -146,11 +146,11 @@ func (m *Manager) UsePauseStore(s PauseStore) {
 
 // pauseError is the refusal EnsureReady returns for a paused process.
 //
-// Permanent, so a lane's walk spills to the next member and an exhausted walk
-// answers 503 rather than 429 + Retry-After. A pause is an operator decision,
-// not congestion: telling a client to retry in 30s against a model that is off
-// until tomorrow would be a lie, and against an indefinite pause it would be an
-// invitation to hammer.
+// Permanent, so a lane's walk spills to the next member instead of queueing on
+// it. The caller normally never sees this: the proxy filters paused candidates
+// out first and answers 429 + Retry-After itself (proxy.writePaused). This is
+// the backstop for a pause that lands while a request is already past that
+// filter, which then fails like any exhausted walk.
 func pauseError(name string, p Pause) *CapacityError {
 	var reason string
 	if ext, ok := p.Extension(); ok {
