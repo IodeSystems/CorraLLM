@@ -2559,6 +2559,18 @@ type corrallm_RollupRow {
   completionTokens: Long!
   """Total cost, USD."""
   costUsd: Float!
+  """Per request: mean context tokens (prompt + completion) per served chat turn. A long conversation counts once per turn."""
+  ctxRequestAvg: Float!
+  """Per request: 90th percentile of context tokens per served chat turn."""
+  ctxRequestP90: Long!
+  """Served chat turns that named a conversation — what ctxRequestAvg/ctxRequestP90 are over."""
+  ctxRequests: Long!
+  """Conversations seen in the window — what ctxTailAvg/ctxTailP90 are over. A conversation whose message count drops (restarted or compacted) counts again."""
+  ctxSessions: Long!
+  """Per session tail: mean context tokens at each conversation's LAST turn in the window. Each turn overwrites the one before, so a conversation counts once."""
+  ctxTailAvg: Float!
+  """Per session tail: 90th percentile of context tokens at each conversation's last turn."""
+  ctxTailP90: Long!
   """Total dwell, milliseconds."""
   dwellMs: Long!
   """energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset."""

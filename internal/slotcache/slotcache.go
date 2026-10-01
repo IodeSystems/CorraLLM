@@ -123,6 +123,23 @@ func Key(caller, declared string, body []byte) (string, bool) {
 	return hex.EncodeToString(h.Sum(nil))[:32], true
 }
 
+// Messages counts the turns a chat request carries, or 0 when it carries none
+// or does not parse.
+//
+// Beside Key because the two together say where a request sits in its
+// conversation: the key names the conversation, the count says how far along
+// it is. A count that goes DOWN under the same key is a new run of it — the
+// same task restarted, or the caller compacting its history.
+func Messages(body []byte) int {
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		return 0
+	}
+	return len(req.Messages)
+}
+
 // Client talks to one llama.cpp backend's slot endpoints.
 type Client struct {
 	// BaseURL is the backend's own address, e.g. http://127.0.0.1:5802.

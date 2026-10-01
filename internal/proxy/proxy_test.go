@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -1912,5 +1913,47 @@ func TestExtractUsageTelemetry(t *testing.T) {
 	bare := []byte(`{"usage": {"prompt_tokens": 100, "completion_tokens": 20}}`)
 	if u := extractUsage(bare, false); u.CachedTokens != 0 || u.PromptPerSec != 0 || u.PredictedPerSec != 0 {
 		t.Errorf("bare body should yield zero telemetry, got %+v", u)
+	}
+}
+
+// TestActivityNamesConversation: each chat turn's activity row names its
+// conversation, so two turns of one conversation read as one session whose
+// tail is the later turn.
+func TestActivityNamesConversation(t *testing.T) {
+	prompt := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		prompt += 100
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":%d,"completion_tokens":1}}`, prompt)
+	}))
+	defer upstream.Close()
+
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	mgr := proc.NewManager(&config.Config{})
+	defer mgr.Shutdown()
+	r := chi.NewRouter()
+	New(mkConfig(t, "mock", upstream.URL), mgr, sched.New(), st).Mount(r)
+
+	for _, msgs := range []string{
+		`{"role":"user","content":"task"}`,
+		`{"role":"user","content":"task"},{"role":"assistant","content":"ok"},{"role":"user","content":"more"}`,
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"model":"mock","messages":[`+msgs+`]}`)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d", rec.Code)
+		}
+	}
+	_, total, err := st.CtxStats(store.Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total.Requests != 2 || total.Sessions != 1 || total.TailP90 != 201 {
+		t.Fatalf("ctx stats = %+v, want 2 turns of 1 session ending at 201 tokens", total)
 	}
 }

@@ -1281,6 +1281,17 @@ type RollupRow struct {
 	PromptPerSec       float64 `json:"promptPerSec" doc:"Mean backend-reported prompt-processing speed, tokens/sec (tp/s). An unweighted mean over the requests that REPORTED a rate, not a throughput — 0 means nothing reported one, not a measured zero. Always 0 on the grand total, which cannot average rates honestly."`
 	PredictedPerSec    float64 `json:"predictedPerSec" doc:"Mean backend-reported generation speed, tokens/sec (tg/s). Separates a slowdown caused by more prompt to read (this holds steady) from one caused by the box itself (this falls). Same caveats as promptPerSec."`
 
+	// HOW FULL THE CONTEXT WAS, two ways. Each turn re-sends the whole
+	// conversation, so one turn's prompt is the conversation's size at that
+	// point; summing them (promptTokens) counts history again on every turn.
+	// See store.CtxStats.
+	CtxRequests   int64   `json:"ctxRequests" doc:"Served chat turns that named a conversation — what ctxRequestAvg/ctxRequestP90 are over."`
+	CtxRequestAvg float64 `json:"ctxRequestAvg" doc:"Per request: mean context tokens (prompt + completion) per served chat turn. A long conversation counts once per turn."`
+	CtxRequestP90 int64   `json:"ctxRequestP90" doc:"Per request: 90th percentile of context tokens per served chat turn."`
+	CtxSessions   int64   `json:"ctxSessions" doc:"Conversations seen in the window — what ctxTailAvg/ctxTailP90 are over. A conversation whose message count drops (restarted or compacted) counts again."`
+	CtxTailAvg    float64 `json:"ctxTailAvg" doc:"Per session tail: mean context tokens at each conversation's LAST turn in the window. Each turn overwrites the one before, so a conversation counts once."`
+	CtxTailP90    int64   `json:"ctxTailP90" doc:"Per session tail: 90th percentile of context tokens at each conversation's last turn."`
+
 	// WHAT KIND OF MONEY THIS IS. costUsd alone cannot say, and the two kinds it
 	// mixes are unrelated: energy is kWh × $/kWh on hardware we run, paid spend
 	// is a provider's invoice. See costkind.go.
@@ -1323,9 +1334,18 @@ type UsageRollupOutput struct {
 
 // UsageRollup aggregates metered activity by served model over a window.
 func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageRollupOutput, error) {
-	rows, err := h.Store.RollupByModel(windowOf(in.FromMS, in.ToMS, in.WindowHours*60))
+	win := windowOf(in.FromMS, in.ToMS, in.WindowHours*60)
+	rows, err := h.Store.RollupByModel(win)
 	if err != nil {
 		return nil, err
+	}
+	ctxRows, ctxTotal, err := h.Store.CtxStats(win)
+	if err != nil {
+		return nil, err
+	}
+	ctxBy := make(map[string]store.CtxStat, len(ctxRows))
+	for _, c := range ctxRows {
+		ctxBy[c.Served] = c
 	}
 	cfg := h.config()
 	costModel := cost.NewModel(cfg)
@@ -1358,6 +1378,7 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		if r.PromptPerSec > 0 {
 			row.CachedSecondsSaved = float64(r.CachedTokens) / r.PromptPerSec
 		}
+		setCtx(&row, ctxBy[r.Served])
 
 		// Which kind of money, and whether the comparison can speak for it.
 		k := classify(known, costModel, r.Served)
@@ -1463,7 +1484,15 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		out.Body.Total.CacheHitRate =
 			float64(out.Body.Total.CachedTokens) / float64(out.Body.Total.PromptTokens)
 	}
+	// Recomputed over every turn, not combined from the rows: a percentile of
+	// percentiles is not one.
+	setCtx(&out.Body.Total, ctxTotal)
 	return out, nil
+}
+
+func setCtx(row *RollupRow, c store.CtxStat) {
+	row.CtxRequests, row.CtxRequestAvg, row.CtxRequestP90 = c.Requests, c.RequestAvg, c.RequestP90
+	row.CtxSessions, row.CtxTailAvg, row.CtxTailP90 = c.Sessions, c.TailAvg, c.TailP90
 }
 
 // --- per-key usage rollup (P8-beyond) ---

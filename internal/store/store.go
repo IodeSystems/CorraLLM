@@ -451,6 +451,9 @@ var migrations = []string{
 	 SELECT provider, credential, model, upstream, lanes, quality, note, at
 	 FROM model_approval WHERE state = 'approved'`,
 	`DROP TABLE model_approval`,
+	conversationSchema,
+	`CREATE INDEX IF NOT EXISTS idx_activity_conversation_ts
+	   ON activity_conversation(ts, served, conversation, messages, ctx_tokens)`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -784,11 +787,17 @@ type Activity struct {
 	// turned it away. Empty for a request that was never rejected and sent no
 	// id of its own, which is most of them.
 	Ticket string
+	// Conversation names the chat conversation this request was a turn of (the
+	// slot cache's key), and ConversationMessages how many messages the turn
+	// carried. Not columns on activity: they live in activity_conversation, see
+	// conversation.go. Empty/0 for anything that is not a chat turn.
+	Conversation         string
+	ConversationMessages int
 }
 
 // InsertActivity appends a request record to the activity log.
 func (s *Store) InsertActivity(a Activity) error {
-	_, err := s.db.Exec(
+	res, err := s.db.Exec(
 		`INSERT INTO activity (ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
@@ -799,7 +808,15 @@ func (s *Store) InsertActivity(a Activity) error {
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
 		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket,
 	)
-	return err
+	if err != nil || a.Conversation == "" {
+		return err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+	return s.insertConversation(id, a.TS, a.Served, a.Conversation, a.ConversationMessages,
+		int64(a.PromptTokens+a.CompletionTokens))
 }
 
 // ActivityByID returns one full activity record including the captured payloads
@@ -826,6 +843,9 @@ func (s *Store) ActivityByID(id int64) (Activity, error) {
 func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 	res, err := s.db.Exec(`DELETE FROM activity WHERE ts < ?`, beforeMS)
 	if err != nil {
+		return 0, err
+	}
+	if _, err := s.db.Exec(`DELETE FROM activity_conversation WHERE ts < ?`, beforeMS); err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()

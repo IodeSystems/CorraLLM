@@ -764,6 +764,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// who is asking and not only on which model answered: an agentic caller and a
 	// person at a chat window want opposite things from the same model.
 	caller := p.config().ResolveCaller(callerKey(r))
+	// Which conversation this turn belongs to, for the activity row. The same
+	// key the slot cache restores by, so "this conversation" means one thing
+	// across the box. Into the context rather than threaded through every
+	// logReq call site, as the ticket rides the headers.
+	if r.URL.Path == "/v1/chat/completions" {
+		if id, n, ok := conversationOf(caller.Key, r.Header.Get(slotcache.ConversationHeader), body); ok {
+			r = r.WithContext(context.WithValue(r.Context(), conversationCtxKey{}, conversation{id, n}))
+		}
+	}
 
 	if r.URL.Path == "/v1/chat/completions" {
 		if m, ok := p.config().Models[served]; ok && m.Sampling != nil {
@@ -2718,6 +2727,9 @@ func (p *Proxy) logReq(r *http.Request, a store.Activity) {
 	// gave up.
 	if a.Ticket == "" {
 		a.Ticket = ticketFrom(r)
+	}
+	if c, ok := r.Context().Value(conversationCtxKey{}).(conversation); ok {
+		a.Conversation, a.ConversationMessages = c.id, c.messages
 	}
 	p.log(a)
 }

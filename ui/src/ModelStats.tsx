@@ -113,6 +113,13 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           cacheHitRate
           promptPerSec
           predictedPerSec
+          # How full the context was: every turn, and each conversation's last.
+          ctxRequests
+          ctxRequestAvg
+          ctxRequestP90
+          ctxSessions
+          ctxTailAvg
+          ctxTailP90
           # What kind of money this row is, and what the same tokens would have
           # been billed at on a paid API.
           type
@@ -482,6 +489,16 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
               </Tooltip>
             </TableCell>
             <TableCell align="right">
+              <Tooltip title="Context tokens (prompt + reply) each chat turn carried, averaged over every turn, with the 90th percentile under it. Every turn re-sends the whole conversation, so one turn's size IS the conversation's size at that point — and a long conversation counts once per turn.">
+                <span>Context / turn</span>
+              </Tooltip>
+            </TableCell>
+            <TableCell align="right">
+              <Tooltip title="Context tokens at each conversation's LAST turn in the window, averaged over conversations, with the 90th percentile under it. Each turn overwrites the one before, so a conversation counts once. A conversation whose message count drops — restarted, or its history compacted — counts as a new one.">
+                <span>Context / conversation end</span>
+              </Tooltip>
+            </TableCell>
+            <TableCell align="right">
               <Tooltip title="Mean time one request holds a slot, with the window's total underneath. The per-request figure, not the sum: a sum of dwell reads as a duration and was misread as one three times over.">
                 <span>Per request</span>
               </Tooltip>
@@ -641,6 +658,22 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                   {requests > 0 ? fmtInt(s?.completionTokens ?? 0) : '—'}
                 </TableCell>
                 <TableCell align="right">
+                  <CtxCell
+                    avg={Number(s?.ctxRequestAvg ?? 0)}
+                    p90={Number(s?.ctxRequestP90 ?? 0)}
+                    n={Number(s?.ctxRequests ?? 0)}
+                    noun="turn"
+                  />
+                </TableCell>
+                <TableCell align="right">
+                  <CtxCell
+                    avg={Number(s?.ctxTailAvg ?? 0)}
+                    p90={Number(s?.ctxTailP90 ?? 0)}
+                    n={Number(s?.ctxSessions ?? 0)}
+                    noun="conversation"
+                  />
+                </TableCell>
+                <TableCell align="right">
                   {requests > 0 ? (
                     <>
                       {fmtDuration(Math.round(Number(s?.dwellMs ?? 0) / requests))}
@@ -773,5 +806,37 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
           per-row chip stays, because that is the part that says WHICH model. */}
       {body}
     </Panel>
+  )
+}
+
+/** Thousands of tokens, one decimal: "35.8k tokens" reads at a glance where "35,821" does not. */
+function fmtKTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k tokens` : `${Math.round(n)} tokens`
+}
+
+/**
+ * One context reading: the mean, the p90 under it, and how many it is over.
+ * A dash when nothing in the window named a conversation — embeddings, audio,
+ * or a backend whose requests carry no messages.
+ */
+function CtxCell({ avg, p90, n, noun }: { avg: number; p90: number; n: number; noun: string }) {
+  if (n === 0) {
+    return (
+      <Tooltip title="No chat turn here named a conversation in this window — embeddings, audio, or requests with no messages.">
+        <span style={{ color: C.textFaint }}>—</span>
+      </Tooltip>
+    )
+  }
+  return (
+    <Tooltip
+      title={`Over ${fmtInt(n)} ${noun}${n === 1 ? '' : 's'}: mean ${fmtInt(Math.round(avg))} tokens, 90th percentile ${fmtInt(p90)} tokens.`}
+    >
+      <span>
+        {fmtKTokens(avg)} avg
+        <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+          p90 {fmtKTokens(p90)}
+        </Typography>
+      </span>
+    </Tooltip>
   )
 }

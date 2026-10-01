@@ -895,6 +895,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	// Sample instantaneous per-lane queue depth so it's visible before requests
 	// resolve (the activity log is completion-driven). Stops on shutdown.
 	go runQueueSampler(sigCtx, scheduler, st, 5*time.Second, o.activityRetention, o.payloadRetention)
+	// Conversation rows for activity recorded before activity_conversation
+	// existed, from the captured payloads still on disk. Resumes on restart and
+	// is a no-op once caught up.
+	go st.BackfillConversations(sigCtx)
 
 	// Publish per-model residency to Prometheus (corrallm_model_loaded +
 	// load-timestamp → uptime). Sampled rather than event-driven so the gauges
