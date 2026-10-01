@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P42.**
+**Next free number: P43.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -326,6 +326,52 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P42 — Swift 1.5 + speculation + thinking-reduction bench — 2026-10-01
+
+One window, production paused (Swift 1.0 + Stock, 10:27–13:25 PDT, aw4 got 32 × 429
+retry-after-300 and honored them; first 200 after resume 13:29:41). llm-bench, built-in probes,
+classes coding/tooluse/adversarial (16 probes, 27 stages), NOT `--pin-sampling` (production
+samplers; greedy changes how reasoning models think). Arms on box1 5090, Q6_K targets.
+Raw: scratchpad `p42/` runs.jsonl (session-local) + activity rows `key=bench-p42`.
+
+| arm | runs | stages pass | completion tok | exec min | decode tg/s |
+|---|---|---|---|---|---|
+| A Swift 1.0 + MTP3 (prod clone) | 3 | 77/81 | 169k | 30.8 | 113 |
+| B Swift 1.5 official + MTP3 | 3 | 78/81 | 168k | 29.6 | 119 |
+| C Swift 1.5 uncensored (i1-Q6_K) + MTP3 | 3 | 78/81 | 151k | 26.8 | 119 |
+| D B + ngram-map-k4v | 1 | 26/27 | 54k | 9.5 | 118 |
+| E B + DFlash2 Q8_0 (5090, ctx 131072) | 1 | 26/27 | 55k | 10.0 | 126 |
+| F B + reasoning_effort=low | 3 | 75/81 | 92k | 15.7 | 126 |
+| G B + logit_bias −2 on hedge tokens | 3 | 77/81 | 167k | 28.9 | 119 |
+
+Findings:
+- **Time is decode, decode is thinking.** ~85% of request time is decode; ~78% of generated tokens
+  are reasoning (completion minus visible tool-call/answer text, ~3.8 chars/token). Tool calls take
+  µs; harness gaps 3%.
+- **Production runs at reasoning_effort=xhigh** — the Qwen3.8/Swift template default, which injects
+  "validate key assumptions, consider plausible alternatives". Nothing overrode it.
+- B ≈ A on quality and tokens (Swift 1.5's thinking-reduction claim does not show on this set),
+  +5% decode. C: same pass rate, −10% tokens; the 8k-token runaway from the smoke test did not
+  recur on the probes.
+- **F (low): −45% tokens, −47% time, 2 real regressions** (`overrefusal-port-scan` stage 1 code
+  fails `go vet` 2/3; xhigh 0/3) + 1 cold-load artifact. medium untested.
+- G: no effect. Swift's training already suppresses those tokens (research warned of redundancy).
+  Token IDs: Wait 13784/13428, Hmm 77264/85152, Alternatively 88842/37201, Actually 50821/32645,
+  " maybe" 6970, " perhaps" 8106.
+- D: no gain (+~1 GiB VRAM); output here is mostly new text, aw4 may repeat more.
+- E: +6% decode, mean accepted len 3.6 (z-lab's 5.1 was on base Qwen); costs 57k context. Cross-GPU
+  drafter (3080) ABORTS in this build: the DFlash drafter shares the target's output.weight
+  (`pre-allocated tensor (output.weight) in a buffer (CUDA0) that cannot run the operation`).
+- `codex-plan-3-violation` fails 3/3 on every arm (calls ask_user_question) — probe or shared limit.
+
+- **next:** owner decisions below; then delete bench clones (A, D, E, F, G entries).
+- **blocking decisions:** (1) production weights: Swift 1.5 official vs uncensored vs stay 1.0;
+  (2) reasoning effort for aw4: xhigh / low / bench medium first. Applying it needs either a cmd
+  flag (`--reasoning-effort`, model-wide) or per-key `chat_template_kwargs.reasoning_effort` in the
+  sampling profile (code: sampling.go sets only enable_thinking today — unverified for effort).
+- **risks:** 1-run arms (D, E) are speed-only; 3-run pass deltas of 1–3 stages are within noise
+  except where the same check fails repeatedly (F's go vet).
 
 ### ✅ P41 — a paused model answers 429 "retry after 5 minutes"; Pause is back in the UI — 2026-10-01
 
