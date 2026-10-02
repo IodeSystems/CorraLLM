@@ -527,6 +527,10 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
         )}
       </Stack>
 
+      {/* How fast and how much reuse: speed and cache distributions, right under
+          the totals and above the comparison and the charts. */}
+      <SpeedCacheHeadline window={window} />
+
       {/* The same comparison the home screen shows, over whatever window this
           page is set to. One component so the two cannot drift; the scope
           sentence and the baseline's name travel with it. */}

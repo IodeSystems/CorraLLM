@@ -451,3 +451,27 @@ func TestUsageRollupHeatAndPerf(t *testing.T) {
 		t.Errorf("total perf = tg %d/%v tp %v cache %d/%v", tot.TgN, tot.TgAvg, tot.TpAvg, tot.CacheN, tot.CacheAvg)
 	}
 }
+
+// TestUnknownModelWithoutTokensIsNotServed: rows under a name the config no
+// longer has are "served by a model no longer in the config" only if something
+// produced tokens; turn-aways logged under an old alias are "no tokens".
+func TestUnknownModelWithoutTokensIsNotServed(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UnixMilli()
+	must(t, st.InsertActivity(store.Activity{TS: now, Served: "old-alias", Status: 429}))
+	must(t, st.InsertActivity(store.Activity{TS: now, Served: "removed-model", Status: 200, PromptTokens: 100, CompletionTokens: 10}))
+	out, err := (&Handlers{Store: st, Cfg: costFixtureConfig()}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]RollupRow{}
+	for _, r := range out.Body.Rows {
+		by[r.Served] = r
+	}
+	if got := by["old-alias"].BaselineExcluded; got != ExcludeNoTokens {
+		t.Errorf("old-alias (only a 429) = %q, want no-tokens", got)
+	}
+	if got := by["removed-model"].BaselineExcluded; got != ExcludeUnknownModel {
+		t.Errorf("removed-model (served tokens) = %q, want unknown-model", got)
+	}
+}

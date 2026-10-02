@@ -1476,6 +1476,14 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 			row.UnattributedUSD = r.CostUSD
 		}
 
+		// A row under a name the config no longer has, WITH NO TOKENS, was never
+		// served by anything: it is turn-aways and failures logged under an old
+		// name (an alias that moved, a model removed while callers still asked
+		// for it). "Served by a model no longer in the config" was false of
+		// those; "nothing produced a token" is the fact.
+		if row.BaselineExcluded == ExcludeUnknownModel && r.PromptTokens == 0 && r.CompletionTokens == 0 {
+			row.BaselineExcluded = ExcludeNoTokens
+		}
 		// The LAST reason, applying only when the backend itself gave none: the
 		// window recorded no tokens, so there is nothing to price. It does not
 		// outrank the others — an audio row always has no tokens, and "billed by

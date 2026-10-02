@@ -74,7 +74,7 @@ const EXCLUSION_WORDS: Record<string, string> = {
   'off-box':
     'served by a machine we do not run, with nothing in the config saying what it charges — so their local figure is not one',
   'unknown-model': 'served by a model that is no longer in the config',
-  'no-tokens': 'recorded no tokens at all',
+  'no-tokens': 'turned away, refused or failed before producing a token, so there is nothing to price',
 }
 
 export function PaidComparison({
