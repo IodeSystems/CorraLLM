@@ -8,7 +8,7 @@ import { ModelStats } from '@/ModelStats'
 import { ServiceProfiles } from '@/ServiceProfiles'
 import { TrafficWarnings } from '@/TrafficWarnings'
 import { TurnedAway } from '@/TurnedAway'
-import { CallerSpend, MoreCharts, TrafficHeadline } from '@/routes/usage'
+import { CallerSpend, MoreCharts, SpeedCacheHeadline, TrafficHeadline } from '@/routes/usage'
 import { TimeWindowPicker, windowPhrase, type TimeWindow } from '@/TimeWindow'
 import { C } from '@/theme'
 
@@ -83,6 +83,10 @@ function Traffic() {
 
       {/* What it did and what it cost: five totals and two charts. */}
       <TrafficHeadline window={window} />
+
+      {/* How fast and how warm: per-request speed and cache distributions, global
+          and — when more than one model served — per model. */}
+      <SpeedCacheHeadline window={window} />
 
       {/* Who is being served RIGHT NOW. It is also on the home screen, which is
           the page that answers "right now" — but a person watching a bad hour on

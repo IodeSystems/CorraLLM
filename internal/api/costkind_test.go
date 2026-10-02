@@ -427,3 +427,27 @@ func TestUsageRollupPricesCostEquivalent(t *testing.T) {
 	}
 	near(t, "total baseline", out.Body.Total.BaselineUSD, 0.53+1.59+0.53)
 }
+
+// TestUsageRollupHeatAndPerf: heat is metered energy x 3412.14 BTU/kWh,
+// averaged over the window for BTU/h, and the per-request speed distributions
+// are recomputed on the total rather than left unset.
+func TestUsageRollupHeatAndPerf(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now()
+	must(t, st.InsertActivity(store.Activity{
+		TS: now.UnixMilli(), Served: "local-chat", Status: 200,
+		PromptTokens: 1000, CachedTokens: 500, CompletionTokens: 100, CostUSD: 0.35,
+		PromptPerSec: 800, PredictedPerSec: 100,
+	}))
+	out, err := (&Handlers{Store: st, Cfg: costFixtureConfig()}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tot := out.Body.Total
+	// $0.35 at $0.14/kWh = 2.5 kWh = 8530.35 BTU, over a 2 h window.
+	near(t, "energyBtu", tot.EnergyBTU, 2.5*3412.14)
+	near(t, "heatBtuPerHour", tot.HeatBTUh, 2.5*3412.14/2)
+	if tot.TgN != 1 || tot.TgAvg != 100 || tot.TpAvg != 800 || tot.CacheN != 1 || tot.CacheAvg != 0.5 {
+		t.Errorf("total perf = tg %d/%v tp %v cache %d/%v", tot.TgN, tot.TgAvg, tot.TpAvg, tot.CacheN, tot.CacheAvg)
+	}
+}

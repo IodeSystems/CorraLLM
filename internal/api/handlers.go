@@ -1292,6 +1292,28 @@ type RollupRow struct {
 	CtxTailAvg    float64 `json:"ctxTailAvg" doc:"Per session tail: mean context tokens at each conversation's LAST turn in the window. Each turn overwrites the one before, so a conversation counts once."`
 	CtxTailP90    int64   `json:"ctxTailP90" doc:"Per session tail: 90th percentile of context tokens at each conversation's last turn."`
 
+	// SPEED AND CACHE, AS DISTRIBUTIONS. Per request: the mean is the speed a
+	// caller typically saw, P10 is the slow tail (where a slowdown shows first),
+	// P90 the fast one. Unlike promptPerSec/predictedPerSec these ARE set on the
+	// total, recomputed over every request rather than averaged across rows.
+	TgN      int64   `json:"tgN" doc:"Requests that reported a decode speed — what the tg* figures are over."`
+	TgAvg    float64 `json:"tgAvg" doc:"Decode (generation) speed, tokens/sec: mean over requests."`
+	TgP10    float64 `json:"tgP10" doc:"Decode speed, tokens/sec: 10th percentile — the slow tail."`
+	TgP90    float64 `json:"tgP90" doc:"Decode speed, tokens/sec: 90th percentile — the fast tail."`
+	TpN      int64   `json:"tpN" doc:"Requests that reported a prefill speed — what the tp* figures are over."`
+	TpAvg    float64 `json:"tpAvg" doc:"Prefill (prompt processing) speed, tokens/sec: mean over requests."`
+	TpP10    float64 `json:"tpP10" doc:"Prefill speed, tokens/sec: 10th percentile — the slow tail."`
+	TpP90    float64 `json:"tpP90" doc:"Prefill speed, tokens/sec: 90th percentile — the fast tail."`
+	CacheN   int64   `json:"cacheN" doc:"Requests the per-request cache figures are over: served requests with a prompt, from models that reported any cache hit in the window. 0 means nothing here reports a cache — not a measured 0%."`
+	CacheAvg float64 `json:"cacheAvg" doc:"Per-request cache hit (cached / prompt tokens), 0..1: mean over requests. cacheHitRate is the token-weighted figure."`
+	CacheP90 float64 `json:"cacheP90" doc:"Per-request cache hit, 0..1: 90th percentile."`
+
+	// HEAT. Every watt-hour a local backend draws ends up as heat in the room.
+	// From METERED token energy only — idle draw, CPU and PSU losses are not in
+	// it, so the box's real heat output is higher.
+	EnergyBTU float64 `json:"energyBtu" doc:"Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."`
+	HeatBTUh  float64 `json:"heatBtuPerHour" doc:"energyBtu averaged over the window's length, BTU/h. 0 when the window is unbounded (all time)."`
+
 	// WHAT KIND OF MONEY THIS IS. costUsd alone cannot say, and the two kinds it
 	// mixes are unrelated: energy is kWh × $/kWh on hardware we run, paid spend
 	// is a provider's invoice. See costkind.go.
@@ -1344,6 +1366,23 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 	if err != nil {
 		return nil, err
 	}
+	perfRows, perfTotal, err := h.Store.PerfStats(win)
+	if err != nil {
+		return nil, err
+	}
+	perfBy := make(map[string]store.PerfStat, len(perfRows))
+	for _, p := range perfRows {
+		perfBy[p.Served] = p
+	}
+	// The window's length in hours, for heat per hour; 0 for an unbounded one.
+	windowHours := 0.0
+	if win.FromMS > 0 {
+		to := win.ToMS
+		if to <= 0 {
+			to = time.Now().UnixMilli()
+		}
+		windowHours = float64(to-win.FromMS) / 3_600_000
+	}
 	ctxBy := make(map[string]store.CtxStat, len(ctxRows))
 	for _, c := range ctxRows {
 		ctxBy[c.Served] = c
@@ -1380,6 +1419,7 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 			row.CachedSecondsSaved = float64(r.CachedTokens) / r.PromptPerSec
 		}
 		setCtx(&row, ctxBy[r.Served])
+		setPerf(&row, perfBy[r.Served])
 
 		// Which kind of money, and whether the comparison can speak for it.
 		k := classify(known, costModel, r.Served)
@@ -1495,7 +1535,28 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 	// Recomputed over every turn, not combined from the rows: a percentile of
 	// percentiles is not one.
 	setCtx(&out.Body.Total, ctxTotal)
+	setPerf(&out.Body.Total, perfTotal)
+	setHeat(&out.Body.Total, windowHours)
+	for i := range out.Body.Rows {
+		setHeat(&out.Body.Rows[i], windowHours)
+	}
 	return out, nil
+}
+
+// btuPerKwh converts electrical energy to heat: all of it ends up in the room.
+const btuPerKwh = 3412.14
+
+func setHeat(row *RollupRow, windowHours float64) {
+	row.EnergyBTU = row.EnergyKwh * btuPerKwh
+	if windowHours > 0 {
+		row.HeatBTUh = row.EnergyBTU / windowHours
+	}
+}
+
+func setPerf(row *RollupRow, p store.PerfStat) {
+	row.TgN, row.TgAvg, row.TgP10, row.TgP90 = p.TG.N, p.TG.Avg, p.TG.P10, p.TG.P90
+	row.TpN, row.TpAvg, row.TpP10, row.TpP90 = p.TP.N, p.TP.Avg, p.TP.P10, p.TP.P90
+	row.CacheN, row.CacheAvg, row.CacheP90 = p.Cache.N, p.Cache.Avg, p.Cache.P90
 }
 
 func setCtx(row *RollupRow, c store.CtxStat) {

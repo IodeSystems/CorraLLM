@@ -1,4 +1,4 @@
-import { Box, Typography } from '@mui/material'
+import { Box, Table, TableBody, TableCell, TableHead, TableRow, Typography } from '@mui/material'
 import { Panel, Row } from '@/Panel'
 import { NotYet } from '@/NotYet'
 import { C } from '@/theme'
@@ -60,6 +60,10 @@ export type ComparisonRow = {
   baselineExcluded: string
   /** The paid type THIS row was priced at — its model's costEquivalent, else the default. */
   baselineType: string
+  /** Heat the row's local work gave off, BTU (metered token energy x 3412.14). */
+  energyBtu: number
+  /** energyBtu over the window's length, BTU/h. */
+  heatBtuPerHour: number
 }
 
 /** The reasons the server can give, in the words a reader gets. */
@@ -148,9 +152,17 @@ export function PaidComparison({
   // (costEquivalent), so one panel can price rows at different tables. Name the
   // one when there is one; name all of them when there are several, rather
   // than calling a mixed sum "haiku rates".
-  const priced = [...new Set(covered.filter((r) => r.requests > 0 && r.baselineType).map((r) => r.baselineType))].sort()
+  // PER MODEL, AT ITS OWN EQUIVALENT. Each local model is priced as the paid
+  // model it stands in for (costEquivalent), so the headline is a sum of
+  // per-model figures and the panel lists them rather than naming one rate
+  // table as if the whole window had been one model.
+  const perModel = covered.filter((r) => r.requests > 0).sort((a, b) => b.baselineUsd - a.baselineUsd)
   const ratesLabel =
-    priced.length > 1 ? `per-model rates (${priced.join(', ')})` : `${priced[0] ?? baselineType} rates`
+    perModel.length === 1
+      ? `${perModel[0].served} as ${perModel[0].baselineType || baselineType}`
+      : `${perModel.length} models, each at its cost equivalent`
+  const btu = sum((r) => r.energyBtu)
+  const btuPerHour = sum((r) => r.heatBtuPerHour)
 
   return (
     <Panel
@@ -158,7 +170,7 @@ export function PaidComparison({
       // A LABEL: the baseline's name and the window, no sentence break, and
       // nothing about a request in flight. It is the header's whole job to say
       // what the numbers below are of.
-      subtitle={`${ratesLabel} · ${when}`}
+      subtitle={`priced per model at its cost equivalent · ${when}`}
       note={
         // The scope sentence names WHOSE hardware, because the covered set is no
         // longer one thing: our own boxes, plus free-tier traffic that cost
@@ -214,6 +226,18 @@ export function PaidComparison({
               a provider giving tokens away — and only the first is a return on
               the machine. Shown only when there is free traffic: a permanent
               "$0.00 / 0 requests" teaches nobody anything. */}
+          {/* HEAT. Every watt-hour a local model draws ends up in the room: free
+              heating in winter, extra load on the cooling in summer. From metered
+              token energy only, so the box's real output is higher. */}
+          <Figure
+            label="Heat given off"
+            value={pending ? <NotYet /> : `${fmtInt(Math.round(btu))} BTU`}
+            sub={
+              btuPerHour > 0
+                ? `≈ ${fmtInt(Math.round(btuPerHour))} BTU/h (${fmtInt(Math.round(btuPerHour / 3.41214))} W) from token work; idle draw not counted`
+                : 'from token work; idle draw not counted'
+            }
+          />
           {freeReqs > 0 && (
             <Figure
               label="Of that, free tier"
@@ -223,6 +247,32 @@ export function PaidComparison({
           )}
         </Box>
       </Row>
+      {perModel.length > 0 && (
+        <Row>
+          <Table size="small" sx={{ my: 0.5 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>Model</TableCell>
+                <TableCell>Priced as</TableCell>
+                <TableCell align="right">On a paid API</TableCell>
+                <TableCell align="right">Electricity here</TableCell>
+                <TableCell align="right">Heat, BTU</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {perModel.map((r) => (
+                <TableRow key={r.served}>
+                  <TableCell>{r.served}</TableCell>
+                  <TableCell>{r.baselineType || baselineType}</TableCell>
+                  <TableCell align="right">{fmtMoney(r.baselineUsd)}</TableCell>
+                  <TableCell align="right">{fmtMoney(r.energyUsd)}</TableCell>
+                  <TableCell align="right">{fmtInt(Math.round(r.energyBtu))}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Row>
+      )}
       {/* The breakdown, in the three classes tokens are always measured in. It
           is below the headline rather than beside it because the headline is what
           somebody came for (OB-11) — and it is here at all because a single

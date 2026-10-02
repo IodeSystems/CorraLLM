@@ -140,6 +140,20 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           baselineExcluded
           # Which paid type priced THIS row: the model's costEquivalent, else the default.
           baselineType
+          # Per-request speed and cache distributions, and the heat local work gave off.
+          tgN
+          tgAvg
+          tgP10
+          tgP90
+          tpN
+          tpAvg
+          tpP10
+          tpP90
+          cacheN
+          cacheAvg
+          cacheP90
+          energyBtu
+          heatBtuPerHour
         }
         total {
           requests
@@ -158,6 +172,25 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           freeRequests
           mispricedUsd
           baselineUsd
+          ctxRequests
+          ctxRequestAvg
+          ctxRequestP90
+          ctxSessions
+          ctxTailAvg
+          ctxTailP90
+          tgN
+          tgAvg
+          tgP10
+          tgP90
+          tpN
+          tpAvg
+          tpP10
+          tpP90
+          cacheN
+          cacheAvg
+          cacheP90
+          energyBtu
+          heatBtuPerHour
         }
       }
     }

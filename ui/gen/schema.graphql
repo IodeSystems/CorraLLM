@@ -2549,8 +2549,14 @@ type corrallm_RollupRow {
   baselineUsd: Float!
   """How this row's cost was arrived at: "energy" (this fleet's electricity, kWh × costPerKwh), "paid" (a provider's per-token rates), "free" (a remote backend with a declared freeTier and no per-token rates — somebody else's hardware at no charge, so the cost is $0 because that is the price), or "unattributed" (this box's energy coefficients applied to a model corrallm does not run and nothing says what it charges, or to one that has left the config — neither electricity nor a bill, and a config gap to fix by declaring what that backend costs)."""
   billing: String!
+  """Per-request cache hit (cached / prompt tokens), 0..1: mean over requests. cacheHitRate is the token-weighted figure."""
+  cacheAvg: Float!
   """cachedTokens / promptTokens, 0..1. Only meaningful when cacheReports > 0."""
   cacheHitRate: Float!
+  """Requests the per-request cache figures are over: served requests with a prompt, from models that reported any cache hit in the window. 0 means nothing here reports a cache — not a measured 0%."""
+  cacheN: Long!
+  """Per-request cache hit, 0..1: 90th percentile."""
+  cacheP90: Float!
   """Requests that reported any cache hit. ZERO MEANS UNKNOWN, NOT 0% — a backend with no prompt cache (embeddings, most remote providers) never reports, and showing that as a measured miss rate invents a problem."""
   cacheReports: Long!
   """Estimated prompt-processing time avoided: cachedTokens / mean observed prompt tokens-per-second. An estimate — the speed varies with batch and context."""
@@ -2575,12 +2581,16 @@ type corrallm_RollupRow {
   ctxTailP90: Long!
   """Total dwell, milliseconds."""
   dwellMs: Long!
+  """Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."""
+  energyBtu: Float!
   """energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset."""
   energyKwh: Float!
   """The part of costUsd that is electricity: nonzero only when billing is "energy"."""
   energyUsd: Float!
   """Requests served at no charge by a backend with a declared freeTier and no per-token rates. Equals requests when billing is "free", else 0; on the total, how many of the window's requests cost nothing. The gate for showing a free-tier figure: its dollar value is always $0, so the count is the only thing that says whether the $0 was measured."""
   freeRequests: Long!
+  """energyBtu averaged over the window's length, BTU/h. 0 when the window is unbounded (all time)."""
+  heatBtuPerHour: Float!
   """What the store had RECORDED against this row that is charged to no kind here: nonzero only when billing is "free". These rows were metered with this box's watt-hour coefficients for tokens processed elsewhere, so the figure is neither electricity nor a bill and costUsd reports 0 instead. It is surfaced rather than dropped because a total that quietly shrank cannot be checked. Metering itself now bills a declared free tier $0 (cost.NoCharge), so this decays to 0 as the 30-day retention window turns over — a nonzero value means rows recorded before that fix are still in the window."""
   mispricedUsd: Float!
   """The part of costUsd that is a provider's bill: nonzero only when billing is "paid"."""
@@ -2595,6 +2605,22 @@ type corrallm_RollupRow {
   requests: Long!
   """Served model name."""
   served: String!
+  """Decode (generation) speed, tokens/sec: mean over requests."""
+  tgAvg: Float!
+  """Requests that reported a decode speed — what the tg* figures are over."""
+  tgN: Long!
+  """Decode speed, tokens/sec: 10th percentile — the slow tail."""
+  tgP10: Float!
+  """Decode speed, tokens/sec: 90th percentile — the fast tail."""
+  tgP90: Float!
+  """Prefill (prompt processing) speed, tokens/sec: mean over requests."""
+  tpAvg: Float!
+  """Requests that reported a prefill speed — what the tp* figures are over."""
+  tpN: Long!
+  """Prefill speed, tokens/sec: 10th percentile — the slow tail."""
+  tpP10: Float!
+  """Prefill speed, tokens/sec: 90th percentile — the fast tail."""
+  tpP90: Float!
   """The model's cost class — its commandCosts key. Empty when the model is no longer in the config."""
   type: String!
   """The part of costUsd that is neither: nonzero only when billing is "unattributed"."""

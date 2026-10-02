@@ -74,6 +74,8 @@ const NowDoc = graphql(/* GraphQL */ `
           baselineGeneratedUsd
           baselineExcluded
           baselineType
+          energyBtu
+          heatBtuPerHour
           promptPerSec
           predictedPerSec
         }
@@ -1134,6 +1136,8 @@ function Now() {
     baselineGeneratedUsd: Number(r.baselineGeneratedUsd ?? 0),
     baselineExcluded: r.baselineExcluded ?? '',
     baselineType: r.baselineType ?? '',
+    energyBtu: Number(r.energyBtu ?? 0),
+    heatBtuPerHour: Number(r.heatBtuPerHour ?? 0),
   }))
 
   return (

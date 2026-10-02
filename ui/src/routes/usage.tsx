@@ -255,6 +255,131 @@ const groupColor = (i: number) => seriesColor(i)
  * is on purpose: a rate averaged across models is not a rate, which is why the
  * schema pins both to 0 on the grand total. They are per-model columns.
  */
+/** Tokens per second, at the precision a reader can use. */
+function fmtRate(n: number): string {
+  return n >= 100 ? Math.round(n).toString() : n.toFixed(1)
+}
+/** Thousands of tokens, one decimal. */
+function fmtK(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n)}`
+}
+const pct = (x: number) => `${(x * 100).toFixed(1)}%`
+
+/**
+ * SPEED AND CACHE, AS DISTRIBUTIONS (P47).
+ *
+ * The By-model table carries per-model MEANS, and the rollup refuses to sum a
+ * rate across models, so the page had no global speed figure and no tail at
+ * all. These are per-request distributions computed over every request in the
+ * window: the mean is what a caller typically saw, p10 is the slow tail — where
+ * a slowdown shows first — and p90 the fast one. Cache and context are about
+ * how much, so they carry the mean and p90.
+ *
+ * Per model only when more than one model served: with one, the table would
+ * repeat the tiles row for row.
+ */
+export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWindow }) {
+  const q = useModelStats(window)
+  const roll = q.data?.corrallm.usageRollup
+  const total = roll?.total
+  const rows = (roll?.rows ?? []).filter(
+    (r) => Number(r.tgN) > 0 || Number(r.cacheN) > 0 || Number(r.ctxRequests) > 0,
+  )
+  const counted = total != null
+  const speedTile = (label: string, n: number, avg: number, p10: number, p90: number, hint: string) => (
+    <StatTile
+      label={label}
+      value={!counted ? <NotYet /> : n > 0 ? `${fmtRate(avg)} tok/s` : 'n/r'}
+      sub={
+        counted && n > 0
+          ? `avg · slowest 10% under ${fmtRate(p10)} · fastest 10% over ${fmtRate(p90)} tok/s · ${fmtInt(n)} requests`
+          : counted
+            ? 'no backend reported timings'
+            : undefined
+      }
+      hint={hint}
+    />
+  )
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
+        {speedTile(
+          'Decode (writing)',
+          Number(total?.tgN ?? 0),
+          Number(total?.tgAvg ?? 0),
+          Number(total?.tgP10 ?? 0),
+          Number(total?.tgP90 ?? 0),
+          'Generation speed the backend reported, tokens/sec, per request. The mean is what a caller typically saw; the slowest-10% mark is where a slowdown shows first. Long contexts decode slower, so this moves with how much each request carried.',
+        )}
+        {speedTile(
+          'Prefill (reading)',
+          Number(total?.tpN ?? 0),
+          Number(total?.tpAvg ?? 0),
+          Number(total?.tpP10 ?? 0),
+          Number(total?.tpP90 ?? 0),
+          'Prompt-processing speed the backend reported, tokens/sec, per request — over the tokens it actually read, not the cached prefix.',
+        )}
+        <StatTile
+          label="Cache hit"
+          value={!counted ? <NotYet /> : Number(total?.cacheN ?? 0) > 0 ? `${pct(Number(total?.cacheAvg))} avg` : 'n/r'}
+          sub={
+            counted && Number(total?.cacheN ?? 0) > 0
+              ? `per request · p90 ${pct(Number(total?.cacheP90))} · ${pct(Number(total?.cacheHitRate ?? 0))} of all prompt tokens`
+              : counted
+                ? 'nothing reported a cache'
+                : undefined
+          }
+          hint="Share of each request's prompt served from the KV cache instead of reprocessed, averaged over requests; the last figure weights by tokens instead. Only models that reported any cache hit are counted, so a backend without a prompt cache does not read as 0%."
+        />
+        <StatTile
+          label="Context / turn"
+          value={!counted ? <NotYet /> : Number(total?.ctxRequests ?? 0) > 0 ? `${fmtK(Number(total?.ctxRequestAvg))} tokens avg` : '—'}
+          sub={
+            counted && Number(total?.ctxRequests ?? 0) > 0
+              ? `p90 ${fmtK(Number(total?.ctxRequestP90))} tokens · conversation end ${fmtK(Number(total?.ctxTailAvg))} avg, p90 ${fmtK(Number(total?.ctxTailP90))}`
+              : undefined
+          }
+          hint="Prompt + reply tokens per chat turn (each turn re-sends the conversation, so this IS the conversation's size then), and at each conversation's last turn."
+        />
+      </Stack>
+      {rows.length > 1 && (
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Model</TableCell>
+                <TableCell align="right">Decode tok/s avg (p10 – p90)</TableCell>
+                <TableCell align="right">Prefill tok/s avg (p10 – p90)</TableCell>
+                <TableCell align="right">Cache hit avg (p90)</TableCell>
+                <TableCell align="right">Context / turn avg (p90), tokens</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rows.map((r) => (
+                <TableRow key={r.served}>
+                  <TableCell>{r.served}</TableCell>
+                  <TableCell align="right">
+                    {Number(r.tgN) > 0 ? `${fmtRate(Number(r.tgAvg))} (${fmtRate(Number(r.tgP10))} – ${fmtRate(Number(r.tgP90))})` : 'n/r'}
+                  </TableCell>
+                  <TableCell align="right">
+                    {Number(r.tpN) > 0 ? `${fmtRate(Number(r.tpAvg))} (${fmtRate(Number(r.tpP10))} – ${fmtRate(Number(r.tpP90))})` : 'n/r'}
+                  </TableCell>
+                  <TableCell align="right">
+                    {Number(r.cacheN) > 0 ? `${pct(Number(r.cacheAvg))} (${pct(Number(r.cacheP90))})` : 'n/r'}
+                  </TableCell>
+                  <TableCell align="right">
+                    {Number(r.ctxRequests) > 0 ? `${fmtK(Number(r.ctxRequestAvg))} (${fmtK(Number(r.ctxRequestP90))})` : '—'}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+    </Box>
+  )
+}
+
 export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWindow }) {
   const q = useUsage(window)
   // Totals ride the By-model query rather than a usageRollup of our own: same
@@ -301,6 +426,8 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
       baselineGeneratedUsd: Number(r.baselineGeneratedUsd ?? 0),
       baselineExcluded: r.baselineExcluded ?? '',
       baselineType: r.baselineType ?? '',
+      energyBtu: Number(r.energyBtu ?? 0),
+      heatBtuPerHour: Number(r.heatBtuPerHour ?? 0),
     }),
   )
   // NOTHING HAS BEEN COUNTED UNTIL THE TOTAL ARRIVES. `?? 0` on these five put a
