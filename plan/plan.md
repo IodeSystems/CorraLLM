@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P46.**
+**Next free number: P47.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -326,6 +326,27 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P46 — housekeeping: one model per role; `free` removed — 2026-10-02
+
+Owner: drop every model except the active ones for OCR, embedding, chat, vision, audio; "kill free —
+free is JUST a bad idea"; keep the `claude` proxy extension; delete box1 weight files.
+
+Done (config rev 133; rev 132 is the restore point): kept `local-Swift-1.5-Qwen3.8-27B-Q6_K_S` (chat +
+vision, the 3 aliases, sole `chat` lane member), `local-chandra-ocr-2`, `local-nomic-embed-text`, the
+`oidio` extension (stt / stt-diarize / realtime-stt / tts), the `claude` extension. Removed: Swift 1.0
+(the rollback), Qwen3.8-27B-Stock (the chat-lane fallback), Qwen3.8-27B-Uncensored, Swift 1.5
+uncensored, Qwen3.6-35B-A3B-MTP (the Mac's only model), qwen-image-2.1, the `free` extension + `free`
+lane (groq / openrouter pool). Deleted 12 files, 112.4 GiB, from `~/.corrallm/models` (only files no kept
+model or extension references; chandra/nomic load from llama.cpp's HF cache). aw4 unaffected.
+
+- **risks:** no warm rollback and no chat-lane fallback — if Swift 1.5 cannot load, `chat` and the
+  aliases have nothing to fall to. The Mac is enrolled but serves nothing. Image generation is gone.
+- **blocking decisions (owner):** close or rewrite the open items whose subject was removed —
+  P9h (image surface), P32 (abliteration), P22 (Qwen 3.6 vs 3.8 tail), "Muse Glimmer vs
+  Qwen3-6-27B-MPT", "carlsmacbookpro is back" and "Second compute host" (Mac now idle).
+- **left on disk:** `~/.corrallm/tools/ninfer-ext` (151 MB failed checkout, not a model); provider
+  credentials for groq/openrouter, if any, are untouched.
 
 ### ✅ P45 — per-model costEquivalent; production priced as Sonnet 5.5; llama.cpp left unpinned — 2026-10-02 → [`done.md`](done.md)
 
