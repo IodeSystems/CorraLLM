@@ -18,6 +18,28 @@ to find.
 
 # Engine
 
+## ✅ P45 — per-model costEquivalent; production priced as Sonnet 5.5 — 2026-10-02
+
+Owner: "at medium thinking, qwen3.8-27b-Q6 equates to Sonnet 5.5 — update our cost system". Found: the
+"would have cost on a paid API" comparison used ONE global baseline; `costBaseline` was unset, so it fell
+back to the cheapest paid type, **anthropic-haiku** — every local token was valued at Haiku rates. And
+the `anthropic-sonnet` / `anthropic-opus` tables were stale (Sonnet 4.6 $3/$15/$0.30, Opus 4.x
+$5/$25/$0.50). No served model uses those types, so correcting them moved no recorded spend.
+
+Built (`e8bfee5`, deployed): `Model.costEquivalent` (paid commandCosts type the model stands in for;
+soft — a non-paid name falls back to the default, like costBaseline). UsageRollup prices each row at
+its model's equivalent, else the default; each row reports `baselineType`; the total's is empty. The
+paid-API panel names one rate table, or "per-model rates (a, b)" when rows differ. Test:
+`TestUsageRollupPricesCostEquivalent`.
+
+Config: anthropic-sonnet → Sonnet 5.5 $2/$10/$0.20; anthropic-opus → Opus 5.5 $4/$20/$0.20 (Claude API
+reference cached 2026-09-25); production Swift-1.5-Qwen3.8-27B-Q6_K_S `costEquivalent: anthropic-sonnet`
+(owner's judgement; others keep the Haiku default — owner chose production only). Live 24 h:
+4,894 requests, $118.38 at Sonnet rates vs $0.79 electricity.
+
+Also (owner): llama.cpp NOT pinned — auto-updates stay on; 4ebdf2c7 selected; tool notes warn never to
+activate a build older than 1fb7ef3e3 while `--spec-draft-sampling probabilistic` is in a cmd.
+
 ## ✅ P44 — probabilistic MTP drafting: +12% decode on live aw4 traffic — 2026-10-02
 
 llama.cpp #27694 (merged 2026-10-02, 1fb7ef3e3): rejection-sampling verify for draft-simple and MTP,
