@@ -18,6 +18,32 @@ to find.
 
 # Engine
 
+## ✅ P47 — Traffic: speed & cache distributions, per-model paid comparison, heat — 2026-10-02
+
+Owner: show cache hit rate, tg/s, tp/s — avg and p90 — globally and per model (when more than one);
+the paid comparison "shouldn't be per sonnet, it should be per model and its cost equivalent"; show
+BTU output for local models. Chose: Traffic page; speeds avg + p10 + p90, cache and context avg + p90.
+
+Built (`7d84726`, deployed): `store.PerfStats` (per-request tg/s, tp/s, cache-hit distributions per
+served model + total; cache only over models that reported any hit, so a cacheless backend never reads
+0%); RollupRow gains tg*/tp*/cache* and `energyBtu` (energyKwh x 3412.14) + `heatBtuPerHour` — set on the
+total too, recomputed over requests. Traffic: "Speed & cache" tile row (decode, prefill, cache hit,
+context) + a per-model table only when >1 model served. Paid comparison: per-model table (model, priced
+as, paid-API $, electricity $, heat BTU) and a "Heat given off" figure (BTU, BTU/h, W).
+
+Measured: the rate columns sit after req_body on the live DB; warm reads 1 d 0.24 s, 7 d 1.35 s,
+30 d 1.31 s (payloads pruned past 7 d); 64 s cold. Same cost RollupByModel already paid. Default window 1 h.
+First live hour: decode 106 tok/s avg (p10 91.4, p90 121), prefill 1,067 (263–2,014), cache 78.7% avg
+per request, 898 BTU/h (263 W) from token work.
+
+- **risks:** heat is METERED token energy — idle draw, CPU and PSU losses are not in it, so real heat is
+  higher. The paid panel's exclusion line says "served by a model no longer in the config" for rows that
+  were turn-aways logged under an old alias name (e.g. `local-Qwen3.8-27B`, 22 in the deploy hour) —
+  wording is wrong for unserved rows; pre-existing.
+- **also:** `groq-gpt-oss-120b` fully removed — its orphan `model_pause` row (paused 9/13 on 403s) was
+  deleted by hand; the unpause API refuses an unknown model, so a removed model's pause can't be cleared
+  through the app.
+
 ## ✅ P46 — housekeeping: one model per role; `free` removed — 2026-10-02
 
 Owner: drop every model except the active ones for OCR, embedding, chat, vision, audio; "kill free —
