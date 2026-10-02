@@ -39,7 +39,8 @@ per request, 898 BTU/h (263 W) from token work.
 - **risks:** heat is METERED token energy — idle draw, CPU and PSU losses are not in it, so real heat is
   higher. The paid panel's exclusion line says "served by a model no longer in the config" for rows that
   were turn-aways logged under an old alias name (e.g. `local-Qwen3.8-27B`, 22 in the deploy hour) —
-  wording is wrong for unserved rows; pre-existing.
+  FIXED same day (`04f0848`): an old-name row with no tokens is now excluded as no-tokens ("turned away,
+  refused or failed before producing a token"). Speed tiles moved under the totals, above the charts.
 - **also:** `groq-gpt-oss-120b` fully removed — its orphan `model_pause` row (paused 9/13 on 403s) was
   deleted by hand; the unpause API refuses an unknown model, so a removed model's pause can't be cleared
   through the app.
