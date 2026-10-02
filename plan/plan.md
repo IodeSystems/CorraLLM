@@ -47,7 +47,7 @@ live verification of the per-device VRAM attribution. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P43.**
+**Next free number: P44.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -326,6 +326,8 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ✅ P43 — P42's three follow-ups: unit ExecReload live, medium benched, n-gram A/B'd on aw4 — 2026-10-01 → [`done.md`](done.md)
 
 ### ✅ P42 — Swift 1.5 Q6_K_S at medium effort is production; bench of thinking/speculation levers — 2026-10-01 → [`done.md`](done.md)
 

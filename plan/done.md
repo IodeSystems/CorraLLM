@@ -18,6 +18,22 @@ to find.
 
 # Engine
 
+## ✅ P43 — P42's three follow-ups — 2026-10-01
+
+1. **Unit reinstalled with ExecReload.** Rendered with a fresh build (`a196c92`), ExecStart pointed at the
+   deployed `~/go/bin/corrallm` and the exact production serve args; diff vs the old unit = only the
+   ExecReload block. `systemctl --user reload corrallm` verified: config reloaded, backend pid unchanged.
+2. **medium benched** on the production weights (Q6_K_S clone, 16 probes x3, production paused
+   14:14–14:32): 76/81 stages, 88k completion tokens, 16.0 min, thinking ≈59% — vs xhigh (Q6_K) 78/81,
+   168k, 29.6 min, ≈78%; low (Q6_K) 75/81, 92k, 15.7 min. Extra failures vs xhigh: one
+   `compaction-continuation` check (the xhigh hedge-bias arm also failed it once) and one `go vet`
+   (low: 2/3). Quant differs from the xhigh arm (Q6_K_S vs Q6_K; ukisai KLD equal). Production stays medium.
+3. **n-gram drafter on live aw4 traffic** (`ngram-map-k4v` on top of MTP, docs-example sizes):
+   252 requests MTP-only 14:32–15:46, 255 with n-gram 15:47–17:05. Median decode 95.6 → 96.4 tg/s
+   (+0.8%); by prompt length <20k +1.4%, 20–35k +2.6%, 35–50k −5.2%, 50k+ +12.7% (n=24/40). Mean
+   accepted draft len 2.98 → 3.07. 0 VRAM cost. No consistent gain → reverted (applies at next respawn).
+   Gotcha: `unload` on a busy backend DRAINS; an immediate `load` is refused until the drain ends.
+
 ## ✅ P42 — Swift 1.5 + speculation + thinking-reduction bench — 2026-10-01
 
 One window, production paused (Swift 1.0 + Stock, 10:27–13:25 PDT, aw4 got 32 × 429
