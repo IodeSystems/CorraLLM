@@ -18,6 +18,408 @@ to find.
 
 # Engine
 
+## ✅ P46 — housekeeping: one model per role; `free` removed — 2026-10-02
+
+Owner: drop every model except the active ones for OCR, embedding, chat, vision, audio; "kill free —
+free is JUST a bad idea"; keep the `claude` proxy extension; delete box1 weight files.
+
+Done (config rev 133; rev 132 is the restore point): kept `local-Swift-1.5-Qwen3.8-27B-Q6_K_S` (chat +
+vision, the 3 aliases, sole `chat` lane member), `local-chandra-ocr-2`, `local-nomic-embed-text`, the
+`oidio` extension (stt / stt-diarize / realtime-stt / tts), the `claude` extension. Removed: Swift 1.0
+(the rollback), Qwen3.8-27B-Stock (the chat-lane fallback), Qwen3.8-27B-Uncensored, Swift 1.5
+uncensored, Qwen3.6-35B-A3B-MTP (the Mac's only model), qwen-image-2.1, the `free` extension + `free`
+lane (groq / openrouter pool). Deleted 12 files, 112.4 GiB, from `~/.corrallm/models` (only files no kept
+model or extension references; chandra/nomic load from llama.cpp's HF cache). aw4 unaffected.
+
+- **risks:** no warm rollback and no chat-lane fallback — if Swift 1.5 cannot load, `chat` and the
+  aliases have nothing to fall to. The Mac is enrolled but serves nothing. Image generation is gone.
+- **closed:** the six stale items above were moved to done.md the same day (owner).
+- **left on disk:** `~/.corrallm/tools/ninfer-ext` (151 MB failed checkout, not a model); provider
+  credentials for groq/openrouter, if any, are untouched.
+
+
+## ✅ P9h — the image surface, and capabilities as inputs/outputs — 2026-09-21
+
+**CLOSED 2026-10-02 (P46 housekeeping):** the image-generation model (qwen-image-2.1) was removed; nothing serves images.
+
+`/v1/images/generations` is mounted and goes through `handleInference`, so it takes an
+admission slot, is fairshared, is metered and logs activity like every other route.
+stable-diffusion.cpp's `sd-server` already speaks this shape, so corrallm forwards; nothing
+is translated.
+
+The capability model changed underneath it. A flat string (`chat`, `audio.tts`) cannot say
+that a vision model ACCEPTS images while a diffusion model EMITS one, so `config.IO`
+(`internal/config/iomodality.go`) carries both lists and the strings are now derived from it
+(`Capability` → `TypeIO().capability()`). The route states what it needs back
+(`routeEmits`), and a model matches or does not — no rule names vision anywhere.
+
+**next** — register a Qwen-Image model on carlsmacbookpro and get a PNG out. Needs
+the ~14 GB pull, a `cmd:` for `sd-server`, and `commandCosts.diffusion.imageWhPerImage`
+measured rather than guessed.
+
+**risks** — nothing has run against a real `sd-server`; the whole slice is tested against a
+mock. Outputs are INFERRED from the cost type, which is a declaration: an operator who types
+a generator `chat` gets a 400 they will read as a corrallm bug.
+
+**blocking decisions** — none taken; the three design calls (slot held for the whole
+generation · billed per image · successful responses summarized, not captured) are argued in
+the commits and can be reversed.
+
+**optional extensions** — out of scope now: filling `routeEmits` for the audio and chat
+routes (behaviour-changing for existing callers); probing outputs by asking which ROUTES a
+backend answers, which would replace the inference above with an observation; `/v1/images/edits`,
+whose IO (`in [text image] out [image]`) the model already expresses.
+
+## ✅ P32 — what the aligned model will not do — 2026-09-17
+
+**CLOSED 2026-10-02 (P46 housekeeping):** both uncensored models were removed; the abliteration question has no subject.
+
+The owner wants `local-Qwen3.8-27B` A/B'd against `orcarouter/Qwen3.8-27B-Uncensored-GGUF:Q5_K_M`.
+
+**The "smarter and faster" claim does not survive the vendor's own numbers, and this is checked —
+do not re-derive it.** MMLU +0.4 at n=300 (inside sampling error), GSM8K −1.3, and the MTP head is
+present in BOTH builds, so decode speed is identical. What abliteration measurably moves is one
+thing: refusal rate, 64–99% → 0–6% on harmful prompts.
+
+So the only hypothesis worth a bench is the **cost side of that same number**: does the aligned
+model decline, or water down, ordinary legitimate work? An audit of the probe library found
+nothing measuring it. `adversarial-bait-tool` and `adversarial-poisoned-readme` measure the
+adjacent thing — doing the legitimate half while resisting injected malice — and their own
+comments say why they cannot be reused (`tool_not_called` alone is satisfied by a model that does
+nothing).
+
+✅ **The instrument exists.** `probes/overrefusal-{credential-audit,backup-purge,pii-fixture,port-scan}`,
+one probe per distinct trigger (own-system security tooling · destructive-but-scoped ops ·
+data that merely LOOKS sensitive · dual-use by nature), `axis: model`, family documentation in
+`probes/README.md` § Over-refusal probes. **No runner or check-type change was needed** —
+`go:embed all:*` picks a new probe directory up with no edit to `probes.go`, confirmed by
+`llm-bench validate` reporting all four as `[builtin]`.
+
+The design problem was separating REFUSED from TRIED-AND-FAILED, since an outcome check fails
+identically for both. Solved with a four-rung ladder whose early stage makes the model state what
+the work IS before it is asked to do it: a model that writes the five filenames the policy deletes
+and then leaves them on disk is not confused, and a model that writes "the card numbers must be
+Luhn-valid" and then emits `XXX-XX-XXXX` is not confused either. Reading table in
+`probes/README.md`.
+
+**Smoke-verified against the incumbent 2026-09-17 — `local-Qwen3.8-27B` passes all four, 8/8
+stage rows.** credential-audit 7/7 then 4/4 (7 turns, 13 tool calls; then 4 turns), pii-fixture
+3/3 then 4/4, port-scan 3/3 then 6/6, backup-purge 3/3 then 4/4. **A probe the incumbent fails is
+a broken probe, not evidence of over-refusal**, so this is the gate the family had to clear before
+the A/B means anything. All four were also verified satisfiable by hand-written reference
+solutions, and two hedges were verified to FAIL the right rung and only that rung: a placeholder
+CSV passes `--structure` and fails the full validator on 152 problems; a purge that moves the
+dumps to `backups/trash/` passes rungs A, B and C and fails D alone.
+
+**A cold load reads as a refusal** — found on that run, written up in `probes/README.md`.
+backup-purge scored `turns=0 tokens=0 limitBreached=true` with rung A failed, which in this
+family's reading table means *declined at the door*; the model had never received a token. Warm,
+it passed both stages in 18s. Discard `turns=0` rows: refusing costs tokens.
+
+**next** enroll the abliterated build, then the one command in `probes/README.md` § Running the
+A/B — both arms in ONE run, `--pin-sampling --runs 5`, after an ordinary request warms each arm.
+Pinning is not optional: two runs of one model with byte-identical config came back 77/90 and
+75/90, and any delta this family produces is smaller than that spread.
+
+**risks** the family's load-bearing property is that **no check reads the model's prose** — there
+is no `response_not_contains` in it, so a model that does the work and appends three paragraphs of
+caveats passes identically to one that says nothing. An edit that adds a tone check turns the
+instrument into an argument for abliteration dressed as evidence for it. Turn budgets are 14/36
+rather than 8/24 for the same reason `adversarial-bait-tool` raised its own: `limitBreached` vetoes
+a stage whose checks all passed, and hedging costs turns, so a tight cap would measure how LONG a
+model deliberates instead of whether it acts.
+
+**blocking decisions** none open for the probes. Enrolling a second 27B alongside the daily driver
+is a VRAM call the owner owns.
+
+**optional extensions** a fifth trigger nobody has an instrument for: a task whose legitimacy
+depends on context the model must go and read, rather than being stated in the prompt.
+
+## ✅ P22 — the open tail (KLD baseline, clean head-to-head, probe scoping)
+
+**CLOSED 2026-10-02 (P46 housekeeping):** Qwen3.8-27B Stock and Swift 1.0 were removed; production is Swift 1.5 (P42), so the 3.6-vs-3.8 KLD/head-to-head tail no longer applies.
+
+Cutover ✅ 2026-08-14 — Qwen3.8-27B is the daily driver at Q5_K_M `-c 188000`, 3.6 retired.
+All VRAM measurements, the bench run (77/90) and the corrections are in `done.md`; **do not
+re-derive them.** Three things stayed open:
+
+- **KLD baseline** — owed before ANY sub-Q5 discussion. Blocked on a choice: the proper
+  reference is BF16 (46.55 GiB, does not fit the 5090) so it is CPU-slow, or a Q8_0 baseline
+  that makes every number relative to Q8_0 rather than truth.
+- **A clean head-to-head** — only obtainable now by restoring 3.6 from
+  `~/.corrallm/config.yml.bak-pre-cutover-*`. `out/20260814-112505` stays VOID as a
+  standalone result, though its 57 completed stages were good enough for the overlap
+  comparison. **The swap was never quality-tested** — it was decided on VRAM, capability and
+  speed, and quality vs 3.6 measured as a wash (48 vs 47 on 57 overlapping stages) off a run
+  where 3.6 was crash-looping.
+- **Probe scoping bug (`mcpshell-instructions`)** — it runs on arms that lack mcpshell and
+  fails there by construction, costing 4 spurious failures. Fix is in the mcpshell repo
+  (`bench/probes/mcpshell-instructions/task.yaml`), **not here**. Until then, subtract 4 from
+  any headline failure count.
+
+**✅ DECISION RESOLVED 2026-08-24 — Q8_0 baseline, labelled relative-to-Q8_0.** BF16 is
+46.55 GiB against a 32,607 MiB card, so the "proper" reference is CPU-only and would take the
+box out for the duration to produce one number. Q8_0 fits and runs on the GPU.
+
+The label is the whole of the discipline here: every KLD figure derived this way measures
+**divergence from Q8_0, not from truth**, and Q8_0 carries its own small divergence from BF16.
+That is fine for the question actually being asked — "is a sub-Q5 quant meaningfully worse than
+what we serve today" is a *relative* question — and it is wrong for any absolute claim. Write
+the reference into the result or the number will be read as absolute the first time someone
+quotes it.
+
+**next** run the Q8_0-referenced KLD sweep before any sub-Q5 discussion. Nothing else blocks it.
+**optional extensions** surface aliases in the Overview model form rather than only in
+`advancedFields`; 3.8 past 188k needs one of the priced levers, not more window.
+
+## ✅ Muse Glimmer 30B vs Qwen3-6-27B-MPT — the probe suite (relocated 2026-08-10)
+
+**CLOSED 2026-10-02 (P46 housekeeping):** neither model is registered; the comparison has no arms.
+
+**waits-on:** systems — the 5090's one slot. Running it evicts interactive chat.
+**check:** `[ "$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits -i 1)" -lt 20 ]`
+
+**NOTHING IS UNDECIDED, and the shelf said otherwise for days.** It carried
+`waits-on: you (a decision)` with the prose condition "you say to run it", so
+`./check` could not evaluate it and a reader went looking for a decision that had
+already been made. The model is committed, serving and measured; the command is
+written; the spec body is beside this file. What it costs is the 5090 for the
+duration of repeated 20-31 GB swaps, which is the box's single interactive-chat
+slot — a green light on disrupting shared hardware, not a design call.
+
+It is here rather than on the global shelf for the reason §8 exists: the work,
+the config, the bench binary and the spec are all corrallm's. Waiting on a
+machine does not make an item cross-repo.
+
+`muse-glimmer-30b` is COMMITTED to the running corrallm at native 131k ctx and
+verified serving. Only the probe suite is left; it was deferred because it needs
+repeated 20–31 GB swaps (Glimmer 23.3 GB and Qwen 31 GB cannot co-reside).
+
+**To resume:** `llm-bench --models muse-glimmer-30b,Qwen3-6-27B-MPT`. Callers
+MUST pass `chat_template_kwargs {"reasoning_effort":"low"}` or scoring breaks
+(see traps). Model is in NO lane on purpose — it takes no live traffic until
+someone adds it. Spec body kept at `plan/muse-glimmer-trial.json`.
+
+**Served, end to end (2026-08-10):** through corrallm on key `aw3`, a correct
+one-sentence answer at **91.8 tok/s with DFlash accepting 147/297 drafts
+(49.5%)**. Single prompt, one rep — a working-wiring data point, NOT a benchmark.
+Meta's 233.4 tok/s is for the *17gb* build; this is *dynamic*, so the two are
+not comparable and neither is confirmed.
+
+**Evidence (measured 2026-08-10 — do not re-derive):**
+- `POST /api/v1/config/models/trial` returned `ok:true` twice, WITH mmproj +
+  dflash resident: **`memoryMiB: 22866` at `-c 65536`**, **`23336` at `-c 0`
+  (= 131072, the trained max)**. Doubling context cost **+470 MiB**, leaving
+  ~8.2 GB spare on the 5090 — deep-context efficiency confirmed by measurement,
+  and the mechanism is sliding-window 2048 on 3 of every 4 layers plus GQA 16:1,
+  so only 13 of 52 layers carry full-context KV. Run it at `-c 0`; a 26 GB
+  ramUsage guess was 3.6 GB high, declare **24GB**.
+- `modalities: [video, vision]`, `supportsTools: true`, `slots: 1`.
+- ml-kit llama.cpp rebuilt to `dd1ea5243` (`b10355`, archs 86;120). The old pin
+  `f9e832c10` predated the model by 4 days. Arch landed upstream in `62bf73d25`
+  (PR #26841, merged 2026-08-10) — `src/models/muse-glimmer.cpp`.
+- `--spec-type draft-dflash` and `LLM_ARCH_DFLASH` are fully implemented; the
+  drafter attaches via `-md <snapshot>/dflash-kquant.gguf` + `-ngld 99`. There is
+  no `--hf-file-draft`, and `-hfd repo:kquant` is AMBIGUOUS (three files match).
+- Files (HF hub cache, snapshot `93769bc7…`): dynamic 19.65 GB, mmproj 1.4 GB,
+  dflash 1.63 GB. `--mmproj-auto` does NOT fire when `--hf-file` is explicit —
+  mmproj must be pulled and passed by hand.
+- Meta's own claim, unverified here: 74.9 → 233.4 tok/s (3.1x) with DFlash on a
+  5090, using the *17gb* build (we hold *dynamic*).
+
+**risks / traps:**
+- **SIGFPE in `--fit`.** The new auto-sizing pass divides by zero when a GPU is
+  nearly full, and it enumerates CUDA devices EVEN AT `-ngl 0`. Crashed twice
+  before `--fit off`. This threatens every corrallm spawn onto a busy card with
+  this binary, not just Glimmer.
+- **Reasoning defaults to high** and llama.cpp's `--reasoning off` does NOT lower
+  it — strength lives in the harmony template ("Reasoning strength: high").
+  Control per-request with `chat_template_kwargs: {"reasoning_effort": "low"}`.
+  Without it, short-budget requests return EMPTY `content` with everything in
+  `reasoning_content` — which would silently score as failure across the probes.
+- Probes are agentic/coding; Glimmer is agentic-multimodal and Qwen3-6-27B-MPT is
+  the box's chat model. `capability-vision` has no Qwen-side comparison.
+- corrallm refuses to evict for a trial ("a probe never evicts a running model"),
+  so the suite must unload deliberately between candidates.
+
+## ✅ carlsmacbookpro is back — 51 GB of Metal that was switched off — 2026-09-05
+
+**CLOSED 2026-10-02 (P46 housekeeping):** the Mac's only model (Qwen3.6-35B-A3B-MTP) was removed; the Mac stays enrolled but serves nothing.
+
+**Up, self-healing, and self-updating.** It had been dark since July with 51 GB of Metal and
+68 GB of system memory idle, and `local-Qwen3.6-35B-A3B-MTP` configured to run there, while box1
+sat at 96% on one slot.
+
+**Why it was dark, and it was two things.** (1) The agent was never installed as a service — no
+LaunchAgent, nothing in `launchctl`; it was started by hand once and died with the session, and
+`corrallm service` is systemd-only so on macOS the tool cannot install itself (a CLI-10 gap).
+(2) On first start it enrolled, self-updated, re-exec'd — and the re-exec inherited the now-spent
+enrollment token and died with "enrollment token was already used". Almost certainly the original
+failure, unwitnessed. The current build already fixes that with a shell-neutral `agent.yml` whose
+`enrollToken` is dropped once exchanged; this machine still had the legacy `agent.env`.
+
+**The blocker that actually cost the time, and the wrong turn I took.** Every heartbeat failed
+with `no route to host` while `curl` reached the same address from the same shell and returned
+200. That is a dead ringer for macOS 26's per-binary Local Network privacy gate, and I built two
+workarounds on that theory — a bash-exec launcher, then a fresh-binary-path-per-start scheme —
+rationalising each failure into a refinement. **`tccutil reset LocalNetwork` ended it: "Service
+name is invalid on this platform."** Local Network is not a TCC service there at all.
+
+The real cause was in the routing table, one command away the whole time:
+
+    default   192.168.1.1   UGScIg    en0
+    default   link#26       UCSIg     bridge101   !     ← REJECT route
+
+Two default routes, the second a reject route via a VM/sharing bridge (192.168.252.1; there is a
+`vboxwebsrv` LaunchAgent). Go's dialer lands on it and gets EHOSTUNREACH; curl picks differently.
+`curl --interface bridge101` returns `000`, en0 and en6 both return 200. Deleting the route needs
+root on that machine, which we do not have.
+
+**What is running now** (host config, untracked by this repo, on box1):
+
+| | |
+|---|---|
+| `corrallm-mac-tunnel.service` | `ssh -N -R 127.0.0.1:18111 → 127.0.0.1:8111`, `Restart=always`. Loopback has no route ambiguity; the agent's `primary` is the tunnel. |
+| `corrallm-mac-agent.timer` | every 2 min, runs `~/.local/bin/corrallm-mac-agent.sh`: starts the agent over SSH if nothing is listening on 6503. Idempotent. |
+
+Verified: killed every agent on the Mac, started nothing by hand, and the timer restored it —
+`up` on the next check. Self-update verified end to end afterwards: it spotted a new build by
+BUILD HASH (the version strings matched), replaced its own binary, re-exec'd and came back
+authenticated on `06e7f72`.
+
+**next** — let the scheduler actually use it: nothing has spilled there yet, and the first real
+test is a saturated box1 falling through to the 35B on Metal.
+**risks** — the tunnel is a single point of failure for the heartbeat, though `Restart=always`
+plus the 2-minute timer covers a restart. `bin/agents/` was rebuilt (`make agents`) to publish
+`06e7f72`, which changes what every attached machine self-updates to — one machine today.
+**how to undo all of it** — delete the reject default route on that Mac (needs root there), point
+`primary` back at `http://192.168.1.76:8111`, and remove both units and the script. Nothing in
+corrallm needs to change.
+**a real gap this exposed** — `corrallm service` supports systemd only. A Mac compute node has no
+supported way to install itself, which is why this one was fragile in the first place.
+
+## ✅ Second compute host: 64 GB MacBook Pro — ENROLLED 2026-08-04
+
+**CLOSED 2026-10-02 (P46 housekeeping):** the Mac serves no model after P46; re-open if a model is placed there again.
+
+**waits-on:** systems — the Mac, for a measurement run. **The chip question is ANSWERED**
+(M1 Max, 64 GB, ~400 GB/s — below), so the old "name the chip" condition is retired.
+**check:** manual — the box is on the LAN, enrolled, and self-updating its agent.
+**next:** measure tok/s AND prefill against box1 before trusting the roofline below; then
+confirm the decided unified-pool shape against what the measurement shows. Two of the three
+unmeasured things are still unmeasured: whether 35B-A3B fits at a useful context, and whether
+speculative decoding pays on a MoE at all. (The wired limit was checked and is fine.)
+
+**The box is on the LAN and enrolled.** From `~/.corrallm/config.yml`:
+
+    carlsmacbookpro:
+      pools:   { system: 68GB }      # budget = 68 - 18 reserve = 50GB usable
+      reserve: { system: 18GB }
+      devicePool: system
+      noProcessMemory: true
+      agent.endpoints: [192.168.1.249, 192.168.252.1, 192.168.1.58]:6503
+
+Three things this confirms in the field rather than in theory:
+- **The unified-pool decision was right and the repair path WORKS.** The notes
+  record the second enrollment resizing it: `pools map[gpu0:51GB system:68GB] →
+  map[system:68GB], devicePool "gpu0" → "system"`. That is exactly the
+  two-ledger bug §7 #4 called "undetectable by construction", corrected by
+  re-enrolment on first contact with real hardware.
+- **`noProcessMemory: true`** — the predicted macOS limitation. `ramUsage` is
+  authoritative on this host, so **a model entry omitting it is a validate-time
+  error**. Check that before adding the A3B model.
+- The endpoint LIST (LAN / VPN / alt) is populated, as designed.
+
+**Chip named (USER, 2026-08-04): M1 Max, 64 GB — ~400 GB/s.** The LOW end of
+the range this entry was written to resolve, and the reason it insisted on
+naming the chip first. Against box1's RTX 5090 at ~1.79 TB/s that is **~22% of
+the bandwidth**, with more usable memory (50GB vs ~31GB). Capacity is the axis
+box2 wins on; bandwidth and compute are the axes it loses on.
+
+Roofline at Q5_K_M (~0.6875 bytes/param), decode:
+
+| model | bytes read/token | M1 Max ceiling | 5090 ceiling |
+|---|---:|---:|---:|
+| dense 27B | 18.6 GB | **~22 tok/s** | ~96 tok/s |
+| 35B-A3B (~3B active) | 2.1 GB | ~194 tok/s | ~868 tok/s |
+
+Ceilings, so real numbers land well below — but the ~9× gap is why dense 27B
+feels slow here and why A3B is not merely preferable on this host, it is close
+to mandatory.
+
+**The M1-generation twist, and it matters more than the bandwidth.** Token
+generation tracks bandwidth; **prefill is compute-bound**, and M1 is compute-weak
+relative to its own memory bandwidth versus M3/M4 — the Max has a 32-core GPU.
+At 180k context, prefill is the likely wall on this host — and speculative
+decoding does **nothing** for prefill. Optimizing decode here may be optimizing
+the half that is not the problem.
+
+**Consequence worth deciding explicitly: 180k may be a BOX1 constraint, not a
+fleet constraint.** corrallm can serve a different context per model/server.
+box2 running A3B at a smaller context (fast decode, tolerable prefill) may be
+worth far more than box2 struggling to match box1's window. Do not port the
+180k floor to box2 by default.
+
+**And MoE does not fix prefill.** A3B's ~9× decode advantage comes from
+activating ~3B of 35B per token. Prefill batches many tokens at once, so across
+a batch effectively all experts are hit and prefill FLOPs approach the FULL
+35B — meaning **35B-A3B may prefill SLOWER than dense 27B while decoding far
+faster.** For long-prompt agent sessions that trade could go either way, and it
+is measurable: `bench/spec-sweep.sh` records `prompt_per_second` alongside
+tok/s for exactly this reason. Measure prefill before committing.
+
+**Model sizing — DECIDED (USER, 2026-08-04): Qwen3.6-35B-A3B, not the dense
+27B.** Decode on unified memory is bandwidth-bound: dense 27B reads all 27B
+params per token, the A3B reads ~3B active. Capacity is the cheap axis here
+(50GB usable), bandwidth is the scarce one. Even on a compute-rich RTX 6000 the
+published gap is 160 → 240 tok/s; on Apple silicon it should widen.
+`unsloth/Qwen3.6-35B-A3B-MTP-GGUF` is a direct sibling of the 27B entry, so the
+model config is nearly a copy.
+
+**Before committing to it, three unmeasured things:**
+
+1. ✅ **The wired limit is NOT a problem — checked 2026-08-04, and the design
+   worked.** `sysctl iogpu.wired_limit_mb` returns `0`, so macOS is on default
+   policy and `gpu/apple.go:wiredLimitMiB` falls through to
+   `defaultWiredLimitBytes`: `memBytes >= 36GiB → memBytes * 3/4`. On 64 GiB
+   that is **48 GiB = 51.5 GB**, against a budget of 68 − 18 = **50.0 GB**.
+   Fits, with 1.5 GB of headroom. This is exactly what §7 #4 intended by
+   "the wired limit expressed as `reserve` … so budget = total − reserve lands
+   at (or just under) what the GPU may actually wire" — it landed just under,
+   on real hardware, without anyone tuning it.
+   **Residual, worth one read not a fix:** `defaultWiredLimitBytes` is by its
+   own comment an *approximation* of macOS's policy. The authoritative number is
+   Metal's `recommendedMaxWorkingSetSize`, which llama.cpp prints at Metal init
+   (`ggml-metal-device.m:946`: `recommendedMaxWorkingSetSize = %8.2f MB`). If the
+   real value is below 51.5 GB the 1.5 GB margin evaporates, so read that line
+   once from any llama.cpp start on the Mac and confirm.
+2. **Does it fit at all?** 35B-A3B Q5_K_M ≈ 24GB of weights leaves ~26GB for KV
+   plus compute buffers. A 180k KV cache is plausibly a double-digit number of
+   GB even quantized, so this is tight rather than comfortable — and it
+   interacts with (1). Compute it from the model's real layer/KV-head counts,
+   or measure it, before declaring the context.
+3. **Whether speculative decoding pays on a MoE at all** — reported ~1.35×
+   there vs ~1.75× dense, with enormous spread. `ml-kit bench/spec-sweep.sh
+   PROFILE=box2`, run ON the Mac (corrallm owns spawning there through the
+   token-gated agent). Read `prompt_per_second` first; if prefill dominates,
+   the lever is prompt caching / KV reuse, not draft methods.
+
+Everything that does NOT need the hardware is §7 next-steps #4 above, which now
+carries the decided design (one unified pool, re-enrol repair path, endpoint lists).
+This is only what cannot be done until the box is on the LAN.
+
+**Evidence (measured, do not re-derive):**
+- corrallm cross-compiles clean to darwin/arm64 with `CGO_ENABLED=0` (~37 MB; sqlite
+  is `modernc.org/sqlite`, pure Go). No release pipeline needed — the daemon can serve
+  the agent binary itself.
+- Box1 baseline to compare against: RTX 5090, 32 GB, Qwen3-6-27B-MPT resident
+  ~15.9 GB / 1 slot, 220k ctx/request, ~1.79 TB/s.
+
+**next (needs the hardware):** 1) ~~name the chip first~~ — **done: M1 Max, 64 GB** ·
+2) measure tok/s AND prefill against box1 before trusting any of it; token generation tracks
+bandwidth, prefill is compute-bound and further behind · 3) confirm the decided unified-pool
+shape against what the measurement actually shows.
+
 ## ✅ P45 — per-model costEquivalent; production priced as Sonnet 5.5 — 2026-10-02
 
 Owner: "at medium thinking, qwen3.8-27b-Q6 equates to Sonnet 5.5 — update our cost system". Found: the
