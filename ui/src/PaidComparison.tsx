@@ -58,6 +58,8 @@ export type ComparisonRow = {
   baselineProcessedUsd: number
   baselineGeneratedUsd: number
   baselineExcluded: string
+  /** The paid type THIS row was priced at — its model's costEquivalent, else the default. */
+  baselineType: string
 }
 
 /** The reasons the server can give, in the words a reader gets. */
@@ -142,13 +144,21 @@ export function PaidComparison({
 
   const multiple = actual > 0 ? wouldCost / actual : 0
 
+  // WHOSE RATES. A model can declare the paid model it stands in for
+  // (costEquivalent), so one panel can price rows at different tables. Name the
+  // one when there is one; name all of them when there are several, rather
+  // than calling a mixed sum "haiku rates".
+  const priced = [...new Set(covered.filter((r) => r.requests > 0 && r.baselineType).map((r) => r.baselineType))].sort()
+  const ratesLabel =
+    priced.length > 1 ? `per-model rates (${priced.join(', ')})` : `${priced[0] ?? baselineType} rates`
+
   return (
     <Panel
       title="What it would have cost on a paid API"
       // A LABEL: the baseline's name and the window, no sentence break, and
       // nothing about a request in flight. It is the header's whole job to say
       // what the numbers below are of.
-      subtitle={`${baselineType} rates · ${when}`}
+      subtitle={`${ratesLabel} · ${when}`}
       note={
         // The scope sentence names WHOSE hardware, because the covered set is no
         // longer one thing: our own boxes, plus free-tier traffic that cost
@@ -168,7 +178,7 @@ export function PaidComparison({
           <Figure
             label="On a paid API"
             value={pending ? <NotYet /> : fmtMoney(wouldCost)}
-            sub={`at ${baselineType} rates`}
+            sub={`at ${ratesLabel}`}
           />
           <Figure
             label="Here, in electricity"

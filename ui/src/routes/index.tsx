@@ -73,6 +73,7 @@ const NowDoc = graphql(/* GraphQL */ `
           baselineProcessedUsd
           baselineGeneratedUsd
           baselineExcluded
+          baselineType
           promptPerSec
           predictedPerSec
         }
@@ -1132,6 +1133,7 @@ function Now() {
     baselineProcessedUsd: Number(r.baselineProcessedUsd ?? 0),
     baselineGeneratedUsd: Number(r.baselineGeneratedUsd ?? 0),
     baselineExcluded: r.baselineExcluded ?? '',
+    baselineType: r.baselineType ?? '',
   }))
 
   return (

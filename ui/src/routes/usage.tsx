@@ -300,6 +300,7 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
       baselineProcessedUsd: Number(r.baselineProcessedUsd ?? 0),
       baselineGeneratedUsd: Number(r.baselineGeneratedUsd ?? 0),
       baselineExcluded: r.baselineExcluded ?? '',
+      baselineType: r.baselineType ?? '',
     }),
   )
   // NOTHING HAS BEEN COUNTED UNTIL THE TOTAL ARRIVES. `?? 0` on these five put a

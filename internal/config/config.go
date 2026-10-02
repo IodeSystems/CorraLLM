@@ -931,6 +931,22 @@ type Model struct {
 	// meant to beat.
 	Quality float64 `yaml:"quality,omitempty"`
 
+	// CostEquivalent names the paid `commandCosts` type this model stands in
+	// for — "running this here replaces what we would otherwise buy from X" —
+	// and the dashboard's "would have cost" comparison prices THIS model's
+	// tokens at that type's rates instead of the global CostBaseline.
+	//
+	// Per model because the honest comparison differs per model: a 27B
+	// reasoning model judged equivalent to a frontier mid-tier model is not
+	// worth what a small embedder is, and pricing both at one global rate
+	// (which fell back to the cheapest paid type) undervalued the one that does
+	// the real work. A judgement, not a measurement — the owner's, recorded
+	// where the model is.
+	//
+	// Unset, or naming a type with no per-token rates, falls back to
+	// CostBaseline; the API reports which type priced each row.
+	CostEquivalent string `yaml:"costEquivalent,omitempty"`
+
 	// Notes is free-text the operator keeps ABOUT this entry, carried in the
 	// config and surfaced in the UI beside it.
 	//

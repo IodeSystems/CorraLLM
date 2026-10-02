@@ -138,6 +138,8 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           baselineProcessedUsd
           baselineGeneratedUsd
           baselineExcluded
+          # Which paid type priced THIS row: the model's costEquivalent, else the default.
+          baselineType
         }
         total {
           requests

@@ -380,3 +380,50 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// TestUsageRollupPricesCostEquivalent: a model that declares a costEquivalent
+// is priced at THAT paid type; one that does not keeps the window's default;
+// one naming a type with no per-token rates falls back rather than reading $0.
+func TestUsageRollupPricesCostEquivalent(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now()
+	for _, served := range []string{"local-chat", "local-sonnetish", "local-badequiv"} {
+		must(t, st.InsertActivity(store.Activity{
+			TS: now.UnixMilli(), Served: served, Status: 200,
+			PromptTokens: 1_000_000, CachedTokens: 800_000, CompletionTokens: 50_000, CostUSD: 0.35,
+		}))
+	}
+	cfg := costFixtureConfig()
+	cfg.Models["local-sonnetish"] = config.Model{Type: "chat", Cmd: "llama-server --port 5801", CostEquivalent: "anthropic-sonnet"}
+	cfg.Models["local-badequiv"] = config.Model{Type: "chat", Cmd: "llama-server --port 5802", CostEquivalent: "chat"}
+
+	out, err := (&Handlers{Store: st, Cfg: cfg}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Body.BaselineType != "anthropic-haiku" {
+		t.Errorf("window default = %q, want anthropic-haiku", out.Body.BaselineType)
+	}
+	by := map[string]RollupRow{}
+	for _, r := range out.Body.Rows {
+		by[r.Served] = r
+	}
+	if r := by["local-chat"]; r.BaselineType != "anthropic-haiku" {
+		t.Errorf("local-chat baselineType = %q, want the default", r.BaselineType)
+	} else {
+		near(t, "local-chat at haiku", r.BaselineUSD, 0.53)
+	}
+	r := by["local-sonnetish"]
+	if r.BaselineType != "anthropic-sonnet" {
+		t.Errorf("local-sonnetish baselineType = %q, want anthropic-sonnet", r.BaselineType)
+	}
+	// 800,000 × 3e-7 + 200,000 × 3e-6 + 50,000 × 1.5e-5 = 0.24 + 0.60 + 0.75.
+	near(t, "local-sonnetish at sonnet", r.BaselineUSD, 1.59)
+	if r := by["local-badequiv"]; r.BaselineType != "anthropic-haiku" {
+		t.Errorf("an equivalent with no per-token rates must fall back, got %q", r.BaselineType)
+	}
+	if out.Body.Total.BaselineType != "" {
+		t.Errorf("total baselineType = %q, want empty (it spans types)", out.Body.Total.BaselineType)
+	}
+	near(t, "total baseline", out.Body.Total.BaselineUSD, 0.53+1.59+0.53)
+}

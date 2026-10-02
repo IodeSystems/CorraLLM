@@ -2543,6 +2543,8 @@ type corrallm_RollupRow {
   baselineGeneratedUsd: Float!
   """Of baselineUsd, the input charge: processed tokens (promptTokens − cachedTokens) × the baseline's processed rate."""
   baselineProcessedUsd: Float!
+  """The paid commandCosts type this row's baseline figures were priced at: the served model's costEquivalent when it names a paid type, else the window's default (usageRollup.baselineType). Empty when baselineExcluded is set or no paid type exists. Empty on the total, which can span several."""
+  baselineType: String!
   """What this row's tokens would have cost on the baseline paid type (usageRollup.baselineType) — the sum of the three class figures below. 0 when baselineExcluded is set."""
   baselineUsd: Float!
   """How this row's cost was arrived at: "energy" (this fleet's electricity, kWh × costPerKwh), "paid" (a provider's per-token rates), "free" (a remote backend with a declared freeTier and no per-token rates — somebody else's hardware at no charge, so the cost is $0 because that is the price), or "unattributed" (this box's energy coefficients applied to a model corrallm does not run and nothing says what it charges, or to one that has left the config — neither electricity nor a bill, and a config gap to fix by declaring what that backend costs)."""
@@ -3039,7 +3041,7 @@ type corrallm_UsageByKeyOutputBody {
 }
 
 type corrallm_UsageRollupOutputBody {
-  """The commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."""
+  """The DEFAULT commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. A model with a costEquivalent is priced at that instead; each row's baselineType says which applied. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."""
   baselineType: String!
   """The configured electricity rate, $ per kWh, that energyUsd was computed at. 0 means no rate is configured, so every energy figure is $0 by omission rather than by being small."""
   costPerKwh: Float!

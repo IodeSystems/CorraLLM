@@ -1313,6 +1313,7 @@ type RollupRow struct {
 	BaselineCached   float64 `json:"baselineCachedUsd" doc:"Of baselineUsd, the cache-read charge: cached tokens × the baseline's cached rate. Locally these tokens are free (served from the KV cache, no recompute); on a paid API they are billed at a reduced but nonzero rate, so this is a real part of the difference."`
 	BaselineProcess  float64 `json:"baselineProcessedUsd" doc:"Of baselineUsd, the input charge: processed tokens (promptTokens − cachedTokens) × the baseline's processed rate."`
 	BaselineGenerate float64 `json:"baselineGeneratedUsd" doc:"Of baselineUsd, the output charge: completionTokens × the baseline's generated rate."`
+	BaselineType     string  `json:"baselineType" doc:"The paid commandCosts type this row's baseline figures were priced at: the served model's costEquivalent when it names a paid type, else the window's default (usageRollup.baselineType). Empty when baselineExcluded is set or no paid type exists. Empty on the total, which can span several."`
 	BaselineExcluded string  `json:"baselineExcluded" doc:"Empty when the comparison covers this row. Otherwise why it does not: \"audio\" (billed per MiB, not per token), \"image\" (billed per image; the local coefficient is unset on this box, so these already cost $0), \"paid\" (already on a paid provider), \"off-box\" (a configured model served elsewhere — its local figure is not a local figure), \"unknown-model\" (the served model has left the config, so nothing says what priced it), \"no-tokens\" (no tokens were recorded, and $0 on any rate table is not a measurement)."`
 }
 
@@ -1328,7 +1329,7 @@ type UsageRollupOutput struct {
 		CostPerKwh float64 `json:"costPerKwh" doc:"The configured electricity rate, $ per kWh, that energyUsd was computed at. 0 means no rate is configured, so every energy figure is $0 by omission rather than by being small."`
 		// WHICH PAID API THE COMPARISON IS AGAINST. An unattributed "would have
 		// cost $X" is not a claim anybody can check.
-		BaselineType string `json:"baselineType" doc:"The commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."`
+		BaselineType string `json:"baselineType" doc:"The DEFAULT commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. A model with a costEquivalent is priced at that instead; each row's baselineType says which applied. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."`
 	}
 }
 
@@ -1442,9 +1443,16 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		if row.BaselineExcluded == "" && r.PromptTokens == 0 && r.CompletionTokens == 0 {
 			row.BaselineExcluded = ExcludeNoTokens
 		}
-		if row.BaselineExcluded == "" && baseline != "" {
+		// Which paid type stands in for this model: its own costEquivalent when
+		// that names real per-token rates, else the window's default.
+		rowBaseline := baseline
+		if m, ok := known[r.Served]; ok && m.CostEquivalent != "" && costModel.IsPaidType(m.CostEquivalent) {
+			rowBaseline = m.CostEquivalent
+		}
+		if row.BaselineExcluded == "" && rowBaseline != "" {
+			row.BaselineType = rowBaseline
 			row.BaselineCached, row.BaselineProcess, row.BaselineGenerate = costModel.RequestUSDByClass(
-				baseline, int(r.CachedTokens), int(processed), int(r.CompletionTokens))
+				rowBaseline, int(r.CachedTokens), int(processed), int(r.CompletionTokens))
 			row.BaselineUSD = row.BaselineCached + row.BaselineProcess + row.BaselineGenerate
 		}
 
