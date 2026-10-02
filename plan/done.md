@@ -18,6 +18,31 @@ to find.
 
 # Engine
 
+## ✅ P44 — probabilistic MTP drafting: +12% decode on live aw4 traffic — 2026-10-02
+
+llama.cpp #27694 (merged 2026-10-02, 1fb7ef3e3): rejection-sampling verify for draft-simple and MTP,
+plus `--spec-draft-sampling {greedy,probabilistic}` — **opt-in, default greedy**. With a greedy draft
+the new verify reduces to the old exact-match rate, so a build bump alone changes nothing.
+
+Live A/B on aw4 (`key=sk-aw4`, Swift 1.5 Q6_K_S, medium, MTP n-max 3, thinking temperature 1.0),
+250 requests per phase, decode tg/s medians by prompt length:
+
+| phase | build | draft sampling | accepted len | <20k | 20–35k | 35–50k | 50k+ | overall |
+|---|---|---|---|---|---|---|---|---|
+| A 09:53–11:43 | 5fc4f3c8 | greedy | 3.04 | 111.3 | 99.9 | 95.2 | — | 102.4 |
+| B 11:43–12:51 | 4ebdf2c7 | greedy | 2.95 | 105.4 | 99.4 | 90.2 | 80.0 | 96.2 |
+| C 12:52–14:06 | 4ebdf2c7 | **probabilistic** | **3.32** | 119.0 | 109.3 | 98.7 | 100.5 | **108.1** |
+
+B→C (same build, matched prompt medians 32.8k/32.6k): +12.4% overall, every bucket +9..+26%.
+A→B (build only): flat to −5% — A's median prompt was shorter (23.7k), so the overall drop is mostly mix.
+Kept in production; the cmd carries a comment. Output distribution preserved by construction.
+
+- **risk:** the flag REQUIRES a build containing 1fb7ef3e3. Older builds are still installed
+  (5fc4f3c8, 926862e5, a868c3e3); activating or pinning one of them makes production exit on an
+  unknown flag. Open decision: pin production's build (P29 pins) rather than following nightly rebuilds.
+- **finding:** the scheduled llama.cpp rebuild produced 4 builds in ~18 h; production silently adopts
+  the active build at each respawn. Earlier "our build is 0c1e57098" statements were stale.
+
 ## ✅ P43 — P42's three follow-ups — 2026-10-01
 
 1. **Unit reinstalled with ExecReload.** Rendered with a fresh build (`a196c92`), ExecStart pointed at the
