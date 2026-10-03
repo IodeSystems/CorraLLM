@@ -9,40 +9,55 @@ Capacity-parked: §9. Finished trees live in [`plan/done.md`](done.md); deferred
 next-steps in [`plan/icebox.md`](icebox.md); **decisions that need you** in
 [`plan/open-questions.md`](open-questions.md).
 
-## Status — 2026-08-24
+## Status — 2026-10-02
 
-**In production on `:8111`, fronted at `https://llm.iodesystems.com`.** corrallm replaced
-the llama-swap fork and serves the live workload from two hosts (box1 + an enrolled
-64 GB MacBook Pro).
+**In production on `:8111`, fronted at `https://llm.iodesystems.com`, serving from box1** (RTX 5090 +
+RTX 3080). The 64 GB MacBook Pro stays enrolled but has served no model since P46.
 
-Shipped and running: the engine (P0–P8 — proxy, fairshare scheduler, ordered
-fall-through, residency/eviction, preemption, cost model, quality degrade), the
-observability + control plane, the **audio/media API surface** (P9 — OpenAI audio
-endpoints; backends scoped out to [oidio](https://github.com/IodeSystems/oidio) in P12),
-PDF auto-conversion (P13), lanes + single-path models (P14), the bench binary (P15),
-the free-tier aggregator (P16), pause (P17), token counting (P20), provider credentials
-(P21a–i), the Qwen3.8-27B cutover (P22), per-mode samplers (P23), local-as-a-provider
-(P24), the toolchain registry with versioned builds, rollback and pins (P25/P27/P29),
-config in SQLite (P26), tickets (P28), and the box1 thermal envelope (P19). Full trees + evidence:
-[`plan/done.md`](done.md).
+**What runs — one model per role (P46):**
 
-**Three decisions need you** — [`open-questions.md`](open-questions.md): the agent lease
-self-reap policy, whether an honest wait estimate is even wanted, and whether aw4 should ride the
-`chat` lane rather than pin a model. **None of them blocks work.** The caller question closed on
-2026-09-11 — see §6, where the answer and its evidence live.
+| Role | Served as | Notes |
+|---|---|---|
+| chat + vision | `local-Swift-1.5-Qwen3.8-27B-Q6_K_S` | Swift 1.5 Q6_K_S on the 5090, `--reasoning-effort medium`, MTP n-max 3 with `--spec-draft-sampling probabilistic`, 188k ctx. Aliases `local-Qwen3.8-27B`, `Qwen3.8-27B`, `Qwen3-6-27B-MPT`. Sole `chat` lane member — **no fallback, no warm rollback**. `costEquivalent: anthropic-sonnet`. |
+| OCR | `local-chandra-ocr-2` | 3080, loads on demand |
+| embedding | `local-nomic-embed-text` | 3080, loads on demand |
+| audio | `oidio` extension | stt, stt-diarize, realtime-stt, tts |
+| Anthropic proxy | `claude` extension | haiku-* / opus-* / sonnet-* |
 
-**The dashboard was rebuilt around the questions people arrive with, 2026-09-04/05.** Seven Lenny
-runs across two scenarios drove it: ten nav entries named after data became seven named after
-questions, Traffic got one time axis, every control that reaches live work says what it costs, and
-the home screen answers "is it serving" and nothing else. The verdict moved from *"No. Not on my
-own, anyway."* to an unqualified yes for the operator; the caller still says no, and what that
-needs is a decision (§6, `open-questions.md` §3). Full tree, composition table and traps:
-[`done.md`](done.md) § Lenny.
+Removed in P46: Swift 1.0, Qwen3.8 Stock and both uncensored builds, the Mac's 35B, qwen-image
+(no image generation), and the `free` aggregator (groq / openrouter).
 
-**Open work is §6**, and it is smaller than it looks: the `ramUsage` placement/size split left
-over from P18, P21c budget granularity, the Q8_0-referenced KLD sweep, streaming the trial
-transcript + the add-model form, wait-estimate accuracy, `host.Remote` for multi-node, and one
-live verification of the per-device VRAM attribution. Parked on hardware: §9.
+**The workload** is one agentic coding caller, `sk-aw4`, reaching Swift through its aliases. First
+measured hour on the current setup (P47): decode ~106 tok/s avg, prefill ~1,070 tok/s, cache hit
+~79% per request, ~30k context per turn. Request time is ~85% decode and ~80% of generated tokens are
+reasoning (P42), which is why effort `medium` (−47% tokens vs `xhigh`) and probabilistic drafting
+(+12% decode, P44) were the levers that paid.
+
+**llama.cpp auto-updates (owner's call, not pinned)**; selected build `4ebdf2c7`. Never activate a
+build older than `1fb7ef3e3` while `--spec-draft-sampling probabilistic` is in a cmd — it exits on the
+unknown flag.
+
+**Operating rules learned the hard way:** reload config with `systemctl --user reload corrallm`
+(plain `systemctl kill -s HUP` kills the backends — P43); measure VRAM fit under a production pause
+BEFORE moving aliases (the P42 Q6_K cutover OOM'd production); a pause answers 429 retry-after-300
+until lifted (P41); `ui/dist` is the live web root, so a UI build deploys.
+
+**Shipped before this stretch** (trees in [`done.md`](done.md)): the engine (P0–P8), observability +
+control plane, audio surface (P9, backends in oidio P12), PDF conversion (P13), lanes (P14), bench
+(P15), pause (P17), token counting (P20), provider credentials (P21a–i), local-as-a-provider (P24),
+the toolchain registry with versioned builds (P25/P27/P29), config in SQLite (P26), tickets (P28),
+and the question-shaped dashboard (Lenny, 2026-09-04/05). **2026-09-30 → 10-02:** P39 context stats,
+P41 pause→429, P42 Swift 1.5 + effort medium, P43 ExecReload, P44 probabilistic MTP, P45 per-model
+cost equivalents, P46 housekeeping, P47 speed/cache/heat on Traffic.
+
+**Four decisions need you** — [`open-questions.md`](open-questions.md): agent lease self-reap (§1),
+whether an honest wait estimate is wanted (§2), whether aw4 should ride the `chat` lane (§4), and the
+calls the remap-out may not guess (§5). None blocks current work.
+
+**Open work is §6:** P38 (ephemeral machines), P37 (warning controls), P36 (true costs), P35 (the
+corral layer), P31 (disabled), P34 (residency queue), the Lenny leftovers, P21c (budget
+granularity), the trial spawn + add-model form, the wait estimate, `host.Remote`, and OSS
+follow-ups. Parked on hardware: §9.
 
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);

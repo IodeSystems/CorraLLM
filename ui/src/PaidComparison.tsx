@@ -1,4 +1,18 @@
-import { Box, Table, TableBody, TableCell, TableHead, TableRow, Typography } from '@mui/material'
+import { useState } from 'react'
+import {
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  Typography,
+} from '@mui/material'
 import { Panel, Row } from '@/Panel'
 import { NotYet } from '@/NotYet'
 import { C } from '@/theme'
@@ -94,6 +108,9 @@ export function PaidComparison({
   /** Nothing has been counted yet — distinct from a counted zero (NotYet.tsx). */
   pending?: boolean
 }) {
+  // The per-model breakdown lives in a dialog: the panel states the sum, the
+  // dialog says which model contributed what at which paid model's rates.
+  const [breakdownOpen, setBreakdownOpen] = useState(false)
   const covered = rows.filter((r) => !r.baselineExcluded)
   const excluded = rows.filter((r) => r.baselineExcluded && r.requests > 0)
   const sum = (f: (r: ComparisonRow) => number) => covered.reduce((a, r) => a + f(r), 0)
@@ -154,19 +171,22 @@ export function PaidComparison({
   // than calling a mixed sum "haiku rates".
   // PER MODEL, AT ITS OWN EQUIVALENT. Each local model is priced as the paid
   // model it stands in for (costEquivalent), so the headline is a sum of
-  // per-model figures and the panel lists them rather than naming one rate
-  // table as if the whole window had been one model.
+  // per-model figures. The panel says "paid-API rates" — true however many
+  // models there are — and the Breakdown dialog says which model at which rates.
   const perModel = covered.filter((r) => r.requests > 0).sort((a, b) => b.baselineUsd - a.baselineUsd)
-  const ratesLabel =
-    perModel.length === 1
-      ? `${perModel[0].served} as ${perModel[0].baselineType || baselineType}`
-      : `${perModel.length} models, each at its cost equivalent`
   const btu = sum((r) => r.energyBtu)
   const btuPerHour = sum((r) => r.heatBtuPerHour)
 
   return (
     <Panel
       title="What it would have cost on a paid API"
+      actions={
+        perModel.length > 0 ? (
+          <Button size="small" onClick={() => setBreakdownOpen(true)} sx={{ textTransform: 'none' }}>
+            Breakdown by model
+          </Button>
+        ) : undefined
+      }
       // A LABEL: the baseline's name and the window, no sentence break, and
       // nothing about a request in flight. It is the header's whole job to say
       // what the numbers below are of.
@@ -190,7 +210,7 @@ export function PaidComparison({
           <Figure
             label="On a paid API"
             value={pending ? <NotYet /> : fmtMoney(wouldCost)}
-            sub={`at ${ratesLabel}`}
+            sub="at paid-API rates"
           />
           <Figure
             label="Here, in electricity"
@@ -247,8 +267,14 @@ export function PaidComparison({
           )}
         </Box>
       </Row>
-      {perModel.length > 0 && (
-        <Row>
+      <Dialog open={breakdownOpen} onClose={() => setBreakdownOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>What it would have cost on a paid API, by model · {when}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ color: C.textMuted, mb: 1 }}>
+            Each model is priced at the rates of the paid model it stands in for (its cost
+            equivalent, or the default when it declares none). Heat is metered token energy ×
+            3,412 BTU/kWh; idle draw is not counted.
+          </Typography>
           <Table size="small" sx={{ my: 0.5 }}>
             <TableHead>
               <TableRow>
@@ -271,8 +297,11 @@ export function PaidComparison({
               ))}
             </TableBody>
           </Table>
-        </Row>
-      )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBreakdownOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
       {/* The breakdown, in the three classes tokens are always measured in. It
           is below the headline rather than beside it because the headline is what
           somebody came for (OB-11) — and it is here at all because a single
