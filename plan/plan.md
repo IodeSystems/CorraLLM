@@ -359,9 +359,16 @@ cooling/heating/neutral, room range. Setup → Room has the Home Assistant field
 any box without thermal settings would have crashed at startup. `TestRawSpinup` (real binary) caught it;
 the deploy gate on `go test` exit status held.
 
-- **next:** owner adds `HA_TOKEN=…` to `~/.corrallm/credentials` (chmod 600) — the token never passes
-  through the assistant — then: restart (the credential store loads at startup), list the
-  temperature sensors via `/api/states`, owner picks the office sensor (+ outdoor), save via Setup → Room.
+- **live (2026-10-03):** owner ran `bin/thermal-ha-setup` (`3713e0f`; token never passed through the
+  assistant). HA has six per-room "4000W" thermostats — the radiant panels' controllers, confirming
+  electric resistance ($4.10/therm holds) — and BigBlue outdoor sensors. **Model corrected by the owner:**
+  the office fan pushes heat INTO THE HOUSE (window closed, no AC) → cooling costs $0 (set), outdoor is
+  display only (`sensor.bigblue_temperature`, air temp — not the apparent-temperature one first picked);
+  heating is decided by the WHOLE HOUSE, not the office. Room is still the office thermostat (`_2`).
+- **next:** owner creates an HA "Combine the state of several sensors" helper (arithmetic mean of the six
+  thermostats); then point `roomEntity` at it (API or Setup → Room).
+- **risks:** BigBlue sensors have only 17 h of history in 31 d (recorder coverage?) — outdoor display is
+  sparse; irrelevant to cost now. UI words hours above 72°F as "cooling" even with no cooling equipment.
 - **risks:** the office sensor is right only while the box's heat stays in the office; with whole-home
   circulation (owner wishes for an attic→basement circulator) a whole-home aggregate entity would be the
   right room reading — a different entity, no code change.
