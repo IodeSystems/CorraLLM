@@ -62,7 +62,7 @@ follow-ups. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P50.**
+**Next free number: P51.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -341,6 +341,31 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P50 — hourly room (and outdoor) temperatures from Home Assistant — 2026-10-02
+
+Owner has Home Assistant at `https://ha.iodesystems.com` (reachable from box1: `/api/` → 401 without a
+token, 88 ms) with an outdoor sensor and per-room sensors. The room temperature was the last manual,
+whole-window number; now each hour can take its own room reading and so its own mode.
+
+Built (`985248b`, deployed): `thermal.homeAssistant` {url, token: `${KEY}` reference — validated, never
+the token itself, roomEntity, outdoorEntity?}. `weather.FetchHAHourly` (history API, TIME-WEIGHTED hourly
+mean, unavailable states contribute nothing, °C converted). `runWeather` caches `ha:<entity>` beside the
+Open-Meteo location (31 d first, then 2 d / 30 min). `hourlyThermal`: per hour room (sensor, else roomF)
+→ mode; outdoor (house sensor, else Open-Meteo, else outdoorF) → fan factor; net figure, hours split
+cooling/heating/neutral, room range. Setup → Room has the Home Assistant fields.
+
+**Caught before deploy:** `runWeather` dereferenced `th.HomeAssistant` with no thermal config (nil) —
+any box without thermal settings would have crashed at startup. `TestRawSpinup` (real binary) caught it;
+the deploy gate on `go test` exit status held.
+
+- **next:** owner adds `HA_TOKEN=…` to `~/.corrallm/credentials` (chmod 600) — the token never passes
+  through the assistant — then: restart (the credential store loads at startup), list the
+  temperature sensors via `/api/states`, owner picks the office sensor (+ outdoor), save via Setup → Room.
+- **risks:** the office sensor is right only while the box's heat stays in the office; with whole-home
+  circulation (owner wishes for an attic→basement circulator) a whole-home aggregate entity would be the
+  right room reading — a different entity, no code change.
+- **blocking decisions:** none.
 
 ### ✅ P49 — hourly outdoor weather (Open-Meteo); cooling priced hour by hour — 2026-10-02 → [`done.md`](done.md)
 
