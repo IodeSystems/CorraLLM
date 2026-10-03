@@ -544,6 +544,11 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
               </Tooltip>
             </TableCell>
             <TableCell align="right">Cost</TableCell>
+            <TableCell align="right">
+              <Tooltip title="Heat this model's local work gave off: its metered electricity × 3,412 BTU/kWh, with the window's average BTU/h under it. Token energy only — idle draw, CPU and PSU losses are not counted, so real heat is higher. A dash for a model that ran somewhere else.">
+                <span>Heat</span>
+              </Tooltip>
+            </TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -782,6 +787,22 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                       </Typography>
                     </span>
                   </Tooltip>
+                </TableCell>
+                {/* HEAT, in the room this box is in. Only energy-billed rows have
+                    any: a paid or remote backend heated somebody else's room. */}
+                <TableCell align="right">
+                  {Number(s?.energyBtu ?? 0) > 0 ? (
+                    <>
+                      {fmtInt(Math.round(Number(s?.energyBtu)))} BTU
+                      {Number(s?.heatBtuPerHour ?? 0) > 0 && (
+                        <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                          ≈ {fmtInt(Math.round(Number(s?.heatBtuPerHour)))} BTU/h
+                        </Typography>
+                      )}
+                    </>
+                  ) : (
+                    <span style={{ color: C.textFaint }}>—</span>
+                  )}
                 </TableCell>
               </TableRow>
             )
