@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Point corrallm's room thermal settings at Home Assistant sensors.
+#
+#   bin/thermal-ha-setup [HA_URL]          (default https://ha.iodesystems.com)
+#
+# Run it in your own terminal: it asks for a Home Assistant long-lived access
+# token WITHOUT echoing it, checks it, lists your temperature sensors, lets you
+# pick the room one (and optionally an outdoor one), stores the token in
+# ~/.corrallm/credentials (mode 600) as HA_TOKEN, and updates corrallm's thermal
+# settings to read those sensors — keeping your targets and cost factors.
+#
+# The token never appears on a command line (it reaches the HTTP calls through
+# the environment), never goes into corrallm's config (that only holds the
+# ${HA_TOKEN} reference — the config is served over HTTP), and is never printed.
+#
+# Non-interactive: pipe the token on stdin and pass the entities:
+#   printf '%s\n' "$TOKEN" | bin/thermal-ha-setup [HA_URL] --room sensor.x [--outdoor sensor.y] [--restart]
+set -euo pipefail
+
+HA_URL="https://ha.iodesystems.com"
+ROOM="" OUTDOOR="" RESTART=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --room) ROOM="$2"; shift 2 ;;
+        --outdoor) OUTDOOR="$2"; shift 2 ;;
+        --restart) RESTART=yes; shift ;;
+        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+        *) HA_URL="$1"; shift ;;
+    esac
+done
+HA_URL="${HA_URL%/}"
+HOME_DIR="${CORRALLM_HOME:-$HOME/.corrallm}"
+CORRALLM="${CORRALLM_BASE:-http://127.0.0.1:8111}"
+
+if [ -t 0 ]; then
+    read -rsp "Home Assistant long-lived access token (input hidden): " HA_SETUP_TOKEN
+    echo
+else
+    IFS= read -r HA_SETUP_TOKEN
+fi
+[ -n "$HA_SETUP_TOKEN" ] || { echo "no token given" >&2; exit 1; }
+export HA_SETUP_TOKEN HA_URL HOME_DIR CORRALLM ROOM OUTDOOR
+
+python3 - <<'PY'
+import json, os, sys, urllib.request, urllib.error
+
+ha, token = os.environ["HA_URL"], os.environ["HA_SETUP_TOKEN"]
+home, corrallm = os.environ["HOME_DIR"], os.environ["CORRALLM"]
+
+def ha_get(path):
+    req = urllib.request.Request(ha + path, headers={"Authorization": "Bearer " + token,
+                                                      "User-Agent": "corrallm thermal-ha-setup"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+# 1. The token works.
+try:
+    ha_get("/api/")
+except urllib.error.HTTPError as e:
+    sys.exit(f"Home Assistant refused the token (HTTP {e.code}) at {ha}")
+except Exception as e:
+    sys.exit(f"cannot reach Home Assistant at {ha}: {e}")
+print(f"token accepted by {ha}")
+
+# 2. The temperature sensors, with what they read now.
+sensors = []
+for s in ha_get("/api/states"):
+    a = s.get("attributes", {})
+    unit = a.get("unit_of_measurement", "")
+    if s["entity_id"].startswith("sensor.") and (a.get("device_class") == "temperature" or unit in ("°F", "°C")):
+        sensors.append((s["entity_id"], a.get("friendly_name", ""), s.get("state", "?"), unit))
+sensors.sort()
+if not sensors:
+    sys.exit("no temperature sensors found")
+
+def choose(prompt, required):
+    tty = open("/dev/tty")
+    while True:
+        print(prompt, end="", flush=True)
+        ans = tty.readline().strip()
+        if not ans and not required:
+            return ""
+        if ans.isdigit() and 1 <= int(ans) <= len(sensors):
+            return sensors[int(ans) - 1][0]
+        if any(ans == s[0] for s in sensors):
+            return ans
+        print("  pick a number from the list, or an entity id")
+
+room, outdoor = os.environ.get("ROOM", ""), os.environ.get("OUTDOOR", "")
+if not room:
+    print("\ntemperature sensors:")
+    for i, (eid, name, state, unit) in enumerate(sensors, 1):
+        print(f"  {i:3}. {eid:45} {name[:30]:30} {state} {unit}")
+    room = choose("\nthe room the box is in (number or entity id): ", True)
+    outdoor = choose("outdoor sensor (number, entity id, or Enter to keep the weather service): ", False)
+known = {s[0] for s in sensors}
+for eid in filter(None, (room, outdoor)):
+    if eid not in known:
+        sys.exit(f"{eid} is not a temperature sensor in Home Assistant")
+print(f"room sensor: {room}" + (f"; outdoor sensor: {outdoor}" if outdoor else "; outdoor: weather service / manual"))
+
+# 3. The token into the credential store, replacing any earlier HA_TOKEN line.
+os.makedirs(home, exist_ok=True)
+path = os.path.join(home, "credentials")
+lines = []
+if os.path.exists(path):
+    with open(path) as f:
+        lines = [l for l in f.read().splitlines() if not l.startswith("HA_TOKEN=")]
+lines.append("HA_TOKEN=" + token)
+old = os.umask(0o077)
+try:
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+finally:
+    os.umask(old)
+os.chmod(path, 0o600)
+print(f"token stored as HA_TOKEN in {path} (mode 600)")
+
+# 4. corrallm's thermal settings, keeping what is there.
+with open(os.path.join(home, "admin.token")) as f:
+    admin = f.read().strip()
+def corr(method, path, body=None):
+    req = urllib.request.Request(corrallm + path, method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "Bearer " + admin, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+cur = corr("GET", "/api/v1/usage/rollup?windowHours=1").get("thermal")
+if not cur:
+    sys.exit("corrallm has no thermal settings yet — set targets and factors on Setup → Room first")
+body = {k: cur.get(k) for k in ("roomF", "outdoorF", "coolTargetF", "coolCostPerTherm", "coolFanCfm",
+                                "coolFanWatts", "heatTargetF", "heatCostPerTherm", "notes", "latitude", "longitude")}
+body.update(homeAssistantUrl=ha, homeAssistantToken="${HA_TOKEN}", roomEntity=room, outdoorEntity=outdoor)
+r = corr("POST", "/api/v1/thermal", body)
+print("corrallm:", r.get("message") or r)
+PY
+
+echo
+echo "corrallm reads the credential store at startup: it needs a restart to use the token"
+echo "(the resident model reloads; a request in flight is dropped, callers retry)."
+if [ -z "$RESTART" ] && [ -e /dev/tty ]; then
+    read -rp "restart corrallm now? [y/N] " RESTART </dev/tty
+fi
+case "$RESTART" in
+    y|Y|yes)
+        systemctl --user restart corrallm
+        echo "restarted; waiting for the first hourly room readings (up to 6 minutes)…"
+        for _ in $(seq 1 72); do
+            if journalctl --user -u corrallm --since "-7min" --no-pager | grep -q "temperatures cached source=ha:"; then
+                journalctl --user -u corrallm --since "-7min" --no-pager | grep "temperatures cached source=ha:\|temperature fetch failed" | tail -3
+                exit 0
+            fi
+            if journalctl --user -u corrallm --since "-7min" --no-pager | grep -q "temperature fetch failed source=ha:"; then
+                journalctl --user -u corrallm --since "-7min" --no-pager | grep "temperature fetch failed" | tail -2
+                exit 1
+            fi
+            sleep 5
+        done
+        echo "no readings yet — check: journalctl --user -u corrallm | grep temperature"
+        ;;
+    *) echo "not restarted: run 'systemctl --user restart corrallm' when convenient" ;;
+esac
