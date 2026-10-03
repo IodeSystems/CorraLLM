@@ -1311,8 +1311,8 @@ type RollupRow struct {
 	// HEAT. Every watt-hour a local backend draws ends up as heat in the room.
 	// From METERED token energy only — idle draw, CPU and PSU losses are not in
 	// it, so the box's real heat output is higher.
-	EnergyBTU float64 `json:"energyBtu" doc:"Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."`
-	HeatBTUh  float64 `json:"heatBtuPerHour" doc:"energyBtu averaged over the window's length, BTU/h. 0 when the window is unbounded (all time)."`
+	EnergyBTU  float64 `json:"energyBtu" doc:"Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."`
+	HeatBTUh   float64 `json:"heatBtuPerHour" doc:"energyBtu averaged over the window's length, BTU/h. 0 when the window is unbounded (all time)."`
 	ThermalUSD float64 `json:"thermalUsd" doc:"What that heat did to the room's climate bill, from config thermal: POSITIVE is extra cooling cost (ambient above the cooling target), NEGATIVE is heating saved (ambient below the heating target), 0 between the targets or with no thermal config. energyBtu / 100000 x the active cost per therm."`
 
 	// WHAT KIND OF MONEY THIS IS. costUsd alone cannot say, and the two kinds it
@@ -1352,8 +1352,8 @@ type UsageRollupOutput struct {
 		CostPerKwh float64 `json:"costPerKwh" doc:"The configured electricity rate, $ per kWh, that energyUsd was computed at. 0 means no rate is configured, so every energy figure is $0 by omission rather than by being small."`
 		// WHICH PAID API THE COMPARISON IS AGAINST. An unattributed "would have
 		// cost $X" is not a claim anybody can check.
-		Thermal *ThermalView `json:"thermal,omitempty" doc:"The room settings thermalUsd was computed from; absent when no thermal config is set."`
-		BaselineType string `json:"baselineType" doc:"The DEFAULT commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. A model with a costEquivalent is priced at that instead; each row's baselineType says which applied. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."`
+		Thermal      *ThermalView `json:"thermal,omitempty" doc:"The room settings thermalUsd was computed from; absent when no thermal config is set."`
+		BaselineType string       `json:"baselineType" doc:"The DEFAULT commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. A model with a costEquivalent is priced at that instead; each row's baselineType says which applied. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."`
 	}
 }
 

@@ -28,8 +28,8 @@ func TestCtxStats(t *testing.T) {
 	turn(2, "m", "b", 2, 50)
 	turn(3, "m", "a", 4, 200)
 	turn(4, "m", "b", 4, 70)
-	turn(5, "m", "a", 6, 0)   // turned away: counts in neither reading
-	turn(6, "m", "a", 2, 30)  // restarted: "a" ended at 200, a new run begins
+	turn(5, "m", "a", 6, 0)  // turned away: counts in neither reading
+	turn(6, "m", "a", 2, 30) // restarted: "a" ended at 200, a new run begins
 	turn(7, "n", "c", 2, 1000)
 	turn(8, "m", "z", 2, 999) // outside the window
 

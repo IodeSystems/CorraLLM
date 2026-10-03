@@ -234,3 +234,37 @@ func TestModelSpecRoundTripsDisabled(t *testing.T) {
 		t.Error("applySpec could not clear disabled — enabling must work through the same door")
 	}
 }
+
+// TestRemovedBackendRaisesNothing: a backend no longer in the config at all
+// can never clear its refusal (only a success does), so it must not sit on the
+// page forever — groq-gpt-oss-120b did, 19 days after its lane was deleted.
+func TestRemovedBackendRaisesNothing(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UnixMilli()
+	if err := st.NoteBackendRefusal("gone-from-config", 403, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.NoteBackendRefusal("live", 401, now); err != nil {
+		t.Fatal(err)
+	}
+	cfg := disabledOverviewCfg()
+	h := &Handlers{Cfg: cfg, Mgr: proc.NewManager(cfg), Store: st}
+	q, err := h.QuotaLedger(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawLive bool
+	for _, r := range q.Body.Refusing {
+		if r.Backend == "gone-from-config" {
+			t.Error("a backend removed from the config is still in the refusing list")
+		}
+		sawLive = sawLive || r.Backend == "live"
+	}
+	if !sawLive {
+		t.Error("the live refusing backend was dropped too")
+	}
+}

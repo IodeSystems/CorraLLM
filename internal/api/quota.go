@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/iodesystems/corrallm/internal/config"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/quota"
@@ -102,10 +103,22 @@ func (h *Handlers) refusingViews() ([]RefusingBackendView, error) {
 		return nil, err
 	}
 	cfg := h.config()
+	var live map[string]config.Model
+	if cfg != nil {
+		live = cfg.AllModels() // disabled models are already left out of it
+	}
 	for _, r := range rows {
 		// The ledger keys on the served model name (proxy.noteRefusal records
 		// the candidate's name), so the config lookup is direct.
-		if cfg != nil && cfg.Models[r.Backend].Disabled {
+		//
+		// A backend that is DISABLED or no longer in the config at all is
+		// skipped for the same reason: nothing calls it, so its refusal can
+		// never clear (only a success clears one) and the reader cannot act on
+		// it. A removed backend's row used to sit on Setup indefinitely —
+		// groq-gpt-oss-120b, 19 days after the free lane that held it was
+		// deleted. The row survives either way, so bringing the model back
+		// brings back the honest answer.
+		if _, ok := live[r.Backend]; cfg != nil && !ok {
 			continue
 		}
 		out = append(out, RefusingBackendView{
