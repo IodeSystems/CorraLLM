@@ -62,7 +62,7 @@ follow-ups. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P49.**
+**Next free number: P50.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -341,6 +341,8 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ✅ P49 — hourly outdoor weather (Open-Meteo); cooling priced hour by hour — 2026-10-02 → [`done.md`](done.md)
 
 ### ✅ P48 — the room the box heats: cooling cost / heating saved from room + outdoor °F — 2026-10-02 → [`done.md`](done.md)
 

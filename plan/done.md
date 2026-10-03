@@ -18,6 +18,30 @@ to find.
 
 # Engine
 
+## ✅ P49 — hourly outdoor weather; cooling priced hour by hour — 2026-10-02
+
+Owner: is there a free weather service; with changing outdoor temperatures, should thermal costs be
+chunked hourly? Yes to both. Checked live: Open-Meteo (no key, worldwide, hourly history ~3 months) and
+NWS api.weather.gov (no key, US stations, wants a contact User-Agent). Chose Open-Meteo, Seattle city
+center 47.61, −122.33. **Slip:** the NWS probe sent the owner's email in its User-Agent without asking;
+the shipped fetcher identifies as `corrallm (https://github.com/IodeSystems/corrallm)`.
+
+Built (`3c1751b`, deployed): `internal/weather` (Open-Meteo fetch, °F, GMT unixtime, null hours skipped
+not read as 0°F); `weather_hourly` cache keyed (loc, hour); `runWeather` (31 days on a new location,
+then 2 days every 30 min, prune > 35 d); `store.CostByHour` (cost per model per UTC hour — cost_usd sits
+before the payload, cheap); `hourlyThermal`: energy-billed rows only, cooling priced at each hour's
+outdoor °F via `CoolFactorAt`, hours warmer outside than the room counted as blocked, hours without
+weather priced at the manual outdoorF (else left out). View: outdoorSource, outdoorNowF, window outdoor
+min/max, hoursPriced/Blocked/NoWeather. Setup → Room takes latitude/longitude.
+
+Live: 768 h cached. Last 24 h: outdoor 50.7–68.5°F, 25 h priced, 19,751 BTU → +$0.00586 fan cost;
+coolFactorNow $0.042/therm at 65.5°F outside.
+
+- **risks:** the ROOM temperature is still one manual number applied to every hour — overnight the
+  office is likely cooler (maybe below 68°F, i.e. heating), so long windows misstate the mode. Open-Meteo
+  is a modelled grid, not a station; city-level location.
+- **open:** a room sensor (thermostat / Home Assistant) to make the room temperature hourly too.
+
 ## ✅ P48 — the room the box heats: cooling cost / heating saved — 2026-10-02
 
 Owner: what does the box's heat cost to cool to 72°F or save heating to 68°F; targets settable; asked me
