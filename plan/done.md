@@ -18,6 +18,36 @@ to find.
 
 # Engine
 
+## ✅ P48 — the room the box heats: cooling cost / heating saved — 2026-10-02
+
+Owner: what does the box's heat cost to cool to 72°F or save heating to 68°F; targets settable; asked me
+to calculate the factors. Owner's setup: cooling = window box fan; heating = gas fireplace always on all
+winter + radiant panels topping up to 68°F; manual temperatures. Corrected mid-build: one "ambient"
+number conflated two signals — the ROOM temperature decides the mode, the OUTDOOR temperature decides
+what fan cooling costs (Seattle 67°F outside, office 77°F).
+
+Built (`f185f9f`, `37d3978`, deployed): config `thermal` (roomF, outdoorF, cool/heat targets, cooling as
+a fixed $/therm OR fan CFM + W, heatCostPerTherm, notes). Mode: room > cool target → cooling, room <
+heat target → heating, else neutral. A fan removes 1.08 x CFM x (room − outdoor) BTU/h, so its $/therm
+comes from the live gap and $/kWh; gap ≤ 0 → "fan can't cool" (heat raises the room, $0). Rollup rows
++ total carry signed `thermalUsd` (+ cooling cost, − heating saved) and a `thermal` view (mode, live
+`coolFactorNow`, `coolBlocked`). Setup gains a **Room** tab (`setThermal`); Traffic shows a "Room
+climate" figure, a column in the per-model breakdown dialog, and a line under each model's heat.
+
+Factors (in config notes): cooling = 20" box fan 2,000 CFM / 75 W → $0.049/therm at a 10°F gap ($0.097
+at 5°F); heating = the PANELS are the marginal source (the fireplace runs regardless) → $0.14/kWh x 29.31
+= $4.10/therm, assuming electric resistance. Live: cooling mode, 934 BTU/h → +$0.00045/h.
+
+Also: `refusingViews` now skips backends not in the config (a removed backend's refusal could never
+clear — groq sat on Setup 19 days); deleted groq's refusal row and two stale openrouter quota counters;
+gofmt on three files. A flaky test of mine (BTU/h at 1e-9 vs a window ending at a fresh now) shipped a
+red suite through a chained deploy once (`ca5bcb8`, code correct) — fixed `9aeb68e`; deploys now gate on
+`go test` exit status, not a grep of its output.
+
+- **risks:** temperatures are manual — stale readings misprice; the fan model assumes outside air is
+  what cools the room; heat is metered token energy only.
+- **open:** auto temperatures (weather by location, or a sensor) if manual entry proves stale.
+
 ## ✅ P47 — Traffic: speed & cache distributions, per-model paid comparison, heat — 2026-10-02
 
 Owner: show cache hit rate, tg/s, tp/s — avg and p90 — globally and per model (when more than one);
