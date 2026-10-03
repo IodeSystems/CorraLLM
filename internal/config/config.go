@@ -2772,43 +2772,67 @@ func (c *Config) SchedulerFor(model string) SchedulerConfig {
 //
 // Every watt-hour a local backend draws ends up as heat in that room. Whether
 // that heat costs or saves money depends on what the room's own climate system
-// is doing, which corrallm cannot see — so the operator states it: the room's
-// ambient temperature (entered by hand), the targets it is held at, and what a
-// therm of heat (100,000 BTU) costs to remove or is worth to add.
+// is doing, which corrallm cannot see — so the operator states it.
 //
-// Ambient above CoolTargetF means the room is being cooled and this box's heat
-// is extra load: it COSTS heat x CoolCostPerTherm. Below HeatTargetF the room is
-// being heated and this box's heat displaces some of it: it SAVES heat x
-// HeatCostPerTherm. Between the two, neither system runs and the heat is free.
+// TWO TEMPERATURES, because they answer different questions. The ROOM decides
+// the mode: above CoolTargetF the room is being cooled and this box's heat is
+// extra load; below HeatTargetF it is being heated and the heat displaces some
+// of it; between them neither runs. The OUTDOOR temperature decides what
+// cooling costs when the cooling moves outside air: a window fan removes
+// 1.08 x CFM x (room - outdoor) BTU/h, so its cost per therm halves when the gap
+// doubles, and it cannot cool at all when outside is warmer than inside.
 //
-// The cost factors are per therm of heat MOVED, which is what makes one number
-// work for any equipment: gas at $/therm / burner efficiency; electric
-// resistance at $/kWh x 29.31; a heat pump or AC at $/kWh x 29.31 / COP; a
-// window fan at its kWh per therm moved (1.08 x CFM x indoor-outdoor gap BTU/h)
-// x $/kWh. The heat that counts is the MARGINAL source — the one the
-// thermostat actually turns down — not one that runs regardless.
+// Cooling is priced one of two ways: a fixed CoolCostPerTherm ($ to remove one
+// therm, 100,000 BTU — e.g. an AC at $/kWh x 29.31 / COP), or, when CoolFanCFM is
+// set, computed from the fan's airflow and watts, the live gap and the
+// electricity rate. Heating is HeatCostPerTherm, the value of a therm from the
+// MARGINAL source — the one the thermostat turns down, not one that runs
+// regardless: electric resistance $/kWh x 29.31, gas $/therm / efficiency.
 type Thermal struct {
-	AmbientF         float64 `yaml:"ambientF"`
+	RoomF            float64 `yaml:"roomF"`
+	OutdoorF         float64 `yaml:"outdoorF,omitempty"`
 	CoolTargetF      float64 `yaml:"coolTargetF"`
-	CoolCostPerTherm float64 `yaml:"coolCostPerTherm"`
+	CoolCostPerTherm float64 `yaml:"coolCostPerTherm,omitempty"`
+	CoolFanCFM       float64 `yaml:"coolFanCfm,omitempty"`
+	CoolFanWatts     float64 `yaml:"coolFanWatts,omitempty"`
 	HeatTargetF      float64 `yaml:"heatTargetF"`
 	HeatCostPerTherm float64 `yaml:"heatCostPerTherm"`
 	Notes            string  `yaml:"notes,omitempty"`
 }
 
-// Mode reports what the room's climate system is doing at the stated ambient:
-// "cooling", "heating", or "neutral" between the targets.
+// Mode reports what the room's climate system is doing at the stated room
+// temperature: "cooling", "heating", or "neutral" between the targets.
 func (t *Thermal) Mode() string {
 	switch {
 	case t == nil:
 		return ""
-	case t.CoolTargetF > 0 && t.AmbientF > t.CoolTargetF:
+	case t.CoolTargetF > 0 && t.RoomF > t.CoolTargetF:
 		return "cooling"
-	case t.HeatTargetF > 0 && t.AmbientF < t.HeatTargetF:
+	case t.HeatTargetF > 0 && t.RoomF < t.HeatTargetF:
 		return "heating"
 	default:
 		return "neutral"
 	}
+}
+
+// CoolFactor is the $ to remove one therm of heat right now, and whether the
+// cooling can remove heat at all. With a fan it is computed from the room-to-
+// outdoor gap at the given electricity rate; a gap of zero or less means the
+// fan cannot cool (ok=false). Otherwise it is the fixed CoolCostPerTherm.
+func (t *Thermal) CoolFactor(costPerKwh float64) (perTherm float64, ok bool) {
+	if t == nil {
+		return 0, false
+	}
+	if t.CoolFanCFM <= 0 {
+		return t.CoolCostPerTherm, true
+	}
+	gap := t.RoomF - t.OutdoorF
+	if gap <= 0 {
+		return 0, false
+	}
+	btuPerHour := 1.08 * t.CoolFanCFM * gap
+	hoursPerTherm := 100_000 / btuPerHour
+	return hoursPerTherm * t.CoolFanWatts / 1000 * costPerKwh, true
 }
 
 // ThermalSettings returns a copy of the thermal block, or nil when unset.

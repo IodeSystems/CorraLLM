@@ -481,28 +481,39 @@ func TestUnknownModelWithoutTokensIsNotServed(t *testing.T) {
 	}
 }
 
-// TestUsageRollupThermal: heat priced by the room's mode — a positive cooling
-// cost above the cooling target, a negative (saved) figure below the heating
-// target, nothing between.
+// TestUsageRollupThermal: heat priced by the ROOM's mode — a positive cooling
+// cost above the cooling target (a fan's from the room-to-outdoor gap, nothing
+// when it cannot cool), a negative (saved) figure below the heating target,
+// nothing between.
 func TestUsageRollupThermal(t *testing.T) {
 	st := openTestStore(t)
 	must(t, st.InsertActivity(store.Activity{TS: time.Now().UnixMilli(), Served: "local-chat", Status: 200,
 		PromptTokens: 1000, CompletionTokens: 100, CostUSD: 0.35})) // 2.5 kWh = 8530.35 BTU
+	const btu = 8530.35
+	fanAt10 := 100000 / (1.08 * 2000 * 10) * 75.0 / 1000 * 0.14 // $/therm at a 10°F gap
 	for _, c := range []struct {
-		ambient float64
-		mode    string
-		usd     float64
-	}{{80, "cooling", 8530.35 / 100000 * 0.10}, {60, "heating", -8530.35 / 100000 * 4.10}, {70, "neutral", 0}} {
+		name string
+		th   config.Thermal
+		mode string
+		usd  float64
+	}{
+		{"fixed cooling", config.Thermal{RoomF: 80, CoolTargetF: 72, CoolCostPerTherm: 0.10, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "cooling", btu / 100000 * 0.10},
+		{"fan, 10°F gap", config.Thermal{RoomF: 77, OutdoorF: 67, CoolTargetF: 72, CoolFanCFM: 2000, CoolFanWatts: 75, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "cooling", btu / 100000 * fanAt10},
+		{"fan, warmer outside", config.Thermal{RoomF: 77, OutdoorF: 85, CoolTargetF: 72, CoolFanCFM: 2000, CoolFanWatts: 75, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "cooling", 0},
+		{"heating", config.Thermal{RoomF: 60, CoolTargetF: 72, CoolCostPerTherm: 0.10, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "heating", -btu / 100000 * 4.10},
+		{"between", config.Thermal{RoomF: 70, CoolTargetF: 72, CoolCostPerTherm: 0.10, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "neutral", 0},
+	} {
 		cfg := costFixtureConfig()
-		cfg.Thermal = &config.Thermal{AmbientF: c.ambient, CoolTargetF: 72, CoolCostPerTherm: 0.10, HeatTargetF: 68, HeatCostPerTherm: 4.10}
+		th := c.th
+		cfg.Thermal = &th
 		out, err := (&Handlers{Store: st, Cfg: cfg}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if out.Body.Thermal == nil || out.Body.Thermal.Mode != c.mode {
-			t.Errorf("ambient %v: thermal = %+v, want mode %s", c.ambient, out.Body.Thermal, c.mode)
+			t.Errorf("%s: thermal = %+v, want mode %s", c.name, out.Body.Thermal, c.mode)
 		}
-		near(t, "thermalUsd at "+c.mode, out.Body.Total.ThermalUSD, c.usd)
+		near(t, "thermalUsd, "+c.name, out.Body.Total.ThermalUSD, c.usd)
 	}
 }
 

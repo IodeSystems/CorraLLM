@@ -83,7 +83,16 @@ export type ComparisonRow = {
 }
 
 /** The room settings the climate figure was computed from (config thermal). */
-export type ThermalSetting = { mode: string; ambientF: number; coolTargetF: number; heatTargetF: number }
+export type ThermalSetting = {
+  mode: string
+  roomF: number
+  outdoorF: number
+  coolTargetF: number
+  heatTargetF: number
+  coolBlocked: boolean
+  coolFactorNow: number
+  coolFanCfm: number
+}
 
 /** The reasons the server can give, in the words a reader gets. */
 const EXCLUSION_WORDS: Record<string, string> = {
@@ -185,13 +194,25 @@ export function PaidComparison({
   const btu = sum((r) => r.energyBtu)
   const btuPerHour = sum((r) => r.heatBtuPerHour)
   const climateUsd = sum((r) => r.thermalUsd)
-  const climate = thermal
-    ? thermal.mode === 'cooling'
-      ? { value: `+${fmtMoney(climateUsd)}`, sub: `extra cooling — ${thermal.ambientF}°F ambient, cooling above ${thermal.coolTargetF}°F` }
+  const climate = !thermal
+    ? null
+    : thermal.mode === 'cooling'
+      ? thermal.coolBlocked
+        ? {
+            value: 'fan can’t cool',
+            sub: `room ${thermal.roomF}°F, outside ${thermal.outdoorF}°F — warmer outside, so this heat raises the room instead of a bill`,
+          }
+        : {
+            value: `+${fmtMoney(climateUsd)}`,
+            sub:
+              `extra cooling — room ${thermal.roomF}°F, above ${thermal.coolTargetF}°F` +
+              (thermal.coolFanCfm > 0
+                ? `; fan at a ${(thermal.roomF - thermal.outdoorF).toFixed(0)}°F gap, $${thermal.coolFactorNow.toFixed(3)}/therm`
+                : `; $${thermal.coolFactorNow.toFixed(2)}/therm`),
+          }
       : thermal.mode === 'heating'
-        ? { value: `${fmtMoney(-climateUsd)} saved`, sub: `heating displaced — ${thermal.ambientF}°F ambient, heating below ${thermal.heatTargetF}°F` }
-        : { value: fmtMoney(0), sub: `${thermal.ambientF}°F is between ${thermal.heatTargetF}°F and ${thermal.coolTargetF}°F — neither system runs` }
-    : null
+        ? { value: `${fmtMoney(-climateUsd)} saved`, sub: `heating displaced — room ${thermal.roomF}°F, below ${thermal.heatTargetF}°F` }
+        : { value: fmtMoney(0), sub: `room ${thermal.roomF}°F is between ${thermal.heatTargetF}°F and ${thermal.coolTargetF}°F — neither system runs` }
 
   return (
     <Panel

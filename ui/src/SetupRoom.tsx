@@ -12,9 +12,14 @@ const RoomDoc = graphql(/* GraphQL */ `
       usageRollup(windowHours: 1) {
         thermal {
           mode
-          ambientF
+          roomF
+          outdoorF
           coolTargetF
           coolCostPerTherm
+          coolFanCfm
+          coolFanWatts
+          coolFactorNow
+          coolBlocked
           heatTargetF
           heatCostPerTherm
           notes
@@ -36,9 +41,12 @@ const SetThermalDoc = graphql(/* GraphQL */ `
 `)
 
 type Form = {
-  ambientF: string
+  roomF: string
+  outdoorF: string
   coolTargetF: string
   coolCostPerTherm: string
+  coolFanCfm: string
+  coolFanWatts: string
   heatTargetF: string
   heatCostPerTherm: string
   notes: string
@@ -59,9 +67,12 @@ export function RoomSettings() {
   const q = useQuery({ queryKey: ['roomSettings'], queryFn: () => gqlClient.request(RoomDoc) })
   const current = q.data?.corrallm.usageRollup?.thermal
   const [form, setForm] = useState<Form>({
-    ambientF: '',
+    roomF: '',
+    outdoorF: '',
     coolTargetF: '72',
     coolCostPerTherm: '',
+    coolFanCfm: '',
+    coolFanWatts: '',
     heatTargetF: '68',
     heatCostPerTherm: '',
     notes: '',
@@ -72,9 +83,12 @@ export function RoomSettings() {
   useEffect(() => {
     if (!current) return
     setForm({
-      ambientF: String(current.ambientF),
+      roomF: String(current.roomF),
+      outdoorF: current.outdoorF ? String(current.outdoorF) : '',
       coolTargetF: String(current.coolTargetF),
-      coolCostPerTherm: String(current.coolCostPerTherm),
+      coolCostPerTherm: current.coolCostPerTherm ? String(current.coolCostPerTherm) : '',
+      coolFanCfm: current.coolFanCfm ? String(current.coolFanCfm) : '',
+      coolFanWatts: current.coolFanWatts ? String(current.coolFanWatts) : '',
       heatTargetF: String(current.heatTargetF),
       heatCostPerTherm: String(current.heatCostPerTherm),
       notes: current.notes ?? '',
@@ -90,11 +104,14 @@ export function RoomSettings() {
     mutationFn: (clear: boolean) =>
       gqlClient.request(SetThermalDoc, {
         body: clear
-          ? { clear: true, ambientF: 0, coolTargetF: 0, coolCostPerTherm: 0, heatTargetF: 0, heatCostPerTherm: 0 }
+          ? { clear: true, roomF: 0, coolTargetF: 0, heatTargetF: 0, heatCostPerTherm: 0 }
           : {
-              ambientF: Number(form.ambientF),
+              roomF: Number(form.roomF),
+              outdoorF: Number(form.outdoorF || 0),
               coolTargetF: Number(form.coolTargetF),
-              coolCostPerTherm: Number(form.coolCostPerTherm),
+              coolCostPerTherm: Number(form.coolCostPerTherm || 0),
+              coolFanCfm: Number(form.coolFanCfm || 0),
+              coolFanWatts: Number(form.coolFanWatts || 0),
               heatTargetF: Number(form.heatTargetF),
               heatCostPerTherm: Number(form.heatCostPerTherm),
               notes: form.notes,
@@ -115,15 +132,16 @@ export function RoomSettings() {
       sx={{ minWidth: 220, flex: '1 1 220px' }}
     />
   )
+  const fan = Number(form.coolFanCfm || 0) > 0
   const valid =
-    form.ambientF !== '' &&
+    form.roomF !== '' &&
     Number(form.heatTargetF) > 0 &&
     Number(form.coolTargetF) > Number(form.heatTargetF) &&
-    form.coolCostPerTherm !== '' &&
+    (fan ? Number(form.coolFanWatts) > 0 && form.outdoorF !== '' : form.coolCostPerTherm !== '') &&
     form.heatCostPerTherm !== ''
 
   const modeWords: Record<string, string> = {
-    cooling: 'Cooling — the box’s heat is extra load on the cooling.',
+    cooling: 'Cooling — the room is above its cooling target, so the box’s heat is extra load.',
     heating: 'Heating — the box’s heat displaces some of the heating.',
     neutral: 'Between the targets — neither system runs; the heat costs and saves nothing.',
   }
@@ -142,17 +160,28 @@ export function RoomSettings() {
           runs regardless.
         </Typography>
         <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
-          {field('ambientF', 'Ambient now', '°F', 'The room as you read it; update it as the season turns')}
+          {field('roomF', 'Room now', '°F', 'Indoors, where the box is. Decides whether the room is being cooled or heated')}
+          {field('outdoorF', 'Outdoor now', '°F', 'Outside. Sets what a window fan can do: it cools only while outside is cooler than the room')}
         </Stack>
         <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
           {field('coolTargetF', 'Cool above', '°F', 'Above this the room is being cooled')}
-          {field(
-            'coolCostPerTherm',
-            'Cooling cost',
-            '$ per therm removed',
-            'AC/heat pump: $/kWh × 29.31 ÷ COP. Window fan: kWh per therm moved × $/kWh, where a fan moves 1.08 × CFM × (inside − outside °F) BTU/h',
-          )}
+          {field('coolFanCfm', 'Cooling fan airflow', 'CFM', 'If cooling is a fan moving outside air: a 20" box fan is ~2,000 CFM. Leave empty for a fixed $/therm')}
+          {field('coolFanWatts', 'Cooling fan draw', 'W', 'The fan\'s watts (~75 W for a box fan)')}
+          {!fan &&
+            field(
+              'coolCostPerTherm',
+              'Cooling cost',
+              '$ per therm removed',
+              'Without a fan: AC or heat pump at $/kWh × 29.31 ÷ COP',
+            )}
         </Stack>
+        {current && current.coolFanCfm > 0 && (
+          <Typography variant="body2" sx={{ color: C.textMuted }}>
+            {current.coolBlocked
+              ? `Right now the fan cannot cool: outside (${current.outdoorF}°F) is not cooler than the room (${current.roomF}°F).`
+              : `Right now the fan removes heat at $${current.coolFactorNow.toFixed(3)} per therm — a ${(current.roomF - current.outdoorF).toFixed(0)}°F gap moves ${Math.round(1.08 * current.coolFanCfm * (current.roomF - current.outdoorF)).toLocaleString()} BTU/h for ${current.coolFanWatts} W.`}
+          </Typography>
+        )}
         <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
           {field('heatTargetF', 'Heat below', '°F', 'Below this the room is being heated')}
           {field(

@@ -102,9 +102,13 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
         costPerKwh
         thermal {
           mode
-          ambientF
+          roomF
+          outdoorF
           coolTargetF
           heatTargetF
+          coolBlocked
+          coolFactorNow
+          coolFanCfm
         }
         baselineType
         rows {

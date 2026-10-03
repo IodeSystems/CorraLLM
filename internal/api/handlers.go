@@ -1313,7 +1313,7 @@ type RollupRow struct {
 	// it, so the box's real heat output is higher.
 	EnergyBTU  float64 `json:"energyBtu" doc:"Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."`
 	HeatBTUh   float64 `json:"heatBtuPerHour" doc:"energyBtu averaged over the window's length, BTU/h. 0 when the window is unbounded (all time)."`
-	ThermalUSD float64 `json:"thermalUsd" doc:"What that heat did to the room's climate bill, from config thermal: POSITIVE is extra cooling cost (ambient above the cooling target), NEGATIVE is heating saved (ambient below the heating target), 0 between the targets or with no thermal config. energyBtu / 100000 x the active cost per therm."`
+	ThermalUSD float64 `json:"thermalUsd" doc:"What that heat did to the room's climate bill, from config thermal: POSITIVE is extra cooling cost (room above the cooling target), NEGATIVE is heating saved (room below the heating target), 0 between the targets, when a fan cannot cool, or with no thermal config. energyBtu / 100000 x the active cost per therm."`
 
 	// WHAT KIND OF MONEY THIS IS. costUsd alone cannot say, and the two kinds it
 	// mixes are unrelated: energy is kWh × $/kWh on hardware we run, paid spend
@@ -1547,32 +1547,40 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 	setCtx(&out.Body.Total, ctxTotal)
 	setPerf(&out.Body.Total, perfTotal)
 	th := cfg.ThermalSettings()
-	out.Body.Thermal = thermalView(th)
-	setHeat(&out.Body.Total, windowHours, th)
+	out.Body.Thermal = thermalView(th, rate)
+	setHeat(&out.Body.Total, windowHours, th, rate)
 	for i := range out.Body.Rows {
-		setHeat(&out.Body.Rows[i], windowHours, th)
+		setHeat(&out.Body.Rows[i], windowHours, th, rate)
 	}
 	return out, nil
 }
 
-// ThermalView is config thermal as the dashboard reads it, with the mode it
-// implies at the stated ambient.
+// ThermalView is config thermal as the dashboard reads it, with what it
+// implies right now: the mode (from the room temperature) and the effective
+// cooling factor (from the room-to-outdoor gap when cooling is a fan).
 type ThermalView struct {
-	Mode             string  `json:"mode" doc:"cooling | heating | neutral, at the stated ambient."`
-	AmbientF         float64 `json:"ambientF" doc:"Room ambient temperature as entered by the operator, °F."`
+	Mode             string  `json:"mode" doc:"cooling | heating | neutral, from the room temperature against the targets."`
+	RoomF            float64 `json:"roomF" doc:"Room (indoor) temperature as entered, °F. Decides the mode."`
+	OutdoorF         float64 `json:"outdoorF" doc:"Outdoor temperature as entered, °F. Decides what fan cooling costs, and whether a fan can cool at all."`
 	CoolTargetF      float64 `json:"coolTargetF" doc:"Cooling target, °F: above it the room is cooled."`
-	CoolCostPerTherm float64 `json:"coolCostPerTherm" doc:"$ to remove one therm (100,000 BTU) of heat."`
+	CoolCostPerTherm float64 `json:"coolCostPerTherm" doc:"Fixed $ to remove one therm (100,000 BTU), used when no fan is configured."`
+	CoolFanCFM       float64 `json:"coolFanCfm" doc:"Cooling fan airflow, CFM; 0 means cooling is priced by coolCostPerTherm."`
+	CoolFanWatts     float64 `json:"coolFanWatts" doc:"Cooling fan draw, W."`
+	CoolFactorNow    float64 `json:"coolFactorNow" doc:"$ to remove one therm right now: the fixed factor, or the fan's at the current room-to-outdoor gap and electricity rate."`
+	CoolBlocked      bool    `json:"coolBlocked" doc:"True when cooling is a fan and outside is not cooler than the room: the fan cannot remove heat, so the heat raises the room temperature instead of costing money."`
 	HeatTargetF      float64 `json:"heatTargetF" doc:"Heating target, °F: below it the room is heated."`
-	HeatCostPerTherm float64 `json:"heatCostPerTherm" doc:"$ one therm (100,000 BTU) of heat is worth when the room is being heated — the marginal source's cost."`
+	HeatCostPerTherm float64 `json:"heatCostPerTherm" doc:"$ one therm of heat is worth when the room is heated — the marginal source's cost."`
 	Notes            string  `json:"notes" doc:"Free text kept about the settings."`
 }
 
-func thermalView(t *config.Thermal) *ThermalView {
+func thermalView(t *config.Thermal, costPerKwh float64) *ThermalView {
 	if t == nil {
 		return nil
 	}
-	return &ThermalView{Mode: t.Mode(), AmbientF: t.AmbientF, CoolTargetF: t.CoolTargetF,
-		CoolCostPerTherm: t.CoolCostPerTherm, HeatTargetF: t.HeatTargetF, HeatCostPerTherm: t.HeatCostPerTherm, Notes: t.Notes}
+	f, ok := t.CoolFactor(costPerKwh)
+	return &ThermalView{Mode: t.Mode(), RoomF: t.RoomF, OutdoorF: t.OutdoorF, CoolTargetF: t.CoolTargetF,
+		CoolCostPerTherm: t.CoolCostPerTherm, CoolFanCFM: t.CoolFanCFM, CoolFanWatts: t.CoolFanWatts,
+		CoolFactorNow: f, CoolBlocked: !ok, HeatTargetF: t.HeatTargetF, HeatCostPerTherm: t.HeatCostPerTherm, Notes: t.Notes}
 }
 
 // btuPerTherm is the unit the thermal cost factors are priced in.
@@ -1581,14 +1589,18 @@ const btuPerTherm = 100_000
 // btuPerKwh converts electrical energy to heat: all of it ends up in the room.
 const btuPerKwh = 3412.14
 
-func setHeat(row *RollupRow, windowHours float64, th *config.Thermal) {
+func setHeat(row *RollupRow, windowHours float64, th *config.Thermal, costPerKwh float64) {
 	row.EnergyBTU = row.EnergyKwh * btuPerKwh
 	if windowHours > 0 {
 		row.HeatBTUh = row.EnergyBTU / windowHours
 	}
 	switch th.Mode() {
 	case "cooling":
-		row.ThermalUSD = row.EnergyBTU / btuPerTherm * th.CoolCostPerTherm
+		// A fan that cannot cool (outside warmer than the room) prices nothing:
+		// the heat raises the room temperature rather than a bill.
+		if f, ok := th.CoolFactor(costPerKwh); ok {
+			row.ThermalUSD = row.EnergyBTU / btuPerTherm * f
+		}
 	case "heating":
 		row.ThermalUSD = -row.EnergyBTU / btuPerTherm * th.HeatCostPerTherm
 	}

@@ -49,9 +49,13 @@ const NowDoc = graphql(/* GraphQL */ `
         baselineType
         thermal {
           mode
-          ambientF
+          roomF
+          outdoorF
           coolTargetF
           heatTargetF
+          coolBlocked
+          coolFactorNow
+          coolFanCfm
         }
         rows {
           served

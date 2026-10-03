@@ -2618,7 +2618,7 @@ type corrallm_RollupRow {
   tgP10: Float!
   """Decode speed, tokens/sec: 90th percentile — the fast tail."""
   tgP90: Float!
-  """What that heat did to the room's climate bill, from config thermal: POSITIVE is extra cooling cost (ambient above the cooling target), NEGATIVE is heating saved (ambient below the heating target), 0 between the targets or with no thermal config. energyBtu / 100000 x the active cost per therm."""
+  """What that heat did to the room's climate bill, from config thermal: POSITIVE is extra cooling cost (room above the cooling target), NEGATIVE is heating saved (room below the heating target), 0 between the targets, when a fan cannot cool, or with no thermal config. energyBtu / 100000 x the active cost per therm."""
   thermalUsd: Float!
   """Prefill (prompt processing) speed, tokens/sec: mean over requests."""
   tpAvg: Float!
@@ -2772,12 +2772,14 @@ input corrallm_SetServerEphemeralInputBodyInput {
 }
 
 input corrallm_SetThermalInputBodyInput {
-  """Room ambient temperature, °F, as you read it."""
-  ambientF: Float!
   """Remove the thermal settings; the dashboard goes back to reporting heat in BTU only."""
   clear: Boolean
-  """$ to remove one therm (100,000 BTU) of heat."""
-  coolCostPerTherm: Float!
+  """Fixed $ to remove one therm (100,000 BTU) of heat — e.g. an AC at $/kWh x 29.31 / COP. Ignored when coolFanCfm is set."""
+  coolCostPerTherm: Float
+  """Cooling is a fan moving outside air: its airflow, CFM. Set this and coolFanWatts to have the cost computed from the room-to-outdoor gap."""
+  coolFanCfm: Float
+  """The cooling fan's draw, W."""
+  coolFanWatts: Float
   """Cooling target, °F. Above it the room is being cooled."""
   coolTargetF: Float!
   """$ one therm of heat is worth when the room is heated — the marginal source the thermostat turns down."""
@@ -2786,6 +2788,10 @@ input corrallm_SetThermalInputBodyInput {
   heatTargetF: Float!
   """Free text kept with the settings (how the factors were worked out)."""
   notes: String
+  """Outdoor temperature, °F. Needed when cooling is a fan: the room-to-outdoor gap sets what it costs."""
+  outdoorF: Float
+  """Room (indoor) temperature, °F, as you read it. Decides the mode."""
+  roomF: Float!
 }
 
 input corrallm_SetWarningThresholdInputBodyInput {
@@ -2835,20 +2841,30 @@ input corrallm_SuppressWarningInputBodyInput {
 }
 
 type corrallm_ThermalView {
-  """Room ambient temperature as entered by the operator, °F."""
-  ambientF: Float!
-  """$ to remove one therm (100,000 BTU) of heat."""
+  """True when cooling is a fan and outside is not cooler than the room: the fan cannot remove heat, so the heat raises the room temperature instead of costing money."""
+  coolBlocked: Boolean!
+  """Fixed $ to remove one therm (100,000 BTU), used when no fan is configured."""
   coolCostPerTherm: Float!
+  """$ to remove one therm right now: the fixed factor, or the fan's at the current room-to-outdoor gap and electricity rate."""
+  coolFactorNow: Float!
+  """Cooling fan airflow, CFM; 0 means cooling is priced by coolCostPerTherm."""
+  coolFanCfm: Float!
+  """Cooling fan draw, W."""
+  coolFanWatts: Float!
   """Cooling target, °F: above it the room is cooled."""
   coolTargetF: Float!
-  """$ one therm (100,000 BTU) of heat is worth when the room is being heated — the marginal source's cost."""
+  """$ one therm of heat is worth when the room is heated — the marginal source's cost."""
   heatCostPerTherm: Float!
   """Heating target, °F: below it the room is heated."""
   heatTargetF: Float!
-  """cooling | heating | neutral, at the stated ambient."""
+  """cooling | heating | neutral, from the room temperature against the targets."""
   mode: String!
   """Free text kept about the settings."""
   notes: String!
+  """Outdoor temperature as entered, °F. Decides what fan cooling costs, and whether a fan can cool at all."""
+  outdoorF: Float!
+  """Room (indoor) temperature as entered, °F. Decides the mode."""
+  roomF: Float!
 }
 
 input corrallm_ToolActivateInputBodyInput {
