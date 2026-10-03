@@ -452,6 +452,7 @@ var migrations = []string{
 	 FROM model_approval WHERE state = 'approved'`,
 	`DROP TABLE model_approval`,
 	conversationSchema,
+	weatherSchema,
 	`CREATE INDEX IF NOT EXISTS idx_activity_conversation_ts
 	   ON activity_conversation(ts, served, conversation, messages, ctx_tokens)`,
 }

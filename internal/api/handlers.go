@@ -1548,9 +1548,40 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 	setPerf(&out.Body.Total, perfTotal)
 	th := cfg.ThermalSettings()
 	out.Body.Thermal = thermalView(th, rate)
+	perServed, hst, hourly := h.hourlyThermal(win, th, known, costModel, rate)
 	setHeat(&out.Body.Total, windowHours, th, rate)
 	for i := range out.Body.Rows {
 		setHeat(&out.Body.Rows[i], windowHours, th, rate)
+	}
+	if hourly {
+		// Hour by hour against the cached outdoor temperature replaces the
+		// single-temperature figure setHeat put on every row.
+		out.Body.Total.ThermalUSD = 0
+		for i := range out.Body.Rows {
+			r := &out.Body.Rows[i]
+			r.ThermalUSD = perServed[r.Served]
+			out.Body.Total.ThermalUSD += r.ThermalUSD
+		}
+		v := out.Body.Thermal
+		v.OutdoorSource = "open-meteo"
+		v.HoursPriced, v.HoursBlocked, v.HoursNoWeather = hst.HoursPriced, hst.HoursBlocked, hst.HoursNoWeather
+		v.OutdoorMinF, v.OutdoorMaxF = hst.OutdoorMinF, hst.OutdoorMaxF
+		if now, err := h.Store.WeatherBetween(th.Loc(), time.Now().Add(-2*time.Hour).UnixMilli(), time.Now().UnixMilli()); err == nil {
+			var latest int64
+			for hr, f := range now {
+				if hr > latest {
+					latest, v.OutdoorNowF = hr, f
+				}
+			}
+			if latest > 0 {
+				v.CoolFactorNow, v.CoolBlocked = 0, false
+				if f, ok := th.CoolFactorAt(v.OutdoorNowF, rate); ok {
+					v.CoolFactorNow = f
+				} else {
+					v.CoolBlocked = true
+				}
+			}
+		}
 	}
 	return out, nil
 }
@@ -1571,6 +1602,18 @@ type ThermalView struct {
 	HeatTargetF      float64 `json:"heatTargetF" doc:"Heating target, °F: below it the room is heated."`
 	HeatCostPerTherm float64 `json:"heatCostPerTherm" doc:"$ one therm of heat is worth when the room is heated — the marginal source's cost."`
 	Notes            string  `json:"notes" doc:"Free text kept about the settings."`
+
+	// HOURLY, when a location is set: the outdoor temperature comes from the
+	// weather cache hour by hour, and cooling is priced per hour.
+	Latitude       float64 `json:"latitude" doc:"Location for hourly outdoor weather; 0,0 means none (outdoorF is used)."`
+	Longitude      float64 `json:"longitude" doc:"See latitude."`
+	OutdoorSource  string  `json:"outdoorSource" doc:"open-meteo when this window was priced hour by hour from cached weather; manual when the single outdoorF was used."`
+	OutdoorNowF    float64 `json:"outdoorNowF" doc:"Latest cached outdoor temperature (within the last 2 h), °F; 0 when none."`
+	OutdoorMinF    float64 `json:"outdoorMinF" doc:"Lowest outdoor temperature over the window's hours that carried heat, °F."`
+	OutdoorMaxF    float64 `json:"outdoorMaxF" doc:"Highest, °F."`
+	HoursPriced    int     `json:"hoursPriced" doc:"Hours of the window that carried a cooling cost or heating saving."`
+	HoursBlocked   int     `json:"hoursBlocked" doc:"Hours a fan could not cool because outside was not cooler than the room — that heat raised the room instead of a bill."`
+	HoursNoWeather int     `json:"hoursNoWeather" doc:"Hours with heat but no cached weather; priced at outdoorF when set, else left out."`
 }
 
 func thermalView(t *config.Thermal, costPerKwh float64) *ThermalView {
@@ -1580,7 +1623,8 @@ func thermalView(t *config.Thermal, costPerKwh float64) *ThermalView {
 	f, ok := t.CoolFactor(costPerKwh)
 	return &ThermalView{Mode: t.Mode(), RoomF: t.RoomF, OutdoorF: t.OutdoorF, CoolTargetF: t.CoolTargetF,
 		CoolCostPerTherm: t.CoolCostPerTherm, CoolFanCFM: t.CoolFanCFM, CoolFanWatts: t.CoolFanWatts,
-		CoolFactorNow: f, CoolBlocked: !ok, HeatTargetF: t.HeatTargetF, HeatCostPerTherm: t.HeatCostPerTherm, Notes: t.Notes}
+		CoolFactorNow: f, CoolBlocked: !ok, HeatTargetF: t.HeatTargetF, HeatCostPerTherm: t.HeatCostPerTherm, Notes: t.Notes,
+		Latitude: t.Latitude, Longitude: t.Longitude, OutdoorSource: "manual"}
 }
 
 // btuPerTherm is the unit the thermal cost factors are priced in.

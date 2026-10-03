@@ -2786,9 +2786,13 @@ input corrallm_SetThermalInputBodyInput {
   heatCostPerTherm: Float!
   """Heating target, °F. Below it the room is being heated. Must be below coolTargetF."""
   heatTargetF: Float!
+  """Location for hourly outdoor temperatures (Open-Meteo, no key). Set both to price cooling hour by hour."""
+  latitude: Float
+  """See latitude."""
+  longitude: Float
   """Free text kept with the settings (how the factors were worked out)."""
   notes: String
-  """Outdoor temperature, °F. Needed when cooling is a fan: the room-to-outdoor gap sets what it costs."""
+  """Outdoor temperature, °F. Needed when cooling is a fan: the room-to-outdoor gap sets what it costs. With a location it is only the fallback for hours with no weather."""
   outdoorF: Float
   """Room (indoor) temperature, °F, as you read it. Decides the mode."""
   roomF: Float!
@@ -2857,12 +2861,30 @@ type corrallm_ThermalView {
   heatCostPerTherm: Float!
   """Heating target, °F: below it the room is heated."""
   heatTargetF: Float!
+  """Hours a fan could not cool because outside was not cooler than the room — that heat raised the room instead of a bill."""
+  hoursBlocked: Long!
+  """Hours with heat but no cached weather; priced at outdoorF when set, else left out."""
+  hoursNoWeather: Long!
+  """Hours of the window that carried a cooling cost or heating saving."""
+  hoursPriced: Long!
+  """Location for hourly outdoor weather; 0,0 means none (outdoorF is used)."""
+  latitude: Float!
+  """See latitude."""
+  longitude: Float!
   """cooling | heating | neutral, from the room temperature against the targets."""
   mode: String!
   """Free text kept about the settings."""
   notes: String!
   """Outdoor temperature as entered, °F. Decides what fan cooling costs, and whether a fan can cool at all."""
   outdoorF: Float!
+  """Highest, °F."""
+  outdoorMaxF: Float!
+  """Lowest outdoor temperature over the window's hours that carried heat, °F."""
+  outdoorMinF: Float!
+  """Latest cached outdoor temperature (within the last 2 h), °F; 0 when none."""
+  outdoorNowF: Float!
+  """open-meteo when this window was priced hour by hour from cached weather; manual when the single outdoorF was used."""
+  outdoorSource: String!
   """Room (indoor) temperature as entered, °F. Decides the mode."""
   roomF: Float!
 }

@@ -92,6 +92,14 @@ export type ThermalSetting = {
   coolBlocked: boolean
   coolFactorNow: number
   coolFanCfm: number
+  outdoorSource: string
+  outdoorNowF: number
+  outdoorMinF: number
+  outdoorMaxF: number
+  // Long on the wire (Go int), which arrives as a string.
+  hoursPriced: number | string
+  hoursBlocked: number | string
+  hoursNoWeather: number | string
 }
 
 /** The reasons the server can give, in the words a reader gets. */
@@ -194,8 +202,21 @@ export function PaidComparison({
   const btu = sum((r) => r.energyBtu)
   const btuPerHour = sum((r) => r.heatBtuPerHour)
   const climateUsd = sum((r) => r.thermalUsd)
+  // Hour by hour when a location is set: the outdoor range and how many hours
+  // the fan could not cool say more than one temperature can.
+  const hourly = thermal?.outdoorSource === 'open-meteo'
+  const hourlyNote = hourly
+    ? `; outdoor ${Math.round(thermal!.outdoorMinF)}–${Math.round(thermal!.outdoorMaxF)}°F hourly, ${Number(thermal!.hoursPriced)} h priced` +
+      (Number(thermal!.hoursBlocked) > 0 ? `, ${Number(thermal!.hoursBlocked)} h too warm outside for the fan` : '') +
+      (Number(thermal!.hoursNoWeather) > 0 ? `, ${Number(thermal!.hoursNoWeather)} h without weather` : '')
+    : ''
   const climate = !thermal
     ? null
+    : hourly && thermal.mode === 'cooling'
+      ? {
+          value: `+${fmtMoney(climateUsd)}`,
+          sub: `extra cooling — room ${thermal.roomF}°F, above ${thermal.coolTargetF}°F${hourlyNote}`,
+        }
     : thermal.mode === 'cooling'
       ? thermal.coolBlocked
         ? {
@@ -211,7 +232,7 @@ export function PaidComparison({
                 : `; $${thermal.coolFactorNow.toFixed(2)}/therm`),
           }
       : thermal.mode === 'heating'
-        ? { value: `${fmtMoney(-climateUsd)} saved`, sub: `heating displaced — room ${thermal.roomF}°F, below ${thermal.heatTargetF}°F` }
+        ? { value: `${fmtMoney(-climateUsd)} saved`, sub: `heating displaced — room ${thermal.roomF}°F, below ${thermal.heatTargetF}°F${hourlyNote}` }
         : { value: fmtMoney(0), sub: `room ${thermal.roomF}°F is between ${thermal.heatTargetF}°F and ${thermal.coolTargetF}°F — neither system runs` }
 
   return (

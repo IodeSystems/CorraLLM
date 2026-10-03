@@ -2789,8 +2789,14 @@ func (c *Config) SchedulerFor(model string) SchedulerConfig {
 // MARGINAL source — the one the thermostat turns down, not one that runs
 // regardless: electric resistance $/kWh x 29.31, gas $/therm / efficiency.
 type Thermal struct {
-	RoomF            float64 `yaml:"roomF"`
-	OutdoorF         float64 `yaml:"outdoorF,omitempty"`
+	RoomF    float64 `yaml:"roomF"`
+	OutdoorF float64 `yaml:"outdoorF,omitempty"`
+	// Latitude/Longitude, when set, replace OutdoorF with HOURLY outdoor
+	// temperatures (Open-Meteo, cached by a background job): a fan's cost moves
+	// with the outdoor temperature hour to hour, so a window's cooling is priced
+	// hour by hour. OutdoorF stays the fallback for an hour with no data.
+	Latitude         float64 `yaml:"latitude,omitempty"`
+	Longitude        float64 `yaml:"longitude,omitempty"`
 	CoolTargetF      float64 `yaml:"coolTargetF"`
 	CoolCostPerTherm float64 `yaml:"coolCostPerTherm,omitempty"`
 	CoolFanCFM       float64 `yaml:"coolFanCfm,omitempty"`
@@ -2823,10 +2829,19 @@ func (t *Thermal) CoolFactor(costPerKwh float64) (perTherm float64, ok bool) {
 	if t == nil {
 		return 0, false
 	}
+	return t.CoolFactorAt(t.OutdoorF, costPerKwh)
+}
+
+// CoolFactorAt is CoolFactor at a given outdoor temperature — one hour's, when
+// the outdoor temperature comes from the weather cache.
+func (t *Thermal) CoolFactorAt(outdoorF, costPerKwh float64) (perTherm float64, ok bool) {
+	if t == nil {
+		return 0, false
+	}
 	if t.CoolFanCFM <= 0 {
 		return t.CoolCostPerTherm, true
 	}
-	gap := t.RoomF - t.OutdoorF
+	gap := t.RoomF - outdoorF
 	if gap <= 0 {
 		return 0, false
 	}
@@ -2847,4 +2862,18 @@ func (c *Config) ThermalSettings() *Thermal {
 	}
 	t := *c.Thermal
 	return &t
+}
+
+// HasLocation reports whether hourly weather is configured.
+func (t *Thermal) HasLocation() bool {
+	return t != nil && (t.Latitude != 0 || t.Longitude != 0)
+}
+
+// Loc is the weather cache's key for this location: lat,lon at 2 decimals
+// (~1 km), plenty for outdoor temperature.
+func (t *Thermal) Loc() string {
+	if !t.HasLocation() {
+		return ""
+	}
+	return fmt.Sprintf("%.2f,%.2f", t.Latitude, t.Longitude)
 }

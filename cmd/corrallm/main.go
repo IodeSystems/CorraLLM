@@ -40,6 +40,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/store"
 	"github.com/iodesystems/corrallm/internal/toolchain"
 	"github.com/iodesystems/corrallm/internal/tune"
+	"github.com/iodesystems/corrallm/internal/weather"
 	"github.com/iodesystems/corrallm/internal/webui"
 	"github.com/iodesystems/corrallm/ui"
 )
@@ -907,6 +908,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	// existed, from the captured payloads still on disk. Resumes on restart and
 	// is a no-op once caught up.
 	go st.BackfillConversations(sigCtx)
+	// Hourly outdoor temperatures for config thermal's location, so the room's
+	// cooling cost can be priced hour by hour without a page waiting on the net.
+	go runWeather(sigCtx, mgr, st)
 
 	// Publish per-model residency to Prometheus (corrallm_model_loaded +
 	// load-timestamp → uptime). Sampled rather than event-driven so the gauges
@@ -1333,5 +1337,49 @@ func (r loadRecorder) RecordLoad(ev proc.ModelLoadEvent) {
 		MS: ev.MS, OK: ev.OK, Err: ev.Err,
 	}); err != nil {
 		slog.Warn("could not record a model load", "model", ev.Model, "err", err)
+	}
+}
+
+// runWeather keeps the weather cache filled for config thermal's location.
+//
+// The first fetch for a location takes 31 days (the activity retention), later
+// ones the last 2 days every 30 minutes — enough to overwrite forecast hours
+// with what actually happened. A change of location is noticed within 5
+// minutes and fetched at once. Failures are logged and retried next round: a
+// missing hour is priced at the manual outdoor reading, never at 0°F.
+func runWeather(ctx context.Context, mgr *proc.Manager, st *store.Store) {
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	var lastLoc string
+	var lastFetch time.Time
+	for {
+		th := mgr.Config().ThermalSettings()
+		if loc := th.Loc(); loc != "" && (loc != lastLoc || time.Since(lastFetch) >= 30*time.Minute) {
+			days := 2
+			if loc != lastLoc {
+				days = 31
+			}
+			hours, err := weather.FetchOpenMeteo(ctx, nil, th.Latitude, th.Longitude, days)
+			if err != nil {
+				slog.Warn("weather fetch failed", "loc", loc, "err", err)
+			} else {
+				m := make(map[int64]float64, len(hours))
+				for _, hr := range hours {
+					m[hr.HourMS] = hr.TempF
+				}
+				if err := st.UpsertWeather(loc, m); err != nil {
+					slog.Warn("weather store failed", "err", err)
+				} else {
+					slog.Info("weather cached", "loc", loc, "hours", len(m), "days", days)
+					lastLoc, lastFetch = loc, time.Now()
+					_ = st.PruneWeather(time.Now().Add(-35 * 24 * time.Hour).UnixMilli())
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 	}
 }

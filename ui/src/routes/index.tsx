@@ -56,6 +56,13 @@ const NowDoc = graphql(/* GraphQL */ `
           coolBlocked
           coolFactorNow
           coolFanCfm
+          outdoorSource
+          outdoorNowF
+          outdoorMinF
+          outdoorMaxF
+          hoursPriced
+          hoursBlocked
+          hoursNoWeather
         }
         rows {
           served

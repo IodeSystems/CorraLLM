@@ -20,6 +20,10 @@ const RoomDoc = graphql(/* GraphQL */ `
           coolFanWatts
           coolFactorNow
           coolBlocked
+          latitude
+          longitude
+          outdoorSource
+          outdoorNowF
           heatTargetF
           heatCostPerTherm
           notes
@@ -43,6 +47,8 @@ const SetThermalDoc = graphql(/* GraphQL */ `
 type Form = {
   roomF: string
   outdoorF: string
+  latitude: string
+  longitude: string
   coolTargetF: string
   coolCostPerTherm: string
   coolFanCfm: string
@@ -69,6 +75,8 @@ export function RoomSettings() {
   const [form, setForm] = useState<Form>({
     roomF: '',
     outdoorF: '',
+    latitude: '',
+    longitude: '',
     coolTargetF: '72',
     coolCostPerTherm: '',
     coolFanCfm: '',
@@ -85,6 +93,8 @@ export function RoomSettings() {
     setForm({
       roomF: String(current.roomF),
       outdoorF: current.outdoorF ? String(current.outdoorF) : '',
+      latitude: current.latitude ? String(current.latitude) : '',
+      longitude: current.longitude ? String(current.longitude) : '',
       coolTargetF: String(current.coolTargetF),
       coolCostPerTherm: current.coolCostPerTherm ? String(current.coolCostPerTherm) : '',
       coolFanCfm: current.coolFanCfm ? String(current.coolFanCfm) : '',
@@ -108,6 +118,8 @@ export function RoomSettings() {
           : {
               roomF: Number(form.roomF),
               outdoorF: Number(form.outdoorF || 0),
+              latitude: Number(form.latitude || 0),
+              longitude: Number(form.longitude || 0),
               coolTargetF: Number(form.coolTargetF),
               coolCostPerTherm: Number(form.coolCostPerTherm || 0),
               coolFanCfm: Number(form.coolFanCfm || 0),
@@ -133,11 +145,12 @@ export function RoomSettings() {
     />
   )
   const fan = Number(form.coolFanCfm || 0) > 0
+  const located = Number(form.latitude || 0) !== 0 || Number(form.longitude || 0) !== 0
   const valid =
     form.roomF !== '' &&
     Number(form.heatTargetF) > 0 &&
     Number(form.coolTargetF) > Number(form.heatTargetF) &&
-    (fan ? Number(form.coolFanWatts) > 0 && form.outdoorF !== '' : form.coolCostPerTherm !== '') &&
+    (fan ? Number(form.coolFanWatts) > 0 && (located || form.outdoorF !== '') : form.coolCostPerTherm !== '') &&
     form.heatCostPerTherm !== ''
 
   const modeWords: Record<string, string> = {
@@ -161,8 +174,26 @@ export function RoomSettings() {
         </Typography>
         <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
           {field('roomF', 'Room now', '°F', 'Indoors, where the box is. Decides whether the room is being cooled or heated')}
-          {field('outdoorF', 'Outdoor now', '°F', 'Outside. Sets what a window fan can do: it cools only while outside is cooler than the room')}
+          {field(
+            'outdoorF',
+            located ? 'Outdoor fallback' : 'Outdoor now',
+            '°F',
+            located
+              ? 'Used only for an hour the weather service has no reading for'
+              : 'Outside. Sets what a window fan can do: it cools only while outside is cooler than the room',
+          )}
         </Stack>
+        <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
+          {field('latitude', 'Latitude', '°', 'With longitude: hourly outdoor temperatures from Open-Meteo (free, no key), so cooling is priced hour by hour. Seattle ≈ 47.61')}
+          {field('longitude', 'Longitude', '°', 'Seattle ≈ −122.33. Leave both empty to use the single outdoor reading')}
+        </Stack>
+        {current?.outdoorSource === 'open-meteo' || (current && (current.latitude !== 0 || current.longitude !== 0)) ? (
+          <Typography variant="body2" sx={{ color: C.textMuted }}>
+            {current.outdoorNowF
+              ? `Outdoor now (Open-Meteo, last hour): ${current.outdoorNowF}°F.`
+              : 'Weather is being fetched — the first hourly readings arrive within a few minutes of saving a location.'}
+          </Typography>
+        ) : null}
         <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
           {field('coolTargetF', 'Cool above', '°F', 'Above this the room is being cooled')}
           {field('coolFanCfm', 'Cooling fan airflow', 'CFM', 'If cooling is a fan moving outside air: a 20" box fan is ~2,000 CFM. Leave empty for a fixed $/therm')}

@@ -529,3 +529,35 @@ func TestSetThermalRejectsBadTargets(t *testing.T) {
 		}
 	}
 }
+
+// TestUsageRollupThermalHourly: with a location, cooling is priced hour by
+// hour at each hour's cached outdoor temperature — an hour warmer outside than
+// the room is blocked (no cost), an hour with no weather falls back to the
+// manual outdoor reading.
+func TestUsageRollupThermalHourly(t *testing.T) {
+	st := openTestStore(t)
+	base := (time.Now().Add(-3*time.Hour).UnixMilli() / 3_600_000) * 3_600_000
+	const h = int64(3_600_000)
+	for i := int64(0); i < 3; i++ {
+		must(t, st.InsertActivity(store.Activity{TS: base + i*h + 60_000, Served: "local-chat", Status: 200,
+			PromptTokens: 100, CompletionTokens: 10, CostUSD: 0.14})) // 1 kWh = 3412.14 BTU each hour
+	}
+	th := &config.Thermal{RoomF: 77, OutdoorF: 72, Latitude: 47.61, Longitude: -122.33,
+		CoolTargetF: 72, CoolFanCFM: 2000, CoolFanWatts: 75, HeatTargetF: 68, HeatCostPerTherm: 4.10}
+	must(t, st.UpsertWeather(th.Loc(), map[int64]float64{base: 67, base + h: 80})) // hour 3 has no weather
+	cfg := costFixtureConfig()
+	cfg.Thermal = th
+	out, err := (&Handlers{Store: st, Cfg: cfg}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fan := func(gap float64) float64 { return 100000 / (1.08 * 2000 * gap) * 75.0 / 1000 * 0.14 }
+	// hour 1: 10°F gap; hour 2: blocked; hour 3: manual 72°F → 5°F gap.
+	want := 3412.14/100000*fan(10) + 3412.14/100000*fan(5)
+	near(t, "hourly thermalUsd", out.Body.Total.ThermalUSD, want)
+	v := out.Body.Thermal
+	if v.OutdoorSource != "open-meteo" || v.HoursPriced != 2 || v.HoursBlocked != 1 || v.HoursNoWeather != 1 ||
+		v.OutdoorMinF != 67 || v.OutdoorMaxF != 80 {
+		t.Errorf("thermal view = %+v", v)
+	}
+}
