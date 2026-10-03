@@ -2786,14 +2786,22 @@ input corrallm_SetThermalInputBodyInput {
   heatCostPerTherm: Float!
   """Heating target, °F. Below it the room is being heated. Must be below coolTargetF."""
   heatTargetF: Float!
+  """A ${KEY} reference to a long-lived access token in the credential store (~/.corrallm/credentials) — never the token itself."""
+  homeAssistantToken: String
+  """Home Assistant base URL (https://ha.example.com) for hourly room (and optionally outdoor) temperatures; empty for the manual readings."""
+  homeAssistantUrl: String
   """Location for hourly outdoor temperatures (Open-Meteo, no key). Set both to price cooling hour by hour."""
   latitude: Float
   """See latitude."""
   longitude: Float
   """Free text kept with the settings (how the factors were worked out)."""
   notes: String
+  """Optional outdoor temperature sensor; preferred over the weather service."""
+  outdoorEntity: String
   """Outdoor temperature, °F. Needed when cooling is a fan: the room-to-outdoor gap sets what it costs. With a location it is only the fallback for hours with no weather."""
   outdoorF: Float
+  """Temperature sensor for the room the box is in (or a whole-home aggregate when air moves between rooms), e.g. sensor.office_temperature."""
+  roomEntity: String
   """Room (indoor) temperature, °F, as you read it. Decides the mode."""
   roomF: Float!
 }
@@ -2861,12 +2869,22 @@ type corrallm_ThermalView {
   heatCostPerTherm: Float!
   """Heating target, °F: below it the room is heated."""
   heatTargetF: Float!
+  """Home Assistant base URL; empty when none."""
+  homeAssistantUrl: String!
   """Hours a fan could not cool because outside was not cooler than the room — that heat raised the room instead of a bill."""
   hoursBlocked: Long!
+  """Hours with heat whose room temperature was above the cooling target."""
+  hoursCooling: Long!
+  """Hours with heat whose room temperature was below the heating target."""
+  hoursHeating: Long!
+  """Hours with heat between the targets."""
+  hoursNeutral: Long!
   """Hours with heat but no cached weather; priced at outdoorF when set, else left out."""
   hoursNoWeather: Long!
   """Hours of the window that carried a cooling cost or heating saving."""
   hoursPriced: Long!
+  """Hours with heat the room sensor had no reading for; roomF stood in."""
+  hoursRoomFallback: Long!
   """Location for hourly outdoor weather; 0,0 means none (outdoorF is used)."""
   latitude: Float!
   """See latitude."""
@@ -2875,6 +2893,8 @@ type corrallm_ThermalView {
   mode: String!
   """Free text kept about the settings."""
   notes: String!
+  """Outdoor temperature sensor's entity id; empty when outdoor comes from the weather service or the manual reading."""
+  outdoorEntity: String!
   """Outdoor temperature as entered, °F. Decides what fan cooling costs, and whether a fan can cool at all."""
   outdoorF: Float!
   """Highest, °F."""
@@ -2883,10 +2903,20 @@ type corrallm_ThermalView {
   outdoorMinF: Float!
   """Latest cached outdoor temperature (within the last 2 h), °F; 0 when none."""
   outdoorNowF: Float!
-  """open-meteo when this window was priced hour by hour from cached weather; manual when the single outdoorF was used."""
+  """home-assistant (a house sensor) or open-meteo when outdoor temperatures were hourly; manual when the single outdoorF was used."""
   outdoorSource: String!
+  """Room temperature sensor's entity id (a room, or a whole-home aggregate)."""
+  roomEntity: String!
   """Room (indoor) temperature as entered, °F. Decides the mode."""
   roomF: Float!
+  """Highest, °F."""
+  roomMaxF: Float!
+  """Lowest hourly room temperature over the window's hours with heat, °F."""
+  roomMinF: Float!
+  """Latest cached room reading (within 2 h), °F; 0 when none."""
+  roomNowF: Float!
+  """home-assistant when hours took the room temperature from the sensor; manual when roomF was used."""
+  roomSource: String!
 }
 
 input corrallm_ToolActivateInputBodyInput {

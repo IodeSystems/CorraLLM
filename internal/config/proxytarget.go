@@ -342,3 +342,11 @@ func (a *AgentBinding) ExpandedToken() string {
 		return lookupSecret(envRef.FindStringSubmatch(m)[1])
 	})
 }
+
+// ExpandSecrets resolves ${KEY} references in s from the credential store (then
+// the environment), the same way proxy headers are resolved.
+func ExpandSecrets(s string) string {
+	return envRef.ReplaceAllStringFunc(s, func(m string) string {
+		return lookupSecret(envRef.FindStringSubmatch(m)[1])
+	})
+}

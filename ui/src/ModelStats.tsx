@@ -116,6 +116,12 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           hoursPriced
           hoursBlocked
           hoursNoWeather
+          roomSource
+          roomMinF
+          roomMaxF
+          hoursCooling
+          hoursHeating
+          hoursNeutral
         }
         baselineType
         rows {

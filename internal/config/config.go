@@ -2795,31 +2795,89 @@ type Thermal struct {
 	// temperatures (Open-Meteo, cached by a background job): a fan's cost moves
 	// with the outdoor temperature hour to hour, so a window's cooling is priced
 	// hour by hour. OutdoorF stays the fallback for an hour with no data.
-	Latitude         float64 `yaml:"latitude,omitempty"`
-	Longitude        float64 `yaml:"longitude,omitempty"`
-	CoolTargetF      float64 `yaml:"coolTargetF"`
-	CoolCostPerTherm float64 `yaml:"coolCostPerTherm,omitempty"`
-	CoolFanCFM       float64 `yaml:"coolFanCfm,omitempty"`
-	CoolFanWatts     float64 `yaml:"coolFanWatts,omitempty"`
-	HeatTargetF      float64 `yaml:"heatTargetF"`
-	HeatCostPerTherm float64 `yaml:"heatCostPerTherm"`
-	Notes            string  `yaml:"notes,omitempty"`
+	Latitude  float64 `yaml:"latitude,omitempty"`
+	Longitude float64 `yaml:"longitude,omitempty"`
+	// HomeAssistant, when set, supplies HOURLY temperatures from sensors in the
+	// house: the room the box is in (its temperature decides each hour's mode —
+	// the room is not one temperature around the clock), and optionally the
+	// outdoors, which beats a weather service's modelled grid. The room entity
+	// can be one room's sensor or a whole-home aggregate: which is right depends
+	// on whether air moves between rooms. RoomF / outdoorF stay the fallbacks;
+	// an outdoor sensor takes precedence over Latitude.
+	HomeAssistant    *HomeAssistant `yaml:"homeAssistant,omitempty"`
+	CoolTargetF      float64        `yaml:"coolTargetF"`
+	CoolCostPerTherm float64        `yaml:"coolCostPerTherm,omitempty"`
+	CoolFanCFM       float64        `yaml:"coolFanCfm,omitempty"`
+	CoolFanWatts     float64        `yaml:"coolFanWatts,omitempty"`
+	HeatTargetF      float64        `yaml:"heatTargetF"`
+	HeatCostPerTherm float64        `yaml:"heatCostPerTherm"`
+	Notes            string         `yaml:"notes,omitempty"`
+}
+
+// HomeAssistant is where the house's temperature sensors are read. Token is a
+// ${KEY} reference into the credential store, never the token itself — the
+// config is served over HTTP and quoted in docs.
+type HomeAssistant struct {
+	URL           string `yaml:"url"`
+	Token         string `yaml:"token"`
+	RoomEntity    string `yaml:"roomEntity"`
+	OutdoorEntity string `yaml:"outdoorEntity,omitempty"`
 }
 
 // Mode reports what the room's climate system is doing at the stated room
 // temperature: "cooling", "heating", or "neutral" between the targets.
 func (t *Thermal) Mode() string {
+	if t == nil {
+		return ""
+	}
+	return t.ModeAt(t.RoomF)
+}
+
+// ModeAt is Mode at a given room temperature — one hour's, when the room
+// temperature comes from a sensor.
+func (t *Thermal) ModeAt(roomF float64) string {
 	switch {
 	case t == nil:
 		return ""
-	case t.CoolTargetF > 0 && t.RoomF > t.CoolTargetF:
+	case t.CoolTargetF > 0 && roomF > t.CoolTargetF:
 		return "cooling"
-	case t.HeatTargetF > 0 && t.RoomF < t.HeatTargetF:
+	case t.HeatTargetF > 0 && roomF < t.HeatTargetF:
 		return "heating"
 	default:
 		return "neutral"
 	}
 }
+
+// HasRoomSensor reports whether hourly room temperatures are configured.
+func (t *Thermal) HasRoomSensor() bool {
+	return t != nil && t.HomeAssistant != nil && t.HomeAssistant.URL != "" && t.HomeAssistant.RoomEntity != ""
+}
+
+// HasOutdoorSensor reports whether hourly outdoor temperatures come from a
+// house sensor (preferred over the weather service).
+func (t *Thermal) HasOutdoorSensor() bool {
+	return t != nil && t.HomeAssistant != nil && t.HomeAssistant.URL != "" && t.HomeAssistant.OutdoorEntity != ""
+}
+
+// RoomLoc is the cache key the room sensor's hourly readings are stored under.
+func (t *Thermal) RoomLoc() string {
+	if !t.HasRoomSensor() {
+		return ""
+	}
+	return "ha:" + t.HomeAssistant.RoomEntity
+}
+
+// OutdoorLoc is the cache key hourly outdoor temperatures are read from: the
+// house's outdoor sensor when set, else the weather service's location.
+func (t *Thermal) OutdoorLoc() string {
+	if t.HasOutdoorSensor() {
+		return "ha:" + t.HomeAssistant.OutdoorEntity
+	}
+	return t.Loc()
+}
+
+// HasHourlyOutdoor reports whether outdoor temperatures are hourly at all.
+func (t *Thermal) HasHourlyOutdoor() bool { return t.HasOutdoorSensor() || t.HasLocation() }
 
 // CoolFactor is the $ to remove one therm of heat right now, and whether the
 // cooling can remove heat at all. With a fan it is computed from the room-to-
@@ -2838,10 +2896,19 @@ func (t *Thermal) CoolFactorAt(outdoorF, costPerKwh float64) (perTherm float64, 
 	if t == nil {
 		return 0, false
 	}
+	return t.CoolFactorFor(t.RoomF, outdoorF, costPerKwh)
+}
+
+// CoolFactorFor is the cooling factor at a given room AND outdoor temperature —
+// both hourly when a room sensor and a location are configured.
+func (t *Thermal) CoolFactorFor(roomF, outdoorF, costPerKwh float64) (perTherm float64, ok bool) {
+	if t == nil {
+		return 0, false
+	}
 	if t.CoolFanCFM <= 0 {
 		return t.CoolCostPerTherm, true
 	}
-	gap := t.RoomF - outdoorF
+	gap := roomF - outdoorF
 	if gap <= 0 {
 		return 0, false
 	}

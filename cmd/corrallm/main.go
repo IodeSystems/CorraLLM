@@ -1340,42 +1340,70 @@ func (r loadRecorder) RecordLoad(ev proc.ModelLoadEvent) {
 	}
 }
 
-// runWeather keeps the weather cache filled for config thermal's location.
+// runWeather keeps the hourly temperature cache filled for config thermal: the
+// weather service's location, and the Home Assistant room/outdoor sensors.
 //
-// The first fetch for a location takes 31 days (the activity retention), later
+// The first fetch for a source takes 31 days (the activity retention), later
 // ones the last 2 days every 30 minutes — enough to overwrite forecast hours
-// with what actually happened. A change of location is noticed within 5
-// minutes and fetched at once. Failures are logged and retried next round: a
-// missing hour is priced at the manual outdoor reading, never at 0°F.
+// with what actually happened and pick up late sensor history. A change of
+// source is noticed within 5 minutes and fetched at once. Failures are logged
+// and retried next round: a missing hour falls back to the manual reading,
+// never to 0°F.
 func runWeather(ctx context.Context, mgr *proc.Manager, st *store.Store) {
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
-	var lastLoc string
-	var lastFetch time.Time
+	last := map[string]time.Time{} // cache key -> last successful fetch
+	fetch := func(key string, get func(days int) ([]weather.Hour, error)) {
+		prev, seen := last[key]
+		if seen && time.Since(prev) < 30*time.Minute {
+			return
+		}
+		days := 2
+		if !seen {
+			days = 31
+		}
+		hours, err := get(days)
+		if err != nil {
+			slog.Warn("temperature fetch failed", "source", key, "err", err)
+			return
+		}
+		m := make(map[int64]float64, len(hours))
+		for _, hr := range hours {
+			m[hr.HourMS] = hr.TempF
+		}
+		if err := st.UpsertWeather(key, m); err != nil {
+			slog.Warn("temperature store failed", "source", key, "err", err)
+			return
+		}
+		slog.Info("temperatures cached", "source", key, "hours", len(m), "days", days)
+		last[key] = time.Now()
+	}
 	for {
 		th := mgr.Config().ThermalSettings()
-		if loc := th.Loc(); loc != "" && (loc != lastLoc || time.Since(lastFetch) >= 30*time.Minute) {
-			days := 2
-			if loc != lastLoc {
-				days = 31
+		if th.HasLocation() && !th.HasOutdoorSensor() {
+			fetch(th.Loc(), func(days int) ([]weather.Hour, error) {
+				return weather.FetchOpenMeteo(ctx, nil, th.Latitude, th.Longitude, days)
+			})
+		}
+		// Has* are nil-safe; th itself is nil on a box with no thermal config,
+		// so nothing here may touch th.HomeAssistant before they say yes.
+		if th.HasRoomSensor() || th.HasOutdoorSensor() {
+			ha := th.HomeAssistant
+			token := config.ExpandSecrets(ha.Token)
+			get := func(entity string) func(days int) ([]weather.Hour, error) {
+				return func(days int) ([]weather.Hour, error) {
+					now := time.Now()
+					return weather.FetchHAHourly(ctx, nil, ha.URL, token, entity, now.Add(-time.Duration(days)*24*time.Hour), now)
+				}
 			}
-			hours, err := weather.FetchOpenMeteo(ctx, nil, th.Latitude, th.Longitude, days)
-			if err != nil {
-				slog.Warn("weather fetch failed", "loc", loc, "err", err)
-			} else {
-				m := make(map[int64]float64, len(hours))
-				for _, hr := range hours {
-					m[hr.HourMS] = hr.TempF
-				}
-				if err := st.UpsertWeather(loc, m); err != nil {
-					slog.Warn("weather store failed", "err", err)
-				} else {
-					slog.Info("weather cached", "loc", loc, "hours", len(m), "days", days)
-					lastLoc, lastFetch = loc, time.Now()
-					_ = st.PruneWeather(time.Now().Add(-35 * 24 * time.Hour).UnixMilli())
-				}
+			if th.HasRoomSensor() {
+				fetch(th.RoomLoc(), get(ha.RoomEntity))
+			}
+			if th.HasOutdoorSensor() {
+				fetch(th.OutdoorLoc(), get(ha.OutdoorEntity))
 			}
 		}
+		_ = st.PruneWeather(time.Now().Add(-35 * 24 * time.Hour).UnixMilli())
 		select {
 		case <-ctx.Done():
 			return

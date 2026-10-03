@@ -24,6 +24,9 @@ const RoomDoc = graphql(/* GraphQL */ `
           longitude
           outdoorSource
           outdoorNowF
+          homeAssistantUrl
+          roomEntity
+          outdoorEntity
           heatTargetF
           heatCostPerTherm
           notes
@@ -49,6 +52,10 @@ type Form = {
   outdoorF: string
   latitude: string
   longitude: string
+  homeAssistantUrl: string
+  homeAssistantToken: string
+  roomEntity: string
+  outdoorEntity: string
   coolTargetF: string
   coolCostPerTherm: string
   coolFanCfm: string
@@ -77,6 +84,10 @@ export function RoomSettings() {
     outdoorF: '',
     latitude: '',
     longitude: '',
+    homeAssistantUrl: '',
+    homeAssistantToken: '${HA_TOKEN}',
+    roomEntity: '',
+    outdoorEntity: '',
     coolTargetF: '72',
     coolCostPerTherm: '',
     coolFanCfm: '',
@@ -95,6 +106,10 @@ export function RoomSettings() {
       outdoorF: current.outdoorF ? String(current.outdoorF) : '',
       latitude: current.latitude ? String(current.latitude) : '',
       longitude: current.longitude ? String(current.longitude) : '',
+      homeAssistantUrl: current.homeAssistantUrl ?? '',
+      homeAssistantToken: '${HA_TOKEN}',
+      roomEntity: current.roomEntity ?? '',
+      outdoorEntity: current.outdoorEntity ?? '',
       coolTargetF: String(current.coolTargetF),
       coolCostPerTherm: current.coolCostPerTherm ? String(current.coolCostPerTherm) : '',
       coolFanCfm: current.coolFanCfm ? String(current.coolFanCfm) : '',
@@ -120,6 +135,14 @@ export function RoomSettings() {
               outdoorF: Number(form.outdoorF || 0),
               latitude: Number(form.latitude || 0),
               longitude: Number(form.longitude || 0),
+              ...(form.homeAssistantUrl
+                ? {
+                    homeAssistantUrl: form.homeAssistantUrl,
+                    homeAssistantToken: form.homeAssistantToken,
+                    roomEntity: form.roomEntity,
+                    outdoorEntity: form.outdoorEntity,
+                  }
+                : {}),
               coolTargetF: Number(form.coolTargetF),
               coolCostPerTherm: Number(form.coolCostPerTherm || 0),
               coolFanCfm: Number(form.coolFanCfm || 0),
@@ -186,6 +209,45 @@ export function RoomSettings() {
         <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
           {field('latitude', 'Latitude', '°', 'With longitude: hourly outdoor temperatures from Open-Meteo (free, no key), so cooling is priced hour by hour. Seattle ≈ 47.61')}
           {field('longitude', 'Longitude', '°', 'Seattle ≈ −122.33. Leave both empty to use the single outdoor reading')}
+        </Stack>
+        <Typography variant="overline" sx={{ color: C.textMuted }}>
+          Home Assistant (hourly room, optional outdoor)
+        </Typography>
+        <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
+          <TextField
+            size="small"
+            label="Home Assistant URL"
+            value={form.homeAssistantUrl}
+            onChange={(e) => setForm({ ...form, homeAssistantUrl: e.target.value })}
+            helperText="e.g. https://ha.example.com — empty to use the manual room temperature"
+            sx={{ minWidth: 260, flex: '1 1 260px' }}
+          />
+          <TextField
+            size="small"
+            label="Token (a reference, not the token)"
+            value={form.homeAssistantToken}
+            onChange={(e) => setForm({ ...form, homeAssistantToken: e.target.value })}
+            helperText="${KEY} naming a line in ~/.corrallm/credentials. The config is served over HTTP — never paste the token itself"
+            sx={{ minWidth: 260, flex: '1 1 260px' }}
+          />
+        </Stack>
+        <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
+          <TextField
+            size="small"
+            label="Room sensor entity"
+            value={form.roomEntity}
+            onChange={(e) => setForm({ ...form, roomEntity: e.target.value })}
+            helperText="The room the box is in — or a whole-home average if air circulates between rooms"
+            sx={{ minWidth: 260, flex: '1 1 260px' }}
+          />
+          <TextField
+            size="small"
+            label="Outdoor sensor entity (optional)"
+            value={form.outdoorEntity}
+            onChange={(e) => setForm({ ...form, outdoorEntity: e.target.value })}
+            helperText="Used instead of the weather service when set"
+            sx={{ minWidth: 260, flex: '1 1 260px' }}
+          />
         </Stack>
         {current?.outdoorSource === 'open-meteo' || (current && (current.latitude !== 0 || current.longitude !== 0)) ? (
           <Typography variant="body2" sx={{ color: C.textMuted }}>

@@ -1563,24 +1563,51 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 			out.Body.Total.ThermalUSD += r.ThermalUSD
 		}
 		v := out.Body.Thermal
-		v.OutdoorSource = "open-meteo"
+		switch {
+		case th.HasOutdoorSensor():
+			v.OutdoorSource = "home-assistant"
+		case th.HasLocation():
+			v.OutdoorSource = "open-meteo"
+		}
+		if th.HasRoomSensor() {
+			v.RoomSource = "home-assistant"
+		}
 		v.HoursPriced, v.HoursBlocked, v.HoursNoWeather = hst.HoursPriced, hst.HoursBlocked, hst.HoursNoWeather
+		v.HoursCooling, v.HoursHeating, v.HoursNeutral = hst.HoursCooling, hst.HoursHeating, hst.HoursNeutral
+		v.HoursRoomFallback = hst.HoursRoomFallback
 		v.OutdoorMinF, v.OutdoorMaxF = hst.OutdoorMinF, hst.OutdoorMaxF
-		if now, err := h.Store.WeatherBetween(th.Loc(), time.Now().Add(-2*time.Hour).UnixMilli(), time.Now().UnixMilli()); err == nil {
+		v.RoomMinF, v.RoomMaxF = hst.RoomMinF, hst.RoomMaxF
+		// "Now": the latest cached readings, and the factor and mode they imply.
+		latestOf := func(loc string) (float64, bool) {
+			if loc == "" {
+				return 0, false
+			}
+			m, err := h.Store.WeatherBetween(loc, time.Now().Add(-2*time.Hour).UnixMilli(), time.Now().UnixMilli())
+			if err != nil {
+				return 0, false
+			}
 			var latest int64
-			for hr, f := range now {
+			var f float64
+			for hr, x := range m {
 				if hr > latest {
-					latest, v.OutdoorNowF = hr, f
+					latest, f = hr, x
 				}
 			}
-			if latest > 0 {
-				v.CoolFactorNow, v.CoolBlocked = 0, false
-				if f, ok := th.CoolFactorAt(v.OutdoorNowF, rate); ok {
-					v.CoolFactorNow = f
-				} else {
-					v.CoolBlocked = true
-				}
-			}
+			return f, latest > 0
+		}
+		roomNow, outNow := th.RoomF, th.OutdoorF
+		if f, ok := latestOf(th.OutdoorLoc()); ok {
+			v.OutdoorNowF, outNow = f, f
+		}
+		if f, ok := latestOf(th.RoomLoc()); ok {
+			v.RoomNowF, roomNow = f, f
+		}
+		v.Mode = th.ModeAt(roomNow)
+		v.CoolFactorNow, v.CoolBlocked = 0, false
+		if f, ok := th.CoolFactorFor(roomNow, outNow, rate); ok {
+			v.CoolFactorNow = f
+		} else {
+			v.CoolBlocked = true
 		}
 	}
 	return out, nil
@@ -1607,13 +1634,27 @@ type ThermalView struct {
 	// weather cache hour by hour, and cooling is priced per hour.
 	Latitude       float64 `json:"latitude" doc:"Location for hourly outdoor weather; 0,0 means none (outdoorF is used)."`
 	Longitude      float64 `json:"longitude" doc:"See latitude."`
-	OutdoorSource  string  `json:"outdoorSource" doc:"open-meteo when this window was priced hour by hour from cached weather; manual when the single outdoorF was used."`
+	OutdoorSource  string  `json:"outdoorSource" doc:"home-assistant (a house sensor) or open-meteo when outdoor temperatures were hourly; manual when the single outdoorF was used."`
 	OutdoorNowF    float64 `json:"outdoorNowF" doc:"Latest cached outdoor temperature (within the last 2 h), °F; 0 when none."`
 	OutdoorMinF    float64 `json:"outdoorMinF" doc:"Lowest outdoor temperature over the window's hours that carried heat, °F."`
 	OutdoorMaxF    float64 `json:"outdoorMaxF" doc:"Highest, °F."`
 	HoursPriced    int     `json:"hoursPriced" doc:"Hours of the window that carried a cooling cost or heating saving."`
 	HoursBlocked   int     `json:"hoursBlocked" doc:"Hours a fan could not cool because outside was not cooler than the room — that heat raised the room instead of a bill."`
 	HoursNoWeather int     `json:"hoursNoWeather" doc:"Hours with heat but no cached weather; priced at outdoorF when set, else left out."`
+
+	// HOURLY ROOM, when a Home Assistant sensor is set: each hour's room
+	// temperature decides that hour's mode.
+	HomeAssistantURL  string  `json:"homeAssistantUrl" doc:"Home Assistant base URL; empty when none."`
+	RoomEntity        string  `json:"roomEntity" doc:"Room temperature sensor's entity id (a room, or a whole-home aggregate)."`
+	OutdoorEntity     string  `json:"outdoorEntity" doc:"Outdoor temperature sensor's entity id; empty when outdoor comes from the weather service or the manual reading."`
+	RoomSource        string  `json:"roomSource" doc:"home-assistant when hours took the room temperature from the sensor; manual when roomF was used."`
+	RoomNowF          float64 `json:"roomNowF" doc:"Latest cached room reading (within 2 h), °F; 0 when none."`
+	RoomMinF          float64 `json:"roomMinF" doc:"Lowest hourly room temperature over the window's hours with heat, °F."`
+	RoomMaxF          float64 `json:"roomMaxF" doc:"Highest, °F."`
+	HoursCooling      int     `json:"hoursCooling" doc:"Hours with heat whose room temperature was above the cooling target."`
+	HoursHeating      int     `json:"hoursHeating" doc:"Hours with heat whose room temperature was below the heating target."`
+	HoursNeutral      int     `json:"hoursNeutral" doc:"Hours with heat between the targets."`
+	HoursRoomFallback int     `json:"hoursRoomFallback" doc:"Hours with heat the room sensor had no reading for; roomF stood in."`
 }
 
 func thermalView(t *config.Thermal, costPerKwh float64) *ThermalView {
@@ -1621,10 +1662,14 @@ func thermalView(t *config.Thermal, costPerKwh float64) *ThermalView {
 		return nil
 	}
 	f, ok := t.CoolFactor(costPerKwh)
-	return &ThermalView{Mode: t.Mode(), RoomF: t.RoomF, OutdoorF: t.OutdoorF, CoolTargetF: t.CoolTargetF,
+	v := &ThermalView{Mode: t.Mode(), RoomF: t.RoomF, OutdoorF: t.OutdoorF, CoolTargetF: t.CoolTargetF,
 		CoolCostPerTherm: t.CoolCostPerTherm, CoolFanCFM: t.CoolFanCFM, CoolFanWatts: t.CoolFanWatts,
 		CoolFactorNow: f, CoolBlocked: !ok, HeatTargetF: t.HeatTargetF, HeatCostPerTherm: t.HeatCostPerTherm, Notes: t.Notes,
-		Latitude: t.Latitude, Longitude: t.Longitude, OutdoorSource: "manual"}
+		Latitude: t.Latitude, Longitude: t.Longitude, OutdoorSource: "manual", RoomSource: "manual"}
+	if t.HomeAssistant != nil {
+		v.HomeAssistantURL, v.RoomEntity, v.OutdoorEntity = t.HomeAssistant.URL, t.HomeAssistant.RoomEntity, t.HomeAssistant.OutdoorEntity
+	}
+	return v
 }
 
 // btuPerTherm is the unit the thermal cost factors are priced in.

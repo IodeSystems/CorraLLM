@@ -100,6 +100,12 @@ export type ThermalSetting = {
   hoursPriced: number | string
   hoursBlocked: number | string
   hoursNoWeather: number | string
+  roomSource: string
+  roomMinF: number
+  roomMaxF: number
+  hoursCooling: number | string
+  hoursHeating: number | string
+  hoursNeutral: number | string
 }
 
 /** The reasons the server can give, in the words a reader gets. */
@@ -210,8 +216,22 @@ export function PaidComparison({
       (Number(thermal!.hoursBlocked) > 0 ? `, ${Number(thermal!.hoursBlocked)} h too warm outside for the fan` : '') +
       (Number(thermal!.hoursNoWeather) > 0 ? `, ${Number(thermal!.hoursNoWeather)} h without weather` : '')
     : ''
+  // ROOM HOUR BY HOUR (a house sensor): a window can hold cooling, heating and
+  // neutral hours at once, so the figure is the NET of all of them, and the
+  // sub-line says how the hours split.
+  const roomHourly = thermal?.roomSource === 'home-assistant'
   const climate = !thermal
     ? null
+    : roomHourly
+      ? {
+          value:
+            climateUsd > 0 ? `+${fmtMoney(climateUsd)}` : climateUsd < 0 ? `${fmtMoney(-climateUsd)} saved` : fmtMoney(0),
+          sub:
+            `room ${Math.round(thermal.roomMinF)}–${Math.round(thermal.roomMaxF)}°F hourly: ` +
+            `${Number(thermal.hoursCooling)} h cooling, ${Number(thermal.hoursHeating)} h heating, ${Number(thermal.hoursNeutral)} h neither` +
+            (hourly ? `; outdoor ${Math.round(thermal.outdoorMinF)}–${Math.round(thermal.outdoorMaxF)}°F` : '') +
+            (Number(thermal.hoursBlocked) > 0 ? `, ${Number(thermal.hoursBlocked)} h too warm outside for the fan` : ''),
+        }
     : hourly && thermal.mode === 'cooling'
       ? {
           value: `+${fmtMoney(climateUsd)}`,

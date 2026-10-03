@@ -561,3 +561,36 @@ func TestUsageRollupThermalHourly(t *testing.T) {
 		t.Errorf("thermal view = %+v", v)
 	}
 }
+
+// TestUsageRollupThermalRoomSensor: with a Home Assistant room sensor each
+// hour takes its own room temperature and so its own mode — a warm afternoon
+// hour costs cooling, a cold night hour saves heating, an hour the sensor
+// missed falls back to the manual roomF.
+func TestUsageRollupThermalRoomSensor(t *testing.T) {
+	st := openTestStore(t)
+	base := (time.Now().Add(-3*time.Hour).UnixMilli() / 3_600_000) * 3_600_000
+	const h = int64(3_600_000)
+	for i := int64(0); i < 3; i++ {
+		must(t, st.InsertActivity(store.Activity{TS: base + i*h + 60_000, Served: "local-chat", Status: 200,
+			PromptTokens: 100, CompletionTokens: 10, CostUSD: 0.14})) // 1 kWh = 3412.14 BTU each hour
+	}
+	th := &config.Thermal{RoomF: 70, OutdoorF: 60, CoolTargetF: 72, CoolFanCFM: 2000, CoolFanWatts: 75,
+		HeatTargetF: 68, HeatCostPerTherm: 4.10,
+		HomeAssistant: &config.HomeAssistant{URL: "http://ha", Token: "${HA_TOKEN}", RoomEntity: "sensor.office"}}
+	must(t, st.UpsertWeather(th.RoomLoc(), map[int64]float64{base: 77, base + h: 64})) // hour 3: no reading → 70 (neutral)
+	cfg := costFixtureConfig()
+	cfg.Thermal = th
+	out, err := (&Handlers{Store: st, Cfg: cfg}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fan := func(gap float64) float64 { return 100000 / (1.08 * 2000 * gap) * 75.0 / 1000 * 0.14 }
+	// hour 1: room 77, outdoor 60 (manual) → cooling at a 17°F gap; hour 2: room 64 → heating saves.
+	want := 3412.14/100000*fan(17) - 3412.14/100000*4.10
+	near(t, "room-sensor thermalUsd", out.Body.Total.ThermalUSD, want)
+	v := out.Body.Thermal
+	if v.RoomSource != "home-assistant" || v.HoursCooling != 1 || v.HoursHeating != 1 || v.HoursNeutral != 1 ||
+		v.HoursRoomFallback != 1 || v.RoomMinF != 64 || v.RoomMaxF != 77 {
+		t.Errorf("thermal view = %+v", v)
+	}
+}
