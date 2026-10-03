@@ -446,7 +446,12 @@ func TestUsageRollupHeatAndPerf(t *testing.T) {
 	tot := out.Body.Total
 	// $0.35 at $0.14/kWh = 2.5 kWh = 8530.35 BTU, over a 2 h window.
 	near(t, "energyBtu", tot.EnergyBTU, 2.5*3412.14)
-	near(t, "heatBtuPerHour", tot.HeatBTUh, 2.5*3412.14/2)
+	// The handler measures the window to a fresh "now", milliseconds after the
+	// 2 h start was fixed, so BTU/h is a hair under the exact figure: compare
+	// relatively, not to 1e-9.
+	if want := 2.5 * 3412.14 / 2; math.Abs(tot.HeatBTUh-want)/want > 1e-4 {
+		t.Errorf("heatBtuPerHour = %v, want ≈%v", tot.HeatBTUh, want)
+	}
 	if tot.TgN != 1 || tot.TgAvg != 100 || tot.TpAvg != 800 || tot.CacheN != 1 || tot.CacheAvg != 0.5 {
 		t.Errorf("total perf = tg %d/%v tp %v cache %d/%v", tot.TgN, tot.TgAvg, tot.TpAvg, tot.CacheN, tot.CacheAvg)
 	}
