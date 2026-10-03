@@ -47,6 +47,12 @@ const NowDoc = graphql(/* GraphQL */ `
         # are window-level, so they ride the query the tiles already make.
         costPerKwh
         baselineType
+        thermal {
+          mode
+          ambientF
+          coolTargetF
+          heatTargetF
+        }
         rows {
           served
           requests
@@ -76,6 +82,7 @@ const NowDoc = graphql(/* GraphQL */ `
           baselineType
           energyBtu
           heatBtuPerHour
+          thermalUsd
           promptPerSec
           predictedPerSec
         }
@@ -1138,6 +1145,7 @@ function Now() {
     baselineType: r.baselineType ?? '',
     energyBtu: Number(r.energyBtu ?? 0),
     heatBtuPerHour: Number(r.heatBtuPerHour ?? 0),
+    thermalUsd: Number(r.thermalUsd ?? 0),
   }))
 
   return (
@@ -1194,6 +1202,7 @@ function Now() {
         when="in the last hour"
         baselineType={c.recent?.baselineType ?? ''}
         costPerKwh={c.recent?.costPerKwh ?? 0}
+        thermal={c.recent?.thermal ?? null}
         rows={comparisonRows}
         pending={q.isLoading}
       />

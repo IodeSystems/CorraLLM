@@ -54,6 +54,11 @@ type Config struct {
 	// unattributed "would have cost $X" says nothing.
 	CostBaseline string `yaml:"costBaseline,omitempty"`
 
+	// Thermal turns the heat local work gives off into money: what it costs to
+	// remove when the room is being cooled, what it saves when the room is being
+	// heated. Unset, the dashboard reports heat in BTU and stops there.
+	Thermal *Thermal `yaml:"thermal,omitempty"`
+
 	// Limits budget the WHOLE box, whatever the caller or backend. The
 	// blast-radius guard: "this machine never spends more than $50/day
 	// regardless of what is misconfigured below". Every narrower scope can be
@@ -2761,4 +2766,61 @@ func (c *Config) SchedulerFor(model string) SchedulerConfig {
 		out.MaxQueueDepth = m.Scheduler.MaxQueueDepth
 	}
 	return out
+}
+
+// Thermal is the room the box heats, as the operator describes it.
+//
+// Every watt-hour a local backend draws ends up as heat in that room. Whether
+// that heat costs or saves money depends on what the room's own climate system
+// is doing, which corrallm cannot see — so the operator states it: the room's
+// ambient temperature (entered by hand), the targets it is held at, and what a
+// therm of heat (100,000 BTU) costs to remove or is worth to add.
+//
+// Ambient above CoolTargetF means the room is being cooled and this box's heat
+// is extra load: it COSTS heat x CoolCostPerTherm. Below HeatTargetF the room is
+// being heated and this box's heat displaces some of it: it SAVES heat x
+// HeatCostPerTherm. Between the two, neither system runs and the heat is free.
+//
+// The cost factors are per therm of heat MOVED, which is what makes one number
+// work for any equipment: gas at $/therm / burner efficiency; electric
+// resistance at $/kWh x 29.31; a heat pump or AC at $/kWh x 29.31 / COP; a
+// window fan at its kWh per therm moved (1.08 x CFM x indoor-outdoor gap BTU/h)
+// x $/kWh. The heat that counts is the MARGINAL source — the one the
+// thermostat actually turns down — not one that runs regardless.
+type Thermal struct {
+	AmbientF         float64 `yaml:"ambientF"`
+	CoolTargetF      float64 `yaml:"coolTargetF"`
+	CoolCostPerTherm float64 `yaml:"coolCostPerTherm"`
+	HeatTargetF      float64 `yaml:"heatTargetF"`
+	HeatCostPerTherm float64 `yaml:"heatCostPerTherm"`
+	Notes            string  `yaml:"notes,omitempty"`
+}
+
+// Mode reports what the room's climate system is doing at the stated ambient:
+// "cooling", "heating", or "neutral" between the targets.
+func (t *Thermal) Mode() string {
+	switch {
+	case t == nil:
+		return ""
+	case t.CoolTargetF > 0 && t.AmbientF > t.CoolTargetF:
+		return "cooling"
+	case t.HeatTargetF > 0 && t.AmbientF < t.HeatTargetF:
+		return "heating"
+	default:
+		return "neutral"
+	}
+}
+
+// ThermalSettings returns a copy of the thermal block, or nil when unset.
+func (c *Config) ThermalSettings() *Thermal {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.Thermal == nil {
+		return nil
+	}
+	t := *c.Thermal
+	return &t
 }

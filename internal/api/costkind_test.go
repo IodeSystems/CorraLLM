@@ -475,3 +475,41 @@ func TestUnknownModelWithoutTokensIsNotServed(t *testing.T) {
 		t.Errorf("removed-model (served tokens) = %q, want unknown-model", got)
 	}
 }
+
+// TestUsageRollupThermal: heat priced by the room's mode — a positive cooling
+// cost above the cooling target, a negative (saved) figure below the heating
+// target, nothing between.
+func TestUsageRollupThermal(t *testing.T) {
+	st := openTestStore(t)
+	must(t, st.InsertActivity(store.Activity{TS: time.Now().UnixMilli(), Served: "local-chat", Status: 200,
+		PromptTokens: 1000, CompletionTokens: 100, CostUSD: 0.35})) // 2.5 kWh = 8530.35 BTU
+	for _, c := range []struct {
+		ambient float64
+		mode    string
+		usd     float64
+	}{{80, "cooling", 8530.35 / 100000 * 0.10}, {60, "heating", -8530.35 / 100000 * 4.10}, {70, "neutral", 0}} {
+		cfg := costFixtureConfig()
+		cfg.Thermal = &config.Thermal{AmbientF: c.ambient, CoolTargetF: 72, CoolCostPerTherm: 0.10, HeatTargetF: 68, HeatCostPerTherm: 4.10}
+		out, err := (&Handlers{Store: st, Cfg: cfg}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Body.Thermal == nil || out.Body.Thermal.Mode != c.mode {
+			t.Errorf("ambient %v: thermal = %+v, want mode %s", c.ambient, out.Body.Thermal, c.mode)
+		}
+		near(t, "thermalUsd at "+c.mode, out.Body.Total.ThermalUSD, c.usd)
+	}
+}
+
+// TestSetThermalRejectsBadTargets: the heating target must be below the
+// cooling one, and both are required — rejected before the config is touched.
+func TestSetThermalRejectsBadTargets(t *testing.T) {
+	h := &Handlers{}
+	for _, b := range []struct{ heat, cool float64 }{{72, 68}, {70, 70}, {0, 72}} {
+		in := &SetThermalInput{}
+		in.Body.HeatTargetF, in.Body.CoolTargetF = b.heat, b.cool
+		if _, err := h.SetThermal(context.Background(), in); err == nil {
+			t.Errorf("heat %v / cool %v accepted, want a 400", b.heat, b.cool)
+		}
+	}
+}

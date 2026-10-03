@@ -100,6 +100,12 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
         # the comparison prices against. Window-level, so they belong here and
         # not on each row.
         costPerKwh
+        thermal {
+          mode
+          ambientF
+          coolTargetF
+          heatTargetF
+        }
         baselineType
         rows {
           served
@@ -154,6 +160,7 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           cacheP90
           energyBtu
           heatBtuPerHour
+          thermalUsd
         }
         total {
           requests
@@ -191,6 +198,7 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           cacheP90
           energyBtu
           heatBtuPerHour
+          thermalUsd
         }
       }
     }
@@ -797,6 +805,13 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                       {Number(s?.heatBtuPerHour ?? 0) > 0 && (
                         <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
                           ≈ {fmtInt(Math.round(Number(s?.heatBtuPerHour)))} BTU/h
+                        </Typography>
+                      )}
+                      {Number(s?.thermalUsd ?? 0) !== 0 && (
+                        <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                          {Number(s?.thermalUsd) > 0
+                            ? `+${fmtUSD(Number(s?.thermalUsd))} cooling`
+                            : `${fmtUSD(-Number(s?.thermalUsd))} heating saved`}
                         </Typography>
                       )}
                     </>

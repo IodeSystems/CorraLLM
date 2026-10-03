@@ -53,6 +53,7 @@ type CorrallmMutationNamespace {
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
+  setThermal(body: corrallm_SetThermalInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setThermal")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
@@ -387,6 +388,7 @@ type CorrallmV1MutationNamespace {
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
+  setThermal(body: corrallm_SetThermalInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setThermal")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
@@ -2616,6 +2618,8 @@ type corrallm_RollupRow {
   tgP10: Float!
   """Decode speed, tokens/sec: 90th percentile — the fast tail."""
   tgP90: Float!
+  """What that heat did to the room's climate bill, from config thermal: POSITIVE is extra cooling cost (ambient above the cooling target), NEGATIVE is heating saved (ambient below the heating target), 0 between the targets or with no thermal config. energyBtu / 100000 x the active cost per therm."""
+  thermalUsd: Float!
   """Prefill (prompt processing) speed, tokens/sec: mean over requests."""
   tpAvg: Float!
   """Requests that reported a prefill speed — what the tp* figures are over."""
@@ -2767,6 +2771,23 @@ input corrallm_SetServerEphemeralInputBodyInput {
   ephemeral: Boolean!
 }
 
+input corrallm_SetThermalInputBodyInput {
+  """Room ambient temperature, °F, as you read it."""
+  ambientF: Float!
+  """Remove the thermal settings; the dashboard goes back to reporting heat in BTU only."""
+  clear: Boolean
+  """$ to remove one therm (100,000 BTU) of heat."""
+  coolCostPerTherm: Float!
+  """Cooling target, °F. Above it the room is being cooled."""
+  coolTargetF: Float!
+  """$ one therm of heat is worth when the room is heated — the marginal source the thermostat turns down."""
+  heatCostPerTherm: Float!
+  """Heating target, °F. Below it the room is being heated. Must be below coolTargetF."""
+  heatTargetF: Float!
+  """Free text kept with the settings (how the factors were worked out)."""
+  notes: String
+}
+
 input corrallm_SetWarningThresholdInputBodyInput {
   kind: String!
   """turned-away / unanswered / open-callers: raise it only above this many. slow-stretch: the multiple of the mean a request must pass. 0 returns to the default."""
@@ -2811,6 +2832,23 @@ input corrallm_SuppressWarningInputBodyInput {
   minutes: Long
   """Served model, for a per-model kind."""
   subject: String
+}
+
+type corrallm_ThermalView {
+  """Room ambient temperature as entered by the operator, °F."""
+  ambientF: Float!
+  """$ to remove one therm (100,000 BTU) of heat."""
+  coolCostPerTherm: Float!
+  """Cooling target, °F: above it the room is cooled."""
+  coolTargetF: Float!
+  """$ one therm (100,000 BTU) of heat is worth when the room is being heated — the marginal source's cost."""
+  heatCostPerTherm: Float!
+  """Heating target, °F: below it the room is heated."""
+  heatTargetF: Float!
+  """cooling | heating | neutral, at the stated ambient."""
+  mode: String!
+  """Free text kept about the settings."""
+  notes: String!
 }
 
 input corrallm_ToolActivateInputBodyInput {
@@ -3076,6 +3114,7 @@ type corrallm_UsageRollupOutputBody {
   costPerKwh: Float!
   """Per-model usage, costliest first."""
   rows: [corrallm_RollupRow!]!
+  thermal: corrallm_ThermalView
   total: corrallm_RollupRow!
   """Window applied (0 = all time)."""
   windowHours: Long!

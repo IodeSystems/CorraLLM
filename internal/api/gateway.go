@@ -499,6 +499,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.SetServerEphemeral)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "setThermal",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/thermal",
+		Summary:     "Set the room the box heats: ambient °F, cooling/heating targets and $ per therm of heat moved (clear: true removes them).",
+		Tags:        []string{"config"},
+	}, h.SetThermal)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "setModelMaxWait",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/models/{name}/max-wait",

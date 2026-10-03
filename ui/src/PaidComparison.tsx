@@ -78,7 +78,12 @@ export type ComparisonRow = {
   energyBtu: number
   /** energyBtu over the window's length, BTU/h. */
   heatBtuPerHour: number
+  /** What that heat did to the room's climate bill: + cooling cost, − heating saved. */
+  thermalUsd: number
 }
+
+/** The room settings the climate figure was computed from (config thermal). */
+export type ThermalSetting = { mode: string; ambientF: number; coolTargetF: number; heatTargetF: number }
 
 /** The reasons the server can give, in the words a reader gets. */
 const EXCLUSION_WORDS: Record<string, string> = {
@@ -95,6 +100,7 @@ export function PaidComparison({
   when,
   baselineType,
   costPerKwh,
+  thermal = null,
   rows,
   pending = false,
 }: {
@@ -104,6 +110,8 @@ export function PaidComparison({
   baselineType: string
   /** $/kWh the electricity figure was computed at. 0 ⇒ no rate configured. */
   costPerKwh: number
+  /** Room settings; null when none are configured (heat stays in BTU). */
+  thermal?: ThermalSetting | null
   rows: ComparisonRow[]
   /** Nothing has been counted yet — distinct from a counted zero (NotYet.tsx). */
   pending?: boolean
@@ -176,6 +184,14 @@ export function PaidComparison({
   const perModel = covered.filter((r) => r.requests > 0).sort((a, b) => b.baselineUsd - a.baselineUsd)
   const btu = sum((r) => r.energyBtu)
   const btuPerHour = sum((r) => r.heatBtuPerHour)
+  const climateUsd = sum((r) => r.thermalUsd)
+  const climate = thermal
+    ? thermal.mode === 'cooling'
+      ? { value: `+${fmtMoney(climateUsd)}`, sub: `extra cooling — ${thermal.ambientF}°F ambient, cooling above ${thermal.coolTargetF}°F` }
+      : thermal.mode === 'heating'
+        ? { value: `${fmtMoney(-climateUsd)} saved`, sub: `heating displaced — ${thermal.ambientF}°F ambient, heating below ${thermal.heatTargetF}°F` }
+        : { value: fmtMoney(0), sub: `${thermal.ambientF}°F is between ${thermal.heatTargetF}°F and ${thermal.coolTargetF}°F — neither system runs` }
+    : null
 
   return (
     <Panel
@@ -258,6 +274,8 @@ export function PaidComparison({
                 : 'from token work; idle draw not counted'
             }
           />
+          {/* WHAT THE HEAT DID TO THE ROOM'S BILL, from Setup → Room. */}
+          {climate && <Figure label="Room climate" value={pending ? <NotYet /> : climate.value} sub={climate.sub} />}
           {freeReqs > 0 && (
             <Figure
               label="Of that, free tier"
@@ -283,6 +301,7 @@ export function PaidComparison({
                 <TableCell align="right">On a paid API</TableCell>
                 <TableCell align="right">Electricity here</TableCell>
                 <TableCell align="right">Heat, BTU</TableCell>
+                {thermal && <TableCell align="right">Room climate</TableCell>}
               </TableRow>
             </TableHead>
             <TableBody>
@@ -293,6 +312,15 @@ export function PaidComparison({
                   <TableCell align="right">{fmtMoney(r.baselineUsd)}</TableCell>
                   <TableCell align="right">{fmtMoney(r.energyUsd)}</TableCell>
                   <TableCell align="right">{fmtInt(Math.round(r.energyBtu))}</TableCell>
+                  {thermal && (
+                    <TableCell align="right">
+                      {r.thermalUsd > 0
+                        ? `+${fmtMoney(r.thermalUsd)} cooling`
+                        : r.thermalUsd < 0
+                          ? `${fmtMoney(-r.thermalUsd)} saved`
+                          : fmtMoney(0)}
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
