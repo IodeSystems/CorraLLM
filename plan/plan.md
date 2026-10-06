@@ -62,7 +62,7 @@ follow-ups. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P51.**
+**Next free number: P52.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -341,6 +341,30 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P51 — production 2-8x slower after the OS upgrade: builds linked the distro's CUDA 12.4 — 2026-10-06
+
+Owner noticed tp/s 172. Live: from 2026-10-05 00:08 (first spawn on the first build compiled after the
+24.04 → 26.04 upgrade) decode 106 → ~50 tok/s, prefill ~1,000 → ~200; same token mix. Not the GPU (no
+throttle, PCIe Gen4 x16), not the driver (fast 21:00–24:00 on the new driver with an old build), not
+the code: the only commit between last-fast and first-slow (d89651a7, #29435) is gated to DGX Spark
+(cc 1210, 5090 is 1200), and a7fb71fa — fast before the upgrade — rebuilt after it was equally slow.
+**Cause:** the upgrade put CUDA 12.4 in /usr/lib (`libcudart12` 12.0 → 12.4); FindCUDAToolkit found it
+first, so builds compiled by nvcc 13.3 linked libcudart/libcublas **12.4**, which predates Blackwell.
+
+Fixed (`12847a0`, deployed): recipe passes `-DCUDAToolkit_ROOT=$cuda_home`; `check_cuda_runtime_matches`
+fails a build whose libggml-cuda links a libcudart major ≠ the toolkit nvcc's (a mismatch now keeps the
+last good build active). Benchmark, 32,916-token prompt, cache off, greedy: prefill 264 → **2,020**
+tok/s, decode 33.5 → **80.4** tok/s. Production on `abeada33` (cuBLAS 13.6). llama.cpp unpinned again.
+
+- **next:** confirm live recovery on aw4 traffic (decode back near ~106 at mixed contexts);
+  CPU duty cycle (owner: "20% perf for 2x lifetime") — options below, owner to choose.
+- **CPU duty cycle:** the 100% core is the CUDA busy-wait (5090 gets CUDA's default spin; llama.cpp only
+  forces spin on cc 12.1). Options: (a) recipe patch to `cudaDeviceScheduleBlockingSync` — frees the core,
+  cost to be measured; (b) disable CPU boost on the 3900X (root, persistent) — lower voltage/heat, little
+  effect on GPU-bound work; (c) `powerprofilesctl set power-saver` (no root). Tctl 75°C at the time.
+- **lessons:** my wait loops matched their own `pgrep -f` pattern twice (use `pgrep -x llama-server`);
+  the guard first read the wrong nvcc (PATH has the distro 12.4) — fixed to use cuda_toolkit_home.
 
 ### ◐ P50 — hourly room (and outdoor) temperatures from Home Assistant — 2026-10-02
 
