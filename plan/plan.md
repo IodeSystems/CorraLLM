@@ -9,7 +9,7 @@ Capacity-parked: §9. Finished trees live in [`plan/done.md`](done.md); deferred
 next-steps in [`plan/icebox.md`](icebox.md); **decisions that need you** in
 [`plan/open-questions.md`](open-questions.md).
 
-## Status — 2026-10-02
+## Status — 2026-10-06
 
 **In production on `:8111`, fronted at `https://llm.iodesystems.com`, serving from box1** (RTX 5090 +
 RTX 3080). The 64 GB MacBook Pro stays enrolled but has served no model since P46.
@@ -33,9 +33,12 @@ measured hour on the current setup (P47): decode ~106 tok/s avg, prefill ~1,070 
 reasoning (P42), which is why effort `medium` (−47% tokens vs `xhigh`) and probabilistic drafting
 (+12% decode, P44) were the levers that paid.
 
-**llama.cpp auto-updates (owner's call, not pinned)**; selected build `4ebdf2c7`. Never activate a
-build older than `1fb7ef3e3` while `--spec-draft-sampling probabilistic` is in a cmd — it exits on the
-unknown flag.
+**llama.cpp auto-updates (owner's call, not pinned), now GATED (P52):** a new build is kept only if
+it passes a start check and a speed benchmark of production on the 5090 against the build it replaces
+(≤10% slower; ~1 min of production paused per build). Serving `20261006-191956-abeada33` (CUDA 13.3,
+cuBLAS 13.6). Never activate a build older than `1fb7ef3e3` while `--spec-draft-sampling probabilistic`
+is in a cmd — it exits on the unknown flag. **2026-10-05/06 regression** (P51): builds linked the
+distro's CUDA 12.4 after the OS upgrade; prefill ~1,000 → ~200 for ~34 h until fixed.
 
 **Operating rules learned the hard way:** reload config with `systemctl --user reload corrallm`
 (plain `systemctl kill -s HUP` kills the backends — P43); measure VRAM fit under a production pause
@@ -48,11 +51,29 @@ control plane, audio surface (P9, backends in oidio P12), PDF conversion (P13), 
 the toolchain registry with versioned builds (P25/P27/P29), config in SQLite (P26), tickets (P28),
 and the question-shaped dashboard (Lenny, 2026-09-04/05). **2026-09-30 → 10-02:** P39 context stats,
 P41 pause→429, P42 Swift 1.5 + effort medium, P43 ExecReload, P44 probabilistic MTP, P45 per-model
-cost equivalents, P46 housekeeping, P47 speed/cache/heat on Traffic.
+cost equivalents, P46 housekeeping, P47 speed/cache/heat on Traffic. **10-02 → 10-06:** P48/P49 room
+thermal + hourly weather, P50 Home Assistant temperatures (◐), P51 CUDA 12.4 link regression fixed,
+P52 library record + benchmark gate on new builds.
 
 **Four decisions need you** — [`open-questions.md`](open-questions.md): agent lease self-reap (§1),
 whether an honest wait estimate is wanted (§2), whether aw4 should ride the `chat` lane (§4), and the
 calls the remap-out may not guess (§5). None blocks current work.
+
+### Next steps — triaged 2026-10-06
+
+Ordered by value to production. Owner actions first, because nothing else unblocks them.
+
+| # | Step | Who | Why now | Effort |
+|---|---|---|---|---|
+| 1 | Run `sudo bash /tmp/cpu-boost-off.sh` (`revert` undoes) | owner | CPU wear, owner's ask; spin patch was declined. **/tmp is cleared on reboot** — run it before one, or ask for it in `bin/`. Then I re-benchmark once. | 1 min |
+| 2 | P50: create the HA mean-of-six-thermostats helper; I point `roomEntity` at it | owner, then me | Heating saved is decided by the whole house, not the office | 5 min |
+| 3 | **Decode is not fully back.** Live tg 91–100 tok/s since the fix (10-06 10:00–14:00) vs 104–110 before 10-05; prefill is back (1,030–1,200 vs ~1,000). Compare per context bucket (prompts ran larger: 28–48k vs 26–34k) before calling it a regression. | me | Only open question on production speed | 30 min |
+| 4 | Route `corrallm tools build` (CLI) through the daemon, or refuse it while the daemon is up | me | The CLI skips the start check AND the benchmark; it is the path used all through P51 | ½ day |
+| 5 | Prove the rollback path live: `tools bench <tool> <id>` (benchmark an installed build against the active one, no build). First use: feed it the kept CUDA 12.4 build `165418-a7fb71fa` — expect a rollback. Also useful for manual A/Bs. | me | P52's rollback is unit-tested only | ½ day |
+| 6 | Benchmark drain wait: up to 15 min of 429s behind a long generation. Option: skip the benchmark (build stays inactive, retry next check) when production is mid-request. | me; owner picks the policy | Bounded outage per build | 2 h |
+
+Not triaged up: build settings as config data (owner raised; not chosen) and the CUDA blocking-sync
+patch (declined) — both in [`icebox.md`](icebox.md).
 
 **Open work is §6:** P38 (ephemeral machines), P37 (warning controls), P36 (true costs), P35 (the
 corral layer), P31 (disabled), P34 (residency queue), the Lenny leftovers, P21c (budget
@@ -342,56 +363,9 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P51 — production 2-8x slower after the OS upgrade: builds linked the distro's CUDA 12.4 — 2026-10-06
+### ✅ P52 — library record + benchmark before a new build is kept — 2026-10-06 → [`done.md`](done.md)
 
-Owner noticed tp/s 172. Live: from 2026-10-05 00:08 (first spawn on the first build compiled after the
-24.04 → 26.04 upgrade) decode 106 → ~50 tok/s, prefill ~1,000 → ~200; same token mix. Not the GPU (no
-throttle, PCIe Gen4 x16), not the driver (fast 21:00–24:00 on the new driver with an old build), not
-the code: the only commit between last-fast and first-slow (d89651a7, #29435) is gated to DGX Spark
-(cc 1210, 5090 is 1200), and a7fb71fa — fast before the upgrade — rebuilt after it was equally slow.
-**Cause:** the upgrade put CUDA 12.4 in /usr/lib (`libcudart12` 12.0 → 12.4); FindCUDAToolkit found it
-first, so builds compiled by nvcc 13.3 linked libcudart/libcublas **12.4**, which predates Blackwell.
-
-Fixed (`12847a0`, deployed): recipe passes `-DCUDAToolkit_ROOT=$cuda_home`; `check_cuda_runtime_matches`
-fails a build whose libggml-cuda links a libcudart major ≠ the toolkit nvcc's (a mismatch now keeps the
-last good build active). Benchmark, 32,916-token prompt, cache off, greedy: prefill 264 → **2,020**
-tok/s, decode 33.5 → **80.4** tok/s. Production on `abeada33` (cuBLAS 13.6). llama.cpp unpinned again.
-
-- **CPU duty cycle (decided):** the 100% core is CUDA's default spin-wait (Auto → spin when cores >
-  contexts; llama.cpp only sets a mode on cc 12.1). A `cudaDeviceScheduleBlockingSync` patch cut
-  llama-server CPU 100% → 54% under load; its cost was inside run-to-run noise (unpatched re-measured
-  1,965/77 vs patched 1,950–1,983/67–78). **Owner: disabled** — "TPS and tgs are at a premium, cpu is
-  not". Patch kept at `~/.corrallm/tools/llama.cpp/patches-disabled/` (not applied). Boost-off script
-  handed over: `/tmp/cpu-boost-off.sh` (owner runs with sudo; `revert` undoes) — **not yet run** as of
-  writing.
-- **lessons:** my wait loops matched their own `pgrep -f` pattern twice (use `pgrep -x llama-server`);
-  the guard first read the wrong nvcc (PATH has the distro 12.4) — fixed to use cuda_toolkit_home.
-- Follow-up shipped as P52.
-
-### ✅ P52 — library record + benchmark before a new build is kept — 2026-10-06
-
-Why: P51's bad builds passed every check. The post-build check only started `nomic-embed-text` on the
-**3080**, and on the 3080 the CUDA 12.4 build is NOT slower (llama-bench chandra Q8_0: pp4096 4,152 vs
-3,947, tg 100 vs 98). Only the 5090 regressed.
-
-Built (`7c45082`, deployed):
-- **Library record:** `builds/<id>/.corrallm-libs` = libs loaded from outside the build (soname=resolved
-  file) + `nvcc=`/`cxx=` for llama.cpp. Shown in Tools → version dialog ("differs from serving"), and
-  the build log prints `libraries CHANGED since <prev>` with +/- lines. Backfilled on box1's 5 builds.
-- **Benchmark:** `tools.<name>.benchmark {models, maxRegressionPct=10, promptTokens=16000}`. After the
-  start check: pause each model (429 + counting-down Retry-After), drain, trial it on the previous and
-  the new build from `builds/<id>` (greedy uncached `/completion`, warm-up + best of 2), roll back if
-  prefill or decode < 90%. Pause lifts after the rollback decision. Not measurable → kept, logged
-  `NOT BENCHMARKED`. box1: `benchmark.models: [local-Swift-1.5-Qwen3.8-27B-Q6_K_S]`.
-- **Live run** (forced build b1, same commit): current 2,109 / 110.0, new 2,104 / 107.3 → passed;
-  production paused 12:20:31, ready on the new build 12:21:37 (~66 s), 0 failed Swift requests.
-
-- **risks:** regression path tested in unit tests only, not live (no bad build to feed it). Drain wait
-  can hold the pause up to 15 min behind a long generation. `corrallm tools build` (CLI) calls the
-  registry directly and skips check AND benchmark — only daemon builds (scheduled, UI, `POST
-  /api/v1/tools/build`) are gated.
-- **optional extensions:** route the CLI build through the daemon; build settings (CMake args) as
-  config data with the recipe as a template (owner raised it; not chosen this round).
+### ✅ P51 — production 2-8x slower after the OS upgrade: builds linked CUDA 12.4 — 2026-10-06 → [`done.md`](done.md)
 
 ### ◐ P50 — hourly room (and outdoor) temperatures from Home Assistant — 2026-10-02
 

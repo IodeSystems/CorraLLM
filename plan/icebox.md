@@ -149,3 +149,26 @@ ever picked up, that is the property being spent, and the trade should be argued
 terms — not inherited from a checkbox.
 
 **waits-on:** nobody. Revisit only if a speech-out workload actually appears.
+
+## Tool build settings as config data
+
+**What.** CMake args (and the CUDA toolkit choice) as per-tool config with the recipe as a template,
+instead of hard-coded in `internal/toolchain/recipes/llama.cpp.sh`. Owner raised it 2026-10-06 after
+P51: "these tool recipes really need to be data, and update able".
+
+**Why it is parked.** The owner chose the library record and the benchmark gate (P52) over it; those
+catch a bad build whatever caused it, while config-driven flags only make a fix faster to apply.
+
+**Resume when.** A second flag change is needed in the recipe, or a host needs flags box1 does not.
+
+## CUDA blocking sync instead of spin (llama.cpp patch)
+
+**What.** `cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync)` for non-cc-12.1 GPUs. Measured
+2026-10-06: llama-server CPU 100% → 54% under load; speed cost inside run-to-run noise. Patch file
+kept at `~/.corrallm/tools/llama.cpp/patches-disabled/0001-cuda-blocking-sync.patch`.
+
+**Why it is parked.** Owner: "TPS and tgs are at a premium, cpu is not."
+
+**Resume when.** CPU wear or heat becomes the constraint; move the file back to `patches/` and the
+next build applies it (the P52 benchmark then shows the cost).
+
