@@ -232,8 +232,16 @@ build() {
             export PATH="$cuda_home/bin:$PATH"
             export LD_LIBRARY_PATH="$cuda_home/lib64:${LD_LIBRARY_PATH:-}"
             say "  using $cuda_home/bin/nvcc ($("$cuda_home/bin/nvcc" --version | sed -n 's/.*release \([0-9.]*\).*/\1/p' | head -1))"
+            # CUDAToolkit_ROOT: the LIBRARIES (cudart, cuBLAS) must come from the
+            # same install as the compiler. Without it, FindCUDAToolkit searched
+            # the system first, and after the box's 24.04 -> 26.04 upgrade put a
+            # distro CUDA 12.4 in /usr/lib, every build linked cuBLAS 12.4 — which
+            # predates Blackwell — under kernels nvcc 13.3 compiled for it.
+            # Production prefill fell ~1,000 -> ~200 tok/s and decode 106 -> ~50
+            # (2026-10-05). Same code, same driver; only the linked cuBLAS differed.
             args+=(
                 -DCMAKE_CUDA_COMPILER="$cuda_home/bin/nvcc"
+                -DCUDAToolkit_ROOT="$cuda_home"
                 -DCMAKE_CUDA_FLAGS="-I$cuda_home/include/"
                 -DCMAKE_CXX_FLAGS="-I$cuda_home/include/"
             )
@@ -251,6 +259,7 @@ build() {
     cmake -B build "${args[@]}" >&2 || exit 1
     cmake --build build --config Release --parallel "$(cpu_count)" >&2 || exit 1
     ) || die "build failed; see log"
+    check_cuda_runtime_matches "$src/build/bin" || die "build links the wrong CUDA runtime; not installed (production keeps its current build)"
 
     local id; id=$(build_id "$head")
     install_build "$src/build/bin" "$id"
@@ -262,6 +271,40 @@ build() {
 
     printf '{"ok":true,"skipped":false,"id":%s,"head":%s,"version":%s,"stamp":%s,"seconds":%d,"error":""}\n' \
         "$(jstr "$id")" "$(jstr "$head")" "$(jstr "$version")" "$(jstr "$stamp_now")" "$((SECONDS - started))"
+}
+
+# check_cuda_runtime_matches refuses a CUDA build whose libggml-cuda links a CUDA
+# runtime of a different MAJOR version than the nvcc that compiled it.
+#
+# A mismatch does not fail to load — the GPU kernels run, just through a
+# cuBLAS that may not know the card — so it shows up only as a slow box, days
+# later. 2026-10-05: an OS upgrade put CUDA 12.4 in /usr/lib, builds compiled by
+# nvcc 13.3 linked libcublas.so.12, and production ran at a fifth of its prefill
+# speed until someone noticed. Failing the build keeps the last good one active.
+check_cuda_runtime_matches() {
+    local bindir=$1 lib nvcc_major linked_major
+    lib=$(ls "$bindir"/libggml-cuda.so 2>/dev/null | head -1)
+    [ -n "$lib" ] || return 0 # not a CUDA build
+    # The SAME toolkit the build used — cuda_toolkit_home, not whatever nvcc
+    # is first on PATH: on this box that is the distro's 12.4, the very
+    # install this guard exists to keep out.
+    local nvcc="${CUDACXX:-}" home
+    if [ -z "$nvcc" ]; then
+        home=$(cuda_toolkit_home)
+        nvcc="${home:+$home/bin/}nvcc"
+    fi
+    nvcc_major=$("$nvcc" --version 2>/dev/null | sed -n 's/.*release \([0-9]*\)\..*/\1/p' | head -1)
+    linked_major=$(ldd "$lib" 2>/dev/null | sed -n 's/.*libcudart\.so\.\([0-9]*\) .*/\1/p' | head -1)
+    if [ -z "$nvcc_major" ] || [ -z "$linked_major" ]; then
+        say "  could not compare CUDA versions (nvcc ${nvcc_major:-?}, linked libcudart ${linked_major:-?}); continuing"
+        return 0
+    fi
+    if [ "$nvcc_major" != "$linked_major" ]; then
+        say "  CUDA MISMATCH: compiled by nvcc $nvcc_major but libggml-cuda links libcudart.so.$linked_major:"
+        ldd "$lib" | grep -E "libcudart|libcublas" | sed 's/^/    /' >&2
+        return 1
+    fi
+    say "  CUDA runtime matches the compiler (major $nvcc_major)"
 }
 
 case "${1:-}" in
