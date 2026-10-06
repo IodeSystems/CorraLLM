@@ -540,10 +540,11 @@ type ToolInstalledBuildsInput struct {
 type InstalledBuildView struct {
 	ID string `json:"id" doc:"The build directory: a UTC timestamp and the short commit."`
 	// Head is the commit it was built from, which is what a pin would name.
-	Head   string `json:"head,omitempty"`
-	Stamp  string `json:"stamp,omitempty"`
-	At     int64  `json:"at" doc:"Unix seconds when it was installed."`
-	Active bool   `json:"active" doc:"bin/ currently points here."`
+	Head   string   `json:"head,omitempty"`
+	Stamp  string   `json:"stamp,omitempty"`
+	At     int64    `json:"at" doc:"Unix seconds when it was installed."`
+	Active bool     `json:"active" doc:"bin/ currently points here."`
+	Libs   []string `json:"libs" doc:"What the build loads from outside itself (soname=resolved file) and how it was compiled (nvcc=…, cxx=…). Empty when not recorded."`
 }
 
 // ToolInstalledBuildsOutput is what a host can roll back to.
@@ -579,7 +580,7 @@ func (h *Handlers) ToolInstalledBuilds(ctx context.Context, in *ToolInstalledBui
 	out.Body.Builds = []InstalledBuildView{}
 	for _, b := range bl.Builds {
 		out.Body.Builds = append(out.Body.Builds, InstalledBuildView{
-			ID: b.ID, Head: b.Head, Stamp: b.Stamp, At: b.At, Active: b.Active,
+			ID: b.ID, Head: b.Head, Stamp: b.Stamp, At: b.At, Active: b.Active, Libs: append([]string{}, b.Libs...),
 		})
 	}
 	out.Body.Active, out.Body.Versioned, out.Body.Keep = bl.Active, bl.Versioned, bl.Keep

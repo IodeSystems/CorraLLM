@@ -671,7 +671,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	mgr.ExpandCmd = toolReg.ExpandTools
 	// A finished build is checked by trialling a model on it, and bin/ goes back
 	// to the previous build when that fails.
-	toolBuilds := &toolchain.Builder{Reg: toolReg, Check: mgr.CheckTool}
+	toolBuilds := &toolchain.Builder{Reg: toolReg, Check: mgr.CheckTool, Bench: mgr.BenchTool}
 	// The scheduled drift check. Until this existed a pin only rotted in public:
 	// llama.cpp ships several builds a day and "how far behind are we" was
 	// answered solely by somebody opening the Tooling panel. Checking is on by

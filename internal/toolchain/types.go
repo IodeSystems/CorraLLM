@@ -202,6 +202,11 @@ type BuildEntry struct {
 	At int64 `json:"at"`
 	// Active means bin/ currently points here.
 	Active bool `json:"active"`
+	// Libs is what the build loads from outside its own directory, one
+	// "soname=resolved file" per line, plus any "key=value" a recipe records
+	// about its compilers (nvcc=13.3.73). Empty when not recorded: a build
+	// from before 2026-10-06, or a host without ldd.
+	Libs []string `json:"libs"`
 }
 
 // BuildList is what a host can roll back to.

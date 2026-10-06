@@ -51,6 +51,7 @@ const InstalledBuildsDoc = graphql(/* GraphQL */ `
           head
           at
           active
+          libs
         }
         active
         versioned
@@ -143,6 +144,8 @@ export function ToolVersionDialog({
   })
   const bl = builds.data?.corrallm.toolInstalledBuilds
   const list = bl?.builds ?? []
+  const servingLibs = list.find((b) => b.active)?.libs ?? []
+  const [openLibs, setOpenLibs] = useState<string | null>(null)
 
   const done = (message: string) => {
     setErr('')
@@ -277,8 +280,8 @@ export function ToolVersionDialog({
           ) : (
             <Stack spacing={0.5}>
               {list.map((b) => (
+                <Box key={b.id}>
                 <Stack
-                  key={b.id}
                   direction="row"
                   spacing={1}
                   sx={{
@@ -325,7 +328,12 @@ export function ToolVersionDialog({
                   >
                     {b.active ? 'Active' : 'Activate'}
                   </Button>
+                  <Button size="small" onClick={() => setOpenLibs(openLibs === b.id ? null : b.id)}>
+                    {openLibs === b.id ? 'Hide libs' : 'Libs'}
+                  </Button>
                 </Stack>
+                <LibsDiff libs={b.libs} serving={servingLibs} isServing={b.active} open={openLibs === b.id} />
+                </Box>
               ))}
               {typeof bl?.keep === 'number' && (
                 <Typography variant="caption" sx={{ color: C.textFaint, pt: 0.5 }}>
@@ -342,4 +350,54 @@ export function ToolVersionDialog({
       </DialogActions>
     </Dialog>
   );
+}
+
+/** "libcublas.so.13=/usr/local/cuda/…/libcublas.so.13.6.0.2" → "libcublas.so.13.6.0.2"; "nvcc=13.3.73" → "nvcc 13.3.73". */
+function libLabel(line: string): string {
+  const i = line.indexOf('=')
+  if (i < 0) return line
+  const k = line.slice(0, i)
+  const v = line.slice(i + 1)
+  return v.startsWith('/') ? v.slice(v.lastIndexOf('/') + 1) : `${k} ${v}`
+}
+
+/**
+ * What a build loads from outside itself, against the serving build. The
+ * difference is shown always — it is the line that would have explained the
+ * 2026-10-05 slowdown (libcublas 12.4 instead of 13.6) at a glance; the full
+ * list only on request.
+ */
+function LibsDiff({ libs, serving, isServing, open }: { libs: string[]; serving: string[]; isServing: boolean; open: boolean }) {
+  if (libs.length === 0) {
+    return open ? (
+      <Typography variant="caption" sx={{ color: C.textFaint, display: 'block', px: 1, py: 0.5 }}>
+        Libraries not recorded (built before 2026-10-06, or the host has no ldd).
+      </Typography>
+    ) : null
+  }
+  const has = new Set(serving)
+  const had = new Set(libs)
+  const added = isServing || serving.length === 0 ? [] : libs.filter((l) => !has.has(l))
+  const gone = isServing || serving.length === 0 ? [] : serving.filter((l) => !had.has(l))
+  return (
+    <Box sx={{ px: 1, py: 0.5 }}>
+      {(added.length > 0 || gone.length > 0) && (
+        <Typography variant="caption" sx={{ color: C.warn, display: 'block', fontFamily: 'monospace' }}>
+          differs from serving: {added.map(libLabel).join(', ')}
+          {gone.length > 0 && <> (serving has {gone.map(libLabel).join(', ')})</>}
+        </Typography>
+      )}
+      {open &&
+        libs.map((l) => (
+          <Tooltip key={l} title={l} placement="left">
+            <Typography
+              variant="caption"
+              sx={{ display: 'block', fontFamily: 'monospace', color: has.has(l) || isServing ? C.textMuted : C.warn }}
+            >
+              {libLabel(l)}
+            </Typography>
+          </Tooltip>
+        ))}
+    </Box>
+  )
 }

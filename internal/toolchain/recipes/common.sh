@@ -559,6 +559,56 @@ verify_build() {
     fi
 }
 
+# LIBS_NAME records, per build, the libraries it loads from OUTSIDE its own
+# directory (and anything a recipe adds about how it was compiled), so two
+# builds can be compared on what they actually run against.
+#
+# Why (box1, 2026-10-05): an OS upgrade put CUDA 12.4 in /usr/lib, and builds
+# compiled by nvcc 13.3 linked its cuBLAS. Nothing failed; production ran at a
+# fifth of its prefill speed for a day and a half. The stamp said head, patches
+# and archs were the same kind of thing as always. This file is what would have
+# shown the difference: libcublas.so.12.4.5.8 where the last build had 13.6.
+LIBS_NAME=".corrallm-libs"
+
+# record_libs writes $dst/.corrallm-libs: one "soname=resolved file" line per
+# library loaded from outside the build, sorted. Linux only (ldd); elsewhere the
+# file is left empty, which reads as "not recorded", not "no libraries".
+record_libs() {
+    local dst=$1 f out="$1/$LIBS_NAME"
+    : > "$out"
+    [ "$(uname -s)" = "Linux" ] && have ldd || return 0
+    for f in "$dst"/*; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        case "$f" in *.so|*.so.*) ;; *) [ -x "$f" ] || continue ;; esac
+        ldd "$f" 2>/dev/null
+    done | awk -v d="$dst/" '$2 == "=>" && $3 ~ /^\// && index($3, d) != 1 { print $1, $3 }' |
+    while read -r soname path; do
+        printf '%s=%s\n' "$soname" "$(readlink -f "$path" 2>/dev/null || printf '%s' "$path")"
+    done | LC_ALL=C sort -u >> "$out"
+}
+
+# record_toolchain adds a "key=value" line about how a build was compiled (the
+# compiler versions), kept sorted with the libraries.
+record_toolchain() {
+    local dst=$1 key=$2 val=$3 out="$1/$LIBS_NAME"
+    [ -n "$val" ] || return 0
+    { cat "$out" 2>/dev/null; printf '%s=%s\n' "$key" "$val"; } | LC_ALL=C sort -u > "$out.tmp" && mv -f "$out.tmp" "$out"
+}
+
+# libs_json prints a build's recorded lines as a JSON array of strings.
+libs_json() {
+    local f="$1/$LIBS_NAME" out="[" first=1 line
+    if [ -f "$f" ]; then
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            [ $first -eq 1 ] || out+=","
+            out+=$(jstr "$line")
+            first=0
+        done < "$f"
+    fi
+    printf '%s]' "$out"
+}
+
 # install_build copies a finished build into its own directory, verifies the
 # copy, and only then activates it. A refused copy is removed — left in builds/
 # it would be a rollback target that does not run — and bin/ is not touched.
@@ -574,6 +624,7 @@ install_build() {
         rm -rf "$dst"
         die "built $id, but it does not run from $dst; kept the active build ($(active_build))"
     fi
+    record_libs "$dst"
     activate_build "$id" || die "built and installed $id, but could not point $prefix/bin at it"
 }
 
@@ -610,9 +661,9 @@ list_builds() {
             head=$(stamp_field "$stamp" head)
             at=$(mtime "$dir/$b")
             [ $first -eq 1 ] || out+=","
-            out+=$(printf '{"id":%s,"stamp":%s,"head":%s,"at":%s,"active":%s}' \
+            out+=$(printf '{"id":%s,"stamp":%s,"head":%s,"at":%s,"active":%s,"libs":%s}' \
                 "$(jstr "$b")" "$(jstr "$stamp")" "$(jstr "$head")" "${at:-0}" \
-                "$(jbool "$([ "$b" = "$active" ] && printf 1)")")
+                "$(jbool "$([ "$b" = "$active" ] && printf 1)")" "$(libs_json "$dir/$b")")
             first=0
         done
     fi

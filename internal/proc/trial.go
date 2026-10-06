@@ -44,6 +44,7 @@ const (
 	TrialHealth   TrialStage = "health"   // /health answers 2xx
 	TrialProbe    TrialStage = "probe"    // what model id does it actually serve?
 	TrialMeasure  TrialStage = "measure"  // what did it really cost?
+	TrialRun      TrialStage = "run"      // the caller's own work against it (TrialWith)
 	TrialTeardown TrialStage = "teardown" // and it is gone
 )
 
@@ -124,6 +125,14 @@ func IsTrial(key string) bool { return strings.HasPrefix(key, TrialKeyPrefix) }
 // The error return is the run's outcome; every stage is also reported through
 // emit, so a caller streaming to a UI needs nothing else.
 func (m *Manager) Trial(ctx context.Context, id string, mdl config.Model, emit func(TrialEvent)) (TrialResult, error) {
+	return m.TrialWith(ctx, id, mdl, emit, nil)
+}
+
+// TrialWith is Trial with work to do while the backend is up: run is called
+// with the backend's base URL after it is healthy and measured, and before it
+// is torn down. Its error fails the trial at TrialRun.
+func (m *Manager) TrialWith(ctx context.Context, id string, mdl config.Model, emit func(TrialEvent),
+	run func(ctx context.Context, baseURL string) error) (TrialResult, error) {
 	var res TrialResult
 	fail := func(stage TrialStage, err error) (TrialResult, error) {
 		res.Failed = string(stage)
@@ -261,6 +270,12 @@ waiting:
 		res.MemoryMiB = mib
 		emit(TrialEvent{Stage: TrialMeasure, OK: true, Msg: fmt.Sprintf("%d MiB", mib),
 			Data: map[string]any{"memoryMiB": mib, "ramUsage": fmt.Sprintf("%dMiB", mib)}})
+	}
+
+	if run != nil {
+		if err := run(ctx, target.BaseURLString()); err != nil {
+			return fail(TrialRun, err)
+		}
 	}
 
 	res.OK = true

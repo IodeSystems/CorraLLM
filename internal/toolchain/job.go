@@ -42,6 +42,13 @@ type Builder struct {
 	// *proc.Manager so this package stays unaware of spawning.
 	Check func(ctx context.Context, tool, host string, log io.Writer) (ran bool, err error)
 
+	// Bench, when set, measures the new build (nextDir) against the one it
+	// replaces (prevDir) after Check passes. Same ran/err contract as Check: a
+	// failure with ran=true puts bin/ back on the previous build. release lifts
+	// whatever the benchmark holds (paused models) and is called only AFTER
+	// that decision, so nothing respawns on a build about to be rolled back.
+	Bench func(ctx context.Context, tool, host, prevDir, nextDir string, log io.Writer) (release func(), ran bool, err error)
+
 	mu      sync.Mutex
 	current *Job
 	last    *Job
@@ -216,16 +223,27 @@ func (b *Builder) run(j *Job, force bool) {
 		}
 	}()
 
-	// What is serving now, so a build that fails its check can be put back.
+	// What is serving now, so a build that fails its check can be put back,
+	// and what it links, so the new one can be compared.
 	var prev string
-	if b.Check != nil {
-		if l, err := b.Reg.Builds(ctx, j.Tool, j.Host); err == nil {
-			prev = l.Active
+	var prevLibs []string
+	if l, err := b.Reg.Builds(ctx, j.Tool, j.Host); err == nil {
+		prev = l.Active
+		for _, e := range l.Builds {
+			if e.ID == prev {
+				prevLibs = e.Libs
+			}
 		}
 	}
 	res, err := b.Reg.Build(ctx, j.Tool, j.Host, force, pw)
-	if err == nil && res != nil && !res.Skipped && b.Check != nil {
-		err = b.check(j, res.ID, prev, pw)
+	if err == nil && res != nil && !res.Skipped {
+		b.diffLibs(ctx, j, prev, prevLibs, res.ID, pw)
+		if b.Check != nil {
+			err = b.check(j, res.ID, prev, pw)
+		}
+		if err == nil && b.Bench != nil {
+			err = b.bench(j, res.ID, prev, pw)
+		}
 	}
 	_ = pw.Close()
 	<-done
@@ -280,13 +298,105 @@ func (b *Builder) check(j *Job, id, prev string, log io.Writer) error {
 	if prev == "" || prev == id {
 		return fmt.Errorf("build %s failed its check and there is no previous build to return to: %w", id, err)
 	}
+	return b.rollback(j, id, prev, fmt.Errorf("failed its check: %w", err), log)
+}
+
+// benchTimeout bounds the benchmark: two loads and a few long requests per
+// model, plus the wait for production to drain.
+const benchTimeout = 45 * time.Minute
+
+// bench measures the new build against prev and rolls back on a regression.
+// Not benchmarked (no previous build, nothing to run it on) keeps the new one,
+// and the log says so loudly.
+func (b *Builder) bench(j *Job, id, prev string, log io.Writer) error {
+	if prev == "" || prev == id {
+		_, _ = fmt.Fprintf(log, "  NOT BENCHMARKED: no previous build to compare %s against\n", id)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), benchTimeout)
+	defer cancel()
+	prevDir, err := b.Reg.BuildDir(ctx, j.Tool, j.Host, prev)
+	if err == nil {
+		var nextDir string
+		if nextDir, err = b.Reg.BuildDir(ctx, j.Tool, j.Host, id); err == nil {
+			_, _ = fmt.Fprintf(log, "=== benchmarking %s against %s on %s\n", id, prev, j.Host)
+			var release func()
+			var ran bool
+			release, ran, err = b.Bench(ctx, j.Tool, j.Host, prevDir, nextDir, log)
+			defer release()
+			switch {
+			case err == nil:
+				_, _ = fmt.Fprintf(log, "  benchmark passed; %s stays active\n", id)
+				return nil
+			case ran:
+				return b.rollback(j, id, prev, err, log)
+			}
+		}
+	}
+	_, _ = fmt.Fprintf(log, "  NOT BENCHMARKED, %s stays active: %v\n", id, err)
+	slog.Warn("a new tool build went unbenchmarked", "tool", j.Tool, "host", j.Host, "build", id, "err", err)
+	return nil
+}
+
+// rollback puts prev back after id failed, and returns the error that fails
+// the job, naming both builds.
+func (b *Builder) rollback(j *Job, id, prev string, cause error, log io.Writer) error {
 	actx, acancel := context.WithTimeout(context.Background(), Timeout(VerbActivate))
 	defer acancel()
 	if _, aerr := b.Reg.Activate(actx, j.Tool, j.Host, prev); aerr != nil {
-		return fmt.Errorf("build %s failed its check (%v), and rolling back to %s failed too: %w", id, err, prev, aerr)
+		return fmt.Errorf("build %s failed (%v), and rolling back to %s failed too: %w", id, cause, prev, aerr)
 	}
 	_, _ = fmt.Fprintf(log, "  rolled back to %s\n", prev)
-	return fmt.Errorf("build %s failed its check; rolled back to %s: %w", id, prev, err)
+	return fmt.Errorf("build %s rolled back to %s: %w", id, prev, cause)
+}
+
+// diffLibs logs what the new build loads that the previous one did not, and
+// the reverse. Informational: the benchmark is what decides. But a changed
+// libcublas next to a failed benchmark is the diagnosis, in the same log.
+func (b *Builder) diffLibs(ctx context.Context, j *Job, prev string, prevLibs []string, id string, log io.Writer) {
+	l, err := b.Reg.Builds(ctx, j.Tool, j.Host)
+	if err != nil || prev == "" || prev == id {
+		return
+	}
+	var next []string
+	for _, e := range l.Builds {
+		if e.ID == id {
+			next = e.Libs
+		}
+	}
+	if len(next) == 0 || len(prevLibs) == 0 {
+		_, _ = fmt.Fprintf(log, "=== libraries: not recorded for %s or %s; not compared\n", prev, id)
+		return
+	}
+	gone, added := setDiff(prevLibs, next), setDiff(next, prevLibs)
+	if len(gone)+len(added) == 0 {
+		_, _ = fmt.Fprintf(log, "=== libraries: same as %s\n", prev)
+		return
+	}
+	_, _ = fmt.Fprintf(log, "=== libraries CHANGED since %s:\n", prev)
+	for _, s := range gone {
+		_, _ = fmt.Fprintf(log, "  - %s\n", s)
+	}
+	for _, s := range added {
+		_, _ = fmt.Fprintf(log, "  + %s\n", s)
+	}
+	slog.Warn("a new tool build links different libraries", "tool", j.Tool, "host", j.Host,
+		"build", id, "previous", prev, "removed", gone, "added", added)
+}
+
+// setDiff is a minus b, in a's order.
+func setDiff(a, b []string) []string {
+	in := make(map[string]bool, len(b))
+	for _, s := range b {
+		in[s] = true
+	}
+	var out []string
+	for _, s := range a {
+		if !in[s] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // State returns the running job (if any) and the last finished one.

@@ -99,8 +99,60 @@ type Tool struct {
 	// stays a decision rather than a timer.
 	Rebuild bool `yaml:"rebuild,omitempty"`
 
+	// Benchmark measures a new build against the one it replaces, on a real
+	// model, before the new one is kept. Nil skips it.
+	Benchmark *ToolBenchmark `yaml:"benchmark,omitempty"`
+
 	// Notes is free text kept about the tool, shown in the UI beside it.
 	Notes string `yaml:"notes,omitempty"`
+}
+
+// ToolBenchmark is the speed test a new build must pass to stay active.
+//
+// Why it exists (box1, 2026-10-05): a build linked the distro's CUDA 12.4 under
+// kernels compiled by nvcc 13.3. It started, it answered, the post-build check
+// (does a model come up?) passed — and production prefill ran at a fifth of its
+// speed for a day and a half. Only measuring catches that, and only on the GPU
+// production runs on: the same build was NOT slower on the 3080.
+//
+// It is disruptive by design: each listed model is PAUSED (callers get 429 with
+// a Retry-After counting down), drained, and loaded once on each build. Expect
+// one to three minutes of no service per model per build.
+type ToolBenchmark struct {
+	// Models are configured chat models (served names) to measure, each on the
+	// host it is placed on. A model not placed on the host being built is
+	// skipped there.
+	Models []string `yaml:"models"`
+	// MaxRegressionPct is how much slower — prefill OR decode — the new build
+	// may be before it is rolled back. 0 means DefaultBenchMaxRegressionPct.
+	MaxRegressionPct float64 `yaml:"maxRegressionPct,omitempty"`
+	// PromptTokens sizes the benchmark prompt (approximate). 0 means
+	// DefaultBenchPromptTokens.
+	PromptTokens int `yaml:"promptTokens,omitempty"`
+}
+
+// DefaultBenchMaxRegressionPct allows run-to-run noise (greedy decode on box1
+// repeats within ~2%) without letting a real regression through.
+const DefaultBenchMaxRegressionPct = 10.0
+
+// DefaultBenchPromptTokens is long enough that prefill dominates its own
+// timing, short enough to cost seconds on a healthy build.
+const DefaultBenchPromptTokens = 16000
+
+// MaxRegression resolves the threshold as a fraction (0.10).
+func (b ToolBenchmark) MaxRegression() float64 {
+	if b.MaxRegressionPct <= 0 {
+		return DefaultBenchMaxRegressionPct / 100
+	}
+	return b.MaxRegressionPct / 100
+}
+
+// Prompt resolves the prompt size.
+func (b ToolBenchmark) Prompt() int {
+	if b.PromptTokens <= 0 {
+		return DefaultBenchPromptTokens
+	}
+	return b.PromptTokens
 }
 
 // ToolHost is one host's relationship to a tool.
@@ -230,6 +282,17 @@ func (c *Config) validateTools() error {
 		if t.Rebuild {
 			if _, ok := CheckIntervalOf(t); !ok {
 				return fmt.Errorf("tool %q: rebuild is on but check is off — a scheduled rebuild is driven by the check, so this would never fire", name)
+			}
+		}
+		if b := t.Benchmark; b != nil {
+			if len(b.Models) == 0 {
+				return fmt.Errorf("tool %q: benchmark lists no models — drop the block to skip benchmarking", name)
+			}
+			if b.MaxRegressionPct < 0 || b.MaxRegressionPct >= 100 {
+				return fmt.Errorf("tool %q: benchmark.maxRegressionPct %v must be between 0 and 100", name, b.MaxRegressionPct)
+			}
+			if b.PromptTokens < 0 {
+				return fmt.Errorf("tool %q: benchmark.promptTokens must not be negative", name)
 			}
 		}
 		for _, host := range sortedHostNames(t.Hosts) {

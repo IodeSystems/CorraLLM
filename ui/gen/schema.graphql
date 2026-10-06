@@ -1754,6 +1754,8 @@ type corrallm_InstalledBuildView {
   head: String
   """The build directory: a UTC timestamp and the short commit."""
   id: String!
+  """What the build loads from outside itself (soname=resolved file) and how it was compiled (nvcc=…, cxx=…). Empty when not recorded."""
+  libs: [String!]!
   stamp: String
 }
 

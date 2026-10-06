@@ -113,6 +113,24 @@ func (r *Registry) ToolDir(ctx context.Context, tool, host string) (string, erro
 	return dir, nil
 }
 
+// BuildDir is where one installed build of a managed tool lives on a host: the
+// builds/<id> sibling of the bin/ link that ToolDir resolves. Builds are
+// self-contained ($ORIGIN rpath, verify_build), so a model can run from here
+// directly — which is how a benchmark runs a build that is not active.
+func (r *Registry) BuildDir(ctx context.Context, tool, host, id string) (string, error) {
+	if strings.TrimSpace(id) == "" || strings.ContainsAny(id, "/\\") || strings.HasPrefix(id, ".") {
+		return "", fmt.Errorf("bad build id %q", id)
+	}
+	if _, err := r.buildableSpec(tool, host, "locate builds of"); err != nil {
+		return "", err
+	}
+	bin, err := r.ToolDir(ctx, tool, host)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(bin), "builds", id), nil
+}
+
 // InvalidateResolved drops a cached directory, so the next spawn re-asks.
 //
 // Called after a build: the path is normally stable across builds, but a build

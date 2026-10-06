@@ -264,6 +264,10 @@ build() {
     local id; id=$(build_id "$head")
     install_build "$src/build/bin" "$id"
     stamp_write "$(builds_dir)/$id" "$stamp_now"
+    # The compilers, as cmake identified them for this configure.
+    local cm; cm=$(ls -d "$src"/build/CMakeFiles/[0-9]* 2>/dev/null | tail -1)
+    record_toolchain "$(builds_dir)/$id" nvcc "$(sed -n 's/^set(CMAKE_CUDA_COMPILER_VERSION "\(.*\)")/\1/p' "$cm/CMakeCUDACompiler.cmake" 2>/dev/null)"
+    record_toolchain "$(builds_dir)/$id" cxx "$(sed -n 's/^CMAKE_CXX_COMPILER:[A-Z]*=//p' "$src/build/CMakeCache.txt" 2>/dev/null | head -1) $(sed -n 's/^set(CMAKE_CXX_COMPILER_VERSION "\(.*\)")/\1/p' "$cm/CMakeCXXCompiler.cmake" 2>/dev/null)"
     prune_builds
 
     local version=""

@@ -221,3 +221,29 @@ func TestBadPinRejectedAtLoad(t *testing.T) {
 		t.Fatal("an abbreviated pin was accepted")
 	}
 }
+
+func TestBenchmarkValidationAndDefaults(t *testing.T) {
+	ok := validTool()
+	ok.Benchmark = &ToolBenchmark{Models: []string{"local-x"}}
+	if err := toolsCfg(ok).validateTools(); err != nil {
+		t.Fatalf("valid benchmark rejected: %v", err)
+	}
+	if got := ok.Benchmark.MaxRegression(); got != 0.10 {
+		t.Errorf("default max regression = %v, want 0.10", got)
+	}
+	if got := ok.Benchmark.Prompt(); got != DefaultBenchPromptTokens {
+		t.Errorf("default prompt = %d", got)
+	}
+	for name, b := range map[string]ToolBenchmark{
+		"no models":    {},
+		"negative pct": {Models: []string{"x"}, MaxRegressionPct: -1},
+		"100 pct":      {Models: []string{"x"}, MaxRegressionPct: 100},
+		"neg prompt":   {Models: []string{"x"}, PromptTokens: -5},
+	} {
+		bad := validTool()
+		bad.Benchmark = &b
+		if err := toolsCfg(bad).validateTools(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
