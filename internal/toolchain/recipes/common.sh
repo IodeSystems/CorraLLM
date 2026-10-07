@@ -333,10 +333,20 @@ align_tree() {
         say "  updating origin: $cur -> $url"
         git remote set-url origin "$url"
     fi
+    # A dirty tree FAILS the build. It used to warn and build the tree as-is,
+    # which on box1 (2026-10-06 -> 10-07) silently shipped a patch the owner had
+    # disabled: the patch file was moved out of patches/, so unapply_patches no
+    # longer knew to revert it, and every later build compiled it in while
+    # stamping patches=none — and ignored a pin, because the tree never moved.
+    # Production ran the rejected patch for a day and a half. A managed tree is
+    # corrallm's (the build runs `git clean -xdf` in it); changes nobody can
+    # account for are a reason to stop, not to build.
     if ! git diff --quiet || ! git diff --cached --quiet; then
-        say "  WARNING: $dir has uncommitted tracked changes; leaving as-is (not aligning to $ref)"
-        say "  at $(git rev-parse --short HEAD) $(git log -1 --format='%s')"
-        exit 0
+        say "  $dir has uncommitted tracked changes that are not in the current patch set:"
+        git status --porcelain --untracked-files=no | sed 's/^/    /' >&2
+        say "  refusing to build or align to $ref; inspect them, then discard with"
+        say "    git -C $dir checkout -- ."
+        exit 1
     fi
     say "  fetching $ref"
     if git fetch --tags origin "$ref" >&2; then
