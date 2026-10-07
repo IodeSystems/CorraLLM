@@ -65,7 +65,7 @@ Ordered by value to production. Owner actions first, because nothing else unbloc
 
 | # | Step | Who | Why now | Effort |
 |---|---|---|---|---|
-| 0 | **Tuner is blind on new llama.cpp builds:** the default log level no longer prints `KV … size = N MiB`, so `kvMiB` (per-slot memory for the slot tuner) reads 0 since build abeada33. Fix: add `-lv 4` to llama-server cmds (owner approves the cmd change), or parse another line. Found 2026-10-07 while fixing P53's loaded-context read. | owner decides, me | Silent: tuning falls back without saying so | 1 h |
+| ✅ 0 | ~~Tuner blind on new llama.cpp (`KV … size` line hidden at default log level)~~ — Swift cmd now has `-lv 4` (2026-10-07, owner OK); perSlotMiB reads 5,328 again. Log ring holds it: 200 of 500 lines in use under traffic. Other llama-server cmds (chandra, nomic) not changed — nomic has no KV cache; chandra on demand. | — | — | — |
 | ✅ 1 | ~~Run `sudo bash /tmp/cpu-boost-off.sh`~~ done 12:07 10-06, persistent via tmpfiles.d; cost −2..−3% (noise-sized), CPU 75 → 56–60 °C | owner | — | — |
 | 2 | P50: create the HA mean-of-six-thermostats helper; I point `roomEntity` at it | owner, then me | Heating saved is decided by the whole house, not the office | 5 min |
 | 3 | **Decode is not fully back.** Live tg 91–100 tok/s since the fix (10-06 10:00–14:00) vs 104–110 before 10-05; prefill is back (1,030–1,200 vs ~1,000). Compare per context bucket (prompts ran larger: 28–48k vs 26–34k) before calling it a regression. | me | Only open question on production speed | 30 min |
@@ -375,6 +375,11 @@ Live check: Swift Q6_K_S, K q8_0 / V q5_1, 188,000 configured / 188,160 loaded; 
 tp 1,040 tok/s, tg 96.1 tok/s, ctx 31,951 / 51,310 / 63,594 tokens. Loaded context was 0 on new
 llama.cpp (no `n_ctx =` line) — fixed via `n_ctx_slot × n_slots`.
 
+- **thinking tokens (`0cfc8e3`):** llama-server reports only `completion_tokens`; the proxy counts streamed
+  `reasoning_content` events (1 per token; think tags not streamed, so they fall in "answer"), non-stream
+  by character share. `activity.reasoning_tokens`, -1 = unmeasured. First live turns: 2,049/2,175,
+  655/812, 929/1,184 completion tokens were thinking (~80%, matching P42). The context figure already
+  included this turn's thinking; earlier turns' thinking is NOT resent by aw4 (0/200 bodies).
 - **risks:** UI not looked at in a browser (data verified through the API only). Quant comes from the
   FILE NAME — a renamed file reports wrong; reading the GGUF header would be exact but needs the host.
   Context-per-request covers turns that named a conversation (all of aw4's do: 3,478 of 3,478).
