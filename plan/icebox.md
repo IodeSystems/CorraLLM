@@ -172,3 +172,26 @@ kept at `~/.corrallm/tools/llama.cpp/patches-disabled/0001-cuda-blocking-sync.pa
 **Resume when.** CPU wear or heat becomes the constraint; move the file back to `patches/` and the
 next build applies it (the P52 benchmark then shows the cost).
 
+## EXL3 (exllamav3 / TabbyAPI) for Swift
+
+**What.** Serve Swift 1.5 as EXL3 through TabbyAPI instead of llama.cpp GGUF. Researched 2026-10-07:
+exllamav3 ≥ v0.0.41 supports Qwen3.8's hybrid architecture with MTP drafting, vision, reasoning split
+and tool calling (`tool_format: qwen3_coder`; argument deltas do not stream, tabbyAPI #460).
+
+**Why it is parked.** No artifact meets the bar: no KLD regression vs the live Q6_K_S (0.0016,
+ukisai, measured). `erlidev/Swift-1.5-Qwen3.8-27B-EXL3` tops out at 5.0 bpw h6, PREDICTED KLD 0.0026
+(from `sc_optimize` on the base model, not Swift); 4.5 → 0.0052, 4.0 → 0.0100. 6.0 bpw exists only for
+base Qwen3.8 (turboderp). A Swift 6.0 would need our own convert (BF16 ~51 GB) and is ~the same
+size as Q6_K_S, so decode — bandwidth-bound — has no reason to be faster; 3090-scaled estimates put
+EXL3+MTP at rough parity with llama.cpp+MTP on the 5090, with slower MTP prefill reported (tabby
+#451). Owner, 2026-10-07: "People seem to love exl3, but what I'm seeing is, high KLD and almost
+indiscriminate quantization traces."
+
+ninfer-ext (its own EXL3 format) is out on the same grounds: its quantizer accepts 5.0 bpw h6
+(`--bits 10 --head-bits 12`, half-bit units) but only 4.0 bpw has a tuned kernel path, and its only
+published artifact is base Qwen3.8 4.0 bpw, KL 0.0332. Upstream ninfer is NVFP4-only (excluded).
+
+**Resume when.** A ≥6 bpw Swift EXL3 is published with KLD MEASURED on Swift (same method as the
+GGUF figure) at ≤ 0.0016, and someone reports 5090 decode with MTP above our live ~100 tok/s at
+20–50k context.
+
