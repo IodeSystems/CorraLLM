@@ -22,7 +22,12 @@ import (
 var (
 	reNCtx   = regexp.MustCompile(`n_ctx\s*=\s*(\d+)`)
 	reNSlots = regexp.MustCompile(`n_slots\s*=\s*(\d+)`)
-	reKVMiB  = regexp.MustCompile(`KV\s+\w+\s+size\s*=\s*([\d.]+)\s*MiB`)
+	// Newer llama.cpp (seen on build abeada33, 2026-10-07) no longer prints
+	// "n_ctx = N" at its default verbosity, only
+	//   load_model: initializing, n_slots = 1, n_ctx_slot = 188160, kv_unified = 'false'
+	// so the total is n_ctx_slot × n_slots.
+	reNCtxSlot = regexp.MustCompile(`n_ctx_slot\s*=\s*(\d+)`)
+	reKVMiB    = regexp.MustCompile(`KV\s+\w+\s+size\s*=\s*([\d.]+)\s*MiB`)
 )
 
 // logBuffer is a backend's bounded, line-oriented capture of its stdout/stderr.
@@ -75,6 +80,13 @@ func (b *logBuffer) appendLine(line string) {
 		if m := reNSlots.FindStringSubmatch(line); m != nil {
 			if v, err := strconv.Atoi(m[1]); err == nil {
 				b.nSlots = v
+			}
+		}
+	}
+	if b.nCtx == 0 && b.nSlots > 0 {
+		if m := reNCtxSlot.FindStringSubmatch(line); m != nil {
+			if v, err := strconv.Atoi(m[1]); err == nil {
+				b.nCtx = v * b.nSlots
 			}
 		}
 	}

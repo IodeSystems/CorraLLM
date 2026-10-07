@@ -73,3 +73,13 @@ func TestLogBufferRingTrim(t *testing.T) {
 		t.Errorf("ring kept wrong tail: %v", lines)
 	}
 }
+
+// Newer llama.cpp prints only n_ctx_slot; the context is per slot times slots.
+func TestLogBufferNCtxFromSlotLine(t *testing.T) {
+	b := newLogBuffer(100)
+	_, _ = b.Write([]byte("0.07.272.575 I srv    load_model: initializing, n_slots = 2, n_ctx_slot = 94080, kv_unified = 'false'\n"))
+	nCtx, nSlots, _ := b.Stats()
+	if nCtx != 188160 || nSlots != 2 {
+		t.Errorf("nCtx %d nSlots %d, want 188160 and 2", nCtx, nSlots)
+	}
+}
