@@ -130,9 +130,23 @@ export function ModelSummary({
                 ? `${int(row.ctxRequestAvg)} / ${int(Number(row.ctxRequestP90))} / ${int(Number(row.ctxRequestP99))} tokens`
                 : '—'
             }
-            hint={`Prompt + completion tokens per served chat turn, over ${int(Number(row.ctxRequests))} turns that named a conversation.`}
+            hint={`Prompt + completion tokens per served chat turn (this turn's thinking included), over ${int(Number(row.ctxRequests))} turns that named a conversation.`}
           />
         </Stack>
+      )}
+      {row && Number(row.ctxRequests) > 0 && (
+        <Typography variant="caption" sx={{ color: C.textMuted, display: 'block', mt: 1, fontFamily: 'monospace' }}>
+          avg {int(row.ctxRequestAvg)} tokens = prompt {int(row.ctxPromptAvg)} (cached {int(row.ctxCachedAvg)})
+          {Number(row.ctxThinkingN) > 0 ? (
+            <>
+              {' '}+ thinking {int(row.ctxThinkingAvg)} + answer {int(row.ctxAnswerAvg)}
+              {Number(row.ctxThinkingN) < Number(row.ctxRequests) &&
+                ` (thinking measured on ${int(row.ctxThinkingN)} of ${int(row.ctxRequests)} turns)`}
+            </>
+          ) : (
+            ' + completion (thinking not measured in this window)'
+          )}
+        </Typography>
       )}
     </Box>
   )

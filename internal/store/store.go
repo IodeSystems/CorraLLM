@@ -455,6 +455,12 @@ var migrations = []string{
 	weatherSchema,
 	`CREATE INDEX IF NOT EXISTS idx_activity_conversation_ts
 	   ON activity_conversation(ts, served, conversation, messages, ctx_tokens)`,
+	// Thinking tokens: the part of completion_tokens the model spent reasoning
+	// (streamed as reasoning_content). llama-server reports only the total, so
+	// the proxy counts them (2026-10-07). -1 = not measured: every row written
+	// before this, and anything the proxy could not count — distinct from a
+	// measured 0 (thinking off).
+	`ALTER TABLE activity ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT -1`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -771,8 +777,13 @@ type Activity struct {
 	// signature of a caller with no max_tokens whose generations are running
 	// away — visible here per request rather than by reading a backend's slots.
 	FinishReason string
-	ReqBody      string // captured request payload, capped+summarized (P10b)
-	RespBody     string // captured response payload, capped+summarized (P10b)
+	// ReasoningTokens is how many of CompletionTokens were thinking, when
+	// ReasoningMeasured. Unmeasured is stored as -1, not 0: 0 means the model
+	// was measured to think not at all.
+	ReasoningTokens   int
+	ReasoningMeasured bool
+	ReqBody           string // captured request payload, capped+summarized (P10b)
+	RespBody          string // captured response payload, capped+summarized (P10b)
 	// RetryAfterMS is the backoff we PROMISED this caller when we turned them
 	// away — exactly the value that went out on the Retry-After header, not a
 	// re-derivation. Zero on anything that wasn't a 429 (and on 429 rows written
@@ -802,12 +813,12 @@ func (s *Store) InsertActivity(a Activity) error {
 		`INSERT INTO activity (ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
-		                       finish_reason, load_ms, retry_after_ms, ticket)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       finish_reason, load_ms, retry_after_ms, ticket, reasoning_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Requested, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
-		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket,
+		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket, reasoningCol(a),
 	)
 	if err != nil || a.Conversation == "" {
 		return err
@@ -818,6 +829,14 @@ func (s *Store) InsertActivity(a Activity) error {
 	}
 	return s.insertConversation(id, a.TS, a.Served, a.Conversation, a.ConversationMessages,
 		int64(a.PromptTokens+a.CompletionTokens))
+}
+
+// reasoningCol is the stored form of a row's thinking count: -1 when unmeasured.
+func reasoningCol(a Activity) int {
+	if !a.ReasoningMeasured {
+		return -1
+	}
+	return a.ReasoningTokens
 }
 
 // ActivityByID returns one full activity record including the captured payloads

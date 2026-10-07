@@ -1287,6 +1287,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// scheduler (limit budgets + cost share currency) at release.
 		var u usage
 		var finishReason string
+		var thinking int
+		var thinkingMeasured bool
 		var costUSD float64
 		var audioBytes int64
 		var cCost, pCost, gCost float64 // per-class $ (cached, processed, generated)
@@ -1319,6 +1321,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		default:
 			u = extractUsage(sc.buf, streaming)
 			finishReason = extractFinishReason(sc.buf, streaming)
+			thinking, thinkingMeasured = sc.thinkingTokens(u)
 			proc := u.PromptTokens - u.CachedTokens
 			if proc < 0 {
 				proc = 0
@@ -1446,6 +1449,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			CostUSD: costUSD, QueuedMS: queuedMS, LoadMS: loadMS,
 			AudioBytes: audioBytes, Error: errReason, TTFBMs: ttfbMS,
 			ReqBody: reqBody, RespBody: respBody, FinishReason: finishReason,
+			ReasoningTokens: thinking, ReasoningMeasured: thinkingMeasured,
 		})
 		return
 	}
@@ -3222,6 +3226,11 @@ type statusCapture struct {
 	buf         []byte    // bounded captured body for usage extraction
 	written     int64     // total response bytes — TTS (P9b) is metered by output size
 	firstWrite  time.Time // time of the first body write — for TTFB (P10b)
+	// thinkChunks counts streamed events carrying reasoning_content, across the
+	// WHOLE stream (buf keeps only a tail). thinkCarry holds the last bytes of
+	// the previous write so a marker split between writes is still counted.
+	thinkChunks int
+	thinkCarry  []byte
 	// bufLimit overrides usageCaptureLimit for this response. 0 = the default.
 	// Set small on surfaces whose body is never parsed for usage and whose only
 	// interesting case is a short error (images, P9h).
@@ -3260,6 +3269,7 @@ func (s *statusCapture) Write(b []byte) (int, error) {
 	s.written += int64(len(b))
 	s.live.recordProgress(len(b))
 	if s.streaming {
+		s.countThinking(b)
 		// Keep a rolling tail — the final SSE event holds usage. Trim lazily at
 		// 2× the cap so a long stream stays amortized O(n), not O(n²): the tail
 		// we retain still covers the final event (well under one cap's worth).
@@ -3277,6 +3287,57 @@ func (s *statusCapture) Write(b []byte) (int, error) {
 		}
 	}
 	return s.ResponseWriter.Write(b)
+}
+
+// thinkMarker opens a non-empty reasoning delta in llama-server's stream. One
+// streamed event carries one generated token, so counting these counts the
+// thinking tokens (measured 2026-10-07: 47 reasoning + 15 content events for
+// completion_tokens 65 — the 3 missing are the think tags, which are not
+// streamed and so land in the answer's share).
+var thinkMarker = []byte(`"reasoning_content":"`)
+
+func (s *statusCapture) countThinking(b []byte) {
+	data := append(s.thinkCarry, b...)
+	s.thinkChunks += bytes.Count(data, thinkMarker)
+	keep := len(thinkMarker) - 1
+	if len(data) < keep {
+		keep = len(data)
+	}
+	s.thinkCarry = append(s.thinkCarry[:0], data[len(data)-keep:]...)
+}
+
+// thinkingTokens is how many of the completion's tokens were thinking, and
+// whether that is known. Only for llama-server replies (they carry timings):
+// another backend's reasoning is shaped differently, and reading 0 there would
+// claim a measurement that was never made.
+//
+// Streaming: counted events (exact to within the unstreamed think tags).
+// Non-streaming: the reasoning text's share of the reply's characters, times
+// completion_tokens — an estimate, and unknown when the body passed the cap.
+func (s *statusCapture) thinkingTokens(u usage) (int, bool) {
+	if u.PredictedPerSec <= 0 || u.CompletionTokens <= 0 {
+		return 0, false
+	}
+	if s.streaming {
+		return min(s.thinkChunks, u.CompletionTokens), true
+	}
+	var r struct {
+		Choices []struct {
+			Message struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(s.buf, &r) != nil || len(r.Choices) == 0 {
+		return 0, false
+	}
+	m := r.Choices[0].Message
+	total := len(m.Content) + len(m.ReasoningContent)
+	if total == 0 {
+		return 0, true
+	}
+	return int(float64(u.CompletionTokens) * float64(len(m.ReasoningContent)) / float64(total)), true
 }
 
 // Flush exposes the underlying flusher so SSE streaming works through the capture.

@@ -113,3 +113,38 @@ func TestAvgTailsP99(t *testing.T) {
 		t.Errorf("avg %v p90 %v p99 %v", avg, p90, p99)
 	}
 }
+
+// The context breaks down into prompt (with its cached part), thinking and
+// answer. Thinking and answer average over measured turns only: a turn from
+// before the counter existed is unknown, not a turn that did not think.
+func TestCtxStatsBreakdown(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	add := func(ts int64, prompt, cached, completion, thinking int, measured bool) {
+		t.Helper()
+		if err := st.InsertActivity(Activity{TS: ts, Served: "m", Path: "/v1/chat/completions", Status: 200,
+			PromptTokens: prompt, CachedTokens: cached, CompletionTokens: completion,
+			ReasoningTokens: thinking, ReasoningMeasured: measured,
+			Conversation: "c", ConversationMessages: int(ts) * 2}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(1, 1000, 800, 300, 200, true)
+	add(2, 2000, 1500, 100, 0, true) // thinking off: a measured 0
+	add(3, 3000, 0, 500, 0, false)   // before the counter: unknown
+
+	rows, _, err := st.CtxStats(Between(1, 4))
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows %+v err %v", rows, err)
+	}
+	m := rows[0]
+	if m.PromptAvg != 2000 || fmt.Sprintf("%.1f", m.CachedAvg) != "766.7" {
+		t.Errorf("prompt %v cached %v", m.PromptAvg, m.CachedAvg)
+	}
+	if m.ThinkingN != 2 || m.ThinkingAvg != 100 || m.AnswerAvg != 100 {
+		t.Errorf("thinkingN %d thinking %v answer %v, want 2, 100, 100", m.ThinkingN, m.ThinkingAvg, m.AnswerAvg)
+	}
+}

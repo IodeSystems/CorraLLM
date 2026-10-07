@@ -1293,6 +1293,12 @@ type RollupRow struct {
 	CtxTailAvg    float64 `json:"ctxTailAvg" doc:"Per session tail: mean context tokens at each conversation's LAST turn in the window. Each turn overwrites the one before, so a conversation counts once."`
 	CtxTailP90    int64   `json:"ctxTailP90" doc:"Per session tail: 90th percentile of context tokens at each conversation's last turn."`
 	CtxTailP99    int64   `json:"ctxTailP99" doc:"Per session tail: 99th percentile of context tokens at each conversation's last turn."`
+	// What a request's context is made of (means over the same turns).
+	CtxPromptAvg   float64 `json:"ctxPromptAvg" doc:"Per request: mean prompt tokens (what the caller sent, including history)."`
+	CtxCachedAvg   float64 `json:"ctxCachedAvg" doc:"Per request: mean prompt tokens the backend already held (not re-processed)."`
+	CtxThinkingN   int64   `json:"ctxThinkingN" doc:"Turns whose thinking was measured — what ctxThinkingAvg/ctxAnswerAvg are over. Fewer than ctxRequests over windows reaching back before 2026-10-07, or for non-llama backends."`
+	CtxThinkingAvg float64 `json:"ctxThinkingAvg" doc:"Per request: mean completion tokens spent thinking (reasoning_content), over ctxThinkingN turns."`
+	CtxAnswerAvg   float64 `json:"ctxAnswerAvg" doc:"Per request: mean completion tokens of the answer (completion minus thinking), over ctxThinkingN turns."`
 
 	// SPEED AND CACHE, AS DISTRIBUTIONS. Per request: the mean is the speed a
 	// caller typically saw, P10 is the slow tail (where a slowdown shows first),
@@ -1708,6 +1714,8 @@ func setPerf(row *RollupRow, p store.PerfStat) {
 func setCtx(row *RollupRow, c store.CtxStat) {
 	row.CtxRequests, row.CtxRequestAvg, row.CtxRequestP90, row.CtxRequestP99 = c.Requests, c.RequestAvg, c.RequestP90, c.RequestP99
 	row.CtxSessions, row.CtxTailAvg, row.CtxTailP90, row.CtxTailP99 = c.Sessions, c.TailAvg, c.TailP90, c.TailP99
+	row.CtxPromptAvg, row.CtxCachedAvg = c.PromptAvg, c.CachedAvg
+	row.CtxThinkingN, row.CtxThinkingAvg, row.CtxAnswerAvg = c.ThinkingN, c.ThinkingAvg, c.AnswerAvg
 }
 
 // --- per-key usage rollup (P8-beyond) ---

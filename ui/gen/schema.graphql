@@ -2586,6 +2586,12 @@ type corrallm_RollupRow {
   completionTokens: Long!
   """Total cost, USD."""
   costUsd: Float!
+  """Per request: mean completion tokens of the answer (completion minus thinking), over ctxThinkingN turns."""
+  ctxAnswerAvg: Float!
+  """Per request: mean prompt tokens the backend already held (not re-processed)."""
+  ctxCachedAvg: Float!
+  """Per request: mean prompt tokens (what the caller sent, including history)."""
+  ctxPromptAvg: Float!
   """Per request: mean context tokens (prompt + completion) per served chat turn. A long conversation counts once per turn."""
   ctxRequestAvg: Float!
   """Per request: 90th percentile of context tokens per served chat turn."""
@@ -2602,6 +2608,10 @@ type corrallm_RollupRow {
   ctxTailP90: Long!
   """Per session tail: 99th percentile of context tokens at each conversation's last turn."""
   ctxTailP99: Long!
+  """Per request: mean completion tokens spent thinking (reasoning_content), over ctxThinkingN turns."""
+  ctxThinkingAvg: Float!
+  """Turns whose thinking was measured — what ctxThinkingAvg/ctxAnswerAvg are over. Fewer than ctxRequests over windows reaching back before 2026-10-07, or for non-llama backends."""
+  ctxThinkingN: Long!
   """Total dwell, milliseconds."""
   dwellMs: Long!
   """Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."""

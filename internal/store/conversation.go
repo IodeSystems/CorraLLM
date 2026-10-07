@@ -173,6 +173,18 @@ type CtxStat struct {
 	TailAvg    float64
 	TailP90    int64
 	TailP99    int64
+
+	// WHAT THE CONTEXT IS MADE OF, per request (means over the same turns as
+	// RequestAvg). Prompt is what the caller sent, Cached the part of it the
+	// backend already held. Thinking and Answer split the completion, and are
+	// over ThinkingN turns only — the ones whose thinking was measured — so
+	// Prompt + Thinking + Answer equals RequestAvg only when ThinkingN equals
+	// Requests.
+	PromptAvg   float64
+	CachedAvg   float64
+	ThinkingN   int64
+	ThinkingAvg float64
+	AnswerAvg   float64
 }
 
 // CtxStats reads per-request and per-session-tail context size over a window,
@@ -187,10 +199,15 @@ type CtxStat struct {
 // are left out of both readings.
 func (s *Store) CtxStats(w Window) (rows []CtxStat, total CtxStat, err error) {
 	wWhere, wArgs := w.ts()
+	// The window filter runs inside the subquery: both tables have a ts column.
 	q, err := s.db.Query(
-		`SELECT served, conversation, messages, ctx_tokens
-		 FROM activity_conversation WHERE `+wWhere+` AND ctx_tokens > 0
-		 ORDER BY ts`, wArgs...)
+		`SELECT c.served, c.conversation, c.messages, c.ctx_tokens,
+		        COALESCE(a.prompt_tokens, 0), COALESCE(a.cached_tokens, 0),
+		        COALESCE(a.completion_tokens, 0), COALESCE(a.reasoning_tokens, -1)
+		 FROM (SELECT activity_id, ts, served, conversation, messages, ctx_tokens
+		       FROM activity_conversation WHERE `+wWhere+` AND ctx_tokens > 0) c
+		 LEFT JOIN activity a ON a.id = c.activity_id
+		 ORDER BY c.ts`, wArgs...)
 	if err != nil {
 		return nil, CtxStat{}, err
 	}
@@ -203,15 +220,24 @@ func (s *Store) CtxStats(w Window) (rows []CtxStat, total CtxStat, err error) {
 	}
 	reqs := map[string][]int64{}
 	tails := map[string][]int64{}
+	parts := map[string]*ctxParts{}
+	var allParts ctxParts
 	sessions := map[string]*open{}
 	for q.Next() {
 		var served, conv string
 		var messages int
-		var ctx int64
-		if err := q.Scan(&served, &conv, &messages, &ctx); err != nil {
+		var ctx, prompt, cached, completion, thinking int64
+		if err := q.Scan(&served, &conv, &messages, &ctx, &prompt, &cached, &completion, &thinking); err != nil {
 			return nil, CtxStat{}, err
 		}
 		reqs[served] = append(reqs[served], ctx)
+		pp := parts[served]
+		if pp == nil {
+			pp = &ctxParts{}
+			parts[served] = pp
+		}
+		pp.add(prompt, cached, completion, thinking)
+		allParts.add(prompt, cached, completion, thinking)
 		if o, ok := sessions[conv]; ok && messages < o.messages {
 			tails[o.served] = append(tails[o.served], o.ctx)
 		}
@@ -226,12 +252,45 @@ func (s *Store) CtxStats(w Window) (rows []CtxStat, total CtxStat, err error) {
 
 	var allReqs, allTails []int64
 	for served, r := range reqs {
-		rows = append(rows, ctxStat(served, r, tails[served]))
+		st := ctxStat(served, r, tails[served])
+		parts[served].fill(&st)
+		rows = append(rows, st)
 		allReqs = append(allReqs, r...)
 		allTails = append(allTails, tails[served]...)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Served < rows[j].Served })
-	return rows, ctxStat("", allReqs, allTails), nil
+	tot := ctxStat("", allReqs, allTails)
+	allParts.fill(&tot)
+	return rows, tot, nil
+}
+
+// ctxParts sums what each request's context is made of.
+type ctxParts struct {
+	n, prompt, cached         int64
+	thinkN, thinking, answers int64
+}
+
+func (p *ctxParts) add(prompt, cached, completion, thinking int64) {
+	p.n++
+	p.prompt += prompt
+	p.cached += cached
+	if thinking >= 0 { // -1 = not measured
+		p.thinkN++
+		p.thinking += thinking
+		p.answers += max(completion-thinking, 0)
+	}
+}
+
+func (p *ctxParts) fill(st *CtxStat) {
+	if p.n > 0 {
+		st.PromptAvg = float64(p.prompt) / float64(p.n)
+		st.CachedAvg = float64(p.cached) / float64(p.n)
+	}
+	st.ThinkingN = p.thinkN
+	if p.thinkN > 0 {
+		st.ThinkingAvg = float64(p.thinking) / float64(p.thinkN)
+		st.AnswerAvg = float64(p.answers) / float64(p.thinkN)
+	}
 }
 
 func ctxStat(served string, reqs, tails []int64) CtxStat {

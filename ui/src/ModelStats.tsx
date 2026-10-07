@@ -141,6 +141,11 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           ctxRequestAvg
           ctxRequestP90
           ctxRequestP99
+          ctxPromptAvg
+          ctxCachedAvg
+          ctxThinkingN
+          ctxThinkingAvg
+          ctxAnswerAvg
           ctxSessions
           ctxTailAvg
           ctxTailP90
@@ -203,6 +208,11 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           ctxRequestAvg
           ctxRequestP90
           ctxRequestP99
+          ctxPromptAvg
+          ctxCachedAvg
+          ctxThinkingN
+          ctxThinkingAvg
+          ctxAnswerAvg
           ctxSessions
           ctxTailAvg
           ctxTailP90
