@@ -65,7 +65,9 @@ Ordered by value to production. Owner actions first, because nothing else unbloc
 
 | # | Step | Who | Why now | Effort |
 |---|---|---|---|---|
-| 1 | Run `sudo bash /tmp/cpu-boost-off.sh` (`revert` undoes) | owner | CPU wear, owner's ask; spin patch was declined. **/tmp is cleared on reboot** — run it before one, or ask for it in `bin/`. Then I re-benchmark once. | 1 min |
+| 0 | **Tuner is blind on new llama.cpp builds:** the default log level no longer prints `KV … size = N MiB`, so `kvMiB` (per-slot memory for the slot tuner) reads 0 since build abeada33. Fix: add `-lv 4` to llama-server cmds (owner approves the cmd change), or parse another line. Found 2026-10-07 while fixing P53's loaded-context read. | owner decides, me | Silent: tuning falls back without saying so | 1 h |
+| ✅ 1 | ~~Run `sudo bash /tmp/cpu-boost-off.sh`~~ done 12:07 10-06, persistent via tmpfiles.d; cost −2..−3% (noise-sized), CPU 75 → 56–60 °C | owner | — | — |
+| ~~1~~ | Run `sudo bash /tmp/cpu-boost-off.sh` (`revert` undoes) | owner | CPU wear, owner's ask; spin patch was declined. **/tmp is cleared on reboot** — run it before one, or ask for it in `bin/`. Then I re-benchmark once. | 1 min |
 | 2 | P50: create the HA mean-of-six-thermostats helper; I point `roomEntity` at it | owner, then me | Heating saved is decided by the whole house, not the office | 5 min |
 | 3 | **Decode is not fully back.** Live tg 91–100 tok/s since the fix (10-06 10:00–14:00) vs 104–110 before 10-05; prefill is back (1,030–1,200 vs ~1,000). Compare per context bucket (prompts ran larger: 28–48k vs 26–34k) before calling it a regression. | me | Only open question on production speed | 30 min |
 | 4 | Route `corrallm tools build` (CLI) through the daemon, or refuse it while the daemon is up | me | The CLI skips the start check AND the benchmark; it is the path used all through P51 | ½ day |
@@ -83,7 +85,7 @@ follow-ups. Parked on hardware: §9.
 **Numbering.** Git history is authoritative for phase numbers. A second, dashboard-flavoured
 series was written into the old roadmap under numbers that collide with it (P15a/P15b, P17–P21);
 those trees are archived in `done.md` § Dashboard & observability under descriptive names.
-**Next free number: P53.**
+**Next free number: P54.**
 
 **Deviations from the original design:** (1) UI served from `--web-root` dir, not `go:embed`
 (matches redline2); (2) live events use **SSE**, not WebSocket (server→client only, no
@@ -362,6 +364,23 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ✅ P53 — model page summary: quant, KV cache, context, speed and context p90/p99 — 2026-10-07
+
+Owner: the model page must report quant, KV cache quants, ctx length, avg tp/tg, total requests, ctx
+per request avg/p90/p99. Built (`547bd0b`, `ee2682d`, deployed): `config.ParseLaunch` reads each
+placement's cmd (comments, continuations, exports, `-m` / `--hf-file` / `-hf repo:TAG`, `-ctk/-ctv`,
+`-c`) → placement fields `quant, cacheTypeK, cacheTypeV, ctxSize, modelFile, llamaServer`. p99 added to
+speed `Dist` and context stats. `ModelSummary` strip above the tabs, window picker (default 24 h).
+Live check: Swift Q6_K_S, K q8_0 / V q5_1, 188,000 configured / 188,160 loaded; 24 h: 3,478 requests,
+tp 1,040 tok/s, tg 96.1 tok/s, ctx 31,951 / 51,310 / 63,594 tokens. Loaded context was 0 on new
+llama.cpp (no `n_ctx =` line) — fixed via `n_ctx_slot × n_slots`.
+
+- **risks:** UI not looked at in a browser (data verified through the API only). Quant comes from the
+  FILE NAME — a renamed file reports wrong; reading the GGUF header would be exact but needs the host.
+  Context-per-request covers turns that named a conversation (all of aw4's do: 3,478 of 3,478).
+- `go vet` fails on two pre-existing copylocks (`config/write.go:52`, `api/enroll.go:289`, from
+  `2b54d67`) — DoD item 1 is red regardless of this work; not fixed here.
 
 ### ✅ P52 — library record + benchmark before a new build is kept — 2026-10-06 → [`done.md`](done.md)
 
