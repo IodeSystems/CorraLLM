@@ -51,6 +51,7 @@ import {
 } from '@/format'
 import { BenchProbeDetail } from '@/BenchProbeDetail'
 import { PauseCostNote, PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost } from '@/Pause'
+import { ModelSummary } from '@/ModelSummary'
 
 // --- data ---------------------------------------------------------------
 
@@ -96,6 +97,12 @@ const ConsoleDoc = graphql(/* GraphQL */ `
             slots
             memoryMiB
             upstream
+            modelFile
+            quant
+            cacheTypeK
+            cacheTypeV
+            ctxSize
+            llamaServer
           }
         }
         # For the pause dialog: which fallback lists keep serving without this
@@ -423,6 +430,12 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
           pause.mutate({ resumeAt, reason })
           setPauseOpen(false)
         }}
+      />
+
+      <ModelSummary
+        name={name}
+        placements={(model.placements ?? []).map((p) => ({ ...p, ctxSize: Number(p.ctxSize) }))}
+        loadedCtx={res?.nCtx ? Number(res.nCtx) : undefined}
       />
 
       <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>

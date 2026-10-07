@@ -1288,9 +1288,11 @@ type RollupRow struct {
 	CtxRequests   int64   `json:"ctxRequests" doc:"Served chat turns that named a conversation — what ctxRequestAvg/ctxRequestP90 are over."`
 	CtxRequestAvg float64 `json:"ctxRequestAvg" doc:"Per request: mean context tokens (prompt + completion) per served chat turn. A long conversation counts once per turn."`
 	CtxRequestP90 int64   `json:"ctxRequestP90" doc:"Per request: 90th percentile of context tokens per served chat turn."`
+	CtxRequestP99 int64   `json:"ctxRequestP99" doc:"Per request: 99th percentile of context tokens per served chat turn."`
 	CtxSessions   int64   `json:"ctxSessions" doc:"Conversations seen in the window — what ctxTailAvg/ctxTailP90 are over. A conversation whose message count drops (restarted or compacted) counts again."`
 	CtxTailAvg    float64 `json:"ctxTailAvg" doc:"Per session tail: mean context tokens at each conversation's LAST turn in the window. Each turn overwrites the one before, so a conversation counts once."`
 	CtxTailP90    int64   `json:"ctxTailP90" doc:"Per session tail: 90th percentile of context tokens at each conversation's last turn."`
+	CtxTailP99    int64   `json:"ctxTailP99" doc:"Per session tail: 99th percentile of context tokens at each conversation's last turn."`
 
 	// SPEED AND CACHE, AS DISTRIBUTIONS. Per request: the mean is the speed a
 	// caller typically saw, P10 is the slow tail (where a slowdown shows first),
@@ -1300,10 +1302,12 @@ type RollupRow struct {
 	TgAvg    float64 `json:"tgAvg" doc:"Decode (generation) speed, tokens/sec: mean over requests."`
 	TgP10    float64 `json:"tgP10" doc:"Decode speed, tokens/sec: 10th percentile — the slow tail."`
 	TgP90    float64 `json:"tgP90" doc:"Decode speed, tokens/sec: 90th percentile — the fast tail."`
+	TgP99    float64 `json:"tgP99" doc:"Decode speed, tokens/sec: 99th percentile."`
 	TpN      int64   `json:"tpN" doc:"Requests that reported a prefill speed — what the tp* figures are over."`
 	TpAvg    float64 `json:"tpAvg" doc:"Prefill (prompt processing) speed, tokens/sec: mean over requests."`
 	TpP10    float64 `json:"tpP10" doc:"Prefill speed, tokens/sec: 10th percentile — the slow tail."`
 	TpP90    float64 `json:"tpP90" doc:"Prefill speed, tokens/sec: 90th percentile — the fast tail."`
+	TpP99    float64 `json:"tpP99" doc:"Prefill speed, tokens/sec: 99th percentile."`
 	CacheN   int64   `json:"cacheN" doc:"Requests the per-request cache figures are over: served requests with a prompt, from models that reported any cache hit in the window. 0 means nothing here reports a cache — not a measured 0%."`
 	CacheAvg float64 `json:"cacheAvg" doc:"Per-request cache hit (cached / prompt tokens), 0..1: mean over requests. cacheHitRate is the token-weighted figure."`
 	CacheP90 float64 `json:"cacheP90" doc:"Per-request cache hit, 0..1: 90th percentile."`
@@ -1696,14 +1700,14 @@ func setHeat(row *RollupRow, windowHours float64, th *config.Thermal, costPerKwh
 }
 
 func setPerf(row *RollupRow, p store.PerfStat) {
-	row.TgN, row.TgAvg, row.TgP10, row.TgP90 = p.TG.N, p.TG.Avg, p.TG.P10, p.TG.P90
-	row.TpN, row.TpAvg, row.TpP10, row.TpP90 = p.TP.N, p.TP.Avg, p.TP.P10, p.TP.P90
+	row.TgN, row.TgAvg, row.TgP10, row.TgP90, row.TgP99 = p.TG.N, p.TG.Avg, p.TG.P10, p.TG.P90, p.TG.P99
+	row.TpN, row.TpAvg, row.TpP10, row.TpP90, row.TpP99 = p.TP.N, p.TP.Avg, p.TP.P10, p.TP.P90, p.TP.P99
 	row.CacheN, row.CacheAvg, row.CacheP90 = p.Cache.N, p.Cache.Avg, p.Cache.P90
 }
 
 func setCtx(row *RollupRow, c store.CtxStat) {
-	row.CtxRequests, row.CtxRequestAvg, row.CtxRequestP90 = c.Requests, c.RequestAvg, c.RequestP90
-	row.CtxSessions, row.CtxTailAvg, row.CtxTailP90 = c.Sessions, c.TailAvg, c.TailP90
+	row.CtxRequests, row.CtxRequestAvg, row.CtxRequestP90, row.CtxRequestP99 = c.Requests, c.RequestAvg, c.RequestP90, c.RequestP99
+	row.CtxSessions, row.CtxTailAvg, row.CtxTailP90, row.CtxTailP99 = c.Sessions, c.TailAvg, c.TailP90, c.TailP99
 }
 
 // --- per-key usage rollup (P8-beyond) ---
@@ -2463,6 +2467,15 @@ type PlacementView struct {
 	Slots         int      `json:"slots" doc:"Concurrency this placement reported."`
 	MemoryMiB     int      `json:"memoryMiB" doc:"Peak measured footprint on this placement."`
 	Upstream      string   `json:"upstream" doc:"Id the backend answers to."`
+
+	// READ FROM THE CMD (config.ParseLaunch): what is configured, known before
+	// the model has ever loaded. contextLength above is what it actually got.
+	ModelFile string `json:"modelFile" doc:"Weights file the cmd loads (-m, else --hf-file, else the -hf repo). Empty when the cmd does not say."`
+	Quant     string `json:"quant" doc:"Weight quant read from the weights file name (Q6_K_S, Q8_0, IQ4_XS, BF16 ...) or an -hf repo's :TAG. Empty when unreadable."`
+	CacheK    string `json:"cacheTypeK" doc:"KV cache type for K (--cache-type-k). Empty when unset: llama.cpp's default is f16 (see llamaServer)."`
+	CacheV    string `json:"cacheTypeV" doc:"KV cache type for V (--cache-type-v). Empty when unset: llama.cpp's default is f16 (see llamaServer)."`
+	CtxSize   int    `json:"ctxSize" doc:"Context the cmd asks for (-c / --ctx-size), tokens. 0 = not given."`
+	Llama     bool   `json:"llamaServer" doc:"The cmd runs llama-server, so unset KV types mean f16."`
 }
 
 type ModalityView struct {
@@ -2484,6 +2497,8 @@ func (h *Handlers) placementViews(name string, m config.Model) []PlacementView {
 	out := []PlacementView{}
 	for _, pl := range m.PlacementList() {
 		v := PlacementView{Name: pl.Name, Server: pl.Server, Cmd: pl.Cmd}
+		l := config.ParseLaunch(pl.Cmd)
+		v.ModelFile, v.Quant, v.CacheK, v.CacheV, v.CtxSize, v.Llama = l.ModelFile, l.Quant, l.CacheK, l.CacheV, l.Ctx, l.Llama
 		if t, err := h.config().TargetFor(name, m.ForPlacement(pl)); err == nil && t != nil {
 			v.Target = t.BaseURLString()
 		}

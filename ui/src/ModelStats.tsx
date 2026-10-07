@@ -140,6 +140,7 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           ctxRequests
           ctxRequestAvg
           ctxRequestP90
+          ctxRequestP99
           ctxSessions
           ctxTailAvg
           ctxTailP90
@@ -168,10 +169,12 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           tgAvg
           tgP10
           tgP90
+          tgP99
           tpN
           tpAvg
           tpP10
           tpP90
+          tpP99
           cacheN
           cacheAvg
           cacheP90
@@ -199,6 +202,7 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           ctxRequests
           ctxRequestAvg
           ctxRequestP90
+          ctxRequestP99
           ctxSessions
           ctxTailAvg
           ctxTailP90
@@ -206,10 +210,12 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           tgAvg
           tgP10
           tgP90
+          tgP99
           tpN
           tpAvg
           tpP10
           tpP90
+          tpP99
           cacheN
           cacheAvg
           cacheP90

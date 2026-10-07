@@ -55,3 +55,18 @@ func TestPerfStats(t *testing.T) {
 		t.Errorf("total = %+v", total)
 	}
 }
+
+// P99 is the nearest rank: over 1..200 it is the 198th value, not the max.
+func TestDistP99IsNearestRank(t *testing.T) {
+	v := make([]float64, 200)
+	for i := range v {
+		v[len(v)-1-i] = float64(i + 1) // unsorted on purpose
+	}
+	d := dist(v)
+	if d.P90 != 180 || d.P99 != 198 {
+		t.Errorf("P90 %v P99 %v, want 180 and 198", d.P90, d.P99)
+	}
+	if one := dist([]float64{7}); one.P99 != 7 {
+		t.Errorf("single value P99 = %v", one.P99)
+	}
+}

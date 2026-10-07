@@ -14,6 +14,7 @@ type Dist struct {
 	Avg float64
 	P10 float64
 	P90 float64
+	P99 float64
 }
 
 // PerfStat is per-request speed and cache behaviour for one served model (or,
@@ -119,5 +120,5 @@ func dist(v []float64) Dist {
 		sum += x
 	}
 	rank := func(p float64) float64 { return v[int(math.Ceil(p*float64(len(v))))-1] }
-	return Dist{N: int64(len(v)), Avg: sum / float64(len(v)), P10: rank(0.1), P90: rank(0.9)}
+	return Dist{N: int64(len(v)), Avg: sum / float64(len(v)), P10: rank(0.1), P90: rank(0.9), P99: rank(0.99)}
 }

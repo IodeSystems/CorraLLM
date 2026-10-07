@@ -102,3 +102,14 @@ func TestBackfillConversations(t *testing.T) {
 		t.Fatalf("stats = %+v", rows)
 	}
 }
+
+func TestAvgTailsP99(t *testing.T) {
+	v := make([]int64, 100)
+	for i := range v {
+		v[i] = int64(100 - i)
+	}
+	avg, p90, p99 := avgTails(v)
+	if avg != 50.5 || p90 != 90 || p99 != 99 {
+		t.Errorf("avg %v p90 %v p99 %v", avg, p90, p99)
+	}
+}

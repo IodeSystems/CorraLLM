@@ -2192,22 +2192,34 @@ type corrallm_PauseModelOutputBody {
 }
 
 type corrallm_PlacementView {
+  """KV cache type for K (--cache-type-k). Empty when unset: llama.cpp's default is f16 (see llamaServer)."""
+  cacheTypeK: String!
+  """KV cache type for V (--cache-type-v). Empty when unset: llama.cpp's default is f16 (see llamaServer)."""
+  cacheTypeV: String!
   """What runs there."""
   cmd: String!
   """Context this placement actually got when probed."""
   contextLength: Long!
+  """Context the cmd asks for (-c / --ctx-size), tokens. 0 = not given."""
+  ctxSize: Long!
   """Whether this backend serves a web UI (probed)."""
   hasUI: Boolean!
+  """The cmd runs llama-server, so unset KV types mean f16."""
+  llamaServer: Boolean!
   """Peak measured footprint on this placement."""
   memoryMiB: Long!
   """Probed input modalities for this placement."""
   modalities: [String!]!
+  """Weights file the cmd loads (-m, else --hf-file, else the -hf repo). Empty when the cmd does not say."""
+  modelFile: String!
   """Stable id: what the process, profile and capability record are filed under."""
   name: String!
   """Whether this placement has ever been probed."""
   probed: Boolean!
   """The recorded capabilities were taken from a DIFFERENT cmd than the one configured now."""
   probedStale: Boolean!
+  """Weight quant read from the weights file name (Q6_K_S, Q8_0, IQ4_XS, BF16 ...) or an -hf repo's :TAG. Empty when unreadable."""
+  quant: String!
   """The box."""
   server: String!
   """Concurrency this placement reported."""
@@ -2578,6 +2590,8 @@ type corrallm_RollupRow {
   ctxRequestAvg: Float!
   """Per request: 90th percentile of context tokens per served chat turn."""
   ctxRequestP90: Long!
+  """Per request: 99th percentile of context tokens per served chat turn."""
+  ctxRequestP99: Long!
   """Served chat turns that named a conversation — what ctxRequestAvg/ctxRequestP90 are over."""
   ctxRequests: Long!
   """Conversations seen in the window — what ctxTailAvg/ctxTailP90 are over. A conversation whose message count drops (restarted or compacted) counts again."""
@@ -2586,6 +2600,8 @@ type corrallm_RollupRow {
   ctxTailAvg: Float!
   """Per session tail: 90th percentile of context tokens at each conversation's last turn."""
   ctxTailP90: Long!
+  """Per session tail: 99th percentile of context tokens at each conversation's last turn."""
+  ctxTailP99: Long!
   """Total dwell, milliseconds."""
   dwellMs: Long!
   """Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."""
@@ -2620,6 +2636,8 @@ type corrallm_RollupRow {
   tgP10: Float!
   """Decode speed, tokens/sec: 90th percentile — the fast tail."""
   tgP90: Float!
+  """Decode speed, tokens/sec: 99th percentile."""
+  tgP99: Float!
   """What that heat did to the room's climate bill, from config thermal: POSITIVE is extra cooling cost (room above the cooling target), NEGATIVE is heating saved (room below the heating target), 0 between the targets, when a fan cannot cool, or with no thermal config. energyBtu / 100000 x the active cost per therm."""
   thermalUsd: Float!
   """Prefill (prompt processing) speed, tokens/sec: mean over requests."""
@@ -2630,6 +2648,8 @@ type corrallm_RollupRow {
   tpP10: Float!
   """Prefill speed, tokens/sec: 90th percentile — the fast tail."""
   tpP90: Float!
+  """Prefill speed, tokens/sec: 99th percentile."""
+  tpP99: Float!
   """The model's cost class — its commandCosts key. Empty when the model is no longer in the config."""
   type: String!
   """The part of costUsd that is neither: nonzero only when billing is "unattributed"."""

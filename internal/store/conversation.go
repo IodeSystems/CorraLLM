@@ -168,9 +168,11 @@ type CtxStat struct {
 	Requests   int64
 	RequestAvg float64
 	RequestP90 int64
+	RequestP99 int64
 	Sessions   int64
 	TailAvg    float64
 	TailP90    int64
+	TailP99    int64
 }
 
 // CtxStats reads per-request and per-session-tail context size over a window,
@@ -234,20 +236,22 @@ func (s *Store) CtxStats(w Window) (rows []CtxStat, total CtxStat, err error) {
 
 func ctxStat(served string, reqs, tails []int64) CtxStat {
 	st := CtxStat{Served: served, Requests: int64(len(reqs)), Sessions: int64(len(tails))}
-	st.RequestAvg, st.RequestP90 = avgP90(reqs)
-	st.TailAvg, st.TailP90 = avgP90(tails)
+	st.RequestAvg, st.RequestP90, st.RequestP99 = avgTails(reqs)
+	st.TailAvg, st.TailP90, st.TailP99 = avgTails(tails)
 	return st
 }
 
-// avgP90 is the mean and the nearest-rank 90th percentile. Sorts in place.
-func avgP90(v []int64) (float64, int64) {
+// avgTails is the mean and the nearest-rank 90th and 99th percentiles. Sorts
+// in place.
+func avgTails(v []int64) (avg float64, p90, p99 int64) {
 	if len(v) == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
 	sort.Slice(v, func(i, j int) bool { return v[i] < v[j] })
 	var sum int64
 	for _, x := range v {
 		sum += x
 	}
-	return float64(sum) / float64(len(v)), v[int(math.Ceil(0.9*float64(len(v))))-1]
+	rank := func(p float64) int64 { return v[int(math.Ceil(p*float64(len(v))))-1] }
+	return float64(sum) / float64(len(v)), rank(0.9), rank(0.99)
 }
