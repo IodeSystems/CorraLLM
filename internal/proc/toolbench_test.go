@@ -61,3 +61,23 @@ func TestBenchPromptScalesWithTheRequestedSize(t *testing.T) {
 }
 
 func jsonNum(f float64) string { b, _ := json.Marshal(f); return string(b) }
+
+// An evicted process leaves the table at once but holds its port until it
+// exits. The benchmark must wait for the exit, or it health-checks the dying
+// production process (box1, 2026-10-07).
+func TestFullyStoppedWaitsForTheExit(t *testing.T) {
+	mgr := NewManager(deadPortModel(t))
+	defer mgr.Shutdown()
+	if !mgr.fullyStopped("A") {
+		t.Fatal("a model with no process reads as running")
+	}
+	mgr.mu.Lock()
+	mgr.stopping = map[string]chan struct{}{"A": make(chan struct{})}
+	mgr.mu.Unlock()
+	if mgr.StateOf("A") != StateAbsent {
+		t.Fatal("setup: StateOf should already say absent — that is the trap")
+	}
+	if mgr.fullyStopped("A") {
+		t.Error("fullyStopped while the old process is still exiting")
+	}
+}

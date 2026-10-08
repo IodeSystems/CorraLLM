@@ -60,6 +60,13 @@ func (m *Manager) BenchTool(ctx context.Context, tool, server, prevDir, nextDir 
 				continue
 			}
 			go func(name string) {
+				// The trial's teardown may still be stopping: wait for it,
+				// bounded, rather than fail with "still stopping" and leave the
+				// model down until a request happens to arrive.
+				key := m.procKey(name)
+				for i := 0; i < 60 && !m.fullyStopped(key); i++ {
+					time.Sleep(time.Second)
+				}
 				if _, err := m.LoadModel(context.Background(), name); err != nil {
 					slog.Warn("benchmark: reload after benchmark failed", "model", name, "err", err)
 				}
@@ -113,7 +120,11 @@ func (m *Manager) BenchTool(ctx context.Context, tool, server, prevDir, nextDir 
 		held = append(held, name)
 		_, _ = fmt.Fprintf(log, "  %s: paused; waiting for in-flight requests to finish\n", name)
 		deadline := time.Now().Add(benchDrain)
-		for m.StateOf(key) != StateAbsent {
+		// Gone means BOTH: out of the process table AND exited. An evicted
+		// process leaves the table at once but keeps its port until it exits
+		// (m.stopping); benchmarking in that window health-checked the DYING
+		// production process and then hit a closed port (box1, 2026-10-07).
+		for !m.fullyStopped(key) {
 			if time.Now().After(deadline) {
 				return release, measured > 0, fmt.Errorf("%s: still running %s after the pause; not benchmarked", name, benchDrain)
 			}
@@ -250,4 +261,13 @@ func benchPrompt(n int) string {
 	}
 	sb.WriteString("\nSummarise the scheduling policy above.")
 	return sb.String()
+}
+
+// fullyStopped reports that a process key has no process: none in the table,
+// and none still exiting.
+func (m *Manager) fullyStopped(key string) bool {
+	m.mu.Lock()
+	_, stopping := m.stopping[key]
+	m.mu.Unlock()
+	return !stopping && m.StateOf(key) == StateAbsent
 }
