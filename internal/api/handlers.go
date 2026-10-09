@@ -1318,6 +1318,15 @@ type RollupRow struct {
 	CacheAvg float64 `json:"cacheAvg" doc:"Per-request cache hit (cached / prompt tokens), 0..1: mean over requests. cacheHitRate is the token-weighted figure."`
 	CacheP90 float64 `json:"cacheP90" doc:"Per-request cache hit, 0..1: 90th percentile."`
 
+	// PREFILL AS THROUGHPUT, token-weighted (store.PrefillStat). tpAvg is the
+	// mean of per-request rates, which a cache-heavy workload drags down to the
+	// fixed per-request overhead; these say what the GPU and the cache delivered.
+	PrefillN        int64              `json:"prefillN" doc:"Requests that reported a prefill rate and processed at least one new token — what the prefill* figures are over."`
+	PrefillFusedTps float64            `json:"prefillFusedTps" doc:"Prompt tokens INCLUDING the cached prefix, per second of prefill, tokens/sec: the rate a caller's prompt was effectively read at."`
+	PrefillRawTps   float64            `json:"prefillRawTps" doc:"New (uncached) prompt tokens per second of prefill, tokens/sec, token-weighted: what the GPU actually processed."`
+	PrefillSecAvg   float64            `json:"prefillSecAvg" doc:"Mean prefill time per request, seconds (new tokens / reported rate)."`
+	PrefillBuckets  []PrefillBucketRow `json:"prefillBuckets" doc:"Raw prefill split by new tokens per request: <500, 500-2k, 2k-8k, 8k+."`
+
 	// HEAT. Every watt-hour a local backend draws ends up as heat in the room.
 	// From METERED token energy only — idle draw, CPU and PSU losses are not in
 	// it, so the box's real heat output is higher.
@@ -1705,7 +1714,32 @@ func setHeat(row *RollupRow, windowHours float64, th *config.Thermal, costPerKwh
 	}
 }
 
+// PrefillBucketRow is raw prefill over the requests in one new-token range.
+type PrefillBucketRow struct {
+	Label     string  `json:"label" doc:"New tokens per request: <500, 500-2k, 2k-8k, 8k+."`
+	N         int64   `json:"n" doc:"Requests in this range."`
+	RawTps    float64 `json:"rawTps" doc:"New tokens per second of prefill, tokens/sec, token-weighted."`
+	SecAvg    float64 `json:"secAvg" doc:"Mean prefill time per request in this range, seconds."`
+	NewTokAvg float64 `json:"newTokensAvg" doc:"Mean new tokens per request in this range."`
+}
+
+var prefillBucketLabels = [4]string{"<500", "500-2k", "2k-8k", "8k+"}
+
 func setPerf(row *RollupRow, p store.PerfStat) {
+	pf := p.Prefill
+	row.PrefillN, row.PrefillFusedTps, row.PrefillRawTps = pf.N, pf.Fused(), pf.Raw()
+	if pf.N > 0 {
+		row.PrefillSecAvg = pf.Seconds / float64(pf.N)
+	}
+	row.PrefillBuckets = make([]PrefillBucketRow, 0, len(pf.Buckets))
+	for i, b := range pf.Buckets {
+		r := PrefillBucketRow{Label: prefillBucketLabels[i], N: b.N, RawTps: b.Raw()}
+		if b.N > 0 {
+			r.SecAvg = b.Seconds / float64(b.N)
+			r.NewTokAvg = float64(b.NewTokens) / float64(b.N)
+		}
+		row.PrefillBuckets = append(row.PrefillBuckets, r)
+	}
 	row.TgN, row.TgAvg, row.TgP10, row.TgP90, row.TgP99 = p.TG.N, p.TG.Avg, p.TG.P10, p.TG.P90, p.TG.P99
 	row.TpN, row.TpAvg, row.TpP10, row.TpP90, row.TpP99 = p.TP.N, p.TP.Avg, p.TP.P10, p.TP.P90, p.TP.P99
 	row.CacheN, row.CacheAvg, row.CacheP90 = p.Cache.N, p.Cache.Avg, p.Cache.P90

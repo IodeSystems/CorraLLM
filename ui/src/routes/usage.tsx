@@ -311,14 +311,38 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
           Number(total?.tgP90 ?? 0),
           'Generation speed the backend reported, tokens/sec, per request. The mean is what a caller typically saw; the slowest-10% mark is where a slowdown shows first. Long contexts decode slower, so this moves with how much each request carried.',
         )}
-        {speedTile(
-          'Prefill (reading)',
-          Number(total?.tpN ?? 0),
-          Number(total?.tpAvg ?? 0),
-          Number(total?.tpP10 ?? 0),
-          Number(total?.tpP90 ?? 0),
-          'Prompt-processing speed the backend reported, tokens/sec, per request — over the tokens it actually read, not the cached prefix.',
-        )}
+        <StatTile
+          label="Prefill, fused (cache included)"
+          value={!counted ? <NotYet /> : Number(total?.prefillN ?? 0) > 0 ? `${fmtRate(Number(total?.prefillFusedTps))} tok/s` : 'n/r'}
+          sub={
+            counted && Number(total?.prefillN ?? 0) > 0
+              ? `raw ${fmtRate(Number(total?.prefillRawTps))} tok/s new tokens · ${Number(total?.prefillSecAvg).toFixed(2)} s prefill per request · ${pct(Number(total?.cacheHitRate ?? 0))} of prompt tokens cached · ${fmtInt(Number(total?.prefillN))} requests`
+              : counted
+                ? 'no backend reported timings'
+                : undefined
+          }
+          hint="Prompt tokens INCLUDING the cached prefix, divided by the time spent in prefill — how fast a caller's whole prompt was effectively read. Raw is the same time over only the tokens the GPU processed. Both are token-weighted: total tokens over total seconds, not a mean of per-request rates (that mean is dominated by cache hits reading a few hundred tokens behind a fixed per-request overhead)."
+        />
+        <StatTile
+          label="Prefill, raw by new tokens"
+          value={
+            !counted ? (
+              <NotYet />
+            ) : Number(total?.prefillN ?? 0) > 0 ? (
+              <Box component="span" sx={{ fontSize: 13, fontFamily: 'monospace', lineHeight: 1.5, display: 'block' }}>
+                {(total?.prefillBuckets ?? []).map((b) => (
+                  <Box component="span" key={b.label} sx={{ display: 'block' }}>
+                    {b.label.padEnd(7)} {Number(b.n) > 0 ? `${fmtRate(b.rawTps)} tok/s · ${b.secAvg.toFixed(2)} s · ${fmtInt(Number(b.n))} req` : '—'}
+                  </Box>
+                ))}
+              </Box>
+            ) : (
+              'n/r'
+            )
+          }
+          sub={counted && Number(total?.prefillN ?? 0) > 0 ? 'new tokens per request → raw rate · prefill time per request · requests' : undefined}
+          hint="Raw prefill split by how many NEW (uncached) tokens each request had. Small chunks are dominated by fixed per-request overhead (context-checkpoint copies on this hybrid model); large chunks show what the GPU can do."
+        />
         <StatTile
           label="Cache hit"
           value={!counted ? <NotYet /> : Number(total?.cacheN ?? 0) > 0 ? `${pct(Number(total?.cacheAvg))} avg` : 'n/r'}

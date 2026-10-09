@@ -70,3 +70,45 @@ func TestDistP99IsNearestRank(t *testing.T) {
 		t.Errorf("single value P99 = %v", one.P99)
 	}
 }
+
+// Fused counts the cached prefix, raw only what was processed; both are
+// token-weighted, so one big miss outweighs many small hits — the opposite of
+// the per-request mean.
+func TestPrefillFusedRawAndBuckets(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	ins := func(ts int64, prompt, cached int, tp float64) {
+		t.Helper()
+		if err := st.InsertActivity(Activity{TS: ts, Served: "m", Path: "/v1/chat/completions", Status: 200,
+			PromptTokens: prompt, CachedTokens: cached, PromptPerSec: tp, PredictedPerSec: 100}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ins(1, 40000, 39800, 400) // 200 new in 0.5 s — a cache hit behind overhead
+	ins(2, 40000, 39800, 400) // same
+	ins(3, 30000, 0, 2000)    // a miss: 30,000 new in 15 s
+	ins(4, 1000, 1000, 1000)  // fully cached: nothing processed, not counted
+	rows, total, err := st.PerfStats(Window{})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows %+v err %v", rows, err)
+	}
+	p := rows[0].Prefill
+	if p.N != 3 || p.NewTokens != 30400 || p.PromptTokens != 110000 || p.Seconds != 16 {
+		t.Fatalf("prefill = %+v", p)
+	}
+	if p.Raw() != 1900 || p.Fused() != 6875 {
+		t.Errorf("raw %v fused %v, want 1900 and 6875", p.Raw(), p.Fused())
+	}
+	if b := p.Buckets[0]; b.N != 2 || b.Raw() != 400 {
+		t.Errorf("<500 bucket = %+v raw %v", b, b.Raw())
+	}
+	if b := p.Buckets[3]; b.N != 1 || b.Raw() != 2000 {
+		t.Errorf("8k+ bucket = %+v raw %v", b, b.Raw())
+	}
+	if total.Prefill.N != 3 || total.Prefill.Seconds != 16 {
+		t.Errorf("total = %+v", total.Prefill)
+	}
+}

@@ -2259,6 +2259,19 @@ type corrallm_PoolView {
   used: Long!
 }
 
+type corrallm_PrefillBucketRow {
+  """New tokens per request: <500, 500-2k, 2k-8k, 8k+."""
+  label: String!
+  """Requests in this range."""
+  n: Long!
+  """Mean new tokens per request in this range."""
+  newTokensAvg: Float!
+  """New tokens per second of prefill, tokens/sec, token-weighted."""
+  rawTps: Float!
+  """Mean prefill time per request in this range, seconds."""
+  secAvg: Float!
+}
+
 type corrallm_ProviderPresetView {
   """Wire format. Only 'openai' is handled today."""
   api: String!
@@ -2630,6 +2643,16 @@ type corrallm_RollupRow {
   paidUsd: Float!
   """Mean backend-reported generation speed, tokens/sec (tg/s). Separates a slowdown caused by more prompt to read (this holds steady) from one caused by the box itself (this falls). Same caveats as promptPerSec."""
   predictedPerSec: Float!
+  """Raw prefill split by new tokens per request: <500, 500-2k, 2k-8k, 8k+."""
+  prefillBuckets: [corrallm_PrefillBucketRow!]!
+  """Prompt tokens INCLUDING the cached prefix, per second of prefill, tokens/sec: the rate a caller's prompt was effectively read at."""
+  prefillFusedTps: Float!
+  """Requests that reported a prefill rate and processed at least one new token — what the prefill* figures are over."""
+  prefillN: Long!
+  """New (uncached) prompt tokens per second of prefill, tokens/sec, token-weighted: what the GPU actually processed."""
+  prefillRawTps: Float!
+  """Mean prefill time per request, seconds (new tokens / reported rate)."""
+  prefillSecAvg: Float!
   """Mean backend-reported prompt-processing speed, tokens/sec (tp/s). An unweighted mean over the requests that REPORTED a rate, not a throughput — 0 means nothing reported one, not a measured zero. Always 0 on the grand total, which cannot average rates honestly."""
   promptPerSec: Float!
   """Total prompt tokens."""

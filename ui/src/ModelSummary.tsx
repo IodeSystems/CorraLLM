@@ -106,11 +106,15 @@ export function ModelSummary({
         <Stack direction="row" spacing={3} sx={{ flexWrap: 'wrap', rowGap: 1 }}>
           <Fact label="Requests" value={`${int(row.requests)} requests`} />
           <Fact
-            label="Prefill (tp), avg"
-            value={Number(row.tpN) > 0 ? `${int(row.tpAvg)} tok/s` : '—'}
+            label="Prefill, fused / raw"
+            value={
+              Number(row.prefillN) > 0
+                ? `${int(row.prefillFusedTps)} / ${int(row.prefillRawTps)} tok/s`
+                : '—'
+            }
             hint={
-              Number(row.tpN) > 0
-                ? `Per request over ${int(row.tpN)} requests. p10 (slow tail) ${int(row.tpP10)} tok/s, p90 ${int(row.tpP90)} tok/s, p99 ${int(row.tpP99)} tok/s.`
+              Number(row.prefillN) > 0
+                ? `Fused counts the cached prefix; raw only the tokens processed. Token-weighted over ${int(row.prefillN)} requests, ${row.prefillSecAvg.toFixed(2)} s prefill per request. Raw by new tokens: ${row.prefillBuckets.map((b) => `${b.label} ${Number(b.n) > 0 ? int(b.rawTps) : '—'}`).join(', ')} tok/s.`
                 : 'No request reported a prefill speed'
             }
           />

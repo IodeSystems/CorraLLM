@@ -34,6 +34,85 @@ type PerfStat struct {
 	// that reported ANY cache hit in the window — a backend with no prompt cache
 	// (or that does not report one) would otherwise read as a measured 0%.
 	Cache Dist
+	// Prefill as THROUGHPUT, token-weighted. The per-request mean (TP) is
+	// dominated by cache hits that read a few hundred new tokens behind a fixed
+	// per-request overhead; with 95% of prompts cached it reads ~780 tok/s while
+	// the card does ~2,000 on any real chunk (box1, 2026-10-09).
+	Prefill PrefillStat
+}
+
+// PrefillBucketBounds are the upper bounds (exclusive) of the new-token
+// buckets; the last bucket is open-ended.
+var PrefillBucketBounds = []int64{500, 2000, 8000}
+
+// PrefillStat sums prompt processing over requests that reported a prefill
+// rate. Seconds is each request's new tokens / its reported rate.
+type PrefillStat struct {
+	N            int64
+	PromptTokens int64 // all prompt tokens, cached included
+	NewTokens    int64 // tokens actually processed
+	Seconds      float64
+	// Buckets by new tokens per request: <500, 500–2k, 2k–8k, 8k+.
+	Buckets [4]PrefillBucket
+}
+
+// PrefillBucket is the same sums over the requests in one new-token range.
+type PrefillBucket struct {
+	N         int64
+	NewTokens int64
+	Seconds   float64
+}
+
+// Fused is prompt tokens, cached included, per second of prefill: the rate a
+// caller's prompt is effectively read at.
+func (p PrefillStat) Fused() float64 { return ratio(float64(p.PromptTokens), p.Seconds) }
+
+// Raw is new tokens per second of prefill: what the GPU actually processed.
+func (p PrefillStat) Raw() float64 { return ratio(float64(p.NewTokens), p.Seconds) }
+
+// Raw is the bucket's new tokens per second.
+func (b PrefillBucket) Raw() float64 { return ratio(float64(b.NewTokens), b.Seconds) }
+
+func ratio(a, b float64) float64 {
+	if b <= 0 {
+		return 0
+	}
+	return a / b
+}
+
+func (p *PrefillStat) add(prompt, cached int64, tp float64) {
+	newTok := prompt - cached
+	if tp <= 0 || newTok <= 0 {
+		return
+	}
+	sec := float64(newTok) / tp
+	p.N++
+	p.PromptTokens += prompt
+	p.NewTokens += newTok
+	p.Seconds += sec
+	i := len(PrefillBucketBounds)
+	for j, hi := range PrefillBucketBounds {
+		if newTok < hi {
+			i = j
+			break
+		}
+	}
+	b := &p.Buckets[i]
+	b.N++
+	b.NewTokens += newTok
+	b.Seconds += sec
+}
+
+func (p *PrefillStat) merge(o PrefillStat) {
+	p.N += o.N
+	p.PromptTokens += o.PromptTokens
+	p.NewTokens += o.NewTokens
+	p.Seconds += o.Seconds
+	for i := range p.Buckets {
+		p.Buckets[i].N += o.Buckets[i].N
+		p.Buckets[i].NewTokens += o.Buckets[i].NewTokens
+		p.Buckets[i].Seconds += o.Buckets[i].Seconds
+	}
 }
 
 // PerfStats reads per-request speed and cache-hit distributions over a window,
@@ -53,7 +132,10 @@ func (s *Store) PerfStats(w Window) (rows []PerfStat, total PerfStat, err error)
 	}
 	defer func() { _ = q.Close() }()
 
-	type acc struct{ tg, tp, cache []float64 }
+	type acc struct {
+		tg, tp, cache []float64
+		prefill       PrefillStat
+	}
 	by := map[string]*acc{}
 	reportsCache := map[string]bool{}
 	type hit struct {
@@ -79,6 +161,7 @@ func (s *Store) PerfStats(w Window) (rows []PerfStat, total PerfStat, err error)
 		if tp > 0 {
 			a.tp = append(a.tp, tp)
 		}
+		a.prefill.add(prompt, cached, tp)
 		if prompt > 0 {
 			hits = append(hits, hit{served, float64(cached) / float64(prompt)})
 		}
@@ -103,10 +186,11 @@ func (s *Store) PerfStats(w Window) (rows []PerfStat, total PerfStat, err error)
 		all.tg = append(all.tg, a.tg...)
 		all.tp = append(all.tp, a.tp...)
 		all.cache = append(all.cache, a.cache...)
-		rows = append(rows, PerfStat{Served: served, TG: dist(a.tg), TP: dist(a.tp), Cache: dist(a.cache)})
+		all.prefill.merge(a.prefill)
+		rows = append(rows, PerfStat{Served: served, TG: dist(a.tg), TP: dist(a.tp), Cache: dist(a.cache), Prefill: a.prefill})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Served < rows[j].Served })
-	return rows, PerfStat{TG: dist(all.tg), TP: dist(all.tp), Cache: dist(all.cache)}, nil
+	return rows, PerfStat{TG: dist(all.tg), TP: dist(all.tp), Cache: dist(all.cache), Prefill: all.prefill}, nil
 }
 
 // dist summarises v (sorting it in place): mean and nearest-rank P10/P90.

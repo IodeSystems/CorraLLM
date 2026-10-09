@@ -180,6 +180,17 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           tpP10
           tpP90
           tpP99
+          prefillN
+          prefillFusedTps
+          prefillRawTps
+          prefillSecAvg
+          prefillBuckets {
+            label
+            n
+            rawTps
+            secAvg
+            newTokensAvg
+          }
           cacheN
           cacheAvg
           cacheP90
@@ -226,6 +237,17 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           tpP10
           tpP90
           tpP99
+          prefillN
+          prefillFusedTps
+          prefillRawTps
+          prefillSecAvg
+          prefillBuckets {
+            label
+            n
+            rawTps
+            secAvg
+            newTokensAvg
+          }
           cacheN
           cacheAvg
           cacheP90
