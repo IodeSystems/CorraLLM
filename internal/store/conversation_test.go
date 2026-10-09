@@ -49,6 +49,10 @@ func TestCtxStats(t *testing.T) {
 	if m.Sessions != 3 || fmt.Sprintf("%.2f", m.TailAvg) != "100.00" || m.TailP90 != 200 {
 		t.Errorf("tails = %+v", m)
 	}
+	// Turns per session: a=2 (before the restart), b=2, a'=1.
+	if fmt.Sprintf("%.2f", m.TurnsAvg) != "1.67" || m.TurnsMax != 2 || m.SingleTurn != 1 {
+		t.Errorf("turns avg %v max %d single %d, want 1.67, 2, 1", m.TurnsAvg, m.TurnsMax, m.SingleTurn)
+	}
 	if total.Requests != 6 || total.Sessions != 4 || total.RequestP90 != 1000 || total.TailP90 != 1000 {
 		t.Errorf("total = %+v", total)
 	}

@@ -83,6 +83,55 @@ function StatTile({
   )
 }
 
+type PrefillRow = {
+  prefillN: unknown
+  prefillFusedTps: number
+  prefillRawTps: number
+  prefillSecAvg: number
+  prefillBuckets: readonly { label: string; n: unknown; rawTps: number; secAvg: number; newTokensAvg: number }[]
+}
+
+/**
+ * The hover breakdown behind a model's prefill figure. Raw prefill by how many
+ * NEW tokens each request had: the small buckets read slow because a fixed
+ * per-request overhead dominates them, which is easy to mistake for a
+ * regression when caching has actually cut the work.
+ */
+function PrefillBreakdown({ row }: { row: PrefillRow }) {
+  const cell = { fontFamily: 'monospace', fontSize: 12, textAlign: 'right' as const, pl: 1.5 }
+  return (
+    <Box sx={{ p: 0.5 }}>
+      <Typography variant="caption" sx={{ display: 'block', mb: 0.5 }}>
+        Fused counts the cached prefix; raw only the new tokens processed. Both are total tokens over total
+        prefill time ({fmtInt(Number(row.prefillN))} requests, {row.prefillSecAvg.toFixed(2)} s each on average).
+      </Typography>
+      <Box component="table" sx={{ borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <Box component="th" sx={{ ...cell, textAlign: 'left', pl: 0 }}>new tokens</Box>
+            <Box component="th" sx={cell}>raw tok/s</Box>
+            <Box component="th" sx={cell}>s / request</Box>
+            <Box component="th" sx={cell}>n</Box>
+          </tr>
+        </thead>
+        <tbody>
+          {row.prefillBuckets.map((b) => (
+            <tr key={b.label}>
+              <Box component="td" sx={{ ...cell, textAlign: 'left', pl: 0 }}>{b.label}</Box>
+              <Box component="td" sx={cell}>{Number(b.n) > 0 ? fmtRate(b.rawTps) : '—'}</Box>
+              <Box component="td" sx={cell}>{Number(b.n) > 0 ? b.secAvg.toFixed(2) : '—'}</Box>
+              <Box component="td" sx={cell}>{fmtInt(Number(b.n))}</Box>
+            </tr>
+          ))}
+        </tbody>
+      </Box>
+      <Typography variant="caption" sx={{ display: 'block', mt: 0.5 }}>
+        Small chunks are slow per token because of a fixed per-request overhead, not the GPU.
+      </Typography>
+    </Box>
+  )
+}
+
 /**
  * A cache hit rate, rendered so "we never heard" cannot be mistaken for "0%".
  *
@@ -332,7 +381,7 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
               <Box component="span" sx={{ fontSize: 13, fontFamily: 'monospace', lineHeight: 1.5, display: 'block' }}>
                 {(total?.prefillBuckets ?? []).map((b) => (
                   <Box component="span" key={b.label} sx={{ display: 'block' }}>
-                    {b.label.padEnd(7)} {Number(b.n) > 0 ? `${fmtRate(b.rawTps)} tok/s · ${b.secAvg.toFixed(2)} s · ${fmtInt(Number(b.n))} req` : '—'}
+                    {b.label.padEnd(7)} {Number(b.n) > 0 ? `${fmtRate(b.rawTps)} tok/s  n ${fmtInt(Number(b.n))}` : '—'}
                   </Box>
                 ))}
               </Box>
@@ -340,8 +389,7 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
               'n/r'
             )
           }
-          sub={counted && Number(total?.prefillN ?? 0) > 0 ? 'new tokens per request → raw rate · prefill time per request · requests' : undefined}
-          hint="Raw prefill split by how many NEW (uncached) tokens each request had. Small chunks are dominated by fixed per-request overhead (context-checkpoint copies on this hybrid model); large chunks show what the GPU can do."
+          hint={`Raw prefill split by how many NEW (uncached) tokens each request had; n is the number of requests. Small chunks are dominated by fixed per-request overhead (context-checkpoint copies on this hybrid model); large chunks show what the GPU can do. Prefill time per request: ${(total?.prefillBuckets ?? []).map((b) => `${b.label} ${Number(b.n) > 0 ? b.secAvg.toFixed(2) + ' s' : '—'}`).join(', ')}.`}
         />
         <StatTile
           label="Cache hit"
@@ -360,10 +408,10 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
           value={!counted ? <NotYet /> : Number(total?.ctxRequests ?? 0) > 0 ? `${fmtK(Number(total?.ctxRequestAvg))} tokens avg` : '—'}
           sub={
             counted && Number(total?.ctxRequests ?? 0) > 0
-              ? `p90 ${fmtK(Number(total?.ctxRequestP90))} tokens · conversation end ${fmtK(Number(total?.ctxTailAvg))} avg, p90 ${fmtK(Number(total?.ctxTailP90))}`
+              ? `p90 ${fmtK(Number(total?.ctxRequestP90))} tokens · conversation end ${fmtK(Number(total?.ctxTailAvg))} avg, p90 ${fmtK(Number(total?.ctxTailP90))} · ${fmtInt(Number(total?.ctxSessions))} conversations, ${(total?.turnsAvg ?? 0).toFixed(1)} turns avg (p90 ${fmtInt(Number(total?.turnsP90))}, max ${fmtInt(Number(total?.turnsMax))}), ${pct(Number(total?.ctxSessions) > 0 ? Number(total?.singleTurnSessions) / Number(total?.ctxSessions) : 0)} single-turn`
               : undefined
           }
-          hint="Prompt + reply tokens per chat turn (each turn re-sends the conversation, so this IS the conversation's size then), and at each conversation's last turn."
+          hint="Prompt + reply tokens per chat turn (each turn re-sends the conversation, so this IS the conversation's size then), and at each conversation's last turn. Turns: served requests per conversation; single-turn conversations never came back, the rest are repeat callers. A conversation whose message count drops (restarted or compacted) counts as a new one."
         />
       </Stack>
       {rows.length > 1 && (
@@ -373,9 +421,10 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
               <TableRow>
                 <TableCell>Model</TableCell>
                 <TableCell align="right">Decode tok/s avg (p10 – p90)</TableCell>
-                <TableCell align="right">Prefill tok/s avg (p10 – p90)</TableCell>
+                <TableCell align="right">Prefill tok/s, fused / raw</TableCell>
                 <TableCell align="right">Cache hit avg (p90)</TableCell>
                 <TableCell align="right">Context / turn avg (p90), tokens</TableCell>
+                <TableCell align="right">Turns / conversation avg (p90, max)</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -386,13 +435,26 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
                     {Number(r.tgN) > 0 ? `${fmtRate(Number(r.tgAvg))} (${fmtRate(Number(r.tgP10))} – ${fmtRate(Number(r.tgP90))})` : 'n/r'}
                   </TableCell>
                   <TableCell align="right">
-                    {Number(r.tpN) > 0 ? `${fmtRate(Number(r.tpAvg))} (${fmtRate(Number(r.tpP10))} – ${fmtRate(Number(r.tpP90))})` : 'n/r'}
+                    {Number(r.prefillN) > 0 ? (
+                      <Tooltip title={<PrefillBreakdown row={r} />} placement="left">
+                        <Box component="span" sx={{ borderBottom: `1px dotted ${C.textMuted}`, cursor: 'help' }}>
+                          {fmtRate(Number(r.prefillFusedTps))} / {fmtRate(Number(r.prefillRawTps))}
+                        </Box>
+                      </Tooltip>
+                    ) : (
+                      'n/r'
+                    )}
                   </TableCell>
                   <TableCell align="right">
                     {Number(r.cacheN) > 0 ? `${pct(Number(r.cacheAvg))} (${pct(Number(r.cacheP90))})` : 'n/r'}
                   </TableCell>
                   <TableCell align="right">
                     {Number(r.ctxRequests) > 0 ? `${fmtK(Number(r.ctxRequestAvg))} (${fmtK(Number(r.ctxRequestP90))})` : '—'}
+                  </TableCell>
+                  <TableCell align="right">
+                    {Number(r.ctxSessions) > 0
+                      ? `${r.turnsAvg.toFixed(1)} (${fmtInt(Number(r.turnsP90))}, ${fmtInt(Number(r.turnsMax))}) · ${pct(Number(r.singleTurnSessions) / Number(r.ctxSessions))} single`
+                      : '—'}
                   </TableCell>
                 </TableRow>
               ))}

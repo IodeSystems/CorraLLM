@@ -185,6 +185,27 @@ type CtxStat struct {
 	ThinkingN   int64
 	ThinkingAvg float64
 	AnswerAvg   float64
+
+	// HOW LONG CONVERSATIONS RUN: served turns per session (same sessions as
+	// Sessions). SingleTurn counts sessions that never came back after one
+	// turn; the rest are repeat customers.
+	TurnsAvg   float64
+	TurnsP90   int64
+	TurnsMax   int64
+	SingleTurn int64
+}
+
+func fillTurns(st *CtxStat, t []int64) {
+	if len(t) == 0 {
+		return
+	}
+	st.TurnsAvg, st.TurnsP90, _ = avgTails(t) // sorts t
+	st.TurnsMax = t[len(t)-1]
+	for _, n := range t {
+		if n == 1 {
+			st.SingleTurn++
+		}
+	}
 }
 
 // CtxStats reads per-request and per-session-tail context size over a window,
@@ -217,9 +238,11 @@ func (s *Store) CtxStats(w Window) (rows []CtxStat, total CtxStat, err error) {
 		served   string
 		messages int
 		ctx      int64
+		turns    int64
 	}
 	reqs := map[string][]int64{}
 	tails := map[string][]int64{}
+	turns := map[string][]int64{}
 	parts := map[string]*ctxParts{}
 	var allParts ctxParts
 	sessions := map[string]*open{}
@@ -238,28 +261,38 @@ func (s *Store) CtxStats(w Window) (rows []CtxStat, total CtxStat, err error) {
 		}
 		pp.add(prompt, cached, completion, thinking)
 		allParts.add(prompt, cached, completion, thinking)
-		if o, ok := sessions[conv]; ok && messages < o.messages {
-			tails[o.served] = append(tails[o.served], o.ctx)
+		n := int64(1)
+		if o, ok := sessions[conv]; ok {
+			if messages < o.messages {
+				tails[o.served] = append(tails[o.served], o.ctx)
+				turns[o.served] = append(turns[o.served], o.turns)
+			} else {
+				n = o.turns + 1
+			}
 		}
-		sessions[conv] = &open{served, messages, ctx}
+		sessions[conv] = &open{served, messages, ctx, n}
 	}
 	if err := q.Err(); err != nil {
 		return nil, CtxStat{}, err
 	}
 	for _, o := range sessions {
 		tails[o.served] = append(tails[o.served], o.ctx)
+		turns[o.served] = append(turns[o.served], o.turns)
 	}
 
-	var allReqs, allTails []int64
+	var allReqs, allTails, allTurns []int64
 	for served, r := range reqs {
 		st := ctxStat(served, r, tails[served])
 		parts[served].fill(&st)
+		fillTurns(&st, turns[served])
 		rows = append(rows, st)
 		allReqs = append(allReqs, r...)
 		allTails = append(allTails, tails[served]...)
+		allTurns = append(allTurns, turns[served]...)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Served < rows[j].Served })
 	tot := ctxStat("", allReqs, allTails)
+	fillTurns(&tot, allTurns)
 	allParts.fill(&tot)
 	return rows, tot, nil
 }

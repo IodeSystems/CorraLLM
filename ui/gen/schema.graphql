@@ -2661,6 +2661,8 @@ type corrallm_RollupRow {
   requests: Long!
   """Served model name."""
   served: String!
+  """Sessions with exactly one served turn — callers that did not come back; ctxSessions minus this are repeat."""
+  singleTurnSessions: Long!
   """Decode (generation) speed, tokens/sec: mean over requests."""
   tgAvg: Float!
   """Requests that reported a decode speed — what the tg* figures are over."""
@@ -2683,6 +2685,12 @@ type corrallm_RollupRow {
   tpP90: Float!
   """Prefill speed, tokens/sec: 99th percentile."""
   tpP99: Float!
+  """Served turns per conversation session, mean."""
+  turnsAvg: Float!
+  """The longest conversation session in the window, in served turns."""
+  turnsMax: Long!
+  """Served turns per conversation session, 90th percentile."""
+  turnsP90: Long!
   """The model's cost class — its commandCosts key. Empty when the model is no longer in the config."""
   type: String!
   """The part of costUsd that is neither: nonzero only when billing is "unattributed"."""

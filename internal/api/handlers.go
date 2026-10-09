@@ -1299,6 +1299,11 @@ type RollupRow struct {
 	CtxThinkingN   int64   `json:"ctxThinkingN" doc:"Turns whose thinking was measured — what ctxThinkingAvg/ctxAnswerAvg are over. Fewer than ctxRequests over windows reaching back before 2026-10-07, or for non-llama backends."`
 	CtxThinkingAvg float64 `json:"ctxThinkingAvg" doc:"Per request: mean completion tokens spent thinking (reasoning_content), over ctxThinkingN turns."`
 	CtxAnswerAvg   float64 `json:"ctxAnswerAvg" doc:"Per request: mean completion tokens of the answer (completion minus thinking), over ctxThinkingN turns."`
+	// How long conversations run (same sessions as ctxSessions).
+	TurnsAvg   float64 `json:"turnsAvg" doc:"Served turns per conversation session, mean."`
+	TurnsP90   int64   `json:"turnsP90" doc:"Served turns per conversation session, 90th percentile."`
+	TurnsMax   int64   `json:"turnsMax" doc:"The longest conversation session in the window, in served turns."`
+	SingleTurn int64   `json:"singleTurnSessions" doc:"Sessions with exactly one served turn — callers that did not come back; ctxSessions minus this are repeat."`
 
 	// SPEED AND CACHE, AS DISTRIBUTIONS. Per request: the mean is the speed a
 	// caller typically saw, P10 is the slow tail (where a slowdown shows first),
@@ -1750,6 +1755,7 @@ func setCtx(row *RollupRow, c store.CtxStat) {
 	row.CtxSessions, row.CtxTailAvg, row.CtxTailP90, row.CtxTailP99 = c.Sessions, c.TailAvg, c.TailP90, c.TailP99
 	row.CtxPromptAvg, row.CtxCachedAvg = c.PromptAvg, c.CachedAvg
 	row.CtxThinkingN, row.CtxThinkingAvg, row.CtxAnswerAvg = c.ThinkingN, c.ThinkingAvg, c.AnswerAvg
+	row.TurnsAvg, row.TurnsP90, row.TurnsMax, row.SingleTurn = c.TurnsAvg, c.TurnsP90, c.TurnsMax, c.SingleTurn
 }
 
 // --- per-key usage rollup (P8-beyond) ---

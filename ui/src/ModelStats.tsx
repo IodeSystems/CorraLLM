@@ -149,6 +149,10 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           ctxSessions
           ctxTailAvg
           ctxTailP90
+          turnsAvg
+          turnsP90
+          turnsMax
+          singleTurnSessions
           # What kind of money this row is, and what the same tokens would have
           # been billed at on a paid API.
           type
@@ -227,6 +231,10 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           ctxSessions
           ctxTailAvg
           ctxTailP90
+          turnsAvg
+          turnsP90
+          turnsMax
+          singleTurnSessions
           tgN
           tgAvg
           tgP10
