@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // buildTree compiles, into <prefix>/src/build/bin, a shared library and a
@@ -91,5 +92,52 @@ func TestInstallBuildRefusesACopyThatLoadsFromTheBuildTree(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(prefix, "builds", "good", "libanswer.so")); err != nil {
 		t.Errorf("the serving build was disturbed: %v", err)
+	}
+}
+
+// box1, 2026-10-07 22:51: a build pruned the build it had just replaced, and
+// the daemon's benchmark gate then had no baseline to run. Installing then
+// pruning must keep the previously active build even past the retention count.
+func TestPruneKeepsTheBuildThisInstallReplaced(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the library check uses ldd")
+	}
+	for _, tool := range []string{"bash", "cc", "ldd"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " not available")
+		}
+	}
+	recipes := t.TempDir()
+	if err := Extract(recipes); err != nil {
+		t.Fatal(err)
+	}
+	prefix := t.TempDir()
+	// "old" is serving, and is the OLDEST of six builds.
+	for i, id := range []string{"old", "b2", "b3", "b4", "b5", "b6"} {
+		src := buildTree(t, prefix, "$ORIGIN")
+		if out, err := installBuild(t, recipes, prefix, src, id); err != nil {
+			t.Fatalf("install %s: %v\n%s", id, err, out)
+		}
+		ts := time.Date(2026, 10, 1+i, 0, 0, 0, 0, time.UTC)
+		_ = os.Chtimes(filepath.Join(prefix, "builds", id), ts, ts)
+	}
+	if err := os.Remove(filepath.Join(prefix, "bin")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("builds/old", filepath.Join(prefix, "bin")); err != nil {
+		t.Fatal(err)
+	}
+
+	src := buildTree(t, prefix, "$ORIGIN")
+	cmd := exec.Command("bash", "-c", `source "$1/common.sh"; install_build "$2" new; prune_builds`, "_", recipes, src)
+	cmd.Env = append(os.Environ(), "TOOL_NAME=llama.cpp", "TOOL_PREFIX="+prefix, "BIN_NAME=llama-server", "TOOL_KEEP_BUILDS=5")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("install+prune: %v\n%s", err, b)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "builds", "old")); err != nil {
+		t.Error("the build this install replaced was pruned — the gate has no baseline")
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "builds", "b2")); err == nil {
+		t.Error("nothing was pruned: the retention count did not apply")
 	}
 }

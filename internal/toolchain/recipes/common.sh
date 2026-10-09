@@ -635,6 +635,10 @@ install_build() {
         die "built $id, but it does not run from $dst; kept the active build ($(active_build))"
     fi
     record_libs "$dst"
+    # The build being replaced is what the daemon's benchmark gate compares the
+    # new one against, and what it rolls back to — so prune_builds must not
+    # delete it in this run (see PRUNE_PROTECT).
+    PRUNE_PROTECT=$(active_build)
     activate_build "$id" || die "built and installed $id, but could not point $prefix/bin at it"
 }
 
@@ -652,6 +656,13 @@ prune_builds() {
         [ "$i" -le "$keep" ] && continue
         if [ "$b" = "$active" ]; then
             say "  keeping $b past the retention window: it is the active build"
+            continue
+        fi
+        # box1, 2026-10-07 22:51: a build pruned the one it had just replaced,
+        # then the daemon tried to benchmark against it — "backend exited during
+        # startup", new build kept unmeasured, and no rollback target left.
+        if [ -n "${PRUNE_PROTECT:-}" ] && [ "$b" = "$PRUNE_PROTECT" ]; then
+            say "  keeping $b past the retention window: it was serving until this build (benchmark baseline / rollback)"
             continue
         fi
         say "  pruning $b"
