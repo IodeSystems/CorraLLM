@@ -149,8 +149,10 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           ctxSessions
           ctxTailAvg
           ctxTailP90
+          ctxTailP99
           turnsAvg
           turnsP90
+          turnsP99
           turnsMax
           singleTurnSessions
           # What kind of money this row is, and what the same tokens would have
@@ -231,8 +233,10 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           ctxSessions
           ctxTailAvg
           ctxTailP90
+          ctxTailP99
           turnsAvg
           turnsP90
+          turnsP99
           turnsMax
           singleTurnSessions
           tgN
@@ -772,6 +776,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                   <CtxCell
                     avg={Number(s?.ctxRequestAvg ?? 0)}
                     p90={Number(s?.ctxRequestP90 ?? 0)}
+                    p99={Number(s?.ctxRequestP99 ?? 0)}
                     n={Number(s?.ctxRequests ?? 0)}
                     noun="turn"
                   />
@@ -780,6 +785,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                   <CtxCell
                     avg={Number(s?.ctxTailAvg ?? 0)}
                     p90={Number(s?.ctxTailP90 ?? 0)}
+                    p99={Number(s?.ctxTailP99 ?? 0)}
                     n={Number(s?.ctxSessions ?? 0)}
                     noun="conversation"
                   />
@@ -949,11 +955,11 @@ function fmtKTokens(n: number): string {
 }
 
 /**
- * One context reading: the mean, the p90 under it, and how many it is over.
+ * One context reading: the mean, the p90 and p99 under it, and how many it is over.
  * A dash when nothing in the window named a conversation — embeddings, audio,
  * or a backend whose requests carry no messages.
  */
-function CtxCell({ avg, p90, n, noun }: { avg: number; p90: number; n: number; noun: string }) {
+function CtxCell({ avg, p90, p99, n, noun }: { avg: number; p90: number; p99: number; n: number; noun: string }) {
   if (n === 0) {
     return (
       <Tooltip title="No chat turn here named a conversation in this window — embeddings, audio, or requests with no messages.">
@@ -963,12 +969,12 @@ function CtxCell({ avg, p90, n, noun }: { avg: number; p90: number; n: number; n
   }
   return (
     <Tooltip
-      title={`Over ${fmtInt(n)} ${noun}${n === 1 ? '' : 's'}: mean ${fmtInt(Math.round(avg))} tokens, 90th percentile ${fmtInt(p90)} tokens.`}
+      title={`Over ${fmtInt(n)} ${noun}${n === 1 ? '' : 's'}: mean ${fmtInt(Math.round(avg))} tokens, 90th percentile ${fmtInt(p90)} tokens, 99th ${fmtInt(p99)} tokens.`}
     >
       <span>
         {fmtKTokens(avg)} avg
         <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
-          p90 {fmtKTokens(p90)}
+          p90 {fmtKTokens(p90)} · p99 {fmtKTokens(p99)}
         </Typography>
       </span>
     </Tooltip>

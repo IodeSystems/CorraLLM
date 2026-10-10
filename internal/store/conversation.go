@@ -191,6 +191,7 @@ type CtxStat struct {
 	// turn; the rest are repeat customers.
 	TurnsAvg   float64
 	TurnsP90   int64
+	TurnsP99   int64
 	TurnsMax   int64
 	SingleTurn int64
 }
@@ -199,7 +200,7 @@ func fillTurns(st *CtxStat, t []int64) {
 	if len(t) == 0 {
 		return
 	}
-	st.TurnsAvg, st.TurnsP90, _ = avgTails(t) // sorts t
+	st.TurnsAvg, st.TurnsP90, st.TurnsP99 = avgTails(t) // sorts t
 	st.TurnsMax = t[len(t)-1]
 	for _, n := range t {
 		if n == 1 {

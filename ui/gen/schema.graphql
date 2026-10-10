@@ -2691,6 +2691,8 @@ type corrallm_RollupRow {
   turnsMax: Long!
   """Served turns per conversation session, 90th percentile."""
   turnsP90: Long!
+  """Served turns per conversation session, 99th percentile."""
+  turnsP99: Long!
   """The model's cost class — its commandCosts key. Empty when the model is no longer in the config."""
   type: String!
   """The part of costUsd that is neither: nonzero only when billing is "unattributed"."""

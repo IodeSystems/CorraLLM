@@ -109,21 +109,21 @@ export function ModelSummary({
             label="Prefill, fused / raw"
             value={
               Number(row.prefillN) > 0
-                ? `${int(row.prefillFusedTps)} / ${int(row.prefillRawTps)} tok/s`
+                ? `${int(row.prefillFusedTps)} / ${int(row.prefillRawTps)} tp/s`
                 : '—'
             }
             hint={
               Number(row.prefillN) > 0
-                ? `Fused counts the cached prefix; raw only the tokens processed. Token-weighted over ${int(row.prefillN)} requests, ${row.prefillSecAvg.toFixed(2)} s prefill per request. Raw by new tokens: ${row.prefillBuckets.map((b) => `${b.label} ${Number(b.n) > 0 ? int(b.rawTps) : '—'}`).join(', ')} tok/s.`
+                ? `Fused counts the cached prefix; raw only the tokens processed. Token-weighted over ${int(row.prefillN)} requests, ${row.prefillSecAvg.toFixed(2)} s prefill per request. Raw by new tokens: ${row.prefillBuckets.map((b) => `${b.label} ${Number(b.n) > 0 ? int(b.rawTps) : '—'}`).join(', ')} tp/s.`
                 : 'No request reported a prefill speed'
             }
           />
           <Fact
             label="Decode (tg), avg"
-            value={Number(row.tgN) > 0 ? `${row.tgAvg.toFixed(1)} tok/s` : '—'}
+            value={Number(row.tgN) > 0 ? `${row.tgAvg.toFixed(1)} tg/s` : '—'}
             hint={
               Number(row.tgN) > 0
-                ? `Per request over ${int(row.tgN)} requests. p10 (slow tail) ${row.tgP10.toFixed(1)} tok/s, p90 ${row.tgP90.toFixed(1)} tok/s, p99 ${row.tgP99.toFixed(1)} tok/s.`
+                ? `Per request over ${int(row.tgN)} requests. p10 (slow tail) ${row.tgP10.toFixed(1)} tg/s, p90 ${row.tgP90.toFixed(1)} tg/s, p99 ${row.tgP99.toFixed(1)} tg/s.`
                 : 'No request reported a decode speed'
             }
           />

@@ -109,7 +109,7 @@ function PrefillBreakdown({ row }: { row: PrefillRow }) {
         <thead>
           <tr>
             <Box component="th" sx={{ ...cell, textAlign: 'left', pl: 0 }}>new tokens</Box>
-            <Box component="th" sx={cell}>raw tok/s</Box>
+            <Box component="th" sx={cell}>raw tp/s</Box>
             <Box component="th" sx={cell}>s / request</Box>
             <Box component="th" sx={cell}>n</Box>
           </tr>
@@ -335,13 +335,13 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
     (r) => Number(r.tgN) > 0 || Number(r.cacheN) > 0 || Number(r.ctxRequests) > 0,
   )
   const counted = total != null
-  const speedTile = (label: string, n: number, avg: number, p10: number, p90: number, hint: string) => (
+  const speedTile = (label: string, unit: string, n: number, avg: number, p10: number, p90: number, hint: string) => (
     <StatTile
       label={label}
-      value={!counted ? <NotYet /> : n > 0 ? `${fmtRate(avg)} tok/s` : 'n/r'}
+      value={!counted ? <NotYet /> : n > 0 ? `${fmtRate(avg)} ${unit}` : 'n/r'}
       sub={
         counted && n > 0
-          ? `avg · slowest 10% under ${fmtRate(p10)} · fastest 10% over ${fmtRate(p90)} tok/s · ${fmtInt(n)} requests`
+          ? `avg · slowest 10% under ${fmtRate(p10)} · fastest 10% over ${fmtRate(p90)} ${unit} · ${fmtInt(n)} requests`
           : counted
             ? 'no backend reported timings'
             : undefined
@@ -354,6 +354,7 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
       <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
         {speedTile(
           'Decode (writing)',
+          'tg/s',
           Number(total?.tgN ?? 0),
           Number(total?.tgAvg ?? 0),
           Number(total?.tgP10 ?? 0),
@@ -362,10 +363,10 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
         )}
         <StatTile
           label="Prefill, fused (cache included)"
-          value={!counted ? <NotYet /> : Number(total?.prefillN ?? 0) > 0 ? `${fmtRate(Number(total?.prefillFusedTps))} tok/s` : 'n/r'}
+          value={!counted ? <NotYet /> : Number(total?.prefillN ?? 0) > 0 ? `${fmtRate(Number(total?.prefillFusedTps))} tp/s` : 'n/r'}
           sub={
             counted && Number(total?.prefillN ?? 0) > 0
-              ? `raw ${fmtRate(Number(total?.prefillRawTps))} tok/s new tokens · ${Number(total?.prefillSecAvg).toFixed(2)} s prefill per request · ${pct(Number(total?.cacheHitRate ?? 0))} of prompt tokens cached · ${fmtInt(Number(total?.prefillN))} requests`
+              ? `raw ${fmtRate(Number(total?.prefillRawTps))} tp/s new tokens · ${Number(total?.prefillSecAvg).toFixed(2)} s prefill per request · ${pct(Number(total?.cacheHitRate ?? 0))} of prompt tokens cached · ${fmtInt(Number(total?.prefillN))} requests`
               : counted
                 ? 'no backend reported timings'
                 : undefined
@@ -381,7 +382,7 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
               <Box component="span" sx={{ fontSize: 13, fontFamily: 'monospace', lineHeight: 1.5, display: 'block' }}>
                 {(total?.prefillBuckets ?? []).map((b) => (
                   <Box component="span" key={b.label} sx={{ display: 'block' }}>
-                    {b.label.padEnd(7)} {Number(b.n) > 0 ? `${fmtRate(b.rawTps)} tok/s  n ${fmtInt(Number(b.n))}` : '—'}
+                    {b.label.padEnd(7)} {Number(b.n) > 0 ? `${fmtRate(b.rawTps)} tp/s  n ${fmtInt(Number(b.n))}` : '—'}
                   </Box>
                 ))}
               </Box>
@@ -408,7 +409,7 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
           value={!counted ? <NotYet /> : Number(total?.ctxRequests ?? 0) > 0 ? `${fmtK(Number(total?.ctxRequestAvg))} tokens avg` : '—'}
           sub={
             counted && Number(total?.ctxRequests ?? 0) > 0
-              ? `p90 ${fmtK(Number(total?.ctxRequestP90))} tokens · conversation end ${fmtK(Number(total?.ctxTailAvg))} avg, p90 ${fmtK(Number(total?.ctxTailP90))} · ${fmtInt(Number(total?.ctxSessions))} conversations, ${(total?.turnsAvg ?? 0).toFixed(1)} turns avg (p90 ${fmtInt(Number(total?.turnsP90))}, max ${fmtInt(Number(total?.turnsMax))}), ${pct(Number(total?.ctxSessions) > 0 ? Number(total?.singleTurnSessions) / Number(total?.ctxSessions) : 0)} single-turn`
+              ? `p90 ${fmtK(Number(total?.ctxRequestP90))}, p99 ${fmtK(Number(total?.ctxRequestP99))} tokens · conversation end ${fmtK(Number(total?.ctxTailAvg))} avg, p90 ${fmtK(Number(total?.ctxTailP90))}, p99 ${fmtK(Number(total?.ctxTailP99))} · ${fmtInt(Number(total?.ctxSessions))} conversations, ${(total?.turnsAvg ?? 0).toFixed(1)} turns avg (p90 ${fmtInt(Number(total?.turnsP90))}, p99 ${fmtInt(Number(total?.turnsP99))}, max ${fmtInt(Number(total?.turnsMax))}), ${pct(Number(total?.ctxSessions) > 0 ? Number(total?.singleTurnSessions) / Number(total?.ctxSessions) : 0)} single-turn`
               : undefined
           }
           hint="Prompt + reply tokens per chat turn (each turn re-sends the conversation, so this IS the conversation's size then), and at each conversation's last turn. Turns: served requests per conversation; single-turn conversations never came back, the rest are repeat callers. A conversation whose message count drops (restarted or compacted) counts as a new one."
@@ -420,11 +421,11 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
             <TableHead>
               <TableRow>
                 <TableCell>Model</TableCell>
-                <TableCell align="right">Decode tok/s avg (p10 – p90)</TableCell>
-                <TableCell align="right">Prefill tok/s, fused / raw</TableCell>
+                <TableCell align="right">Decode tg/s avg (p10 – p90)</TableCell>
+                <TableCell align="right">Prefill tp/s, fused / raw</TableCell>
                 <TableCell align="right">Cache hit avg (p90)</TableCell>
-                <TableCell align="right">Context / turn avg (p90), tokens</TableCell>
-                <TableCell align="right">Turns / conversation avg (p90, max)</TableCell>
+                <TableCell align="right">Context / turn avg (p90, p99), tokens</TableCell>
+                <TableCell align="right">Turns / conversation avg (p90, p99, max)</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -449,11 +450,11 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
                     {Number(r.cacheN) > 0 ? `${pct(Number(r.cacheAvg))} (${pct(Number(r.cacheP90))})` : 'n/r'}
                   </TableCell>
                   <TableCell align="right">
-                    {Number(r.ctxRequests) > 0 ? `${fmtK(Number(r.ctxRequestAvg))} (${fmtK(Number(r.ctxRequestP90))})` : '—'}
+                    {Number(r.ctxRequests) > 0 ? `${fmtK(Number(r.ctxRequestAvg))} (${fmtK(Number(r.ctxRequestP90))}, ${fmtK(Number(r.ctxRequestP99))})` : '—'}
                   </TableCell>
                   <TableCell align="right">
                     {Number(r.ctxSessions) > 0
-                      ? `${r.turnsAvg.toFixed(1)} (${fmtInt(Number(r.turnsP90))}, ${fmtInt(Number(r.turnsMax))}) · ${pct(Number(r.singleTurnSessions) / Number(r.ctxSessions))} single`
+                      ? `${r.turnsAvg.toFixed(1)} (${fmtInt(Number(r.turnsP90))}, ${fmtInt(Number(r.turnsP99))}, ${fmtInt(Number(r.turnsMax))}) · ${pct(Number(r.singleTurnSessions) / Number(r.ctxSessions))} single`
                       : '—'}
                   </TableCell>
                 </TableRow>
