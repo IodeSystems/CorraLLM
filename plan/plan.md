@@ -18,7 +18,7 @@ RTX 3080). The 64 GB MacBook Pro stays enrolled but has served no model since P4
 
 | Role | Served as | Notes |
 |---|---|---|
-| chat + vision | `local-Swift-1.5-Qwen3.8-27B-Q6_K_S` | Swift 1.5 Q6_K_S on the 5090, `--reasoning-effort medium`, MTP n-max 3 with `--spec-draft-sampling probabilistic`, 188k ctx. Aliases `local-Qwen3.8-27B`, `Qwen3.8-27B`, `Qwen3-6-27B-MPT`. Sole `chat` lane member — **no fallback, no warm rollback**. `costEquivalent: anthropic-sonnet`. |
+| chat + vision | `local-Swift-1.5-Qwen3.8-27B-Q6_K_S` | Swift 1.5 Q6_K_S on the 5090, `--reasoning-effort medium`, MTP **n-max 4** (measured optimum, 10-07) with `--spec-draft-sampling probabilistic`, **128k ctx, KV q8_0/q8_0** (10-10: p99 context 67k, max seen 108k in 14 d; KV/slot 5,328 → 4,352 MiB, card 30.6 → 29.2 GiB), `--cache-ram 32768`, `-lv 4`. Aliases `local-Qwen3.8-27B`, `Qwen3.8-27B`, `Qwen3-6-27B-MPT`. Sole `chat` lane member — **no fallback, no warm rollback**. `costEquivalent: anthropic-sonnet`. |
 | OCR | `local-chandra-ocr-2` | 3080, loads on demand |
 | embedding | `local-nomic-embed-text` | 3080, loads on demand |
 | audio | `oidio` extension | stt, stt-diarize, realtime-stt, tts |
