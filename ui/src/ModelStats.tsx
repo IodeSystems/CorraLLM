@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { DEFAULT_WINDOW, windowKey, windowPhrase, windowVars, type TimeWindow } from '@/TimeWindow'
 import {
   Box,
   Button,
   Chip,
+  Link,
   Table,
   TableBody,
   TableCell,
@@ -93,6 +95,11 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           depthUnreachable
           allowedWaitMs
           waitForDepthMs
+          askedFor
+          members {
+            model
+            routed
+          }
         }
       }
       usageRollup(windowHours: $windowHours, from: $from, to: $to) {
@@ -326,8 +333,12 @@ function joinRows(util: readonly UtilRow[], spend: readonly SpendRow[]) {
     if (e) e.s = s
     else byModel.set(s.served, { served: s.served, s })
   }
+  // A lane completes nothing under its own name — its traffic is on its rungs'
+  // rows — so it ranks by what was asked of it.
+  const volume = (e: { u?: UtilRow; s?: SpendRow }) =>
+    e.u?.lane ? Number(e.u.askedFor) : Number(e.s?.requests ?? 0)
   return [...byModel.values()].sort((a, b) => {
-    const rb = Number(b.s?.requests ?? 0) - Number(a.s?.requests ?? 0)
+    const rb = volume(b) - volume(a)
     return rb !== 0 ? rb : Number(b.u?.turnedAway ?? 0) - Number(a.u?.turnedAway ?? 0)
   })
 }
@@ -516,8 +527,18 @@ function billingHint(billing: string, type: string, rate: number, mispriced = 0)
   }
 }
 
+const rowId = (served: string) => `model-row-${served}`
+
 export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow }) {
   const q = useModelStats(window)
+  // The row a lane link just jumped to, highlighted for a moment so the eye
+  // lands on it after the scroll.
+  const [flash, setFlash] = useState<string | null>(null)
+  const jumpTo = (served: string) => {
+    document.getElementById(rowId(served))?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setFlash(served)
+    setTimeout(() => setFlash((f) => (f === served ? null : f)), 2000)
+  }
 
   const util = q.data?.corrallm.utilization?.rows ?? []
   const spend = q.data?.corrallm.usageRollup?.rows ?? []
@@ -642,37 +663,135 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
             const notHonored = Number(u?.notHonored ?? 0)
             const early = Number(u?.early ?? 0)
             const cacheReports = Number(s?.cacheReports ?? 0)
-            return (
-              <TableRow key={served} hover>
-                <TableCell>
-                  {served}
-                  {u?.lane && (
-                    // Without this the same busy slot appears twice — once as the
-                    // lane, once as the model it resolves to — and the column
-                    // reads as two slots where there is one. What the lane is
-                    // MADE OF lives on /machines; here it only needs to stop the
-                    // row being misread as one backend.
-                    <Tooltip title="A fallback list, not one backend: its models are tried top to bottom, and the load here is theirs counted once. /machines shows what it is made of. The config file calls this a lane.">
-                      <Chip size="small" variant="outlined" label="fallback list" sx={{ ml: 1 }} />
-                    </Tooltip>
-                  )}
-                  {u?.depthUnreachable && (
+            const nameCell = (
+                  <TableCell>
+                    {served}
+                    {u?.lane && (
+                      // Without this the same busy slot appears twice — once as the
+                      // lane, once as the model it resolves to — and the column
+                      // reads as two slots where there is one. What the lane is
+                      // MADE OF lives on /machines; here it only needs to stop the
+                      // row being misread as one backend.
+                      <Tooltip title="A fallback list, not one backend: its models are tried top to bottom, and the load here is theirs counted once. /machines shows what it is made of. The config file calls this a lane.">
+                        <Chip size="small" variant="outlined" label="fallback list" sx={{ ml: 1 }} />
+                      </Tooltip>
+                    )}
+                    {u?.depthUnreachable && (
+                      <Tooltip
+                        title={`maxQueueDepth is ${u.configuredDepth}, but maxWait only allows ${u.reachableDepth} waiter(s) at ${fmtDuration(u.serviceMeanMs)} per request on ${cap} slot(s).`}
+                      >
+                        <Chip
+                          size="small"
+                          color="warning"
+                          variant="outlined"
+                          // On a frozen window this is still a SETTING, not a
+                          // reading of that hour — run 5 could not tell which, and
+                          // it was the one thing drawn identically on both (OB-9).
+                          label={live ? 'settings clash' : 'settings clash (a setting, not a reading)'}
+                          sx={{ ml: 1 }}
+                        />
+                      </Tooltip>
+                    )}
+                  </TableCell>
+            )
+            // In use and turned away: live and per-name, so a lane row keeps them.
+            const liveCells = (
+              <>
+                  <TableCell align="right">
+                    {!live ? (
+                      // NOT the same dash as a zero elsewhere in this row. Run 5:
+                      // "same glyph, two different reasons, no visual difference
+                      // between them" (OB-9).
+                      <span style={{ color: C.textFaint, fontSize: 11 }}>not recorded</span>
+                    ) : cap > 0 ? (
+                      <Tooltip
+                        title={
+                          `${active} in service against ${cap} slot(s); ${waiting} queued` +
+                          (depth > 0 ? ` of a ${depth}-deep queue.` : ' (queue unbounded).')
+                        }
+                      >
+                        <Chip
+                          size="small"
+                          variant={active >= cap ? 'filled' : 'outlined'}
+                          color={depth > 0 && waiting >= depth ? 'error' : active >= cap ? 'warning' : 'default'}
+                          label={`${active}/${cap} · ${depth > 0 ? `${waiting}/${depth}` : waiting} queued`}
+                        />
+                      </Tooltip>
+                    ) : (
+                      // No live scheduler state: the model was called in the window
+                      // but nothing has been admitted on it since this process
+                      // started. Reporting 0/0 would imply zero capacity.
+                      <Tooltip title="No admissions on this model since startup — no live slot state to report.">
+                        <span style={{ color: C.textFaint }}>—</span>
+                      </Tooltip>
+                    )}
+                  </TableCell>
+                  <TableCell align="right">
+                    {/* Promised / not honoured / came back early were three more
+                        columns of mostly em-dashes. They are outcomes of the SAME
+                        rejection this cell counts, so they ride its tooltip, and
+                        the panel that lists them caller by caller is two panels
+                        down. */}
                     <Tooltip
-                      title={`maxQueueDepth is ${u.configuredDepth}, but maxWait only allows ${u.reachableDepth} waiter(s) at ${fmtDuration(u.serviceMeanMs)} per request on ${cap} slot(s).`}
+                      title={
+                        promised + notHonored + early > 0
+                          ? `${promised} still due back, ${notHonored} never returned, ${early} came back before the time we named.`
+                          : 'Nobody was told to come back on this model in the window.'
+                      }
                     >
-                      <Chip
-                        size="small"
-                        color="warning"
-                        variant="outlined"
-                        // On a frozen window this is still a SETTING, not a
-                        // reading of that hour — run 5 could not tell which, and
-                        // it was the one thing drawn identically on both (OB-9).
-                        label={live ? 'settings clash' : 'settings clash (a setting, not a reading)'}
-                        sx={{ ml: 1 }}
-                      />
+                      <span>
+                        <Zeroable n={Number(u?.turnedAway ?? 0)} color={C.error} />
+                      </span>
                     </Tooltip>
-                  )}
-                </TableCell>
+                  </TableCell>
+              </>
+            )
+            if (u?.lane) {
+              const members = u.members ?? []
+              const routed = members.reduce((n, m) => n + Number(m.routed), 0)
+              const fellThrough = members.slice(1).reduce((n, m) => n + Number(m.routed), 0)
+              const unanswered = Math.max(0, Number(u.askedFor) - routed)
+              return (
+                <TableRow key={served} id={rowId(served)} hover selected={flash === served}>
+                  {nameCell}
+                  <TableCell align="right">{fmtInt(Number(u.askedFor))}</TableCell>
+                  {liveCells}
+                  {/* A lane owns no tokens, speed or cost: they are on the rows of
+                      the models it routed to. One cell says where, instead of
+                      eleven columns of dashes. */}
+                  <TableCell colSpan={11}>
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, alignItems: 'baseline' }}>
+                      {members.map((m, i) => (
+                        <Tooltip
+                          key={m.model}
+                          title={`${i === 0 ? 'First choice' : `Fallback ${i}`}: answered ${fmtInt(Number(m.routed))} request(s) for ${served} in the window. Click to jump to its row.`}
+                        >
+                          <Link component="button" variant="body2" onClick={() => jumpTo(m.model)}>
+                            {i === 0 ? '→ ' : '↳ '}
+                            {m.model} ×{fmtInt(Number(m.routed))}
+                          </Link>
+                        </Tooltip>
+                      ))}
+                      <Tooltip title="Requests answered by a model other than the first choice — the first was full, paused or failing. The number to watch on a list with more than one model.">
+                        <Typography variant="caption" sx={{ color: fellThrough > 0 ? C.warn : C.textMuted }}>
+                          fell through {fmtInt(fellThrough)}
+                        </Typography>
+                      </Tooltip>
+                      {unanswered > 0 && (
+                        <Tooltip title="Asked for this list but answered by none of its models: turned away, refused, failed or cancelled.">
+                          <Typography variant="caption" sx={{ color: C.error }}>
+                            not answered {fmtInt(unanswered)}
+                          </Typography>
+                        </Tooltip>
+                      )}
+                    </Box>
+                  </TableCell>
+                </TableRow>
+              )
+            }
+            return (
+              <TableRow key={served} id={rowId(served)} hover selected={flash === served}>
+                {nameCell}
                 <TableCell align="right">
                   {requests > 0 ? (
                     fmtInt(requests)
@@ -682,53 +801,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                     </Tooltip>
                   )}
                 </TableCell>
-                <TableCell align="right">
-                  {!live ? (
-                    // NOT the same dash as a zero elsewhere in this row. Run 5:
-                    // "same glyph, two different reasons, no visual difference
-                    // between them" (OB-9).
-                    <span style={{ color: C.textFaint, fontSize: 11 }}>not recorded</span>
-                  ) : cap > 0 ? (
-                    <Tooltip
-                      title={
-                        `${active} in service against ${cap} slot(s); ${waiting} queued` +
-                        (depth > 0 ? ` of a ${depth}-deep queue.` : ' (queue unbounded).')
-                      }
-                    >
-                      <Chip
-                        size="small"
-                        variant={active >= cap ? 'filled' : 'outlined'}
-                        color={depth > 0 && waiting >= depth ? 'error' : active >= cap ? 'warning' : 'default'}
-                        label={`${active}/${cap} · ${depth > 0 ? `${waiting}/${depth}` : waiting} queued`}
-                      />
-                    </Tooltip>
-                  ) : (
-                    // No live scheduler state: the model was called in the window
-                    // but nothing has been admitted on it since this process
-                    // started. Reporting 0/0 would imply zero capacity.
-                    <Tooltip title="No admissions on this model since startup — no live slot state to report.">
-                      <span style={{ color: C.textFaint }}>—</span>
-                    </Tooltip>
-                  )}
-                </TableCell>
-                <TableCell align="right">
-                  {/* Promised / not honoured / came back early were three more
-                      columns of mostly em-dashes. They are outcomes of the SAME
-                      rejection this cell counts, so they ride its tooltip, and
-                      the panel that lists them caller by caller is two panels
-                      down. */}
-                  <Tooltip
-                    title={
-                      promised + notHonored + early > 0
-                        ? `${promised} still due back, ${notHonored} never returned, ${early} came back before the time we named.`
-                        : 'Nobody was told to come back on this model in the window.'
-                    }
-                  >
-                    <span>
-                      <Zeroable n={Number(u?.turnedAway ?? 0)} color={C.error} />
-                    </span>
-                  </Tooltip>
-                </TableCell>
+                {liveCells}
                 <TableCell align="right">
                   <Rate v={Number(s?.promptPerSec ?? 0)} what="prompt-processing" />
                 </TableCell>

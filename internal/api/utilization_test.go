@@ -321,3 +321,47 @@ func TestUtilizationTurnedAwayCountsTheRefusingRung(t *testing.T) {
 		t.Errorf("turned away = %v, want 1 on chat and 1 on local-a", got)
 	}
 }
+
+// A lane's traffic is recorded under the rung that answered, so the lane row
+// carries the routing: how many asked for the lane, and how many each rung
+// answered. It appears even with no rejection of its own.
+func TestUtilizationLaneRouting(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UnixMilli()
+	for i := 0; i < 3; i++ {
+		if err := st.InsertActivity(store.Activity{TS: now - 60_000, Served: "local-a", Requested: "chat", Status: 200}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.InsertActivity(store.Activity{TS: now - 50_000, Served: "local-b", Requested: "chat", Status: 200}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Models: map[string]config.Model{
+			"local-a": {Cmd: "run-a", Server: "box1"},
+			"local-b": {Cmd: "run-b", Server: "box1"},
+		},
+		Lanes: map[string]config.Lane{"chat": {Members: []config.LaneMember{{Model: "local-a"}, {Model: "local-b"}}}},
+	}
+	h := &Handlers{Store: st, Sched: sched.New(), Cfg: cfg, Mgr: proc.NewManager(cfg)}
+	out, err := h.Utilization(context.Background(), &UtilizationInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lane *UtilizationRow
+	for i := range out.Body.Rows {
+		if out.Body.Rows[i].Served == "chat" {
+			lane = &out.Body.Rows[i]
+		}
+	}
+	if lane == nil {
+		t.Fatalf("no row for the lane: %+v", out.Body.Rows)
+	}
+	if lane.AskedFor != 4 || len(lane.Members) != 2 || lane.Members[0].Routed != 3 || lane.Members[1].Routed != 1 {
+		t.Errorf("lane = asked %d, members %+v; want asked 4, local-a 3, local-b 1", lane.AskedFor, lane.Members)
+	}
+}

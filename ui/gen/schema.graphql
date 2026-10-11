@@ -3359,6 +3359,8 @@ type corrallm_UtilizationMember {
   paused: Boolean!
   """Served by a host corrallm does not run: nothing to load, always available."""
   remote: Boolean!
+  """Requests for the lane this rung answered in the window."""
+  routed: Long!
   """A local process backs it — its own cmd, or its hosting extension's."""
   spawnable: Boolean!
   """absent|loading|ready|failed|evicting, or 'stopping' mid-teardown. Empty when remote."""
@@ -3379,6 +3381,8 @@ type corrallm_UtilizationRow {
   active: Long!
   """The longest queue wait that applies to this model — its own override, or the box-wide one. 0 = unbounded."""
   allowedWaitMs: Long!
+  """For a lane, every request that asked for it in the window, answered or not."""
+  askedFor: Long!
   """Admission slots across this name's backends; 0 if none has been touched since start."""
   capacity: Long!
   """scheduler.maxQueueDepth as configured (0 = unbounded)."""

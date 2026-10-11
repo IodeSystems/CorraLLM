@@ -623,8 +623,9 @@ type UtilizationRow struct {
 	// so `chat` and the model behind it both report the same busy slot — and a
 	// reader with no way to tell them apart sees two slots where there is one,
 	// and a column that sums to nothing real.
-	Lane    bool                `json:"lane" doc:"This name is a lane: its live load is the sum of the members below, not separate capacity."`
-	Members []UtilizationMember `json:"members" doc:"For a lane, the rungs whose slots it is reporting, in fall-through order."`
+	Lane     bool                `json:"lane" doc:"This name is a lane: its live load is the sum of the members below, not separate capacity."`
+	Members  []UtilizationMember `json:"members" doc:"For a lane, the rungs whose slots it is reporting, in fall-through order."`
+	AskedFor int64               `json:"askedFor" doc:"For a lane, every request that asked for it in the window, answered or not."`
 	// Live, instantaneous — from the scheduler, summed over the backends this
 	// served name resolves to.
 	Capacity int `json:"capacity" doc:"Admission slots across this name's backends; 0 if none has been touched since start."`
@@ -680,9 +681,10 @@ type UtilizationMember struct {
 	PauseReason string `json:"pauseReason" doc:"Why it is paused (operator-supplied)."`
 	// This rung's share of the lane's live load, so a busy lane says WHICH rung
 	// is busy.
-	Capacity int `json:"capacity" doc:"This rung's admission slots; 0 if it has never been admitted to since start."`
-	Active   int `json:"active" doc:"Slots of this rung in service right now."`
-	Waiting  int `json:"waiting" doc:"Callers queued on this rung right now."`
+	Capacity int   `json:"capacity" doc:"This rung's admission slots; 0 if it has never been admitted to since start."`
+	Active   int   `json:"active" doc:"Slots of this rung in service right now."`
+	Waiting  int   `json:"waiting" doc:"Callers queued on this rung right now."`
+	Routed   int64 `json:"routed" doc:"Requests for the lane this rung answered in the window."`
 }
 
 // UtilizationOutput is the per-model pressure table.
@@ -839,8 +841,46 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 			r.ConfiguredDepth = depth
 		}
 	}
+	// Every lane that was asked for gets a row, not only one that turned
+	// somebody away: its traffic is recorded under the rung that answered, so
+	// a lane with no rejections would otherwise vanish, and its routing with it.
+	asked, err := h.Store.RequestedTotals(w)
+	if err != nil {
+		return nil, err
+	}
+	for name := range asked {
+		if _, ok := rows[name]; ok {
+			continue
+		}
+		if cands, ok := h.config().ResolveServed(name); ok && (len(cands) != 1 || cands[0].Name != name) {
+			row(name)
+		}
+	}
 	for s := range rows {
 		attach(s)
+	}
+	// What each lane routed where. The rows are keyed by the model that
+	// answered, so without this a lane row shows only its own rejections and
+	// the reader cannot see that its traffic is on the rung's row.
+	routes, err := h.Store.LaneRoutes(w)
+	if err != nil {
+		return nil, err
+	}
+	routed := map[string]map[string]int64{}
+	for _, rt := range routes {
+		if routed[rt.Requested] == nil {
+			routed[rt.Requested] = map[string]int64{}
+		}
+		routed[rt.Requested][rt.Served] = rt.N
+	}
+	for name, r := range rows {
+		if !r.Lane {
+			continue
+		}
+		r.AskedFor = asked[name]
+		for i := range r.Members {
+			r.Members[i].Routed = routed[name][r.Members[i].Model]
+		}
 	}
 	// A model busy RIGHT NOW but with no completed request in the window has no
 	// activity row yet — it would vanish from a log-only row set precisely when
