@@ -276,7 +276,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 		case stage.Queue || stage.Then == "queue":
 			// fall through to the wait path below
 		default:
-			be := bs.backpressure("rejected")
+			be := bs.backpressureFor(now, sl, "rejected")
 			s.mu.Unlock()
 			cancel(nil)
 			return nil, nil, be
@@ -292,7 +292,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 			cancel(nil)
 			return nil, nil, be
 		default:
-			be := bs.backpressure("rejected")
+			be := bs.backpressureFor(now, sl, "rejected")
 			s.mu.Unlock()
 			cancel(nil)
 			return nil, nil, be
@@ -302,6 +302,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	// Bound the queue: once maxQueueDepth callers already wait, reject fast with an
 	// informative 429 so the caller can shape, rather than block (the fork's
 	// maxQueueDepth contract). Preempt waiters above bypass this — they freed a slot.
+	var victim *waiter
 	if modelDepth > 0 && len(bs.waiters) >= modelDepth {
 		// A full queue used to reject the NEWCOMER unconditionally, so a queue
 		// held by low-priority waiters blocked a higher-priority arrival purely
@@ -313,23 +314,27 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 		// is bumped — it gets a 429 with a real Retry-After, exactly as if it
 		// had timed out. Otherwise the arrival is rejected as before.
 		//
-		// Within a group the numerator is identical, so a newcomer is never
-		// strictly better than its own peers: bumping only ever happens ACROSS
-		// groups, and "which of my peers do I evict" never arises.
-		victim := bs.pickBumpable(s.now(), sl)
+		// Within a group the numerator is identical, so a fresh newcomer is
+		// never strictly better than its own peers. An aged ticket can be (see
+		// aging.go): a caller that already timed out displaces a fresher peer.
+		victim = bs.pickBumpable(s.now(), sl)
 		if victim == nil {
-			be := bs.backpressure("rejected")
+			be := bs.backpressureFor(now, sl, "rejected")
 			s.mu.Unlock()
 			cancel(nil)
 			return nil, nil, be
 		}
 		bs.removeWaiter(victim)
-		victim.bumpErr = bs.backpressure("bumped")
-		close(victim.bumped)
 	}
 
 	w := &waiter{slot: sl, ready: make(chan struct{}), bumped: make(chan struct{})}
 	bs.waiters = append(bs.waiters, w)
+	if victim != nil {
+		// Priced after the arrival joins: it outranks the victim, so it is one
+		// of the waiters the victim would return behind.
+		victim.bumpErr = bs.backpressureFor(now, victim.slot, "bumped")
+		close(victim.bumped)
+	}
 	s.mu.Unlock()
 	return s.wait(ctx, backend, w, reqCtx, modelMaxWait)
 }
@@ -370,7 +375,7 @@ func (s *Scheduler) giveUp(backend string, w *waiter, reason string) (func(...Do
 	s.mu.Lock()
 	bs := s.backends[backend]
 	if bs != nil && bs.removeWaiter(w) {
-		be := bs.backpressure(reason)
+		be := bs.backpressureFor(s.now(), w.slot, reason)
 		s.mu.Unlock()
 		w.slot.cancel(nil)
 		return nil, nil, be
@@ -721,14 +726,42 @@ func (bs *backendState) observeDwell(dwell float64) {
 	bs.ewmaDwell = ewmaAlpha*dwell + (1-ewmaAlpha)*bs.ewmaDwell
 }
 
-// backpressure snapshots the current pressure into an error (caller holds s.mu).
-// Retry-After estimates the wait as the caller's queue position in "rounds"
-// (ceil((waiting+1)/capacity)) times the measured per-request service time
-// (dwell EWMA) — an honest hint. Before any request completes (no EWMA yet) it
-// falls back to ~1s per round.
+// backpressure snapshots the current pressure into an error for a caller that
+// would wait behind the whole queue (caller holds s.mu). See backpressureAhead.
 func (bs *backendState) backpressure(reason string) *BackpressureError {
+	return bs.backpressureAhead(reason, len(bs.waiters))
+}
+
+// backpressureFor is backpressure for one known caller: Retry-After counts only
+// the waiters that will be granted before it on its return (caller holds s.mu).
+//
+// The whole queue is the wrong count once ranks differ. A waiter that times
+// out with an aged ticket outranks fresher waiters behind it, and on its
+// immediate return it is granted before them — counting them overstates its
+// wait by a full round each. Ahead means: a preempt waiter (always granted
+// first), or one at least as deserving. Ties count as ahead because the grant
+// pick breaks them by list order, and a returning caller joins at the end.
+func (bs *backendState) backpressureFor(now time.Time, sl *slot, reason string) *BackpressureError {
+	currency := bs.queueCurrency()
+	ahead := 0
+	for _, w := range bs.waiters {
+		if w.slot == sl {
+			continue
+		}
+		if w.preempt || !bs.moreDeserving(now, currency, sl, w.slot) {
+			ahead++
+		}
+	}
+	return bs.backpressureAhead(reason, ahead)
+}
+
+// backpressureAhead estimates the wait as the caller's queue position in
+// "rounds" (ceil((ahead+1)/capacity)) times the measured per-request service
+// time (dwell EWMA) — an honest hint. Before any request completes (no EWMA
+// yet) it falls back to ~1s per round. Waiting still reports the whole queue.
+func (bs *backendState) backpressureAhead(reason string, ahead int) *BackpressureError {
 	waiting := len(bs.waiters)
-	rounds := math.Ceil(float64(waiting+1) / float64(maxInt(bs.capacity, 1)))
+	rounds := math.Ceil(float64(ahead+1) / float64(maxInt(bs.capacity, 1)))
 	per := bs.ewmaDwell
 	if per <= 0 {
 		per = 1 // no service-time sample yet

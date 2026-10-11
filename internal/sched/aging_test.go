@@ -122,3 +122,37 @@ func TestBumpingUsesTheSameAgedRatioAsGranting(t *testing.T) {
 		t.Error("a decisively more deserving arrival failed to bump")
 	}
 }
+
+// Retry-After counts only the waiters a returning caller would be granted
+// behind. An aged caller that times out returns ahead of the fresh waiters
+// behind it, so they must not lengthen its estimate.
+func TestRetryAfterCountsOnlyWaitersAhead(t *testing.T) {
+	now := time.Now()
+	bs := &backendState{capacity: 1, groupActive: map[string]int{"g": 1}, share: map[string]float64{}, ewmaDwell: 10}
+	aged := waiterFor("g", 1, now.Add(-45*time.Second))
+	bs.waiters = []*waiter{waiterFor("g", 1, time.Time{}), waiterFor("g", 1, time.Time{})}
+
+	if got := bs.backpressureFor(now, aged.slot, "queue-timeout"); got.RetryAfter != 10*time.Second || got.Waiting != 2 {
+		t.Errorf("aged caller: Retry-After %s waiting %d, want 10s (nobody ahead) and 2 waiting", got.RetryAfter, got.Waiting)
+	}
+
+	// A fresh caller ties with the fresh waiters and joins behind them.
+	fresh := &slot{group: "g", weight: 1, currency: "requests"}
+	if got := bs.backpressureFor(now, fresh, "rejected"); got.RetryAfter != 30*time.Second {
+		t.Errorf("fresh caller: Retry-After %s, want 30s (two equal waiters ahead)", got.RetryAfter)
+	}
+}
+
+// A preempt waiter is granted first whatever its rank, so it always counts.
+func TestRetryAfterCountsPreemptWaitersAhead(t *testing.T) {
+	now := time.Now()
+	bs := &backendState{capacity: 1, groupActive: map[string]int{"g": 1}, share: map[string]float64{}, ewmaDwell: 10}
+	pre := waiterFor("g", 1, time.Time{})
+	pre.preempt = true
+	bs.waiters = []*waiter{pre}
+	aged := waiterFor("g", 1, now.Add(-45*time.Second))
+
+	if got := bs.backpressureFor(now, aged.slot, "queue-timeout"); got.RetryAfter != 20*time.Second {
+		t.Errorf("Retry-After %s, want 20s (the preempt waiter is ahead)", got.RetryAfter)
+	}
+}
