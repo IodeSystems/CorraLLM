@@ -3987,3 +3987,16 @@ axes.
 - UI: busy % (last hour / 24 h) under each pool in "Where the models are"; panel with busy % and stacked TTFT charts per GPU.
 - First live read: box1/gpu0 busy 72.1% over 24 h (ad-hoc check said 72.6%); TTFT queue 312 ms + active 2.5 s avg, total p90 5.0 s, p99 20.0 s.
 - OCR same day: `ocr` lane → chandra-ocr-2 (default); LightOnOCR-3-4B stays selectable by name.
+
+## ✅ Go 1.27.2, gwag v2.1.2, queue/429 fixes, lane rows, MACD (2026-10-11)
+- Go 1.27.2 system-wide; `~/.config/go/env` had `GOTOOLCHAIN=go1.26.8+auto` pinning the old one (removed).
+  gwag deps upgraded and released v2.1.2 (GitHub release); corrallm pins it (4a4cf40). `go vet` clean (97b4ab4).
+- 429 `Retry-After` counts only waiters ranked ahead (2f4cf8a). A pause's `Retry-After` capped at 30 s
+  (was up to 5 min; a 45 s deploy pause idled Swift ~4.75 min). New `activity.refused_by` names the rung
+  that refused; turned-away counts on lane and rung (1799548).
+- By model: `active/slots · waiting/depth queued` (44cbe32); lane depth = rungs' depths summed (3b07bae);
+  lane rows span the metric columns with rung links + routed counts, fell-through, not-answered (f4c128d).
+- GPU panel: 3 h / 6.5 h EMAs on busy % + MACD chart, 12/26/9 on 15-min buckets over 48 h (844a7d8).
+- Restart drain: dashboard SSE held every shutdown 60 s; broker closes on shutdown (76e2104, untested live
+  until the next restart). Graceful deploy = pause Swift (drains in-flight, 429 ≤ 30 s), deploy, unpause.
+
