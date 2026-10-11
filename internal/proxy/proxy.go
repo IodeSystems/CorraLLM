@@ -992,13 +992,14 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
+				bp.Backend = name
 				if bp.Reason == "spill" {
 					bestBP = keepSoonest(bestBP, bp)
 					continue // advance to the next backend
 				}
 				// rejected or queue-timeout → terminal backoff.
 				promised := writeBackpressure(w, bp, ensureTicket(r))
-				p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+				p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refusedBy(bp), Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, ReqBody: reqBody,
 					RetryAfterMS: promised})
@@ -1044,6 +1045,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				bestBP = keepSoonest(bestBP, &sched.BackpressureError{
 					Reason:     "capacity",
 					RetryAfter: ce.RetryAfter,
+					Backend:    name,
 				})
 			}
 			slog.Warn("backend unavailable, spilling", "backend", name, "err", err)
@@ -1458,7 +1460,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if bestBP != nil {
 		bestBP.Reason = "exhausted"
 		promised := writeBackpressure(w, bestBP, ensureTicket(r))
-		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+		p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refusedBy(bestBP), Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", ReqBody: reqBody,
 			RetryAfterMS: promised})
@@ -1552,12 +1554,13 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
+				bp.Backend = name
 				if bp.Reason == "spill" {
 					lastBP = keepSoonest(lastBP, bp)
 					continue
 				}
 				promised := writeBackpressure(w, bp, ensureTicket(r))
-				p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+				p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refusedBy(bp), Key: key, Path: r.URL.Path,
 					Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 					QueuedMS: queuedMS, LoadMS: loadMS, Error: bp.Reason, RetryAfterMS: promised})
 				return
@@ -1580,6 +1583,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 				lastBP = keepSoonest(lastBP, &sched.BackpressureError{
 					Reason:     "capacity",
 					RetryAfter: ce.RetryAfter,
+					Backend:    name,
 				})
 			}
 			slog.Warn("realtime backend unavailable, spilling", "backend", name, "err", err)
@@ -1646,7 +1650,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	if lastBP != nil {
 		lastBP.Reason = "exhausted"
 		promised := writeBackpressure(w, lastBP, ensureTicket(r))
-		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+		p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refusedBy(lastBP), Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			QueuedMS: queuedMS, LoadMS: loadMS, Error: "exhausted", RetryAfterMS: promised})
 		return
@@ -1861,9 +1865,16 @@ func (p *Proxy) pauseResumeIn(cands []config.Candidate, now time.Time) (time.Dur
 	return time.Second, true
 }
 
-// pauseRetryAfter is what a paused model tells callers when nothing says when
-// it lifts: come back in five minutes, and again after that, until it does.
-const pauseRetryAfter = 5 * time.Minute
+// pauseRetryAfter is the longest a paused model tells callers to wait: come
+// back in 30 seconds, and again after that, until the pause lifts.
+//
+// Was five minutes, and the time left on a timed pause when sooner. Both were
+// wrong in the same way: a pause routinely ends EARLY — a build benchmark
+// paused Swift for 2.3 minutes but told aw4 4, and a deploy paused it for 45
+// seconds but told aw4 5 — and a caller already asleep cannot be called back.
+// The model then sits idle with work waiting. A 30-second poll costs one cheap
+// 429 per caller per interval; an early resume costs at most 30 seconds.
+const pauseRetryAfter = 30 * time.Second
 
 // writePaused answers a request whose every candidate is paused.
 //
@@ -1876,8 +1887,8 @@ const pauseRetryAfter = 5 * time.Minute
 // either gave up or retried on its own schedule.
 //
 // The interval is the time left on a timed pause when that is sooner than
-// pauseRetryAfter, else pauseRetryAfter: a pause lifting in two minutes says
-// two, one lifting tomorrow (or never) says five and keeps saying it.
+// pauseRetryAfter, else pauseRetryAfter: a pause lifting in ten seconds says
+// ten, anything longer (or indefinite) says thirty and keeps saying it.
 //
 // Deliberately NOT routed through writeBackpressure: that path is EWMA
 // guesswork about congestion and emits the X-RateLimit-* family, neither of
@@ -1897,7 +1908,16 @@ func (p *Proxy) writePaused(w http.ResponseWriter, r *http.Request, served, key 
 	w.WriteHeader(http.StatusTooManyRequests)
 	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"paused","retry_after":%d}}`,
 		jsonString(fmt.Sprintf("%s is paused by the operator; retry after %d seconds", served, secs)), secs)
-	p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+	// The first paused rung, the one the walk would have tried first, is the
+	// one that refused.
+	var refused string
+	for _, c := range cands {
+		if p.mgr.IsPaused(c.Name) {
+			refused = c.Name
+			break
+		}
+	}
+	p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refused, Key: key, Path: r.URL.Path,
 		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 		Error: "model paused", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
 }
@@ -2799,6 +2819,16 @@ func keepSoonest(cur, next *sched.BackpressureError) *sched.BackpressureError {
 		return next
 	}
 	return cur
+}
+
+// refusedBy is the backend that turned a request away, for the 429 row's
+// refused_by. Without it a lane's rejections named no model, and the model that
+// was actually full showed none.
+func refusedBy(bp *sched.BackpressureError) string {
+	if bp == nil {
+		return ""
+	}
+	return bp.Backend
 }
 
 // writeBackpressure renders a BackpressureError as 429 + informative headers and

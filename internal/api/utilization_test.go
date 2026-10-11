@@ -289,3 +289,35 @@ func TestUtilizationLaneDepthIsItsRungs(t *testing.T) {
 		t.Errorf("depths = %v, want chat 8 (5+3 from its rungs) and local-a 5", got)
 	}
 }
+
+// A lane's 429 counts as turned away on the lane, which is what the caller
+// asked for, and on the rung that refused, which is what was full or paused —
+// the same mirroring the lane row does for live slots.
+func TestUtilizationTurnedAwayCountsTheRefusingRung(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UnixMilli()
+	if err := st.InsertActivity(store.Activity{TS: now - 60_000, Served: "chat", Requested: "chat", Key: "k",
+		Status: 429, RetryAfterMS: 30_000, Error: "model paused", RefusedBy: "local-a"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Models: map[string]config.Model{"local-a": {Cmd: "run-a", Server: "box1"}},
+		Lanes:  map[string]config.Lane{"chat": {Members: []config.LaneMember{{Model: "local-a"}}}},
+	}
+	h := &Handlers{Store: st, Sched: sched.New(), Cfg: cfg, Mgr: proc.NewManager(cfg)}
+	out, err := h.Utilization(context.Background(), &UtilizationInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, r := range out.Body.Rows {
+		got[r.Served] = r.Turned
+	}
+	if got["chat"] != 1 || got["local-a"] != 1 {
+		t.Errorf("turned away = %v, want 1 on chat and 1 on local-a", got)
+	}
+}

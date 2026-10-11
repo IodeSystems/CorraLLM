@@ -37,6 +37,10 @@ type BackpressureError struct {
 	Capacity   int           // backend slots
 	InFlight   int           // slots currently in use
 	Waiting    int           // queued requests
+	// Backend is the backend that refused, so a 429 for a lane is recorded
+	// against the rung that turned it away. Set by the proxy's walk, which
+	// knows the candidate's name; empty from the scheduler itself.
+	Backend string
 }
 
 func (e *BackpressureError) Error() string {

@@ -920,19 +920,29 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 	if err != nil {
 		return nil, err
 	}
+	// Counted on the requested name AND on the rung that refused, the same way
+	// a lane row mirrors its rungs' live slots: the lane is what the caller
+	// asked for, the rung is what was full or paused.
 	for _, p := range promises {
-		r, ok := rows[p.Served]
-		if !ok {
-			r = row(p.Served)
+		names := []string{p.Served}
+		if p.RefusedBy != "" && p.RefusedBy != p.Served {
+			names = append(names, p.RefusedBy)
 		}
-		r.Turned++
-		switch classifyPromise(now, p.TS+p.RetryAfterMS, p.ReturnedMS) {
-		case "waiting":
-			r.Promised++
-		case "gone":
-			r.NotHonored++
-		case "early":
-			r.Early++
+		outcome := classifyPromise(now, p.TS+p.RetryAfterMS, p.ReturnedMS)
+		for _, name := range names {
+			r, ok := rows[name]
+			if !ok {
+				r = row(name)
+			}
+			r.Turned++
+			switch outcome {
+			case "waiting":
+				r.Promised++
+			case "gone":
+				r.NotHonored++
+			case "early":
+				r.Early++
+			}
 		}
 	}
 

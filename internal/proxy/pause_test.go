@@ -22,6 +22,14 @@ import (
 // the manager sharing the proxy's config (so it can resolve a model by name).
 func pauseLaneFixture(t *testing.T) (*chi.Mux, *proc.Manager) {
 	t.Helper()
+	r, mgr, _ := pauseLaneRig(t)
+	return r, mgr
+}
+
+// pauseLaneRig is pauseLaneFixture with the activity store, for tests that
+// read what was recorded.
+func pauseLaneRig(t *testing.T) (*chi.Mux, *proc.Manager, *store.Store) {
+	t.Helper()
 	reply := func(body string) *httptest.Server {
 		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/health" {
@@ -56,7 +64,7 @@ func pauseLaneFixture(t *testing.T) (*chi.Mux, *proc.Manager) {
 
 	r := chi.NewRouter()
 	New(cfg, mgr, sched.New(), st).Mount(r)
-	return r, mgr
+	return r, mgr, st
 }
 
 func sendToLane(t *testing.T, r *chi.Mux, model string) *httptest.ResponseRecorder {
@@ -92,7 +100,7 @@ func TestPausedMemberFallsThrough(t *testing.T) {
 }
 
 // TestAllMembersPaused429: a lane with nothing unpaused left is a 429 telling
-// the caller to come back in five minutes — the pause's standing answer.
+// the caller to come back in 30 seconds — the pause's standing answer.
 func TestAllMembersPaused429(t *testing.T) {
 	r, mgr := pauseLaneFixture(t)
 	for _, m := range []string{"m-1", "m-2"} {
@@ -104,10 +112,10 @@ func TestAllMembersPaused429(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("want 429, got %d (%s)", rec.Code, rec.Body.String())
 	}
-	if ra := rec.Header().Get("Retry-After"); ra != "300" {
-		t.Errorf("Retry-After = %q, want 300", ra)
+	if ra := rec.Header().Get("Retry-After"); ra != "30" {
+		t.Errorf("Retry-After = %q, want 30", ra)
 	}
-	if !strings.Contains(rec.Body.String(), `"type":"paused"`) || !strings.Contains(rec.Body.String(), `"retry_after":300`) {
+	if !strings.Contains(rec.Body.String(), `"type":"paused"`) || !strings.Contains(rec.Body.String(), `"retry_after":30`) {
 		t.Errorf("body = %s, want a paused error carrying retry_after", rec.Body.String())
 	}
 }
@@ -193,10 +201,10 @@ func postChat(t *testing.T, r *chi.Mux, model string) *httptest.ResponseRecorder
 
 // TestPausedIndefiniteHasNoRetryAfter: the original behavior, and the case the
 // "no retry interval would be honest" comment was written for. Nothing but a
-// TestPausedIndefiniteRetriesInFiveMinutes: nothing says when an indefinite
-// pause lifts, so the caller is told five minutes — and told it again on every
+// TestPausedIndefiniteRetriesInThirtySeconds: nothing says when an indefinite
+// pause lifts, so the caller is told 30 seconds — and told it again on every
 // request until it does.
-func TestPausedIndefiniteRetriesInFiveMinutes(t *testing.T) {
+func TestPausedIndefiniteRetriesInThirtySeconds(t *testing.T) {
 	r, mgr := pauseLaneFixture(t)
 	for _, m := range []string{"m-1", "m-2"} {
 		if _, err := mgr.PauseModel(m, "", time.Time{}); err != nil {
@@ -208,16 +216,16 @@ func TestPausedIndefiniteRetriesInFiveMinutes(t *testing.T) {
 		if w.Code != http.StatusTooManyRequests {
 			t.Fatalf("request %d: status = %d, want 429", i, w.Code)
 		}
-		if ra := w.Header().Get("Retry-After"); ra != "300" {
-			t.Errorf("request %d: Retry-After = %q, want 300", i, ra)
+		if ra := w.Header().Get("Retry-After"); ra != "30" {
+			t.Errorf("request %d: Retry-After = %q, want 30", i, ra)
 		}
 	}
 }
 
-// TestPausedTimedCapsAtFiveMinutes: a timed pause lifting an hour from now
-// still says five minutes — the caller keeps checking in rather than going
-// quiet for the whole hour.
-func TestPausedTimedCapsAtFiveMinutes(t *testing.T) {
+// TestPausedTimedCapsAtThirtySeconds: a timed pause lifting an hour from now
+// still says 30 seconds — the caller keeps checking in rather than going quiet
+// for the whole hour, so a pause lifted early costs it at most one interval.
+func TestPausedTimedCapsAtThirtySeconds(t *testing.T) {
 	r, mgr := pauseLaneFixture(t)
 	resume := time.Now().Add(time.Hour)
 	for _, m := range []string{"m-1", "m-2"} {
@@ -233,8 +241,8 @@ func TestPausedTimedCapsAtFiveMinutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Retry-After = %q, want an integer second count: %v", w.Header().Get("Retry-After"), err)
 	}
-	if secs != 300 {
-		t.Errorf("Retry-After = %ds, want 300 (capped; the pause has an hour left)", secs)
+	if secs != 30 {
+		t.Errorf("Retry-After = %ds, want 30 (capped; the pause has an hour left)", secs)
 	}
 }
 
@@ -245,7 +253,7 @@ func TestPausedLaneUsesSoonestResume(t *testing.T) {
 	if _, err := mgr.PauseModel("m-1", "", time.Now().Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(3*time.Minute)); err != nil {
+	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(20*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	w := postChat(t, r, "m")
@@ -253,8 +261,8 @@ func TestPausedLaneUsesSoonestResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Retry-After = %q: %v", w.Header().Get("Retry-After"), err)
 	}
-	if secs < 170 || secs > 180 {
-		t.Errorf("Retry-After = %ds, want ~180 — the SOONEST member, under the 5 minute cap", secs)
+	if secs < 11 || secs > 20 {
+		t.Errorf("Retry-After = %ds, want ~20 — the SOONEST member, under the 30 second cap", secs)
 	}
 }
 
@@ -266,7 +274,7 @@ func TestPausedMixedIndefiniteAndTimed(t *testing.T) {
 	if _, err := mgr.PauseModel("m-1", "", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(2*time.Minute)); err != nil {
+	if _, err := mgr.PauseModel("m-2", "", time.Now().Add(15*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	w := postChat(t, r, "m")
@@ -274,7 +282,29 @@ func TestPausedMixedIndefiniteAndTimed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Retry-After = %q, want the timed sibling's interval: %v", w.Header().Get("Retry-After"), err)
 	}
-	if secs < 110 || secs > 120 {
-		t.Errorf("Retry-After = %ds, want ~120", secs)
+	if secs < 6 || secs > 15 {
+		t.Errorf("Retry-After = %ds, want ~15", secs)
+	}
+}
+
+// A lane whose rungs are all paused records its 429 under the lane — the
+// refusing model did not serve — and names the rung that refused, the first
+// one the walk would have tried.
+func TestPausedLaneRecordsTheRungThatRefused(t *testing.T) {
+	r, mgr, st := pauseLaneRig(t)
+	for _, m := range []string{"m-1", "m-2"} {
+		if _, err := mgr.PauseModel(m, "", time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := postChat(t, r, "m"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", w.Code)
+	}
+	ps, err := st.RetryPromises(store.Window{}, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ps) != 1 || ps[0].Served != "m" || ps[0].RefusedBy != "m-1" {
+		t.Fatalf("promises = %+v, want one with served m, refused by m-1", ps)
 	}
 }

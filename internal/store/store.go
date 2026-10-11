@@ -468,6 +468,11 @@ var migrations = []string{
 	// before this, and anything the proxy could not count — distinct from a
 	// measured 0 (thinking off).
 	`ALTER TABLE activity ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT -1`,
+	// The backend that turned a request away (2026-10-11). `served` keeps the
+	// requested name on an unserved row, so a refusing model is never credited
+	// with the request; without this column a lane's 429s named no model at all,
+	// and the model that was full or paused showed none. '' = not recorded.
+	`ALTER TABLE activity ADD COLUMN refused_by TEXT NOT NULL DEFAULT ''`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -810,6 +815,10 @@ type Activity struct {
 	// turned it away. Empty for a request that was never rejected and sent no
 	// id of its own, which is most of them.
 	Ticket string
+	// RefusedBy is the backend that turned this request away, on a 429 where
+	// the walk knows it. Served stays the requested name: a model that refused
+	// did not serve.
+	RefusedBy string
 	// Conversation names the chat conversation this request was a turn of (the
 	// slot cache's key), and ConversationMessages how many messages the turn
 	// carried. Not columns on activity: they live in activity_conversation, see
@@ -874,12 +883,12 @@ func (s *Store) InsertActivity(a Activity) error {
 		`INSERT INTO activity (ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec,
-		                       finish_reason, load_ms, retry_after_ms, ticket, reasoning_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       finish_reason, load_ms, retry_after_ms, ticket, reasoning_tokens, refused_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Requested, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec,
-		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket, reasoningCol(a),
+		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket, reasoningCol(a), a.RefusedBy,
 	)
 	if err != nil {
 		return err
@@ -1133,6 +1142,7 @@ type RetryPromise struct {
 	Key          string // caller identity; empty for an unkeyed caller
 	SourceIP     string
 	Served       string
+	RefusedBy    string // the backend that turned it away, '' if not recorded
 	Reason       string // backpressure reason: rejected | queue-timeout | exhausted | bumped
 	RetryAfterMS int64  // what we promised
 	// ReturnedMS is the caller's next request of any kind after TS, or 0 if they
@@ -1155,7 +1165,7 @@ func (s *Store) RetryPromises(w Window, limit int, key string) ([]RetryPromise, 
 	// Qualified: this query self-joins the activity table to find each
 	// rejection's return, so a bare `ts` is ambiguous.
 	wWhere, wArgs := w.where("a.ts")
-	q := `SELECT a.id, a.ts, a.key, a.source_ip, a.served, a.error, a.retry_after_ms,
+	q := `SELECT a.id, a.ts, a.key, a.source_ip, a.served, a.refused_by, a.error, a.retry_after_ms,
 	             COALESCE((SELECT MIN(b.ts) FROM activity b
 	                        WHERE b.ts > a.ts
 	                          AND CASE WHEN a.key <> '' THEN b.key = a.key
@@ -1177,7 +1187,7 @@ func (s *Store) RetryPromises(w Window, limit int, key string) ([]RetryPromise, 
 	var out []RetryPromise
 	for rows.Next() {
 		var p RetryPromise
-		if err := rows.Scan(&p.ID, &p.TS, &p.Key, &p.SourceIP, &p.Served, &p.Reason,
+		if err := rows.Scan(&p.ID, &p.TS, &p.Key, &p.SourceIP, &p.Served, &p.RefusedBy, &p.Reason,
 			&p.RetryAfterMS, &p.ReturnedMS); err != nil {
 			return nil, err
 		}
