@@ -9,6 +9,7 @@ import { Panel, PageHeader, Row } from '@/Panel'
 import { C } from '@/theme'
 import { NotYet } from '@/NotYet'
 import { FleetPanel, type FleetResident, type FleetServer } from '@/FleetPanel'
+import { GpuUtilizationPanel, useGpuBusy } from '@/GpuUtilization'
 import { fmtInt, fmtKwh, fmtUSD } from '@/format'
 import { PaidComparison, type ComparisonRow } from '@/PaidComparison'
 
@@ -953,6 +954,7 @@ function Now() {
       }),
     refetchInterval: 10000,
   })
+  const gpuBusy = useGpuBusy()
 
   if (q.error) {
     return (
@@ -1238,7 +1240,10 @@ function Now() {
         declaredByServer={declaredByServer}
         boundPools={boundPools}
         probeIncomplete={probeIncomplete}
+        busy={gpuBusy}
       />
+
+      <GpuUtilizationPanel />
 
       <ActiveRequests />
     </Box>

@@ -651,6 +651,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UsageSeriesByGroup)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "gpuUtilization",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/usage/gpu-utilization",
+		Summary:     "Per-GPU-pool busy share and time to first token (queue / load / active), bucketed.",
+		Tags:        []string{"observability"},
+	}, h.GPUUtilization)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "usageByKey",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/usage/by-key",

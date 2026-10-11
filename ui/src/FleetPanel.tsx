@@ -219,6 +219,8 @@ export function FleetPanel(props: {
   boundPools?: Set<string>
   /** A local card whose probe failed, so its pool cannot be classified. */
   probeIncomplete?: boolean
+  /** Share of time each `server/pool` was serving, last hour and last 24 h, 0..1. */
+  busy?: Map<string, { hour: number; day: number }>
 }) {
   const {
     pending = false,
@@ -227,6 +229,7 @@ export function FleetPanel(props: {
     declaredByServer = new Map<string, number>(),
     boundPools = new Set<string>(),
     probeIncomplete = false,
+    busy = new Map<string, { hour: number; day: number }>(),
   } = props
 
   if (pending) {
@@ -287,6 +290,12 @@ export function FleetPanel(props: {
                       <Box sx={{ mt: 0.5 }}>
                         <Holders holders={holders} />
                       </Box>
+                      {busy.has(`${s.server}/${p.pool}`) && (
+                        <Typography variant="caption" sx={{ color: C.textMuted, display: 'block' }}>
+                          busy {Math.round((busy.get(`${s.server}/${p.pool}`)?.hour ?? 0) * 100)}% last hour ·{' '}
+                          {Math.round((busy.get(`${s.server}/${p.pool}`)?.day ?? 0) * 100)}% last 24 h
+                        </Typography>
+                      )}
                     </Box>
                   )
                 })}

@@ -171,6 +171,16 @@ type CorrallmQueryNamespace {
   ): corrallm_EntryYAMLOutputBody @derived(operationId: "entryYaml")
   extensions: corrallm_ExtensionsOutputBody @derived(operationId: "extensions")
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
+  gpuUtilization(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_GPUUtilizationOutputBody @derived(operationId: "gpuUtilization")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   journeys(
@@ -505,6 +515,16 @@ type CorrallmV1QueryNamespace {
   ): corrallm_EntryYAMLOutputBody @derived(operationId: "entryYaml")
   extensions: corrallm_ExtensionsOutputBody @derived(operationId: "extensions")
   freeRoster: corrallm_RosterOutputBody @derived(operationId: "freeRoster")
+  gpuUtilization(
+    """Bucket width in minutes."""
+    bucketMinutes: Long
+    """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
+    from: Long
+    """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
+    to: Long
+    """Trailing window in hours."""
+    windowHours: Long
+  ): corrallm_GPUUtilizationOutputBody @derived(operationId: "gpuUtilization")
   groups: corrallm_GroupsOutputBody @derived(operationId: "groups")
   health: corrallm_HealthOutputBody @derived(operationId: "health")
   journeys(
@@ -1641,6 +1661,15 @@ type corrallm_ExtensionsOutputBody {
   extensions: [corrallm_ExtensionState!]!
 }
 
+type corrallm_GPUUtilizationOutputBody {
+  """Effective bucket width (may be coarsened)."""
+  bucketMinutes: Long!
+  """Bucket start times, unix millis, ascending."""
+  buckets: [Long!]!
+  """One entry per GPU pool that served anything in the window, busiest first."""
+  pools: [corrallm_PoolUtilization!]!
+}
+
 type corrallm_GroupDef {
   """Opts into quality-degrade fall-through."""
   acceptDegrade: Boolean!
@@ -2248,6 +2277,43 @@ type corrallm_PoolUsageView {
   bytes: Long!
   """Pool name."""
   pool: String!
+}
+
+type corrallm_PoolUtilization {
+  """Per bucket: mean active time to first token (prompt processing, after queue and load), ms."""
+  activeMs: [Float!]!
+  """Window mean active time to first token, ms."""
+  activeMsAvg: Float!
+  """Window 90th percentile of active time to first token, ms."""
+  activeMsP90: Long!
+  """Window 99th percentile of active time to first token, ms."""
+  activeMsP99: Long!
+  """Per bucket: share of the bucket at least one request was being served, 0..1."""
+  busy: [Float!]!
+  """Share of the window (elapsed part) at least one request was being served on this pool, 0..1."""
+  busyPct: Float!
+  """Per bucket: mean time waiting for a cold model load, ms."""
+  loadMs: [Float!]!
+  """Served models that ran on this pool in the window."""
+  models: [String!]!
+  """Device pool (the GPU) the models' weights are placed on."""
+  pool: String!
+  """Per bucket: mean time in corrallm's queue before admission, ms."""
+  queueMs: [Float!]!
+  """Window mean queue time, ms."""
+  queueMsAvg: Float!
+  """Per bucket: served requests that ENDED in the bucket."""
+  requests: [Long!]!
+  """Box the pool is on."""
+  server: String!
+  """Streamed requests with a first-token figure in the window."""
+  ttftCount: Long!
+  """Window 90th percentile of total time to first token (queue + load + active), ms."""
+  ttftMsP90: Long!
+  """Window 99th percentile of total time to first token, ms."""
+  ttftMsP99: Long!
+  """Per bucket: streamed requests whose first byte fell in the bucket — what the ttft* means are over."""
+  ttftN: [Long!]!
 }
 
 type corrallm_PoolView {
