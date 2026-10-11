@@ -859,6 +859,9 @@ func serve(ctx context.Context, o serveOpts) error {
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// Live-event streams never finish on their own; end them when shutdown
+	// starts so the drain waits only for real requests.
+	srv.RegisterOnShutdown(broker.Close)
 
 	// Graceful shutdown: SIGINT/SIGTERM stops the listener and (via the defers)
 	// tears down spawned backends — otherwise a kill leaves child processes

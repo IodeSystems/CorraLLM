@@ -32,11 +32,22 @@ type Event struct {
 type Broker struct {
 	mu   sync.Mutex
 	subs map[chan Event]struct{}
+	// done ends every open stream. http.Server.Shutdown waits for handlers but
+	// never cancels their contexts, so an open dashboard held each restart for
+	// the whole drain (60 s, every time) with no model work in flight.
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // NewBroker constructs an empty Broker.
 func NewBroker() *Broker {
-	return &Broker{subs: map[chan Event]struct{}{}}
+	return &Broker{subs: map[chan Event]struct{}{}, done: make(chan struct{})}
+}
+
+// Close ends every open stream and makes new ones return at once. Called when
+// shutdown begins; the browser's EventSource reconnects to the next process.
+func (b *Broker) Close() {
+	b.closeOnce.Do(func() { close(b.done) })
 }
 
 // Subscribe registers a buffered channel and returns it with an unsubscribe
@@ -100,6 +111,8 @@ func (b *Broker) ServeSSE(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-b.done:
 			return
 		case <-ping.C:
 			fmt.Fprint(w, ": ping\n\n")

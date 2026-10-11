@@ -106,3 +106,29 @@ func TestServeSSE(t *testing.T) {
 		t.Fatalf("did not observe streamed event (event=%v data=%v)", sawEvent, sawData)
 	}
 }
+
+// An open stream must not hold a server's shutdown. Shutdown waits for every
+// handler and never cancels their contexts, so before Close existed an open
+// dashboard made each restart wait out the whole drain.
+func TestCloseLetsShutdownFinish(t *testing.T) {
+	b := NewBroker()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(b.ServeSSE))
+	srv.Config.RegisterOnShutdown(b.Close)
+	srv.Start()
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if line, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil || !strings.HasPrefix(line, ": connected") {
+		t.Fatalf("stream did not open: %q, %v", line, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Config.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown with an open stream: %v (the stream held the drain)", err)
+	}
+}
