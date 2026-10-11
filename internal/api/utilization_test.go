@@ -241,3 +241,51 @@ lanes:
 		t.Errorf("member = %q, want openrouter-m", lane.Members[0].Model)
 	}
 }
+
+// A lane queues nothing itself: its rungs do, each against its own bound. The
+// lane row's depth is theirs summed, like its slots — not the lane name's own
+// (box-wide) setting, which describes a queue that does not exist.
+func TestUtilizationLaneDepthIsItsRungs(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UnixMilli()
+	for _, served := range []string{"chat", "local-a"} {
+		if err := st.InsertActivity(store.Activity{TS: now - 60_000, Served: served, Status: 200, DwellMS: 1000}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := &config.Config{
+		Scheduler: config.SchedulerConfig{MaxQueueDepth: 2},
+		Models: map[string]config.Model{
+			"local-a": {Cmd: "run-a", Server: "box1", Scheduler: &config.SchedulerConfig{MaxQueueDepth: 5}},
+			"local-b": {Cmd: "run-b", Server: "box1", Scheduler: &config.SchedulerConfig{MaxQueueDepth: 3}},
+		},
+		Lanes: map[string]config.Lane{
+			"chat": {Members: []config.LaneMember{{Model: "local-a"}, {Model: "local-b"}}},
+		},
+	}
+	sc := sched.New()
+	for _, b := range []string{"local-a", "local-b"} {
+		release, _, err := sc.Admit(context.Background(), b, "local", 1, "g", 1, false, config.Stage{Queue: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		release()
+	}
+	h := &Handlers{Store: st, Sched: sc, Cfg: cfg, Mgr: proc.NewManager(cfg)}
+	out, err := h.Utilization(context.Background(), &UtilizationInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, r := range out.Body.Rows {
+		got[r.Served] = r.ConfiguredDepth
+	}
+	if got["chat"] != 8 || got["local-a"] != 5 {
+		t.Errorf("depths = %v, want chat 8 (5+3 from its rungs) and local-a 5", got)
+	}
+}

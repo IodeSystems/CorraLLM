@@ -804,6 +804,11 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 			r.Lane = true
 			r.Members = append(r.Members, member(c, byBackend[c.Name]))
 		}
+		// The queue bound is the backends' own, summed the same way as their
+		// slots: a lane queues nothing itself, so its own (box-wide) depth would
+		// describe a queue that does not exist. Any unbounded rung makes the
+		// whole lane unbounded (0).
+		depth, unbounded, counted := 0, false, map[string]bool{}
 		for _, c := range cands {
 			b, ok := byBackend[c.Name]
 			if !ok {
@@ -812,12 +817,26 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 			r.Capacity += b.Capacity
 			r.Active += b.Active
 			r.Waiting += b.Waiting
+			if !counted[c.Name] {
+				counted[c.Name] = true
+				d := h.config().SchedulerFor(c.Name).MaxQueueDepth
+				unbounded = unbounded || d <= 0
+				depth += d
+			}
 			// Min across candidates, matching how a spill walk reports backpressure
 			// (keepSoonest): the earliest moment ANY path could take the caller.
 			ms := b.EstWait.Milliseconds()
 			if ms > 0 && (r.EstWaitMS == 0 || ms < r.EstWaitMS) {
 				r.EstWaitMS = ms
 			}
+		}
+		switch {
+		case len(counted) == 0:
+			r.ConfiguredDepth = h.config().SchedulerFor(served).MaxQueueDepth
+		case unbounded:
+			r.ConfiguredDepth = 0
+		default:
+			r.ConfiguredDepth = depth
 		}
 	}
 	for s := range rows {
@@ -868,10 +887,9 @@ func (h *Handlers) Utilization(_ context.Context, in *UtilizationInput) (*Utiliz
 		// other way.
 		sc := h.config().SchedulerFor(s.Served)
 		maxWait, _ := time.ParseDuration(sc.MaxWait)
-		depth := sc.MaxQueueDepth
+		depth := r.ConfiguredDepth
 		cv := s.CV()
 		r.ServiceMeanMS, r.ServiceCV, r.ServiceSamples = int64(s.MeanMS), cv, s.N
-		r.ConfiguredDepth = depth
 		if r.Capacity > 0 {
 			// Utilization measured over the window rather than from an instantaneous
 			// active/capacity read: a snapshot of a bursty hour is mostly noise, and
