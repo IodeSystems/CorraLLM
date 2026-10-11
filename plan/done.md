@@ -3972,3 +3972,10 @@ axes.
   regenerated the SDL without `predictedPerSec`, silently reverting it. Rebase onto main first.
 - **Agents run `bin/gen` when they mean `pnpm gen`.** The former also rewrites the tracked SDL
   snapshot — the exact collision the DAG exists to avoid.
+
+## ✅ Traffic page slow at 24h/7d — payloads moved to `activity_payload` (2026-10-10, 9a09f64)
+- Cause: `req_body`/`resp_body` (~118 KB/request, 7-day retention) sat before `cached_tokens`,
+  `prompt_per_sec`, `reasoning_tokens` …; every rollup walked payload overflow pages. 13.4 GB file, 72% free pages.
+- Fix: side table + one-time move and VACUUM on Open (2m02s on box1; file 13.4 → 3.4 GB).
+- Result: ModelStats query 7d 4.1 s (7–127 s under contention) → 0.35 s; 24h 0.99 → 0.10 s.
+- Not done: pre-aggregated window buckets. Not needed at these times.
