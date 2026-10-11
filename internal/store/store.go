@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -42,12 +43,20 @@ CREATE TABLE IF NOT EXISTS activity (
     cached_tokens     INTEGER NOT NULL DEFAULT 0, -- backend-reported cached prompt tokens
     prompt_per_sec    REAL    NOT NULL DEFAULT 0, -- backend-reported prompt-processing speed (tp/s)
     predicted_per_sec REAL    NOT NULL DEFAULT 0, -- backend-reported generation speed (tg/s)
-    req_body          TEXT    NOT NULL DEFAULT '', -- captured request payload, capped (P10b)
-    resp_body         TEXT    NOT NULL DEFAULT '', -- captured response payload, capped (P10b)
     retry_after_ms    INTEGER NOT NULL DEFAULT 0, -- the Retry-After we PROMISED this caller on a 429 (P15)
     ticket            TEXT    NOT NULL DEFAULT ''  -- one caller's attempt, across every rejection it took (P28)
 );
 CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
+-- Captured request/response payloads (P10b), one row per activity row that has
+-- one. A SIDE TABLE because they are ~120 KB a request: as columns on activity
+-- they pushed every column after them into overflow pages, and every rollup
+-- read the payloads to reach a number. Measured on box1, 2026-10-10: a 7-day
+-- sum(cached_tokens) took 1.08 s with the payloads inline, 0.066 s without.
+CREATE TABLE IF NOT EXISTS activity_payload (
+    activity_id INTEGER PRIMARY KEY, -- activity.id
+    req_body    TEXT NOT NULL DEFAULT '',
+    resp_body   TEXT NOT NULL DEFAULT ''
+);
 -- Per-key access, COVERING the rollup behind the Keys page.
 --
 -- Two things it serves. Correlating a promise with the caller's next request
@@ -391,8 +400,6 @@ var migrations = []string{
 	`ALTER TABLE activity ADD COLUMN audio_bytes INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN error TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE activity ADD COLUMN ttfb_ms INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE activity ADD COLUMN req_body TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE activity ADD COLUMN resp_body TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE activity ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE activity ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN prompt_per_sec REAL NOT NULL DEFAULT 0`,
@@ -710,6 +717,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			return nil, fmt.Errorf("migrate: %w", err)
 		}
 	}
+	if err := movePayloads(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -807,24 +818,83 @@ type Activity struct {
 	ConversationMessages int
 }
 
-// InsertActivity appends a request record to the activity log.
+// movePayloads moves req_body/resp_body out of an activity table created
+// before activity_payload existed, once. The DROPs rewrite every activity row,
+// which is what brings the columns after the payloads back into the row's own
+// page. Then a VACUUM, because the dropped payloads leave the file at twice
+// its size; the daemon is not serving yet, so nothing waits on it.
+// Measured on a copy of box1's database (157k rows, 3.4 GB): 17 s for the move.
+func movePayloads(ctx context.Context, db *sql.DB) error {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('activity') WHERE name = 'req_body'`).Scan(&n); err != nil {
+		return fmt.Errorf("move payloads: %w", err)
+	}
+	if n == 0 {
+		return nil
+	}
+	start := time.Now()
+	slog.Info("moving captured payloads out of activity (one-time; takes a minute or more)")
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("move payloads: %w", err)
+	}
+	for _, q := range []string{
+		`INSERT OR IGNORE INTO activity_payload (activity_id, req_body, resp_body)
+		 SELECT id, req_body, resp_body FROM activity WHERE req_body <> '' OR resp_body <> ''`,
+		`ALTER TABLE activity DROP COLUMN req_body`,
+		`ALTER TABLE activity DROP COLUMN resp_body`,
+	} {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("move payloads: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("move payloads: %w", err)
+	}
+	slog.Info("payloads moved; vacuuming", "took", time.Since(start).Round(time.Second))
+	if _, err := db.ExecContext(ctx, `VACUUM`); err != nil {
+		// The move is committed and correct; the file is only larger than it needs to be.
+		slog.Warn("vacuum after payload move failed", "err", err)
+	}
+	slog.Info("payload move done", "took", time.Since(start).Round(time.Second))
+	return nil
+}
+
+// InsertActivity appends a request record to the activity log, and its
+// captured payloads, if any, to activity_payload.
 func (s *Store) InsertActivity(a Activity) error {
-	res, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(
 		`INSERT INTO activity (ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
-		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
+		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec,
 		                       finish_reason, load_ms, retry_after_ms, ticket, reasoning_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Requested, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
-		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec, a.ReqBody, a.RespBody,
+		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec,
 		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket, reasoningCol(a),
 	)
-	if err != nil || a.Conversation == "" {
+	if err != nil {
 		return err
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
+		return err
+	}
+	if a.ReqBody != "" || a.RespBody != "" {
+		if _, err := tx.Exec(`INSERT INTO activity_payload (activity_id, req_body, resp_body) VALUES (?, ?, ?)`,
+			id, a.ReqBody, a.RespBody); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil || a.Conversation == "" {
 		return err
 	}
 	return s.insertConversation(id, a.TS, a.Served, a.Conversation, a.ConversationMessages,
@@ -847,9 +917,11 @@ func (s *Store) ActivityByID(id int64) (Activity, error) {
 	err := s.db.QueryRow(
 		`SELECT id, ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
-		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec, req_body, resp_body,
+		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec,
+		        COALESCE(p.req_body, ''), COALESCE(p.resp_body, ''),
 		        finish_reason, load_ms, retry_after_ms, ticket
-		 FROM activity WHERE id = ?`, id).Scan(
+		 FROM activity LEFT JOIN activity_payload p ON p.activity_id = activity.id
+		 WHERE id = ?`, id).Scan(
 		&a.ID, &a.TS, &a.Served, &a.Requested, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
 		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody,
@@ -866,6 +938,12 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 		return 0, err
 	}
 	if _, err := s.db.Exec(`DELETE FROM activity_conversation WHERE ts < ?`, beforeMS); err != nil {
+		return 0, err
+	}
+	// Payloads of the rows just deleted: ids are the activity PK, so every
+	// payload below the oldest remaining row is an orphan.
+	if _, err := s.db.Exec(`DELETE FROM activity_payload
+	                         WHERE activity_id < (SELECT COALESCE(MIN(id), 9223372036854775807) FROM activity)`); err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
@@ -888,10 +966,8 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 // combined. Agentic callers re-send the same system prompt and tool schemas
 // every turn and each turn stores them in full.
 //
-// The condition is deliberately `IS NOT NULL AND != ”` rather than a bare
-// timestamp compare: without it every pass would rewrite every old row it had
-// already cleared, turning a one-off cleanup into a permanent write load on a
-// five-minute timer.
+// Payloads live in activity_payload, so clearing one is a DELETE of that row;
+// a cleared payload has no row, and a pass never revisits it.
 //
 // The FILE does not shrink. auto_vacuum is off, so cleared pages land on the
 // freelist and are reused by subsequent inserts — which is the point (growth
@@ -902,10 +978,10 @@ func (s *Store) PrunePayloads(beforeMS int64) (int64, error) {
 	var total int64
 	for {
 		res, err := s.db.Exec(`
-			UPDATE activity SET req_body = '', resp_body = ''
-			 WHERE rowid IN (
-			   SELECT rowid FROM activity
-			    WHERE ts < ? AND (req_body != '' OR resp_body != '')
+			DELETE FROM activity_payload
+			 WHERE activity_id IN (
+			   SELECT p.activity_id FROM activity_payload p JOIN activity a ON a.id = p.activity_id
+			    WHERE a.ts < ?
 			    LIMIT ?)`, beforeMS, payloadPruneChunk)
 		if err != nil {
 			return total, err

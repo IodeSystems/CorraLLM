@@ -94,7 +94,9 @@ func (s *Store) BackfillConversations(ctx context.Context) {
 // that there is nothing left worth reading: no rows, or none with a body.
 func (s *Store) backfillBatch(ctx context.Context, cursor int64, limit int) (inserted int, next int64, empty bool, err error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, ts, served, key, req_body, prompt_tokens + completion_tokens
+		`SELECT id, ts, served, key,
+		        COALESCE((SELECT req_body FROM activity_payload WHERE activity_id = id), ''),
+		        prompt_tokens + completion_tokens
 		 FROM activity WHERE id < ? AND path = '/v1/chat/completions'
 		 ORDER BY id DESC LIMIT ?`, cursor, limit)
 	if err != nil {

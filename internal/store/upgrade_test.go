@@ -102,3 +102,52 @@ func TestOpenUpgradesAPreTicketDatabase(t *testing.T) {
 		t.Error("the ticket index was not created on an upgraded database")
 	}
 }
+
+// An activity table with inline payloads gets them moved to activity_payload:
+// the bodies survive, the columns go, and a row with no payload gets no row.
+func TestOpenMovesInlinePayloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(oldActivityDDL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO activity (ts, served, path, status, req_body, resp_body)
+	                      VALUES (1, 'm', '/v1/chat/completions', 200, '{"q":1}', 'a'),
+	                             (2, 'm', '/v1/chat/completions', 200, '', '')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	got, err := st.ActivityByID(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReqBody != `{"q":1}` || got.RespBody != "a" {
+		t.Errorf("payload lost in the move: req=%q resp=%q", got.ReqBody, got.RespBody)
+	}
+	var cols, payloads int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('activity')
+	                          WHERE name IN ('req_body', 'resp_body')`).Scan(&cols); err != nil {
+		t.Fatal(err)
+	}
+	if cols != 0 {
+		t.Errorf("%d payload columns still on activity", cols)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM activity_payload`).Scan(&payloads); err != nil {
+		t.Fatal(err)
+	}
+	if payloads != 1 {
+		t.Errorf("activity_payload has %d rows, want 1 (the empty row gets none)", payloads)
+	}
+}
