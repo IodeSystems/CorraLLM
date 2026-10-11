@@ -652,3 +652,129 @@ export function MetricChart({
     </Box>
   )
 }
+
+// MacdChart draws a series that swings both sides of zero: a MACD line, its
+// signal line, and their difference as bars (dependency-free SVG).
+//
+// MetricChart's axis starts at 0, so it cannot show this. The axis here is
+// symmetric about zero so "above" and "below" read at the same scale, and the
+// zero line is drawn stronger than the grid: crossing it is the event.
+export function MacdChart({
+  title,
+  macd,
+  signal,
+  fmt,
+  buckets,
+  note,
+}: {
+  title: string
+  macd: number[]
+  signal: number[]
+  fmt: (n: number) => string
+  buckets?: number[]
+  note?: string
+}) {
+  const W = 600
+  const H = 120
+  const pad = 4
+  const boxRef = useRef<HTMLDivElement | null>(null)
+  const width = useWidth(boxRef)
+  const n = macd.length
+  const hist = macd.map((v, i) => v - (signal[i] ?? 0))
+  const mag = Math.max(0, ...macd.map(Math.abs), ...signal.map(Math.abs), ...hist.map(Math.abs))
+  const half = niceTicks(mag, 2)
+  const axisMax = half[half.length - 1] || 0
+  const yTicks = [...half.slice(1).map((t) => -t).reverse(), ...half]
+  const x = (i: number) => (n <= 1 ? pad : (i / (n - 1)) * (W - 2 * pad) + pad)
+  const y = (v: number) => (axisMax <= 0 ? H / 2 : H / 2 - (v / axisMax) * (H / 2 - pad))
+  const barW = n > 0 ? Math.max(1, ((W - 2 * pad) / n) * 0.7) : 1
+  const spanMs = buckets && buckets.length > 1 ? buckets[buckets.length - 1] - buckets[0] : 0
+  const xIdx =
+    buckets && buckets.length === n && n > 1 ? pickTickIndices(n, xTickCountFor(width)) : []
+  const line = (vs: number[]) => vs.map((v, i) => `${x(i)},${y(v)}`).join(' ')
+  const series: ChartSeries[] = [
+    { key: 'MACD (fast − slow)', color: seriesColor(0), values: macd },
+    { key: 'signal', color: seriesColor(1), values: signal },
+  ]
+  const last = n > 0 ? macd[n - 1] : 0
+  return (
+    <Box sx={{ flex: '1 1 380px', minWidth: 320 }}>
+      <Panel
+        title={title}
+        note={note}
+        actions={
+          <Typography variant="caption" sx={{ color: C.textMuted }}>
+            now {last >= 0 ? '+' : ''}
+            {fmt(last)}
+          </Typography>
+        }
+        dense
+      >
+        <Box sx={{ display: 'flex', alignItems: 'stretch', gap: 0.75 }}>
+          <YAxisLabels ticks={yTicks} fmt={fmt} height={130} />
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Box ref={boxRef}>
+              <Box
+                component="svg"
+                viewBox={`0 0 ${W} ${H}`}
+                preserveAspectRatio="none"
+                sx={{ width: '100%', height: 130, display: 'block' }}
+              >
+                {yTicks.map((t) => (
+                  <line
+                    key={`grid-${t}`}
+                    x1={pad}
+                    x2={W - pad}
+                    y1={y(t)}
+                    y2={y(t)}
+                    stroke={t === 0 ? C.textFaint : C.border}
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+                {xIdx.map((i) => (
+                  <line
+                    key={`vgrid-${i}`}
+                    x1={x(i)}
+                    x2={x(i)}
+                    y1={pad}
+                    y2={H - pad}
+                    stroke={C.border}
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+                {hist.map((v, i) => (
+                  <rect
+                    key={`h-${i}`}
+                    x={x(i) - barW / 2}
+                    width={barW}
+                    y={Math.min(y(v), y(0))}
+                    height={Math.abs(y(v) - y(0))}
+                    fill={v >= 0 ? C.ok : C.error}
+                    opacity={0.45}
+                  />
+                ))}
+                {series.map((s) => (
+                  <polyline
+                    key={s.key}
+                    fill="none"
+                    stroke={s.color}
+                    strokeWidth={2}
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                    points={line(s.values)}
+                  />
+                ))}
+              </Box>
+            </Box>
+            {xIdx.length > 0 && buckets && (
+              <XAxisLabels indices={xIdx} buckets={buckets} spanMs={spanMs} xPct={(i) => (x(i) / W) * 100} />
+            )}
+          </Box>
+        </Box>
+        <Legend series={series} dot />
+      </Panel>
+    </Box>
+  )
+}

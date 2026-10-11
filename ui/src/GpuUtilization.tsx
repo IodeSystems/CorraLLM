@@ -3,7 +3,7 @@ import { Box, Typography } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { Panel } from '@/Panel'
-import { MetricChart, StackedArea } from '@/Charts'
+import { MacdChart, MetricChart, StackedArea } from '@/Charts'
 import { C, seriesColor } from '@/theme'
 import { fmtDuration } from '@/format'
 
@@ -27,6 +27,14 @@ const GpuUtilDoc = graphql(/* GraphQL */ `
           server
           pool
           busyPct
+        }
+      }
+      trend: gpuUtilization(windowHours: 48, bucketMinutes: 15) {
+        buckets
+        pools {
+          server
+          pool
+          busy
         }
       }
       day: gpuUtilization(windowHours: 24, bucketMinutes: 15) {
@@ -79,6 +87,38 @@ export function useGpuBusy(): Map<string, { hour: number; day: number }> {
 }
 
 const pct = (n: number) => `${Math.round(n * 100)}%`
+
+// MACD on busy share, standard 12/26/9 periods. At 15-minute buckets the fast
+// average spans 3 h, the slow ("typical") 6.5 h, the signal 2.25 h.
+const FAST = 12
+const SLOW = 26
+const SIGNAL = 9
+
+/** Exponential moving average, seeded with the first value. */
+function ema(v: number[], period: number): number[] {
+  const a = 2 / (period + 1)
+  const out: number[] = []
+  v.forEach((x, i) => out.push(i === 0 ? x : a * x + (1 - a) * out[i - 1]))
+  return out
+}
+
+/**
+ * Fast and slow averages of busy %, the MACD line (fast − slow) and its signal,
+ * computed over the 48 h series so the averages are warmed up, then cut to the
+ * 24 h axis by timestamp. MACD above 0 = busier than typical; MACD above its
+ * signal (green bars) = the gap is widening, i.e. accelerating.
+ */
+function macdFor(trendBuckets: number[], trendBusy: number[], dayBuckets: number[]) {
+  const pctSeries = trendBusy.map((v) => v * 100)
+  const fast = ema(pctSeries, FAST)
+  const slow = ema(pctSeries, SLOW)
+  const macd = fast.map((f, i) => f - slow[i])
+  const signal = ema(macd, SIGNAL)
+  const off = trendBuckets.indexOf(dayBuckets[0])
+  if (off < 0 || off + dayBuckets.length > trendBuckets.length) return null
+  const cut = (v: number[]) => v.slice(off, off + dayBuckets.length)
+  return { fast: cut(fast), slow: cut(slow), macd: cut(macd), signal: cut(signal) }
+}
 const secs = (ms: number) => fmtDuration(Math.round(ms))
 
 export function GpuUtilizationPanel() {
@@ -87,6 +127,8 @@ export function GpuUtilizationPanel() {
   const hour = data?.corrallm?.hour
   const buckets = (day?.buckets ?? []).map(Number)
   const pools = day?.pools ?? []
+  const trend = data?.corrallm?.trend
+  const trendBuckets = (trend?.buckets ?? []).map(Number)
   return (
     <Panel
       title="GPU utilization and time to first token"
@@ -105,6 +147,8 @@ export function GpuUtilizationPanel() {
       ) : (
         pools.map((p) => {
           const h = hour?.pools.find((x) => x.server === p.server && x.pool === p.pool)
+          const tp = trend?.pools.find((x) => x.server === p.server && x.pool === p.pool)
+          const m = tp ? macdFor(trendBuckets, tp.busy, buckets) : null
           const n = Number(p.ttftCount)
           return (
             <Box key={`${p.server}/${p.pool}`} sx={{ mb: 2 }}>
@@ -124,10 +168,28 @@ export function GpuUtilizationPanel() {
               <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
                 <MetricChart
                   title="Busy (share of each 15 min)"
-                  series={[{ key: 'busy', color: seriesColor(0), values: p.busy.map((v) => v * 100) }]}
+                  series={[
+                    { key: 'busy', color: seriesColor(0), values: p.busy.map((v) => v * 100) },
+                    ...(m
+                      ? [
+                          { key: 'recent avg (3 h)', color: seriesColor(1), values: m.fast },
+                          { key: 'typical avg (6.5 h)', color: seriesColor(2), values: m.slow },
+                        ]
+                      : []),
+                  ]}
                   fmt={(v) => `${Math.round(v)}%`}
                   buckets={buckets}
                 />
+                {m && (
+                  <MacdChart
+                    title="Busy trend (MACD, percentage points)"
+                    note="MACD = recent average (3 h) minus typical average (6.5 h) of busy %. Above 0: busier than typical; below 0: quieter. Bars are MACD minus its 2.25 h signal line: green means the gap is growing (accelerating), red means it is shrinking."
+                    macd={m.macd}
+                    signal={m.signal}
+                    fmt={(v) => `${v.toFixed(1)} pp`}
+                    buckets={buckets}
+                  />
+                )}
                 <Box sx={{ flex: '1 1 380px', minWidth: 320 }}>
                   <StackedArea
                     title="Time to first token, mean per 15 min"
