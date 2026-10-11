@@ -560,7 +560,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
             <TableCell>Model</TableCell>
             <TableCell align="right">Requests</TableCell>
             <TableCell align="right">
-              <Tooltip title="Slots in service now, over slots that exist. A `+n` is the queue on top of them: demand, not occupancy — 1+1/1 is a full slot with somebody behind it, and it is the moment before a rejection.">
+              <Tooltip title="Slots in service now over slots that exist, then callers queued now over the queue limit (maxQueueDepth). 1/1 · 2/5 queued is a full slot with two waiting and room for three more; a full queue is the moment before a rejection.">
                 <span>In use</span>
               </Tooltip>
             </TableCell>
@@ -631,6 +631,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
             const cap = Number(u?.capacity ?? 0)
             const active = Number(u?.active ?? 0)
             const waiting = Number(u?.waiting ?? 0)
+            const depth = Number(u?.configuredDepth ?? 0)
             const requests = Number(s?.requests ?? 0)
             const n = Number(u?.queuedSamples ?? 0)
             const real = Number(u?.realWaitMs ?? 0)
@@ -690,16 +691,15 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                   ) : cap > 0 ? (
                     <Tooltip
                       title={
-                        waiting > 0
-                          ? `${active} in service and ${waiting} queued against ${cap} slot(s) — demand is ${active + waiting}.`
-                          : `${active} in service against ${cap} slot(s).`
+                        `${active} in service against ${cap} slot(s); ${waiting} queued` +
+                        (depth > 0 ? ` of a ${depth}-deep queue.` : ' (queue unbounded).')
                       }
                     >
                       <Chip
                         size="small"
                         variant={active >= cap ? 'filled' : 'outlined'}
-                        color={active + waiting > cap ? 'error' : active >= cap ? 'warning' : 'default'}
-                        label={waiting > 0 ? `${active}+${waiting} / ${cap}` : `${active} / ${cap}`}
+                        color={depth > 0 && waiting >= depth ? 'error' : active >= cap ? 'warning' : 'default'}
+                        label={`${active}/${cap} · ${depth > 0 ? `${waiting}/${depth}` : waiting} queued`}
                       />
                     </Tooltip>
                   ) : (
