@@ -283,17 +283,6 @@ const gb = 1000 * 1000 * 1000
 func bytesToGB(b int64) string   { return fmt.Sprintf("%dGB", b/gb) }
 func bytesToGBUp(b int64) string { return fmt.Sprintf("%dGB", (b+gb-1)/gb) }
 
-// shallowCopyConfig copies the maps that enrollment touches, so a failed
-// validation never leaves the LIVE config mutated.
-func shallowCopyConfig(c *config.Config) *config.Config {
-	out := *c
-	out.Servers = make(map[string]config.Server, len(c.Servers)+1)
-	for k, v := range c.Servers {
-		out.Servers[k] = v
-	}
-	return &out
-}
-
 // MintEnrollmentTokenInput asks for a new one-time token.
 type MintEnrollmentTokenInput struct {
 	// ForwardedHost is how the caller reached this daemon, when something in

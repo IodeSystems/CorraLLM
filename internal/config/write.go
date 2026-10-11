@@ -1,5 +1,7 @@
 package config
 
+import "reflect"
+
 // managedHeader tops every file corrallm writes.
 //
 // Blunt on purpose: the whole point of a machine-owned config is that nobody
@@ -49,7 +51,7 @@ func ForWriting(c *Config) *Config { return forWriting(c) }
 // goes into Load, and writing without accounting for that produces a file the
 // daemon cannot start from.
 func forWriting(c *Config) *Config {
-	out := *c
+	out := exportedCopy(c)
 	if len(c.Models) > 0 {
 		models := make(map[string]Model, len(c.Models))
 		for name, m := range c.Models {
@@ -68,7 +70,23 @@ func forWriting(c *Config) *Config {
 		}
 		out.Models = models
 	}
-	return &out
+	return out
+}
+
+// exportedCopy is a shallow copy of c's exported fields: the authored config.
+// The unexported fields are runtime state (discovered models and the mutex
+// that guards them); a copy for writing needs none of it, and copying the
+// mutex is a lock copy (go vet copylocks). By reflection so a field added to
+// Config later is carried without anyone remembering to list it here.
+func exportedCopy(c *Config) *Config {
+	out := &Config{}
+	src, dst := reflect.ValueOf(c).Elem(), reflect.ValueOf(out).Elem()
+	for i := range src.NumField() {
+		if src.Type().Field(i).IsExported() {
+			dst.Field(i).Set(src.Field(i))
+		}
+	}
+	return out
 }
 
 // Everything that WROTE a config file is gone: Save, SaveValidated, and the
