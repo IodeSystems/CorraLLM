@@ -3979,3 +3979,11 @@ axes.
 - Fix: side table + one-time move and VACUUM on Open (2m02s on box1; file 13.4 → 3.4 GB).
 - Result: ModelStats query 7d 4.1 s (7–127 s under contention) → 0.35 s; 24h 0.99 → 0.10 s.
 - Not done: pre-aggregated window buckets. Not needed at these times.
+
+## ✅ GPU utilization + time to first token on the dashboard (2026-10-10, e2b7b3a)
+- `gpuUtilization` (REST `/api/v1/usage/gpu-utilization` + GraphQL): per GPU pool, busy = union of service spans
+  `[ts − (dwell − queued − load), ts]` (ts is the END stamp); first token = queue + cold load + active
+  (`ttfb − queued − load`), streamed only (rows with ttfb within 100 ms of dwell are skipped).
+- UI: busy % (last hour / 24 h) under each pool in "Where the models are"; panel with busy % and stacked TTFT charts per GPU.
+- First live read: box1/gpu0 busy 72.1% over 24 h (ad-hoc check said 72.6%); TTFT queue 312 ms + active 2.5 s avg, total p90 5.0 s, p99 20.0 s.
+- OCR same day: `ocr` lane → chandra-ocr-2 (default); LightOnOCR-3-4B stays selectable by name.
