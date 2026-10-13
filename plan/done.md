@@ -4000,3 +4000,14 @@ axes.
 - Restart drain: dashboard SSE held every shutdown 60 s; broker closes on shutdown (76e2104, untested live
   until the next restart). Graceful deploy = pause Swift (drains in-flight, 429 ≤ 30 s), deploy, unpause.
 
+
+## ✅ Measured power replaces the per-token energy estimate (2026-10-13, ed07348)
+- Coefficients (0.0013 / 0.00005 Wh/token, from 400 W ÷ 83 / 2,300 tok/s) put gen at 515 W and prefill at ~200 W
+  at today's rates on a 400 W-capped card; idle and the rest of the box were never counted.
+- `power:` config → Prometheus `gpu_power_watts{stat="avg"}` (cards matched by uuid to `servers.box1.devices`) and
+  `network_ups_tools_ups_realpower` (only box1 on the UPS). Per step: card energy split busy (to the models served,
+  by time) / idle; rest of box = wall − GPUs. Estimate kept when unreachable, unbounded, or < 90% coverage.
+- First read, 6 h to 11:1x 10-13: wall 374 W avg (2.25 kWh); 5090 141 W (0.67 kWh Swift, 0.18 idle); 3080 31 W
+  (all idle); rest of box 1.21 kWh (~200 W). Prometheus avg_over_time agrees (140.6 / 31.5 / 378.3 W).
+- Not done: per-key and time-series energy still use the estimate.
+- Same deploy verified the shutdown fix (76e2104): stop in < 1 s, was 60 s.
