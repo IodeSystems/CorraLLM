@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -65,28 +66,7 @@ func (h *Handlers) GPUUtilization(_ context.Context, in *GPUUtilizationInput) (*
 	if err != nil {
 		return nil, err
 	}
-	cfg := h.config()
-	type poolKey struct{ server, pool string }
-	byPool := map[poolKey][]store.ServiceSpan{}
-	for _, sp := range spans {
-		m, ok := cfg.Models[sp.Served]
-		if !ok {
-			continue
-		}
-		pl, ok := m.PlacementNamed(sp.Placement)
-		if !ok {
-			list := m.PlacementList()
-			if len(list) == 0 {
-				continue
-			}
-			pl = list[0]
-		}
-		if pl.Pool == "" {
-			continue
-		}
-		k := poolKey{pl.Server, pl.Pool}
-		byPool[k] = append(byPool[k], sp)
-	}
+	byPool := spansByPool(h.config(), spans)
 
 	out := &GPUUtilizationOutput{}
 	out.Body.BucketMinutes = int(bucketMS / 60_000)
@@ -176,4 +156,37 @@ func rankP90P99(v []int64) (p90, p99 int64) {
 	slices.Sort(v)
 	at := func(q float64) int64 { return v[min(len(v)-1, int(q*float64(len(v))))] }
 	return at(0.9), at(0.99)
+}
+
+type poolKey struct{ server, pool string }
+
+// spansByPool groups service spans by the GPU pool that served them: the pool
+// of the placement that served the request, or the model's only placement for
+// rows older than the placement column. Models corrallm does not run (pure
+// proxies) have no pool and are left out.
+func spansByPool(cfg *config.Config, spans []store.ServiceSpan) map[poolKey][]store.ServiceSpan {
+	byPool := map[poolKey][]store.ServiceSpan{}
+	if cfg == nil {
+		return byPool
+	}
+	for _, sp := range spans {
+		m, ok := cfg.Models[sp.Served]
+		if !ok {
+			continue
+		}
+		pl, ok := m.PlacementNamed(sp.Placement)
+		if !ok {
+			list := m.PlacementList()
+			if len(list) == 0 {
+				continue
+			}
+			pl = list[0]
+		}
+		if pl.Pool == "" {
+			continue
+		}
+		k := poolKey{pl.Server, pl.Pool}
+		byPool[k] = append(byPool[k], sp)
+	}
+	return byPool
 }

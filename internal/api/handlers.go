@@ -1414,7 +1414,8 @@ type RollupRow struct {
 	Type            string  `json:"type" doc:"The model's cost class — its commandCosts key. Empty when the model is no longer in the config."`
 	Billing         string  `json:"billing" doc:"How this row's cost was arrived at: \"energy\" (this fleet's electricity, kWh × costPerKwh), \"paid\" (a provider's per-token rates), \"free\" (a remote backend with a declared freeTier and no per-token rates — somebody else's hardware at no charge, so the cost is $0 because that is the price), or \"unattributed\" (this box's energy coefficients applied to a model corrallm does not run and nothing says what it charges, or to one that has left the config — neither electricity nor a bill, and a config gap to fix by declaring what that backend costs)."`
 	EnergyUSD       float64 `json:"energyUsd" doc:"The part of costUsd that is electricity: nonzero only when billing is \"energy\"."`
-	EnergyKwh       float64 `json:"energyKwh" doc:"energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset."`
+	EnergyKwh       float64 `json:"energyKwh" doc:"energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset. Measured when energyMeasured is set."`
+	EnergyMeasured  bool    `json:"energyMeasured" doc:"energyKwh is this model's share of its card's MEASURED draw (usageRollup.power), not the per-token estimate; costUsd and energyUsd follow it."`
 	PaidUSD         float64 `json:"paidUsd" doc:"The part of costUsd that is a provider's bill: nonzero only when billing is \"paid\"."`
 	UnattributedUSD float64 `json:"unattributedUsd" doc:"The part of costUsd that is neither: nonzero only when billing is \"unattributed\"."`
 	// FREE TRAFFIC IS COUNTED, NOT PRICED. There is no "freeUsd" beside the
@@ -1446,12 +1447,13 @@ type UsageRollupOutput struct {
 		// WHICH PAID API THE COMPARISON IS AGAINST. An unattributed "would have
 		// cost $X" is not a claim anybody can check.
 		Thermal      *ThermalView `json:"thermal,omitempty" doc:"The room settings thermalUsd was computed from; absent when no thermal config is set."`
+		Power        *PowerView   `json:"power,omitempty" doc:"Measured energy for the window, from config power; absent when power is not configured. When measured, models on measured cards carry their share of it (energyMeasured) and the rest — idle cards and the rest of the box — is here."`
 		BaselineType string       `json:"baselineType" doc:"The DEFAULT commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. A model with a costEquivalent is priced at that instead; each row's baselineType says which applied. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."`
 	}
 }
 
 // UsageRollup aggregates metered activity by served model over a window.
-func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageRollupOutput, error) {
+func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*UsageRollupOutput, error) {
 	win := windowOf(in.FromMS, in.ToMS, in.WindowHours*60)
 	rows, err := h.Store.RollupByModel(win)
 	if err != nil {
@@ -1494,6 +1496,12 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 	rate := costModel.CostPerKwh()
 	baseline := baselineType(cfg, costModel)
 
+	// Measured watts, where config power says where to read them. A model on a
+	// measured card gets its share of the card's draw instead of the per-token
+	// estimate; the rest of the measured draw is reported, not charged.
+	pv, measured := h.measurePower(ctx, win)
+	estKwh := map[string]float64{} // a measured model's estimate, to rescale its hourly heat price
+
 	out := &UsageRollupOutput{}
 	out.Body.WindowHours = in.WindowHours
 	out.Body.CostPerKwh = rate
@@ -1534,6 +1542,11 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 			row.EnergyUSD = r.CostUSD
 			if rate > 0 {
 				row.EnergyKwh = r.CostUSD / rate
+			}
+			if kwh, ok := measured[r.Served]; ok {
+				estKwh[r.Served] = row.EnergyKwh
+				row.EnergyKwh, row.EnergyUSD, row.CostUSD = kwh, kwh*rate, kwh*rate
+				row.EnergyMeasured = true
 			}
 		case BillPaid:
 			row.PaidUSD = r.CostUSD
@@ -1653,6 +1666,11 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		for i := range out.Body.Rows {
 			r := &out.Body.Rows[i]
 			r.ThermalUSD = perServed[r.Served]
+			// The hourly pricing weighted the ESTIMATED energy; a measured row
+			// keeps its hour-by-hour shape at its measured size.
+			if est := estKwh[r.Served]; r.EnergyMeasured && est > 0 {
+				r.ThermalUSD *= r.EnergyKwh / est
+			}
 			out.Body.Total.ThermalUSD += r.ThermalUSD
 		}
 		v := out.Body.Thermal
@@ -1702,6 +1720,19 @@ func (h *Handlers) UsageRollup(_ context.Context, in *UsageRollupInput) (*UsageR
 		} else {
 			v.CoolBlocked = true
 		}
+	}
+	if pv != nil {
+		pv.USD = pv.Kwh * rate
+		heat := RollupRow{EnergyKwh: pv.Kwh}
+		setHeat(&heat, windowHours, th, rate)
+		pv.EnergyBTU, pv.HeatBTUh, pv.ThermalUSD = heat.EnergyBTU, heat.HeatBTUh, heat.ThermalUSD
+		// Hour-by-hour pricing weighted the models' energy by the hour it was
+		// drawn in; scale that to the whole draw rather than fall back to one
+		// temperature for the window.
+		if hourly && out.Body.Total.EnergyKwh > 0 {
+			pv.ThermalUSD = out.Body.Total.ThermalUSD * pv.Kwh / out.Body.Total.EnergyKwh
+		}
+		out.Body.Power = pv
 	}
 	return out, nil
 }

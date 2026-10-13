@@ -59,6 +59,10 @@ type Config struct {
 	// heated. Unset, the dashboard reports heat in BTU and stops there.
 	Thermal *Thermal `yaml:"thermal,omitempty"`
 
+	// Power replaces the per-token watt-hour coefficients with MEASURED power,
+	// read from Prometheus. Unset, energy stays the coefficient estimate.
+	Power *Power `yaml:"power,omitempty"`
+
 	// Limits budget the WHOLE box, whatever the caller or backend. The
 	// blast-radius guard: "this machine never spends more than $50/day
 	// regardless of what is misconfigured below". Every narrower scope can be
@@ -2467,6 +2471,9 @@ func (c *Config) validatePool(model, placement, server, pool string) error {
 // run. P0 enforces only what's cheap and unambiguous; richer checks land with
 // the phases that consume each section.
 func (c *Config) Validate() error {
+	if err := c.Power.validate(c.Servers); err != nil {
+		return err
+	}
 	// `thinking` is reserved inside a key policy (see KeyPolicy.UnmarshalYAML),
 	// where every other name means "may escalate into that group". A priority
 	// group by that name would make `thinking: true` mean two things at once,
@@ -2943,4 +2950,49 @@ func (t *Thermal) Loc() string {
 		return ""
 	}
 	return fmt.Sprintf("%.2f,%.2f", t.Latitude, t.Longitude)
+}
+
+// Power is where measured watts come from: a Prometheus server and, per
+// corrallm server, the queries for its cards and its whole-box draw.
+//
+// Measured, because the coefficients drift: they were 400 W divided by the
+// token rates of the day, and two llama.cpp builds later they put generation
+// at 515 W on a card capped at 400 W and prefill at half its real draw.
+type Power struct {
+	// Prometheus is the server's base URL, e.g. http://localhost:9090.
+	Prometheus string `yaml:"prometheus"`
+	// Servers maps a corrallm server name to its power queries.
+	Servers map[string]ServerPower `yaml:"servers"`
+}
+
+// ServerPower is the PromQL for one box. GPU must return one series per card,
+// each carrying a `uuid` label matched against the server's devices; Box
+// returns one series, the box's wall draw (a UPS with only this box on it).
+// Either may be empty: no GPU query leaves model energy estimated, no Box
+// query leaves out the rest of the box.
+type ServerPower struct {
+	GPU   string `yaml:"gpu,omitempty"`
+	Box   string `yaml:"box,omitempty"`
+	Notes string `yaml:"notes,omitempty"`
+}
+
+func (p *Power) validate(servers map[string]Server) error {
+	if p == nil {
+		return nil
+	}
+	if strings.TrimSpace(p.Prometheus) == "" {
+		return fmt.Errorf("power: prometheus URL is required")
+	}
+	for name, sp := range p.Servers {
+		srv, ok := servers[name]
+		if !ok {
+			return fmt.Errorf("power: server %q is not one of the configured servers", name)
+		}
+		// Cards are matched to pools by UUID; without devices there is nothing
+		// to match against, and every card's watts would be dropped silently.
+		if sp.GPU != "" && len(srv.Devices) == 0 {
+			return fmt.Errorf("power: server %q has a gpu query but no devices to match its cards to pools", name)
+		}
+	}
+	return nil
 }

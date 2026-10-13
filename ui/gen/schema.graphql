@@ -1362,6 +1362,19 @@ type corrallm_BenchTranscriptOutputBody {
   truncated: Boolean
 }
 
+type corrallm_BoxPower {
+  """Mean wall draw over the measured part of the window, watts."""
+  avgW: Float!
+  """Of kwh, what its measured GPUs drew."""
+  gpuKwh: Float!
+  """Measured wall energy over the window, kWh (the UPS, with only this box on it)."""
+  kwh: Float!
+  """kwh − gpuKwh: CPU, memory, fans, disks and power-supply loss. Charged to no model."""
+  restKwh: Float!
+  """The box."""
+  server: String!
+}
+
 type corrallm_BrowseCatalogOutputBody {
   credential: String!
   entries: [corrallm_CatalogEntryView!]!
@@ -2272,6 +2285,21 @@ type corrallm_PoolDef {
   totalBytes: Long!
 }
 
+type corrallm_PoolPower {
+  """Mean draw over the measured part of the window, watts."""
+  avgW: Float!
+  """Of kwh, the part drawn while a request was being served on it — split across the models served, by time."""
+  busyKwh: Float!
+  """Of kwh, the part drawn with nothing being served: the card's idle draw, charged to no model."""
+  idleKwh: Float!
+  """Measured energy of the card over the window, kWh."""
+  kwh: Float!
+  """Device pool the card backs."""
+  pool: String!
+  """Box the card is in."""
+  server: String!
+}
+
 type corrallm_PoolUsageView {
   """Reserved bytes."""
   bytes: Long!
@@ -2323,6 +2351,31 @@ type corrallm_PoolView {
   pool: String!
   """Bytes currently reserved by resident backends."""
   used: Long!
+}
+
+type corrallm_PowerView {
+  """Per box, wall energy split into GPUs and the rest."""
+  boxes: [corrallm_BoxPower!]!
+  """Share of the window's sample steps that had data, 0..1, over every series read."""
+  coverage: Float!
+  """kwh × 3412.14 BTU/kWh: everything the box drew ends up as heat."""
+  energyBtu: Float!
+  """Why nothing was measured: Prometheus unreachable, too little data in the window, or an unbounded window. Empty when measured."""
+  error: String!
+  """energyBtu over the window's length, BTU/h."""
+  heatBtuPerHour: Float!
+  """Total measured energy: each box's wall figure, or its GPUs' where it has no box query."""
+  kwh: Float!
+  """True when these figures replaced the per-token estimate for the models on measured cards. False with error set when they could not."""
+  measured: Boolean!
+  """Per GPU, measured energy split into busy and idle."""
+  pools: [corrallm_PoolPower!]!
+  """The Prometheus server the watts were read from."""
+  source: String!
+  """What that heat did to the climate bill, as thermalUsd on a rollup row."""
+  thermalUsd: Float!
+  """kwh × costPerKwh."""
+  usd: Float!
 }
 
 type corrallm_PrefillBucketRow {
@@ -2695,8 +2748,10 @@ type corrallm_RollupRow {
   dwellMs: Long!
   """Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."""
   energyBtu: Float!
-  """energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset."""
+  """energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset. Measured when energyMeasured is set."""
   energyKwh: Float!
+  """energyKwh is this model's share of its card's MEASURED draw (usageRollup.power), not the per-token estimate; costUsd and energyUsd follow it."""
+  energyMeasured: Boolean!
   """The part of costUsd that is electricity: nonzero only when billing is "energy"."""
   energyUsd: Float!
   """Requests served at no charge by a backend with a declared freeTier and no per-token rates. Equals requests when billing is "free", else 0; on the total, how many of the window's requests cost nothing. The gate for showing a free-tier figure: its dollar value is always $0, so the count is the only thing that says whether the $0 was measured."""
@@ -3311,6 +3366,7 @@ type corrallm_UsageRollupOutputBody {
   baselineType: String!
   """The configured electricity rate, $ per kWh, that energyUsd was computed at. 0 means no rate is configured, so every energy figure is $0 by omission rather than by being small."""
   costPerKwh: Float!
+  power: corrallm_PowerView
   """Per-model usage, costliest first."""
   rows: [corrallm_RollupRow!]!
   thermal: corrallm_ThermalView

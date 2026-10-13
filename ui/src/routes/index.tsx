@@ -42,6 +42,31 @@ const NowDoc = graphql(/* GraphQL */ `
       # two screens in their head, which is what it took to find the 2026-09-05
       # slowdown by hand.
       recent: usageRollup(from: $hourAgo, to: $now) {
+        power {
+          measured
+          error
+          coverage
+          kwh
+          usd
+          energyBtu
+          heatBtuPerHour
+          thermalUsd
+          pools {
+            server
+            pool
+            kwh
+            busyKwh
+            idleKwh
+            avgW
+          }
+          boxes {
+            server
+            kwh
+            gpuKwh
+            restKwh
+            avgW
+          }
+        }
         # THE RATE AND THE BASELINE, ON THE SAME FETCH. An energy figure without
         # its $/kWh is a number with no basis, and "would have cost $X" without
         # the type it was priced against is not a claim anybody can check. Both
@@ -1222,6 +1247,7 @@ function Now() {
         baselineType={c.recent?.baselineType ?? ''}
         costPerKwh={c.recent?.costPerKwh ?? 0}
         thermal={c.recent?.thermal ?? null}
+        power={c.recent?.power ?? null}
         rows={comparisonRows}
         pending={q.isLoading}
       />

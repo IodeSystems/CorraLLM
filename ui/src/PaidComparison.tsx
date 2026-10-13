@@ -82,6 +82,17 @@ export type ComparisonRow = {
   thermalUsd: number
 }
 
+/** Measured draw for the window (usageRollup.power), as much as the heat figure reads. */
+export type PowerHeat = {
+  measured: boolean
+  error: string
+  energyBtu: number
+  heatBtuPerHour: number
+  thermalUsd: number
+  pools: readonly { avgW: number }[]
+  boxes: readonly { avgW: number }[]
+}
+
 /** The room settings the climate figure was computed from (config thermal). */
 export type ThermalSetting = {
   mode: string
@@ -124,6 +135,7 @@ export function PaidComparison({
   baselineType,
   costPerKwh,
   thermal = null,
+  power = null,
   rows,
   pending = false,
 }: {
@@ -135,6 +147,8 @@ export function PaidComparison({
   costPerKwh: number
   /** Room settings; null when none are configured (heat stays in BTU). */
   thermal?: ThermalSetting | null
+  /** Measured draw; when measured, heat is the whole box at the wall, not token work. */
+  power?: PowerHeat | null
   rows: ComparisonRow[]
   /** Nothing has been counted yet — distinct from a counted zero (NotYet.tsx). */
   pending?: boolean
@@ -205,9 +219,13 @@ export function PaidComparison({
   // per-model figures. The panel says "paid-API rates" — true however many
   // models there are — and the Breakdown dialog says which model at which rates.
   const perModel = covered.filter((r) => r.requests > 0).sort((a, b) => b.baselineUsd - a.baselineUsd)
-  const btu = sum((r) => r.energyBtu)
-  const btuPerHour = sum((r) => r.heatBtuPerHour)
-  const climateUsd = sum((r) => r.thermalUsd)
+  // MEASURED, when config power reads the wall: everything the box drew ends
+  // up in the room, idle and CPU included. Otherwise the token-work estimate.
+  const wall = power?.measured ? power : null
+  const btu = wall ? Number(wall.energyBtu) : sum((r) => r.energyBtu)
+  const btuPerHour = wall ? Number(wall.heatBtuPerHour) : sum((r) => r.heatBtuPerHour)
+  const climateUsd = wall ? Number(wall.thermalUsd) : sum((r) => r.thermalUsd)
+  const gpuW = wall ? wall.pools.reduce((n, p) => n + Number(p.avgW), 0) : 0
   // Hour by hour when a location is set: the outdoor range and how many hours
   // the fan could not cool say more than one temperature can.
   const hourly = thermal?.outdoorSource === 'open-meteo'
@@ -332,8 +350,12 @@ export function PaidComparison({
             value={pending ? <NotYet /> : `${fmtInt(Math.round(btu))} BTU`}
             sub={
               btuPerHour > 0
-                ? `≈ ${fmtInt(Math.round(btuPerHour))} BTU/h (${fmtInt(Math.round(btuPerHour / 3.41214))} W) from token work; idle draw not counted`
-                : 'from token work; idle draw not counted'
+                ? wall
+                  ? `≈ ${fmtInt(Math.round(btuPerHour))} BTU/h (${fmtInt(Math.round(btuPerHour / 3.41214))} W) measured at the wall; GPUs ${fmtInt(Math.round(gpuW))} W of it`
+                  : `≈ ${fmtInt(Math.round(btuPerHour))} BTU/h (${fmtInt(Math.round(btuPerHour / 3.41214))} W) from token work; idle draw not counted`
+                : wall
+                  ? 'measured at the wall'
+                  : 'from token work; idle draw not counted'
             }
           />
           {/* WHAT THE HEAT DID TO THE ROOM'S BILL, from Setup → Room. */}

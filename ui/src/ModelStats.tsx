@@ -103,6 +103,31 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
         }
       }
       usageRollup(windowHours: $windowHours, from: $from, to: $to) {
+        power {
+          measured
+          error
+          coverage
+          kwh
+          usd
+          energyBtu
+          heatBtuPerHour
+          thermalUsd
+          pools {
+            server
+            pool
+            kwh
+            busyKwh
+            idleKwh
+            avgW
+          }
+          boxes {
+            server
+            kwh
+            gpuKwh
+            restKwh
+            avgW
+          }
+        }
         # The rate every energy figure below was computed at, and the paid type
         # the comparison prices against. Window-level, so they belong here and
         # not on each row.
@@ -168,6 +193,7 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           billing
           energyUsd
           energyKwh
+          energyMeasured
           paidUsd
           unattributedUsd
           # Free-tier traffic carries no dollars — that is what free means — so
@@ -544,6 +570,29 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
   const spend = q.data?.corrallm.usageRollup?.rows ?? []
   const rows = joinRows(util, spend)
   const rate = q.data?.corrallm.usageRollup?.costPerKwh ?? 0
+  const power = q.data?.corrallm.usageRollup?.power
+  // Per-hour heat from a kWh figure, at the window's length (the power view's
+  // own ratio, so the rows and the total share one clock).
+  const perHour =
+    power && Number(power.energyBtu) > 0 ? Number(power.heatBtuPerHour) / Number(power.energyBtu) : 0
+  // THE MEASURED DRAW NO MODEL CAUSED: each card idle, and the rest of each box.
+  // Rows of their own so the column sums to the wall, not to token work.
+  const overhead = power?.measured
+    ? [
+        ...power.pools.map((p) => ({
+          key: `idle-${p.server}/${p.pool}`,
+          label: `GPU idle — ${p.server}/${p.pool}`,
+          note: `The card's draw with nothing being served on it. It averaged ${fmtInt(Math.round(Number(p.avgW)))} W over the window, busy and idle together.`,
+          kwh: Number(p.idleKwh),
+        })),
+        ...power.boxes.map((b) => ({
+          key: `rest-${b.server}`,
+          label: `Rest of ${b.server}`,
+          note: `CPU, memory, fans, disks and power-supply loss: the wall (${fmtInt(Math.round(Number(b.avgW)))} W average, the UPS) minus the GPUs.`,
+          kwh: Number(b.restKwh),
+        })),
+      ]
+    : []
 
   // TWO OF THESE COLUMNS ARE LIVE, WHATEVER THE WINDOW SAYS. `In use` and the
   // est. wait behind the Wait tooltip come from the scheduler's CURRENT
@@ -934,6 +983,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                           Number(s?.energyKwh ?? 0),
                           s?.baselineExcluded ?? '',
                         )}
+                        {s?.energyMeasured ? ' · measured' : ''}
                       </Typography>
                     </span>
                   </Tooltip>
@@ -964,6 +1014,30 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
               </TableRow>
             )
           })}
+          {overhead.map((o) => (
+            <TableRow key={o.key}>
+              <TableCell sx={{ color: C.textMuted, fontStyle: 'italic' }}>{o.label}</TableCell>
+              <TableCell colSpan={12}>
+                <Typography variant="caption" sx={{ color: C.textFaint }}>
+                  {o.note} Charged to no model.
+                </Typography>
+              </TableCell>
+              <TableCell align="right">
+                {fmtUSD(o.kwh * rate)}
+                <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                  {fmtKwh(o.kwh)} measured
+                </Typography>
+              </TableCell>
+              <TableCell align="right">
+                {fmtInt(Math.round(o.kwh * 3412.14))} BTU
+                {perHour > 0 && (
+                  <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
+                    ≈ {fmtInt(Math.round(o.kwh * 3412.14 * perHour))} BTU/h
+                  </Typography>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
         </TableBody>
       </Table>
     </TableContainer>
@@ -998,7 +1072,16 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
             <>Electricity is billed at ${rate}/kWh.</>
           ) : (
             <>No $/kWh is configured, so every electricity figure is $0 by omission.</>
-          )}
+          )}{' '}
+          {power?.measured ? (
+            <>
+              A model on a measured card is charged its share of the card&rsquo;s measured draw
+              (&ldquo;measured&rdquo;); the idle cards and the rest of the box are the last rows, so
+              the column adds up to the wall.
+            </>
+          ) : power?.error ? (
+            <>Measured power is unavailable ({power.error}); electricity is the per-token estimate.</>
+          ) : null}
         </>
       }
       // "0 models" while the query is still out is the same lie the tiles above

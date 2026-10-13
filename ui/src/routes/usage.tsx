@@ -627,6 +627,7 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
         baselineType={baselineType}
         costPerKwh={rate}
         thermal={stats.data?.corrallm.usageRollup?.thermal ?? null}
+        power={stats.data?.corrallm.usageRollup?.power ?? null}
         rows={comparisonRows}
         pending={!counted}
       />
