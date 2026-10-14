@@ -4011,3 +4011,11 @@ axes.
   (all idle); rest of box 1.21 kWh (~200 W). Prometheus avg_over_time agrees (140.6 / 31.5 / 378.3 W).
 - Not done: per-key and time-series energy still use the estimate.
 - Same deploy verified the shutdown fix (76e2104): stop in < 1 s, was 60 s.
+
+## ✅ Draft model on the 3080 — tested live, rolled back (2026-10-14)
+- Asked by aw4-2d (owner OK'd a live test). Qwen3.5-0.8B-Q8_0 as draft-simple on the 3080 (-devd CUDA1), n-max 8,
+  replacing MTP (a drafter cannot stack with MTP: the first spec type that drafts wins). Main context/KV unchanged.
+- Live 10:22–10:32 vs MTP 24 h: tg/s 99.8 → 21.2, acceptance 0.659 → 0.215, active TTFT p50 2.53 → 4.14 s,
+  requests/h 259 → 78. Rolled back 10:34:38; MTP back to 80–120 tg/s. Qwen3.5-2B-Q8_0 downloaded, untested.
+- Measure script: session scratchpad `specmeasure.py FROM TO`.
+- Found: a request QUEUED when a pause drains gets 503 "no backend available", not a 429 (10:20:24, 10:34:22).
