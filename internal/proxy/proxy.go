@@ -927,7 +927,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	} else {
 		cands = kept
 	}
-	cands = p.filterByQuota(cands)
+	if kept, wait := p.filterByQuota(cands); len(kept) == 0 {
+		p.writeBudgetExhausted(w, r, served, key, cands, wait, start, reqBody)
+		return
+	} else {
+		cands = kept
+	}
 	topQuality := config.MaxQuality(cands)
 	ordered := orderCandidates(cands, p.nextRR(served))
 	walk := ordered[:0:0]
@@ -1922,6 +1927,29 @@ func (p *Proxy) writePaused(w http.ResponseWriter, r *http.Request, served, key 
 		Error: "model paused", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
 }
 
+// writeBudgetExhausted answers a request every candidate of which is held by a
+// hard limit: 429 with Retry-After, because unlike a permission this clears on
+// its own as the window leaks.
+func (p *Proxy) writeBudgetExhausted(w http.ResponseWriter, r *http.Request, served, key string,
+	cands []config.Candidate, wait time.Duration, start time.Time, reqBody string) {
+	secs := int((wait + time.Second - 1) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"budget_exhausted","retry_after":%d}}`,
+		jsonString(fmt.Sprintf("%s: budget exhausted (hard limit); retry after %d seconds", served, secs)), secs)
+	var refused string
+	if len(cands) > 0 {
+		refused = cands[0].Name
+	}
+	p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refused, Key: key, Path: r.URL.Path,
+		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+		Error: "hard budget exhausted", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
+}
+
 func (p *Proxy) filterByPaused(cands []config.Candidate) []config.Candidate {
 	kept := make([]config.Candidate, 0, len(cands))
 	for _, c := range cands {
@@ -1985,10 +2013,35 @@ func (p *Proxy) filterByCredential(cands []config.Candidate, key string) []confi
 	return kept
 }
 
-func (p *Proxy) filterByQuota(cands []config.Candidate) []config.Candidate {
+// filterByQuota drops candidates out of budget. A HARD limit's candidate is
+// dropped unconditionally; the soft fallback below only ever restores
+// candidates that passed that check. When hard limits leave nothing, the
+// result is empty and wait is the soonest any of them admits again.
+func (p *Proxy) filterByQuota(cands []config.Candidate) (out []config.Candidate, wait time.Duration) {
 	if p.quota == nil {
-		return cands
+		return cands, 0
 	}
+	allowed := make([]config.Candidate, 0, len(cands))
+	for _, c := range cands {
+		blocked, until := false, time.Duration(0)
+		for _, sc := range c.QuotaScopes(p.config()) {
+			if b, d := p.quota.HardBlocked(sc); b {
+				blocked = true
+				if d > until {
+					until = d
+				}
+			}
+		}
+		if !blocked {
+			allowed = append(allowed, c)
+		} else if wait == 0 || until < wait {
+			wait = until
+		}
+	}
+	if len(allowed) == 0 {
+		return nil, wait
+	}
+	cands = allowed
 	kept := make([]config.Candidate, 0, len(cands))
 	for _, c := range cands {
 		// Every scope must have room. A credential under its own cap still
@@ -2005,9 +2058,9 @@ func (p *Proxy) filterByQuota(cands []config.Candidate) []config.Candidate {
 		}
 	}
 	if len(kept) == 0 {
-		return cands
+		return cands, 0
 	}
-	return kept
+	return kept, 0
 }
 
 func partitionResident(walk []int, cands []config.Candidate, resident map[string]bool) []int {
@@ -3117,6 +3170,11 @@ type usage struct {
 	PromptTokensDetails struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
+	// PromptCacheHitTokens is DeepSeek's cached-token report, a flat sibling of
+	// prompt_tokens rather than the nested OpenAI field (api-docs.deepseek.com,
+	// "Context Caching"). Without it a DeepSeek request records 0 cached, and its
+	// cache hits are billed at the cache-miss rate — 50x.
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
 	// Derived by extractUsage from usage + the sibling "timings" object; not
 	// members of the OpenAI "usage" JSON, hence json:"-".
 	CachedTokens    int     `json:"-"` // cached prompt tokens (usage.prompt_tokens_details.cached_tokens, else timings.cache_n)
@@ -3134,9 +3192,13 @@ type timings struct {
 
 // mergeTimings folds a captured timings object into a usage value: fills the
 // throughput speeds and uses cache_n as the cached-token fallback when the
-// OpenAI-shape prompt_tokens_details.cached_tokens is absent/zero.
+// OpenAI-shape prompt_tokens_details.cached_tokens and DeepSeek's
+// prompt_cache_hit_tokens are both absent/zero.
 func mergeTimings(u usage, t timings) usage {
 	u.CachedTokens = u.PromptTokensDetails.CachedTokens
+	if u.CachedTokens == 0 {
+		u.CachedTokens = u.PromptCacheHitTokens
+	}
 	if u.CachedTokens == 0 {
 		u.CachedTokens = t.CacheN
 	}

@@ -1897,6 +1897,13 @@ func TestExtractUsageTelemetry(t *testing.T) {
 		t.Errorf("cache_n fallback: cachedTokens = %d, want 33", u.CachedTokens)
 	}
 
+	// DeepSeek: flat prompt_cache_hit_tokens, no nested OpenAI field, no timings.
+	deepseek := []byte(`{"usage": {"prompt_tokens": 100, "completion_tokens": 20,
+		"prompt_cache_hit_tokens": 90, "prompt_cache_miss_tokens": 10}}`)
+	if u := extractUsage(deepseek, false); u.CachedTokens != 90 {
+		t.Errorf("deepseek cache hit: cachedTokens = %d, want 90", u.CachedTokens)
+	}
+
 	// Streaming: usage + timings ride in the final data: event.
 	stream := []byte(strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"hi"}}]}`,

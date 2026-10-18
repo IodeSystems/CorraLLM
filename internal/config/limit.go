@@ -17,6 +17,7 @@ import (
 //	  - {usd: "5.00", per: hour}
 //	  - {usd: 200,    per: month}
 //	  - {sec: 600,    per: minute}
+//	  - {usd: 300,    per: month, hard: true}
 //
 // A flat list rather than a dimension→spec map, because the same dimension
 // routinely needs several windows: a provider's "20/minute AND 1000/day" is two
@@ -32,6 +33,14 @@ type Limit struct {
 	USD float64 `yaml:"usd,omitempty" json:"usd,omitempty"` // dollars spent
 	Sec float64 `yaml:"sec,omitempty" json:"sec,omitempty"` // seconds of backend dwell
 	Per string  `yaml:"per,omitempty" json:"per,omitempty"` // window: minute|hour|day|month|…
+
+	// Hard makes an exhausted limit REFUSE rather than steer. A soft limit only
+	// takes its backend out of the walk while something else can serve; when
+	// every candidate is exhausted the request is served anyway, which is right
+	// for a free tier and wrong for a paid key, where "served anyway" is the
+	// spend the limit was written to stop. A hard limit's backend never serves
+	// while the limit is full, and a caller with nothing else gets a 429.
+	Hard bool `yaml:"hard,omitempty" json:"hard,omitempty"`
 }
 
 // limit dimensions, as used for counter labels and error messages.

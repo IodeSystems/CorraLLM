@@ -56,6 +56,7 @@ type Window struct {
 	Limit    int       `json:"limit"`
 	Used     int       `json:"used"`               // decayed fill level, rounded for display
 	Blocked  bool      `json:"blocked,omitempty"`  // level has reached the limit
+	Hard     bool      `json:"hard,omitempty"`     // blocked refuses, never served anyway
 	ResetsAt time.Time `json:"resetsAt,omitempty"` // when the level fully drains to zero
 }
 
@@ -76,6 +77,7 @@ type counterWindow struct {
 	// 1000 per day. The leaky-bucket arithmetic is dimensionless.
 	limit float64
 	dur   time.Duration
+	hard  bool      // a full window refuses even when nothing else can serve
 	used  float64   // fill level as of `at`
 	at    time.Time // when `used` was last computed
 }
@@ -238,7 +240,9 @@ func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 		// Label is dimension+window ("req/day", "usd/month"), so several windows
 		// on ONE dimension keep independent counters — and the label is the
 		// persistence key, so it must stay stable across restarts.
-		windows = append(windows, l.seedWindow(backend, lim.Label(), lim.Amount(), dur))
+		w := l.seedWindow(backend, lim.Label(), lim.Amount(), dur)
+		w.hard = lim.Hard
+		windows = append(windows, w)
 	}
 	if len(windows) == 0 {
 		delete(l.counters, backend)
@@ -517,6 +521,35 @@ func (l *Ledger) Available(backend string) bool {
 	return true
 }
 
+// HardBlocked reports whether a backend has a HARD window at its limit, and
+// how long until the fullest such window has leaked enough to admit again.
+// Unlike Available it ignores soft windows, cooling and staleness: those steer
+// the walk, while this is the one answer the walk may not overrule.
+func (l *Ledger) HardBlocked(backend string) (bool, time.Duration) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	cs := l.counters[backend]
+	if cs == nil {
+		return false, 0
+	}
+	now := l.now()
+	blocked, wait := false, time.Duration(0)
+	for _, cw := range cs.windows {
+		lv := cw.levelAt(now)
+		if !cw.hard || lv < cw.limit {
+			continue
+		}
+		blocked = true
+		// The level leaks limit per dur, so it drops back under the limit after
+		// (lv-limit) worth of leak; the epsilon keeps an exactly-full window
+		// from answering "retry in 0s".
+		if d := time.Duration((lv - cw.limit + cw.limit*1e-6) / cw.limit * float64(cw.dur)); d > wait {
+			wait = d
+		}
+	}
+	return blocked, wait
+}
+
 // Snapshot returns a copy of every tracked entry, backend-sorted, for display.
 func (l *Ledger) Snapshot() []Entry {
 	l.mu.RLock()
@@ -538,6 +571,7 @@ func (l *Ledger) Snapshot() []Entry {
 					Limit:   int(cw.limit),
 					Used:    int(math.Round(lv)),
 					Blocked: lv >= cw.limit,
+					Hard:    cw.hard,
 				}
 				if d := cw.drainAt(now); !d.IsZero() {
 					w.ResetsAt = d

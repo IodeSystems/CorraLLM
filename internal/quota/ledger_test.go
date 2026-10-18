@@ -405,6 +405,38 @@ func TestSpendWindowBlocksWhenExhausted(t *testing.T) {
 	}
 }
 
+// A soft window reports no hard block however full it is; a hard one does, with
+// the leak time back under the limit.
+func TestHardBlocked(t *testing.T) {
+	l := New()
+	t0 := time.Unix(1_800_000_000, 0)
+	fixed(l, t0)
+	l.SetLimits("soft", []config.Limit{lim("usd", 10, "day")})
+	l.SetLimits("hard", []config.Limit{{USD: 10, Per: "day", Hard: true}})
+	l.Charge("soft", config.DimUSD, 20)
+	if b, _ := l.HardBlocked("soft"); b {
+		t.Error("a soft window must never hard-block")
+	}
+	if b, _ := l.HardBlocked("hard"); b {
+		t.Error("an empty hard window must not block")
+	}
+	l.Charge("hard", config.DimUSD, 12.5)
+	b, wait := l.HardBlocked("hard")
+	if !b {
+		t.Fatal("an over-budget hard window must block")
+	}
+	if want := 6 * time.Hour; wait < want || wait > want+time.Second {
+		t.Errorf("wait = %v, want ~%v (2.5 over at 10/day)", wait, want)
+	}
+	fixed(l, t0.Add(wait))
+	if b, _ := l.HardBlocked("hard"); b {
+		t.Error("after the reported wait the window must admit")
+	}
+	if b, _ := l.HardBlocked("unknown"); b {
+		t.Error("an unregistered backend must not block")
+	}
+}
+
 // TestDimensionsAreIndependent: charging requests must not consume the dollar
 // budget, and vice versa — they are separate windows keyed by label.
 func TestDimensionsAreIndependent(t *testing.T) {

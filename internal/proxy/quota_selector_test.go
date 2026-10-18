@@ -3,6 +3,7 @@ package proxy
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/quota"
@@ -32,20 +33,20 @@ func TestFilterByQuota(t *testing.T) {
 	cands := []config.Candidate{cand("groq-a"), cand("groq-b"), cand("MTP-local")}
 
 	// Nothing observed yet → all available (optimistic), unchanged.
-	if got := p.filterByQuota(cands); len(got) != 3 {
+	if got, _ := p.filterByQuota(cands); len(got) != 3 {
 		t.Fatalf("unobserved backends should all pass: %v", names(got))
 	}
 
 	// Exhaust groq-a → dropped, others kept.
 	exhaust(p.quota, "groq-a")
-	got := p.filterByQuota(cands)
+	got, _ := p.filterByQuota(cands)
 	if len(got) != 2 || got[0].Name != "groq-b" || got[1].Name != "MTP-local" {
 		t.Errorf("exhausted groq-a should be dropped: %v", names(got))
 	}
 
 	// Exhaust groq-b too → only the local floor remains.
 	exhaust(p.quota, "groq-b")
-	if got := p.filterByQuota(cands); len(got) != 1 || got[0].Name != "MTP-local" {
+	if got, _ := p.filterByQuota(cands); len(got) != 1 || got[0].Name != "MTP-local" {
 		t.Errorf("only the local floor should remain: %v", names(got))
 	}
 }
@@ -56,7 +57,7 @@ func TestFilterByQuota_NeverEmpties(t *testing.T) {
 	p := &Proxy{quota: quota.New()}
 	cands := []config.Candidate{cand("groq-a")}
 	exhaust(p.quota, "groq-a")
-	if got := p.filterByQuota(cands); len(got) != 1 {
+	if got, _ := p.filterByQuota(cands); len(got) != 1 {
 		t.Errorf("must not empty the candidate set: %v", names(got))
 	}
 }
@@ -66,9 +67,43 @@ func TestFilterByQuota_SkipsHardDown(t *testing.T) {
 	p := &Proxy{quota: quota.New()}
 	cands := []config.Candidate{cand("groq-a"), cand("MTP-local")}
 	p.quota.MarkDown("groq-a")
-	got := p.filterByQuota(cands)
+	got, _ := p.filterByQuota(cands)
 	if len(got) != 1 || got[0].Name != "MTP-local" {
 		t.Errorf("hard-down groq-a should be dropped: %v", names(got))
+	}
+}
+
+// A hard spend limit is the one answer the never-empty fallback may not
+// overrule: the paid backend is dropped even when it is the only candidate, and
+// the caller is told when to come back.
+func TestFilterByQuota_HardLimitEmpties(t *testing.T) {
+	p := &Proxy{quota: quota.New()}
+	p.quota.SetLimits("deepseek-flash", []config.Limit{{USD: 10, Per: "day", Hard: true}})
+	cands := []config.Candidate{cand("deepseek-flash")}
+	if got, _ := p.filterByQuota(cands); len(got) != 1 {
+		t.Fatalf("under budget must pass: %v", names(got))
+	}
+	p.quota.Charge("deepseek-flash", config.DimUSD, 10.5)
+	got, wait := p.filterByQuota(cands)
+	if len(got) != 0 {
+		t.Fatalf("over a hard budget must empty: %v", names(got))
+	}
+	// 0.5 over a 10/day leak is ~72 minutes.
+	if wait < 70*time.Minute || wait > 75*time.Minute {
+		t.Errorf("wait = %v, want ~72m", wait)
+	}
+}
+
+// A hard-blocked candidate stays out of the soft fallback: when the remaining
+// candidates are all softly exhausted, the walk keeps them and not the paid one.
+func TestFilterByQuota_HardStaysOutOfSoftFallback(t *testing.T) {
+	p := &Proxy{quota: quota.New()}
+	p.quota.SetLimits("deepseek-flash", []config.Limit{{USD: 10, Per: "day", Hard: true}})
+	p.quota.Charge("deepseek-flash", config.DimUSD, 11)
+	exhaust(p.quota, "groq-a")
+	got, _ := p.filterByQuota([]config.Candidate{cand("deepseek-flash"), cand("groq-a")})
+	if len(got) != 1 || got[0].Name != "groq-a" {
+		t.Errorf("want only the soft-exhausted groq-a: %v", names(got))
 	}
 }
 
