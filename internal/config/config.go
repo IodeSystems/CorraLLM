@@ -1564,7 +1564,7 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 			if c.Models[p].Disabled {
 				return nil, false
 			}
-			return []Candidate{{Name: served, Model: c.Models[p]}}, true
+			return c.expandCredentials([]Candidate{{Name: served, Model: c.Models[p]}}), true
 		}
 	}
 	// Bare-name precedence, LAST. Nothing explicit recognised this name, so the

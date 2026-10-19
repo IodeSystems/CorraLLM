@@ -487,3 +487,38 @@ extensions:
 		}
 	}
 }
+
+// A glob template's candidate carries its provider's credentials like any other
+// resolve path, so a credential's allowlist governs every dated id the template
+// catches. It used to return the bare candidate: `allow` applied to nothing a
+// client actually sends, because clients send concrete ids.
+func TestGlobTemplateGetsCredentials(t *testing.T) {
+	const y = `
+extensions:
+  claude:
+    providers:
+      claude:
+        proxy: { host: api.anthropic.com, port: 443 }
+        credentials:
+          - name: api
+            headers: { x-api-key: "k" }
+            allow: [sk-aw4]
+        provides:
+          haiku-*: { type: anthropic-haiku, quality: 3 }
+`
+	c, err := loadYAML(t, y)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands, ok := c.ResolveServed("claude-haiku-4-5-20251001")
+	if !ok || len(cands) != 1 {
+		t.Fatalf("resolve: ok=%v cands=%d", ok, len(cands))
+	}
+	cr := cands[0].Credential
+	if cr == nil {
+		t.Fatal("glob candidate has no credential: allowlist bypassed")
+	}
+	if !cr.AllowsKey("sk-aw4") || cr.AllowsKey("stranger") {
+		t.Errorf("allowlist not applied: aw4=%v stranger=%v", cr.AllowsKey("sk-aw4"), cr.AllowsKey("stranger"))
+	}
+}
