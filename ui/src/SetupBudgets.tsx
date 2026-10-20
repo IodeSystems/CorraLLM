@@ -33,6 +33,16 @@ import {
 import { DisableDialog, disableCost, useSetDisabled } from '@/Disable'
 import { useReadOnly } from '@/auth'
 
+// One counted window, e.g. "$0.72 of $5 per day (UTC)" or "3 of 30 requests per minute".
+function windowText(label: string, used: number, limit: number): string {
+  const [dim, per] = label.split('/')
+  const period =
+    per === 'calendar-day' ? 'day (UTC)' : per === 'calendar-month' ? 'calendar month (UTC)' : `${per} (rolling)`
+  if (dim === 'usd') return `$${used.toFixed(2)} of $${limit} per ${period}`
+  if (dim === 'req') return `${Math.round(used)} of ${limit} requests per ${period}`
+  return `${used.toFixed(1)} of ${limit} ${dim} per ${period}`
+}
+
 /**
  * Free-tier quota ledger (P16): each remote backend's remaining rate-limit
  * budget, learned live from the provider's X-Ratelimit-* headers. The selector
@@ -61,6 +71,10 @@ const QuotaDoc = graphql(/* GraphQL */ `
             limit
             used
             resetsIn
+          }
+          reported {
+            name
+            value
           }
           requests {
             limit
@@ -678,8 +692,8 @@ export function ProviderBudgets() {
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
                           {(be.windows ?? []).map((w) => (
                             <Typography key={w.label} variant="caption">
-                              {w.used}/{w.limit} /{w.label}
-                              {w.resetsIn ? ` · resets ${w.resetsIn}` : ''}
+                              {windowText(w.label, Number(w.used), Number(w.limit))}
+                              {w.resetsIn ? ` · ${w.label.includes('calendar') ? 'resets' : 'drains'} in ${w.resetsIn}` : ''}
                             </Typography>
                           ))}
                           <Typography
@@ -696,7 +710,17 @@ export function ProviderBudgets() {
                       )}
                     </TableCell>
                     <TableCell>
-                      {(be.windows ?? []).length > 0 ? (
+                      {(be.reported ?? []).length > 0 ? (
+                        <Tooltip title="What the provider reports about its own limits, as sent. Shown, not enforced.">
+                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
+                            {(be.reported ?? []).map((h) => (
+                              <Typography key={h.name} variant="caption" sx={{ fontFamily: 'monospace' }}>
+                                {h.name.replace(/^x-ratelimit-/, '')}: {h.value}
+                              </Typography>
+                            ))}
+                          </Box>
+                        </Tooltip>
+                      ) : (be.windows ?? []).length > 0 ? (
                         <Typography
                           variant="caption"
                           sx={{

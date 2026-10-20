@@ -37,6 +37,10 @@ type Entry struct {
 	CoolingUntil time.Time `json:"coolingUntil,omitempty"`
 	LastSeen     time.Time `json:"lastSeen"`
 	Seen         int64     `json:"seen"`
+	// Reported is the provider's latest x-ratelimit-* headers, as sent
+	// (Fireworks: X-Ratelimit-Limit-Tokens-Prompt / -Cache-Adjusted-Prompt /
+	// -Generated, X-Ratelimit-Over-Limit). Shown, not enforced.
+	Reported map[string]string `json:"reported,omitempty"`
 	// CapRequests/CapTokens echo the configured self-cap (0 = none) so a consumer
 	// can render the effective budget via EffRemaining(bucket, cap).
 	CapRequests int `json:"capRequests,omitempty"`
@@ -360,7 +364,8 @@ func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	}
 	_, isCounter := l.counters[backend]
 	hasHeaders := h.Get("X-Ratelimit-Limit-Requests") != "" || h.Get("X-Ratelimit-Limit-Tokens") != ""
-	if !is429 && !hasHeaders && !isCounter {
+	reported := rateLimitHeaders(h)
+	if !is429 && !hasHeaders && !isCounter && reported == nil {
 		l.mu.Unlock()
 		return
 	}
@@ -372,6 +377,9 @@ func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	}
 	e.LastSeen = now
 	e.Seen++
+	if reported != nil {
+		e.Reported = reported
+	}
 	updateBucket(&e.Requests, h, "Requests", now)
 	updateBucket(&e.Tokens, h, "Tokens", now)
 	// Counter-mode: this completed request counts, INCLUDING a 429 — providers
@@ -455,6 +463,22 @@ func updateBucket(b *Bucket, h http.Header, kind string, now time.Time) {
 			b.ResetsAt = now.Add(d)
 		}
 	}
+}
+
+// rateLimitHeaders collects every x-ratelimit-* header, lowercased; nil when
+// there are none.
+func rateLimitHeaders(h http.Header) map[string]string {
+	var out map[string]string
+	for k, v := range h {
+		lk := strings.ToLower(k)
+		if strings.HasPrefix(lk, "x-ratelimit-") && len(v) > 0 {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[lk] = v[0]
+		}
+	}
+	return out
 }
 
 // ParseRetryAfter reads a Retry-After value: whole or fractional seconds, a

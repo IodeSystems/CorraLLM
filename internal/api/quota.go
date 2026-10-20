@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"github.com/iodesystems/corrallm/internal/config"
+	"sort"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/quota"
@@ -46,6 +47,14 @@ type QuotaEntryView struct {
 	// Stale is true when the backend's model has churned out of its provider's
 	// free roster (P16e) — unavailable until a refresh finds it free again.
 	Stale bool `json:"stale,omitempty"`
+	// Reported is what the provider says about its own limits, as sent.
+	Reported []ReportedLimitView `json:"reported,omitempty" doc:"The provider's latest x-ratelimit-* headers, as sent (e.g. Fireworks' per-model token-per-minute limits). Shown, not enforced."`
+}
+
+// ReportedLimitView is one provider rate-limit header.
+type ReportedLimitView struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // QuotaWindowView is a counter-mode backend's locally-counted request window.
@@ -133,10 +142,22 @@ func (h *Handlers) refusingViews() ([]RefusingBackendView, error) {
 type QuotaOutput struct {
 	Body struct {
 		Backends []QuotaEntryView `json:"backends"`
-		// Refusing is what is answering 401/402/403 right now, longest-broken
+		// Refusing is what is answering 401/402/403/429/503 right now, longest-broken
 		// first. Empty is the normal case and means nothing is refusing.
 		Refusing []RefusingBackendView `json:"refusing"`
 	}
+}
+
+func reportedViews(m map[string]string) []ReportedLimitView {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]ReportedLimitView, 0, len(m))
+	for k, v := range m {
+		out = append(out, ReportedLimitView{Name: k, Value: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // QuotaLedger reports the free-tier budget ledger.
@@ -158,6 +179,7 @@ func (h *Handlers) QuotaLedger(_ context.Context, _ *struct{}) (*QuotaOutput, er
 			Requests:  bucketView(e.Requests, e.CapRequests, now),
 			Tokens:    bucketView(e.Tokens, e.CapTokens, now),
 			Available: available(e, now),
+			Reported:  reportedViews(e.Reported),
 			Seen:      e.Seen,
 			Stale:     e.Stale,
 		}

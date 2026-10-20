@@ -2584,6 +2584,8 @@ type corrallm_QuotaEntryView {
   """Seconds left in a 429 cooldown; 0 when not cooling."""
   coolingInSec: Long
   observedAgoSec: Long!
+  """The provider's latest x-ratelimit-* headers, as sent (e.g. Fireworks' per-model token-per-minute limits). Shown, not enforced."""
+  reported: [corrallm_ReportedLimitView!]
   requests: corrallm_QuotaBucketView!
   seen: Long!
   stale: Boolean
@@ -2601,11 +2603,11 @@ type corrallm_QuotaWindowView {
   blocked: Boolean
   """"1m" (per-minute) or "1d" (per-day)."""
   label: String!
-  limit: Long!
+  limit: Float!
   """Time until the current level fully drains to zero."""
   resetsIn: String
-  """Decayed fill level, rounded; leaks back toward zero over the window."""
-  used: Long!
+  """Fill level. A falloff window leaks back toward zero over its period; a calendar window (calendar-day / calendar-month) empties at the UTC boundary."""
+  used: Float!
 }
 
 type corrallm_RecentActivityOutputBody {
@@ -2699,6 +2701,11 @@ input corrallm_RemotePricingInput {
   inputPerM: Float!
   """$ per 1M output tokens."""
   outputPerM: Float!
+}
+
+type corrallm_ReportedLimitView {
+  name: String!
+  value: String!
 }
 
 type corrallm_RequestOverheadOutputBody {
