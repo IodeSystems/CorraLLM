@@ -30,6 +30,7 @@ type fakeIdP struct {
 	challenge string          // code_challenge from the last /auth/login
 	nonce     string
 	claims    func(issuer, nonce string) map[string]any
+	userinfo  map[string]any // served at /userinfo; nil = 404
 }
 
 const (
@@ -48,6 +49,7 @@ func newIdP(t *testing.T) *fakeIdP {
 			"authorization_endpoint":                p.srv.URL + "/authorize",
 			"token_endpoint":                        p.srv.URL + "/token",
 			"jwks_uri":                              p.srv.URL + "/jwks",
+			"userinfo_endpoint":                     p.srv.URL + "/userinfo",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 		})
 	})
@@ -59,6 +61,17 @@ func newIdP(t *testing.T) *fakeIdP {
 			"kty": "RSA", "alg": "RS256", "use": "sig", "kid": p.kid,
 			"n": b64(pub.N.Bytes()), "e": b64(big.NewInt(int64(pub.E)).Bytes()),
 		}}})
+	})
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		p.mu.Lock()
+		ui := p.userinfo
+		p.mu.Unlock()
+		if ui == nil || r.Header.Get("Authorization") != "Bearer at" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ui)
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -399,6 +412,33 @@ func TestSSOUnverifiedEmailRefused(t *testing.T) {
 		return c
 	}
 	sessionFrom(t, h.signIn(t))
+}
+
+// Zitadel's default: no email in the ID token, only at userinfo. Admitted from
+// userinfo for the same subject; a userinfo answer about someone else is not.
+func TestSSOEmailFromUserinfo(t *testing.T) {
+	noEmail := func(iss, nonce string) map[string]any {
+		c := goodClaims(iss, nonce)
+		delete(c, "email")
+		delete(c, "email_verified")
+		return c
+	}
+	h := newHarness(t)
+	h.idp.claims = noEmail
+	h.idp.userinfo = map[string]any{"sub": "u1", "email": "ops@example.com", "email_verified": true}
+	sessionFrom(t, h.signIn(t))
+
+	h = newHarness(t)
+	h.idp.claims = noEmail
+	h.idp.userinfo = map[string]any{"sub": "someone-else", "email": "ops@example.com", "email_verified": true}
+	if rec := h.signIn(t); findCookie(rec, SessionCookie) != nil && findCookie(rec, SessionCookie).Value != "" {
+		t.Error("session issued from userinfo about a different subject")
+	}
+
+	h = newHarness(t)
+	h.idp.claims = noEmail
+	h.idp.userinfo = map[string]any{"sub": "u1", "email": "ops@example.com", "email_verified": false}
+	noSession(t, h.signIn(t), http.StatusForbidden)
 }
 
 func TestSSOProviderErrorPage(t *testing.T) {

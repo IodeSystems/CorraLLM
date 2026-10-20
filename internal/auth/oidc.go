@@ -293,6 +293,21 @@ func (s *SSO) verifyIDToken(ctx context.Context, p *oidc.Provider, st *OIDCSetti
 	if err := idt.Claims(&claims); err != nil {
 		return "", "id token claims: " + err.Error(), false
 	}
+	// Zitadel, among others, leaves profile claims out of the ID token unless
+	// the client opts in, and serves them from userinfo instead. Ask there,
+	// and only accept an answer about the same subject.
+	if strings.TrimSpace(claims.Email) == "" {
+		ui, err := p.UserInfo(ctx, oauth2.StaticTokenSource(tok))
+		if err != nil {
+			return "", "userinfo: " + err.Error(), false
+		}
+		if ui.Subject != idt.Subject {
+			return "", "userinfo: subject does not match the id token", false
+		}
+		if err := ui.Claims(&claims); err != nil {
+			return "", "userinfo claims: " + err.Error(), false
+		}
+	}
 	email = strings.ToLower(strings.TrimSpace(claims.Email))
 	if email == "" {
 		return "", "no email claim (is the email scope requested?)", true
