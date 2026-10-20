@@ -34,6 +34,10 @@ type Limit struct {
 	USD float64 `json:"usd,omitempty" doc:"Dollars."`
 	Sec float64 `json:"sec,omitempty" doc:"Seconds of backend dwell."`
 	Per string  `json:"per" doc:"Window: minute | hour | day | month."`
+	// Hard refuses (429) once exhausted instead of serving anyway; see
+	// config.Limit.Hard. Carried both ways so a form save cannot downgrade a
+	// spend cap written in YAML to a soft one.
+	Hard bool `json:"hard,omitempty" required:"false" doc:"Refuse once exhausted (429) instead of serving anyway. For paid keys."`
 }
 
 // ProviderSpec is one upstream endpoint and the accounts held against it.
@@ -259,15 +263,24 @@ func secretRefOf(cr config.Credential) (ref, header string) {
 func toWireLimits(in config.LimitSet) []Limit {
 	out := make([]Limit, 0, len(in))
 	for _, l := range in {
-		out = append(out, Limit{Req: l.Req, USD: l.USD, Sec: l.Sec, Per: l.Per})
+		out = append(out, Limit{Req: l.Req, USD: l.USD, Sec: l.Sec, Per: l.Per, Hard: l.Hard})
 	}
 	return out
+}
+
+// authValue is the header value referencing a stored secret: bare for the
+// key-style headers (x-api-key, api-key), "Bearer <ref>" for authorization.
+func authValue(header, ref string) string {
+	if strings.EqualFold(header, "authorization") {
+		return "Bearer ${" + ref + "}"
+	}
+	return "${" + ref + "}"
 }
 
 func toConfigLimits(in []Limit) config.LimitSet {
 	out := make(config.LimitSet, 0, len(in))
 	for _, l := range in {
-		out = append(out, config.Limit{Req: l.Req, USD: l.USD, Sec: l.Sec, Per: l.Per})
+		out = append(out, config.Limit{Req: l.Req, USD: l.USD, Sec: l.Sec, Per: l.Per, Hard: l.Hard})
 	}
 	return out
 }
@@ -338,17 +351,26 @@ func (h *Handlers) UpsertProvider(ctx context.Context, in *UpsertProviderInput) 
 
 		creds := make([]config.Credential, 0, len(b.Credentials))
 		for _, cs := range b.Credentials {
-			cc := config.Credential{
-				Name: cs.Name, Allow: cs.Allow, Limits: toConfigLimits(cs.Limits),
-			}
+			// Start from the stored credential of the same name, so fields the
+			// form does not model (extra headers, authTokenCommand) survive a
+			// save. Rebuilding from the form alone silently dropped them.
+			cc, _ := pv.CredentialNamed(cs.Name)
+			cc.Name, cc.Allow, cc.Limits = cs.Name, cs.Allow, toConfigLimits(cs.Limits)
 			if cs.SecretRef != "" {
 				header := cs.HeaderName
 				if header == "" {
 					header = "authorization"
 				}
+				headers := map[string]string{}
+				for k, v := range cc.Headers {
+					if !strings.Contains(v, "${") {
+						headers[k] = v // non-secret extras such as anthropic-version
+					}
+				}
 				// A REFERENCE, never the value — this lands in the document the
 				// config API serves.
-				cc.Headers = map[string]string{header: "Bearer ${" + cs.SecretRef + "}"}
+				headers[header] = authValue(header, cs.SecretRef)
+				cc.Headers = headers
 			}
 			creds = append(creds, cc)
 		}

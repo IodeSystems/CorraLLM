@@ -9,6 +9,7 @@ schema {
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
 
 type CorrallmMutationNamespace {
+  addRemoteModel(body: corrallm_RemoteModelSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "addRemoteModel")
   agentEnroll(
     """Bearer <enrollment token>, minted by the operator."""
     Authorization: String
@@ -354,6 +355,7 @@ type CorrallmQueryNamespace {
 }
 
 type CorrallmV1MutationNamespace {
+  addRemoteModel(body: corrallm_RemoteModelSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "addRemoteModel")
   agentEnroll(
     """Bearer <enrollment token>, minted by the operator."""
     Authorization: String
@@ -1940,6 +1942,8 @@ type corrallm_LaneRungDef {
 }
 
 type corrallm_Limit {
+  """Refuse once exhausted (429) instead of serving anyway. For paid keys."""
+  hard: Boolean
   """Window: minute | hour | day | month."""
   per: String!
   """Requests."""
@@ -1951,6 +1955,8 @@ type corrallm_Limit {
 }
 
 input corrallm_LimitInput {
+  """Refuse once exhausted (429) instead of serving anyway. For paid keys."""
+  hard: Boolean
   """Window: minute | hour | day | month."""
   per: String!
   """Requests."""
@@ -2564,6 +2570,47 @@ type corrallm_RefusingBackendView {
   sinceMs: Long!
   """The most recent refusal's HTTP status: 401 (key), 402 (unpaid), 403 (not permitted)."""
   status: Long!
+}
+
+input corrallm_RemoteModelSpecInput {
+  """corrallm keys allowed to use this key. Empty = every caller."""
+  allow: [String!]
+  """OpenAI-compatible base URL, e.g. https://api.fireworks.ai/inference/v1. A trailing /v1 is optional."""
+  baseUrl: String!
+  """Extension grouping the provider. Default: the provider name."""
+  extension: String
+  """Header carrying the key. Default authorization (as Bearer)."""
+  headerName: String
+  """Budgets on this key. Use hard: true for spend caps."""
+  limits: [corrallm_LimitInput!]
+  """Concurrent requests corrallm admits. 0 = no limit."""
+  maxConcurrent: Long
+  """Output-token cap injected when a caller sets none. 0 = no cap."""
+  maxTokens: Long
+  """The id the provider calls the model, sent upstream unchanged."""
+  modelId: String!
+  """Served-name suffix. Default: the model id's last path segment."""
+  name: String
+  pricing: corrallm_RemotePricingInput
+  """Provider name; the model is served as <provider>-<name>. Lowercase letters, digits and dashes."""
+  provider: String!
+  """Rank among models serving the same name. Higher wins."""
+  quality: Float
+  """Credential-store entry holding the API key. Empty = no key."""
+  secretRef: String
+  """When set, stored under secretRef first. Write-only; never returned."""
+  secretValue: String
+  """Cost class. Default: <provider>-<name> when pricing is given, else chat."""
+  type: String
+}
+
+input corrallm_RemotePricingInput {
+  """$ per 1M cached input tokens. 0 = same as input."""
+  cachedPerM: Float
+  """$ per 1M uncached input tokens."""
+  inputPerM: Float!
+  """$ per 1M output tokens."""
+  outputPerM: Float!
 }
 
 type corrallm_RequestOverheadOutputBody {

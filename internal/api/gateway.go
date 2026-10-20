@@ -451,6 +451,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.UpsertProvider)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "addRemoteModel",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/providers/remote-model",
+		Summary:     "Serve one model from an OpenAI-compatible endpoint: provider, key reference, budget and price in one edit.",
+		Tags:        []string{"config"},
+	}, h.AddRemoteModel)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "setSecret",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/secrets",
