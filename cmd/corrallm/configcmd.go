@@ -244,6 +244,6 @@ func newConfigCmd() *cobra.Command {
 	}
 	restoreCmd.Flags().StringVar(&restoreDB, "db", "", "database holding the config")
 
-	cmd.AddCommand(pathCmd, exportCmd, loadCmd, histCmd, showCmd, restoreCmd)
+	cmd.AddCommand(pathCmd, exportCmd, loadCmd, histCmd, showCmd, restoreCmd, newSecretCmd())
 	return cmd
 }
