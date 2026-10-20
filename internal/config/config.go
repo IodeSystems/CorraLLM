@@ -1407,7 +1407,10 @@ func (c Candidate) Target() (*ProxyTarget, error) {
 		return t, err
 	}
 	merged := *t
-	merged.Headers = c.Credential.MergedHeaders(t.Headers)
+	// Expanded HERE as well as in ProxyTarget: the provider's headers were
+	// expanded there, but a credential's own headers were not, so a key
+	// referenced as ${NAME} went upstream as the literal text.
+	merged.Headers = expandHeaders(c.Credential.MergedHeaders(t.Headers))
 	if cmd := c.Credential.AuthTokenCommand; cmd != "" {
 		merged.AuthTokenCommand = cmd
 	}

@@ -463,3 +463,17 @@ func TestACLAllowlistSemantics(t *testing.T) {
 		t.Error("unlisted caller must be refused — allowlist, not denylist")
 	}
 }
+
+// A credential's ${NAME} key reaches the wire expanded, not as the literal.
+func TestCandidateTargetExpandsCredentialSecret(t *testing.T) {
+	t.Setenv("CORRALLM_TEST_CRED_KEY", "sk-real")
+	m := Model{Proxy: portNode(443)}
+	cr := &Credential{Name: "default", Headers: map[string]string{"authorization": "Bearer ${CORRALLM_TEST_CRED_KEY}"}}
+	tgt, err := Candidate{Name: "p-m", Model: m, Credential: cr}.Target()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tgt.Headers["authorization"]; got != "Bearer sk-real" {
+		t.Errorf("authorization = %q, want the expanded key", got)
+	}
+}
