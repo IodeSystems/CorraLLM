@@ -459,7 +459,8 @@ var migrations = []string{
 	 FROM model_approval WHERE state = 'approved'`,
 	`DROP TABLE model_approval`,
 	conversationSchema,
-	weatherSchema,
+	// The hourly weather cache went with the room-heat feature; nothing reads it.
+	`DROP TABLE IF EXISTS weather_hourly`,
 	`CREATE INDEX IF NOT EXISTS idx_activity_conversation_ts
 	   ON activity_conversation(ts, served, conversation, messages, ctx_tokens)`,
 	// Thinking tokens: the part of completion_tokens the model spent reasoning

@@ -54,10 +54,9 @@ type Config struct {
 	// unattributed "would have cost $X" says nothing.
 	CostBaseline string `yaml:"costBaseline,omitempty"`
 
-	// Thermal turns the heat local work gives off into money: what it costs to
-	// remove when the room is being cooled, what it saves when the room is being
-	// heated. Unset, the dashboard reports heat in BTU and stops there.
-	Thermal *Thermal `yaml:"thermal,omitempty"`
+	// Thermal is the retired room-heat block. It is parsed only so a stored
+	// config that still has it loads; Finalize warns once and drops it.
+	Thermal any `yaml:"thermal,omitempty"`
 
 	// Power replaces the per-token watt-hour coefficients with MEASURED power,
 	// read from Prometheus. Unset, energy stays the coefficient estimate.
@@ -2102,6 +2101,8 @@ func (c *Config) ResolveCaller(cred string) Caller {
 	return cr
 }
 
+var thermalWarn sync.Once
+
 // Load reads and parses the corrallm YAML config at path. A missing file yields
 // an empty (valid) config so the proxy can boot with env-only configuration.
 func Load(path string) (*Config, error) {
@@ -2145,6 +2146,12 @@ func Load(path string) (*Config, error) {
 // the model rules ("cmd set but no server") must judge the RESOLVED model, not
 // the sparse one the author wrote.
 func (c *Config) Finalize() error {
+	if c.Thermal != nil {
+		thermalWarn.Do(func() {
+			slog.Warn("config `thermal:` is no longer used (room heat, weather and BTU accounting were removed); it is ignored and dropped on the next save")
+		})
+		c.Thermal = nil
+	}
 	c.projectFirstPlacement()
 	if err := c.resolveExtensions(); err != nil {
 		return err
@@ -2773,183 +2780,6 @@ func (c *Config) SchedulerFor(model string) SchedulerConfig {
 		out.MaxQueueDepth = m.Scheduler.MaxQueueDepth
 	}
 	return out
-}
-
-// Thermal is the room the box heats, as the operator describes it.
-//
-// Every watt-hour a local backend draws ends up as heat in that room. Whether
-// that heat costs or saves money depends on what the room's own climate system
-// is doing, which corrallm cannot see — so the operator states it.
-//
-// TWO TEMPERATURES, because they answer different questions. The ROOM decides
-// the mode: above CoolTargetF the room is being cooled and this box's heat is
-// extra load; below HeatTargetF it is being heated and the heat displaces some
-// of it; between them neither runs. The OUTDOOR temperature decides what
-// cooling costs when the cooling moves outside air: a window fan removes
-// 1.08 x CFM x (room - outdoor) BTU/h, so its cost per therm halves when the gap
-// doubles, and it cannot cool at all when outside is warmer than inside.
-//
-// Cooling is priced one of two ways: a fixed CoolCostPerTherm ($ to remove one
-// therm, 100,000 BTU — e.g. an AC at $/kWh x 29.31 / COP), or, when CoolFanCFM is
-// set, computed from the fan's airflow and watts, the live gap and the
-// electricity rate. Heating is HeatCostPerTherm, the value of a therm from the
-// MARGINAL source — the one the thermostat turns down, not one that runs
-// regardless: electric resistance $/kWh x 29.31, gas $/therm / efficiency.
-type Thermal struct {
-	RoomF    float64 `yaml:"roomF"`
-	OutdoorF float64 `yaml:"outdoorF,omitempty"`
-	// Latitude/Longitude, when set, replace OutdoorF with HOURLY outdoor
-	// temperatures (Open-Meteo, cached by a background job): a fan's cost moves
-	// with the outdoor temperature hour to hour, so a window's cooling is priced
-	// hour by hour. OutdoorF stays the fallback for an hour with no data.
-	Latitude  float64 `yaml:"latitude,omitempty"`
-	Longitude float64 `yaml:"longitude,omitempty"`
-	// HomeAssistant, when set, supplies HOURLY temperatures from sensors in the
-	// house: the room the box is in (its temperature decides each hour's mode —
-	// the room is not one temperature around the clock), and optionally the
-	// outdoors, which beats a weather service's modelled grid. The room entity
-	// can be one room's sensor or a whole-home aggregate: which is right depends
-	// on whether air moves between rooms. RoomF / outdoorF stay the fallbacks;
-	// an outdoor sensor takes precedence over Latitude.
-	HomeAssistant    *HomeAssistant `yaml:"homeAssistant,omitempty"`
-	CoolTargetF      float64        `yaml:"coolTargetF"`
-	CoolCostPerTherm float64        `yaml:"coolCostPerTherm,omitempty"`
-	CoolFanCFM       float64        `yaml:"coolFanCfm,omitempty"`
-	CoolFanWatts     float64        `yaml:"coolFanWatts,omitempty"`
-	HeatTargetF      float64        `yaml:"heatTargetF"`
-	HeatCostPerTherm float64        `yaml:"heatCostPerTherm"`
-	Notes            string         `yaml:"notes,omitempty"`
-}
-
-// HomeAssistant is where the house's temperature sensors are read. Token is a
-// ${KEY} reference into the credential store, never the token itself — the
-// config is served over HTTP and quoted in docs.
-type HomeAssistant struct {
-	URL           string `yaml:"url"`
-	Token         string `yaml:"token"`
-	RoomEntity    string `yaml:"roomEntity"`
-	OutdoorEntity string `yaml:"outdoorEntity,omitempty"`
-}
-
-// Mode reports what the room's climate system is doing at the stated room
-// temperature: "cooling", "heating", or "neutral" between the targets.
-func (t *Thermal) Mode() string {
-	if t == nil {
-		return ""
-	}
-	return t.ModeAt(t.RoomF)
-}
-
-// ModeAt is Mode at a given room temperature — one hour's, when the room
-// temperature comes from a sensor.
-func (t *Thermal) ModeAt(roomF float64) string {
-	switch {
-	case t == nil:
-		return ""
-	case t.CoolTargetF > 0 && roomF > t.CoolTargetF:
-		return "cooling"
-	case t.HeatTargetF > 0 && roomF < t.HeatTargetF:
-		return "heating"
-	default:
-		return "neutral"
-	}
-}
-
-// HasRoomSensor reports whether hourly room temperatures are configured.
-func (t *Thermal) HasRoomSensor() bool {
-	return t != nil && t.HomeAssistant != nil && t.HomeAssistant.URL != "" && t.HomeAssistant.RoomEntity != ""
-}
-
-// HasOutdoorSensor reports whether hourly outdoor temperatures come from a
-// house sensor (preferred over the weather service).
-func (t *Thermal) HasOutdoorSensor() bool {
-	return t != nil && t.HomeAssistant != nil && t.HomeAssistant.URL != "" && t.HomeAssistant.OutdoorEntity != ""
-}
-
-// RoomLoc is the cache key the room sensor's hourly readings are stored under.
-func (t *Thermal) RoomLoc() string {
-	if !t.HasRoomSensor() {
-		return ""
-	}
-	return "ha:" + t.HomeAssistant.RoomEntity
-}
-
-// OutdoorLoc is the cache key hourly outdoor temperatures are read from: the
-// house's outdoor sensor when set, else the weather service's location.
-func (t *Thermal) OutdoorLoc() string {
-	if t.HasOutdoorSensor() {
-		return "ha:" + t.HomeAssistant.OutdoorEntity
-	}
-	return t.Loc()
-}
-
-// HasHourlyOutdoor reports whether outdoor temperatures are hourly at all.
-func (t *Thermal) HasHourlyOutdoor() bool { return t.HasOutdoorSensor() || t.HasLocation() }
-
-// CoolFactor is the $ to remove one therm of heat right now, and whether the
-// cooling can remove heat at all. With a fan it is computed from the room-to-
-// outdoor gap at the given electricity rate; a gap of zero or less means the
-// fan cannot cool (ok=false). Otherwise it is the fixed CoolCostPerTherm.
-func (t *Thermal) CoolFactor(costPerKwh float64) (perTherm float64, ok bool) {
-	if t == nil {
-		return 0, false
-	}
-	return t.CoolFactorAt(t.OutdoorF, costPerKwh)
-}
-
-// CoolFactorAt is CoolFactor at a given outdoor temperature — one hour's, when
-// the outdoor temperature comes from the weather cache.
-func (t *Thermal) CoolFactorAt(outdoorF, costPerKwh float64) (perTherm float64, ok bool) {
-	if t == nil {
-		return 0, false
-	}
-	return t.CoolFactorFor(t.RoomF, outdoorF, costPerKwh)
-}
-
-// CoolFactorFor is the cooling factor at a given room AND outdoor temperature —
-// both hourly when a room sensor and a location are configured.
-func (t *Thermal) CoolFactorFor(roomF, outdoorF, costPerKwh float64) (perTherm float64, ok bool) {
-	if t == nil {
-		return 0, false
-	}
-	if t.CoolFanCFM <= 0 {
-		return t.CoolCostPerTherm, true
-	}
-	gap := roomF - outdoorF
-	if gap <= 0 {
-		return 0, false
-	}
-	btuPerHour := 1.08 * t.CoolFanCFM * gap
-	hoursPerTherm := 100_000 / btuPerHour
-	return hoursPerTherm * t.CoolFanWatts / 1000 * costPerKwh, true
-}
-
-// ThermalSettings returns a copy of the thermal block, or nil when unset.
-func (c *Config) ThermalSettings() *Thermal {
-	if c == nil {
-		return nil
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.Thermal == nil {
-		return nil
-	}
-	t := *c.Thermal
-	return &t
-}
-
-// HasLocation reports whether hourly weather is configured.
-func (t *Thermal) HasLocation() bool {
-	return t != nil && (t.Latitude != 0 || t.Longitude != 0)
-}
-
-// Loc is the weather cache's key for this location: lat,lon at 2 decimals
-// (~1 km), plenty for outdoor temperature.
-func (t *Thermal) Loc() string {
-	if !t.HasLocation() {
-		return ""
-	}
-	return fmt.Sprintf("%.2f,%.2f", t.Latitude, t.Longitude)
 }
 
 // Power is where measured watts come from: a Prometheus server and, per

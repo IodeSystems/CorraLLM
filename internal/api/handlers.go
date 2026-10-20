@@ -1401,13 +1401,6 @@ type RollupRow struct {
 	PrefillSecAvg   float64            `json:"prefillSecAvg" doc:"Mean prefill time per request, seconds (new tokens / reported rate)."`
 	PrefillBuckets  []PrefillBucketRow `json:"prefillBuckets" doc:"Raw prefill split by new tokens per request: <500, 500-2k, 2k-8k, 8k+."`
 
-	// HEAT. Every watt-hour a local backend draws ends up as heat in the room.
-	// From METERED token energy only — idle draw, CPU and PSU losses are not in
-	// it, so the box's real heat output is higher.
-	EnergyBTU  float64 `json:"energyBtu" doc:"Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."`
-	HeatBTUh   float64 `json:"heatBtuPerHour" doc:"energyBtu averaged over the window's length, BTU/h. 0 when the window is unbounded (all time)."`
-	ThermalUSD float64 `json:"thermalUsd" doc:"What that heat did to the room's climate bill, from config thermal: POSITIVE is extra cooling cost (room above the cooling target), NEGATIVE is heating saved (room below the heating target), 0 between the targets, when a fan cannot cool, or with no thermal config. energyBtu / 100000 x the active cost per therm."`
-
 	// WHAT KIND OF MONEY THIS IS. costUsd alone cannot say, and the two kinds it
 	// mixes are unrelated: energy is kWh × $/kWh on hardware we run, paid spend
 	// is a provider's invoice. See costkind.go.
@@ -1446,9 +1439,8 @@ type UsageRollupOutput struct {
 		CostPerKwh float64 `json:"costPerKwh" doc:"The configured electricity rate, $ per kWh, that energyUsd was computed at. 0 means no rate is configured, so every energy figure is $0 by omission rather than by being small."`
 		// WHICH PAID API THE COMPARISON IS AGAINST. An unattributed "would have
 		// cost $X" is not a claim anybody can check.
-		Thermal      *ThermalView `json:"thermal,omitempty" doc:"The room settings thermalUsd was computed from; absent when no thermal config is set."`
-		Power        *PowerView   `json:"power,omitempty" doc:"Measured energy for the window, from config power; absent when power is not configured. When measured, models on measured cards carry their share of it (energyMeasured) and the rest — idle cards and the rest of the box — is here."`
-		BaselineType string       `json:"baselineType" doc:"The DEFAULT commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. A model with a costEquivalent is priced at that instead; each row's baselineType says which applied. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."`
+		Power        *PowerView `json:"power,omitempty" doc:"Measured energy for the window, from config power; absent when power is not configured. When measured, models on measured cards carry their share of it (energyMeasured) and the rest — idle cards and the rest of the box — is here."`
+		BaselineType string     `json:"baselineType" doc:"The DEFAULT commandCosts type baselineUsd prices against — config costBaseline when it names a paid type, else the cheapest configured paid type by generated-token rate. A model with a costEquivalent is priced at that instead; each row's baselineType says which applied. Empty when no paid type is configured, in which case there is no comparison and every baseline figure is 0."`
 	}
 }
 
@@ -1471,15 +1463,6 @@ func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*Usag
 	for _, p := range perfRows {
 		perfBy[p.Served] = p
 	}
-	// The window's length in hours, for heat per hour; 0 for an unbounded one.
-	windowHours := 0.0
-	if win.FromMS > 0 {
-		to := win.ToMS
-		if to <= 0 {
-			to = time.Now().UnixMilli()
-		}
-		windowHours = float64(to-win.FromMS) / 3_600_000
-	}
 	ctxBy := make(map[string]store.CtxStat, len(ctxRows))
 	for _, c := range ctxRows {
 		ctxBy[c.Served] = c
@@ -1500,7 +1483,6 @@ func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*Usag
 	// measured card gets its share of the card's draw instead of the per-token
 	// estimate; the rest of the measured draw is reported, not charged.
 	pv, measured := h.measurePower(ctx, win)
-	estKwh := map[string]float64{} // a measured model's estimate, to rescale its hourly heat price
 
 	out := &UsageRollupOutput{}
 	out.Body.WindowHours = in.WindowHours
@@ -1544,7 +1526,6 @@ func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*Usag
 				row.EnergyKwh = r.CostUSD / rate
 			}
 			if kwh, ok := measured[r.Served]; ok {
-				estKwh[r.Served] = row.EnergyKwh
 				row.EnergyKwh, row.EnergyUSD, row.CostUSD = kwh, kwh*rate, kwh*rate
 				row.EnergyMeasured = true
 			}
@@ -1652,171 +1633,11 @@ func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*Usag
 	// percentiles is not one.
 	setCtx(&out.Body.Total, ctxTotal)
 	setPerf(&out.Body.Total, perfTotal)
-	th := cfg.ThermalSettings()
-	out.Body.Thermal = thermalView(th, rate)
-	perServed, hst, hourly := h.hourlyThermal(win, th, known, costModel, rate)
-	setHeat(&out.Body.Total, windowHours, th, rate)
-	for i := range out.Body.Rows {
-		setHeat(&out.Body.Rows[i], windowHours, th, rate)
-	}
-	if hourly {
-		// Hour by hour against the cached outdoor temperature replaces the
-		// single-temperature figure setHeat put on every row.
-		out.Body.Total.ThermalUSD = 0
-		for i := range out.Body.Rows {
-			r := &out.Body.Rows[i]
-			r.ThermalUSD = perServed[r.Served]
-			// The hourly pricing weighted the ESTIMATED energy; a measured row
-			// keeps its hour-by-hour shape at its measured size.
-			if est := estKwh[r.Served]; r.EnergyMeasured && est > 0 {
-				r.ThermalUSD *= r.EnergyKwh / est
-			}
-			out.Body.Total.ThermalUSD += r.ThermalUSD
-		}
-		v := out.Body.Thermal
-		switch {
-		case th.HasOutdoorSensor():
-			v.OutdoorSource = "home-assistant"
-		case th.HasLocation():
-			v.OutdoorSource = "open-meteo"
-		}
-		if th.HasRoomSensor() {
-			v.RoomSource = "home-assistant"
-		}
-		v.HoursPriced, v.HoursBlocked, v.HoursNoWeather = hst.HoursPriced, hst.HoursBlocked, hst.HoursNoWeather
-		v.HoursCooling, v.HoursHeating, v.HoursNeutral = hst.HoursCooling, hst.HoursHeating, hst.HoursNeutral
-		v.HoursRoomFallback = hst.HoursRoomFallback
-		v.OutdoorMinF, v.OutdoorMaxF = hst.OutdoorMinF, hst.OutdoorMaxF
-		v.RoomMinF, v.RoomMaxF = hst.RoomMinF, hst.RoomMaxF
-		// "Now": the latest cached readings, and the factor and mode they imply.
-		latestOf := func(loc string) (float64, bool) {
-			if loc == "" {
-				return 0, false
-			}
-			m, err := h.Store.WeatherBetween(loc, time.Now().Add(-2*time.Hour).UnixMilli(), time.Now().UnixMilli())
-			if err != nil {
-				return 0, false
-			}
-			var latest int64
-			var f float64
-			for hr, x := range m {
-				if hr > latest {
-					latest, f = hr, x
-				}
-			}
-			return f, latest > 0
-		}
-		roomNow, outNow := th.RoomF, th.OutdoorF
-		if f, ok := latestOf(th.OutdoorLoc()); ok {
-			v.OutdoorNowF, outNow = f, f
-		}
-		if f, ok := latestOf(th.RoomLoc()); ok {
-			v.RoomNowF, roomNow = f, f
-		}
-		v.Mode = th.ModeAt(roomNow)
-		v.CoolFactorNow, v.CoolBlocked = 0, false
-		if f, ok := th.CoolFactorFor(roomNow, outNow, rate); ok {
-			v.CoolFactorNow = f
-		} else {
-			v.CoolBlocked = true
-		}
-	}
 	if pv != nil {
 		pv.USD = pv.Kwh * rate
-		heat := RollupRow{EnergyKwh: pv.Kwh}
-		setHeat(&heat, windowHours, th, rate)
-		pv.EnergyBTU, pv.HeatBTUh, pv.ThermalUSD = heat.EnergyBTU, heat.HeatBTUh, heat.ThermalUSD
-		// Hour-by-hour pricing weighted the models' energy by the hour it was
-		// drawn in; scale that to the whole draw rather than fall back to one
-		// temperature for the window.
-		if hourly && out.Body.Total.EnergyKwh > 0 {
-			pv.ThermalUSD = out.Body.Total.ThermalUSD * pv.Kwh / out.Body.Total.EnergyKwh
-		}
 		out.Body.Power = pv
 	}
 	return out, nil
-}
-
-// ThermalView is config thermal as the dashboard reads it, with what it
-// implies right now: the mode (from the room temperature) and the effective
-// cooling factor (from the room-to-outdoor gap when cooling is a fan).
-type ThermalView struct {
-	Mode             string  `json:"mode" doc:"cooling | heating | neutral, from the room temperature against the targets."`
-	RoomF            float64 `json:"roomF" doc:"Room (indoor) temperature as entered, °F. Decides the mode."`
-	OutdoorF         float64 `json:"outdoorF" doc:"Outdoor temperature as entered, °F. Decides what fan cooling costs, and whether a fan can cool at all."`
-	CoolTargetF      float64 `json:"coolTargetF" doc:"Cooling target, °F: above it the room is cooled."`
-	CoolCostPerTherm float64 `json:"coolCostPerTherm" doc:"Fixed $ to remove one therm (100,000 BTU), used when no fan is configured."`
-	CoolFanCFM       float64 `json:"coolFanCfm" doc:"Cooling fan airflow, CFM; 0 means cooling is priced by coolCostPerTherm."`
-	CoolFanWatts     float64 `json:"coolFanWatts" doc:"Cooling fan draw, W."`
-	CoolFactorNow    float64 `json:"coolFactorNow" doc:"$ to remove one therm right now: the fixed factor, or the fan's at the current room-to-outdoor gap and electricity rate."`
-	CoolBlocked      bool    `json:"coolBlocked" doc:"True when cooling is a fan and outside is not cooler than the room: the fan cannot remove heat, so the heat raises the room temperature instead of costing money."`
-	HeatTargetF      float64 `json:"heatTargetF" doc:"Heating target, °F: below it the room is heated."`
-	HeatCostPerTherm float64 `json:"heatCostPerTherm" doc:"$ one therm of heat is worth when the room is heated — the marginal source's cost."`
-	Notes            string  `json:"notes" doc:"Free text kept about the settings."`
-
-	// HOURLY, when a location is set: the outdoor temperature comes from the
-	// weather cache hour by hour, and cooling is priced per hour.
-	Latitude       float64 `json:"latitude" doc:"Location for hourly outdoor weather; 0,0 means none (outdoorF is used)."`
-	Longitude      float64 `json:"longitude" doc:"See latitude."`
-	OutdoorSource  string  `json:"outdoorSource" doc:"home-assistant (a house sensor) or open-meteo when outdoor temperatures were hourly; manual when the single outdoorF was used."`
-	OutdoorNowF    float64 `json:"outdoorNowF" doc:"Latest cached outdoor temperature (within the last 2 h), °F; 0 when none."`
-	OutdoorMinF    float64 `json:"outdoorMinF" doc:"Lowest outdoor temperature over the window's hours that carried heat, °F."`
-	OutdoorMaxF    float64 `json:"outdoorMaxF" doc:"Highest, °F."`
-	HoursPriced    int     `json:"hoursPriced" doc:"Hours of the window that carried a cooling cost or heating saving."`
-	HoursBlocked   int     `json:"hoursBlocked" doc:"Hours a fan could not cool because outside was not cooler than the room — that heat raised the room instead of a bill."`
-	HoursNoWeather int     `json:"hoursNoWeather" doc:"Hours with heat but no cached weather; priced at outdoorF when set, else left out."`
-
-	// HOURLY ROOM, when a Home Assistant sensor is set: each hour's room
-	// temperature decides that hour's mode.
-	HomeAssistantURL  string  `json:"homeAssistantUrl" doc:"Home Assistant base URL; empty when none."`
-	RoomEntity        string  `json:"roomEntity" doc:"Room temperature sensor's entity id (a room, or a whole-home aggregate)."`
-	OutdoorEntity     string  `json:"outdoorEntity" doc:"Outdoor temperature sensor's entity id; empty when outdoor comes from the weather service or the manual reading."`
-	RoomSource        string  `json:"roomSource" doc:"home-assistant when hours took the room temperature from the sensor; manual when roomF was used."`
-	RoomNowF          float64 `json:"roomNowF" doc:"Latest cached room reading (within 2 h), °F; 0 when none."`
-	RoomMinF          float64 `json:"roomMinF" doc:"Lowest hourly room temperature over the window's hours with heat, °F."`
-	RoomMaxF          float64 `json:"roomMaxF" doc:"Highest, °F."`
-	HoursCooling      int     `json:"hoursCooling" doc:"Hours with heat whose room temperature was above the cooling target."`
-	HoursHeating      int     `json:"hoursHeating" doc:"Hours with heat whose room temperature was below the heating target."`
-	HoursNeutral      int     `json:"hoursNeutral" doc:"Hours with heat between the targets."`
-	HoursRoomFallback int     `json:"hoursRoomFallback" doc:"Hours with heat the room sensor had no reading for; roomF stood in."`
-}
-
-func thermalView(t *config.Thermal, costPerKwh float64) *ThermalView {
-	if t == nil {
-		return nil
-	}
-	f, ok := t.CoolFactor(costPerKwh)
-	v := &ThermalView{Mode: t.Mode(), RoomF: t.RoomF, OutdoorF: t.OutdoorF, CoolTargetF: t.CoolTargetF,
-		CoolCostPerTherm: t.CoolCostPerTherm, CoolFanCFM: t.CoolFanCFM, CoolFanWatts: t.CoolFanWatts,
-		CoolFactorNow: f, CoolBlocked: !ok, HeatTargetF: t.HeatTargetF, HeatCostPerTherm: t.HeatCostPerTherm, Notes: t.Notes,
-		Latitude: t.Latitude, Longitude: t.Longitude, OutdoorSource: "manual", RoomSource: "manual"}
-	if t.HomeAssistant != nil {
-		v.HomeAssistantURL, v.RoomEntity, v.OutdoorEntity = t.HomeAssistant.URL, t.HomeAssistant.RoomEntity, t.HomeAssistant.OutdoorEntity
-	}
-	return v
-}
-
-// btuPerTherm is the unit the thermal cost factors are priced in.
-const btuPerTherm = 100_000
-
-// btuPerKwh converts electrical energy to heat: all of it ends up in the room.
-const btuPerKwh = 3412.14
-
-func setHeat(row *RollupRow, windowHours float64, th *config.Thermal, costPerKwh float64) {
-	row.EnergyBTU = row.EnergyKwh * btuPerKwh
-	if windowHours > 0 {
-		row.HeatBTUh = row.EnergyBTU / windowHours
-	}
-	switch th.Mode() {
-	case "cooling":
-		// A fan that cannot cool (outside warmer than the room) prices nothing:
-		// the heat raises the room temperature rather than a bill.
-		if f, ok := th.CoolFactor(costPerKwh); ok {
-			row.ThermalUSD = row.EnergyBTU / btuPerTherm * f
-		}
-	case "heating":
-		row.ThermalUSD = -row.EnergyBTU / btuPerTherm * th.HeatCostPerTherm
-	}
 }
 
 // PrefillBucketRow is raw prefill over the requests in one new-token range.

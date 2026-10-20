@@ -428,10 +428,9 @@ func TestUsageRollupPricesCostEquivalent(t *testing.T) {
 	near(t, "total baseline", out.Body.Total.BaselineUSD, 0.53+1.59+0.53)
 }
 
-// TestUsageRollupHeatAndPerf: heat is metered energy x 3412.14 BTU/kWh,
-// averaged over the window for BTU/h, and the per-request speed distributions
-// are recomputed on the total rather than left unset.
-func TestUsageRollupHeatAndPerf(t *testing.T) {
+// TestUsageRollupPerf: the per-request speed distributions are recomputed on
+// the total rather than left unset.
+func TestUsageRollupPerf(t *testing.T) {
 	st := openTestStore(t)
 	now := time.Now()
 	must(t, st.InsertActivity(store.Activity{
@@ -444,14 +443,6 @@ func TestUsageRollupHeatAndPerf(t *testing.T) {
 		t.Fatal(err)
 	}
 	tot := out.Body.Total
-	// $0.35 at $0.14/kWh = 2.5 kWh = 8530.35 BTU, over a 2 h window.
-	near(t, "energyBtu", tot.EnergyBTU, 2.5*3412.14)
-	// The handler measures the window to a fresh "now", milliseconds after the
-	// 2 h start was fixed, so BTU/h is a hair under the exact figure: compare
-	// relatively, not to 1e-9.
-	if want := 2.5 * 3412.14 / 2; math.Abs(tot.HeatBTUh-want)/want > 1e-4 {
-		t.Errorf("heatBtuPerHour = %v, want ≈%v", tot.HeatBTUh, want)
-	}
 	if tot.TgN != 1 || tot.TgAvg != 100 || tot.TpAvg != 800 || tot.CacheN != 1 || tot.CacheAvg != 0.5 {
 		t.Errorf("total perf = tg %d/%v tp %v cache %d/%v", tot.TgN, tot.TgAvg, tot.TpAvg, tot.CacheN, tot.CacheAvg)
 	}
@@ -478,119 +469,5 @@ func TestUnknownModelWithoutTokensIsNotServed(t *testing.T) {
 	}
 	if got := by["removed-model"].BaselineExcluded; got != ExcludeUnknownModel {
 		t.Errorf("removed-model (served tokens) = %q, want unknown-model", got)
-	}
-}
-
-// TestUsageRollupThermal: heat priced by the ROOM's mode — a positive cooling
-// cost above the cooling target (a fan's from the room-to-outdoor gap, nothing
-// when it cannot cool), a negative (saved) figure below the heating target,
-// nothing between.
-func TestUsageRollupThermal(t *testing.T) {
-	st := openTestStore(t)
-	must(t, st.InsertActivity(store.Activity{TS: time.Now().UnixMilli(), Served: "local-chat", Status: 200,
-		PromptTokens: 1000, CompletionTokens: 100, CostUSD: 0.35})) // 2.5 kWh = 8530.35 BTU
-	const btu = 8530.35
-	fanAt10 := 100000 / (1.08 * 2000 * 10) * 75.0 / 1000 * 0.14 // $/therm at a 10°F gap
-	for _, c := range []struct {
-		name string
-		th   config.Thermal
-		mode string
-		usd  float64
-	}{
-		{"fixed cooling", config.Thermal{RoomF: 80, CoolTargetF: 72, CoolCostPerTherm: 0.10, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "cooling", btu / 100000 * 0.10},
-		{"fan, 10°F gap", config.Thermal{RoomF: 77, OutdoorF: 67, CoolTargetF: 72, CoolFanCFM: 2000, CoolFanWatts: 75, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "cooling", btu / 100000 * fanAt10},
-		{"fan, warmer outside", config.Thermal{RoomF: 77, OutdoorF: 85, CoolTargetF: 72, CoolFanCFM: 2000, CoolFanWatts: 75, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "cooling", 0},
-		{"heating", config.Thermal{RoomF: 60, CoolTargetF: 72, CoolCostPerTherm: 0.10, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "heating", -btu / 100000 * 4.10},
-		{"between", config.Thermal{RoomF: 70, CoolTargetF: 72, CoolCostPerTherm: 0.10, HeatTargetF: 68, HeatCostPerTherm: 4.10}, "neutral", 0},
-	} {
-		cfg := costFixtureConfig()
-		th := c.th
-		cfg.Thermal = &th
-		out, err := (&Handlers{Store: st, Cfg: cfg}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 1})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if out.Body.Thermal == nil || out.Body.Thermal.Mode != c.mode {
-			t.Errorf("%s: thermal = %+v, want mode %s", c.name, out.Body.Thermal, c.mode)
-		}
-		near(t, "thermalUsd, "+c.name, out.Body.Total.ThermalUSD, c.usd)
-	}
-}
-
-// TestSetThermalRejectsBadTargets: the heating target must be below the
-// cooling one, and both are required — rejected before the config is touched.
-func TestSetThermalRejectsBadTargets(t *testing.T) {
-	h := &Handlers{}
-	for _, b := range []struct{ heat, cool float64 }{{72, 68}, {70, 70}, {0, 72}} {
-		in := &SetThermalInput{}
-		in.Body.HeatTargetF, in.Body.CoolTargetF = b.heat, b.cool
-		if _, err := h.SetThermal(context.Background(), in); err == nil {
-			t.Errorf("heat %v / cool %v accepted, want a 400", b.heat, b.cool)
-		}
-	}
-}
-
-// TestUsageRollupThermalHourly: with a location, cooling is priced hour by
-// hour at each hour's cached outdoor temperature — an hour warmer outside than
-// the room is blocked (no cost), an hour with no weather falls back to the
-// manual outdoor reading.
-func TestUsageRollupThermalHourly(t *testing.T) {
-	st := openTestStore(t)
-	base := (time.Now().Add(-3*time.Hour).UnixMilli() / 3_600_000) * 3_600_000
-	const h = int64(3_600_000)
-	for i := int64(0); i < 3; i++ {
-		must(t, st.InsertActivity(store.Activity{TS: base + i*h + 60_000, Served: "local-chat", Status: 200,
-			PromptTokens: 100, CompletionTokens: 10, CostUSD: 0.14})) // 1 kWh = 3412.14 BTU each hour
-	}
-	th := &config.Thermal{RoomF: 77, OutdoorF: 72, Latitude: 47.61, Longitude: -122.33,
-		CoolTargetF: 72, CoolFanCFM: 2000, CoolFanWatts: 75, HeatTargetF: 68, HeatCostPerTherm: 4.10}
-	must(t, st.UpsertWeather(th.Loc(), map[int64]float64{base: 67, base + h: 80})) // hour 3 has no weather
-	cfg := costFixtureConfig()
-	cfg.Thermal = th
-	out, err := (&Handlers{Store: st, Cfg: cfg}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fan := func(gap float64) float64 { return 100000 / (1.08 * 2000 * gap) * 75.0 / 1000 * 0.14 }
-	// hour 1: 10°F gap; hour 2: blocked; hour 3: manual 72°F → 5°F gap.
-	want := 3412.14/100000*fan(10) + 3412.14/100000*fan(5)
-	near(t, "hourly thermalUsd", out.Body.Total.ThermalUSD, want)
-	v := out.Body.Thermal
-	if v.OutdoorSource != "open-meteo" || v.HoursPriced != 2 || v.HoursBlocked != 1 || v.HoursNoWeather != 1 ||
-		v.OutdoorMinF != 67 || v.OutdoorMaxF != 80 {
-		t.Errorf("thermal view = %+v", v)
-	}
-}
-
-// TestUsageRollupThermalRoomSensor: with a Home Assistant room sensor each
-// hour takes its own room temperature and so its own mode — a warm afternoon
-// hour costs cooling, a cold night hour saves heating, an hour the sensor
-// missed falls back to the manual roomF.
-func TestUsageRollupThermalRoomSensor(t *testing.T) {
-	st := openTestStore(t)
-	base := (time.Now().Add(-3*time.Hour).UnixMilli() / 3_600_000) * 3_600_000
-	const h = int64(3_600_000)
-	for i := int64(0); i < 3; i++ {
-		must(t, st.InsertActivity(store.Activity{TS: base + i*h + 60_000, Served: "local-chat", Status: 200,
-			PromptTokens: 100, CompletionTokens: 10, CostUSD: 0.14})) // 1 kWh = 3412.14 BTU each hour
-	}
-	th := &config.Thermal{RoomF: 70, OutdoorF: 60, CoolTargetF: 72, CoolFanCFM: 2000, CoolFanWatts: 75,
-		HeatTargetF: 68, HeatCostPerTherm: 4.10,
-		HomeAssistant: &config.HomeAssistant{URL: "http://ha", Token: "${HA_TOKEN}", RoomEntity: "sensor.office"}}
-	must(t, st.UpsertWeather(th.RoomLoc(), map[int64]float64{base: 77, base + h: 64})) // hour 3: no reading → 70 (neutral)
-	cfg := costFixtureConfig()
-	cfg.Thermal = th
-	out, err := (&Handlers{Store: st, Cfg: cfg}).UsageRollup(context.Background(), &UsageRollupInput{WindowHours: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fan := func(gap float64) float64 { return 100000 / (1.08 * 2000 * gap) * 75.0 / 1000 * 0.14 }
-	// hour 1: room 77, outdoor 60 (manual) → cooling at a 17°F gap; hour 2: room 64 → heating saves.
-	want := 3412.14/100000*fan(17) - 3412.14/100000*4.10
-	near(t, "room-sensor thermalUsd", out.Body.Total.ThermalUSD, want)
-	v := out.Body.Thermal
-	if v.RoomSource != "home-assistant" || v.HoursCooling != 1 || v.HoursHeating != 1 || v.HoursNeutral != 1 ||
-		v.HoursRoomFallback != 1 || v.RoomMinF != 64 || v.RoomMaxF != 77 {
-		t.Errorf("thermal view = %+v", v)
 	}
 }
