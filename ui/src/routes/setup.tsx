@@ -9,6 +9,8 @@ import { ProviderBudgets, RefusingBanner } from '@/SetupBudgets'
 import { HistoryPanels } from '@/SetupHistory'
 import { WarningSettings } from '@/WarningControls'
 import { AddModelDialog } from '@/AddModelDialog'
+import { AccessTab } from '@/SetupAccess'
+import { useReadOnly } from '@/auth'
 
 /**
  * Setup: five questions, five tabs, one page.
@@ -37,6 +39,9 @@ import { AddModelDialog } from '@/AddModelDialog'
  *              The panel itself shows a setting only while it is holding a
  *              warning back, so this is the one place they are all listed.
  *   History    what changed, and the undo.
+ *   Access     who may sign in, with what role, through which provider, and
+ *              whether the admin token is still accepted. Admin only, so it is
+ *              not offered to a viewer.
  *
  * History used to be rendered FIRST on the scroll, because "is this something I
  * did" is why people open this page when something is wrong (OB-11, Lenny run
@@ -57,6 +62,7 @@ import { AddModelDialog } from '@/AddModelDialog'
 const TABS = [
   { key: 'providers', label: 'Providers' },
   { key: 'models', label: 'Models' },
+  { key: 'access', label: 'Access' },
   { key: 'budgets', label: 'Budgets' },
   { key: 'warnings', label: 'Warnings' },
   { key: 'history', label: 'History' },
@@ -71,7 +77,9 @@ function isTab(v: string | undefined): v is TabKey {
 function SetupPage() {
   const navigate = useNavigate()
   const { tab: tabParam } = Route.useSearch()
-  const tab: TabKey = isTab(tabParam) ? tabParam : 'providers'
+  const readOnly = useReadOnly()
+  const tabs = TABS.filter((t) => !(readOnly && t.key === 'access'))
+  const tab: TabKey = isTab(tabParam) && tabs.some((t) => t.key === tabParam) ? tabParam : 'providers'
   // Replaces rather than pushes: a tab is where you ARE on this page, not a
   // place you went, and eight tab clicks should not be eight presses of Back to
   // leave the page.
@@ -90,6 +98,7 @@ function SetupPage() {
           size="small"
           variant="contained"
           startIcon={<AddIcon />}
+          disabled={readOnly}
           onClick={() => {
             setAddTo('')
             goTab('providers')
@@ -97,11 +106,11 @@ function SetupPage() {
         >
           Add provider
         </Button>
-        <Button size="small" variant="outlined" startIcon={<AddIcon />} onClick={() => setAddModel(true)}>
+        <Button size="small" variant="outlined" startIcon={<AddIcon />} disabled={readOnly} onClick={() => setAddModel(true)}>
           Add model
         </Button>
         <Typography variant="body2" sx={{ opacity: 0.75 }}>
-          Changes apply to the next request.
+          {readOnly ? 'Read-only: your role cannot change settings.' : 'Changes apply to the next request.'}
         </Typography>
       </PageHeader>
       <AddModelDialog open={addModel} onClose={() => setAddModel(false)} />
@@ -110,7 +119,7 @@ function SetupPage() {
       <RefusingBanner />
 
       <Tabs value={tab} onChange={(_, v: TabKey) => goTab(v)} sx={{ mb: 1 }}>
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <Tab key={t.key} value={t.key} label={t.label} />
         ))}
       </Tabs>
@@ -119,6 +128,7 @@ function SetupPage() {
           polling, and Budgets polls every four seconds. */}
       {tab === 'providers' && <ProvidersTab addTo={addTo} onAddTo={setAddTo} />}
       {tab === 'models' && <ModelsTab />}
+      {tab === 'access' && <AccessTab />}
       {tab === 'budgets' && <ProviderBudgets />}
       {tab === 'warnings' && <WarningSettings />}
       {tab === 'history' && <HistoryPanels />}

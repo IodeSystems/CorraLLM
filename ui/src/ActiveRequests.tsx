@@ -17,6 +17,7 @@ import { gqlClient } from '@/gqlClient'
 import { Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtDuration, fmtInt } from '@/format'
+import { useReadOnly } from '@/auth'
 
 // Live in-flight requests. The activity log holds only FINISHED requests, so a
 // long completion, a cold load, or a request queued behind a saturated backend
@@ -108,6 +109,7 @@ export function ActiveRequests({ compact = false }: { compact?: boolean } = {}) 
   }, [])
 
   const qc = useQueryClient()
+  const readOnly = useReadOnly()
   const cancel = useMutation({
     mutationFn: (id: string) => gqlClient.request(CancelDoc, { id }),
     onSettled: () => qc.invalidateQueries({ queryKey: ['active'] }),
@@ -236,7 +238,7 @@ export function ActiveRequests({ compact = false }: { compact?: boolean } = {}) 
                       <Button
                         size="small"
                         color="error"
-                        disabled={cancel.isPending}
+                        disabled={cancel.isPending || readOnly}
                         onClick={() => cancel.mutate(String(r.id))}
                       >
                         Cancel

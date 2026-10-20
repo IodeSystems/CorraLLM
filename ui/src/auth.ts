@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 
 // Admin-token handling for the dashboard. The token is stored in localStorage
 // (sent as a Bearer header on GraphQL requests) AND mirrored into a cookie so
@@ -76,13 +77,29 @@ export function useAuthGate(): Gate {
 }
 
 // SSO state from /auth/whoami: whether the server has an OIDC provider
-// configured, and whose session this browser holds (if any).
-export type WhoAmI = { oidc: boolean; email?: string }
+// configured, whose session this browser holds (if any), its role, and whether
+// the admin token is accepted at all. The admin token reports role admin with
+// no email.
+export type Role = 'admin' | 'viewer'
+export type WhoAmI = { oidc: boolean; email?: string; role?: Role; adminToken: 'enabled' | 'disabled' }
 
 export function fetchWhoAmI(): Promise<WhoAmI> {
   return fetch('/auth/whoami', { cache: 'no-store' })
     .then((r) => (r.ok ? r.json() : { oidc: false }))
-    .then((d) => ({ oidc: d?.oidc === true, email: typeof d?.email === 'string' ? d.email : undefined }))
+    .then((d) => ({
+      oidc: d?.oidc === true,
+      email: typeof d?.email === 'string' ? d.email : undefined,
+      role: d?.role === 'admin' || d?.role === 'viewer' ? d.role : undefined,
+      adminToken: d?.adminToken === 'disabled' ? 'disabled' : 'enabled',
+    }))
+}
+
+// useReadOnly is true for a viewer session. The server refuses their writes
+// regardless; this only keeps the UI from offering buttons that would 403.
+// Unknown (loading, --insecure, admin token) reads as not read-only.
+export function useReadOnly(): boolean {
+  const { data } = useQuery({ queryKey: ['whoami'], queryFn: fetchWhoAmI, staleTime: 60_000 })
+  return data?.role === 'viewer'
 }
 
 // signOut ends both kinds of sign-in this browser may hold: the admin token in

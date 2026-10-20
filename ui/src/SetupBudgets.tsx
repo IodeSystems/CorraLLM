@@ -31,6 +31,7 @@ import {
   type PauseCost,
 } from '@/Pause'
 import { DisableDialog, disableCost, useSetDisabled } from '@/Disable'
+import { useReadOnly } from '@/auth'
 
 /**
  * Free-tier quota ledger (P16): each remote backend's remaining rate-limit
@@ -297,6 +298,7 @@ type PauseTarget = {
  * disappears the moment the decision is made.
  */
 export function RefusingBanner() {
+  const readOnly = useReadOnly()
   const qc = useQueryClient()
   const q = useLedger(20000)
   const refusing = q.data?.corrallm?.quotaLedger?.refusing ?? []
@@ -448,7 +450,7 @@ export function RefusingBanner() {
                     size="small"
                     variant="outlined"
                     color="success"
-                    disabled={busy}
+                    disabled={busy || readOnly}
                     onClick={() => unpause.mutate(r.backend)}
                     sx={{ minWidth: 190, justifyContent: 'center' }}
                   >
@@ -477,7 +479,7 @@ export function RefusingBanner() {
                   <Button
                     size="small"
                     variant="outlined"
-                    disabled={busy || ctx.isLoading}
+                    disabled={busy || ctx.isLoading || readOnly}
                     onClick={() =>
                       setOutTarget({ name: r.backend, cost: disableCost(r.backend, lanes, alreadyOut) })
                     }
@@ -509,7 +511,7 @@ export function RefusingBanner() {
                     size="small"
                     variant="outlined"
                     color="warning"
-                    disabled={busy || ctx.isLoading}
+                    disabled={busy || ctx.isLoading || readOnly}
                     onClick={() =>
                       setTarget({
                         name: r.backend,
@@ -547,7 +549,7 @@ export function RefusingBanner() {
                   <Button
                     size="small"
                     variant="outlined"
-                    disabled={busy || ctx.isLoading}
+                    disabled={busy || ctx.isLoading || readOnly}
                     onClick={() =>
                       setOutTarget({ name: r.backend, cost: disableCost(r.backend, lanes, alreadyOut) })
                     }

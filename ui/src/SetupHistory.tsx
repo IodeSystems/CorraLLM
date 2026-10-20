@@ -19,6 +19,7 @@ import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
 import { extractMessage } from '@/format'
 import { Pager, usePaging } from '@/Paging'
+import { useReadOnly } from '@/auth'
 
 /**
  * Configuration history — what changed, when, and how to get it back.
@@ -93,6 +94,7 @@ function fmtBytes(n: number): string {
  * sits under Setup with the things whose changes it records.
  */
 export function HistoryPanels() {
+  const readOnly = useReadOnly()
   const qc = useQueryClient()
   const [viewing, setViewing] = useState<string | null>(null)
   const [confirming, setConfirming] = useState<{ id: string; note: string } | null>(null)
@@ -230,7 +232,7 @@ export function HistoryPanels() {
                   still appends a revision, which is noise in the one place
                   meant to explain what happened. */}
               {!r.current && (
-                <Button
+                <Button disabled={readOnly}
                   size="small"
                   onClick={() => setConfirming({ id: String(r.id), note: r.note ?? '' })}
                 >

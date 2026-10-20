@@ -13,6 +13,7 @@ import { C } from '@/theme'
 import { Loading } from '@/Loading'
 import { FilterField, matches } from '@/Paging'
 import { byExtension, useSetupData, type ProviderRow } from '@/SetupData'
+import { useReadOnly } from '@/auth'
 
 /**
  * Providers (P21): an upstream endpoint and the accounts held against it.
@@ -58,6 +59,7 @@ export function ProvidersTab(props: {
   addTo: string | null
   onAddTo: (v: string | null) => void
 }) {
+  const readOnly = useReadOnly()
   const { addTo, onAddTo } = props
   const [edit, setEdit] = useState<ProviderInitial | null>(null)
   const [browse, setBrowse] = useState<{ provider: string; credential: string } | null>(null)
@@ -124,7 +126,7 @@ export function ProvidersTab(props: {
             {all.length > 6 && (
               <FilterField value={q} onChange={setQ} placeholder="extension, provider, host" />
             )}
-            <Button size="small" variant="outlined" onClick={() => setEditing(blankExtension())}>
+            <Button disabled={readOnly} size="small" variant="outlined" onClick={() => setEditing(blankExtension())}>
               Add extension
             </Button>
           </>
@@ -204,7 +206,7 @@ export function ProvidersTab(props: {
                     for it; asked here, the click is the answer. The global
                     button in the page header still exists for "I do not know
                     yet". */}
-                <Button
+                <Button disabled={readOnly}
                   size="small"
                   onClick={(e) => {
                     e.stopPropagation() // the row itself opens the extension editor
@@ -321,7 +323,7 @@ export function ProvidersTab(props: {
                             pinned by name regardless of what the catalogue says
                             today. */}
                         <Tooltip title="Declare a model of this provider by hand, instead of choosing one off its directory.">
-                          <Button
+                          <Button disabled={readOnly}
                             size="small"
                             startIcon={<AddIcon />}
                             onClick={() => setAddLocal({ provider: p.name, extension: p.extension })}
@@ -329,7 +331,7 @@ export function ProvidersTab(props: {
                             Model
                           </Button>
                         </Tooltip>
-                        <Button size="small" onClick={() => setEdit(toInitial(p))}>
+                        <Button disabled={readOnly} size="small" onClick={() => setEdit(toInitial(p))}>
                           Edit
                         </Button>
                       </Stack>

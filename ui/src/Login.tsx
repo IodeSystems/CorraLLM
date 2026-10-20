@@ -19,9 +19,15 @@ export function Login() {
   // SSO is offered only when the server has a provider configured; otherwise
   // this screen is the admin-token form alone, as it always was.
   const [sso, setSso] = useState(false)
+  // A disabled admin token is refused by /api, so the form for it is hidden
+  // and SSO is the only way in.
+  const [tokenOff, setTokenOff] = useState(false)
   useEffect(() => {
     fetchWhoAmI()
-      .then((w) => setSso(w.oidc))
+      .then((w) => {
+        setSso(w.oidc)
+        setTokenOff(w.adminToken === 'disabled')
+      })
       .catch(() => setSso(false))
   }, [])
   useEffect(() => {
@@ -46,9 +52,13 @@ export function Login() {
               <Button variant="contained" size="large" href="/auth/login">
                 Sign in with SSO
               </Button>
-              <Divider sx={{ color: C.textMuted, fontSize: 12 }}>or use the admin token</Divider>
+              {!tokenOff && (
+                <Divider sx={{ color: C.textMuted, fontSize: 12 }}>or use the admin token</Divider>
+              )}
             </>
           )}
+          {!tokenOff && (
+          <>
           <Typography variant="body2" sx={{
             color: "text.secondary"
           }}>
@@ -85,6 +95,8 @@ export function Login() {
           <Button variant={sso ? 'outlined' : 'contained'} onClick={submit} disabled={!val.trim()}>
             Sign in
           </Button>
+          </>
+          )}
           {/* FOR THE PERSON WHO IS NOT THE OPERATOR.
               This page is everything a caller can reach: every /api/ route is
               gated on the admin token alone, so an API key gets 401 here and

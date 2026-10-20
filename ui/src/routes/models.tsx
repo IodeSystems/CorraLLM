@@ -19,6 +19,7 @@ import { gqlClient } from '@/gqlClient'
 import { Panel, PageHeader, Row, Stat } from '@/Panel'
 import { C } from '@/theme'
 import { fmtInt, fmtTime } from '@/format'
+import { useReadOnly } from '@/auth'
 import { Loading } from '@/Loading'
 import { PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost, PauseCostNote } from '@/Pause'
 import { useSetDisabled } from '@/Disable'
@@ -205,7 +206,10 @@ function ResidencyToggle(props: {
   onLoad: () => void
   onUnload: () => void
 }) {
-  const { state, persistent, paused, stopping, busy, onLoad, onUnload } = props
+  const { state, persistent, paused, stopping, onLoad, onUnload } = props
+  // A viewer's load or unload would be refused; the buttons stay, inert.
+  const readOnly = useReadOnly()
+  const busy = props.busy || readOnly
   const inFlight = state === 'loading' || state === 'evicting'
   const resident = state === 'ready'
 

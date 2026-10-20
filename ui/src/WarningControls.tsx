@@ -15,6 +15,7 @@ import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
+import { useReadOnly } from '@/auth'
 
 /**
  * WHAT THE OPERATOR SAID ABOUT A WARNING: hide it for a while, or raise it only
@@ -142,11 +143,12 @@ const SUPPRESS_FOR = [
  * of the working day, short enough that a problem nobody fixed comes back.
  */
 export function SuppressButton({ kind, subject }: { kind: WarningKind; subject?: string }) {
+  const readOnly = useReadOnly()
   const { suppress } = useWarningMutations()
   const [anchor, setAnchor] = useState<HTMLElement | null>(null)
   return (
     <>
-      <ButtonGroup size="small" variant="text" disabled={suppress.isPending}>
+      <ButtonGroup size="small" variant="text" disabled={suppress.isPending || readOnly}>
         <Button onClick={() => suppress.mutate({ kind, subject, minutes: 24 * 60 })}>
           {suppress.isPending ? 'Hiding…' : 'Hide for 1 day'}
         </Button>
@@ -231,6 +233,7 @@ export function ThresholdButton({
   minExclusive?: boolean
   step?: number
 }) {
+  const readOnly = useReadOnly()
   const { setThreshold } = useWarningMutations()
   const [open, setOpen] = useState(false)
   const [value, setValue] = useState(String(current))
@@ -239,7 +242,7 @@ export function ThresholdButton({
     value.trim() !== '' && Number.isFinite(n) && (minExclusive ? n > min : n >= min)
   if (!open) {
     return (
-      <Button
+      <Button disabled={readOnly}
         size="small"
         variant="text"
         onClick={() => {
@@ -272,7 +275,7 @@ export function ThresholdButton({
       <Button
         size="small"
         variant="outlined"
-        disabled={!valid || setThreshold.isPending}
+        disabled={!valid || setThreshold.isPending || readOnly}
         onClick={() =>
           setThreshold.mutate({ kind, threshold: n }, { onSuccess: () => setOpen(false) })
         }
@@ -283,7 +286,7 @@ export function ThresholdButton({
         <Button
           size="small"
           variant="text"
-          disabled={setThreshold.isPending}
+          disabled={setThreshold.isPending || readOnly}
           onClick={() =>
             setThreshold.mutate({ kind, threshold: 0 }, { onSuccess: () => setOpen(false) })
           }
@@ -318,6 +321,7 @@ const KIND_NAME: Record<string, string> = {
  * list a raised threshold could only be undone through the API.
  */
 export function HiddenWarnings({ prefs }: { prefs: readonly WarningPref[] }) {
+  const readOnly = useReadOnly()
   const { suppress, setThreshold } = useWarningMutations()
   const hidden = prefs.filter((p) => p.suppressed)
   const tuned = prefs.filter((p) => p.threshold > 0)
@@ -354,7 +358,7 @@ export function HiddenWarnings({ prefs }: { prefs: readonly WarningPref[] }) {
           <Button
             size="small"
             variant="text"
-            disabled={busy}
+            disabled={busy || readOnly}
             onClick={() =>
               suppress.mutate({ kind: p.kind as WarningKind, subject: p.subject, lift: true })
             }
@@ -370,7 +374,7 @@ export function HiddenWarnings({ prefs }: { prefs: readonly WarningPref[] }) {
           <Button
             size="small"
             variant="text"
-            disabled={busy}
+            disabled={busy || readOnly}
             onClick={() => setThreshold.mutate({ kind: p.kind as WarningKind, threshold: 0 })}
           >
             {resetLabel(p.kind as WarningKind)}
@@ -397,6 +401,7 @@ const TUNABLE: { kind: WarningKind; minExclusive?: boolean; min?: number; step?:
  * whether or not anything is being held back right now.
  */
 export function WarningSettings() {
+  const readOnly = useReadOnly()
   const prefs = useWarningPrefs()
   const { suppress } = useWarningMutations()
   if (prefs.isLoading) {
@@ -475,7 +480,7 @@ export function WarningSettings() {
               <Button
                 size="small"
                 variant="text"
-                disabled={suppress.isPending}
+                disabled={suppress.isPending || readOnly}
                 onClick={() =>
                   suppress.mutate({ kind: p.kind as WarningKind, subject: p.subject, lift: true })
                 }

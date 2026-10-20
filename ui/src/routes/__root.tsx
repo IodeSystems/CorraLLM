@@ -110,6 +110,10 @@ function AccountMenu() {
   if (!label) return null
   return (
     <>
+      {/* The server refuses a viewer's writes; this says so before a click. */}
+      {who?.role === 'viewer' && (
+        <Chip size="small" label="Read-only" variant="outlined" sx={{ color: 'inherit', borderColor: 'currentColor' }} />
+      )}
       <Button
         size="small"
         onClick={(e) => setAnchor(e.currentTarget)}
@@ -121,6 +125,12 @@ function AccountMenu() {
         </Box>
       </Button>
       <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
+        <MenuItem disabled sx={{ '&.Mui-disabled': { opacity: 1 }, flexDirection: 'column', alignItems: 'flex-start' }}>
+          <Typography variant="body2">{who?.email ?? 'Admin token'}</Typography>
+          <Typography variant="caption" sx={{ color: C.textMuted }}>
+            {who?.role === 'viewer' ? 'Viewer: read-only' : 'Admin'}
+          </Typography>
+        </MenuItem>
         <MenuItem onClick={() => void signOut()}>Sign out</MenuItem>
       </Menu>
     </>

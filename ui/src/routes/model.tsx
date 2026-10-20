@@ -54,6 +54,7 @@ import { BenchProbeDetail } from '@/BenchProbeDetail'
 import { PauseCostNote, PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost } from '@/Pause'
 import { ModelSummary } from '@/ModelSummary'
 import { stateLabel } from '@/MachineData'
+import { useReadOnly } from '@/auth'
 
 // --- data ---------------------------------------------------------------
 
@@ -319,6 +320,7 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
     void qc.invalidateQueries({ queryKey: ['overview'] })
   }
   const pauseFail = (e: unknown) => setPauseMsg({ ok: false, text: String(e) })
+  const readOnly = useReadOnly()
   const pause = useMutation({
     mutationFn: (v: { resumeAt: string | null; reason: string }) =>
       gqlClient.request(PauseModelDoc, { model: name, resumeAt: v.resumeAt, reason: v.reason }),
@@ -399,7 +401,7 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
             size="small"
             variant="outlined"
             color="success"
-            disabled={unpause.isPending}
+            disabled={unpause.isPending || readOnly}
             onClick={() => unpause.mutate()}
           >
             Resume
@@ -410,7 +412,7 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
               size="small"
               variant="outlined"
               color="warning"
-              disabled={pause.isPending}
+              disabled={pause.isPending || readOnly}
               onClick={() => setPauseOpen(true)}
             >
               Pause
@@ -551,6 +553,7 @@ function InfoTab({
     qcp.invalidateQueries({ queryKey: ['modelConsole'] })
     qcp.invalidateQueries({ queryKey: ['modelProfile'] })
   }
+  const readOnly = useReadOnly()
   const probePlacement = useMutation({
     mutationFn: (model: string) =>
       gqlClient.request(ProbePlacementDoc, { name: model, apply: true }),
@@ -676,7 +679,7 @@ function InfoTab({
 
                   What they cost is in the info tooltip beside them. */}
               <Box sx={{ display: 'flex', gap: 1, mt: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
-                <Button size="small" variant="outlined" onClick={() => probePlacement.mutate(name)}>
+                <Button size="small" variant="outlined" disabled={readOnly} onClick={() => probePlacement.mutate(name)}>
                   {probePlacement.isPending ? 'Probing…' : pl?.probed ? 'Re-probe' : 'Probe'}
                 </Button>
                 {pl?.state === 'ready' ? (
@@ -684,12 +687,13 @@ function InfoTab({
                     size="small"
                     variant="outlined"
                     color="warning"
+                    disabled={readOnly}
                     onClick={() => unloadPlacement.mutate(name)}
                   >
                     Unload
                   </Button>
                 ) : (
-                  <Button size="small" variant="outlined" onClick={() => loadPlacement.mutate(name)}>
+                  <Button size="small" variant="outlined" disabled={readOnly} onClick={() => loadPlacement.mutate(name)}>
                     Load
                   </Button>
                 )}

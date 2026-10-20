@@ -27,6 +27,7 @@ import { C } from '@/theme'
 import { Loading } from '@/Loading'
 import { FilterField, matches, Pager, usePaging } from '@/Paging'
 import { groupByBox, useSetupData, UNPLACED } from '@/SetupData'
+import { useReadOnly } from '@/auth'
 
 /**
  * What this box serves, and under what name.
@@ -118,6 +119,7 @@ const UnassignDoc = graphql(/* GraphQL */ `
  * "did I already add the free Qwen" is a lookup, not a scroll.
  */
 function AssignedModels() {
+  const readOnly = useReadOnly()
   const qc = useQueryClient()
   const [q, setQ] = useState('')
   const { data } = useQuery({
@@ -227,7 +229,7 @@ function AssignedModels() {
               <Button
                 size="small"
                 color="error"
-                disabled={unassign.isPending}
+                disabled={unassign.isPending || readOnly}
                 onClick={() =>
                   unassign.mutate({
                     provider: r.provider,
@@ -248,6 +250,7 @@ function AssignedModels() {
 }
 
 export function ModelsTab() {
+  const readOnly = useReadOnly()
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [addLocal, setAddLocal] = useState<{
@@ -382,7 +385,7 @@ export function ModelsTab() {
                     </Tooltip>
                   )}
                 </Stack>
-                <Button
+                <Button disabled={readOnly}
                   size="small"
                   startIcon={<AddIcon />}
                   onClick={() => setAddTo(p.name)}
@@ -471,7 +474,7 @@ export function ModelsTab() {
                           />
                         </Tooltip>
                       </Stack>
-                      <Button
+                      <Button disabled={readOnly}
                         size="small"
                         onClick={() => setAddLocal({ provider: p.name, editId: m.id })}
                       >
@@ -483,7 +486,7 @@ export function ModelsTab() {
                       >
                         Inspect
                       </Button>
-                      <Button
+                      <Button disabled={readOnly}
                         size="small"
                         color="error"
                         onClick={() => {
@@ -513,7 +516,7 @@ export function ModelsTab() {
         // is the only place the word `lane` now appears in front of a reader.
         help="Asking for a list by name allows a substitute; asking for a model by name pins the request to that model."
         actions={
-          <Button size="small" variant="outlined" onClick={() => setEditing(blankLane())}>
+          <Button disabled={readOnly} size="small" variant="outlined" onClick={() => setEditing(blankLane())}>
             Add fallback list
           </Button>
         }

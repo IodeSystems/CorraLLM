@@ -374,26 +374,32 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P55 — OIDC sign-in for the dashboard — 2026-10-19
+### ◐ P55 — OIDC sign-in, roles and the Access tab — 2026-10-19
 
-Owner: generic OIDC (issuer + client id + secret, discovery), email allowlist with
-`email_verified` required, admin token kept as fallback, `/api` + UI only (`/v1` untouched). Built:
-config `auth.oidc` (`internal/config/authcfg.go`, validated at load, persisted as a `config_scalar`
-row), `internal/auth/oidc.go` (`/auth/login|callback|logout|whoami`, state + nonce + PKCE S256 in a
-signed 10-min cookie, go-oidc verification, HMAC session cookie `corrallm_session` 12 h, key at
-`session.key` beside `admin.token`), middleware accepts admin token OR session (session refused when
-`Sec-Fetch-Site` is cross-site/same-site), UI SSO button + header account menu with Sign out.
-Tests: fake IdP over httptest. Not yet against a real provider; live config unchanged.
+Owner: one OIDC provider (org uses Zitadel, https://id.iodesystems.com), editable from the
+dashboard; users with roles admin | viewer; admin token stays admin and can be disabled once SSO
+works; `/v1` untouched. Built: `/auth/login|callback|logout|whoami` (state + nonce + PKCE S256,
+go-oidc, HMAC session 12 h, `session.key`); client secret optional (PKCE-only client sends
+client_id + verifier in the body). Config `auth.users [{email, role}]`, `auth.oidc.disabled`,
+`auth.adminToken: enabled|disabled` (disabled needs SSO on + an admin user); legacy
+`auth.oidc.allowedEmails` read as admins, folded into `auth.users` on the next Access save.
+Role resolved per request from live config. Viewer gate in `auth.Middleware` (`internal/auth/role.go`):
+GET/HEAD, or a GraphQL document whose operations are all queries (executor's own parser); else 403
+`read-only access`. Per-user session cutoff + last sign-in in store table `auth_users_state`.
+API (admin only): listAccess, upsertUser, removeUser, revokeUserSessions, setIdentityProvider,
+testIdentityProvider, setAdminToken (disable only from an SSO admin session). Recovery CLI:
+`corrallm auth admin-token enable|disable|status`. UI: Setup → Access tab; Read-only chip; viewer
+buttons disabled on Setup, models, model page, active requests. Config revisions name the SSO user.
+Not yet run against Zitadel; live config unchanged.
 
-- **next:** owner registers `<public-base>/auth/callback` at a provider, stores
-  `OIDC_CLIENT_SECRET`, adds `auth.oidc`, reloads, signs in.
-- **risks:** sessions are stateless — sign-out clears the cookie but a copied cookie stays valid until
-  expiry (12 h) unless the email leaves the allowlist or `session.key` is deleted + restart. Config
-  edits made by an SSO user are still noted by address, not email. Discovery result is cached per
-  issuer for the process lifetime (JWKS refreshes itself on unknown kid).
-- **blocking decisions:** none.
-- **optional extensions:** record the session email on config revisions; several providers; groups /
-  domain allowlist; server-side session revocation.
+- **next:** owner creates the Zitadel Web app (auth method PKCE), registers the redirect URI shown
+  in Access, adds self as admin, enables SSO, signs in, then disables the admin token.
+- **risks:** viewers can read everything a GET serves, including `keys` (caller API keys, usable on
+  `/v1`) and `configExport`; untested against a real provider; every SSO request does one SQLite
+  lookup for the cutoff; a literal (non-`${REF}`) client secret is dropped by a form save (UI warns).
+- **blocking decisions:** should viewers see caller API keys / the config export? (currently yes).
+- **optional extensions:** hide secrets-adjacent reads from viewers; groups / domain allowlist;
+  several providers (declined for now).
 
 ### ◐ P54 — Anthropic Messages shim: prompt caching behind the OpenAI surface — 2026-10-19
 
