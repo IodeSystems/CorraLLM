@@ -39,6 +39,63 @@ type ProxyTarget struct {
 	//   authTokenCommand: jq -r .claudeAiOauth.accessToken ~/.claude/.credentials.json
 	// A static `Authorization` in `headers` still wins if both are set.
 	AuthTokenCommand string
+
+	// API is the wire dialect the upstream speaks. Empty (or "openai") forwards
+	// the caller's OpenAI request as written. "anthropic" makes corrallm
+	// translate /v1/chat/completions to Anthropic's native Messages API
+	// (/v1/messages) and the reply back — see proxy/anthropic.go. It exists for
+	// prompt caching: Anthropic's own OpenAI-compatible layer ignores
+	// cache_control, so an agentic caller re-paid full input price every turn.
+	API string
+
+	// CacheTTL is the prompt-cache lifetime corrallm asks for on the
+	// breakpoints it places when API is "anthropic": "" or "5m" (Anthropic's
+	// default, cheapest write) or "1h" (pricier write, survives a long pause
+	// between turns). Refused for any other API.
+	CacheTTL string
+}
+
+// API dialects a proxy target may speak. See ProxyTarget.API.
+const (
+	APIOpenAI    = "openai"
+	APIAnthropic = "anthropic"
+)
+
+// validateAPI checks the dialect fields of a proxy object. Unknown values are
+// refused rather than treated as the default: `api: antropic` silently
+// forwarding OpenAI bodies would look like it worked and lose the caching it
+// was written to get.
+func validateAPI(api, ttl string) error {
+	switch api {
+	case "", APIOpenAI, APIAnthropic:
+	default:
+		return fmt.Errorf("proxy api %q: want %q or %q", api, APIOpenAI, APIAnthropic)
+	}
+	switch ttl {
+	case "", "5m", "1h":
+	default:
+		return fmt.Errorf("proxy cacheTTL %q: want 5m or 1h", ttl)
+	}
+	if ttl != "" && api != APIAnthropic {
+		return fmt.Errorf("proxy cacheTTL is only meaningful with api: %s", APIAnthropic)
+	}
+	return nil
+}
+
+// ValidateProxyAPI checks a model's `proxy:` dialect fields (api, cacheTTL)
+// without resolving the rest of the target. A scalar proxy has none.
+func ValidateProxyAPI(n yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		return nil
+	}
+	var o struct {
+		API      string `yaml:"api"`
+		CacheTTL string `yaml:"cacheTTL"`
+	}
+	if err := n.Decode(&o); err != nil {
+		return nil // shape errors are proxyTarget's to report
+	}
+	return validateAPI(o.API, o.CacheTTL)
 }
 
 // BaseURLString is the full prefix a caller should hang a path off: the target
@@ -56,7 +113,7 @@ func (t *ProxyTarget) BaseURLString() string {
 }
 
 // proxyObj is the object form of `proxy:`
-// ({host, port, headers, basePath, model}).
+// ({host, port, headers, basePath, model, api, cacheTTL}).
 type proxyObj struct {
 	Host             string            `yaml:"host"`
 	Port             int               `yaml:"port"`
@@ -65,6 +122,8 @@ type proxyObj struct {
 	BasePath         string            `yaml:"basePath"`
 	Model            string            `yaml:"model"`
 	AuthTokenCommand string            `yaml:"authTokenCommand"`
+	API              string            `yaml:"api"`
+	CacheTTL         string            `yaml:"cacheTTL"`
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -126,6 +185,10 @@ func (m Model) proxyTarget() (*ProxyTarget, error) {
 		t.BasePath = normalizeBasePath(o.BasePath)
 		t.Model = o.Model
 		t.AuthTokenCommand = o.AuthTokenCommand
+		if err := validateAPI(o.API, o.CacheTTL); err != nil {
+			return nil, err
+		}
+		t.API, t.CacheTTL = o.API, o.CacheTTL
 		return t, nil
 	default:
 		return nil, fmt.Errorf("unsupported proxy target kind %d", n.Kind)

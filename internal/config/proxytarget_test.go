@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -100,5 +102,62 @@ func TestProxyTargetUpstreamModel(t *testing.T) {
 	local, _ := modelWithProxy(t, "5800").ProxyTarget()
 	if local.Model != "" {
 		t.Errorf("local Model = %q, want empty", local.Model)
+	}
+}
+
+// `api` selects the wire dialect; a misspelling must fail loudly rather than
+// quietly forward OpenAI bodies, and a TTL without the dialect means nothing.
+func TestProxyTargetAPI(t *testing.T) {
+	cases := []struct {
+		yaml     string
+		ok       bool
+		api, ttl string
+	}{
+		{"{ host: h, port: 443 }", true, "", ""},
+		{"{ host: h, port: 443, api: openai }", true, "openai", ""},
+		{"{ host: h, port: 443, api: anthropic }", true, "anthropic", ""},
+		{"{ host: h, port: 443, api: anthropic, cacheTTL: 1h }", true, "anthropic", "1h"},
+		{"{ host: h, port: 443, api: anthropic, cacheTTL: 5m }", true, "anthropic", "5m"},
+		{"{ host: h, port: 443, api: antropic }", false, "", ""},
+		{"{ host: h, port: 443, api: anthropic, cacheTTL: 10m }", false, "", ""},
+		{"{ host: h, port: 443, cacheTTL: 1h }", false, "", ""},
+		{"5800", true, "", ""},
+	}
+	for _, c := range cases {
+		m := modelWithProxy(t, c.yaml)
+		if err := ValidateProxyAPI(m.Proxy); (err == nil) != c.ok {
+			t.Errorf("%s: ValidateProxyAPI err = %v, want ok=%v", c.yaml, err, c.ok)
+		}
+		tgt, err := m.ProxyTarget()
+		if (err == nil) != c.ok {
+			t.Errorf("%s: ProxyTarget err = %v, want ok=%v", c.yaml, err, c.ok)
+			continue
+		}
+		if c.ok && (tgt.API != c.api || tgt.CacheTTL != c.ttl) {
+			t.Errorf("%s: API/CacheTTL = %q/%q, want %q/%q", c.yaml, tgt.API, tgt.CacheTTL, c.api, c.ttl)
+		}
+	}
+}
+
+// The setting lives on the extension's proxy and reaches every provided model;
+// a bad value is refused at load, naming the model.
+func TestProxyAPIThroughExtension(t *testing.T) {
+	const cfg = `
+extensions:
+  claude:
+    proxy: { host: api.anthropic.com, port: 443, api: %s, headers: { x-api-key: k } }
+    provides:
+      sonnet-x: { type: anthropic-sonnet, upstream: claude-sonnet-x }
+`
+	c, err := loadYAML(t, fmt.Sprintf(cfg, "anthropic"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	tgt, err := c.Models["claude-sonnet-x"].ProxyTarget()
+	if err != nil || tgt.API != APIAnthropic {
+		t.Fatalf("provided model target = %+v, %v; want api anthropic", tgt, err)
+	}
+	if _, err := loadYAML(t, fmt.Sprintf(cfg, "antropic")); err == nil || !strings.Contains(err.Error(), "antropic") {
+		t.Errorf("misspelled api: err = %v, want a load error naming it", err)
 	}
 }

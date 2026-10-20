@@ -374,6 +374,29 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P54 — Anthropic Messages shim: prompt caching behind the OpenAI surface — 2026-10-19
+
+Owner: agentic callers on the `claude` extension re-pay full input every turn, because Anthropic's
+OpenAI-compatible layer has no prompt caching. Built (`internal/proxy/anthropic.go`): proxy object
+key `api: anthropic` (+ optional `cacheTTL: 5m|1h`, validated at load) makes `/v1/chat/completions`
+go to `/v1/messages` with the body translated, ≤4 `cache_control` breakpoints (last tool, last
+system block, last block of the final two user turns; caller markers honoured and counted), and the
+reply (JSON + SSE) translated back with `cached_tokens = cache_read_input_tokens`. Tests: table
+tests + an httptest fake Anthropic through the full proxy path (activity row carries cached tokens
+and the cached-rate cost). Not yet against the real API; live config unchanged.
+
+- **next:** owner adds `api: anthropic` to the `claude` extension's proxy and checks
+  `cached_tokens` > 0 on the second turn of an aw-style conversation.
+- **risks:** cache writes priced at 1× input (Anthropic bills 1.25×/2×) — slight undercount, by
+  design. `temperature`/`top_p` and forced `tool_choice` are passed through; current Opus/Sonnet 5.5
+  reject them with a 400, which reaches the caller as-is. Whitespace-only `stop` entries are dropped
+  (assumed Anthropic rejects them). Usage chunk is always streamed, even without
+  `stream_options.include_usage`. Live config uses OAuth (`authTokenCommand`) — the shim strips the
+  caller's `Authorization` so the token is injected; not verified against the subscription endpoint.
+- **blocking decisions:** none.
+- **optional extensions:** map `reasoning_effort` → `output_config.effort`; `file` (PDF) parts →
+  `document` blocks; a cache-write cost class.
+
 ### ✅ P53 — model page summary: quant, KV cache, context, speed and context p90/p99 — 2026-10-07
 
 Owner: the model page must report quant, KV cache quants, ctx length, avg tp/tg, total requests, ctx

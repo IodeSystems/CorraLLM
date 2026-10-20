@@ -1098,6 +1098,25 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				outBody = rewriteModelField(outBody, upstream)
 			}
 		}
+		// Anthropic Messages shim (anthropic.go): a backend whose proxy says
+		// `api: anthropic` gets the native Messages body — with prompt-cache
+		// breakpoints — and its reply is translated back below. Per candidate,
+		// after the model rewrite and the max_tokens clamp, because both are
+		// properties of THIS backend and the translation reads the result.
+		anthropic := pr.Target != nil && pr.Target.API == config.APIAnthropic &&
+			r.URL.Path == "/v1/chat/completions"
+		if anthropic {
+			ab, terr := toAnthropicRequest(outBody, anthropicOpts{MaxTokens: backend.MaxTokens, CacheTTL: pr.Target.CacheTTL})
+			if terr != nil {
+				// The deferred release()/done() free the slot and the ref.
+				writeJSONError(w, http.StatusBadRequest, "invalid_request_error", terr.Error())
+				p.logReq(r, store.Activity{Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path,
+					Status: http.StatusBadRequest, DwellMS: time.Since(start).Milliseconds(),
+					QueuedMS: queuedMS, LoadMS: loadMS, Error: "anthropic translation: " + terr.Error(), ReqBody: reqBody})
+				return
+			}
+			outBody = ab
+		}
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
 		p.markInflight(live, inflightStreaming, name)
@@ -1192,7 +1211,21 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}
 			rw.WriteHeader(code)
 		}
-		rp.ServeHTTP(sc, r.WithContext(reqCtx))
+		// The Anthropic shim's writer sits OUTSIDE statusCapture, so the capture
+		// — usage, finish_reason, the activity row's body — reads the OpenAI
+		// shape the caller gets. Only the outgoing request's path changes; r
+		// keeps /v1/chat/completions for the row.
+		var dst http.ResponseWriter = sc
+		var aw *anthropicWriter
+		upReq := r.WithContext(reqCtx)
+		if anthropic {
+			aw = newAnthropicWriter(sc)
+			dst = aw
+			u := *upReq.URL
+			u.Path, u.RawPath = "/v1/messages", ""
+			upReq.URL = &u
+		}
+		rp.ServeHTTP(dst, upReq)
 		// THE SECOND UPSTREAM CALL (P35 §12.9(e) RULE 2, sttdiarize.go): the
 		// caller asked for speaker labels and this backend serves them from a
 		// separate endpoint whose answer corrallm joins to the transcription
@@ -1253,6 +1286,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// held body is released now — as events if it parsed, verbatim if not —
 		// and a passed-through event stream gets the terminator the route
 		// promises whether or not the backend sent one.
+		if aw != nil {
+			aw.finish()
+		}
 		// The remap releases first: its output is what the SSE writer reads.
 		if sttRemap != nil {
 			sttRemap.finish()
@@ -3018,6 +3054,16 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 			// this a compressing upstream (common for paid endpoints) yields
 			// unparseable bytes and meters as $0.
 			req.Header.Del("Accept-Encoding")
+			if t.API == config.APIAnthropic {
+				// The caller's corrallm key must not reach Anthropic: beside
+				// x-api-key it is a second, invalid credential, and it would
+				// block authTokenCommand below. Configured headers still win.
+				req.Header.Del("Authorization")
+				req.Header.Del("X-Corrallm-Key")
+				// Required on every Messages call. A default only: a version
+				// pinned in the config's headers overwrites it just below.
+				req.Header.Set("anthropic-version", anthropicVersion)
+			}
 			for k, v := range t.Headers {
 				req.Header.Set(k, v)
 			}

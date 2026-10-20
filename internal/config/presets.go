@@ -198,7 +198,7 @@ var presets = []ProviderPreset{
 		Host: "api.anthropic.com", Port: 443,
 		SecretRef: "ANTHROPIC_API_KEY", Catalog: CatalogAuthed,
 		Docs:   "https://docs.claude.com/en/api/openai-sdk",
-		Notes:  "Via Anthropic's OpenAI-compatible layer at /v1/chat/completions. The native Messages API is a different surface and is not what this reaches.",
+		Notes:  "Via Anthropic's OpenAI-compatible layer at /v1/chat/completions, which has no prompt caching. Add `api: anthropic` to the provider's proxy to have corrallm translate to the native Messages API instead, with cache breakpoints placed (see proxy/anthropic.go).",
 		Filter: PresetFilter{Limit: 12},
 	},
 	{
