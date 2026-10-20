@@ -56,9 +56,13 @@ export function useAuthGate(): Gate {
   useEffect(() => {
     if (gate !== 'checking') return
     let alive = true
-    fetch('/health')
-      .then((r) => r.json())
-      .then((d) => alive && setGate(d?.insecure === true ? 'open' : 'needs-token'))
+    // An SSO session is an HttpOnly cookie the page cannot see, so whether one
+    // is live has to be asked too.
+    Promise.all([
+      fetch('/health').then((r) => r.json()),
+      fetchWhoAmI(),
+    ])
+      .then(([h, who]) => alive && setGate(h?.insecure === true || who.email ? 'open' : 'needs-token'))
       // Unreachable or unparseable: fall back to asking for a token. Assuming
       // "open" on a failed probe would blank the login screen on a server that
       // does want one, leaving no way in.
@@ -69,4 +73,25 @@ export function useAuthGate(): Gate {
   }, [gate])
 
   return gate
+}
+
+// SSO state from /auth/whoami: whether the server has an OIDC provider
+// configured, and whose session this browser holds (if any).
+export type WhoAmI = { oidc: boolean; email?: string }
+
+export function fetchWhoAmI(): Promise<WhoAmI> {
+  return fetch('/auth/whoami', { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : { oidc: false }))
+    .then((d) => ({ oidc: d?.oidc === true, email: typeof d?.email === 'string' ? d.email : undefined }))
+}
+
+// signOut ends both kinds of sign-in this browser may hold: the admin token in
+// storage and the SSO session cookie, which only the server can clear.
+export async function signOut() {
+  clearToken()
+  try {
+    await fetch('/auth/logout', { method: 'POST' })
+  } finally {
+    window.location.assign('/')
+  }
 }

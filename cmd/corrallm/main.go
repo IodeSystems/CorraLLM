@@ -734,6 +734,22 @@ func serve(ctx context.Context, o serveOpts) error {
 	} else {
 		slog.Info("loaded admin token", "path", o.tokenPath)
 	}
+	// SSO sign-in (auth.oidc). The signing key sits beside the admin token and
+	// is made the same way; deleting it signs every session out.
+	sessionKeyPath := filepath.Join(filepath.Dir(o.tokenPath), "session.key")
+	sessionKey, _, err := auth.LoadOrCreateToken(sessionKeyPath)
+	if err != nil {
+		return err
+	}
+	sso := &auth.SSO{Key: []byte(sessionKey), Settings: func() *auth.OIDCSettings {
+		return oidcSettings(mgr.Config(), o.publicBase)
+	}}
+	if st := sso.Settings(); st != nil {
+		slog.Info("sso enabled", "issuer", st.Issuer, "redirect", st.RedirectURL, "allowed", len(st.AllowedEmails))
+		if st.RedirectURL == "" {
+			slog.Warn("sso: no callback URL — set auth.oidc.redirectUrl or --public-base; /auth/login will refuse until then")
+		}
+	}
 	if o.insecure {
 		// WARN, and louder when the address is one other machines can reach.
 		// "Insecure on localhost" is a defensible choice on a single-user box;
@@ -762,8 +778,13 @@ func serve(ctx context.Context, o serveOpts) error {
 	router.Use(api.SourceMiddleware)
 	router.Use(middleware.Recoverer)
 	if !o.insecure {
-		router.Use(auth.Middleware(adminToken)) // gates /api/*; /v1, /upstream, /health, SPA pass through
+		router.Use(auth.Middleware(adminToken, sso)) // gates /api/*; /v1, /upstream, /health, SPA pass through
 	}
+	// Public: these are how a person without a credential gets one.
+	router.Get("/auth/login", sso.Login)
+	router.Get("/auth/callback", sso.Callback)
+	router.Post("/auth/logout", sso.Logout)
+	router.Get("/auth/whoami", sso.WhoAmI)
 
 	// BuildGateway mounts REST + GraphQL (/api/graphql) + schema views onto router.
 	if _, err := api.BuildGateway(router, h); err != nil {
@@ -1336,5 +1357,28 @@ func (r loadRecorder) RecordLoad(ev proc.ModelLoadEvent) {
 		MS: ev.MS, OK: ev.OK, Err: ev.Err,
 	}); err != nil {
 		slog.Warn("could not record a model load", "model", ev.Model, "err", err)
+	}
+}
+
+// oidcSettings resolves auth.oidc for the SSO handlers: the client secret
+// expanded from the credential store, the redirect URL defaulted from
+// --public-base. Nil when SSO is not configured.
+func oidcSettings(c *config.Config, publicBase string) *auth.OIDCSettings {
+	if c == nil || c.Auth == nil || c.Auth.OIDC == nil {
+		return nil
+	}
+	o := c.Auth.OIDC
+	redirect := o.RedirectURL
+	if redirect == "" && publicBase != "" {
+		redirect = strings.TrimRight(publicBase, "/") + "/auth/callback"
+	}
+	return &auth.OIDCSettings{
+		Issuer:               strings.TrimSpace(o.Issuer),
+		ClientID:             o.ClientID,
+		ClientSecret:         config.ExpandSecrets(o.ClientSecret),
+		RedirectURL:          redirect,
+		Scopes:               o.ScopesOrDefault(),
+		AllowedEmails:        o.AllowedEmails,
+		AllowUnverifiedEmail: o.AllowUnverifiedEmail,
 	}
 }

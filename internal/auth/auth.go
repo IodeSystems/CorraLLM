@@ -4,6 +4,10 @@
 // OpenAI inference proxy (/v1/…) and the model web UIs (/upstream/…) are NOT
 // gated here: those callers authenticate by their own API key (fairshare
 // identity), and /health stays open for liveness probes.
+//
+// A person can also reach /api/ with an SSO session from an OpenID Connect
+// sign-in (oidc.go, enabled by auth.oidc in config). The admin token keeps
+// working beside it, for scripts and for recovery when the provider is down.
 package auth
 
 import (
@@ -71,9 +75,10 @@ func selfAuthenticating(path string) bool {
 }
 
 // Middleware gates /api/ requests on the admin token (Authorization: Bearer, or
-// the CookieName cookie). All other paths pass through untouched, as do the
-// agent routes, which verify their own per-server credential.
-func Middleware(token string) func(http.Handler) http.Handler {
+// the CookieName cookie) or, when sso is non-nil, a valid SSO session cookie.
+// All other paths pass through untouched, as do the agent routes, which verify
+// their own per-server credential.
+func Middleware(token string, sso *SSO) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasPrefix(r.URL.Path, "/api/") || selfAuthenticating(r.URL.Path) {
@@ -92,6 +97,10 @@ func Middleware(token string) func(http.Handler) http.Handler {
 				// Refreshing it here means any authenticated call heals the
 				// mismatch, and the client no longer has to keep them in step.
 				refreshCookie(w, r, token)
+				next.ServeHTTP(w, r)
+				return
+			}
+			if _, ok := sso.SessionEmail(r); ok && sameOrigin(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -118,4 +127,16 @@ func authorized(r *http.Request, token string) bool {
 
 func tokenEqual(got, want string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// sameOrigin refuses a session-cookie request a browser marked as coming from
+// another site. The session cookie is SameSite=Lax, which still rides along on
+// a cross-site top-level GET; this closes that for /api. Absent (non-browser
+// clients) and "none" (typed into the address bar) pass.
+func sameOrigin(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+		return true
+	}
+	return false
 }

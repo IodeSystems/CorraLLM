@@ -23,6 +23,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://localhost:6502', changeOrigin: true, ws: true },
       '/health': { target: 'http://localhost:6502', changeOrigin: true },
+      '/auth': { target: 'http://localhost:6502', changeOrigin: true },
     },
   },
 })

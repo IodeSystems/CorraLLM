@@ -374,6 +374,27 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P55 — OIDC sign-in for the dashboard — 2026-10-19
+
+Owner: generic OIDC (issuer + client id + secret, discovery), email allowlist with
+`email_verified` required, admin token kept as fallback, `/api` + UI only (`/v1` untouched). Built:
+config `auth.oidc` (`internal/config/authcfg.go`, validated at load, persisted as a `config_scalar`
+row), `internal/auth/oidc.go` (`/auth/login|callback|logout|whoami`, state + nonce + PKCE S256 in a
+signed 10-min cookie, go-oidc verification, HMAC session cookie `corrallm_session` 12 h, key at
+`session.key` beside `admin.token`), middleware accepts admin token OR session (session refused when
+`Sec-Fetch-Site` is cross-site/same-site), UI SSO button + header account menu with Sign out.
+Tests: fake IdP over httptest. Not yet against a real provider; live config unchanged.
+
+- **next:** owner registers `<public-base>/auth/callback` at a provider, stores
+  `OIDC_CLIENT_SECRET`, adds `auth.oidc`, reloads, signs in.
+- **risks:** sessions are stateless — sign-out clears the cookie but a copied cookie stays valid until
+  expiry (12 h) unless the email leaves the allowlist or `session.key` is deleted + restart. Config
+  edits made by an SSO user are still noted by address, not email. Discovery result is cached per
+  issuer for the process lifetime (JWKS refreshes itself on unknown kid).
+- **blocking decisions:** none.
+- **optional extensions:** record the session email on config revisions; several providers; groups /
+  domain allowlist; server-side session revocation.
+
 ### ◐ P54 — Anthropic Messages shim: prompt caching behind the OpenAI surface — 2026-10-19
 
 Owner: agentic callers on the `claude` extension re-pay full input every turn, because Anthropic's

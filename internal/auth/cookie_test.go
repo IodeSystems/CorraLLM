@@ -11,7 +11,7 @@ const tok = "sekrit-admin-token"
 func serve(t *testing.T, r *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	Middleware(tok)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	Middleware(tok, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(rec, r)
 	return rec

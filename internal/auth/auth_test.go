@@ -29,7 +29,7 @@ func TestLoadOrCreateToken(t *testing.T) {
 
 func TestMiddleware(t *testing.T) {
 	const token = "secret-token"
-	h := Middleware(token)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := Middleware(token, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -71,7 +71,7 @@ func TestMiddleware(t *testing.T) {
 // report liveness.
 func TestMiddleware_AgentHeartbeatIsNotAdminGated(t *testing.T) {
 	var reached bool
-	h := Middleware("admin-secret")(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+	h := Middleware("admin-secret", nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
 
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/agents/heartbeat", nil)
 	w := httptest.NewRecorder()

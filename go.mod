@@ -3,6 +3,7 @@ module github.com/iodesystems/corrallm
 go 1.26.2
 
 require (
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/iodesystems/agentkit v0.6.0
@@ -11,6 +12,7 @@ require (
 	github.com/prometheus/client_golang v1.25.0
 	github.com/spf13/cobra v1.10.2
 	go.starlark.net v0.0.0-20260828210309-6dd8f160a37f
+	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -25,6 +27,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/getkin/kin-openapi v0.149.0 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-openapi/jsonpointer v1.0.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect

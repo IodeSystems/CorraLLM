@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Box, Button, TextField, Typography } from '@mui/material'
-import { setToken } from './auth'
+import { Box, Button, Divider, TextField, Typography } from '@mui/material'
+import { fetchWhoAmI, setToken } from './auth'
 import { Panel } from '@/Panel'
 import { C } from '@/theme'
 
@@ -16,6 +16,14 @@ import { C } from '@/theme'
 export function Login() {
   const [val, setVal] = useState('')
   const [tokenPath, setTokenPath] = useState<string | null>(null)
+  // SSO is offered only when the server has a provider configured; otherwise
+  // this screen is the admin-token form alone, as it always was.
+  const [sso, setSso] = useState(false)
+  useEffect(() => {
+    fetchWhoAmI()
+      .then((w) => setSso(w.oidc))
+      .catch(() => setSso(false))
+  }, [])
   useEffect(() => {
     fetch('/health')
       .then((r) => r.json())
@@ -31,8 +39,16 @@ export function Login() {
   return (
     <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', p: 2 }}>
       <Box sx={{ maxWidth: 460, width: '100%' }}>
-        <Panel title="Admin sign in">
+        <Panel title={sso ? 'Sign in' : 'Admin sign in'}>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {sso && (
+            <>
+              <Button variant="contained" size="large" href="/auth/login">
+                Sign in with SSO
+              </Button>
+              <Divider sx={{ color: C.textMuted, fontSize: 12 }}>or use the admin token</Divider>
+            </>
+          )}
           <Typography variant="body2" sx={{
             color: "text.secondary"
           }}>
@@ -64,9 +80,9 @@ export function Login() {
             onChange={(e) => setVal(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}
             fullWidth
-            autoFocus
+            autoFocus={!sso}
           />
-          <Button variant="contained" onClick={submit} disabled={!val.trim()}>
+          <Button variant={sso ? 'outlined' : 'contained'} onClick={submit} disabled={!val.trim()}>
             Sign in
           </Button>
           {/* FOR THE PERSON WHO IS NOT THE OPERATOR.

@@ -15,6 +15,8 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Menu,
+  MenuItem,
   Toolbar,
   Tooltip,
   Typography,
@@ -25,13 +27,14 @@ import DashboardOutlined from '@mui/icons-material/DashboardOutlined'
 import LayersOutlined from '@mui/icons-material/LayersOutlined'
 import GroupsOutlined from '@mui/icons-material/GroupsOutlined'
 import MenuIcon from '@mui/icons-material/Menu'
+import AccountCircleOutlined from '@mui/icons-material/AccountCircleOutlined'
 import DnsOutlined from '@mui/icons-material/DnsOutlined'
 import TuneOutlined from '@mui/icons-material/TuneOutlined'
 import SpeedOutlined from '@mui/icons-material/SpeedOutlined'
 import TimelineOutlined from '@mui/icons-material/TimelineOutlined'
 import { C, theme } from '@/theme'
 import { useLiveEvents } from '@/useLiveEvents'
-import { useAuthGate } from '@/auth'
+import { fetchWhoAmI, getToken, signOut, useAuthGate } from '@/auth'
 import { Login } from '@/Login'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -92,6 +95,35 @@ function RunIndicator() {
         sx={{ ml: 'auto' }}
       />
     </Tooltip>
+  )
+}
+
+/**
+ * Who is signed in, and the way out. An SSO session shows its email; the admin
+ * token has no person attached, so it says that instead. Nothing renders on an
+ * --insecure server opened without either.
+ */
+function AccountMenu() {
+  const { data: who } = useQuery({ queryKey: ['whoami'], queryFn: fetchWhoAmI, staleTime: 60_000 })
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null)
+  const label = who?.email ?? (getToken() ? 'Admin token' : null)
+  if (!label) return null
+  return (
+    <>
+      <Button
+        size="small"
+        onClick={(e) => setAnchor(e.currentTarget)}
+        startIcon={<AccountCircleOutlined fontSize="small" />}
+        sx={{ color: 'inherit', textTransform: 'none', minWidth: 0, px: 1, maxWidth: 260 }}
+      >
+        <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {label}
+        </Box>
+      </Button>
+      <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
+        <MenuItem onClick={() => void signOut()}>Sign out</MenuItem>
+      </Menu>
+    </>
   )
 }
 
@@ -225,8 +257,8 @@ function NavList({ labels, onNavigate }: { labels: boolean; onNavigate?: () => v
 }
 
 function RootLayout() {
-  useLiveEvents() // push-based refresh for the live views (no-op until signed in)
   const gate = useAuthGate()
+  useLiveEvents(gate === 'open') // push-based refresh for the live views
   const desktop = useMediaQuery(theme.breakpoints.up('md'))
   // Two independent bits of state, because the two drawers mean different
   // things: on mobile the drawer is an overlay that must start CLOSED, on
@@ -276,7 +308,9 @@ function RootLayout() {
           <Typography variant="h6" sx={{ letterSpacing: '-0.02em' }}>
             corrallm
           </Typography>
+          <Box sx={{ flex: 1 }} />
           <RunIndicator />
+          <AccountMenu />
         </Toolbar>
       </AppBar>
 
