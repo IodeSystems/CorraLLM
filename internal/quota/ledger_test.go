@@ -209,7 +209,7 @@ func TestCounterMode(t *testing.T) {
 		}
 	}
 	if minute.Used != 20 {
-		t.Errorf("per-minute used = %d, want 20", minute.Used)
+		t.Errorf("per-minute used = %v, want 20", minute.Used)
 	}
 
 	// After the minute rolls, the per-minute window resets → available again
@@ -222,7 +222,7 @@ func TestCounterMode(t *testing.T) {
 	l.ObserveResponse("or", 200, http.Header{})
 	for _, x := range l.Snapshot()[0].Windows {
 		if x.Label == "req/minute" && x.Used != 1 {
-			t.Errorf("per-minute should have rolled to 1, got %d", x.Used)
+			t.Errorf("per-minute should have rolled to 1, got %v", x.Used)
 		}
 	}
 }
@@ -247,7 +247,7 @@ func TestCounterMode_Falloff(t *testing.T) {
 		t.Error("after 30s the level should have leaked below the limit")
 	}
 	if u := l.Snapshot()[0].Windows[0].Used; u != 5 {
-		t.Errorf("used after 30s decay = %d, want 5", u)
+		t.Errorf("used after 30s decay = %v, want 5", u)
 	}
 }
 
@@ -268,7 +268,7 @@ func TestCounterMode_DurableAcrossRestart(t *testing.T) {
 		l1.ObserveResponse("or", 200, http.Header{})
 	}
 	if u := l1.Snapshot()[0].Windows[0].Used; u != 800 {
-		t.Fatalf("first process used = %d, want 800", u)
+		t.Fatalf("first process used = %v, want 800", u)
 	}
 
 	// Restart one minute later: a NEW ledger attaches the SAME store, then
@@ -279,7 +279,7 @@ func TestCounterMode_DurableAcrossRestart(t *testing.T) {
 	l2.UseStore(st)
 	l2.SetLimits("or", []config.Limit{lim("req", 1000, "day")})
 	if u := l2.Snapshot()[0].Windows[0].Used; u < 798 || u > 800 {
-		t.Errorf("after restart used = %d, want ~800 (survived), not 0", u)
+		t.Errorf("after restart used = %v, want ~800 (survived), not 0", u)
 	}
 }
 

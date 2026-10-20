@@ -10,7 +10,6 @@
 package quota
 
 import (
-	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -53,8 +52,8 @@ type Entry struct {
 // Window is a locally-counted request budget for a counter-mode backend.
 type Window struct {
 	Label    string    `json:"label"` // "1m" | "1d"
-	Limit    int       `json:"limit"`
-	Used     int       `json:"used"`               // decayed fill level, rounded for display
+	Limit    float64   `json:"limit"`
+	Used     float64   `json:"used"`               // decayed fill level (dollars stay fractional)
 	Blocked  bool      `json:"blocked,omitempty"`  // level has reached the limit
 	Hard     bool      `json:"hard,omitempty"`     // blocked refuses, never served anyway
 	ResetsAt time.Time `json:"resetsAt,omitempty"` // when the level fully drains to zero
@@ -77,7 +76,10 @@ type counterWindow struct {
 	// 1000 per day. The leaky-bucket arithmetic is dimensionless.
 	limit float64
 	dur   time.Duration
-	hard  bool      // a full window refuses even when nothing else can serve
+	// calendar is "day" or "month" for a fixed window that empties at the UTC
+	// period boundary instead of leaking; "" = falloff.
+	calendar string
+	hard     bool // a full window refuses even when nothing else can serve
 	used  float64   // fill level as of `at`
 	at    time.Time // when `used` was last computed
 }
@@ -87,6 +89,12 @@ type counterWindow struct {
 // stored level as-is.
 func (w *counterWindow) levelAt(now time.Time) float64 {
 	if w.at.IsZero() {
+		return w.used
+	}
+	if w.calendar != "" {
+		if w.at.Before(periodStart(w.calendar, now)) {
+			return 0 // last charged in an earlier period
+		}
 		return w.used
 	}
 	elapsed := now.Sub(w.at)
@@ -120,7 +128,28 @@ func (w *counterWindow) drainAt(now time.Time) time.Time {
 	if lv <= 0 {
 		return time.Time{}
 	}
+	if w.calendar != "" {
+		return periodEnd(w.calendar, now)
+	}
 	return now.Add(time.Duration(lv / w.limit * float64(w.dur)))
+}
+
+// periodStart is the start of the UTC calendar day or month holding t.
+func periodStart(unit string, t time.Time) time.Time {
+	t = t.UTC()
+	if unit == "month" {
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+	}
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// periodEnd is when the UTC calendar day or month holding t ends.
+func periodEnd(unit string, t time.Time) time.Time {
+	s := periodStart(unit, t)
+	if unit == "month" {
+		return s.AddDate(0, 1, 0)
+	}
+	return s.AddDate(0, 0, 1)
 }
 
 // counterState is a counter-mode backend's windows (per-minute, per-day).
@@ -242,6 +271,7 @@ func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 		// persistence key, so it must stay stable across restarts.
 		w := l.seedWindow(backend, lim.Label(), lim.Amount(), dur)
 		w.hard = lim.Hard
+		w.calendar = lim.Calendar()
 		windows = append(windows, w)
 	}
 	if len(windows) == 0 {
@@ -540,6 +570,12 @@ func (l *Ledger) HardBlocked(backend string) (bool, time.Duration) {
 			continue
 		}
 		blocked = true
+		if cw.calendar != "" {
+			if d := periodEnd(cw.calendar, now).Sub(now); d > wait {
+				wait = d
+			}
+			continue
+		}
 		// The level leaks limit per dur, so it drops back under the limit after
 		// (lv-limit) worth of leak; the epsilon keeps an exactly-full window
 		// from answering "retry in 0s".
@@ -568,8 +604,8 @@ func (l *Ledger) Snapshot() []Entry {
 				lv := cw.levelAt(now)
 				w := Window{
 					Label:   cw.label,
-					Limit:   int(cw.limit),
-					Used:    int(math.Round(lv)),
+					Limit:   cw.limit,
+					Used:    lv,
 					Blocked: lv >= cw.limit,
 					Hard:    cw.hard,
 				}

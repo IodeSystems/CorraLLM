@@ -18,6 +18,7 @@ import (
 //	  - {usd: 200,    per: month}
 //	  - {sec: 600,    per: minute}
 //	  - {usd: 300,    per: month, hard: true}
+//	  - {usd: 50,     per: calendar-month, hard: true}
 //
 // A flat list rather than a dimension→spec map, because the same dimension
 // routinely needs several windows: a provider's "20/minute AND 1000/day" is two
@@ -87,11 +88,33 @@ func (l Limit) Amount() float64 {
 // falloff buckets with no reset boundary, so there is no 1st-of-the-month cliff
 // and no thundering burst after one — a budget that drains continuously is the
 // better shape for a spend guard, and it is the only one this engine can honour
-// honestly. A caller who needs billing-cycle semantics needs a different
-// mechanism, not a different string here.
+// honestly.
+//
+// "calendar-day" and "calendar-month" are the billing-cycle form: a fixed
+// window that empties at 00:00 UTC / on the 1st, the way a provider bills. The
+// duration returned for them is nominal (display only); see Calendar.
 func (l Limit) Window() (time.Duration, bool) {
-	d, ok := windowUnits[strings.ToLower(strings.TrimSpace(l.Per))]
+	per := strings.ToLower(strings.TrimSpace(l.Per))
+	if d, ok := calendarUnits[per]; ok {
+		return d, true
+	}
+	d, ok := windowUnits[per]
 	return d, ok
+}
+
+// calendarUnits are the fixed-reset windows, with a nominal duration.
+var calendarUnits = map[string]time.Duration{
+	"calendar-day":   24 * time.Hour,
+	"calendar-month": 30 * 24 * time.Hour,
+}
+
+// Calendar is "day" or "month" for a fixed-reset window, "" for a falloff one.
+func (l Limit) Calendar() string {
+	per := strings.ToLower(strings.TrimSpace(l.Per))
+	if _, ok := calendarUnits[per]; ok {
+		return strings.TrimPrefix(per, "calendar-")
+	}
+	return ""
 }
 
 // Label is the counter key for this limit: dimension + window, so several

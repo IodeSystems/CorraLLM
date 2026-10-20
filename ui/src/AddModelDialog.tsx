@@ -302,8 +302,8 @@ function RemoteModelDialog(props: { open: boolean; onClose: () => void; header: 
   const add = useMutation({
     mutationFn: () => {
       const limits = [
-        ...(num(d.usdDay) > 0 ? [{ usd: num(d.usdDay), per: 'day', hard: true }] : []),
-        ...(num(d.usdMonth) > 0 ? [{ usd: num(d.usdMonth), per: 'month', hard: true }] : []),
+        ...(num(d.usdDay) > 0 ? [{ usd: num(d.usdDay), per: 'calendar-day', hard: true }] : []),
+        ...(num(d.usdMonth) > 0 ? [{ usd: num(d.usdMonth), per: 'calendar-month', hard: true }] : []),
         ...(num(d.rpm) > 0 ? [{ req: num(d.rpm), per: 'minute' }] : []),
       ]
       return gqlClient.request(AddRemoteModelDoc, {
@@ -542,8 +542,8 @@ function RemoteModelDialog(props: { open: boolean; onClose: () => void; header: 
               )}
             />
             <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-              <Money label="Spend cap per day" value={d.usdDay} onChange={(v) => set({ usdDay: v })} />
-              <Money label="Spend cap per month" value={d.usdMonth} onChange={(v) => set({ usdMonth: v })} />
+              <Money label="Spend cap per day (UTC)" value={d.usdDay} onChange={(v) => set({ usdDay: v })} />
+              <Money label="Spend cap per calendar month" value={d.usdMonth} onChange={(v) => set({ usdMonth: v })} />
               <TextField
                 size="small"
                 type="number"

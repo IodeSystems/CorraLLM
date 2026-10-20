@@ -54,8 +54,8 @@ type QuotaEntryView struct {
 // reset boundary.
 type QuotaWindowView struct {
 	Label    string `json:"label" doc:"\"1m\" (per-minute) or \"1d\" (per-day)."`
-	Limit    int    `json:"limit"`
-	Used     int    `json:"used" doc:"Decayed fill level, rounded; leaks back toward zero over the window."`
+	Limit    float64 `json:"limit"`
+	Used     float64 `json:"used" doc:"Fill level. A falloff window leaks back toward zero over its period; a calendar window (calendar-day / calendar-month) empties at the UTC boundary."`
 	Blocked  bool   `json:"blocked,omitempty" doc:"The level has reached the limit — the backend is skipped until it drains below."`
 	ResetsIn string `json:"resetsIn,omitempty" doc:"Time until the current level fully drains to zero."`
 }
