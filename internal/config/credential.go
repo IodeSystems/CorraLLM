@@ -124,6 +124,14 @@ func (c Credential) MergedHeaders(shared map[string]string) map[string]string {
 	return out
 }
 
+// ResolvedHeaders is MergedHeaders with ${NAME} references expanded: what goes
+// on the wire. The provider's headers arrive expanded already; the
+// credential's own do not, and a merge without this sent a key reference
+// upstream as its literal text.
+func (c Credential) ResolvedHeaders(shared map[string]string) map[string]string {
+	return expandHeaders(c.MergedHeaders(shared))
+}
+
 // ProviderTarget resolves where one credential of a provider talks to, for
 // callers that need the endpoint OUTSIDE a served model — enumerating a
 // catalogue, testing a key.
@@ -147,7 +155,7 @@ func (c *Config) ProviderTarget(provider, credential string) (string, *ProxyTarg
 	}
 	t := *base
 	if len(cr.Headers) > 0 || cr.AuthTokenCommand != "" {
-		t.Headers = cr.MergedHeaders(base.Headers)
+		t.Headers = cr.ResolvedHeaders(base.Headers)
 		if cr.AuthTokenCommand != "" {
 			t.AuthTokenCommand = cr.AuthTokenCommand
 		}

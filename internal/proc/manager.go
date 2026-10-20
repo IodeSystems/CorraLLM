@@ -420,7 +420,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	// resolved the same model.
 	if cred != nil && target != nil {
 		merged := *target
-		merged.Headers = cred.MergedHeaders(target.Headers)
+		merged.Headers = cred.ResolvedHeaders(target.Headers)
 		if c := cred.AuthTokenCommand; c != "" {
 			merged.AuthTokenCommand = c
 		}

@@ -100,7 +100,7 @@ func (c *Config) VirtualTargets() []VirtualTarget {
 			for _, cr := range pv.CredentialList() {
 				t := *base
 				if len(cr.Headers) > 0 || cr.AuthTokenCommand != "" {
-					t.Headers = cr.MergedHeaders(base.Headers)
+					t.Headers = cr.ResolvedHeaders(base.Headers)
 					if cr.AuthTokenCommand != "" {
 						t.AuthTokenCommand = cr.AuthTokenCommand
 					}
