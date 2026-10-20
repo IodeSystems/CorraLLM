@@ -81,3 +81,34 @@ func TestRoster_HasAndErrorPreservesSet(t *testing.T) {
 		t.Errorf("snapshot should carry the error: %+v", s)
 	}
 }
+
+// Context windows and prices come from whichever vendor field is present.
+func TestParseCatalogVendorShapes(t *testing.T) {
+	cases := []struct {
+		name, body string
+		ctx        int
+		prompt     float64
+		label      string
+	}{
+		{"groq", `{"data":[{"id":"m","context_window":131072}]}`, 131072, 0, ""},
+		{"vllm", `{"data":[{"id":"m","max_model_len":32768}]}`, 32768, 0, ""},
+		{"anthropic", `{"data":[{"id":"claude-x","display_name":"Claude X","max_input_tokens":200000}]}`, 200000, 0, "Claude X"},
+		{"together bare array", `[{"id":"m","display_name":"M","context_length":8192,"pricing":{"input":0.6,"output":1.2}}]`, 8192, 0.6 / 1e6, "M"},
+		{"openrouter", `{"data":[{"id":"m","name":"M","context_length":4096,"pricing":{"prompt":"0.000001","completion":"0.000002"}}]}`, 4096, 0.000001, "M"},
+	}
+	for _, c := range cases {
+		got, err := parseCatalog([]byte(c.body))
+		if err != nil || len(got) != 1 {
+			t.Fatalf("%s: %v %v", c.name, got, err)
+		}
+		e := got[0]
+		if e.ContextLength != c.ctx || e.PromptUSD != c.prompt || e.Name != c.label || e.Free {
+			t.Errorf("%s: %+v", c.name, e)
+		}
+	}
+	// A listed zero is free; absent pricing is not.
+	got, _ := parseCatalog([]byte(`{"data":[{"id":"a","pricing":{"prompt":"0","completion":"0"}},{"id":"b"}]}`))
+	if !got[0].Free || got[1].Free {
+		t.Errorf("free: %+v", got)
+	}
+}

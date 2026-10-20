@@ -205,42 +205,84 @@ func FetchCatalog(ctx context.Context, hc *http.Client, modelsURL string, header
 	return parseCatalog(body)
 }
 
+// catalogRow is one /v1/models row in any of the shapes providers send. The
+// OpenAI spec defines only id; everything else is a vendor extension, so each
+// field below names who sends it.
+type catalogRow struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`         // OpenRouter
+	DisplayName string `json:"display_name"` // Anthropic, Together
+	Desc        string `json:"description"`
+	Pricing     struct {
+		Prompt     any `json:"prompt"`     // OpenRouter: $/token, as a string
+		Completion any `json:"completion"` // OpenRouter
+		Input      any `json:"input"`      // Together: $/1M tokens, as a number
+		Output     any `json:"output"`     // Together
+	} `json:"pricing"`
+	ContextLength  int `json:"context_length"`   // OpenRouter, Together, Fireworks
+	ContextWindow  int `json:"context_window"`   // Groq
+	MaxModelLen    int `json:"max_model_len"`    // vLLM
+	MaxInputTokens int `json:"max_input_tokens"` // Anthropic
+	Architecture   struct {
+		InputModalities  []string `json:"input_modalities"`
+		OutputModalities []string `json:"output_modalities"`
+		Modality         string   `json:"modality"` // legacy "text->text"
+	} `json:"architecture"`
+}
+
+// num reads a price that may be a JSON string or number; ok is false when
+// absent or unparseable, which is distinct from a listed price of 0.
+func num(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case string:
+		f, err := strconv.ParseFloat(x, 64)
+		return f, err == nil
+	}
+	return 0, false
+}
+
 func parseCatalog(body []byte) ([]Entry, error) {
 	var doc struct {
-		Data []struct {
-			ID      string `json:"id"`
-			Name    string `json:"name"`
-			Desc    string `json:"description"`
-			Pricing struct {
-				Prompt     string `json:"prompt"`
-				Completion string `json:"completion"`
-			} `json:"pricing"`
-			ContextLength int `json:"context_length"`
-			Architecture  struct {
-				InputModalities  []string `json:"input_modalities"`
-				OutputModalities []string `json:"output_modalities"`
-				Modality         string   `json:"modality"` // legacy "text->text"
-			} `json:"architecture"`
-		} `json:"data"`
+		Data []catalogRow `json:"data"`
 	}
-	if err := json.Unmarshal(body, &doc); err != nil {
+	// Together returns a bare array instead of {"data": [...]}.
+	if t := strings.TrimSpace(string(body)); strings.HasPrefix(t, "[") {
+		if err := json.Unmarshal(body, &doc.Data); err != nil {
+			return nil, fmt.Errorf("parse models: %w", err)
+		}
+	} else if err := json.Unmarshal(body, &doc); err != nil {
 		return nil, fmt.Errorf("parse models: %w", err)
 	}
 	out := make([]Entry, 0, len(doc.Data))
 	for _, m := range doc.Data {
 		e := Entry{
-			ID:            m.ID,
-			Free:          hasFreeSuffix(m.ID) || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0"),
-			ContextLength: m.ContextLength,
-			Name:          m.Name,
-			Description:   m.Desc,
+			ID:          m.ID,
+			Name:        m.Name,
+			Description: m.Desc,
 		}
-		// Unparseable or absent pricing lands at 0, which reads as "unpriced" —
-		// the same thing the caller sees for an endpoint that reports no pricing
-		// block at all. Free is NOT inferred from these: it is already decided
-		// above on the raw strings, where "0" and "" are distinguishable.
-		e.PromptUSD, _ = strconv.ParseFloat(m.Pricing.Prompt, 64)
-		e.CompletionUSD, _ = strconv.ParseFloat(m.Pricing.Completion, 64)
+		if e.Name == "" {
+			e.Name = m.DisplayName
+		}
+		for _, n := range []int{m.ContextLength, m.ContextWindow, m.MaxModelLen, m.MaxInputTokens} {
+			if n > 0 {
+				e.ContextLength = n
+				break
+			}
+		}
+		// Unparseable or absent pricing lands at 0, which reads as "unpriced".
+		// Free needs a LISTED zero for both, which absent pricing is not.
+		p, pok := num(m.Pricing.Prompt)
+		c, cok := num(m.Pricing.Completion)
+		if !pok && !cok {
+			// Together lists dollars per million; Entry is dollars per token.
+			p, pok = num(m.Pricing.Input)
+			c, cok = num(m.Pricing.Output)
+			p, c = p/1e6, c/1e6
+		}
+		e.PromptUSD, e.CompletionUSD = p, c
+		e.Free = hasFreeSuffix(m.ID) || (pok && cok && p == 0 && c == 0)
 		e.InputModality = strings.Join(m.Architecture.InputModalities, "+")
 		e.OutputModality = strings.Join(m.Architecture.OutputModalities, "+")
 		// Older payloads report only "text->text"; split it so one filter works
