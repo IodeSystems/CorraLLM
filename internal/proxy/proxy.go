@@ -985,11 +985,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	var queuedMS int64 // time blocked in admission control
 	var loadMS int64   // time waiting for a backend to be spawned/resident
 
-	for _, idx := range walk {
+	for wi, idx := range walk {
 		cand := cands[idx]
 		backend := cand.Model
 		name := cand.Name
 		stage := group.StageFor(backend.Type)
+		lastCand := wi == len(walk)-1
 
 		admitStart := time.Now()
 		// group.Interruptible OR the request's own opt-in. A caller can only
@@ -1179,6 +1180,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// to the next candidate rather than returning the error to the caller.
 		isFree := backend.FreeTier != nil
 		hardFailStatus := 0
+		// A remote API's own 429/503: corrallm pauses the backend, makes sure the
+		// caller gets a Retry-After, and tries the next candidate if one is left.
+		remote := isRemote(backend)
+		upstreamRefusal := 0
+		var coolTo time.Time
 		upstreamStart := time.Now()
 		var upHeaders http.Header // the upstream's own headers, before ours are added
 		rp.ModifyResponse = func(resp *http.Response) error {
@@ -1202,6 +1208,28 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				hardFailStatus = resp.StatusCode
 				p.quota.MarkDown(name) // exponential backoff lives in the ledger
 				return errBackendDown
+			}
+			if remote && isHardFail(resp.StatusCode) {
+				p.noteRefusal(name, resp.StatusCode) // paid key: alert, no spill
+			}
+			if remote && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) {
+				upstreamRefusal = resp.StatusCode
+				fallback := 15 * time.Second // 503: load shedding, usually brief
+				if resp.StatusCode == http.StatusTooManyRequests {
+					fallback = time.Minute
+				}
+				if p.quota != nil {
+					coolTo = p.quota.CoolFor(name, resp.Header, fallback)
+				} else {
+					coolTo = time.Now().Add(fallback)
+				}
+				if resp.Header.Get("Retry-After") == "" {
+					resp.Header.Set("Retry-After", strconv.Itoa(retryAfterSecs(time.Until(coolTo))))
+				}
+				p.noteRefusal(name, resp.StatusCode)
+				if !lastCand {
+					return errBackendDown
+				}
 			}
 			return nil
 		}
@@ -1285,6 +1313,18 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// another backend instead of surfacing a 402/403.
 		if errors.Is(proxyErr, errBackendDown) && !sc.wroteHeader {
 			release()
+			if upstreamRefusal != 0 {
+				// The upstream's own refusal, recorded as its own row so the log
+				// shows the provider said no before another model answered.
+				slog.Warn("remote backend refused, trying the next candidate", "backend", name, "status", upstreamRefusal)
+				lastHardFail = fmt.Sprintf("%s refused with %d", name, upstreamRefusal)
+				p.logReq(r, store.Activity{Served: name, Requested: served, RefusedBy: name, Key: key, Path: r.URL.Path,
+					Status: upstreamRefusal, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
+					Error: fmt.Sprintf("upstream %d; tried the next model", upstreamRefusal), ReqBody: reqBody,
+					RespHeaders: keptHeaders(upHeaders), RetryAfterMS: time.Until(coolTo).Milliseconds()})
+				p.markInflight(live, inflightQueued, "")
+				continue
+			}
 			slog.Warn("free-tier backend hard-failed, spilling", "backend", name, "status", hardFailStatus)
 			lastHardFail = fmt.Sprintf("%s refused with %d", name, hardFailStatus)
 			p.noteRefusal(name, hardFailStatus)
@@ -1329,6 +1369,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(context.Cause(reqCtx), sched.ErrPreempted) {
 			status, errReason = 499, "preempted" // slot reclaimed by a higher-priority group mid-request
+		}
+		var retryAfterMS int64
+		if upstreamRefusal != 0 && errReason == "" {
+			errReason = fmt.Sprintf("upstream %d", upstreamRefusal)
+			retryAfterMS = max(time.Until(coolTo).Milliseconds(), 0)
 		}
 		// Meter the served request and resolve it to $ via the backend's cost
 		// class. Audio routes carry no token usage, so they cost by byte size
@@ -1512,6 +1557,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			CostUSD: costUSD, QueuedMS: queuedMS, LoadMS: loadMS,
 			AudioBytes: audioBytes, Error: errReason, TTFBMs: ttfbMS,
 			ReqBody: reqBody, RespBody: respBody, RespHeaders: respHeaders, FinishReason: finishReason,
+			RetryAfterMS: retryAfterMS,
 			ReasoningTokens: thinking, ReasoningMeasured: thinkingMeasured,
 		})
 		return

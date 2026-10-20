@@ -457,17 +457,54 @@ func updateBucket(b *Bucket, h http.Header, kind string, now time.Time) {
 	}
 }
 
+// ParseRetryAfter reads a Retry-After value: whole or fractional seconds, a
+// Go duration ("1.5s"), or an HTTP date (RFC 9110). false when absent or
+// unreadable.
+func ParseRetryAfter(v string, now time.Time) (time.Time, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}, false
+	}
+	if secs, err := strconv.ParseFloat(v, 64); err == nil && secs >= 0 {
+		return now.Add(time.Duration(secs * float64(time.Second))), true
+	}
+	if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+		return now.Add(d), true
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+// CoolFor takes a backend out of rotation after the upstream refused it with
+// a 429 or 503: until its Retry-After, else for fallback. Never shortens a
+// longer cooling already in place. Returns when the backend is admitted again.
+func (l *Ledger) CoolFor(backend string, h http.Header, fallback time.Duration) time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	until, ok := ParseRetryAfter(h.Get("Retry-After"), now)
+	if !ok {
+		until = now.Add(fallback)
+	}
+	e := l.entries[backend]
+	if e == nil {
+		e = &Entry{Backend: backend}
+		l.entries[backend] = e
+	}
+	if until.After(e.CoolingUntil) {
+		e.CoolingUntil = until
+	}
+	return e.CoolingUntil
+}
+
 // coolUntil picks how long to skip a backend after a 429: Retry-After if the
-// provider sent one (seconds int or duration string), else the soonest reset of
-// an exhausted bucket, else a conservative minute.
+// provider sent one, else the soonest reset of an exhausted bucket, else a
+// conservative minute.
 func coolUntil(h http.Header, e *Entry, now time.Time) time.Time {
-	if ra := h.Get("Retry-After"); ra != "" {
-		if secs, err := strconv.Atoi(ra); err == nil {
-			return now.Add(time.Duration(secs) * time.Second)
-		}
-		if d, err := time.ParseDuration(ra); err == nil {
-			return now.Add(d)
-		}
+	if t, ok := ParseRetryAfter(h.Get("Retry-After"), now); ok {
+		return t
 	}
 	var soonest time.Time
 	for _, b := range []Bucket{e.Requests, e.Tokens} {

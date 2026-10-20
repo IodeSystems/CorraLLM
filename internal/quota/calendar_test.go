@@ -49,3 +49,21 @@ func TestCalendarDayKeepsChargesWithinTheDay(t *testing.T) {
 		t.Errorf("next day used = %v, want 0", u)
 	}
 }
+
+func TestParseRetryAfterForms(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	for v, want := range map[string]time.Duration{
+		"3":                             3 * time.Second,
+		"1.5":                           1500 * time.Millisecond,
+		"2s":                            2 * time.Second,
+		"Tue, 20 Oct 2026 12:00:30 GMT": 30 * time.Second,
+	} {
+		got, ok := ParseRetryAfter(v, now)
+		if !ok || got.Sub(now) != want {
+			t.Errorf("ParseRetryAfter(%q) = %v, %v; want +%v", v, got.Sub(now), ok, want)
+		}
+	}
+	if _, ok := ParseRetryAfter("soon", now); ok {
+		t.Error(`"soon" parsed`)
+	}
+}

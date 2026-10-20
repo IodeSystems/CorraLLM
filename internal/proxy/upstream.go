@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/iodesystems/corrallm/internal/config"
 )
 
 // Speed sources, stored in activity.speed_source. "" is the backend's own
@@ -99,4 +101,15 @@ func keptHeaders(h http.Header) string {
 	}
 	sort.Strings(lines)
 	return strings.Join(lines, "\n")
+}
+
+// isRemote is config.Model.Remote, a variable so a test can treat a loopback
+// fake as a remote API.
+var isRemote = func(m config.Model) bool { return m.Remote() }
+
+// retryAfterSecs renders a wait as a Retry-After value: whole seconds,
+// rounded up, at least 1.
+func retryAfterSecs(d time.Duration) int {
+	secs := int((d + time.Second - 1) / time.Second)
+	return max(secs, 1)
 }
