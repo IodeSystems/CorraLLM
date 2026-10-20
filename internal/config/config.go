@@ -138,6 +138,9 @@ type Config struct {
 	// absolute path forever, and every existing one does.
 	Tools map[string]Tool `yaml:"tools,omitempty"`
 
+	// Auth adds dashboard sign-in methods beside the admin token. See authcfg.go.
+	Auth *Auth `yaml:"auth,omitempty"`
+
 	// discovered holds models contributed at runtime by a provider's `discover`
 	// block, keyed by served name. Guarded because the refresh loop writes it
 	// while requests read it. Never populated by Load — the file is the static
@@ -2479,6 +2482,9 @@ func (c *Config) validatePool(model, placement, server, pool string) error {
 // the phases that consume each section.
 func (c *Config) Validate() error {
 	if err := c.Power.validate(c.Servers); err != nil {
+		return err
+	}
+	if err := c.Auth.validate(); err != nil {
 		return err
 	}
 	// `thinking` is reserved inside a key policy (see KeyPolicy.UnmarshalYAML),

@@ -355,3 +355,17 @@ func TestServerEphemeralSurvives(t *testing.T) {
 		t.Errorf("ephemeral lost in the round trip: %+v", out.Servers["laptop"])
 	}
 }
+
+// auth: has no table of its own; it rides in config_scalar. Losing it on a
+// save would silently switch SSO off.
+func TestRoundTripAuth(t *testing.T) {
+	in := &config.Config{Auth: &config.Auth{OIDC: &config.OIDC{
+		Issuer: "https://idp.example.com", ClientID: "cid", ClientSecret: "${OIDC_CLIENT_SECRET}",
+		AllowedEmails: []string{"ops@example.com"}, AllowUnverifiedEmail: true,
+	}}}
+	out := roundTrip(t, in)
+	compare(t, in, out)
+	if out.Auth == nil || out.Auth.OIDC == nil || out.Auth.OIDC.ClientID != "cid" {
+		t.Fatalf("auth lost in round trip: %+v", out.Auth)
+	}
+}
