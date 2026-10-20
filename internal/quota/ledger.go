@@ -274,6 +274,14 @@ func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 		// on ONE dimension keep independent counters — and the label is the
 		// persistence key, so it must stay stable across restarts.
 		w := l.seedWindow(backend, lim.Label(), lim.Amount(), dur)
+		// Re-registered on a config change: the same label keeps counting.
+		if cur := l.counters[backend]; cur != nil {
+			for _, old := range cur.windows {
+				if old.label == w.label {
+					w.used, w.at = old.used, old.at
+				}
+			}
+		}
 		w.hard = lim.Hard
 		w.calendar = lim.Calendar()
 		windows = append(windows, w)
@@ -288,6 +296,19 @@ func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 	// first response; counter-mode is declared, so surface it up front).
 	if l.entries[backend] == nil {
 		l.entries[backend] = &Entry{Backend: backend}
+	}
+}
+
+// DropLimitsExcept stops counting every scope not in keep: its limits were
+// removed from the config. Persisted rows stay, harmless, until the label is
+// declared again.
+func (l *Ledger) DropLimitsExcept(keep map[string]bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for b := range l.counters {
+		if !keep[b] {
+			delete(l.counters, b)
+		}
 	}
 }
 

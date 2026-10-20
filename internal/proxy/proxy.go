@@ -382,6 +382,22 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 	// of persisting it — so the mirror has to be primed, or the first success
 	// after a restart would not know there was anything to clear.
 	p.loadRefusals()
+	p.seedQuota(cfg)
+	return p
+}
+
+// seedQuota registers every declared budget with the ledger. At construction
+// and again on every config change, so an edited limit applies without a
+// restart; a window that keeps its label keeps its level.
+func (p *Proxy) seedQuota(cfg *config.Config) {
+	if p.quota == nil {
+		return
+	}
+	declared := map[string]bool{}
+	setLimits := func(scope string, ls []config.Limit) {
+		declared[scope] = true
+		p.quota.SetLimits(scope, ls)
+	}
 	// Seed the ledger from each free-tier backend's config (P16): a self-cap for
 	// header-tracked backends, and the provider limits for counter-mode ones (no
 	// rate-limit headers, so budget is counted locally).
@@ -393,7 +409,7 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 			p.quota.SetCap(name, m.FreeTier.Cap.Requests, m.FreeTier.Cap.Tokens)
 		}
 		if len(m.FreeTier.Limits) > 0 {
-			p.quota.SetLimits(name, m.FreeTier.Limits)
+			setLimits(name, m.FreeTier.Limits)
 		}
 	}
 	// Credential budgets are registered per (provider, credential) rather than
@@ -404,18 +420,19 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 		for pn, pv := range ext.Providers {
 			for _, cr := range pv.Credentials {
 				if len(cr.Limits) > 0 {
-					p.quota.SetLimits(cr.ScopeKey(pn), cr.Limits)
+					setLimits(cr.ScopeKey(pn), cr.Limits)
 				}
 			}
 			if len(pv.Limits) > 0 {
-				p.quota.SetLimits(config.ProviderScopeKey(pn), pv.Limits)
+				setLimits(config.ProviderScopeKey(pn), pv.Limits)
 			}
 		}
 	}
 	if len(cfg.Limits) > 0 {
-		p.quota.SetLimits(config.GlobalScopeKey, cfg.Limits)
+		setLimits(config.GlobalScopeKey, cfg.Limits)
 	}
-	return p
+	// A scope whose limits were removed stops counting.
+	p.quota.DropLimitsExcept(declared)
 }
 
 // quotaCounterStore adapts *store.Store to quota.CounterStore, converting the
@@ -3598,6 +3615,7 @@ func (p *Proxy) SetConfig(cfg *config.Config) {
 	}
 	p.cfg.Store(cfg)
 	p.cost = cost.NewModel(cfg)
+	p.seedQuota(cfg)
 }
 
 // RetryableHeader lets a CALLER volunteer its request for preemption.

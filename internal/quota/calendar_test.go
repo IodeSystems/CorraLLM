@@ -67,3 +67,28 @@ func TestParseRetryAfterForms(t *testing.T) {
 		t.Error(`"soon" parsed`)
 	}
 }
+
+func TestSetLimitsAgainKeepsLevelsAndDropRemovesScopes(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	l := New()
+	l.now = func() time.Time { return now }
+	l.SetLimits("cred", []config.Limit{{USD: 5, Per: "calendar-day", Hard: true}})
+	l.SetLimits("old", []config.Limit{{Req: 10, Per: "minute"}})
+	l.Charge("cred", config.DimUSD, 3)
+	// Config reload: same label, new amount.
+	l.SetLimits("cred", []config.Limit{{USD: 4, Per: "calendar-day", Hard: true}})
+	l.DropLimitsExcept(map[string]bool{"cred": true})
+	snap := l.Snapshot()
+	var got *Entry
+	for i := range snap {
+		if snap[i].Backend == "cred" {
+			got = &snap[i]
+		}
+		if snap[i].Backend == "old" && len(snap[i].Windows) > 0 {
+			t.Error("dropped scope still has windows")
+		}
+	}
+	if got == nil || len(got.Windows) != 1 || got.Windows[0].Used != 3 || got.Windows[0].Limit != 4 {
+		t.Fatalf("after reload = %+v, want used 3 of limit 4", got)
+	}
+}
