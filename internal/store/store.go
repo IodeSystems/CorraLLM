@@ -706,6 +706,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply enrollment schema: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, authUserSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("apply auth user schema: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
