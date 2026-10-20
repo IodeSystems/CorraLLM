@@ -26,6 +26,7 @@ import (
 
 	"github.com/iodesystems/corrallm/internal/agent"
 	"github.com/iodesystems/corrallm/internal/agentdist"
+	"github.com/iodesystems/corrallm/internal/alert"
 	"github.com/iodesystems/corrallm/internal/api"
 	"github.com/iodesystems/corrallm/internal/auth"
 	"github.com/iodesystems/corrallm/internal/bench/task"
@@ -390,6 +391,7 @@ func newServeCmd() *cobra.Command {
 	var (
 		home, service, webRoot, configPath, dbPath string
 		agentDir, publicBase                       string
+		alertNtfy                                  string
 		healthTimeout, activityRetention           time.Duration
 		payloadRetention                           time.Duration
 		requestTimeout                             time.Duration
@@ -423,6 +425,7 @@ func newServeCmd() *cobra.Command {
 				webRoot:            pick(webRoot, envOr("WEB_ROOT", "./ui/dist")),
 				agentDir:           pick(agentDir, envOr("CORRALLM_AGENT_DIR", "./bin/agents")),
 				publicBase:         pick(publicBase, envOr("CORRALLM_PUBLIC_BASE", "")),
+				alertNtfy:          pick(alertNtfy, envOr("CORRALLM_ALERT_NTFY", "")),
 				configPath:         p.config,
 				configDerived:      p.configDerived,
 				dbPath:             dbPathResolved,
@@ -457,6 +460,7 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&home, "home", defaultHome(), "directory corrallm roots its own state in — config, SQLite store, admin token, layered .properties (or CORRALLM_HOME)")
 	f.StringVar(&service, "service", envOr("CORRALLM_SLOT", "dev"), "service/slot selecting override .properties (dev|current|next)")
 	f.StringVar(&webRoot, "web-root", "", "directory to serve the SPA from (default ./ui/dist or WEB_ROOT)")
+	f.StringVar(&alertNtfy, "alert-ntfy", "", "ntfy topic URL for operator alerts, e.g. https://ntfy.sh/<topic> (or CORRALLM_ALERT_NTFY): a provider refusing requests, a spend cap reached; empty = none")
 	f.StringVar(&publicBase, "public-base", "", "how attached machines reach this daemon, e.g. http://box1:8111 (or CORRALLM_PUBLIC_BASE); used in the install command")
 	f.StringVar(&agentDir, "agent-dir", "", "directory of cross-compiled agent binaries to serve at /install/ (default ./bin/agents or CORRALLM_AGENT_DIR; populate with `make agents`)")
 	f.StringVar(&configPath, "config", "", "path to the corrallm YAML config (default <home>/config.yml or CORRALLM_CONFIG)")
@@ -524,6 +528,7 @@ type serveOpts struct {
 	webRoot, configPath, dbPath, addr     string
 	configDerived                         bool
 	agentDir, publicBase                  string
+	alertNtfy                             string
 	healthTimeout                         time.Duration
 	tokenPath                             string
 	insecure                              bool
@@ -844,6 +849,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	h.BenchConfig = o.benchConfig
 	h.BenchProbeDirs = task.SplitProbeDirs(o.benchProbes)
 	px.SetBroker(broker)
+	px.SetAlerter(alert.New(o.alertNtfy))
 	// corrallm's own callers pass credential allowlists: the running bench and
 	// an admin's dashboard (Test tab). Not under --insecure, where every
 	// browser would count as an admin.

@@ -30,6 +30,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/iodesystems/corrallm/internal/alert"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/events"
@@ -61,6 +62,7 @@ type Proxy struct {
 	requestTimeout     time.Duration                          // 0 = no corrallm-imposed deadline (defer to client + backend)
 	capturePayloads    bool                                   // capture req/resp payloads onto the activity row (P10b)
 	trustedCaller      func(r *http.Request, key string) bool // passes credential allowlists; see SetTrustedCaller
+	alert              *alert.Notifier                        // operator push alerts; nil drops them
 	realtimeIdle       time.Duration                          // 0 = no idle reap of a realtime ws session (P9e)
 	realtimeMaxSession time.Duration                          // 0 = no max-duration reap of a realtime ws session (P9e)
 	convertEnabled     bool                                   // master switch for chat attachment ingestion (P13)
@@ -105,8 +107,14 @@ func (p *Proxy) noteRefusal(backend string, status int) {
 	if p.refusing == nil {
 		p.refusing = map[string]bool{}
 	}
+	was := p.refusing[backend]
 	p.refusing[backend] = true
 	p.refusingMu.Unlock()
+	if !was {
+		p.alert.Send("refusing/"+backend, backend+" refused a request",
+			fmt.Sprintf("**%s** answered **%d** (%s). corrallm will not report it again until it serves.",
+				backend, status, http.StatusText(status)), "warning")
+	}
 	if err := p.store.NoteBackendRefusal(backend, status, time.Now().UnixMilli()); err != nil {
 		slog.Warn("could not record backend refusal", "backend", backend, "err", err)
 	}
@@ -128,6 +136,8 @@ func (p *Proxy) clearRefusal(backend string) {
 	if !was {
 		return
 	}
+	p.alert.Forget("refusing/" + backend)
+	p.alert.Send("serving/"+backend, backend+" is serving again", "**"+backend+"** answered a request successfully.", "white_check_mark")
 	if err := p.store.ClearBackendRefusal(backend); err != nil {
 		slog.Warn("could not clear backend refusal", "backend", backend, "err", err)
 	}
@@ -482,6 +492,10 @@ func (p *Proxy) capturePayload(data []byte, binary bool, contentType string, cap
 	}
 	return string(data)
 }
+
+// SetAlerter sets where operator alerts go (provider refusals, spend caps).
+// nil drops them.
+func (p *Proxy) SetAlerter(n *alert.Notifier) { p.alert = n }
 
 // SetTrustedCaller sets who passes every credential allowlist: corrallm's own
 // callers (the running benchmark, an admin's dashboard Test tab). Spend limits
@@ -1208,6 +1222,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				hardFailStatus = resp.StatusCode
 				p.quota.MarkDown(name) // exponential backoff lives in the ledger
 				return errBackendDown
+			}
+			if remote && strings.EqualFold(resp.Header.Get("X-Ratelimit-Over-Limit"), "yes") {
+				p.alert.Send("overlimit/"+name, name+": provider reports over limit",
+					fmt.Sprintf("**%s** answered with `x-ratelimit-over-limit: yes` (status %d). Expect 429s.", name, resp.StatusCode), "warning")
 			}
 			if remote && isHardFail(resp.StatusCode) {
 				p.noteRefusal(name, resp.StatusCode) // paid key: alert, no spill
@@ -2038,6 +2056,9 @@ func (p *Proxy) writeBudgetExhausted(w http.ResponseWriter, r *http.Request, ser
 	if secs < 1 {
 		secs = 1
 	}
+	p.alert.Send("budget/"+served, served+": spend cap reached",
+		fmt.Sprintf("A hard spend limit on **%s** is full. Requests are refused for %s.", served,
+			(time.Duration(secs)*time.Second).String()), "money_with_wings")
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusTooManyRequests)
