@@ -794,6 +794,64 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Tags:        []string{"observability"},
 	}, h.Reservations)
 
+	// Access: users, roles and the identity provider. Admin only; the viewer
+	// gate in auth.Middleware refuses the writes before they get here.
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "listAccess",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/access",
+		Summary:     "Dashboard users with roles and last sign-in, the identity provider (secret reference only) and the admin token setting.",
+		Tags:        []string{"access"},
+	}, h.ListAccess)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "upsertUser",
+		Method:      http.MethodPut,
+		Path:        "/api/v1/access/users",
+		Summary:     "Add a dashboard user or change their role (admin | viewer).",
+		Tags:        []string{"access"},
+	}, h.UpsertUser)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "removeUser",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/access/users/remove",
+		Summary:     "Remove a dashboard user and revoke their sessions.",
+		Tags:        []string{"access"},
+	}, h.RemoveUser)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "revokeUserSessions",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/access/users/revoke",
+		Summary:     "Sign a user out everywhere: every session issued until now stops working.",
+		Tags:        []string{"access"},
+	}, h.RevokeUserSessions)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "setIdentityProvider",
+		Method:      http.MethodPut,
+		Path:        "/api/v1/access/provider",
+		Summary:     "Set the OpenID Connect provider: issuer, client ID, optional client secret reference, enabled.",
+		Tags:        []string{"access"},
+	}, h.SetIdentityProvider)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "testIdentityProvider",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/access/provider/test",
+		Summary:     "Fetch an issuer's discovery document and report the endpoints found. Sends no credentials.",
+		Tags:        []string{"access"},
+	}, h.TestIdentityProvider)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "setAdminToken",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/access/admin-token",
+		Summary:     "Enable or disable the admin token. Disabling is accepted only from an SSO admin session.",
+		Tags:        []string{"access"},
+	}, h.SetAdminToken)
+
 	// Finalize: ingest the OpenAPI doc, build the GraphQL schema, mount
 	// /api/graphql + /api/schema/*.
 	if err := gat.RegisterHuma(humaAPI, g, "/api"); err != nil {

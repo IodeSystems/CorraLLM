@@ -31,6 +31,8 @@ type fakeIdP struct {
 	nonce     string
 	claims    func(issuer, nonce string) map[string]any
 	userinfo  map[string]any // served at /userinfo; nil = 404
+	tokenForm url.Values     // what the last /token request carried
+	tokenAuth string         // its Authorization header
 }
 
 const (
@@ -77,6 +79,7 @@ func newIdP(t *testing.T) *fakeIdP {
 		_ = r.ParseForm()
 		p.mu.Lock()
 		challenge, nonce := p.challenge, p.nonce
+		p.tokenForm, p.tokenAuth = r.PostForm, r.Header.Get("Authorization")
 		p.mu.Unlock()
 		sum := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
 		if r.Form.Get("code") != goodCode || b64(sum[:]) != challenge {
@@ -147,9 +150,9 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{idp: newIdP(t)}
 	h.settings = &OIDCSettings{
 		Issuer: h.idp.srv.URL, ClientID: clientID, ClientSecret: "shh",
-		RedirectURL:   "http://corrallm.test/auth/callback",
-		Scopes:        []string{"openid", "email"},
-		AllowedEmails: []string{"Ops@Example.com"},
+		RedirectURL: "http://corrallm.test/auth/callback",
+		Scopes:      []string{"openid", "email"},
+		Users:       map[string]Role{"Ops@Example.com": RoleAdmin},
 	}
 	h.sso = &SSO{Key: []byte("0123456789abcdef0123456789abcdef"), Settings: func() *OIDCSettings { return h.settings }}
 	h.api = Middleware(adminToken, h.sso)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -485,7 +488,7 @@ func TestSSOSessionExpires(t *testing.T) {
 func TestSSOSessionFollowsConfig(t *testing.T) {
 	h := newHarness(t)
 	sess := sessionFrom(t, h.signIn(t))
-	h.settings.AllowedEmails = []string{"someone-else@example.com"}
+	h.settings.Users = map[string]Role{"someone-else@example.com": RoleAdmin}
 	if code := h.apiCode(func(r *http.Request) { r.AddCookie(sess) }); code != http.StatusUnauthorized {
 		t.Errorf("de-listed email: /api = %d, want 401", code)
 	}
@@ -549,7 +552,7 @@ func TestSSONotConfigured(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	sso.WhoAmI(rec, httptest.NewRequest(http.MethodGet, "/auth/whoami", nil))
-	if strings.TrimSpace(rec.Body.String()) != `{"oidc":false}` {
+	if strings.TrimSpace(rec.Body.String()) != `{"oidc":false,"adminToken":"enabled"}` {
 		t.Errorf("whoami = %s", rec.Body)
 	}
 }

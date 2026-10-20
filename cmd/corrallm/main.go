@@ -77,7 +77,7 @@ func newRoot() *cobra.Command {
 		// unaffected.
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) { warnIfStaleFor(cmd.Name()) },
 	}
-	root.AddCommand(newServeCmd(), newAgentCmd(), newConfigCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd(), newServiceCmd(), newToolsCmd())
+	root.AddCommand(newServeCmd(), newAgentCmd(), newConfigCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd(), newServiceCmd(), newToolsCmd(), newAuthCmd())
 	return root
 }
 
@@ -743,9 +743,17 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 	sso := &auth.SSO{Key: []byte(sessionKey), Settings: func() *auth.OIDCSettings {
 		return oidcSettings(mgr.Config(), o.publicBase)
-	}}
+	}, AdminToken: adminToken,
+		TokenEnabled: func() bool {
+			c := mgr.Config()
+			return c == nil || c.Auth.AdminTokenOn()
+		},
+		// Per-user revocation and last sign-in live in the store, not config.
+		NotBefore:    st.AuthNotBefore,
+		RecordSignIn: st.AuthRecordSignIn,
+	}
 	if st := sso.Settings(); st != nil {
-		slog.Info("sso enabled", "issuer", st.Issuer, "redirect", st.RedirectURL, "allowed", len(st.AllowedEmails))
+		slog.Info("sso enabled", "issuer", st.Issuer, "redirect", st.RedirectURL, "users", len(st.Users))
 		if st.RedirectURL == "" {
 			slog.Warn("sso: no callback URL — set auth.oidc.redirectUrl or --public-base; /auth/login will refuse until then")
 		}
@@ -1362,23 +1370,24 @@ func (r loadRecorder) RecordLoad(ev proc.ModelLoadEvent) {
 
 // oidcSettings resolves auth.oidc for the SSO handlers: the client secret
 // expanded from the credential store, the redirect URL defaulted from
-// --public-base. Nil when SSO is not configured.
+// --public-base, the users with their roles. Nil when SSO is not configured
+// or switched off.
 func oidcSettings(c *config.Config, publicBase string) *auth.OIDCSettings {
-	if c == nil || c.Auth == nil || c.Auth.OIDC == nil {
+	if c == nil || !c.Auth.OIDCEnabled() {
 		return nil
 	}
 	o := c.Auth.OIDC
-	redirect := o.RedirectURL
-	if redirect == "" && publicBase != "" {
-		redirect = strings.TrimRight(publicBase, "/") + "/auth/callback"
+	users := map[string]auth.Role{}
+	for _, u := range c.Auth.EffectiveUsers() {
+		users[u.Email] = auth.Role(u.Role)
 	}
 	return &auth.OIDCSettings{
 		Issuer:               strings.TrimSpace(o.Issuer),
 		ClientID:             o.ClientID,
 		ClientSecret:         config.ExpandSecrets(o.ClientSecret),
-		RedirectURL:          redirect,
+		RedirectURL:          api.OIDCRedirectURL(o, publicBase),
 		Scopes:               o.ScopesOrDefault(),
-		AllowedEmails:        o.AllowedEmails,
+		Users:                users,
 		AllowUnverifiedEmail: o.AllowUnverifiedEmail,
 	}
 }

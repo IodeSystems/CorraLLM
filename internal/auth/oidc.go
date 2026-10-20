@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -23,11 +24,13 @@ import (
 // OIDC sign-in for the dashboard.
 //
 // The admin token stays the root credential; this adds a session cookie that a
-// person gets by signing in at an OpenID Connect provider with an allowlisted,
-// verified email. The session is stateless: an HMAC-signed {email, expiry}
-// under a server key. Nothing is stored server-side, so sign-out clears the
-// cookie but cannot revoke a copy of it; rotating the key (delete
-// <home>/session.key, restart) revokes every session.
+// person gets by signing in at an OpenID Connect provider with a verified email
+// listed in auth.users. The session is an HMAC-signed {email, issued, expiry}
+// under a server key. The role is not in it: it is looked up in the current
+// config on every request, so a demotion or removal applies at once. Revoking
+// one user's sessions sets a per-user cutoff (NotBefore) that every session
+// issued before it fails; rotating the key (delete <home>/session.key,
+// restart) revokes every session.
 
 const (
 	// SessionCookie carries the signed session.
@@ -50,21 +53,23 @@ type OIDCSettings struct {
 	ClientSecret         string
 	RedirectURL          string
 	Scopes               []string
-	AllowedEmails        []string
 	AllowUnverifiedEmail bool
+	// Users maps each admitted email to its role.
+	Users map[string]Role
 }
 
-func (s *OIDCSettings) allows(email string) bool {
+// roleOf returns email's role; ok is false when the email is not a user.
+func (s *OIDCSettings) roleOf(email string) (Role, bool) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
-		return false
+		return "", false
 	}
-	for _, e := range s.AllowedEmails {
+	for e, r := range s.Users {
 		if strings.ToLower(strings.TrimSpace(e)) == email {
-			return true
+			return r, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // SSO serves /auth/* and checks session cookies.
@@ -80,6 +85,17 @@ type SSO struct {
 	Client *http.Client
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// AdminToken lets WhoAmI report the token's holder as an admin.
+	AdminToken string
+	// TokenEnabled reports whether /api accepts the admin token. Nil means
+	// always. Read per request, like Settings.
+	TokenEnabled func() bool
+	// NotBefore returns a user's revocation cutoff in unix ms (0 = none). A
+	// session issued at or before it is refused, and so is every session when
+	// it fails. Nil means no revocation.
+	NotBefore func(ctx context.Context, email string) (int64, error)
+	// RecordSignIn notes a successful sign-in. Nil skips it.
+	RecordSignIn func(ctx context.Context, email, ip string, atMS int64) error
 
 	mu       sync.Mutex
 	issuer   string
@@ -91,6 +107,10 @@ func (s *SSO) now() time.Time {
 		return s.Now()
 	}
 	return time.Now()
+}
+
+func (s *SSO) tokenOn() bool {
+	return s == nil || s.TokenEnabled == nil || s.TokenEnabled()
 }
 
 func (s *SSO) settings() *OIDCSettings {
@@ -131,11 +151,18 @@ func (s *SSO) discover(issuer string) (*oidc.Provider, error) {
 }
 
 func oauthConfig(st *OIDCSettings, p *oidc.Provider) *oauth2.Config {
+	ep := p.Endpoint()
+	if st.ClientSecret == "" {
+		// A public client: PKCE is the proof, and client_id rides in the body.
+		// Auto-detect would send Basic "id:" first, which a PKCE-only client at
+		// Zitadel refuses.
+		ep.AuthStyle = oauth2.AuthStyleInParams
+	}
 	return &oauth2.Config{
 		ClientID:     st.ClientID,
 		ClientSecret: st.ClientSecret,
 		RedirectURL:  st.RedirectURL,
-		Endpoint:     p.Endpoint(),
+		Endpoint:     ep,
 		Scopes:       st.Scopes,
 	}
 }
@@ -150,6 +177,8 @@ type statePayload struct {
 type sessionPayload struct {
 	Email string `json:"e"`
 	Exp   int64  `json:"x"`
+	// Issued is unix ms, checked against NotBefore.
+	Issued int64 `json:"i"`
 }
 
 // Login starts the authorization-code flow: GET /auth/login.
@@ -251,9 +280,15 @@ func (s *SSO) Callback(w http.ResponseWriter, r *http.Request) {
 		errorPage(w, http.StatusUnauthorized, "Sign-in rejected", "The provider's identity token did not verify. Start again.")
 		return
 	}
+	now := s.now()
+	if s.RecordSignIn != nil {
+		if err := s.RecordSignIn(r.Context(), email, clientIP(r), now.UnixMilli()); err != nil {
+			slog.Warn("sso: could not record sign-in", "email", email, "err", err)
+		}
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookie,
-		Value:    sign(s.Key, "session", sessionPayload{Email: email, Exp: s.now().Add(sessionTTL).Unix()}),
+		Value:    sign(s.Key, "session", sessionPayload{Email: email, Exp: now.Add(sessionTTL).Unix(), Issued: now.UnixMilli()}),
 		Path:     "/",
 		SameSite: http.SameSiteLaxMode,
 		HttpOnly: true,
@@ -315,8 +350,8 @@ func (s *SSO) verifyIDToken(ctx context.Context, p *oidc.Provider, st *OIDCSetti
 	if !st.AllowUnverifiedEmail && !truthy(claims.EmailVerified) {
 		return email, "email not verified by the provider", true
 	}
-	if !st.allows(email) {
-		return email, "email is not in auth.oidc.allowedEmails", true
+	if _, ok := st.roleOf(email); !ok {
+		return email, "email is not in auth.users", true
 	}
 	return email, "", false
 }
@@ -338,36 +373,72 @@ func (s *SSO) Logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// WhoAmI tells the dashboard whether SSO is configured and who the session
-// belongs to: GET /auth/whoami. Public, so the login screen can ask before it
-// has any credential.
+// WhoAmI tells the dashboard whether SSO is configured, who the session
+// belongs to and their role: GET /auth/whoami. Public, so the login screen can
+// ask before it has any credential. The admin token reports role admin and no
+// email.
 func (s *SSO) WhoAmI(w http.ResponseWriter, r *http.Request) {
 	out := struct {
-		OIDC  bool   `json:"oidc"`
-		Email string `json:"email,omitempty"`
-	}{OIDC: s.settings() != nil}
-	out.Email, _ = s.SessionEmail(r)
+		OIDC bool `json:"oidc"`
+		// AdminToken is enabled or disabled; the login screen hides the token
+		// field when disabled.
+		AdminToken string `json:"adminToken"`
+		Email      string `json:"email,omitempty"`
+		Role       Role   `json:"role,omitempty"`
+	}{OIDC: s.settings() != nil, AdminToken: "enabled"}
+	if !s.tokenOn() {
+		out.AdminToken = "disabled"
+	}
+	if s != nil && s.AdminToken != "" && s.tokenOn() && authorized(r, s.AdminToken) {
+		out.Role = RoleAdmin
+	} else if id, ok := s.Session(r); ok {
+		out.Email, out.Role = id.Email, id.Role
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-// SessionEmail returns the email of a valid session on r: signature good, not
-// expired, SSO still configured and the email still allowlisted.
-func (s *SSO) SessionEmail(r *http.Request) (string, bool) {
+// Session returns who holds a valid session on r: signature good, not
+// expired, issued after the user's revocation cutoff, SSO still enabled and
+// the email still a user. The role comes from the current settings.
+func (s *SSO) Session(r *http.Request) (Identity, bool) {
 	st := s.settings()
 	if st == nil {
-		return "", false
+		return Identity{}, false
 	}
 	c, err := r.Cookie(SessionCookie)
 	if err != nil {
-		return "", false
+		return Identity{}, false
 	}
 	var sp sessionPayload
-	if !verify(s.Key, "session", c.Value, &sp) || sp.Exp < s.now().Unix() || !st.allows(sp.Email) {
-		return "", false
+	if !verify(s.Key, "session", c.Value, &sp) || sp.Exp < s.now().Unix() {
+		return Identity{}, false
 	}
-	return sp.Email, true
+	role, ok := st.roleOf(sp.Email)
+	if !ok {
+		return Identity{}, false
+	}
+	if s.NotBefore != nil {
+		nb, err := s.NotBefore(r.Context(), sp.Email)
+		if err != nil {
+			slog.Warn("sso: revocation lookup failed; refusing the session", "email", sp.Email, "err", err)
+			return Identity{}, false
+		}
+		if nb > 0 && sp.Issued <= nb {
+			return Identity{}, false
+		}
+	}
+	return Identity{Email: sp.Email, Role: role}, true
+}
+
+// clientIP is the address recorded for a sign-in: RemoteAddr without the
+// port, after the router's RealIP has run.
+func clientIP(r *http.Request) string {
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return h
+	}
+	return r.RemoteAddr
 }
 
 // sign encodes v as base64url(JSON).base64url(HMAC-SHA256). purpose is mixed

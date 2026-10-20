@@ -78,6 +78,10 @@ func selfAuthenticating(path string) bool {
 // the CookieName cookie) or, when sso is non-nil, a valid SSO session cookie.
 // All other paths pass through untouched, as do the agent routes, which verify
 // their own per-server credential.
+//
+// The resolved Identity rides in the request context. A viewer session is
+// refused any request readOnly does not clear, with 403 — here, before any
+// handler, so a write route added later is covered without opting in.
 func Middleware(token string, sso *SSO) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +89,7 @@ func Middleware(token string, sso *SSO) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if authorized(r, token) {
+			if sso.tokenOn() && authorized(r, token) {
 				// Re-issue the cookie whenever a Bearer request arrives without a
 				// matching one. The dashboard holds the token in localStorage and
 				// MIRRORS it into a cookie, because EventSource cannot set headers
@@ -97,11 +101,15 @@ func Middleware(token string, sso *SSO) func(http.Handler) http.Handler {
 				// Refreshing it here means any authenticated call heals the
 				// mismatch, and the client no longer has to keep them in step.
 				refreshCookie(w, r, token)
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), Identity{Role: RoleAdmin})))
 				return
 			}
-			if _, ok := sso.SessionEmail(r); ok && sameOrigin(r) {
-				next.ServeHTTP(w, r)
+			if id, ok := sso.Session(r); ok && sameOrigin(r) {
+				if id.Role != RoleAdmin && !readOnly(r) {
+					denyReadOnly(w)
+					return
+				}
+				next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
 				return
 			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="corrallm"`)

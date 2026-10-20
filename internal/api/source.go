@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 	"net/http"
+
+	"github.com/iodesystems/corrallm/internal/auth"
 )
 
 // WHO CHANGED THIS, as far as one shared credential can say.
@@ -50,6 +52,11 @@ func SourceMiddleware(next http.Handler) http.Handler {
 func noteFor(ctx context.Context, what string) string {
 	if what == "" {
 		what = "configuration changed"
+	}
+	// The SSO user, when there is one: with the address it answers "was it me?"
+	// by name rather than by machine.
+	if id, ok := auth.IdentityFrom(ctx); ok && id.Email != "" {
+		what += " by " + id.Email
 	}
 	if src, ok := ctx.Value(sourceKey{}).(requestSource); ok && src.Addr != "" {
 		return what + " — from " + src.Addr

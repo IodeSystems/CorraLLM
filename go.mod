@@ -3,6 +3,7 @@ module github.com/iodesystems/corrallm
 go 1.26.2
 
 require (
+	github.com/IodeSystems/graphql-go/v2 v2.0.1
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/go-chi/chi/v5 v5.3.2
@@ -21,7 +22,6 @@ require (
 
 require (
 	connectrpc.com/connect v1.21.0 // indirect
-	github.com/IodeSystems/graphql-go/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bufbuild/protocompile v0.14.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

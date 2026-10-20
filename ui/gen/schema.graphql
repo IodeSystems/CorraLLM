@@ -50,6 +50,10 @@ type CorrallmMutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
+  removeUser(body: corrallm_UserEmailInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "removeUser")
+  revokeUserSessions(body: corrallm_UserEmailInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "revokeUserSessions")
+  setAdminToken(body: corrallm_SetAdminTokenInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setAdminToken")
+  setIdentityProvider(body: corrallm_SetIdentityProviderInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setIdentityProvider")
   setModelMaxWait(body: corrallm_SetModelMaxWaitInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelMaxWait")
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
@@ -57,6 +61,7 @@ type CorrallmMutationNamespace {
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
+  testIdentityProvider(body: corrallm_TestIdentityProviderInputBodyInput!): corrallm_TestIdentityProviderOutputBody @derived(operationId: "testIdentityProvider")
   toolActivate(body: corrallm_ToolActivateInputBodyInput!): corrallm_ToolActivateOutputBody @derived(operationId: "toolActivate")
   toolBuildStart(body: corrallm_ToolBuildStartInputBodyInput!): corrallm_ToolBuildStartOutputBody @derived(operationId: "toolBuildStart")
   toolPin(body: corrallm_ToolPinInputBodyInput!): corrallm_ToolPinOutputBody @derived(operationId: "toolPin")
@@ -85,6 +90,7 @@ type CorrallmMutationNamespace {
     provider: String
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
   upsertProvider(body: corrallm_ProviderSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertProvider")
+  upsertUser(body: corrallm_UpsertUserInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertUser")
   v1: CorrallmV1MutationNamespace!
 }
 
@@ -197,6 +203,7 @@ type CorrallmQueryNamespace {
     """Look back this far for keys seen in traffic (0 = all recorded usage)."""
     windowHours: Long
   ): corrallm_KeysOutputBody @derived(operationId: "keys")
+  listAccess: corrallm_AccessOutputBody @derived(operationId: "listAccess")
   listProviderPresets: corrallm_ProviderPresetsOutputBody @derived(operationId: "listProviderPresets")
   listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
   listSelections: corrallm_SelectionsOutputBody @derived(operationId: "listSelections")
@@ -395,6 +402,10 @@ type CorrallmV1MutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "putEntryYaml")
+  removeUser(body: corrallm_UserEmailInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "removeUser")
+  revokeUserSessions(body: corrallm_UserEmailInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "revokeUserSessions")
+  setAdminToken(body: corrallm_SetAdminTokenInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setAdminToken")
+  setIdentityProvider(body: corrallm_SetIdentityProviderInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setIdentityProvider")
   setModelMaxWait(body: corrallm_SetModelMaxWaitInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelMaxWait")
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
@@ -402,6 +413,7 @@ type CorrallmV1MutationNamespace {
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
+  testIdentityProvider(body: corrallm_TestIdentityProviderInputBodyInput!): corrallm_TestIdentityProviderOutputBody @derived(operationId: "testIdentityProvider")
   toolActivate(body: corrallm_ToolActivateInputBodyInput!): corrallm_ToolActivateOutputBody @derived(operationId: "toolActivate")
   toolBuildStart(body: corrallm_ToolBuildStartInputBodyInput!): corrallm_ToolBuildStartOutputBody @derived(operationId: "toolBuildStart")
   toolPin(body: corrallm_ToolPinInputBodyInput!): corrallm_ToolPinOutputBody @derived(operationId: "toolPin")
@@ -430,6 +442,7 @@ type CorrallmV1MutationNamespace {
     provider: String
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertModel")
   upsertProvider(body: corrallm_ProviderSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertProvider")
+  upsertUser(body: corrallm_UpsertUserInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "upsertUser")
 }
 
 type CorrallmV1QueryNamespace {
@@ -541,6 +554,7 @@ type CorrallmV1QueryNamespace {
     """Look back this far for keys seen in traffic (0 = all recorded usage)."""
     windowHours: Long
   ): corrallm_KeysOutputBody @derived(operationId: "keys")
+  listAccess: corrallm_AccessOutputBody @derived(operationId: "listAccess")
   listProviderPresets: corrallm_ProviderPresetsOutputBody @derived(operationId: "listProviderPresets")
   listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
   listSelections: corrallm_SelectionsOutputBody @derived(operationId: "listSelections")
@@ -708,6 +722,28 @@ type Mutation {
 
 type Query {
   corrallm: CorrallmQueryNamespace!
+}
+
+type corrallm_AccessOutputBody {
+  """enabled | disabled: whether /api accepts the admin token."""
+  adminToken: String!
+  """Email of the SSO session making this request; empty for the admin token."""
+  callerEmail: String!
+  provider: corrallm_IdentityProviderView!
+  """Names in the credential store, for picking a stored client secret. Names only."""
+  secrets: [String!]!
+  users: [corrallm_AccessUser!]!
+}
+
+type corrallm_AccessUser {
+  email: String!
+  lastSignInIp: String!
+  """Unix ms of the last SSO sign-in; 0 = never."""
+  lastSignInMs: Long!
+  """Listed in the legacy auth.oidc.allowedEmails; moved to auth.users on the next save."""
+  legacy: Boolean!
+  """admin | viewer"""
+  role: String!
 }
 
 type corrallm_ActiveRequestView {
@@ -1786,6 +1822,25 @@ input corrallm_HelloInput {
   os: String!
   protocol: Long!
   version: String!
+}
+
+type corrallm_IdentityProviderView {
+  clientId: String!
+  """An auth.oidc block exists."""
+  configured: Boolean!
+  """Sign-in is switched on."""
+  enabled: Boolean!
+  """Whether that entry exists. The value is never returned."""
+  hasSecret: Boolean!
+  issuer: String!
+  """The config holds a literal secret instead of a reference; saving from the form drops it."""
+  literalSecret: Boolean!
+  """The callback to register with the provider, as corrallm will send it. Empty when it cannot be derived (no --public-base)."""
+  redirectUri: String!
+  """Configured callback override; empty = derived."""
+  redirectUrl: String!
+  """Credential-store entry holding the client secret; empty for a public (PKCE-only) client."""
+  secretRef: String!
 }
 
 type corrallm_InstalledBuildView {
@@ -2970,6 +3025,22 @@ type corrallm_ServiceProfilesOutputBody {
   rows: [corrallm_ServiceProfileRow!]!
 }
 
+input corrallm_SetAdminTokenInputBodyInput {
+  enabled: Boolean!
+}
+
+input corrallm_SetIdentityProviderInputBodyInput {
+  clientId: String!
+  enabled: Boolean!
+  issuer: String!
+  """Callback override; empty derives it from --public-base."""
+  redirectUrl: String
+  """Credential-store entry for the client secret. Empty = public client (PKCE only)."""
+  secretRef: String
+  """Stored under secretRef first when set. Write-only."""
+  secretValue: String
+}
+
 input corrallm_SetModelMaxWaitInputBodyInput {
   """A Go duration, e.g. "45s". Empty clears the override and returns the model to the box-wide wait."""
   maxWait: String!
@@ -3036,6 +3107,23 @@ input corrallm_SuppressWarningInputBodyInput {
   minutes: Long
   """Served model, for a per-model kind."""
   subject: String
+}
+
+input corrallm_TestIdentityProviderInputBodyInput {
+  issuer: String!
+}
+
+type corrallm_TestIdentityProviderOutputBody {
+  authorizationEndpoint: String!
+  codeChallengeMethods: [String!]!
+  """The issuer the discovery document names. Must equal the one configured."""
+  issuer: String!
+  jwksUri: String!
+  message: String!
+  ok: Boolean!
+  tokenAuthMethods: [String!]!
+  tokenEndpoint: String!
+  userinfoEndpoint: String!
 }
 
 input corrallm_ToolActivateInputBodyInput {
@@ -3287,6 +3375,12 @@ input corrallm_UpdateNotesInputBodyInput {
   notes: String!
 }
 
+input corrallm_UpsertUserInputBodyInput {
+  email: String!
+  """admin | viewer"""
+  role: String!
+}
+
 type corrallm_UsageByKeyOutputBody {
   """Per-key usage, costliest first."""
   rows: [corrallm_KeyUsageRow!]!
@@ -3332,6 +3426,10 @@ type corrallm_UsageSeriesOutputBody {
   buckets: [Long!]!
   """Per-key dense series, costliest first."""
   keys: [corrallm_KeySeries!]!
+}
+
+input corrallm_UserEmailInputBodyInput {
+  email: String!
 }
 
 type corrallm_UtilizationMember {
