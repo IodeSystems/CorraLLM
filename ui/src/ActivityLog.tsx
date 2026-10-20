@@ -91,6 +91,7 @@ const ActivityDoc = graphql(/* GraphQL */ `
           cachedTokens
           promptPerSec
           predictedPerSec
+          speedSource
           audioBytes
           costUsd
           error
@@ -123,12 +124,14 @@ const ActivityDetailDoc = graphql(/* GraphQL */ `
           cachedTokens
           promptPerSec
           predictedPerSec
+          speedSource
           audioBytes
           costUsd
           error
           retryAfterMs
           reqBody
           respBody
+          respHeaders
         }
       }
     }
@@ -198,6 +201,7 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
                 {Number(rec.predictedPerSec) > 0 && (
                   <> · {Number(rec.predictedPerSec).toFixed(1)} tok/s decode</>
                 )}
+                {rec.speedSource && <> ({SPEED_SOURCE[rec.speedSource] ?? rec.speedSource})</>}
                 {Number(rec.audioBytes) > 0 && <> · audio {fmtBytes(rec.audioBytes)}</>}
               </Typography>
             </Box>
@@ -212,11 +216,28 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
             <Divider />
             <Payload title="Request" body={rec.reqBody} />
             <Payload title="Response" body={rec.respBody} />
+            {rec.respHeaders && <Payload title="Upstream headers" body={rec.respHeaders} />}
           </Stack>
         )}
       </DialogContent>
     </Dialog>
   );
+}
+
+// Who measured a row's speeds. Empty = the backend's own timings.
+const SPEED_SOURCE: Record<string, string> = {
+  provider: 'from provider headers',
+  proxy: 'measured at proxy; includes network and provider queue',
+}
+
+function Speed({ v, source }: { v: number; source: string }) {
+  if (!(v > 0)) return <>—</>
+  if (!source) return <>{v.toFixed(1)}</>
+  return (
+    <Tooltip title={SPEED_SOURCE[source] ?? source}>
+      <span style={{ color: C.textMuted }}>~{v.toFixed(1)}</span>
+    </Tooltip>
+  )
 }
 
 function Payload({ title, body }: { title: string; body: string }) {
@@ -467,10 +488,10 @@ export function ActivityLog({
                   {Number(r.audioBytes) > 0 ? '—' : fmtInt(r.completionTokens)}
                 </TableCell>
                 <TableCell align="right">
-                  {Number(r.promptPerSec) > 0 ? Number(r.promptPerSec).toFixed(1) : '—'}
+                  <Speed v={Number(r.promptPerSec)} source={r.speedSource} />
                 </TableCell>
                 <TableCell align="right">
-                  {Number(r.predictedPerSec) > 0 ? Number(r.predictedPerSec).toFixed(1) : '—'}
+                  <Speed v={Number(r.predictedPerSec)} source={r.speedSource} />
                 </TableCell>
                 <TableCell align="right">
                   {Number(r.audioBytes) > 0 ? fmtBytes(r.audioBytes) : '—'}

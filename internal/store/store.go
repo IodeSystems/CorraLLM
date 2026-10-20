@@ -474,6 +474,14 @@ var migrations = []string{
 	// with the request; without this column a lane's 429s named no model at all,
 	// and the model that was full or paused showed none. '' = not recorded.
 	`ALTER TABLE activity ADD COLUMN refused_by TEXT NOT NULL DEFAULT ''`,
+	// Who measured prompt_per_sec/predicted_per_sec (2026-10-20). '' = the
+	// backend's own timings (llama-server; every row before this). "provider" =
+	// the upstream's timing headers (Fireworks). "proxy" = corrallm's clock,
+	// which includes the network and the provider's own queue.
+	`ALTER TABLE activity ADD COLUMN speed_source TEXT NOT NULL DEFAULT ''`,
+	// Upstream response headers on an allowlist (provider timing, rate limits,
+	// request ids), one "Name: value" per line. Captured with the payloads.
+	`ALTER TABLE activity_payload ADD COLUMN resp_headers TEXT NOT NULL DEFAULT ''`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -782,6 +790,7 @@ type Activity struct {
 	CachedTokens     int     // backend-reported cached prompt tokens
 	PromptPerSec     float64 // backend-reported prompt-processing speed (tp/s)
 	PredictedPerSec  float64 // backend-reported generation speed (tg/s)
+	SpeedSource      string  // who measured the two speeds: "" backend, "provider", "proxy"
 	CostUSD          float64
 	QueuedMS         int64  // time queued before admission/reject (P8-beyond)
 	LoadMS           int64  // time waiting for the backend to become resident
@@ -805,6 +814,7 @@ type Activity struct {
 	ReasoningMeasured bool
 	ReqBody           string // captured request payload, capped+summarized (P10b)
 	RespBody          string // captured response payload, capped+summarized (P10b)
+	RespHeaders       string // allowlisted upstream response headers, "Name: value" lines
 	// RetryAfterMS is the backoff we PROMISED this caller when we turned them
 	// away — exactly the value that went out on the Retry-After header, not a
 	// re-derivation. Zero on anything that wasn't a 429 (and on 429 rows written
@@ -888,12 +898,14 @@ func (s *Store) InsertActivity(a Activity) error {
 		`INSERT INTO activity (ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec,
-		                       finish_reason, load_ms, retry_after_ms, ticket, reasoning_tokens, refused_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       finish_reason, load_ms, retry_after_ms, ticket, reasoning_tokens, refused_by,
+		                       speed_source)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Requested, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec,
 		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket, reasoningCol(a), a.RefusedBy,
+		a.SpeedSource,
 	)
 	if err != nil {
 		return err
@@ -902,9 +914,9 @@ func (s *Store) InsertActivity(a Activity) error {
 	if err != nil {
 		return err
 	}
-	if a.ReqBody != "" || a.RespBody != "" {
-		if _, err := tx.Exec(`INSERT INTO activity_payload (activity_id, req_body, resp_body) VALUES (?, ?, ?)`,
-			id, a.ReqBody, a.RespBody); err != nil {
+	if a.ReqBody != "" || a.RespBody != "" || a.RespHeaders != "" {
+		if _, err := tx.Exec(`INSERT INTO activity_payload (activity_id, req_body, resp_body, resp_headers) VALUES (?, ?, ?, ?)`,
+			id, a.ReqBody, a.RespBody, a.RespHeaders); err != nil {
 			return err
 		}
 	}
@@ -932,14 +944,14 @@ func (s *Store) ActivityByID(id int64) (Activity, error) {
 		`SELECT id, ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec,
-		        COALESCE(p.req_body, ''), COALESCE(p.resp_body, ''),
-		        finish_reason, load_ms, retry_after_ms, ticket
+		        COALESCE(p.req_body, ''), COALESCE(p.resp_body, ''), COALESCE(p.resp_headers, ''),
+		        finish_reason, load_ms, retry_after_ms, ticket, speed_source
 		 FROM activity LEFT JOIN activity_payload p ON p.activity_id = activity.id
 		 WHERE id = ?`, id).Scan(
 		&a.ID, &a.TS, &a.Served, &a.Requested, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
-		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody,
-		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS, &a.Ticket)
+		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody, &a.RespHeaders,
+		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS, &a.Ticket, &a.SpeedSource)
 	return a, err
 }
 
@@ -1082,7 +1094,7 @@ func (s *Store) RecentActivityPage(w Window, limit, offset int, served, key, pla
 	const cols = `id, ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
 	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms,
-	        ticket`
+	        ticket, speed_source`
 	q := `SELECT ` + cols + ` FROM activity`
 	wWhere, wArgs := w.ts()
 	// The window is a WHERE like any other filter, and it goes on first so the
@@ -1118,7 +1130,7 @@ func (s *Store) RecentActivityPage(w Window, limit, offset int, served, key, pla
 		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Requested, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
 			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS,
-			&a.RetryAfterMS, &a.Ticket); err != nil {
+			&a.RetryAfterMS, &a.Ticket, &a.SpeedSource); err != nil {
 			return nil, false, err
 		}
 		out = append(out, a)

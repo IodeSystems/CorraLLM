@@ -225,6 +225,7 @@ type ActivityRecord struct {
 	CachedTokens     int     `json:"cachedTokens" doc:"Backend-reported cached prompt tokens (0 if none)."`
 	PromptPerSec     float64 `json:"promptPerSec" doc:"Backend-reported prompt-processing speed, tokens/sec (tp/s); 0 if unavailable."`
 	PredictedPerSec  float64 `json:"predictedPerSec" doc:"Backend-reported generation speed, tokens/sec (tg/s); 0 if unavailable."`
+	SpeedSource      string  `json:"speedSource" doc:"Who measured promptPerSec/predictedPerSec: empty = the backend's own timings; provider = the upstream's timing headers; proxy = corrallm's clock, which includes the network and the provider's queue."`
 	CostUSD          float64 `json:"costUsd" doc:"Resolved request cost in USD."`
 	AudioBytes       int64   `json:"audioBytes" doc:"Metered audio request bytes (STT/TTS); 0 for text."`
 	Error            string  `json:"error" doc:"Proxy/backpressure failure reason, if any (empty on success)."`
@@ -281,6 +282,7 @@ func (h *Handlers) RecentActivity(_ context.Context, in *RecentActivityInput) (*
 			CachedTokens:     a.CachedTokens,
 			PromptPerSec:     a.PromptPerSec,
 			PredictedPerSec:  a.PredictedPerSec,
+			SpeedSource:      a.SpeedSource,
 			CostUSD:          a.CostUSD,
 			AudioBytes:       a.AudioBytes,
 			Error:            a.Error,
@@ -302,8 +304,9 @@ type ActivityDetailInput struct {
 // the detail modal. Fetched on demand so the list query stays lean.
 type ActivityDetailRecord struct {
 	ActivityRecord
-	ReqBody  string `json:"reqBody" doc:"Captured request payload (capped; binary audio summarized)."`
-	RespBody string `json:"respBody" doc:"Captured response payload (capped; binary audio summarized)."`
+	ReqBody     string `json:"reqBody" doc:"Captured request payload (capped; binary audio summarized)."`
+	RespBody    string `json:"respBody" doc:"Captured response payload (capped; binary audio summarized)."`
+	RespHeaders string `json:"respHeaders" doc:"Upstream response headers on an allowlist (provider timing, rate limits, request ids), one 'name: value' per line."`
 }
 
 // ActivityDetailOutput wraps one detail record.
@@ -330,13 +333,14 @@ func (h *Handlers) ActivityDetail(ctx context.Context, in *ActivityDetailInput) 
 			Key: a.Key, SourceIP: a.SourceIP, Path: a.Path,
 			Status: a.Status, DwellMS: a.DwellMS, PromptTokens: a.PromptTokens,
 			CompletionTokens: a.CompletionTokens, CachedTokens: a.CachedTokens,
-			PromptPerSec: a.PromptPerSec, PredictedPerSec: a.PredictedPerSec,
+			PromptPerSec: a.PromptPerSec, PredictedPerSec: a.PredictedPerSec, SpeedSource: a.SpeedSource,
 			CostUSD: a.CostUSD, AudioBytes: a.AudioBytes,
 			Error: a.Error, TTFBMs: a.TTFBMs, FinishReason: a.FinishReason, QueuedMS: a.QueuedMS,
 			RetryAfterMS: a.RetryAfterMS,
 		},
-		ReqBody:  a.ReqBody,
-		RespBody: a.RespBody,
+		ReqBody:     a.ReqBody,
+		RespBody:    a.RespBody,
+		RespHeaders: a.RespHeaders,
 	}
 	return out, nil
 }

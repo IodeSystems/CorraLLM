@@ -823,12 +823,16 @@ type corrallm_ActivityDetailRecord {
   reqBody: String!
   """Captured response payload (capped; binary audio summarized)."""
   respBody: String!
+  """Upstream response headers on an allowlist (provider timing, rate limits, request ids), one 'name: value' per line."""
+  respHeaders: String!
   """The Retry-After we promised this caller on a 429, milliseconds; 0 when no promise was made. ts + retryAfterMs is when we told them to come back."""
   retryAfterMs: Long!
   """Served model name."""
   served: String!
   """Client IP (via X-Forwarded-For); empty if unknown."""
   sourceIp: String!
+  """Who measured promptPerSec/predictedPerSec: empty = the backend's own timings; provider = the upstream's timing headers; proxy = corrallm's clock, which includes the network and the provider's queue."""
+  speedSource: String!
   """HTTP status."""
   status: Long!
   """Unix millis when the request was logged."""
@@ -874,6 +878,8 @@ type corrallm_ActivityRecord {
   served: String!
   """Client IP (via X-Forwarded-For); empty if unknown."""
   sourceIp: String!
+  """Who measured promptPerSec/predictedPerSec: empty = the backend's own timings; provider = the upstream's timing headers; proxy = corrallm's clock, which includes the network and the provider's queue."""
+  speedSource: String!
   """HTTP status."""
   status: Long!
   """Unix millis when the request was logged."""

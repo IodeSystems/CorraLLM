@@ -1173,7 +1173,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		isFree := backend.FreeTier != nil
 		hardFailStatus := 0
 		upstreamStart := time.Now()
+		var upHeaders http.Header // the upstream's own headers, before ours are added
 		rp.ModifyResponse = func(resp *http.Response) error {
+			upHeaders = resp.Header.Clone()
 			// Timing breakdown, so a caller can recover EXECUTION time from its
 			// own wall clock. A benchmark measuring a busy box otherwise reports
 			// scheduler queueing and cold loads as if the model were slow — the
@@ -1332,6 +1334,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		var finishReason string
 		var thinking int
 		var thinkingMeasured bool
+		var speedSource string
 		var costUSD float64
 		var audioBytes int64
 		var cCost, pCost, gCost float64 // per-class $ (cached, processed, generated)
@@ -1365,6 +1368,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			u = extractUsage(sc.buf, streaming)
 			finishReason = extractFinishReason(sc.buf, streaming)
 			thinking, thinkingMeasured = sc.thinkingTokens(u)
+			if !thinkingMeasured && u.CompletionTokensDetails.ReasoningTokens != nil {
+				thinking, thinkingMeasured = *u.CompletionTokensDetails.ReasoningTokens, true
+			}
+			if status >= 200 && status < 300 && u.PromptPerSec == 0 && u.PredictedPerSec == 0 {
+				u, speedSource = upstreamSpeeds(u, upHeaders, streaming, upstreamStart, sc.firstWrite, sc.lastWrite)
+			}
 			proc := u.PromptTokens - u.CachedTokens
 			if proc < 0 {
 				proc = 0
@@ -1476,6 +1485,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		} else {
 			respBody = p.capturePayload(sc.buf, false, "", payloadCap)
 		}
+		var respHeaders string
+		if p.capturePayloads {
+			respHeaders = keptHeaders(upHeaders)
+		}
 		var ttfbMS int64
 		if !sc.firstWrite.IsZero() {
 			ttfbMS = sc.firstWrite.Sub(start).Milliseconds()
@@ -1488,10 +1501,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path, Status: status,
 			DwellMS: time.Since(start).Milliseconds(), PromptTokens: u.PromptTokens,
 			CompletionTokens: u.CompletionTokens, CachedTokens: u.CachedTokens,
-			PromptPerSec: u.PromptPerSec, PredictedPerSec: u.PredictedPerSec,
+			PromptPerSec: u.PromptPerSec, PredictedPerSec: u.PredictedPerSec, SpeedSource: speedSource,
 			CostUSD: costUSD, QueuedMS: queuedMS, LoadMS: loadMS,
 			AudioBytes: audioBytes, Error: errReason, TTFBMs: ttfbMS,
-			ReqBody: reqBody, RespBody: respBody, FinishReason: finishReason,
+			ReqBody: reqBody, RespBody: respBody, RespHeaders: respHeaders, FinishReason: finishReason,
 			ReasoningTokens: thinking, ReasoningMeasured: thinkingMeasured,
 		})
 		return
@@ -3221,6 +3234,11 @@ type usage struct {
 	// "Context Caching"). Without it a DeepSeek request records 0 cached, and its
 	// cache hits are billed at the cache-miss rate — 50x.
 	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+	// CompletionTokensDetails.ReasoningTokens is the provider's own thinking
+	// count (OpenAI shape; Fireworks sends it). nil when absent.
+	CompletionTokensDetails struct {
+		ReasoningTokens *int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 	// Derived by extractUsage from usage + the sibling "timings" object; not
 	// members of the OpenAI "usage" JSON, hence json:"-".
 	CachedTokens    int     `json:"-"` // cached prompt tokens (usage.prompt_tokens_details.cached_tokens, else timings.cache_n)
@@ -3364,6 +3382,7 @@ type statusCapture struct {
 	buf         []byte    // bounded captured body for usage extraction
 	written     int64     // total response bytes — TTS (P9b) is metered by output size
 	firstWrite  time.Time // time of the first body write — for TTFB (P10b)
+	lastWrite   time.Time // time of the last body write — remote generation speed
 	// thinkChunks counts streamed events carrying reasoning_content, across the
 	// WHOLE stream (buf keeps only a tail). thinkCarry holds the last bytes of
 	// the previous write so a marker split between writes is still counted.
@@ -3401,8 +3420,11 @@ func (s *statusCapture) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true
 	}
-	if s.firstWrite.IsZero() && len(b) > 0 {
-		s.firstWrite = time.Now()
+	if len(b) > 0 {
+		s.lastWrite = time.Now()
+		if s.firstWrite.IsZero() {
+			s.firstWrite = s.lastWrite
+		}
 	}
 	s.written += int64(len(b))
 	s.live.recordProgress(len(b))
