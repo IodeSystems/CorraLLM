@@ -165,7 +165,7 @@ export function HistoryPanels() {
       )}
 
       <Panel
-        title="What changed"
+        title="Change history"
         actions={
           <Button
             size="small"
@@ -183,15 +183,10 @@ export function HistoryPanels() {
             <Chip size="small" variant="outlined" label={`${revisions.length}`} />
           )
         }
-        subtitle="What the configuration became at each save, newest first"
+        subtitle="One entry per save, newest first"
         // Restore is the control on this page that reaches live traffic, and
         // the header clipped the half that says when it lands and on whom.
-        note={
-          <>
-            <b>Restore</b> replaces what is running now with an older version — it takes effect
-            immediately, on whoever is using the box at that moment.
-          </>
-        }
+        note="Restore replaces the running configuration at once, for every caller."
         flush
       >
         {q.error && (
@@ -291,7 +286,7 @@ export function HistoryPanels() {
             right now stays in this list and can be restored back.
           </Typography>
           <Typography variant="body2" sx={{ color: C.textMuted, mt: 1.5 }}>
-            Resident models are not evicted — a reload changes what the NEXT spawn uses.
+            Loaded models stay loaded; the next start uses the restored configuration.
           </Typography>
         </DialogContent>
         <DialogActions>

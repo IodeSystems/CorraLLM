@@ -149,10 +149,7 @@ export function ActiveRequests({ compact = false }: { compact?: boolean } = {}) 
       // is the one that says what the caller gets.
       note={
         rows.length ? (
-          <>
-            <b>Cancel</b> ends one for the caller waiting on it — they get an error, not a shorter
-            answer.
-          </>
+          'Cancel ends a request; its caller gets an error.'
         ) : undefined
       }
       flush={answered && rows.length > 0}

@@ -630,8 +630,8 @@ function BoxState(props: {
             elsewhere > 0
             ? `This machine is serving normally. ${attachedPhrase(downMachines, badProviders)}`
             : ready === 0
-              ? `Nothing is loaded right now — the next request loads one of ${configured} models. Nothing needs you.`
-              : `${ready} of ${configured} models loaded across ${machines} machine${machines === 1 ? '' : 's'}. Nothing needs you.`
+              ? `Nothing is loaded right now — the next request loads one of ${configured} models.`
+              : `${ready} of ${configured} models loaded across ${machines} machine${machines === 1 ? '' : 's'}.`
   return (
     <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
       <Typography variant="body1" sx={{ color, fontWeight: 700 }}>
@@ -843,12 +843,12 @@ function Throughput({
   }
   return (
     <Panel
-      title="What it is getting done"
-      subtitle="Counted over the last hour"
+      title="Activity"
+      subtitle="Last hour"
+      help="Traffic shows the same numbers over any span you pick."
       // The window stays in the header, because a number without its window is
       // not a number (OB-4) and the head of the sentence survives a clip. Where
-      // to get another window is the next step, and goes where it is readable.
-      note="Traffic has the same numbers over any span you pick."
+      // to get another window is the next step, and goes in the help tooltip.
       dense
     >
       <Row>
@@ -878,9 +878,8 @@ function WhatIsWrong({ faults }: { faults: Fault[] }) {
   if (!faults.length) return null
   return (
     <Panel
-      title="What needs looking at"
+      title="Needs attention"
       badge={<Chip size="small" label={faults.length} />}
-      subtitle="What it is, whose it is, and the one thing to do about it"
       flush
     >
       {faults.map((f) => (
@@ -934,7 +933,7 @@ function Now() {
     return (
       <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
         <PageHeader title="Now" />
-        <Panel title="This machine did not answer">
+        <Panel title="No response from this machine">
           <Typography variant="body2" sx={{ color: C.textMuted }}>
             The dashboard could not reach corrallm on this box. It is either restarting, stopped, or
             not reachable from here — nothing below is current. {String(q.error)}

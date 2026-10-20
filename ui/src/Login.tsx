@@ -31,7 +31,7 @@ export function Login() {
   return (
     <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', p: 2 }}>
       <Box sx={{ maxWidth: 460, width: '100%' }}>
-        <Panel title="corrallm — admin sign in">
+        <Panel title="Admin sign in">
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Typography variant="body2" sx={{
             color: "text.secondary"

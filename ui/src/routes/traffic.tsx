@@ -104,8 +104,8 @@ function Traffic() {
         filterKey={key}
         subtitle={
           key
-            ? `Everything ${key} ran ${windowPhrase(window)} — click a row for payloads`
-            : `Completed requests ${windowPhrase(window)}, newest first — click a row for payloads`
+            ? `${key}, ${windowPhrase(window)}; click a row for payloads`
+            : `${windowPhrase(window)}, newest first; click a row for payloads`
         }
       />
 
@@ -123,7 +123,7 @@ function Traffic() {
           chart groups already use. */}
       <Box>
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, mb: 1, flexWrap: 'wrap' }}>
-          <Typography variant="overline" sx={{ color: C.textMuted }}>
+          <Typography variant="overline" sx={{ color: C.textMuted, textTransform: 'none', fontSize: 13, letterSpacing: 0 }}>
             Queueing detail
           </Typography>
           <Button size="small" onClick={() => setDetail((d) => !d)} sx={{ textTransform: 'none' }}>

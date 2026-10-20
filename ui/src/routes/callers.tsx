@@ -147,7 +147,7 @@ function Callers() {
         title="Caller keys"
         // Panel's subtitle is one line, nowrap, ellipsis — shared by every page,
         // so what fits there is a LABEL. Only the label is here now.
-        subtitle="Who is calling, and what their group gets them"
+        subtitle="Callers and their groups"
         flush
       >
         {/* THE WORST THING A PLACEMENT ON THIS PAGE DOES, above the roster that

@@ -141,7 +141,7 @@ function AssignedModels() {
   return (
     <Panel
       title={`Assigned models (${filtered.length === all.length ? all.length : `${filtered.length} of ${all.length}`})`}
-      subtitle="Chosen off a provider's catalog"
+      subtitle="Chosen from a provider's catalog"
       // Remove is a config change, not a kill: say so where it can be read.
       // "where it can be read" was a clipping header until now.
       //
@@ -149,12 +149,11 @@ function AssignedModels() {
       // It is said once for the group rather than hidden on a tooltip per row
       // (OB-2, OB-10): a number in a chip is unreadable without it, and a
       // hovered gloss is not written.
-      note={
+      note="Remove takes a model out of the catalog; requests for it are then refused."
+      help={
         <>
-          <b>Remove</b> takes one out of the catalog this box serves — anything mid-answer on it
-          finishes, and the next request for it is refused. A chip like <code>chat @ 50</code> says
-          which fallback list the model joined and where it sits in that list&apos;s order, lower
-          tried first.
+          Anything mid-answer on a removed model finishes. A chip like <code>chat @ 50</code> shows
+          the fallback list the model joined and its position in it; lower is tried first.
         </>
       }
       actions={
@@ -212,7 +211,7 @@ function AssignedModels() {
                   <Chip key={l.lane} size="small" label={`${l.lane} @ ${l.order}`} />
                 ))}
                 {r.lanes.length === 0 && (
-                  <Tooltip title="Servable by name, but in no fallback list (no `lane` in the config) — nothing reaches it unless a caller asks for it by name.">
+                  <Tooltip title="Servable by name, but in no fallback list — nothing reaches it unless a caller asks for it by name.">
                     <Chip size="small" variant="outlined" label="no fallback list" />
                   </Tooltip>
                 )}
@@ -320,13 +319,9 @@ export function ModelsTab() {
           // Delete sat beside a model marked "spawned" with nothing saying what it
           // does to it (Lenny run 4, OB-1/OB-2). The header it was moved to clips
           // at the reader's window width, and the clause it takes is "ends there".
-          note={
-            <>
-              <b>Edit</b> changes how one is started; <b>Delete</b> removes it from the
-              configuration — if it is loaded, it is stopped, and anything mid-answer on it ends
-              there.
-            </>
-          }
+          note="Delete removes a model from the configuration and stops it if loaded."
+          help="Edit changes how a model is started. Anything mid-answer on a deleted model ends there."
+
           actions={
             localTotal > 8 ? (
               <FilterField value={localQ} onChange={setLocalQ} placeholder="model, type, host" />
@@ -334,11 +329,6 @@ export function ModelsTab() {
           }
           flush
         >
-          <Typography variant="body2" sx={{ px: 2, pt: 1.5, color: C.textMuted }}>
-            Models that run on this box. Each owns its process, its GPU budget and its port — which
-            is why they are declared rather than browsed: the catalogue is whatever you put on the
-            disk. Served as <code>&lt;provider&gt;-&lt;id&gt;</code> like any remote.
-          </Typography>
           {localShown.length === 0 && (
             <Typography variant="body2" sx={{ px: 2, py: 1.5, color: C.textFaint }}>
               No local model matches “{localQ}”.
@@ -477,7 +467,7 @@ export function ModelsTab() {
                           <Chip
                             size="small"
                             variant="outlined"
-                            label={m.hasCmd ? 'spawned' : 'proxy'}
+                            label={m.hasCmd ? 'managed' : 'proxy'}
                           />
                         </Tooltip>
                       </Stack>
@@ -516,12 +506,12 @@ export function ModelsTab() {
 
       <Panel
         title={`Fallback lists (${lanes.length})`}
-        subtitle="A name standing for several models, tried in order until one can serve"
+        subtitle="Models tried in order until one can serve"
         // Which model answers a request is what this decides, so the sentence
         // that says so is the panel's, not the header's (OB-12). The second
         // sentence is the gloss that joins this label to the config file, which
         // is the only place the word `lane` now appears in front of a reader.
-        note="Asking for the list by name allows a substitute; asking for a model by name pins the request to that one. The config file calls one of these a lane."
+        help="Asking for a list by name allows a substitute; asking for a model by name pins the request to that model."
         actions={
           <Button size="small" variant="outlined" onClick={() => setEditing(blankLane())}>
             Add fallback list

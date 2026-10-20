@@ -230,7 +230,7 @@ export function MemoryPanel(props: {
         key: 'other processes',
         bytes: other,
         color: NEUTRAL,
-        hint: 'on the GPU but not spawned by corrallm',
+        hint: 'on the GPU but not managed by corrallm',
       })
     }
     return segs
@@ -272,7 +272,7 @@ export function MemoryPanel(props: {
   return (
     <Panel
       title="Memory"
-      subtitle="Who is holding RAM and VRAM right now"
+      subtitle="RAM and VRAM in use"
       // No device name here: it names ONE device, and this panel covers every
       // box. It sits on the pool row it describes. A missing probe is still
       // panel-scope, because then there is no device reading anywhere below.

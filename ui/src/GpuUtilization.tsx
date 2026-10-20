@@ -131,9 +131,9 @@ export function GpuUtilizationPanel() {
   const trendBuckets = (trend?.buckets ?? []).map(Number)
   return (
     <Panel
-      title="GPU utilization and time to first token"
+      title="GPU utilization"
       subtitle="Last 24 hours, 15-minute buckets"
-      note="Busy: at least one request being served on the GPU; waiting in the queue or for a load is not busy. First token: streamed requests only, split into waiting in corrallm's queue, waiting for a cold model load, and active prompt processing up to the first byte."
+      help="Busy: at least one request being served on the GPU; waiting in the queue or for a load is not busy. First token: streamed requests only, split into waiting in corrallm's queue, waiting for a cold model load, and active prompt processing up to the first byte."
       dense
     >
       {isLoading ? (
@@ -167,7 +167,7 @@ export function GpuUtilizationPanel() {
               </Typography>
               <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
                 <MetricChart
-                  title="Busy (share of each 15 min)"
+                  title="Busy (% of each 15 minutes)"
                   series={[
                     { key: 'busy', color: seriesColor(0), values: p.busy.map((v) => v * 100) },
                     ...(m
@@ -182,7 +182,7 @@ export function GpuUtilizationPanel() {
                 />
                 {m && (
                   <MacdChart
-                    title="Busy trend (MACD, percentage points)"
+                    title="Busy trend (percentage points)"
                     note="MACD = recent average (3 h) minus typical average (6.5 h) of busy %. Above 0: busier than typical; below 0: quieter. Bars are MACD minus its 2.25 h signal line: green means the gap is growing (accelerating), red means it is shrinking."
                     macd={m.macd}
                     signal={m.signal}
@@ -192,7 +192,7 @@ export function GpuUtilizationPanel() {
                 )}
                 <Box sx={{ flex: '1 1 380px', minWidth: 320 }}>
                   <StackedArea
-                    title="Time to first token, mean per 15 min"
+                    title="Time to first token (seconds, mean per 15 min)"
                     series={[
                       { key: 'queue', color: seriesColor(1), values: p.queueMs.map((v) => v / 1000) },
                       { key: 'cold load', color: seriesColor(2), values: p.loadMs.map((v) => v / 1000) },

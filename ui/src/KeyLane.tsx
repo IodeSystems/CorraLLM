@@ -143,7 +143,7 @@ export function KeyLaneActions({
             <Typography variant="body2" sx={{
               color: "text.secondary"
             }}>
-              Weight lives on the group, not the key — this chooses which lane{' '}
+              Weight lives on the group, not the key — this chooses which priority group{' '}
               <code>{keyName}</code> is scheduled in.
             </Typography>
             <TextField

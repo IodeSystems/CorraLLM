@@ -80,7 +80,7 @@ function KeyDetail() {
           )}
         </Alert>
       ) : (
-        <Panel title="Caller" subtitle="Group, what the group gets it, and what it has consumed">
+        <Panel title="Caller" subtitle="Group, allowance and usage">
           <Stack spacing={2}>
             {/* THE ANSWER FIRST (OB-11). Somebody arrives here having recognised
                 this key as their own team's, asking whether the box is broken or
@@ -149,7 +149,7 @@ function KeyDetail() {
       <ActivityLog
         filterKey={key}
         title="Requests"
-        subtitle="Everything this key has run, newest first — click a row for payloads"
+        subtitle="Newest first; click a row for payloads"
       />
     </Box>
   );

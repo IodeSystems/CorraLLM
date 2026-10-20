@@ -253,7 +253,7 @@ export function ToolVersionDialog({
           </Typography>
           <Typography variant="caption" sx={{ color: C.textMuted, display: 'block', mb: 1.5 }}>
             Switching between these is a symlink rename — seconds, no compiler. It affects this host
-            only and takes effect on the next spawn, so reload a model to pick it up.
+            only and takes effect the next time a model starts, so reload a model to pick it up.
           </Typography>
 
           {adopted ? (

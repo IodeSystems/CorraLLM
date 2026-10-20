@@ -253,7 +253,7 @@ export function ActivityLog({
   limit = 25,
   window,
   title = 'Recent',
-  subtitle = 'Completed requests, newest first — click a row for payloads',
+  subtitle = 'Newest first; click a row for payloads',
   action,
 }: {
   filterKey?: string

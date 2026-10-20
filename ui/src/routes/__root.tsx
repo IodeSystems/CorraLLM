@@ -9,6 +9,7 @@ import {
   Box,
   Chip,
   CircularProgress,
+  Divider,
   Drawer,
   List,
   ListItemButton,
@@ -20,12 +21,12 @@ import {
   useMediaQuery,
 } from '@mui/material'
 import type { SvgIconComponent } from '@mui/icons-material'
-import CloudOutlined from '@mui/icons-material/CloudOutlined'
 import DashboardOutlined from '@mui/icons-material/DashboardOutlined'
 import LayersOutlined from '@mui/icons-material/LayersOutlined'
 import GroupsOutlined from '@mui/icons-material/GroupsOutlined'
 import MenuIcon from '@mui/icons-material/Menu'
-import SettingsOutlined from '@mui/icons-material/SettingsOutlined'
+import DnsOutlined from '@mui/icons-material/DnsOutlined'
+import TuneOutlined from '@mui/icons-material/TuneOutlined'
 import SpeedOutlined from '@mui/icons-material/SpeedOutlined'
 import TimelineOutlined from '@mui/icons-material/TimelineOutlined'
 import { C, theme } from '@/theme'
@@ -101,7 +102,7 @@ function CalibrationBanner() {
     <Alert severity="info" square sx={{ borderRadius: 0 }}>
       <AlertTitle>Benchmark running</AlertTitle>
       A bench run is competing for slots like any other caller — nothing is being
-      evicted and no one is being turned away, but expect added latency and some{' '}
+      unloaded and no one is being turned away, but expect added latency and some{' '}
       <b>429 + Retry-After</b> backpressure in Activity until it finishes.{' '}
       <Link to="/bench">Watch it →</Link>
     </Alert>
@@ -133,8 +134,12 @@ const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/models', label: 'Models', icon: LayersOutlined },
   { to: '/traffic', label: 'Traffic', icon: TimelineOutlined },
   { to: '/callers', label: 'Callers', icon: GroupsOutlined },
-  { to: '/machines', label: 'Machines', icon: SettingsOutlined },
-  { to: '/setup', label: 'Setup', icon: CloudOutlined },
+  { to: '/machines', label: 'Machines', icon: DnsOutlined },
+  { to: '/setup', label: 'Setup', icon: TuneOutlined },
+]
+
+// Under a small "Advanced" subheader at the bottom of the nav.
+const NAV_ADVANCED: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/bench', label: 'Bench', icon: SpeedOutlined },
 ]
 
@@ -154,7 +159,7 @@ function NavList({ labels, onNavigate }: { labels: boolean; onNavigate?: () => v
   const matchRoute = useMatchRoute()
   return (
     <List sx={{ py: 1 }}>
-      {NAV.map((n) => {
+      {[...NAV, ...NAV_ADVANCED].map((n) => {
         // Sub-routes count as their parent: /keys/$key should light up Keys.
         // '/' would fuzzy-match everything, so it stays exact.
         const active = !!matchRoute({ to: n.to, fuzzy: n.to !== '/' })
@@ -190,12 +195,29 @@ function NavList({ labels, onNavigate }: { labels: boolean; onNavigate?: () => v
             )}
           </ListItemButton>
         )
-        return labels ? (
+        const entry = labels ? (
           <Box key={n.to}>{item}</Box>
         ) : (
           <Tooltip key={n.to} title={n.label} placement="right">
             {item}
           </Tooltip>
+        )
+        if (n.to !== NAV_ADVANCED[0].to) return entry
+        // Subheader (or a hairline in the icon-only rail) above the first advanced entry.
+        return (
+          <Box key={n.to} sx={{ mt: 2 }}>
+            {labels ? (
+              <Typography
+                variant="overline"
+                sx={{ display: 'block', px: 2, pb: 0.5, color: C.textFaint, textTransform: 'none', fontSize: 12, letterSpacing: 0 }}
+              >
+                Advanced
+              </Typography>
+            ) : (
+              <Divider sx={{ mx: 1.5, mb: 1 }} />
+            )}
+            {entry}
+          </Box>
         )
       })}
     </List>

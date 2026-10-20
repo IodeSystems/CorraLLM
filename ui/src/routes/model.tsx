@@ -52,6 +52,7 @@ import {
 import { BenchProbeDetail } from '@/BenchProbeDetail'
 import { PauseCostNote, PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost } from '@/Pause'
 import { ModelSummary } from '@/ModelSummary'
+import { stateLabel } from '@/MachineData'
 
 // --- data ---------------------------------------------------------------
 
@@ -372,7 +373,7 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
             happened. */}
         <Chip
           size="small"
-          label={model.remote ? 'proxy' : (res?.state ?? 'absent')}
+          label={model.remote ? 'proxy' : stateLabel(res?.state ?? 'absent')}
           color={model.remote ? 'secondary' : 'default'}
         />
         <Chip size="small" color="info" variant="outlined" label={capLabel(capability)} />
@@ -596,7 +597,7 @@ function InfoTab({
             <TableRow>
               <TableCell>{model.type}</TableCell>
               <TableCell>
-                {model.quality} — higher wins when a lane has to choose between models
+                {model.quality} — higher wins when a fallback list has to choose between models
               </TableCell>
               <TableCell>{model.capability}</TableCell>
             </TableRow>
@@ -624,7 +625,7 @@ function InfoTab({
               sx={{ mt: 1.5, p: 1.5, border: `1px solid ${C.border}`, borderRadius: 1 }}
             >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                <Chip size="small" label={pl?.state || 'absent'} />
+                <Chip size="small" label={stateLabel(pl?.state || 'absent')} />
                 <Typography variant="subtitle2">{pl?.server}</Typography>
                 {pl?.name !== pl?.server && (
                   <Chip size="small" variant="outlined" label={pl?.name} />
@@ -765,7 +766,7 @@ function InfoTab({
               {/* Live footprint needs residency; everything else comes from the
                   persisted MEASUREMENT, so an evicted model still shows what it
                   was measured at instead of a row of dashes. */}
-              <TableCell>{res ? fmtMiB(res.footprintMiB) : 'not resident'}</TableCell>
+              <TableCell>{res ? fmtMiB(res.footprintMiB) : 'not loaded'}</TableCell>
               <TableCell>{prof ? fmtMiB(prof.baseMiB) : res ? fmtMiB(res.baseMiB) : '—'}</TableCell>
               <TableCell>{prof ? fmtMiB(prof.perSlotMiB) : res ? fmtMiB(res.perSlotMiB) : '—'}</TableCell>
               <TableCell>{prof ? fmtMiB(prof.peakMiB) : res ? fmtMiB(res.peakMiB) : '—'}</TableCell>
@@ -870,7 +871,7 @@ function LogsTab({ backend, ready }: { backend: string; ready: boolean }) {
         <Typography variant="caption" sx={{
           color: "text.secondary"
         }}>
-          Backend is not resident — showing whatever output was captured from its last run.
+          Backend is not loaded — showing whatever output was captured from its last run.
         </Typography>
       )}
       <Box
@@ -2627,7 +2628,7 @@ function BenchTab({ name }: { name: string }) {
       {!!plan?.disagreements?.length && (
         <Alert severity="error">
           <AlertTitle>Cold/warm disagreement</AlertTitle>
-          A declared modality worked in one residency state and failed in the other. This is the
+          A declared modality worked loaded and failed cold, or the reverse. This is the
           failure a warm-only check cannot see:{' '}
           {plan.disagreements.map((d) => `${d.modality} (${d.runMode || 'any'})`).join(', ')}
         </Alert>
@@ -2765,7 +2766,7 @@ function BenchTab({ name }: { name: string }) {
           <Typography variant="body2" component="div">
             Selected: <b>{[...checked].join(', ') || 'nothing'}</b>
             <Alert severity="info" sx={{ mt: 2 }}>
-              The run shares the box: it evicts nothing and turns nobody away. It queues for
+              The run shares the box: it unloads nothing and turns nobody away. It queues for
               slots like any other caller, waits out <b>429 + Retry-After</b> backpressure and
               subtracts that wait from its timings. It will still consume GPU time.
             </Alert>

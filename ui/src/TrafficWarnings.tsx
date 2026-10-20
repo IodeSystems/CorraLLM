@@ -114,7 +114,7 @@ export function TrafficWarnings({
       badge={
 <Chip size="small" color="warning" variant="filled" label={count} />
       }
-      subtitle={`Everything below is drawn from ${windowPhrase(window)} — the tables that produced these lines are further down`}
+      subtitle={windowPhrase(window)}
       flush
     >
       {/* The only one of these with a control, so it goes first: the rest are

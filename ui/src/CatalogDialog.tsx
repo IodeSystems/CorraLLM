@@ -442,7 +442,7 @@ export function CatalogDialog(props: {
             </MenuItem>
           ))}
         </TextField>
-        <Tooltip title="Where in that list the model sits; lower is tried first. The config file calls this the lane order.">
+        <Tooltip title="Where in that list the model sits; lower is tried first.">
           <TextField
             size="small"
             label="Order"

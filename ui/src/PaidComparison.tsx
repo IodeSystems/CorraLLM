@@ -148,7 +148,7 @@ export function PaidComparison({
 
   if (!baselineType) {
     return (
-      <Panel title="What it would have cost on a paid API" dense>
+      <Panel title="Cost vs paid API" dense>
         <Typography variant="body2" sx={{ color: C.textMuted }}>
           No paid backend type is configured, so there is no rate table to compare against.
           Declaring one under <code>commandCosts</code> — a <code>cachedCostFactor</code>,{' '}
@@ -172,7 +172,7 @@ export function PaidComparison({
   const perModel = covered.filter((r) => r.requests > 0).sort((a, b) => b.baselineUsd - a.baselineUsd)
   return (
     <Panel
-      title="What it would have cost on a paid API"
+      title="Cost vs paid API"
       actions={
         perModel.length > 0 ? (
           <Button size="small" onClick={() => setBreakdownOpen(true)} sx={{ textTransform: 'none' }}>
@@ -183,18 +183,21 @@ export function PaidComparison({
       // A LABEL: the baseline's name and the window, no sentence break, and
       // nothing about a request in flight. It is the header's whole job to say
       // what the numbers below are of.
-      subtitle={`priced per model at its cost equivalent · ${when}`}
-      note={
+      subtitle={`Priced per model · ${when}`}
+      help={
         // The scope sentence names WHOSE hardware, because the covered set is no
         // longer one thing: our own boxes, plus free-tier traffic that cost
         // nothing to anybody. "Run on our own hardware" was true when it was
         // written and would now be false of some of the requests it counts.
         (freeReqs > 0
-          ? `Priced from the tokens of ${fmtInt(coveredReqs)} request(s) — ${fmtInt(localReqs)} on our own hardware, ${fmtInt(freeReqs)} given away by a provider's free tier.`
+          ? `Priced from the tokens of ${fmtInt(coveredReqs)} request(s): ${fmtInt(localReqs)} on our own hardware, ${fmtInt(freeReqs)} on a provider's free tier.`
           : `Priced from the tokens of ${fmtInt(coveredReqs)} request(s) run on our own hardware.`) +
-        (excludedReqs > 0
-          ? ` ${fmtInt(excludedReqs)} more are NOT in these figures — ${reasonList.join('; ')}.`
-          : ' That is every request in the window.')
+        (excludedReqs > 0 ? '' : ' That is every request in the window.')
+      }
+      note={
+        excludedReqs > 0
+          ? `${fmtInt(excludedReqs)} requests are not in these figures: ${reasonList.join('; ')}.`
+          : undefined
       }
       dense
     >
@@ -206,7 +209,7 @@ export function PaidComparison({
             sub="at paid-API rates"
           />
           <Figure
-            label="Here, in electricity"
+            label="Electricity here"
             value={pending ? <NotYet /> : fmtMoney(actual)}
             sub={costPerKwh > 0 ? `${fmtKwh(kwh)} at $${costPerKwh}/kWh` : 'no $/kWh configured'}
           />
@@ -249,7 +252,7 @@ export function PaidComparison({
         </Box>
       </Row>
       <Dialog open={breakdownOpen} onClose={() => setBreakdownOpen(false)} maxWidth="md" fullWidth>
-        <DialogTitle>What it would have cost on a paid API, by model · {when}</DialogTitle>
+        <DialogTitle>Cost vs paid API, by model · {when}</DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ color: C.textMuted, mb: 1 }}>
             Each model is priced at the rates of the paid model it stands in for (its cost

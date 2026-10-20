@@ -2,7 +2,7 @@ import { Box, Chip, Typography } from '@mui/material'
 import { Panel, Row } from '@/Panel'
 import { UtilizationBar } from '@/UtilizationBar'
 import { NotYet } from '@/NotYet'
-import { residentColor } from '@/MachineData'
+import { residentColor, stateLabel } from '@/MachineData'
 import { C } from '@/theme'
 import { fmtBytes } from '@/format'
 
@@ -69,13 +69,13 @@ export type FleetServer = {
 
 // One clause, no sentence break: this is a label, not prose (Panel.tsx, and
 // `corrallm/subtitle-is-a-label` enforces the half a machine can check).
-const SUBTITLE = 'What each machine is holding, of what the scheduler may fill'
+const SUBTITLE = 'Memory held per machine'
 
-// The band above the body, where the two things a reader would otherwise get
+// The help tooltip, where the two things a reader would otherwise get
 // wrong go: which models are missing from this list, and that a full bar is not
 // by itself a fault (UtilizationBar's own note says why at length).
 const NOTE =
-  'Models a provider runs are not here — they hold nothing on your machines. How full a pool is is not a fault on its own; Machines has each box in full, with what being full has cost it.'
+  'Provider-hosted models are not listed; they use no memory on your machines. A full pool is not a fault by itself. Machines shows each box in detail.'
 
 /**
  * Whether being full HERE has cost anything, in the only terms that settle it.
@@ -147,7 +147,7 @@ function MachineLine({ s, resident, declared }: { s: FleetServer; resident: Flee
       ? declared === 0
         ? 'holding nothing · no models are configured to run here'
         : `holding nothing · ${declared} model${declared === 1 ? '' : 's'} can run here`
-      : `${resident.length} of ${declared} models here loaded${busy > 0 ? ` · ${busy} in flight` : ''}`
+      : `${resident.length} of ${declared} models here loaded${busy > 0 ? ` · ${busy} requests in flight` : ''}`
   return (
     <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
       <Typography variant="subtitle2">{s.server}</Typography>
@@ -200,7 +200,7 @@ function Holders({ holders }: { holders: { r: FleetResident; bytes: number }[] }
           {/* Only when it is NOT ready. A chip reading "ready" on every row of a
               working fleet is a chip nobody reads. */}
           {r.state !== 'ready' && (
-            <Chip size="small" label={r.state} color={residentColor(r.state)} />
+            <Chip size="small" label={stateLabel(r.state)} color={residentColor(r.state)} />
           )}
         </Box>
       ))}
@@ -234,7 +234,7 @@ export function FleetPanel(props: {
 
   if (pending) {
     return (
-      <Panel title="Where the models are" subtitle={SUBTITLE} dense>
+      <Panel title="Capacity" subtitle={SUBTITLE} dense>
         <Typography variant="body2" sx={{ color: C.textMuted }}>
           <NotYet /> — nothing has reported what it is holding. This is not a fleet holding nothing.
         </Typography>
@@ -244,7 +244,7 @@ export function FleetPanel(props: {
 
   if (servers.length === 0) {
     return (
-      <Panel title="Where the models are" subtitle={SUBTITLE} dense>
+      <Panel title="Capacity" subtitle={SUBTITLE} dense>
         <Typography variant="body2" sx={{ color: C.textMuted }}>
           No machines are declared, so nothing can be held anywhere. Machines is where a box is
           added.
@@ -254,7 +254,7 @@ export function FleetPanel(props: {
   }
 
   return (
-    <Panel title="Where the models are" subtitle={SUBTITLE} note={NOTE} flush>
+    <Panel title="Capacity" subtitle={SUBTITLE} help={NOTE} flush>
       {[...servers].sort(order).map((s) => {
         const here = resident.filter((r) => r.server === s.server)
         const note = madeRoom(s)

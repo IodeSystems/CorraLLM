@@ -107,21 +107,13 @@ export function ToolingPanel(props: { host?: string } = {}) {
   return (
     <Panel
       title="Tooling"
-      subtitle={
-        host
-          ? `The programs that run the models on ${host}, and whether each is behind its pin`
-          : 'The programs that run the models — a version per host, and whether it is behind its pin'
-      }
+      subtitle={host ? `Inference programs on ${host}` : 'Inference programs per host'}
       // What the buttons cost, once, above the group — a tooltip does not reach
       // somebody who does not hover, and Lenny has refused Rebuild every run
       // because nothing said whether it takes the running model down with it.
       // A header clips, so this was never reaching him there either.
-      note={
-        <>
-          <b>Rebuild</b> compiles a new copy in the background — minutes of full-machine compile —
-          and leaves anything already running alone; models pick it up the next time they start.
-        </>
-      }
+      note="Rebuild compiles in the background and leaves running models alone."
+      help="A rebuild takes minutes of full-machine compile. Models use the new copy the next time they start."
       badge={
         q.isFetching ? (
           <CircularProgress size={14} />
@@ -191,12 +183,12 @@ export function ToolingPanel(props: { host?: string } = {}) {
 
               <Box sx={{ minWidth: 230 }}>
                 {t.error ? (
-                  <Tooltip title="corrallm could not ASK this host. Not the same as the tool being absent — nothing is known either way.">
+                  <Tooltip title="corrallm could not ASK this host. Not the same as the tool being missing — nothing is known either way.">
                     <Chip size="small" color="warning" variant="outlined" label="cannot ask" />
                   </Tooltip>
                 ) : !t.present ? (
                   <Tooltip title={t.path ? `Nothing at ${t.path}` : 'Not installed on this host'}>
-                    <Chip size="small" variant="outlined" label="absent" />
+                    <Chip size="small" variant="outlined" label="not installed" />
                   </Tooltip>
                 ) : unidentified ? (
                   <Tooltip title="Installed, and there is no way to say which build. ninfer has no --version at all, so a copy corrallm did not build cannot be identified — rather than show a made-up version, this says so.">

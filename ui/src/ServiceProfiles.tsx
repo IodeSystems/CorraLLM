@@ -174,11 +174,11 @@ export function ServiceProfiles({ window = DEFAULT_WINDOW }: { window?: TimeWind
   return (
     <Panel
       title="Caller service profiles"
-      subtitle={`How long each caller's work holds a slot, and how predictable it is — ${windowPhrase(window)}`}
+      subtitle={`Slot time per caller ${windowPhrase(window)}`}
       // Three sentences defining two column headings. In a one-line header the
       // reader got the first clause and an ellipsis, which is the half that
       // names the columns without saying what either number means.
-      note={
+      help={
         <>
           &ldquo;How even&rdquo; near 1 means their requests vary about as much as they average;
           well above 1 means a few long ones dominate. &ldquo;Makes others wait&rdquo; is how much

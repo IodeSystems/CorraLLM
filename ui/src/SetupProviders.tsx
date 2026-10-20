@@ -115,7 +115,8 @@ export function ProvidersTab(props: {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <Panel
         title={`Integrations (${groups.length === all.length ? all.length : `${groups.length} of ${all.length}`})`}
-        subtitle="An extension is the container: one integration, its providers, and the models it serves."
+        subtitle="Providers and the models they serve"
+        help="An extension is one integration with its providers and the models it serves."
         actions={
           <>
             {/* No filter until there is something to filter: a search box over
@@ -169,7 +170,7 @@ export function ProvidersTab(props: {
                 )}
                 {g.ext?.cmd && (
                   <Tooltip title="One local process serving several models. They load, unload and are accounted for together, because they are the same bytes.">
-                    <Chip size="small" variant="outlined" label="spawned" />
+                    <Chip size="small" variant="outlined" label="managed" />
                   </Tooltip>
                 )}
                 {g.ext?.server && <Chip size="small" variant="outlined" label={g.ext.server} />}
@@ -193,7 +194,7 @@ export function ProvidersTab(props: {
                 {g.pool?.lanes?.map((l) => (
                   <Tooltip
                     key={l.lane}
-                    title={`Every model in this pool joins the ${l.lane} fallback list at position ${l.order}, so asking for ${l.lane} reaches the pool. The config file calls this a lane.`}
+                    title={`Every model in this pool joins the ${l.lane} fallback list at position ${l.order}, so asking for ${l.lane} reaches the pool.`}
                   >
                     <Chip size="small" variant="outlined" label={`${l.lane} · fallback list`} />
                   </Tooltip>
@@ -349,11 +350,9 @@ export function ProvidersTab(props: {
       {/* The credential store sits under the providers that reference it rather
           than at the bottom of the page: a secretRef is only ever read in the
           sentence "which account does this provider use". */}
-      <Panel title={`Credential store (${secrets.length})`}>
+      <Panel title={`Credentials (${secrets.length})`}>
         <Typography variant="body2" sx={{ opacity: 0.75, mb: 1 }}>
-          Names only, never values — referenced from a provider as <code>${'{NAME}'}</code>. No
-          endpoint returns a value, which is what keeps the config document safe to read, back up
-          and share.
+          Names only; no value is ever shown. Reference one from a provider as <code>${'{NAME}'}</code>.
         </Typography>
         <Stack
           direction="row"

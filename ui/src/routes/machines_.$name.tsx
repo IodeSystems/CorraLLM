@@ -17,6 +17,7 @@ import {
   derive,
   madeRoomNote,
   residentColor,
+  stateLabel,
   useMachines,
   type Machine,
 } from '@/MachineData'
@@ -247,7 +248,7 @@ function OverviewTab({ m }: { m: Machine }) {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <Panel
         title="Health"
-        subtitle="Whether anything can start here, and what it has cost to fit things in today."
+        subtitle="Reachability and load"
       >
         <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
           <Stat
@@ -267,22 +268,22 @@ function OverviewTab({ m }: { m: Machine }) {
             />
           )}
           <Stat
-            label="concurrency cap"
+            label="max concurrent requests"
             value={m.maxConcurrent > 0 ? String(m.maxConcurrent) : 'none'}
             title="How many requests this host may serve at once, across every model on it. 'none' means the models' own caps are the only limit."
           />
           <Stat
-            label="loaded"
+            label="models loaded"
             value={`${m.resident.length} of ${m.declaredModels}`}
-            title="Backends resident right now, out of the models configured to run here."
+            title="Backends loaded right now, out of the models configured to run here."
           />
           <Stat
-            label="in flight"
+            label="requests in flight"
             value={String(busy)}
             title="Requests holding a backend on this machine right now."
           />
           <Stat
-            label="made room"
+            label="unloads to fit"
             value={m.madeRoomCount > 0 ? `${m.madeRoomCount} today` : 'not today'}
             title="Loads in the last 24h that had to unload something first. This — not a percentage — is what says whether being full here costs anything."
           />
@@ -324,12 +325,12 @@ function OverviewTab({ m }: { m: Machine }) {
       </Panel>
 
       <Panel
-        title="Utilisation"
+        title="Memory use"
         subtitle="One bar per pool"
         // How to read the bars at all. Losing the tail of this leaves two
         // shapes with no key, and the clause about what being full has cost is
         // the one that goes first.
-        note="The thin rule is what the scheduler may fill, the thick bar is what it has. Hover a bar for the measured reading and whether being full has cost anything."
+        help="The thin rule is what the scheduler may fill; the thick bar is what is in use. Hover a bar for the measured reading and whether being full has cost anything."
       >
         {m.pools.length === 0 ? (
           <Typography variant="body2" sx={{ color: C.textMuted }}>
@@ -382,11 +383,11 @@ function OverviewTab({ m }: { m: Machine }) {
 
       <Panel
         title="Loaded here"
-        subtitle="What is on this machine right now"
+        subtitle="On this machine right now"
         // The second sentence exists to stop this list being read as a fault
         // list, which is exactly what it looks like under a memory panel, and
         // it is the half a one-line header drops.
-        note="Nothing here is a cost — it is what the memory above is being spent on."
+        help="Nothing here is a cost; this is what the memory above is spent on."
         badge={
           <Chip
             size="small"
@@ -409,7 +410,7 @@ function OverviewTab({ m }: { m: Machine }) {
           <Row key={r.name}>
             <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
               <Typography variant="subtitle2">{r.modelName}</Typography>
-              <Chip size="small" label={r.state} color={residentColor(r.state)} />
+              <Chip size="small" label={stateLabel(r.state)} color={residentColor(r.state)} />
               {r.persistent && <Chip size="small" variant="outlined" label="kept loaded" />}
               {r.refs > 0 && <Chip size="small" variant="outlined" label={`${r.refs} in flight`} />}
             </Box>
@@ -440,7 +441,7 @@ function OverviewTab({ m }: { m: Machine }) {
               {/* A remote integration has no local process, so a residency state
                   would claim a load that never happened. */}
               {e.local ? (
-                <Chip size="small" label={e.state} color={residentColor(e.state)} />
+                <Chip size="small" label={stateLabel(e.state)} color={residentColor(e.state)} />
               ) : (
                 <Tooltip title="A remote integration: corrallm forwards to it and runs no process here, so it holds no memory on this machine.">
                   <Chip size="small" color="secondary" label="remote" />

@@ -145,7 +145,7 @@ function ProbePage() {
           <Chip size="small" variant="outlined" label="← all probes" clickable />
         </Link>
         {cat?.class && <Chip size="small" label={capLabel(cat.class)} />}
-        {cat?.run && <Chip size="small" variant="outlined" label={`residency: ${cat.run}`} />}
+        {cat?.run && <Chip size="small" variant="outlined" label={`load mode: ${cat.run}`} />}
         {cat?.requires && cat.requires !== 'chat' && (
           <Chip size="small" variant="outlined" label={`needs ${cat.requires}`} />
         )}
@@ -160,7 +160,7 @@ function ProbePage() {
           {cat.error}
         </Alert>
       ) : cat?.description ? (
-        <Panel title="What this probe measures">
+        <Panel title="What it measures">
           <Box sx={{ p: 2 }}>
             <ProbeMarkdown text={cat.description} />
           </Box>

@@ -652,7 +652,7 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
           ) : (
             <Box sx={{ flex: '1 1 380px', minWidth: 320 }}>
               <StackedArea
-                title="Requests over time, by priority group"
+                title="Requests by priority group"
                 series={groupSeries}
                 fmtTotal={fmtInt}
                 buckets={groupBuckets}
@@ -662,7 +662,7 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
           )}
           {costSeries.length > 0 && (
             <MetricChart
-              title="Cost over time, by caller"
+              title="Cost by caller"
               series={costSeries}
               fmt={fmtUSD}
               buckets={keyBuckets}
@@ -685,7 +685,7 @@ export function CallerSpend({ window = DEFAULT_WINDOW }: { window?: TimeWindow }
     dwell: Math.max(0, ...byKey.map((r) => Number(r.dwellMs))),
   }
   return (
-    <Panel title="By caller" subtitle="Bars are relative to the column max" flush>
+    <Panel title="By caller" subtitle="Bars scale to the column maximum" flush>
       <TableContainer>
         <Table size="small">
           <TableHead>
@@ -797,13 +797,13 @@ export function MoreCharts({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
   return (
     <Stack spacing={3}>
       <Box>
-        <Typography variant="overline" sx={{ color: C.textMuted, display: 'block', mb: 1 }}>
+        <Typography variant="overline" sx={{ color: C.textMuted, display: 'block', mb: 1, textTransform: 'none', fontSize: 13, letterSpacing: 0 }}>
           Priority groups
         </Typography>
         <Stack spacing={2}>
           {anyRejections ? (
             <StackedArea
-              title="Queue pressure — 429s/bucket by group"
+              title="Rejections (429) by group"
               series={rejectSeries}
               fmtTotal={fmtInt}
               buckets={groupBuckets}
@@ -814,7 +814,7 @@ export function MoreCharts({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
             </Typography>
           )}
           <MetricChart
-            title="Avg queue wait / request"
+            title="Average queue wait per request"
             series={waitSeries}
             fmt={(n) => fmtDuration(n)}
             buckets={groupBuckets}
@@ -823,7 +823,7 @@ export function MoreCharts({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
             <Loading size={20} minHeight={80} />
           ) : anyDepth ? (
             <StackedArea
-              title="Queue depth — avg waiting by group (sampled)"
+              title="Queue depth by group"
               series={depthSeries}
               fmtTotal={(n) => n.toFixed(1)}
               // Its OWN buckets: queueDepth samples the scheduler rather than
@@ -841,7 +841,7 @@ export function MoreCharts({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
       </Box>
 
       <Box>
-        <Typography variant="overline" sx={{ color: C.textMuted, display: 'block', mb: 1 }}>
+        <Typography variant="overline" sx={{ color: C.textMuted, display: 'block', mb: 1, textTransform: 'none', fontSize: 13, letterSpacing: 0 }}>
           By caller over time
         </Typography>
         {seriesKeys.length === 0 ? (
@@ -861,7 +861,7 @@ export function MoreCharts({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
               buckets={keyBuckets}
             />
             <MetricChart
-              title="Time"
+              title="Slot time"
               series={mkSeries((p) => Number(p.dwellMs))}
               fmt={(n) => fmtDuration(n)}
               buckets={keyBuckets}

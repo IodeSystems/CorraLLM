@@ -22,6 +22,7 @@ import { fmtInt, fmtTime } from '@/format'
 import { Loading } from '@/Loading'
 import { PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost, PauseCostNote } from '@/Pause'
 import { useSetDisabled } from '@/Disable'
+import { stateLabel } from '@/MachineData'
 
 const OverviewDoc = graphql(/* GraphQL */ `
   query Overview {
@@ -700,7 +701,7 @@ function ModelsPage() {
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
           <Chip
             size="small"
-            label={m.remote ? 'proxy' : stoppingProcs.has(m.procKey) ? 'stopping' : (st?.state ?? 'absent')}
+            label={m.remote ? 'proxy' : stoppingProcs.has(m.procKey) ? 'stopping' : stateLabel(st?.state ?? 'absent')}
             color={stateColor(m.remote ? 'proxy' : (st?.state ?? 'absent'))}
           />
           <Typography variant="subtitle2">{m.name}</Typography>
@@ -847,14 +848,14 @@ function ModelsPage() {
               {!!planByModel.get(probeFor)?.disagreements?.length && (
                 <li>
                   <b>Cold/warm disagreement</b> — recorded when cold probing still existed:
-                  this modality worked in one residency state and failed in the other. A
+                  this modality worked loaded and failed cold, or the reverse. A
                   re-run can no longer confirm it, since arranging a cold model meant
-                  evicting one.
+                  unloading one.
                 </li>
               )}
             </ul>
             <Alert severity="info" sx={{ mt: 1 }}>
-              The run shares the box: nothing is evicted and no caller is turned away. It
+              The run shares the box: nothing is unloaded and no caller is turned away. It
               queues for slots like any other client and waits out <b>429 + Retry-After</b>
               backpressure, subtracting that wait from its timings. It will still use GPU
               time, so expect added latency while it runs.
@@ -869,7 +870,7 @@ function ModelsPage() {
                 setProbeFor(null)
               }}
             >
-              Evict and probe
+              Run probe
             </Button>
           </DialogActions>
         </Dialog>
@@ -908,7 +909,7 @@ function ModelsPage() {
         <Panel
           title="Loaded"
           badge={<Chip size="small" color="success" label={loaded.length} />}
-          subtitle="Resident or coming up — holding capacity right now"
+          subtitle="Loaded or loading"
           flush
         >
           {loaded.map(modelRow)}
@@ -944,14 +945,13 @@ function ModelsPage() {
         <Panel
           title="Out of this setup"
           badge={<Chip size="small" color="warning" variant="outlined" label={outOfSetup.length} />}
-          subtitle="Kept in your configuration, and not served"
-          note={
+          subtitle="Kept in the configuration, not served"
+          help={
             <>
               Nothing resolves to these, nothing preloads them, and they are in no fallback list. A
-              caller that asks for one by name is answered <b>404</b> with the reason, rather than
-              the 429 &ldquo;come back later&rdquo; a pause gives — there is nothing to wait for. The config file calls this{' '}
-              <code>disabled</code>. <b>Put it back</b> returns the model to the setup exactly as it
-              was left, including a pause if one was set on it beforehand.
+              request for one by name gets a 404 with the reason, not a 429 retry. In the config file
+              this is <code>disabled</code>. Put it back restores the model as it was left, including
+              any pause.
             </>
           }
           flush
@@ -997,7 +997,8 @@ function ModelsPage() {
       {extensions.length > 0 && (
         <Panel
           title="Extensions"
-          subtitle="One process serving several models — it loads, unloads and pauses as a unit"
+          subtitle="One process, several models"
+          help="An extension loads, unloads and pauses as a unit."
           flush
         >
           {extensions.map((e) => {
@@ -1008,7 +1009,7 @@ function ModelsPage() {
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                   <Chip
                     size="small"
-                    label={!spawnable ? 'proxy' : stopping ? 'stopping' : e.state}
+                    label={!spawnable ? 'proxy' : stopping ? 'stopping' : stateLabel(e.state)}
                     color={!spawnable ? 'secondary' : stopping ? 'warning' : stateColor(e.state)}
                     variant={e.state !== 'absent' || !spawnable || stopping ? 'filled' : 'outlined'}
                     sx={{ minWidth: 68 }}
@@ -1094,15 +1095,14 @@ function ModelsPage() {
       {lanes.length > 0 && (
         <Panel
           title="Fallback lists"
-          subtitle="A name standing for several models, tried left to right until one can serve"
+          subtitle="Models tried in order until one can serve"
           // The chip legend. Without it a filled chip reads as a config entry
           // somebody cannot find, and the header was clipping it.
-          note={
+          help={
             <>
-              The config file calls one of these a lane. Filled chips are contributed at runtime — a
-              pool, a directory choice, or a selector — and are not in your config&apos;s member
-              list. A struck-through chip is a rung you took out of the setup: it stays written down
-              so you can see and undo the decision, and is never tried.
+              Filled chips are added at runtime (a pool, a directory choice or a selector) and are
+              not in your config&apos;s member list. A struck-through chip is a model taken out of the
+              setup; it is never tried.
             </>
           }
           flush
@@ -1133,9 +1133,9 @@ function ModelsPage() {
                   {rungs.map((r, i) => {
                     const mem = sticky.get(r.model)
                     const notes = [
-                      mem?.ttl ? `ttl ${mem.ttl}` : null,
-                      mem?.idleUnload ? `idle-unload ${mem.idleUnload}` : null,
-                      mem?.evictCost ? `evict ${mem.evictCost}` : null,
+                      mem?.ttl ? `keep for ${mem.ttl}` : null,
+                      mem?.idleUnload ? `unload when idle ${mem.idleUnload}` : null,
+                      mem?.evictCost ? `unload priority ${mem.evictCost}` : null,
                       r.origin === 'pool'
                         ? `from the ${r.pool || 'virtual'} pool — membership changes as providers add and withdraw models`
                         : null,

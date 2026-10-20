@@ -435,9 +435,9 @@ export function TurnedAway({
       subtitle={
         view === 'callers'
           ? filterKey
-            ? `The window's hardest-working callers, narrowed to ${filterKey} — a quiet caller may not be among them`
-            : "One caller's attempts, grouped by ticket — how many rejections it took, and whether they ever got in"
-          : `Each rejection we put a time on ${windowPhrase(window)}, and what the caller did about it`
+            ? `Busiest callers, narrowed to ${filterKey}`
+            : 'Rejections per caller, grouped by ticket'
+          : `Each timed rejection ${windowPhrase(window)}`
       }
       badge={
         <Stack direction="row" spacing={0.5}>

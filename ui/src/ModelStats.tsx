@@ -680,7 +680,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                       // reads as two slots where there is one. What the lane is
                       // MADE OF lives on /machines; here it only needs to stop the
                       // row being misread as one backend.
-                      <Tooltip title="A fallback list, not one backend: its models are tried top to bottom, and the load here is theirs counted once. /machines shows what it is made of. The config file calls this a lane.">
+                      <Tooltip title="A fallback list, not one backend: its models are tried top to bottom, and the load here is theirs counted once. /machines shows what it is made of.">
                         <Chip size="small" variant="outlined" label="fallback list" sx={{ ml: 1 }} />
                       </Tooltip>
                     )}
@@ -974,12 +974,12 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
   return (
     <Panel
       title="By model"
-      subtitle={`What each model did ${windowPhrase(window)}, and what reaching it cost`}
+      subtitle={`Requests, speed and cost ${windowPhrase(window)}`}
       // The column glossary, which is prose and was clipping. Which sentence
       // depends on whether the window is the live one: "in use" is a reading of
       // this moment, so on a past window the column is blank for a reason the
       // reader would otherwise have to guess at (OB-9).
-      note={
+      help={
         <>
           {live ? (
             <>

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { Box, Paper, Typography } from '@mui/material'
+import { Box, Paper, Tooltip, Typography } from '@mui/material'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { C } from '@/theme'
 
 // What a PANEL is, defined once.
@@ -11,11 +12,14 @@ import { C } from '@/theme'
 // heading floating above a white box (the old pattern) gives the eye nothing to
 // anchor the box's extent to.
 //
-//   title     the label. Rendered small/uppercase/tracked — a LABEL, not prose.
+//   title     the label. Short, plain, sentence case — a LABEL, not prose.
 //   subtitle  a second label fragment, muted, in the header. ONE LINE, clipped
 //             with an ellipsis when it does not fit. See below.
 //   note      prose that belongs to the panel: a band under the header, above
 //             the body, wrapping to as many lines as it needs.
+//   help      longer explanation, in an info-icon tooltip next to the title.
+//             Use it instead of `note` when the text explains and nobody has to
+//             read it before acting.
 //   badge     a count or status chip pinned next to the title.
 //   actions   controls, right-aligned in the header bar.
 //   flush     body gets no padding — for a table or list that should meet the
@@ -64,13 +68,14 @@ export function Panel(props: {
   title?: ReactNode
   subtitle?: ReactNode
   note?: ReactNode
+  help?: ReactNode
   badge?: ReactNode
   actions?: ReactNode
   flush?: boolean
   dense?: boolean
   children: ReactNode
 }) {
-  const { title, subtitle, note, badge, actions, flush, dense, children } = props
+  const { title, subtitle, note, help, badge, actions, flush, dense, children } = props
   const hasHeader = title != null || actions != null || badge != null
   return (
     <Paper elevation={0} sx={{ overflow: 'hidden' }}>
@@ -88,9 +93,17 @@ export function Panel(props: {
           }}
         >
           {title != null && (
-            <Typography variant="overline" sx={{ color: C.text, whiteSpace: 'nowrap' }}>
+            <Typography
+              variant="overline"
+              sx={{ color: C.text, whiteSpace: 'nowrap', textTransform: 'none', fontSize: 13, letterSpacing: 0 }}
+            >
               {title}
             </Typography>
+          )}
+          {help != null && (
+            <Tooltip title={help} arrow placement="bottom-start">
+              <InfoOutlinedIcon aria-label="More information" sx={{ fontSize: 16, color: C.textFaint, cursor: 'help' }} />
+            </Tooltip>
           )}
           {badge}
           {subtitle != null && (

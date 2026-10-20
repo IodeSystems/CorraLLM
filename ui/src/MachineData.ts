@@ -448,11 +448,11 @@ export function madeRoomNote(m: Machine): string {
 
 /** What each agent state means for whether anything can run there. */
 export const AGENT_STATUS_HINT: Record<string, string> = {
-  up: 'heartbeating; models can be spawned here',
-  down: 'stopped reporting in — new spawns are refused here, but its config and any running backends are left alone',
+  up: 'heartbeating; models can be started here',
+  down: 'stopped reporting in — new starts are refused here, but its config and any running backends are left alone',
   // Last-seen lives in memory, so "unknown" is "not since corrallm started",
   // not "never" — after a restart a machine that reported in all week reads so.
-  unknown: 'configured but has not reported in since corrallm started; a spawn will be attempted and will say why if it fails',
+  unknown: 'configured but has not reported in since corrallm started; a start will be attempted and will say why if it fails',
   away: 'marked as coming and going, and not here now — its models fall through to the next choice until it reports in',
   local: 'this machine',
 }
@@ -462,6 +462,18 @@ export function agentColor(status: string): 'success' | 'error' | 'warning' | 'd
   if (status === 'down') return 'error'
   if (status === 'local' || status === 'away') return 'default'
   return 'warning'
+}
+
+/** The word a user sees for a backend state; the raw states are internal. */
+export function stateLabel(state: string): string {
+  switch (state) {
+    case 'absent':
+      return 'not loaded'
+    case 'evicting':
+      return 'unloading'
+    default:
+      return state
+  }
 }
 
 /** The states a resident backend can be in, in the dashboard's shared colours. */

@@ -246,9 +246,8 @@ function ActiveRun(props: {
       <Typography variant="caption" sx={{
         color: "text.secondary"
       }}>
-        The run queues for admission like any other caller — nothing is evicted and no one is
-        locked out. It competes for slots, so a single-slot model will make both the bench and
-        other traffic wait on each other.
+        The run queues like any other caller. Nothing is unloaded and no one is locked out, but
+        a single-slot model makes the bench and other traffic wait on each other.
       </Typography>
       {args.length > 0 && (
         <Box component="pre" sx={{ m: 0, mt: 1, fontSize: 11, opacity: 0.75, overflowX: 'auto' }}>
@@ -387,7 +386,7 @@ function BenchPage() {
           you know what was being asked — and until this existed there was no way
           to find out from the dashboard at all. */}
       <Panel
-        title="The suite"
+        title="Probe suite"
         subtitle={
           catalog?.source === 'builtin'
             ? 'Built into the binary'
@@ -402,10 +401,8 @@ function BenchPage() {
             p: 2,
             pb: 1
           }}>
-          Every probe the runner would resolve — what could run, as opposed to what did. A probe
-          that fails to LOAD is listed here with its error rather than omitted, because a probe
-          silently missing from a run looks exactly like a probe that ran and found nothing.
-          Open one for the full description of what it measures and how to read a failure.
+          Every probe the runner can run. A probe that fails to load is listed with its error.
+          Open one to see what it measures.
         </Typography>
         {/* n(), not !!: GraphQL renders Long as TEXT, and the string "0" is
             truthy — so a healthy suite showed a red "0 probe(s) fail to load". */}
@@ -719,18 +716,18 @@ function BenchPage() {
                   {withVram.length > 0 && (
                     <>
                       <Typography variant="subtitle2" sx={{ mt: 2 }}>
-                        vs resident VRAM
+                        vs loaded VRAM
                       </Typography>
                       <Typography variant="caption" sx={{
                         color: "text.secondary"
                       }}>
                         The tradeoff that actually decides what to run: quality on THIS surface
-                        against what it costs to keep resident. Up and to the left is better.
+                        against the VRAM it takes to keep loaded. Up and to the left is better.
                       </Typography>
                       <ScatterChart
                         height={280}
                         colors={SERIES}
-                        xAxis={[{ label: 'resident MiB' }]}
+                        xAxis={[{ label: 'loaded VRAM (MiB)' }]}
                         yAxis={[{ label: 'pass rate', min: 0, max: 1 }]}
                         series={withVram.map((m) => ({
                           label: m.model,
@@ -789,13 +786,12 @@ function BenchPage() {
             })
           )}
 
-          <Panel title="Tokens — processed vs generated">
+          <Panel title="Tokens: processed vs generated">
             <Typography variant="caption" sx={{
               color: "text.secondary"
             }}>
-              Cache hits are excluded from &ldquo;processed&rdquo;: a model that ran second over the
-              same fixtures gets cheap prompt tokens through no merit of its own, so counting
-              them would reward the running order rather than the model.
+              Cache hits are excluded from &ldquo;processed&rdquo;, so run order does not
+              favor a model.
             </Typography>
             <BarChart
               height={280}
@@ -955,7 +951,7 @@ function BenchPage() {
             <br />
             <br />
             The run shares the box. It queues for slots like any other caller and
-            evicts nothing, so everyone else keeps serving. It waits out{' '}
+            unloads nothing, so everyone else keeps serving. It waits out{' '}
             <b>429 + Retry-After</b> backpressure rather than competing, and subtracts
             that waiting from its timings — so the numbers describe the model rather
             than the queue.

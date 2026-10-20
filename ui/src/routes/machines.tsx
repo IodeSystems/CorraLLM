@@ -80,7 +80,7 @@ function MachineRow({ m, onOpen }: { m: Machine; onOpen: () => void }) {
         <Typography variant="caption" sx={{ color: C.textMuted }}>
           {resident === 0
             ? 'nothing loaded'
-            : `${resident} loaded${busy > 0 ? ` · ${busy} in flight` : ''}`}
+            : `${resident} loaded${busy > 0 ? ` · ${busy} requests in flight` : ''}`}
         </Typography>
       </Box>
 
@@ -252,11 +252,8 @@ function MachinesPage() {
       {!pending && machines.length === 0 && modelCount === 0 && (
         <Panel title="Nothing configured yet">
           <Typography variant="body2" sx={{ color: 'text.secondary', mb: 2 }}>
-            This instance is running but serves no models. Declare a host here first — its memory
-            budget is what the scheduler admits against — then add models on <b>Setup</b>, which is
-            where a model gets the provider that owns it. A <code>proxy:</code> model (an upstream
-            API such as Groq or OpenRouter) needs no host at all, so that is the shortest path to a
-            working instance.
+            No models are served yet. Add a host here, then add models on <b>Setup</b>. A remote API
+            model (such as Groq or OpenRouter) needs no host.
           </Typography>
           <Stack direction="row" spacing={1}>
             <Button size="small" variant="contained" onClick={() => setEditing(blankServer())}>
@@ -271,10 +268,10 @@ function MachinesPage() {
 
       <Panel
         title="Machines"
-        subtitle="What hardware exists, whether it is reachable, and how much of it is spoken for"
+        subtitle="Hardware, reachability and capacity in use"
         // The second sentence is the page's only statement of where to go next
         // (OB-8), and the header was cutting it off before it named anything.
-        note="Open one for its memory, what is loaded on it, and the tools it builds with."
+        note="Open a machine for its memory, loaded models and tools."
         actions={
           <>
             <Button size="small" variant="outlined" onClick={() => setEditing(blankServer())}>
