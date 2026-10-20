@@ -18,6 +18,7 @@ import AddIcon from '@mui/icons-material/Add'
 import { Panel, Row } from '@/Panel'
 import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { ProviderModelDialog } from '@/ProviderModelDialog'
+import { AddModelDialog } from '@/AddModelDialog'
 import { OperatorNote } from '@/OperatorNote'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
@@ -255,6 +256,7 @@ export function ModelsTab() {
     extension?: string
     editId?: string
   } | null>(null)
+  const [addTo, setAddTo] = useState<string | null>(null)
   // Deleting a model is not undoable from here, so it is confirmed by name.
   const [confirmDelete, setConfirmDelete] = useState<{ served: string; hasCmd: boolean } | null>(
     null,
@@ -393,7 +395,7 @@ export function ModelsTab() {
                 <Button
                   size="small"
                   startIcon={<AddIcon />}
-                  onClick={() => setAddLocal({ provider: p.name })}
+                  onClick={() => setAddTo(p.name)}
                 >
                   Add model
                 </Button>
@@ -553,6 +555,12 @@ export function ModelsTab() {
         <Pager p={lanePager} unit="fallback lists" />
       </Panel>
 
+      <AddModelDialog
+        open={addTo != null}
+        onClose={() => setAddTo(null)}
+        initialKind="process"
+        localProvider={addTo ?? 'local'}
+      />
       {addLocal && (
         <ProviderModelDialog
           open

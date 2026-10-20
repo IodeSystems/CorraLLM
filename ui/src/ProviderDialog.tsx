@@ -100,6 +100,26 @@ type Preset = NonNullable<
   NonNullable<ReturnType<typeof usePresets>['data']>['presets']
 >[number]
 
+/**
+ * The accounts to save: the first one edited by the form (its key name and
+ * requests/minute), every other field and account passed through unchanged.
+ */
+function credentialsFor(existing: CredentialValue[], secretRef: string, rpm: string) {
+  if (!secretRef && existing.length === 0) return []
+  const [first, ...rest] = existing.length ? existing : [{ name: 'default', secretRef: '', headerName: '', allow: [], limits: [] }]
+  const edited = {
+    name: first.name,
+    secretRef,
+    headerName: first.headerName,
+    allow: first.allow,
+    limits: [
+      ...first.limits.filter((l) => !isRpm(l)),
+      ...(rpm ? [{ req: Number(rpm), per: 'minute' }] : []),
+    ],
+  }
+  return [edited, ...rest]
+}
+
 function usePresets() {
   const { data } = useQuery({
     queryKey: ['providerPresets'],
@@ -156,6 +176,33 @@ function wireFormat(api?: string | null): string {
   return api
 }
 
+export type LimitValue = { req?: number; usd?: number; sec?: number; per: string; hard?: boolean }
+
+/** Normalises a limit as the query returns it into what the mutation takes. */
+export function toLimit(l: {
+  req?: number | null
+  usd?: number | null
+  sec?: number | null
+  per: string
+  hard?: boolean | null
+}): LimitValue {
+  return {
+    ...(l.req ? { req: l.req } : {}),
+    ...(l.usd ? { usd: l.usd } : {}),
+    ...(l.sec ? { sec: l.sec } : {}),
+    per: l.per,
+    ...(l.hard ? { hard: true } : {}),
+  }
+}
+
+export type CredentialValue = {
+  name: string
+  secretRef: string
+  headerName: string
+  allow: string[]
+  limits: LimitValue[]
+}
+
 export type ProviderInitial = {
   extension: string
   name: string
@@ -167,7 +214,17 @@ export type ProviderInitial = {
     freeOnly: boolean
     minContext: string
   }
+  /**
+   * Carried so a save sends them back. The form edits one key name, a
+   * requests/minute limit and a monthly cap; everything else on the provider's
+   * accounts (allowlists, spend caps, other accounts) must survive the save.
+   */
+  limits: LimitValue[]
+  credentials: CredentialValue[]
 }
+
+const isRpm = (l: LimitValue) => !!l.req && l.per === 'minute'
+const isMonthlyUsd = (l: LimitValue) => !!l.usd && l.per === 'month' && !l.hard
 
 type Draft = {
   extension: string
@@ -249,6 +306,9 @@ export function ProviderDialog(props: {
             basePath: initial.basePath,
             freeOnly: initial.directory?.freeOnly ?? false,
             minContext: initial.directory?.minContext ?? '0',
+            secretRef: initial.credentials[0]?.secretRef ?? '',
+            rpm: String(initial.credentials[0]?.limits.find(isRpm)?.req ?? ''),
+            monthlyUSD: String(initial.limits.find(isMonthlyUsd)?.usd ?? ''),
           }
         : BLANK,
     )
@@ -310,7 +370,10 @@ export function ProviderDialog(props: {
         port: String(Number(d.port || 443)),
         basePath: d.basePath,
         manual: true,
-        limits: d.monthlyUSD ? [{ usd: Number(d.monthlyUSD), per: 'month' }] : [],
+        limits: [
+          ...(initial?.limits ?? []).filter((l) => !isMonthlyUsd(l)),
+          ...(d.monthlyUSD ? [{ usd: Number(d.monthlyUSD), per: 'month' }] : []),
+        ],
         directory: {
           freeOnly: d.freeOnly,
           inputModality: '',
@@ -319,15 +382,7 @@ export function ProviderDialog(props: {
           limit: '0',
           quality: 0,
         },
-        credentials: d.secretRef
-          ? [
-              {
-                name: 'main',
-                secretRef: d.secretRef,
-                limits: d.rpm ? [{ req: Number(d.rpm), per: 'minute' }] : [],
-              },
-            ]
-          : [],
+        credentials: credentialsFor(initial?.credentials ?? [], d.secretRef, d.rpm),
       })
       const res = r.corrallm?.upsertProvider
       // The mutation reports refusal in the body, not as an error — a rejected

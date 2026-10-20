@@ -121,8 +121,16 @@ export function ProviderModelDialog(props: {
    * a second opinion about a question that is already settled.
    */
   editId?: string
+  /**
+   * For a new LOCAL model, which of the two it is: a process corrallm starts,
+   * or something already listening that corrallm only forwards to. Absent on
+   * edit — the stored model already says, by whether it has a cmd.
+   */
+  kind?: 'process' | 'port'
+  /** Rendered above the fields; AddModelDialog puts its kind chooser here. */
+  header?: React.ReactNode
 }) {
-  const { open, onClose, provider, extension, editId } = props
+  const { open, onClose, provider, extension, editId, kind, header } = props
   const remote = !!extension
   const qc = useQueryClient()
   const wide = useMediaQuery(theme.breakpoints.up('sm'))
@@ -178,6 +186,10 @@ export function ProviderModelDialog(props: {
 
   const save = async () => {
     setErr('')
+    // Unloading and memory settings only mean something for a process corrallm
+    // starts. Sending them for a forward-only model got the save refused
+    // ("only apply to cmd models"), so a pure proxy sends them cleared.
+    const spawned = !remote && kind !== 'port' && spec.cmd.trim() !== ''
     try {
       const r = await upsert.mutateAsync({
         name: served,
@@ -186,23 +198,23 @@ export function ProviderModelDialog(props: {
           // the provider is — so it is sent as the served name to keep the two
           // from disagreeing.
           name: served,
-          cmd: spec.cmd,
-          server: spec.server,
+          cmd: spawned ? spec.cmd : '',
+          server: spawned ? spec.server : '',
           proxy: spec.proxy,
           upstream: spec.upstream,
           type: spec.type,
           quality: spec.quality,
           maxConcurrent: String(spec.maxConcurrent),
           maxTokens: String(spec.maxTokens),
-          persistent: spec.persistent,
+          persistent: spawned && spec.persistent,
           disabled: spec.disabled,
-          stickyTtl: spec.stickyTtl,
-          stickyIdleUnload: spec.stickyIdleUnload,
-          stickyEvictCost: spec.stickyEvictCost,
+          stickyTtl: spawned ? spec.stickyTtl : '',
+          stickyIdleUnload: spawned ? spec.stickyIdleUnload : '',
+          stickyEvictCost: spawned ? spec.stickyEvictCost : '',
           // A JSON map, matching what the Config editor sends. Reshaping it into
           // a list of pairs here got a 422 from the server, which is the kind of
           // divergence reusing one form is supposed to prevent.
-          ramUsage: spec.ramUsage,
+          ramUsage: spawned ? spec.ramUsage : {},
           notes: spec.notes,
         },
       })
@@ -221,15 +233,19 @@ export function ProviderModelDialog(props: {
 
   // A remote model needs nothing but an id: its endpoint comes from the
   // provider. A local one must say how to reach it.
-  const incomplete = !id.trim() || (!remote && !spec.cmd.trim() && !spec.proxy.trim())
+  const incomplete =
+    !id.trim() ||
+    (!remote && !spec.proxy.trim()) ||
+    (kind === 'process' && (!spec.cmd.trim() || !spec.server))
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth fullScreen={!wide}>
       <DialogTitle>
-        {editing ? `Edit ${provider}-${editId}` : `Add a model to ${provider}`}
+        {editing ? `Edit ${provider}-${editId}` : header ? 'Add a model' : `Add a model to ${provider}`}
       </DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2.5} sx={{ pt: 0.5 }}>
+          {header}
           <TextField
             size="small"
             autoFocus={!editing}
@@ -259,11 +275,10 @@ export function ProviderModelDialog(props: {
                 <strong>Upstream id</strong> if the provider calls it something other than the id
                 above.
               </>
+            ) : kind === 'port' ? (
+              <>Something already running on this network. corrallm forwards to it and never starts or stops it.</>
             ) : (
-              <>
-                A local model owns its process, so it needs a <strong>cmd</strong> to run — or a{' '}
-                <strong>proxy</strong>, if something is already listening on that port.
-              </>
+              <>A process corrallm starts on a server, and stops when it needs the memory.</>
             )}
           </Typography>
           <ModelForm
@@ -273,7 +288,11 @@ export function ProviderModelDialog(props: {
             advanced={[]}
             existing={editing}
             hide={
-              remote ? ['name', 'process', 'proxy', 'footprint', 'residency'] : ['name']
+              remote
+                ? ['name', 'process', 'proxy', 'footprint', 'residency']
+                : kind === 'port'
+                  ? ['name', 'process', 'footprint', 'residency']
+                  : ['name']
             }
           />
           {err && <Alert severity="error">{err}</Alert>}

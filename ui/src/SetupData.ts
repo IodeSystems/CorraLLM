@@ -74,6 +74,7 @@ export const ProvidersDoc = graphql(/* GraphQL */ `
             usd
             sec
             per
+            hard
           }
           credentials {
             name
@@ -86,6 +87,7 @@ export const ProvidersDoc = graphql(/* GraphQL */ `
               usd
               sec
               per
+              hard
             }
           }
         }

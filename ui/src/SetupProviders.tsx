@@ -5,7 +5,7 @@ import SearchIcon from '@mui/icons-material/Search'
 import { Panel, Row } from '@/Panel'
 import { EntryEditor, openEntry, type EntryEdit } from '@/EntryEditor'
 import { ProviderDialog } from '@/ProviderDialog'
-import type { ProviderInitial } from '@/ProviderDialog'
+import { toLimit, type ProviderInitial } from '@/ProviderDialog'
 import { CatalogDialog } from '@/CatalogDialog'
 import { ProviderModelDialog } from '@/ProviderModelDialog'
 import { OperatorNote } from '@/OperatorNote'
@@ -101,6 +101,14 @@ export function ProvidersTab(props: {
           minContext: String(p.directory.minContext ?? '0'),
         }
       : null,
+    limits: (p.limits ?? []).map(toLimit),
+    credentials: (p.credentials ?? []).map((c) => ({
+      name: c.name,
+      secretRef: c.secretRef ?? '',
+      headerName: c.headerName ?? '',
+      allow: c.allow ?? [],
+      limits: (c.limits ?? []).map(toLimit),
+    })),
   })
 
   return (

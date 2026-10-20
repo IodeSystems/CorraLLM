@@ -200,7 +200,7 @@ export function ModelForm({
 
         {!hidden('proxy') && (
         <TextField
-          label="Proxy"
+          label="Listens on"
           size="small"
           sx={{ minWidth: 180 }}
           value={spec.proxy}
@@ -208,8 +208,8 @@ export function ModelForm({
           error={!spec.proxy.trim()}
           helperText={
             !spec.proxy.trim()
-              ? 'Required: where to forward'
-              : 'A port (5800), host:port, or a URL'
+              ? 'Required: a port (5800), host:port or URL'
+              : 'Where corrallm forwards requests'
           }
         />
         )}
@@ -271,27 +271,27 @@ export function ModelForm({
           sx={{ width: 140 }}
           value={spec.maxTokens}
           onChange={(e) => set('maxTokens', Number(e.target.value))}
-          helperText="0 = no clamp"
+          helperText="Output cap when a caller sets none. 0 = no limit"
         />
       </Box>
 
-      {!hidden('residency') && (
+      {!hidden('residency') && spawned && (
       <FormControlLabel
         control={
           <Switch checked={spec.persistent} onChange={(e) => set('persistent', e.target.checked)} />
         }
         label={
           <Typography variant="body2">
-            Persistent — preloaded at boot and never evicted
+            Keep loaded — start at boot and never unload
           </Typography>
         }
       />
       )}
 
-      {!hidden('residency') && (
+      {!hidden('residency') && spawned && (
       <Box>
         <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-          Residency
+          Unloading
         </Typography>
         <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
           <TextField
@@ -315,12 +315,12 @@ export function ModelForm({
           <TextField
             size="small"
             select
-            label="Evict cost"
+            label="Eviction priority"
             value={spec.stickyEvictCost}
             onChange={(e) => set('stickyEvictCost', e.target.value)}
             disabled={spec.persistent}
             sx={{ minWidth: 140 }}
-            helperText="Resistance once a victim"
+            helperText="Higher = unloaded last"
           >
             {['', 'low', 'medium', 'high'].map((v) => (
               <MenuItem key={v || 'unset'} value={v}>

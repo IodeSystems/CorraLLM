@@ -8,6 +8,7 @@ import { ModelsTab } from '@/SetupModels'
 import { ProviderBudgets, RefusingBanner } from '@/SetupBudgets'
 import { HistoryPanels } from '@/SetupHistory'
 import { WarningSettings } from '@/WarningControls'
+import { AddModelDialog } from '@/AddModelDialog'
 
 /**
  * Setup: five questions, five tabs, one page.
@@ -80,6 +81,7 @@ function SetupPage() {
   // an extension row's "+ Provider" open the same dialog, and the header button
   // has to work from whichever tab you are on.
   const [addTo, setAddTo] = useState<string | null>(null)
+  const [addModel, setAddModel] = useState(false)
 
   return (
     <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -95,11 +97,14 @@ function SetupPage() {
         >
           Add provider
         </Button>
+        <Button size="small" variant="outlined" startIcon={<AddIcon />} onClick={() => setAddModel(true)}>
+          Add model
+        </Button>
         <Typography variant="body2" sx={{ opacity: 0.75 }}>
-          <b>Saving anything here takes effect at once</b>, and applies to the next request: a reply
-          already being written is not interrupted.
+          Changes apply to the next request.
         </Typography>
       </PageHeader>
+      <AddModelDialog open={addModel} onClose={() => setAddModel(false)} />
 
       {/* Above the tabs on purpose — see the file comment. */}
       <RefusingBanner />
