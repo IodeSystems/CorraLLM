@@ -42,60 +42,12 @@ const NowDoc = graphql(/* GraphQL */ `
       # two screens in their head, which is what it took to find the 2026-09-05
       # slowdown by hand.
       recent: usageRollup(from: $hourAgo, to: $now) {
-        power {
-          measured
-          error
-          coverage
-          kwh
-          usd
-          energyBtu
-          heatBtuPerHour
-          thermalUsd
-          pools {
-            server
-            pool
-            kwh
-            busyKwh
-            idleKwh
-            avgW
-          }
-          boxes {
-            server
-            kwh
-            gpuKwh
-            restKwh
-            avgW
-          }
-        }
         # THE RATE AND THE BASELINE, ON THE SAME FETCH. An energy figure without
         # its $/kWh is a number with no basis, and "would have cost $X" without
         # the type it was priced against is not a claim anybody can check. Both
         # are window-level, so they ride the query the tiles already make.
         costPerKwh
         baselineType
-        thermal {
-          mode
-          roomF
-          outdoorF
-          coolTargetF
-          heatTargetF
-          coolBlocked
-          coolFactorNow
-          coolFanCfm
-          outdoorSource
-          outdoorNowF
-          outdoorMinF
-          outdoorMaxF
-          hoursPriced
-          hoursBlocked
-          hoursNoWeather
-          roomSource
-          roomMinF
-          roomMaxF
-          hoursCooling
-          hoursHeating
-          hoursNeutral
-        }
         rows {
           served
           requests
@@ -123,9 +75,6 @@ const NowDoc = graphql(/* GraphQL */ `
           baselineGeneratedUsd
           baselineExcluded
           baselineType
-          energyBtu
-          heatBtuPerHour
-          thermalUsd
           promptPerSec
           predictedPerSec
         }
@@ -1187,9 +1136,6 @@ function Now() {
     baselineGeneratedUsd: Number(r.baselineGeneratedUsd ?? 0),
     baselineExcluded: r.baselineExcluded ?? '',
     baselineType: r.baselineType ?? '',
-    energyBtu: Number(r.energyBtu ?? 0),
-    heatBtuPerHour: Number(r.heatBtuPerHour ?? 0),
-    thermalUsd: Number(r.thermalUsd ?? 0),
   }))
 
   return (
@@ -1246,8 +1192,6 @@ function Now() {
         when="in the last hour"
         baselineType={c.recent?.baselineType ?? ''}
         costPerKwh={c.recent?.costPerKwh ?? 0}
-        thermal={c.recent?.thermal ?? null}
-        power={c.recent?.power ?? null}
         rows={comparisonRows}
         pending={q.isLoading}
       />

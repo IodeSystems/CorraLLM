@@ -109,9 +109,6 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           coverage
           kwh
           usd
-          energyBtu
-          heatBtuPerHour
-          thermalUsd
           pools {
             server
             pool
@@ -132,29 +129,6 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
         # the comparison prices against. Window-level, so they belong here and
         # not on each row.
         costPerKwh
-        thermal {
-          mode
-          roomF
-          outdoorF
-          coolTargetF
-          heatTargetF
-          coolBlocked
-          coolFactorNow
-          coolFanCfm
-          outdoorSource
-          outdoorNowF
-          outdoorMinF
-          outdoorMaxF
-          hoursPriced
-          hoursBlocked
-          hoursNoWeather
-          roomSource
-          roomMinF
-          roomMaxF
-          hoursCooling
-          hoursHeating
-          hoursNeutral
-        }
         baselineType
         rows {
           served
@@ -208,7 +182,7 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           baselineExcluded
           # Which paid type priced THIS row: the model's costEquivalent, else the default.
           baselineType
-          # Per-request speed and cache distributions, and the heat local work gave off.
+          # Per-request speed and cache distributions.
           tgN
           tgAvg
           tgP10
@@ -233,9 +207,6 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           cacheN
           cacheAvg
           cacheP90
-          energyBtu
-          heatBtuPerHour
-          thermalUsd
         }
         total {
           requests
@@ -296,9 +267,6 @@ const ModelStatsDoc = graphql(/* GraphQL */ `
           cacheN
           cacheAvg
           cacheP90
-          energyBtu
-          heatBtuPerHour
-          thermalUsd
         }
       }
     }
@@ -571,10 +539,6 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
   const rows = joinRows(util, spend)
   const rate = q.data?.corrallm.usageRollup?.costPerKwh ?? 0
   const power = q.data?.corrallm.usageRollup?.power
-  // Per-hour heat from a kWh figure, at the window's length (the power view's
-  // own ratio, so the rows and the total share one clock).
-  const perHour =
-    power && Number(power.energyBtu) > 0 ? Number(power.heatBtuPerHour) / Number(power.energyBtu) : 0
   // THE MEASURED DRAW NO MODEL CAUSED: each card idle, and the rest of each box.
   // Rows of their own so the column sums to the wall, not to token work.
   const overhead = power?.measured
@@ -689,11 +653,6 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
               </Tooltip>
             </TableCell>
             <TableCell align="right">Cost</TableCell>
-            <TableCell align="right">
-              <Tooltip title="Heat this model's local work gave off: its metered electricity × 3,412 BTU/kWh, with the window's average BTU/h under it. Token energy only — idle draw, CPU and PSU losses are not counted, so real heat is higher. A dash for a model that ran somewhere else.">
-                <span>Heat</span>
-              </Tooltip>
-            </TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -807,8 +766,8 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                   {liveCells}
                   {/* A lane owns no tokens, speed or cost: they are on the rows of
                       the models it routed to. One cell says where, instead of
-                      eleven columns of dashes. */}
-                  <TableCell colSpan={11}>
+                      ten columns of dashes. */}
+                  <TableCell colSpan={10}>
                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, alignItems: 'baseline' }}>
                       {members.map((m, i) => (
                         <Tooltip
@@ -988,29 +947,6 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                     </span>
                   </Tooltip>
                 </TableCell>
-                {/* HEAT, in the room this box is in. Only energy-billed rows have
-                    any: a paid or remote backend heated somebody else's room. */}
-                <TableCell align="right">
-                  {Number(s?.energyBtu ?? 0) > 0 ? (
-                    <>
-                      {fmtInt(Math.round(Number(s?.energyBtu)))} BTU
-                      {Number(s?.heatBtuPerHour ?? 0) > 0 && (
-                        <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
-                          ≈ {fmtInt(Math.round(Number(s?.heatBtuPerHour)))} BTU/h
-                        </Typography>
-                      )}
-                      {Number(s?.thermalUsd ?? 0) !== 0 && (
-                        <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
-                          {Number(s?.thermalUsd) > 0
-                            ? `+${fmtUSD(Number(s?.thermalUsd))} cooling`
-                            : `${fmtUSD(-Number(s?.thermalUsd))} heating saved`}
-                        </Typography>
-                      )}
-                    </>
-                  ) : (
-                    <span style={{ color: C.textFaint }}>—</span>
-                  )}
-                </TableCell>
               </TableRow>
             )
           })}
@@ -1027,14 +963,6 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                 <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
                   {fmtKwh(o.kwh)} measured
                 </Typography>
-              </TableCell>
-              <TableCell align="right">
-                {fmtInt(Math.round(o.kwh * 3412.14))} BTU
-                {perHour > 0 && (
-                  <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
-                    ≈ {fmtInt(Math.round(o.kwh * 3412.14 * perHour))} BTU/h
-                  </Typography>
-                )}
               </TableCell>
             </TableRow>
           ))}

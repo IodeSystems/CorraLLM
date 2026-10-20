@@ -8,7 +8,6 @@ import { ModelsTab } from '@/SetupModels'
 import { ProviderBudgets, RefusingBanner } from '@/SetupBudgets'
 import { HistoryPanels } from '@/SetupHistory'
 import { WarningSettings } from '@/WarningControls'
-import { RoomSettings } from '@/SetupRoom'
 
 /**
  * Setup: five questions, five tabs, one page.
@@ -36,9 +35,6 @@ import { RoomSettings } from '@/SetupRoom'
  *   Warnings   what Traffic's Warnings panel holds back: thresholds and hides.
  *              The panel itself shows a setting only while it is holding a
  *              warning back, so this is the one place they are all listed.
- *   Room       the room the box heats: ambient °F, targets, and what a therm of
- *              heat costs to remove or is worth to add — turns Traffic's BTU
- *              into a cooling cost or a heating saving.
  *   History    what changed, and the undo.
  *
  * History used to be rendered FIRST on the scroll, because "is this something I
@@ -62,7 +58,6 @@ const TABS = [
   { key: 'models', label: 'Models' },
   { key: 'budgets', label: 'Budgets' },
   { key: 'warnings', label: 'Warnings' },
-  { key: 'room', label: 'Room' },
   { key: 'history', label: 'History' },
 ] as const
 
@@ -121,7 +116,6 @@ function SetupPage() {
       {tab === 'models' && <ModelsTab />}
       {tab === 'budgets' && <ProviderBudgets />}
       {tab === 'warnings' && <WarningSettings />}
-      {tab === 'room' && <RoomSettings />}
       {tab === 'history' && <HistoryPanels />}
     </Box>
   )

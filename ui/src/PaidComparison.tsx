@@ -74,49 +74,6 @@ export type ComparisonRow = {
   baselineExcluded: string
   /** The paid type THIS row was priced at — its model's costEquivalent, else the default. */
   baselineType: string
-  /** Heat the row's local work gave off, BTU (metered token energy x 3412.14). */
-  energyBtu: number
-  /** energyBtu over the window's length, BTU/h. */
-  heatBtuPerHour: number
-  /** What that heat did to the room's climate bill: + cooling cost, − heating saved. */
-  thermalUsd: number
-}
-
-/** Measured draw for the window (usageRollup.power), as much as the heat figure reads. */
-export type PowerHeat = {
-  measured: boolean
-  error: string
-  energyBtu: number
-  heatBtuPerHour: number
-  thermalUsd: number
-  pools: readonly { avgW: number }[]
-  boxes: readonly { avgW: number }[]
-}
-
-/** The room settings the climate figure was computed from (config thermal). */
-export type ThermalSetting = {
-  mode: string
-  roomF: number
-  outdoorF: number
-  coolTargetF: number
-  heatTargetF: number
-  coolBlocked: boolean
-  coolFactorNow: number
-  coolFanCfm: number
-  outdoorSource: string
-  outdoorNowF: number
-  outdoorMinF: number
-  outdoorMaxF: number
-  // Long on the wire (Go int), which arrives as a string.
-  hoursPriced: number | string
-  hoursBlocked: number | string
-  hoursNoWeather: number | string
-  roomSource: string
-  roomMinF: number
-  roomMaxF: number
-  hoursCooling: number | string
-  hoursHeating: number | string
-  hoursNeutral: number | string
 }
 
 /** The reasons the server can give, in the words a reader gets. */
@@ -134,8 +91,6 @@ export function PaidComparison({
   when,
   baselineType,
   costPerKwh,
-  thermal = null,
-  power = null,
   rows,
   pending = false,
 }: {
@@ -145,10 +100,6 @@ export function PaidComparison({
   baselineType: string
   /** $/kWh the electricity figure was computed at. 0 ⇒ no rate configured. */
   costPerKwh: number
-  /** Room settings; null when none are configured (heat stays in BTU). */
-  thermal?: ThermalSetting | null
-  /** Measured draw; when measured, heat is the whole box at the wall, not token work. */
-  power?: PowerHeat | null
   rows: ComparisonRow[]
   /** Nothing has been counted yet — distinct from a counted zero (NotYet.tsx). */
   pending?: boolean
@@ -219,60 +170,6 @@ export function PaidComparison({
   // per-model figures. The panel says "paid-API rates" — true however many
   // models there are — and the Breakdown dialog says which model at which rates.
   const perModel = covered.filter((r) => r.requests > 0).sort((a, b) => b.baselineUsd - a.baselineUsd)
-  // MEASURED, when config power reads the wall: everything the box drew ends
-  // up in the room, idle and CPU included. Otherwise the token-work estimate.
-  const wall = power?.measured ? power : null
-  const btu = wall ? Number(wall.energyBtu) : sum((r) => r.energyBtu)
-  const btuPerHour = wall ? Number(wall.heatBtuPerHour) : sum((r) => r.heatBtuPerHour)
-  const climateUsd = wall ? Number(wall.thermalUsd) : sum((r) => r.thermalUsd)
-  const gpuW = wall ? wall.pools.reduce((n, p) => n + Number(p.avgW), 0) : 0
-  // Hour by hour when a location is set: the outdoor range and how many hours
-  // the fan could not cool say more than one temperature can.
-  const hourly = thermal?.outdoorSource === 'open-meteo'
-  const hourlyNote = hourly
-    ? `; outdoor ${Math.round(thermal!.outdoorMinF)}–${Math.round(thermal!.outdoorMaxF)}°F hourly, ${Number(thermal!.hoursPriced)} h priced` +
-      (Number(thermal!.hoursBlocked) > 0 ? `, ${Number(thermal!.hoursBlocked)} h too warm outside for the fan` : '') +
-      (Number(thermal!.hoursNoWeather) > 0 ? `, ${Number(thermal!.hoursNoWeather)} h without weather` : '')
-    : ''
-  // ROOM HOUR BY HOUR (a house sensor): a window can hold cooling, heating and
-  // neutral hours at once, so the figure is the NET of all of them, and the
-  // sub-line says how the hours split.
-  const roomHourly = thermal?.roomSource === 'home-assistant'
-  const climate = !thermal
-    ? null
-    : roomHourly
-      ? {
-          value:
-            climateUsd > 0 ? `+${fmtMoney(climateUsd)}` : climateUsd < 0 ? `${fmtMoney(-climateUsd)} saved` : fmtMoney(0),
-          sub:
-            `room ${Math.round(thermal.roomMinF)}–${Math.round(thermal.roomMaxF)}°F hourly: ` +
-            `${Number(thermal.hoursCooling)} h cooling, ${Number(thermal.hoursHeating)} h heating, ${Number(thermal.hoursNeutral)} h neither` +
-            (hourly ? `; outdoor ${Math.round(thermal.outdoorMinF)}–${Math.round(thermal.outdoorMaxF)}°F` : '') +
-            (Number(thermal.hoursBlocked) > 0 ? `, ${Number(thermal.hoursBlocked)} h too warm outside for the fan` : ''),
-        }
-    : hourly && thermal.mode === 'cooling'
-      ? {
-          value: `+${fmtMoney(climateUsd)}`,
-          sub: `extra cooling — room ${thermal.roomF}°F, above ${thermal.coolTargetF}°F${hourlyNote}`,
-        }
-    : thermal.mode === 'cooling'
-      ? thermal.coolBlocked
-        ? {
-            value: 'fan can’t cool',
-            sub: `room ${thermal.roomF}°F, outside ${thermal.outdoorF}°F — warmer outside, so this heat raises the room instead of a bill`,
-          }
-        : {
-            value: `+${fmtMoney(climateUsd)}`,
-            sub:
-              `extra cooling — room ${thermal.roomF}°F, above ${thermal.coolTargetF}°F` +
-              (thermal.coolFanCfm > 0
-                ? `; fan at a ${(thermal.roomF - thermal.outdoorF).toFixed(0)}°F gap, $${thermal.coolFactorNow.toFixed(3)}/therm`
-                : `; $${thermal.coolFactorNow.toFixed(2)}/therm`),
-          }
-      : thermal.mode === 'heating'
-        ? { value: `${fmtMoney(-climateUsd)} saved`, sub: `heating displaced — room ${thermal.roomF}°F, below ${thermal.heatTargetF}°F${hourlyNote}` }
-        : { value: fmtMoney(0), sub: `room ${thermal.roomF}°F is between ${thermal.heatTargetF}°F and ${thermal.coolTargetF}°F — neither system runs` }
-
   return (
     <Panel
       title="What it would have cost on a paid API"
@@ -342,24 +239,6 @@ export function PaidComparison({
               a provider giving tokens away — and only the first is a return on
               the machine. Shown only when there is free traffic: a permanent
               "$0.00 / 0 requests" teaches nobody anything. */}
-          {/* HEAT. Every watt-hour a local model draws ends up in the room: free
-              heating in winter, extra load on the cooling in summer. From metered
-              token energy only, so the box's real output is higher. */}
-          <Figure
-            label="Heat given off"
-            value={pending ? <NotYet /> : `${fmtInt(Math.round(btu))} BTU`}
-            sub={
-              btuPerHour > 0
-                ? wall
-                  ? `≈ ${fmtInt(Math.round(btuPerHour))} BTU/h (${fmtInt(Math.round(btuPerHour / 3.41214))} W) measured at the wall; GPUs ${fmtInt(Math.round(gpuW))} W of it`
-                  : `≈ ${fmtInt(Math.round(btuPerHour))} BTU/h (${fmtInt(Math.round(btuPerHour / 3.41214))} W) from token work; idle draw not counted`
-                : wall
-                  ? 'measured at the wall'
-                  : 'from token work; idle draw not counted'
-            }
-          />
-          {/* WHAT THE HEAT DID TO THE ROOM'S BILL, from Setup → Room. */}
-          {climate && <Figure label="Room climate" value={pending ? <NotYet /> : climate.value} sub={climate.sub} />}
           {freeReqs > 0 && (
             <Figure
               label="Of that, free tier"
@@ -374,8 +253,7 @@ export function PaidComparison({
         <DialogContent>
           <Typography variant="body2" sx={{ color: C.textMuted, mb: 1 }}>
             Each model is priced at the rates of the paid model it stands in for (its cost
-            equivalent, or the default when it declares none). Heat is metered token energy ×
-            3,412 BTU/kWh; idle draw is not counted.
+            equivalent, or the default when it declares none).
           </Typography>
           <Table size="small" sx={{ my: 0.5 }}>
             <TableHead>
@@ -384,8 +262,6 @@ export function PaidComparison({
                 <TableCell>Priced as</TableCell>
                 <TableCell align="right">On a paid API</TableCell>
                 <TableCell align="right">Electricity here</TableCell>
-                <TableCell align="right">Heat, BTU</TableCell>
-                {thermal && <TableCell align="right">Room climate</TableCell>}
               </TableRow>
             </TableHead>
             <TableBody>
@@ -395,16 +271,6 @@ export function PaidComparison({
                   <TableCell>{r.baselineType || baselineType}</TableCell>
                   <TableCell align="right">{fmtMoney(r.baselineUsd)}</TableCell>
                   <TableCell align="right">{fmtMoney(r.energyUsd)}</TableCell>
-                  <TableCell align="right">{fmtInt(Math.round(r.energyBtu))}</TableCell>
-                  {thermal && (
-                    <TableCell align="right">
-                      {r.thermalUsd > 0
-                        ? `+${fmtMoney(r.thermalUsd)} cooling`
-                        : r.thermalUsd < 0
-                          ? `${fmtMoney(-r.thermalUsd)} saved`
-                          : fmtMoney(0)}
-                    </TableCell>
-                  )}
                 </TableRow>
               ))}
             </TableBody>

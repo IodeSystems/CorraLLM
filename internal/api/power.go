@@ -39,10 +39,6 @@ type PowerView struct {
 	Boxes    []BoxPower  `json:"boxes" doc:"Per box, wall energy split into GPUs and the rest."`
 	Kwh      float64     `json:"kwh" doc:"Total measured energy: each box's wall figure, or its GPUs' where it has no box query."`
 	USD      float64     `json:"usd" doc:"kwh × costPerKwh."`
-	// Heat of the whole measured draw, the same arithmetic as a rollup row's.
-	EnergyBTU  float64 `json:"energyBtu" doc:"kwh × 3412.14 BTU/kWh: everything the box drew ends up as heat."`
-	HeatBTUh   float64 `json:"heatBtuPerHour" doc:"energyBtu over the window's length, BTU/h."`
-	ThermalUSD float64 `json:"thermalUsd" doc:"What that heat did to the climate bill, as thermalUsd on a rollup row."`
 }
 
 // minCoverage is the share of sample steps that must have data before the

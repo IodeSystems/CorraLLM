@@ -513,9 +513,6 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
       baselineGeneratedUsd: Number(r.baselineGeneratedUsd ?? 0),
       baselineExcluded: r.baselineExcluded ?? '',
       baselineType: r.baselineType ?? '',
-      energyBtu: Number(r.energyBtu ?? 0),
-      heatBtuPerHour: Number(r.heatBtuPerHour ?? 0),
-      thermalUsd: Number(r.thermalUsd ?? 0),
     }),
   )
   // NOTHING HAS BEEN COUNTED UNTIL THE TOTAL ARRIVES. `?? 0` on these five put a
@@ -626,8 +623,6 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
         when={windowPhrase(window)}
         baselineType={baselineType}
         costPerKwh={rate}
-        thermal={stats.data?.corrallm.usageRollup?.thermal ?? null}
-        power={stats.data?.corrallm.usageRollup?.power ?? null}
         rows={comparisonRows}
         pending={!counted}
       />

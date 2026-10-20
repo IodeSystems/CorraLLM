@@ -53,7 +53,6 @@ type CorrallmMutationNamespace {
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
-  setThermal(body: corrallm_SetThermalInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setThermal")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
@@ -398,7 +397,6 @@ type CorrallmV1MutationNamespace {
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
-  setThermal(body: corrallm_SetThermalInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setThermal")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
@@ -2358,12 +2356,8 @@ type corrallm_PowerView {
   boxes: [corrallm_BoxPower!]!
   """Share of the window's sample steps that had data, 0..1, over every series read."""
   coverage: Float!
-  """kwh × 3412.14 BTU/kWh: everything the box drew ends up as heat."""
-  energyBtu: Float!
   """Why nothing was measured: Prometheus unreachable, too little data in the window, or an unbounded window. Empty when measured."""
   error: String!
-  """energyBtu over the window's length, BTU/h."""
-  heatBtuPerHour: Float!
   """Total measured energy: each box's wall figure, or its GPUs' where it has no box query."""
   kwh: Float!
   """True when these figures replaced the per-token estimate for the models on measured cards. False with error set when they could not."""
@@ -2372,8 +2366,6 @@ type corrallm_PowerView {
   pools: [corrallm_PoolPower!]!
   """The Prometheus server the watts were read from."""
   source: String!
-  """What that heat did to the climate bill, as thermalUsd on a rollup row."""
-  thermalUsd: Float!
   """kwh × costPerKwh."""
   usd: Float!
 }
@@ -2746,8 +2738,6 @@ type corrallm_RollupRow {
   ctxThinkingN: Long!
   """Total dwell, milliseconds."""
   dwellMs: Long!
-  """Heat from local work in the window: energyKwh x 3412.14 BTU/kWh. Metered token energy only — idle GPU/CPU draw and PSU losses are not counted, so real heat is higher."""
-  energyBtu: Float!
   """energyUsd / costPerKwh — the kilowatt-hours behind it. 0 when the rate is unset. Measured when energyMeasured is set."""
   energyKwh: Float!
   """energyKwh is this model's share of its card's MEASURED draw (usageRollup.power), not the per-token estimate; costUsd and energyUsd follow it."""
@@ -2756,8 +2746,6 @@ type corrallm_RollupRow {
   energyUsd: Float!
   """Requests served at no charge by a backend with a declared freeTier and no per-token rates. Equals requests when billing is "free", else 0; on the total, how many of the window's requests cost nothing. The gate for showing a free-tier figure: its dollar value is always $0, so the count is the only thing that says whether the $0 was measured."""
   freeRequests: Long!
-  """energyBtu averaged over the window's length, BTU/h. 0 when the window is unbounded (all time)."""
-  heatBtuPerHour: Float!
   """What the store had RECORDED against this row that is charged to no kind here: nonzero only when billing is "free". These rows were metered with this box's watt-hour coefficients for tokens processed elsewhere, so the figure is neither electricity nor a bill and costUsd reports 0 instead. It is surfaced rather than dropped because a total that quietly shrank cannot be checked. Metering itself now bills a declared free tier $0 (cost.NoCharge), so this decays to 0 as the 30-day retention window turns over — a nonzero value means rows recorded before that fix are still in the window."""
   mispricedUsd: Float!
   """The part of costUsd that is a provider's bill: nonzero only when billing is "paid"."""
@@ -2794,8 +2782,6 @@ type corrallm_RollupRow {
   tgP90: Float!
   """Decode speed, tokens/sec: 99th percentile."""
   tgP99: Float!
-  """What that heat did to the room's climate bill, from config thermal: POSITIVE is extra cooling cost (room above the cooling target), NEGATIVE is heating saved (room below the heating target), 0 between the targets, when a fan cannot cool, or with no thermal config. energyBtu / 100000 x the active cost per therm."""
-  thermalUsd: Float!
   """Prefill (prompt processing) speed, tokens/sec: mean over requests."""
   tpAvg: Float!
   """Requests that reported a prefill speed — what the tp* figures are over."""
@@ -2957,41 +2943,6 @@ input corrallm_SetServerEphemeralInputBodyInput {
   ephemeral: Boolean!
 }
 
-input corrallm_SetThermalInputBodyInput {
-  """Remove the thermal settings; the dashboard goes back to reporting heat in BTU only."""
-  clear: Boolean
-  """Fixed $ to remove one therm (100,000 BTU) of heat — e.g. an AC at $/kWh x 29.31 / COP. Ignored when coolFanCfm is set."""
-  coolCostPerTherm: Float
-  """Cooling is a fan moving outside air: its airflow, CFM. Set this and coolFanWatts to have the cost computed from the room-to-outdoor gap."""
-  coolFanCfm: Float
-  """The cooling fan's draw, W."""
-  coolFanWatts: Float
-  """Cooling target, °F. Above it the room is being cooled."""
-  coolTargetF: Float!
-  """$ one therm of heat is worth when the room is heated — the marginal source the thermostat turns down."""
-  heatCostPerTherm: Float!
-  """Heating target, °F. Below it the room is being heated. Must be below coolTargetF."""
-  heatTargetF: Float!
-  """A ${KEY} reference to a long-lived access token in the credential store (~/.corrallm/credentials) — never the token itself."""
-  homeAssistantToken: String
-  """Home Assistant base URL (https://ha.example.com) for hourly room (and optionally outdoor) temperatures; empty for the manual readings."""
-  homeAssistantUrl: String
-  """Location for hourly outdoor temperatures (Open-Meteo, no key). Set both to price cooling hour by hour."""
-  latitude: Float
-  """See latitude."""
-  longitude: Float
-  """Free text kept with the settings (how the factors were worked out)."""
-  notes: String
-  """Optional outdoor temperature sensor; preferred over the weather service."""
-  outdoorEntity: String
-  """Outdoor temperature, °F. Needed when cooling is a fan: the room-to-outdoor gap sets what it costs. With a location it is only the fallback for hours with no weather."""
-  outdoorF: Float
-  """Temperature sensor for the room the box is in (or a whole-home aggregate when air moves between rooms), e.g. sensor.office_temperature."""
-  roomEntity: String
-  """Room (indoor) temperature, °F, as you read it. Decides the mode."""
-  roomF: Float!
-}
-
 input corrallm_SetWarningThresholdInputBodyInput {
   kind: String!
   """turned-away / unanswered / open-callers: raise it only above this many. slow-stretch: the multiple of the mean a request must pass. 0 returns to the default."""
@@ -3036,73 +2987,6 @@ input corrallm_SuppressWarningInputBodyInput {
   minutes: Long
   """Served model, for a per-model kind."""
   subject: String
-}
-
-type corrallm_ThermalView {
-  """True when cooling is a fan and outside is not cooler than the room: the fan cannot remove heat, so the heat raises the room temperature instead of costing money."""
-  coolBlocked: Boolean!
-  """Fixed $ to remove one therm (100,000 BTU), used when no fan is configured."""
-  coolCostPerTherm: Float!
-  """$ to remove one therm right now: the fixed factor, or the fan's at the current room-to-outdoor gap and electricity rate."""
-  coolFactorNow: Float!
-  """Cooling fan airflow, CFM; 0 means cooling is priced by coolCostPerTherm."""
-  coolFanCfm: Float!
-  """Cooling fan draw, W."""
-  coolFanWatts: Float!
-  """Cooling target, °F: above it the room is cooled."""
-  coolTargetF: Float!
-  """$ one therm of heat is worth when the room is heated — the marginal source's cost."""
-  heatCostPerTherm: Float!
-  """Heating target, °F: below it the room is heated."""
-  heatTargetF: Float!
-  """Home Assistant base URL; empty when none."""
-  homeAssistantUrl: String!
-  """Hours a fan could not cool because outside was not cooler than the room — that heat raised the room instead of a bill."""
-  hoursBlocked: Long!
-  """Hours with heat whose room temperature was above the cooling target."""
-  hoursCooling: Long!
-  """Hours with heat whose room temperature was below the heating target."""
-  hoursHeating: Long!
-  """Hours with heat between the targets."""
-  hoursNeutral: Long!
-  """Hours with heat but no cached weather; priced at outdoorF when set, else left out."""
-  hoursNoWeather: Long!
-  """Hours of the window that carried a cooling cost or heating saving."""
-  hoursPriced: Long!
-  """Hours with heat the room sensor had no reading for; roomF stood in."""
-  hoursRoomFallback: Long!
-  """Location for hourly outdoor weather; 0,0 means none (outdoorF is used)."""
-  latitude: Float!
-  """See latitude."""
-  longitude: Float!
-  """cooling | heating | neutral, from the room temperature against the targets."""
-  mode: String!
-  """Free text kept about the settings."""
-  notes: String!
-  """Outdoor temperature sensor's entity id; empty when outdoor comes from the weather service or the manual reading."""
-  outdoorEntity: String!
-  """Outdoor temperature as entered, °F. Decides what fan cooling costs, and whether a fan can cool at all."""
-  outdoorF: Float!
-  """Highest, °F."""
-  outdoorMaxF: Float!
-  """Lowest outdoor temperature over the window's hours that carried heat, °F."""
-  outdoorMinF: Float!
-  """Latest cached outdoor temperature (within the last 2 h), °F; 0 when none."""
-  outdoorNowF: Float!
-  """home-assistant (a house sensor) or open-meteo when outdoor temperatures were hourly; manual when the single outdoorF was used."""
-  outdoorSource: String!
-  """Room temperature sensor's entity id (a room, or a whole-home aggregate)."""
-  roomEntity: String!
-  """Room (indoor) temperature as entered, °F. Decides the mode."""
-  roomF: Float!
-  """Highest, °F."""
-  roomMaxF: Float!
-  """Lowest hourly room temperature over the window's hours with heat, °F."""
-  roomMinF: Float!
-  """Latest cached room reading (within 2 h), °F; 0 when none."""
-  roomNowF: Float!
-  """home-assistant when hours took the room temperature from the sensor; manual when roomF was used."""
-  roomSource: String!
 }
 
 input corrallm_ToolActivateInputBodyInput {
@@ -3369,7 +3253,6 @@ type corrallm_UsageRollupOutputBody {
   power: corrallm_PowerView
   """Per-model usage, costliest first."""
   rows: [corrallm_RollupRow!]!
-  thermal: corrallm_ThermalView
   total: corrallm_RollupRow!
   """Window applied (0 = all time)."""
   windowHours: Long!
