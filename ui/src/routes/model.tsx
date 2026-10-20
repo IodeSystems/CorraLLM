@@ -51,6 +51,7 @@ import {
   fmtUSD,
 } from '@/format'
 import { BenchProbeDetail } from '@/BenchProbeDetail'
+import { BenchCompare, LatestBench } from '@/BenchCompare'
 import { PauseCostNote, PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost } from '@/Pause'
 import { ModelSummary } from '@/ModelSummary'
 import { stateLabel } from '@/MachineData'
@@ -450,7 +451,9 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
         <Tab label="Bench" />
       </Tabs>
 
-      {tab === 0 && <InfoTab model={model} res={res} caps={caps.data} name={name} />}
+      {tab === 0 && (
+        <InfoTab model={model} res={res} caps={caps.data} name={name} onOpenBench={() => setTab(4)} />
+      )}
       {tab === 1 && (
         <TestTab
           capability={capability}
@@ -527,11 +530,13 @@ function InfoTab({
   res,
   caps,
   name,
+  onOpenBench,
 }: {
   model: OvModel
   res: ResModel | undefined
   caps: Manifest | undefined
   name: string
+  onOpenBench: () => void
 }) {
   // A measurement outlives residency: read it from benchPlan so the Memory
   // table below still has numbers when the model is evicted.
@@ -580,6 +585,8 @@ function InfoTab({
           </Button>
         )}
       </Stack>
+
+      <LatestBench name={name} onOpen={onOpenBench} />
 
       <Box>
         {/* What is true of the MODEL — the routing identity. Anything that
@@ -2639,14 +2646,14 @@ function BenchTab({ name }: { name: string }) {
           {plan.disagreements.map((d) => `${d.modality} (${d.runMode || 'any'})`).join(', ')}
         </Alert>
       )}
-      {!plan?.hasTuneProfile && (
+      {!plan?.hasTuneProfile && offered.has('measure') && (
         <Alert severity="info">
           No measured VRAM profile — corrallm is scheduling this model on its declared{' '}
           <code>ramUsage</code>, which nothing has verified.
         </Alert>
       )}
 
-      <Panel title="Run a benchmark on {name}">
+      <Panel title={`Run a benchmark on ${name}`}>
         <Stack
           direction="row"
           spacing={2}
@@ -2710,6 +2717,8 @@ function BenchTab({ name }: { name: string }) {
       {!!status?.error && <Alert severity="error">{status.error}</Alert>}
 
       <CapabilityBreakdown data={q.data?.corrallm?.benchProbes ?? null} model={name} />
+
+      <BenchCompare name={name} />
 
       <Panel title="History">
         <Typography
@@ -2776,6 +2785,12 @@ function BenchTab({ name }: { name: string }) {
               slots like any other caller, waits out <b>429 + Retry-After</b> backpressure and
               subtracts that wait from its timings. It will still consume GPU time.
             </Alert>
+            {!offered.has('measure') && (
+              <Alert severity="warning" sx={{ mt: 2 }}>
+                corrallm does not run this model on this box. If it is a paid API, the provider
+                bills the run and it counts against this model's spend limits.
+              </Alert>
+            )}
           </Typography>
         </DialogContent>
         <DialogActions>
