@@ -53,11 +53,11 @@ type QuotaEntryView struct {
 // limit/window, so ResetsIn is when the current level fully drains, not a hard
 // reset boundary.
 type QuotaWindowView struct {
-	Label    string `json:"label" doc:"\"1m\" (per-minute) or \"1d\" (per-day)."`
+	Label    string  `json:"label" doc:"\"1m\" (per-minute) or \"1d\" (per-day)."`
 	Limit    float64 `json:"limit"`
 	Used     float64 `json:"used" doc:"Fill level. A falloff window leaks back toward zero over its period; a calendar window (calendar-day / calendar-month) empties at the UTC boundary."`
-	Blocked  bool   `json:"blocked,omitempty" doc:"The level has reached the limit — the backend is skipped until it drains below."`
-	ResetsIn string `json:"resetsIn,omitempty" doc:"Time until the current level fully drains to zero."`
+	Blocked  bool    `json:"blocked,omitempty" doc:"The level has reached the limit — the backend is skipped until it drains below."`
+	ResetsIn string  `json:"resetsIn,omitempty" doc:"Time until the current level fully drains to zero."`
 }
 
 // RefusingBackendView is one backend that is refusing outright, and for how long.

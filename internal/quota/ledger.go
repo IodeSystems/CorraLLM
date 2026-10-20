@@ -79,9 +79,9 @@ type counterWindow struct {
 	// calendar is "day" or "month" for a fixed window that empties at the UTC
 	// period boundary instead of leaking; "" = falloff.
 	calendar string
-	hard     bool // a full window refuses even when nothing else can serve
-	used  float64   // fill level as of `at`
-	at    time.Time // when `used` was last computed
+	hard     bool      // a full window refuses even when nothing else can serve
+	used     float64   // fill level as of `at`
+	at       time.Time // when `used` was last computed
 }
 
 // levelAt returns the decayed fill at now without mutating: the bucket leaks

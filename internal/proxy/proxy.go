@@ -58,13 +58,13 @@ type Proxy struct {
 
 	started int64 // unix seconds at construction — the catalog's "created"
 
-	requestTimeout     time.Duration        // 0 = no corrallm-imposed deadline (defer to client + backend)
-	capturePayloads    bool                 // capture req/resp payloads onto the activity row (P10b)
+	requestTimeout     time.Duration                          // 0 = no corrallm-imposed deadline (defer to client + backend)
+	capturePayloads    bool                                   // capture req/resp payloads onto the activity row (P10b)
 	trustedCaller      func(r *http.Request, key string) bool // passes credential allowlists; see SetTrustedCaller
-	realtimeIdle       time.Duration        // 0 = no idle reap of a realtime ws session (P9e)
-	realtimeMaxSession time.Duration        // 0 = no max-duration reap of a realtime ws session (P9e)
-	convertEnabled     bool                 // master switch for chat attachment ingestion (P13)
-	convertGlobal      config.ConvertConfig // global default; per-model `convert:` overrides it
+	realtimeIdle       time.Duration                          // 0 = no idle reap of a realtime ws session (P9e)
+	realtimeMaxSession time.Duration                          // 0 = no max-duration reap of a realtime ws session (P9e)
+	convertEnabled     bool                                   // master switch for chat attachment ingestion (P13)
+	convertGlobal      config.ConvertConfig                   // global default; per-model `convert:` overrides it
 
 	rrMu sync.Mutex
 	rr   map[string]uint64 // per-served-model round-robin counter
@@ -1557,7 +1557,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			CostUSD: costUSD, QueuedMS: queuedMS, LoadMS: loadMS,
 			AudioBytes: audioBytes, Error: errReason, TTFBMs: ttfbMS,
 			ReqBody: reqBody, RespBody: respBody, RespHeaders: respHeaders, FinishReason: finishReason,
-			RetryAfterMS: retryAfterMS,
+			RetryAfterMS:    retryAfterMS,
 			ReasoningTokens: thinking, ReasoningMeasured: thinkingMeasured,
 		})
 		return
