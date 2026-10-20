@@ -3054,12 +3054,14 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 			// this a compressing upstream (common for paid endpoints) yields
 			// unparseable bytes and meters as $0.
 			req.Header.Del("Accept-Encoding")
+			// The caller's corrallm key is corrallm's credential, never the
+			// backend's. Forwarded, it handed every caller's key to every
+			// upstream provider, and on a provider with no key configured (or
+			// one using authTokenCommand) it went out AS the credential. A
+			// backend that needs auth gets it from its configured headers.
+			req.Header.Del("Authorization")
+			req.Header.Del("X-Corrallm-Key")
 			if t.API == config.APIAnthropic {
-				// The caller's corrallm key must not reach Anthropic: beside
-				// x-api-key it is a second, invalid credential, and it would
-				// block authTokenCommand below. Configured headers still win.
-				req.Header.Del("Authorization")
-				req.Header.Del("X-Corrallm-Key")
 				// Required on every Messages call. A default only: a version
 				// pinned in the config's headers overwrites it just below.
 				req.Header.Set("anthropic-version", anthropicVersion)

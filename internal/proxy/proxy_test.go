@@ -1964,3 +1964,28 @@ func TestActivityNamesConversation(t *testing.T) {
 		t.Fatalf("ctx stats = %+v, want 2 turns of 1 session ending at 201 tokens", total)
 	}
 }
+
+// The caller's corrallm key never reaches a backend; the backend's own
+// configured credential does.
+func TestReverseProxyStripsCallerKey(t *testing.T) {
+	var got http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+	}))
+	defer up.Close()
+	u, _ := url.Parse(up.URL)
+	for _, headers := range []map[string]string{nil, {"Authorization": "Bearer provider-key"}} {
+		rp := newReverseProxy(&config.ProxyTarget{URL: u, Headers: headers})
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer sk-aw4")
+		req.Header.Set("X-Corrallm-Key", "sk-aw4")
+		rp.ServeHTTP(httptest.NewRecorder(), req)
+		if got.Get("X-Corrallm-Key") != "" {
+			t.Errorf("headers %v: X-Corrallm-Key forwarded", headers)
+		}
+		want := headers["Authorization"]
+		if got.Get("Authorization") != want {
+			t.Errorf("headers %v: upstream Authorization = %q, want %q", headers, got.Get("Authorization"), want)
+		}
+	}
+}
