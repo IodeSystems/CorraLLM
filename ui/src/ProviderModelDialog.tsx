@@ -267,6 +267,7 @@ export function ProviderModelDialog(props: {
                     : `Callers ask for ${served} — and for ${id} too, while this provider claims bare names.`
             }
           />
+          {!header && (
           <Typography variant="caption" sx={{ color: C.textFaint, mt: -1 }}>
             {remote ? (
               <>
@@ -281,6 +282,7 @@ export function ProviderModelDialog(props: {
               <>A process corrallm starts on a server, and stops when it needs the memory.</>
             )}
           </Typography>
+          )}
           <ModelForm
             spec={spec}
             onChange={setSpec}

@@ -292,11 +292,15 @@ export function ProvidersTab(props: {
                           <Chip
                             key={c.name}
                             size="small"
-                            color={c.hasSecret ? 'success' : 'warning'}
+                            color={c.hasSecret || !c.secretRef ? 'success' : 'warning'}
                             variant="outlined"
-                            label={`${c.name}${
-                              c.hasSecret ? '' : ` · ${c.secretRef || 'no secret'} missing`
-                            }`}
+                            label={
+                              !c.secretRef
+                                ? `${c.name} · no key`
+                                : c.hasSecret
+                                  ? `${c.name} · ${c.secretRef}`
+                                  : `${c.name} · ${c.secretRef} not stored`
+                            }
                           />
                         ))}
                       </Stack>

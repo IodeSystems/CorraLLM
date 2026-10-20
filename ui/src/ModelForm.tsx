@@ -205,10 +205,9 @@ export function ModelForm({
           sx={{ minWidth: 180 }}
           value={spec.proxy}
           onChange={(e) => set('proxy', e.target.value)}
-          error={!spec.proxy.trim()}
           helperText={
             !spec.proxy.trim()
-              ? 'Required: a port (5800), host:port or URL'
+              ? 'A port (5800), host:port or URL'
               : 'Where corrallm forwards requests'
           }
         />
@@ -251,7 +250,7 @@ export function ModelForm({
           // Fractional on purpose: a 4-bit Mac tier legitimately sits between
           // two integer tiers, and forcing it onto one of them changes routing.
           slotProps={{ htmlInput: { step: 0.5 } }}
-          helperText="Higher wins; fractions fine"
+          helperText="Higher is preferred"
         />
 
         <TextField
@@ -261,7 +260,7 @@ export function ModelForm({
           sx={{ width: 150 }}
           value={spec.maxConcurrent}
           onChange={(e) => set('maxConcurrent', Number(e.target.value))}
-          helperText="Admission slots (≈ --parallel)"
+          helperText="Requests at once"
         />
 
         <TextField
