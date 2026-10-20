@@ -3069,8 +3069,7 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 			for k, v := range t.Headers {
 				req.Header.Set(k, v)
 			}
-			// Dynamic bearer for short-lived rotating credentials (e.g. reusing
-			// Claude Code's OAuth subscription token). A static Authorization
+			// Dynamic bearer for short-lived rotating credentials. A static Authorization
 			// header set above wins; otherwise inject the resolved token.
 			if t.AuthTokenCommand != "" && req.Header.Get("Authorization") == "" {
 				if tok := resolveAuthToken(t.AuthTokenCommand); tok != "" {
@@ -3084,8 +3083,7 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 }
 
 // authTokenCache memoizes AuthTokenCommand output so a per-request bearer isn't
-// re-shelled on every call. Rotating tokens (Claude Code OAuth is good for ~4h
-// and its own store keeps it refreshed) tolerate a short cache.
+// re-shelled on every call. Rotating tokens last far longer than the cache.
 var (
 	authTokMu    sync.Mutex
 	authTokCache = map[string]authTokEntry{}

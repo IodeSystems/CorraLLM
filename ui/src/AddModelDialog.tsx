@@ -116,6 +116,8 @@ const RemoteDataDoc = graphql(/* GraphQL */ `
           basePath
           secretRef
           needsSecret
+          api
+          authHeader
         }
       }
       listProviders {
@@ -146,6 +148,8 @@ type KeyMode = 'stored' | 'new' | 'none'
 
 interface Draft {
   preset: string
+  api: string
+  headerName: string
   provider: string
   baseUrl: string
   modelId: string
@@ -165,6 +169,8 @@ interface Draft {
 
 const blank: Draft = {
   preset: '',
+  api: '',
+  headerName: '',
   provider: '',
   baseUrl: '',
   modelId: '',
@@ -223,7 +229,7 @@ function RemoteModelDialog(props: { open: boolean; onClose: () => void; header: 
   const choosePreset = (id: string) => {
     const p = presets.find((x) => x.id === id)
     if (!p) {
-      set({ preset: '' })
+      set({ preset: '', api: '', headerName: '' })
       return
     }
     const port = p.port && String(p.port) !== '443' ? `:${p.port}` : ''
@@ -231,6 +237,8 @@ function RemoteModelDialog(props: { open: boolean; onClose: () => void; header: 
     set({
       preset: id,
       provider: p.id,
+      api: p.api === 'openai' ? '' : (p.api ?? ''),
+      headerName: p.authHeader === 'authorization' ? '' : (p.authHeader ?? ''),
       baseUrl: `https://${p.host}${port}${p.basePath ?? ''}/v1`,
       secretRef: ref,
       keyMode: !p.needsSecret ? 'none' : secrets.includes(ref) ? 'stored' : 'new',
@@ -256,6 +264,8 @@ function RemoteModelDialog(props: { open: boolean; onClose: () => void; header: 
           name: d.name.trim() || null,
           secretRef: d.keyMode === 'none' ? '' : d.secretRef.trim(),
           secretValue: d.keyMode === 'new' ? d.secretValue : '',
+          api: d.api || null,
+          headerName: d.headerName || null,
           maxTokens: String(num(d.maxTokens)),
           allow: d.allow,
           limits,
@@ -339,7 +349,11 @@ function RemoteModelDialog(props: { open: boolean; onClose: () => void; header: 
               placeholder="https://api.fireworks.ai/inference/v1"
               value={d.baseUrl}
               onChange={(e) => set({ baseUrl: e.target.value })}
-              helperText="As in the provider's OpenAI-compatible docs"
+              helperText={
+                d.api === 'anthropic'
+                  ? "Callers use the OpenAI format; corrallm translates to Anthropic's Messages API with prompt caching"
+                  : "As in the provider's OpenAI-compatible docs"
+              }
             />
             <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
               <TextField

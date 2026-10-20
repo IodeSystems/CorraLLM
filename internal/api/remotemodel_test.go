@@ -123,3 +123,33 @@ func TestSplitBaseURL(t *testing.T) {
 		}
 	}
 }
+
+// The Anthropic preset's shape: native Messages API through the shim, key in
+// x-api-key without a Bearer prefix.
+func TestAddRemoteModelAnthropic(t *testing.T) {
+	cfg, err := config.Load(managedConfig(t, remoteProviderYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := storeBackedHandlers(t, cfg)
+	out, err := h.AddRemoteModel(context.Background(), &AddRemoteModelInput{Body: RemoteModelSpec{
+		Provider: "anthropic", BaseURL: "https://api.anthropic.com", API: "anthropic",
+		ModelID: "claude-sonnet-5-5", SecretRef: "ANTHROPIC_API_KEY", HeaderName: "x-api-key",
+	}})
+	if err != nil || !out.Body.OK {
+		t.Fatalf("add: %v %+v", err, out.Body)
+	}
+	saved := reloadStored(t, h, "after add")
+	m := saved.Models["anthropic-claude-sonnet-5-5"]
+	tgt, err := m.ProxyTarget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.API != config.APIAnthropic {
+		t.Errorf("api = %q, want anthropic", tgt.API)
+	}
+	cr := saved.Extensions["anthropic"].Providers["anthropic"].Credentials[0]
+	if cr.Headers["x-api-key"] != "${ANTHROPIC_API_KEY}" {
+		t.Errorf("headers = %v, want a bare x-api-key reference", cr.Headers)
+	}
+}

@@ -2567,6 +2567,8 @@ type corrallm_RefusingBackendView {
 input corrallm_RemoteModelSpecInput {
   """corrallm keys allowed to use this key. Empty = every caller."""
   allow: [String!]
+  """Wire format upstream: openai (default) or anthropic (Messages API with prompt caching)."""
+  api: String
   """OpenAI-compatible base URL, e.g. https://api.fireworks.ai/inference/v1. A trailing /v1 is optional."""
   baseUrl: String!
   """Extension grouping the provider. Default: the provider name."""

@@ -196,9 +196,12 @@ var presets = []ProviderPreset{
 	{
 		ID: "anthropic", Label: "Anthropic", Group: "lab",
 		Host: "api.anthropic.com", Port: 443,
+		// Native Messages API through the shim (proxy/anthropic.go), not
+		// Anthropic's OpenAI-compatible layer, which has no prompt caching.
+		API: APIAnthropic, AuthHeader: "x-api-key",
 		SecretRef: "ANTHROPIC_API_KEY", Catalog: CatalogAuthed,
-		Docs:   "https://docs.claude.com/en/api/openai-sdk",
-		Notes:  "Via Anthropic's OpenAI-compatible layer at /v1/chat/completions, which has no prompt caching. Add `api: anthropic` to the provider's proxy to have corrallm translate to the native Messages API instead, with cache breakpoints placed (see proxy/anthropic.go).",
+		Docs:   "https://docs.claude.com/en/api/messages",
+		Notes:  "Callers speak OpenAI; corrallm translates to Anthropic's Messages API and places prompt-cache breakpoints.",
 		Filter: PresetFilter{Limit: 12},
 	},
 	{

@@ -31,6 +31,7 @@ type RemoteModelSpec struct {
 	SecretRef   string `json:"secretRef" required:"false" doc:"Credential-store entry holding the API key. Empty = no key."`
 	SecretValue string `json:"secretValue" required:"false" doc:"When set, stored under secretRef first. Write-only; never returned."`
 	HeaderName  string `json:"headerName" required:"false" doc:"Header carrying the key. Default authorization (as Bearer)."`
+	API         string `json:"api" required:"false" doc:"Wire format upstream: openai (default) or anthropic (Messages API with prompt caching)."`
 
 	Type          string  `json:"type" required:"false" doc:"Cost class. Default: <provider>-<name> when pricing is given, else chat."`
 	Quality       float64 `json:"quality" required:"false" doc:"Rank among models serving the same name. Higher wins."`
@@ -116,7 +117,11 @@ func (h *Handlers) AddRemoteModel(ctx context.Context, in *AddRemoteModelInput) 
 		pv := e.Providers[b.Provider]
 
 		var proxy yaml.Node
-		if err := proxy.Encode(map[string]any{"scheme": scheme, "host": host, "port": port, "basePath": basePath}); err != nil {
+		target := map[string]any{"scheme": scheme, "host": host, "port": port, "basePath": basePath}
+		if b.API != "" && b.API != config.PresetAPIOpenAI {
+			target["api"] = b.API
+		}
+		if err := proxy.Encode(target); err != nil {
 			return err
 		}
 		pv.Proxy = proxy

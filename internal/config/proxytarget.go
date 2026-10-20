@@ -34,9 +34,8 @@ type ProxyTarget struct {
 
 	// AuthTokenCommand, when set, is a command run per-request (result cached
 	// briefly) whose stdout is injected as `Authorization: Bearer <out>`. Used
-	// for short-lived rotating credentials — e.g. reusing Claude Code's OAuth
-	// subscription token, whose own credential store keeps it refreshed:
-	//   authTokenCommand: jq -r .claudeAiOauth.accessToken ~/.claude/.credentials.json
+	// for short-lived rotating credentials kept fresh by some other tool, e.g.
+	//   authTokenCommand: gcloud auth print-access-token
 	// A static `Authorization` in `headers` still wins if both are set.
 	AuthTokenCommand string
 
