@@ -50,7 +50,10 @@ type EntryYAMLOutput struct {
 }
 
 // EntryYAML returns one model, server or lane as YAML for editing.
-func (h *Handlers) EntryYAML(_ context.Context, in *EntryYAMLInput) (*EntryYAMLOutput, error) {
+func (h *Handlers) EntryYAML(ctx context.Context, in *EntryYAMLInput) (*EntryYAMLOutput, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	cfg := h.config()
 	if cfg == nil {
 		return nil, huma.Error503ServiceUnavailable("config unavailable")

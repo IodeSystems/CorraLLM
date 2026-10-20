@@ -314,7 +314,11 @@ type ActivityDetailOutput struct {
 }
 
 // ActivityDetail returns one activity row including its captured payloads.
-func (h *Handlers) ActivityDetail(_ context.Context, in *ActivityDetailInput) (*ActivityDetailOutput, error) {
+func (h *Handlers) ActivityDetail(ctx context.Context, in *ActivityDetailInput) (*ActivityDetailOutput, error) {
+	// Payloads are users' prompts and replies: admins only.
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	a, err := h.Store.ActivityByID(in.ID)
 	if err != nil {
 		return nil, huma.Error404NotFound("no such activity row")
@@ -1961,7 +1965,11 @@ type ModelLogsOutput struct {
 }
 
 // ModelLogs returns a spawned backend's recent stdout/stderr.
-func (h *Handlers) ModelLogs(_ context.Context, in *ModelLogsInput) (*ModelLogsOutput, error) {
+func (h *Handlers) ModelLogs(ctx context.Context, in *ModelLogsInput) (*ModelLogsOutput, error) {
+	// Backend logs can carry prompts (llama.cpp at -lv 4): admins only.
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	lines := h.Mgr.Logs(in.Backend)
 	tail := in.Tail
 	if tail <= 0 {

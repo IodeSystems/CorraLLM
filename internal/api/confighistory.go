@@ -83,6 +83,9 @@ type ConfigYAMLOutput struct {
 
 // ConfigRevision returns one revision's configuration.
 func (h *Handlers) ConfigRevision(ctx context.Context, in *ConfigRevisionInput) (*ConfigYAMLOutput, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	if h.ConfigSource == nil {
 		return nil, fmt.Errorf("this daemon has no configuration store")
 	}
@@ -104,6 +107,9 @@ type ConfigExportInput struct{}
 // not readable in an editor, so this is how a backup or a review happens for
 // somebody who is not going to ssh in.
 func (h *Handlers) ConfigExport(ctx context.Context, _ *ConfigExportInput) (*ConfigYAMLOutput, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	if h.ConfigSource == nil {
 		return nil, fmt.Errorf("this daemon has no configuration store")
 	}

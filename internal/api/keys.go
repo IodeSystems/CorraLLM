@@ -1,6 +1,8 @@
 package api
 
 import (
+	"github.com/iodesystems/corrallm/internal/auth"
+
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -86,7 +88,7 @@ type KeysOutput struct {
 }
 
 // Keys lists every caller key this box knows about — configured or merely seen.
-func (h *Handlers) Keys(_ context.Context, in *KeysInput) (*KeysOutput, error) {
+func (h *Handlers) Keys(ctx context.Context, in *KeysInput) (*KeysOutput, error) {
 	cfg := h.config()
 	out := &KeysOutput{}
 	out.Body.Keys = []KeyRow{}
@@ -141,6 +143,13 @@ func (h *Handlers) Keys(_ context.Context, in *KeysInput) (*KeysOutput, error) {
 		out.Body.Keys = append(out.Body.Keys, *r)
 	}
 	sortKeyRows(out.Body.Keys)
+	// A caller key is a bearer credential on /v1. Viewers see each caller by
+	// its hash, never the key itself.
+	if auth.IsViewer(ctx) {
+		for i := range out.Body.Keys {
+			out.Body.Keys[i].Key = "key-" + out.Body.Keys[i].Hash
+		}
+	}
 	return out, nil
 }
 
