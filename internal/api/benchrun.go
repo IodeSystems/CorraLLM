@@ -49,6 +49,18 @@ type BenchRunner struct {
 // NewBenchRunner builds an idle runner.
 func NewBenchRunner() *BenchRunner { return &BenchRunner{} }
 
+// IsRunKey reports whether key is the caller key of the run in progress. The
+// proxy lets that key past credential allowlists: an admin started the run and
+// chose its models, and the spend limits still apply.
+func (b *BenchRunner) IsRunKey(key string) bool {
+	if b == nil || key == "" {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.running && key == b.key
+}
+
 // BenchRunStatus is the UI's view of the current or last run.
 type BenchRunStatus struct {
 	Running   bool     `json:"running"`

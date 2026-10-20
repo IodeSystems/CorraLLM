@@ -60,6 +60,7 @@ type Proxy struct {
 
 	requestTimeout     time.Duration        // 0 = no corrallm-imposed deadline (defer to client + backend)
 	capturePayloads    bool                 // capture req/resp payloads onto the activity row (P10b)
+	trustedCaller      func(r *http.Request, key string) bool // passes credential allowlists; see SetTrustedCaller
 	realtimeIdle       time.Duration        // 0 = no idle reap of a realtime ws session (P9e)
 	realtimeMaxSession time.Duration        // 0 = no max-duration reap of a realtime ws session (P9e)
 	convertEnabled     bool                 // master switch for chat attachment ingestion (P13)
@@ -481,6 +482,11 @@ func (p *Proxy) capturePayload(data []byte, binary bool, contentType string, cap
 	}
 	return string(data)
 }
+
+// SetTrustedCaller sets who passes every credential allowlist: corrallm's own
+// callers (the running benchmark, an admin's dashboard Test tab). Spend limits
+// still apply to them. nil = nobody.
+func (p *Proxy) SetTrustedCaller(f func(r *http.Request, key string) bool) { p.trustedCaller = f }
 
 // SetBroker attaches an events broker so the request path can push live updates
 // (a new activity record, a "state changed" ping). Optional; nil disables it.
@@ -918,10 +924,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// Permission before budget: refusing a caller a credential it may not use is
 	// not a capacity question, and gating on budget first would let an
 	// exhausted-but-permitted account mask a forbidden one.
-	if kept := p.filterByCredential(cands, key); len(kept) == 0 {
-		http.Error(w, "no permitted credential for this key", http.StatusServiceUnavailable)
+	if kept := p.filterByCredential(r, cands, key); len(kept) == 0 {
+		// 403, not 503: retrying will not help, the caller is not on the list.
+		http.Error(w, "no permitted credential for this key", http.StatusForbidden)
 		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
-			Status: http.StatusServiceUnavailable, DwellMS: time.Since(start).Milliseconds(),
+			Status: http.StatusForbidden, DwellMS: time.Since(start).Milliseconds(),
 			Error: "no permitted credential", ReqBody: reqBody})
 		return
 	} else {
@@ -2052,7 +2059,10 @@ func (p *Proxy) filterByOutput(cands []config.Candidate, want string) []config.C
 // anyway is arguably better than failing; a permission is not. If nothing is
 // permitted the walk ends and the caller gets the same "no backend" answer as
 // any other empty candidate set.
-func (p *Proxy) filterByCredential(cands []config.Candidate, key string) []config.Candidate {
+func (p *Proxy) filterByCredential(r *http.Request, cands []config.Candidate, key string) []config.Candidate {
+	if p.trustedCaller != nil && p.trustedCaller(r, key) {
+		return cands
+	}
 	kept := make([]config.Candidate, 0, len(cands))
 	for _, c := range cands {
 		if c.Credential == nil || c.Credential.AllowsKey(key) {

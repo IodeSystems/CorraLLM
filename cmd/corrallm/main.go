@@ -844,6 +844,13 @@ func serve(ctx context.Context, o serveOpts) error {
 	h.BenchConfig = o.benchConfig
 	h.BenchProbeDirs = task.SplitProbeDirs(o.benchProbes)
 	px.SetBroker(broker)
+	// corrallm's own callers pass credential allowlists: the running bench and
+	// an admin's dashboard (Test tab). Not under --insecure, where every
+	// browser would count as an admin.
+	bench := h.Bench
+	px.SetTrustedCaller(func(r *http.Request, key string) bool {
+		return bench.IsRunKey(key) || (!o.insecure && auth.DashboardAdmin(r, adminToken, sso))
+	})
 	px.SetRequestTimeout(o.requestTimeout)
 	px.SetCapturePayloads(o.capturePayloads)
 	px.SetSlotCache(o.slotCacheDir, int64(o.slotCacheMaxGB)<<30)

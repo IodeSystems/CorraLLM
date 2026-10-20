@@ -120,6 +120,22 @@ func Middleware(token string, sso *SSO) func(http.Handler) http.Handler {
 	}
 }
 
+// DashboardAdmin reports whether r comes from a signed-in admin dashboard:
+// the admin-token cookie (while the token is enabled) or an admin SSO session
+// from the same origin. Cookies only — the Bearer slot on /v1 is the caller's
+// corrallm key, not a dashboard credential.
+func DashboardAdmin(r *http.Request, token string, sso *SSO) bool {
+	if sso.tokenOn() && token != "" {
+		if c, err := r.Cookie(CookieName); err == nil && tokenEqual(c.Value, token) {
+			return true
+		}
+	}
+	if id, ok := sso.Session(r); ok && id.Role == RoleAdmin && sameOrigin(r) {
+		return true
+	}
+	return false
+}
+
 // authorized reports whether r presents the admin token (constant-time compared).
 func authorized(r *http.Request, token string) bool {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
