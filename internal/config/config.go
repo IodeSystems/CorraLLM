@@ -2544,6 +2544,9 @@ func (c *Config) Validate() error {
 		if m.Cmd != "" && m.Server == "" {
 			return fmt.Errorf("model %q: cmd set but no server", name)
 		}
+		if err := ValidateProxyAPI(m.Proxy); err != nil {
+			return fmt.Errorf("model %q: %w", name, err)
+		}
 		if m.Cmd == "" {
 			// A pure proxy model has no local lifecycle: residency knobs are
 			// meaningless on it and almost certainly a config mistake.
