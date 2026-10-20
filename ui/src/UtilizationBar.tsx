@@ -69,7 +69,7 @@ export function UtilizationBar(props: {
     <Box>
       <Typography variant="caption" sx={{ display: 'block', color: C.text, fontWeight: 700 }}>
         {label}
-        {role ? ` · ${role}` : ''}
+        {role && role !== label ? ` · ${role}` : ''}
       </Typography>
       {available ? (
         <>
@@ -113,7 +113,7 @@ export function UtilizationBar(props: {
           <Typography variant="caption" sx={{ color: C.text, minWidth: 0 }}>
             {label}
           </Typography>
-          {role && (
+          {role && role !== label && (
             <Typography variant="caption" sx={{ color: C.textFaint }}>
               {role}
             </Typography>

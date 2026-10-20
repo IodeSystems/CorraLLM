@@ -89,7 +89,7 @@ export function Legend({
         onClick={() => setOpen(true)}
         sx={{ mt: 0.5, color: C.textMuted, textTransform: 'none', minWidth: 0, px: 0.5 }}
       >
-        show {series.length} series
+        Show legend ({series.length} series)
       </Button>
     )
   }

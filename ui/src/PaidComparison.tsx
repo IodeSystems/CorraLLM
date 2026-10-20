@@ -13,7 +13,7 @@ import {
   TableRow,
   Typography,
 } from '@mui/material'
-import { Panel, Row } from '@/Panel'
+import { Name, Panel, Row } from '@/Panel'
 import { NotYet } from '@/NotYet'
 import { C } from '@/theme'
 import { fmtInt, fmtKwh, fmtMoney } from '@/format'
@@ -270,7 +270,7 @@ export function PaidComparison({
             <TableBody>
               {perModel.map((r) => (
                 <TableRow key={r.served}>
-                  <TableCell>{r.served}</TableCell>
+                  <TableCell><Name>{r.served}</Name></TableCell>
                   <TableCell>{r.baselineType || baselineType}</TableCell>
                   <TableCell align="right">{fmtMoney(r.baselineUsd)}</TableCell>
                   <TableCell align="right">{fmtMoney(r.energyUsd)}</TableCell>

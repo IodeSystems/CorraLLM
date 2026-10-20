@@ -14,7 +14,7 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { Panel } from '@/Panel'
+import { Name, Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtDuration, fmtInt } from '@/format'
 import { Loading } from '@/Loading'
@@ -138,7 +138,7 @@ export function ServiceProfiles({ window = DEFAULT_WINDOW }: { window?: TimeWind
             const thin = n < 30
             return (
               <TableRow key={`${r.served}/${r.key}/${i}`} hover>
-                <TableCell>{r.served}</TableCell>
+                <TableCell><Name>{r.served}</Name></TableCell>
                 <TableCell>{r.key || <span style={{ color: C.textFaint }}>unkeyed</span>}</TableCell>
                 <TableCell align="right">
                   <span style={thin ? { color: C.textFaint } : undefined}>{fmtInt(r.n)}</span>

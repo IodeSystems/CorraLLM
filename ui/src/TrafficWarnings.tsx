@@ -128,18 +128,17 @@ export function TrafficWarnings({
       {showTurned && (
         <Row>
           <Typography variant="body2" sx={{ color: C.warn }}>
-            {fmtInt(turnedAway)} request{turnedAway === 1 ? ' was' : 's were'} told to come back
-            later — demand that did not fit.
+            {fmtInt(turnedAway)} request{turnedAway === 1 ? ' was' : 's were'} told to retry
+            later (demand did not fit).
             {notHonored > 0 && (
               <>
                 {' '}
-                {fmtInt(notHonored)} of those callers never came back, which may mean we drove them
-                off rather than delayed them.
+                {fmtInt(notHonored)} of those callers never came back.
               </>
             )}
           </Typography>
           <Typography variant="body2" sx={{ color: C.textMuted, mt: 0.25 }}>
-            Who, and how many tries it took them, is in <b>Turned away</b> below.
+            Details are in <b>Turned away</b> below.
           </Typography>
           {controls(
             <>
@@ -188,8 +187,7 @@ export function TrafficWarnings({
               {open} caller{open === 1 ? ' is' : 's are'} still without an answer.
             </Typography>
             <Typography variant="body2" sx={{ color: C.textMuted }}>
-              Their last attempt was a rejection and they have not got in since — some may still be
-              backing off and due to return.
+              Last attempt was rejected and they have not got in since. Some may still be retrying.
             </Typography>
           </Stack>
           {controls(

@@ -291,8 +291,8 @@ function slowdownFaults(recent: Rollup[], baseline: Rollup[]): Fault[] {
     // fallback is not a lesser card: it is the honest one when the only number
     // anybody measured is wall time.
     const what = rated
-      ? `${now.served} is generating at ${rate(nowTg)} tg/s against ${rate(wasTg)}, reading prompt at ${rate(nowTp)} tp/s against ${rate(wasTp)}${reread_}`
-      : `${now.served} is answering more slowly than usual — ${secs(nowMean)} a request against ${secs(wasMean)} over the last day${reread_} (this backend reports no tg/s/tp/s, so the cause is not separable here)`
+      ? `${now.served} is generating at ${rate(nowTg)} tok/s against ${rate(wasTg)}, reading prompt at ${rate(nowTp)} tok/s against ${rate(wasTp)}${reread_}`
+      : `${now.served} is answering more slowly than usual — ${secs(nowMean)} a request against ${secs(wasMean)} over the last day${reread_} (this backend reports no tok/s rates, so the cause is not separable here)`
 
     out.push({
       key: `slow:${now.served}`,
@@ -773,7 +773,7 @@ function Throughput({
       ) : idle ? (
         '—'
       ) : (
-        `${cacheReports > 0 ? compact(cachedTokens) : 'n/r'} · ${compact(
+        `${cacheReports > 0 ? compact(cachedTokens) : '—'} · ${compact(
           Math.max(0, promptTokens - cachedTokens),
         )} · ${compact(completionTokens)}`
       ),

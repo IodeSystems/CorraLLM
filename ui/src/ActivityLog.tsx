@@ -22,7 +22,7 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { Panel } from '@/Panel'
+import { Name, Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtBytes, fmtDuration, fmtInt, fmtTime, fmtUSD } from '@/format'
 import { Loading } from '@/Loading'
@@ -194,9 +194,9 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
                 {fmtDuration(rec.queuedMs)} · {fmtInt(rec.cachedTokens)} cached ·{' '}
                 {fmtInt(Math.max(0, Number(rec.promptTokens) - Number(rec.cachedTokens)))}{' '}
                 processed · {fmtInt(rec.completionTokens)} generated · {fmtUSD(rec.costUsd)}
-                {Number(rec.promptPerSec) > 0 && <> · {Number(rec.promptPerSec).toFixed(1)} tp/s</>}
+                {Number(rec.promptPerSec) > 0 && <> · {Number(rec.promptPerSec).toFixed(1)} tok/s prefill</>}
                 {Number(rec.predictedPerSec) > 0 && (
-                  <> · {Number(rec.predictedPerSec).toFixed(1)} tg/s</>
+                  <> · {Number(rec.predictedPerSec).toFixed(1)} tok/s decode</>
                 )}
                 {Number(rec.audioBytes) > 0 && <> · audio {fmtBytes(rec.audioBytes)}</>}
               </Typography>
@@ -346,7 +346,7 @@ export function ActivityLog({
     </Box>
   ) : (
     <TableContainer>
-      <Table size="small" stickyHeader>
+      <Table size="small" stickyHeader sx={{ '& .MuiTableCell-root': { px: 1 } }}>
         <TableHead>
           <TableRow>
             <TableCell>Time</TableCell>
@@ -387,8 +387,8 @@ export function ActivityLog({
                 <span>Generated</span>
               </Tooltip>
             </TableCell>
-            <TableCell align="right">tp/s</TableCell>
-            <TableCell align="right">tg/s</TableCell>
+            <TableCell align="right">Prefill tok/s</TableCell>
+            <TableCell align="right">Decode tok/s</TableCell>
             <TableCell align="right">Audio</TableCell>
             <TableCell align="right">Cost</TableCell>
           </TableRow>
@@ -414,9 +414,9 @@ export function ActivityLog({
             records.map((r, i) => (
               <TableRow key={i} hover sx={{ cursor: 'pointer' }} onClick={() => setSelected(r.id)}>
                 <TableCell>{fmtTime(r.ts)}</TableCell>
-                {!hideModel && <TableCell>{r.served}</TableCell>}
-                <TableCell>{r.placement || '—'}</TableCell>
-                <TableCell>{r.key || '—'}</TableCell>
+                {!hideModel && <TableCell><Name>{r.served}</Name></TableCell>}
+                <TableCell>{r.placement ? <Name max={160}>{r.placement}</Name> : '—'}</TableCell>
+                <TableCell>{r.key ? <Name max={160}>{r.key}</Name> : '—'}</TableCell>
                 <TableCell sx={{ fontFamily: 'monospace' }}>{r.sourceIp || '—'}</TableCell>
                 <TableCell>{r.path}</TableCell>
                 <TableCell align="right">

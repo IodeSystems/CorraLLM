@@ -654,6 +654,15 @@ function ModelsPage() {
     return Array.from(new Set(pols)).join('/')
   }
 
+  // What a group's onSaturated policy means, in words, for the chips.
+  const WHEN_FULL: Record<string, string> = {
+    queue: 'waits when full',
+    reject: 'refused when full',
+    preempt: 'preempts lower groups',
+    spill: 'spills to next backend',
+    fallThrough: 'spills to next backend',
+  }
+
   // The group strip rides in the panel HEADER, not above it — it qualifies the
   // panel's contents (which lanes may use these models, under what policy), so
   // it belongs inside the panel's boundary.
@@ -662,8 +671,10 @@ function ModelsPage() {
       <>
         {groups.map((g) => {
           const ks = keys.filter((k) => k.group === g.name).map((k) => k.key)
+          const policy = policyForTypes(g, types)
           const detail = [
             `weight ${g.weight}`,
+            `when full: ${policy.split('/').map((x) => WHEN_FULL[x] ?? x).join(' / ')}`,
             g.shareCurrency,
             g.interruptible ? 'interruptible' : null,
             g.acceptDegrade ? `degrade ≥ ${g.qualityFloor}` : 'top-quality only',
@@ -676,7 +687,7 @@ function ModelsPage() {
               <Chip
                 size="small"
                 variant="outlined"
-                label={`${g.name} · w${g.weight} · ${policyForTypes(g, types)}`}
+                label={`${g.name} (weight ${g.weight}) · ${policy.split('/').map((x) => WHEN_FULL[x] ?? x).join(' / ')}`}
               />
             </Tooltip>
           )
@@ -749,21 +760,18 @@ function ModelsPage() {
   const other = unloaded.filter((m) => !seen.has(m.name))
   if (other.length) sections.push({ title: 'Other', blurb: '', caps: [], groupTypes: [], models: other })
 
-  const res = c.residency
 
   // WHO IS HOLDING MEMORY moved to /machines (was /hosts) with P30 phase A. It
   // answers "what does the hardware have", which is that page's question; on the
   // home screen it was the second panel a person read while looking for whether
   // anything was wrong.
 
-  // Loaded/configured counts for the header.
-  const readyCount = (res?.models ?? []).filter((m) => m.state === 'ready').length
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <PageHeader title="Models">
         <Chip size="small" variant="outlined" label={`${models.length} configured`} />
-        <Chip size="small" variant="outlined" label={`${readyCount} loaded`} />
+        <Chip size="small" variant="outlined" label={`${loaded.length} loaded`} />
         {/* ON ARRIVAL, NOT AFTER A SCROLL. The panel is far down the page — it
             is not what anybody came for — but a decision that is silent
             everywhere else has to be countable somewhere without hunting, or

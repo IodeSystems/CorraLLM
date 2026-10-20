@@ -5,6 +5,8 @@ import {
   Alert,
   Box,
   Chip,
+  FormControlLabel,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -21,7 +23,6 @@ import { KeyCharts } from '@/KeyCharts'
 import { GroupPanels } from '@/routes/groups'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { C } from '@/theme'
 import { fmtAgo, fmtInt, fmtUSD } from '@/format'
 import { Loading } from '@/Loading'
 
@@ -74,6 +75,7 @@ export const KeysDoc = graphql(/* GraphQL */ `
 
 function Callers() {
   const [err, setErr] = useState('')
+  const [hideIdle, setHideIdle] = useState(true)
 
   // What each group costs the callers in it, from the groups query the panels
   // at the bottom of this page already issue. Shared cache, no extra request.
@@ -104,6 +106,15 @@ function Callers() {
   // (OB-13: a summary carries its worst case, not a count of everything). Being
   // outranked costs you latency; being stoppable costs you the answer, so the
   // summary names the second group's callers and leaves the first to the rows.
+  // Idle: last seen more than a week ago, or never. Client-side only; the
+  // counts above and the stoppable list still cover every key.
+  const idleCutoff = Date.now() - 7 * 86400_000
+  const isIdle = (k: (typeof keys)[number]) => {
+    const t = Date.parse(k.lastSeen ?? '')
+    return !Number.isFinite(t) || t < idleCutoff
+  }
+  const idleCount = keys.filter(isIdle).length
+  const shown = hideIdle ? keys.filter((k) => !isIdle(k)) : keys
   const stoppable = keys.filter((k) => costOf(k.group).canBeStopped).map((k) => k.key)
 
   return (
@@ -148,36 +159,34 @@ function Callers() {
         // Panel's subtitle is one line, nowrap, ellipsis — shared by every page,
         // so what fits there is a LABEL. Only the label is here now.
         subtitle="Callers and their groups"
+        help={
+          <>
+            {stoppable.length > 0 && (
+              <Box sx={{ mb: 1 }}>
+                {stoppable.length === 1 ? 'One caller is' : `${fmtInt(stoppable.length)} callers are`}{' '}
+                in a group whose answers can be stopped part-way when a higher group needs the
+                slot: <b>{stoppable.slice(0, 8).join(', ')}</b>
+                {stoppable.length > 8 ? ` and ${fmtInt(stoppable.length - 8)} more` : ''}.{' '}
+                {preemptionHistory(preemptions, lastPreemptedMs)}
+              </Box>
+            )}
+            Rows include keys seen in traffic that nobody has assigned. <b>Change</b> moves a
+            caller to another group and <b>Unassign</b> drops it back to the fallback one. Neither
+            cuts anybody off, and a request already running is unaffected.
+          </>
+        }
         flush
       >
-        {/* THE WORST THING A PLACEMENT ON THIS PAGE DOES, above the roster that
-            explains it (OB-11, OB-12). Lenny run 5 recognised his own key here
-            and had nothing telling him it was in the group that gets cut off
-            first — so the keys are NAMED, and the last sentence separates what
-            the setting permits from what the box has actually done. Silent when
-            no group can be stopped at all. */}
-        {stoppable.length > 0 && (
-          <Row>
-            <Typography variant="body2" sx={{ color: preemptions > 0 ? C.warn : C.textMuted }}>
-              {stoppable.length === 1 ? 'One caller is' : `${fmtInt(stoppable.length)} callers are`}{' '}
-              in a group whose answers can be stopped part-way when a higher group needs the slot:{' '}
-              <b>{stoppable.slice(0, 8).join(', ')}</b>
-              {stoppable.length > 8 ? ` and ${fmtInt(stoppable.length - 8)} more` : ''}.{' '}
-              {preemptionHistory(preemptions, lastPreemptedMs)}
-            </Typography>
-          </Row>
-        )}
-        {/* WHAT THE ROW BUTTONS COST, once above the group (OB-2). This was the
-            subtitle and truncated at "and a reques…", losing exactly the clause
-            that lets somebody press a control that reaches live traffic. The
-            tooltips do not carry it either: they reach nobody who does not
-            hover, which is the reader this sentence is for. */}
         <Row>
-          <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-            Rows include keys seen in traffic that nobody has assigned. <b>Change</b> moves a caller
-            to another group and <b>Unassign</b> drops it back to the fallback one — neither cuts
-            anybody off, and a request already running is unaffected.
-          </Typography>
+          <FormControlLabel
+            control={<Switch size="small" checked={hideIdle} onChange={(e) => setHideIdle(e.target.checked)} />}
+            label={
+              <Typography variant="body2">
+                Hide idle keys (not seen in 7 days)
+                {idleCount > 0 && hideIdle ? `: ${fmtInt(idleCount)} hidden` : ''}
+              </Typography>
+            }
+          />
         </Row>
         <TableContainer>
           <Table size="small">
@@ -194,18 +203,18 @@ function Callers() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {keys.length === 0 ? (
+              {shown.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8}>
                     <Typography sx={{
                       color: "text.secondary"
                     }}>
-                      No keys configured, and none seen in traffic yet.
+                      {keys.length === 0 ? 'No keys configured, and none seen in traffic yet.' : 'All keys are idle. Turn off the filter to see them.'}
                     </Typography>
                   </TableCell>
                 </TableRow>
               ) : (
-                keys.map((k) => (
+                shown.map((k) => (
                   <TableRow key={k.hash} hover>
                     <TableCell sx={{ fontFamily: 'monospace' }}>
                       <Link to="/keys/$key" params={{ key: k.key }}>

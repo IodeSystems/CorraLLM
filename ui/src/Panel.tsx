@@ -193,3 +193,26 @@ export function PageHeader(props: { title: ReactNode; children?: ReactNode }) {
     </Box>
   )
 }
+
+// Name: a model, key or placement name in a table cell. One line, clipped with an
+// ellipsis, full text on hover — names break at every dash otherwise and a row
+// becomes five lines tall.
+export function Name({ children, max = 260 }: { children: string; max?: number }) {
+  return (
+    <Tooltip title={children} placement="top-start">
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-block',
+          maxWidth: max,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          verticalAlign: 'bottom',
+        }}
+      >
+        {children}
+      </Box>
+    </Tooltip>
+  )
+}

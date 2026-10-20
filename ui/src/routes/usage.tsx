@@ -16,7 +16,7 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { Panel } from '@/Panel'
+import { Name, Panel } from '@/Panel'
 import { MetricChart, StackedArea } from '@/Charts'
 import type { ChartSeries } from '@/Charts'
 import { C, seriesColor } from '@/theme'
@@ -109,7 +109,7 @@ function PrefillBreakdown({ row }: { row: PrefillRow }) {
         <thead>
           <tr>
             <Box component="th" sx={{ ...cell, textAlign: 'left', pl: 0 }}>new tokens</Box>
-            <Box component="th" sx={cell}>raw tp/s</Box>
+            <Box component="th" sx={cell}>Prefill tok/s (raw)</Box>
             <Box component="th" sx={cell}>s / request</Box>
             <Box component="th" sx={cell}>n</Box>
           </tr>
@@ -154,7 +154,7 @@ function CacheCell({
     return (
       <TableCell align="right">
         <Tooltip title="No request here reported cached tokens — either this backend has no prompt cache (embeddings, most remote providers) or it does not report one. Not a measured 0%.">
-          <span style={{ color: C.textFaint }}>n/r</span>
+          <span style={{ color: C.textFaint }}>—</span>
         </Tooltip>
       </TableCell>
     )
@@ -338,7 +338,7 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
   const speedTile = (label: string, unit: string, n: number, avg: number, p10: number, p90: number, hint: string) => (
     <StatTile
       label={label}
-      value={!counted ? <NotYet /> : n > 0 ? `${fmtRate(avg)} ${unit}` : 'n/r'}
+      value={!counted ? <NotYet /> : n > 0 ? `${fmtRate(avg)} ${unit}` : '—'}
       sub={
         counted && n > 0
           ? `avg · slowest 10% under ${fmtRate(p10)} · fastest 10% over ${fmtRate(p90)} ${unit} · ${fmtInt(n)} requests`
@@ -353,8 +353,8 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
         {speedTile(
-          'Decode (writing)',
-          'tg/s',
+          'Decode speed',
+          'tok/s',
           Number(total?.tgN ?? 0),
           Number(total?.tgAvg ?? 0),
           Number(total?.tgP10 ?? 0),
@@ -362,11 +362,11 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
           'Generation speed the backend reported, tokens/sec, per request. The mean is what a caller typically saw; the slowest-10% mark is where a slowdown shows first. Long contexts decode slower, so this moves with how much each request carried.',
         )}
         <StatTile
-          label="Prefill, fused (cache included)"
-          value={!counted ? <NotYet /> : Number(total?.prefillN ?? 0) > 0 ? `${fmtRate(Number(total?.prefillFusedTps))} tp/s` : 'n/r'}
+          label="Prefill speed (incl. cache)"
+          value={!counted ? <NotYet /> : Number(total?.prefillN ?? 0) > 0 ? `${fmtRate(Number(total?.prefillFusedTps))} tok/s` : '—'}
           sub={
             counted && Number(total?.prefillN ?? 0) > 0
-              ? `raw ${fmtRate(Number(total?.prefillRawTps))} tp/s new tokens · ${Number(total?.prefillSecAvg).toFixed(2)} s prefill per request · ${pct(Number(total?.cacheHitRate ?? 0))} of prompt tokens cached · ${fmtInt(Number(total?.prefillN))} requests`
+              ? `raw ${fmtRate(Number(total?.prefillRawTps))} tok/s on new tokens · ${Number(total?.prefillSecAvg).toFixed(2)} s prefill per request · ${pct(Number(total?.cacheHitRate ?? 0))} of prompt tokens cached · ${fmtInt(Number(total?.prefillN))} requests`
               : counted
                 ? 'no backend reported timings'
                 : undefined
@@ -374,27 +374,38 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
           hint="Prompt tokens INCLUDING the cached prefix, divided by the time spent in prefill — how fast a caller's whole prompt was effectively read. Raw is the same time over only the tokens the GPU processed. Both are token-weighted: total tokens over total seconds, not a mean of per-request rates (that mean is dominated by cache hits reading a few hundred tokens behind a fixed per-request overhead)."
         />
         <StatTile
-          label="Prefill, raw by new tokens"
+          label="Prefill speed by prompt size"
           value={
             !counted ? (
               <NotYet />
             ) : Number(total?.prefillN ?? 0) > 0 ? (
-              <Box component="span" sx={{ fontSize: 13, fontFamily: 'monospace', lineHeight: 1.5, display: 'block' }}>
-                {(total?.prefillBuckets ?? []).map((b) => (
-                  <Box component="span" key={b.label} sx={{ display: 'block' }}>
-                    {b.label.padEnd(7)} {Number(b.n) > 0 ? `${fmtRate(b.rawTps)} tp/s  n ${fmtInt(Number(b.n))}` : '—'}
-                  </Box>
-                ))}
+              <Box component="table" sx={{ borderCollapse: 'collapse', fontSize: 13, '& td, & th': { py: 0.125, pr: 2, textAlign: 'right', fontWeight: 400, whiteSpace: 'nowrap' }, '& td:first-of-type, & th:first-of-type': { textAlign: 'left' } }}>
+                <thead>
+                  <tr>
+                    <Box component="th" sx={{ color: C.textFaint }}>Prompt size</Box>
+                    <Box component="th" sx={{ color: C.textFaint }}>tok/s</Box>
+                    <Box component="th" sx={{ color: C.textFaint }}>Requests</Box>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(total?.prefillBuckets ?? []).map((b) => (
+                    <tr key={b.label}>
+                      <Box component="td">{b.label}</Box>
+                      <Box component="td" sx={{ fontVariantNumeric: 'tabular-nums' }}>{Number(b.n) > 0 ? fmtRate(b.rawTps) : '—'}</Box>
+                      <Box component="td" sx={{ fontVariantNumeric: 'tabular-nums' }}>{fmtInt(Number(b.n))}</Box>
+                    </tr>
+                  ))}
+                </tbody>
               </Box>
             ) : (
-              'n/r'
+              '—'
             )
           }
           hint={`Raw prefill split by how many NEW (uncached) tokens each request had; n is the number of requests. Small chunks are dominated by fixed per-request overhead (context-checkpoint copies on this hybrid model); large chunks show what the GPU can do. Prefill time per request: ${(total?.prefillBuckets ?? []).map((b) => `${b.label} ${Number(b.n) > 0 ? b.secAvg.toFixed(2) + ' s' : '—'}`).join(', ')}.`}
         />
         <StatTile
           label="Cache hit"
-          value={!counted ? <NotYet /> : Number(total?.cacheN ?? 0) > 0 ? `${pct(Number(total?.cacheAvg))} avg` : 'n/r'}
+          value={!counted ? <NotYet /> : Number(total?.cacheN ?? 0) > 0 ? `${pct(Number(total?.cacheAvg))} avg` : '—'}
           sub={
             counted && Number(total?.cacheN ?? 0) > 0
               ? `per request · p90 ${pct(Number(total?.cacheP90))} · ${pct(Number(total?.cacheHitRate ?? 0))} of all prompt tokens`
@@ -421,8 +432,8 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
             <TableHead>
               <TableRow>
                 <TableCell>Model</TableCell>
-                <TableCell align="right">Decode tg/s avg (p10 – p90)</TableCell>
-                <TableCell align="right">Prefill tp/s, fused / raw</TableCell>
+                <TableCell align="right">Decode tok/s avg (p10 – p90)</TableCell>
+                <TableCell align="right">Prefill tok/s, with cache / raw</TableCell>
                 <TableCell align="right">Cache hit avg (p90)</TableCell>
                 <TableCell align="right">Context / turn avg (p90, p99), tokens</TableCell>
                 <TableCell align="right">Turns / conversation avg (p90, p99, max)</TableCell>
@@ -431,9 +442,9 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
             <TableBody>
               {rows.map((r) => (
                 <TableRow key={r.served}>
-                  <TableCell>{r.served}</TableCell>
+                  <TableCell><Name>{r.served}</Name></TableCell>
                   <TableCell align="right">
-                    {Number(r.tgN) > 0 ? `${fmtRate(Number(r.tgAvg))} (${fmtRate(Number(r.tgP10))} – ${fmtRate(Number(r.tgP90))})` : 'n/r'}
+                    {Number(r.tgN) > 0 ? `${fmtRate(Number(r.tgAvg))} (${fmtRate(Number(r.tgP10))} – ${fmtRate(Number(r.tgP90))})` : '—'}
                   </TableCell>
                   <TableCell align="right">
                     {Number(r.prefillN) > 0 ? (
@@ -443,11 +454,11 @@ export function SpeedCacheHeadline({ window = DEFAULT_WINDOW }: { window?: TimeW
                         </Box>
                       </Tooltip>
                     ) : (
-                      'n/r'
+                      '—'
                     )}
                   </TableCell>
                   <TableCell align="right">
-                    {Number(r.cacheN) > 0 ? `${pct(Number(r.cacheAvg))} (${pct(Number(r.cacheP90))})` : 'n/r'}
+                    {Number(r.cacheN) > 0 ? `${pct(Number(r.cacheAvg))} (${pct(Number(r.cacheP90))})` : '—'}
                   </TableCell>
                   <TableCell align="right">
                     {Number(r.ctxRequests) > 0 ? `${fmtK(Number(r.ctxRequestAvg))} (${fmtK(Number(r.ctxRequestP90))}, ${fmtK(Number(r.ctxRequestP99))})` : '—'}
@@ -539,7 +550,7 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
             same subtraction the Now page's re-read figure uses. */}
         <StatTile
           label="Cached"
-          value={!counted ? <NotYet /> : reports > 0 ? fmtInt(total.cachedTokens) : 'n/r'}
+          value={!counted ? <NotYet /> : reports > 0 ? fmtInt(total.cachedTokens) : '—'}
           sub={
             !counted
               ? undefined
@@ -549,7 +560,7 @@ export function TrafficHeadline({ window = DEFAULT_WINDOW }: { window?: TimeWind
                   )} saved`
                 : 'nothing reported a cache'
           }
-          hint="Prompt tokens the backends served from cache instead of reprocessing, and their share of all prompt tokens — weighted by tokens across every model, not an average of per-model rates. 'n/r' means nothing reported a cache at all, which is not a measured zero. The saved figure estimates the prompt-processing time avoided at the observed tokens/sec, so it moves with batch size and context."
+          hint="Prompt tokens the backends served from cache instead of reprocessing, and their share of all prompt tokens — weighted by tokens across every model, not an average of per-model rates. '—' means nothing reported a cache at all, which is not a measured zero. The saved figure estimates the prompt-processing time avoided at the observed tokens/sec, so it moves with batch size and context."
         />
         <StatTile
           label="Processed"

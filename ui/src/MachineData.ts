@@ -229,7 +229,13 @@ type Data = NonNullable<ReturnType<typeof useMachines>['data']>
  * than no measured bar. (MemoryPanel made this call first; it is the same rule,
  * now in one place, and MemoryPanel reads it from here.)
  */
-export function localServer(servers: { server: string }[]): string | undefined {
+export function localServer(
+  servers: { server: string; agentStatus?: string }[],
+): string | undefined {
+  // An agent status of 'local' names the box this process runs on, which is
+  // what lets a fleet with remote machines still attribute the device probe.
+  const local = servers.filter((s) => s.agentStatus === 'local')
+  if (local.length === 1) return local[0].server
   return servers.length === 1 ? servers[0].server : undefined
 }
 
@@ -242,7 +248,7 @@ export function localServer(servers: { server: string }[]): string | undefined {
  */
 export function pairDevice(opts: {
   gpus: GpuMem[]
-  servers: { server: string; devicePool: string }[]
+  servers: { server: string; devicePool: string; agentStatus?: string }[]
   server: string
   pool: string
 }): GpuMem | undefined {

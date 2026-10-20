@@ -19,7 +19,7 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { Panel } from '@/Panel'
+import { Name, Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtDuration, fmtTime } from '@/format'
 import { Loading } from '@/Loading'
@@ -176,15 +176,15 @@ export function Unanswered({ refused, endedEarly }: { refused: number; endedEarl
   if (refused === 0 && endedEarly === 0) return null
   const parts = [
     refused > 0
-      ? `${refused.toLocaleString()} request${refused === 1 ? ' was' : 's were'} refused outright — nothing could serve ${refused === 1 ? 'it' : 'them'}, and no time to come back was offered`
+      ? `${refused.toLocaleString()} request${refused === 1 ? ' was' : 's were'} refused with no retry time`
       : '',
     endedEarly > 0
-      ? `${endedEarly.toLocaleString()} answer${endedEarly === 1 ? '' : 's'} stopped part-way because the caller's connection went away`
+      ? `${endedEarly.toLocaleString()} answer${endedEarly === 1 ? '' : 's'} stopped part-way (caller disconnected)`
       : '',
   ].filter(Boolean)
   return (
     <Typography variant="body2" sx={{ color: C.warn }}>
-      {parts.join('. ')}. {refused > 0 ? 'A refusal is not a promise: nobody was told when to return.' : ''}
+      {parts.join('. ')}.
     </Typography>
   )
 }
@@ -305,7 +305,7 @@ export function TurnedAway({
                     </Box>
                   </Tooltip>
                 </TableCell>
-                <TableCell>{j.served}</TableCell>
+                <TableCell><Name>{j.served}</Name></TableCell>
                 <TableCell align="right">
                   {attempts}
                   <span style={{ color: rejections > 0 ? C.warn : C.textFaint }}>
@@ -361,7 +361,7 @@ export function TurnedAway({
                 <TableCell>{fmtTime(p.ts)}</TableCell>
                 <TableCell>{p.key || '—'}</TableCell>
                 <TableCell sx={{ fontFamily: 'monospace' }}>{p.sourceIp || '—'}</TableCell>
-                <TableCell>{p.served}</TableCell>
+                <TableCell><Name>{p.served}</Name></TableCell>
                 <TableCell>
                   <Chip size="small" variant="outlined" label={p.reason} />
                 </TableCell>

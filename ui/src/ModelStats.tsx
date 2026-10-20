@@ -17,7 +17,7 @@ import {
 } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { Panel } from '@/Panel'
+import { Name, Panel } from '@/Panel'
 import { C } from '@/theme'
 import { fmtDuration, fmtInt, fmtKwh, fmtUSD } from '@/format'
 import { SuppressButton } from '@/WarningControls'
@@ -359,7 +359,7 @@ function Rate({ v, what }: { v: number; what: string }) {
       <Tooltip
         title={`Nothing here reported a ${what} rate. Only local llama.cpp backends report timings — a remote provider never does, and neither does an embedding model. Not a measured zero.`}
       >
-        <span style={{ color: C.textFaint }}>n/r</span>
+        <span style={{ color: C.textFaint }}>—</span>
       </Tooltip>
     )
   }
@@ -588,7 +588,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
     </Box>
   ) : (
     <TableContainer>
-      <Table size="small" stickyHeader>
+      <Table size="small" stickyHeader sx={{ '& .MuiTableCell-root': { px: 1 } }}>
         <TableHead>
           <TableRow>
             <TableCell>Model</TableCell>
@@ -604,13 +604,13 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
               </Tooltip>
             </TableCell>
             <TableCell align="right">
-              <Tooltip title="Prompt-processing speed the backend reported, tokens/sec — how fast it READS. An unweighted mean over the requests that reported a rate; 'n/r' means none did.">
-                <span>tp/s</span>
+              <Tooltip title="Prompt-processing speed the backend reported, tokens/sec — how fast it READS. An unweighted mean over the requests that reported a rate; '—' means none did.">
+                <span>Prefill tok/s</span>
               </Tooltip>
             </TableCell>
             <TableCell align="right">
-              <Tooltip title="Generation speed the backend reported, tokens/sec — how fast it WRITES. This is the number that falls when the box itself degrades, while tp/s holds steady; a drop in both is more prompt to read, not a sick box.">
-                <span>tg/s</span>
+              <Tooltip title="Generation speed the backend reported, tokens/sec — how fast it WRITES. This is the number that falls when the box itself degrades, while prefill tok/s holds steady; a drop in both is more prompt to read, not a sick box.">
+                <span>Decode tok/s</span>
               </Tooltip>
             </TableCell>
             {/* CACHED · PROCESSED · GENERATED, in the order the work happens.
@@ -618,7 +618,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                 carried promptTokens — which includes the cached prefix, so the
                 two columns overlapped and the header said otherwise. */}
             <TableCell align="right">
-              <Tooltip title="Prompt tokens served from cache instead of reprocessed, and their share of this model's prompt. 'n/r' means nothing here reported a cache — not a measured zero.">
+              <Tooltip title="Prompt tokens served from cache instead of reprocessed, and their share of this model's prompt. '—' means nothing here reported a cache — not a measured zero.">
                 <span>Cached</span>
               </Tooltip>
             </TableCell>
@@ -673,7 +673,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
             const cacheReports = Number(s?.cacheReports ?? 0)
             const nameCell = (
                   <TableCell>
-                    {served}
+                    <Name>{served}</Name>
                     {u?.lane && (
                       // Without this the same busy slot appears twice — once as the
                       // lane, once as the model it resolves to — and the column
@@ -839,7 +839,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
                     </Tooltip>
                   ) : (
                     <Tooltip title="No request here reported cached tokens — either this backend has no prompt cache (embeddings, most remote providers) or it does not report one. Not a measured 0.">
-                      <span style={{ color: C.textFaint }}>n/r</span>
+                      <span style={{ color: C.textFaint }}>—</span>
                     </Tooltip>
                   )}
                 </TableCell>
@@ -983,7 +983,7 @@ export function ModelStats({ window = DEFAULT_WINDOW }: { window?: TimeWindow })
         <>
           {live ? (
             <>
-              tp/s reads, tg/s writes — &ldquo;n/r&rdquo; means no backend here reports timings,
+              Prefill tok/s is reading speed, decode tok/s is writing speed. &mdash; means no backend here reports timings,
               which is every remote provider.
             </>
           ) : (

@@ -32,6 +32,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { alpha } from '@mui/material/styles'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { Panel, PageHeader } from '@/Panel'
@@ -606,13 +607,15 @@ function InfoTab({
       </Box>
 
       <Box>
-        <Typography variant="subtitle2">
-          Ways to run this
-          <Typography component="span" variant="caption" sx={{ ml: 1, color: C.textFaint }}>
-            one per box and command — the config calls each a `placement`.
-            Capabilities are probed per placement, because two boxes are not
-            assumed to agree.
-          </Typography>
+        <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          Placements
+          <Tooltip
+            arrow
+            placement="bottom-start"
+            title="One placement per box and command. Capabilities are probed per placement, because two boxes are not assumed to agree."
+          >
+            <InfoOutlinedIcon aria-label="More information" sx={{ fontSize: 16, color: C.textFaint, cursor: 'help' }} />
+          </Tooltip>
         </Typography>
         {(model.placements ?? []).length === 0 ? (
           <Typography variant="body2" sx={{ color: C.textFaint, mt: 1 }}>
@@ -671,19 +674,8 @@ function InfoTab({
               {/* Controls act on THIS placement's process, which is why they are
                   here and not on the model.
 
-                  WHAT THEY COST, ABOVE THE GROUP AND IN WORDS. Three Lenny runs
-                  refused Unload and Probe, every time, for the same reason: the
-                  buttons say what they are, not what they do to the people using
-                  them. A tooltip does not reach him (he does not hover) and
-                  neither does a confirm dialog (it is behind the press he will
-                  not make) — canon LEN-9. So it goes here, once, above the row it
-                  describes, where it can be read without risking anything. */}
-              <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: C.textMuted }}>
-                {pl?.state === 'ready'
-                  ? 'Probe asks this backend what it can do — it keeps serving while it answers. Unload stops it: anything mid-answer on this box ends there, and the next request has to load it again.'
-                  : 'Probe asks this backend what it can do. Load starts it now instead of waiting for the next request — it takes the memory below.'}
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 1, mt: 1, flexWrap: 'wrap' }}>
+                  What they cost is in the info tooltip beside them. */}
+              <Box sx={{ display: 'flex', gap: 1, mt: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
                 <Button size="small" variant="outlined" onClick={() => probePlacement.mutate(name)}>
                   {probePlacement.isPending ? 'Probing…' : pl?.probed ? 'Re-probe' : 'Probe'}
                 </Button>
@@ -712,6 +704,16 @@ function InfoTab({
                     Open UI
                   </Button>
                 )}
+                <Tooltip
+                  arrow
+                  title={
+                    pl?.state === 'ready'
+                      ? 'Probe asks this backend what it can do; it keeps serving while it answers. Unload stops it: anything mid-answer on this box ends there, and the next request has to load it again.'
+                      : 'Probe asks this backend what it can do. Load starts it now instead of waiting for the next request; it takes the memory below.'
+                  }
+                >
+                  <InfoOutlinedIcon aria-label="What these buttons do" sx={{ fontSize: 16, color: C.textFaint, cursor: 'help' }} />
+                </Tooltip>
               </Box>
 
               {pl?.target && (
@@ -940,7 +942,7 @@ function UsageTab({ name }: { name: string }) {
                     </>
                   ) : (
                     <>
-                      n/r
+                      —
                       <Typography variant="caption" sx={{ display: 'block', color: C.textFaint }}>
                         nothing here reported a cache — not a measured zero
                       </Typography>
