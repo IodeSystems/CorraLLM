@@ -133,6 +133,25 @@ const RemoteDataDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const PreviewModelsDoc = graphql(/* GraphQL */ `
+  mutation PreviewRemoteModels($body: corrallm_RemoteModelsPreviewInputBodyInput!) {
+    corrallm {
+      previewRemoteModels(body: $body) {
+        error
+        models {
+          id
+          name
+          contextLength
+          inputPerM
+          outputPerM
+        }
+      }
+    }
+  }
+`)
+
+const fmtPrice = (n: number) => (n >= 1 ? n.toFixed(2) : n.toPrecision(2))
+
 const AddRemoteModelDoc = graphql(/* GraphQL */ `
   mutation AddRemoteModel($body: corrallm_RemoteModelSpecInput!) {
     corrallm {
@@ -245,6 +264,37 @@ function RemoteModelDialog(props: { open: boolean; onClose: () => void; header: 
     })
   }
 
+  // The provider's own model list, once there is a URL and a usable key.
+  const keyReady =
+    d.keyMode === 'none' ||
+    (d.keyMode === 'stored' && secrets.includes(d.secretRef)) ||
+    (d.keyMode === 'new' && d.secretValue.length > 8)
+  const catalogQ = useQuery({
+    queryKey: ['previewRemoteModels', d.baseUrl, d.api, d.headerName, d.keyMode, d.secretRef, d.secretValue],
+    queryFn: () =>
+      gqlClient.request(PreviewModelsDoc, {
+        body: {
+          baseUrl: d.baseUrl.trim(),
+          api: d.api || null,
+          headerName: d.headerName || null,
+          secretRef: d.keyMode === 'stored' ? d.secretRef : null,
+          secretValue: d.keyMode === 'new' ? d.secretValue : null,
+        },
+      }),
+    enabled: open && /^https?:\/\/[^/]+\.[^/]+/.test(d.baseUrl.trim()) && keyReady,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+  type Listed = { id: string; contextLength: string | number; inputPerM: number; outputPerM: number }
+  const catalog: Listed[] = catalogQ.data?.corrallm?.previewRemoteModels?.models ?? []
+  const pickModel = (m: Listed) =>
+    set({
+      modelId: m.id,
+      ...(m.inputPerM || m.outputPerM
+        ? { inputPerM: String(+m.inputPerM.toPrecision(6)), outputPerM: String(+m.outputPerM.toPrecision(6)) }
+        : {}),
+    })
+
   const name = d.name.trim() || suffixOf(d.modelId.trim())
   const served = d.provider && name ? `${d.provider}-${name}` : ''
   const priced = d.inputPerM.trim() !== '' && d.outputPerM.trim() !== ''
@@ -355,26 +405,7 @@ function RemoteModelDialog(props: { open: boolean; onClose: () => void; header: 
                   : "As in the provider's OpenAI-compatible docs"
               }
             />
-            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-              <TextField
-                size="small"
-                label="Model ID"
-                sx={{ flex: 2, minWidth: 260 }}
-                placeholder="accounts/fireworks/models/deepseek-v4p1-flash"
-                value={d.modelId}
-                onChange={(e) => set({ modelId: e.target.value })}
-                helperText="Exactly as the provider names it"
-              />
-              <TextField
-                size="small"
-                label="Short name"
-                sx={{ flex: 1, minWidth: 180 }}
-                placeholder={suffixOf(d.modelId) || 'deepseek-v4p1-flash'}
-                value={d.name}
-                onChange={(e) => set({ name: e.target.value })}
-                helperText={served ? `Callers ask for ${served}` : 'Default: last part of the ID'}
-              />
-            </Box>
+
           </Section>
 
           <Section title="API key">
@@ -430,6 +461,68 @@ function RemoteModelDialog(props: { open: boolean; onClose: () => void; header: 
                 />
               </Box>
             )}
+          </Section>
+
+          <Section title="Model">
+            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              <Autocomplete
+                freeSolo
+                size="small"
+                sx={{ flex: 2, minWidth: 260 }}
+                options={catalog}
+                loading={catalogQ.isFetching}
+                filterOptions={(opts, st) => {
+                  const q = st.inputValue.toLowerCase()
+                  return opts.filter((o) => o.id.toLowerCase().includes(q)).slice(0, 200)
+                }}
+                getOptionLabel={(o) => (typeof o === 'string' ? o : o.id)}
+                inputValue={d.modelId}
+                onInputChange={(_, v) => set({ modelId: v })}
+                onChange={(_, v) => {
+                  if (v && typeof v !== 'string') pickModel(v)
+                }}
+                renderOption={(props, o) => (
+                  <li {...props} key={o.id}>
+                    <Box sx={{ display: 'flex', width: '100%', gap: 1 }}>
+                      <Typography variant="body2" sx={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {o.id}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: C.textFaint, whiteSpace: 'nowrap' }}>
+                        {[
+                          o.contextLength ? `${Math.round(Number(o.contextLength) / 1000)}k ctx` : '',
+                          o.inputPerM || o.outputPerM ? `$${fmtPrice(o.inputPerM)} / $${fmtPrice(o.outputPerM)} per 1M` : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Typography>
+                    </Box>
+                  </li>
+                )}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="Model ID"
+                    placeholder="accounts/fireworks/models/deepseek-v4p1-flash"
+                    helperText={
+                      catalogQ.data?.corrallm?.previewRemoteModels?.error
+                        ? `Could not list models: ${catalogQ.data.corrallm.previewRemoteModels.error}`
+                        : catalog.length
+                          ? `${catalog.length} models from the provider; any ID can be typed`
+                          : 'Exactly as the provider names it'
+                    }
+                  />
+                )}
+              />
+              <TextField
+                size="small"
+                label="Short name"
+                sx={{ flex: 1, minWidth: 180 }}
+                placeholder={suffixOf(d.modelId) || 'deepseek-v4p1-flash'}
+                value={d.name}
+                onChange={(e) => set({ name: e.target.value })}
+                helperText={served ? `Callers ask for ${served}` : 'Default: last part of the ID'}
+              />
+            </Box>
           </Section>
 
           <Section title="Access and budget" note="Optional. A spend cap refuses requests once reached.">

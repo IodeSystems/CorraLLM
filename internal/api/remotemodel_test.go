@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/iodesystems/corrallm/internal/config"
@@ -151,5 +153,37 @@ func TestAddRemoteModelAnthropic(t *testing.T) {
 	cr := saved.Extensions["anthropic"].Providers["anthropic"].Credentials[0]
 	if cr.Headers["x-api-key"] != "${ANTHROPIC_API_KEY}" {
 		t.Errorf("headers = %v, want a bare x-api-key reference", cr.Headers)
+	}
+}
+
+// The preview reads an unconfigured endpoint's list with the given key, and
+// converts per-token prices to per-1M.
+func TestPreviewRemoteModels(t *testing.T) {
+	var gotAuth string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if r.URL.Path != "/inference/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"b-model","context_length":131072,"pricing":{"prompt":"0.0000003","completion":"0.0000012"}},{"id":"a-model"}]}`))
+	}))
+	defer up.Close()
+	h := &Handlers{}
+	in := &RemoteModelsPreviewInput{}
+	in.Body.BaseURL, in.Body.SecretValue = up.URL+"/inference/v1", "k"
+	out, err := h.PreviewRemoteModels(context.Background(), in)
+	if err != nil || out.Body.Error != "" {
+		t.Fatalf("%v %q", err, out.Body.Error)
+	}
+	if gotAuth != "Bearer k" {
+		t.Errorf("auth = %q", gotAuth)
+	}
+	m := out.Body.Models
+	if len(m) != 2 || m[0].ID != "a-model" || m[1].ContextLength != 131072 {
+		t.Fatalf("models = %+v", m)
+	}
+	if d := m[1].InputPerM - 0.30; d > 1e-9 || d < -1e-9 {
+		t.Errorf("input $/1M = %v, want 0.30", m[1].InputPerM)
 	}
 }

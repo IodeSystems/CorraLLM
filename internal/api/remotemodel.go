@@ -3,14 +3,18 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
+	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/freeroster"
 )
 
 // RemoteModelSpec is everything needed to serve one model from somebody else's
@@ -220,4 +224,84 @@ func servedSuffix(id string) string {
 		}
 		return '-'
 	}, id)
+}
+
+// RemoteModelsPreviewInput asks an endpoint that is not configured yet for its
+// model list, so the add-model form can offer ids instead of a blank field.
+type RemoteModelsPreviewInput struct {
+	Body struct {
+		BaseURL     string `json:"baseUrl" doc:"OpenAI-compatible base URL, as for addRemoteModel."`
+		API         string `json:"api" required:"false" doc:"openai (default) or anthropic."`
+		SecretRef   string `json:"secretRef" required:"false" doc:"Stored key to authenticate with."`
+		SecretValue string `json:"secretValue" required:"false" doc:"A key not stored yet. Used for this request only; never stored or returned."`
+		HeaderName  string `json:"headerName" required:"false" doc:"Header carrying the key. Default authorization (as Bearer)."`
+	}
+}
+
+// RemoteModelView is one row of a provider's /v1/models, with the vendor
+// extensions that matter when choosing a model.
+type RemoteModelView struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name" doc:"The provider's label, when it reports one."`
+	ContextLength int     `json:"contextLength" doc:"Advertised context window in tokens, 0 when unreported."`
+	InputPerM     float64 `json:"inputPerM" doc:"$ per 1M input tokens, 0 when unreported."`
+	OutputPerM    float64 `json:"outputPerM" doc:"$ per 1M output tokens, 0 when unreported."`
+}
+
+type RemoteModelsPreviewOutput struct {
+	Body struct {
+		Models []RemoteModelView `json:"models"`
+		Error  string            `json:"error" doc:"Why the list could not be read; empty on success."`
+	}
+}
+
+// PreviewRemoteModels GETs <base>/v1/models with the given key. An admin
+// action: it makes the daemon call an arbitrary URL with a credential.
+func (h *Handlers) PreviewRemoteModels(ctx context.Context, in *RemoteModelsPreviewInput) (*RemoteModelsPreviewOutput, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+	out := &RemoteModelsPreviewOutput{}
+	out.Body.Models = []RemoteModelView{}
+	b := in.Body
+	scheme, host, port, basePath, err := splitBaseURL(b.BaseURL)
+	if err != nil {
+		out.Body.Error = err.Error()
+		return out, nil
+	}
+	key := b.SecretValue
+	if key == "" && b.SecretRef != "" {
+		key = config.ExpandSecrets("${" + b.SecretRef + "}")
+	}
+	headers := map[string]string{}
+	if key != "" {
+		header := b.HeaderName
+		if header == "" {
+			header = "authorization"
+		}
+		v := key
+		if strings.EqualFold(header, "authorization") {
+			v = "Bearer " + key
+		}
+		headers[header] = v
+	}
+	if b.API == config.APIAnthropic {
+		headers["anthropic-version"] = "2023-06-01"
+	}
+	u := fmt.Sprintf("%s://%s:%d%s/v1/models", scheme, host, port, basePath)
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	rows, err := freeroster.FetchCatalog(cctx, &http.Client{Timeout: 15 * time.Second}, u, headers)
+	if err != nil {
+		out.Body.Error = err.Error()
+		return out, nil
+	}
+	for _, r := range rows {
+		out.Body.Models = append(out.Body.Models, RemoteModelView{
+			ID: r.ID, Name: r.Name, ContextLength: r.ContextLength,
+			InputPerM: r.PromptUSD * 1e6, OutputPerM: r.CompletionUSD * 1e6,
+		})
+	}
+	sort.Slice(out.Body.Models, func(i, j int) bool { return out.Body.Models[i].ID < out.Body.Models[j].ID })
+	return out, nil
 }

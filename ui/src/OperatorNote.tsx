@@ -29,7 +29,7 @@ import { C } from '@/theme'
  *   - italic, which is the same signal again for anyone who takes the shape of
  *     a paragraph before its label.
  *
- * WHAT IT DOES NOT DO is shorten it. The clamp is three rendered lines with a
+ * WHAT IT DOES NOT DO is shorten it. The clamp is one rendered line with a
  * visible control that opens the rest in place — NOT one line with the
  * remainder on a tooltip, which is what this replaced (8d7ddb1): hover reaches
  * nobody who does not hover (OB-10), and half a line summarises nothing. Not
@@ -45,7 +45,7 @@ export function OperatorNote({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
   // Rendered lines are not source lines, so this is not a count of what is
   // hidden — only whether anything can be. Short notes get no control at all.
-  const canOverflow = text.includes('\n') || text.length > 160
+  const canOverflow = text.includes('\n') || text.length > 100
   const clamped = canOverflow && !open
   return (
     <Box
@@ -63,7 +63,7 @@ export function OperatorNote({ text }: { text: string }) {
         component="div"
         sx={{ color: C.textFaint, fontSize: 9.5, lineHeight: 1.6, letterSpacing: 0.6 }}
       >
-        Note from the config file
+        Notes
       </Typography>
       <Typography
         variant="caption"
@@ -75,7 +75,7 @@ export function OperatorNote({ text }: { text: string }) {
           ...(clamped
             ? {
                 display: '-webkit-box',
-                WebkitLineClamp: 3,
+                WebkitLineClamp: 1,
                 WebkitBoxOrient: 'vertical',
                 overflow: 'hidden',
               }
@@ -93,7 +93,7 @@ export function OperatorNote({ text }: { text: string }) {
             setOpen(!open)
           }}
         >
-          {open ? 'Show less' : 'Show all notes'}
+          {open ? 'Show less' : 'Show more'}
         </Button>
       )}
     </Box>

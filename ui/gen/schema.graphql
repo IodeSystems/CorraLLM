@@ -34,6 +34,7 @@ type CorrallmMutationNamespace {
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
   pauseExtension(body: corrallm_PauseExtensionInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseExtension")
   pauseModel(body: corrallm_PauseModelInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseModel")
+  previewRemoteModels(body: corrallm_RemoteModelsPreviewInputBodyInput!): corrallm_RemoteModelsPreviewOutputBody @derived(operationId: "previewRemoteModels")
   probeModel(
     """Write what was discovered back onto the model: modalities, slots, context. Off by default — a probe reads unless told to write."""
     apply: Boolean
@@ -386,6 +387,7 @@ type CorrallmV1MutationNamespace {
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
   pauseExtension(body: corrallm_PauseExtensionInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseExtension")
   pauseModel(body: corrallm_PauseModelInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseModel")
+  previewRemoteModels(body: corrallm_RemoteModelsPreviewInputBodyInput!): corrallm_RemoteModelsPreviewOutputBody @derived(operationId: "previewRemoteModels")
   probeModel(
     """Write what was discovered back onto the model: modalities, slots, context. Off by default — a probe reads unless told to write."""
     apply: Boolean
@@ -2651,6 +2653,37 @@ input corrallm_RemoteModelSpecInput {
   secretValue: String
   """Cost class. Default: <provider>-<name> when pricing is given, else chat."""
   type: String
+}
+
+type corrallm_RemoteModelView {
+  """Advertised context window in tokens, 0 when unreported."""
+  contextLength: Long!
+  id: String!
+  """$ per 1M input tokens, 0 when unreported."""
+  inputPerM: Float!
+  """The provider's label, when it reports one."""
+  name: String!
+  """$ per 1M output tokens, 0 when unreported."""
+  outputPerM: Float!
+}
+
+input corrallm_RemoteModelsPreviewInputBodyInput {
+  """openai (default) or anthropic."""
+  api: String
+  """OpenAI-compatible base URL, as for addRemoteModel."""
+  baseUrl: String!
+  """Header carrying the key. Default authorization (as Bearer)."""
+  headerName: String
+  """Stored key to authenticate with."""
+  secretRef: String
+  """A key not stored yet. Used for this request only; never stored or returned."""
+  secretValue: String
+}
+
+type corrallm_RemoteModelsPreviewOutputBody {
+  """Why the list could not be read; empty on success."""
+  error: String!
+  models: [corrallm_RemoteModelView!]!
 }
 
 input corrallm_RemotePricingInput {

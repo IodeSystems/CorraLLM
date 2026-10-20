@@ -459,6 +459,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.AddRemoteModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "previewRemoteModels",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/providers/remote-models",
+		Summary:     "List an endpoint's /v1/models before it is configured, with context windows and prices where reported.",
+		Tags:        []string{"config"},
+	}, h.PreviewRemoteModels)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "setSecret",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/secrets",
