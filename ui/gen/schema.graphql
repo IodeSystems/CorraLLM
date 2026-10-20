@@ -2642,7 +2642,7 @@ input corrallm_RemoteModelSpecInput {
   headerName: String
   """Budgets on this key. Use hard: true for spend caps."""
   limits: [corrallm_LimitInput!]
-  """Concurrent requests corrallm admits. 0 = no limit."""
+  """Concurrent requests corrallm admits. 0 = 8."""
   maxConcurrent: Long
   """Output-token cap injected when a caller sets none. 0 = no cap."""
   maxTokens: Long

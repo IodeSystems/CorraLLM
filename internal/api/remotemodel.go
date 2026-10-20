@@ -40,7 +40,7 @@ type RemoteModelSpec struct {
 	Type          string  `json:"type" required:"false" doc:"Cost class. Default: <provider>-<name> when pricing is given, else chat."`
 	Quality       float64 `json:"quality" required:"false" doc:"Rank among models serving the same name. Higher wins."`
 	MaxTokens     int     `json:"maxTokens" required:"false" doc:"Output-token cap injected when a caller sets none. 0 = no cap."`
-	MaxConcurrent int     `json:"maxConcurrent" required:"false" doc:"Concurrent requests corrallm admits. 0 = no limit."`
+	MaxConcurrent int     `json:"maxConcurrent" required:"false" doc:"Concurrent requests corrallm admits. 0 = 8."`
 
 	Allow  []string `json:"allow" required:"false" doc:"corrallm keys allowed to use this key. Empty = every caller."`
 	Limits []Limit  `json:"limits" required:"false" doc:"Budgets on this key. Use hard: true for spend caps."`
@@ -60,6 +60,10 @@ type AddRemoteModelInput struct {
 }
 
 var providerName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// remoteDefaultConcurrent is how many requests at once a remote API model
+// admits when the form leaves it unset.
+const remoteDefaultConcurrent = 8
 
 // AddRemoteModel writes the extension, provider, credential, model and price
 // for one remote model in ONE config edit, so a half-configured provider never
@@ -153,7 +157,12 @@ func (h *Handlers) AddRemoteModel(ctx context.Context, in *AddRemoteModelInput) 
 		m.Type = typ
 		m.Quality = b.Quality
 		m.MaxTokens = b.MaxTokens
+		// A hosted API serves many requests at once; corrallm's own default of 1
+		// would queue a caller's parallel calls behind each other.
 		m.MaxConcurrent = b.MaxConcurrent
+		if m.MaxConcurrent <= 0 {
+			m.MaxConcurrent = remoteDefaultConcurrent
+		}
 		pv.Provides[name] = m
 
 		e.Providers[b.Provider] = pv
