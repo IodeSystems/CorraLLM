@@ -261,11 +261,15 @@ type Manager struct {
 	// and spawns, evicts for room, idle-sweeps and reconciles nothing more.
 	// localHold, when non-nil, holds every LOCAL spawn until closed: the
 	// successor's GPU is still occupied by the predecessor's children.
-	// stoppingLocal marks which stopping keys are local children, so
-	// LocalBackends can count a teardown that still holds VRAM.
+	// stoppingLocal maps each stopping key that is a local child to its
+	// server, so LocalBackends can count a teardown that still holds VRAM.
+	// holdServers is what the predecessor last said its local children run
+	// on; agent spawns onto those servers are held too (awaitLocalHold). nil
+	// means not said yet, or a predecessor too old to say.
 	draining      atomic.Bool
 	localHold     chan struct{}
-	stoppingLocal map[string]bool
+	stoppingLocal map[string]string
+	holdServers   map[string]bool
 }
 
 // agentHoldTimeout bounds how long, after this primary starts, a spawn onto an
@@ -492,10 +496,11 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		return nil, nil, false, err
 	}
 
-	// Never spawn a local backend while a predecessor's children may still
-	// hold the GPU (see HoldLocalSpawns).
-	if mdl.Cmd != "" && !m.agentBacked(mdl.Server) {
-		if err := m.awaitLocalHold(ctx, key); err != nil {
+	// Never spawn a backend while a predecessor's children may still hold the
+	// GPU (see HoldLocalSpawns) — locally, or through an agent on a server the
+	// predecessor ran locally.
+	if mdl.Cmd != "" {
+		if err := m.awaitLocalHold(ctx, key, mdl.Server); err != nil {
 			return nil, nil, false, err
 		}
 	}
@@ -2176,9 +2181,9 @@ func (m *Manager) evictLocked(p *Process) {
 		m.stopping[p.key] = done
 		if !onAgent(h) {
 			if m.stoppingLocal == nil {
-				m.stoppingLocal = map[string]bool{}
+				m.stoppingLocal = map[string]string{}
 			}
-			m.stoppingLocal[p.key] = true
+			m.stoppingLocal[p.key] = p.server
 		}
 		go func() {
 			defer func() {

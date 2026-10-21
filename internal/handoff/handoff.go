@@ -45,6 +45,13 @@ type Status struct {
 	// Local counts the predecessor's local backends that may still hold
 	// memory. The successor spawns no local backend until it is zero.
 	Local int `json:"local"`
+	// LocalServers names the servers those local backends run on. The
+	// successor holds an AGENT spawn onto one of them too: a server that moved
+	// under an agent beside this primary spawns onto the GPU these children
+	// still occupy. Always sent, empty when there are none — no omitempty, so
+	// a successor can tell "none" from a predecessor older than this field
+	// (absent → nil), for which it keeps every agent spawn held.
+	LocalServers []string `json:"localServers"`
 }
 
 // message is one line on the control socket.

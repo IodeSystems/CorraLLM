@@ -168,7 +168,9 @@ func drainForSuccessor(pred *handoff.Predecessor, srv *http.Server, ln net.Liste
 	h.Bench.Cancel()
 	builds.Stop()
 	report := func() {
-		if err := pred.Send(handoff.Status{Draining: true, Active: sc.OwnActive(), Local: mgr.LocalBackends()}); err != nil {
+		local, servers := mgr.LocalBackendsOn()
+		if err := pred.Send(handoff.Status{Draining: true, Active: sc.OwnActive(),
+			Local: local, LocalServers: servers}); err != nil {
 			slog.Warn("handoff: could not report to the successor", "err", err)
 		}
 	}
@@ -242,6 +244,7 @@ func watchPredecessor(succ *handoff.Successor, sc *sched.Scheduler, mgr *proc.Ma
 		}
 		sc.SetForeign(s.Active)
 		sc.ReleaseAdmission()
+		mgr.SetHoldServers(s.LocalServers)
 		if s.Local == 0 {
 			mgr.ReleaseLocalSpawns()
 		}
