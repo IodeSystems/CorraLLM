@@ -224,3 +224,35 @@ func TestMakeRoomOnAgent_SpawnWaitsForVictimExit(t *testing.T) {
 		t.Errorf("b spawned %s before a exited; the GPU still held a", aExited.Sub(bStarted))
 	}
 }
+
+// A reload after a benchmark that is refused for capacity is retried, not
+// dropped: the model comes back once the memory reads free, without waiting
+// for a request to arrive.
+func TestReloadAfterBench_RetriesCapacityRefusal(t *testing.T) {
+	a := newSlowAgent(t, 0, 29<<10)
+	m, live := slowAgentMgr(t, a, map[string]int{"swift": 29})
+	saved := benchReloadBackoff
+	benchReloadBackoff = []time.Duration{100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond}
+	t.Cleanup(func() { benchReloadBackoff = saved })
+
+	// Something not ours holds 29 GB: the first attempt is refused.
+	c := a.capacity()
+	c.GPU.UsedBytes, c.GPUs[0].UsedBytes = 29<<30, 29<<30
+	live.RecordCapacity("box", c)
+
+	done := make(chan struct{})
+	go func() { m.reloadAfterBench("swift"); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	if st := m.StateOf(m.procKey("swift")); st != StateAbsent {
+		t.Fatalf("state %s while the GPU reads full; want the first attempt refused", st)
+	}
+	live.RecordCapacity("box", a.capacity()) // the memory is released
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reloadAfterBench did not finish")
+	}
+	if st := m.StateOf(m.procKey("swift")); st != StateReady {
+		t.Errorf("state %s after the memory freed; want ready", st)
+	}
+}
