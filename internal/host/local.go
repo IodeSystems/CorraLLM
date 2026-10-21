@@ -23,6 +23,10 @@ func (l *Local) Name() string { return l.name }
 // handle calls it and publishes the result through Done/Err rather than letting
 // callers race for it.
 func (l *Local) Start(s Spec) (Handle, error) {
+	// Load from disk, not from the page cache (pagecache.go). Here because
+	// this is the one place every backend starts — on the primary and inside
+	// an agent alike.
+	EvictPageCache(s.Cmd)
 	shell, args := shellFor(s.Cmd)
 	cmd := exec.Command(shell, args...)
 	cmd.Stdout, cmd.Stderr = s.Out, s.Out
