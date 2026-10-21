@@ -185,6 +185,15 @@ type Process struct {
 	draining   bool      // unload requested: finish in-flight work, admit nothing new
 	refs       int       // in-flight requests holding this backend
 	readyAt    time.Time // when it became ready (min-residency anchor)
+	// loadedAt is when this backend's weights were loaded: the spawn, or —
+	// for a backend adopted from an agent — the start time the agent reports,
+	// which survives primary restarts and handoffs. NOT when this primary
+	// started tracking it. The non-ECC refresh measures age from here.
+	loadedAt time.Time
+	// refreshing marks a drain started by the non-ECC refresh. A request
+	// arriving during it waits for the replacement instead of being refused
+	// (see EnsureReady), because the model is coming straight back.
+	refreshing bool
 	lastUsed   time.Time
 	tunedSlots int // --parallel N actually applied by the auto-tuner; 0 = untuned (config default stands)
 }
@@ -240,6 +249,10 @@ type Manager struct {
 	// still comes back); see pause.go. Guarded by mu.
 	paused     map[string]Pause
 	pauseStore PauseStore // durable pauses (nil = memory-only)
+
+	// refreshHold names why a model must not be refreshed now; see
+	// SetRefreshHold. Guarded by mu.
+	refreshHold func(model string) string
 
 	// stopping tracks process keys whose previous process is still being torn
 	// down: eviction only REQUESTS an exit (SIGTERM, then up to evictGrace
@@ -418,6 +431,7 @@ func (m *Manager) SetVRAMMargin(mb int) {
 // sticky optionally overrides the model's own residency stickiness (a lane
 // member loaded on the lane's behalf may unload sooner); nil → model's own.
 func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model, sticky *config.Sticky, cred *config.Credential) (proc *Process, release func(), loaded bool, err error) {
+	asked := mdl // as the caller passed it, for a retry after a refresh drain
 	// A provided model carries no cmd/server/ramUsage — those live on its
 	// extension. Overlay here, at the one door every caller comes through, so
 	// nothing upstream has to know the difference.
@@ -602,6 +616,15 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	select {
 	case <-p.ready:
 		p.mu.Lock()
+		if p.draining && p.refreshing {
+			// A refresh is replacing this process: wait for it to go, then
+			// load (or join the load of) its replacement, as for a cold load.
+			p.mu.Unlock()
+			if err := m.awaitGone(ctx, key, p); err != nil {
+				return nil, nil, false, err
+			}
+			return m.EnsureReady(ctx, name, asked, sticky, cred)
+		}
 		defer p.mu.Unlock()
 		// A draining backend is finishing what it has and taking nothing new.
 		// Checked before the state test because a drained-and-evicted process
@@ -795,6 +818,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		if p.logs != nil {
 			out = io.MultiWriter(os.Stdout, p.logs)
 		}
+		spawnAt := time.Now()
 		h, err := m.hostFor(mdl.Server).Start(host.Spec{
 			Name: name, Key: p.key, Cmd: cmdStr, Out: out,
 			ConfigCmd: mdl.Cmd, Port: backendPort(mdl)})
@@ -803,7 +827,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 			return
 		}
 		p.mu.Lock()
-		p.handle, p.spawnedCmd = h, cmdStr
+		p.handle, p.spawnedCmd, p.loadedAt = h, cmdStr, spawnAt
 		p.mu.Unlock()
 		go func() {
 			<-h.Done()
@@ -2897,6 +2921,7 @@ type ResidentModel struct {
 	Persistent bool // pinned: exempt from eviction
 	LastUsedMS int64
 	ReadyAtMS  int64  // unix ms the backend became ready (uptime anchor; 0 if unknown)
+	LoadedAtMS int64  // unix ms its weights were loaded (spawn, or an adopted backend's own start); 0 if unknown
 	NCtx       int    // parsed context length (spawned backends; 0 if unknown)
 	NSlots     int    // parsed slot count (spawned backends; 0 if unknown)
 	HasUI      string // unknown | yes | no — does the backend serve a web UI at / (P11b)
@@ -2964,6 +2989,9 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 		}
 		if !p.readyAt.IsZero() {
 			rm.ReadyAtMS = p.readyAt.UnixMilli()
+		}
+		if !p.loadedAt.IsZero() {
+			rm.LoadedAtMS = p.loadedAt.UnixMilli()
 		}
 		for pool, b := range p.usage {
 			rm.Usage = append(rm.Usage, PoolUsage{Pool: pool, Bytes: b})

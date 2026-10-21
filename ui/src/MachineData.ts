@@ -79,6 +79,7 @@ const ConfigDoc = graphql(/* GraphQL */ `
             pool
             totalBytes
             reserveBytes
+            ecc
           }
         }
         models {
@@ -159,7 +160,9 @@ export function useMachines() {
 
 export type MachinePool = {
   pool: string
-  /** 'device' | 'system' | 'device + system' — what this pool IS on this box. */
+  /** 'device' | 'system' | 'device + system' — what this pool IS on this box —
+   *  then 'ECC' or 'no ECC'. Models on a pool without ECC are reloaded on a
+   *  schedule (residency.nonEccMaxAge). */
   role: string
   /** What the scheduler may fill: the declared total minus the reserve. */
   budget: number
@@ -354,7 +357,9 @@ export function derive(data?: Data) {
           // A unified-memory box (Apple silicon) has ONE pool that is both its
           // device and its system memory. Saying so beats implying a GPU pool
           // that does not exist.
-          role: isDevice && s.pools.length === 1 ? 'device + system' : isDevice ? 'device' : 'system',
+          role:
+            (isDevice && s.pools.length === 1 ? 'device + system' : isDevice ? 'device' : 'system') +
+            (p.ecc ? ' · ECC' : ' · no ECC'),
           budget: l ? num(l.budget) : Math.max(0, num(p.totalBytes) - num(p.reserveBytes)),
           used: num(l?.used),
           reserve: num(p.reserveBytes),

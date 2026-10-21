@@ -1527,7 +1527,9 @@ input corrallm_CapacityInput {
   gpuError: String
   gpus: [corrallm_GPUDeviceInput!]
   host: corrallm_DeviceMemInput
+  hostEcc: Boolean
   hostError: String
+  measuredAt: Long
   perProcess: Boolean!
   unified: Boolean
 }
@@ -1799,6 +1801,7 @@ type corrallm_ExtensionsOutputBody {
 }
 
 input corrallm_GPUDeviceInput {
+  ecc: Boolean
   freeBytes: Long!
   index: Long!
   name: String!
@@ -2444,6 +2447,10 @@ type corrallm_PlacementView {
 }
 
 type corrallm_PoolDef {
+  """The pool's memory has ECC. False also when it cannot be told; models on a pool without ECC are reloaded once their weights are older than residency.nonEccMaxAge."""
+  ecc: Boolean!
+  """Where ecc came from: config (servers.<name>.ecc), detected (nvidia-smi, EDAC, or the agent's report), or unknown (nothing to go on; treated as no ECC)."""
+  eccSource: String!
   """Pool name."""
   pool: String!
   """Headroom kept free."""
@@ -2885,6 +2892,8 @@ type corrallm_ResidentModelView {
   hasUi: String!
   """Unix millis of last use, 0 if never."""
   lastUsedMs: Long!
+  """Unix millis the backend's weights were loaded: its spawn, or for one adopted from an agent the start the agent reports (kept across restarts and handoffs). 0 if unknown. The non-ECC refresh measures age from here."""
+  loadedAtMs: Long!
   """Tune-cache: n_slots the measurement was taken at; 0 if unmeasured."""
   measuredSlots: Long!
   """Served model name."""

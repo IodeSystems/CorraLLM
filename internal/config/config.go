@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -125,6 +126,9 @@ type Config struct {
 
 	// Scheduler holds global admission knobs (queue bounds).
 	Scheduler SchedulerConfig `yaml:"scheduler,omitempty"`
+
+	// Residency holds global knobs for how long backends stay loaded.
+	Residency ResidencyConfig `yaml:"residency,omitempty"`
 
 	// Providers are top-level providers whose models own their own process —
 	// `local` above all. See localprovider.go. Their models are folded into
@@ -373,6 +377,43 @@ type SchedulerConfig struct {
 	MaxQueueDepth int    `yaml:"maxQueueDepth,omitempty"` // reject once this many already wait on a backend
 }
 
+// ResidencyConfig is the box-wide policy for loaded backends.
+type ResidencyConfig struct {
+	// NonECCMaxAge is the longest a spawned backend may keep its weights
+	// loaded on memory without ECC before it is reloaded, as a Go duration.
+	// Empty means DefaultNonECCMaxAge; "0" turns the refresh off.
+	//
+	// Memory without ECC can flip a bit, and a flip in loaded weights stays
+	// until the model reloads. A reload reads the weights from disk again
+	// (the page cache is dropped first), so the age bounds how long a flip can
+	// serve. See proc's non-ECC refresh.
+	NonECCMaxAge string `yaml:"nonEccMaxAge,omitempty"`
+}
+
+// DefaultNonECCMaxAge is NonECCMaxAge when unset (owner rule, 2026-10-21).
+const DefaultNonECCMaxAge = 48 * time.Hour
+
+// NonECCMaxAgeDuration resolves NonECCMaxAge: the default when empty, 0 when
+// off. Validate rejects anything that does not parse, so an error here is
+// treated as the default by callers that run after validation.
+func (r ResidencyConfig) NonECCMaxAgeDuration() (time.Duration, error) {
+	v := strings.TrimSpace(r.NonECCMaxAge)
+	if v == "" {
+		return DefaultNonECCMaxAge, nil
+	}
+	if v == "0" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return DefaultNonECCMaxAge, fmt.Errorf("residency.nonEccMaxAge %q: %w", v, err)
+	}
+	if d < 0 {
+		return DefaultNonECCMaxAge, fmt.Errorf("residency.nonEccMaxAge %q is negative (use 0 to turn the refresh off)", v)
+	}
+	return d, nil
+}
+
 // Extension is an integration corrallm hosts. The concept is deliberately OPEN:
 // today an extension is a process that contributes models (`provides`), but the
 // shape is meant to grow — a request/response listener or transformer, for
@@ -594,6 +635,16 @@ type Server struct {
 	// its declared pool will be charged to the wrong ledger. Declaring the pool
 	// is how you tell corrallm where you already sent it.
 	Devices map[string]string `yaml:"devices,omitempty"`
+
+	// ECC overrides whether a pool's memory is error-correcting: pool name →
+	// true (ECC) or false (no ECC). A pool not listed takes what was detected:
+	// nvidia-smi's ecc.mode.current for the card a device pool is bound to,
+	// EDAC for system RAM on Linux, and "no ECC" for everything else (Apple
+	// unified memory, an unbound pool, a probe that failed).
+	//
+	// It exists for when detection is wrong. It decides whether the non-ECC
+	// refresh (residency.nonEccMaxAge) reloads models on the pool.
+	ECC map[string]bool `yaml:"ecc,omitempty"`
 
 	// Agent binds this server to another machine running `corrallm agent`.
 	// Absent (nil) means this box, spawned locally — byte-identical to the
@@ -2495,6 +2546,9 @@ func (c *Config) Validate() error {
 	if _, clash := c.PriorityGroups["thinking"]; clash {
 		return fmt.Errorf("priority group %q collides with the reserved key-policy field of the same name; rename the group", "thinking")
 	}
+	if _, err := c.Residency.NonECCMaxAgeDuration(); err != nil {
+		return err
+	}
 	for srvName, srv := range c.Servers {
 		if _, err := ParseSizes(srv.Pools); err != nil {
 			return fmt.Errorf("server %q pools: %w", srvName, err)
@@ -2529,6 +2583,13 @@ func (c *Config) Validate() error {
 					srvName, prev, pool, sel)
 			}
 			seenSel[strings.ToLower(sel)] = pool
+		}
+		// An ecc key that is not a pool would override nothing, and the
+		// operator would believe a pool was covered that is not.
+		for pool := range srv.ECC {
+			if _, ok := srv.Pools[pool]; !ok {
+				return fmt.Errorf("server %q: ecc key %q is not one of its pools %v", srvName, pool, poolNames(srv.Pools))
+			}
 		}
 		// An agent binding that cannot be dialled is worse than none: the models
 		// on that server would be admitted and then fail at spawn, one request
