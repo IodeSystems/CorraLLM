@@ -111,9 +111,19 @@ func (m *Manager) ReconcileAgent(ctx context.Context, server string, reported []
 			continue // already dead; nothing to adopt or reap
 		}
 		if _, ours := ourIDs[b.Key]; !ours {
-			if p := m.adoptReported(server, b); p != nil {
+			p, transient := m.adoptReported(server, b)
+			if p != nil {
+				m.adoptSettled(b.ID)
 				ourIDs[b.Key] = b.ID
 				adopted++
+				continue
+			}
+			// The agent did not answer, or the backend was not healthy: both
+			// can pass, and the backend may be exactly what config would run.
+			// Grace from when this primary first saw that, not from the
+			// backend's start: a model loaded hours ago otherwise had none,
+			// and an agent restarting during a handoff got Swift reaped.
+			if transient && m.adoptRetrying(b.ID, now) {
 				continue
 			}
 		}
@@ -131,6 +141,7 @@ func (m *Manager) ReconcileAgent(ctx context.Context, server string, reported []
 			slog.Error("failed to reap orphan", "server", server, "id", b.ID, "err", err)
 			continue
 		}
+		m.adoptSettled(b.ID)
 		reaped++
 	}
 
@@ -143,24 +154,49 @@ func (m *Manager) ReconcileAgent(ctx context.Context, server string, reported []
 	return adopted, reaped, vanished
 }
 
+// adoptRetrying records that adopting backend id failed for a reason that can
+// pass, and reports whether it is still inside adoptionGrace of the first
+// such failure.
+func (m *Manager) adoptRetrying(id string, now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.adoptRetry == nil {
+		m.adoptRetry = map[string]time.Time{}
+	}
+	first, ok := m.adoptRetry[id]
+	if !ok {
+		m.adoptRetry[id], first = now, now
+	}
+	return now.Sub(first) < adoptionGrace
+}
+
+// adoptSettled forgets a backend's adoption retries: it was adopted or reaped.
+func (m *Manager) adoptSettled(id string) {
+	m.mu.Lock()
+	delete(m.adoptRetry, id)
+	m.mu.Unlock()
+}
+
 // adoptReported registers a backend the agent is running and this primary did
 // not start, IF it is exactly what the current config would spawn under that
 // key. Returns the new Process, or nil when it must not be adopted — which
-// sends the caller down the reap path.
+// sends the caller down the reap path. transient is true when the refusal can
+// pass on its own (the agent did not answer, the backend was not healthy), so
+// the caller waits before reaping.
 //
 // Every check here errs toward nil. Wrongly adopting means serving traffic
 // from a process running a command nobody configured any more; wrongly
 // declining costs one cold load.
-func (m *Manager) adoptReported(server string, b agent.Backend) *Process {
+func (m *Manager) adoptReported(server string, b agent.Backend) (_ *Process, transient bool) {
 	cfg := m.config()
 	if cfg == nil {
-		return nil
+		return nil, false
 	}
 	served, mdl, pl, ok := configuredFor(cfg, server, b.Key)
 	if !ok {
 		slog.Info("not adopting agent backend: no configured model has this key here",
 			"server", server, "id", b.ID, "key", b.Key)
-		return nil
+		return nil, false
 	}
 	switch {
 	case b.ConfigCmd == "":
@@ -168,41 +204,41 @@ func (m *Manager) adoptReported(server string, b agent.Backend) *Process {
 		// compare against, so nothing to vouch for it.
 		slog.Info("not adopting agent backend: it carries no configured cmd to verify",
 			"server", server, "id", b.ID, "key", b.Key)
-		return nil
+		return nil, false
 	case b.ConfigCmd != mdl.Cmd:
 		slog.Info("not adopting agent backend: its model's cmd has changed in config",
 			"server", server, "id", b.ID, "key", b.Key)
-		return nil
+		return nil, false
 	case b.Port == 0 || b.Port != backendPort(mdl):
 		slog.Info("not adopting agent backend: its port is not the configured one",
 			"server", server, "id", b.ID, "key", b.Key, "port", b.Port, "want", backendPort(mdl))
-		return nil
+		return nil, false
 	case mdl.Disabled:
-		return nil
+		return nil, false
 	}
 	if _, paused := m.pauseByKey(b.Key); paused {
-		return nil // out of service by order: it should not be running at all
+		return nil, false // out of service by order: it should not be running at all
 	}
 	target, err := cfg.TargetFor(served, mdl)
 	if err != nil || target == nil {
-		return nil
+		return nil, false
 	}
 	// Running is not serving. A backend left half-loaded, or wedged, is not
 	// adopted; if it stays that way past the grace it is reaped.
 	if err := m.waitHealthyFor(target, nil, adoptHealthBudget); err != nil {
 		slog.Info("not adopting agent backend yet: not healthy", "server", server, "id", b.ID, "key", b.Key, "err", err)
-		return nil
+		return nil, true
 	}
 	rh, ok := m.hostFor(server).(*agent.RemoteHost)
 	if !ok {
-		return nil
+		return nil, false
 	}
 
 	logs := newLogBuffer(500)
 	h, err := rh.Attach(b.ID, logs)
 	if err != nil {
 		slog.Warn("not adopting agent backend: cannot attach", "server", server, "id", b.ID, "err", err)
-		return nil
+		return nil, true
 	}
 	now := time.Now()
 	// The agent's start time, not now: adoption is not a load, and the
@@ -246,7 +282,7 @@ func (m *Manager) adoptReported(server string, b agent.Backend) *Process {
 		// adopt after all; detach and let the reap path have it.
 		m.mu.Unlock()
 		stopWatching(h)
-		return nil
+		return nil, false
 	}
 	p.usage = m.effectiveUsage(served, mdl)
 	m.reserveLocked(mdl.Server, p.usage)
@@ -281,7 +317,7 @@ func (m *Manager) adoptReported(server string, b agent.Backend) *Process {
 	go m.probeUI(p)
 	slog.Info("adopted a running backend from its agent",
 		"server", server, "id", b.ID, "key", b.Key, "model", served, "target", target.URL.String())
-	return p
+	return p, false
 }
 
 // adoptMeasureDelay is how long an adopted backend's measurement waits for the

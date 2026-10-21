@@ -289,6 +289,12 @@ type Manager struct {
 	localHold     chan struct{}
 	stoppingLocal map[string]string
 	holdServers   map[string]bool
+
+	// adoptRetry maps an agent backend id to when adopting it first failed
+	// for a reason that can pass (the agent did not answer, the backend was
+	// not healthy). It is reaped only once that has lasted adoptionGrace.
+	// Guarded by mu.
+	adoptRetry map[string]time.Time
 }
 
 // agentHoldTimeout bounds how long, after this primary starts, a spawn onto an

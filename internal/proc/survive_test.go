@@ -380,3 +380,55 @@ func TestConfiguredFor_FindsTheProcessKey(t *testing.T) {
 		t.Fatal("precondition")
 	}
 }
+
+// A backend that is exactly what config would run but is not healthy right
+// now — or whose agent did not answer — is not reaped on first sight. Its grace
+// runs from when this primary first saw that, not from the backend's start:
+// on 2026-10-21 an agent restart during a handoff made the attach fail, and a
+// model loaded hours earlier was sent a reap at once.
+func TestReconcile_UnhealthyMatchGetsGraceBeforeReap(t *testing.T) {
+	fa := newFakeAgent(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(backend.Close)
+	u, _ := url.Parse(backend.URL)
+	var port int
+	_, _ = fmt.Sscanf(u.Port(), "%d", &port)
+	cmd := fmt.Sprintf("exec llama-server --port %d", port)
+	cfg, err := config.LoadBytesForTest([]byte(fmt.Sprintf(`
+servers:
+  mac1:
+    pools: { system: 8GB }
+    devicePool: system
+    agent: { endpoints: [%q], token: t }
+models:
+  m:
+    cmd: %q
+    server: mac1
+    ramUsage: { system: 1GB }
+    proxy: %d
+`, fa.srv.URL, cmd, port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(cfg)
+	b := agent.Backend{ID: "b1", Key: "m", Model: "m", Alive: true, Started: time.Now().Add(-3 * time.Hour).UnixMilli(),
+		ConfigCmd: cmd, Cmd: cmd, Port: port}
+
+	if _, r, _ := m.ReconcileAgent(context.Background(), "mac1", []agent.Backend{b}); r != 0 {
+		t.Fatalf("reaped %d on first sight of an unhealthy match", r)
+	}
+	if _, sig := fa.counts(); len(sig) != 0 {
+		t.Fatalf("signaled %v on first sight; want no reap", sig)
+	}
+
+	// Still unhealthy past the grace: now it is reaped.
+	m.mu.Lock()
+	m.adoptRetry["b1"] = time.Now().Add(-adoptionGrace - time.Second)
+	m.mu.Unlock()
+	m.ReconcileAgent(context.Background(), "mac1", []agent.Backend{b})
+	if _, sig := fa.counts(); len(sig) == 0 || sig[0] != "b1" {
+		t.Fatalf("signaled %v after the grace; want b1 reaped", sig)
+	}
+}
