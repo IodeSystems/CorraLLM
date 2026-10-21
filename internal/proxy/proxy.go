@@ -453,8 +453,21 @@ func (p *Proxy) seedQuota(cfg *config.Config) {
 // unix-millis timestamps the store persists to the time.Time the ledger uses.
 type quotaCounterStore struct{ st *store.Store }
 
-func (q quotaCounterStore) SaveQuotaCounter(backend, label string, used float64, atMS int64) error {
-	return q.st.SaveQuotaCounter(backend, label, used, atMS)
+func (q quotaCounterStore) AddQuotaCounter(backend, label string, amt, limit float64, dur time.Duration, periodStart, at time.Time) (float64, error) {
+	return q.st.AddQuotaCounter(backend, label, amt, limit, dur.Milliseconds(), unixMSOrZero(periodStart), at.UnixMilli())
+}
+
+func (q quotaCounterStore) RaiseQuotaCounter(backend, label string, floor float64, periodStart, at time.Time) (float64, error) {
+	return q.st.RaiseQuotaCounter(backend, label, floor, unixMSOrZero(periodStart), at.UnixMilli())
+}
+
+// unixMSOrZero maps the zero time (no calendar period) to 0, not to the
+// large negative millis time.Time{}.UnixMilli() is.
+func unixMSOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 func (q quotaCounterStore) LoadQuotaCounters() ([]quota.PersistedCounter, error) {

@@ -171,9 +171,30 @@ type PersistedCounter struct {
 // survives a restart. Header-tracked backends need none (they relearn from the
 // next response), but a locally-counted daily budget would otherwise reset to
 // zero on every restart and over-send against the provider's real cap.
+//
+// Writes are DELTAS applied in the store, returning the stored level, because
+// more than one process can charge the same window: a blue-green handoff runs
+// the old and new daemon side by side, and with absolute writes the last one
+// to save erased the other's charges. See mergeLocked for how the returned
+// level folds back into memory.
 type CounterStore interface {
 	LoadQuotaCounters() ([]PersistedCounter, error)
-	SaveQuotaCounter(backend, label string, used float64, atUnixMS int64) error
+	// AddQuotaCounter decays the stored level to at (limit per dur for a
+	// falloff window; zero before periodStart for a calendar one, whose
+	// periodStart is non-zero), adds amt, and returns the result.
+	AddQuotaCounter(backend, label string, amt, limit float64, dur time.Duration, periodStart, at time.Time) (float64, error)
+	// RaiseQuotaCounter lifts a calendar window's stored level to at least
+	// floor for the period starting at periodStart; returns the result.
+	RaiseQuotaCounter(backend, label string, floor float64, periodStart, at time.Time) (float64, error)
+}
+
+// pendingSave is one charge to apply to the store, outside the ledger lock.
+type pendingSave struct {
+	backend string
+	w       *counterWindow
+	amt     float64 // amount added; for a raise, the floor
+	raise   bool
+	at      time.Time
 }
 
 // loadedCounter is a persisted level awaiting a matching window at construction.
@@ -418,29 +439,102 @@ func (l *Ledger) ObserveResponse(backend string, status int, h http.Header) {
 	// Persist the updated levels OUTSIDE the lock — SQLite I/O must not block
 	// other ledger readers, and the in-memory ledger is already authoritative;
 	// the write is best-effort durability, so a failure is swallowed.
-	for _, s := range saves {
-		_ = store.SaveQuotaCounter(s.Backend, s.Label, s.Used, s.At.UnixMilli())
-	}
+	l.flush(store, saves)
 }
 
-// chargeLocked adds amt to every window of one dimension and returns the rows
-// to persist. Caller holds l.mu; the returned rows are written outside it.
-func (l *Ledger) chargeLocked(backend, dim string, amt float64, now time.Time) []PersistedCounter {
+// chargeLocked adds amt to every window of one dimension and returns the
+// charges to persist. Caller holds l.mu; the returned saves are written outside
+// it (see flush).
+func (l *Ledger) chargeLocked(backend, dim string, amt float64, now time.Time) []pendingSave {
 	cs := l.counters[backend]
 	if cs == nil {
 		return nil
 	}
-	var saves []PersistedCounter
+	var saves []pendingSave
 	for _, w := range cs.windows {
 		if !strings.HasPrefix(w.label, dim+"/") {
 			continue
 		}
 		w.add(now, amt)
 		if l.store != nil {
-			saves = append(saves, PersistedCounter{Backend: backend, Label: w.label, Used: w.used, At: w.at})
+			saves = append(saves, pendingSave{backend: backend, w: w, amt: amt, at: now})
 		}
 	}
 	return saves
+}
+
+// flush writes saves to the store and folds each stored level back in.
+// Called WITHOUT l.mu: SQLite I/O must not block ledger readers. Best effort —
+// the in-memory level already holds this process's charge, so a failed write
+// loses durability, never the charge itself.
+func (l *Ledger) flush(store CounterStore, saves []pendingSave) {
+	for _, sv := range saves {
+		var ps time.Time
+		if sv.w.calendar != "" {
+			ps = periodStart(sv.w.calendar, sv.at)
+		}
+		var stored float64
+		var err error
+		if sv.raise {
+			stored, err = store.RaiseQuotaCounter(sv.backend, sv.w.label, sv.amt, ps, sv.at)
+		} else {
+			stored, err = store.AddQuotaCounter(sv.backend, sv.w.label, sv.amt, sv.w.limit, sv.w.dur, ps, sv.at)
+		}
+		if err != nil {
+			continue
+		}
+		l.mu.Lock()
+		l.mergeLocked(sv.w, stored, sv.at)
+		l.mu.Unlock()
+	}
+}
+
+// mergeLocked folds a level read from the store (as of at) into w: the
+// higher of the two, both decayed to now.
+//
+// The store holds every process's charges; memory holds this process's,
+// including ones whose writes have not landed yet. Taking the max never
+// counts a charge twice — each appears at most once on either side — and
+// picks up another process's charges as soon as they make the stored level
+// the larger. What it can miss, briefly, is another process's charge that
+// overlaps one of ours still in flight; the next write or Resync corrects it.
+// Caller holds l.mu.
+func (l *Ledger) mergeLocked(w *counterWindow, stored float64, at time.Time) {
+	now := l.now()
+	other := counterWindow{limit: w.limit, dur: w.dur, calendar: w.calendar, used: stored, at: at}
+	if lv := other.levelAt(now); lv > w.levelAt(now) {
+		w.used, w.at = lv, now
+	}
+}
+
+// Resync re-reads every persisted window and raises any in-memory level the
+// store says is higher. For a process sharing the database with another that
+// is still charging — the successor in a blue-green handoff picks up what the
+// draining predecessor spends — and once more when that predecessor exits.
+func (l *Ledger) Resync() {
+	l.mu.RLock()
+	store := l.store
+	l.mu.RUnlock()
+	if store == nil {
+		return
+	}
+	rows, err := store.LoadQuotaCounters()
+	if err != nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, r := range rows {
+		cs := l.counters[r.Backend]
+		if cs == nil {
+			continue
+		}
+		for _, w := range cs.windows {
+			if w.label == r.Label {
+				l.mergeLocked(w, r.Used, r.At)
+			}
+		}
+	}
 }
 
 // Charge records consumption in a dimension whose amount is only known after
@@ -459,9 +553,7 @@ func (l *Ledger) Charge(backend, dim string, amt float64) {
 	store := l.store
 	l.mu.Unlock()
 	// Same discipline as ObserveResponse: I/O outside the lock, best-effort.
-	for _, s := range saves {
-		_ = store.SaveQuotaCounter(s.Backend, s.Label, s.Used, s.At.UnixMilli())
-	}
+	l.flush(store, saves)
 }
 
 // RaiseCalendarFloor lifts the level of a scope's calendar window in dimension
@@ -492,7 +584,7 @@ func (l *Ledger) RaiseCalendarFloor(backend, dim, unit string, floor float64) fl
 	}
 	now := l.now()
 	var raised float64
-	var saves []PersistedCounter
+	var saves []pendingSave
 	for _, w := range cs.windows {
 		if w.calendar != unit || !strings.HasPrefix(w.label, dim+"/") {
 			continue
@@ -504,14 +596,12 @@ func (l *Ledger) RaiseCalendarFloor(backend, dim, unit string, floor float64) fl
 		w.used, w.at = floor, now
 		raised += floor - lv
 		if l.store != nil {
-			saves = append(saves, PersistedCounter{Backend: backend, Label: w.label, Used: w.used, At: w.at})
+			saves = append(saves, pendingSave{backend: backend, w: w, amt: floor, raise: true, at: now})
 		}
 	}
 	store := l.store
 	l.mu.Unlock()
-	for _, s := range saves {
-		_ = store.SaveQuotaCounter(s.Backend, s.Label, s.Used, s.At.UnixMilli())
-	}
+	l.flush(store, saves)
 	return raised
 }
 
