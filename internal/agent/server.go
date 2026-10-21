@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -24,9 +26,11 @@ type Server struct {
 	token   string
 	booted  time.Time
 	host    host.Host
-	// stateDir is where the agent notes which process groups it supervises, so
-	// a RESTARTED agent can kill what the previous one left running. Empty
-	// disables it (tests, and any install with nowhere to write).
+	// stateDir is where the agent notes which process groups it supervises and
+	// keeps their log files, so a RESTARTED agent can adopt what the previous
+	// one left running (or kill what it cannot adopt). Empty disables both
+	// (tests, and any install with nowhere to write): output is then piped,
+	// and a backend does not survive this agent.
 	stateDir string
 	// allowInstallDeps lets the toolchain surface install SYSTEM PACKAGES here.
 	//
@@ -36,43 +40,130 @@ type Server struct {
 	// enabled it on that machine deliberately.
 	allowInstallDeps bool
 
+	// jobsCtx ends every tool run when the agent shuts down. Jobs (builds,
+	// probes) die with whoever started them; only model backends outlive the
+	// agent. See toolRun. Guarded by jobsMu: a failed self-update re-arms it.
+	jobsMu     sync.Mutex
+	jobsCtx    context.Context
+	jobsCancel context.CancelFunc
+	jobs       sync.WaitGroup
+
+	// identityDelays is when a new backend's identity is read; see
+	// defaultIdentityDelays.
+	identityDelays []time.Duration
+
 	mu       sync.Mutex
 	backends map[string]*supervised
 	seq      int
 }
 
 type supervised struct {
-	id      string
-	key     string
-	model   string
-	cmd     string
-	started time.Time
-	handle  host.Handle
-	logs    *logRing
+	id        string
+	key       string
+	model     string
+	cmd       string
+	configCmd string
+	port      int
+	started   time.Time
+	handle    host.Handle
+	logs      *logRing
 }
 
 // SetAllowInstallDeps permits the toolchain surface to install system packages
 // on this machine. Call before serving.
 func (s *Server) SetAllowInstallDeps(v bool) { s.allowInstallDeps = v }
 
-// SetStateDir enables crash-recovery bookkeeping and reaps anything a previous
-// agent left behind. Call before serving.
+// SetStateDir enables restart bookkeeping, adopts the backends a previous
+// agent left running and kills the ones it cannot adopt. Call before serving
+// and before the first heartbeat, so the primary's first view of this machine
+// already includes what was adopted.
 func (s *Server) SetStateDir(dir string) {
 	s.stateDir = dir
-	if n := ReapStale(dir); n > 0 {
-		slog.Warn("agent: reaped backends left by a previous agent", "count", n)
+	adopt, killed := Recover(dir)
+	if killed > 0 {
+		slog.Warn("agent: killed backends left by a previous agent that could not be adopted", "count", killed)
 	}
+	keepLogs := map[string]bool{}
+	for _, r := range adopt {
+		if s.adopt(r) && r.Log != "" {
+			keepLogs[filepath.Base(r.Log)] = true
+			keepLogs[filepath.Base(r.Log)+".1"] = true
+		}
+	}
+	// Log files of backends that are gone. Each is capped, but a crash loop
+	// writes a new one per spawn, so nothing else would ever bound the count.
+	if dir := s.logDir(); dir != "" {
+		if ents, err := os.ReadDir(dir); err == nil {
+			for _, e := range ents {
+				if !keepLogs[e.Name()] {
+					_ = os.Remove(filepath.Join(dir, e.Name()))
+				}
+			}
+		}
+	}
+}
+
+// adopt re-registers a backend a previous agent started, under the SAME id and
+// key, so the primary — which addresses it by id and matches it by key — sees
+// nothing change.
+func (s *Server) adopt(r supervisedRec) bool {
+	h, err := host.Adopt(r.PGID)
+	if err != nil {
+		slog.Warn("agent: could not adopt a recorded backend", "id", r.ID, "pgid", r.PGID, "err", err)
+		ForgetSupervised(s.stateDir, r.PGID)
+		return false
+	}
+	ring := newLogRing(500)
+	b := &supervised{
+		id: r.ID, key: r.Key, model: r.Model, cmd: r.Cmd, configCmd: r.ConfigCmd,
+		port: r.Port, started: time.UnixMilli(r.Started), handle: h, logs: ring,
+	}
+	s.mu.Lock()
+	s.backends[r.ID] = b
+	if n := backendSeq(r.ID); n > s.seq {
+		s.seq = n
+	}
+	s.mu.Unlock()
+	if r.Log != "" {
+		go s.tail(r.Log, ring, true, h.Done())
+	}
+	go func() { <-h.Done(); ForgetSupervised(s.stateDir, r.PGID) }()
+	slog.Info("agent: adopted a backend left running by a previous agent",
+		"id", r.ID, "key", r.Key, "model", r.Model, "pgid", r.PGID)
+	return true
+}
+
+func (s *Server) logDir() string {
+	if s.stateDir == "" {
+		return ""
+	}
+	return filepath.Join(s.stateDir, "logs")
+}
+
+// tail feeds a backend's log file into its ring and the agent's own stdout,
+// then removes the file once the backend has exited and the tail is drained.
+// The ring keeps the last lines for the primary; the file was only ever the
+// channel that does not die with the agent.
+func (s *Server) tail(path string, ring *logRing, seed bool, done <-chan struct{}) {
+	tailLog(path, io.MultiWriter(os.Stdout, ring), seed, done, logCapBytes)
+	_ = os.Remove(path)
+	_ = os.Remove(path + ".1")
 }
 
 // New builds an agent. An empty token means no authentication — only reachable
 // via the explicit opt-out on the command, never by default.
 func New(version, token string) *Server {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		version:  version,
-		token:    token,
-		booted:   time.Now(),
-		host:     host.NewLocal("agent"),
-		backends: map[string]*supervised{},
+		version:    version,
+		token:      token,
+		booted:     time.Now(),
+		host:       host.NewLocal("agent"),
+		backends:   map[string]*supervised{},
+		jobsCtx:    ctx,
+		jobsCancel: cancel,
+
+		identityDelays: defaultIdentityDelays,
 	}
 }
 
@@ -173,15 +264,40 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	ring := newLogRing(500)
 	s.mu.Lock()
 	s.seq++
-	id := fmt.Sprintf("b%d", s.seq)
+	id := newBackendID(s.seq, s.booted)
 	s.mu.Unlock()
 
-	// Tee to the agent's own stdout as well: an operator watching the agent
-	// should see what its backends are doing without going through the primary.
+	// Output goes to a file when there is somewhere to put one, so the backend
+	// never depends on this process to keep reading a pipe (see logfile.go).
+	// Tee to the agent's own stdout as well, either way: an operator watching
+	// the agent should see what its backends are doing without the primary.
+	out := io.Writer(io.MultiWriter(os.Stdout, ring))
+	var logPath string
+	if dir := s.logDir(); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err == nil {
+			logPath = filepath.Join(dir, id+".log")
+			if f, err := openBackendLog(logPath); err == nil {
+				defer func() { _ = f.Close() }() // the child holds its own copy
+				out = f
+			} else {
+				logPath = ""
+			}
+		}
+		if logPath == "" {
+			slog.Warn("agent: cannot write a backend log file; piping output instead (this backend will not survive an agent restart)",
+				"dir", dir)
+		}
+	}
+
+	// Detached: its own session, so a hangup on the terminal this agent was
+	// started from does not reach it. It is meant to outlive this agent.
+	started := time.Now()
 	h, err := s.host.Start(host.Spec{
-		Name: req.Model,
-		Cmd:  req.Cmd,
-		Out:  io.MultiWriter(os.Stdout, ring),
+		Name:   req.Model,
+		Key:    req.Key,
+		Cmd:    req.Cmd,
+		Out:    out,
+		Detach: true,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -189,17 +305,24 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b := &supervised{
-		id: id, key: req.Key, model: req.Model, cmd: req.Cmd,
-		started: time.Now(), handle: h, logs: ring,
+		id: id, key: req.Key, model: req.Model, cmd: req.Cmd, configCmd: req.ConfigCmd,
+		port: req.Port, started: started, handle: h, logs: ring,
 	}
 	s.mu.Lock()
 	s.backends[id] = b
 	s.mu.Unlock()
+	if logPath != "" {
+		go s.tail(logPath, ring, false, h.Done())
+	}
 
 	if pgid := pgidOf(h.ID()); pgid > 0 {
-		RecordSupervised(s.stateDir, pgid, req.Cmd)
-		// Drop the note when it exits, so startup only ever kills things that
-		// are genuinely still running.
+		recordSupervised(s.stateDir, supervisedRec{
+			PGID: pgid, Cmd: req.Cmd, ID: id, Key: req.Key, Model: req.Model,
+			ConfigCmd: req.ConfigCmd, Port: req.Port, Started: started.UnixMilli(), Log: logPath,
+		})
+		go observeIdentity(s.stateDir, pgid, h.Done(), s.identityDelays)
+		// Drop the note when it exits, so startup only ever looks at things
+		// that are genuinely still running.
 		go func() { <-h.Done(); ForgetSupervised(s.stateDir, pgid) }()
 	}
 	slog.Info("agent: backend started", "id", id, "key", req.Key, "model", req.Model, "handle", h.ID())
@@ -284,7 +407,7 @@ func (s *Server) view(b *supervised) Backend {
 		mem = v
 	}
 	out := Backend{
-		ID: b.id, Key: b.key, Model: b.model, Cmd: b.cmd,
+		ID: b.id, Key: b.key, Model: b.model, Cmd: b.cmd, ConfigCmd: b.configCmd, Port: b.port,
 		Alive: b.handle.Alive(), Exited: exited,
 		Started: b.started.UnixMilli(), MemoryMiB: mem,
 		LastSeq: b.logs.LastSeq(),
@@ -297,17 +420,83 @@ func (s *Server) view(b *supervised) Backend {
 	return out
 }
 
-// Shutdown stops everything this agent spawned.
+// Shutdown ends this agent's JOBS and leaves its backends running.
 //
-// An agent that exits leaving backends running strands them: the primary's
-// handles are gone, nothing will reap them, and the next agent starts against a
-// machine that is mysteriously full. This is the same reasoning as the
-// primary's own Shutdown.
+// This is the reverse of what it used to do, deliberately. Every agent restart
+// — a crash, start.sh's loop, a manual stop, a self-update, a systemd restart —
+// used to stop every model on the machine and cost each one a cold load. The
+// backends are now detached, write to files, and are recorded with enough
+// identity for the NEXT agent to adopt them (see reap.go), so leaving them is
+// safe: they stay tracked across the gap. A full stop is StopBackends, and the
+// primary's explicit unload still signals them one by one.
 //
-// It does NOT cover the agent being killed abruptly or losing its primary while
-// staying up — that needs a lease, which is a deliberate open decision (see
-// plan.md), not an oversight.
+// Tool runs are jobs, not backends, and die with the agent that started them:
+// their context is cancelled here, which kills their process groups.
 func (s *Server) Shutdown() {
+	s.jobsMu.Lock()
+	s.jobsCancel()
+	s.jobsMu.Unlock()
+	s.refreshIdentities()
+	done := make(chan struct{})
+	go func() { s.jobs.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		slog.Warn("agent: tool runs still finishing after 10s; exiting anyway")
+	}
+}
+
+// refreshIdentities records every live backend's identity once more, right
+// before this agent exits. The scheduled looks (identityDelays) leave a window
+// after a spawn in which no identity is recorded yet, and a backend left in
+// that window cannot be adopted — the next agent kills it. Observed in the
+// sandbox: an agent stopped one second after a spawn killed that backend on
+// restart.
+func (s *Server) refreshIdentities() {
+	if s.stateDir == "" {
+		return
+	}
+	s.mu.Lock()
+	bs := make([]*supervised, 0, len(s.backends))
+	for _, b := range s.backends {
+		bs = append(bs, b)
+	}
+	s.mu.Unlock()
+	for _, b := range bs {
+		pgid := pgidOf(b.handle.ID())
+		if pgid <= 0 || !b.handle.Alive() {
+			continue
+		}
+		if id, err := procIdentity(pgid); err == nil {
+			updateIdentity(s.stateDir, pgid, id)
+		}
+	}
+}
+
+// beginJob registers a tool run and returns the context it is bound to, or
+// false once the agent is shutting down. Add happens under jobsMu, before any
+// cancel, so Shutdown's Wait never races a late Add.
+func (s *Server) beginJob() (context.Context, bool) {
+	s.jobsMu.Lock()
+	defer s.jobsMu.Unlock()
+	if s.jobsCtx.Err() != nil {
+		return nil, false
+	}
+	s.jobs.Add(1)
+	return s.jobsCtx, true
+}
+
+// rearmJobs lets tool runs start again after a Shutdown that did not end the
+// process — an exec into a new build that failed.
+func (s *Server) rearmJobs() {
+	s.jobsMu.Lock()
+	defer s.jobsMu.Unlock()
+	s.jobsCtx, s.jobsCancel = context.WithCancel(context.Background())
+}
+
+// StopBackends stops everything this agent supervises: SIGTERM, then SIGKILL
+// for anything still alive after 10 seconds. The explicit full stop.
+func (s *Server) StopBackends() {
 	s.mu.Lock()
 	bs := make([]*supervised, 0, len(s.backends))
 	for _, b := range s.backends {

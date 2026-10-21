@@ -63,6 +63,20 @@ type Spec struct {
 	// implementation that drops or reorders early output costs that model its
 	// tuning profile.
 	Out io.Writer
+	// Detach starts the group in its own SESSION, not just its own process
+	// group, so it is cut loose from the starter's terminal: a hangup on the
+	// terminal an agent was started from (an ssh logout, a closed window) no
+	// longer reaches the backend. Used by the agent, whose backends are meant
+	// to outlive it and be adopted by the next agent; see agent.Server.
+	// Ignored on Windows.
+	Detach bool
+	// ConfigCmd is the command as CONFIGURED, before ${tool:} expansion and
+	// tuning rewrote it into Cmd, and Port is the port the backend serves on.
+	// Local ignores both. A remote host records them with the backend, so a
+	// RESTARTED primary can recognise it as the model its current config would
+	// spawn (adopt it) or as a stale one (reap it) — see proc.ReconcileAgent.
+	ConfigCmd string
+	Port      int
 }
 
 // Handle is one running backend process group.

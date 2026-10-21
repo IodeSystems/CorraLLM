@@ -64,6 +64,10 @@ func (b *Beacon) Run(ctx context.Context) {
 		if err != nil {
 			slog.Warn("agent: heartbeat failed", "primary", b.Primary, "err", err)
 		} else {
+			if !ack.OK {
+				slog.Warn("agent: the primary refused this heartbeat",
+					"primary", b.Primary, "ourProtocol", Protocol, "theirProtocol", ack.Protocol)
+			}
 			b.maybeSelfUpdate(ctx, ack)
 		}
 		select {

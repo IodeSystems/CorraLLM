@@ -141,6 +141,11 @@ func (l *Local) Run(ctx context.Context, spec Spec, verb Verb) (*Raw, error) {
 
 	script := filepath.Join(dir, recipe+".sh")
 	cmd := exec.CommandContext(ctx, "bash", script, string(verb))
+	killWithGroup(cmd)
+	// After a cancel, stop waiting for the output pipes once the group has
+	// had a moment to die; a grandchild that escaped the group (setsid) would
+	// otherwise hold Run open for as long as it lives.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = specEnv(spec, l.Force)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out

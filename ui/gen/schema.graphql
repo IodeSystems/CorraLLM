@@ -920,6 +920,7 @@ input corrallm_AssignModelInputBodyInput {
 input corrallm_BackendInput {
   alive: Boolean!
   cmd: String!
+  configCmd: String
   err: String
   exited: Boolean!
   id: String!
@@ -927,6 +928,7 @@ input corrallm_BackendInput {
   lastSeq: Long!
   memoryMiB: Long!
   model: String!
+  port: Long
   started: Long!
 }
 
@@ -1884,6 +1886,7 @@ type corrallm_HeartbeatAck {
   buildId: String
   intervalSeconds: Long!
   ok: Boolean!
+  protocol: Long
   updateUrl: String!
   version: String!
 }

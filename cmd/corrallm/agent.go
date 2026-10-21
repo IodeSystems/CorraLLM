@@ -35,6 +35,10 @@ func newAgentCmd() *cobra.Command {
 		server     string
 		selfUpdate bool
 		cfgPath    string
+		// stopOnExit restores the old exit behaviour: stop every backend
+		// before exiting. Off by default — backends outlive the agent and are
+		// adopted by the next one.
+		stopOnExit bool
 		// allowInstallDeps is per-machine on purpose: whether corrallm may
 		// touch this box's system packages is a property of the box, not of
 		// the tool being installed.
@@ -99,7 +103,7 @@ func newAgentCmd() *cobra.Command {
 			}
 			return runAgent(cmd.Context(), addr, token,
 				pick(primary, os.Getenv("CORRALLM_PRIMARY")),
-				pick(server, os.Getenv("CORRALLM_AGENT_SERVER")), selfUpdate, allowInstallDeps)
+				pick(server, os.Getenv("CORRALLM_AGENT_SERVER")), selfUpdate, allowInstallDeps, stopOnExit)
 		},
 	}
 	f := cmd.Flags()
@@ -110,12 +114,13 @@ func newAgentCmd() *cobra.Command {
 	f.StringVar(&enroll, "enroll-token", "", "one-time enrollment token; attaches this machine and exchanges it for a long-lived credential (or CORRALLM_ENROLL_TOKEN)")
 	f.StringVar(&primary, "primary", "", "base URL of the corrallm to report liveness to, e.g. http://box1:8111 (or CORRALLM_PRIMARY)")
 	f.StringVar(&server, "server", "", "the `servers:` key in the primary's config that this machine backs (or CORRALLM_AGENT_SERVER)")
-	f.BoolVar(&selfUpdate, "self-update", true, "replace this binary with the primary's build when versions differ AND no backends are running here")
+	f.BoolVar(&selfUpdate, "self-update", true, "replace this binary with the primary's build when the agent PROTOCOL differs (backends keep running and are adopted by the updated agent)")
+	f.BoolVar(&stopOnExit, "stop-backends-on-exit", false, "stop every backend when this agent exits (default: leave them running for the next agent to adopt; SIGUSR1 also stops them and exits)")
 	f.BoolVar(&allowInstallDeps, "allow-install-deps", false, "let the primary install SYSTEM PACKAGES here when a tool's preflight reports missing dependencies (off by default; the commands are always reported so they can be run by hand)")
 	return cmd
 }
 
-func runAgent(ctx context.Context, addr, token, primary, server string, selfUpdate, allowInstallDeps bool) error {
+func runAgent(ctx context.Context, addr, token, primary, server string, selfUpdate, allowInstallDeps, stopOnExit bool) error {
 	a := agent.New(version, token)
 	a.SetAllowInstallDeps(allowInstallDeps)
 
@@ -131,10 +136,10 @@ func runAgent(ctx context.Context, addr, token, primary, server string, selfUpda
 		if err := agent.ReconcileLauncher(filepath.Dir(exe)); err != nil {
 			slog.Warn("agent: could not update start.sh", "err", err)
 		}
-		// Before anything is spawned: kill backends a previous agent left
-		// running. start.sh restarts this process on every crash and every
-		// manual stop, and each restart used to strand whatever it supervised
-		// as a process nothing could account for or reap.
+		// Before anything is spawned and before the first heartbeat: adopt
+		// the backends a previous agent left running, kill the ones that
+		// cannot be adopted. start.sh restarts this process on every crash
+		// and every manual stop; with this, a restart costs no model a reload.
 		a.SetStateDir(filepath.Dir(exe))
 	}
 
@@ -152,6 +157,13 @@ func runAgent(ctx context.Context, addr, token, primary, server string, selfUpda
 	srv := &http.Server{Handler: a.Routes()}
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// The explicit full stop, for an operator who wants the machine empty
+	// (uninstalling, handing the GPU to something else) without editing flags.
+	fullStop := make(chan os.Signal, 1)
+	if sigs := fullStopSignals(); len(sigs) > 0 {
+		signal.Notify(fullStop, sigs...)
+		defer signal.Stop(fullStop)
+	}
 
 	// Report liveness OUTWARD. The agent knows it is alive, may sit behind NAT,
 	// and may change networks; requiring the primary to reach in would make a
@@ -181,13 +193,20 @@ func runAgent(ctx context.Context, addr, token, primary, server string, selfUpda
 	case err := <-errCh:
 		return err
 	case <-sigCtx.Done():
+	case <-fullStop:
+		stopOnExit = true
 	}
 
-	// Stop the backends BEFORE the listener: leaving them running would strand
-	// processes the primary can no longer reach a handle for, and nothing would
-	// ever reap them.
-	slog.Info("corrallm agent shutting down; stopping backends")
+	// Backends are LEFT RUNNING by default: they are recorded on disk and the
+	// next agent adopts them (see agent.Server.Shutdown). Only jobs — tool
+	// runs — end with this process.
 	a.Shutdown()
+	if stopOnExit {
+		slog.Info("corrallm agent shutting down; stopping backends")
+		a.StopBackends()
+	} else {
+		slog.Info("corrallm agent shutting down; backends keep running for the next agent to adopt")
+	}
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

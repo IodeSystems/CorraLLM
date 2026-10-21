@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/iodesystems/corrallm/internal/config"
 )
@@ -37,9 +38,14 @@ func (m *Manager) CheckTool(ctx context.Context, tool, server string, log io.Wri
 	}
 	mdl.Cmd = cmd
 	_, _ = fmt.Fprintf(log, "  checking with %s\n", name)
+	// Trial events arrive from more than one goroutine (the backend's output
+	// copier and the trial itself), and log is a plain writer.
+	var logMu sync.Mutex
 	res, err := m.Trial(ctx, "tool-check-"+name, mdl, func(e TrialEvent) {
 		if e.Msg != "" {
+			logMu.Lock()
 			_, _ = fmt.Fprintf(log, "  [%s] %s\n", e.Stage, e.Msg)
+			logMu.Unlock()
 		}
 	})
 	if err == nil {

@@ -341,6 +341,17 @@ func (c *Config) TargetFor(served string, m Model) (*ProxyTarget, error) {
 	if agentBase == nil {
 		return t, nil
 	}
+	// The agent is on THIS machine: dial its backend directly on loopback.
+	//
+	// The proxy path below exists to keep an unauthenticated backend off the
+	// network, and on the same machine loopback already does that. What the
+	// proxy costs here is availability: every request rides the agent's
+	// process, so restarting the agent — which no longer stops its backends —
+	// would still drop every in-flight request on this box (owner decision
+	// 10-20). Direct, the backend serves straight through an agent restart.
+	if SameMachine(agentBase.Hostname()) {
+		return t, nil
+	}
 	backendPort := t.URL.Port()
 	if backendPort == "" {
 		// Nothing to forward to: without a port there is no local service to

@@ -14,28 +14,35 @@ import (
 )
 
 // selfUpdate replaces this agent's binary with the primary's build and restarts
-// into it — but ONLY while nothing is running here.
+// into it — when, and only when, the two speak different PROTOCOLS.
 //
-// The idle condition is the whole design. An agent supervises process groups
-// holding tens of GB; restarting while one is live would either strand it (the
-// new process has no handles for it) or kill someone's warm model to ship a
-// code change. Neither is an acceptable price for a deploy, so an agent that is
-// busy simply stays on the old build and updates at the next quiet moment.
+// It used to fire on any build difference, which on a primary rebuilt several
+// times a day meant an agent restart several times a day. The agent is a
+// minimal supervisor; it does not need the primary's latest code, only to
+// understand the primary's requests. A protocol mismatch is the one case where
+// it cannot (guard refuses every request), so that is the trigger (owner
+// decision 10-20). Code changes to the agent that keep the protocol reach it
+// at the next protocol bump, or by hand.
+//
+// Backends no longer block it. The re-exec keeps this PID, and the new image
+// adopts every recorded backend at startup (reap.go) — provided there is a
+// state directory to record them in. Without one, adoption is impossible and
+// the old rule stands: update only while nothing is running.
 //
 // Triggered by the heartbeat rather than a timer: the heartbeat is already the
-// channel that knows the primary's version, and an agent that cannot reach its
+// channel that knows the primary's protocol, and an agent that cannot reach its
 // primary should not be replacing its own binary on the strength of stale
 // information.
 func (b *Beacon) maybeSelfUpdate(ctx context.Context, ack HeartbeatAck) {
 	if !b.SelfUpdate || ack.UpdateURL == "" || b.Srv == nil {
 		return
 	}
-	if !outOfDate(OwnBuildID(), b.Srv.version, ack) {
+	if !protocolDiffers(ack) {
 		return
 	}
-	if busy := b.Srv.busy(); busy > 0 {
-		slog.Info("agent: update available but backends are running; deferring",
-			"have", b.Srv.version, "want", ack.Version, "backends", busy)
+	if busy := b.Srv.busy(); busy > 0 && b.Srv.stateDir == "" {
+		slog.Info("agent: protocol update available but backends are running and cannot be adopted (no state dir); deferring",
+			"have", Protocol, "want", ack.Protocol, "backends", busy)
 		return
 	}
 
@@ -44,7 +51,8 @@ func (b *Beacon) maybeSelfUpdate(ctx context.Context, ack HeartbeatAck) {
 		slog.Warn("agent: cannot locate own binary; skipping self-update", "err", err)
 		return
 	}
-	slog.Info("agent: idle and out of date — updating",
+	slog.Info("agent: primary speaks a different protocol — updating",
+		"haveProtocol", Protocol, "wantProtocol", ack.Protocol,
 		"have", b.Srv.version, "haveBuild", OwnBuildID(),
 		"want", ack.Version, "wantBuild", ack.BuildID, "path", exe)
 
@@ -66,34 +74,21 @@ func (b *Beacon) maybeSelfUpdate(ctx context.Context, ack HeartbeatAck) {
 
 	// Re-exec rather than exit: the supervisor that started us may not restart
 	// us, and an agent that vanishes to apply an update has made things worse.
-	// Nothing is running (checked above), so there is nothing to hand over.
+	// Running backends are left as they are; the new image adopts them. Jobs
+	// end first, as on any agent exit.
+	b.Srv.Shutdown()
 	slog.Info("agent: restarting into the new build", "version", ack.Version)
 	if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
 		slog.Error("agent: exec into the new build FAILED — still running the old one", "err", err)
+		b.Srv.rearmJobs()
 	}
 }
 
-// outOfDate decides whether the primary is offering a build we are not running.
-//
-// Build ids win whenever both sides have one: they compare BYTES, so they are
-// right in the case version strings get wrong — two "dev" builds a week apart —
-// and equally right in the case they get correct. A machine that answers "same
-// bytes" needs no update no matter what the version strings say, and one that
-// answers "different bytes" needs one for the same reason.
-//
-// The version comparison survives only as a fallback for when an id is missing
-// on either side: an agent that cannot read its own executable, or a primary
-// with no binary built for that platform. Its old "both dev → do nothing" rule
-// stays with it, because without ids there is still no way to tell two dev
-// builds apart, and updating on every beat would be worse than not updating.
-func outOfDate(ownBuild, ownVersion string, ack HeartbeatAck) bool {
-	if ownBuild != "" && ack.BuildID != "" {
-		return ownBuild != ack.BuildID
-	}
-	if ack.Version == "" || ack.Version == ownVersion {
-		return false
-	}
-	return !(ack.Version == "dev" && ownVersion == "dev")
+// protocolDiffers reports whether the primary speaks a protocol this agent
+// does not. Zero means a primary older than the field, which says nothing —
+// and nothing is not a reason to replace a working binary.
+func protocolDiffers(ack HeartbeatAck) bool {
+	return ack.Protocol != 0 && ack.Protocol != Protocol
 }
 
 // updateTempPrefix names the in-flight download. Distinctive and dot-prefixed:

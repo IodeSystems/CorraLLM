@@ -6,51 +6,22 @@ import (
 	"testing"
 )
 
-// The case that motivated build ids: two untagged builds, a week apart, both
-// stamped "dev". Version strings say "current"; the bytes say otherwise.
-func TestOutOfDateDistinguishesTwoDevBuilds(t *testing.T) {
-	ack := HeartbeatAck{Version: "dev", BuildID: "bbbbbbbbbbbb"}
-	if !outOfDate("aaaaaaaaaaaa", "dev", ack) {
-		t.Error("two different dev builds compared equal — the agent would never update during development")
-	}
-	// And the same bytes must terminate it, or the agent re-execs on every beat.
-	if outOfDate("bbbbbbbbbbbb", "dev", ack) {
-		t.Error("identical build ids reported out of date — this is the update loop")
-	}
-}
-
-// Build ids beat version strings in BOTH directions, including the awkward one:
-// the primary claims a new version while serving the build already installed.
-func TestOutOfDateTrustsBytesOverVersionStrings(t *testing.T) {
-	same := HeartbeatAck{Version: "v9.9.9", BuildID: "aaaaaaaaaaaa"}
-	if outOfDate("aaaaaaaaaaaa", "v1.0.0", same) {
-		t.Error("a new version string over identical bytes should not trigger an update")
-	}
-	differ := HeartbeatAck{Version: "v1.0.0", BuildID: "cccccccccccc"}
-	if !outOfDate("aaaaaaaaaaaa", "v1.0.0", differ) {
-		t.Error("matching version strings over different bytes should still update")
-	}
-}
-
-// Without ids on both sides there is still no way to tell two dev builds apart,
-// so the old rule has to stand — updating on every beat would be worse.
-func TestOutOfDateFallsBackToVersionsWhenAnIDIsMissing(t *testing.T) {
+// The trigger is the PROTOCOL, not the build (owner decision 10-20). A primary
+// rebuilt several times a day used to restart every agent several times a day;
+// different bytes speaking the same protocol are no reason to.
+func TestSelfUpdateOnlyWhenTheProtocolDiffers(t *testing.T) {
 	cases := []struct {
-		name          string
-		ownID, ownVer string
-		ack           HeartbeatAck
-		want          bool
+		name string
+		ack  HeartbeatAck
+		want bool
 	}{
-		{"no id either side, both dev", "", "dev", HeartbeatAck{Version: "dev"}, false},
-		{"no id either side, versions differ", "", "v1", HeartbeatAck{Version: "v2"}, true},
-		{"no id either side, versions match", "", "v1", HeartbeatAck{Version: "v1"}, false},
-		{"primary has no binary for us", "aaaaaaaaaaaa", "v1", HeartbeatAck{Version: "v2"}, true},
-		{"agent cannot hash itself", "", "v1", HeartbeatAck{Version: "v2", BuildID: "bbbbbbbbbbbb"}, true},
-		{"primary says nothing at all", "aaaaaaaaaaaa", "v1", HeartbeatAck{}, false},
+		{"different build, same protocol", HeartbeatAck{Protocol: Protocol, BuildID: "bbbbbbbbbbbb", Version: "v2"}, false},
+		{"different protocol", HeartbeatAck{Protocol: Protocol + 1}, true},
+		{"primary older than the field", HeartbeatAck{BuildID: "bbbbbbbbbbbb", Version: "v2"}, false},
 	}
 	for _, c := range cases {
-		if got := outOfDate(c.ownID, c.ownVer, c.ack); got != c.want {
-			t.Errorf("%s: outOfDate = %v, want %v", c.name, got, c.want)
+		if got := protocolDiffers(c.ack); got != c.want {
+			t.Errorf("%s: protocolDiffers = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

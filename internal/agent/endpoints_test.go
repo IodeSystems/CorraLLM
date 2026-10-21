@@ -2,6 +2,21 @@ package agent
 
 import "testing"
 
+// An agent bound to one address is reachable there and nowhere else. Offering
+// every interface sent the primary to addresses nothing listens on: an agent on
+// 127.0.0.1 beside its primary lost its only working endpoint on the first beat.
+func TestLocalEndpoints_BoundAddressIsTheOnlyEndpoint(t *testing.T) {
+	got := localEndpoints("127.0.0.1:6612")
+	if len(got) != 1 || got[0] != "http://127.0.0.1:6612" {
+		t.Errorf("localEndpoints(127.0.0.1:6612) = %v, want only the bound address", got)
+	}
+	for _, e := range localEndpoints("0.0.0.0:6612") {
+		if e == "http://0.0.0.0:6612" {
+			t.Error("the unspecified address was offered as an endpoint")
+		}
+	}
+}
+
 // A box running containers offers a dozen bridge-gateway addresses no primary
 // can dial. The endpoint list is walked in order on every spawn, so including
 // them spends the probe budget before reaching the address that works.

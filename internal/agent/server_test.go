@@ -17,6 +17,7 @@ func newTestAgent(t *testing.T, token string) (*Server, *httptest.Server) {
 	srv := httptest.NewServer(a.Routes())
 	t.Cleanup(func() {
 		a.Shutdown()
+		a.StopBackends() // Shutdown leaves backends running; a test must not
 		srv.Close()
 	})
 	return a, srv
@@ -172,9 +173,10 @@ func TestAgent_StartRejectsEmptyCmd(t *testing.T) {
 	}
 }
 
-// An agent that exits leaving backends running strands them: the primary's
-// handles are gone and nothing will ever reap them.
-func TestAgent_ShutdownStopsBackends(t *testing.T) {
+// An agent exit must NOT take its backends with it: they are recorded and the
+// next agent adopts them. Every restart used to cost every model a cold load.
+// StopBackends is the explicit full stop, and it must still work.
+func TestAgent_ShutdownLeavesBackendsStopBackendsStopsThem(t *testing.T) {
 	a, srv := newTestAgent(t, "")
 	_, body := do(t, srv, http.MethodPost, "/agent/v1/backends", "", `{"key":"k","cmd":"exec sleep 30"}`)
 	var b Backend
@@ -188,7 +190,12 @@ func TestAgent_ShutdownStopsBackends(t *testing.T) {
 		t.Fatal("precondition: backend should be running")
 	}
 	a.Shutdown()
+	time.Sleep(100 * time.Millisecond)
+	if !sup.handle.Alive() {
+		t.Fatal("agent shutdown stopped a backend — it should be left for the next agent to adopt")
+	}
+	a.StopBackends()
 	if sup.handle.Alive() {
-		t.Error("backend survived agent shutdown — it would be stranded")
+		t.Error("backend survived StopBackends — the explicit full stop does not work")
 	}
 }

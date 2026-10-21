@@ -6,7 +6,15 @@ import "syscall"
 
 // sysProcAttr starts the backend in its own process group so a kill reaches the
 // whole tree (sh -c → llama-server → children), not just the shell.
-func sysProcAttr() *syscall.SysProcAttr {
+//
+// detach uses a new session instead. setsid also makes the child the leader of
+// a new process group with pgid == pid, so every group operation below works
+// unchanged; Setpgid must NOT be set alongside it, because a session leader
+// cannot change its process group and the spawn would fail with EPERM.
+func sysProcAttr(detach bool) *syscall.SysProcAttr {
+	if detach {
+		return &syscall.SysProcAttr{Setsid: true}
+	}
 	return &syscall.SysProcAttr{Setpgid: true}
 }
 
