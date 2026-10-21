@@ -84,9 +84,12 @@ func execBudgetContext(parent context.Context, budget time.Duration, oh *overhea
 	ctx, cancel := context.WithCancelCause(parent)
 	start := time.Now()
 	sinceStart := stageQueueWait()
+	// Read the tunables once: the goroutine can outlive the caller, and a test
+	// that restores them must not race it.
+	tick, stall := watchdogTick, stallTimeout
 
 	go func() {
-		t := time.NewTicker(watchdogTick)
+		t := time.NewTicker(tick)
 		defer t.Stop()
 		// Held across ticks: a failed lookup must not reset the correction to
 		// zero, which would make the watchdog abruptly stricter exactly when
@@ -118,7 +121,7 @@ func execBudgetContext(parent context.Context, budget time.Duration, oh *overhea
 				// queued early and then wedged got a grace as long as
 				// everything it had ever waited for, so on a contended box the
 				// guard would rarely fire at all.
-				if idleFor != nil && idleFor(time.Now()) > stallTimeout {
+				if idleFor != nil && idleFor(time.Now()) > stall {
 					cancel(errStalled)
 					return
 				}
