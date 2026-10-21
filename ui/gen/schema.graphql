@@ -9,7 +9,7 @@ schema {
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
 
 type CorrallmMutationNamespace {
-  addLocalServer: corrallm_AddLocalServerOutputBody @derived(operationId: "addLocalServer")
+  addLocalServer(body: corrallm_LocalServerEditInput): corrallm_AddLocalServerOutputBody @derived(operationId: "addLocalServer")
   addRemoteModel(body: corrallm_RemoteModelSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "addRemoteModel")
   agentEnroll(
     """Bearer <enrollment token>, minted by the operator."""
@@ -365,7 +365,7 @@ type CorrallmQueryNamespace {
 }
 
 type CorrallmV1MutationNamespace {
-  addLocalServer: corrallm_AddLocalServerOutputBody @derived(operationId: "addLocalServer")
+  addLocalServer(body: corrallm_LocalServerEditInput): corrallm_AddLocalServerOutputBody @derived(operationId: "addLocalServer")
   addRemoteModel(body: corrallm_RemoteModelSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "addRemoteModel")
   agentEnroll(
     """Bearer <enrollment token>, minted by the operator."""
@@ -2122,6 +2122,28 @@ input corrallm_LimitInput {
   usd: Float
 }
 
+type corrallm_LocalPool {
+  """Whether the pool is bound to the card by UUID (devices). One card is not bound: there is no other to confuse it with."""
+  bound: Boolean!
+  """Headroom added to inUseBytes: 1 GiB per GPU; for system RAM the larger of 4 GiB and 10% of the total."""
+  bufferBytes: Long!
+  """The GPU this pool budgets; empty for system RAM."""
+  card: String!
+  """Whether the pool's memory was detected as ECC. An unreadable answer is false."""
+  ecc: Boolean!
+  """Memory other processes held when the probe ran: used, minus what corrallm's own backends hold (on a GPU, their memory there; in system RAM, their anonymous memory, Linux only)."""
+  inUseBytes: Long!
+  pool: String!
+  """The reserve in words, e.g. 'in use now 1.2 GB + 1.1 GB buffer'."""
+  reason: String!
+  """Memory kept free for everything that is not a corrallm backend (whole GB, rounded up, never more than totalBytes)."""
+  reserveBytes: Long!
+  """The pool's size as it would be written (whole GB, rounded down)."""
+  totalBytes: Long!
+  """The card's vendor UUID; empty for system RAM."""
+  uuid: String!
+}
+
 type corrallm_LocalProviderModelView {
   """Whether the unprefixed id also resolves here."""
   bare: Boolean!
@@ -2144,11 +2166,32 @@ type corrallm_LocalProviderView {
   notes: String!
 }
 
+input corrallm_LocalServerEditInput {
+  """The pool a measured GPU footprint is charged to. Only read with pools; empty uses the probe's when it is one of them."""
+  devicePool: String
+  """Pool → card UUID it budgets. Only read with pools."""
+  devices: JSON
+  """Pool → ECC, only for a pool where detection is wrong. Absent pools keep detection."""
+  ecc: JSON
+  """Server name; empty uses the probe's (the hostname)."""
+  name: String
+  """Pool → size, as config writes it (e.g. {"gpu0": "24GB"}). Empty uses the probe's pools, reserve, devices and devicePool."""
+  pools: JSON
+  """Pool → memory kept free for other processes. Only read with pools."""
+  reserve: JSON
+}
+
 type corrallm_LocalServerProbeOutputBody {
+  """The pool a measured GPU footprint is charged to."""
+  devicePool: String!
   """A server already declared for this machine (no agent binding); empty when there is none."""
   existing: String!
   """The server name adding this machine would use: the hostname."""
   name: String!
+  """This machine cannot attribute memory to one process."""
+  noProcessMemory: Boolean!
+  """Each pool adding this machine would declare, with its proposed reserve and how it was reached."""
+  poolDetail: [corrallm_LocalPool!]!
   """The memory pools adding this machine would declare, e.g. 'gpu0 24GB, system 64GB'."""
   pools: String!
 }

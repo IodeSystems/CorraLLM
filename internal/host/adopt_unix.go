@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/gpu"
+	"github.com/iodesystems/corrallm/internal/sysmem"
 )
 
 // adoptPoll is how often an adopted group is checked for exit. There is no
@@ -120,3 +121,5 @@ func (h *adoptedHandle) MemoryOnMiB(uuid string) (int, error) { return gpu.Group
 func (h *adoptedHandle) MemoryByDeviceMiB() (map[string]int, error) {
 	return gpu.GroupVRAMByDevice(h.pid)
 }
+
+func (h *adoptedHandle) AnonBytes() (int64, error) { return sysmem.GroupAnonBytes(h.pid) }

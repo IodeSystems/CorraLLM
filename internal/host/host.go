@@ -130,6 +130,13 @@ type DeviceMemory interface {
 	MemoryByDeviceMiB() (map[string]int, error)
 }
 
+// HostMemory is the OPTIONAL system-RAM half: the anonymous memory a group
+// holds on THIS machine (sysmem.GroupAnonBytes). Only a handle on this machine
+// can answer; the error is the supported "cannot attribute" state.
+type HostMemory interface {
+	AnonBytes() (int64, error)
+}
+
 // Host starts backends somewhere.
 type Host interface {
 	// Name is the config `servers:` key this host backs.
