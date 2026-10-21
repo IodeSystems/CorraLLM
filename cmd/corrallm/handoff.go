@@ -185,14 +185,21 @@ func drainForSuccessor(pred *handoff.Predecessor, srv *http.Server, ln net.Liste
 	defer tick.Stop()
 	succDone := pred.Done()
 	for {
+		// Again each pass: a load that was under way at the handover becomes
+		// an idle local backend later, and must be stopped too.
+		mgr.Drain()
 		report()
-		busy, live := conns.Busy(), px.LiveRequests()
-		if busy == 0 && live == 0 {
+		busy, live, local := conns.Busy(), px.LiveRequests(), mgr.LocalBackends()
+		// Local backends count until their teardown is CONFIRMED (SIGKILL
+		// after the eviction grace if need be). Exiting earlier would end the
+		// reaper with this process, and a backend ignoring SIGTERM would keep
+		// its VRAM while the successor — released by this exit — spawns.
+		if busy == 0 && live == 0 && local == 0 {
 			break
 		}
 		if time.Now().After(deadline) {
 			slog.Warn("handoff: drain cap reached with requests still running; they are cut",
-				"cap", drainCap, "connections", busy, "requests", live)
+				"cap", drainCap, "connections", busy, "requests", live, "localBackends", local)
 			break
 		}
 		select {
