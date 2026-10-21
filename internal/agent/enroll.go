@@ -117,8 +117,12 @@ func Probe() Capacity {
 	case len(devs) == 0:
 		c.GPUError = "no GPUs reported"
 	default:
+		// ECC is read once and cached by gpu.ECC; an error leaves every card
+		// non-ECC, the safe reading.
+		ecc, _ := gpu.ECC()
 		for _, st := range devs {
 			c.GPUs = append(c.GPUs, GPUDevice{
+				ECC: ecc[st.UUID],
 				DeviceMem: DeviceMem{Name: st.Name, TotalBytes: int64(st.TotalMiB) * mib,
 					UsedBytes: int64(st.UsedMiB) * mib, FreeBytes: int64(st.FreeMiB) * mib},
 				Index: st.Index, UUID: st.UUID, PCIBusID: st.PCIBusID,
@@ -143,6 +147,7 @@ func Probe() Capacity {
 	// Intel Mac with a discrete card is darwin and has two real pools. The
 	// prober knows what it just measured; nothing else does.
 	c.Unified = gpu.Unified()
+	c.HostECC = sysmem.HostECC()
 	return c
 }
 

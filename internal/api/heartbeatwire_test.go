@@ -39,6 +39,9 @@ servers:
 		"null split": `{"server":"box1",` + hello + `,"backends":[{` + backend + `,"memoryByDevice":null}],` +
 			`"capacity":{"perProcess":true,"gpus":[{"name":"g","totalBytes":1,"usedBytes":1,"freeBytes":0,"index":0,"uuid":"GPU-1"}]}}`,
 		"empty split": `{"server":"box1",` + hello + `,"backends":[{` + backend + `,"memoryByDevice":{}}],"capacity":{"perProcess":true}}`,
+		// ECC is additive too: a card and the host reporting it.
+		"ecc": `{"server":"box1",` + hello + `,"backends":[{` + backend + `}],` +
+			`"capacity":{"perProcess":true,"hostEcc":true,"gpus":[{"name":"g","totalBytes":1,"usedBytes":1,"freeBytes":0,"index":0,"uuid":"GPU-1","ecc":true}]}}`,
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/heartbeat", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")

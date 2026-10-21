@@ -66,6 +66,13 @@ type GPUDevice struct {
 	Index    int    `json:"index"`
 	UUID     string `json:"uuid,omitempty"`
 	PCIBusID string `json:"pciBusId,omitempty"`
+	// ECC reports that this card's memory has ECC enabled (gpu.ECC). False
+	// covers "disabled", "not supported" and "could not tell" alike, and is
+	// what an agent older than this field sends by omission: every one of
+	// them means "weights here can bit-flip", which is the safe reading.
+	// omitempty, so a machine without ECC sends exactly the bytes it did
+	// before this field existed.
+	ECC bool `json:"ecc,omitempty"`
 }
 
 // Capacity is what this machine can actually offer, measured.
@@ -123,6 +130,9 @@ type Capacity struct {
 	// foreign use and the next admit fails for up to a heartbeat interval.
 	// Zero from an agent older than this field: always accepted.
 	MeasuredAt int64 `json:"measuredAt,omitempty"`
+	// HostECC reports that system RAM is ECC-protected (sysmem.HostECC). Same
+	// reading as GPUDevice.ECC: absent and false both mean "no ECC".
+	HostECC bool `json:"hostEcc,omitempty"`
 }
 
 // DeviceStats returns GPUs in the form gpu.Select matches against, so a
@@ -139,6 +149,21 @@ func (c Capacity) DeviceStats() []gpu.Stats {
 			Index: d.Index, UUID: d.UUID, PCIBusID: d.PCIBusID, Name: d.Name,
 			TotalMiB: int(d.TotalBytes / mib), UsedMiB: int(d.UsedBytes / mib), FreeMiB: int(d.FreeBytes / mib),
 		})
+	}
+	return out
+}
+
+// ECCByUUID maps each reported card's uuid to its ECC flag. Nil when the agent
+// sent no per-card list.
+func (c Capacity) ECCByUUID() map[string]bool {
+	if len(c.GPUs) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(c.GPUs))
+	for _, d := range c.GPUs {
+		if d.UUID != "" {
+			out[d.UUID] = d.ECC
+		}
 	}
 	return out
 }
