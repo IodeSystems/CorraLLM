@@ -187,6 +187,7 @@ func (m *Manager) TrialWith(ctx context.Context, id string, mdl config.Model, em
 	p.mu.Lock()
 	p.handle = h
 	p.spawnedCmd = mdl.Cmd
+	p.loadedAt = time.Now() // reconcile's spawn grace reads it
 	p.state = StateLoading
 	p.mu.Unlock()
 	emit(TrialEvent{Stage: TrialSpawn, OK: true, Msg: h.ID()})

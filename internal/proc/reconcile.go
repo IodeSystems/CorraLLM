@@ -83,7 +83,7 @@ func (m *Manager) ReconcileAgent(ctx context.Context, server string, reported []
 			continue
 		}
 		p.mu.Lock()
-		h := p.handle
+		h, loadedAt := p.handle, p.loadedAt
 		p.mu.Unlock()
 		id := ""
 		if a, ok := h.(interface{ AgentID() string }); ok {
@@ -96,7 +96,12 @@ func (m *Manager) ReconcileAgent(ctx context.Context, server string, reported []
 			continue
 		}
 		ourIDs[key] = id
-		if !reportedKeys[key] {
+		// A spawn newer than the agent's report is missing from it because
+		// the report was taken first, not because it is gone. Without this
+		// grace a llama.cpp build benchmark lost its trial on 2026-10-21: the
+		// pools were freed, the trial became an orphan and was reaped mid-run.
+		fresh := !loadedAt.IsZero() && now.Sub(loadedAt) < adoptionGrace
+		if !reportedKeys[key] && !fresh {
 			gone = append(gone, p)
 		}
 	}

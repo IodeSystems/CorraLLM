@@ -117,3 +117,27 @@ func TestReconcile_DoesNotTouchOtherServers(t *testing.T) {
 		t.Error("a box1 resident was dropped by mac1's reconciliation")
 	}
 }
+
+// A spawn newer than the agent's report is missing from it because the report
+// was taken first. It must not be declared vanished: on 2026-10-21 that freed a
+// build benchmark's trial, which was then reaped as an orphan mid-run.
+func TestReconcile_FreshSpawnMissingFromReportIsNotVanished(t *testing.T) {
+	m, _ := reconcileMgr(t)
+	m.mu.Lock()
+	m.procs["m"] = &Process{Name: "m", key: "m", server: "mac1", usage: map[string]int64{"system": 1 << 30},
+		handle: agentMemHandle{}, loadedAt: time.Now(), ready: make(chan struct{})}
+	m.reserveLocked("mac1", map[string]int64{"system": 1 << 30})
+	m.mu.Unlock()
+
+	if _, _, vanished := m.ReconcileAgent(context.Background(), "mac1", nil); vanished != 0 {
+		t.Fatalf("vanished = %d for a spawn seconds old; want 0", vanished)
+	}
+
+	// Still missing past the grace: now it is gone.
+	m.mu.Lock()
+	m.procs["m"].loadedAt = time.Now().Add(-adoptionGrace - time.Second)
+	m.mu.Unlock()
+	if _, _, vanished := m.ReconcileAgent(context.Background(), "mac1", nil); vanished != 1 {
+		t.Fatalf("vanished = %d past the grace; want 1", vanished)
+	}
+}
