@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
 	"strings"
@@ -63,14 +64,17 @@ func localServerFrom(c agent.Capacity, devs []gpu.Stats) config.Server {
 }
 
 // existingLocal names a server already declared for this machine (no agent
-// binding), or "".
+// binding, or an agent on loopback), or "".
 func existingLocal(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
 	}
 	var names []string
 	for n, s := range cfg.Servers {
-		if s.Agent == nil {
+		// An agent on loopback is this machine too: box1 runs its models
+		// under a same-machine agent so they outlive the primary. Offering
+		// to add this machine again would declare its memory twice.
+		if s.Agent == nil || loopbackAgent(s.Agent) {
 			names = append(names, n)
 		}
 	}
@@ -79,6 +83,15 @@ func existingLocal(cfg *config.Config) string {
 		return ""
 	}
 	return names[0]
+}
+
+func loopbackAgent(a *config.AgentBinding) bool {
+	h := a.Host()
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 func poolSummary(pools map[string]string) string {
@@ -97,7 +110,7 @@ func poolSummary(pools map[string]string) string {
 // LocalServerProbeOutput is what adding this machine would write.
 type LocalServerProbeOutput struct {
 	Body struct {
-		Existing        string      `json:"existing" doc:"A server already declared for this machine (no agent binding); empty when there is none."`
+		Existing        string      `json:"existing" doc:"A server already declared for this machine (no agent binding, or an agent on loopback); empty when there is none."`
 		Name            string      `json:"name" doc:"The server name adding this machine would use: the hostname."`
 		Pools           string      `json:"pools" doc:"The memory pools adding this machine would declare, e.g. 'gpu0 24GB, system 64GB'."`
 		PoolDetail      []LocalPool `json:"poolDetail" doc:"Each pool adding this machine would declare, with its proposed reserve and how it was reached."`

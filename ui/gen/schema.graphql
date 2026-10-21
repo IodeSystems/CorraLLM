@@ -2184,7 +2184,7 @@ input corrallm_LocalServerEditInput {
 type corrallm_LocalServerProbeOutputBody {
   """The pool a measured GPU footprint is charged to."""
   devicePool: String!
-  """A server already declared for this machine (no agent binding); empty when there is none."""
+  """A server already declared for this machine (no agent binding, or an agent on loopback); empty when there is none."""
   existing: String!
   """The server name adding this machine would use: the hostname."""
   name: String!

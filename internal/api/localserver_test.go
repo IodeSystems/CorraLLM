@@ -290,3 +290,19 @@ func TestProposeLocalUnified(t *testing.T) {
 		t.Errorf("busy = %+v, reserve %v", lp, busy.Server.Reserve)
 	}
 }
+
+// A server run by an agent on loopback is this machine: offering to add it
+// again would declare the same memory twice.
+func TestExistingLocalCountsALoopbackAgent(t *testing.T) {
+	cfg := &config.Config{Servers: map[string]config.Server{
+		"mac":  {Agent: &config.AgentBinding{Endpoints: []string{"http://192.168.1.50:6510"}}},
+		"box1": {Agent: &config.AgentBinding{Endpoints: []string{"http://127.0.0.1:6510"}}},
+	}}
+	if got := existingLocal(cfg); got != "box1" {
+		t.Fatalf("existingLocal = %q, want box1", got)
+	}
+	delete(cfg.Servers, "box1")
+	if got := existingLocal(cfg); got != "" {
+		t.Fatalf("existingLocal = %q, want none (the only server is another machine)", got)
+	}
+}
