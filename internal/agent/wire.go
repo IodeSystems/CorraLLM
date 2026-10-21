@@ -203,7 +203,14 @@ type Heartbeat struct {
 
 // HeartbeatAck is the primary's reply.
 type HeartbeatAck struct {
+	// OK is false when the primary refused the beat because the protocols
+	// differ. The rest of the ack is still filled in, because it is exactly
+	// what that agent needs to update itself out of the mismatch.
 	OK bool `json:"ok"`
+	// Protocol is the primary's agent protocol. A difference is the ONLY
+	// thing that makes an agent replace itself (see maybeSelfUpdate). Zero
+	// from a primary older than this field.
+	Protocol int `json:"protocol,omitempty"`
 	// Version is what the primary is running. An agent compares it against its
 	// own and updates itself when they differ AND it is idle — which is what
 	// makes iterating on agent code possible without walking to every machine.

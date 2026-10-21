@@ -1823,6 +1823,7 @@ type corrallm_HeartbeatAck {
   buildId: String
   intervalSeconds: Long!
   ok: Boolean!
+  protocol: Long
   updateUrl: String!
   version: String!
 }

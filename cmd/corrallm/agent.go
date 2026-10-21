@@ -114,7 +114,7 @@ func newAgentCmd() *cobra.Command {
 	f.StringVar(&enroll, "enroll-token", "", "one-time enrollment token; attaches this machine and exchanges it for a long-lived credential (or CORRALLM_ENROLL_TOKEN)")
 	f.StringVar(&primary, "primary", "", "base URL of the corrallm to report liveness to, e.g. http://box1:8111 (or CORRALLM_PRIMARY)")
 	f.StringVar(&server, "server", "", "the `servers:` key in the primary's config that this machine backs (or CORRALLM_AGENT_SERVER)")
-	f.BoolVar(&selfUpdate, "self-update", true, "replace this binary with the primary's build when versions differ AND no backends are running here")
+	f.BoolVar(&selfUpdate, "self-update", true, "replace this binary with the primary's build when the agent PROTOCOL differs (backends keep running and are adopted by the updated agent)")
 	f.BoolVar(&stopOnExit, "stop-backends-on-exit", false, "stop every backend when this agent exits (default: leave them running for the next agent to adopt; SIGUSR1 also stops them and exits)")
 	f.BoolVar(&allowInstallDeps, "allow-install-deps", false, "let the primary install SYSTEM PACKAGES here when a tool's preflight reports missing dependencies (off by default; the commands are always reported so they can be run by hand)")
 	return cmd

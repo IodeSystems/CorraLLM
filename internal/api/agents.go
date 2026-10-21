@@ -53,8 +53,19 @@ func (h *Handlers) AgentHeartbeat(_ context.Context, in *AgentHeartbeatInput) (*
 		return nil, huma.Error401Unauthorized("agent token rejected")
 	}
 	if in.Body.Hello.Protocol != 0 && in.Body.Hello.Protocol != agent.Protocol {
-		return nil, huma.Error400BadRequest(fmt.Sprintf(
-			"agent speaks protocol %d, this daemon speaks %d", in.Body.Hello.Protocol, agent.Protocol))
+		// Refused — but answered with an ack, not an error. This agent can
+		// do nothing for us (it would reject every request), and the ack's
+		// update fields are the only way out of that: a protocol mismatch is
+		// precisely what makes an agent replace itself. A 400 here left a
+		// mismatched agent with no way to learn where its new binary is.
+		//
+		// Not recorded as a beat, and nothing reconciled: liveness means "can
+		// be spawned onto", which this agent cannot.
+		slog.Warn("agent heartbeat refused: protocol mismatch; telling it to update",
+			"server", in.Body.Server, "agent", in.Body.Hello.Protocol, "primary", agent.Protocol)
+		out := h.heartbeatAck(in.Body.Hello)
+		out.Body.OK = false
+		return out, nil
 	}
 
 	h.Liveness.Beat(in.Body.Server, time.Now())
@@ -82,8 +93,15 @@ func (h *Handlers) AgentHeartbeat(_ context.Context, in *AgentHeartbeatInput) (*
 	// rewriting the config file ten times a second per host would be absurd.
 	h.adoptEndpoints(in.Body.Server, srv, in.Body.Endpoints)
 
-	out := &AgentHeartbeatOutput{}
+	out := h.heartbeatAck(in.Body.Hello)
 	out.Body.OK = true
+	return out, nil
+}
+
+// heartbeatAck fills everything an ack carries apart from OK.
+func (h *Handlers) heartbeatAck(hb agent.Hello) *AgentHeartbeatOutput {
+	out := &AgentHeartbeatOutput{}
+	out.Body.Protocol = agent.Protocol
 	out.Body.IntervalSeconds = int(agent.HeartbeatInterval / time.Second)
 	// The version of the BINARIES we serve, not this process's own — they are
 	// built by separate targets and routinely differ, and the agent compares
@@ -92,7 +110,7 @@ func (h *Handlers) AgentHeartbeat(_ context.Context, in *AgentHeartbeatInput) (*
 	// Tell the agent where ITS platform's binary is, using the OS/arch it just
 	// reported. The agent needs no knowledge of the primary's layout, and a
 	// mismatched build can never be handed to the wrong machine.
-	if hb := in.Body.Hello; hb.OS != "" && hb.Arch != "" {
+	if hb.OS != "" && hb.Arch != "" {
 		out.Body.UpdateURL = fmt.Sprintf("/install/corrallm-%s-%s", hb.OS, hb.Arch)
 		// The identity of the binary at that URL, which is what self-update
 		// actually compares. Without it two untagged "dev" builds look
@@ -102,7 +120,7 @@ func (h *Handlers) AgentHeartbeat(_ context.Context, in *AgentHeartbeatInput) (*
 			out.Body.BuildID = h.AgentDist.BuildID(hb.OS, hb.Arch)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func bearer(h string) string {
