@@ -50,6 +50,16 @@ const ModelDoc = graphql(/* GraphQL */ `
           wallMs
           tokPerSec
           footprintMiB
+          traffic {
+            turns
+            tps
+            tfps
+            tgs
+            cachePct
+            thinkingPct
+            thinkingTurns
+            thinkingLevel
+          }
         }
       }
     }
@@ -58,6 +68,7 @@ const ModelDoc = graphql(/* GraphQL */ `
 
 const n = (v: unknown): number => Number(v ?? 0) || 0
 const pct = (v: number) => `${(v * 100).toFixed(0)}%`
+const rate = (v: unknown) => (n(v) > 0 ? n(v).toFixed(0) : '—')
 
 function ModelBenchPage() {
   const { name } = Route.useSearch()
@@ -154,7 +165,11 @@ function ModelBenchPage() {
                     <TableCell align="right">Stages</TableCell>
                     <TableCell align="right">Processed</TableCell>
                     <TableCell align="right">Generated</TableCell>
-                    <TableCell align="right">tok/s</TableCell>
+                    <TableCell align="right" title="Model calls answered in the run">Turns</TableCell>
+                    <TableCell align="right" title="Prompt processing, uncached tokens/s">tps</TableCell>
+                    <TableCell align="right" title="Fused prompt rate, cache hits included, tokens/s; cache share in brackets">tfps (cache)</TableCell>
+                    <TableCell align="right" title="Generation tokens/s">tgs</TableCell>
+                    <TableCell align="right" title="Thinking share of output tokens, and the thinking level asked for">Thinking</TableCell>
                     <TableCell align="right">VRAM MiB</TableCell>
                     <TableCell align="right">Wall</TableCell>
                     <TableCell>Classes</TableCell>
@@ -180,7 +195,17 @@ function ModelBenchPage() {
                       </TableCell>
                       <TableCell align="right">{fmtInt(n(r.tokensProcessed))}</TableCell>
                       <TableCell align="right">{fmtInt(n(r.tokensGenerated))}</TableCell>
-                      <TableCell align="right">{n(r.tokPerSec).toFixed(0)}</TableCell>
+                      <TableCell align="right">{r.traffic ? fmtInt(n(r.traffic.turns)) : '—'}</TableCell>
+                      <TableCell align="right">{r.traffic ? rate(r.traffic.tps) : '—'}</TableCell>
+                      <TableCell align="right">
+                        {r.traffic ? `${rate(r.traffic.tfps)} (${pct(n(r.traffic.cachePct))})` : '—'}
+                      </TableCell>
+                      <TableCell align="right">{r.traffic ? rate(r.traffic.tgs) : '—'}</TableCell>
+                      <TableCell align="right">
+                        {!r.traffic
+                          ? '—'
+                          : `${n(r.traffic.thinkingTurns) > 0 ? pct(n(r.traffic.thinkingPct)) : 'n/a'}, ${r.traffic.thinkingLevel}`}
+                      </TableCell>
                       <TableCell align="right">{fmtInt(n(r.footprintMiB))}</TableCell>
                       <TableCell align="right">{fmtDuration(n(r.wallMs))}</TableCell>
                       <TableCell>

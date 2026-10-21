@@ -825,6 +825,9 @@ type BenchResultView struct {
 	WallMS          int64   `json:"wallMs"`
 	TokPerSec       float64 `json:"tokPerSec"`
 	FootprintMiB    int     `json:"footprintMiB"`
+	// Traffic is the proxy's own record of the run; nil when it has none (a
+	// run made by hand under another key, or rows since pruned).
+	Traffic *BenchTrafficView `json:"traffic,omitempty"`
 }
 
 // BenchResultsInput optionally scopes to one model.
@@ -876,6 +879,7 @@ func (h *Handlers) BenchResults(ctx context.Context, in *BenchResultsInput) (*Be
 			TokensProcessed: processed, TokensGenerated: r.CompletionTokens,
 			CachedTokens: r.CachedTokens, WallMS: r.WallMS,
 			TokPerSec: r.TokPerSec, FootprintMiB: r.FootprintMiB,
+			Traffic: h.benchTraffic(ctx, r),
 		})
 	}
 	return out, nil

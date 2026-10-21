@@ -1266,6 +1266,7 @@ type corrallm_BenchResultView {
   tokensGenerated: Long!
   """Prompt tokens EXCLUDING cache hits."""
   tokensProcessed: Long!
+  traffic: corrallm_BenchTrafficView
   wallMs: Long!
 }
 
@@ -1396,6 +1397,40 @@ type corrallm_BenchStageView {
   toolCalls: Long!
   turns: Long!
   wallMs: Long!
+}
+
+type corrallm_BenchTrafficView {
+  """Cached ÷ context tokens, 0..1."""
+  cachePct: Float!
+  cachedTokens: Long!
+  """Total prompt tokens sent, cache hits included: the summed context length of every turn."""
+  contextTokens: Long!
+  generatedTokens: Long!
+  """Largest prompt + completion of a single turn."""
+  peakContext: Long!
+  """Prompt tokens actually evaluated (context minus cache hits)."""
+  processedTokens: Long!
+  queuedMs: Long!
+  """Requests not answered 200 (429s, errors)."""
+  refused: Long!
+  """Every request, refused ones included."""
+  requests: Long!
+  """Fused prompt rate: all prompt tokens, cache hits included, per second of prefill."""
+  tfps: Float!
+  """Generation tokens per second."""
+  tgs: Float!
+  """What the requests asked for (reasoning_effort, thinking, enable_thinking), else the launch flags, else 'model default'."""
+  thinkingLevel: String!
+  """Thinking ÷ generated tokens over the measured turns, 0..1."""
+  thinkingPct: Float!
+  """Reasoning tokens, summed over the turns where they were measured."""
+  thinkingTokens: Long!
+  """Turns with a thinking count; fewer than turns means the sum is partial."""
+  thinkingTurns: Long!
+  """Prompt processing: uncached prompt tokens per second of prefill."""
+  tps: Float!
+  """Model calls answered 200."""
+  turns: Long!
 }
 
 type corrallm_BenchTranscriptEntry {

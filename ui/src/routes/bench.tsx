@@ -57,6 +57,16 @@ const BenchDoc = graphql(/* GraphQL */ `
           wallMs
           tokPerSec
           footprintMiB
+          traffic {
+            turns
+            tps
+            tfps
+            tgs
+            cachePct
+            thinkingPct
+            thinkingTurns
+            thinkingLevel
+          }
         }
       }
       benchPlan {
@@ -360,6 +370,8 @@ function BenchPage() {
   // per-capability scatter can plot quality against what it costs to keep
   // resident without the matrix endpoint having to duplicate the field.
   const vramByModel = new Map(results.map((r) => [r.model, n(r.footprintMiB)]))
+  const trafficByModel = new Map(results.map((r) => [r.model, r.traffic]))
+  const rate = (v: unknown) => (n(v) > 0 ? `${n(v).toFixed(0)}` : '—')
   const nothingSelected = request.models.length === 0
 
   return (
@@ -751,6 +763,11 @@ function BenchPage() {
                           <TableCell align="right">Stages</TableCell>
                           <TableCell align="right">Probes</TableCell>
                           <TableCell align="right">VRAM MiB</TableCell>
+                          <TableCell align="right" title="Model calls answered in the run">Turns</TableCell>
+                          <TableCell align="right" title="Prompt processing, uncached tokens/s">tps</TableCell>
+                          <TableCell align="right" title="Fused prompt rate, cache hits included, tokens/s; cache share in brackets">tfps (cache)</TableCell>
+                          <TableCell align="right" title="Generation tokens/s">tgs</TableCell>
+                          <TableCell align="right" title="Thinking share of output tokens, and the thinking level asked for">Thinking</TableCell>
                           <TableCell>Run</TableCell>
                         </TableRow>
                       </TableHead>
@@ -773,6 +790,24 @@ function BenchPage() {
                             <TableCell align="right">
                               {fmtInt(vramByModel.get(m.model) ?? 0)}
                             </TableCell>
+                            {(() => {
+                              const t = trafficByModel.get(m.model)
+                              return (
+                                <>
+                                  <TableCell align="right">{t ? fmtInt(n(t.turns)) : '—'}</TableCell>
+                                  <TableCell align="right">{t ? rate(t.tps) : '—'}</TableCell>
+                                  <TableCell align="right">
+                                    {t ? `${rate(t.tfps)} (${(n(t.cachePct) * 100).toFixed(0)}%)` : '—'}
+                                  </TableCell>
+                                  <TableCell align="right">{t ? rate(t.tgs) : '—'}</TableCell>
+                                  <TableCell align="right">
+                                    {!t
+                                      ? '—'
+                                      : `${n(t.thinkingTurns) > 0 ? `${(n(t.thinkingPct) * 100).toFixed(0)}%` : 'n/a'}, ${t.thinkingLevel}`}
+                                  </TableCell>
+                                </>
+                              )
+                            })()}
                             <TableCell>
                               <Typography variant="caption">{m.runId}</Typography>
                             </TableCell>
