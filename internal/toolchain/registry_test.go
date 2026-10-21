@@ -24,11 +24,15 @@ type fakeRunner struct {
 
 func (f *fakeRunner) Where() string   { return "fake" }
 func (f *fakeRunner) SetForce(v bool) { f.force = v }
-func (f *fakeRunner) Run(_ context.Context, spec Spec, v Verb) (*Raw, error) {
+func (f *fakeRunner) Run(ctx context.Context, spec Spec, v Verb) (*Raw, error) {
 	f.calls = append(f.calls, v)
 	f.specs = append(f.specs, spec)
 	if v == VerbBuild && f.block != nil {
-		<-f.block
+		select {
+		case <-f.block:
+		case <-ctx.Done():
+			return nil, ctx.Err() // what a real runner does: kill the build
+		}
 	}
 	a, ok := f.answers[v]
 	if !ok {
