@@ -126,6 +126,11 @@ make install >/dev/null
 say "rebuilding ./bin/corrallm (the CLI, so it cannot lag the daemon)"
 make build >/dev/null
 
+# The daemon runs benches with local/bin/llm-bench (--bench-bin), which nothing
+# rebuilt: on 2026-10-21 it was three weeks behind the bench code it runs.
+say "rebuilding local/bin/llm-bench (what the daemon runs benches with)"
+"$root/bin/llm-bench" >/dev/null
+
 # Handoff needs the unit `corrallm service install` writes now (Type=notify,
 # NotifyAccess=all): under an older Type=simple unit systemd would read the old
 # process's exit as the service stopping and kill the new one.
@@ -176,6 +181,20 @@ if ! curl -fsS -m 2 "$BASE/health" >/dev/null 2>&1; then
     echo "!! $SERVICE did not answer within 3 minutes; UI NOT published (old one still serving)" >&2
     echo "   journalctl --user -u $SERVICE -n 50" >&2
     exit 1
+fi
+
+# A same-machine agent (corrallm-agent unit) runs its own COPY of the binary:
+# its state lives beside the executable. After the primary, never before — an
+# older primary refuses a newer agent's heartbeat fields. Restarting the agent
+# leaves its model backends running; the new agent adopts them.
+agent_exe=$(systemctl --user show "$SERVICE-agent" -p ExecStart --value 2>/dev/null | sed -n 's/.*path=\([^ ;]*\).*/\1/p')
+if [ -n "$agent_exe" ] && [ -f "$agent_exe" ]; then
+    gobin=$(go env GOBIN); [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
+    if ! cmp -s "$gobin/corrallm" "$agent_exe"; then
+        say "updating the agent binary ($agent_exe) and restarting $SERVICE-agent (backends keep running)"
+        cp "$gobin/corrallm" "$agent_exe.new" && mv "$agent_exe.new" "$agent_exe"
+        systemctl --user restart "$SERVICE-agent"
+    fi
 fi
 
 if $SKIP_UI; then
