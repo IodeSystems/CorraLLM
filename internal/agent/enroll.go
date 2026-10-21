@@ -147,8 +147,17 @@ func helloFor(version string) Hello {
 // agent cannot know that — so it offers all of them and lets the primary probe.
 func localEndpoints(addr string) []string {
 	port := "6503"
-	if _, p, err := net.SplitHostPort(addr); err == nil && p != "" {
+	host, p, err := net.SplitHostPort(addr)
+	if err == nil && p != "" {
 		port = p
+	}
+	// Bound to ONE address: that is the only place this agent can be reached.
+	// Listing every interface here sent the primary to addresses nothing
+	// listens on — an agent bound to 127.0.0.1 (one beside its primary) had
+	// its working loopback endpoint replaced by LAN addresses on its first
+	// beat, and every spawn after that failed with "connection refused".
+	if ip := net.ParseIP(host); ip != nil && !ip.IsUnspecified() {
+		return []string{"http://" + net.JoinHostPort(ip.String(), port)}
 	}
 	var out []string
 	ifaces, err := net.Interfaces()
