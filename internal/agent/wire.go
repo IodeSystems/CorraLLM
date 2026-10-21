@@ -115,6 +115,14 @@ type Capacity struct {
 	// Absent from an agent older than this field; the primary then keeps the
 	// single-GPU arithmetic it always had.
 	GPUs []GPUDevice `json:"gpus,omitempty"`
+	// MeasuredAt is when the agent STARTED this probe, in unix milliseconds on
+	// the agent's clock. Readings reach the primary by two routes — the
+	// heartbeat and a direct fetch after a backend exits (RemoteHost) — and a
+	// heartbeat probed before the exit can land after the fresh fetch. Without
+	// an order, that stale reading puts the exited backend's memory back as
+	// foreign use and the next admit fails for up to a heartbeat interval.
+	// Zero from an agent older than this field: always accepted.
+	MeasuredAt int64 `json:"measuredAt,omitempty"`
 }
 
 // DeviceStats returns GPUs in the form gpu.Select matches against, so a

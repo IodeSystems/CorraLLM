@@ -31,7 +31,62 @@ type RemoteHost struct {
 
 	mu       sync.Mutex
 	endpoint string // the one that last answered; empty until probed
+	// onCapacity receives a fresh reading of the agent's machine taken after a
+	// backend's group is gone (SetCapacitySink). Guarded by mu.
+	onCapacity func(Capacity)
 }
+
+// SetCapacitySink makes every handle of this host, on seeing its backend's
+// group gone, fetch a fresh capacity reading and pass it to f BEFORE the exit
+// is published (Alive false, Done closed).
+//
+// The primary counts agent memory that no live backend of its own accounts
+// for as foreign, from the agent's last reading. That reading is up to a
+// heartbeat interval old, so right after a stop it still holds the exited
+// backend: a reload admitted against it fails with "no capacity" although the
+// card is empty (box1 2026-10-21 01:46:04, a build-benchmark trial). With the
+// sink, "the stop returned" also means "the ledger has seen the memory go".
+func (r *RemoteHost) SetCapacitySink(f func(Capacity)) {
+	r.mu.Lock()
+	r.onCapacity = f
+	r.mu.Unlock()
+}
+
+// Capacity fetches the agent's measurement of its machine now.
+func (r *RemoteHost) Capacity(ctx context.Context) (Capacity, error) {
+	endpoint, err := r.pick(ctx)
+	if err != nil {
+		return Capacity{}, err
+	}
+	var c Capacity
+	err = r.call(ctx, http.MethodGet, endpoint+"/agent/v1/capacity", nil, &c)
+	return c, err
+}
+
+// refreshCapacity hands a post-exit reading to the sink, if there is one.
+// Bounded and best-effort: an unreachable agent costs the freshness (the next
+// heartbeat brings it), never the exit.
+func (r *RemoteHost) refreshCapacity() {
+	r.mu.Lock()
+	sink := r.onCapacity
+	r.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), capacityRefreshTimeout)
+	defer cancel()
+	c, err := r.Capacity(ctx)
+	if err != nil {
+		slog.Warn("agent capacity refresh after a backend exit failed; the next heartbeat corrects it",
+			"server", r.server, "err", err)
+		return
+	}
+	sink(c)
+}
+
+// capacityRefreshTimeout bounds the post-exit capacity fetch. A probe is one
+// nvidia-smi run on the agent: seconds, not tens of them.
+const capacityRefreshTimeout = 10 * time.Second
 
 // NewRemoteHost binds a server name to an agent reachable at any of endpoints.
 func NewRemoteHost(server string, endpoints []string, token string) *RemoteHost {
@@ -241,7 +296,25 @@ func (h *remoteHandle) watch() {
 			// the memory — the exact over-commitment that makes every later
 			// spawn OOM. Keep the last known state and try again.
 			slog.Debug("agent poll failed", "id", h.id, "err", err)
+		case st.Exited && st.Alive:
+			// The leader was reaped but something in its GROUP still runs —
+			// the process that holds the memory, when the leader was a shell.
+			// Done closes (it reports the leader, as a local handle's does);
+			// Alive stays true and polling goes on until the group is gone.
+			h.mu.Lock()
+			if st.Err != "" {
+				h.err = fmt.Errorf("%s", st.Err)
+			}
+			if !h.finished {
+				h.finished = true
+				close(h.done)
+			}
+			h.mu.Unlock()
 		case st.Exited:
+			// Gone. Refresh the capacity reading BEFORE publishing that, so a
+			// caller woken by the exit admits against a reading that no longer
+			// shows this backend (SetCapacitySink).
+			h.host.refreshCapacity()
 			h.mu.Lock()
 			h.alive = false
 			if st.Err != "" {
@@ -255,8 +328,11 @@ func (h *remoteHandle) watch() {
 			h.drainLogs() // one last pass so the tail is not lost
 			return
 		default:
+			// Not exited yet: alive. A group that is empty before its leader
+			// is reaped is a moment's gap; the next poll reports Exited and
+			// goes through the refresh above before anyone is told.
 			h.mu.Lock()
-			h.alive = st.Alive
+			h.alive = true
 			h.memMiB = st.MemoryMiB
 			h.memByDev = st.MemoryByDevice
 			h.mu.Unlock()

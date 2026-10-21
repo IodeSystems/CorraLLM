@@ -139,6 +139,12 @@ type Process struct {
 	evictedFor []string
 	requester  string
 
+	// victimsGone are the teardowns of the backends evicted to make room for
+	// this one (Manager.stopping channels). The spawn waits for them: the
+	// ledger freed their reservation at eviction, but the memory is free only
+	// once their groups are gone. Set before load runs; read-only after.
+	victimsGone []chan struct{}
+
 	// key is this process's identity in Manager.procs. For an ordinary model it
 	// is the served name; for every model of one extension it is the SAME
 	// "extension:<name>", which is what makes them share a process and therefore
@@ -304,7 +310,19 @@ func (m *Manager) hostFor(server string) host.Host {
 	var h host.Host = host.NewLocal(server)
 	if cfg := m.cfg.Load(); cfg != nil {
 		if srv, ok := cfg.Servers[server]; ok && srv.Agent != nil {
-			h = agent.NewRemoteHost(server, srv.Agent.Endpoints, srv.Agent.ExpandedToken())
+			rh := agent.NewRemoteHost(server, srv.Agent.Endpoints, srv.Agent.ExpandedToken())
+			// A backend's exit is published only after the agent's memory
+			// reading has been refreshed, so whoever waited on the stop admits
+			// against a ledger that no longer charges the exited backend as
+			// foreign use. m.live is read at call time: SetLiveness may come
+			// after the first hostFor.
+			rh.SetCapacitySink(func(c agent.Capacity) {
+				m.mu.Lock()
+				live := m.live
+				m.mu.Unlock()
+				live.RecordCapacity(server, c)
+			})
+			h = rh
 		}
 	}
 	if m.hosts == nil {
@@ -535,13 +553,14 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		// Residency applies to spawned models bound to a server pool; pure
 		// proxies (remote/paid) consume no local pools.
 		var evicted []string
+		var victimsGone []chan struct{}
 		if mdl.Server != "" && len(usage) > 0 {
-			ev, err := m.makeRoomLocked(mdl.Server, usage)
+			ev, gone, err := m.makeRoomLocked(mdl.Server, usage)
 			if err != nil {
 				m.mu.Unlock()
 				return nil, nil, false, err
 			}
-			evicted = ev
+			evicted, victimsGone = ev, gone
 			m.reserveLocked(mdl.Server, usage)
 		}
 		st := mdl.Sticky
@@ -570,6 +589,8 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 			ready:      make(chan struct{}),
 			evictedFor: evicted,
 			requester:  requesterFrom(ctx),
+
+			victimsGone: victimsGone,
 		}
 		m.procs[key] = p
 		m.mu.Unlock()
@@ -758,6 +779,14 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 			p.mu.Lock()
 			p.tunedSlots = tunedSlots
 			p.mu.Unlock()
+		}
+
+		// Spawn only once what was evicted for this is gone. Its reservation
+		// was freed at eviction, but its memory is free only now; starting
+		// alongside a backend still in CUDA teardown is an OOM. Each channel
+		// closes when its reaper finishes, which is bounded by the grace.
+		for _, ch := range p.victimsGone {
+			<-ch
 		}
 
 		// Tee output to our stdout AND the per-backend ring buffer (for the logs
@@ -1869,9 +1898,12 @@ func (m *Manager) onProcExit(name string, p *Process) {
 // reloading" is half a story until you know what keeps pushing it out, and that
 // was the half the 2026-09-05 slowdown had to be reconstructed from a database
 // session because nothing kept it.
-func (m *Manager) makeRoomLocked(server string, usage map[string]int64) ([]string, error) {
+//
+// gone holds one channel per evicted backend that is still stopping; each
+// closes when that group has exited. The spawn waits for all of them.
+func (m *Manager) makeRoomLocked(server string, usage map[string]int64) (names []string, gone []chan struct{}, err error) {
 	if m.fitsLocked(server, usage, nil) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	// Candidate victims on this server: idle (refs==0 AND not used within the
 	// activeUse window — between-turn gaps of an agent session don't count as
@@ -1900,13 +1932,16 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64) ([]strin
 			for _, e := range freed {
 				m.evictLocked(e)
 				names = append(names, e.Name)
+				if ch, ok := m.stopping[e.key]; ok {
+					gone = append(gone, ch)
+				}
 			}
 			sort.Strings(names) // stable, so the recorded reason reads the same twice
 			slog.Info("evicted for capacity", "server", server, "count", len(freed), "evicted", names)
-			return names, nil
+			return names, gone, nil
 		}
 	}
-	return nil, m.capacityErrorLocked(server, usage, now)
+	return nil, nil, m.capacityErrorLocked(server, usage, now)
 }
 
 // capacityErrorLocked classifies a failed makeRoom into permanent vs transient.
@@ -2213,31 +2248,54 @@ const evictGrace = 15 * time.Second
 // the `sh -c` wrapper, whose exit is what cmd.Wait() reports as "backend
 // exited", while the llama-server grandchild is what owns the GPU memory.
 func (m *Manager) reapGroup(name string, h host.Handle) {
-	deadline := time.Now().Add(evictGrace)
-	for time.Now().Before(deadline) {
-		if !h.Alive() {
-			return // clean exit
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	if !h.Alive() {
-		return
+	m.reapGroupWithin(name, h, evictGrace)
+}
+
+// reapGroupWithin is reapGroup with the grace given. Reports whether SIGKILL
+// was needed.
+//
+// It is the ONE wait every stop goes through (eviction, unload, make-room,
+// handoff release, trial teardown), and it is the same for both kinds of host:
+// Alive is the group locally, and on an agent it turns false only once the
+// agent has seen the group gone AND a fresh memory reading has been taken
+// (agent.RemoteHost.SetCapacitySink). So a caller that waited on this admits
+// against memory that is really free.
+func (m *Manager) reapGroupWithin(name string, h host.Handle, grace time.Duration) (killed bool) {
+	if !waitGone(h, grace) {
+		return false // clean exit
 	}
 	slog.Warn("backend ignored SIGTERM; sending SIGKILL",
-		"name", name, "id", h.ID(), "grace", evictGrace)
+		"name", name, "id", h.ID(), "grace", grace)
 	if err := h.Signal(host.SigKill); err != nil {
 		slog.Error("SIGKILL failed — process group may still hold VRAM",
 			"name", name, "id", h.ID(), "err", err)
-		return
+		return true
 	}
 	// Confirm rather than assume: an unkillable process (uninterruptible driver
 	// wait) leaves VRAM stranded and corrallm over-committed, and an operator
-	// needs to know that from the log rather than from OOMing spawns.
-	time.Sleep(2 * time.Second)
-	if h.Alive() {
+	// needs to know that from the log rather than from OOMing spawns. Polled:
+	// an agent reports the exit a poll interval (and a capacity read) late.
+	if waitGone(h, killConfirm) {
 		slog.Error("backend SURVIVED SIGKILL — VRAM is stranded and this server is now over-committed",
 			"name", name, "id", h.ID())
 	}
+	return true
+}
+
+// killConfirm bounds the wait for a SIGKILLed group to be seen gone.
+const killConfirm = 5 * time.Second
+
+// waitGone polls until h's group is gone or d passes. Reports true when it is
+// still alive at the end.
+func waitGone(h host.Handle, d time.Duration) (alive bool) {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if !h.Alive() {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return h.Alive()
 }
 
 // spawnerFor reports which OTHER model in the config spawns a process on this

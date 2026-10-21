@@ -67,7 +67,11 @@ func (l *Liveness) RecordCapacity(server string, c Capacity) {
 	if l.cap == nil {
 		l.cap = map[string]Capacity{}
 	}
-	l.cap[server] = c
+	// An OLDER reading never replaces a newer one: a heartbeat probed before a
+	// backend exited can arrive after the post-exit fetch (Capacity.MeasuredAt).
+	if prev, ok := l.cap[server]; !ok || c.MeasuredAt == 0 || c.MeasuredAt >= prev.MeasuredAt {
+		l.cap[server] = c
+	}
 	l.mu.Unlock()
 }
 

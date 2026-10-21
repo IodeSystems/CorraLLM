@@ -106,7 +106,7 @@ func sanitiseHostname(hn string) string {
 
 // Probe measures this machine, reporting errors rather than zeros.
 func Probe() Capacity {
-	var c Capacity
+	c := Capacity{MeasuredAt: time.Now().UnixMilli()}
 	const mib = 1024 * 1024
 	// One read of every card, the same probe a local server uses. GPU stays
 	// the first card (what gpu.Probe reports) for primaries that only know
