@@ -1155,7 +1155,13 @@ func runOne(ctx context.Context, opts Options, model string, tset Toolset, tsk *
 		// could not reach an observability endpoint is worse than a slightly
 		// pessimistic one.
 		if opts.overhead != nil {
-			if d, err := opts.overhead.Between(ctx, model, start, time.Now()); err != nil {
+			// Not ctx: that is the combo context, and the stall watchdog
+			// cancels it, so on exactly the stages that waited longest this
+			// query failed with "context canceled" and the wait was recorded
+			// as execution (live run 20261020-223350: all 12 aborted stages
+			// had queuedMs 0, all 79 others had queuedMs > 0).
+			// The client's own timeout still bounds it.
+			if d, err := opts.overhead.Between(context.WithoutCancel(ctx), model, start, time.Now()); err != nil {
 				log.Printf("llm-bench: overhead unavailable for %s/%s (timings include corrallm queueing): %v", model, tsk.Name, err)
 			} else {
 				queued += d
