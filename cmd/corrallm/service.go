@@ -53,6 +53,7 @@ func newServiceInstallCmd() *cobra.Command {
 		enable  bool
 		start   bool
 		envs    []string
+		asAgent bool
 	)
 	cmd := &cobra.Command{
 		Use:   "install [-- <serve flags>...]",
@@ -60,8 +61,14 @@ func newServiceInstallCmd() *cobra.Command {
 		Long: "Write the systemd user unit.\n\n" +
 			"Arguments after `--` are passed through to `corrallm serve` verbatim, so the\n" +
 			"unit carries exactly the flags you would have typed:\n\n" +
-			"  corrallm service install --enable -- --addr 0.0.0.0:8111 --web-root /srv/ui\n",
+			"  corrallm service install --enable -- --addr 0.0.0.0:8111 --web-root /srv/ui\n\n" +
+			"With --agent the unit runs `corrallm agent` instead (args go to `agent`), and\n" +
+			"stopping it leaves the agent's model backends running for the next agent:\n\n" +
+			"  corrallm service install --agent --enable -- --config /path/agent.yml\n",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if asAgent && !cmd.Flags().Changed("name") {
+				name = service.DefaultAgentName
+			}
 			if execBin == "" {
 				p, err := os.Executable()
 				if err != nil {
@@ -83,9 +90,17 @@ func newServiceInstallCmd() *cobra.Command {
 			}
 
 			// Pick the config out of the passthrough args so the unit can
-			// validate before it starts, without asking for it twice.
-			if cfgPath == "" {
+			// validate before it starts, without asking for it twice. Not for
+			// an agent: `validate` checks a PRIMARY config.
+			if cfgPath == "" && !asAgent {
 				cfgPath = flagValue(args, "--config")
+			}
+			if asAgent && workDir == "" {
+				if c := flagValue(args, "--config"); c != "" {
+					if abs, err := filepath.Abs(c); err == nil {
+						workDir = filepath.Dir(abs)
+					}
+				}
 			}
 			if cfgPath != "" {
 				if abs, err := filepath.Abs(cfgPath); err == nil {
@@ -101,11 +116,11 @@ func newServiceInstallCmd() *cobra.Command {
 			// that into a crash loop rather than a visible failure — which is
 			// exactly how this went out the first time. Refuse it here, where
 			// the fix is one line away, instead of at 2am in a journal.
-			if v := flagValue(args, "--addr"); v != "" {
+			if v := flagValue(args, "--addr"); v != "" && !asAgent {
 				return fmt.Errorf("`serve` has no --addr flag; it reads the listen address from ADDR.\n"+
 					"  use: --env ADDR=%s", v)
 			}
-			u := service.Unit{Name: name, Exec: execBin, Args: args, ConfigPath: cfgPath, WorkingDir: workDir, Env: envs}
+			u := service.Unit{Name: name, Exec: execBin, Args: args, ConfigPath: cfgPath, WorkingDir: workDir, Env: envs, Agent: asAgent}
 			dir, err := service.UserUnitDir()
 			if err != nil {
 				return err
@@ -151,6 +166,7 @@ func newServiceInstallCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&envs, "env", nil, "environment for the unit as KEY=VALUE (repeatable); the listen address is ADDR=host:port")
 	cmd.Flags().BoolVar(&enable, "enable", false, "also enable the unit so it starts at login")
 	cmd.Flags().BoolVar(&start, "start", false, "also start the unit now")
+	cmd.Flags().BoolVar(&asAgent, "agent", false, "install a unit for `corrallm agent` (default name "+service.DefaultAgentName+"; backends survive a stop)")
 	return cmd
 }
 

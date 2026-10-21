@@ -148,3 +148,25 @@ func TestRenderEmitsEnvironment(t *testing.T) {
 		t.Errorf("Environment landed outside [Service]:\n%s", got)
 	}
 }
+
+// The agent unit must stop the AGENT and nothing else: its backends are meant
+// to outlive it and be adopted by the next agent. control-group (the default)
+// and mixed would both kill every model in the unit's cgroup on a restart.
+func TestRenderAgentLeavesBackendsRunning(t *testing.T) {
+	u := Unit{Agent: true, Exec: "/usr/bin/corrallm", Args: []string{"--config", "/home/x/agent/agent.yml"}}
+	got := u.Render()
+	for _, want := range []string{
+		"ExecStart=/usr/bin/corrallm agent --config /home/x/agent/agent.yml",
+		"KillMode=process",
+		"OOMPolicy=continue",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("agent unit is missing %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"KillMode=mixed", "ExecStartPre=", "ExecReload=", " serve"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("agent unit carries %q:\n%s", bad, got)
+		}
+	}
+}
