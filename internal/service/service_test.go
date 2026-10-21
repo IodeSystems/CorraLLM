@@ -27,6 +27,10 @@ func TestRenderCarriesTheLaunchersGuarantees(t *testing.T) {
 		"TimeoutStopSec=90",
 		"Restart=on-failure",
 		"WantedBy=default.target",
+		// A handoff moves the main pid to the new process via sd_notify;
+		// without these systemd kills the new process when the old exits.
+		"Type=notify",
+		"NotifyAccess=all",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("unit is missing %q:\n%s", want, got)

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Deploy corrallm: build, restart the service, then publish the UI.
+# Deploy corrallm: build, hand the service over to the new binary, then publish
+# the UI.
 #
 # ORDER IS THE WHOLE POINT. ui/dist is the LIVE web root — the running daemon
 # serves that directory directly via --web-root, so building the UI is a deploy
@@ -8,7 +9,16 @@
 # `Cannot query field "X"`, and the dashboard renders its error state instead of
 # loading. A new server with an old UI is harmless; the reverse is an outage.
 #
-# So: binary, restart, verify, THEN the UI.
+# So: binary, handoff (or restart), verify, THEN the UI.
+#
+# HANDOFF, NOT RESTART, when the unit allows it. `corrallm service upgrade`
+# starts the new binary beside the running one with the listening socket; the
+# new one takes every connection once it is ready and the old one finishes its
+# in-flight requests and exits. No connection is refused and no request is
+# cut. Local (non-agent) models are reloaded by the new process — the old one's
+# children cannot be adopted — and requests for them wait for that load. If the
+# handoff fails (the new binary does not start, or the unit predates it), the
+# old process is still serving and this falls back to a restart.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,12 +50,14 @@ BASE="${CORRALLM_BASE:-http://127.0.0.1:8111}"
 WITH_AGENTS=false
 SKIP_UI=false
 YES=false
+FORCE_RESTART=false
 
 for arg in "$@"; do
     case "$arg" in
         --agents) WITH_AGENTS=true ;;
         --no-ui)  SKIP_UI=true ;;
         -y|--yes) YES=true ;;
+        --restart) FORCE_RESTART=true ;;
         -h|--help)
             cat <<EOF
 Usage: $0 [--agents] [--no-ui] [-y]
@@ -54,10 +66,14 @@ Usage: $0 [--agents] [--no-ui] [-y]
              Attached machines self-update to whatever is there, so this
              changes every agent in the fleet, not just this box.
   --no-ui    Server only; leave ui/dist as it is.
-  -y         Do not prompt before restarting.
+  -y         Do not prompt before switching over.
+  --restart  Restart instead of handing over (evicts every model, drops
+             in-flight requests).
 
-A restart EVICTS every resident model and drops in-flight requests, so it is
-asked about unless -y. Env: CORRALLM_SERVICE, CORRALLM_BASE.
+A handoff keeps every connection and in-flight request; local models are
+reloaded by the new process. If it fails, this falls back to a restart, which
+EVICTS every resident model and drops in-flight requests — asked about unless
+-y. Env: CORRALLM_SERVICE, CORRALLM_BASE.
 EOF
             exit 0 ;;
         *) echo "Unknown argument: $arg" >&2; exit 2 ;;
@@ -83,7 +99,8 @@ if ! $YES; then
         inflight=$(curl -fsS -m 5 -H "Authorization: Bearer $tok" "$BASE/api/v1/active" 2>/dev/null \
             | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("requests",[])))' 2>/dev/null || echo "?")
     fi
-    printf '\nRestarting %s evicts every resident model and drops in-flight requests.\n' "$SERVICE"
+    printf '\nSwitching %s over. A handoff keeps in-flight requests and reloads local models;\n' "$SERVICE"
+    printf 'if it fails, the fallback restart evicts every resident model and drops them.\n'
     printf 'In flight right now: %s\n' "$inflight"
     read -r -p "Continue? [y/N] " reply
     [[ "$reply" =~ ^[Yy]$ ]] || { echo "aborted"; exit 1; }
@@ -109,8 +126,39 @@ make install >/dev/null
 say "rebuilding ./bin/corrallm (the CLI, so it cannot lag the daemon)"
 make build >/dev/null
 
-say "restarting $SERVICE"
-systemctl --user restart "$SERVICE"
+# Handoff needs the unit `corrallm service install` writes now (Type=notify,
+# NotifyAccess=all): under an older Type=simple unit systemd would read the old
+# process's exit as the service stopping and kill the new one.
+unit_type=$(systemctl --user show "$SERVICE" -p Type --value 2>/dev/null || true)
+old_pid=$(systemctl --user show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)
+restart=false
+if $FORCE_RESTART; then
+    restart=true
+elif [ "$unit_type" != "notify" ]; then
+    echo "!! $SERVICE is Type=${unit_type:-?}, not notify: handoff unavailable (reinstall the unit: corrallm service install ...)" >&2
+    restart=true
+elif [ "${old_pid:-0}" = "0" ]; then
+    echo "   $SERVICE is not running; starting it" >&2
+    restart=true
+else
+    say "handing $SERVICE over to the new binary (pid $old_pid drains its requests, then exits)"
+    gobin=$(go env GOBIN); [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
+    rc=0
+    "$gobin/corrallm" service upgrade --name "$SERVICE" || rc=$?
+    if [ "$rc" = 3 ]; then
+        # The NEW binary did not start. A restart would replace a working
+        # daemon with that binary, so stop here: the old one is still serving.
+        echo "!! the new binary failed to start; $SERVICE is still serving the old one. NOT restarting, UI NOT published." >&2
+        exit 1
+    elif [ "$rc" != 0 ]; then
+        echo "!! handoff unavailable (the old process is still serving); falling back to a restart" >&2
+        restart=true
+    fi
+fi
+if $restart; then
+    say "restarting $SERVICE"
+    systemctl --user restart "$SERVICE"
+fi
 
 # Generous, because a restart PRELOADS persistent models before it serves — a
 # 30s window reported a healthy daemon as dead while it was loading 30 GB of
