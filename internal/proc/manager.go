@@ -2301,6 +2301,11 @@ func (m *Manager) Preload(ctx context.Context) {
 //
 // Local backends are this process's children and keep the old behaviour:
 // nothing would ever adopt them.
+//
+// Decided by the HANDLE, not by the server's config. A server that gained an
+// agent binding by a config reload still has local children from before the
+// switch; reading config would leave those running with nothing that will
+// ever adopt or stop them.
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2309,7 +2314,7 @@ func (m *Manager) Shutdown() {
 		p.mu.Lock()
 		h := p.handle
 		p.mu.Unlock()
-		if h != nil && m.agentBacked(p.server) {
+		if _, onAgent := h.(interface{ AgentID() string }); onAgent {
 			slog.Info("leaving agent-hosted backend running for the next primary to adopt",
 				"name", name, "server", p.server, "id", h.ID())
 			continue

@@ -304,8 +304,15 @@ func (h *recHandle) signals() int {
 	return len(h.sig)
 }
 
+// agentRecHandle is a recHandle that, like a remote handle, lives on an agent.
+type agentRecHandle struct{ recHandle }
+
+func (h *agentRecHandle) AgentID() string { return "b1-x" }
+
 // A primary shutdown leaves agent-hosted backends running for the next
-// primary to adopt, and still stops its own local children.
+// primary to adopt, and still stops its own local children — including a
+// local child on a server that has since been bound to an agent, which no
+// agent knows about.
 func TestShutdown_LeavesAgentBackendsStopsLocalOnes(t *testing.T) {
 	cfg, err := config.LoadBytesForTest([]byte(`
 servers:
@@ -323,10 +330,12 @@ models:
 		t.Fatal(err)
 	}
 	m := NewManager(cfg)
-	lh, rh := &recHandle{}, &recHandle{}
+	lh, rh, stale := &recHandle{}, &agentRecHandle{}, &recHandle{}
 	m.mu.Lock()
 	m.procs["local"] = &Process{Name: "local", key: "local", server: "box1", handle: lh, state: StateReady}
 	m.procs["remote"] = &Process{Name: "remote", key: "remote", server: "mac1", handle: rh, state: StateReady}
+	// Spawned locally before mac1 was bound to its agent.
+	m.procs["stale"] = &Process{Name: "stale", key: "stale", server: "mac1", handle: stale, state: StateReady}
 	m.mu.Unlock()
 
 	m.Shutdown()
@@ -335,6 +344,24 @@ models:
 	}
 	if lh.signals() == 0 {
 		t.Error("shutdown did not stop a local backend")
+	}
+	if stale.signals() == 0 {
+		t.Error("shutdown left a LOCAL child running because its server is now agent-bound; nothing would ever stop it")
+	}
+}
+
+// A local child on a server that was bound to an agent after it spawned is
+// not the agent's to report. Treating its absence as "vanished" freed its
+// pools while it kept running on this machine.
+func TestReconcile_IgnoresLocalChildrenOfAnAgentBoundServer(t *testing.T) {
+	m, _, _, _ := surviveMgr(t)
+	m.mu.Lock()
+	m.procs["m"] = &Process{Name: "m", key: "m", server: "mac1", handle: &recHandle{},
+		usage: map[string]int64{"system": 1}, state: StateReady}
+	m.reserveLocked("mac1", map[string]int64{"system": 1})
+	m.mu.Unlock()
+	if _, _, v := m.ReconcileAgent(context.Background(), "mac1", nil); v != 0 {
+		t.Errorf("vanished = %d; a local child is not the agent's to report", v)
 	}
 }
 

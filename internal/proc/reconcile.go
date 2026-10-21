@@ -86,6 +86,12 @@ func (m *Manager) ReconcileAgent(ctx context.Context, server string, reported []
 		id := ""
 		if a, ok := h.(interface{ AgentID() string }); ok {
 			id = a.AgentID()
+		} else if h != nil {
+			// A LOCAL child on a server that has since been bound to an
+			// agent. The agent cannot know it, so its absence from the
+			// report says nothing; declaring it vanished would free its
+			// pools while it still runs here.
+			continue
 		}
 		ourIDs[key] = id
 		if !reportedKeys[key] {
