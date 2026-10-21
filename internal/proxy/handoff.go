@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/iodesystems/corrallm/internal/store"
 )
@@ -29,15 +31,60 @@ import (
 // request again.
 const HandoffHeader = "X-Corrallm-Handoff"
 
+// HandoffWaitedHeader is how long, in milliseconds, a forwarded request had
+// already waited in the predecessor before it was handed over, and
+// HandoffTokenHeader the handoff's secret that makes the successor believe it
+// (handoff.Predecessor.Token). Without them the successor's row counted only
+// its own share: a request that queued ~27 s in the old process logged a few
+// hundred ms of dwell.
+const (
+	HandoffWaitedHeader = "X-Corrallm-Handoff-Waited-Ms"
+	HandoffTokenHeader  = "X-Corrallm-Handoff-Token"
+)
+
+// maxHandedWait caps a believed predecessor wait: well past any real drain,
+// so only a corrupt value is cut.
+const maxHandedWait = 24 * time.Hour
+
 // SetSuccessor arms forwarding to the process that took over the listener,
-// at base (http://host:port). Called once, when this process starts draining.
-func (p *Proxy) SetSuccessor(base string) error {
+// at base (http://host:port). token is the handoff's secret, stamped on every
+// forward so the successor can trust what the forward reports. Called once,
+// when this process starts draining.
+func (p *Proxy) SetSuccessor(base, token string) error {
 	u, err := url.Parse(base)
 	if err != nil {
 		return err
 	}
+	p.successorToken.Store(&token)
 	p.successor.Store(u)
 	return nil
+}
+
+// SetPredecessorToken is the successor's side of SetSuccessor: requests that
+// carry token in HandoffTokenHeader were forwarded by the predecessor, and
+// their HandoffWaitedHeader is counted. Empty trusts nothing.
+func (p *Proxy) SetPredecessorToken(token string) {
+	p.predecessorToken.Store(&token)
+}
+
+// handedWait is how long r already waited in the predecessor, when it was
+// forwarded by it; 0 otherwise. The handoff headers are removed either way:
+// they are this hop's, and a backend (or a paid API) has no business seeing
+// the token.
+func (p *Proxy) handedWait(r *http.Request) time.Duration {
+	got, waited := r.Header.Get(HandoffTokenHeader), r.Header.Get(HandoffWaitedHeader)
+	r.Header.Del(HandoffTokenHeader)
+	r.Header.Del(HandoffWaitedHeader)
+	want := p.predecessorToken.Load()
+	if want == nil || *want == "" || got == "" ||
+		subtle.ConstantTimeCompare([]byte(got), []byte(*want)) != 1 {
+		return 0
+	}
+	ms, err := strconv.ParseInt(waited, 10, 64)
+	if err != nil || ms <= 0 {
+		return 0
+	}
+	return min(time.Duration(ms)*time.Millisecond, maxHandedWait)
 }
 
 // draining reports whether requests should be handed to a successor.
@@ -49,7 +96,10 @@ func (p *Proxy) draining() bool { return p.successor.Load() != nil }
 // arrived (a transcode here rewrites it); a nil body streams r.Body through
 // untouched. Reports false when there is no successor or the request is
 // already a forwarded one — the caller then carries on.
-func (p *Proxy) handOver(w http.ResponseWriter, r *http.Request, contentType string, body []byte) bool {
+//
+// waited is how long r has been in this process; the successor adds it to the
+// row's dwell and queued time.
+func (p *Proxy) handOver(w http.ResponseWriter, r *http.Request, contentType string, body []byte, waited time.Duration) bool {
 	succ := p.successor.Load()
 	if succ == nil || r.Header.Get(HandoffHeader) != "" {
 		return false
@@ -64,6 +114,14 @@ func (p *Proxy) handOver(w http.ResponseWriter, r *http.Request, contentType str
 		out.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	}
 	out.Header.Set(HandoffHeader, strconv.Itoa(pid))
+	out.Header.Del(HandoffTokenHeader)
+	out.Header.Del(HandoffWaitedHeader)
+	if tok := p.successorToken.Load(); tok != nil && *tok != "" {
+		out.Header.Set(HandoffTokenHeader, *tok)
+		if ms := waited.Milliseconds(); ms > 0 {
+			out.Header.Set(HandoffWaitedHeader, strconv.FormatInt(ms, 10))
+		}
+	}
 	// The successor stamps its own pid; ours would make the answer look as
 	// if this process served it.
 	w.Header().Del(PidHeader)

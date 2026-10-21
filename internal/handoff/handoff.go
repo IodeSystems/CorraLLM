@@ -20,8 +20,11 @@
 package handoff
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -33,6 +36,12 @@ import (
 const (
 	envFDs    = "CORRALLM_HANDOFF_FDS"
 	envParent = "CORRALLM_HANDOFF_PARENT"
+	// envToken carries a per-handoff secret from predecessor to successor.
+	// The predecessor stamps it on each request it forwards, and only a
+	// request carrying it is trusted for what the forward says about itself
+	// (the time it already waited) — the public port takes the forwards, so
+	// the handoff header alone could be sent by anyone.
+	envToken = "CORRALLM_HANDOFF_TOKEN"
 )
 
 // Status is the predecessor's occupancy, sent whenever it changes.
@@ -65,6 +74,15 @@ type message struct {
 func encode(m message) []byte {
 	b, _ := json.Marshal(m)
 	return append(b, '\n')
+}
+
+// newToken returns a fresh random secret for one handoff (envToken).
+func newToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("handoff: token: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // ErrUnsupported is returned where a handoff cannot work: no descriptor

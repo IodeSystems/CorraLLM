@@ -21,6 +21,7 @@ import (
 // Predecessor is the running process's side of a handoff it started.
 type Predecessor struct {
 	cmd    *exec.Cmd
+	token  string
 	conn   net.Conn
 	exited chan error
 	mu     sync.Mutex
@@ -60,12 +61,17 @@ func Start(exe string, args []string, ln net.Listener, timeout time.Duration) (*
 	// when this process exits, and the successor's next log line would then
 	// die of SIGPIPE (Go exits on EPIPE at fd 1 or 2). A failed start reports
 	// its reason over the control socket instead (ReportStartFailure).
+	token, err := newToken()
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.ExtraFiles = []*os.File{lf, theirs} // fd 3, fd 4
 	cmd.Env = append(withoutHandoffEnv(os.Environ()),
-		envFDs+"=3,4", envParent+"="+strconv.Itoa(os.Getpid()))
+		envFDs+"=3,4", envParent+"="+strconv.Itoa(os.Getpid()), envToken+"="+token)
 	if err := cmd.Start(); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("handoff: start %s: %w", exe, err)
@@ -121,7 +127,7 @@ func Start(exe string, args []string, ln net.Listener, timeout time.Duration) (*
 		return fail(fmt.Errorf("handoff: successor pid %d not ready within %s", cmd.Process.Pid, timeout))
 	}
 	// From here the successor serves; its exit is reaped by the goroutine above.
-	return &Predecessor{cmd: cmd, conn: conn, exited: exited}, nil
+	return &Predecessor{cmd: cmd, token: token, conn: conn, exited: exited}, nil
 }
 
 // Done delivers the successor's exit, should it die while this process is
@@ -130,6 +136,9 @@ func (p *Predecessor) Done() <-chan error { return p.exited }
 
 // PID is the successor's.
 func (p *Predecessor) PID() int { return p.cmd.Process.Pid }
+
+// Token is the secret this handoff shares with the successor (envToken).
+func (p *Predecessor) Token() string { return p.token }
 
 // Send reports this process's occupancy to the successor. Repeats of the last
 // report are not resent.
@@ -153,7 +162,10 @@ func (p *Predecessor) Send(s Status) error {
 type Successor struct {
 	Listener       net.Listener
 	PredecessorPID int
-	conn           net.Conn
+	// Token is the predecessor's secret for this handoff (envToken). Empty
+	// from a predecessor older than it.
+	Token string
+	conn  net.Conn
 }
 
 // inherited is this process's control socket while it starts as a successor,
@@ -193,6 +205,8 @@ func Inherit() (*Successor, error) {
 		return nil, nil
 	}
 	parent, _ := strconv.Atoi(os.Getenv(envParent))
+	token := os.Getenv(envToken)
+	_ = os.Unsetenv(envToken)
 	// Not passed on: a later handoff from this process sets its own, and a
 	// backend it spawns must not think it was handed anything.
 	_ = os.Unsetenv(envFDs)
@@ -214,7 +228,7 @@ func Inherit() (*Successor, error) {
 		return nil, fmt.Errorf("handoff: inherited control socket: %w", err)
 	}
 	inherited = conn
-	return &Successor{Listener: ln, PredecessorPID: parent, conn: conn}, nil
+	return &Successor{Listener: ln, PredecessorPID: parent, Token: token, conn: conn}, nil
 }
 
 // Ready tells the predecessor to stop accepting and drain. Call once this
@@ -250,7 +264,7 @@ func (s *Successor) Watch(onStatus func(Status), gone func()) {
 func withoutHandoffEnv(env []string) []string {
 	out := env[:0:0]
 	for _, e := range env {
-		if strings.HasPrefix(e, envFDs+"=") || strings.HasPrefix(e, envParent+"=") {
+		if strings.HasPrefix(e, envFDs+"=") || strings.HasPrefix(e, envParent+"=") || strings.HasPrefix(e, envToken+"=") {
 			continue
 		}
 		out = append(out, e)
