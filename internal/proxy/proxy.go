@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"sort"
@@ -76,6 +77,11 @@ type Proxy struct {
 	inflightMu  sync.Mutex
 	inflight    map[int64]*inflightEntry
 	inflightSeq int64
+
+	// successor is where a draining process forwards what it will not serve
+	// (handoff.go); nil until it hands over.
+	successor atomic.Pointer[url.URL]
+	handing   atomic.Int64 // requests being forwarded to it now
 
 	// quota is the P16 free-tier budget ledger: it learns each remote backend's
 	// remaining rate-limit budget from the X-Ratelimit-* headers on its responses.
@@ -637,6 +643,10 @@ func writeJSONError(w http.ResponseWriter, status int, kind, msg string) {
 // handleInference resolves the served model from the JSON body's "model" field,
 // ensures its first backend is ready, and reverse-proxies the (buffered) body.
 func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
+	// Handed over: the successor serves everything that arrives from now on.
+	if p.draining() && p.handOver(w, r, "", nil) {
+		return
+	}
 	// Audio routes (P9a/P9b). STT (transcriptions/translations) takes a multipart
 	// upload — raise the body cap for the audio file (parakeet caps it at 25 MiB).
 	// TTS (speech) is JSON-in/binary-out, so it keeps the default cap but still
@@ -679,6 +689,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", msg)
 		return
 	}
+	// As it arrived, for a handoff to forward (handOver): everything below
+	// may rewrite both, and the successor must see the original.
+	arrivedBody, arrivedCT := body, r.Header.Get("Content-Type")
 	// Resolve the served model + stream flag. JSON bodies carry both as top-level
 	// fields; multipart audio carries them as form fields. The buffered body is
 	// replayed to the upstream intact either way.
@@ -1055,6 +1068,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// widen this, never narrow it — see retryableRequest.
 		release, reqCtx, err := p.sched.Admit(agedCtx(ctx, r), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
+		if errors.Is(err, sched.ErrDraining) && p.handOver(w, r, arrivedCT, arrivedBody) {
+			return // queued here when this process handed over
+		}
 		if err == nil {
 			// A slot was taken — lanes load changed. markInflight publishes, so
 			// the two live views (lanes + active requests) refresh together.
@@ -1109,6 +1125,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// upstream stream and frees this slot.
 		loadStart := time.Now()
 		pr, done, loaded, err := p.mgr.EnsureReady(proc.WithRequester(reqCtx, key), name, backend, cand.Sticky, cand.Credential)
+		if errors.Is(err, proc.ErrDraining) {
+			// Admitted here, but the backend is not resident and this process
+			// may not spawn it: the successor loads and serves it.
+			release()
+			p.dropRowMarker(takeMarker())
+			if p.handOver(w, r, arrivedCT, arrivedBody) {
+				return
+			}
+		}
 		// WHERE this was served. A model can be placed on more than one box, so
 		// the served name no longer says which machine, quantisation or context
 		// window handled the request — and a latency figure that could have come
@@ -1685,6 +1710,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 // preempted. corrallm stays a transparent pipe — VAD/chunking live in the backend
 // (e.g. Speaches), device capture in the client.
 func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
+	if p.draining() && p.handOver(w, r, "", nil) {
+		return
+	}
 	served := r.URL.Query().Get("model")
 	if served == "" {
 		http.Error(w, `{"error":{"message":"missing \"model\" query param"}}`, http.StatusBadRequest)
@@ -1749,6 +1777,9 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		admitStart := time.Now()
 		release, reqCtx, err := p.sched.Admit(agedCtx(r.Context(), r), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
 		queuedMS += time.Since(admitStart).Milliseconds()
+		if errors.Is(err, sched.ErrDraining) && p.handOver(w, r, "", nil) {
+			return // the successor takes the session
+		}
 		if err != nil {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
