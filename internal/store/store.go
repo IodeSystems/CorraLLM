@@ -482,6 +482,9 @@ var migrations = []string{
 	// Upstream response headers on an allowlist (provider timing, rate limits,
 	// request ids), one "Name: value" per line. Captured with the payloads.
 	`ALTER TABLE activity_payload ADD COLUMN resp_headers TEXT NOT NULL DEFAULT ''`,
+	// What each provider's own bill says next to what corrallm metered (2026-10-20).
+	providerBillingSchema,
+	providerBillingFetchSchema,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
