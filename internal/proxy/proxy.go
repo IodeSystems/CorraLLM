@@ -1297,7 +1297,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			u.Path, u.RawPath = "/v1/messages", ""
 			upReq.URL = &u
 		}
-		rp.ServeHTTP(dst, upReq)
+		aborted := serveCatchingAbort(rp, dst, upReq)
 		// THE SECOND UPSTREAM CALL (P35 §12.9(e) RULE 2, sttdiarize.go): the
 		// caller asked for speaker labels and this backend serves them from a
 		// separate endpoint whose answer corrallm joins to the transcription
@@ -1404,6 +1404,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(context.Cause(reqCtx), sched.ErrPreempted) {
 			status, errReason = 499, "preempted" // slot reclaimed by a higher-priority group mid-request
+		}
+		if aborted && errReason == "" {
+			errReason = "stream cut: the upstream broke off"
+			if r.Context().Err() != nil {
+				errReason = "stream cut: the caller hung up"
+			}
 		}
 		var retryAfterMS int64
 		if upstreamRefusal != 0 && errReason == "" {
@@ -1595,6 +1601,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			RetryAfterMS:    retryAfterMS,
 			ReasoningTokens: thinking, ReasoningMeasured: thinkingMeasured,
 		})
+		if aborted {
+			// Metered and logged; now abort the connection as ReverseProxy
+			// would have, so a caller still connected sees a broken stream
+			// rather than a clean end to a truncated one.
+			panic(http.ErrAbortHandler)
+		}
 		return
 	}
 
@@ -2445,8 +2457,8 @@ func (p *Proxy) noSuchModel(served string) string {
 	return "unknown model \"" + served + "\""
 }
 
-// handleUpstream proxies /upstream/<model>/<rest> to the backend, stripping the
-// prefix. Untracked: no model resolution from body, no activity log.
+// handleUpstream proxies /upstream/<model>/<rest> to a LOCAL backend, stripping
+// the prefix. Untracked: no model resolution from body, no activity log.
 func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/upstream/")
 	served, tail, _ := strings.Cut(rest, "/")
@@ -2457,6 +2469,15 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	// decision.
 	if !ok || model.Disabled {
 		writeJSONError(w, http.StatusNotFound, "invalid_request_error", p.noSuchModel(served))
+		return
+	}
+	// Not for a remote model. This door skips the credential allowlist, the
+	// spend limits and the activity log, so through it any caller could spend
+	// a paid provider key with nothing recorded. It exists for a local
+	// backend's own endpoints (llama.cpp /tokenize, /props).
+	if isRemote(model) {
+		writeJSONError(w, http.StatusForbidden, "invalid_request_error",
+			"model \""+served+"\" is a remote provider; /upstream/ is only for local backends")
 		return
 	}
 	pr, done, _, err := p.mgr.EnsureReady(r.Context(), served, model, nil, nil)
@@ -3141,6 +3162,28 @@ func filterBySensitive(cands []config.Candidate) []config.Candidate {
 		}
 	}
 	return kept
+}
+
+// serveCatchingAbort runs the reverse proxy and reports whether it aborted.
+//
+// ReverseProxy panics with http.ErrAbortHandler when the response body cannot
+// be copied through — most often because the caller hung up — and net/http
+// swallows that panic without a log line. Left alone it unwinds past every
+// line after ServeHTTP: the usage already read, the cost, the spend ledger
+// and the activity row. An agent client that stops reading at the usage chunk
+// triggered it on most requests to a provider that sends [DONE] late, and the
+// requests were billed by the provider and recorded nowhere here.
+func serveCatchingAbort(rp *httputil.ReverseProxy, w http.ResponseWriter, r *http.Request) (aborted bool) {
+	defer func() {
+		if v := recover(); v != nil {
+			if v != http.ErrAbortHandler {
+				panic(v)
+			}
+			aborted = true
+		}
+	}()
+	rp.ServeHTTP(w, r)
+	return false
 }
 
 func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
