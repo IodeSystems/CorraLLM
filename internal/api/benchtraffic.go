@@ -27,6 +27,8 @@ type BenchTrafficView struct {
 	ThinkingTurns   int     `json:"thinkingTurns" doc:"Turns with a thinking count; fewer than turns means the sum is partial."`
 	ThinkingPct     float64 `json:"thinkingPct" doc:"Thinking ÷ generated tokens over the measured turns, 0..1."`
 	PeakContext     int64   `json:"peakContext" doc:"Largest prompt + completion of a single turn."`
+	Conversations   int     `json:"conversations" doc:"Conversations in the run (a probe stage under one toolset is one)."`
+	FinalContext    int64   `json:"finalContext" doc:"Sum over conversations of the context length at the last turn."`
 	QueuedMS        int64   `json:"queuedMs"`
 
 	TPS  float64 `json:"tps" doc:"Prompt processing: uncached prompt tokens per second of prefill."`
@@ -60,6 +62,7 @@ func (h *Handlers) benchTraffic(ctx context.Context, r store.BenchResult) *Bench
 		ProcessedTokens: max(ru.Prompt-ru.Cached, 0), GeneratedTokens: ru.Generated,
 		ThinkingTokens: ru.Thinking, ThinkingTurns: ru.ThinkingRows,
 		PeakContext: ru.PeakCtx, QueuedMS: ru.QueuedMS,
+		Conversations: ru.Conversations, FinalContext: ru.FinalCtx,
 	}
 	if ru.Prompt > 0 {
 		v.CachePct = float64(ru.Cached) / float64(ru.Prompt)

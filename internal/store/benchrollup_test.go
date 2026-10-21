@@ -39,7 +39,39 @@ func TestBenchRollupSumsOnlyTheRunsBenchTraffic(t *testing.T) {
 	if r.PeakCtx != 3300 {
 		t.Errorf("peak = %d", r.PeakCtx)
 	}
+	if r.Conversations != 0 || r.FinalCtx != 0 {
+		t.Errorf("rows without a conversation counted: %d / %d", r.Conversations, r.FinalCtx)
+	}
 	if r.PrefillS != 2 || r.PrefillNew != 1200 || r.PrefillAll != 4000 || r.GenS != 5 || r.GenTokens != 400 {
 		t.Errorf("speeds = %+v", r)
+	}
+}
+
+// A conversation ends at its last turn. One key can hold several conversations
+// (the same probe under two toolsets): a turn with no more messages than the
+// one before starts the next.
+func TestBenchFinalContextSplitsAKeyIntoConversations(t *testing.T) {
+	s := openTestStore(t)
+	turn := func(ts int64, conv string, msgs, prompt, compl int) {
+		t.Helper()
+		if err := s.InsertActivity(Activity{TS: ts, Served: "m", Key: "bench-a", Status: 200,
+			PromptTokens: prompt, CompletionTokens: compl,
+			Conversation: conv, ConversationMessages: msgs}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn(1, "k1", 2, 100, 10) // k1, toolset A
+	turn(2, "k1", 4, 200, 20) // final 220
+	turn(3, "k1", 2, 100, 10) // k1, toolset B
+	turn(4, "k1", 4, 300, 30)
+	turn(5, "k1", 6, 400, 40) // final 440
+	turn(6, "k2", 2, 50, 5)   // final 55
+
+	r, err := s.BenchRollupFor(context.Background(), "m", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Conversations != 3 || r.FinalCtx != 220+440+55 {
+		t.Errorf("conversations %d, final %d; want 3, 715", r.Conversations, r.FinalCtx)
 	}
 }

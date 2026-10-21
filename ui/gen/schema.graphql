@@ -1405,6 +1405,10 @@ type corrallm_BenchTrafficView {
   cachedTokens: Long!
   """Total prompt tokens sent, cache hits included: the summed context length of every turn."""
   contextTokens: Long!
+  """Conversations in the run (a probe stage under one toolset is one)."""
+  conversations: Long!
+  """Sum over conversations of the context length at the last turn."""
+  finalContext: Long!
   generatedTokens: Long!
   """Largest prompt + completion of a single turn."""
   peakContext: Long!

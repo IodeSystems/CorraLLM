@@ -31,6 +31,10 @@ type BenchRollup struct {
 	PrefillS, GenS         float64
 	PrefillNew, PrefillAll int64 // uncached / all prompt tokens on rows with a prefill speed
 	GenTokens              int64 // completion tokens on rows with a generation speed
+	// Conversations and FinalCtx: how many conversations the run held, and the
+	// sum of each one's context length at its last turn.
+	Conversations int
+	FinalCtx      int64
 }
 
 // BenchRollupFor sums the proxy's rows for one model in [fromMS, toMS].
@@ -59,7 +63,51 @@ WHERE ts BETWEEN ? AND ? AND served = ? AND key LIKE 'bench-%'`, fromMS, toMS, m
 			&thinking, &r.ThinkingRows, &r.PeakCtx, &r.QueuedMS,
 			&r.PrefillS, &r.PrefillNew, &r.PrefillAll, &r.GenS, &r.GenTokens)
 	r.Thinking = thinking.Int64
+	if err != nil {
+		return r, err
+	}
+	r.Conversations, r.FinalCtx, err = s.benchFinalContexts(ctx, model, fromMS, toMS)
 	return r, err
+}
+
+// benchFinalContexts counts the run's conversations and sums each one's
+// context at its last turn.
+//
+// The conversation key is the conversation's head (system + first user
+// message), so one probe run under several toolsets shares a key. Within a
+// key, a turn that carries no more messages than the one before starts a new
+// conversation.
+func (s *Store) benchFinalContexts(ctx context.Context, model string, fromMS, toMS int64) (int, int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT c.conversation, c.messages, c.ctx_tokens
+FROM activity a JOIN activity_conversation c ON c.activity_id = a.id
+WHERE a.ts BETWEEN ? AND ? AND a.served = ? AND a.key LIKE 'bench-%' AND a.status = 200
+ORDER BY c.conversation, a.ts`, fromMS, toMS, model)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	var (
+		n        int
+		total    int64
+		last     int64
+		prevConv string
+		prevMsgs = -1
+	)
+	for rows.Next() {
+		var conv string
+		var msgs int
+		var ctxTok int64
+		if err := rows.Scan(&conv, &msgs, &ctxTok); err != nil {
+			return 0, 0, err
+		}
+		if conv != prevConv || msgs <= prevMsgs {
+			total += last
+			n++
+		}
+		last, prevConv, prevMsgs = ctxTok, conv, msgs
+	}
+	return n, total + last, rows.Err()
 }
 
 // BenchRequestSample returns one captured request body from the run, or ""

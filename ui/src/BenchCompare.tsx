@@ -48,6 +48,8 @@ const BenchSideDoc = graphql(/* GraphQL */ `
             thinkingTurns
             thinkingPct
             peakContext
+            conversations
+            finalContext
             queuedMs
             tps
             tfps
@@ -124,6 +126,16 @@ const TRAFFIC_ROWS: TrafficRow[] = [
     hint: 'Prompt tokens sent over every turn, cache hits included',
     show: (t) => toks(t.contextTokens),
     num: (t) => n(t.contextTokens),
+    higherBetter: false,
+  },
+  {
+    label: 'final context',
+    hint: 'Each conversation\'s context at its last turn, summed; average per conversation in brackets',
+    show: (t) =>
+      `${toks(t.finalContext)} (${fmtInt(t.conversations)} conversations, avg ${toks(
+        n(t.conversations) > 0 ? Math.round(n(t.finalContext) / n(t.conversations)) : 0,
+      )})`,
+    num: (t) => n(t.finalContext),
     higherBetter: false,
   },
   { label: 'peak context', hint: 'Largest single turn (prompt + output)', show: (t) => toks(t.peakContext) },
