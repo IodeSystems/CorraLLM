@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux
 
 // These tests parse /proc/meminfo, which only exists on Linux. The Windows
 // probe calls GlobalMemoryStatusEx and has no fixture to parse.
