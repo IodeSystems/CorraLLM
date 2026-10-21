@@ -314,11 +314,15 @@ func introspect(cmd *cobra.Command, o introspectOpts) error {
 	// budgets — the state a freshly installed GPU is in.
 	poolOwner := map[string][2]string{} // uuid → {server, pool}
 	for srvName, srv := range cfg.Servers {
+		// An agent's cards are usually in another box. Only a UUID — unique
+		// across machines — proves a card here is one it budgets (an agent
+		// beside this primary); a bus id names a slot every box has.
+		match := gpu.Select
 		if srv.Agent != nil {
-			continue // its cards are in another box; this probe cannot see them
+			match = gpu.SelectByUUID
 		}
 		for pool, sel := range srv.Devices {
-			if st, err := gpu.Select(devs, sel); err == nil {
+			if st, err := match(devs, sel); err == nil {
 				poolOwner[st.UUID] = [2]string{srvName, pool}
 			}
 		}

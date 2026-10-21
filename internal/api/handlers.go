@@ -1279,8 +1279,10 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 	// second GPU was installed it was no longer the card the pool budgeted.
 	if devs, err := gpu.ProbeAll(); err == nil {
 		const mib = 1024 * 1024
-		// The device probe reads THIS machine, so only a local server's pools
-		// can claim one. Remote servers report their own capacity by heartbeat.
+		// The device probe reads THIS machine, so only a pool bound to one of
+		// its cards can claim one — a local server's, or an agent's beside this
+		// primary (by UUID). Remote servers report their own capacity by
+		// heartbeat.
 		poolOf := h.localDevicePools(devs)
 		for _, d := range devs {
 			out.Body.GPUs = append(out.Body.GPUs, DeviceMemView{
@@ -3109,11 +3111,13 @@ func keys[V any](m map[string]V) []string {
 // installed, else the one it was constructed with. Read through this, never
 // h.Cfg directly, or a reload goes unnoticed here.
 // localDevicePools maps a card's UUID to the pool that budgets it, across every
-// LOCAL server — the machines whose cards this process's probe can actually see.
+// server whose cards this process's probe can actually see.
 //
-// Agent-backed servers are excluded on purpose. Their pools describe hardware in
-// another box, and matching one of their selectors against a card in THIS one
-// would draw a remote budget under a local device reading.
+// An agent-backed server claims a card here only by UUID (gpu.SelectByUUID).
+// Its pools usually describe hardware in another box, and a PCI bus id match
+// against a card in THIS one would draw a remote budget under a local device
+// reading. A UUID match is the same physical card: an agent beside its primary,
+// which budgets this machine's cards exactly as a local server would.
 //
 // Absent from the map means no pool claims that card: it is in the machine and
 // nothing budgets it, which the dashboard should show as exactly that rather
@@ -3125,11 +3129,12 @@ func (h *Handlers) localDevicePools(devs []gpu.Stats) map[string]string {
 		return out
 	}
 	for _, srv := range cfg.Servers {
+		sel := gpu.Select
 		if srv.Agent != nil {
-			continue
+			sel = gpu.SelectByUUID
 		}
-		for pool, sel := range srv.Devices {
-			st, err := gpu.Select(devs, sel)
+		for pool, s := range srv.Devices {
+			st, err := sel(devs, s)
 			if err != nil {
 				continue
 			}
