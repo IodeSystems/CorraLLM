@@ -101,3 +101,12 @@ func (h *localHandle) MemoryOnMiB(uuid string) (int, error) {
 	}
 	return gpu.GroupVRAMOn(h.pid, uuid)
 }
+
+// MemoryByDeviceMiB is the group's footprint on every card at once (see
+// DeviceMemory).
+func (h *localHandle) MemoryByDeviceMiB() (map[string]int, error) {
+	if h.pid == 0 {
+		return nil, fmt.Errorf("no process")
+	}
+	return gpu.GroupVRAMByDevice(h.pid)
+}

@@ -86,6 +86,22 @@ func Select(devs []Stats, selector string) (Stats, error) {
 	}
 }
 
+// SelectByUUID is Select restricted to a selector that names a card by vendor
+// UUID ("GPU-…" or "MIG-…", or a prefix of one).
+//
+// A UUID is unique across machines; a PCI bus id names a slot, and two boxes
+// have the same slots. So only a UUID match proves that a card another machine
+// describes — an agent-backed server's `devices:` entry — is the card in THIS
+// one. That is the case of an agent running beside its primary, where the
+// primary's own probe sees the very cards the agent budgets.
+func SelectByUUID(devs []Stats, selector string) (Stats, error) {
+	sel := strings.ToLower(strings.TrimSpace(selector))
+	if !strings.HasPrefix(sel, "gpu-") && !strings.HasPrefix(sel, "mig-") {
+		return Stats{}, fmt.Errorf("gpu: %q is not a device uuid", selector)
+	}
+	return Select(devs, selector)
+}
+
 // Prober reads GPU memory state from a vendor backend. Implementations wrap a
 // tool (nvidia-smi, rocm-smi, …); any method may return an error, which callers
 // treat as "introspection unavailable".
@@ -218,6 +234,33 @@ func GroupVRAMOn(pgid int, uuid string) (int, error) {
 		return 0, err
 	}
 	return sumGroup(procs, pgid), nil
+}
+
+// GroupVRAMByDevice is GroupVRAMOn for every card at once: device uuid → the
+// memory process group pgid holds there. One vendor-tool call, so an agent can
+// report a backend's per-card footprint on each status poll without paying
+// one call per card.
+//
+// A card where the group holds nothing is absent from the map, which is the
+// same answer ProcVRAMOn gives for an idle card. Errors when the backend cannot
+// attribute per device; unified memory has no per-device split to report, so
+// it errors too rather than inventing a device key.
+func GroupVRAMByDevice(pgid int) (map[string]int, error) {
+	dp, ok := Default.(DeviceProcProber)
+	if !ok {
+		return nil, fmt.Errorf("gpu: %s cannot attribute memory per device", Default.Name())
+	}
+	byDev, err := dp.ProcVRAMByDevice()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int{}
+	for uuid, procs := range byDev {
+		if mib := sumGroup(procs, pgid); mib > 0 {
+			out[uuid] = mib
+		}
+	}
+	return out, nil
 }
 
 // sumGroup totals the pids in procs that belong to process group pgid. A pid

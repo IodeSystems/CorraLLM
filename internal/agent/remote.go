@@ -217,6 +217,7 @@ type remoteHandle struct {
 	alive    bool
 	err      error
 	memMiB   int
+	memByDev map[string]int // nil: the agent cannot (or does not) split by card
 	nextSeq  int64
 	finished bool
 }
@@ -257,6 +258,7 @@ func (h *remoteHandle) watch() {
 			h.mu.Lock()
 			h.alive = st.Alive
 			h.memMiB = st.MemoryMiB
+			h.memByDev = st.MemoryByDevice
 			h.mu.Unlock()
 		}
 		select {
@@ -360,13 +362,22 @@ func (h *remoteHandle) MemoryMiB() (int, error) {
 	return h.memMiB, nil
 }
 
-// MemoryOnMiB always reports "cannot attribute": the heartbeat carries ONE
-// aggregate per backend, with no per-device breakdown, so there is no honest
-// per-card answer to give. Returning the aggregate here would be the exact
+// MemoryOnMiB returns the agent's last per-card reading for the card named by
+// uuid — 0 when the group holds nothing there, the same answer a local handle
+// gives for an idle card.
+//
+// Errors when the agent sent no per-card split: an agent older than
+// Backend.MemoryByDevice, a machine that cannot attribute per device (macOS),
+// or no poll answered yet. Returning the aggregate instead would be the exact
 // cross-card over-charge this method exists to prevent — the caller falls back
-// to MemoryMiB and the single-device path instead.
-func (h *remoteHandle) MemoryOnMiB(string) (int, error) {
-	return 0, fmt.Errorf("agent reports no per-device memory breakdown")
+// to MemoryMiB and the single-device path.
+func (h *remoteHandle) MemoryOnMiB(uuid string) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.memByDev == nil {
+		return 0, fmt.Errorf("agent reports no per-device memory breakdown")
+	}
+	return h.memByDev[uuid], nil
 }
 
 // ListBackends asks the agent what it is running now — the same view its

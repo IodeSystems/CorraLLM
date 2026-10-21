@@ -290,3 +290,45 @@ func TestProcVRAMErrorWhenCommandFails(t *testing.T) {
 		t.Error("want error when nvidia-smi is unavailable")
 	}
 }
+
+// TestGroupVRAMByDevice: one read splits a process group's footprint by card,
+// leaving out cards where the group holds nothing and other groups' pids.
+func TestGroupVRAMByDevice(t *testing.T) {
+	withRunCmd(t, func(name string, args ...string) ([]byte, error) {
+		return []byte(uuid5090 + ", 1234, 20000\n" + uuid3080 + ", 1234, 9000\n" +
+			uuid3080 + ", 1235, 500\n" + uuid5090 + ", 99, 7000\n"), nil
+	})
+	orig := PGIDFn
+	PGIDFn = func(pid int) (int, error) {
+		if pid == 99 {
+			return 99, nil
+		}
+		return 1234, nil
+	}
+	t.Cleanup(func() { PGIDFn = orig })
+	got, err := GroupVRAMByDevice(1234)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[uuid5090] != 20000 || got[uuid3080] != 9500 {
+		t.Errorf("GroupVRAMByDevice = %v, want 5090:20000 3080:9500", got)
+	}
+}
+
+// TestSelectByUUIDRefusesBusIDs: only a UUID proves a card is the same one
+// across machines.
+func TestSelectByUUIDRefusesBusIDs(t *testing.T) {
+	devs, err := parseGPUCSV([]byte(rowsTwoGPUs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := SelectByUUID(devs, uuid5090); err != nil || st.UUID != uuid5090 {
+		t.Errorf("by uuid = %+v, %v", st, err)
+	}
+	if st, err := SelectByUUID(devs, "gpu-ee90af07"); err != nil || st.UUID != uuid5090 {
+		t.Errorf("by uuid prefix = %+v, %v", st, err)
+	}
+	if _, err := SelectByUUID(devs, "0a:00.0"); err == nil {
+		t.Error("a bus id matched through SelectByUUID")
+	}
+}

@@ -108,11 +108,24 @@ func sanitiseHostname(hn string) string {
 func Probe() Capacity {
 	var c Capacity
 	const mib = 1024 * 1024
-	if st, err := gpu.Probe(); err != nil {
+	// One read of every card, the same probe a local server uses. GPU stays
+	// the first card (what gpu.Probe reports) for primaries that only know
+	// that field; GPUs carries all of them with their identities.
+	switch devs, err := gpu.ProbeAll(); {
+	case err != nil:
 		c.GPUError = err.Error()
-	} else {
-		c.GPU = &DeviceMem{Name: st.Name, TotalBytes: int64(st.TotalMiB) * mib,
-			UsedBytes: int64(st.UsedMiB) * mib, FreeBytes: int64(st.FreeMiB) * mib}
+	case len(devs) == 0:
+		c.GPUError = "no GPUs reported"
+	default:
+		for _, st := range devs {
+			c.GPUs = append(c.GPUs, GPUDevice{
+				DeviceMem: DeviceMem{Name: st.Name, TotalBytes: int64(st.TotalMiB) * mib,
+					UsedBytes: int64(st.UsedMiB) * mib, FreeBytes: int64(st.FreeMiB) * mib},
+				Index: st.Index, UUID: st.UUID, PCIBusID: st.PCIBusID,
+			})
+		}
+		first := c.GPUs[0].DeviceMem
+		c.GPU = &first
 	}
 	if hm, err := sysmem.Probe(); err != nil {
 		c.HostError = err.Error()
