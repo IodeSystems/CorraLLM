@@ -55,12 +55,14 @@ func Start(exe string, args []string, ln net.Listener, timeout time.Duration) (*
 		return nil, fmt.Errorf("handoff: control socket: %w", err)
 	}
 
-	// The successor's output goes where ours does (the journal); its tail is
-	// kept so a failed start can say why.
-	tail := &tailBuffer{max: 4 << 10}
+	// The successor writes to OUR stdout and stderr descriptors themselves (the
+	// journal), never through a pipe this process copies: a pipe would close
+	// when this process exits, and the successor's next log line would then
+	// die of SIGPIPE (Go exits on EPIPE at fd 1 or 2). A failed start reports
+	// its reason over the control socket instead (ReportStartFailure).
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = io.MultiWriter(os.Stderr, tail)
+	cmd.Stderr = os.Stderr
 	cmd.ExtraFiles = []*os.File{lf, theirs} // fd 3, fd 4
 	cmd.Env = append(withoutHandoffEnv(os.Environ()),
 		envFDs+"=3,4", envParent+"="+strconv.Itoa(os.Getpid()))
@@ -81,7 +83,14 @@ func Start(exe string, args []string, ln net.Listener, timeout time.Duration) (*
 				return
 			}
 			var m message
-			if json.Unmarshal(line, &m) == nil && m.Ready {
+			if json.Unmarshal(line, &m) != nil {
+				continue
+			}
+			if m.Error != "" {
+				ready <- fmt.Errorf("failed to start: %s", m.Error)
+				return
+			}
+			if m.Ready {
 				ready <- nil
 				return
 			}
@@ -91,9 +100,6 @@ func Start(exe string, args []string, ln net.Listener, timeout time.Duration) (*
 	fail := func(why error) (*Predecessor, error) {
 		_ = cmd.Process.Kill()
 		_ = conn.Close()
-		if t := strings.TrimSpace(tail.String()); t != "" {
-			why = fmt.Errorf("%w; its output ended: %s", why, t)
-		}
 		return nil, why
 	}
 	select {
@@ -102,6 +108,14 @@ func Start(exe string, args []string, ln net.Listener, timeout time.Duration) (*
 			return fail(fmt.Errorf("handoff: successor pid %d: %w", cmd.Process.Pid, err))
 		}
 	case err := <-exited:
+		// It may have said why on its way out; that beats an exit status.
+		select {
+		case rerr := <-ready:
+			if rerr != nil && strings.HasPrefix(rerr.Error(), "failed to start") {
+				return fail(fmt.Errorf("handoff: successor pid %d %v (%v)", cmd.Process.Pid, rerr, err))
+			}
+		case <-time.After(100 * time.Millisecond):
+		}
 		return fail(fmt.Errorf("handoff: successor pid %d exited before it was ready: %v", cmd.Process.Pid, err))
 	case <-time.After(timeout):
 		return fail(fmt.Errorf("handoff: successor pid %d not ready within %s", cmd.Process.Pid, timeout))
@@ -142,6 +156,35 @@ type Successor struct {
 	conn           net.Conn
 }
 
+// inherited is this process's control socket while it starts as a successor,
+// so ReportStartFailure can reach the predecessor after Inherit consumed the
+// environment.
+var inherited net.Conn
+
+// ReportStartFailure tells the predecessor, if this process was started by a
+// handoff, why it is exiting before it became ready — so `corrallm service
+// upgrade` can say "unknown flag: --x" rather than "exit status 1". A no-op
+// otherwise.
+func ReportStartFailure(err error) {
+	if err == nil {
+		return
+	}
+	conn := inherited
+	if conn == nil && os.Getenv(envFDs) == "3,4" {
+		// Failed before Inherit ran (a flag error): fd 4 is still ours.
+		c, cerr := net.FileConn(os.NewFile(4, "handoff-control"))
+		if cerr != nil {
+			return
+		}
+		conn = c
+	}
+	if conn == nil {
+		return
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
+	_, _ = conn.Write(encode(message{Error: err.Error()}))
+}
+
 // Inherit picks up a handoff started by a predecessor. (nil, nil) when this
 // process was started any other way.
 func Inherit() (*Successor, error) {
@@ -170,12 +213,14 @@ func Inherit() (*Successor, error) {
 		_ = ln.Close()
 		return nil, fmt.Errorf("handoff: inherited control socket: %w", err)
 	}
+	inherited = conn
 	return &Successor{Listener: ln, PredecessorPID: parent, conn: conn}, nil
 }
 
 // Ready tells the predecessor to stop accepting and drain. Call once this
 // process is accepting on Listener.
 func (s *Successor) Ready() error {
+	inherited = nil // started: a later failure is not a start failure
 	_, err := s.conn.Write(encode(message{Ready: true, PID: os.Getpid()}))
 	return err
 }
@@ -211,29 +256,6 @@ func withoutHandoffEnv(env []string) []string {
 		out = append(out, e)
 	}
 	return out
-}
-
-// tailBuffer keeps the last max bytes written to it.
-type tailBuffer struct {
-	mu  sync.Mutex
-	max int
-	b   []byte
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.b = append(t.b, p...)
-	if len(t.b) > t.max {
-		t.b = t.b[len(t.b)-t.max:]
-	}
-	return len(p), nil
-}
-
-func (t *tailBuffer) String() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return string(t.b)
 }
 
 // Notify sends a state string to systemd's notify socket (sd_notify). A no-op

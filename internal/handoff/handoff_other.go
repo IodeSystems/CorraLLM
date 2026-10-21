@@ -28,5 +28,6 @@ type Successor struct {
 func Inherit() (*Successor, error)              { return nil, nil }
 func (s *Successor) Ready() error               { return ErrUnsupported }
 func (s *Successor) Watch(func(Status), func()) {}
+func ReportStartFailure(error)                  {}
 func Notify(string) (bool, error)               { return false, nil }
 func CheckSupervisor() error                    { return ErrUnsupported }

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,11 @@ import (
 func TestHelperSuccessor(t *testing.T) {
 	if os.Getenv(envFDs) == "" {
 		t.Skip("successor half of the handoff tests")
+	}
+	if os.Getenv(helperFailEnv) != "" {
+		// A flag error: before Inherit, as cobra would fail.
+		ReportStartFailure(errors.New("unknown flag: --bogus"))
+		os.Exit(1)
 	}
 	s, err := Inherit()
 	if err != nil || s == nil {
@@ -43,6 +49,89 @@ func TestHelperSuccessor(t *testing.T) {
 		fmt.Printf("status draining=%v active=%v local=%d\n", st.Draining, st.Active, st.Local)
 	},
 		func() { os.Exit(0) })
+}
+
+const (
+	helperFailEnv    = "CORRALLM_HANDOFF_TEST_FAIL"
+	helperPredEnv    = "CORRALLM_HANDOFF_TEST_PREDECESSOR"
+	helperPersistEnv = "CORRALLM_HANDOFF_TEST_PERSIST"
+)
+
+// TestHelperPredecessor is a predecessor that hands over and EXITS at once —
+// what the real one does once drained. It prints its listener's address.
+func TestHelperPredecessor(t *testing.T) {
+	if os.Getenv(helperPredEnv) == "" {
+		t.Skip("predecessor half of TestHandoff_SuccessorOutlivesPredecessor")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		os.Exit(2)
+	}
+	os.Setenv(helperPersistEnv, "1")
+	if _, err := Start(os.Args[0], []string{"-test.run=^TestHelperPersistentSuccessor$"}, ln, 20*time.Second); err != nil {
+		fmt.Println("start failed:", err)
+		os.Exit(3)
+	}
+	fmt.Println(ln.Addr().String())
+	os.Exit(0)
+}
+
+// TestHelperPersistentSuccessor keeps serving after its predecessor exits,
+// logging to stderr as the daemon does, until asked to /quit.
+func TestHelperPersistentSuccessor(t *testing.T) {
+	if os.Getenv(envFDs) == "" || os.Getenv(helperPersistEnv) == "" {
+		t.Skip("successor half of TestHandoff_SuccessorOutlivesPredecessor")
+	}
+	s, err := Inherit()
+	if err != nil || s == nil {
+		os.Exit(3)
+	}
+	go func() {
+		_ = http.Serve(s.Listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintln(os.Stderr, "successor log line", r.URL.Path)
+			fmt.Fprint(w, os.Getpid())
+			if r.URL.Path == "/quit" {
+				go func() { time.Sleep(50 * time.Millisecond); os.Exit(0) }()
+			}
+		}))
+	}()
+	_ = s.Ready()
+	s.Watch(func(Status) {}, func() { fmt.Fprintln(os.Stderr, "predecessor gone") })
+	time.Sleep(30 * time.Second)
+	os.Exit(4)
+}
+
+// The successor must outlive the predecessor that started it and keep
+// logging. Its stderr used to be a pipe the predecessor copied from: when the
+// predecessor exited, the successor's next log line died of SIGPIPE and took
+// the service down — seen in the first sandbox handoff.
+func TestHandoff_SuccessorOutlivesPredecessor(t *testing.T) {
+	pred := exec.Command(os.Args[0], "-test.run=^TestHelperPredecessor$")
+	pred.Env = append(os.Environ(), helperPredEnv+"=1")
+	pred.Stderr = os.Stderr
+	// A file, not a pipe: the successor inherits it, and a pipe would keep
+	// Run waiting for the successor too.
+	f, err := os.Create(t.TempDir() + "/out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pred.Stdout = f
+	err = pred.Run() // returns once the predecessor has exited
+	_ = f.Close()
+	out, _ := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatalf("predecessor: %v %s", err, out)
+	}
+	lines := strings.Fields(string(out))
+	addr := lines[len(lines)-1]
+	time.Sleep(300 * time.Millisecond)
+	for _, path := range []string{"/", "/again", "/quit"} {
+		resp, err := http.Get("http://" + addr + path)
+		if err != nil {
+			t.Fatalf("successor gone after its predecessor exited: %v", err)
+		}
+		_ = resp.Body.Close()
+	}
 }
 
 func listen(t *testing.T) net.Listener {
@@ -152,9 +241,15 @@ func TestHandoff_ListenerMovesWithoutRefusals(t *testing.T) {
 func TestHandoff_FailedStartKeepsServing(t *testing.T) {
 	ln := listen(t)
 	defer func() { _ = ln.Close() }()
-	_, err := Start("/bin/sh", []string{"-c", "echo 'unknown flag: --bogus' >&2; exit 1"}, ln, 10*time.Second)
-	if err == nil || !strings.Contains(err.Error(), "exited before it was ready") || !strings.Contains(err.Error(), "unknown flag: --bogus") {
+	t.Setenv(helperFailEnv, "1")
+	_, err := Start(os.Args[0], []string{"-test.run=^TestHelperSuccessor$"}, ln, 10*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "failed to start: unknown flag: --bogus") {
 		t.Fatalf("err = %v", err)
+	}
+	// A successor that dies without a word still fails cleanly.
+	if _, err := Start("/bin/sh", []string{"-c", "exit 1"}, ln, 10*time.Second); err == nil ||
+		!strings.Contains(err.Error(), "exited before it was ready") {
+		t.Fatalf("silent failure: err = %v", err)
 	}
 	go func() {
 		c, err := ln.Accept()

@@ -50,6 +50,7 @@ type Status struct {
 // message is one line on the control socket.
 type message struct {
 	Ready  bool    `json:"ready,omitempty"`
+	Error  string  `json:"error,omitempty"` // successor failed to start
 	PID    int     `json:"pid,omitempty"`
 	Status *Status `json:"status,omitempty"`
 }
@@ -87,7 +88,12 @@ func StopAccepting(srv *http.Server, ln net.Listener) {
 // Hook as http.Server.ConnState.
 type Conns struct {
 	mu   sync.Mutex
-	busy map[net.Conn]bool
+	busy map[net.Conn]connState
+}
+
+type connState struct {
+	st    http.ConnState
+	since time.Time
 }
 
 // Hook tracks one connection's state change.
@@ -95,19 +101,30 @@ func (c *Conns) Hook(conn net.Conn, st http.ConnState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.busy == nil {
-		c.busy = map[net.Conn]bool{}
+		c.busy = map[net.Conn]connState{}
 	}
 	switch st {
 	case http.StateNew, http.StateActive:
-		c.busy[conn] = true
+		c.busy[conn] = connState{st, time.Now()}
 	default: // idle, hijacked (counted by whoever hijacked it), closed
 		delete(c.busy, conn)
 	}
 }
 
-// Busy is how many connections are new or mid-request.
+// newConnGrace is how long a connection that has sent nothing yet counts as
+// busy — net/http's own rule for Shutdown (issue 22682): past it, a silent
+// connection is idle and must not hold a drain open.
+const newConnGrace = 5 * time.Second
+
+// Busy is how many connections are mid-request, or new within newConnGrace.
 func (c *Conns) Busy() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.busy)
+	n := 0
+	for _, s := range c.busy {
+		if s.st == http.StateActive || time.Since(s.since) < newConnGrace {
+			n++
+		}
+	}
+	return n
 }
