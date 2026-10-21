@@ -249,7 +249,21 @@ type Manager struct {
 	// different implementation here and nothing else in this file changes.
 	// Guarded by mu.
 	hosts map[string]host.Host
+
+	// born and reported implement the post-restart spawn hold on agent-backed
+	// servers (see awaitAgentReport). reported holds one channel per server,
+	// closed once that server's first heartbeat has been reconciled. Guarded
+	// by mu.
+	born     time.Time
+	reported map[string]chan struct{}
 }
+
+// agentHoldTimeout bounds how long, after this primary starts, a spawn onto an
+// agent-backed server waits for that agent's first report. Past it the agent
+// is presumed gone and spawning proceeds as it always did. Nine heartbeat
+// intervals: long enough for an agent that is itself restarting, short enough
+// that a dead machine does not stall its models for long.
+const agentHoldTimeout = 90 * time.Second
 
 // SetLiveness attaches the agent heartbeat tracker.
 func (m *Manager) SetLiveness(l *agent.Liveness) {
@@ -313,6 +327,7 @@ func NewManager(cfg *config.Config) *Manager {
 		healthTimeout: 120 * time.Second,
 		activeUse:     defaultActiveUse,
 		vramMargin:    defaultVRAMMargin,
+		born:          time.Now(),
 	}
 	m.cfg.Store(cfg)
 	for name, srv := range cfg.Servers {
@@ -452,6 +467,13 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 	// extension's pause covers every model it provides for free.
 	if p, ok := m.pauseByKey(key); ok {
 		return nil, nil, false, pauseError(name, p)
+	}
+
+	// Never spawn before the agent has said what it is already running: after
+	// a primary restart the model may well be up there, and a second copy of a
+	// 30 GB model on a full GPU is the failure this prevents.
+	if err := m.awaitAgentReport(ctx, mdl.Server); err != nil {
+		return nil, nil, false, err
 	}
 
 	// Never spawn into a teardown: the process this would replace may still be
@@ -712,7 +734,8 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 			out = io.MultiWriter(os.Stdout, p.logs)
 		}
 		h, err := m.hostFor(mdl.Server).Start(host.Spec{
-			Name: name, Key: p.key, Cmd: cmdStr, Out: out})
+			Name: name, Key: p.key, Cmd: cmdStr, Out: out,
+			ConfigCmd: mdl.Cmd, Port: backendPort(mdl)})
 		if err != nil {
 			finish(StateFailed, err)
 			return
@@ -2268,7 +2291,16 @@ func (m *Manager) Preload(ctx context.Context) {
 	}
 }
 
-// Shutdown stops every spawned process.
+// Shutdown stops every spawned process — except those on an agent.
+//
+// An agent-hosted backend outlives this primary on purpose: the agent keeps
+// supervising it, and the next primary adopts it from the agent's first
+// heartbeat (ReconcileAgent) instead of paying a cold load. Stopping it here
+// made every primary restart — a deploy, a config fix — cost every model on
+// every attached machine. The explicit unload paths still stop it.
+//
+// Local backends are this process's children and keep the old behaviour:
+// nothing would ever adopt them.
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2277,6 +2309,11 @@ func (m *Manager) Shutdown() {
 		p.mu.Lock()
 		h := p.handle
 		p.mu.Unlock()
+		if h != nil && m.agentBacked(p.server) {
+			slog.Info("leaving agent-hosted backend running for the next primary to adopt",
+				"name", name, "server", p.server, "id", h.ID())
+			continue
+		}
 		if h != nil {
 			slog.Info("stopping backend", "name", name, "id", h.ID())
 			_ = h.Signal(host.SigTerm)

@@ -158,17 +158,36 @@ func (r *RemoteHost) Start(s host.Spec) (host.Handle, error) {
 	}
 	var b Backend
 	if err := r.call(ctx, http.MethodPost, endpoint+"/agent/v1/backends",
-		StartRequest{Key: specKey(s), Model: s.Name, Cmd: s.Cmd}, &b); err != nil {
+		StartRequest{Key: specKey(s), Model: s.Name, Cmd: s.Cmd, ConfigCmd: s.ConfigCmd, Port: s.Port}, &b); err != nil {
 		return nil, fmt.Errorf("agent start on %s: %w", endpoint, err)
 	}
+	return r.handleFor(endpoint, b.ID, s.Out), nil
+}
 
+// Attach returns a handle for a backend the agent is ALREADY running, by its
+// agent-side id — one this primary did not start in its current life, found
+// on a heartbeat after a restart and adopted (proc.ReconcileAgent).
+//
+// Its output is read from the agent's log ring from the start of what is
+// retained, so the manager's banner parsing sees as much as still exists.
+func (r *RemoteHost) Attach(id string, out io.Writer) (host.Handle, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	endpoint, err := r.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.handleFor(endpoint, id, out), nil
+}
+
+func (r *RemoteHost) handleFor(endpoint, id string, out io.Writer) *remoteHandle {
 	h := &remoteHandle{
-		host: r, endpoint: endpoint, id: b.ID,
-		done: make(chan struct{}), out: s.Out,
-		alive: true, memMiB: -1,
+		host: r, endpoint: endpoint, id: id,
+		done: make(chan struct{}), out: out,
+		alive: true, memMiB: -1, stop: make(chan struct{}),
 	}
 	go h.watch()
-	return h, nil
+	return h
 }
 
 // specKey is the identity reconciliation will match on, defaulting to the
@@ -191,6 +210,8 @@ type remoteHandle struct {
 	id       string
 	out      io.Writer
 	done     chan struct{}
+	stop     chan struct{} // closed by Detach
+	stopOnce sync.Once
 
 	mu       sync.Mutex
 	alive    bool
@@ -238,9 +259,18 @@ func (h *remoteHandle) watch() {
 			h.memMiB = st.MemoryMiB
 			h.mu.Unlock()
 		}
-		<-t.C
+		select {
+		case <-t.C:
+		case <-h.stop:
+			return
+		}
 	}
 }
+
+// Detach stops mirroring the backend without touching it. For a handle that
+// was attached and then not used (adoption lost a race); Done never closes
+// afterwards, so nothing may be waiting on it.
+func (h *remoteHandle) Detach() { h.stopOnce.Do(func() { close(h.stop) }) }
 
 func (h *remoteHandle) status() (Backend, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -281,6 +311,11 @@ func (h *remoteHandle) drainLogs() {
 }
 
 func (h *remoteHandle) ID() string { return h.endpoint + "#" + h.id }
+
+// AgentID is the backend's id on its agent, which is what a heartbeat reports
+// it under. Reconciliation compares it to tell this backend from a duplicate
+// carrying the same key.
+func (h *remoteHandle) AgentID() string { return h.id }
 
 func (h *remoteHandle) Done() <-chan struct{} { return h.done }
 
