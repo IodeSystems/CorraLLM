@@ -116,3 +116,7 @@ func (h *adoptedHandle) Alive() bool { return groupAlive(h.pid) }
 func (h *adoptedHandle) MemoryMiB() (int, error) { return gpu.GroupVRAM(h.pid) }
 
 func (h *adoptedHandle) MemoryOnMiB(uuid string) (int, error) { return gpu.GroupVRAMOn(h.pid, uuid) }
+
+func (h *adoptedHandle) MemoryByDeviceMiB() (map[string]int, error) {
+	return gpu.GroupVRAMByDevice(h.pid)
+}

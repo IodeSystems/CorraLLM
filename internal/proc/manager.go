@@ -261,11 +261,15 @@ type Manager struct {
 	// and spawns, evicts for room, idle-sweeps and reconciles nothing more.
 	// localHold, when non-nil, holds every LOCAL spawn until closed: the
 	// successor's GPU is still occupied by the predecessor's children.
-	// stoppingLocal marks which stopping keys are local children, so
-	// LocalBackends can count a teardown that still holds VRAM.
+	// stoppingLocal maps each stopping key that is a local child to its
+	// server, so LocalBackends can count a teardown that still holds VRAM.
+	// holdServers is what the predecessor last said its local children run
+	// on; agent spawns onto those servers are held too (awaitLocalHold). nil
+	// means not said yet, or a predecessor too old to say.
 	draining      atomic.Bool
 	localHold     chan struct{}
-	stoppingLocal map[string]bool
+	stoppingLocal map[string]string
+	holdServers   map[string]bool
 }
 
 // agentHoldTimeout bounds how long, after this primary starts, a spawn onto an
@@ -492,10 +496,11 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		return nil, nil, false, err
 	}
 
-	// Never spawn a local backend while a predecessor's children may still
-	// hold the GPU (see HoldLocalSpawns).
-	if mdl.Cmd != "" && !m.agentBacked(mdl.Server) {
-		if err := m.awaitLocalHold(ctx, key); err != nil {
+	// Never spawn a backend while a predecessor's children may still hold the
+	// GPU (see HoldLocalSpawns) — locally, or through an agent on a server the
+	// predecessor ran locally.
+	if mdl.Cmd != "" {
+		if err := m.awaitLocalHold(ctx, key, mdl.Server); err != nil {
 			return nil, nil, false, err
 		}
 	}
@@ -1218,9 +1223,14 @@ func (m *Manager) placementOf(model string) (server, pool string, ramUsage map[s
 //
 // Falls back to the first-GPU probe when the model names no device-bound pool —
 // the single-GPU case, where "first" and "the one" are the same card.
+//
+// The card is resolved on the machine that RUNS the model (deviceFor): an
+// agent-backed server's pools name the agent's cards, read from its heartbeat.
+// It must agree with deviceNameFor, or the profile measure() files is never the
+// one tuneCmd reads.
 func (m *Manager) modelDevice(model string) (gpu.Stats, error) {
 	server, pool, ramUsage := m.placementOf(model)
-	if st, ok := m.localDeviceFor(server, pool, ramUsage); ok {
+	if st, ok := m.deviceFor(server, pool, ramUsage); ok {
 		return st, nil
 	}
 	return gpu.Probe()
@@ -1397,7 +1407,7 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 	// that total under one device name, which for a two-card model is a figure
 	// true of the host and false of both pools — and it is the pool that
 	// admission reads. Falls through when the host cannot attribute per device.
-	if devs, ok := m.localDevicesFor(mdl.Server, mdl.Pool, mdl.RAMUsage); ok && len(devs) > 1 {
+	if devs, ok := m.devicesFor(mdl.Server, mdl.Pool, mdl.RAMUsage); ok && len(devs) > 1 {
 		if m.measurePerDevice(model, h, devs, nCtx, nSlots, time.Now().Unix()) {
 			return
 		}
@@ -1543,11 +1553,21 @@ func (m *Manager) TunedSlots(model string, configDefault int) int {
 // hardware. So a model whose ramUsage names a device-bound pool is resolved
 // through that pool's declared card, by UUID, not by position.
 //
-// The agent reports its device name on every heartbeat, so for an agent-backed
-// server that is the authority. Falls back to the local probe for a local
-// server, which is what it always was — and stays exactly that on a single-GPU
-// box, where no pool declares a device.
+// The pool's declared card wins first, on a local server AND on an agent-backed
+// one (deviceFor reads the agent's per-card heartbeat list). It used to be the
+// other way round: the agent's single heartbeat device name came first, and
+// that name is nvidia-smi's index 0 — so a two-card box under an agent filed
+// every profile under its 10 GiB card while tuneCmd read them under the 32 GiB
+// one the pool names.
+//
+// Then the agent's heartbeat device name, for an agent whose pools declare no
+// card (one GPU, or unified memory) or that predates the per-card list. Falls
+// back to the local probe for a local server, which is what it always was — and
+// stays exactly that on a single-GPU box, where no pool declares a device.
 func (m *Manager) deviceNameFor(server, pool string, ramUsage map[string]string) string {
+	if st, ok := m.deviceFor(server, pool, ramUsage); ok {
+		return st.Name
+	}
 	if m.live != nil && server != "" {
 		if cap, ok := m.live.Capacity(server); ok {
 			if cap.GPU != nil && cap.GPU.Name != "" {
@@ -1558,24 +1578,44 @@ func (m *Manager) deviceNameFor(server, pool string, ramUsage map[string]string)
 			}
 		}
 	}
-	if st, ok := m.localDeviceFor(server, pool, ramUsage); ok {
-		return st.Name
-	}
 	if stats, err := gpu.Probe(); err == nil {
 		return stats.Name
 	}
 	return ""
 }
 
-// localDeviceFor resolves the physical card a model draws from on a LOCAL
-// server, via the pool its ramUsage names and that pool's declared selector.
+// devicesOn lists the cards of the machine that runs server's backends: this
+// machine's probe for a local server, the agent's last heartbeat for an
+// agent-backed one. Both are matched by the same `devices:` selectors, so a
+// pool resolves to its card the same way wherever the card is.
+//
+// An agent that sent no per-card list (older than Capacity.GPUs, or not
+// reported yet) is an error, never this machine's cards: matching a remote
+// pool's selector against a local probe describes the wrong hardware.
+func (m *Manager) devicesOn(server string) ([]gpu.Stats, error) {
+	if !m.agentBacked(server) {
+		return gpu.ProbeAll()
+	}
+	if m.live != nil {
+		if cap, ok := m.live.Capacity(server); ok {
+			if devs := cap.DeviceStats(); len(devs) > 0 {
+				return devs, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("agent for server %q has reported no per-card list", server)
+}
+
+// deviceFor resolves the physical card a model draws from, via the pool its
+// ramUsage names and that pool's declared selector, on the machine that runs
+// the server (devicesOn).
 //
 // ok=false whenever the answer is not knowable with certainty — no config, no
 // `devices:` declaration, a CPU-only model, a model split across two cards, a
 // selector that matches nothing. Every one of those falls back to the caller's
 // previous behavior rather than picking a card, because the failure this exists
 // to prevent is precisely a confident answer about the wrong GPU.
-func (m *Manager) localDeviceFor(server, pool string, ramUsage map[string]string) (gpu.Stats, bool) {
+func (m *Manager) deviceFor(server, pool string, ramUsage map[string]string) (gpu.Stats, bool) {
 	cfg := m.config()
 	// An explicit pool is placement knowledge on its own: a model that declares
 	// `pool:` and no ramUsage still knows which card it is on. Before the split
@@ -1595,7 +1635,7 @@ func (m *Manager) localDeviceFor(server, pool string, ramUsage map[string]string
 	if sel == "" {
 		return gpu.Stats{}, false
 	}
-	devs, err := gpu.ProbeAll()
+	devs, err := m.devicesOn(server)
 	if err != nil {
 		return gpu.Stats{}, false
 	}
@@ -1612,10 +1652,10 @@ func (m *Manager) localDeviceFor(server, pool string, ramUsage map[string]string
 	return st, true
 }
 
-// localDevicesFor resolves EVERY physical card a model draws from on a LOCAL
-// server — the plural of localDeviceFor, and the reason it exists.
+// devicesFor resolves EVERY physical card a model draws from — the plural of
+// deviceFor, and the reason it exists.
 //
-// localDeviceFor deliberately gives up on a model spanning two cards, because
+// deviceFor deliberately gives up on a model spanning two cards, because
 // naming the ONE card a profile is filed under has no answer then. That was the
 // right call for naming and the wrong one for measuring: the model still has a
 // footprint on each card, each of those is knowable, and refusing to look meant
@@ -1624,7 +1664,7 @@ func (m *Manager) localDeviceFor(server, pool string, ramUsage map[string]string
 // Returns ok=false whenever any named pool fails to resolve, rather than a
 // partial list: measuring three cards out of four and charging the sum to those
 // three is a worse lie than not measuring.
-func (m *Manager) localDevicesFor(server, pool string, ramUsage map[string]string) ([]gpu.Stats, bool) {
+func (m *Manager) devicesFor(server, pool string, ramUsage map[string]string) ([]gpu.Stats, bool) {
 	cfg := m.config()
 	if cfg == nil || server == "" || (pool == "" && len(ramUsage) == 0) {
 		return nil, false
@@ -1633,7 +1673,7 @@ func (m *Manager) localDevicesFor(server, pool string, ramUsage map[string]strin
 	if len(named) == 0 {
 		return nil, false
 	}
-	devs, err := gpu.ProbeAll()
+	devs, err := m.devicesOn(server)
 	if err != nil {
 		return nil, false
 	}
@@ -1658,9 +1698,10 @@ func (m *Manager) localDevicesFor(server, pool string, ramUsage map[string]strin
 // charging each pool only what the process actually holds on that card.
 //
 // Reports false — measure() then falls back to the whole-host path — when the
-// host cannot attribute per device (a remote agent, macOS), or when any single
+// host cannot attribute per device (macOS, an agent older than
+// Backend.MemoryByDevice), or when any single
 // card reads back an error. Partial success is treated as failure for the same
-// reason localDevicesFor refuses partial lists.
+// reason devicesFor refuses partial lists.
 //
 // kvMiB is deliberately NOT passed through. llama.cpp logs ONE KV total for the
 // process; splitting it across cards would require knowing the per-card layer
@@ -1947,7 +1988,29 @@ func (m *Manager) foreignUsedLocked(server, pool string) int64 {
 		return 0
 	}
 	cfg := m.config()
-	if cfg == nil || cfg.DevicePoolFor(server) != pool {
+	if cfg == nil {
+		return 0
+	}
+	// A pool bound to a card by `devices:` reads THAT card from the agent's
+	// per-card list — every bound pool, not only the server's device pool. The
+	// single GPU reading below is nvidia-smi's index 0: on a two-card box it is
+	// whichever card sits on the lowest PCI bus, and charging it to the device
+	// pool billed a 10 GiB card's usage against a 32 GiB pool while the other
+	// card got no correction at all.
+	if sel := cfg.DeviceSelectorFor(server, pool); sel != "" {
+		if devs := cap.DeviceStats(); len(devs) > 0 {
+			st, err := gpu.Select(devs, sel)
+			if err != nil {
+				// The pool budgets a card the agent does not report. No reading
+				// is better than another card's.
+				return 0
+			}
+			return foreignOf(int64(st.UsedMiB)*1024*1024, m.ownPlacedLocked(server, pool))
+		}
+		// An agent older than the per-card list: the single-GPU arithmetic
+		// below, exactly as before.
+	}
+	if cfg.DevicePoolFor(server) != pool {
 		// Only the device pool has a live reading behind it. Other pools keep
 		// their declared arithmetic rather than borrowing an unrelated number.
 		return 0
@@ -1955,19 +2018,35 @@ func (m *Manager) foreignUsedLocked(server, pool string) int64 {
 	var measuredUsed int64
 	switch {
 	case cap.GPU != nil && cap.GPU.UsedBytes > 0:
+		if len(cap.GPUs) > 1 {
+			// Several cards and this pool names none of them: which card it
+			// budgets is unknown, and the first card's reading is a guess.
+			return 0
+		}
 		measuredUsed = cap.GPU.UsedBytes
 	case cap.Host != nil && cap.Host.UsedBytes > 0:
 		measuredUsed = cap.Host.UsedBytes
 	default:
 		return 0
 	}
-	// Everything we believe we placed here. The remainder is somebody else's.
+	return foreignOf(measuredUsed, m.ownPlacedLocked(server, pool))
+}
+
+// ownPlacedLocked is everything corrallm believes it placed in one pool of a
+// server: the reservations of its processes there. Caller holds m.mu.
+func (m *Manager) ownPlacedLocked(server, pool string) int64 {
 	var ours int64
 	for _, p := range m.procs {
 		if p.server == server {
 			ours += p.usage[pool]
 		}
 	}
+	return ours
+}
+
+// foreignOf is a measured use minus our own placements, floored at zero: the
+// remainder is somebody else's.
+func foreignOf(measuredUsed, ours int64) int64 {
 	if foreign := measuredUsed - ours; foreign > 0 {
 		return foreign
 	}
@@ -2102,9 +2181,9 @@ func (m *Manager) evictLocked(p *Process) {
 		m.stopping[p.key] = done
 		if !onAgent(h) {
 			if m.stoppingLocal == nil {
-				m.stoppingLocal = map[string]bool{}
+				m.stoppingLocal = map[string]string{}
 			}
-			m.stoppingLocal[p.key] = true
+			m.stoppingLocal[p.key] = p.server
 		}
 		go func() {
 			defer func() {

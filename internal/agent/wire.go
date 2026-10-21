@@ -18,6 +18,8 @@
 // as you would treat exposing a shell.
 package agent
 
+import "github.com/iodesystems/corrallm/internal/gpu"
+
 // Protocol is the agent wire version. The primary sends it on every request and
 // the agent rejects a mismatch, because the alternative — a primary spawning
 // something an older agent cannot describe or reap — leaves a process running
@@ -55,6 +57,17 @@ type DeviceMem struct {
 	FreeBytes  int64  `json:"freeBytes"`
 }
 
+// GPUDevice is one card's measurement, with the identity a pool binds to.
+//
+// Index is the vendor tool's position and is a label only; UUID and PCIBusID
+// are what a server's `devices:` selector matches (gpu.Stats.Matches).
+type GPUDevice struct {
+	DeviceMem
+	Index    int    `json:"index"`
+	UUID     string `json:"uuid,omitempty"`
+	PCIBusID string `json:"pciBusId,omitempty"`
+}
+
 // Capacity is what this machine can actually offer, measured.
 //
 // Errors are reported rather than zeroed. A zero that means "could not measure"
@@ -89,6 +102,37 @@ type Capacity struct {
 	// previous two-pool behavior — wrong on a Mac, but no worse than the
 	// version that agent was enrolled by.
 	Unified bool `json:"unified,omitempty"`
+	// GPUs is EVERY card this machine can see, in the vendor tool's order —
+	// the same list gpu.ProbeAll gives a local server.
+	//
+	// GPU above is the FIRST of them and is kept unchanged for primaries older
+	// than this field. On a two-card box it is whichever card sits on the lowest
+	// PCI bus, which is not an identity: a primary that charged it to the
+	// server's device pool billed a 10 GiB card's usage against a 32 GiB pool.
+	// With this list the primary resolves each pool to its card by the
+	// server's `devices:` selectors, exactly as it does for a local server.
+	//
+	// Absent from an agent older than this field; the primary then keeps the
+	// single-GPU arithmetic it always had.
+	GPUs []GPUDevice `json:"gpus,omitempty"`
+}
+
+// DeviceStats returns GPUs in the form gpu.Select matches against, so a
+// server's `devices:` selectors resolve against an agent's cards through the
+// same code as against a local probe. Nil when the agent sent no list.
+func (c Capacity) DeviceStats() []gpu.Stats {
+	if len(c.GPUs) == 0 {
+		return nil
+	}
+	const mib = 1024 * 1024
+	out := make([]gpu.Stats, 0, len(c.GPUs))
+	for _, d := range c.GPUs {
+		out = append(out, gpu.Stats{
+			Index: d.Index, UUID: d.UUID, PCIBusID: d.PCIBusID, Name: d.Name,
+			TotalMiB: int(d.TotalBytes / mib), UsedMiB: int(d.UsedBytes / mib), FreeMiB: int(d.FreeBytes / mib),
+		})
+	}
+	return out
 }
 
 // StartRequest asks the agent to run one backend.
@@ -130,6 +174,19 @@ type Backend struct {
 	// MemoryMiB is the group's device memory, or -1 when this machine cannot
 	// attribute memory per process (macOS has no nvidia-smi equivalent).
 	MemoryMiB int `json:"memoryMiB"`
+	// MemoryByDevice is the same footprint split by card: device uuid → MiB
+	// the group holds there. A card the group holds nothing on is absent.
+	//
+	// It is what lets the primary measure a model per card on an agent the way
+	// it does on a local server (host.Handle.MemoryOnMiB). Null — never an
+	// empty object — when this machine cannot attribute per device, and absent
+	// from an agent older than this field; both mean "cannot attribute", and
+	// the primary falls back to MemoryMiB. Hence no omitempty: an empty object
+	// is a real answer ("no memory on any card"). required:"false" and
+	// nullable:"true" keep the primary's heartbeat validation accepting the
+	// absent and null forms; without them it refused every older agent's beat
+	// with a 422.
+	MemoryByDevice map[string]int `json:"memoryByDevice" required:"false" nullable:"true"`
 	// LastSeq is the highest log sequence number available, so a reconnecting
 	// primary knows how far behind it is.
 	LastSeq int64 `json:"lastSeq"`

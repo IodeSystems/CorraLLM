@@ -402,14 +402,27 @@ func (s *Server) view(b *supervised) Backend {
 		exited = true
 	default:
 	}
+	// Per card first: one vendor-tool read answers both questions, and the sum
+	// of the split IS the group total MemoryMiB would read with a second call.
 	mem := -1
-	if v, err := b.handle.MemoryMiB(); err == nil {
-		mem = v
+	var byDev map[string]int
+	if dm, ok := b.handle.(host.DeviceMemory); ok {
+		if m, err := dm.MemoryByDeviceMiB(); err == nil {
+			byDev, mem = m, 0
+			for _, v := range m {
+				mem += v
+			}
+		}
+	}
+	if byDev == nil {
+		if v, err := b.handle.MemoryMiB(); err == nil {
+			mem = v
+		}
 	}
 	out := Backend{
 		ID: b.id, Key: b.key, Model: b.model, Cmd: b.cmd, ConfigCmd: b.configCmd, Port: b.port,
 		Alive: b.handle.Alive(), Exited: exited,
-		Started: b.started.UnixMilli(), MemoryMiB: mem,
+		Started: b.started.UnixMilli(), MemoryMiB: mem, MemoryByDevice: byDev,
 		LastSeq: b.logs.LastSeq(),
 	}
 	if exited {

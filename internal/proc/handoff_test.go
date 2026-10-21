@@ -159,3 +159,89 @@ func TestHandoff_DrainingSkipsAgentReconcile(t *testing.T) {
 		t.Errorf("signals %v sent while draining", sig)
 	}
 }
+
+// A server that moved under an agent beside the primary (local in the
+// predecessor's config, agent-backed in the successor's) spawns onto the GPU
+// the predecessor's local children still hold. The successor holds that agent
+// spawn with the local ones; an agent spawn onto a server the predecessor ran
+// nothing local on is not held.
+func TestHandoff_AgentSpawnHeldOnThePredecessorsLocalServer(t *testing.T) {
+	spawnAsync := func(m *Manager) chan error {
+		got := make(chan error, 1)
+		go func() {
+			_, rel, _, err := m.EnsureReady(context.Background(), "m", m.config().Models["m"], nil, nil)
+			if err == nil {
+				rel()
+			}
+			got <- err
+		}()
+		return got
+	}
+	held := func(t *testing.T, got chan error, fa *fakeAgent) {
+		t.Helper()
+		select {
+		case err := <-got:
+			t.Fatalf("agent spawn ran during the hold (err %v)", err)
+		case <-time.After(300 * time.Millisecond):
+		}
+		if n, _ := fa.counts(); n != 0 {
+			t.Fatalf("agent asked to spawn %d during the hold", n)
+		}
+	}
+	ran := func(t *testing.T, got chan error, fa *fakeAgent) {
+		t.Helper()
+		select {
+		case err := <-got:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatal("agent spawn still held")
+		}
+		if n, _ := fa.counts(); n != 1 {
+			t.Fatalf("agent spawns = %d, want 1", n)
+		}
+	}
+
+	t.Run("before the predecessor reports", func(t *testing.T) {
+		m, fa, _, _ := surviveMgr(t)
+		m.HoldLocalSpawns()
+		got := spawnAsync(m)
+		held(t, got, fa)
+		m.ReleaseLocalSpawns()
+		ran(t, got, fa)
+	})
+	t.Run("predecessor runs local children on that server", func(t *testing.T) {
+		m, fa, _, _ := surviveMgr(t)
+		m.HoldLocalSpawns()
+		m.SetHoldServers([]string{"mac1"})
+		got := spawnAsync(m)
+		held(t, got, fa)
+		m.ReleaseLocalSpawns()
+		ran(t, got, fa)
+	})
+	t.Run("predecessor runs nothing local there", func(t *testing.T) {
+		m, fa, _, _ := surviveMgr(t)
+		m.HoldLocalSpawns()
+		m.SetHoldServers([]string{"box1"})
+		ran(t, spawnAsync(m), fa)
+	})
+}
+
+// The predecessor reports WHERE its local children run, and "none" as an empty
+// list — distinct from nil, which a successor reads as "not reported".
+func TestHandoff_LocalBackendsOn(t *testing.T) {
+	m := localMgr(t)
+	if n, servers := m.LocalBackendsOn(); n != 0 || servers == nil || len(servers) != 0 {
+		t.Fatalf("idle: %d %#v, want 0 and an empty non-nil list", n, servers)
+	}
+	_, release, _, err := m.EnsureReady(context.Background(), "m", m.config().Models["m"], nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	waitLocal(t, m, 1)
+	if n, servers := m.LocalBackendsOn(); n != 1 || len(servers) != 1 || servers[0] != "box" {
+		t.Errorf("one local backend: %d %v, want 1 [box]", n, servers)
+	}
+}

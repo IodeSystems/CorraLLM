@@ -926,6 +926,7 @@ input corrallm_BackendInput {
   id: String!
   key: String!
   lastSeq: Long!
+  memoryByDevice: JSON
   memoryMiB: Long!
   model: String!
   port: Long
@@ -1522,6 +1523,7 @@ type corrallm_CancelRequestOutputBody {
 input corrallm_CapacityInput {
   gpu: corrallm_DeviceMemInput
   gpuError: String
+  gpus: [corrallm_GPUDeviceInput!]
   host: corrallm_DeviceMemInput
   hostError: String
   perProcess: Boolean!
@@ -1792,6 +1794,16 @@ type corrallm_ExtensionState {
 
 type corrallm_ExtensionsOutputBody {
   extensions: [corrallm_ExtensionState!]!
+}
+
+input corrallm_GPUDeviceInput {
+  freeBytes: Long!
+  index: Long!
+  name: String!
+  pciBusId: String
+  totalBytes: Long!
+  usedBytes: Long!
+  uuid: String
 }
 
 type corrallm_GPUUtilizationOutputBody {

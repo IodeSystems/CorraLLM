@@ -118,6 +118,18 @@ type Handle interface {
 	MemoryOnMiB(uuid string) (int, error)
 }
 
+// DeviceMemory is the OPTIONAL per-card breakdown of a handle's footprint:
+// device uuid → MiB the group holds there, from one vendor-tool read.
+//
+// Optional rather than part of Handle because only a handle on THIS machine
+// can answer it; an agent asks it of its own handles and reports the result,
+// which is how a primary learns a remote backend's per-card footprint. A card
+// absent from the map holds nothing of the group. The error is the supported
+// "cannot attribute per device" state, as for MemoryOnMiB.
+type DeviceMemory interface {
+	MemoryByDeviceMiB() (map[string]int, error)
+}
+
 // Host starts backends somewhere.
 type Host interface {
 	// Name is the config `servers:` key this host backs.
