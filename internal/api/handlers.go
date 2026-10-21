@@ -2321,6 +2321,7 @@ type ActiveRequestView struct {
 	State     string `json:"state" doc:"queued (awaiting a slot) | loading (awaiting backend) | streaming (proxying)."`
 	StartedAt string `json:"startedAt" doc:"RFC3339 arrival time."`
 	ElapsedMS int64  `json:"elapsedMs" doc:"Milliseconds in flight so far."`
+	StateMS   int64  `json:"stateMs" doc:"Milliseconds in the current state so far. For a streaming request: time since it left the queue and the backend was ready."`
 }
 
 // ActiveRequestsOutput lists live requests, oldest first.
@@ -2346,7 +2347,7 @@ func (h *Handlers) ActiveRequests(_ context.Context, _ *ActiveRequestsInput) (*A
 			Key: r.Key, SourceIP: r.SourceIP, Path: r.Path, Streaming: r.Streaming,
 			Retryable: r.Retryable, BytesOut: r.BytesOut, Chunks: r.Chunks,
 			State: r.State, StartedAt: r.StartedAt.UTC().Format(time.RFC3339),
-			ElapsedMS: r.ElapsedMS,
+			ElapsedMS: r.ElapsedMS, StateMS: r.StateMS,
 		})
 	}
 	return out, nil

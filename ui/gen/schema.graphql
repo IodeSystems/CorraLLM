@@ -781,6 +781,8 @@ type corrallm_ActiveRequestView {
   startedAt: String!
   """queued (awaiting a slot) | loading (awaiting backend) | streaming (proxying)."""
   state: String!
+  """Milliseconds in the current state so far. For a streaming request: time since it left the queue and the backend was ready."""
+  stateMs: Long!
   """Client asked for a streamed response."""
   streaming: Boolean!
 }

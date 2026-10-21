@@ -93,3 +93,78 @@ func (c *overheadClient) Between(ctx context.Context, model string, from, to tim
 	}
 	return time.Duration(body.TotalMS) * time.Millisecond, nil
 }
+
+// liveState is what corrallm holds in flight for this bench on one model.
+type liveState struct {
+	// Waiting: at least one request is queued for a slot or waiting on a cold
+	// load. The model has not been asked yet, so silence is not the model's.
+	Waiting bool
+	// Streaming: at least one request is with the backend, and StreamingFor is
+	// how long the NEWEST of them has been (corrallm's stateMs). Silence counts
+	// from then at the earliest.
+	Streaming    bool
+	StreamingFor time.Duration
+}
+
+// Live asks corrallm (GET /api/v1/active) what it holds in flight for this
+// bench's key on one model.
+//
+// Durations come from corrallm as elapsed milliseconds, never as timestamps,
+// so a remote corrallm with a skewed clock gives the same answer.
+//
+// Scoped by key and model, not by request: combos of one model that run
+// concurrently share both, so one combo can see another's request. That errs
+// lenient (a stall is caught later, never invented), and the execution budget
+// still bounds the combo.
+func (c *overheadClient) Live(ctx context.Context, model string) (liveState, error) {
+	var st liveState
+	if c == nil {
+		return st, fmt.Errorf("no corrallm admin access")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/v1/active", nil)
+	if err != nil {
+		return st, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return st, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 {
+		return st, fmt.Errorf("active requests: HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Requests []struct {
+			Served  string `json:"served"`
+			Key     string `json:"key"`
+			State   string `json:"state"`
+			StateMS *int64 `json:"stateMs"`
+		} `json:"requests"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return st, err
+	}
+	for _, r := range body.Requests {
+		if r.Key != c.key || r.Served != model {
+			continue
+		}
+		switch r.State {
+		case "queued", "loading":
+			st.Waiting = true
+		case "streaming":
+			// A corrallm without stateMs cannot say when the backend got the
+			// request. Report nothing rather than "just now", which would hide
+			// every hang.
+			if r.StateMS == nil {
+				continue
+			}
+			d := time.Duration(*r.StateMS) * time.Millisecond
+			if !st.Streaming || d < st.StreamingFor {
+				st.StreamingFor = d
+			}
+			st.Streaming = true
+		}
+	}
+	return st, nil
+}
