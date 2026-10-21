@@ -166,3 +166,29 @@ func TestPriorityDoesNotPreempt(t *testing.T) {
 		t.Fatal("running request was canceled by a priority arrival")
 	}
 }
+
+// TestCallerCancelWhileQueuedIsNotBackpressure: a caller that hangs up while
+// queued gets its own cancellation back, not a 429 queue-timeout. The live box
+// logged bench requests the watchdog abandoned as 429 queue-timeout.
+func TestCallerCancelWhileQueuedIsNotBackpressure(t *testing.T) {
+	s := New()
+	hold, _, _ := s.Admit(context.Background(), "b", "local", 1, "g", 1, false, queueStage)
+	defer hold()
+	gone := errors.New("client went away")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel(gone)
+	}()
+	_, _, err := s.Admit(ctx, "b", "local", 1, "g", 1, false, queueStage)
+	var bp *BackpressureError
+	if errors.As(err, &bp) {
+		t.Fatalf("caller cancel reported as backpressure %q", bp.Reason)
+	}
+	if !errors.Is(err, gone) {
+		t.Fatalf("want the cancel cause, got %v", err)
+	}
+	if n := queueLen(s, "b"); n != 0 {
+		t.Fatalf("canceled waiter left in queue (%d)", n)
+	}
+}

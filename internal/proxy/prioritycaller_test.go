@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,5 +25,17 @@ func TestAdmitCtxMarksPriorityCaller(t *testing.T) {
 	}
 	if sched.PriorityForTest(p.admitCtx(context.Background(), r, "sk-aw4")) {
 		t.Fatal("other key marked priority")
+	}
+}
+
+func TestQueuedCancelReason(t *testing.T) {
+	if got := queuedCancelReason(ErrCanceled); got != "canceled by operator" {
+		t.Fatalf("operator cancel = %q", got)
+	}
+	if got := queuedCancelReason(context.Canceled); got != "client canceled" {
+		t.Fatalf("client cancel = %q", got)
+	}
+	if got := queuedCancelReason(errors.New("x")); got != "client canceled" {
+		t.Fatalf("other = %q", got)
 	}
 }

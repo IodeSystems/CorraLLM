@@ -392,7 +392,14 @@ func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx 
 	case <-maxWaitC:
 		return s.giveUp(backend, w, "queue-timeout")
 	case <-ctx.Done():
-		return s.giveUp(backend, w, "queue-timeout")
+		// A deadline is corrallm's own request timeout: backpressure, as
+		// before. Anything else is the caller leaving (client hang-up, operator
+		// cancel). That is not a refusal, so it must not be logged as a 429
+		// queue-timeout; the proxy logs the returned cause as 499.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return s.giveUp(backend, w, "queue-timeout")
+		}
+		return s.leave(backend, w, context.Cause(ctx))
 	case <-s.drainCh:
 		// Handed over while queued: the successor serves it. A grant that
 		// raced the drain is kept — that slot is real and the request runs.
@@ -424,6 +431,21 @@ func (s *Scheduler) giveUp(backend string, w *waiter, reason string) (func(...Do
 	s.mu.Unlock()
 	s.releaser(backend, w.slot)() // already granted: release the slot we never used
 	return nil, nil, &BackpressureError{Reason: reason, RetryAfter: time.Second}
+}
+
+// leave drops a waiter whose caller went away and returns cause. A grant that
+// raced the cancel is handed back, as in giveUp.
+func (s *Scheduler) leave(backend string, w *waiter, cause error) (func(...Done), context.Context, error) {
+	s.mu.Lock()
+	bs := s.backends[backend]
+	removed := bs != nil && bs.removeWaiter(w)
+	s.mu.Unlock()
+	if removed {
+		w.slot.cancel(nil)
+	} else {
+		s.releaser(backend, w.slot)()
+	}
+	return nil, nil, cause
 }
 
 // releaser returns a one-shot release for a held slot. The optional Done carries

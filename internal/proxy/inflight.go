@@ -19,6 +19,16 @@ import (
 // disconnect is nobody's fault, and this one was deliberate and should say so.
 var ErrCanceled = errors.New("canceled by operator")
 
+// queuedCancelReason is the activity-row error for a request that left the
+// admission queue with neither a slot nor backpressure: the client went away,
+// or an operator canceled it.
+func queuedCancelReason(err error) string {
+	if errors.Is(err, ErrCanceled) {
+		return ErrCanceled.Error()
+	}
+	return "client canceled"
+}
+
 // In-flight request registry.
 //
 // The activity log only exists once a request FINISHES — which is exactly when

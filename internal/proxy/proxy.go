@@ -1111,7 +1111,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}
 			p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
 				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS,
-				Error: "client canceled", ReqBody: reqBody}) // queued then client gave up
+				Error: queuedCancelReason(err), ReqBody: reqBody}) // queued then client gave up
 			return
 		}
 
@@ -1812,7 +1812,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
-				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS, Error: "client canceled"})
+				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS, Error: queuedCancelReason(err)})
 			return
 		}
 		p.markInflight(live, inflightLoading, name)
