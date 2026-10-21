@@ -588,8 +588,10 @@ func serve(ctx context.Context, o serveOpts) error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
-	// Requests the last process died serving left a marker and no row.
-	if n, err := st.SweepInflight(); err != nil {
+	// Requests the last process died serving left a marker and no row. Only a
+	// DEAD writer's: in a handoff the predecessor is still serving its own.
+	st.SetOwner(selfIdentity())
+	if n, err := st.SweepInflight(processAlive); err != nil {
 		slog.Warn("sweep in-flight requests", "err", err)
 	} else if n > 0 {
 		slog.Warn("requests cut by the last stop, recorded", "count", n)

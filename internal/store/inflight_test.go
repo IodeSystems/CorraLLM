@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func TestInflight_CompletionReplacesTheMarker(t *testing.T) {
 		t.Fatalf("rows %+v, markers %d", rows, n)
 	}
 	// Nothing left to cut at the next start.
-	if n, err := st.SweepInflight(); err != nil || n != 0 {
+	if n, err := st.SweepInflight(nil); err != nil || n != 0 {
 		t.Fatalf("sweep = %d, %v; want 0", n, err)
 	}
 }
@@ -40,11 +41,14 @@ func TestInflight_SweepRecordsCutRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
+	// Written by a process that is gone; swept by this one.
+	st.SetOwner(4242, "gone")
 	if _, err := st.BeginInflight(Activity{TS: 100, Served: "m", Requested: "lane", Key: "k",
 		Path: "/v1/chat/completions", Ticket: "t1", QueuedMS: 7}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := st.SweepInflight()
+	st.SetOwner(os.Getpid(), "me")
+	n, err := st.SweepInflight(nil)
 	if err != nil || n != 1 {
 		t.Fatalf("sweep = %d, %v; want 1", n, err)
 	}
@@ -57,11 +61,55 @@ func TestInflight_SweepRecordsCutRows(t *testing.T) {
 		r.Key != "k" || r.Ticket != "t1" || r.TS != 100 || r.QueuedMS != 7 || r.PromptTokens != 0 {
 		t.Errorf("cut row = %+v", r)
 	}
-	if n, _ := st.SweepInflight(); n != 0 {
+	if n, _ := st.SweepInflight(nil); n != 0 {
 		t.Errorf("second sweep cut %d rows", n)
 	}
 	if m, _ := st.InflightCount(); m != 0 {
 		t.Errorf("%d markers left", m)
+	}
+}
+
+// Blue-green: the new process sweeps at start while its predecessor still
+// serves. Only markers whose writer is dead become cut rows; a live
+// predecessor's and this process's own stay, and an ownerless (pre-column)
+// marker is swept.
+func TestInflight_SweepSkipsLiveOwners(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	mark := func(pid int, start, served string) {
+		st.SetOwner(pid, start)
+		if _, err := st.BeginInflight(Activity{TS: 1, Served: served, Path: "/v1/chat/completions"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mark(100, "s100", "old-live")
+	mark(100, "s100-earlier", "reused-pid") // same pid, other instance: dead
+	mark(200, "s200", "dead")
+	mark(0, "", "legacy")
+	mark(300, "self", "mine")
+	// This process is pid 300 "self".
+	alive := func(pid int64, start string) bool { return pid == 100 && start == "s100" }
+	n, err := st.SweepInflight(alive)
+	if err != nil || n != 3 {
+		t.Fatalf("sweep = %d, %v; want 3", n, err)
+	}
+	rows, _ := st.RecentActivity(Window{}, 10, "", "", "")
+	cut := map[string]bool{}
+	for _, r := range rows {
+		cut[r.Served] = r.Error == CutRestartError
+	}
+	if !cut["reused-pid"] || !cut["dead"] || !cut["legacy"] || len(cut) != 3 {
+		t.Errorf("cut rows = %v; want reused-pid, dead, legacy", cut)
+	}
+	if m, _ := st.InflightCount(); m != 2 {
+		t.Errorf("%d markers left; want the live predecessor's and our own", m)
+	}
+	// The predecessor exits: the next sweep takes its marker.
+	if n, _ := st.SweepInflight(func(int64, string) bool { return false }); n != 1 {
+		t.Errorf("after predecessor exit swept %d; want 1", n)
 	}
 }
 
