@@ -2,7 +2,9 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -88,6 +90,10 @@ func (s *Server) toolRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "spec.name is required")
 		return
 	}
+	// Read the body to EOF. net/http only starts watching the connection for
+	// a hang-up — which is what cancels r.Context() — once the body has been
+	// consumed, and the JSON decoder may stop just short of EOF.
+	_, _ = io.Copy(io.Discard, r.Body)
 	verb := toolchain.Verb(req.Verb)
 	switch verb {
 	case toolchain.VerbProbe, toolchain.VerbUpstream, toolchain.VerbPreflight,
@@ -98,8 +104,25 @@ func (s *Server) toolRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A tool run is a JOB: it dies with whoever started it. The request
+	// context ends when the primary's connection drops (the primary died or
+	// gave up); jobsCtx ends when this agent shuts down. Either kills the
+	// run's whole process group (toolchain.Local.Run). Unlike a backend,
+	// nothing would ever adopt an orphaned build, and a half-finished one
+	// pegs the GPU for minutes on behalf of nobody.
+	jobCtx, ok := s.beginJob()
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, "agent is shutting down")
+		return
+	}
+	defer s.jobs.Done()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	stop := context.AfterFunc(jobCtx, cancel)
+	defer stop()
+
 	if req.Stream {
-		s.toolRunStreaming(w, r, req, verb)
+		s.toolRunStreaming(ctx, w, req, verb)
 		return
 	}
 
@@ -113,7 +136,7 @@ func (s *Server) toolRun(w http.ResponseWriter, r *http.Request) {
 		// shape proc.Trial took, and streaming can be added without changing the
 		// contract.
 	}
-	raw, err := runner.Run(r.Context(), req.Spec, verb)
+	raw, err := runner.Run(ctx, req.Spec, verb)
 	resp := ToolRunResponse{}
 	if raw != nil {
 		resp.JSON = raw.JSON
@@ -142,7 +165,7 @@ func (s *Server) recipeDir() string {
 // One NDJSON frame per line, flushed immediately. Flushing per line is the
 // whole point: buffered, the operator sees nothing until the build ends, which
 // is the behaviour this replaces.
-func (s *Server) toolRunStreaming(w http.ResponseWriter, r *http.Request, req ToolRunRequest, verb toolchain.Verb) {
+func (s *Server) toolRunStreaming(ctx context.Context, w http.ResponseWriter, req ToolRunRequest, verb toolchain.Verb) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-store")
 	// Headers go out before the first line so the client knows which shape it
@@ -173,7 +196,7 @@ func (s *Server) toolRunStreaming(w http.ResponseWriter, r *http.Request, req To
 		Progress:         lw,
 	}
 
-	raw, err := runner.Run(r.Context(), req.Spec, verb)
+	raw, err := runner.Run(ctx, req.Spec, verb)
 	lw.flush()
 
 	f := ToolRunFrame{Done: true}

@@ -101,18 +101,32 @@ type StartRequest struct {
 	Model string `json:"model"`
 	// Cmd is the shell string, ALREADY tuned by the primary.
 	Cmd string `json:"cmd"`
+	// ConfigCmd is the command as CONFIGURED, before ${tool:} expansion and
+	// slot tuning. Stored and reported back verbatim: it is what a restarted
+	// primary compares against its current config to decide whether this
+	// backend is still the model it would spawn (adopt) or a stale one (reap).
+	// Cmd cannot answer that — tuning rewrites it on every spawn.
+	ConfigCmd string `json:"configCmd,omitempty"`
+	// Port is the loopback port the backend serves on. A restarted agent only
+	// adopts a recorded backend that still answers there.
+	Port int `json:"port,omitempty"`
 }
 
 // Backend is one supervised process group as the agent sees it.
 type Backend struct {
-	ID      string `json:"id"`
-	Key     string `json:"key"`
-	Model   string `json:"model"`
-	Cmd     string `json:"cmd"`
-	Alive   bool   `json:"alive"`
-	Exited  bool   `json:"exited"`
-	Err     string `json:"err,omitempty"`
-	Started int64  `json:"started"` // unix millis
+	ID    string `json:"id"`
+	Key   string `json:"key"`
+	Model string `json:"model"`
+	Cmd   string `json:"cmd"`
+	// ConfigCmd and Port echo the StartRequest; see there. Empty from an
+	// agent older than these fields, which a primary must treat as "cannot
+	// verify" — and therefore never adopt.
+	ConfigCmd string `json:"configCmd,omitempty"`
+	Port      int    `json:"port,omitempty"`
+	Alive     bool   `json:"alive"`
+	Exited    bool   `json:"exited"`
+	Err       string `json:"err,omitempty"`
+	Started   int64  `json:"started"` // unix millis
 	// MemoryMiB is the group's device memory, or -1 when this machine cannot
 	// attribute memory per process (macOS has no nvidia-smi equivalent).
 	MemoryMiB int `json:"memoryMiB"`
