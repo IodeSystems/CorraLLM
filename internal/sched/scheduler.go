@@ -82,6 +82,13 @@ type Scheduler struct {
 	// (interactive) lane gets an already-free slot without preempting.
 	reservations map[string]map[string]*reservation
 	maxResTTL    time.Duration // cap on a reservation lease (0 = default 5m)
+
+	// Blue-green handoff (handoff.go). draining refuses admission and stops
+	// promotion; drainCh is closed by Drain so queued waiters wake and leave.
+	// hold, when non-nil, makes Admit wait until ReleaseAdmission closes it.
+	draining bool
+	drainCh  chan struct{}
+	hold     chan struct{}
 }
 
 // ewmaAlpha weights the newest service-time sample in the per-backend dwell EWMA
@@ -102,6 +109,7 @@ func New() *Scheduler {
 		budgets:      map[string][]rateEvent{},
 		reservations: map[string]map[string]*reservation{},
 		now:          time.Now,
+		drainCh:      make(chan struct{}),
 	}
 }
 
@@ -151,7 +159,8 @@ func (s *Scheduler) boundsFor(model string) (time.Duration, int) {
 
 type backendState struct {
 	capacity    int
-	active      int            // slots in use
+	active      int            // slots in use, foreign included
+	foreign     int            // of active, held by another process (SetForeign)
 	groupActive map[string]int // in-flight slots per group (request-count numerator)
 	slots       []*slot        // active slots, for victim selection
 	waiters     []*waiter      // queued, picked by preempt-priority then weighted fairshare
@@ -209,10 +218,18 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	if weight < 1 {
 		weight = 1
 	}
+	if err := s.awaitHold(ctx); err != nil {
+		return nil, nil, err
+	}
 	reqCtx, cancel := context.WithCancelCause(ctx)
 	now := s.now()
 
 	s.mu.Lock()
+	if s.draining {
+		s.mu.Unlock()
+		cancel(nil)
+		return nil, nil, ErrDraining
+	}
 	bs := s.backends[backend]
 	if bs == nil {
 		bs = &backendState{capacity: capacity, groupActive: map[string]int{},
@@ -369,6 +386,19 @@ func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx 
 		return s.giveUp(backend, w, "queue-timeout")
 	case <-ctx.Done():
 		return s.giveUp(backend, w, "queue-timeout")
+	case <-s.drainCh:
+		// Handed over while queued: the successor serves it. A grant that
+		// raced the drain is kept — that slot is real and the request runs.
+		s.mu.Lock()
+		bs := s.backends[backend]
+		removed := bs != nil && bs.removeWaiter(w)
+		s.mu.Unlock()
+		if removed {
+			w.slot.cancel(nil)
+			return nil, nil, ErrDraining
+		}
+		<-w.ready
+		return s.releaser(backend, w.slot), reqCtx, nil
 	}
 }
 
@@ -512,6 +542,12 @@ func (bs *backendState) grant(sl *slot, now time.Time) {
 // only granted a slot its lane may use (not one reserved by another lane), so
 // freed batch slots don't refill a reserved segment.
 func (s *Scheduler) promote(bs *backendState, backend string, now time.Time) []*slot {
+	// A draining process grants nothing more; its waiters leave with
+	// ErrDraining (see wait). Without this a release would hand its slot to
+	// a queued request and the successor could not count it.
+	if s.draining {
+		return nil
+	}
 	var granted []*slot
 	for len(bs.waiters) > 0 {
 		idx := s.pickGrantableWaiter(bs, backend, now)
