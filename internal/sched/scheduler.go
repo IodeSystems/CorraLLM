@@ -189,6 +189,8 @@ type slot struct {
 	admitAt    time.Time
 	cancel     context.CancelCauseFunc
 	preempting bool
+	// priority queues ahead of every normal waiter (see priority.go).
+	priority bool
 }
 
 type waiter struct {
@@ -246,7 +248,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 
 	sl := &slot{group: group, backendType: backendType, weight: weight,
 		interruptible: interruptible, currency: s.shareCurrency(group), cancel: cancel,
-		since: waitingSince(ctx)}
+		since: waitingSince(ctx), priority: priorityFrom(ctx)}
 
 	// Over a per-group / per-(group×type) limit budget? Preemption can't free a
 	// budget, so an over-budget request advances (spill) if the stage allows,
@@ -324,7 +326,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	// informative 429 so the caller can shape, rather than block (the fork's
 	// maxQueueDepth contract). Preempt waiters above bypass this — they freed a slot.
 	var victim *waiter
-	if modelDepth > 0 && len(bs.waiters) >= modelDepth {
+	if modelDepth > 0 && bs.queuedAhead(sl) >= modelDepth {
 		// A full queue used to reject the NEWCOMER unconditionally, so a queue
 		// held by low-priority waiters blocked a higher-priority arrival purely
 		// because they got there first. Arrival order outranking fairshare is
@@ -338,7 +340,12 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 		// Within a group the numerator is identical, so a fresh newcomer is
 		// never strictly better than its own peers. An aged ticket can be (see
 		// aging.go): a caller that already timed out displaces a fresher peer.
-		victim = bs.pickBumpable(s.now(), sl)
+		//
+		// A priority arrival bumps nobody: it is here only because priority
+		// waiters alone fill the queue, and those are FIFO among themselves.
+		if !sl.priority {
+			victim = bs.pickBumpable(s.now(), sl)
+		}
 		if victim == nil {
 			be := bs.backpressureFor(now, sl, "rejected")
 			s.mu.Unlock()
@@ -385,7 +392,14 @@ func (s *Scheduler) wait(ctx context.Context, backend string, w *waiter, reqCtx 
 	case <-maxWaitC:
 		return s.giveUp(backend, w, "queue-timeout")
 	case <-ctx.Done():
-		return s.giveUp(backend, w, "queue-timeout")
+		// A deadline is corrallm's own request timeout: backpressure, as
+		// before. Anything else is the caller leaving (client hang-up, operator
+		// cancel). That is not a refusal, so it must not be logged as a 429
+		// queue-timeout; the proxy logs the returned cause as 499.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return s.giveUp(backend, w, "queue-timeout")
+		}
+		return s.leave(backend, w, context.Cause(ctx))
 	case <-s.drainCh:
 		// Handed over while queued: the successor serves it. A grant that
 		// raced the drain is kept — that slot is real and the request runs.
@@ -417,6 +431,21 @@ func (s *Scheduler) giveUp(backend string, w *waiter, reason string) (func(...Do
 	s.mu.Unlock()
 	s.releaser(backend, w.slot)() // already granted: release the slot we never used
 	return nil, nil, &BackpressureError{Reason: reason, RetryAfter: time.Second}
+}
+
+// leave drops a waiter whose caller went away and returns cause. A grant that
+// raced the cancel is handed back, as in giveUp.
+func (s *Scheduler) leave(backend string, w *waiter, cause error) (func(...Done), context.Context, error) {
+	s.mu.Lock()
+	bs := s.backends[backend]
+	removed := bs != nil && bs.removeWaiter(w)
+	s.mu.Unlock()
+	if removed {
+		w.slot.cancel(nil)
+	} else {
+		s.releaser(backend, w.slot)()
+	}
+	return nil, nil, cause
 }
 
 // releaser returns a one-shot release for a held slot. The optional Done carries
@@ -566,12 +595,19 @@ func (s *Scheduler) promote(bs *backendState, backend string, now time.Time) []*
 // pickGrantableWaiter chooses the next waiter that can actually take a free slot,
 // or -1 if none. Preempt waiters go first in FIFO order — each already freed a
 // slot by preempting, so it REPLACES (net active unchanged) and is bounded by
-// physical capacity, not the reservation. Otherwise the most under-served group by
+// physical capacity, not the reservation. Priority waiters next, FIFO (see
+// priority.go). Otherwise the most under-served group by
 // min(numerator/weight) wins, but only among lanes with room under their effective
 // capacity (a lane can't fill slots reserved by another lane). Caller holds s.mu.
 func (s *Scheduler) pickGrantableWaiter(bs *backendState, backend string, now time.Time) int {
 	for i, w := range bs.waiters {
 		if w.preempt && bs.active < bs.capacity {
+			return i
+		}
+	}
+	// Priority waiters next, FIFO, each within its lane's effective capacity.
+	for i, w := range bs.waiters {
+		if w.slot.priority && !w.preempt && bs.active < s.effCapLocked(bs, backend, w.slot.group, now) {
 			return i
 		}
 	}
@@ -637,15 +673,16 @@ func attemptStart(now time.Time, sl *slot) time.Time {
 // admission and slot admission cannot disagree about who deserves what.
 //
 // Never bumps a preempt waiter: it freed a slot by being preempted and is owed
-// the place. Strictly-greater comparison means ties never bump, which is what
-// keeps same-group arrivals from displacing their own peers.
+// the place. Never bumps a priority waiter either (see priority.go).
+// Strictly-greater comparison means ties never bump, which is what keeps
+// same-group arrivals from displacing their own peers.
 func (bs *backendState) pickBumpable(now time.Time, arriving *slot) *waiter {
 	currency := bs.queueCurrency()
 	mine := bs.ratio(now, currency, arriving)
 	var victim *waiter
 	worst := mine
 	for _, w := range bs.waiters {
-		if w.preempt {
+		if w.preempt || w.slot.priority {
 			continue
 		}
 		if r := bs.ratio(now, currency, w.slot); r > worst {
@@ -662,6 +699,11 @@ func (bs *backendState) pickBumpable(now time.Time, arriving *slot) *waiter {
 func (bs *backendState) pickWaiter(now time.Time) int {
 	for i, w := range bs.waiters {
 		if w.preempt {
+			return i
+		}
+	}
+	for i, w := range bs.waiters {
+		if w.slot.priority {
 			return i
 		}
 	}

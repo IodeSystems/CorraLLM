@@ -63,6 +63,7 @@ type Proxy struct {
 	requestTimeout     time.Duration                          // 0 = no corrallm-imposed deadline (defer to client + backend)
 	capturePayloads    bool                                   // capture req/resp payloads onto the activity row (P10b)
 	trustedCaller      func(r *http.Request, key string) bool // passes credential allowlists; see SetTrustedCaller
+	priorityCaller     func(key string) bool                  // heads the admission queue; see SetPriorityCaller
 	alert              *alert.Notifier                        // operator push alerts; nil drops them
 	realtimeIdle       time.Duration                          // 0 = no idle reap of a realtime ws session (P9e)
 	realtimeMaxSession time.Duration                          // 0 = no max-duration reap of a realtime ws session (P9e)
@@ -551,6 +552,22 @@ func (p *Proxy) SetAlerter(n *alert.Notifier) { p.alert = n }
 // callers (the running benchmark, an admin's dashboard Test tab). Spend limits
 // still apply to them. nil = nobody.
 func (p *Proxy) SetTrustedCaller(f func(r *http.Request, key string) bool) { p.trustedCaller = f }
+
+// SetPriorityCaller sets whose requests go to the head of a model's admission
+// queue (sched.WithPriority): the running benchmark, so contention does not
+// distort what it measures. It does not preempt and does not skip limits.
+// nil = nobody.
+func (p *Proxy) SetPriorityCaller(f func(key string) bool) { p.priorityCaller = f }
+
+// admitCtx is the context a request is admitted under: aged by its ticket, and
+// marked priority for a priority caller.
+func (p *Proxy) admitCtx(ctx context.Context, r *http.Request, key string) context.Context {
+	ctx = agedCtx(ctx, r)
+	if p.priorityCaller != nil && p.priorityCaller(key) {
+		ctx = sched.WithPriority(ctx)
+	}
+	return ctx
+}
 
 // SetBroker attaches an events broker so the request path can push live updates
 // (a new activity record, a "state changed" ping). Optional; nil disables it.
@@ -1066,7 +1083,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		admitStart := time.Now()
 		// group.Interruptible OR the request's own opt-in. A caller can only
 		// widen this, never narrow it — see retryableRequest.
-		release, reqCtx, err := p.sched.Admit(agedCtx(ctx, r), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
+		release, reqCtx, err := p.sched.Admit(p.admitCtx(ctx, r, key), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if errors.Is(err, sched.ErrDraining) && p.handOver(w, r, arrivedCT, arrivedBody) {
 			return // queued here when this process handed over
@@ -1094,7 +1111,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}
 			p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
 				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS,
-				Error: "client canceled", ReqBody: reqBody}) // queued then client gave up
+				Error: queuedCancelReason(err), ReqBody: reqBody}) // queued then client gave up
 			return
 		}
 
@@ -1775,7 +1792,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		stage := group.StageFor(backend.Type)
 
 		admitStart := time.Now()
-		release, reqCtx, err := p.sched.Admit(agedCtx(r.Context(), r), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
+		release, reqCtx, err := p.sched.Admit(p.admitCtx(r.Context(), r, key), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
 		queuedMS += time.Since(admitStart).Milliseconds()
 		if errors.Is(err, sched.ErrDraining) && p.handOver(w, r, "", nil) {
 			return // the successor takes the session
@@ -1795,7 +1812,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
-				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS, Error: "client canceled"})
+				Status: 499, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS, Error: queuedCancelReason(err)})
 			return
 		}
 		p.markInflight(live, inflightLoading, name)

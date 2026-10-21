@@ -88,3 +88,26 @@ func TestInflightVisibleDuringRequestAndClearedAfter(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// StateMS restarts when the state changes and only then: it is how a client
+// that cannot see corrallm's queue (llm-bench's stall watchdog) tells time
+// queued from time with the backend.
+func TestInflightStateMSRestartsOnStateChange(t *testing.T) {
+	p := &Proxy{}
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	e := p.beginInflight(r, "m", "g", "k", true, false, func(error) {})
+	defer p.endInflight(e)
+	time.Sleep(30 * time.Millisecond)
+	if got := p.Inflight()[0]; got.State != inflightQueued || got.StateMS < 30 {
+		t.Fatalf("queued: state %s stateMs %d, want queued >= 30", got.State, got.StateMS)
+	}
+	p.markInflight(e, inflightStreaming, "b")
+	if got := p.Inflight()[0]; got.StateMS >= 30 || got.ElapsedMS < 30 {
+		t.Fatalf("streaming: stateMs %d elapsedMs %d, want stateMs reset, elapsed kept", got.StateMS, got.ElapsedMS)
+	}
+	time.Sleep(20 * time.Millisecond)
+	p.markInflight(e, inflightStreaming, "b") // same state: no restart
+	if got := p.Inflight()[0]; got.StateMS < 20 {
+		t.Fatalf("same-state mark restarted stateMs: %d", got.StateMS)
+	}
+}

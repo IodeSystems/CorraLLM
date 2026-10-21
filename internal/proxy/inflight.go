@@ -19,6 +19,16 @@ import (
 // disconnect is nobody's fault, and this one was deliberate and should say so.
 var ErrCanceled = errors.New("canceled by operator")
 
+// queuedCancelReason is the activity-row error for a request that left the
+// admission queue with neither a slot nor backpressure: the client went away,
+// or an operator canceled it.
+func queuedCancelReason(err error) string {
+	if errors.Is(err, ErrCanceled) {
+		return ErrCanceled.Error()
+	}
+	return "client canceled"
+}
+
 // In-flight request registry.
 //
 // The activity log only exists once a request FINISHES — which is exactly when
@@ -58,6 +68,10 @@ type inflightEntry struct {
 	streaming bool
 	state     string
 	startedAt time.Time
+	// stateAt is when the entry entered its current state. A client that
+	// cannot see corrallm's queue (llm-bench's stall watchdog) reads it to
+	// tell queue time from model silence.
+	stateAt time.Time
 
 	// retryable is the request's own opt-in to being preempted, on top of
 	// whatever its group allows. See the header in proxy.go.
@@ -102,6 +116,7 @@ type InflightInfo struct {
 	BytesOut  int64 // response bytes relayed so far
 	Chunks    int64 // response writes so far — for a stream, ~tokens
 	State     string
+	StateMS   int64 // time in the current state so far
 	StartedAt time.Time
 	ElapsedMS int64
 }
@@ -123,6 +138,7 @@ func (p *Proxy) beginInflight(r *http.Request, served, group, key string, stream
 		state:     inflightQueued,
 		startedAt: time.Now(),
 	}
+	e.stateAt = e.startedAt
 	p.inflightMu.Lock()
 	if p.inflight == nil {
 		p.inflight = map[int64]*inflightEntry{}
@@ -141,6 +157,9 @@ func (p *Proxy) markInflight(e *inflightEntry, state, backend string) {
 		return
 	}
 	p.inflightMu.Lock()
+	if e.state != state {
+		e.stateAt = time.Now()
+	}
 	e.state = state
 	e.backend = backend
 	p.inflightMu.Unlock()
@@ -177,6 +196,7 @@ func (p *Proxy) Inflight() []InflightInfo {
 			Retryable: e.retryable, State: e.state, StartedAt: e.startedAt,
 			BytesOut: e.bytesOut.Load(), Chunks: e.chunks.Load(),
 			ElapsedMS: now.Sub(e.startedAt).Milliseconds(),
+			StateMS:   now.Sub(e.stateAt).Milliseconds(),
 		})
 	}
 	p.inflightMu.Unlock()

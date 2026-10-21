@@ -21,11 +21,13 @@ import (
 // scripted run behaves identically to a clicked one. corrallm adds only the
 // things a UI needs and a shell does not — captured output and a cancel button.
 //
-// The run is NOT privileged. It holds no lease, evicts nothing, and turns no
-// caller away: it queues for admission like any other client and waits out 429
-// backpressure, which llm-bench retries without limit and subtracts from its
-// timings. Isolating model time from queue time was the only thing exclusivity
-// bought, and measuring the queue directly buys it without an outage.
+// The run holds no lease, evicts nothing, preempts nothing, and turns no caller
+// away. Its one privilege is queue order: its requests go to the head of a
+// model's admission queue (sched.WithPriority), because queue time behind other
+// callers was measured as model silence and aborted stages (live run
+// 20261020-223350). It still waits for a running request to finish, and waits
+// out 429 backpressure, which llm-bench retries without limit and subtracts
+// from its timings.
 
 // benchLogCap bounds captured output so a runaway benchmark cannot exhaust
 // memory through its log alone.
@@ -50,8 +52,9 @@ type BenchRunner struct {
 func NewBenchRunner() *BenchRunner { return &BenchRunner{} }
 
 // IsRunKey reports whether key is the caller key of the run in progress. The
-// proxy lets that key past credential allowlists: an admin started the run and
-// chose its models, and the spend limits still apply.
+// proxy lets that key past credential allowlists (an admin started the run and
+// chose its models, and the spend limits still apply) and to the head of the
+// admission queue.
 func (b *BenchRunner) IsRunKey(key string) bool {
 	if b == nil || key == "" {
 		return false

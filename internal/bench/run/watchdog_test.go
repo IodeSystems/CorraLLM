@@ -325,8 +325,8 @@ func TestRetry429CountIsObservable(t *testing.T) {
 	}
 }
 
-// The relationship that makes the stall guard safe, asserted rather than
-// remembered.
+// The relationship that makes the stall guard safe WITHOUT corrallm admin
+// access (no modelSilence lookup), asserted rather than remembered.
 //
 // Legitimate silence inside ONE request is bounded by scheduler.maxWait: a
 // waiter not granted within it is handed a 429 instead of being held. If

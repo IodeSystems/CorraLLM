@@ -36,20 +36,23 @@ var errStalled = errors.New("model produced nothing for the stall timeout")
 //   - Retry-After sleeps BETWEEN attempts, which the client performs itself.
 //     OnRetry counts them and idleFor subtracts them per gap, so they never
 //     count as silence.
-//   - Queue time INSIDE an accepted request, which the client cannot see at
-//     all — it just looks like a slow response. corrallm bounds this with
-//     scheduler.maxWait: a waiter that is not granted within maxWait is handed
-//     a 429 rather than held. That bound is the ONLY reason a stall guard can
-//     work; without it, queued and hung are the same observation.
+//   - Queue time INSIDE an accepted request (admission and cold load), which
+//     the client cannot see on the wire — it just looks like a slow response.
+//     The watchdog asks corrallm for it instead (modelSilence): a request
+//     corrallm still holds queued or loading is not silence, and silence after
+//     it reaches the backend counts from that moment.
 //
-// So the floor is maxWait + time-to-first-token. Measured TTFT on a 3400x4400
-// page against a resident 27B is ~11s, and maxWait is 15s on this box, giving
-// a floor near 26s. 60s is that with room for a colder model, not a number
-// picked for feel.
+// That lookup needs corrallm admin access (overheadClient). Without it the
+// only bound on queue time is scheduler.maxWait: a waiter not granted within
+// maxWait is handed a 429 rather than held. The floor is then maxWait +
+// time-to-first-token. Measured TTFT on a 3400x4400 page against a resident
+// 27B is ~11s, and maxWait was 15s, giving a floor near 26s. 60s is that with
+// room for a colder model, not a number picked for feel.
 //
-// RAISING scheduler.maxWait without raising this will make the bench kill
-// healthy queued requests — the "stages died for being polite" regression,
-// again. TestStallTimeoutClearsTheQueueBound pins the relationship.
+// Live run 20261020-223350 is what the lookup fixes: maxWait on that box let
+// bench requests queue ~60s on a 1-slot model, and 12 stages were aborted as
+// "produced NOTHING" while corrallm still held their request in the queue.
+// TestStallTimeoutClearsTheQueueBound pins the no-lookup fallback.
 var stallTimeout = 60 * time.Second
 
 // watchdogTick bounds how stale the queue correction may be. Small enough that
@@ -121,9 +124,11 @@ func execBudgetContext(parent context.Context, budget time.Duration, oh *overhea
 				// queued early and then wedged got a grace as long as
 				// everything it had ever waited for, so on a contended box the
 				// guard would rarely fire at all.
-				if idleFor != nil && idleFor(time.Now()) > stall {
-					cancel(errStalled)
-					return
+				if idleFor != nil {
+					if idle := idleFor(time.Now()); idle > stall && modelSilence(ctx, oh, model, idle) > stall {
+						cancel(errStalled)
+						return
+					}
 				}
 				if time.Since(start)-(sinceStart()+serverWait) > budget {
 					cancel(errExecBudget)
@@ -134,4 +139,35 @@ func execBudgetContext(parent context.Context, budget time.Duration, oh *overhea
 	}()
 	// The caller's cancel must not claim the budget was spent.
 	return ctx, func() { cancel(context.Canceled) }
+}
+
+// modelSilence is how much of a client-side silence of idle was the MODEL's.
+//
+// Asked only once idle already exceeds the stall timeout, so a healthy combo
+// never pays for the lookup. corrallm decides the answer:
+//   - a request still queued or loading in corrallm: none of it. The model has
+//     not been asked yet.
+//   - a request with the backend: at most the time since it got there. A
+//     backend that accepts and never streams is still caught, stallTimeout
+//     after admission.
+//   - nothing in flight: all of it. The silence is the bench's own (a hung tool,
+//     a wedged retry), which is what the guard is for.
+//
+// A failed lookup, or no corrallm admin access, keeps idle: the guard works as
+// it did before the lookup existed rather than going blind.
+func modelSilence(ctx context.Context, oh *overheadClient, model string, idle time.Duration) time.Duration {
+	if oh == nil {
+		return idle
+	}
+	st, err := oh.Live(ctx, model)
+	if err != nil {
+		return idle
+	}
+	if st.Waiting {
+		return 0
+	}
+	if st.Streaming && st.StreamingFor < idle {
+		return st.StreamingFor
+	}
+	return idle
 }
