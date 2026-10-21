@@ -1085,8 +1085,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// widen this, never narrow it — see retryableRequest.
 		release, reqCtx, err := p.sched.Admit(p.admitCtx(ctx, r, key), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
-		if errors.Is(err, sched.ErrDraining) && p.handOver(w, r, arrivedCT, arrivedBody) {
-			return // queued here when this process handed over
+		if errors.Is(err, sched.ErrDraining) {
+			if p.handOver(w, r, arrivedCT, arrivedBody) {
+				return // queued here when this process handed over
+			}
+			p.refuseUnhanded(w, r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+				DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS, ReqBody: reqBody})
+			return
 		}
 		if err == nil {
 			// A slot was taken — lanes load changed. markInflight publishes, so
@@ -1794,8 +1799,13 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		admitStart := time.Now()
 		release, reqCtx, err := p.sched.Admit(p.admitCtx(r.Context(), r, key), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
 		queuedMS += time.Since(admitStart).Milliseconds()
-		if errors.Is(err, sched.ErrDraining) && p.handOver(w, r, "", nil) {
-			return // the successor takes the session
+		if errors.Is(err, sched.ErrDraining) {
+			if p.handOver(w, r, "", nil) {
+				return // the successor takes the session
+			}
+			p.refuseUnhanded(w, r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+				DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS, LoadMS: loadMS})
+			return
 		}
 		if err != nil {
 			var bp *sched.BackpressureError

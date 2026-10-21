@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+
+	"github.com/iodesystems/corrallm/internal/store"
 )
 
 // Blue-green handoff, the request side.
@@ -88,6 +90,21 @@ func (p *Proxy) handOver(w http.ResponseWriter, r *http.Request, contentType str
 	}
 	rp.ServeHTTP(w, out)
 	return true
+}
+
+// refuseUnhanded answers a request the drained scheduler refused and that
+// could not be handed over (no successor, or it was forwarded here already):
+// a 503 the caller can retry, and the one row saying so. It used to fall to
+// the "client canceled" 499 path, which writes nothing — the caller got an
+// empty 200 and the row blamed the caller.
+func (p *Proxy) refuseUnhanded(w http.ResponseWriter, r *http.Request, a store.Activity) {
+	slog.Warn("handoff: a refused request could not be handed over", "path", r.URL.Path,
+		"forwardedBy", r.Header.Get(HandoffHeader))
+	w.Header().Set("Retry-After", "1")
+	writeJSONError(w, http.StatusServiceUnavailable, "server_error", "corrallm is restarting; retry")
+	a.Status = http.StatusServiceUnavailable
+	a.Error = "restarting: not handed over"
+	p.logReq(r, a)
 }
 
 // pid is this process's, stamped on forwarded requests and on responses.
