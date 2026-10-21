@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -12,6 +12,7 @@ import {
   Typography,
   useMediaQuery,
 } from '@mui/material'
+import { AddLocalServerDialog, LocalServerProbeDoc } from '@/AddLocalServerDialog'
 import { ModelForm, blankSpec, specFromGql, type ModelSpec, type ServerOption } from '@/ModelForm'
 import { graphql } from '@/gql'
 import type { Corrallm_ModelSpecInput } from '@/gql/graphql'
@@ -43,31 +44,6 @@ const ServersDoc = graphql(/* GraphQL */ `
           }
           noProcessMemory
         }
-      }
-    }
-  }
-`)
-
-// Whether a server describes this machine, and what declaring it would write.
-const LocalServerProbeDoc = graphql(/* GraphQL */ `
-  query LocalServerProbe {
-    corrallm {
-      localServerProbe {
-        existing
-        name
-        pools
-      }
-    }
-  }
-`)
-
-const AddLocalServerDoc = graphql(/* GraphQL */ `
-  mutation AddLocalServer {
-    corrallm {
-      addLocalServer {
-        ok
-        message
-        server
       }
     }
   }
@@ -183,23 +159,24 @@ export function ProviderModelDialog(props: {
     enabled: open && !remote && kind !== 'port',
   })
   const probe = local?.corrallm?.localServerProbe
+  // Choosing "this machine" opens a form prefilled from the probe; the picker
+  // waits on it, and gets the server written or null for a cancel.
+  const [addingLocal, setAddingLocal] = useState(false)
+  const resolveLocal = useRef<((server: string | null) => void) | null>(null)
+  const closeLocal = (server: string | null) => {
+    setAddingLocal(false)
+    resolveLocal.current?.(server)
+    resolveLocal.current = null
+  }
   const addThisMachine =
     probe && !probe.existing
       ? {
-          label: `this machine: add ${probe.name} (${probe.pools || 'memory not measured'})`,
-          onAdd: async () => {
-            setErr('')
-            try {
-              const r = await gqlClient.request(AddLocalServerDoc)
-              qc.invalidateQueries({ queryKey: ['localModelServers'] })
-              qc.invalidateQueries({ queryKey: ['localServerProbe'] })
-              qc.invalidateQueries({ queryKey: ['overview'] })
-              return r.corrallm?.addLocalServer?.server ?? null
-            } catch (e) {
-              setErr(String(e))
-              return null
-            }
-          },
+          label: `this machine: add ${probe.name}… (${probe.pools || 'memory not measured'})`,
+          onAdd: () =>
+            new Promise<string | null>((resolve) => {
+              resolveLocal.current = resolve
+              setAddingLocal(true)
+            }),
         }
       : undefined
 
@@ -365,6 +342,7 @@ export function ProviderModelDialog(props: {
           {upsert.isPending ? 'Saving…' : editing ? 'Save changes' : 'Add model'}
         </Button>
       </DialogActions>
+      <AddLocalServerDialog open={addingLocal} onClose={closeLocal} />
     </Dialog>
   )
 }

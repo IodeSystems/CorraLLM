@@ -518,7 +518,7 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		OperationID: "localServerProbe",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/servers/local",
-		Summary:     "What adding this machine as a server would write (name and pools), and the server already declared for it, if any.",
+		Summary:     "What adding this machine as a server would write (name, pools, and a reserve per pool for what other processes use plus a buffer), and the server already declared for it, if any.",
 		Tags:        []string{"config"},
 	}, h.LocalServerProbe)
 
@@ -526,7 +526,7 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		OperationID: "addLocalServer",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/servers/local",
-		Summary:     "Declare this machine as a server, sized from its own GPU and memory probe, so spawned models have somewhere to run. Returns the existing one when there is one.",
+		Summary:     "Declare this machine as a server, sized from its own GPU and memory probe or as the body edits that proposal, so spawned models have somewhere to run. Returns the existing one when there is one.",
 		Tags:        []string{"config"},
 	}, h.AddLocalServer)
 

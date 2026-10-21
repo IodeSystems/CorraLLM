@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/iodesystems/corrallm/internal/gpu"
+	"github.com/iodesystems/corrallm/internal/sysmem"
 )
 
 // Local runs backends as child processes of this corrallm. It is the behavior
@@ -113,4 +114,12 @@ func (h *localHandle) MemoryByDeviceMiB() (map[string]int, error) {
 		return nil, fmt.Errorf("no process")
 	}
 	return gpu.GroupVRAMByDevice(h.pid)
+}
+
+// AnonBytes is the group's anonymous system RAM (see HostMemory).
+func (h *localHandle) AnonBytes() (int64, error) {
+	if h.pid == 0 {
+		return 0, fmt.Errorf("no process")
+	}
+	return sysmem.GroupAnonBytes(h.pid)
 }
