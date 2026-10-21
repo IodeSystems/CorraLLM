@@ -70,17 +70,12 @@ type Reconciler struct {
 	Ledger    Floorer
 	Alert     *alert.Notifier
 	Now       func() time.Time
-
-	// drifting remembers which windows are in a drift episode so one is told
-	// about once, not once an hour. In memory: a restart re-announces a drift
-	// that is still there, which is a reminder rather than a flood.
-	drifting map[string]bool
 }
 
 // New builds a reconciler with the built-in providers.
 func New(st *store.Store, cfg func() *config.Config, ledger Floorer, n *alert.Notifier) *Reconciler {
 	return &Reconciler{Store: st, Config: cfg, Providers: []Provider{NewFireworks()},
-		Ledger: ledger, Alert: n, Now: time.Now, drifting: map[string]bool{}}
+		Ledger: ledger, Alert: n, Now: time.Now}
 }
 
 // Run reconciles after startDelay and then every interval until ctx ends. The
@@ -302,24 +297,56 @@ func Drift(billed, recorded float64) (float64, bool) {
 	return d, d > thr
 }
 
-// checkDrift sends ONE message when any window newly enters drift, and clears a
-// window's episode when it falls back under the threshold. The period is part
-// of the key, so a new day or month is a new episode.
+// newEpisode reports whether drift d in a window is news, given the episode
+// on record for it. The rule:
+//
+//   - no episode on record, or one for an earlier period (a new day or
+//     month): news;
+//   - the drift has at least DOUBLED since the last alert: news again — the
+//     unmetered amount is growing, not just still there;
+//   - otherwise the same episode: quiet.
+//
+// A window that falls back under the threshold ends its episode (cleared in
+// checkDrift), so a drift that reappears later alerts again.
+func newEpisode(period string, d float64, recPeriod string, recUSD float64, ok bool) bool {
+	return !ok || recPeriod != period || d >= 2*recUSD
+}
+
+// checkDrift sends ONE message when any window newly enters drift (see
+// newEpisode), and clears a window's episode when it falls back under the
+// threshold. Episodes are stored (billing_alert), so a restart or blue-green
+// handoff does not re-announce an unchanged drift.
 func (r *Reconciler) checkDrift(t target, now time.Time, ws []window) {
 	var lines []string
+	type mark struct {
+		unit, period string
+		d            float64
+	}
+	var marks []mark
 	for _, w := range ws {
-		k := t.provider + "/" + t.cred.Name + "/" + w.unit + "/" + w.period
 		d, over := Drift(w.billed, w.recorded)
 		if !over {
-			delete(r.drifting, k)
+			if err := r.Store.ClearBillingAlert(t.provider, t.cred.Name, w.unit); err != nil {
+				slog.Warn("billing: clear drift episode", "err", err)
+			}
 			continue
 		}
-		if r.drifting[k] {
+		// A read failure alerts: a repeated message beats a missed one.
+		recPeriod, recUSD, ok, err := r.Store.BillingAlert(t.provider, t.cred.Name, w.unit)
+		if err != nil {
+			slog.Warn("billing: read drift episode", "err", err)
+		}
+		if !newEpisode(w.period, d, recPeriod, recUSD, ok) {
 			continue
 		}
-		r.drifting[k] = true
+		marks = append(marks, mark{w.unit, w.period, d})
 		lines = append(lines, fmt.Sprintf("%s %s: billed $%.2f, recorded $%.2f, unmetered $%.2f",
 			w.unit, w.period, w.billed, w.recorded, d))
+	}
+	for _, m := range marks {
+		if err := r.Store.SetBillingAlert(t.provider, t.cred.Name, m.unit, m.period, m.d, now.UnixMilli()); err != nil {
+			slog.Warn("billing: record drift episode", "err", err)
+		}
 	}
 	if len(lines) == 0 {
 		return

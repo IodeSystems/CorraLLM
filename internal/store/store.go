@@ -491,6 +491,9 @@ var migrations = []string{
 	// What each provider's own bill says next to what corrallm metered (2026-10-20).
 	providerBillingSchema,
 	providerBillingFetchSchema,
+	// The open billing-drift episode per window, so a restart or handoff does
+	// not re-announce it (2026-10-21).
+	billingAlertSchema,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
