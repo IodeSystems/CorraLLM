@@ -41,8 +41,9 @@ var jobs struct {
 // CREATE_NEW_PROCESS_GROUP is what makes a console control event addressable to
 // this child and its descendants rather than to everything sharing our console
 // — including this daemon. It is also required for GenerateConsoleCtrlEvent to
-// target the child at all.
-func sysProcAttr() *syscall.SysProcAttr {
+// target the child at all. detach has no Windows meaning (no sessions to leave
+// in the unix sense) and is ignored.
+func sysProcAttr(bool) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
 }
 

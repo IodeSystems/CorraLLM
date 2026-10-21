@@ -26,7 +26,7 @@ func (l *Local) Start(s Spec) (Handle, error) {
 	shell, args := shellFor(s.Cmd)
 	cmd := exec.Command(shell, args...)
 	cmd.Stdout, cmd.Stderr = s.Out, s.Out
-	cmd.SysProcAttr = sysProcAttr()
+	cmd.SysProcAttr = sysProcAttr(s.Detach)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn %q: %w", s.Cmd, err)
 	}
