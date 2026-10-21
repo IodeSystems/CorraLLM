@@ -48,6 +48,31 @@ const ServersDoc = graphql(/* GraphQL */ `
   }
 `)
 
+// Whether a server describes this machine, and what declaring it would write.
+const LocalServerProbeDoc = graphql(/* GraphQL */ `
+  query LocalServerProbe {
+    corrallm {
+      localServerProbe {
+        existing
+        name
+        pools
+      }
+    }
+  }
+`)
+
+const AddLocalServerDoc = graphql(/* GraphQL */ `
+  mutation AddLocalServer {
+    corrallm {
+      addLocalServer {
+        ok
+        message
+        server
+      }
+    }
+  }
+`)
+
 const LocalModelSpecDoc = graphql(/* GraphQL */ `
   query LocalModelSpec($name: String!) {
     corrallm {
@@ -149,6 +174,34 @@ export function ProviderModelDialog(props: {
     pools: (s.pools ?? []).map((p) => p.pool),
     noProcessMemory: s.noProcessMemory ?? false,
   }))
+
+  // A fresh install has no server, so a process model had nowhere to run and
+  // could not be saved. Offer to declare this machine.
+  const { data: local } = useQuery({
+    queryKey: ['localServerProbe'],
+    queryFn: () => gqlClient.request(LocalServerProbeDoc),
+    enabled: open && !remote && kind !== 'port',
+  })
+  const probe = local?.corrallm?.localServerProbe
+  const addThisMachine =
+    probe && !probe.existing
+      ? {
+          label: `this machine: add ${probe.name} (${probe.pools || 'memory not measured'})`,
+          onAdd: async () => {
+            setErr('')
+            try {
+              const r = await gqlClient.request(AddLocalServerDoc)
+              qc.invalidateQueries({ queryKey: ['localModelServers'] })
+              qc.invalidateQueries({ queryKey: ['localServerProbe'] })
+              qc.invalidateQueries({ queryKey: ['overview'] })
+              return r.corrallm?.addLocalServer?.server ?? null
+            } catch (e) {
+              setErr(String(e))
+              return null
+            }
+          },
+        }
+      : undefined
 
   // Loaded through the SAME query the Config page uses, so the two editors
   // cannot disagree about what a stored model looks like.
@@ -289,6 +342,8 @@ export function ProviderModelDialog(props: {
             servers={servers}
             advanced={[]}
             existing={editing}
+            cmdRequired={!remote && kind === 'process'}
+            addThisMachine={addThisMachine}
             hide={
               remote
                 ? ['name', 'process', 'proxy', 'footprint', 'residency']

@@ -74,6 +74,10 @@ export type ServerOption = {
   agentStatus?: string | null
 }
 
+// The Server select's value for "declare this machine". Server names are
+// [a-z0-9-], so this cannot collide with one.
+const THIS_MACHINE = '__this_machine__'
+
 // Cost classes the scheduler knows. Free text would be a typo waiting to route
 // nothing; the list is short and changes rarely.
 const TYPES = ['chat', 'embed', 'stt', 'tts', 'realtime', 'image', 'rerank']
@@ -101,6 +105,8 @@ export function ModelForm({
   advanced,
   existing,
   hide = [],
+  cmdRequired = false,
+  addThisMachine,
 }: {
   spec: ModelSpec
   onChange: (s: ModelSpec) => void
@@ -128,6 +134,13 @@ export function ModelForm({
    *   residency  persistent, idle-unload, evict
    */
   hide?: ('name' | 'process' | 'proxy' | 'footprint' | 'residency')[]
+  /** A process model: the command is required, and "pure proxy" is not an option. */
+  cmdRequired?: boolean
+  /**
+   * Offered when no server describes the machine this daemon runs on — a fresh
+   * install. Choosing it declares that machine and selects it.
+   */
+  addThisMachine?: { label: string; onAdd: () => Promise<string | null> }
 }) {
   const hidden = (k: 'name' | 'process' | 'proxy' | 'footprint' | 'residency') => hide.includes(k)
   const set = <K extends keyof ModelSpec>(k: K, v: ModelSpec[K]) => onChange({ ...spec, [k]: v })
@@ -160,8 +173,11 @@ export function ModelForm({
         multiline
         minRows={2}
         slotProps={{ input: { sx: { fontFamily: 'monospace', fontSize: 12.5 } } }}
+        placeholder={cmdRequired ? 'llama-server -m /models/model.gguf --port 5800' : undefined}
         helperText={
-          spawned
+          cmdRequired
+            ? 'Required. corrallm runs it on the server below, and stops it when it needs the memory. Its port goes in Listens on.'
+            : spawned
             ? 'Run by corrallm on the server below. Leave empty to make this a pure proxy to something already running.'
             : 'Empty: this is a pure proxy — corrallm forwards to it and never starts or stops it.'
         }
@@ -176,7 +192,10 @@ export function ModelForm({
           size="small"
           sx={{ minWidth: 220 }}
           value={spec.server}
-          onChange={(e) => set('server', e.target.value)}
+          onChange={(e) => {
+            if (e.target.value !== THIS_MACHINE) return set('server', e.target.value)
+            void addThisMachine?.onAdd().then((name) => name && set('server', name))
+          }}
           // A spawned model MUST name a server; config validation rejects it
           // otherwise, and saying so here beats a round trip to find out.
           error={spawned && !spec.server}
@@ -186,9 +205,16 @@ export function ModelForm({
               : 'Which machine runs it'
           }
         >
-          <MenuItem value="">
-            <em>none (pure proxy)</em>
-          </MenuItem>
+          {!cmdRequired && (
+            <MenuItem value="">
+              <em>none (pure proxy)</em>
+            </MenuItem>
+          )}
+          {addThisMachine && (
+            <MenuItem value={THIS_MACHINE}>
+              <em>{addThisMachine.label}</em>
+            </MenuItem>
+          )}
           {servers.map((s) => (
             <MenuItem key={s.server} value={s.server}>
               {s.server}

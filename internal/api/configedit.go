@@ -186,9 +186,12 @@ func (h *Handlers) UpsertModel(ctx context.Context, in *UpsertModelInput) (*Conf
 		// served name must match the prefix rule so the URL and the config
 		// cannot disagree about what this model is called.
 		if !existed && in.Provider != "" {
-			lp, ok := c.Providers[in.Provider]
-			if !ok {
-				return huma.Error400BadRequest(fmt.Sprintf("unknown provider %q", in.Provider))
+			// A missing provider is created, not refused. A fresh install has
+			// no `local` provider until its first model, and refusing here made
+			// that first model impossible to add from the dashboard.
+			lp := c.Providers[in.Provider]
+			if c.Providers == nil {
+				c.Providers = map[string]config.LocalProvider{}
 			}
 			id := strings.TrimPrefix(name, in.Provider+"-")
 			if id == name || id == "" {

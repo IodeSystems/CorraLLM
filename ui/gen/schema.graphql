@@ -9,6 +9,7 @@ schema {
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
 
 type CorrallmMutationNamespace {
+  addLocalServer: corrallm_AddLocalServerOutputBody @derived(operationId: "addLocalServer")
   addRemoteModel(body: corrallm_RemoteModelSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "addRemoteModel")
   agentEnroll(
     """Bearer <enrollment token>, minted by the operator."""
@@ -208,6 +209,7 @@ type CorrallmQueryNamespace {
   listProviderPresets: corrallm_ProviderPresetsOutputBody @derived(operationId: "listProviderPresets")
   listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
   listSelections: corrallm_SelectionsOutputBody @derived(operationId: "listSelections")
+  localServerProbe: corrallm_LocalServerProbeOutputBody @derived(operationId: "localServerProbe")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -362,6 +364,7 @@ type CorrallmQueryNamespace {
 }
 
 type CorrallmV1MutationNamespace {
+  addLocalServer: corrallm_AddLocalServerOutputBody @derived(operationId: "addLocalServer")
   addRemoteModel(body: corrallm_RemoteModelSpecInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "addRemoteModel")
   agentEnroll(
     """Bearer <enrollment token>, minted by the operator."""
@@ -560,6 +563,7 @@ type CorrallmV1QueryNamespace {
   listProviderPresets: corrallm_ProviderPresetsOutputBody @derived(operationId: "listProviderPresets")
   listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
   listSelections: corrallm_SelectionsOutputBody @derived(operationId: "listSelections")
+  localServerProbe: corrallm_LocalServerProbeOutputBody @derived(operationId: "localServerProbe")
   modelLogs(
     """Backend id (<servedModel>#<index>), as in residency."""
     backend: String
@@ -886,6 +890,13 @@ type corrallm_ActivityRecord {
   ts: Long!
   """Time to first response byte, milliseconds (0 if no body)."""
   ttfbMs: Long!
+}
+
+type corrallm_AddLocalServerOutputBody {
+  message: String!
+  ok: Boolean!
+  """The server to put spawned models on."""
+  server: String!
 }
 
 input corrallm_AssignModelInputBodyInput {
@@ -2048,6 +2059,15 @@ type corrallm_LocalProviderView {
   models: [corrallm_LocalProviderModelView!]!
   name: String!
   notes: String!
+}
+
+type corrallm_LocalServerProbeOutputBody {
+  """A server already declared for this machine (no agent binding); empty when there is none."""
+  existing: String!
+  """The server name adding this machine would use: the hostname."""
+  name: String!
+  """The memory pools adding this machine would declare, e.g. 'gpu0 24GB, system 64GB'."""
+  pools: String!
 }
 
 input corrallm_MintEnrollmentTokenInputBodyInput {

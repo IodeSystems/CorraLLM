@@ -33,7 +33,7 @@ func Enroll(ctx context.Context, primary, enrollToken, server, addr, version str
 	// later, and an unnamed enrollment is otherwise a hard failure at the last
 	// step of an otherwise one-command setup.
 	if strings.TrimSpace(server) == "" {
-		server = proposedServerName()
+		server = ProposedServerName()
 	}
 	req := EnrollRequest{
 		Server:    server,
@@ -73,18 +73,18 @@ func Enroll(ctx context.Context, primary, enrollToken, server, addr, version str
 	return out, nil
 }
 
-// proposedServerName turns this machine's hostname into a config key.
+// ProposedServerName turns this machine's hostname into a config key.
 //
 // Config keys end up in YAML, logs and URLs, so the name is reduced to
 // lowercase alphanumerics and dashes — "CarlsMacBookPro.local" becomes
 // "carlsmacbookpro". A machine with no usable hostname falls back to a fixed
 // name rather than an empty one, which would create a server called "".
-func proposedServerName() string {
+func ProposedServerName() string {
 	hn, _ := os.Hostname()
 	return sanitiseHostname(hn)
 }
 
-// sanitiseHostname is proposedServerName's pure half, so it can be tested.
+// sanitiseHostname is ProposedServerName's pure half, so it can be tested.
 func sanitiseHostname(hn string) string {
 	if i := strings.IndexByte(hn, '.'); i > 0 {
 		hn = hn[:i] // drop the .local / domain suffix

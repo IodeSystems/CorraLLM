@@ -507,6 +507,22 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.SetModelQueueDepth)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "localServerProbe",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/servers/local",
+		Summary:     "What adding this machine as a server would write (name and pools), and the server already declared for it, if any.",
+		Tags:        []string{"config"},
+	}, h.LocalServerProbe)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "addLocalServer",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/servers/local",
+		Summary:     "Declare this machine as a server, sized from its own GPU and memory probe, so spawned models have somewhere to run. Returns the existing one when there is one.",
+		Tags:        []string{"config"},
+	}, h.AddLocalServer)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "setServerEphemeral",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/servers/{name}/ephemeral",
