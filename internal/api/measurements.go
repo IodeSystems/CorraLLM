@@ -69,6 +69,12 @@ func (h *Handlers) PublishTuneProfile(_ context.Context, in *TuneProfileInput) (
 		// publish would silently do nothing; a profile stored under the wrong
 		// card is the same silence with a plausible-looking row to explain it.
 		gpuName = h.Mgr.DeviceNameForModel(in.Body.Model)
+		if gpuName == "" && h.agentBackedModel(in.Body.Model) {
+			// Its agent has not reported its cards yet. This machine's probe
+			// names a different machine's card, or index 0 of this one.
+			out.Body.Message = "gpu not specified and the model's agent has not reported its devices yet"
+			return out, nil
+		}
 		if gpuName == "" {
 			st, err := gpu.Probe()
 			if err != nil {
@@ -883,4 +889,14 @@ func (h *Handlers) BenchResults(ctx context.Context, in *BenchResultsInput) (*Be
 		})
 	}
 	return out, nil
+}
+
+// agentBackedModel reports whether model's backend runs under an agent.
+func (h *Handlers) agentBackedModel(model string) bool {
+	cfg := h.config()
+	if cfg == nil {
+		return false
+	}
+	srv, ok := cfg.Servers[cfg.Models[model].Server]
+	return ok && srv.Agent != nil
 }

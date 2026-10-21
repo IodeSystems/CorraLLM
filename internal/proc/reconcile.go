@@ -253,11 +253,20 @@ func (m *Manager) adoptReported(server string, b agent.Backend) *Process {
 	go m.sampleVRAMPeak(served, h)
 	// Re-measure as a spawn would. Delayed: the handle's first poll has not
 	// filled in the memory reading yet, and measuring "unknown" records nothing.
+	// Then held until the agent has reported its cards: adoption can run before
+	// the agent's first heartbeat (handoff primeAgents), and the card the
+	// profile is filed under comes from that heartbeat. Measured without it,
+	// the footprint was filed under the wrong card.
 	go func() {
 		select {
 		case <-h.Done():
 			return
-		case <-time.After(3 * time.Second):
+		case <-time.After(adoptMeasureDelay):
+		}
+		if !m.waitDevicesKnown(mdl.Server, h.Done(), adoptMeasureWait) {
+			slog.Info("adopted backend not measured: its agent reported no capacity in time",
+				"server", mdl.Server, "model", served)
+			return
 		}
 		m.measure(served, mdl, p, h)
 	}()
@@ -265,6 +274,48 @@ func (m *Manager) adoptReported(server string, b agent.Backend) *Process {
 	slog.Info("adopted a running backend from its agent",
 		"server", server, "id", b.ID, "key", b.Key, "model", served, "target", target.URL.String())
 	return p
+}
+
+// adoptMeasureDelay is how long an adopted backend's measurement waits for the
+// handle's first status poll. A var for tests.
+var adoptMeasureDelay = 3 * time.Second
+
+// adoptMeasureWait bounds how long that measurement then waits for the agent's
+// first capacity report: a few heartbeats. A var for tests.
+var adoptMeasureWait = 3 * agent.HeartbeatInterval
+
+// devicesKnownPoll is how often waitDevicesKnown re-checks. A var for tests.
+var devicesKnownPoll = 500 * time.Millisecond
+
+// devicesKnown reports whether the card a model on server runs on can be
+// resolved now: always for a local server (it probes this machine), and for an
+// agent-backed one only once its agent has reported capacity.
+func (m *Manager) devicesKnown(server string) bool {
+	if !m.agentBacked(server) {
+		return true
+	}
+	m.mu.Lock()
+	live := m.live
+	m.mu.Unlock()
+	_, ok := live.Capacity(server) // nil-safe
+	return ok
+}
+
+// waitDevicesKnown blocks until devicesKnown(server), done closes, or timeout
+// passes. Reports whether the devices became known.
+func (m *Manager) waitDevicesKnown(server string, done <-chan struct{}, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for !m.devicesKnown(server) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-done:
+			return false
+		case <-time.After(devicesKnownPoll):
+		}
+	}
+	return true
 }
 
 // stopWatching ends a remote handle's poller without signalling the backend.

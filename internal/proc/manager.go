@@ -1633,6 +1633,16 @@ func (m *Manager) deviceNameFor(server, pool string, ramUsage map[string]string)
 			}
 		}
 	}
+	if m.agentBacked(server) {
+		// The agent has not reported yet: the answer is not knowable, and this
+		// machine's probe is not it. A successor primary adopts agent backends
+		// before the agent's first heartbeat reaches it (handoff primeAgents);
+		// the local probe then named nvidia-smi's index 0 — box1's 3080 — and a
+		// gpu0 model's adopted footprint was filed under that card (box1
+		// 2026-10-21 01:43:31, Swift: base 29202 under the 3080). Even with the
+		// agent on this machine, index 0 is a position, not the pool's card.
+		return ""
+	}
 	if stats, err := gpu.Probe(); err == nil {
 		return stats.Name
 	}
@@ -1899,6 +1909,13 @@ func (m *Manager) DeviceNameForModel(model string) string {
 // The guess was the bug: callers probed once per snapshot and reused "the first
 // GPU" for every model, so on a two-card box every profile lookup asked about
 // the wrong hardware and quietly missed.
+//
+// A profile stored under a card the model's pool is NOT bound to (box1's
+// 3080 entry for a gpu0 model, left by an adoption measured before the agent
+// reported) is ignored by this lookup, not pruned from the file. Pruning on
+// load would need the config inside the tune cache, and would delete entries
+// that are valid: a model with placements on two cards, or one rebound to
+// another pool, owns a profile on each card it has run on.
 func (m *Manager) TuneProfileForModel(model string) (tune.Profile, bool) {
 	if m.tuneCache == nil {
 		return tune.Profile{}, false
