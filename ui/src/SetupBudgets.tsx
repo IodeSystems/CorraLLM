@@ -19,7 +19,7 @@ import {
 import { Panel } from '@/Panel'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { fmtInt } from '@/format'
+import { fmtInt, fmtMoney, fmtTime } from '@/format'
 import { Loading } from '@/Loading'
 import {
   PauseDialog,
@@ -108,6 +108,158 @@ type Bucket = {
 }
 
 const n = (v: unknown): number => Number(v ?? 0) || 0
+
+/**
+ * What each provider's own bill says next to what corrallm metered. Metering is
+ * an estimate; the bill is the truth, and the spend windows above are raised to
+ * it. Read from the last hourly fetch, so it is never a live number.
+ */
+const BillingDoc = graphql(/* GraphQL */ `
+  query ProviderBilling {
+    corrallm {
+      providerBilling {
+        providers {
+          provider
+          credential
+          fetchedMs
+          lastOkMs
+          error
+          settling
+          attributable
+          billedMonthUsd
+          recordedMonthUsd
+          billedTodayUsd
+          recordedTodayUsd
+          models {
+            upstream
+            served
+            billedMonthUsd
+            recordedMonthUsd
+            billedTodayUsd
+            recordedTodayUsd
+          }
+          days {
+            day
+            billedUsd
+            recordedUsd
+          }
+        }
+      }
+    }
+  }
+`)
+
+/** Billed minus recorded, signed, in dollars. */
+function gapText(billed: number, recorded: number): string {
+  const d = billed - recorded
+  if (Math.abs(d) < 0.005) return '$0.00'
+  return `${d > 0 ? '+' : '-'}${fmtMoney(Math.abs(d))}`
+}
+
+const strong = { fontWeight: 600 } as const
+
+function BilledVsRecorded() {
+  const q = useQuery({
+    queryKey: ['providerBilling'],
+    queryFn: () => gqlClient.request(BillingDoc),
+    refetchInterval: 60000,
+  })
+  const providers = q.data?.corrallm?.providerBilling?.providers ?? []
+  if (providers.length === 0) return null
+  return (
+    <>
+      {providers.map((p) => (
+        <Panel
+          key={`${p.provider}/${p.credential}`}
+          title={`Billed by ${p.provider} vs recorded`}
+          subtitle={`This UTC month, credential ${p.credential}`}
+          note={`Last read from the provider ${fmtTime(p.lastOkMs)}. Metering is an estimate; spend caps are raised to the bill.`}
+          flush
+        >
+          {p.error && (
+            <Alert severity="warning" sx={{ m: 1 }}>
+              The last attempt to read the bill failed ({fmtTime(p.fetchedMs)}): {p.error}
+            </Alert>
+          )}
+          {p.settling && (
+            <Typography variant="caption" sx={{ display: 'block', px: 2, pt: 1, color: 'text.secondary' }}>
+              The provider is still settling its latest hours, so the newest billed dollars can rise.
+            </Typography>
+          )}
+          {!p.attributable && (
+            <Typography variant="caption" sx={{ display: 'block', px: 2, pt: 1, color: 'text.secondary' }}>
+              This provider has several credentials. Recorded dollars cannot be split by account, so they show $0.
+            </Typography>
+          )}
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Model</TableCell>
+                  <TableCell align="right">Billed, month (USD)</TableCell>
+                  <TableCell align="right">Recorded, month (USD)</TableCell>
+                  <TableCell align="right">Billed minus recorded, month (USD)</TableCell>
+                  <TableCell align="right">Billed, today (USD)</TableCell>
+                  <TableCell align="right">Recorded, today (USD)</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {p.models.map((m) => (
+                  <TableRow key={m.upstream} hover>
+                    <TableCell>
+                      <Tooltip title={m.served ? `Served as ${m.served}` : 'No configured model maps to this id'}>
+                        <span style={{ fontFamily: 'monospace' }}>
+                          {m.upstream.replace(/^accounts\/[^/]+\/models\//, '')}
+                        </span>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell align="right">{fmtMoney(m.billedMonthUsd)}</TableCell>
+                    <TableCell align="right">{fmtMoney(m.recordedMonthUsd)}</TableCell>
+                    <TableCell align="right">{gapText(m.billedMonthUsd, m.recordedMonthUsd)}</TableCell>
+                    <TableCell align="right">{fmtMoney(m.billedTodayUsd)}</TableCell>
+                    <TableCell align="right">{fmtMoney(m.recordedTodayUsd)}</TableCell>
+                  </TableRow>
+                ))}
+                <TableRow>
+                  <TableCell sx={strong}>All models</TableCell>
+                  <TableCell align="right" sx={strong}>{fmtMoney(p.billedMonthUsd)}</TableCell>
+                  <TableCell align="right" sx={strong}>{fmtMoney(p.recordedMonthUsd)}</TableCell>
+                  <TableCell align="right" sx={strong}>{gapText(p.billedMonthUsd, p.recordedMonthUsd)}</TableCell>
+                  <TableCell align="right" sx={strong}>{fmtMoney(p.billedTodayUsd)}</TableCell>
+                  <TableCell align="right" sx={strong}>{fmtMoney(p.recordedTodayUsd)}</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </TableContainer>
+          {p.days.length > 0 && (
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Day (UTC)</TableCell>
+                    <TableCell align="right">Billed (USD)</TableCell>
+                    <TableCell align="right">Recorded (USD)</TableCell>
+                    <TableCell align="right">Billed minus recorded (USD)</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {p.days.map((d) => (
+                    <TableRow key={d.day} hover>
+                      <TableCell>{d.day}</TableCell>
+                      <TableCell align="right">{fmtMoney(d.billedUsd)}</TableCell>
+                      <TableCell align="right">{fmtMoney(d.recordedUsd)}</TableCell>
+                      <TableCell align="right">{gapText(d.billedUsd, d.recordedUsd)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </Panel>
+      ))}
+    </>
+  )
+}
 
 /**
  * One ledger, two readers at different speeds. The budgets tab watches it tick;
@@ -751,6 +903,7 @@ export function ProviderBudgets() {
           </TableContainer>
         </Panel>
       )}
+      <BilledVsRecorded />
     </Box>
   )
 }
