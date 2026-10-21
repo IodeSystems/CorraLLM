@@ -483,6 +483,11 @@ var migrations = []string{
 	// request ids), one "Name: value" per line. Captured with the payloads.
 	`ALTER TABLE activity_payload ADD COLUMN resp_headers TEXT NOT NULL DEFAULT ''`,
 	inflightSchema,
+	// Which process wrote each in-flight marker (2026-10-20, blue-green): a
+	// handoff starts the new process while the old one is still serving, and
+	// the new one's startup sweep must leave the old one's markers alone.
+	`ALTER TABLE activity_inflight ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE activity_inflight ADD COLUMN owner_start TEXT NOT NULL DEFAULT ''`,
 	// What each provider's own bill says next to what corrallm metered (2026-10-20).
 	providerBillingSchema,
 	providerBillingFetchSchema,
@@ -644,6 +649,11 @@ func addProbeResultRepeat(ctx context.Context, db *sql.DB) error {
 // Store wraps the SQLite handle.
 type Store struct {
 	db *sql.DB
+	// owner names this process on the in-flight markers it writes, so a
+	// startup sweep can tell a marker left by a dead process from one a live
+	// predecessor is still serving (see SetOwner).
+	ownerPID   int64
+	ownerStart string
 }
 
 // Open opens (creating if absent) the SQLite database at path and applies the
@@ -660,7 +670,24 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			return nil, fmt.Errorf("create db dir %s: %w", dir, err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	// Set on EVERY connection the pool opens, not once after Open: during a
+	// blue-green handoff two processes write this file at the same time, and a
+	// pooled connection that was replaced (a broken conn is discarded and
+	// redialled) would come back without a busy_timeout and fail its first
+	// contended write with SQLITE_BUSY instead of waiting.
+	//
+	// _txlock=immediate makes BEGIN take the write lock up front. A deferred
+	// transaction that reads and then writes cannot be rescued by busy_timeout
+	// when another process committed in between — SQLite answers
+	// SQLITE_BUSY_SNAPSHOT at once — while an immediate one simply waits its
+	// turn. Within one process the single connection already serializes
+	// everything, so this costs nothing there.
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&" // a URI that already carries parameters (tests' shared memory)
+	}
+	dsn := path + sep + "_pragma=busy_timeout(10000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}
@@ -685,11 +712,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	// corrupts on crash either way; NORMAL only gives up the "committed means
 	// on-platter" guarantee, which nothing here relies on.
 	//
-	// Both are set per connection, so the single pooled conn carries them for
-	// its lifetime; journal_mode is additionally persistent in the file header.
+	// synchronous is per connection and rides the DSN above with busy_timeout;
+	// journal_mode is persistent in the file header.
 	// A local file is assumed — WAL requires shared memory and does not work on
 	// a network filesystem.
-	for _, pragma := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL", "PRAGMA busy_timeout=5000"} {
+	for _, pragma := range []string{"PRAGMA journal_mode=WAL"} {
 		if _, err := db.ExecContext(ctx, pragma); err != nil {
 			// Non-fatal: a filesystem that refuses WAL still serves correctly
 			// on the rollback journal, just slower.
@@ -743,7 +770,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, ownerPID: int64(os.Getpid())}, nil
 }
 
 // Activity is one proxied request record. The token/cost fields are metered on
@@ -1745,6 +1772,49 @@ INSERT INTO quota_counter (backend, label, used, at) VALUES (?,?,?,?)
 ON CONFLICT(backend, label) DO UPDATE SET used=excluded.used, at=excluded.at`,
 		backend, label, used, atMS)
 	return err
+}
+
+// AddQuotaCounter charges amt to one window IN THE DATABASE and returns the
+// level stored afterwards.
+//
+// A delta, not the level: during a blue-green handoff two processes charge
+// the same windows, each from its own in-memory copy. Writing absolute levels
+// made the last writer win and dropped the other process's charges; adding in
+// one statement makes the row the sum of both. The stored level is decayed to
+// atMS first with the same arithmetic as the ledger (limit per durMS leak for
+// a falloff window; reset to zero at periodStartMS for a calendar one, which
+// is the window's UTC period start, 0 for falloff).
+func (s *Store) AddQuotaCounter(backend, label string, amt, limit float64, durMS, periodStartMS, atMS int64) (float64, error) {
+	if durMS <= 0 {
+		durMS = 1
+	}
+	var used float64
+	err := s.db.QueryRow(`
+INSERT INTO quota_counter (backend, label, used, at) VALUES (?1, ?2, ?3, ?4)
+ON CONFLICT(backend, label) DO UPDATE SET
+  used = (CASE WHEN ?5 > 0
+               THEN (CASE WHEN quota_counter.at < ?5 THEN 0.0 ELSE quota_counter.used END)
+               ELSE max(0.0, quota_counter.used - ?6 * (max(0, ?4 - quota_counter.at) * 1.0 / ?7))
+          END) + excluded.used,
+  at = max(quota_counter.at, excluded.at)
+RETURNING used`,
+		backend, label, amt, atMS, periodStartMS, limit, durMS).Scan(&used)
+	return used, err
+}
+
+// RaiseQuotaCounter lifts a calendar window's stored level to at least floor
+// for the period starting at periodStartMS and returns the level stored
+// afterwards. Never lowers it: the same max another process would apply.
+func (s *Store) RaiseQuotaCounter(backend, label string, floor float64, periodStartMS, atMS int64) (float64, error) {
+	var used float64
+	err := s.db.QueryRow(`
+INSERT INTO quota_counter (backend, label, used, at) VALUES (?1, ?2, ?3, ?4)
+ON CONFLICT(backend, label) DO UPDATE SET
+  used = max(CASE WHEN quota_counter.at < ?5 THEN 0.0 ELSE quota_counter.used END, excluded.used),
+  at = max(quota_counter.at, excluded.at)
+RETURNING used`,
+		backend, label, floor, atMS, periodStartMS).Scan(&used)
+	return used, err
 }
 
 // LoadQuotaCounters returns every persisted falloff-counter window, for seeding

@@ -256,6 +256,16 @@ type Manager struct {
 	// by mu.
 	born     time.Time
 	reported map[string]chan struct{}
+
+	// Blue-green handoff (handoff.go). draining: this process has handed over
+	// and spawns, evicts for room, idle-sweeps and reconciles nothing more.
+	// localHold, when non-nil, holds every LOCAL spawn until closed: the
+	// successor's GPU is still occupied by the predecessor's children.
+	// stoppingLocal marks which stopping keys are local children, so
+	// LocalBackends can count a teardown that still holds VRAM.
+	draining      atomic.Bool
+	localHold     chan struct{}
+	stoppingLocal map[string]bool
 }
 
 // agentHoldTimeout bounds how long, after this primary starts, a spawn onto an
@@ -482,9 +492,23 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		return nil, nil, false, err
 	}
 
+	// Never spawn a local backend while a predecessor's children may still
+	// hold the GPU (see HoldLocalSpawns).
+	if mdl.Cmd != "" && !m.agentBacked(mdl.Server) {
+		if err := m.awaitLocalHold(ctx, key); err != nil {
+			return nil, nil, false, err
+		}
+	}
+
 	m.mu.Lock()
 	p := m.procs[key]
 	triggered := p == nil
+	if p == nil && m.draining.Load() && mdl.Cmd != "" {
+		// Handed over: the successor serves anything not already resident
+		// here. Spawning would put a second copy on the GPU it is about to use.
+		m.mu.Unlock()
+		return nil, nil, false, ErrDraining
+	}
 	if p == nil {
 		// A server whose agent has stopped reporting in cannot be spawned onto.
 		// Refuse BEFORE reserving pools: otherwise every cold load onto a dead
@@ -645,8 +669,12 @@ func (m *Manager) releaser(p *Process) func() {
 			p.refs--
 			p.lastUsed = time.Now()
 			drained := p.draining && p.refs == 0
+			idle := p.refs == 0
 			p.mu.Unlock()
 			if !drained {
+				if idle && m.draining.Load() {
+					m.releaseIdleLocal()
+				}
 				return
 			}
 			// The last in-flight request just finished, so the unload that asked
@@ -2072,11 +2100,18 @@ func (m *Manager) evictLocked(p *Process) {
 			m.stopping = map[string]chan struct{}{}
 		}
 		m.stopping[p.key] = done
+		if !onAgent(h) {
+			if m.stoppingLocal == nil {
+				m.stoppingLocal = map[string]bool{}
+			}
+			m.stoppingLocal[p.key] = true
+		}
 		go func() {
 			defer func() {
 				m.mu.Lock()
 				if m.stopping[p.key] == done {
 					delete(m.stopping, p.key)
+					delete(m.stoppingLocal, p.key)
 				}
 				m.mu.Unlock()
 				close(done)
@@ -2813,6 +2848,9 @@ func (m *Manager) StartIdleSweeper(ctx context.Context) {
 //   - idleUnload == 0 means never, which is every model that has not opted in.
 //     This feature is off unless asked for.
 func (m *Manager) sweepIdle() {
+	if m.draining.Load() {
+		return // handed over: residency is the successor's to manage
+	}
 	now := time.Now()
 	m.mu.Lock()
 	var due []*Process

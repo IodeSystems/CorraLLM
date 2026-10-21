@@ -53,6 +53,32 @@ type Builder struct {
 	current *Job
 	last    *Job
 	seq     int
+	// base parents every build's context; Stop cancels it. Lazily made so a
+	// Builder literal needs no constructor.
+	base     context.Context
+	stopBase context.CancelFunc
+}
+
+// baseCtx returns the context every build runs under.
+func (b *Builder) baseCtx() context.Context {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.base == nil {
+		b.base, b.stopBase = context.WithCancel(context.Background())
+	}
+	return b.base
+}
+
+// Stop cancels the running build and every later one. For a daemon handing
+// over to its successor: a build is a job, and jobs die with the process
+// that started them — killed now (its process group with it) rather than
+// orphaned when this process exits, still compiling into a bin/ the
+// successor may be serving from.
+func (b *Builder) Stop() {
+	b.baseCtx()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.stopBase()
 }
 
 // BuildHistory is the persistence a Builder needs, and no more.
@@ -203,11 +229,12 @@ func (b *Builder) Start(tool, host string, force bool) (*Job, error) {
 
 // run performs the build and files the result.
 //
-// context.Background, NOT the request's: the HTTP call that started this
-// returns immediately, and tying a 20-minute compile to a connection that has
-// already closed would cancel every build the moment its modal was dismissed.
+// The Builder's own context (see Stop), NOT the request's: the HTTP call that
+// started this returns immediately, and tying a 20-minute compile to a
+// connection that has already closed would cancel every build the moment its
+// modal was dismissed.
 func (b *Builder) run(j *Job, force bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), Timeout(VerbBuild))
+	ctx, cancel := context.WithTimeout(b.baseCtx(), Timeout(VerbBuild))
 	defer cancel()
 
 	pr, pw := io.Pipe()

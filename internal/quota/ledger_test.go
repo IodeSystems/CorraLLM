@@ -2,6 +2,7 @@ package quota
 
 import (
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -285,10 +286,13 @@ func TestCounterMode_DurableAcrossRestart(t *testing.T) {
 
 // memCounterStore is an in-memory CounterStore for the durability test.
 type memCounterStore struct {
+	mu   sync.Mutex
 	rows map[string]PersistedCounter
 }
 
 func (m *memCounterStore) SaveQuotaCounter(backend, label string, used float64, atMS int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.rows == nil {
 		m.rows = map[string]PersistedCounter{}
 	}
@@ -296,7 +300,54 @@ func (m *memCounterStore) SaveQuotaCounter(backend, label string, used float64, 
 	return nil
 }
 
+// decayed is a stored row's level as of at, with the store's arithmetic.
+func (m *memCounterStore) decayed(key string, limit float64, dur time.Duration, periodStart, at time.Time) float64 {
+	r, ok := m.rows[key]
+	if !ok {
+		return 0
+	}
+	if !periodStart.IsZero() {
+		if r.At.Before(periodStart) {
+			return 0
+		}
+		return r.Used
+	}
+	el := at.Sub(r.At)
+	if el < 0 {
+		el = 0
+	}
+	return max(0, r.Used-limit*float64(el)/float64(dur))
+}
+
+func (m *memCounterStore) put(backend, label string, used float64, at time.Time) float64 {
+	if m.rows == nil {
+		m.rows = map[string]PersistedCounter{}
+	}
+	key := backend + "\x00" + label
+	if r, ok := m.rows[key]; ok && r.At.After(at) {
+		at = r.At
+	}
+	m.rows[key] = PersistedCounter{Backend: backend, Label: label, Used: used, At: at}
+	return used
+}
+
+func (m *memCounterStore) AddQuotaCounter(backend, label string, amt, limit float64, dur time.Duration, periodStart, at time.Time) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lv := m.decayed(backend+"\x00"+label, limit, dur, periodStart, at)
+	return m.put(backend, label, lv+amt, at), nil
+}
+
+func (m *memCounterStore) RaiseQuotaCounter(backend, label string, floor float64, periodStart, at time.Time) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lv := m.decayed(backend+"\x00"+label, 0, time.Hour, periodStart, at)
+	return m.put(backend, label, max(lv, floor), at), nil
+}
+
 func (m *memCounterStore) LoadQuotaCounters() ([]PersistedCounter, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	out := make([]PersistedCounter, 0, len(m.rows))
 	for _, r := range m.rows {
 		out = append(out, r)

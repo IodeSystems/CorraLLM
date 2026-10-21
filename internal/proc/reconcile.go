@@ -55,7 +55,9 @@ const adoptHealthBudget = 3 * time.Second
 // Returns counts for logging. Safe to call on every heartbeat: adoption is a
 // no-op in the steady state.
 func (m *Manager) ReconcileAgent(ctx context.Context, server string, reported []agent.Backend) (adopted, reaped, vanished int) {
-	if server == "" {
+	if server == "" || m.draining.Load() {
+		// Draining: the successor reconciles. Reaping here could kill a
+		// backend the successor has just adopted or spawned.
 		return 0, 0, 0
 	}
 	// Whatever happens below, this server has now reported: spawns held since

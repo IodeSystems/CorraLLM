@@ -10,9 +10,13 @@ import (
 type memCounters struct{ saved map[string]float64 }
 
 func (m *memCounters) LoadQuotaCounters() ([]PersistedCounter, error) { return nil, nil }
-func (m *memCounters) SaveQuotaCounter(b, label string, used float64, _ int64) error {
-	m.saved[b+"/"+label] = used
-	return nil
+func (m *memCounters) AddQuotaCounter(b, label string, amt, _ float64, _ time.Duration, _, _ time.Time) (float64, error) {
+	m.saved[b+"/"+label] += amt
+	return m.saved[b+"/"+label], nil
+}
+func (m *memCounters) RaiseQuotaCounter(b, label string, floor float64, _, _ time.Time) (float64, error) {
+	m.saved[b+"/"+label] = max(m.saved[b+"/"+label], floor)
+	return m.saved[b+"/"+label], nil
 }
 
 func TestRaiseCalendarFloorOnlyRaisesCalendarWindows(t *testing.T) {

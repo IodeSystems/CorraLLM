@@ -35,6 +35,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/configdb"
 	"github.com/iodesystems/corrallm/internal/events"
 	"github.com/iodesystems/corrallm/internal/gpu"
+	"github.com/iodesystems/corrallm/internal/handoff"
 	"github.com/iodesystems/corrallm/internal/metrics"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/proxy"
@@ -51,6 +52,9 @@ var version = "dev"
 
 func main() {
 	if err := newRoot().Execute(); err != nil {
+		// Started by a handoff and failing: the predecessor keeps serving and
+		// reports this to whoever asked for the upgrade.
+		handoff.ReportStartFailure(err)
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
@@ -408,6 +412,7 @@ func newServeCmd() *cobra.Command {
 		slotCacheMaxGB                             int
 		vramMargin                                 int
 		benchBin, benchConfig, benchProbes         string
+		handoffDrain                               time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -454,6 +459,7 @@ func newServeCmd() *cobra.Command {
 				benchBin:           benchBin,
 				benchConfig:        pick(benchConfig, defaultBenchConfig(p.home)),
 				benchProbes:        benchProbes,
+				handoffDrain:       pickDuration(handoffDrain, envDuration("CORRALLM_HANDOFF_DRAIN", defaultHandoffDrain)),
 			})
 		},
 	}
@@ -488,6 +494,7 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&benchBin, "bench-bin", envOr("CORRALLM_BENCH_BIN", "llm-bench"), "llm-bench binary spawned by UI-driven bench runs (same binary you run from a shell)")
 	f.StringVar(&benchConfig, "bench-config", envOr("CORRALLM_BENCH_CONFIG", ""), "llm-bench config passed to spawned runs (default: llm-bench's own default)")
 	f.StringVar(&benchProbes, "bench-probes", envOr("CORRALLM_BENCH_PROBES", ""), "comma-separated probe directories passed to spawned runs; overrides the config's probeDirs (default: llm-bench's own default)")
+	f.DurationVar(&handoffDrain, "handoff-drain", 0, "on a handoff (`corrallm service upgrade`), how long the old process may take to finish its in-flight requests before it exits and cuts the rest (default 10m or CORRALLM_HANDOFF_DRAIN)")
 	return cmd
 }
 
@@ -547,6 +554,7 @@ type serveOpts struct {
 	slotCacheMaxGB                        int
 	vramMargin                            int
 	benchBin, benchConfig, benchProbes    string
+	handoffDrain                          time.Duration
 }
 
 // pauseStore adapts *store.Store to proc.PauseStore. The manager keeps the
@@ -573,8 +581,14 @@ func (p pauseStore) LoadPauses() ([]proc.PersistedPause, error) {
 }
 
 func serve(ctx context.Context, o serveOpts) error {
-	if o.configDerived {
-
+	// A process started by a predecessor's handoff inherits the listener and
+	// the control socket; anything else gets nil and listens itself.
+	succ, err := handoff.Inherit()
+	if err != nil {
+		return err
+	}
+	if succ != nil {
+		slog.Info("taking over from a running corrallm", "predecessor", succ.PredecessorPID)
 	}
 	// Before the config: ${...} references in it resolve through this store, so
 	// it has to be installed first or a credential-backed provider silently
@@ -588,8 +602,10 @@ func serve(ctx context.Context, o serveOpts) error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
-	// Requests the last process died serving left a marker and no row.
-	if n, err := st.SweepInflight(); err != nil {
+	// Requests the last process died serving left a marker and no row. Only a
+	// DEAD writer's: in a handoff the predecessor is still serving its own.
+	st.SetOwner(selfIdentity())
+	if n, err := st.SweepInflight(processAlive); err != nil {
 		slog.Warn("sweep in-flight requests", "err", err)
 	} else if n > 0 {
 		slog.Warn("requests cut by the last stop, recorded", "count", n)
@@ -653,6 +669,13 @@ func serve(ctx context.Context, o serveOpts) error {
 
 	scheduler := sched.NewWithConfig(cfg)
 	scheduler.SetMaxReservationTTL(o.reservationMaxTTL)
+	if succ != nil {
+		// Until the predecessor reports what it holds: no admission (its
+		// slots on each backend are unknown), and no local spawn (its
+		// children may still hold the GPU). See watchPredecessor.
+		scheduler.HoldAdmission()
+		mgr.HoldLocalSpawns()
+	}
 	// Shared between the heartbeat endpoint (writes) and the manager (reads):
 	// one view of which agent-backed servers are reporting in.
 	liveness := agent.NewLiveness()
@@ -787,6 +810,15 @@ func serve(ctx context.Context, o serveOpts) error {
 	}
 
 	router := chi.NewRouter()
+	// Which process answered. Across a handoff two serve the same port, and
+	// this is how a client — or the operator reading a trace — tells them apart.
+	pidStr := strconv.Itoa(os.Getpid())
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set(proxy.PidHeader, pidStr)
+			next.ServeHTTP(w, r)
+		})
+	})
 	// Ahead of RealIP, which OVERWRITES r.RemoteAddr with a client-supplied
 	// header. Anything making a trust decision needs the address the connection
 	// actually came from, not one the caller can set.
@@ -903,10 +935,14 @@ func serve(ctx context.Context, o serveOpts) error {
 	// The SPA is served for everything not claimed above.
 	router.Handle("/*", webui.Handler(o.webRoot, ui.DistFS()))
 
+	// Counted so a handoff drain knows when the last request has finished
+	// (see handoff.StopAccepting for why that is not Shutdown's job).
+	conns := &handoff.Conns{}
 	srv := &http.Server{
 		Addr:              o.addr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		ConnState:         conns.Hook,
 	}
 	// Live-event streams never finish on their own; end them when shutdown
 	// starts so the drain waits only for real requests.
@@ -917,6 +953,11 @@ func serve(ctx context.Context, o serveOpts) error {
 	// orphaned (their process groups never get signalled).
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Everything this process does on its own schedule — tool watches, sweeps,
+	// samplers, pruning, billing — runs under jobsCtx, which a handoff cancels:
+	// the draining process finishes requests and nothing else.
+	jobsCtx, stopJobs := context.WithCancel(sigCtx)
+	defer stopJobs()
 
 	// Enrollment writes config; reloading makes the new server usable without a
 	// restart. Set here rather than at construction because it closes over the
@@ -932,17 +973,17 @@ func serve(ctx context.Context, o serveOpts) error {
 
 	// Drift checks run on each tool's own cadence. Reads config per pass, so a
 	// reload that changes `check:`/`rebuild:` takes effect without a restart.
-	go toolWatch.Run(sigCtx)
+	go toolWatch.Run(jobsCtx)
 
 	// Expire stale slot reservations (a keyed caller can lease headroom for its
 	// lane; the lease must be renewed or it auto-frees). Stops on shutdown.
-	scheduler.StartReaper(sigCtx)
+	scheduler.StartReaper(jobsCtx)
 
 	// Lift timed pauses when they come due. Every read expires a pause lazily,
 	// so this is not what makes a resume correct — it is what makes one happen
 	// for a pinned model, which nothing ever requests by name.
-	mgr.StartPauseSweeper(sigCtx)
-	mgr.StartIdleSweeper(sigCtx)
+	mgr.StartPauseSweeper(jobsCtx)
+	mgr.StartIdleSweeper(jobsCtx)
 
 	// A payload retention at or past the row retention can never fire: the row
 	// is deleted first, taking its payload with it. Silently doing nothing is
@@ -955,22 +996,22 @@ func serve(ctx context.Context, o serveOpts) error {
 
 	// Sample instantaneous per-lane queue depth so it's visible before requests
 	// resolve (the activity log is completion-driven). Stops on shutdown.
-	go runQueueSampler(sigCtx, scheduler, st, 5*time.Second, o.activityRetention, o.payloadRetention)
+	go runQueueSampler(jobsCtx, scheduler, st, 5*time.Second, o.activityRetention, o.payloadRetention)
 	// Conversation rows for activity recorded before activity_conversation
 	// existed, from the captured payloads still on disk. Resumes on restart and
 	// is a no-op once caught up.
-	go st.BackfillConversations(sigCtx)
+	go st.BackfillConversations(jobsCtx)
 
 	// Publish per-model residency to Prometheus (corrallm_model_loaded +
 	// load-timestamp → uptime). Sampled rather than event-driven so the gauges
 	// self-heal after any missed load/evict signal.
-	go runResidencySampler(sigCtx, mgr, 10*time.Second)
+	go runResidencySampler(jobsCtx, mgr, 10*time.Second)
 
 	// Periodically refresh each opted-in provider's free-model roster (P16e), so a
 	// free model that churns out (goes paid or is removed) is skipped proactively.
 	// Only started when a backend opts in via freeTier.refresh.
 	if px.HasRosterRefresh() {
-		go runRosterRefresh(sigCtx, px, 30*time.Minute)
+		go runRosterRefresh(jobsCtx, px, 30*time.Minute)
 	}
 
 	// Reconcile metered spend against what each provider billed (Fireworks:
@@ -979,18 +1020,46 @@ func serve(ctx context.Context, o serveOpts) error {
 	// their hours at. CORRALLM_BILLING_RECONCILE=off disables it.
 	if !strings.EqualFold(envOr("CORRALLM_BILLING_RECONCILE", "on"), "off") {
 		rec := billing.New(st, px.Config, px, alertNotifier)
-		go rec.Run(sigCtx, time.Minute, time.Hour)
+		go rec.Run(jobsCtx, time.Minute, time.Hour)
 	}
 
+	ln := net.Listener(nil)
+	if succ != nil {
+		ln = succ.Listener
+	} else if ln, err = net.Listen("tcp", o.addr); err != nil {
+		return err
+	}
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("corrallm listening", "addr", o.addr, "version", version)
-		errCh <- srv.ListenAndServe()
+		slog.Info("corrallm listening", "addr", ln.Addr().String(), "version", version, "pid", os.Getpid())
+		errCh <- srv.Serve(ln)
 	}()
+
+	if succ != nil {
+		// Tell systemd this process is the service now, BEFORE the predecessor
+		// is told to drain: its exit must not read as the unit stopping.
+		if _, err := handoff.Notify(fmt.Sprintf("MAINPID=%d\nREADY=1", os.Getpid())); err != nil {
+			slog.Warn("could not tell systemd the main pid moved", "err", err)
+		}
+		go primeAgents(ctx, mgr)
+		if err := succ.Ready(); err != nil {
+			slog.Error("could not tell the predecessor this process is ready", "err", err)
+		}
+		go watchPredecessor(succ, scheduler, mgr, px, st)
+	} else if _, err := handoff.Notify("READY=1"); err != nil {
+		slog.Warn("could not tell systemd the service is ready", "err", err)
+	}
+
+	// SIGUSR2 hands this process over to a new one (corrallm service upgrade).
+	upgraded := make(chan *handoff.Predecessor, 1)
+	go watchUpgrade(sigCtx, ln, upgraded)
 
 	select {
 	case err := <-errCh:
 		return err
+	case pred := <-upgraded:
+		drainForSuccessor(pred, srv, ln, conns, broker, scheduler, mgr, px, h, toolBuilds, stopJobs, o.handoffDrain)
+		return nil
 	case <-sigCtx.Done():
 		slog.Info("shutdown signal received")
 		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownDrain)

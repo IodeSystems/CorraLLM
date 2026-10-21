@@ -92,6 +92,24 @@ func TestSecondBuildIsRefusedAndNamesTheFirst(t *testing.T) {
 	}
 }
 
+// A daemon handing over stops its build: jobs die with the process that
+// started them, and later ones do not start a compile.
+func TestStopEndsTheRunningBuild(t *testing.T) {
+	f := &fakeRunner{answers: map[Verb]any{
+		VerbPreflight: Preflight{OK: true},
+		VerbBuild:     Build{OK: true},
+	}, block: make(chan struct{})}
+	b := &Builder{Reg: testRegistry(cfgWith(map[string]config.ToolHost{"box1": {}}), f)}
+	if _, err := b.Start("llama.cpp", "box1", false); err != nil {
+		t.Fatal(err)
+	}
+	b.Stop()
+	waitIdle(t, b)
+	if _, last := b.State(); last == nil || last.Status != "failed" {
+		t.Fatalf("stopped build = %+v, want failed", last)
+	}
+}
+
 func TestFinishedJobIsRetainedAsLast(t *testing.T) {
 	b, _ := builderWith(map[Verb]any{
 		VerbPreflight: Preflight{OK: true},
