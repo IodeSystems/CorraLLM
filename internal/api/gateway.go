@@ -331,6 +331,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.QuotaLedger)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "providerBilling",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/billing",
+		Summary:     "What each provider billed this month versus what corrallm recorded, per model and day.",
+		Tags:        []string{"observability"},
+	}, h.ProviderBilling)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchArmMatrix",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/bench/arms",

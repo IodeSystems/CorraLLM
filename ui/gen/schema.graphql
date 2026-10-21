@@ -221,6 +221,7 @@ type CorrallmQueryNamespace {
     name: String!
   ): corrallm_ModelSpecOutputBody @derived(operationId: "modelSpec")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
+  providerBilling: corrallm_ProviderBillingOutputBody @derived(operationId: "providerBilling")
   queueDepth(
     """Bucket width in minutes."""
     bucketMinutes: Long
@@ -575,6 +576,7 @@ type CorrallmV1QueryNamespace {
     name: String!
   ): corrallm_ModelSpecOutputBody @derived(operationId: "modelSpec")
   overview: corrallm_OverviewOutputBody @derived(operationId: "overview")
+  providerBilling: corrallm_ProviderBillingOutputBody @derived(operationId: "providerBilling")
   queueDepth(
     """Bucket width in minutes."""
     bucketMinutes: Long
@@ -1454,6 +1456,28 @@ type corrallm_BenchTranscriptOutputBody {
   reason: String
   runId: String!
   truncated: Boolean
+}
+
+type corrallm_BillingDayView {
+  billedUsd: Float!
+  """UTC date, YYYY-MM-DD."""
+  day: String!
+  recordedUsd: Float!
+}
+
+type corrallm_BillingModelView {
+  """Dollars the provider billed this UTC month."""
+  billedMonthUsd: Float!
+  """Dollars billed today (UTC)."""
+  billedTodayUsd: Float!
+  """Dollars corrallm recorded for the mapped models this UTC month."""
+  recordedMonthUsd: Float!
+  """Dollars corrallm recorded today (UTC)."""
+  recordedTodayUsd: Float!
+  """corrallm model(s) mapped to it; empty when none is configured."""
+  served: String!
+  """The provider's own model id, as on its bill."""
+  upstream: String!
 }
 
 type corrallm_BoxPower {
@@ -2509,6 +2533,31 @@ type corrallm_PrefillBucketRow {
   rawTps: Float!
   """Mean prefill time per request in this range, seconds."""
   secAvg: Float!
+}
+
+type corrallm_ProviderBillingOutputBody {
+  providers: [corrallm_ProviderBillingView!]!
+}
+
+type corrallm_ProviderBillingView {
+  """False when the provider has several credentials: recorded cost cannot be told apart by account, so recorded columns read 0."""
+  attributable: Boolean!
+  billedMonthUsd: Float!
+  billedTodayUsd: Float!
+  credential: String!
+  days: [corrallm_BillingDayView!]!
+  """Why the last attempt failed; empty when it worked."""
+  error: String!
+  """Unix millis of the last attempt to read the provider's bill."""
+  fetchedMs: Long!
+  """Unix millis of the last successful read; 0 = never."""
+  lastOkMs: Long!
+  models: [corrallm_BillingModelView!]!
+  provider: String!
+  recordedMonthUsd: Float!
+  recordedTodayUsd: Float!
+  """The provider says its latest hours may still be revised, so the newest billed figures can rise."""
+  settling: Boolean!
 }
 
 type corrallm_ProviderPresetView {

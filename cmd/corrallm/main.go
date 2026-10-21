@@ -30,6 +30,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/api"
 	"github.com/iodesystems/corrallm/internal/auth"
 	"github.com/iodesystems/corrallm/internal/bench/task"
+	"github.com/iodesystems/corrallm/internal/billing"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/configdb"
 	"github.com/iodesystems/corrallm/internal/events"
@@ -855,7 +856,8 @@ func serve(ctx context.Context, o serveOpts) error {
 	h.BenchConfig = o.benchConfig
 	h.BenchProbeDirs = task.SplitProbeDirs(o.benchProbes)
 	px.SetBroker(broker)
-	px.SetAlerter(alert.New(o.alertNtfy))
+	alertNotifier := alert.New(o.alertNtfy)
+	px.SetAlerter(alertNotifier)
 	// corrallm's own callers pass credential allowlists: the running bench and
 	// an admin's dashboard (Test tab). Not under --insecure, where every
 	// browser would count as an admin.
@@ -969,6 +971,15 @@ func serve(ctx context.Context, o serveOpts) error {
 	// Only started when a backend opts in via freeTier.refresh.
 	if px.HasRosterRefresh() {
 		go runRosterRefresh(sigCtx, px, 30*time.Minute)
+	}
+
+	// Reconcile metered spend against what each provider billed (Fireworks:
+	// recognised by host). The first pass waits a minute so startup is not
+	// competing with a billing call; then hourly, the cadence providers settle
+	// their hours at. CORRALLM_BILLING_RECONCILE=off disables it.
+	if !strings.EqualFold(envOr("CORRALLM_BILLING_RECONCILE", "on"), "off") {
+		rec := billing.New(st, px.Config, px, alertNotifier)
+		go rec.Run(sigCtx, time.Minute, time.Hour)
 	}
 
 	errCh := make(chan error, 1)
