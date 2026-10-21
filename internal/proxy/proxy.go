@@ -365,6 +365,20 @@ func (p *Proxy) QuotaSnapshot() []quota.Entry {
 	return p.quota.Snapshot()
 }
 
+// Config returns the config in force now, which follows reloads. For background
+// jobs that must not hold on to the config they started with.
+func (p *Proxy) Config() *config.Config { return p.config() }
+
+// RaiseSpendFloor lifts a budget scope's calendar-window spend to a figure the
+// provider billed (see quota.Ledger.RaiseCalendarFloor). Returns the amount
+// added; 0 when nothing was raised or the scope has no such window.
+func (p *Proxy) RaiseSpendFloor(scope, unit string, usd float64) float64 {
+	if p.quota == nil {
+		return 0
+	}
+	return p.quota.RaiseCalendarFloor(scope, config.DimUSD, unit, usd)
+}
+
 // New constructs a Proxy.
 func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.Store) *Proxy {
 	p := &Proxy{mgr: mgr, sched: sc, store: st, cost: cost.NewModel(cfg),

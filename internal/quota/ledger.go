@@ -464,6 +464,57 @@ func (l *Ledger) Charge(backend, dim string, amt float64) {
 	}
 }
 
+// RaiseCalendarFloor lifts the level of a scope's calendar window in dimension
+// dim ("usd") and unit ("day" | "month") to at least floor, for the CURRENT
+// period, and returns how much it was raised (0 = already at or above).
+//
+// It exists for reconciliation against a provider's own bill: per-request
+// metering is an estimate that can miss requests (a response whose usage never
+// arrived), while the bill is the truth. The level may only go UP — a bill that
+// reads lower than our meter is an hour the provider has not settled yet, and
+// lowering the level would reopen a cap on spend that already happened.
+//
+// Only calendar windows are touched. A falloff window leaks at limit/dur, so
+// its level is "spend over the trailing period, decayed", not "spend since a
+// boundary"; a bill total for the month or day cannot be mapped onto it without
+// guessing how much of the missing spend has already leaked out. A calendar
+// window has no such ambiguity: its level IS spend since the UTC boundary, the
+// same quantity the bill reports.
+func (l *Ledger) RaiseCalendarFloor(backend, dim, unit string, floor float64) float64 {
+	if floor <= 0 {
+		return 0
+	}
+	l.mu.Lock()
+	cs := l.counters[backend]
+	if cs == nil {
+		l.mu.Unlock()
+		return 0
+	}
+	now := l.now()
+	var raised float64
+	var saves []PersistedCounter
+	for _, w := range cs.windows {
+		if w.calendar != unit || !strings.HasPrefix(w.label, dim+"/") {
+			continue
+		}
+		lv := w.levelAt(now)
+		if floor <= lv {
+			continue
+		}
+		w.used, w.at = floor, now
+		raised += floor - lv
+		if l.store != nil {
+			saves = append(saves, PersistedCounter{Backend: backend, Label: w.label, Used: w.used, At: w.at})
+		}
+	}
+	store := l.store
+	l.mu.Unlock()
+	for _, s := range saves {
+		_ = store.SaveQuotaCounter(s.Backend, s.Label, s.Used, s.At.UnixMilli())
+	}
+	return raised
+}
+
 // updateBucket reads the limit/remaining/reset triple for one window. The reset
 // header is a GO-DURATION STRING ("1m26.4s", "310ms") — verified live against
 // Groq, and the reason this uses time.ParseDuration, not strconv: a naive
