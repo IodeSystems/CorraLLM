@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"strings"
 )
 
@@ -171,6 +173,50 @@ func (s *Store) RecordedCostByHour(served []string, fromMS, toMS int64) (map[str
 		out[name][hour] = usd
 	}
 	return out, rows.Err()
+}
+
+// billingAlertSchema is the open drift episode per (provider, credential,
+// window unit), so an unchanged drift is announced once across restarts and
+// blue-green handoffs, not once per process start (2026-10-21: the same alert
+// twice in 13 minutes, one per deploy).
+const billingAlertSchema = `
+CREATE TABLE IF NOT EXISTS billing_alert (
+    provider    TEXT    NOT NULL,
+    credential  TEXT    NOT NULL,
+    unit        TEXT    NOT NULL,           -- 'day' | 'month'
+    period      TEXT    NOT NULL,           -- the window's period, e.g. 2026-10-21
+    alerted_usd REAL    NOT NULL DEFAULT 0, -- the drift the last alert announced
+    alerted_at  INTEGER NOT NULL DEFAULT 0, -- unix millis of that alert
+    PRIMARY KEY (provider, credential, unit)
+)`
+
+// BillingAlert is the open drift episode of one window: the period it is in
+// and the drift last announced. ok is false when there is none.
+func (s *Store) BillingAlert(provider, credential, unit string) (period string, alertedUSD float64, ok bool, err error) {
+	err = s.db.QueryRow(`SELECT period, alerted_usd FROM billing_alert WHERE provider=? AND credential=? AND unit=?`,
+		provider, credential, unit).Scan(&period, &alertedUSD)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, false, nil
+	}
+	return period, alertedUSD, err == nil, err
+}
+
+// SetBillingAlert records an announced drift episode, replacing the window's
+// previous one so an old period does not linger.
+func (s *Store) SetBillingAlert(provider, credential, unit, period string, alertedUSD float64, nowMS int64) error {
+	_, err := s.db.Exec(`INSERT INTO billing_alert (provider, credential, unit, period, alerted_usd, alerted_at)
+		VALUES (?,?,?,?,?,?)
+		ON CONFLICT(provider, credential, unit) DO UPDATE SET period=excluded.period,
+		  alerted_usd=excluded.alerted_usd, alerted_at=excluded.alerted_at`,
+		provider, credential, unit, period, alertedUSD, nowMS)
+	return err
+}
+
+// ClearBillingAlert ends a window's drift episode.
+func (s *Store) ClearBillingAlert(provider, credential, unit string) error {
+	_, err := s.db.Exec(`DELETE FROM billing_alert WHERE provider=? AND credential=? AND unit=?`,
+		provider, credential, unit)
+	return err
 }
 
 func b2i(b bool) int {

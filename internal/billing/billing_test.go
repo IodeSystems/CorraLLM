@@ -332,11 +332,46 @@ func TestDriftAlertsOncePerEpisode(t *testing.T) {
 		t.Fatalf("persisting drift: %d messages, want still 1", n)
 	}
 
+	if p, usd, ok, err := f.st.BillingAlert("fireworks", "default", "month"); !ok || err != nil || p != "2026-10" || usd < 3.4 {
+		t.Fatalf("month episode on record: %q $%v ok=%v err=%v", p, usd, ok, err)
+	}
+	// A restart (or blue-green handoff) is a new Reconciler on the same
+	// database: the unchanged episode stays quiet.
+	r2 := New(f.st, f.r.Config, nil, f.r.Alert)
+	r2.Providers, r2.Now = f.r.Providers, f.r.Now
+	r2.RunOnce(context.Background())
+	if n := f.ntfy.count(); n != 1 {
+		t.Fatalf("after a restart: %d messages, want still 1", n)
+	}
+
 	// Metering catches up: the episode ends, and a new drift is news again.
 	f.record(t, "fireworks-glm", time.Date(2026, 10, 20, 10, 5, 0, 0, time.UTC), 3.5)
 	f.r.RunOnce(context.Background())
-	if len(f.r.drifting) != 0 {
-		t.Fatalf("episodes after catching up = %v, want none", f.r.drifting)
+	for _, unit := range []string{"day", "month"} {
+		if _, _, ok, err := f.st.BillingAlert("fireworks", "default", unit); ok || err != nil {
+			t.Fatalf("%s episode after catching up: ok=%v err=%v, want none", unit, ok, err)
+		}
+	}
+}
+
+func TestNewEpisodeRule(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		recPeriod string
+		recUSD    float64
+		ok        bool
+		d         float64
+		want      bool
+	}{
+		{"none on record", "", 0, false, 0.5, true},
+		{"same, unchanged", "2026-10", 0.5, true, 0.5, false},
+		{"same, grew a little", "2026-10", 0.5, true, 0.9, false},
+		{"same, doubled", "2026-10", 0.5, true, 1.0, true},
+		{"earlier period", "2026-09", 0.5, true, 0.5, true},
+	} {
+		if got := newEpisode("2026-10", c.d, c.recPeriod, c.recUSD, c.ok); got != c.want {
+			t.Errorf("%s: newEpisode = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

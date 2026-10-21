@@ -158,6 +158,39 @@ func TestHandoff_QueuedRequestIsForwarded(t *testing.T) {
 	}
 }
 
+// A forward that comes back to the draining process itself — the listening
+// socket is shared with the successor, so while this process still accepts on
+// it the kernel may hand it its own forward — cannot be handed over again.
+// The caller must get a retryable 503 and exactly one row saying so, not an
+// empty 200 and a 499 "client canceled" (live 10-21 01:18:07).
+func TestHandoff_ForwardBackToSelfIsARetryable503(t *testing.T) {
+	treatAsRemote(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the draining process served a request itself")
+	}))
+	t.Cleanup(up.Close)
+	h, px, sc, st := handoffRig(t, map[string]config.Model{"m": modelTo(t, up.URL, "chat")})
+	self := httptest.NewServer(h)
+	t.Cleanup(self.Close)
+	if err := px.SetSuccessor(self.URL); err != nil {
+		t.Fatal(err)
+	}
+	sc.Drain()
+
+	rec := post(h, "m")
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("caller got %d (Retry-After %q) %q, want a retryable 503", rec.Code,
+			rec.Header().Get("Retry-After"), rec.Body.String())
+	}
+	all, err := st.RecentActivity(store.Window{}, 10, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Status != http.StatusServiceUnavailable {
+		t.Fatalf("rows %+v, want one 503", all)
+	}
+}
+
 // A request already forwarded once is not forwarded again (no loop).
 func TestHandoff_NoDoubleForward(t *testing.T) {
 	treatAsRemote(t)

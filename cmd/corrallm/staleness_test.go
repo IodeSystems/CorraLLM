@@ -58,7 +58,7 @@ func TestNewestBuildInputQuietWhenUpToDate(t *testing.T) {
 // on disk, not compiled in, so a changed .tsx does not make the binary stale.
 // Flagging it would cry wolf on every dashboard edit.
 func TestBuildInputIgnoresTheUI(t *testing.T) {
-	for _, n := range []string{"index.tsx", "app.css", "schema.graphql", "README.md"} {
+	for _, n := range []string{"index.tsx", "app.css", "schema.graphql", "README.md", "proxy_test.go"} {
 		if buildInput(n) {
 			t.Errorf("%s counted as a build input", n)
 		}
@@ -80,6 +80,28 @@ func TestNewestBuildInputSkipsNoise(t *testing.T) {
 	}
 	if got, name := newestBuildInput(dir, built); !got.IsZero() {
 		t.Errorf("claimed stale from %q, which is not a build input", name)
+	}
+}
+
+// An agent worktree under .claude/, or any nested checkout or module, is a
+// different tree: a newer file there says nothing about this binary. Live
+// 10-21 the warning named .claude/worktrees/agent-…/internal/proxy/inflight_test.go.
+func TestNewestBuildInputSkipsOtherTrees(t *testing.T) {
+	dir := t.TempDir()
+	built := time.Now().Add(-time.Hour)
+	touch(t, dir, "go.mod", built.Add(-time.Hour))
+	touch(t, dir, ".claude/worktrees/agent-x/internal/proxy/proxy.go", built.Add(time.Hour))
+	touch(t, dir, "wt/.git", built.Add(-time.Hour)) // a worktree's .git is a file
+	touch(t, dir, "wt/internal/a.go", built.Add(time.Hour))
+	touch(t, dir, "sub/go.mod", built.Add(-time.Hour))
+	touch(t, dir, "sub/b.go", built.Add(time.Hour))
+	touch(t, dir, "internal/c_test.go", built.Add(time.Hour))
+	if got, name := newestBuildInput(dir, built); !got.IsZero() {
+		t.Errorf("claimed stale from %q, which is not this binary's source", name)
+	}
+	touch(t, dir, "internal/c.go", built.Add(time.Hour))
+	if _, name := newestBuildInput(dir, built); name != filepath.Join("internal", "c.go") {
+		t.Errorf("named %q, want internal/c.go", name)
 	}
 }
 

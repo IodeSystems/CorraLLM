@@ -153,9 +153,17 @@ func successorBase(ln net.Listener) string {
 func drainForSuccessor(pred *handoff.Predecessor, srv *http.Server, ln net.Listener, conns *handoff.Conns,
 	broker *events.Broker, sc *sched.Scheduler, mgr *proc.Manager, px *proxy.Proxy, h *api.Handlers,
 	builds *toolchain.Builder, stopJobs context.CancelFunc, drainCap time.Duration) {
-	// Order matters. The successor is armed before the scheduler drains, so a
-	// request woken out of the queue by the drain has somewhere to go; the
-	// first report goes out after the drain, so it is final or shrinking.
+	// Order matters. This process stops accepting FIRST: the listening socket
+	// is shared with the successor, and a forward dials that very socket — so
+	// while this process still accepts on it, the kernel can hand a forwarded
+	// request back to this process. It then arrives already forwarded, cannot
+	// be forwarded again, and is refused by the drained scheduler (live
+	// 10-21 01:18:07: one such request logged 499 "client canceled", dwell 0,
+	// and its caller got an empty 200). The successor is armed before the
+	// scheduler drains, so a request woken out of the queue by the drain has
+	// somewhere to go; the first report goes out after the drain, so it is
+	// final or shrinking.
+	handoff.StopAccepting(srv, ln)
 	if err := px.SetSuccessor(successorBase(ln)); err != nil {
 		slog.Error("handoff: successor address", "err", err)
 	}
@@ -176,7 +184,6 @@ func drainForSuccessor(pred *handoff.Predecessor, srv *http.Server, ln net.Liste
 	}
 	report()
 
-	handoff.StopAccepting(srv, ln)
 	// Event streams never end on their own. Closed now, a browser reconnects —
 	// to the successor — instead of holding this drain open.
 	broker.Close()
