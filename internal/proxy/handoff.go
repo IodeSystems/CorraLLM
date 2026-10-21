@@ -104,3 +104,8 @@ func (p *Proxy) LiveRequests() int {
 	defer p.inflightMu.Unlock()
 	return len(p.inflight) + int(p.handing.Load())
 }
+
+// ResyncQuota folds spend another process has persisted into this one's
+// ledger (quota.Ledger.Resync) — the successor's view of what its draining
+// predecessor charges.
+func (p *Proxy) ResyncQuota() { p.quota.Resync() }

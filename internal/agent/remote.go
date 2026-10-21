@@ -369,6 +369,23 @@ func (h *remoteHandle) MemoryOnMiB(string) (int, error) {
 	return 0, fmt.Errorf("agent reports no per-device memory breakdown")
 }
 
+// ListBackends asks the agent what it is running now — the same view its
+// heartbeat carries. A primary that has just taken over from another uses it
+// to adopt without waiting up to a heartbeat interval for the first beat.
+func (r *RemoteHost) ListBackends(ctx context.Context) ([]Backend, error) {
+	endpoint, err := r.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Backends []Backend `json:"backends"`
+	}
+	if err := r.call(ctx, http.MethodGet, endpoint+"/agent/v1/backends", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Backends, nil
+}
+
 // KillBackend stops a backend on the agent by its agent-side id, without a
 // Handle. Used by reconciliation to reap an orphan the primary has no handle
 // for — precisely the case where a Handle does not exist.

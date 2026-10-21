@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -272,7 +275,95 @@ func newServiceCtlCmds() []*cobra.Command {
 	}
 	restart.Flags().StringVar(&rname, "name", service.DefaultName, "unit name (without .service)")
 	restart.Flags().StringVar(&rcfg, "config", "", "config to validate (default: the one recorded in the unit)")
-	return append(cmds, restart)
+	return append(cmds, restart, newServiceUpgradeCmd())
+}
+
+// newServiceUpgradeCmd hands the running daemon over to the binary now at its
+// path, without dropping a connection or a request (blue-green; see
+// internal/handoff). The old process finishes its in-flight requests and
+// exits on its own.
+func newServiceUpgradeCmd() *cobra.Command {
+	var (
+		name    string
+		pid     int
+		timeout time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Hand the running daemon over to the binary at its path, without downtime",
+		Long: "Hand the running daemon over to the binary at its path, without downtime.\n\n" +
+			"The running process starts the new binary with its listening socket; the new\n" +
+			"one takes every connection from the moment it is ready, and the old one\n" +
+			"finishes its in-flight requests (up to --handoff-drain, default 10m) and exits.\n" +
+			"If the new binary fails to start, the old one keeps serving and this command\n" +
+			"says why and exits 3 (any other failure: 1). Needs the unit from\n" +
+			"`corrallm service install` (Type=notify, NotifyAccess=all) so systemd\n" +
+			"follows the main pid.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			// The unit's main pid, when the daemon runs under one: it moving
+			// to a new process is proof of a handoff on its own, should the
+			// status file be unreadable from here.
+			unitPID := func() int {
+				out, err := exec.Command("systemctl", "--user", "show", "-p", "MainPID", "--value", name+".service").Output()
+				if err != nil {
+					return 0
+				}
+				n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+				return n
+			}
+			viaUnit := pid == 0
+			if viaUnit {
+				if pid = unitPID(); pid == 0 {
+					return fmt.Errorf("%s.service is not running (or pass --pid)", name)
+				}
+			}
+			sent := time.Now()
+			if err := sendUpgrade(pid); err != nil {
+				return fmt.Errorf("signal pid %d: %w", pid, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "asked pid %d to hand over; waiting for its successor\n", pid)
+			for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+				var st handoffStatus
+				found := false
+				for _, p := range handoffStatusPaths(pid) {
+					b, err := os.ReadFile(p)
+					if err == nil && json.Unmarshal(b, &st) == nil && st.From == pid && st.AtMS >= sent.UnixMilli() {
+						found = true
+						break
+					}
+				}
+				if !found {
+					if viaUnit {
+						if now := unitPID(); now != 0 && now != pid {
+							fmt.Fprintf(cmd.OutOrStdout(), "handed over: pid %d -> %d (systemd's main pid moved)\n", pid, now)
+							return nil
+						}
+					}
+					continue
+				}
+				if !st.OK {
+					// Exit 3 when the NEW BINARY is the problem: a caller that
+					// would fall back to a restart (bin/deploy) must not restart
+					// onto a binary that does not start. Any other failure is 1.
+					fmt.Fprintf(cmd.ErrOrStderr(), "handoff failed; pid %d is still serving: %s\n", pid, st.Error)
+					if strings.HasPrefix(st.Error, "handoff: successor") {
+						os.Exit(3)
+					}
+					return fmt.Errorf("handoff failed; pid %d is still serving", pid)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "handed over: pid %d -> %d; the old process exits once its requests finish\n", pid, st.To)
+				return nil
+			}
+			return fmt.Errorf("no handoff result from pid %d within %s (looked in %s)", pid, timeout,
+				strings.Join(handoffStatusPaths(pid), ", "))
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&name, "name", service.DefaultName, "unit name (without .service), to find the running pid")
+	f.IntVar(&pid, "pid", 0, "the daemon to hand over (default: the unit's MainPID)")
+	f.DurationVar(&timeout, "timeout", 3*time.Minute, "how long to wait for the new process to report ready")
+	return cmd
 }
 
 // unitConfigPath recovers the --config the unit was installed with, so restart
