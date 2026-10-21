@@ -171,7 +171,7 @@ func TestBackpressure429(t *testing.T) {
 	}
 }
 
-func modelTo(t *testing.T, urlStr, typ string) config.Model {
+func modelTo(t testing.TB, urlStr, typ string) config.Model {
 	t.Helper()
 	u, err := url.Parse(urlStr)
 	if err != nil {

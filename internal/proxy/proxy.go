@@ -1066,6 +1066,18 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// this deferred call is then a no-op.
 		defer release()
 
+		// THE IN-FLIGHT MARKER: from here a restart or crash would otherwise
+		// lose this request without a trace — the activity row is written only
+		// at the end. The marker is turned into a row by whichever log below
+		// completes it (InflightID), or into a cut row by the startup sweep.
+		// Placed before EnsureReady so a minutes-long cold load is covered too.
+		// Best effort: a failed write costs the marker, never the request.
+		var markerID int64
+		defer func() { p.dropRowMarker(markerID) }() // a path that logs nothing, or panics
+		markerID = p.markRow(r, store.Activity{Served: name, Requested: served, Key: key,
+			Path: r.URL.Path, QueuedMS: queuedMS})
+		takeMarker := func() int64 { id := markerID; markerID = 0; return id }
+
 		// Proxy under reqCtx so a later preemption (cause ErrPreempted) aborts the
 		// upstream stream and frees this slot.
 		loadStart := time.Now()
@@ -1093,6 +1105,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			slog.Warn("backend unavailable, spilling", "backend", name, "err", err)
+			p.dropRowMarker(takeMarker())
 			p.markInflight(live, inflightQueued, "") // back to the walk, no backend held
 			continue
 		}
@@ -1151,7 +1164,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				writeJSONError(w, http.StatusBadRequest, "invalid_request_error", terr.Error())
 				p.logReq(r, store.Activity{Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path,
 					Status: http.StatusBadRequest, DwellMS: time.Since(start).Milliseconds(),
-					QueuedMS: queuedMS, LoadMS: loadMS, Error: "anthropic translation: " + terr.Error(), ReqBody: reqBody})
+					QueuedMS: queuedMS, LoadMS: loadMS, Error: "anthropic translation: " + terr.Error(), ReqBody: reqBody,
+					InflightID: takeMarker()})
 				return
 			}
 			outBody = ab
@@ -1356,13 +1370,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				p.logReq(r, store.Activity{Served: name, Requested: served, RefusedBy: name, Key: key, Path: r.URL.Path,
 					Status: upstreamRefusal, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
 					Error: fmt.Sprintf("upstream %d; tried the next model", upstreamRefusal), ReqBody: reqBody,
-					RespHeaders: keptHeaders(upHeaders), RetryAfterMS: time.Until(coolTo).Milliseconds()})
+					RespHeaders: keptHeaders(upHeaders), RetryAfterMS: time.Until(coolTo).Milliseconds(),
+					InflightID: takeMarker()})
 				p.markInflight(live, inflightQueued, "")
 				continue
 			}
 			slog.Warn("free-tier backend hard-failed, spilling", "backend", name, "status", hardFailStatus)
 			lastHardFail = fmt.Sprintf("%s refused with %d", name, hardFailStatus)
 			p.noteRefusal(name, hardFailStatus)
+			p.dropRowMarker(takeMarker()) // logs no row of its own, as before
 			p.markInflight(live, inflightQueued, "")
 			continue
 		}
@@ -1600,6 +1616,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			ReqBody: reqBody, RespBody: respBody, RespHeaders: respHeaders, FinishReason: finishReason,
 			RetryAfterMS:    retryAfterMS,
 			ReasoningTokens: thinking, ReasoningMeasured: thinkingMeasured,
+			InflightID: takeMarker(),
 		})
 		if aborted {
 			// Metered and logged; now abort the connection as ReverseProxy
@@ -2965,6 +2982,33 @@ func (p *Proxy) log(a store.Activity) {
 	ev := a
 	ev.ReqBody, ev.RespBody = "", ""
 	p.publish(events.Event{Type: "activity", Data: ev})
+}
+
+// markRow writes the in-flight marker for a request about to be served and
+// returns its id (0 when nothing was written). See store.inflightSchema.
+func (p *Proxy) markRow(r *http.Request, a store.Activity) int64 {
+	if p.store == nil {
+		return 0
+	}
+	a.TS = time.Now().UnixMilli()
+	a.SourceIP = clientIP(r)
+	a.Ticket = ticketFrom(r)
+	id, err := p.store.BeginInflight(a)
+	if err != nil {
+		slog.Warn("activity in-flight marker", "err", err)
+		return 0
+	}
+	return id
+}
+
+// dropRowMarker drops a marker that no row completed. A no-op for id 0.
+func (p *Proxy) dropRowMarker(id int64) {
+	if id == 0 || p.store == nil {
+		return
+	}
+	if err := p.store.EndInflight(id); err != nil {
+		slog.Warn("activity in-flight marker", "err", err)
+	}
 }
 
 // logReq stamps request-derived fields (the caller's source IP) onto the

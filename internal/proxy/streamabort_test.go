@@ -63,6 +63,9 @@ func TestCallerHangingUpAfterUsageIsStillLogged(t *testing.T) {
 	if r.Status != 200 || r.PromptTokens != 10 || r.CompletionTokens != 5 || !strings.Contains(r.Error, "hung up") {
 		t.Errorf("row = status %d, %d/%d tokens, error %q", r.Status, r.PromptTokens, r.CompletionTokens, r.Error)
 	}
+	if n, _ := st.InflightCount(); n != 0 {
+		t.Errorf("%d in-flight markers left after the hang-up", n)
+	}
 }
 
 // /upstream/ skips allowlists, limits and the log, so a remote model is refused.
