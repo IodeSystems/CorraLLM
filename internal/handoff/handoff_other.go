@@ -16,6 +16,7 @@ func Start(string, []string, net.Listener, time.Duration) (*Predecessor, error) 
 }
 
 func (p *Predecessor) PID() int           { return 0 }
+func (p *Predecessor) Token() string      { return "" }
 func (p *Predecessor) Send(Status) error  { return ErrUnsupported }
 func (p *Predecessor) Done() <-chan error { return nil }
 
@@ -23,6 +24,7 @@ func (p *Predecessor) Done() <-chan error { return nil }
 type Successor struct {
 	Listener       net.Listener
 	PredecessorPID int
+	Token          string
 }
 
 func Inherit() (*Successor, error)              { return nil, nil }

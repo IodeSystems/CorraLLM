@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -59,18 +60,7 @@ func (m *Manager) BenchTool(ctx context.Context, tool, server, prevDir, nextDir 
 				slog.Warn("benchmark: unpause failed", "model", name, "err", err)
 				continue
 			}
-			go func(name string) {
-				// The trial's teardown may still be stopping: wait for it,
-				// bounded, rather than fail with "still stopping" and leave the
-				// model down until a request happens to arrive.
-				key := m.procKey(name)
-				for i := 0; i < 60 && !m.fullyStopped(key); i++ {
-					time.Sleep(time.Second)
-				}
-				if _, err := m.LoadModel(context.Background(), name); err != nil {
-					slog.Warn("benchmark: reload after benchmark failed", "model", name, "err", err)
-				}
-			}(name)
+			go m.reloadAfterBench(name)
 		}
 	}
 
@@ -261,6 +251,48 @@ func benchPrompt(n int) string {
 	}
 	sb.WriteString("\nSummarise the scheduling policy above.")
 	return sb.String()
+}
+
+// benchReloadBackoff is the wait before each retry of a reload after a
+// benchmark that was refused for capacity. About a minute in all: enough for a
+// trial's memory to show as released on a slow agent, short enough that a
+// model that truly does not fit stops trying and waits for demand.
+var benchReloadBackoff = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second}
+
+// reloadAfterBench puts a model a benchmark took down back up.
+//
+// A capacity refusal is retried with backoff instead of ending it. Without the
+// retry one refusal left a resident model down until a request happened to
+// arrive (box1 2026-10-21: Swift down 01:46:04 to 01:46:23, refused against a
+// memory reading that still showed the trial). Any other error ends it, as do
+// a new pause and anything else having loaded or started loading the model.
+func (m *Manager) reloadAfterBench(name string) {
+	// The trial's teardown may still be stopping: wait for it, bounded, rather
+	// than fail with "still stopping".
+	key := m.procKey(name)
+	for i := 0; i < 60 && !m.fullyStopped(key); i++ {
+		time.Sleep(time.Second)
+	}
+	for attempt := 0; ; attempt++ {
+		_, err := m.LoadModel(context.Background(), name)
+		if err == nil {
+			if attempt > 0 {
+				slog.Info("benchmark: reloaded after benchmark", "model", name, "attempts", attempt+1)
+			}
+			return
+		}
+		var ce *CapacityError
+		if !errors.As(err, &ce) || attempt >= len(benchReloadBackoff) {
+			slog.Warn("benchmark: reload after benchmark failed", "model", name, "attempts", attempt+1, "err", err)
+			return
+		}
+		slog.Info("benchmark: reload refused for capacity; retrying", "model", name,
+			"retryIn", benchReloadBackoff[attempt], "err", err)
+		time.Sleep(benchReloadBackoff[attempt])
+		if m.IsPaused(name) || !m.fullyStopped(key) {
+			return // paused again, or something else is bringing it up
+		}
+	}
 }
 
 // fullyStopped reports that a process key has no process: none in the table,

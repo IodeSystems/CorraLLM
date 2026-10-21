@@ -45,6 +45,9 @@ func TestHelperSuccessor(t *testing.T) {
 	if err := s.Ready(); err != nil {
 		os.Exit(4)
 	}
+	// The handoff secret arrives, and is not left in the environment for a
+	// backend this process spawns.
+	fmt.Printf("token=%s env=%s\n", s.Token, os.Getenv(envToken))
 	s.Watch(func(st Status) {
 		fmt.Printf("status draining=%v active=%v local=%d\n", st.Draining, st.Active, st.Local)
 	},
@@ -225,10 +228,17 @@ func TestHandoff_ListenerMovesWithoutRefusals(t *testing.T) {
 	}
 	sc := bufio.NewScanner(r)
 	var lines []string
+	tokenLine := ""
 	for sc.Scan() {
 		if strings.HasPrefix(sc.Text(), "status") {
 			lines = append(lines, sc.Text())
 		}
+		if strings.HasPrefix(sc.Text(), "token=") {
+			tokenLine = sc.Text()
+		}
+	}
+	if p.Token() == "" || tokenLine != "token="+p.Token()+" env=" {
+		t.Errorf("successor token line %q, predecessor token %q", tokenLine, p.Token())
 	}
 	want := []string{"status draining=true active=map[m:1] local=1", "status draining=true active=map[] local=0"}
 	if strings.Join(lines, "|") != strings.Join(want, "|") {

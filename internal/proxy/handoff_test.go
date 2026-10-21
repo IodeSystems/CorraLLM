@@ -76,7 +76,7 @@ func TestHandoff_ArrivingRequestIsForwarded(t *testing.T) {
 	h, px, sc, st := handoffRig(t, map[string]config.Model{"m": modelTo(t, up.URL, "chat")})
 	succ := newSuccessor(t)
 	sc.Drain()
-	if err := px.SetSuccessor(succ.srv.URL); err != nil {
+	if err := px.SetSuccessor(succ.srv.URL, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -137,7 +137,7 @@ func TestHandoff_QueuedRequestIsForwarded(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	if err := px.SetSuccessor(succ.srv.URL); err != nil {
+	if err := px.SetSuccessor(succ.srv.URL, ""); err != nil {
 		t.Fatal(err)
 	}
 	sc.Drain()
@@ -172,7 +172,7 @@ func TestHandoff_ForwardBackToSelfIsARetryable503(t *testing.T) {
 	h, px, sc, st := handoffRig(t, map[string]config.Model{"m": modelTo(t, up.URL, "chat")})
 	self := httptest.NewServer(h)
 	t.Cleanup(self.Close)
-	if err := px.SetSuccessor(self.URL); err != nil {
+	if err := px.SetSuccessor(self.URL, ""); err != nil {
 		t.Fatal(err)
 	}
 	sc.Drain()
@@ -200,7 +200,7 @@ func TestHandoff_NoDoubleForward(t *testing.T) {
 	t.Cleanup(up.Close)
 	h, px, _, _ := handoffRig(t, map[string]config.Model{"m": modelTo(t, up.URL, "chat")})
 	succ := newSuccessor(t)
-	_ = px.SetSuccessor(succ.srv.URL)
+	_ = px.SetSuccessor(succ.srv.URL, "")
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("X-Corrallm-Key", "k")

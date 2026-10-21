@@ -386,12 +386,15 @@ func (m *Manager) endTrial(key string, p *Process) string {
 	if h != nil {
 		msg = "stopped"
 		_ = h.Signal(host.SigTerm)
-		select {
-		case <-h.Done():
-		case <-time.After(trialGrace):
-			// A backend in CUDA teardown can ignore SIGTERM for a long time, and
-			// an untracked group holding tens of GB is the worst state there is.
-			_ = h.Signal(host.SigKill)
+		// The GROUP, not Done: Done is the leader, and on an agent the group
+		// being gone is also what refreshes the memory reading the next admit
+		// is checked against. Returning on the signal alone let the reload
+		// after a build benchmark see the trial's ~29 GB still on the card and
+		// fail "no capacity" (box1 2026-10-21 01:46:04).
+		//
+		// A backend in CUDA teardown can ignore SIGTERM for a long time, and
+		// an untracked group holding tens of GB is the worst state there is.
+		if m.reapGroupWithin(p.Name, h, trialGrace) {
 			msg = "stopped (killed after " + trialGrace.String() + ")"
 		}
 	}

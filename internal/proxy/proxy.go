@@ -83,6 +83,10 @@ type Proxy struct {
 	// (handoff.go); nil until it hands over.
 	successor atomic.Pointer[url.URL]
 	handing   atomic.Int64 // requests being forwarded to it now
+	// successorToken is stamped on forwards; predecessorToken is what a
+	// forward to this process must carry to be believed (handedWait).
+	successorToken   atomic.Pointer[string]
+	predecessorToken atomic.Pointer[string]
 
 	// quota is the P16 free-tier budget ledger: it learns each remote backend's
 	// remaining rate-limit budget from the X-Ratelimit-* headers on its responses.
@@ -661,9 +665,11 @@ func writeJSONError(w http.ResponseWriter, status int, kind, msg string) {
 // ensures its first backend is ready, and reverse-proxies the (buffered) body.
 func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// Handed over: the successor serves everything that arrives from now on.
-	if p.draining() && p.handOver(w, r, "", nil) {
+	if p.draining() && p.handOver(w, r, "", nil, 0) {
 		return
 	}
+	// Time this request already spent in a predecessor that handed it over.
+	handed := p.handedWait(r)
 	// Audio routes (P9a/P9b). STT (transcriptions/translations) takes a multipart
 	// upload — raise the body cap for the audio file (parakeet caps it at 25 MiB).
 	// TTS (speech) is JSON-in/binary-out, so it keeps the default cap but still
@@ -723,7 +729,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start := time.Now()
+	// Shifted back by the predecessor's share, so every dwell and TTFB below
+	// is the caller's whole wait, not just this process's part of it.
+	start := time.Now().Add(-handed)
 	// Capture the request payload once (available on every exit path). STT uploads
 	// are multipart/binary → summarized to a size, not stored raw. Captured BEFORE
 	// PDF conversion so the activity row holds the (small) original, not the
@@ -1070,8 +1078,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// in the headers below, where a client subtracts them from its own wall
 	// clock to recover execution time — under-reporting the overhead inflates
 	// the execution time it computes.
-	var queuedMS int64 // time blocked in admission control
-	var loadMS int64   // time waiting for a backend to be spawned/resident
+	queuedMS := handed.Milliseconds() // time blocked in admission control, the predecessor's included
+	var loadMS int64                  // time waiting for a backend to be spawned/resident
 
 	for wi, idx := range walk {
 		cand := cands[idx]
@@ -1086,7 +1094,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		release, reqCtx, err := p.sched.Admit(p.admitCtx(ctx, r, key), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if errors.Is(err, sched.ErrDraining) {
-			if p.handOver(w, r, arrivedCT, arrivedBody) {
+			if p.handOver(w, r, arrivedCT, arrivedBody, time.Since(start)) {
 				return // queued here when this process handed over
 			}
 			p.refuseUnhanded(w, r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
@@ -1152,7 +1160,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			// may not spawn it: the successor loads and serves it.
 			release()
 			p.dropRowMarker(takeMarker())
-			if p.handOver(w, r, arrivedCT, arrivedBody) {
+			if p.handOver(w, r, arrivedCT, arrivedBody, time.Since(start)) {
 				return
 			}
 		}
@@ -1732,9 +1740,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 // preempted. corrallm stays a transparent pipe — VAD/chunking live in the backend
 // (e.g. Speaches), device capture in the client.
 func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
-	if p.draining() && p.handOver(w, r, "", nil) {
+	if p.draining() && p.handOver(w, r, "", nil, 0) {
 		return
 	}
+	handed := p.handedWait(r)
 	served := r.URL.Query().Get("model")
 	if served == "" {
 		http.Error(w, `{"error":{"message":"missing \"model\" query param"}}`, http.StatusBadRequest)
@@ -1753,7 +1762,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	// are no audio bytes to meter here.
 	ws := r.Method == http.MethodGet && strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 
-	start := time.Now()
+	start := time.Now().Add(-handed) // see handleInference
 	key := callerKey(r)
 	// Same operator-order filter as the inference path: skip paused members so
 	// the walk never queues for an admission slot on a model that will not
@@ -1784,7 +1793,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	var lastBP *sched.BackpressureError
 	// Cumulative across the walk, same as the chat path: a session that queued
 	// on one backend, spilled and queued again must report both waits.
-	var queuedMS int64
+	queuedMS := handed.Milliseconds()
 	var loadMS int64
 
 	for _, idx := range ordered {
@@ -1800,7 +1809,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		release, reqCtx, err := p.sched.Admit(p.admitCtx(r.Context(), r, key), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
 		queuedMS += time.Since(admitStart).Milliseconds()
 		if errors.Is(err, sched.ErrDraining) {
-			if p.handOver(w, r, "", nil) {
+			if p.handOver(w, r, "", nil, time.Since(start)) {
 				return // the successor takes the session
 			}
 			p.refuseUnhanded(w, r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,

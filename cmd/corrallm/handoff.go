@@ -164,7 +164,7 @@ func drainForSuccessor(pred *handoff.Predecessor, srv *http.Server, ln net.Liste
 	// somewhere to go; the first report goes out after the drain, so it is
 	// final or shrinking.
 	handoff.StopAccepting(srv, ln)
-	if err := px.SetSuccessor(successorBase(ln)); err != nil {
+	if err := px.SetSuccessor(successorBase(ln), pred.Token()); err != nil {
 		slog.Error("handoff: successor address", "err", err)
 	}
 	sc.Drain()
