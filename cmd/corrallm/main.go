@@ -901,6 +901,9 @@ func serve(ctx context.Context, o serveOpts) error {
 	px.SetTrustedCaller(func(r *http.Request, key string) bool {
 		return bench.IsRunKey(key) || (!o.insecure && auth.DashboardAdmin(r, adminToken, sso))
 	})
+	// The running bench also heads each model's admission queue: queue time
+	// behind other callers would otherwise be measured as model time.
+	px.SetPriorityCaller(bench.IsRunKey)
 	px.SetRequestTimeout(o.requestTimeout)
 	px.SetCapturePayloads(o.capturePayloads)
 	px.SetSlotCache(o.slotCacheDir, int64(o.slotCacheMaxGB)<<30)
