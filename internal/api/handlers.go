@@ -1177,6 +1177,7 @@ type ResidentModelView struct {
 	Refs       int             `json:"refs" doc:"In-flight requests holding it."`
 	Persistent bool            `json:"persistent" doc:"Pinned: exempt from eviction."`
 	LastUsedMS int64           `json:"lastUsedMs" doc:"Unix millis of last use, 0 if never."`
+	LoadedAtMS int64           `json:"loadedAtMs" doc:"Unix millis the backend's weights were loaded: its spawn, or for one adopted from an agent the start the agent reports (kept across restarts and handoffs). 0 if unknown. The non-ECC refresh measures age from here."`
 	NCtx       int             `json:"nCtx" doc:"Context length parsed from the backend (0 if unknown)."`
 	NSlots     int             `json:"nSlots" doc:"Slot count parsed from the backend (0 if unknown)."`
 	HasUI      string          `json:"hasUi" doc:"unknown|yes|no — does the backend serve a web UI at / (P11b)."`
@@ -1311,7 +1312,7 @@ func (h *Handlers) Residency(_ context.Context, _ *ResidencyInput) (*ResidencyOu
 		mv := ResidentModelView{
 			Name: m.Name, ModelName: m.ModelName, ProcKey: m.ProcKey, Remote: m.Remote,
 			Server: m.Server, State: m.State,
-			Refs: m.Refs, Persistent: m.Persistent, LastUsedMS: m.LastUsedMS,
+			Refs: m.Refs, Persistent: m.Persistent, LastUsedMS: m.LastUsedMS, LoadedAtMS: m.LoadedAtMS,
 			NCtx: m.NCtx, NSlots: m.NSlots, HasUI: m.HasUI,
 			Usage: make([]PoolUsageView, 0, len(m.Usage)),
 
@@ -2360,6 +2361,11 @@ type PoolDef struct {
 	Pool         string `json:"pool" doc:"Pool name."`
 	TotalBytes   int64  `json:"totalBytes" doc:"Declared pool size."`
 	ReserveBytes int64  `json:"reserveBytes" doc:"Headroom kept free."`
+	// ECC decides whether models on the pool are reloaded on a schedule
+	// (residency.nonEccMaxAge), so the operator needs to see what corrallm
+	// believes, and why.
+	ECC       bool   `json:"ecc" doc:"The pool's memory has ECC. False also when it cannot be told; models on a pool without ECC are reloaded once their weights are older than residency.nonEccMaxAge."`
+	ECCSource string `json:"eccSource" doc:"Where ecc came from: config (servers.<name>.ecc), detected (nvidia-smi, EDAC, or the agent's report), or unknown (nothing to go on; treated as no ECC)."`
 }
 
 // ServerDef is a server's declared capacity.
@@ -2683,7 +2689,11 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 		totals, _ := config.ParseSizes(srv.Pools)
 		reserve, _ := config.ParseSizes(srv.Reserve)
 		for pool, total := range totals {
-			sd.Pools = append(sd.Pools, PoolDef{Pool: pool, TotalBytes: total, ReserveBytes: reserve[pool]})
+			pd := PoolDef{Pool: pool, TotalBytes: total, ReserveBytes: reserve[pool], ECCSource: proc.ECCUnknown}
+			if h.Mgr != nil {
+				pd.ECC, pd.ECCSource = h.Mgr.PoolECC(name, pool)
+			}
+			sd.Pools = append(sd.Pools, pd)
 		}
 		sort.Slice(sd.Pools, func(i, j int) bool { return sd.Pools[i].Pool < sd.Pools[j].Pool })
 		out.Body.Servers = append(out.Body.Servers, sd)

@@ -996,6 +996,15 @@ func serve(ctx context.Context, o serveOpts) error {
 	// for a pinned model, which nothing ever requests by name.
 	mgr.StartPauseSweeper(jobsCtx)
 	mgr.StartIdleSweeper(jobsCtx)
+	// Reload models whose weights sat too long on memory without ECC. A
+	// bench run measuring the model holds it off until the run ends.
+	mgr.SetRefreshHold(func(model string) string {
+		if h.Bench.Benching(model) {
+			return "a bench run is measuring it"
+		}
+		return ""
+	})
+	mgr.StartNonECCRefresh(jobsCtx)
 
 	// A payload retention at or past the row retention can never fire: the row
 	// is deleted first, taking its payload with it. Silently doing nothing is

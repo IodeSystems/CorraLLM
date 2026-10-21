@@ -267,26 +267,35 @@ var benchReloadBackoff = []time.Duration{2 * time.Second, 4 * time.Second, 8 * t
 // memory reading that still showed the trial). Any other error ends it, as do
 // a new pause and anything else having loaded or started loading the model.
 func (m *Manager) reloadAfterBench(name string) {
+	m.reloadAfter(context.Background(), name, "benchmark")
+}
+
+// reloadAfter is reloadAfterBench for any planned stop; what names the cause
+// in the log. The non-ECC refresh uses it too (refresh.go).
+func (m *Manager) reloadAfter(ctx context.Context, name, what string) {
 	// The trial's teardown may still be stopping: wait for it, bounded, rather
 	// than fail with "still stopping".
 	key := m.procKey(name)
 	for i := 0; i < 60 && !m.fullyStopped(key); i++ {
 		time.Sleep(time.Second)
 	}
+	if m.StateOf(key) != StateAbsent {
+		return // a request brought it back up while it was stopping
+	}
 	for attempt := 0; ; attempt++ {
-		_, err := m.LoadModel(context.Background(), name)
+		_, err := m.LoadModel(ctx, name)
 		if err == nil {
 			if attempt > 0 {
-				slog.Info("benchmark: reloaded after benchmark", "model", name, "attempts", attempt+1)
+				slog.Info(what+": reloaded", "model", name, "attempts", attempt+1)
 			}
 			return
 		}
 		var ce *CapacityError
 		if !errors.As(err, &ce) || attempt >= len(benchReloadBackoff) {
-			slog.Warn("benchmark: reload after benchmark failed", "model", name, "attempts", attempt+1, "err", err)
+			slog.Warn(what+": reload failed", "model", name, "attempts", attempt+1, "err", err)
 			return
 		}
-		slog.Info("benchmark: reload refused for capacity; retrying", "model", name,
+		slog.Info(what+": reload refused for capacity; retrying", "model", name,
 			"retryIn", benchReloadBackoff[attempt], "err", err)
 		time.Sleep(benchReloadBackoff[attempt])
 		if m.IsPaused(name) || !m.fullyStopped(key) {

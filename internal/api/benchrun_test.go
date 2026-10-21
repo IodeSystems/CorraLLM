@@ -6,6 +6,27 @@ import (
 	"time"
 )
 
+// Benching: a run measures the models it lists, or every model when it lists
+// none; an idle runner measures nothing.
+func TestBenchRunnerBenching(t *testing.T) {
+	var nilRunner *BenchRunner
+	if nilRunner.Benching("swift") {
+		t.Error("nil runner benching")
+	}
+	b := NewBenchRunner()
+	if b.Benching("swift") {
+		t.Error("idle runner benching")
+	}
+	b.running, b.models = true, []string{"swift"}
+	if !b.Benching("swift") || b.Benching("other") {
+		t.Error("a run listing swift must measure swift only")
+	}
+	b.models = nil
+	if !b.Benching("other") {
+		t.Error("a run listing no models measures every model")
+	}
+}
+
 func waitDone(t *testing.T, b *BenchRunner) BenchRunStatus {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

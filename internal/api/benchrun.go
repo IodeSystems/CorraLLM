@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,7 @@ type BenchRunner struct {
 	started time.Time
 	args    []string
 	key     string
+	models  []string // --models of the run in progress; empty = every model
 
 	logMu sync.RWMutex
 	lines []string
@@ -62,6 +64,19 @@ func (b *BenchRunner) IsRunKey(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.running && key == b.key
+}
+
+// Benching reports whether the run in progress measures model: it lists it,
+// or lists nothing and so measures everything. A reload under a bench would
+// be measured as the model's own latency, so the non-ECC refresh waits for
+// it (proc.Manager.SetRefreshHold).
+func (b *BenchRunner) Benching(model string) bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.running && (len(b.models) == 0 || slices.Contains(b.models, model))
 }
 
 // BenchRunStatus is the UI's view of the current or last run.
@@ -213,6 +228,7 @@ func (b *BenchRunner) Start(opts BenchStartOptions) (BenchRunStatus, error) {
 	cmd.Stderr = cmd.Stdout
 
 	b.running, b.cancel, b.started, b.key = true, cancel, time.Now(), key
+	b.models = slices.Clone(opts.Models)
 	b.args = append([]string{opts.Bin}, args...)
 	b.mu.Unlock()
 

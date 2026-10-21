@@ -205,6 +205,13 @@ func (m *Manager) adoptReported(server string, b agent.Backend) *Process {
 		return nil
 	}
 	now := time.Now()
+	// The agent's start time, not now: adoption is not a load, and the
+	// non-ECC refresh must see the weights' real age across primary restarts
+	// and handoffs. An agent that sent none (zero) starts the clock here.
+	loadedAt := now
+	if b.Started > 0 {
+		loadedAt = time.UnixMilli(b.Started)
+	}
 	p := &Process{
 		Name:       served,
 		ModelName:  served,
@@ -226,6 +233,7 @@ func (m *Manager) adoptReported(server string, b agent.Backend) *Process {
 		// anchor all describe THIS primary's view, which begins now.
 		readyAt:  now,
 		lastUsed: now,
+		loadedAt: loadedAt,
 	}
 	if n := parallelOf(b.Cmd); n > 0 && n != mdl.Slots() {
 		p.tunedSlots = n
