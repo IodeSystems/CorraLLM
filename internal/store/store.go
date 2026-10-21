@@ -482,6 +482,7 @@ var migrations = []string{
 	// Upstream response headers on an allowlist (provider timing, rate limits,
 	// request ids), one "Name: value" per line. Captured with the payloads.
 	`ALTER TABLE activity_payload ADD COLUMN resp_headers TEXT NOT NULL DEFAULT ''`,
+	inflightSchema,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -748,7 +749,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 // actually consumed before the abort (partial tokens + any swap energy spent).
 type Activity struct {
 	ID int64 // row id (P10b; 0 until persisted, set on read)
-	TS int64 // unix millis
+	// InflightID is the activity_inflight marker this row completes (0 = none).
+	// Not a column: InsertActivity deletes the marker in the row's transaction.
+	InflightID int64
+	TS         int64 // unix millis
 	// Served is the model that ACTUALLY answered — the candidate that won, not
 	// the name the caller wrote down. Those differ whenever a caller addresses a
 	// lane, and the log used to record the request's name for both.
@@ -913,6 +917,13 @@ func (s *Store) InsertActivity(a Activity) error {
 	id, err := res.LastInsertId()
 	if err != nil {
 		return err
+	}
+	if a.InflightID != 0 {
+		// The marker's job ends with the row it was standing in for; same
+		// transaction, so a crash between the two never leaves both.
+		if _, err := tx.Exec(`DELETE FROM activity_inflight WHERE id = ?`, a.InflightID); err != nil {
+			return err
+		}
 	}
 	if a.ReqBody != "" || a.RespBody != "" || a.RespHeaders != "" {
 		if _, err := tx.Exec(`INSERT INTO activity_payload (activity_id, req_body, resp_body, resp_headers) VALUES (?, ?, ?, ?)`,
