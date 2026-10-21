@@ -1465,6 +1465,23 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 	// whether the KV-log fast path below is available this run — it's the
 	// data the two-point slope fallback needs, and costs nothing to keep.
 	existing, _ := m.tuneCache.Get(dev, model)
+	if lostBanner(existing, nCtx, kvMiB) {
+		// No n_ctx and no KV size, yet this model's profile was measured with
+		// both: the startup banner is not in this process's log. That is an
+		// ADOPTED backend (the agent's log ring holds the newest lines, and a
+		// llama.cpp banner is far more than 500 back). Deriving from it files
+		// the whole footprint as base with perSlot 0 and ctx 0, which wiped a
+		// good profile (box1 2026-10-21 01:43:31, Swift: base 29202 perSlot
+		// 0 after a handoff adopted it). Keep the shape; record only the peak.
+		m.tuneCache.BumpPeak(dev, model, footprint)
+		if err := m.tuneCache.Save(); err != nil {
+			slog.Warn("save tune cache", "model", model, "err", err)
+		}
+		slog.Info("vram measured without a startup banner; kept the stored profile, recorded the peak only",
+			"model", model, "footprintMiB", footprint, "baseMiB", existing.BaseMiB,
+			"perSlotMiB", existing.PerSlotMiB, "ctx", existing.Ctx)
+		return
+	}
 	// Shared derivation — the SAME code llm-bench's published measurement runs
 	// through. Two implementations of "what is this model's per-slot cost"
 	// would drift.
@@ -1485,6 +1502,15 @@ func (m *Manager) measure(model string, mdl config.Model, p *Process, h host.Han
 	}
 	slog.Info("vram measured", "model", model, "footprintMiB", footprint,
 		"baseMiB", base, "perSlotMiB", perSlot, "slots", nSlots, "kvMiB", kvMiB, "ctx", nCtx)
+}
+
+// lostBanner reports a measurement that cannot know its context or KV size
+// although the stored profile was made with both — the banner existed for this
+// model and is missing from this log. A backend that never prints one (no
+// llama.cpp banner, so existing.Ctx is 0) is not this case: its profile comes
+// from the two-point slope, which needs every spawn's sample.
+func lostBanner(existing tune.Profile, nCtx, kvMiB int) bool {
+	return nCtx <= 0 && kvMiB <= 0 && existing.Ctx > 0
 }
 
 // sampleVRAMPeak periodically re-probes a resident process's VRAM footprint
@@ -1760,6 +1786,14 @@ func (m *Manager) measurePerDevice(model string, h host.Handle, devs []gpu.Stats
 			return false
 		}
 		existing, _ := m.tuneCache.Get(d.Name, model)
+		if lostBanner(existing, nCtx, 0) {
+			// See measure: no banner in the log, and this card's profile was
+			// made with one. Its peak is evidence; its shape is not.
+			m.tuneCache.BumpPeak(d.Name, model, mib)
+			slog.Info("vram measured per device without a startup banner; kept the stored profile",
+				"model", model, "device", d.Name, "footprintMiB", mib)
+			continue
+		}
 		readings = append(readings, reading{
 			dev:  d,
 			mib:  mib,

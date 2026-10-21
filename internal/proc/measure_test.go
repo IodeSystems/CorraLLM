@@ -449,3 +449,48 @@ func TestMeasureSingleDeviceUnaffected(t *testing.T) {
 		t.Errorf("profile = %+v ok=%v, want PeakMiB 12000", got, ok)
 	}
 }
+
+// An adopted backend's log holds no startup banner, so its measurement has no
+// n_ctx and no KV size. It must not replace a profile that was measured with
+// both: box1 2026-10-21 01:43:31 filed Swift as base 29202 / perSlot 0 / ctx 0
+// after a handoff adopted it, over base 24702 / perSlot 4352 / ctx 131072.
+// Its footprint still counts toward the peak.
+func TestMeasure_NoBannerKeepsAMeasuredProfile(t *testing.T) {
+	const fakePid = 434343
+	fakeNvidiaSMI(t, "0, Fake GPU, 32000, 30000, 2000", strconv.Itoa(fakePid)+", 29202")
+	origPGID := gpu.PGIDFn
+	gpu.PGIDFn = func(pid int) (int, error) { return pid, nil }
+	t.Cleanup(func() { gpu.PGIDFn = origPGID })
+
+	cache, err := tune.New(filepath.Join(t.TempDir(), "vram-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := tune.Profile{BaseMiB: 24702, PerSlotMiB: 4352, PeakMiB: 29054, MeasuredSlots: 1, Ctx: 131072,
+		Source: tune.SourceServing, MeasuredAt: 1, Samples: []tune.Sample{{Slots: 1, FootprintMiB: 29054}},
+		RecentPeaks: []int{29054}}
+	cache.Update("Fake GPU", "swift", good)
+	mgr := NewManager(&config.Config{})
+	mgr.SetTuneCache(cache)
+
+	// What adoption builds: a fresh ring the banner never reaches.
+	p := &Process{logs: newLogBuffer(500)}
+	_, _ = p.logs.Write([]byte("srv  log_server_r: done request: POST /v1/chat/completions 200\n"))
+	mgr.measure("swift", config.Model{Cmd: "exec sleep 30", MaxConcurrent: 1}, p, pidHandle{pid: fakePid})
+
+	got, _ := cache.Get("Fake GPU", "swift")
+	if got.BaseMiB != good.BaseMiB || got.PerSlotMiB != good.PerSlotMiB || got.Ctx != good.Ctx {
+		t.Errorf("shape overwritten: base %d perSlot %d ctx %d; want %d / %d / %d",
+			got.BaseMiB, got.PerSlotMiB, got.Ctx, good.BaseMiB, good.PerSlotMiB, good.Ctx)
+	}
+	if got.PeakMiB != 29202 {
+		t.Errorf("PeakMiB = %d, want the adopted footprint 29202", got.PeakMiB)
+	}
+
+	// A backend that never prints a banner (no stored ctx) still measures as
+	// before: the two-point slope needs every spawn's sample.
+	mgr.measure("nobanner", config.Model{Cmd: "exec sleep 30", MaxConcurrent: 1}, p, pidHandle{pid: fakePid})
+	if nb, ok := cache.Get("Fake GPU", "nobanner"); !ok || nb.BaseMiB != 29202 {
+		t.Errorf("no-banner model profile = %+v ok=%v; want a measured one", nb, ok)
+	}
+}
