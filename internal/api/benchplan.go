@@ -112,8 +112,11 @@ func (h *Handlers) BenchPlan(_ context.Context, _ *BenchPlanInput) (*BenchPlanOu
 		// meaningless for it — offering to measure one would be noise.
 		measurable := m.Server != "" && m.Cmd != ""
 
-		if h.Mgr != nil && measurable && gpuName != "" {
-			if p, ok := h.Mgr.TuneProfile(gpuName, name); ok && p.BaseMiB > 0 {
+		// The profile of the card THIS model runs on. This machine's first
+		// GPU read every model's profile under one card — on box1 the 3080, so
+		// a gpu0 (5090) model showed whatever stale entry sat under the 3080.
+		if h.Mgr != nil && measurable {
+			if p, ok := h.Mgr.TuneProfileForModel(name); ok && p.BaseMiB > 0 {
 				plan.HasTuneProfile = true
 				plan.Profile = &TuneProfileView{
 					BaseMiB: p.BaseMiB, PerSlotMiB: p.PerSlotMiB, PeakMiB: p.PeakMiB,
