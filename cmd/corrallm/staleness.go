@@ -105,7 +105,15 @@ func newestBuildInput(dir string, t time.Time) (time.Time, string) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "node_modules", "testdata", "out", "local", "bin", "tmp":
+			case ".git", ".claude", "node_modules", "testdata", "out", "local", "bin", "tmp":
+				return filepath.SkipDir
+			}
+			// Another tree inside this one is not this binary's source: an
+			// agent worktree (a .git FILE at its root) or a nested module (its
+			// own go.mod). Live 10-21 the warning named
+			// .claude/worktrees/agent-…/internal/proxy/inflight_test.go on
+			// every deploy that had a worktree open.
+			if p != dir && ownTree(p) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -134,13 +142,25 @@ func newestBuildInput(dir string, t time.Time) (time.Time, string) {
 //
 // The UI is deliberately NOT included: it is served from --web-root as files on
 // disk, not compiled in, so a changed .tsx does not make this binary stale and
-// flagging it would cry wolf on every dashboard edit.
+// flagging it would cry wolf on every dashboard edit. Nor are tests: a
+// _test.go file is never compiled into the binary.
 func buildInput(name string) bool {
 	switch name {
 	case "go.mod", "go.sum", "go.work":
 		return true
 	}
-	return strings.HasSuffix(name, ".go")
+	return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
+}
+
+// ownTree reports whether dir is the root of a separate tree: a git checkout
+// or worktree (.git directory or file) or a Go module (go.mod).
+func ownTree(dir string) bool {
+	for _, n := range []string{".git", "go.mod"} {
+		if _, err := os.Lstat(filepath.Join(dir, n)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // moduleRootAbove finds the module directory a binary is sitting in, or "" when
