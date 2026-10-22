@@ -377,6 +377,27 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P59 — Models grouped by provider; Setup → Settings; Load watched to the end — 2026-10-22
+
+- ✅ One Models page: a panel per provider (local by box; extension → providers → models),
+  Add provider / model / extension. Settings = Access, Budgets, Warnings, History. `/setup`,
+  `/providers`, `/history`, `/quota` redirect. API: `provider`, `extension` on overview models.
+- ✅ Load dialog on the model page: holds the blocking load request, tails the log, ends on the
+  server's answer. Start command shown, not folded. Post-action refresh hit an unused key (fixed).
+- ✅ Spawn refuses a port something already answers on (primary + agents); a crashed backend's
+  log is kept per process key; the failure names the exit status.
+- Verified in a sandbox (`--home` scratch, fake backends): crash, taken port, healthy load,
+  redirects. Not deployed.
+- **next:** deploy box1 (server first, then `ui-build` — the new UI needs the new fields); owner
+  rebuilds the Mac (`make install`).
+- **risks:** Mac `/models` hang is UNDIAGNOSED — only the overview query hangs there; needs a
+  SIGQUIT goroutine dump (`launchctl kill QUIT gui/$(id -u)/com.iodesystems.corrallm`). Port
+  check dials 127.0.0.1 only: a backend bound to another interface is not seen. Loaded panel and
+  per-capability sections were dropped from Models (state is a chip per row).
+- **blocking decisions:** none.
+- **optional extensions:** async load (return at once, poll state) so a closed dialog holds no
+  connection; collapse per provider group.
+
 ### ◐ P58 — `make install` → `~/.local/bin`; launchd support for `corrallm service` — 2026-10-22
 
 Owner: "make install should install bins into ~/.local/bin, we should have launchd support. Go".
