@@ -416,12 +416,14 @@ Slices:
   `key:<k>`. Hard → 429 `allocation_exhausted` + Retry-After before routing; soft → reported only.
   Charged once per served request: `req` 1, `usd` = metered cost (electricity local, bill paid).
   Test: `proxy/keyallocation_test.go`. Left: show/edit in Setup → Budgets (with slice E).
-- ◻ **D. spend rates** — $/h over the window per key, model, provider budget; projected
-  exhaustion before reset.
+- ✅ **D. spend rates** — ledger keeps a 60 × 1-minute charge ring per scope and dimension
+  (memory only); `quotaLedger` windows carry `hard`, `ratePerHour`, `rateSpanSec`,
+  `exhaustsInSec`, `projectedAtReset`. Covers key, model, credential, provider and box scopes.
+  A key or model with no budget gets its $/h from `usageRollup` cost ÷ window (UI, slice E).
 - ◻ **E. UI** — main page dashboard sections on A–D; Traffic trimmed to requests; old usage
   components retired once nothing mounts them.
 
-- **next:** slice D — spend rates from the ledger + usage, then slice E UI.
+- **next:** slice E — UI: dashboard on `/`, Traffic = requests, Fleet → `/machines`.
 - **risks:** a key's allocation is charged the per-token electricity ESTIMATE, while the dashboard
   may show measured kWh (power config) — the two can differ; key scope charged only on
   `handleInference` (the sole quota charge site) — realtime/websocket audio is not counted;

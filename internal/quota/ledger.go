@@ -61,6 +61,47 @@ type Window struct {
 	Blocked  bool      `json:"blocked,omitempty"`  // level has reached the limit
 	Hard     bool      `json:"hard,omitempty"`     // blocked refuses, never served anyway
 	ResetsAt time.Time `json:"resetsAt,omitempty"` // when the level fully drains to zero
+	// SPEND RATE (P56): this window's dimension charged to the scope over the
+	// last hour (or since this process started, when sooner), per hour.
+	RatePerHour float64 `json:"ratePerHour,omitempty"`
+	// RateSpan is how much time RatePerHour is over: up to an hour.
+	RateSpan time.Duration `json:"rateSpan,omitempty"`
+	// ExhaustsAt is when the level reaches the limit at RatePerHour — zero when
+	// it never does at that rate (a falloff window leaking faster than it
+	// fills) or not before the calendar period empties it.
+	ExhaustsAt time.Time `json:"exhaustsAt,omitempty"`
+	// ProjectedAtReset is the level a calendar window reaches by its boundary
+	// at RatePerHour; 0 on a falloff window, which has no boundary.
+	ProjectedAtReset float64 `json:"projectedAtReset,omitempty"`
+}
+
+// rateRing sums one dimension's charges into 60 one-minute slots, for a
+// trailing-hour rate. In memory only: after a restart the rate covers the time
+// since, which RateSpan says.
+type rateRing struct {
+	slot [60]float64
+	min  [60]int64 // which unix minute each slot holds
+}
+
+func (r *rateRing) add(now time.Time, amt float64) {
+	m := now.Unix() / 60
+	i := m % 60
+	if r.min[i] != m {
+		r.min[i], r.slot[i] = m, 0
+	}
+	r.slot[i] += amt
+}
+
+// lastHour is the sum over the 60 minutes ending at now.
+func (r *rateRing) lastHour(now time.Time) float64 {
+	m := now.Unix() / 60
+	var sum float64
+	for i := range r.slot {
+		if m-r.min[i] < 60 {
+			sum += r.slot[i]
+		}
+	}
+	return sum
 }
 
 // cap is a per-backend self-throttle below the provider's own limit. 0 = none.
@@ -157,7 +198,10 @@ func periodEnd(unit string, t time.Time) time.Time {
 }
 
 // counterState is a counter-mode backend's windows (per-minute, per-day).
-type counterState struct{ windows []*counterWindow }
+type counterState struct {
+	windows []*counterWindow
+	recent  map[string]*rateRing // by dimension
+}
 
 // PersistedCounter is one falloff window's durable state (see CounterStore).
 type PersistedCounter struct {
@@ -216,6 +260,7 @@ type Ledger struct {
 	stale     map[string]bool // backend's model has churned out of its provider's free roster (P16e)
 	store     CounterStore    // durable falloff-counter state (nil = memory-only)
 	loaded    map[string]loadedCounter
+	started   time.Time // bounds the span a rate can be over
 }
 
 // New builds an empty ledger.
@@ -224,6 +269,7 @@ func New() *Ledger {
 		now: time.Now, entries: map[string]*Entry{},
 		caps: map[string]cap{}, counters: map[string]*counterState{},
 		hardFails: map[string]int{}, stale: map[string]bool{},
+		started: time.Now(),
 	}
 }
 
@@ -311,7 +357,11 @@ func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 		delete(l.counters, backend)
 		return
 	}
-	l.counters[backend] = &counterState{windows: windows}
+	recent := map[string]*rateRing{}
+	if cur := l.counters[backend]; cur != nil {
+		recent = cur.recent
+	}
+	l.counters[backend] = &counterState{windows: windows, recent: recent}
 	// Create the entry now so a counter-mode backend shows its declared budget in
 	// the ledger before its first call (header-mode backends are discovered on
 	// first response; counter-mode is declared, so surface it up front).
@@ -450,6 +500,10 @@ func (l *Ledger) chargeLocked(backend, dim string, amt float64, now time.Time) [
 	if cs == nil {
 		return nil
 	}
+	if cs.recent[dim] == nil {
+		cs.recent[dim] = &rateRing{}
+	}
+	cs.recent[dim].add(now, amt)
 	var saves []pendingSave
 	for _, w := range cs.windows {
 		if !strings.HasPrefix(w.label, dim+"/") {
@@ -835,6 +889,7 @@ func (l *Ledger) Snapshot() []Entry {
 				if d := cw.drainAt(now); !d.IsZero() {
 					w.ResetsAt = d
 				}
+				l.project(&w, cw, cs, now)
 				v.Windows = append(v.Windows, w)
 			}
 		}
@@ -842,4 +897,35 @@ func (l *Ledger) Snapshot() []Entry {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Backend < out[j].Backend })
 	return out
+}
+
+// project fills a window view's spend rate and where that rate takes it.
+// Caller holds l.mu (read).
+func (l *Ledger) project(w *Window, cw *counterWindow, cs *counterState, now time.Time) {
+	dim, _, _ := strings.Cut(cw.label, "/")
+	r := cs.recent[dim]
+	if r == nil {
+		return
+	}
+	span := min(time.Hour, now.Sub(l.started))
+	if span < time.Minute {
+		return // too short to call a rate
+	}
+	w.RateSpan = span
+	w.RatePerHour = r.lastHour(now) / span.Hours()
+	room := cw.limit - w.Used
+	if cw.calendar != "" {
+		end := periodEnd(cw.calendar, now)
+		w.ProjectedAtReset = w.Used + w.RatePerHour*end.Sub(now).Hours()
+		if w.RatePerHour > 0 && room > 0 {
+			if at := now.Add(time.Duration(room / w.RatePerHour * float64(time.Hour))); at.Before(end) {
+				w.ExhaustsAt = at
+			}
+		}
+		return
+	}
+	// A falloff window leaks limit per dur while it fills at the rate.
+	if net := w.RatePerHour - cw.limit/cw.dur.Hours(); net > 0 && room > 0 {
+		w.ExhaustsAt = now.Add(time.Duration(room / net * float64(time.Hour)))
+	}
 }

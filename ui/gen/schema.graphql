@@ -2812,9 +2812,19 @@ type corrallm_QuotaOutputBody {
 type corrallm_QuotaWindowView {
   """The level has reached the limit — the backend is skipped until it drains below."""
   blocked: Boolean
+  """Seconds until the level reaches the limit at ratePerHour. 0 when it does not: the rate is 0, a falloff window leaks faster than it fills, or a calendar window empties first."""
+  exhaustsInSec: Long!
+  """A full window refuses (429). False: soft — reported, and only steers routing."""
+  hard: Boolean
   """"1m" (per-minute) or "1d" (per-day)."""
   label: String!
   limit: Float!
+  """Calendar windows: the level reached by the period boundary at ratePerHour. 0 on a falloff window."""
+  projectedAtReset: Float!
+  """This window's dimension (usd or req) charged to the scope over the last hour, per hour. Over rateSpanSec when that is shorter (the process started under an hour ago)."""
+  ratePerHour: Float!
+  """Seconds ratePerHour is measured over, up to 3600. 0 means too soon after start to call a rate."""
+  rateSpanSec: Long!
   """Time until the current level fully drains to zero."""
   resetsIn: String
   """Fill level. A falloff window leaks back toward zero over its period; a calendar window (calendar-day / calendar-month) empties at the UTC boundary."""

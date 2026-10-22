@@ -67,6 +67,12 @@ type QuotaWindowView struct {
 	Used     float64 `json:"used" doc:"Fill level. A falloff window leaks back toward zero over its period; a calendar window (calendar-day / calendar-month) empties at the UTC boundary."`
 	Blocked  bool    `json:"blocked,omitempty" doc:"The level has reached the limit — the backend is skipped until it drains below."`
 	ResetsIn string  `json:"resetsIn,omitempty" doc:"Time until the current level fully drains to zero."`
+	Hard     bool    `json:"hard,omitempty" doc:"A full window refuses (429). False: soft — reported, and only steers routing."`
+	// SPEND RATE (P56).
+	RatePerHour      float64 `json:"ratePerHour" doc:"This window's dimension (usd or req) charged to the scope over the last hour, per hour. Over rateSpanSec when that is shorter (the process started under an hour ago)."`
+	RateSpanSec      int     `json:"rateSpanSec" doc:"Seconds ratePerHour is measured over, up to 3600. 0 means too soon after start to call a rate."`
+	ExhaustsInSec    int     `json:"exhaustsInSec" doc:"Seconds until the level reaches the limit at ratePerHour. 0 when it does not: the rate is 0, a falloff window leaks faster than it fills, or a calendar window empties first."`
+	ProjectedAtReset float64 `json:"projectedAtReset" doc:"Calendar windows: the level reached by the period boundary at ratePerHour. 0 on a falloff window."`
 }
 
 // RefusingBackendView is one backend that is refusing outright, and for how long.
@@ -190,7 +196,12 @@ func (h *Handlers) QuotaLedger(_ context.Context, _ *struct{}) (*QuotaOutput, er
 			v.CoolingInSec = int(time.Until(e.CoolingUntil).Seconds())
 		}
 		for _, w := range e.Windows {
-			wv := QuotaWindowView{Label: w.Label, Limit: w.Limit, Used: w.Used}
+			wv := QuotaWindowView{Label: w.Label, Limit: w.Limit, Used: w.Used, Hard: w.Hard,
+				RatePerHour: w.RatePerHour, RateSpanSec: int(w.RateSpan.Seconds()),
+				ProjectedAtReset: w.ProjectedAtReset}
+			if w.ExhaustsAt.After(now) {
+				wv.ExhaustsInSec = int(w.ExhaustsAt.Sub(now).Seconds())
+			}
 			if w.ResetsAt.After(now) {
 				wv.ResetsIn = time.Until(w.ResetsAt).Round(time.Second).String()
 			}
