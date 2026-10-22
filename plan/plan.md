@@ -430,8 +430,9 @@ Slices:
   `/usage` → `/`. Checked in a sandbox (scratch `--home`, fake upstream, `vite dev` on :5179):
   allocation 429 after 4 × $0.016 on a $0.05/day hard cap; splits, row filter, /traffic,
   /machines render. Not deployed.
-- **next:** owner decides on deploy (Go binary + `ui/dist` rebuild + restart), then adds a key
-  allocation if wanted (`keys.<k>.limits` via the config entry editor).
+- **next:** deployed 10-21 (7c17a87, handoff, Swift stayed ready); verified on prod: key×model
+  rollup, gpu compute sampling. Owner adds a key allocation if wanted (`keys.<k>.limits` via the
+  config entry editor). Then close P56 → done.md.
 - **risks:** a key's allocation is charged the per-token electricity ESTIMATE, while the dashboard
   may show measured kWh (power config) — the two can differ; key scope charged only on
   `handleInference` (the sole quota charge site) — realtime/websocket audio is not counted;
@@ -466,13 +467,13 @@ testIdentityProvider, setAdminToken (disable only from an SSO admin session). Re
 buttons disabled on Setup, models, model page, active requests. Config revisions name the SSO user.
 Not yet run against Zitadel; live config unchanged.
 
-- **next:** deploy a9c84a8, then sign in at https://llm.iodesystems.com. Done 10-21: Zitadel app (auth
+- **next:** sign in at https://llm.iodesystems.com (deployed 10-21, 7c17a87). Done 10-21: Zitadel app (auth
   method None = PKCE, callback https://llm.iodesystems.com/auth/callback), admin user, provider
   saved. Fixed 10-21 (a9c84a8, not deployed): callback = override or the browser's address (was
   --public-base, a LAN http URL); issuer trailing slash tolerated; Test probes the authorize
   endpoint with the client ID + callback. Then disable the admin token.
-- **assumption:** haproxy sends X-Forwarded-Proto: https for llm.iodesystems.com; if not, the
-  derived callback is http:// and Test says so — set the override then.
+- **verified 10-21:** haproxy sends X-Forwarded-Proto; Test via the public URL derives
+  https://llm.iodesystems.com/auth/callback and Zitadel accepts it.
 - **risks:** viewers can read everything a GET serves, including `keys` (caller API keys, usable on
   `/v1`) and `configExport`; untested against a real provider; every SSO request does one SQLite
   lookup for the cutoff; a literal (non-`${REF}`) client secret is dropped by a form save (UI warns).
