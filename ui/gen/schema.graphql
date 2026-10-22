@@ -2286,6 +2286,8 @@ type corrallm_ModelDef {
   disabled: Boolean!
   """Eviction resistance (sticky): the tiebreak among candidates once TTL ordering is applied."""
   evictCost: String!
+  """The extension (integration) that provides this model. Empty for a local provider's model or a model declared on its own."""
+  extension: String!
   """Quiet period after which the backend unloads itself, with nothing else needing its memory (sticky). Empty = never. Counts only while no request is in flight."""
   idleUnload: String!
   """Admission slots."""
@@ -2316,6 +2318,8 @@ type corrallm_ModelDef {
   placements: [corrallm_PlacementView!]!
   """Backing process identity; an extension's models share one."""
   procKey: String!
+  """The provider that serves this model: a local provider's name, or the upstream within its extension. Empty for a model declared on its own."""
+  provider: String!
   """Relative quality rank. Fractional tiers are legal — a model that belongs between two existing tiers is 1.5, not a renumbered ladder."""
   quality: Float!
   """True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."""

@@ -2529,7 +2529,12 @@ type ServerDef struct {
 // Spawnable models carry their cmd; pure-proxy models have an empty cmd and
 // forward to Target. Auth headers on remote targets are NOT exposed.
 type ModelDef struct {
-	Name       string         `json:"name" doc:"Served model name."`
+	Name string `json:"name" doc:"Served model name."`
+	// Provider and Extension say where the model comes from, so the dashboard
+	// can group models under the provider that serves them. Both empty for a
+	// model declared on its own under `models:`.
+	Provider   string         `json:"provider" doc:"The provider that serves this model: a local provider's name, or the upstream within its extension. Empty for a model declared on its own."`
+	Extension  string         `json:"extension" doc:"The extension (integration) that provides this model. Empty for a local provider's model or a model declared on its own."`
 	Persistent bool           `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
 	TTL        string         `json:"ttl" doc:"Eviction PRIORITY (sticky): once idle this long the model sorts ahead of warmer ones as an eviction victim. It never unloads anything on its own — see idleUnload."`
 	IdleUnload string         `json:"idleUnload" doc:"Quiet period after which the backend unloads itself, with nothing else needing its memory (sticky). Empty = never. Counts only while no request is in flight."`
@@ -2855,7 +2860,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	for name, m := range h.config().Models {
 		md := ModelDef{
-			Name: name, Persistent: m.Persistent, Disabled: m.Disabled, Capability: config.ModelCapability(m),
+			Name: name, Provider: m.ProviderName, Extension: m.Extension, Persistent: m.Persistent, Disabled: m.Disabled, Capability: config.ModelCapability(m),
 			ContextPerRequest: m.ContextPerRequest,
 			Placements:        h.placementViews(name, m),
 			Modalities:        modalityViews(m.EffectiveModalities(name, costModel.IsAudioType(m.Type))),
