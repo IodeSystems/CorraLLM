@@ -555,25 +555,54 @@ function InfoTab({
   // backend nobody was looking at.
   const qcp = useQueryClient()
   const refresh = () => {
-    qcp.invalidateQueries({ queryKey: ['modelConsole'] })
+    qcp.invalidateQueries({ queryKey: ['console'] })
+    qcp.invalidateQueries({ queryKey: ['overview'] })
     qcp.invalidateQueries({ queryKey: ['modelProfile'] })
   }
   const readOnly = useReadOnly()
   const probePlacement = useMutation({
     mutationFn: (model: string) =>
       gqlClient.request(ProbePlacementDoc, { name: model, apply: true }),
-    onSuccess: refresh,
+    onSuccess: (d) => {
+      const r = d.corrallm.probeModel
+      if (r && !r.ok) setActMsg({ ok: false, text: r.error || 'probe failed' })
+      refresh()
+    },
+    onError: (e) => setActMsg({ ok: false, text: String(e) }),
   })
-  const loadPlacement = useMutation({
-    mutationFn: (model: string) => gqlClient.request(LoadModelDoc, { body: { model } }),
-    onSuccess: refresh,
-  })
+  // Load opens a dialog that watches it through: the request blocks until the
+  // backend is healthy or has failed, and a button that only changed colour
+  // a minute later — or never, on a failure — told nobody anything.
+  const [loading, setLoading] = useState<{ start: boolean; placement: string } | null>(null)
+  const [actMsg, setActMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const unloadPlacement = useMutation({
     mutationFn: (model: string) => gqlClient.request(UnloadModelDoc, { body: { model } }),
-    onSuccess: refresh,
+    onSuccess: (d) => {
+      const r = d.corrallm.unloadModel
+      if (r && !r.ok) setActMsg({ ok: false, text: r.message })
+      refresh()
+    },
+    onError: (e) => setActMsg({ ok: false, text: String(e) }),
   })
+  const loadingPl = (model.placements ?? []).find((p) => p?.name === loading?.placement)
   return (
     <Stack spacing={2}>
+      {actMsg && (
+        <Alert severity={actMsg.ok ? 'success' : 'error'} onClose={() => setActMsg(null)}>
+          {actMsg.text}
+        </Alert>
+      )}
+      {loading && (
+        <LoadDialog
+          model={name}
+          server={loadingPl?.server ?? ''}
+          target={loadingPl?.target ?? ''}
+          state={loadingPl?.state ?? 'absent'}
+          start={loading.start}
+          onDone={refresh}
+          onClose={() => setLoading(null)}
+        />
+      )}
       <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
         {res && Number(res.nCtx) > 0 && <Chip size="small" variant="outlined" label={`ctx ${fmtInt(res.nCtx)}`} />}
         {res && Number(res.nSlots) > 0 && <Chip size="small" variant="outlined" label={`slots ${fmtInt(res.nSlots)}`} />}
@@ -699,8 +728,19 @@ function InfoTab({
                   >
                     Unload
                   </Button>
+                ) : pl?.state === 'loading' ? (
+                  // Already loading — from a request, or another tab. Watch
+                  // it rather than start a second load the server would refuse.
+                  <Button size="small" variant="outlined" onClick={() => setLoading({ start: false, placement: pl.name })}>
+                    Loading… watch
+                  </Button>
                 ) : (
-                  <Button size="small" variant="outlined" disabled={readOnly} onClick={() => loadPlacement.mutate(name)}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={readOnly}
+                    onClick={() => pl && setLoading({ start: true, placement: pl.name })}
+                  >
                     Load
                   </Button>
                 )}
@@ -732,30 +772,18 @@ function InfoTab({
                   {pl.target}
                 </Typography>
               )}
-              {/* THE LAUNCH SCRIPT IS NOT THE ANSWER TO ANY QUESTION ASKED HERE.
-                  It was the largest thing on the page — a quant ladder, a GPU
-                  UUID, an nvidia-smi poll — and it was the top defect in two runs
-                  by two different people: the operator could not get past it
-                  ("everything else is somebody's launch script") and the caller
-                  read the whole page as addressed to somebody else ("I asked if
-                  my model was healthy and got a GPU serial number and a bash
-                  script"). The state, the placement and the controls above it
-                  answer "is this model alright". This answers "how does it start",
-                  which is a different question and belongs behind a label that
-                  says so (OB-11). Collapsed, but the label says what is inside —
-                  a control nobody can name is one nobody opens. */}
+              {/* The command, shown, not folded away: whoever opens a model's
+                  page to find out why it will not start needs it in front of
+                  them, beside the Load that runs it. */}
               {pl?.cmd && (
-                <Box component="details" sx={{ mt: 1 }}>
-                  <Box
-                    component="summary"
-                    sx={{ cursor: 'pointer', color: C.textMuted, fontSize: 13, py: 0.5 }}
-                  >
-                    How this model is started — the exact command, for whoever tunes it
-                  </Box>
+                <>
+                  <Typography variant="caption" sx={{ display: 'block', mt: 1, color: C.textMuted }}>
+                    Command
+                  </Typography>
                   <Box component="pre" sx={preSx}>
                     {pl.cmd}
                   </Box>
-                </Box>
+                </>
               )}
             </Box>
           ))
@@ -813,6 +841,135 @@ function InfoTab({
       </Box>
     </Stack>
   );
+}
+
+/**
+ * LoadDialog watches one load through to its end.
+ *
+ * The load request blocks until the backend answers its health check or fails,
+ * so the dialog holds that request open and tails the backend's output beside
+ * it. It ends on the server's own answer: "up" once /health returns 200, or the
+ * reason it is not — the process exited, the port is taken, the health check
+ * timed out. While it is open the Load button cannot be pressed again, which is
+ * what kept a slow load from turning into five queued ones.
+ *
+ * Opened on a load already in progress (start=false), it starts nothing and
+ * watches the placement's state instead.
+ */
+function LoadDialog(props: {
+  model: string
+  server: string
+  target: string
+  state: string
+  start: boolean
+  onDone: () => void
+  onClose: () => void
+}) {
+  const { model, server, target, state, start, onDone, onClose } = props
+  const [startedAt] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
+  const fired = useRef(false)
+  const load = useMutation({
+    mutationFn: () => gqlClient.request(LoadModelDoc, { body: { model } }),
+    onSuccess: (d) => {
+      const r = d.corrallm.loadModel
+      setResult({ ok: !!r?.ok, text: r?.message ?? '' })
+      onDone()
+    },
+    onError: (e) => {
+      setResult({ ok: false, text: String(e) })
+      onDone()
+    },
+  })
+  useEffect(() => {
+    if (start && !fired.current) {
+      fired.current = true
+      load.mutate()
+    }
+  }, [start, load])
+
+  // Watching someone else's load: the placement's state is the answer.
+  const sawLoading = useRef(false)
+  useEffect(() => {
+    if (start || result) return
+    if (state === 'loading') sawLoading.current = true
+    else if (state === 'ready') setResult({ ok: true, text: `${model} is up` })
+    else if (state === 'failed') setResult({ ok: false, text: `${model} failed to start — the log below says why` })
+    else if (sawLoading.current) setResult({ ok: false, text: `${model} stopped before it was up — the log below says why` })
+  }, [start, state, result, model])
+
+  // The page's own query, polled fast while the dialog is open, so `state`
+  // above moves with the load.
+  useQuery({ queryKey: ['console'], queryFn: () => gqlClient.request(ConsoleDoc), refetchInterval: result ? false : 1000 })
+
+  const running = !result
+  useEffect(() => {
+    if (!running) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [running])
+
+  const logs = useQuery({
+    queryKey: ['loadLogs', model],
+    queryFn: () => gqlClient.request(LogsDoc, { backend: model }),
+    refetchInterval: running ? 1000 : false,
+  })
+  // One more read after the end: the last lines are the ones that say why.
+  useEffect(() => {
+    if (result) void logs.refetch()
+  }, [result])
+  const lines = logs.data?.corrallm.modelLogs?.lines ?? []
+  const pre = useRef<HTMLPreElement>(null)
+  useEffect(() => {
+    const el = pre.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [lines.length])
+
+  const secs = Math.round((now - startedAt) / 1000)
+  return (
+    <Dialog open onClose={onClose} maxWidth="md" fullWidth>
+      <DialogTitle>
+        Loading {model}
+        {server ? ` on ${server}` : ''}
+      </DialogTitle>
+      <DialogContent dividers>
+        {running ? (
+          <Alert severity="info" icon={<CircularProgress size={18} />}>
+            Started {secs}s ago. Waiting for {target ? <code>{target}/health</code> : 'its health check'} to
+            answer 200.
+          </Alert>
+        ) : (
+          <Alert severity={result.ok ? 'success' : 'error'}>
+            {result.ok ? `Up${target ? ` — answering on ${target}` : ''}.` : result.text}
+          </Alert>
+        )}
+        <Box
+          component="pre"
+          ref={pre}
+          sx={{
+            m: 0,
+            mt: 1.5,
+            p: 1,
+            fontSize: 12,
+            lineHeight: 1.4,
+            height: '50vh',
+            overflow: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+            bgcolor: C.canvas,
+            color: C.text,
+            borderRadius: 1,
+          }}
+        >
+          {lines.length ? lines.join('\n') : running ? 'waiting for output…' : '(the backend wrote nothing)'}
+        </Box>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>{running ? 'Close (it keeps loading)' : 'Close'}</Button>
+      </DialogActions>
+    </Dialog>
+  )
 }
 
 const preSx = {
