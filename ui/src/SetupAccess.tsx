@@ -673,7 +673,7 @@ function TestResultView({ r }: { r: TestResult }) {
   )
 }
 
-const RECOVER_CMD = 'corrallm auth admin-token enable && systemctl --user reload corrallm'
+const RECOVER_CMD = 'corrallm auth admin-token enable && corrallm service reload'
 
 function AdminTokenPanel({
   enabled,

@@ -4,7 +4,7 @@ import { CssBaseline, ThemeProvider } from '@mui/material'
 import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { routeTree } from './routeTree.gen'
-import { clearToken, is401 } from './auth'
+import { adoptTokenFromHash, clearToken, is401 } from './auth'
 import { theme } from './theme'
 
 // On a 401 the admin token is stale/missing — drop it and reload to the login
@@ -34,6 +34,8 @@ const queryClient = new QueryClient({
     },
   },
 })
+adoptTokenFromHash()
+
 const router = createRouter({ routeTree })
 
 declare module '@tanstack/react-router' {

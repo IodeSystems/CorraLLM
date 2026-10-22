@@ -200,6 +200,10 @@ func launchdCtl(action, name string) error {
 		// Reload, not `kickstart -k`: kickstart restarts the definition
 		// launchd already holds, so a reinstalled plist would not apply.
 		return launchdLoad(name)
+	case "reload":
+		// launchd signals the job's main process only — the property
+		// systemd needs ExecReload=/bin/kill -HUP $MAINPID for.
+		return launchctl("kill", "HUP", launchdTarget(name)).Run()
 	case "status":
 		return launchctl("print", launchdTarget(name)).Run()
 	case "logs":

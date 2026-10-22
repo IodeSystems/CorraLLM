@@ -74,7 +74,7 @@ func TestAuthAdminTokenCommand(t *testing.T) {
 	if err := setAdminToken(ctx, src, config.AdminTokenDisabled, &out); err != nil {
 		t.Fatal(err)
 	}
-	if status() != "disabled" || !strings.Contains(out.String(), "systemctl --user reload corrallm") {
+	if status() != "disabled" || !strings.Contains(out.String(), "corrallm service reload") {
 		t.Errorf("after disable: %s / %s", status(), out.String())
 	}
 	if err := setAdminToken(ctx, src, config.AdminTokenEnabled, &out); err != nil {

@@ -23,7 +23,7 @@ func newAuthCmd() *cobra.Command {
 		Long: "The admin token (admin.token in corrallm's home) is accepted by /api unless\n" +
 			"auth.adminToken is disabled. Disabling it from the dashboard needs a working SSO\n" +
 			"admin session; this command is the way back when SSO stops working.\n\n" +
-			"A running daemon picks the change up on `systemctl --user reload corrallm`.",
+			"A running daemon picks the change up on `corrallm service reload`.",
 	}
 	var dbPath string
 	tok.PersistentFlags().StringVar(&dbPath, "db", "", "database holding the config")
@@ -78,7 +78,7 @@ func setAdminToken(ctx context.Context, src *configdb.Source, v string, out io.W
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "admin token %s — `systemctl --user reload corrallm` to apply it to a running daemon\n", v)
+	fmt.Fprintf(out, "admin token %s — `corrallm service reload` to apply it to a running daemon\n", v)
 	return nil
 }
 

@@ -166,3 +166,41 @@ func PlistArgs(plist string) []string {
 		rest = after2
 	}
 }
+
+// PlistEnv recovers EnvironmentVariables from a plist this package wrote.
+func PlistEnv(plist string) map[string]string {
+	out := map[string]string{}
+	_, rest, ok := strings.Cut(plist, "<key>EnvironmentVariables</key>")
+	if !ok {
+		return out
+	}
+	rest, _, _ = strings.Cut(rest, "</dict>")
+	un := strings.NewReplacer("&lt;", "<", "&gt;", ">", "&quot;", `"`, "&apos;", "'", "&amp;", "&")
+	for {
+		_, a, ok := strings.Cut(rest, "<key>")
+		if !ok {
+			return out
+		}
+		k, a, _ := strings.Cut(a, "</key>")
+		_, a, ok = strings.Cut(a, "<string>")
+		if !ok {
+			return out
+		}
+		v, a, _ := strings.Cut(a, "</string>")
+		out[un.Replace(k)] = un.Replace(v)
+		rest = a
+	}
+}
+
+// UnitEnv recovers Environment= lines from a unit this package wrote.
+func UnitEnv(unit string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(unit, "\n") {
+		if kv, ok := strings.CutPrefix(line, "Environment="); ok {
+			if k, v, ok := strings.Cut(kv, "="); ok {
+				out[k] = v
+			}
+		}
+	}
+	return out
+}

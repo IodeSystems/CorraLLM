@@ -220,8 +220,8 @@ func newConfigCmd() *cobra.Command {
 			"recorded as a NEW revision rather than rewinding the history. A revision that\n" +
 			"is no longer valid — it names a server that has since been removed — is\n" +
 			"refused rather than restored into a daemon that cannot run it.\n\n" +
-			"A running daemon does not notice by itself: `systemctl --user reload corrallm`\n" +
-			"(SIGHUP to the main process only — `systemctl kill` would signal every backend too).",
+			"A running daemon does not notice by itself: `corrallm service reload`\n" +
+			"(SIGHUP to the main process only — signalling the whole service would stop every backend too).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var id int64
@@ -238,7 +238,7 @@ func newConfigCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"restored revision %d — `systemctl --user reload corrallm` to pick it up\n", id)
+				"restored revision %d — `corrallm service reload` to pick it up\n", id)
 			return nil
 		},
 	}

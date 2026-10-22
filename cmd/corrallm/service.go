@@ -26,7 +26,7 @@ import (
 func newServiceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "service",
-		Short: "Install and control corrallm as a systemd user service (launchd on macOS)",
+		Short: "Install and control corrallm as a per-user service (systemd on Linux, launchd on macOS)",
 		Long: "Install and control corrallm as a systemd user service, or on macOS as a\n" +
 			"launchd LaunchAgent (~/Library/LaunchAgents/" + service.LabelPrefix + "<name>.plist,\n" +
 			"logs in ~/Library/Logs/corrallm/<name>.log).\n\n" +
@@ -65,12 +65,12 @@ func newServiceInstallCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "install [-- <serve flags>...]",
-		Short: "Write the systemd user unit (everything after -- is passed to `serve`)",
-		Long: "Write the systemd user unit.\n\n" +
+		Short: "Write the service definition (everything after -- is passed to `serve`)",
+		Long: "Write the service definition: a systemd user unit on Linux, a LaunchAgent on macOS.\n\n" +
 			"Arguments after `--` are passed through to `corrallm serve` verbatim, so the\n" +
 			"unit carries exactly the flags you would have typed:\n\n" +
-			"  corrallm service install --enable -- --addr 0.0.0.0:8111 --web-root /srv/ui\n\n" +
-			"With --agent the unit runs `corrallm agent` instead (args go to `agent`), and\n" +
+			"  corrallm service install --enable --env ADDR=0.0.0.0:8111 -- --web-root /srv/ui\n\n" +
+			"With --agent the service runs `corrallm agent` instead (args go to `agent`), and\n" +
 			"stopping it leaves the agent's model backends running for the next agent:\n\n" +
 			"  corrallm service install --agent --enable -- --config /path/agent.yml\n",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -181,9 +181,9 @@ func newServiceInstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&execBin, "exec", "", "path to the corrallm binary (default: this one, symlinks resolved)")
 	cmd.Flags().StringVar(&cfgPath, "config", "", "config to validate before each start (default: --config from the passthrough args)")
 	cmd.Flags().StringVar(&workDir, "working-dir", "", "unit WorkingDirectory (default: the config's directory)")
-	cmd.Flags().StringArrayVar(&envs, "env", nil, "environment for the unit as KEY=VALUE (repeatable); the listen address is ADDR=host:port")
-	cmd.Flags().BoolVar(&enable, "enable", false, "also enable the unit so it starts at login")
-	cmd.Flags().BoolVar(&start, "start", false, "also start the unit now")
+	cmd.Flags().StringArrayVar(&envs, "env", nil, "environment for the service as KEY=VALUE (repeatable); the listen address is ADDR=host:port")
+	cmd.Flags().BoolVar(&enable, "enable", false, "also enable the service so it starts at login")
+	cmd.Flags().BoolVar(&start, "start", false, "also start the service now")
 	cmd.Flags().BoolVar(&asAgent, "agent", false, "install a unit for `corrallm agent` (default name "+service.DefaultAgentName+"; backends survive a stop)")
 	return cmd
 }
@@ -205,7 +205,7 @@ func newServiceUninstallCmd() *cobra.Command {
 	var name string
 	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Stop, disable and remove the unit",
+		Short: "Stop, disable and remove the service",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if useLaunchd() {
@@ -241,12 +241,19 @@ func newServiceUninstallCmd() *cobra.Command {
 // validates first.
 func newServiceCtlCmds() []*cobra.Command {
 	var cmds []*cobra.Command
-	for _, verb := range []string{"start", "stop", "status", "logs"} {
+	for _, verb := range []string{"start", "stop", "reload", "status", "logs"} {
 		var name string
 		action := verb
+		short := map[string]string{
+			"start":  "Start the service",
+			"stop":   "Stop the service (it drains in-flight requests first)",
+			"reload": "Re-read the config in the running daemon (SIGHUP to corrallm only, never its backends)",
+			"status": "Show whether the service is running",
+			"logs":   "Show the service's recent log",
+		}[action]
 		c := &cobra.Command{
 			Use:   action,
-			Short: action + " the corrallm unit (systemctl --user; launchctl on macOS)",
+			Short: short,
 			Args:  cobra.NoArgs,
 			RunE: func(_ *cobra.Command, _ []string) error {
 				if useLaunchd() {
@@ -268,8 +275,8 @@ func newServiceCtlCmds() []*cobra.Command {
 	var rname, rcfg string
 	restart := &cobra.Command{
 		Use:   "restart",
-		Short: "Validate the config, then restart the unit",
-		Long: "Validate the config, then restart the unit.\n\n" +
+		Short: "Validate the config, then restart the service",
+		Long: "Validate the config, then restart the service.\n\n" +
 			"The validation is the point: `serve` frees the listen port before it parses,\n" +
 			"so restarting onto a broken config takes the gateway down instead of leaving\n" +
 			"the running instance alone. Checking here means a bad config costs nothing.",
@@ -303,7 +310,7 @@ func newServiceCtlCmds() []*cobra.Command {
 	}
 	restart.Flags().StringVar(&rname, "name", service.DefaultName, "unit name (without .service)")
 	restart.Flags().StringVar(&rcfg, "config", "", "config to validate (default: the one recorded in the unit)")
-	return append(cmds, restart, newServiceUpgradeCmd())
+	return append(cmds, restart, newServiceUpgradeCmd(), newServiceLoginAdminCmd())
 }
 
 // newServiceUpgradeCmd hands the running daemon over to the binary now at its
@@ -324,9 +331,9 @@ func newServiceUpgradeCmd() *cobra.Command {
 			"one takes every connection from the moment it is ready, and the old one\n" +
 			"finishes its in-flight requests (up to --handoff-drain, default 10m) and exits.\n" +
 			"If the new binary fails to start, the old one keeps serving and this command\n" +
-			"says why and exits 3 (any other failure: 1). Needs the unit from\n" +
-			"`corrallm service install` (Type=notify, NotifyAccess=all) so systemd\n" +
-			"follows the main pid.",
+			"says why and exits 3 (any other failure: 1). Needs a service installed by\n" +
+			"`corrallm service install`. Linux only: launchd (macOS) cannot follow the\n" +
+			"main process to a new pid, so there use `corrallm service restart`.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if useLaunchd() && pid == 0 {

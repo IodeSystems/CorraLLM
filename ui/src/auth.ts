@@ -29,6 +29,18 @@ export function setToken(t: string) {
   document.cookie = `${COOKIE}=${t}; path=/; Max-Age=${COOKIE_MAX_AGE}; SameSite=Strict${secure}`
 }
 
+// adoptTokenFromHash takes a token handed over as `#token=<t>` (what
+// `corrallm service login-admin` opens), stores it, and removes it from the
+// address bar and history entry. A fragment is never sent to the server, so
+// the token does not reach access logs or a proxy on the way in.
+export function adoptTokenFromHash() {
+  const m = /(?:^#|&)token=([^&]+)/.exec(window.location.hash)
+  if (!m) return
+  setToken(decodeURIComponent(m[1]))
+  const { pathname, search } = window.location
+  window.history.replaceState(null, '', pathname + search)
+}
+
 export function clearToken() {
   localStorage.removeItem(KEY)
   document.cookie = `${COOKIE}=; path=/; Max-Age=0; SameSite=Strict`

@@ -79,3 +79,14 @@ func TestInstallPlistRefusesRelativeExec(t *testing.T) {
 		t.Errorf("log dir not created: %v", err)
 	}
 }
+
+// TestEnvRoundTrip: login-admin finds ADDR in the installed unit or plist.
+func TestEnvRoundTrip(t *testing.T) {
+	u := Unit{Exec: "/x/corrallm", Env: []string{"ADDR=0.0.0.0:8111", "PATH=/a&b:/c"}}
+	if got := PlistEnv(u.RenderPlist("/l.log")); got["ADDR"] != "0.0.0.0:8111" || got["PATH"] != "/a&b:/c" {
+		t.Errorf("PlistEnv = %v", got)
+	}
+	if got := UnitEnv(u.Render()); got["ADDR"] != "0.0.0.0:8111" {
+		t.Errorf("UnitEnv = %v", got)
+	}
+}

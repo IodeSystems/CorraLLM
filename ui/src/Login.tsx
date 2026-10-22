@@ -83,6 +83,13 @@ export function Login() {
               </>
             )}
           </Typography>
+          <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+            On the server&rsquo;s own desktop,{' '}
+            <Box component="code" sx={{ px: 0.5, bgcolor: C.canvas, borderRadius: 0.5 }}>
+              corrallm service login-admin
+            </Box>{' '}
+            opens this dashboard already signed in.
+          </Typography>
           <TextField
             type="password"
             label="Admin token"
