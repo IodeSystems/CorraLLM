@@ -388,6 +388,9 @@ still open. Items parked on hardware rather than on a decision are in §9.
   log is kept per process key; the failure names the exit status.
 - Verified in a sandbox (`--home` scratch, fake backends): crash, taken port, healthy load,
   redirects. Not deployed.
+- ✅ `corrallm service <verb> --agent | --all` on start/stop/restart/reload/status/logs. `--all` =
+  every unit install wrote (by header), server first. `restart` no longer validates an agent's
+  `agent.yml` as a server config (it refused every agent restart).
 - **next:** deploy box1 (server first, then `ui-build` — the new UI needs the new fields); owner
   rebuilds the Mac (`make install`).
 - **risks:** Mac `/models` hang is UNDIAGNOSED — only the overview query hangs there; needs a

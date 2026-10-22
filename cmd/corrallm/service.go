@@ -237,12 +237,104 @@ func newServiceUninstallCmd() *cobra.Command {
 	return cmd
 }
 
+// unitSel is the --name / --agent / --all choice every control verb takes.
+type unitSel struct {
+	name  string
+	agent bool
+	all   bool
+}
+
+func (u *unitSel) flags(c *cobra.Command) {
+	c.Flags().StringVar(&u.name, "name", service.DefaultName, "unit name (without .service)")
+	c.Flags().BoolVar(&u.agent, "agent", false, "the agent's unit ("+service.DefaultAgentName+" unless --name says otherwise)")
+	c.Flags().BoolVar(&u.all, "all", false, "every unit `corrallm service install` wrote: the server first, then agents")
+}
+
+// resolve turns the flags into the units to act on.
+func (u *unitSel) resolve(c *cobra.Command) ([]service.Installed, error) {
+	if u.all {
+		if c.Flags().Changed("name") || u.agent {
+			return nil, fmt.Errorf("--all already means every unit; drop --name/--agent")
+		}
+		dir, err := service.UserUnitDir()
+		if useLaunchd() {
+			dir, err = service.LaunchAgentsDir()
+		}
+		if err != nil {
+			return nil, err
+		}
+		units, err := service.FindInstalled(dir, useLaunchd())
+		if err != nil {
+			return nil, err
+		}
+		if len(units) == 0 {
+			return nil, fmt.Errorf("no corrallm units installed in %s", dir)
+		}
+		return units, nil
+	}
+	name := u.name
+	if u.agent && !c.Flags().Changed("name") {
+		name = service.DefaultAgentName
+	}
+	return []service.Installed{{Name: name, Agent: u.agent || installedIsAgent(name)}}, nil
+}
+
+// installedIsAgent reads the installed unit or plist: an agent's --config is
+// an agent.yml, which `validate` would reject as a server config.
+func installedIsAgent(name string) bool {
+	if useLaunchd() {
+		p, err := launchdPlistPath(name)
+		if err != nil {
+			return false
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return false
+		}
+		args := service.PlistArgs(string(b))
+		return len(args) > 1 && args[1] == "agent"
+	}
+	dir, err := service.UserUnitDir()
+	if err != nil {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(dir, name+".service"))
+	return err == nil && service.UnitIsAgent(string(b))
+}
+
+// eachUnit runs fn on every selected unit, naming each when there is more
+// than one, and carries on past a failure so one bad unit does not leave the
+// rest untouched.
+func eachUnit(c *cobra.Command, sel *unitSel, fn func(u service.Installed) error) error {
+	units, err := sel.resolve(c)
+	if err != nil {
+		return err
+	}
+	var failed []string
+	for _, u := range units {
+		if len(units) > 1 {
+			fmt.Fprintf(c.OutOrStdout(), "== %s\n", u.Name)
+		}
+		if err := fn(u); err != nil {
+			if len(units) == 1 {
+				return err
+			}
+			fmt.Fprintf(c.ErrOrStderr(), "%s: %v\n", u.Name, err)
+			failed = append(failed, u.Name)
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("failed: %s", strings.Join(failed, ", "))
+	}
+	return nil
+}
+
 // newServiceCtlCmds are the thin systemctl passthroughs, plus a restart that
-// validates first.
+// validates first. Each takes --name, --agent or --all.
 func newServiceCtlCmds() []*cobra.Command {
 	var cmds []*cobra.Command
 	for _, verb := range []string{"start", "stop", "reload", "status", "logs"} {
-		var name string
+		var sel unitSel
 		action := verb
 		short := map[string]string{
 			"start":  "Start the service",
@@ -255,60 +347,71 @@ func newServiceCtlCmds() []*cobra.Command {
 			Use:   action,
 			Short: short,
 			Args:  cobra.NoArgs,
-			RunE: func(_ *cobra.Command, _ []string) error {
-				if useLaunchd() {
-					return launchdCtl(action, name)
-				}
-				unit := name + ".service"
-				if action == "logs" {
-					j := exec.Command("journalctl", "--user", "-u", unit, "-n", "200", "--no-pager")
-					j.Stdout, j.Stderr = os.Stdout, os.Stderr
-					return j.Run()
-				}
-				return systemctl(action, unit).Run()
+			RunE: func(c *cobra.Command, _ []string) error {
+				return eachUnit(c, &sel, func(u service.Installed) error {
+					if useLaunchd() {
+						return launchdCtl(action, u.Name)
+					}
+					unit := u.Name + ".service"
+					if action == "logs" {
+						j := exec.Command("journalctl", "--user", "-u", unit, "-n", "200", "--no-pager")
+						j.Stdout, j.Stderr = os.Stdout, os.Stderr
+						return j.Run()
+					}
+					return systemctl(action, unit).Run()
+				})
 			},
 		}
-		c.Flags().StringVar(&name, "name", service.DefaultName, "unit name (without .service)")
+		sel.flags(c)
 		cmds = append(cmds, c)
 	}
 
-	var rname, rcfg string
+	var rsel unitSel
+	var rcfg string
 	restart := &cobra.Command{
 		Use:   "restart",
 		Short: "Validate the config, then restart the service",
 		Long: "Validate the config, then restart the service.\n\n" +
 			"The validation is the point: `serve` frees the listen port before it parses,\n" +
 			"so restarting onto a broken config takes the gateway down instead of leaving\n" +
-			"the running instance alone. Checking here means a bad config costs nothing.",
+			"the running instance alone. Checking here means a bad config costs nothing.\n\n" +
+			"--agent restarts the agent instead (its backends keep running); --all restarts\n" +
+			"every installed unit, the server first.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			unit := rname + ".service"
-			cfg := rcfg
-			if cfg == "" {
+			return eachUnit(cmd, &rsel, func(u service.Installed) error {
+				unit := u.Name + ".service"
+				// An agent's --config is an agent.yml: there is no server
+				// config to validate, and `validate` would reject it.
+				if !u.Agent {
+					cfg := rcfg
+					if cfg == "" {
+						if useLaunchd() {
+							cfg = launchdConfigPath(u.Name)
+						} else {
+							cfg = unitConfigPath(unit)
+						}
+					}
+					if cfg != "" {
+						self, err := os.Executable()
+						if err != nil {
+							return err
+						}
+						v := exec.Command(self, "validate", "--config", cfg)
+						v.Stdout, v.Stderr = cmd.OutOrStdout(), os.Stderr
+						if err := v.Run(); err != nil {
+							return fmt.Errorf("config invalid — NOT restarting; the running instance is untouched")
+						}
+					}
+				}
 				if useLaunchd() {
-					cfg = launchdConfigPath(rname)
-				} else {
-					cfg = unitConfigPath(unit)
+					return launchdCtl("restart", u.Name)
 				}
-			}
-			if cfg != "" {
-				self, err := os.Executable()
-				if err != nil {
-					return err
-				}
-				v := exec.Command(self, "validate", "--config", cfg)
-				v.Stdout, v.Stderr = cmd.OutOrStdout(), os.Stderr
-				if err := v.Run(); err != nil {
-					return fmt.Errorf("config invalid — NOT restarting; the running instance is untouched")
-				}
-			}
-			if useLaunchd() {
-				return launchdCtl("restart", rname)
-			}
-			return systemctl("restart", unit).Run()
+				return systemctl("restart", unit).Run()
+			})
 		},
 	}
-	restart.Flags().StringVar(&rname, "name", service.DefaultName, "unit name (without .service)")
+	rsel.flags(restart)
 	restart.Flags().StringVar(&rcfg, "config", "", "config to validate (default: the one recorded in the unit)")
 	return append(cmds, restart, newServiceUpgradeCmd(), newServiceLoginAdminCmd())
 }
