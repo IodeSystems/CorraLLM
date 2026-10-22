@@ -445,10 +445,18 @@ func readGroups(ctx context.Context, db querier, c *config.Config) error {
 
 func writeKeys(ctx context.Context, tx querier, c *config.Config) error {
 	for _, k := range sortedKeys(c.Keys) {
+		limits := ""
+		if ls := c.Keys[k].Limits; len(ls) > 0 {
+			b, err := json.Marshal([]config.Limit(ls))
+			if err != nil {
+				return fmt.Errorf("write key %s limits: %w", k, err)
+			}
+			limits = string(b)
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO config_key (key, group_name, allow, thinking) VALUES (?, ?, ?, ?)`,
+			`INSERT INTO config_key (key, group_name, allow, thinking, limits_json) VALUES (?, ?, ?, ?, ?)`,
 			k, c.Keys[k].Group, encodeAllow(c.Keys[k].Allow),
-			encodeThinking(c.Keys[k].Thinking)); err != nil {
+			encodeThinking(c.Keys[k].Thinking), limits); err != nil {
 			return fmt.Errorf("write key: %w", err)
 		}
 	}
@@ -481,18 +489,26 @@ func decodeThinking(s string) *bool {
 }
 
 func readKeys(ctx context.Context, db querier, c *config.Config) error {
-	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, thinking FROM config_key`)
+	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, thinking, limits_json FROM config_key`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	keys := map[string]config.KeyPolicy{}
 	for rows.Next() {
-		var k, g, allow, thinking string
-		if err := rows.Scan(&k, &g, &allow, &thinking); err != nil {
+		var k, g, allow, thinking, limits string
+		if err := rows.Scan(&k, &g, &allow, &thinking, &limits); err != nil {
 			return err
 		}
-		keys[k] = config.KeyPolicy{Group: g, Allow: decodeAllow(allow), Thinking: decodeThinking(thinking)}
+		kp := config.KeyPolicy{Group: g, Allow: decodeAllow(allow), Thinking: decodeThinking(thinking)}
+		if limits != "" {
+			var ls []config.Limit
+			if err := json.Unmarshal([]byte(limits), &ls); err != nil {
+				return fmt.Errorf("read key %s limits: %w", k, err)
+			}
+			kp.Limits = ls
+		}
+		keys[k] = kp
 	}
 	if err := rows.Err(); err != nil {
 		return err

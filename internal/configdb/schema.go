@@ -145,7 +145,9 @@ CREATE TABLE IF NOT EXISTS config_key (
     -- with no opinion follows the model's reasoning default, and collapsing
     -- that into false would pin every caller to instruct the first time the
     -- config was saved.
-    thinking   TEXT NOT NULL DEFAULT ''
+    thinking   TEXT NOT NULL DEFAULT '',
+    -- JSON array of config.Limit: the key's allocation (P56). '' = unlimited.
+    limits_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS config_tool (
