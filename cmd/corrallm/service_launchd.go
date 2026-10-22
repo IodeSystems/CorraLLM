@@ -54,16 +54,23 @@ func launchdLoad(name string) error {
 		return err
 	}
 	if launchdLoaded(name) {
+		fmt.Println("stopping…")
 		if err := launchctl("bootout", launchdTarget(name)).Run(); err != nil {
 			return fmt.Errorf("bootout: %w", err)
 		}
 		// bootout can return while the job is still leaving the domain (a
 		// draining serve takes up to its ExitTimeOut), and a bootstrap in that
 		// window fails with error 5 like any other.
-		for deadline := time.Now().Add(100 * time.Second); launchdLoaded(name) && time.Now().Before(deadline); {
+		start, said := time.Now(), time.Time{}
+		for deadline := start.Add(100 * time.Second); launchdLoaded(name) && time.Now().Before(deadline); {
+			if time.Since(said) >= 10*time.Second {
+				fmt.Printf("waiting for it to exit (%ds)…\n", int(time.Since(start).Seconds()))
+				said = time.Now()
+			}
 			time.Sleep(250 * time.Millisecond)
 		}
 	}
+	fmt.Println("starting…")
 	// RunAtLoad starts it. launchctl's stderr is captured: on failure it says
 	// "Try re-running the command as root for richer errors", which is wrong
 	// for a per-user LaunchAgent — as root the domain is gui/0, not yours.

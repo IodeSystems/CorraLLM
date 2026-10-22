@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -397,13 +398,24 @@ func newServiceCtlCmds() []*cobra.Command {
 						if err != nil {
 							return err
 						}
-						v := exec.Command(self, "validate", "--config", cfg)
+						// Bounded: validate opens the database the running server
+						// holds, and a server wedged on it would hold this too.
+						fmt.Fprintf(cmd.OutOrStdout(), "validating %s\n", cfg)
+						ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+						defer cancel()
+						v := exec.CommandContext(ctx, self, "validate", "--config", cfg)
 						v.Stdout, v.Stderr = cmd.OutOrStdout(), os.Stderr
 						if err := v.Run(); err != nil {
+							if ctx.Err() != nil {
+								return fmt.Errorf("validate did not finish in 30s — the running server may be stuck on its database. NOT restarting. "+
+									"Kill it instead; its supervisor starts it again (launchd: `launchctl kill QUIT gui/$(id -u)/com.iodesystems.%s`, "+
+									"which also writes every goroutine's stack to its log)", u.Name)
+							}
 							return fmt.Errorf("config invalid — NOT restarting; the running instance is untouched")
 						}
 					}
 				}
+				fmt.Fprintf(cmd.OutOrStdout(), "restarting %s (a server drains in-flight requests first: up to 90s)\n", u.Name)
 				if useLaunchd() {
 					return launchdCtl("restart", u.Name)
 				}
