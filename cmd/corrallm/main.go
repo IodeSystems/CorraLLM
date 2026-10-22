@@ -781,7 +781,7 @@ func serve(ctx context.Context, o serveOpts) error {
 		return err
 	}
 	sso := &auth.SSO{Key: []byte(sessionKey), Settings: func() *auth.OIDCSettings {
-		return oidcSettings(mgr.Config(), o.publicBase)
+		return oidcSettings(mgr.Config())
 	}, AdminToken: adminToken,
 		TokenEnabled: func() bool {
 			c := mgr.Config()
@@ -1536,10 +1536,12 @@ func (r loadRecorder) RecordLoad(ev proc.ModelLoadEvent) {
 }
 
 // oidcSettings resolves auth.oidc for the SSO handlers: the client secret
-// expanded from the credential store, the redirect URL defaulted from
-// --public-base, the users with their roles. Nil when SSO is not configured
-// or switched off.
-func oidcSettings(c *config.Config, publicBase string) *auth.OIDCSettings {
+// expanded from the credential store, the users with their roles. The callback
+// is the configured override or, unset, the address the browser used
+// (auth.OIDCSettings.RedirectFor) — not --public-base, which is how agents
+// reach this daemon and can differ from how people do. Nil when SSO is not
+// configured or switched off.
+func oidcSettings(c *config.Config) *auth.OIDCSettings {
 	if c == nil || !c.Auth.OIDCEnabled() {
 		return nil
 	}
@@ -1552,7 +1554,7 @@ func oidcSettings(c *config.Config, publicBase string) *auth.OIDCSettings {
 		Issuer:               strings.TrimSpace(o.Issuer),
 		ClientID:             o.ClientID,
 		ClientSecret:         config.ExpandSecrets(o.ClientSecret),
-		RedirectURL:          api.OIDCRedirectURL(o, publicBase),
+		RedirectURL:          o.RedirectURL,
 		Scopes:               o.ScopesOrDefault(),
 		Users:                users,
 		AllowUnverifiedEmail: o.AllowUnverifiedEmail,

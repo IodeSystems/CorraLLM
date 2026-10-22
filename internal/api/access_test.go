@@ -138,7 +138,9 @@ func TestListAccessNeverReturnsSecretValues(t *testing.T) {
 	if out, err := h.SetIdentityProvider(ctxToken, in); err != nil || !out.Body.OK {
 		t.Fatalf("set provider: %v %+v", err, out)
 	}
-	out, err := h.ListAccess(ctxToken, nil)
+	// The callback is built from the address the request came in on.
+	ctx := context.WithValue(ctxToken, sourceKey{}, requestSource{Origin: "https://corrallm.example.com"})
+	out, err := h.ListAccess(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +196,60 @@ func TestTestIdentityProvider(t *testing.T) {
 	in.Body.Issuer = "id.example.com"
 	if out, _ := h.TestIdentityProvider(ctxToken, in); out.Body.OK {
 		t.Errorf("relative issuer accepted")
+	}
+}
+
+// With a client ID, Test asks the provider to start a sign-in and reads the
+// answer the way Zitadel gives it: a redirect to its login page for a known
+// client and callback, a 400 naming what it refused otherwise.
+func TestTestIdentityProviderProbesClient(t *testing.T) {
+	h := accessHandlers(t, nil, "ops@example.com")
+	const good = "https://llm.example.com/auth/callback"
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer": srv.URL, "authorization_endpoint": srv.URL + "/authorize", "token_endpoint": srv.URL + "/token",
+				"jwks_uri": srv.URL + "/keys", "code_challenge_methods_supported": []string{"S256"},
+				"token_endpoint_auth_methods_supported": []string{"none", "client_secret_basic"},
+			})
+		case "/authorize":
+			q := r.URL.Query()
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case q.Get("client_id") != "cid":
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid_request","error_description":"Errors.App.NotFound"}`))
+			case q.Get("redirect_uri") != good:
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid_request","error_description":"The requested redirect_uri is missing in the client configuration."}`))
+			default:
+				http.Redirect(w, r, "/ui/login?authRequestID=1", http.StatusFound)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	ctx := context.WithValue(ctxToken, sourceKey{}, requestSource{Origin: "https://llm.example.com"})
+	run := func(client, override string) *TestIdentityProviderOutput {
+		in := &TestIdentityProviderInput{}
+		in.Body.Issuer, in.Body.ClientID, in.Body.RedirectURL, in.Body.Public = srv.URL, client, override, true
+		out, err := h.TestIdentityProvider(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if out := run("cid", ""); !out.Body.OK || out.Body.RedirectURI != good {
+		t.Errorf("good client = %+v", out.Body)
+	}
+	if out := run("other", ""); out.Body.OK || !strings.Contains(out.Body.Message, "does not know client ID other") {
+		t.Errorf("unknown client = %q", out.Body.Message)
+	}
+	if out := run("cid", "http://192.168.1.76:8111/auth/callback"); out.Body.OK || !strings.Contains(out.Body.Message, "has not registered the callback") {
+		t.Errorf("unregistered callback = %q", out.Body.Message)
 	}
 }
 

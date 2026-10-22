@@ -24,6 +24,9 @@ import (
 // their own machine — or to know it was not them.
 type requestSource struct {
 	Addr string // the caller's address, as near as the proxy chain allows
+	// Origin is scheme://host as the browser addressed this server
+	// (auth.RequestOrigin) — the base of the SSO callback it will be sent.
+	Origin string
 }
 
 type sourceKey struct{}
@@ -41,7 +44,7 @@ func SourceMiddleware(next http.Handler) http.Handler {
 		if host, _, err := net.SplitHostPort(addr); err == nil {
 			addr = host
 		}
-		ctx := context.WithValue(r.Context(), sourceKey{}, requestSource{Addr: addr})
+		ctx := context.WithValue(r.Context(), sourceKey{}, requestSource{Addr: addr, Origin: auth.RequestOrigin(r)})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -62,4 +65,10 @@ func noteFor(ctx context.Context, what string) string {
 		return what + " — from " + src.Addr
 	}
 	return what
+}
+
+// originFrom is the request's origin recorded by SourceMiddleware, or "".
+func originFrom(ctx context.Context) string {
+	src, _ := ctx.Value(sourceKey{}).(requestSource)
+	return src.Origin
 }

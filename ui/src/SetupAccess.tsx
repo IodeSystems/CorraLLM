@@ -126,6 +126,12 @@ const TestProviderDoc = graphql(/* GraphQL */ `
         jwksUri
         codeChallengeMethods
         tokenAuthMethods
+        redirectUri
+        checks {
+          name
+          ok
+          detail
+        }
       }
     }
   }
@@ -383,12 +389,15 @@ type TestResult = {
   jwksUri: string
   codeChallengeMethods: string[]
   tokenAuthMethods: string[]
+  redirectUri: string
+  checks: { name: string; ok: boolean; detail: string }[]
 }
 
 function ProviderPanel({ p, secrets, hasUsers }: { p: Provider; secrets: string[]; hasUsers: boolean }) {
   const { err, setErr, run } = useAccessAction()
   const [issuer, setIssuer] = useState(p.issuer)
   const [clientId, setClientId] = useState(p.clientId)
+  const [redirectUrl, setRedirectUrl] = useState(p.redirectUrl)
   const [enabled, setEnabled] = useState(p.enabled)
   const [keyMode, setKeyMode] = useState<KeyMode>(p.secretRef ? 'stored' : 'none')
   const [secretRef, setSecretRef] = useState(p.secretRef)
@@ -398,7 +407,15 @@ function ProviderPanel({ p, secrets, hasUsers }: { p: Provider; secrets: string[
   const [copied, setCopied] = useState(false)
 
   const testRun = useMutation({
-    mutationFn: () => gqlClient.request(TestProviderDoc, { body: { issuer: issuer.trim() } }),
+    mutationFn: () =>
+      gqlClient.request(TestProviderDoc, {
+        body: {
+          issuer: issuer.trim(),
+          clientId: clientId.trim(),
+          redirectUrl: redirectUrl.trim(),
+          public: keyMode === 'none',
+        },
+      }),
     onSuccess: (r) => setTest(r.corrallm?.testIdentityProvider ?? null),
     onError: (e) => setErr(extractMessage(e)),
   })
@@ -419,7 +436,7 @@ function ProviderPanel({ p, secrets, hasUsers }: { p: Provider; secrets: string[
               issuer: issuer.trim(),
               clientId: clientId.trim(),
               enabled,
-              redirectUrl: p.redirectUrl,
+              redirectUrl: redirectUrl.trim(),
               secretRef: keyMode === 'none' ? '' : secretRef.trim(),
               secretValue: keyMode === 'new' ? secretValue : '',
             },
@@ -433,8 +450,11 @@ function ProviderPanel({ p, secrets, hasUsers }: { p: Provider; secrets: string[
     }
   }
 
+  // What sign-in will send: the override, else this page's own address — the
+  // server builds it from the request the same way (auth.RedirectFor).
+  const callback = redirectUrl.trim() || (p.redirectUrl ? `${window.location.origin}/auth/callback` : p.redirectUri)
   const copy = () => {
-    void navigator.clipboard?.writeText(p.redirectUri).then(() => {
+    void navigator.clipboard?.writeText(callback).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })
@@ -468,10 +488,10 @@ function ProviderPanel({ p, secrets, hasUsers }: { p: Provider; secrets: string[
           <Typography variant="caption" sx={{ color: C.textMuted }}>
             Redirect URI (register this in your provider)
           </Typography>
-          {p.redirectUri ? (
+          {callback ? (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Box component="code" sx={{ px: 0.5, bgcolor: C.canvas, borderRadius: 0.5, wordBreak: 'break-all' }}>
-                {p.redirectUri}
+                {callback}
               </Box>
               <Tooltip title={copied ? 'Copied' : 'Copy'}>
                 <IconButton size="small" onClick={copy} aria-label="Copy redirect URI">
@@ -481,11 +501,22 @@ function ProviderPanel({ p, secrets, hasUsers }: { p: Provider; secrets: string[
             </Box>
           ) : (
             <Typography variant="body2" sx={{ color: C.textFaint }}>
-              Unknown: start corrallm with --public-base (the address people open the dashboard at), or set
-              auth.oidc.redirectUrl in config.
+              Unknown: set a callback override below.
             </Typography>
           )}
+          <Typography variant="caption" sx={{ color: C.textMuted, display: 'block', mt: 0.5 }}>
+            Built from the address you opened this page at. People who sign in at a different address
+            send a different callback; register each, or set one override.
+          </Typography>
         </Box>
+        <TextField
+          size="small"
+          label="Callback override (optional)"
+          placeholder="https://llm.example.com/auth/callback"
+          value={redirectUrl}
+          onChange={(e) => setRedirectUrl(e.target.value)}
+          helperText="Leave empty to use the address the browser signs in from"
+        />
 
         <Box>
           <Typography variant="body2" sx={{ mb: 1 }}>
@@ -615,6 +646,15 @@ function TestResultView({ r }: { r: TestResult }) {
       <Typography variant="body2" sx={{ mb: r.issuer ? 1 : 0 }}>
         {r.message}
       </Typography>
+      {r.checks.length > 0 && (
+        <Box component="ul" sx={{ m: 0, mb: 1, pl: 2.5, fontSize: 13 }}>
+          {r.checks.map((c) => (
+            <li key={c.name}>
+              <b>{c.ok ? '✓' : '✗'} {c.name}</b> — {c.detail}
+            </li>
+          ))}
+        </Box>
+      )}
       {r.issuer && (
         <Box component="dl" sx={{ m: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 2, fontSize: 13 }}>
           {rows.map(([k, v]) => (

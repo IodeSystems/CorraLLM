@@ -557,12 +557,39 @@ func TestSSONotConfigured(t *testing.T) {
 	}
 }
 
-func TestSSONoRedirectURL(t *testing.T) {
+// With no override, the callback is the address the browser used — behind a
+// TLS-terminating proxy, the forwarded scheme and host (P56 follow-up: the
+// --public-base default sent a LAN http callback the provider had never seen).
+func TestSSORedirectFromRequest(t *testing.T) {
 	h := newHarness(t)
 	h.settings.RedirectURL = ""
+	login := func(r *http.Request) string {
+		rec := httptest.NewRecorder()
+		h.sso.Login(rec, r)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("login = %d: %s", rec.Code, rec.Body)
+		}
+		loc, _ := url.Parse(rec.Header().Get("Location"))
+		return loc.Query().Get("redirect_uri")
+	}
+	if got := login(httptest.NewRequest(http.MethodGet, "http://box1:8111/auth/login", nil)); got != "http://box1:8111/auth/callback" {
+		t.Errorf("direct = %q", got)
+	}
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8111/auth/login", nil)
+	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-Host", "llm.example.com")
+	if got := login(r); got != "https://llm.example.com/auth/callback" {
+		t.Errorf("proxied = %q", got)
+	}
+}
+
+// A trailing slash on the configured issuer is not a different issuer.
+func TestSSOIssuerTrailingSlash(t *testing.T) {
+	h := newHarness(t)
+	h.settings.Issuer += "/"
 	rec := httptest.NewRecorder()
 	h.sso.Login(rec, httptest.NewRequest(http.MethodGet, "/auth/login", nil))
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "public-base") {
-		t.Errorf("login without redirect = %d: %s", rec.Code, rec.Body)
+	if rec.Code != http.StatusFound {
+		t.Errorf("login with issuer + slash = %d: %s", rec.Code, rec.Body)
 	}
 }

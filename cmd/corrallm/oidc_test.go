@@ -11,7 +11,7 @@ import (
 )
 
 func TestOIDCSettings(t *testing.T) {
-	if oidcSettings(&config.Config{}, "http://box:8111") != nil {
+	if oidcSettings(&config.Config{}) != nil {
 		t.Fatal("settings without an auth.oidc block")
 	}
 	t.Setenv("CORRALLM_TEST_OIDC_SECRET", "shh")
@@ -19,20 +19,17 @@ func TestOIDCSettings(t *testing.T) {
 		Issuer: " https://idp.example.com ", ClientID: "cid", ClientSecret: "${CORRALLM_TEST_OIDC_SECRET}",
 		AllowedEmails: []string{"ops@example.com"},
 	}}}
-	st := oidcSettings(c, "https://corrallm.example.com/")
-	if st.RedirectURL != "https://corrallm.example.com/auth/callback" {
-		t.Errorf("default redirect = %q", st.RedirectURL)
+	st := oidcSettings(c)
+	// No override: the callback comes from the request (auth.RedirectFor).
+	if st.RedirectURL != "" {
+		t.Errorf("default redirect = %q, want none", st.RedirectURL)
 	}
 	if st.ClientSecret != "shh" || st.Issuer != "https://idp.example.com" || len(st.Scopes) != 3 {
 		t.Errorf("settings = %+v", st)
 	}
 	c.Auth.OIDC.RedirectURL = "https://other/cb"
-	if got := oidcSettings(c, "https://corrallm.example.com").RedirectURL; got != "https://other/cb" {
+	if got := oidcSettings(c).RedirectURL; got != "https://other/cb" {
 		t.Errorf("explicit redirect overridden: %q", got)
-	}
-	c.Auth.OIDC.RedirectURL = ""
-	if got := oidcSettings(c, "").RedirectURL; got != "" {
-		t.Errorf("redirect invented without a public base: %q", got)
 	}
 }
 
@@ -41,12 +38,12 @@ func TestOIDCSettingsUsersAndDisabled(t *testing.T) {
 		Users: []config.AuthUser{{Email: "Eve@Example.com", Role: "viewer"}},
 		OIDC:  &config.OIDC{Issuer: "https://idp.example.com", ClientID: "cid", AllowedEmails: []string{"ops@example.com"}},
 	}}
-	st := oidcSettings(c, "")
+	st := oidcSettings(c)
 	if st.Users["eve@example.com"] != auth.RoleViewer || st.Users["ops@example.com"] != auth.RoleAdmin {
 		t.Errorf("users = %v", st.Users)
 	}
 	c.Auth.OIDC.Disabled = true
-	if oidcSettings(c, "") != nil {
+	if oidcSettings(c) != nil {
 		t.Error("settings while disabled")
 	}
 }

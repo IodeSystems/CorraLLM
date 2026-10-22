@@ -32,15 +32,16 @@ func requireAdmin(ctx context.Context) error {
 }
 
 // OIDCRedirectURL is the callback the provider must have registered: the
-// configured one, else <public-base>/auth/callback, else empty.
-func OIDCRedirectURL(o *config.OIDC, publicBase string) string {
+// configured one, else /auth/callback on origin — the address the browser used,
+// which is what sign-in sends (auth.OIDCSettings.RedirectFor) — else empty.
+func OIDCRedirectURL(o *config.OIDC, origin string) string {
 	if o != nil && o.RedirectURL != "" {
 		return o.RedirectURL
 	}
-	if publicBase == "" {
+	if origin == "" {
 		return ""
 	}
-	return strings.TrimRight(publicBase, "/") + "/auth/callback"
+	return strings.TrimRight(origin, "/") + "/auth/callback"
 }
 
 // AccessUser is one dashboard user.
@@ -64,7 +65,7 @@ type IdentityProviderView struct {
 	HasSecret     bool   `json:"hasSecret" doc:"Whether that entry exists. The value is never returned."`
 	LiteralSecret bool   `json:"literalSecret" doc:"The config holds a literal secret instead of a reference; saving from the form drops it."`
 	RedirectURL   string `json:"redirectUrl" doc:"Configured callback override; empty = derived."`
-	RedirectURI   string `json:"redirectUri" doc:"The callback to register with the provider, as corrallm will send it. Empty when it cannot be derived (no --public-base)."`
+	RedirectURI   string `json:"redirectUri" doc:"The callback to register with the provider, as corrallm will send it for a sign-in started at the address this request came in on: the override, else <that address>/auth/callback."`
 }
 
 type AccessOutput struct {
@@ -143,7 +144,7 @@ func (h *Handlers) ListAccess(ctx context.Context, _ *struct{}) (*AccessOutput, 
 			p.LiteralSecret = true
 		}
 	}
-	p.RedirectURI = OIDCRedirectURL(cfgOIDC(a), h.PublicBase)
+	p.RedirectURI = OIDCRedirectURL(cfgOIDC(a), originFrom(ctx))
 	return out, nil
 }
 
@@ -349,22 +350,34 @@ func (h *Handlers) SetIdentityProvider(ctx context.Context, in *SetIdentityProvi
 
 type TestIdentityProviderInput struct {
 	Body struct {
-		Issuer string `json:"issuer"`
+		Issuer      string `json:"issuer"`
+		ClientID    string `json:"clientId" required:"false" doc:"When set, the provider is asked to start a sign-in for this client and callback, which proves both are registered."`
+		RedirectURL string `json:"redirectUrl" required:"false" doc:"Callback override; empty uses the address this request came in on."`
+		Public      bool   `json:"public" required:"false" doc:"No client secret (PKCE only): also checks the provider lists S256 and token auth method none."`
 	}
 }
 
 type TestIdentityProviderOutput struct {
 	Body struct {
-		OK                    bool     `json:"ok"`
-		Message               string   `json:"message"`
-		Issuer                string   `json:"issuer" doc:"The issuer the discovery document names. Must equal the one configured."`
-		AuthorizationEndpoint string   `json:"authorizationEndpoint"`
-		TokenEndpoint         string   `json:"tokenEndpoint"`
-		UserinfoEndpoint      string   `json:"userinfoEndpoint"`
-		JwksURI               string   `json:"jwksUri"`
-		CodeChallengeMethods  []string `json:"codeChallengeMethods"`
-		TokenAuthMethods      []string `json:"tokenAuthMethods"`
+		OK                    bool        `json:"ok"`
+		Message               string      `json:"message"`
+		Issuer                string      `json:"issuer" doc:"The issuer the discovery document names. Must equal the one configured."`
+		AuthorizationEndpoint string      `json:"authorizationEndpoint"`
+		TokenEndpoint         string      `json:"tokenEndpoint"`
+		UserinfoEndpoint      string      `json:"userinfoEndpoint"`
+		JwksURI               string      `json:"jwksUri"`
+		CodeChallengeMethods  []string    `json:"codeChallengeMethods"`
+		TokenAuthMethods      []string    `json:"tokenAuthMethods"`
+		RedirectURI           string      `json:"redirectUri" doc:"The callback the authorize check sent."`
+		Checks                []TestCheck `json:"checks" doc:"Each thing checked, in order; ok is false at the first that would make sign-in fail."`
 	}
+}
+
+// TestCheck is one step of the provider test.
+type TestCheck struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
 }
 
 // discoveryClient fetches discovery documents; short, so a dead issuer
@@ -379,6 +392,7 @@ func (h *Handlers) TestIdentityProvider(ctx context.Context, in *TestIdentityPro
 	}
 	out := &TestIdentityProviderOutput{}
 	out.Body.CodeChallengeMethods, out.Body.TokenAuthMethods = []string{}, []string{}
+	out.Body.Checks = []TestCheck{}
 	issuer := strings.TrimRight(strings.TrimSpace(in.Body.Issuer), "/")
 	u, err := url.Parse(issuer)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -422,16 +436,123 @@ func (h *Handlers) TestIdentityProvider(ctx context.Context, in *TestIdentityPro
 	if doc.AuthMethods != nil {
 		b.TokenAuthMethods = doc.AuthMethods
 	}
-	switch {
-	case strings.TrimRight(doc.Issuer, "/") != issuer:
-		b.Message = fmt.Sprintf("the document names issuer %q, not %q; sign-in would fail the issuer check", doc.Issuer, issuer)
-	case doc.Authorization == "" || doc.Token == "" || doc.JWKS == "":
-		b.Message = "the document is missing the authorization, token or JWKS endpoint"
-	default:
-		b.OK = true
-		b.Message = "discovery document found"
+	b.Checks = []TestCheck{{Name: "discovery", OK: true, Detail: "found at " + issuer + "/.well-known/openid-configuration"}}
+	fail := func(name, detail string) (*TestIdentityProviderOutput, error) {
+		b.Checks = append(b.Checks, TestCheck{Name: name, Detail: detail})
+		b.Message = detail
+		return out, nil
 	}
+	pass := func(name, detail string) {
+		b.Checks = append(b.Checks, TestCheck{Name: name, OK: true, Detail: detail})
+	}
+
+	// Sign-in compares issuers exactly; a trailing slash alone is forgiven
+	// (auth.SSO.discover tries both forms), anything else is not.
+	typed := strings.TrimSpace(in.Body.Issuer)
+	switch {
+	case doc.Issuer == typed:
+		pass("issuer", "the provider names itself "+doc.Issuer)
+	case strings.TrimRight(doc.Issuer, "/") == issuer:
+		pass("issuer", fmt.Sprintf("the provider names itself %q; you typed %q — accepted, the trailing slash is ignored", doc.Issuer, typed))
+	default:
+		return fail("issuer", fmt.Sprintf("the document names issuer %q, not %q; sign-in would fail the issuer check", doc.Issuer, typed))
+	}
+	if doc.Authorization == "" || doc.Token == "" || doc.JWKS == "" {
+		return fail("endpoints", "the document is missing the authorization, token or JWKS endpoint")
+	}
+	pass("endpoints", "authorization, token and JWKS endpoints listed")
+	if in.Body.Public {
+		if !listHas(doc.Challenge, "S256") {
+			return fail("pkce", "no client secret is set, but the provider does not list PKCE S256")
+		}
+		if doc.AuthMethods != nil && !listHas(doc.AuthMethods, "none") {
+			return fail("pkce", "no client secret is set, but the provider does not allow token auth method none (Zitadel: authentication method PKCE / None)")
+		}
+		pass("pkce", "S256 and auth method none supported")
+	}
+
+	clientID := strings.TrimSpace(in.Body.ClientID)
+	if clientID == "" {
+		b.OK, b.Message = true, "discovery document found; enter a client ID to check the client and callback too"
+		return out, nil
+	}
+	redirect := OIDCRedirectURL(&config.OIDC{RedirectURL: strings.TrimSpace(in.Body.RedirectURL)}, originFrom(ctx))
+	b.RedirectURI = redirect
+	if redirect == "" {
+		return fail("client", "no callback URL: set a callback override")
+	}
+	ok, detail := probeAuthorize(ctx, doc.Authorization, clientID, redirect)
+	if !ok {
+		return fail("client", detail)
+	}
+	pass("client", detail)
+	b.OK, b.Message = true, "the provider accepts this client and callback; sign-in should work"
 	return out, nil
+}
+
+// probeAuthorize starts a sign-in at the provider without following it: a
+// redirect to the provider's own login page means it knows the client and the
+// callback; an error — returned as a 4xx, or as a redirect to the callback
+// carrying error= — says which one it refused. Nothing is signed in.
+func probeAuthorize(ctx context.Context, endpoint, clientID, redirect string) (bool, string) {
+	q := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {clientID},
+		"redirect_uri":          {redirect},
+		"scope":                 {"openid email profile"},
+		"state":                 {"corrallm-test"},
+		"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+		"code_challenge_method": {"S256"},
+	}
+	sep := "?"
+	if strings.Contains(endpoint, "?") {
+		sep = "&"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+sep+q.Encode(), nil)
+	if err != nil {
+		return false, err.Error()
+	}
+	cli := *discoveryClient
+	cli.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := cli.Do(req)
+	if err != nil {
+		return false, "could not reach the authorization endpoint: " + err.Error()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		loc, _ := resp.Location()
+		if loc != nil && strings.HasPrefix(loc.String(), redirect) {
+			lq := loc.Query()
+			if e := lq.Get("error"); e != "" {
+				return false, "the provider refused: " + strings.TrimSpace(e+" "+lq.Get("error_description"))
+			}
+		}
+		return true, "client " + clientID + " and callback " + redirect + " accepted"
+	}
+	var e struct {
+		Error       string `json:"error"`
+		Description string `json:"error_description"`
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if json.Unmarshal(body, &e) == nil && e.Error != "" {
+		msg := e.Error + ": " + e.Description
+		if strings.Contains(e.Description, "App.NotFound") {
+			msg = "the provider does not know client ID " + clientID
+		} else if strings.Contains(e.Description, "redirect_uri") {
+			msg = "the provider has not registered the callback " + redirect + " for this client (" + e.Description + ")"
+		}
+		return false, msg
+	}
+	return false, fmt.Sprintf("the authorization endpoint answered %s, not a redirect to its login page", resp.Status)
+}
+
+func listHas(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 type SetAdminTokenInput struct {

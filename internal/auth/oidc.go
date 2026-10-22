@@ -45,12 +45,13 @@ const (
 	clockSkew = time.Minute
 )
 
-// OIDCSettings is the resolved provider config: secret expanded, redirect URL
-// defaulted.
+// OIDCSettings is the resolved provider config, secret expanded.
 type OIDCSettings struct {
 	Issuer               string
 	ClientID             string
 	ClientSecret         string
+	// RedirectURL is the configured override; "" means the callback on the
+	// address the browser used (RedirectFor).
 	RedirectURL          string
 	Scopes               []string
 	AllowUnverifiedEmail bool
@@ -136,6 +137,12 @@ var defaultClient = &http.Client{Timeout: 15 * time.Second}
 //
 // Background, not the request context: the provider keeps this context for
 // its JWKS fetches long after the request ends.
+//
+// A TRAILING SLASH IS NOT A DIFFERENT ISSUER to a person typing one in, but
+// go-oidc requires the configured issuer to equal the provider's byte for
+// byte. Zitadel names itself without the slash, Auth0 with one, and the error
+// read "provider unreachable" on a provider that answered in 19 ms. So when the
+// form typed fails, the other form is tried before giving up.
 func (s *SSO) discover(issuer string) (*oidc.Provider, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -144,13 +151,48 @@ func (s *SSO) discover(issuer string) (*oidc.Provider, error) {
 	}
 	p, err := oidc.NewProvider(s.ctx(context.Background()), issuer)
 	if err != nil {
-		return nil, err
+		alt := strings.TrimSuffix(issuer, "/")
+		if alt == issuer {
+			alt += "/"
+		}
+		p2, err2 := oidc.NewProvider(s.ctx(context.Background()), alt)
+		if err2 != nil {
+			return nil, err // the error for what was configured
+		}
+		p = p2
 	}
 	s.provider, s.issuer = p, issuer
 	return p, nil
 }
 
-func oauthConfig(st *OIDCSettings, p *oidc.Provider) *oauth2.Config {
+// RequestOrigin is scheme://host as the browser addressed this server: the
+// front proxy's X-Forwarded-Proto and X-Forwarded-Host when it sends them, else
+// the connection's own. A client can set those headers; that is acceptable
+// where the result is only a callback the provider must already have
+// registered — a forged one fails at the provider, not here.
+func RequestOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	host := r.Host
+	if fh := r.Header.Get("X-Forwarded-Host"); fh != "" {
+		host = strings.TrimSpace(strings.Split(fh, ",")[0])
+	}
+	return scheme + "://" + host
+}
+
+// RedirectFor is the callback for a sign-in started by r: the configured
+// override, else /auth/callback on the address the browser used. The callback
+// request lands on that same address, so both legs of the flow agree.
+func (st *OIDCSettings) RedirectFor(r *http.Request) string {
+	if st.RedirectURL != "" {
+		return st.RedirectURL
+	}
+	return RequestOrigin(r) + "/auth/callback"
+}
+
+func oauthConfig(st *OIDCSettings, p *oidc.Provider, redirect string) *oauth2.Config {
 	ep := p.Endpoint()
 	if st.ClientSecret == "" {
 		// A public client: PKCE is the proof, and client_id rides in the body.
@@ -161,7 +203,7 @@ func oauthConfig(st *OIDCSettings, p *oidc.Provider) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     st.ClientID,
 		ClientSecret: st.ClientSecret,
-		RedirectURL:  st.RedirectURL,
+		RedirectURL:  redirect,
 		Endpoint:     ep,
 		Scopes:       st.Scopes,
 	}
@@ -188,16 +230,11 @@ func (s *SSO) Login(w http.ResponseWriter, r *http.Request) {
 		errorPage(w, http.StatusNotFound, "Single sign-on is not configured", "This server has no auth.oidc block.")
 		return
 	}
-	if st.RedirectURL == "" {
-		errorPage(w, http.StatusInternalServerError, "Single sign-on is not set up",
-			"No callback URL: set auth.oidc.redirectUrl, or start corrallm with --public-base.")
-		return
-	}
 	p, err := s.discover(st.Issuer)
 	if err != nil {
 		slog.Warn("sso: provider discovery failed", "issuer", st.Issuer, "err", err)
 		errorPage(w, http.StatusBadGateway, "Sign-in provider unreachable",
-			"corrallm could not read the provider's configuration. Try again, or sign in with the admin token.")
+			"corrallm could not use the provider's configuration: "+err.Error()+". Check the issuer under Setup → Access (Test), or sign in with the admin token.")
 		return
 	}
 	sp := statePayload{
@@ -217,7 +254,7 @@ func (s *SSO) Login(w http.ResponseWriter, r *http.Request) {
 		Secure:   secureRequest(r, st),
 		MaxAge:   int(stateTTL.Seconds()),
 	})
-	url := oauthConfig(st, p).AuthCodeURL(sp.State, oidc.Nonce(sp.Nonce), oauth2.S256ChallengeOption(sp.Verifier))
+	url := oauthConfig(st, p, st.RedirectFor(r)).AuthCodeURL(sp.State, oidc.Nonce(sp.Nonce), oauth2.S256ChallengeOption(sp.Verifier))
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
@@ -260,7 +297,7 @@ func (s *SSO) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := s.ctx(r.Context())
-	tok, err := oauthConfig(st, p).Exchange(ctx, q.Get("code"), oauth2.VerifierOption(sp.Verifier))
+	tok, err := oauthConfig(st, p, st.RedirectFor(r)).Exchange(ctx, q.Get("code"), oauth2.VerifierOption(sp.Verifier))
 	if err != nil {
 		slog.Warn("sso: code exchange failed", "err", exchangeErr(err))
 		errorPage(w, http.StatusBadGateway, "Sign-in failed", "The provider did not accept the sign-in. Start again.")

@@ -1967,7 +1967,7 @@ type corrallm_IdentityProviderView {
   issuer: String!
   """The config holds a literal secret instead of a reference; saving from the form drops it."""
   literalSecret: Boolean!
-  """The callback to register with the provider, as corrallm will send it. Empty when it cannot be derived (no --public-base)."""
+  """The callback to register with the provider, as corrallm will send it for a sign-in started at the address this request came in on: the override, else <that address>/auth/callback."""
   redirectUri: String!
   """Configured callback override; empty = derived."""
   redirectUrl: String!
@@ -3380,18 +3380,34 @@ input corrallm_SuppressWarningInputBodyInput {
   subject: String
 }
 
+type corrallm_TestCheck {
+  detail: String!
+  name: String!
+  ok: Boolean!
+}
+
 input corrallm_TestIdentityProviderInputBodyInput {
+  """When set, the provider is asked to start a sign-in for this client and callback, which proves both are registered."""
+  clientId: String
   issuer: String!
+  """No client secret (PKCE only): also checks the provider lists S256 and token auth method none."""
+  public: Boolean
+  """Callback override; empty uses the address this request came in on."""
+  redirectUrl: String
 }
 
 type corrallm_TestIdentityProviderOutputBody {
   authorizationEndpoint: String!
+  """Each thing checked, in order; ok is false at the first that would make sign-in fail."""
+  checks: [corrallm_TestCheck!]!
   codeChallengeMethods: [String!]!
   """The issuer the discovery document names. Must equal the one configured."""
   issuer: String!
   jwksUri: String!
   message: String!
   ok: Boolean!
+  """The callback the authorize check sent."""
+  redirectUri: String!
   tokenAuthMethods: [String!]!
   tokenEndpoint: String!
   userinfoEndpoint: String!
