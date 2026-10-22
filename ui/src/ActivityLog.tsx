@@ -301,6 +301,13 @@ export function ActivityLog({
 }) {
   const [selected, setSelected] = useState<string | null>(null)
   const [page, setPage] = useState(0)
+  // PAUSE pins the upper bound of the query to the newest row on screen. A busy
+  // embed caller writes rows faster than anyone can click one, and every SSE
+  // invalidation slid the table under the pointer. Pinned, the same rows come
+  // back on every refetch and Newer/Older page through that fixed set. The row's
+  // own timestamp, not the browser clock: a skewed clock would drop or admit the
+  // last few seconds.
+  const [pausedAt, setPausedAt] = useState<number | null>(null)
 
   // PAGING IS OFFERED ONLY WHERE AN INDEX COVERS THE FILTER, and that is not a
   // style choice — it is the difference between a page-turn costing 0.002s and
@@ -333,11 +340,14 @@ export function ActivityLog({
     if (page !== 0) setPage(0)
   }
   const offset = pageable ? page * limit : 0
+  // An absolute window is already frozen; a pause can only narrow its end.
+  const winTo = window ? Number(windowVars(window).to) : 0
+  const to = pausedAt != null && (winTo === 0 || pausedAt < winTo) ? pausedAt : winTo
 
   const q = useQuery({
     // filterKey is part of the cache key, or switching callers would show the
     // previous one's rows until the refetch landed.
-    queryKey: ['activity', filterKey ?? '', filterModel ?? '', filterPlacement ?? '', limit, offset, windowK],
+    queryKey: ['activity', filterKey ?? '', filterModel ?? '', filterPlacement ?? '', limit, offset, windowK, to],
     queryFn: () =>
       gqlClient.request(ActivityDoc, {
         limit: String(limit),
@@ -346,14 +356,14 @@ export function ActivityLog({
         served: filterModel || undefined,
         placement: filterPlacement || undefined,
         from: window ? windowVars(window).from : '0',
-        to: window ? windowVars(window).to : '0',
+        to: String(to),
       }),
     // Keep the previous page on screen while the next one loads. Without it
     // every page-turn blanks the table to a spinner, which reads as a reload.
     placeholderData: (prev) => prev,
     // fallback; live updates arrive via SSE (useLiveEvents). A frozen window has
     // nothing to refetch — new rows are outside it by definition.
-    refetchInterval: window?.kind === 'absolute' ? false : 15000,
+    refetchInterval: window?.kind === 'absolute' || pausedAt != null ? false : 15000,
   })
 
   const records = q.data?.corrallm.recentActivity?.records ?? []
@@ -511,6 +521,34 @@ export function ActivityLog({
   const first = records.length === 0 ? 0 : offset + 1
   const last = offset + records.length
 
+  // Only offered where something moves: an absolute window is already still.
+  const pauseButton =
+    window?.kind === 'absolute' ? null : pausedAt != null ? (
+      <Tooltip title={`Showing requests before ${fmtTime(String(pausedAt))}. Resume to follow new ones again.`}>
+        <Button
+          size="small"
+          variant="contained"
+          color="warning"
+          onClick={() => {
+            setPausedAt(null)
+            setPage(0)
+          }}
+        >
+          Paused · Resume
+        </Button>
+      </Tooltip>
+    ) : (
+      <Tooltip title="Stop new requests from pushing these rows down, so one can be clicked.">
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={() => setPausedAt(records.length > 0 && offset === 0 ? Number(records[0].ts) + 1 : Date.now())}
+        >
+          Pause
+        </Button>
+      </Tooltip>
+    )
+
   return (
     <>
       <Panel
@@ -532,6 +570,7 @@ export function ActivityLog({
           pageable ? (
             <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
               {q.isFetching && <Typography variant="caption" sx={{ color: C.textFaint }}>loading…</Typography>}
+              {pauseButton}
               <Button size="small" disabled={page === 0 || q.isFetching} onClick={() => setPage((p) => p - 1)}>
                 Newer
               </Button>
@@ -541,9 +580,12 @@ export function ActivityLog({
             </Stack>
           ) : (
             // Not a pager it cannot afford: see `pageable` above.
-            <Typography variant="caption" sx={{ color: C.textFaint }}>
-              newest {limit}
-            </Typography>
+            <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+              {pauseButton}
+              <Typography variant="caption" sx={{ color: C.textFaint }}>
+                newest {limit}
+              </Typography>
+            </Stack>
           )
         }
         flush
