@@ -405,10 +405,12 @@ Slices:
   read-only: key×model rollup 0.28 s, key-filtered ctx join 0.13 s. Time series dropped — owner:
   "hooked" meant summed and splittable, not charted.
 - ✅ **B. GPU compute %** — nvidia-smi `utilization.gpu` → `gpu.Stats.UtilPct` (nil = unreported)
-  → agent `GPUDevice.utilPct` on heartbeat. `runGPUSampler` (main.go, 10 s) writes bound pools to
-  `gpu_samples`, pruned at activity retention. `gpuUtilization` pools carry `computePct`,
-  `computeN`, per-bucket `compute` {n, open, high, low, close, mean, slopePerMin}, computed at
-  read time (owner 10-21: query-time OHLC, no LOD tiers). Live after the next deploy only.
+  → agent `GPUDevice.utilPct` on heartbeat. `runGPUSampler` (main.go, 10 s) folds each sample into
+  `gpu_lod` tiers (1 m, 15 m; n, open, high, low, close, Σu, Σx, Σx², Σxu), pruned at activity
+  retention; no raw table. `gpuUtilization` pools carry `computePct`, `computeN`, per-bucket
+  `compute` {n, open, high, low, close, mean, slopePerMin}, merged from the coarsest tier dividing
+  the bucket. Synthetic 2 pools × 30 d: raw scan 682 ms → tiers 21 ms at 15 m buckets. Live after
+  the next deploy only.
 - ◻ **C. key allocations** — config per key `{usd, period, hard|soft}`; ledger entry per key;
   scheduler refusal on hard; shown in Setup → Budgets.
 - ◻ **D. spend rates** — $/h over the window per key, model, provider budget; projected
@@ -423,7 +425,7 @@ Slices:
 - **assumptions:** "fused TPS" = prefill fused (incl. cached prefix), the only fused metric; tg/s
   shown as avg + p90; allocation periods day/week/month, calendar-aligned like provider budgets.
 - **optional extensions:** allocation as a slice of a provider budget; per-key alerts via ntfy;
-  LOD tiers for `gpu_samples` if retention past 30 d is wanted.
+  a 1 h / 1 d tier if retention past 30 d is wanted; the same tiering for other slow series.
 
 ### ◐ P55 — OIDC sign-in, roles and the Access tab — 2026-10-19
 
