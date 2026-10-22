@@ -288,7 +288,8 @@ func TestHandoff_ReadyTimeout(t *testing.T) {
 	}
 }
 
-// Under a systemd unit with no notify socket a handoff is refused up front.
+// Under a systemd unit with no notify socket, or under launchd, a handoff is
+// refused up front.
 func TestCheckSupervisor(t *testing.T) {
 	t.Setenv("INVOCATION_ID", "x")
 	t.Setenv("NOTIFY_SOCKET", "")
@@ -303,6 +304,14 @@ func TestCheckSupervisor(t *testing.T) {
 	t.Setenv("NOTIFY_SOCKET", "")
 	if err := CheckSupervisor(); err != nil {
 		t.Errorf("not under systemd: %v", err)
+	}
+	t.Setenv("XPC_SERVICE_NAME", "0")
+	if err := CheckSupervisor(); err != nil {
+		t.Errorf("macOS Terminal shell: %v", err)
+	}
+	t.Setenv("XPC_SERVICE_NAME", "com.iodesystems.corrallm")
+	if err := CheckSupervisor(); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("launchd job: %v", err)
 	}
 }
 

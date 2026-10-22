@@ -293,8 +293,8 @@ func Notify(state string) (bool, error) {
 	return true, nil
 }
 
-// CheckSupervisor refuses a handoff that would kill the service: under
-// systemd, the main pid can move to the successor only through the notify
+// CheckSupervisor refuses a handoff that would kill or orphan the service:
+// under systemd, the main pid can move to the successor only through the notify
 // socket (Type=notify, NotifyAccess=all). Without one, the predecessor's exit
 // reads to systemd as the service stopping, and it kills the successor with
 // the rest of the unit.
@@ -302,6 +302,13 @@ func CheckSupervisor() error {
 	if os.Getenv("INVOCATION_ID") != "" && os.Getenv("NOTIFY_SOCKET") == "" {
 		return fmt.Errorf("%w: this systemd unit has no notify socket, so the main pid cannot move to a new process; "+
 			"reinstall it (`corrallm service install`, Type=notify + NotifyAccess=all) or restart instead", ErrUnsupported)
+	}
+	// launchd sets XPC_SERVICE_NAME to the job's label ("0" in a Terminal
+	// shell). It tracks the pid it started and cannot be told that moved: the
+	// predecessor's clean exit ends the job, and the successor is left an
+	// orphan that a later stop or restart does not reach.
+	if n := os.Getenv("XPC_SERVICE_NAME"); n != "" && n != "0" {
+		return fmt.Errorf("%w: running under launchd (%s), which cannot follow the main process to a new pid; restart instead", ErrUnsupported, n)
 	}
 	return nil
 }

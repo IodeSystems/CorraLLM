@@ -1,4 +1,4 @@
-.PHONY: hooks install gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps verify-docker
+.PHONY: hooks install bindir gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps verify-docker
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -30,16 +30,21 @@ golangci:         ## Go lint
 build:            ## Build the server binary
 	go build -ldflags "$(LDFLAGS)" -o bin/corrallm ./cmd/corrallm
 
-GOBIN   := $(shell go env GOBIN)
-ifeq ($(GOBIN),)
-GOBIN   := $(shell go env GOPATH)/bin
-endif
+# Where `make install` puts the binaries: ~/.local/bin, the per-user bin dir on
+# PATH on both Linux and macOS, rather than wherever GOPATH happens to point.
+PREFIX  ?= $(HOME)/.local
+BINDIR  ?= $(PREFIX)/bin
 
-install:          ## Install a source-stamped corrallm to $(GOBIN) (what the systemd unit runs)
-	@mkdir -p $(GOBIN)
-	go build -ldflags "$(LDFLAGS)" -o $(GOBIN)/corrallm ./cmd/corrallm
-	@echo "installed $(GOBIN)/corrallm (warns when it predates $(SRCDIR))"
+install:          ## Install source-stamped corrallm, llm-bench, llm-bench-mcp to $(BINDIR) (what the service runs)
+	@mkdir -p $(BINDIR)
+	go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/corrallm ./cmd/corrallm
+	go build -o $(BINDIR)/llm-bench ./cmd/llm-bench
+	go build -o $(BINDIR)/llm-bench-mcp ./cmd/llm-bench-mcp
+	@echo "installed corrallm, llm-bench, llm-bench-mcp to $(BINDIR) (corrallm warns when it predates $(SRCDIR))"
 	@echo "restart the service to run it: corrallm service restart"
+
+bindir:           ## Print where `make install` puts binaries (bin/deploy reads this)
+	@echo $(BINDIR)
 
 run: build        ## Build + run the server
 	ADDR='$(ADDR)' ./bin/corrallm serve

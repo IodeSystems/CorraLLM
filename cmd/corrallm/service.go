@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,18 +16,22 @@ import (
 	"github.com/iodesystems/corrallm/internal/service"
 )
 
-// newServiceCmd manages corrallm's own systemd user service.
+// newServiceCmd manages corrallm's own systemd user service, or its launchd
+// LaunchAgent on macOS (service_launchd.go).
 //
-// Everything here shells out to `systemctl --user` rather than reimplementing
-// it: the unit is the contract, and an operator must be able to use systemctl
-// and journalctl directly without corrallm being in the way.
+// Everything here shells out to `systemctl --user` / `launchctl` rather than
+// reimplementing them: the unit is the contract, and an operator must be able
+// to use systemctl and journalctl (or launchctl) directly without corrallm
+// being in the way.
 func newServiceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "service",
-		Short: "Install and control corrallm as a systemd user service",
-		Long: "Install and control corrallm as a systemd user service.\n\n" +
+		Short: "Install and control corrallm as a systemd user service (launchd on macOS)",
+		Long: "Install and control corrallm as a systemd user service, or on macOS as a\n" +
+			"launchd LaunchAgent (~/Library/LaunchAgents/" + service.LabelPrefix + "<name>.plist,\n" +
+			"logs in ~/Library/Logs/corrallm/<name>.log).\n\n" +
 			"Building the binary is deliberately NOT part of this: a service cannot\n" +
-			"build itself. Use `go install ./cmd/corrallm` then `corrallm service restart`.",
+			"build itself. Use `make install` then `corrallm service restart`.",
 	}
 	cmd.AddCommand(newServiceInstallCmd(), newServiceUninstallCmd())
 	cmd.AddCommand(newServiceCtlCmds()...)
@@ -124,6 +129,16 @@ func newServiceInstallCmd() *cobra.Command {
 					"  use: --env ADDR=%s", v)
 			}
 			u := service.Unit{Name: name, Exec: execBin, Args: args, ConfigPath: cfgPath, WorkingDir: workDir, Env: envs, Agent: asAgent}
+			if useLaunchd() {
+				// A LaunchAgent starts with launchd's PATH (/usr/bin:/bin:…),
+				// not the login shell's: the Mac agent could not find cmake in
+				// /opt/homebrew/bin and failed every tool build unseen. Carry
+				// the installing shell's PATH unless one was given.
+				if !slices.ContainsFunc(u.Env, func(e string) bool { return strings.HasPrefix(e, "PATH=") }) {
+					u.Env = append(u.Env, "PATH="+os.Getenv("PATH"))
+				}
+				return launchdInstall(cmd.OutOrStdout(), u, enable, start)
+			}
 			dir, err := service.UserUnitDir()
 			if err != nil {
 				return err
@@ -193,6 +208,9 @@ func newServiceUninstallCmd() *cobra.Command {
 		Short: "Stop, disable and remove the unit",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if useLaunchd() {
+				return launchdUninstall(cmd.OutOrStdout(), name)
+			}
 			unit := name + ".service"
 			if hasUserSystemd() {
 				// Best-effort: a unit that was never started or never enabled
@@ -228,9 +246,12 @@ func newServiceCtlCmds() []*cobra.Command {
 		action := verb
 		c := &cobra.Command{
 			Use:   action,
-			Short: "systemctl --user " + action + " the corrallm unit",
+			Short: action + " the corrallm unit (systemctl --user; launchctl on macOS)",
 			Args:  cobra.NoArgs,
 			RunE: func(_ *cobra.Command, _ []string) error {
+				if useLaunchd() {
+					return launchdCtl(action, name)
+				}
 				unit := name + ".service"
 				if action == "logs" {
 					j := exec.Command("journalctl", "--user", "-u", unit, "-n", "200", "--no-pager")
@@ -257,7 +278,11 @@ func newServiceCtlCmds() []*cobra.Command {
 			unit := rname + ".service"
 			cfg := rcfg
 			if cfg == "" {
-				cfg = unitConfigPath(unit)
+				if useLaunchd() {
+					cfg = launchdConfigPath(rname)
+				} else {
+					cfg = unitConfigPath(unit)
+				}
 			}
 			if cfg != "" {
 				self, err := os.Executable()
@@ -269,6 +294,9 @@ func newServiceCtlCmds() []*cobra.Command {
 				if err := v.Run(); err != nil {
 					return fmt.Errorf("config invalid — NOT restarting; the running instance is untouched")
 				}
+			}
+			if useLaunchd() {
+				return launchdCtl("restart", rname)
 			}
 			return systemctl("restart", unit).Run()
 		},
@@ -301,6 +329,11 @@ func newServiceUpgradeCmd() *cobra.Command {
 			"follows the main pid.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if useLaunchd() && pid == 0 {
+				// Exit 1, not 3: the binary is fine, the supervisor is the
+				// limit, so bin/deploy falls back to a restart.
+				return fmt.Errorf("launchd cannot follow the main process to a new pid, so there is no handoff under it; use `corrallm service restart`")
+			}
 			// The unit's main pid, when the daemon runs under one: it moving
 			// to a new process is proof of a handoff on its own, should the
 			// status file be unreadable from here.

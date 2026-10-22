@@ -106,10 +106,23 @@ if ! $YES; then
     [[ "$reply" =~ ^[Yy]$ ]] || { echo "aborted"; exit 1; }
 fi
 
-# `install`, not `build`: the systemd unit runs $GOBIN/corrallm, and building to
-# ./bin/corrallm would deploy nothing while looking like it had.
-say "installing the binary to \$GOBIN (what the unit runs)"
+# `install`, not `build`: the unit runs $BINDIR/corrallm (~/.local/bin), and
+# building to ./bin/corrallm would deploy nothing while looking like it had.
+bindir=$(make -s bindir)
+say "installing the binaries to $bindir (what the unit runs)"
 make install >/dev/null
+
+# A unit installed before `make install` moved off $GOBIN still runs the old
+# path, and a handoff starts the binary at the path the RUNNING process was
+# started by — so the new build would never be what serves. Say so rather
+# than deploy a binary nothing runs.
+unit_exe=$(systemctl --user show "$SERVICE" -p ExecStart --value 2>/dev/null | sed -n 's/.*path=\([^ ;]*\).*/\1/p')
+if [ -n "$unit_exe" ] && [ "$unit_exe" != "$bindir/corrallm" ] && ! [ "$unit_exe" -ef "$bindir/corrallm" ]; then
+    echo "!! $SERVICE runs $unit_exe, not $bindir/corrallm. Repoint it once:" >&2
+    echo "     ln -sf $bindir/corrallm $unit_exe   # so the running process hands over to the new build" >&2
+    echo "     then reinstall the unit with --exec $bindir/corrallm (corrallm service install --help)" >&2
+    exit 1
+fi
 
 # AND ./bin/corrallm, which the unit does not run and everybody types.
 #
@@ -147,9 +160,8 @@ elif [ "${old_pid:-0}" = "0" ]; then
     restart=true
 else
     say "handing $SERVICE over to the new binary (pid $old_pid drains its requests, then exits)"
-    gobin=$(go env GOBIN); [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
     rc=0
-    "$gobin/corrallm" service upgrade --name "$SERVICE" || rc=$?
+    "$bindir/corrallm" service upgrade --name "$SERVICE" || rc=$?
     if [ "$rc" = 3 ]; then
         # The NEW binary did not start. A restart would replace a working
         # daemon with that binary, so stop here: the old one is still serving.
@@ -189,10 +201,9 @@ fi
 # leaves its model backends running; the new agent adopts them.
 agent_exe=$(systemctl --user show "$SERVICE-agent" -p ExecStart --value 2>/dev/null | sed -n 's/.*path=\([^ ;]*\).*/\1/p')
 if [ -n "$agent_exe" ] && [ -f "$agent_exe" ]; then
-    gobin=$(go env GOBIN); [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
-    if ! cmp -s "$gobin/corrallm" "$agent_exe"; then
+    if ! cmp -s "$bindir/corrallm" "$agent_exe"; then
         say "updating the agent binary ($agent_exe) and restarting $SERVICE-agent (backends keep running)"
-        cp "$gobin/corrallm" "$agent_exe.new" && mv "$agent_exe.new" "$agent_exe"
+        cp "$bindir/corrallm" "$agent_exe.new" && mv "$agent_exe.new" "$agent_exe"
         systemctl --user restart "$SERVICE-agent"
     fi
 fi
