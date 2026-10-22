@@ -389,14 +389,21 @@ on failure, ExitTimeOut 90 s (agent 30 s + AbandonProcessGroup = KillMode=proces
 the shell's PATH (fixes the Mac's missing-cmake class). No handoff under launchd: `serve` refuses
 when `XPC_SERVICE_NAME` is a label, `service upgrade` exits 1 → deploy restarts. `--enable` =
 `launchctl enable` (load at login, not now); `--start` = bootout + bootstrap.
+Then (c69fa12, 183b4f2): a Mac bootstrap failed "5: Input/output error" and launchctl's "re-run as root"
+hint sent the owner to sudo (gui/0) — now: wait for bootout to finish, drop that hint, diagnose (plist
+lint, disabled list, ssh session, Login Items background toggle), refuse root; owner confirmed it then
+ran. `service login-admin` (ADDR from the unit → /health tokenPath → opens `http://127.0.0.1:<port>/
+#token=…`; dashboard stores it and strips the fragment; verified in a sandbox with a dummy token) and
+`service reload` (systemctl reload / launchctl kill HUP). Owner: help must not be OS-specific — CLI
+help, messages and the Access page now name `corrallm service …` verbs, not systemctl.
 Live on box1 08:25: unit repointed to `~/.local/bin/corrallm` (only diff), `~/go/bin/corrallm` is now
 a symlink to it (old binary + old unit in session a3c14c87 scratchpad), handoff 3979990 → 3783674,
 Swift + embed adopted by the agent, pids unchanged.
 
-- **next:** run it on the Mac (carlsmacbookpro, unreachable over ssh at 08:20 — "no route to host").
-  Plists checked only by Python plistlib, not `plutil`/launchd. Replacing the Mac's
+- **next:** owner runs `corrallm service login-admin` on the Mac (built after 183b4f2). Replacing the Mac's
   `corrallm-mac-agent.timer` ssh loop with a LaunchAgent still needs the Local Network GUI approval.
-- **risks:** launchd log file is never rotated; `bin/deploy` stays systemd-only; `--enable` without
+- **risks:** login-admin puts the token in `open`/`xdg-open`'s argv for a moment (visible to other
+  local users in `ps`); launchd log file is never rotated; `bin/deploy` stays systemd-only; `--enable` without
   `--start` on darwin does not start the job now (systemd's doesn't either); the `~/go/bin` symlink
   must stay until the next full restart (a handoff execs the path the running process started from).
 - **assumed:** "bins" = the three Go commands; launchd label prefix `com.iodesystems.`.
