@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/iodesystems/corrallm/internal/service"
 )
@@ -55,15 +57,72 @@ func launchdLoad(name string) error {
 		if err := launchctl("bootout", launchdTarget(name)).Run(); err != nil {
 			return fmt.Errorf("bootout: %w", err)
 		}
+		// bootout can return while the job is still leaving the domain (a
+		// draining serve takes up to its ExitTimeOut), and a bootstrap in that
+		// window fails with error 5 like any other.
+		for deadline := time.Now().Add(100 * time.Second); launchdLoaded(name) && time.Now().Before(deadline); {
+			time.Sleep(250 * time.Millisecond)
+		}
 	}
-	// RunAtLoad starts it.
-	if err := launchctl("bootstrap", launchdDomain(), p).Run(); err != nil {
-		return fmt.Errorf("bootstrap %s: %w", p, err)
+	// RunAtLoad starts it. launchctl's stderr is captured: on failure it says
+	// "Try re-running the command as root for richer errors", which is wrong
+	// for a per-user LaunchAgent — as root the domain is gui/0, not yours.
+	var stderr strings.Builder
+	c := exec.Command("launchctl", "bootstrap", launchdDomain(), p)
+	c.Stdout, c.Stderr = os.Stdout, &stderr
+	if err := c.Run(); err != nil {
+		if launchdLoaded(name) {
+			// Raced into the domain anyway (an at-login load, a second
+			// command): it is loaded, which is what was asked.
+			return nil
+		}
+		msg := strings.TrimSpace(strings.ReplaceAll(stderr.String(), "Try re-running the command as root for richer errors.", ""))
+		return fmt.Errorf("launchctl bootstrap %s %s: %s (%w)\n%s", launchdDomain(), p, msg, err, launchdDiagnose(name, p))
+	}
+	return nil
+}
+
+// launchdDiagnose names what is known to make a bootstrap fail. launchctl
+// reports nearly all of them as "5: Input/output error".
+func launchdDiagnose(name, plist string) string {
+	var b strings.Builder
+	b.WriteString("Do not rerun as root: this is a per-user LaunchAgent. Checked:\n")
+	if out, err := exec.Command("plutil", "-lint", plist).CombinedOutput(); err != nil {
+		fmt.Fprintf(&b, "  - the plist does not parse: %s\n", strings.TrimSpace(string(out)))
+	} else {
+		b.WriteString("  - the plist parses\n")
+	}
+	label := service.Unit{Name: name}.Label()
+	if out, err := exec.Command("launchctl", "print-disabled", launchdDomain()).Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, `"`+label+`"`) && (strings.Contains(line, "disabled") || strings.Contains(line, "true")) {
+				fmt.Fprintf(&b, "  - the job is DISABLED: run `launchctl enable %s`, then start again\n", launchdTarget(name))
+			}
+		}
+	}
+	if os.Getenv("SSH_CONNECTION") != "" {
+		b.WriteString("  - this is an ssh session: the gui domain exists only while you are logged in at the Mac's screen\n")
+	}
+	b.WriteString("  - System Settings → General → Login Items & Extensions: \"Allow in the Background\" must be on for corrallm\n")
+	if lp, err := service.LaunchdLogPath(name); err == nil {
+		fmt.Fprintf(&b, "  - the job's own output: %s\n", lp)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// launchdRefuseRoot: as root, gui/<uid> is gui/0 and ~ is root's home, so
+// every command would act on a job that does not exist.
+func launchdRefuseRoot() error {
+	if os.Getuid() == 0 {
+		return fmt.Errorf("run `corrallm service` as your own user, not root: the LaunchAgent is per-user (gui/<your uid>, ~/Library/LaunchAgents)")
 	}
 	return nil
 }
 
 func launchdInstall(out io.Writer, u service.Unit, enable, start bool) error {
+	if err := launchdRefuseRoot(); err != nil {
+		return err
+	}
 	name := u.Name
 	dir, err := service.LaunchAgentsDir()
 	if err != nil {
@@ -102,6 +161,9 @@ func launchdInstall(out io.Writer, u service.Unit, enable, start bool) error {
 }
 
 func launchdUninstall(out io.Writer, name string) error {
+	if err := launchdRefuseRoot(); err != nil {
+		return err
+	}
 	if launchdLoaded(name) {
 		_ = launchctl("bootout", launchdTarget(name)).Run()
 	}
@@ -118,6 +180,9 @@ func launchdUninstall(out io.Writer, name string) error {
 
 // launchdCtl maps the systemctl passthrough verbs.
 func launchdCtl(action, name string) error {
+	if err := launchdRefuseRoot(); err != nil {
+		return err
+	}
 	switch action {
 	case "start":
 		if launchdLoaded(name) {
@@ -132,9 +197,8 @@ func launchdCtl(action, name string) error {
 		}
 		return launchctl("bootout", launchdTarget(name)).Run()
 	case "restart":
-		if launchdLoaded(name) {
-			return launchctl("kickstart", "-k", launchdTarget(name)).Run()
-		}
+		// Reload, not `kickstart -k`: kickstart restarts the definition
+		// launchd already holds, so a reinstalled plist would not apply.
 		return launchdLoad(name)
 	case "status":
 		return launchctl("print", launchdTarget(name)).Run()
