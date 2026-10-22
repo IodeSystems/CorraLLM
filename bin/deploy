@@ -109,8 +109,10 @@ fi
 # `install`, not `build`: the unit runs $BINDIR/corrallm (~/.local/bin), and
 # building to ./bin/corrallm would deploy nothing while looking like it had.
 bindir=$(make -s bindir)
+# install-bin, not install: `install` rebuilds ui/dist first, which here is
+# publishing the UI before the server — the order this script exists to avoid.
 say "installing the binaries to $bindir (what the unit runs)"
-make install >/dev/null
+make install-bin >/dev/null
 
 # A unit installed before `make install` moved off $GOBIN still runs the old
 # path, and a handoff starts the binary at the path the RUNNING process was

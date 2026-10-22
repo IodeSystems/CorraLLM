@@ -1,4 +1,4 @@
-.PHONY: hooks install bindir gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps verify-docker
+.PHONY: hooks install install-bin bindir gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps verify-docker
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -35,7 +35,19 @@ build:            ## Build the server binary
 PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
 
-install:          ## Install source-stamped corrallm, llm-bench, llm-bench-mcp to $(BINDIR) (what the service runs)
+# `install` builds the UI first so the binary EMBEDS it: a service started from
+# anywhere but this checkout (its WorkingDirectory is the config's directory)
+# has no ./ui/dist, and a binary built without one embeds only the .gitkeep —
+# the dashboard then shows "UI not built" on a fresh install.
+# Sequenced in the recipe, not as two prerequisites: under `make -j` those
+# run in parallel and the binary could embed the UI mid-build.
+install: ui-build ## Build the UI, then install corrallm (UI embedded), llm-bench, llm-bench-mcp to $(BINDIR)
+	@$(MAKE) --no-print-directory install-bin
+
+# Binaries only, embedding whatever ui/dist holds now. bin/deploy uses this:
+# ui/dist is box1's LIVE web root, and it must change only AFTER the new
+# server is up (see bin/deploy).
+install-bin:      ## Install the binaries to $(BINDIR) without rebuilding the UI
 	@mkdir -p $(BINDIR)
 	go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/corrallm ./cmd/corrallm
 	go build -o $(BINDIR)/llm-bench ./cmd/llm-bench
@@ -75,8 +87,10 @@ agents:           ## Cross-compile agent binaries into bin/agents/ for the daemo
 	@printf '%s' "$(VERSION)" > bin/agents/VERSION
 	@ls -la bin/agents/
 
-ui-build:         ## Typecheck + production-build the UI
-	cd ui && pnpm install && pnpm build
+# `pnpm gen` first: ui/src/gql is generated (gitignored) from the tracked
+# ui/gen/schema.graphql, so a clean checkout cannot typecheck without it.
+ui-build:         ## Codegen + typecheck + production-build the UI
+	cd ui && pnpm install && pnpm gen && pnpm build
 
 deploy:           ## Build, restart the service, then publish the UI (delegates to bin/deploy)
 	@./bin/deploy $(ARGS)
