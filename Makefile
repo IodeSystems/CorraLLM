@@ -49,9 +49,12 @@ install: ui-build ## Build the UI, then install corrallm (UI embedded), llm-benc
 # server is up (see bin/deploy).
 install-bin:      ## Install the binaries to $(BINDIR) without rebuilding the UI
 	@mkdir -p $(BINDIR)
-	go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/corrallm ./cmd/corrallm
-	go build -o $(BINDIR)/llm-bench ./cmd/llm-bench
-	go build -o $(BINDIR)/llm-bench-mcp ./cmd/llm-bench-mcp
+	# Temp name, then rename: a running copy (the service) is never half-written.
+	go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/corrallm.tmp ./cmd/corrallm
+	go build -o $(BINDIR)/llm-bench.tmp ./cmd/llm-bench
+	go build -o $(BINDIR)/llm-bench-mcp.tmp ./cmd/llm-bench-mcp
+	@for b in corrallm llm-bench llm-bench-mcp; do mv -f $(BINDIR)/$$b.tmp $(BINDIR)/$$b; done
+	@case ":$$PATH:" in *":$(BINDIR):"*) ;; *) echo "note: $(BINDIR) is not on PATH";; esac
 	@echo "installed corrallm, llm-bench, llm-bench-mcp to $(BINDIR) (corrallm warns when it predates $(SRCDIR))"
 	@echo "restart the service to run it: corrallm service restart"
 
