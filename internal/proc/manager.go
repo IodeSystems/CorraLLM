@@ -213,6 +213,12 @@ type Manager struct {
 
 	mu     sync.Mutex
 	procs  map[string]*Process
+	// lastLogs is the log buffer of each process key's most recent run, kept
+	// after the process leaves procs. A backend that dies during startup is
+	// removed from procs at once, and its output — the only place the reason
+	// is written — went with it: the logs view showed "no output captured" for
+	// exactly the load somebody was trying to debug.
+	lastLogs map[string]*logBuffer
 	used   map[string]map[string]int64 // server → pool → reserved bytes
 	budget map[string]map[string]int64 // server → pool → (total − reserve)
 
@@ -372,6 +378,7 @@ func (m *Manager) InvalidateHost(server string) {
 func NewManager(cfg *config.Config) *Manager {
 	m := &Manager{
 		procs:         map[string]*Process{},
+		lastLogs:      map[string]*logBuffer{},
 		used:          map[string]map[string]int64{},
 		budget:        map[string]map[string]int64{},
 		healthCli:     &http.Client{Timeout: 2 * time.Second},
@@ -613,6 +620,12 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 			victimsGone: victimsGone,
 		}
 		m.procs[key] = p
+		if lb != nil {
+			if m.lastLogs == nil {
+				m.lastLogs = map[string]*logBuffer{}
+			}
+			m.lastLogs[key] = lb
+		}
 		m.mu.Unlock()
 		go m.load(name, mdl, p)
 	} else {
@@ -848,6 +861,15 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 
 		// Wait until the spawned server can actually serve.
 		if err := m.waitHealthy(p.Target, h.Done()); err != nil {
+			// A process that died says how ("exit status 1"); the health
+			// check alone only knows the port never answered.
+			select {
+			case <-h.Done():
+				if xe := h.Err(); xe != nil {
+					err = fmt.Errorf("%w (process: %v)", err, xe)
+				}
+			default:
+			}
 			finish(StateFailed, err)
 			return
 		}
@@ -2938,12 +2960,16 @@ type ResidentModel struct {
 // or nil for an unknown or pure-proxy backend.
 func (m *Manager) Logs(name string) []string {
 	m.mu.Lock()
-	p := m.procs[m.procKey(name)]
+	key := m.procKey(name)
+	lb := m.lastLogs[key]
+	if p := m.procs[key]; p != nil && p.logs != nil {
+		lb = p.logs
+	}
 	m.mu.Unlock()
-	if p == nil || p.logs == nil {
+	if lb == nil {
 		return nil
 	}
-	return p.logs.Lines()
+	return lb.Lines()
 }
 
 // ResidencySnapshot is a point-in-time view of the residency layer.

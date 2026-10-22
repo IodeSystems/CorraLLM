@@ -2,8 +2,11 @@ package host
 
 import (
 	"fmt"
+	"net"
 	"os/exec"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/iodesystems/corrallm/internal/gpu"
 	"github.com/iodesystems/corrallm/internal/sysmem"
@@ -28,6 +31,9 @@ func (l *Local) Start(s Spec) (Handle, error) {
 	// this is the one place every backend starts — on the primary and inside
 	// an agent alike.
 	EvictPageCache(s.Cmd)
+	if err := portFree(s.Port); err != nil {
+		return nil, err
+	}
 	shell, args := shellFor(s.Cmd)
 	cmd := exec.Command(shell, args...)
 	cmd.Stdout, cmd.Stderr = s.Out, s.Out
@@ -52,6 +58,30 @@ func (l *Local) Start(s Spec) (Handle, error) {
 		close(h.done)
 	}()
 	return h, nil
+}
+
+// CheckPortFree turns portFree on. Off only in tests that stand a fake backend
+// up on the port BEFORE the spawn, which is exactly what the check refuses.
+var CheckPortFree = true
+
+// portFree refuses a spawn whose port something else already answers on.
+//
+// Without it the failure is silent and misleading: the new backend cannot bind
+// and exits, while the health check may reach the OTHER process — a copy left
+// running in a terminal — and report it ready. corrallm then proxies to a
+// process it did not start and cannot stop. 127.0.0.1 is enough to dial: a
+// backend bound to 0.0.0.0 answers there too.
+func portFree(port int) error {
+	if port <= 0 || !CheckPortFree {
+		return nil
+	}
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
+	if err != nil {
+		return nil
+	}
+	_ = conn.Close()
+	return fmt.Errorf("port %d is already in use by a process corrallm did not start (a copy left running in a terminal?) — stop it, or give this model another port", port)
 }
 
 type localHandle struct {

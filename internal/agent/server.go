@@ -296,6 +296,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 		Name:   req.Model,
 		Key:    req.Key,
 		Cmd:    req.Cmd,
+		Port:   req.Port,
 		Out:    out,
 		Detach: true,
 	})
