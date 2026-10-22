@@ -393,6 +393,7 @@ export function ProviderDialog(props: {
       }
       setD((s) => ({ ...s, secretValue: '' }))
       qc.invalidateQueries({ queryKey: ['providers'] })
+      qc.invalidateQueries({ queryKey: ['overview'] })
       onClose()
     } catch (e) {
       setErr(String(e))

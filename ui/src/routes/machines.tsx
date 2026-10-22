@@ -254,15 +254,15 @@ function MachinesPage() {
       {!pending && machines.length === 0 && modelCount === 0 && (
         <Panel title="Nothing configured yet">
           <Typography variant="body2" sx={{ color: 'text.secondary', mb: 2 }}>
-            No models are served yet. Add a host here, then add models on <b>Setup</b>. A remote API
+            No models are served yet. Add a host here, then add models on <b>Models</b>. A remote API
             model (such as Groq or OpenRouter) needs no host.
           </Typography>
           <Stack direction="row" spacing={1}>
             <Button size="small" variant="contained" onClick={() => setEditing(blankServer())}>
               Add host
             </Button>
-            <Button size="small" variant="outlined" onClick={() => nav({ to: '/setup' })}>
-              Go to Setup
+            <Button size="small" variant="outlined" onClick={() => nav({ to: '/models' })}>
+              Go to Models
             </Button>
           </Stack>
         </Panel>

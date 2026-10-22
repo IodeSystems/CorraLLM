@@ -226,6 +226,7 @@ export function CatalogDialog(props: {
     )
     qc.invalidateQueries({ queryKey: ['selections'] })
     qc.invalidateQueries({ queryKey: ['providers'] })
+    qc.invalidateQueries({ queryKey: ['overview'] })
     refetch()
   }
 

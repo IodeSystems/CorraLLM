@@ -347,8 +347,8 @@ export function HiddenWarnings({ prefs }: { prefs: readonly WarningPref[] }) {
     <Box>
       <Typography variant="caption" sx={{ color: C.textFaint }}>
         Held back by a setting here — still in the tables below. All settings:{' '}
-        <Link to="/setup" search={{ tab: 'warnings' }}>
-          Setup → Warnings
+        <Link to="/settings" search={{ tab: 'warnings' }}>
+          Settings → Warnings
         </Link>
       </Typography>
       {hidden.map((p) =>
@@ -393,7 +393,7 @@ const TUNABLE: { kind: WarningKind; minExclusive?: boolean; min?: number; step?:
 ]
 
 /**
- * Setup → Warnings: every standing order on the Warnings panel, in one place.
+ * Settings → Warnings: every standing order on the Warnings panel, in one place.
  *
  * The panel shows a setting only while it holds a warning back, and shows
  * nothing at all when no warning is up — so a threshold or a hide can be in

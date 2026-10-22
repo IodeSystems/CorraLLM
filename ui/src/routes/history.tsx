@@ -1,7 +1,7 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 /**
- * /history → Setup's History tab.
+ * /history → Settings' History tab.
  *
  * Configuration history was a top-level page, then a panel at the top of Setup,
  * and is now Setup's fourth tab — a revision spans everything on that page, so
@@ -15,6 +15,6 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
  */
 export const Route = createFileRoute('/history')({
   beforeLoad: () => {
-    throw redirect({ to: '/setup', search: { tab: 'history' } })
+    throw redirect({ to: '/settings', search: { tab: 'history' } })
   },
 })

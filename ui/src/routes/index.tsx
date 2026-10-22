@@ -446,7 +446,7 @@ function faultsOf(
         status === 402
           ? 'Fund the account, or stop calling it — pausing it is reversible and leaves your config alone. Nothing here is waiting on it.'
           : 'Check the credential, or stop calling it — pausing it is reversible and leaves your config alone. Nothing here is waiting on it.',
-      where: { label: 'Pause it on Setup', to: '/setup' },
+      where: { label: 'Pause it on Models', to: '/models' },
       when:
         days >= 1
           ? `it has been like this for ${days} day${days === 1 ? '' : 's'}`
@@ -539,7 +539,7 @@ function BoxState(props: {
         : configured === 0
           ? outOfSetup > 0
             ? `Every model in your configuration is out of the setup, so nothing can be served. Models lists ${outOfSetup === 1 ? 'it' : 'them'}, and puts ${outOfSetup === 1 ? 'it' : 'them'} back.`
-            : 'No models are configured, so nothing can be served yet. Start on Setup.'
+            : 'No models are configured, so nothing can be served yet. Start on Models.'
           : // THIS box is fine and something else is not: say both, in that order.
             // "Struggling" for a machine that is not serving anybody sends a
             // person hunting for a fault on the one that is.

@@ -155,11 +155,13 @@ function CalibrationBanner() {
 // data they rendered became six plus the lab, each named after what it answers:
 //
 //   Dashboard is anything wrong; what did it do and cost, split by key/model (P56)
-//   Models    what can be called, and what state is it in     (was the Overview catalog)
+//   Models    what can be called, from which provider, in what state (+ Setup's
+//             Providers and Models tabs)
 //   Traffic   the requests themselves: in flight, done, turned away (P56)
 //   Callers   who is asking and what are they allowed        (was Keys + Groups)
 //   Machines  what hardware exists and what is on it         (was Hosts; + fleet, P56)
-//   Setup     what is configured, and what changed           (was Providers + History + Quota)
+//   Settings  who may sign in, budgets, warnings, what changed (was Setup; its
+//             Providers and Models tabs are part of Models now)
 //   Bench     which model is worth its VRAM
 //
 // Every old address still resolves; each moved page redirects.
@@ -177,7 +179,7 @@ const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/traffic', label: 'Traffic', icon: TimelineOutlined },
   { to: '/callers', label: 'Callers', icon: GroupsOutlined },
   { to: '/machines', label: 'Machines', icon: DnsOutlined },
-  { to: '/setup', label: 'Setup', icon: TuneOutlined },
+  { to: '/settings', label: 'Settings', icon: TuneOutlined },
 ]
 
 // Under a small "Advanced" subheader at the bottom of the nav.

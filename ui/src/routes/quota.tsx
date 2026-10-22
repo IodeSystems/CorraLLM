@@ -1,7 +1,7 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 /**
- * /quota → Setup's Budgets tab.
+ * /quota → Settings' Budgets tab.
  *
  * "Quota" is the word a person uses for "am I about to run out", and three
  * Lenny runs went looking under it for exactly that and found a ledger of
@@ -13,6 +13,6 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
  */
 export const Route = createFileRoute('/quota')({
   beforeLoad: () => {
-    throw redirect({ to: '/setup', search: { tab: 'budgets' } })
+    throw redirect({ to: '/settings', search: { tab: 'budgets' } })
   },
 })

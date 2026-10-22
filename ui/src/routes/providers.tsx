@@ -1,7 +1,7 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 /**
- * /providers is /setup now (P30 phase C).
+ * /providers is /models now: providers and their models are one page.
  *
  * The page already held more than providers — extensions, credentials, the
  * models chosen off each catalog, the fallback lanes — and it has absorbed the
@@ -11,6 +11,6 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
  */
 export const Route = createFileRoute('/providers')({
   beforeLoad: () => {
-    throw redirect({ to: '/setup' })
+    throw redirect({ to: '/models' })
   },
 })
