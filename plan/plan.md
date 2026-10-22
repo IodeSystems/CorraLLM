@@ -377,6 +377,30 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P58 — `make install` → `~/.local/bin`; launchd support for `corrallm service` — 2026-10-22
+
+Owner: "make install should install bins into ~/.local/bin, we should have launchd support. Go".
+Done (f11cbbf, 64c095c): `make install` builds corrallm + llm-bench + llm-bench-mcp into
+`$(PREFIX)/bin` (default `~/.local/bin`; `make bindir` prints it). `bin/deploy` installs there and
+exits 1 if the unit runs another path (`-ef` allows a symlink). On darwin, `corrallm service
+install/uninstall/start/stop/restart/status/logs` drive launchctl: `~/Library/LaunchAgents/
+com.iodesystems.<name>.plist` in `gui/<uid>`, logs `~/Library/Logs/corrallm/<name>.log`, KeepAlive
+on failure, ExitTimeOut 90 s (agent 30 s + AbandonProcessGroup = KillMode=process), install copies
+the shell's PATH (fixes the Mac's missing-cmake class). No handoff under launchd: `serve` refuses
+when `XPC_SERVICE_NAME` is a label, `service upgrade` exits 1 → deploy restarts. `--enable` =
+`launchctl enable` (load at login, not now); `--start` = bootout + bootstrap.
+Live on box1 08:25: unit repointed to `~/.local/bin/corrallm` (only diff), `~/go/bin/corrallm` is now
+a symlink to it (old binary + old unit in session a3c14c87 scratchpad), handoff 3979990 → 3783674,
+Swift + embed adopted by the agent, pids unchanged.
+
+- **next:** run it on the Mac (carlsmacbookpro, unreachable over ssh at 08:20 — "no route to host").
+  Plists checked only by Python plistlib, not `plutil`/launchd. Replacing the Mac's
+  `corrallm-mac-agent.timer` ssh loop with a LaunchAgent still needs the Local Network GUI approval.
+- **risks:** launchd log file is never rotated; `bin/deploy` stays systemd-only; `--enable` without
+  `--start` on darwin does not start the job now (systemd's doesn't either); the `~/go/bin` symlink
+  must stay until the next full restart (a handoff execs the path the running process started from).
+- **assumed:** "bins" = the three Go commands; launchd label prefix `com.iodesystems.`.
+
 ### ◐ P57 — Swift OOM loop: `--cache-ram` 56 → 40 GiB; disk tier measured, not built — 2026-10-22
 
 Swift's llama-server was OOM-killed 01:58, 02:26, 02:59 (anon-rss 45.0 / 49.4 / 51.2 GB; host 121 GiB,
