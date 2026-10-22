@@ -18,7 +18,7 @@ RTX 3080). The 64 GB MacBook Pro stays enrolled but has served no model since P4
 
 | Role | Served as | Notes |
 |---|---|---|
-| chat + vision | `local-Swift-1.5-Qwen3.8-27B-Q6_K_S` | Swift 1.5 Q6_K_S on the 5090, `--reasoning-effort medium`, MTP **n-max 4** (measured optimum, 10-07) with `--spec-draft-sampling probabilistic`, **128k ctx, KV q8_0/q8_0** (10-10: p99 context 67k, max seen 108k in 14 d; KV/slot 5,328 → 4,352 MiB, card 30.6 → 29.2 GiB), `--cache-ram 32768`, `-lv 4`. Aliases `local-Qwen3.8-27B`, `Qwen3.8-27B`, `Qwen3-6-27B-MPT`. Sole `chat` lane member — **no fallback, no warm rollback**. `costEquivalent: anthropic-sonnet`. |
+| chat + vision | `local-Swift-1.5-Qwen3.8-27B-Q6_K_S` | Swift 1.5 Q6_K_S on the 5090, `--reasoning-effort medium`, MTP **n-max 4** (measured optimum, 10-07) with `--spec-draft-sampling probabilistic`, **128k ctx, KV q8_0/q8_0** (10-10: p99 context 67k, max seen 108k in 14 d; KV/slot 5,328 → 4,352 MiB, card 30.6 → 29.2 GiB), `--cache-ram 40960` (10-22, was 57344: OOM loop), `-lv 4`. Aliases `local-Qwen3.8-27B`, `Qwen3.8-27B`, `Qwen3-6-27B-MPT`. Sole `chat` lane member — **no fallback, no warm rollback**. `costEquivalent: anthropic-sonnet`. |
 | OCR | `local-chandra-ocr-2` | 3080, loads on demand |
 | embedding | `local-nomic-embed-text` | 3080, loads on demand |
 | audio | `oidio` extension | stt, stt-diarize, realtime-stt, tts |
@@ -376,6 +376,32 @@ the BackpressureError shape we already validated.
 Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ blocked.
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
+
+### ◐ P57 — Swift OOM loop: `--cache-ram` 56 → 40 GiB; disk tier measured, not built — 2026-10-22
+
+Swift's llama-server was OOM-killed 01:58, 02:26, 02:59 (anon-rss 45.0 / 49.4 / 51.2 GB; host 121 GiB,
+swap 16/16 full, other load ~50-60 GB incl. gopls/tsserver 20-30 GB). Owner: lower it; measure a disk
+tier first. **04:11 `--cache-ram 57344 → 40960`** (config export → one-line edit → `config load
+--force` → reload; reload does not restart a running backend, so I SIGTERMed Swift at 04:16 while
+idle — admin token is disabled, `unloadModel` unavailable). Cost: 1 aw4 stream cut + 3 × 502
+(connection refused) 04:16:17-21; traffic back 04:17:25.
+
+Disk-tier measurement (24 h to 04:17, Swift continuing turns, miss = <50% cached; restarts =
+15 `backend spawned` lines): 5,994 continuing turns, 294 misses, 8.8 Mtok re-prefilled. By cause:
+gap <5 min 194 (5.77 Mtok — divergence, not eviction); a restart in between 74 (2.41 Mtok); gap
+5-30 min 23 (0.68); 30 min-2 h 5 (0.04); >2 h 1 (0.02). Evictions ~20-85/h of ~2 GiB entries.
+**Eviction-attributable ≤ 29 misses/day, ~0.74 Mtok (~6 min prefill/day)**; a write-on-evict tier
+writes ~2 TB/day to the NVMe (990 PRO at 11% wear, 83.85 C stuck) to save that. Not worth it.
+
+- **next:** 24 h read at 40 GiB (same script, scratchpad of session a3c14c87): misses by cause vs the
+  table above, evictions/h, OOM kills (expect 0), Swift RSS peak.
+- **risks:** fewer entries (~14 vs ~20) → more 5-30 min misses; host RAM still depends on other
+  load (gopls runaway 20.8 GB seen).
+- **gap found:** after a backend dies, corrallm proxies to its dead port for ~5 s (502 connection
+  refused) instead of holding requests for the respawn — every OOM kill costs aw4 these 502s. Fix =
+  mark the backend not-ready on exit before the next request is routed. Unscheduled; owner decides.
+- **optional extensions:** a disk tier only if the 40 GiB read shows ≥ 10× the eviction-attributable
+  misses; restart wipes are better fixed by not restarting (OOM, scheduled builds).
 
 ### ◐ P56 — Dashboard as main page; Traffic = requests; key × model split; key allocations — 2026-10-21
 
