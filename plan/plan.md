@@ -411,15 +411,21 @@ Slices:
   `compute` {n, open, high, low, close, mean, slopePerMin}, merged from the coarsest tier dividing
   the bucket. Synthetic 2 pools × 30 d: raw scan 682 ms → tiers 21 ms at 15 m buckets. Live after
   the next deploy only.
-- ◻ **C. key allocations** — config per key `{usd, period, hard|soft}`; ledger entry per key;
-  scheduler refusal on hard; shown in Setup → Budgets.
+- ◐ **C. key allocations** — engine done: `keys.<k>.limits` (mapping form, reserved word like
+  `thinking`; `config.Limit`, usd or req, rolling or `calendar-*`), seeded as ledger scope
+  `key:<k>`. Hard → 429 `allocation_exhausted` + Retry-After before routing; soft → reported only.
+  Charged once per served request: `req` 1, `usd` = metered cost (electricity local, bill paid).
+  Test: `proxy/keyallocation_test.go`. Left: show/edit in Setup → Budgets (with slice E).
 - ◻ **D. spend rates** — $/h over the window per key, model, provider budget; projected
   exhaustion before reset.
 - ◻ **E. UI** — main page dashboard sections on A–D; Traffic trimmed to requests; old usage
   components retired once nothing mounts them.
 
-- **next:** slice C — per-key allocation config; read existing model/provider limit code first.
-- **risks:** `activity_conversation` only goes back as far as payload retention, so turns/ctx are short for
+- **next:** slice D — spend rates from the ledger + usage, then slice E UI.
+- **risks:** a key's allocation is charged the per-token electricity ESTIMATE, while the dashboard
+  may show measured kWh (power config) — the two can differ; key scope charged only on
+  `handleInference` (the sole quota charge site) — realtime/websocket audio is not counted;
+  `activity_conversation` only goes back as far as payload retention, so turns/ctx are short for
   old windows; GPU % sampled at heartbeat rate is coarse.
 - **blocking decisions:** none open.
 - **assumptions:** "fused TPS" = prefill fused (incl. cached prefix), the only fused metric; tg/s

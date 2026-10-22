@@ -2543,8 +2543,23 @@ func (c *Config) Validate() error {
 	// group by that name would make `thinking: true` mean two things at once,
 	// so it is refused rather than silently reinterpreted — the reader of such a
 	// config would have no way to tell which meaning applied.
-	if _, clash := c.PriorityGroups["thinking"]; clash {
-		return fmt.Errorf("priority group %q collides with the reserved key-policy field of the same name; rename the group", "thinking")
+	for _, reserved := range []string{"thinking", "limits"} {
+		if _, clash := c.PriorityGroups[reserved]; clash {
+			return fmt.Errorf("priority group %q collides with the reserved key-policy field of the same name; rename the group", reserved)
+		}
+	}
+	// A key allocation counts requests (charged as each completes) and dollars
+	// (charged once metered). Nothing charges dwell seconds to a caller, so a
+	// `sec` limit there would never fill.
+	for key, kp := range c.Keys {
+		for _, l := range kp.Limits {
+			if err := l.Validate(); err != nil {
+				return fmt.Errorf("key %q limits: %w", key, err)
+			}
+			if l.Dimension() == DimDwell {
+				return fmt.Errorf("key %q limits: a caller allocation counts req or usd, not sec", key)
+			}
+		}
 	}
 	if _, err := c.Residency.NonECCMaxAgeDuration(); err != nil {
 		return err

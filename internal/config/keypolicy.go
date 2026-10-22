@@ -56,7 +56,19 @@ type KeyPolicy struct {
 	// A REQUEST still outranks this. The caller knows which of its own calls is
 	// the hard one, and that judgement is better than any default here.
 	Thinking *bool
+
+	// Limits are this caller's ALLOCATION (P56): what it may spend across
+	// every model, refilled each period. Empty is unlimited. Same shape and
+	// hard/soft meaning as a model's or provider's budgets; a hard one refuses
+	// with 429 once full, a soft one is reported and never refuses — every
+	// route the caller has shares the one allocation, so there is no
+	// alternative for a soft limit to steer to. Local traffic charges its
+	// electricity, a paid route its bill: the metered cost of the request.
+	Limits LimitSet
 }
+
+// KeyScopeKey is a caller key's allocation identity in the quota ledger.
+func KeyScopeKey(key string) string { return "key:" + key }
 
 // ThinkingPreference reports this key's reasoning override and whether it has one.
 func (k KeyPolicy) ThinkingPreference() (think bool, set bool) {
@@ -116,6 +128,12 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 				k.Thinking = &b
 				continue
 			}
+			if name == "limits" {
+				if err := node.Decode(&k.Limits); err != nil {
+					return fmt.Errorf("key policy: `limits`: %w", err)
+				}
+				continue
+			}
 			if name == "default" {
 				var s string
 				if err := node.Decode(&s); err != nil {
@@ -152,7 +170,7 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 // That keeps every existing config byte-identical across a save, so adding this
 // feature does not show up as a diff on every key in the revision history.
 func (k KeyPolicy) MarshalYAML() (any, error) {
-	if len(k.Allow) == 0 && k.Thinking == nil {
+	if len(k.Allow) == 0 && k.Thinking == nil && len(k.Limits) == 0 {
 		return k.Group, nil
 	}
 	m := map[string]any{"default": k.Group}
@@ -163,6 +181,9 @@ func (k KeyPolicy) MarshalYAML() (any, error) {
 	}
 	if k.Thinking != nil {
 		m["thinking"] = *k.Thinking
+	}
+	if len(k.Limits) > 0 {
+		m["limits"] = k.Limits
 	}
 	return m, nil
 }

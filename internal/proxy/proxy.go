@@ -456,6 +456,13 @@ func (p *Proxy) seedQuota(cfg *config.Config) {
 	if len(cfg.Limits) > 0 {
 		setLimits(config.GlobalScopeKey, cfg.Limits)
 	}
+	// Caller allocations (P56): the same ledger, keyed by who is asking rather
+	// than by what answers.
+	for key, kp := range cfg.Keys {
+		if len(kp.Limits) > 0 {
+			setLimits(config.KeyScopeKey(key), kp.Limits)
+		}
+	}
 	// A scope whose limits were removed stops counting.
 	p.quota.DropLimitsExcept(declared)
 }
@@ -1029,6 +1036,14 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		return
 	} else {
 		cands = kept
+	}
+	// The caller's own allocation before any backend's: it is the same answer
+	// whichever candidate would have served, so there is no walk to steer.
+	if p.quota != nil {
+		if full, wait := p.quota.HardBlocked(config.KeyScopeKey(key)); full {
+			p.writeAllocationExhausted(w, r, served, key, wait, start, reqBody)
+			return
+		}
 	}
 	if kept, wait := p.filterByQuota(cands); len(kept) == 0 {
 		p.writeBudgetExhausted(w, r, served, key, cands, wait, start, reqBody)
@@ -1614,6 +1629,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// Here rather than in ObserveResponse because cost is only knowable now:
 		// the response has been read, its tokens counted and priced. A backend
 		// with no usd window is a no-op, so this runs unconditionally.
+		// The caller's request allocation, once per served request — not per
+		// upstream attempt, and not through ObserveResponse, whose 429 handling
+		// would cool the caller's scope for a backend's refusal.
+		if p.quota != nil {
+			p.quota.Charge(config.KeyScopeKey(key), config.DimRequests, 1)
+		}
 		if p.quota != nil && costUSD > 0 {
 			// Every scope the candidate answers to: the model, its credential,
 			// that credential's provider, and the box. Spend belongs to the
@@ -1621,6 +1642,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			for _, sc := range cand.QuotaScopes(p.config()) {
 				p.quota.Charge(sc, config.DimUSD, costUSD)
 			}
+			// And the caller's allocation: electricity for a local model, the
+			// bill for a paid one — whatever the request was metered at.
+			p.quota.Charge(config.KeyScopeKey(key), config.DimUSD, costUSD)
 		}
 
 		// Prometheus: meter the served request — provider×model with per-class
@@ -2211,6 +2235,28 @@ func (p *Proxy) writeBudgetExhausted(w http.ResponseWriter, r *http.Request, ser
 	p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refused, Key: key, Path: r.URL.Path,
 		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 		Error: "hard budget exhausted", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
+}
+
+// writeAllocationExhausted refuses a caller whose own hard allocation is full
+// (P56). Same 429 shape as a backend's budget, with its own type so a client
+// can tell "you have spent yours" from "the backend is out".
+func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request, served, key string,
+	wait time.Duration, start time.Time, reqBody string) {
+	secs := int((wait + time.Second - 1) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	p.alert.Send("allocation/"+key, key+": allocation reached",
+		fmt.Sprintf("Caller **%s** has used its hard allocation. Its requests are refused for %s.", key,
+			(time.Duration(secs)*time.Second).String()), "money_with_wings")
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_exhausted","retry_after":%d}}`,
+		jsonString(fmt.Sprintf("this key's allocation is used up (hard limit); retry after %d seconds", secs)), secs)
+	p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+		Error: "hard allocation exhausted", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
 }
 
 func (p *Proxy) filterByPaused(cands []config.Candidate) []config.Candidate {
