@@ -250,17 +250,33 @@ CREATE TABLE IF NOT EXISTS lane_samples (
 );
 CREATE INDEX IF NOT EXISTS idx_lane_samples_ts ON lane_samples(ts);
 
--- gpu_samples: each device pool's compute utilization as the vendor tool read
--- it (P56). Busy time from the activity log says a request was being served;
--- this says the card was actually computing, which differs while a slot waits
--- on the network or sits between decode steps.
-CREATE TABLE IF NOT EXISTS gpu_samples (
-    ts       INTEGER NOT NULL,   -- unix millis of the sample
+-- gpu_lod: each device pool's compute utilization as the vendor tool read it
+-- (P56), kept only as per-tier summaries: one row per (tier, bucket, pool),
+-- updated as each sample lands. Busy time from the activity log says a request
+-- was being served; this says the card was actually computing.
+--
+-- WHY TIERS AND NO RAW TABLE. Summarising raw 10 s samples at read time cost
+-- 0.68 s for 30 days of two pools (520k rows, 2026-10-21) — on every load. The
+-- tiers hold sums that merge exactly into any coarser bucket (open/close by
+-- time, high/low, n and sum, and the least-squares sums for the slope), and
+-- every bucket the API allows is a whole number of minutes, so the 1-minute
+-- tier answers anything the raw rows could.
+CREATE TABLE IF NOT EXISTS gpu_lod (
+    tier_ms  INTEGER NOT NULL,   -- 60000 or 900000
+    bucket   INTEGER NOT NULL,   -- unix millis, ts floored to tier_ms
     server   TEXT    NOT NULL,
     pool     TEXT    NOT NULL,
-    util_pct INTEGER NOT NULL    -- 0..100
+    n        INTEGER NOT NULL,
+    open     REAL    NOT NULL,   -- first sample, percent
+    high     REAL    NOT NULL,
+    low      REAL    NOT NULL,
+    close    REAL    NOT NULL,   -- last sample, percent
+    sum      REAL    NOT NULL,   -- Σu
+    sx       REAL    NOT NULL,   -- Σx, x = minutes from bucket start
+    sxx      REAL    NOT NULL,   -- Σx²
+    sxy      REAL    NOT NULL,   -- Σxu
+    PRIMARY KEY (tier_ms, bucket, server, pool)
 );
-CREATE INDEX IF NOT EXISTS idx_gpu_samples_ts ON gpu_samples(ts);
 
 -- quota_counter: durable state for a counter-mode backend's falloff counters
 -- (P16 durability). A header-tracked backend needs no persistence — it relearns
@@ -1758,7 +1774,12 @@ type GPUSample struct {
 	UtilPct int
 }
 
-// InsertGPUSamples records a batch of per-pool utilization samples at ts.
+// gpuTiers are the bucket widths gpu_lod keeps, finest first.
+var gpuTiers = []int64{60_000, 900_000}
+
+// InsertGPUSamples folds a batch of per-pool utilization samples taken at ts
+// into every tier. Samples must arrive in time order per pool, as the sampler's
+// ticks do: close is simply the latest one written.
 func (s *Store) InsertGPUSamples(ts int64, samples []GPUSample) error {
 	if len(samples) == 0 {
 		return nil
@@ -1768,29 +1789,39 @@ func (s *Store) InsertGPUSamples(ts int64, samples []GPUSample) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	stmt, err := tx.Prepare(`INSERT INTO gpu_samples (ts, server, pool, util_pct) VALUES (?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO gpu_lod
+		(tier_ms, bucket, server, pool, n, open, high, low, close, sum, sx, sxx, sxy)
+		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (tier_ms, bucket, server, pool) DO UPDATE SET
+		  n = n + 1, high = MAX(high, excluded.high), low = MIN(low, excluded.low),
+		  close = excluded.close, sum = sum + excluded.sum,
+		  sx = sx + excluded.sx, sxx = sxx + excluded.sxx, sxy = sxy + excluded.sxy`)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stmt.Close() }()
-	for _, x := range samples {
-		if _, err := stmt.Exec(ts, x.Server, x.Pool, x.UtilPct); err != nil {
-			return err
+	for _, tier := range gpuTiers {
+		bucket := (ts / tier) * tier
+		x := float64(ts-bucket) / 60_000
+		for _, smp := range samples {
+			u := float64(smp.UtilPct)
+			if _, err := stmt.Exec(tier, bucket, smp.Server, smp.Pool, u, u, u, u, u, x, x*x, x*u); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
 }
 
-// PruneGPUSamples deletes samples older than beforeMS (retention).
+// PruneGPUSamples deletes tier rows whose bucket starts before beforeMS.
 func (s *Store) PruneGPUSamples(beforeMS int64) error {
-	_, err := s.db.Exec(`DELETE FROM gpu_samples WHERE ts < ?`, beforeMS)
+	_, err := s.db.Exec(`DELETE FROM gpu_lod WHERE bucket < ?`, beforeMS)
 	return err
 }
 
 // GPUComputeRow is one (bucket, pool) summary of sampled utilization, in
 // percent: first and last sample, low, high, mean, and the least-squares trend
-// across the bucket. Computed at read time from the raw samples (P56) — at a
-// 10 s cadence and 30 days, a pool is ~260k rows, which needs no stored tiers.
+// across the bucket.
 type GPUComputeRow struct {
 	BucketTS                     int64
 	Server, Pool                 string
@@ -1799,15 +1830,24 @@ type GPUComputeRow struct {
 	SlopePerMin                  float64 // percentage points per minute; 0 under 2 samples
 }
 
-// GPUCompute summarises utilization samples into buckets of bucketMS, per pool,
-// ordered by bucket.
+// GPUCompute summarises utilization into buckets of bucketMS, per pool,
+// ordered by bucket. It reads the coarsest tier that divides bucketMS; a width
+// no tier divides (not a whole number of minutes) is rounded down to the
+// 1-minute tier's grid.
 func (s *Store) GPUCompute(w Window, bucketMS int64) ([]GPUComputeRow, error) {
 	if bucketMS <= 0 {
 		bucketMS = 3600_000
 	}
-	wWhere, wArgs := w.ts()
+	tier := gpuTiers[0]
+	for _, t := range gpuTiers {
+		if bucketMS%t == 0 {
+			tier = t
+		}
+	}
+	wWhere, wArgs := w.where("bucket")
 	rows, err := s.db.Query(
-		`SELECT ts, server, pool, util_pct FROM gpu_samples WHERE `+wWhere+` ORDER BY ts`, wArgs...)
+		`SELECT bucket, server, pool, n, open, high, low, close, sum, sx, sxx, sxy
+		 FROM gpu_lod WHERE tier_ms = ? AND `+wWhere+` ORDER BY bucket`, append([]any{tier}, wArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1817,32 +1857,35 @@ func (s *Store) GPUCompute(w Window, bucketMS int64) ([]GPUComputeRow, error) {
 		server, pool string
 	}
 	type acc struct {
-		row                   GPUComputeRow
-		sx, sy, sxx, sxy, sum float64
+		row              GPUComputeRow
+		sx, sy, sxx, sxy float64
 	}
 	by := map[key]*acc{}
 	var order []key
 	for rows.Next() {
-		var ts int64
+		var b, n int64
 		var server, pool string
-		var u float64
-		if err := rows.Scan(&ts, &server, &pool, &u); err != nil {
+		var open, high, low, cl, sum, sx, sxx, sxy float64
+		if err := rows.Scan(&b, &server, &pool, &n, &open, &high, &low, &cl, &sum, &sx, &sxx, &sxy); err != nil {
 			return nil, err
 		}
-		k := key{(ts / bucketMS) * bucketMS, server, pool}
+		k := key{(b / bucketMS) * bucketMS, server, pool}
 		a := by[k]
 		if a == nil {
-			a = &acc{row: GPUComputeRow{BucketTS: k.bucket, Server: server, Pool: pool, Open: u, High: u, Low: u}}
+			a = &acc{row: GPUComputeRow{BucketTS: k.bucket, Server: server, Pool: pool, Open: open, High: high, Low: low}}
 			by[k] = a
 			order = append(order, k)
 		}
-		x := float64(ts-k.bucket) / 60_000 // minutes into the bucket
-		a.row.N++
-		a.row.Close = u
-		a.row.High = max(a.row.High, u)
-		a.row.Low = min(a.row.Low, u)
-		a.sum += u
-		a.sx, a.sy, a.sxx, a.sxy = a.sx+x, a.sy+u, a.sxx+x*x, a.sxy+x*u
+		// Re-base the tier row's x (minutes from ITS start) onto the bucket's.
+		c, fn := float64(b-k.bucket)/60_000, float64(n)
+		a.row.N += n
+		a.row.Close = cl
+		a.row.High = max(a.row.High, high)
+		a.row.Low = min(a.row.Low, low)
+		a.sy += sum
+		a.sx += sx + fn*c
+		a.sxx += sxx + 2*c*sx + fn*c*c
+		a.sxy += sxy + c*sum
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1851,8 +1894,8 @@ func (s *Store) GPUCompute(w Window, bucketMS int64) ([]GPUComputeRow, error) {
 	for _, k := range order {
 		a := by[k]
 		n := float64(a.row.N)
-		a.row.Mean = a.sum / n
-		if d := n*a.sxx - a.sx*a.sx; a.row.N >= 2 && d > 0 {
+		a.row.Mean = a.sy / n
+		if d := n*a.sxx - a.sx*a.sx; a.row.N >= 2 && d > 1e-9 {
 			a.row.SlopePerMin = (n*a.sxy - a.sx*a.sy) / d
 		}
 		out = append(out, a.row)

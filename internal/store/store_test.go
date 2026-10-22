@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -552,5 +553,14 @@ func TestGPUCompute(t *testing.T) {
 	}
 	if rows[1].N != 1 || rows[1].SlopePerMin != 0 {
 		t.Errorf("bucket 1 = %+v, want one sample and no slope", rows[1])
+	}
+	// The 15-minute tier holds all four; slope over x = 0,1,2,10 and u = 10,30,50,90.
+	wide, err := st.GPUCompute(Window{}, 900_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wide) != 1 || wide[0].N != 4 || wide[0].Open != 10 || wide[0].Close != 90 || wide[0].Mean != 45 ||
+		fmt.Sprintf("%.4f", wide[0].SlopePerMin) != "7.0916" {
+		t.Errorf("15 min = %+v, want n4 o10 c90 mean45 slope 7.0916", wide)
 	}
 }
