@@ -134,14 +134,19 @@ export function ModelSummary({
                 ? `${int(row.ctxRequestAvg)} / ${int(Number(row.ctxRequestP90))} / ${int(Number(row.ctxRequestP99))} tokens`
                 : '—'
             }
-            hint={`Prompt + completion tokens per served chat turn (this turn's thinking included), over ${int(Number(row.ctxRequests))} turns that named a conversation.`}
+            hint={`Prompt + completion tokens per served request (thinking included), over ${int(Number(row.ctxRequests))} requests. A chat turn counts when it names a conversation; an embedding or rerank call always counts, as the whole of its input batch.`}
           />
         </Stack>
       )}
       {row && Number(row.ctxRequests) > 0 && (
         <Typography variant="caption" sx={{ color: C.textMuted, display: 'block', mt: 1, fontFamily: 'monospace' }}>
           avg {int(row.ctxRequestAvg)} tokens = prompt {int(row.ctxPromptAvg)} (cached {int(row.ctxCachedAvg)})
-          {Number(row.ctxThinkingN) > 0 ? (
+          {/* Nothing generated: an embedding or rerank model. Its context is
+              all input, and "thinking not measured" would describe a question
+              that does not apply. */}
+          {Math.round(Number(row.ctxRequestAvg)) === Math.round(Number(row.ctxPromptAvg)) ? (
+            ', nothing generated'
+          ) : Number(row.ctxThinkingN) > 0 ? (
             <>
               {' '}+ thinking {int(row.ctxThinkingAvg)} + answer {int(row.ctxAnswerAvg)}
               {Number(row.ctxThinkingN) < Number(row.ctxRequests) &&
