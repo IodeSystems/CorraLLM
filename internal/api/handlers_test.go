@@ -126,6 +126,70 @@ func TestUsageRollup(t *testing.T) {
 	}
 }
 
+// TestUsageRollupSplit narrows and splits the rollup by caller and model
+// (P56): sums fold exactly, the per-request rate means re-weight by how many
+// requests reported one, and a filter drops what it does not name.
+func TestUsageRollupSplit(t *testing.T) {
+	st, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	ts := time.Now().UnixMilli()
+	for _, a := range []store.Activity{
+		{TS: ts, Key: "k1", Served: "a", Status: 200, CostUSD: 0.10, PromptTokens: 10, CachedTokens: 5, PredictedPerSec: 100},
+		{TS: ts, Key: "k1", Served: "a", Status: 200, CostUSD: 0.10, PromptTokens: 10, PredictedPerSec: 100},
+		{TS: ts, Key: "k1", Served: "b", Status: 200, CostUSD: 0.30, PromptTokens: 20},
+		{TS: ts, Key: "k2", Served: "a", Status: 200, CostUSD: 0.05, PromptTokens: 10, PredictedPerSec: 40},
+	} {
+		if err := st.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := &Handlers{Store: st}
+	get := func(in UsageRollupInput) *UsageRollupOutput {
+		t.Helper()
+		out, err := h.UsageRollup(context.Background(), &in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	near := func(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }
+
+	byKey := get(UsageRollupInput{GroupBy: "key"})
+	if len(byKey.Body.Rows) != 2 || byKey.Body.Rows[0].Key != "k1" || byKey.Body.Rows[0].Served != "" {
+		t.Fatalf("by key rows = %+v", byKey.Body.Rows)
+	}
+	if k1 := byKey.Body.Rows[0]; !near(k1.CostUSD, 0.50) || k1.Requests != 3 || !near(k1.CacheHitRate, 5.0/40) {
+		t.Errorf("k1 = $%v %d req cache %v, want $0.50 3 req 0.125", k1.CostUSD, k1.Requests, k1.CacheHitRate)
+	}
+
+	// Model a: two k1 requests at 100 tg/s and one k2 at 40 → 80, not (100+40)/2.
+	byModel := get(UsageRollupInput{GroupBy: "model", Models: "a"})
+	if len(byModel.Body.Rows) != 1 || !near(byModel.Body.Rows[0].PredictedPerSec, 80) {
+		t.Fatalf("model a = %+v, want one row at 80 tg/s", byModel.Body.Rows)
+	}
+
+	cells := get(UsageRollupInput{GroupBy: "key,model", Keys: "k1"})
+	if len(cells.Body.Rows) != 2 || !near(cells.Body.Total.CostUSD, 0.50) {
+		t.Fatalf("k1 cells = %d rows, total $%v; want 2, $0.50", len(cells.Body.Rows), cells.Body.Total.CostUSD)
+	}
+	for _, r := range cells.Body.Rows {
+		if r.Key != "k1" || r.Served == "" {
+			t.Errorf("cell %q/%q, want k1 and a model", r.Key, r.Served)
+		}
+	}
+
+	none := get(UsageRollupInput{GroupBy: "none"})
+	if len(none.Body.Rows) != 1 || none.Body.Rows[0].Requests != 4 {
+		t.Errorf("none = %+v, want one row of 4", none.Body.Rows)
+	}
+	if _, err := h.UsageRollup(context.Background(), &UsageRollupInput{GroupBy: "caller"}); err == nil {
+		t.Error("groupBy caller: want an error")
+	}
+}
+
 // TestUsageByKey aggregates per key and derives energy from cost/costPerKwh.
 func TestUsageByKey(t *testing.T) {
 	st, err := store.Open(context.Background(), ":memory:")

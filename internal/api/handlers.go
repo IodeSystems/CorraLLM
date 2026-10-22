@@ -1343,11 +1343,51 @@ type UsageRollupInput struct {
 	// this panel and every other on the page over the SAME span.
 	FromMS int64 `query:"from" doc:"Absolute window start, epoch ms (inclusive). Overrides windowHours."`
 	ToMS   int64 `query:"to" doc:"Absolute window end, epoch ms (exclusive). Overrides windowHours."`
+	// THE SPLIT (P56). One agent on two models, or two callers on one model,
+	// read differently from either axis alone.
+	Keys    string `query:"keys" doc:"Comma-separated caller keys to keep. Empty = every caller."`
+	Models  string `query:"models" doc:"Comma-separated served model names to keep. Empty = every model."`
+	GroupBy string `query:"groupBy" default:"model" doc:"What the rows are split by: \"model\", \"key\", \"key,model\" or \"none\" (one row, equal to the total)."`
 }
 
-// RollupRow is aggregated usage for one served model.
+// slice parses the input's filters and split.
+func (in *UsageRollupInput) slice() (store.Slice, error) {
+	sl := store.Slice{Keys: splitList(in.Keys), Models: splitList(in.Models)}
+	groupBy := in.GroupBy
+	if groupBy == "" {
+		groupBy = "model" // the split before P56; a direct call has no huma default
+	}
+	for _, d := range splitList(groupBy) {
+		switch d {
+		case "key":
+			sl.ByKey = true
+		case "model":
+			sl.ByModel = true
+		case "none":
+		default:
+			return sl, huma.Error400BadRequest(fmt.Sprintf(
+				"groupBy %q: want model, key, key,model or none", in.GroupBy))
+		}
+	}
+	return sl, nil
+}
+
+// splitList reads a comma-separated list, dropping blanks.
+func splitList(s string) []string {
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// RollupRow is aggregated usage for one served model, one caller, or one
+// caller on one model — whichever the request's groupBy split by.
 type RollupRow struct {
-	Served             string  `json:"served" doc:"Served model name."`
+	Key                string  `json:"key" doc:"Caller key. Set only when groupBy splits by key; an unkeyed caller is also empty."`
+	Served             string  `json:"served" doc:"Served model name. Set only when groupBy splits by model."`
 	Requests           int64   `json:"requests" doc:"Request count."`
 	PromptTokens       int64   `json:"promptTokens" doc:"Total prompt tokens."`
 	CompletionTokens   int64   `json:"completionTokens" doc:"Total completion tokens."`
@@ -1455,28 +1495,44 @@ type UsageRollupOutput struct {
 	}
 }
 
-// UsageRollup aggregates metered activity by served model over a window.
+// UsageRollup aggregates metered activity over a window, narrowed to some
+// callers and models and split by either or both (P56).
+//
+// MONEY IS PRICED PER (CALLER, MODEL) CELL, THEN FOLDED. What kind of money a
+// request is depends on the model that served it, so a caller's row on its own
+// can span electricity and a bill; pricing the cells first keeps every kind
+// exact whatever the split.
 func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*UsageRollupOutput, error) {
 	win := windowOf(in.FromMS, in.ToMS, in.WindowHours*60)
-	rows, err := h.Store.RollupByModel(win)
+	sl, err := in.slice()
 	if err != nil {
 		return nil, err
 	}
-	ctxRows, ctxTotal, err := h.Store.CtxStats(win)
+	// Every caller is read even under a key filter: a model's measured draw is
+	// shared across ALL its callers, so the shares need the whole model's time.
+	rows, err := h.Store.RollupSlice(win, store.Slice{Models: sl.Models, ByKey: true, ByModel: true})
 	if err != nil {
 		return nil, err
 	}
-	perfRows, perfTotal, err := h.Store.PerfStats(win)
+	modelDwell := map[string]int64{}
+	for _, r := range rows {
+		modelDwell[r.Served] += r.DwellMS
+	}
+	ctxRows, ctxTotal, err := h.Store.CtxStats(win, sl)
 	if err != nil {
 		return nil, err
 	}
-	perfBy := make(map[string]store.PerfStat, len(perfRows))
+	perfRows, perfTotal, err := h.Store.PerfStats(win, sl)
+	if err != nil {
+		return nil, err
+	}
+	perfBy := make(map[store.Group]store.PerfStat, len(perfRows))
 	for _, p := range perfRows {
-		perfBy[p.Served] = p
+		perfBy[p.Group] = p
 	}
-	ctxBy := make(map[string]store.CtxStat, len(ctxRows))
+	ctxBy := make(map[store.Group]store.CtxStat, len(ctxRows))
 	for _, c := range ctxRows {
-		ctxBy[c.Served] = c
+		ctxBy[c.Group] = c
 	}
 	cfg := h.config()
 	costModel := cost.NewModel(cfg)
@@ -1499,23 +1555,23 @@ func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*Usag
 	out.Body.WindowHours = in.WindowHours
 	out.Body.CostPerKwh = rate
 	out.Body.BaselineType = baseline
-	out.Body.Rows = make([]RollupRow, 0, len(rows))
+	folded := map[store.Group]*foldedRow{}
+	var order []store.Group
 	for _, r := range rows {
+		if !sl.Has(r.Key, r.Served) {
+			continue
+		}
 		row := RollupRow{
-			Served: r.Served, Requests: r.Requests,
+			Key: r.Key, Served: r.Served, Requests: r.Requests,
 			PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens,
 			DwellMS: r.DwellMS, CostUSD: r.CostUSD,
 			CachedTokens: r.CachedTokens, CacheReports: r.CacheReports,
 			PromptPerSec: r.PromptPerSec, PredictedPerSec: r.PredictedPerSec,
 		}
-		if r.PromptTokens > 0 {
-			row.CacheHitRate = float64(r.CachedTokens) / float64(r.PromptTokens)
-		}
+		// Rates and distributions are set on the folded row, not the cell.
 		if r.PromptPerSec > 0 {
 			row.CachedSecondsSaved = float64(r.CachedTokens) / r.PromptPerSec
 		}
-		setCtx(&row, ctxBy[r.Served])
-		setPerf(&row, perfBy[r.Served])
 
 		// Which kind of money, and whether the comparison can speak for it.
 		k := classify(known, costModel, r.Served)
@@ -1537,6 +1593,11 @@ func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*Usag
 				row.EnergyKwh = r.CostUSD / rate
 			}
 			if kwh, ok := measured[r.Served]; ok {
+				// The model's measured draw, split across its callers by
+				// their share of its serving time.
+				if d := modelDwell[r.Served]; d > 0 {
+					kwh *= float64(r.DwellMS) / float64(d)
+				}
 				row.EnergyKwh, row.EnergyUSD, row.CostUSD = kwh, kwh*rate, kwh*rate
 				row.EnergyMeasured = true
 			}
@@ -1604,26 +1665,36 @@ func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*Usag
 			row.BaselineUSD = row.BaselineCached + row.BaselineProcess + row.BaselineGenerate
 		}
 
-		out.Body.Rows = append(out.Body.Rows, row)
-		out.Body.Total.Requests += row.Requests
-		out.Body.Total.PromptTokens += row.PromptTokens
-		out.Body.Total.CompletionTokens += row.CompletionTokens
-		out.Body.Total.DwellMS += row.DwellMS
-		out.Body.Total.CostUSD += row.CostUSD
-		out.Body.Total.CachedTokens += row.CachedTokens
-		out.Body.Total.CacheReports += row.CacheReports
-		out.Body.Total.CachedSecondsSaved += row.CachedSecondsSaved
-		out.Body.Total.EnergyUSD += row.EnergyUSD
-		out.Body.Total.EnergyKwh += row.EnergyKwh
-		out.Body.Total.PaidUSD += row.PaidUSD
-		out.Body.Total.UnattributedUSD += row.UnattributedUSD
-		out.Body.Total.FreeRequests += row.FreeRequests
-		out.Body.Total.MispricedUSD += row.MispricedUSD
-		out.Body.Total.BaselineUSD += row.BaselineUSD
-		out.Body.Total.BaselineCached += row.BaselineCached
-		out.Body.Total.BaselineProcess += row.BaselineProcess
-		out.Body.Total.BaselineGenerate += row.BaselineGenerate
+		g := store.Group{}
+		if sl.ByKey {
+			g.Key = row.Key
+		}
+		if sl.ByModel {
+			g.Served = row.Served
+		}
+		f := folded[g]
+		if f == nil {
+			f = &foldedRow{}
+			folded[g] = f
+			order = append(order, g)
+		}
+		f.add(row, r)
+		out.Body.Total.add(row)
 	}
+	out.Body.Rows = make([]RollupRow, 0, len(order))
+	for _, g := range order {
+		row := folded[g].finish(g)
+		setCtx(&row, ctxBy[g])
+		setPerf(&row, perfBy[g])
+		out.Body.Rows = append(out.Body.Rows, row)
+	}
+	sort.SliceStable(out.Body.Rows, func(i, j int) bool {
+		a, b := out.Body.Rows[i], out.Body.Rows[j]
+		if a.CostUSD != b.CostUSD {
+			return a.CostUSD > b.CostUSD
+		}
+		return a.Requests > b.Requests
+	})
 	// Type/Billing/BaselineExcluded stay empty on the total, deliberately: a sum
 	// across models spans every kind, and naming one of them on the total would
 	// assert that the whole window was that kind. The split is the four dollar
@@ -1649,6 +1720,78 @@ func (h *Handlers) UsageRollup(ctx context.Context, in *UsageRollupInput) (*Usag
 		out.Body.Power = pv
 	}
 	return out, nil
+}
+
+// add sums row's counts and money into r. Rates, distributions and the
+// kind-of-money labels are not sums and are left to the caller.
+func (r *RollupRow) add(row RollupRow) {
+	r.Requests += row.Requests
+	r.PromptTokens += row.PromptTokens
+	r.CompletionTokens += row.CompletionTokens
+	r.DwellMS += row.DwellMS
+	r.CostUSD += row.CostUSD
+	r.CachedTokens += row.CachedTokens
+	r.CacheReports += row.CacheReports
+	r.CachedSecondsSaved += row.CachedSecondsSaved
+	r.EnergyUSD += row.EnergyUSD
+	r.EnergyKwh += row.EnergyKwh
+	r.PaidUSD += row.PaidUSD
+	r.UnattributedUSD += row.UnattributedUSD
+	r.FreeRequests += row.FreeRequests
+	r.MispricedUSD += row.MispricedUSD
+	r.BaselineUSD += row.BaselineUSD
+	r.BaselineCached += row.BaselineCached
+	r.BaselineProcess += row.BaselineProcess
+	r.BaselineGenerate += row.BaselineGenerate
+}
+
+// foldedRow combines priced (caller, model) cells into one row of the split.
+type foldedRow struct {
+	row     RollupRow
+	n       int
+	tpSum   float64 // prompt_per_sec × requests reporting it, to re-mean
+	tpN     int64
+	tgSum   float64
+	tgN     int64
+	mixKind bool // the cells disagree on type/billing/baseline
+}
+
+func (f *foldedRow) add(row RollupRow, r store.Rollup) {
+	if f.n == 0 {
+		f.row.Type, f.row.Billing = row.Type, row.Billing
+		f.row.BaselineType, f.row.BaselineExcluded = row.BaselineType, row.BaselineExcluded
+	} else if f.row.Type != row.Type || f.row.Billing != row.Billing ||
+		f.row.BaselineType != row.BaselineType || f.row.BaselineExcluded != row.BaselineExcluded {
+		f.mixKind = true
+	}
+	f.n++
+	f.row.add(row)
+	f.row.EnergyMeasured = f.row.EnergyMeasured || row.EnergyMeasured
+	f.tpSum += r.PromptPerSec * float64(r.PromptPerSecN)
+	f.tpN += r.PromptPerSecN
+	f.tgSum += r.PredictedPerSec * float64(r.PredictedPerSecN)
+	f.tgN += r.PredictedPerSecN
+}
+
+// finish labels the folded row. A row whose cells are of different kinds —
+// one caller's electricity and its bill — names none of them, the same as the
+// total: the split lives in the dollar fields.
+func (f *foldedRow) finish(g store.Group) RollupRow {
+	row := f.row
+	row.Key, row.Served = g.Key, g.Served
+	if f.mixKind {
+		row.Type, row.Billing, row.BaselineType, row.BaselineExcluded = "", "", "", ""
+	}
+	if row.PromptTokens > 0 {
+		row.CacheHitRate = float64(row.CachedTokens) / float64(row.PromptTokens)
+	}
+	if f.tpN > 0 {
+		row.PromptPerSec = f.tpSum / float64(f.tpN)
+	}
+	if f.tgN > 0 {
+		row.PredictedPerSec = f.tgSum / float64(f.tgN)
+	}
+	return row
 }
 
 // PrefillBucketRow is raw prefill over the requests in one new-token range.

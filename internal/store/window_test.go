@@ -33,7 +33,7 @@ func TestWindowTilesAndExcludesItsUpperBound(t *testing.T) {
 	}
 
 	count := func(w Window) int64 {
-		rows, err := st.RollupByModel(w)
+		rows, err := st.RollupSlice(w, PerModel)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -73,7 +73,7 @@ func TestWindowZeroValueAndSince(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	all, err := st.RollupByModel(Window{})
+	all, err := st.RollupSlice(Window{}, PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestWindowZeroValueAndSince(t *testing.T) {
 		t.Fatalf("Window{} should read the whole log, got %+v", all)
 	}
 
-	recent, err := st.RollupByModel(Since(500))
+	recent, err := st.RollupSlice(Since(500), PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestWindowZeroValueAndSince(t *testing.T) {
 	}
 
 	// An upper bound alone is legal: everything before a moment.
-	older, err := st.RollupByModel(Window{ToMS: 500})
+	older, err := st.RollupSlice(Window{ToMS: 500}, PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}

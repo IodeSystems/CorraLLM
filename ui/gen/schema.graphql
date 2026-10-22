@@ -315,6 +315,12 @@ type CorrallmQueryNamespace {
   usageRollup(
     """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
     from: Long
+    """What the rows are split by: "model", "key", "key,model" or "none" (one row, equal to the total)."""
+    groupBy: String
+    """Comma-separated caller keys to keep. Empty = every caller."""
+    keys: String
+    """Comma-separated served model names to keep. Empty = every model."""
+    models: String
     """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
     to: Long
     """Trailing window in hours; 0 = all time."""
@@ -670,6 +676,12 @@ type CorrallmV1QueryNamespace {
   usageRollup(
     """Absolute window start, epoch ms (inclusive). Overrides windowHours."""
     from: Long
+    """What the rows are split by: "model", "key", "key,model" or "none" (one row, equal to the total)."""
+    groupBy: String
+    """Comma-separated caller keys to keep. Empty = every caller."""
+    keys: String
+    """Comma-separated served model names to keep. Empty = every model."""
+    models: String
     """Absolute window end, epoch ms (exclusive). Overrides windowHours."""
     to: Long
     """Trailing window in hours; 0 = all time."""
@@ -3073,6 +3085,8 @@ type corrallm_RollupRow {
   energyUsd: Float!
   """Requests served at no charge by a backend with a declared freeTier and no per-token rates. Equals requests when billing is "free", else 0; on the total, how many of the window's requests cost nothing. The gate for showing a free-tier figure: its dollar value is always $0, so the count is the only thing that says whether the $0 was measured."""
   freeRequests: Long!
+  """Caller key. Set only when groupBy splits by key; an unkeyed caller is also empty."""
+  key: String!
   """What the store had RECORDED against this row that is charged to no kind here: nonzero only when billing is "free". These rows were metered with this box's watt-hour coefficients for tokens processed elsewhere, so the figure is neither electricity nor a bill and costUsd reports 0 instead. It is surfaced rather than dropped because a total that quietly shrank cannot be checked. Metering itself now bills a declared free tier $0 (cost.NoCharge), so this decays to 0 as the 30-day retention window turns over — a nonzero value means rows recorded before that fix are still in the window."""
   mispricedUsd: Float!
   """The part of costUsd that is a provider's bill: nonzero only when billing is "paid"."""
@@ -3095,7 +3109,7 @@ type corrallm_RollupRow {
   promptTokens: Long!
   """Request count."""
   requests: Long!
-  """Served model name."""
+  """Served model name. Set only when groupBy splits by model."""
   served: String!
   """Sessions with exactly one served turn — callers that did not come back; ctxSessions minus this are repeat."""
   singleTurnSessions: Long!

@@ -33,7 +33,7 @@ func TestCtxStats(t *testing.T) {
 	turn(7, "n", "c", 2, 1000)
 	turn(8, "m", "z", 2, 999) // outside the window
 
-	rows, total, err := st.CtxStats(Between(1, 8))
+	rows, total, err := st.CtxStats(Between(1, 8), PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestBackfillConversations(t *testing.T) {
 	if n != 3 || live != 1 {
 		t.Fatalf("rows = %d (live %d), want 3 with the live key kept", n, live)
 	}
-	rows, _, err := st.CtxStats(Window{})
+	rows, _, err := st.CtxStats(Window{}, PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestCtxStatsBreakdown(t *testing.T) {
 	add(2, 2000, 1500, 100, 0, true) // thinking off: a measured 0
 	add(3, 3000, 0, 500, 0, false)   // before the counter: unknown
 
-	rows, _, err := st.CtxStats(Between(1, 4))
+	rows, _, err := st.CtxStats(Between(1, 4), PerModel)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("rows %+v err %v", rows, err)
 	}
@@ -150,5 +150,47 @@ func TestCtxStatsBreakdown(t *testing.T) {
 	}
 	if m.ThinkingN != 2 || m.ThinkingAvg != 100 || m.AnswerAvg != 100 {
 		t.Errorf("thinkingN %d thinking %v answer %v, want 2, 100, 100", m.ThinkingN, m.ThinkingAvg, m.AnswerAvg)
+	}
+}
+
+// TestCtxStatsByKey splits and filters context by the caller, which lives on
+// the activity row rather than the conversation one (P56).
+func TestCtxStatsByKey(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	turn := func(ts int64, key, conv string, messages, prompt int) {
+		t.Helper()
+		if err := st.InsertActivity(Activity{TS: ts, Key: key, Served: "m", Path: "/v1/chat/completions", Status: 200,
+			PromptTokens: prompt, Conversation: conv, ConversationMessages: messages}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn(1, "k1", "a", 2, 100)
+	turn(2, "k1", "a", 4, 300)
+	turn(3, "k2", "b", 2, 50)
+
+	rows, total, err := st.CtxStats(Window{}, Slice{ByKey: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Key != "k1" || rows[0].Served != "" || rows[1].Key != "k2" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if k1 := rows[0]; k1.Requests != 2 || k1.Sessions != 1 || k1.TailAvg != 300 || k1.TurnsMax != 2 {
+		t.Errorf("k1 = %+v, want 2 requests, 1 session ending at 300 after 2 turns", k1)
+	}
+	if total.Requests != 3 || total.Sessions != 2 {
+		t.Errorf("total = %+v", total)
+	}
+
+	only, _, err := st.CtxStats(Window{}, Slice{Keys: []string{"k2"}, ByModel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(only) != 1 || only[0].Served != "m" || only[0].Requests != 1 || only[0].RequestAvg != 50 {
+		t.Errorf("k2 only = %+v", only)
 	}
 }

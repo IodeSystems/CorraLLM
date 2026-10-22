@@ -30,7 +30,7 @@ func TestPerfStats(t *testing.T) {
 	ins(13, "embed", 200, 50, 0, 0, 0)  // never reports a cache, no timings: absent
 	ins(14, "n", 200, 1000, 0, 200, 50) // a second model, no cache hits ever
 
-	rows, total, err := st.PerfStats(Window{})
+	rows, total, err := st.PerfStats(Window{}, PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestPrefillFusedRawAndBuckets(t *testing.T) {
 	ins(2, 40000, 39800, 400) // same
 	ins(3, 30000, 0, 2000)    // a miss: 30,000 new in 15 s
 	ins(4, 1000, 1000, 1000)  // fully cached: nothing processed, not counted
-	rows, total, err := st.PerfStats(Window{})
+	rows, total, err := st.PerfStats(Window{}, PerModel)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("rows %+v err %v", rows, err)
 	}

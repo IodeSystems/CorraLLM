@@ -1460,8 +1460,10 @@ func (s *Store) ModelsSeenSince(w Window) ([]string, error) {
 	return out, rows.Err()
 }
 
-// Rollup is aggregated activity for one served model over a window (P8).
+// Rollup is aggregated activity for one served model over a window (P8), or,
+// under a Slice that splits by caller, for one caller (on one model) (P56).
 type Rollup struct {
+	Key              string
 	Served           string
 	Requests         int64
 	PromptTokens     int64
@@ -1498,15 +1500,29 @@ type Rollup struct {
 	// than a zero, so these compare one window against another honestly and must
 	// not be read as capacity.
 	PredictedPerSec float64
+	// How many requests each mean is over, so two rows' means can be combined
+	// into the mean over both without guessing at the weights.
+	PromptPerSecN    int64
+	PredictedPerSecN int64
 }
 
-// RollupByModel aggregates activity at or after sinceMS, grouped by served
-// model, ordered by cost (then request count) descending. sinceMS <= 0 covers
-// all records.
-func (s *Store) RollupByModel(w Window) ([]Rollup, error) {
+// RollupSlice aggregates activity over a window, narrowed and split by sl,
+// ordered by cost (then request count) descending. Key and Served are set only
+// for the dimensions sl splits by.
+func (s *Store) RollupSlice(w Window, sl Slice) ([]Rollup, error) {
 	wWhere, wArgs := w.ts()
+	sWhere, sArgs := sl.where("key", "served")
+	// A dimension the slice does not split by is selected as '' so every split
+	// scans into the same two columns.
+	keyCol, servedCol := "''", "''"
+	if sl.ByKey {
+		keyCol = "key"
+	}
+	if sl.ByModel {
+		servedCol = "served"
+	}
 	rows, err := s.db.Query(
-		`SELECT served,
+		`SELECT `+keyCol+`, `+servedCol+`,
 		        COUNT(*),
 		        COALESCE(SUM(prompt_tokens), 0),
 		        COALESCE(SUM(completion_tokens), 0),
@@ -1515,10 +1531,12 @@ func (s *Store) RollupByModel(w Window) ([]Rollup, error) {
 		        COALESCE(SUM(cached_tokens), 0),
 		        SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END),
 		        COALESCE(AVG(NULLIF(prompt_per_sec, 0)), 0),
-		        COALESCE(AVG(NULLIF(predicted_per_sec, 0)), 0)
-		 FROM activity WHERE `+wWhere+`
-		 GROUP BY served
-		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, wArgs...)
+		        COUNT(NULLIF(prompt_per_sec, 0)),
+		        COALESCE(AVG(NULLIF(predicted_per_sec, 0)), 0),
+		        COUNT(NULLIF(predicted_per_sec, 0))
+		 FROM activity WHERE `+wWhere+sWhere+`
+		 GROUP BY 1, 2
+		 ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC`, append(wArgs, sArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1526,9 +1544,9 @@ func (s *Store) RollupByModel(w Window) ([]Rollup, error) {
 	var out []Rollup
 	for rows.Next() {
 		var r Rollup
-		if err := rows.Scan(&r.Served, &r.Requests, &r.PromptTokens, &r.CompletionTokens,
+		if err := rows.Scan(&r.Key, &r.Served, &r.Requests, &r.PromptTokens, &r.CompletionTokens,
 			&r.DwellMS, &r.CostUSD, &r.CachedTokens, &r.CacheReports,
-			&r.PromptPerSec, &r.PredictedPerSec); err != nil {
+			&r.PromptPerSec, &r.PromptPerSecN, &r.PredictedPerSec, &r.PredictedPerSecN); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

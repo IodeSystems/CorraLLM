@@ -166,7 +166,7 @@ func (s *Store) backfillBatch(ctx context.Context, cursor int64, limit int) (ins
 // does a conversation get by the end". Each turn overwrites the one before it,
 // so a 40-turn conversation is one number here, not 40.
 type CtxStat struct {
-	Served     string
+	Group
 	Requests   int64
 	RequestAvg float64
 	RequestP90 int64
@@ -212,7 +212,7 @@ func fillTurns(st *CtxStat, t []int64) {
 }
 
 // CtxStats reads per-request and per-session-tail context size over a window,
-// per served model plus a total across them (Served "").
+// narrowed and split by sl, plus a total across the rows (Group zero).
 //
 // A session is one run of a conversation: the same conversation key with a
 // message count that never goes down. A count that drops starts a new session
@@ -221,80 +221,85 @@ func fillTurns(st *CtxStat, t []int64) {
 // here. A session still running at the end of the window is counted at its
 // latest turn. Turns nobody served (ctx_tokens 0: a 429, a 503, a hang-up)
 // are left out of both readings.
-func (s *Store) CtxStats(w Window) (rows []CtxStat, total CtxStat, err error) {
+func (s *Store) CtxStats(w Window, sl Slice) (rows []CtxStat, total CtxStat, err error) {
 	wWhere, wArgs := w.ts()
+	// The caller lives on activity, so a key filter needs the join to match;
+	// without one the LEFT JOIN keeps turns whose activity row is gone.
+	sWhere, sArgs := sl.where("COALESCE(a.key, '')", "c.served")
 	// The window filter runs inside the subquery: both tables have a ts column.
 	q, err := s.db.Query(
-		`SELECT c.served, c.conversation, c.messages, c.ctx_tokens,
+		`SELECT COALESCE(a.key, ''), c.served, c.conversation, c.messages, c.ctx_tokens,
 		        COALESCE(a.prompt_tokens, 0), COALESCE(a.cached_tokens, 0),
 		        COALESCE(a.completion_tokens, 0), COALESCE(a.reasoning_tokens, -1)
 		 FROM (SELECT activity_id, ts, served, conversation, messages, ctx_tokens
 		       FROM activity_conversation WHERE `+wWhere+` AND ctx_tokens > 0) c
 		 LEFT JOIN activity a ON a.id = c.activity_id
-		 ORDER BY c.ts`, wArgs...)
+		 WHERE 1=1`+sWhere+`
+		 ORDER BY c.ts`, append(wArgs, sArgs...)...)
 	if err != nil {
 		return nil, CtxStat{}, err
 	}
 	defer func() { _ = q.Close() }()
 
 	type open struct {
-		served   string
+		group    Group
 		messages int
 		ctx      int64
 		turns    int64
 	}
-	reqs := map[string][]int64{}
-	tails := map[string][]int64{}
-	turns := map[string][]int64{}
-	parts := map[string]*ctxParts{}
+	reqs := map[Group][]int64{}
+	tails := map[Group][]int64{}
+	turns := map[Group][]int64{}
+	parts := map[Group]*ctxParts{}
 	var allParts ctxParts
 	sessions := map[string]*open{}
 	for q.Next() {
-		var served, conv string
+		var key, served, conv string
 		var messages int
 		var ctx, prompt, cached, completion, thinking int64
-		if err := q.Scan(&served, &conv, &messages, &ctx, &prompt, &cached, &completion, &thinking); err != nil {
+		if err := q.Scan(&key, &served, &conv, &messages, &ctx, &prompt, &cached, &completion, &thinking); err != nil {
 			return nil, CtxStat{}, err
 		}
-		reqs[served] = append(reqs[served], ctx)
-		pp := parts[served]
+		g := sl.group(key, served)
+		reqs[g] = append(reqs[g], ctx)
+		pp := parts[g]
 		if pp == nil {
 			pp = &ctxParts{}
-			parts[served] = pp
+			parts[g] = pp
 		}
 		pp.add(prompt, cached, completion, thinking)
 		allParts.add(prompt, cached, completion, thinking)
 		n := int64(1)
 		if o, ok := sessions[conv]; ok {
 			if messages < o.messages {
-				tails[o.served] = append(tails[o.served], o.ctx)
-				turns[o.served] = append(turns[o.served], o.turns)
+				tails[o.group] = append(tails[o.group], o.ctx)
+				turns[o.group] = append(turns[o.group], o.turns)
 			} else {
 				n = o.turns + 1
 			}
 		}
-		sessions[conv] = &open{served, messages, ctx, n}
+		sessions[conv] = &open{g, messages, ctx, n}
 	}
 	if err := q.Err(); err != nil {
 		return nil, CtxStat{}, err
 	}
 	for _, o := range sessions {
-		tails[o.served] = append(tails[o.served], o.ctx)
-		turns[o.served] = append(turns[o.served], o.turns)
+		tails[o.group] = append(tails[o.group], o.ctx)
+		turns[o.group] = append(turns[o.group], o.turns)
 	}
 
 	var allReqs, allTails, allTurns []int64
-	for served, r := range reqs {
-		st := ctxStat(served, r, tails[served])
-		parts[served].fill(&st)
-		fillTurns(&st, turns[served])
+	for g, r := range reqs {
+		st := ctxStat(g, r, tails[g])
+		parts[g].fill(&st)
+		fillTurns(&st, turns[g])
 		rows = append(rows, st)
 		allReqs = append(allReqs, r...)
-		allTails = append(allTails, tails[served]...)
-		allTurns = append(allTurns, turns[served]...)
+		allTails = append(allTails, tails[g]...)
+		allTurns = append(allTurns, turns[g]...)
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Served < rows[j].Served })
-	tot := ctxStat("", allReqs, allTails)
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Group.less(rows[j].Group) })
+	tot := ctxStat(Group{}, allReqs, allTails)
 	fillTurns(&tot, allTurns)
 	allParts.fill(&tot)
 	return rows, tot, nil
@@ -329,8 +334,8 @@ func (p *ctxParts) fill(st *CtxStat) {
 	}
 }
 
-func ctxStat(served string, reqs, tails []int64) CtxStat {
-	st := CtxStat{Served: served, Requests: int64(len(reqs)), Sessions: int64(len(tails))}
+func ctxStat(g Group, reqs, tails []int64) CtxStat {
+	st := CtxStat{Group: g, Requests: int64(len(reqs)), Sessions: int64(len(tails))}
 	st.RequestAvg, st.RequestP90, st.RequestP99 = avgTails(reqs)
 	st.TailAvg, st.TailP90, st.TailP99 = avgTails(tails)
 	return st

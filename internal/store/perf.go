@@ -25,7 +25,7 @@ type Dist struct {
 // backend's own report (llama.cpp timings); a request that reported none
 // contributes nothing rather than a zero.
 type PerfStat struct {
-	Served string
+	Group
 	// Decode (generation) speed, tokens/sec.
 	TG Dist
 	// Prefill (prompt processing) speed, tokens/sec.
@@ -116,17 +116,18 @@ func (p *PrefillStat) merge(o PrefillStat) {
 }
 
 // PerfStats reads per-request speed and cache-hit distributions over a window,
-// per served model plus a total across them (Served "").
+// narrowed and split by sl, plus a total across the rows (Group zero).
 //
 // These columns sit after the captured payload on a migrated database, so the
 // read walks each row's overflow pages while the payload is still kept (7
 // days). Measured on box1 2026-10-02, warm: 1 day 0.24 s, 7 days 1.35 s, 30
 // days 1.31 s — the same cost RollupByModel already pays for its averages.
-func (s *Store) PerfStats(w Window) (rows []PerfStat, total PerfStat, err error) {
+func (s *Store) PerfStats(w Window, sl Slice) (rows []PerfStat, total PerfStat, err error) {
 	wWhere, wArgs := w.ts()
+	sWhere, sArgs := sl.where("key", "served")
 	q, err := s.db.Query(
-		`SELECT served, prompt_tokens, cached_tokens, prompt_per_sec, predicted_per_sec
-		 FROM activity WHERE `+wWhere+` AND status = 200`, wArgs...)
+		`SELECT key, served, prompt_tokens, cached_tokens, prompt_per_sec, predicted_per_sec
+		 FROM activity WHERE `+wWhere+sWhere+` AND status = 200`, append(wArgs, sArgs...)...)
 	if err != nil {
 		return nil, PerfStat{}, err
 	}
@@ -136,24 +137,28 @@ func (s *Store) PerfStats(w Window) (rows []PerfStat, total PerfStat, err error)
 		tg, tp, cache []float64
 		prefill       PrefillStat
 	}
-	by := map[string]*acc{}
+	by := map[Group]*acc{}
+	// Whether a MODEL reports a cache is a property of its backend, whatever
+	// the split, so this stays keyed by served name.
 	reportsCache := map[string]bool{}
 	type hit struct {
+		group  Group
 		served string
 		rate   float64
 	}
 	var hits []hit
 	for q.Next() {
-		var served string
+		var key, served string
 		var prompt, cached int64
 		var tp, tg float64
-		if err := q.Scan(&served, &prompt, &cached, &tp, &tg); err != nil {
+		if err := q.Scan(&key, &served, &prompt, &cached, &tp, &tg); err != nil {
 			return nil, PerfStat{}, err
 		}
-		a := by[served]
+		g := sl.group(key, served)
+		a := by[g]
 		if a == nil {
 			a = &acc{}
-			by[served] = a
+			by[g] = a
 		}
 		if tg > 0 {
 			a.tg = append(a.tg, tg)
@@ -163,7 +168,7 @@ func (s *Store) PerfStats(w Window) (rows []PerfStat, total PerfStat, err error)
 		}
 		a.prefill.add(prompt, cached, tp)
 		if prompt > 0 {
-			hits = append(hits, hit{served, float64(cached) / float64(prompt)})
+			hits = append(hits, hit{g, served, float64(cached) / float64(prompt)})
 		}
 		if cached > 0 {
 			reportsCache[served] = true
@@ -174,12 +179,12 @@ func (s *Store) PerfStats(w Window) (rows []PerfStat, total PerfStat, err error)
 	}
 	for _, h := range hits {
 		if reportsCache[h.served] {
-			by[h.served].cache = append(by[h.served].cache, h.rate)
+			by[h.group].cache = append(by[h.group].cache, h.rate)
 		}
 	}
 
 	var all acc
-	for served, a := range by {
+	for g, a := range by {
 		if len(a.tg)+len(a.tp)+len(a.cache) == 0 {
 			continue // no request here reported anything this reads
 		}
@@ -187,9 +192,9 @@ func (s *Store) PerfStats(w Window) (rows []PerfStat, total PerfStat, err error)
 		all.tp = append(all.tp, a.tp...)
 		all.cache = append(all.cache, a.cache...)
 		all.prefill.merge(a.prefill)
-		rows = append(rows, PerfStat{Served: served, TG: dist(a.tg), TP: dist(a.tp), Cache: dist(a.cache), Prefill: a.prefill})
+		rows = append(rows, PerfStat{Group: g, TG: dist(a.tg), TP: dist(a.tp), Cache: dist(a.cache), Prefill: a.prefill})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Served < rows[j].Served })
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Group.less(rows[j].Group) })
 	return rows, PerfStat{TG: dist(all.tg), TP: dist(all.tp), Cache: dist(all.cache), Prefill: all.prefill}, nil
 }
 

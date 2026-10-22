@@ -1956,7 +1956,7 @@ func TestActivityNamesConversation(t *testing.T) {
 			t.Fatalf("status %d", rec.Code)
 		}
 	}
-	_, total, err := st.CtxStats(store.Window{})
+	_, total, err := st.CtxStats(store.Window{}, store.PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -377,6 +377,50 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P56 — Dashboard as main page; Traffic = requests; key × model split; key allocations — 2026-10-21
+
+Owner asks (10-21): Traffic is convoluted. Metrics wanted summed and splittable by API key, model,
+or both: cache rate, prefill fused/raw TPS, tg/s, turns, request ctx, final (session-tail) ctx.
+Same split for cost: estimated API cost (costBaseline/costEquivalent), paid cost, electricity.
+Utilization per device for hosted models: request-span busy % AND real GPU compute %. Budgets
+and spend rates per key and per model/provider.
+
+Decisions (owner, 10-21):
+- Main page (`/`) = dashboard. Keep the Now header (state sentence, faults) on top, then
+  Metrics · Cost · Utilization · Budgets. Fleet panel (residents per box) moves to `/machines`. `/traffic` = requests only: active, recent log, turned
+  away, queueing detail.
+- Partition = filters (key, model) AND a group-by (total / key / model / key×model). Every
+  metric and cost is a sum or a distribution over the selected rows.
+- Utilization shows both busy % (from activity spans, exists) and GPU compute % (new sampler).
+- Key allocation: per key, unlimited (default) or a static $ amount refilled each period. Hard/soft
+  like model budgets (hard → 429). Local traffic counts electricity $; paid routes count the bill.
+  Existing provider/credential/model/box budgets stay and are shown beside it.
+
+Slices:
+- ✅ **A. key × model rollup** — `usageRollup(keys, models, groupBy)`; `groupBy` is `model`
+  (default), `key`, `key,model` or `none`. Store: `store.Slice` on `RollupSlice` / `PerfStats` /
+  `CtxStats` (ctx joins `activity` for `key`). Handler prices each (key, model) cell, then folds;
+  a fold whose cells differ in billing kind leaves `billing`/`type`/`baseline*` empty like the
+  total. Measured kWh is split across a model's callers by dwell share. Box1 prod DB, 7 d,
+  read-only: key×model rollup 0.28 s, key-filtered ctx join 0.13 s. Time series dropped — owner:
+  "hooked" meant summed and splittable, not charted.
+- ◻ **B. GPU compute %** — agent heartbeat adds `utilization.gpu` from its existing nvidia-smi
+  call (macOS: none); server stores a per-device sample history; query per device per bucket.
+- ◻ **C. key allocations** — config per key `{usd, period, hard|soft}`; ledger entry per key;
+  scheduler refusal on hard; shown in Setup → Budgets.
+- ◻ **D. spend rates** — $/h over the window per key, model, provider budget; projected
+  exhaustion before reset.
+- ◻ **E. UI** — main page dashboard sections on A–D; Traffic trimmed to requests; old usage
+  components retired once nothing mounts them.
+
+- **next:** slice B — agent heartbeat GPU util from the existing nvidia-smi call.
+- **risks:** `activity_conversation` only goes back as far as payload retention, so turns/ctx are short for
+  old windows; GPU % sampled at heartbeat rate is coarse.
+- **blocking decisions:** none open.
+- **assumptions:** "fused TPS" = prefill fused (incl. cached prefix), the only fused metric; tg/s
+  shown as avg + p90; allocation periods day/week/month, calendar-aligned like provider budgets.
+- **optional extensions:** allocation as a slice of a provider budget; per-key alerts via ntfy.
+
 ### ◐ P55 — OIDC sign-in, roles and the Access tab — 2026-10-19
 
 Owner: one OIDC provider (org uses Zitadel, https://id.iodesystems.com), editable from the

@@ -95,7 +95,7 @@ func TestRollupByModel(t *testing.T) {
 	}
 
 	// Cutoff at ts=100 excludes "old"; pricey outranks cheap by cost.
-	got, err := st.RollupByModel(Since(100))
+	got, err := st.RollupSlice(Since(100), PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestRollupByModel(t *testing.T) {
 	}
 
 	// sinceMS=0 includes everything.
-	all, err := st.RollupByModel(Window{})
+	all, err := st.RollupSlice(Window{}, PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestRollupByModelSpeeds(t *testing.T) {
 		}
 	}
 
-	got, err := st.RollupByModel(Window{})
+	got, err := st.RollupSlice(Window{}, PerModel)
 	if err != nil {
 		t.Fatal(err)
 	}
