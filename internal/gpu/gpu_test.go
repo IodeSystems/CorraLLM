@@ -332,3 +332,19 @@ func TestSelectByUUIDRefusesBusIDs(t *testing.T) {
 		t.Error("a bus id matched through SelectByUUID")
 	}
 }
+
+// TestParseGPUCSVUtilization reads the optional utilization column, and reads
+// "[N/A]" there as unreported rather than as 0% (P56).
+func TestParseGPUCSVUtilization(t *testing.T) {
+	stats, err := parseGPUCSV([]byte("0, " + uuid3080 + ", 00000000:03:00.0, RTX 3080, 10240, 4, 10236, 37\n" +
+		"1, GPU-x, 00000000:04:00.0, RTX 5090, 32607, 1, 32606, [N/A]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats[0].UtilPct == nil || *stats[0].UtilPct != 37 {
+		t.Errorf("card 0 util = %v, want 37", stats[0].UtilPct)
+	}
+	if stats[1].UtilPct != nil {
+		t.Errorf("card 1 util = %d, want unreported", *stats[1].UtilPct)
+	}
+}

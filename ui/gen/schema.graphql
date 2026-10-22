@@ -1597,6 +1597,23 @@ type corrallm_CatalogEntryView {
   servedName: String!
 }
 
+type corrallm_ComputeBucket {
+  """Last sample, percent."""
+  close: Float!
+  """Highest sample, percent."""
+  high: Float!
+  """Lowest sample, percent."""
+  low: Float!
+  """Mean of the samples, percent."""
+  mean: Float!
+  """Samples in the bucket; 0 means no reading, and the other fields are 0."""
+  n: Long!
+  """First sample, percent."""
+  open: Float!
+  """Least-squares trend across the bucket, percentage points per minute. 0 under two samples."""
+  slopePerMin: Float!
+}
+
 type corrallm_ConfigHistoryOutputBody {
   revisions: [corrallm_ConfigRevisionView!]!
 }
@@ -1820,6 +1837,7 @@ input corrallm_GPUDeviceInput {
   pciBusId: String
   totalBytes: Long!
   usedBytes: Long!
+  utilPct: Long
   uuid: String
 }
 
@@ -1828,7 +1846,7 @@ type corrallm_GPUUtilizationOutputBody {
   bucketMinutes: Long!
   """Bucket start times, unix millis, ascending."""
   buckets: [Long!]!
-  """One entry per GPU pool that served anything in the window, busiest first."""
+  """One entry per GPU pool that served anything or reported utilization in the window, busiest first."""
   pools: [corrallm_PoolUtilization!]!
 }
 
@@ -2549,6 +2567,12 @@ type corrallm_PoolUtilization {
   busy: [Float!]!
   """Share of the window (elapsed part) at least one request was being served on this pool, 0..1."""
   busyPct: Float!
+  """Per bucket, aligned to buckets: sampled compute utilization summary."""
+  compute: [corrallm_ComputeBucket!]!
+  """Utilization samples in the window. 0 means the card reports none (macOS, an old agent) — not a measured 0%."""
+  computeN: Long!
+  """Mean sampled compute utilization over the window, percent 0..100."""
+  computePct: Float!
   """Per bucket: mean time waiting for a cold model load, ms."""
   loadMs: [Float!]!
   """Served models that ran on this pool in the window."""

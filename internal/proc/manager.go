@@ -1679,7 +1679,7 @@ func (m *Manager) deviceNameFor(server, pool string, ramUsage map[string]string)
 	return ""
 }
 
-// devicesOn lists the cards of the machine that runs server's backends: this
+// DevicesOn lists the cards of the machine that runs server's backends: this
 // machine's probe for a local server, the agent's last heartbeat for an
 // agent-backed one. Both are matched by the same `devices:` selectors, so a
 // pool resolves to its card the same way wherever the card is.
@@ -1687,7 +1687,7 @@ func (m *Manager) deviceNameFor(server, pool string, ramUsage map[string]string)
 // An agent that sent no per-card list (older than Capacity.GPUs, or not
 // reported yet) is an error, never this machine's cards: matching a remote
 // pool's selector against a local probe describes the wrong hardware.
-func (m *Manager) devicesOn(server string) ([]gpu.Stats, error) {
+func (m *Manager) DevicesOn(server string) ([]gpu.Stats, error) {
 	if !m.agentBacked(server) {
 		return gpu.ProbeAll()
 	}
@@ -1703,7 +1703,7 @@ func (m *Manager) devicesOn(server string) ([]gpu.Stats, error) {
 
 // deviceFor resolves the physical card a model draws from, via the pool its
 // ramUsage names and that pool's declared selector, on the machine that runs
-// the server (devicesOn).
+// the server (DevicesOn).
 //
 // ok=false whenever the answer is not knowable with certainty — no config, no
 // `devices:` declaration, a CPU-only model, a model split across two cards, a
@@ -1730,7 +1730,7 @@ func (m *Manager) deviceFor(server, pool string, ramUsage map[string]string) (gp
 	if sel == "" {
 		return gpu.Stats{}, false
 	}
-	devs, err := m.devicesOn(server)
+	devs, err := m.DevicesOn(server)
 	if err != nil {
 		return gpu.Stats{}, false
 	}
@@ -1768,7 +1768,7 @@ func (m *Manager) devicesFor(server, pool string, ramUsage map[string]string) ([
 	if len(named) == 0 {
 		return nil, false
 	}
-	devs, err := m.devicesOn(server)
+	devs, err := m.DevicesOn(server)
 	if err != nil {
 		return nil, false
 	}

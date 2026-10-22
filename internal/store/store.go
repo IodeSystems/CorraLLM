@@ -250,6 +250,18 @@ CREATE TABLE IF NOT EXISTS lane_samples (
 );
 CREATE INDEX IF NOT EXISTS idx_lane_samples_ts ON lane_samples(ts);
 
+-- gpu_samples: each device pool's compute utilization as the vendor tool read
+-- it (P56). Busy time from the activity log says a request was being served;
+-- this says the card was actually computing, which differs while a slot waits
+-- on the network or sits between decode steps.
+CREATE TABLE IF NOT EXISTS gpu_samples (
+    ts       INTEGER NOT NULL,   -- unix millis of the sample
+    server   TEXT    NOT NULL,
+    pool     TEXT    NOT NULL,
+    util_pct INTEGER NOT NULL    -- 0..100
+);
+CREATE INDEX IF NOT EXISTS idx_gpu_samples_ts ON gpu_samples(ts);
+
 -- quota_counter: durable state for a counter-mode backend's falloff counters
 -- (P16 durability). A header-tracked backend needs no persistence — it relearns
 -- its budget from the next response's X-Ratelimit-* headers — but a
@@ -1737,6 +1749,115 @@ func (s *Store) InsertLaneSamples(ts int64, samples []LaneSample) error {
 func (s *Store) PruneLaneSamples(beforeMS int64) error {
 	_, err := s.db.Exec(`DELETE FROM lane_samples WHERE ts < ?`, beforeMS)
 	return err
+}
+
+// GPUSample is one device pool's compute utilization at a sample tick.
+type GPUSample struct {
+	Server  string
+	Pool    string
+	UtilPct int
+}
+
+// InsertGPUSamples records a batch of per-pool utilization samples at ts.
+func (s *Store) InsertGPUSamples(ts int64, samples []GPUSample) error {
+	if len(samples) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`INSERT INTO gpu_samples (ts, server, pool, util_pct) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, x := range samples {
+		if _, err := stmt.Exec(ts, x.Server, x.Pool, x.UtilPct); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// PruneGPUSamples deletes samples older than beforeMS (retention).
+func (s *Store) PruneGPUSamples(beforeMS int64) error {
+	_, err := s.db.Exec(`DELETE FROM gpu_samples WHERE ts < ?`, beforeMS)
+	return err
+}
+
+// GPUComputeRow is one (bucket, pool) summary of sampled utilization, in
+// percent: first and last sample, low, high, mean, and the least-squares trend
+// across the bucket. Computed at read time from the raw samples (P56) — at a
+// 10 s cadence and 30 days, a pool is ~260k rows, which needs no stored tiers.
+type GPUComputeRow struct {
+	BucketTS                     int64
+	Server, Pool                 string
+	N                            int64
+	Open, High, Low, Close, Mean float64
+	SlopePerMin                  float64 // percentage points per minute; 0 under 2 samples
+}
+
+// GPUCompute summarises utilization samples into buckets of bucketMS, per pool,
+// ordered by bucket.
+func (s *Store) GPUCompute(w Window, bucketMS int64) ([]GPUComputeRow, error) {
+	if bucketMS <= 0 {
+		bucketMS = 3600_000
+	}
+	wWhere, wArgs := w.ts()
+	rows, err := s.db.Query(
+		`SELECT ts, server, pool, util_pct FROM gpu_samples WHERE `+wWhere+` ORDER BY ts`, wArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	type key struct {
+		bucket       int64
+		server, pool string
+	}
+	type acc struct {
+		row                   GPUComputeRow
+		sx, sy, sxx, sxy, sum float64
+	}
+	by := map[key]*acc{}
+	var order []key
+	for rows.Next() {
+		var ts int64
+		var server, pool string
+		var u float64
+		if err := rows.Scan(&ts, &server, &pool, &u); err != nil {
+			return nil, err
+		}
+		k := key{(ts / bucketMS) * bucketMS, server, pool}
+		a := by[k]
+		if a == nil {
+			a = &acc{row: GPUComputeRow{BucketTS: k.bucket, Server: server, Pool: pool, Open: u, High: u, Low: u}}
+			by[k] = a
+			order = append(order, k)
+		}
+		x := float64(ts-k.bucket) / 60_000 // minutes into the bucket
+		a.row.N++
+		a.row.Close = u
+		a.row.High = max(a.row.High, u)
+		a.row.Low = min(a.row.Low, u)
+		a.sum += u
+		a.sx, a.sy, a.sxx, a.sxy = a.sx+x, a.sy+u, a.sxx+x*x, a.sxy+x*u
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]GPUComputeRow, 0, len(order))
+	for _, k := range order {
+		a := by[k]
+		n := float64(a.row.N)
+		a.row.Mean = a.sum / n
+		if d := n*a.sxx - a.sx*a.sx; a.row.N >= 2 && d > 0 {
+			a.row.SlopePerMin = (n*a.sxy - a.sx*a.sy) / d
+		}
+		out = append(out, a.row)
+	}
+	return out, nil
 }
 
 // LaneDepthRow is one (bucket, group) aggregate of sampled load.

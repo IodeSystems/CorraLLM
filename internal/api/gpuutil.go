@@ -39,6 +39,22 @@ type PoolUtilization struct {
 	ActiveMSP90 int64   `json:"activeMsP90" doc:"Window 90th percentile of active time to first token, ms."`
 	TTFTMSP99   int64   `json:"ttftMsP99" doc:"Window 99th percentile of total time to first token, ms."`
 	ActiveMSP99 int64   `json:"activeMsP99" doc:"Window 99th percentile of active time to first token, ms."`
+	// COMPUTE, MEASURED (P56). busy says a request was in flight; this says the
+	// card was running kernels, from the vendor tool sampled every 10 s.
+	ComputeN   int64           `json:"computeN" doc:"Utilization samples in the window. 0 means the card reports none (macOS, an old agent) — not a measured 0%."`
+	ComputePct float64         `json:"computePct" doc:"Mean sampled compute utilization over the window, percent 0..100."`
+	Compute    []ComputeBucket `json:"compute" doc:"Per bucket, aligned to buckets: sampled compute utilization summary."`
+}
+
+// ComputeBucket summarises one bucket's utilization samples, in percent.
+type ComputeBucket struct {
+	N           int64   `json:"n" doc:"Samples in the bucket; 0 means no reading, and the other fields are 0."`
+	Open        float64 `json:"open" doc:"First sample, percent."`
+	High        float64 `json:"high" doc:"Highest sample, percent."`
+	Low         float64 `json:"low" doc:"Lowest sample, percent."`
+	Close       float64 `json:"close" doc:"Last sample, percent."`
+	Mean        float64 `json:"mean" doc:"Mean of the samples, percent."`
+	SlopePerMin float64 `json:"slopePerMin" doc:"Least-squares trend across the bucket, percentage points per minute. 0 under two samples."`
 }
 
 // GPUUtilizationOutput is a shared time axis plus one series per GPU pool.
@@ -46,7 +62,7 @@ type GPUUtilizationOutput struct {
 	Body struct {
 		BucketMinutes int               `json:"bucketMinutes" doc:"Effective bucket width (may be coarsened)."`
 		Buckets       []int64           `json:"buckets" doc:"Bucket start times, unix millis, ascending."`
-		Pools         []PoolUtilization `json:"pools" doc:"One entry per GPU pool that served anything in the window, busiest first."`
+		Pools         []PoolUtilization `json:"pools" doc:"One entry per GPU pool that served anything or reported utilization in the window, busiest first."`
 	}
 }
 
@@ -93,10 +109,24 @@ func (h *Handlers) GPUUtilization(_ context.Context, in *GPUUtilizationInput) (*
 		}
 		return i
 	}
+	compute, err := h.Store.GPUCompute(store.Window{FromMS: start, ToMS: w.ToMS}, bucketMS)
+	if err != nil {
+		return nil, err
+	}
+	computeBy := map[poolKey][]store.GPUComputeRow{}
+	for _, c := range compute {
+		k := poolKey{c.Server, c.Pool}
+		computeBy[k] = append(computeBy[k], c)
+		// A card computing with nothing served through corrallm (a bench, a
+		// process outside it) still gets a row.
+		if _, ok := byPool[k]; !ok {
+			byPool[k] = nil
+		}
+	}
 	for k, sps := range byPool {
 		frac, busyMS := store.BusyFractions(sps, start, bucketMS, n, now)
 		p := PoolUtilization{
-			Server: k.server, Pool: k.pool, Busy: frac,
+			Server: k.server, Pool: k.pool, Busy: frac, Compute: make([]ComputeBucket, n),
 			Requests: make([]int64, n), TTFTN: make([]int64, n),
 			QueueMS: make([]float64, n), LoadMS: make([]float64, n), ActiveMS: make([]float64, n),
 		}
@@ -140,6 +170,20 @@ func (h *Handlers) GPUUtilization(_ context.Context, in *GPUUtilizationInput) (*
 			p.ActiveMSAvg = float64(aSum) / float64(c)
 			p.TTFTMSP90, p.TTFTMSP99 = rankP90P99(totals)
 			p.ActiveMSP90, p.ActiveMSP99 = rankP90P99(actives)
+		}
+		var sum float64
+		for _, c := range computeBy[k] {
+			i := pos(c.BucketTS)
+			if i < 0 {
+				continue
+			}
+			p.Compute[i] = ComputeBucket{N: c.N, Open: c.Open, High: c.High, Low: c.Low,
+				Close: c.Close, Mean: c.Mean, SlopePerMin: c.SlopePerMin}
+			p.ComputeN += c.N
+			sum += c.Mean * float64(c.N)
+		}
+		if p.ComputeN > 0 {
+			p.ComputePct = sum / float64(p.ComputeN)
 		}
 		for m := range models {
 			p.Models = append(p.Models, m)

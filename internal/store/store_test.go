@@ -521,3 +521,36 @@ func TestRecentActivityPageOffsetsThroughPages(t *testing.T) {
 		t.Errorf("offset at the last row: got %d rows (ts %v), hasMore %v, want 1 row (ts 1), hasMore false", len(last), last, hasMore)
 	}
 }
+
+// TestGPUCompute summarises samples per bucket and pool: first, last, low,
+// high, mean and the trend in points per minute (P56).
+func TestGPUCompute(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	// Bucket [0, 600 000): 10, 30, 50 one minute apart; then one in the next.
+	for i, u := range []int{10, 30, 50} {
+		if err := st.InsertGPUSamples(int64(i)*60_000, []GPUSample{{Server: "box", Pool: "gpu0", UtilPct: u}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.InsertGPUSamples(600_000, []GPUSample{{Server: "box", Pool: "gpu0", UtilPct: 90}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.GPUCompute(Window{}, 600_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	r := rows[0]
+	if r.N != 3 || r.Open != 10 || r.Close != 50 || r.Low != 10 || r.High != 50 || r.Mean != 30 || r.SlopePerMin != 20 {
+		t.Errorf("bucket 0 = %+v, want n3 o10 c50 l10 h50 mean30 slope20", r)
+	}
+	if rows[1].N != 1 || rows[1].SlopePerMin != 0 {
+		t.Errorf("bucket 1 = %+v, want one sample and no slope", rows[1])
+	}
+}

@@ -1018,6 +1018,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// Sample instantaneous per-lane queue depth so it's visible before requests
 	// resolve (the activity log is completion-driven). Stops on shutdown.
 	go runQueueSampler(jobsCtx, scheduler, st, 5*time.Second, o.activityRetention, o.payloadRetention)
+	go runGPUSampler(jobsCtx, mgr, st, 10*time.Second, o.activityRetention)
 	// Conversation rows for activity recorded before activity_conversation
 	// existed, from the captured payloads still on disk. Resumes on restart and
 	// is a no-op once caught up.
@@ -1219,6 +1220,52 @@ func runQueueSampler(ctx context.Context, sc *sched.Scheduler, st *store.Store, 
 						slog.Info("cleared captured payloads (rows and their metrics kept)",
 							"rows", n, "retention", payloadRetention)
 					}
+				}
+			}
+		}
+	}
+}
+
+// runGPUSampler records each bound device pool's compute utilization (P56),
+// from this machine's probe for a local server and from the agent's last
+// heartbeat for an agent-backed one. 10 s matches the heartbeat: sampling an
+// agent faster would only record the same reading twice. A pool whose card
+// reports no utilization (macOS) records nothing rather than a 0.
+func runGPUSampler(ctx context.Context, mgr *proc.Manager, st *store.Store, interval, retention time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	var sincePrune time.Duration
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			cfg := mgr.Config()
+			if cfg == nil {
+				continue
+			}
+			var samples []store.GPUSample
+			for name, srv := range cfg.Servers {
+				if len(srv.Devices) == 0 {
+					continue
+				}
+				devs, err := mgr.DevicesOn(name)
+				if err != nil {
+					continue
+				}
+				for pool, sel := range srv.Devices {
+					if d, err := gpu.Select(devs, sel); err == nil && d.UtilPct != nil {
+						samples = append(samples, store.GPUSample{Server: name, Pool: pool, UtilPct: *d.UtilPct})
+					}
+				}
+			}
+			if err := st.InsertGPUSamples(time.Now().UnixMilli(), samples); err != nil {
+				slog.Warn("gpu sample", "err", err)
+			}
+			if sincePrune += interval; retention > 0 && sincePrune >= 5*time.Minute {
+				sincePrune = 0
+				if err := st.PruneGPUSamples(time.Now().Add(-retention).UnixMilli()); err != nil {
+					slog.Warn("prune gpu samples", "err", err)
 				}
 			}
 		}

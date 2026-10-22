@@ -125,7 +125,7 @@ func Probe() Capacity {
 				ECC: ecc[st.UUID],
 				DeviceMem: DeviceMem{Name: st.Name, TotalBytes: int64(st.TotalMiB) * mib,
 					UsedBytes: int64(st.UsedMiB) * mib, FreeBytes: int64(st.FreeMiB) * mib},
-				Index: st.Index, UUID: st.UUID, PCIBusID: st.PCIBusID,
+				Index: st.Index, UUID: st.UUID, PCIBusID: st.PCIBusID, UtilPct: st.UtilPct,
 			})
 		}
 		first := c.GPUs[0].DeviceMem

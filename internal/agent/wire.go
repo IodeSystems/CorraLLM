@@ -73,6 +73,9 @@ type GPUDevice struct {
 	// omitempty, so a machine without ECC sends exactly the bytes it did
 	// before this field existed.
 	ECC bool `json:"ecc,omitempty"`
+	// UtilPct is the card's compute utilization at the probe, 0..100 (gpu.Stats).
+	// Absent when the agent cannot read one, or predates the field.
+	UtilPct *int `json:"utilPct,omitempty"`
 }
 
 // Capacity is what this machine can actually offer, measured.
@@ -148,6 +151,7 @@ func (c Capacity) DeviceStats() []gpu.Stats {
 		out = append(out, gpu.Stats{
 			Index: d.Index, UUID: d.UUID, PCIBusID: d.PCIBusID, Name: d.Name,
 			TotalMiB: int(d.TotalBytes / mib), UsedMiB: int(d.UsedBytes / mib), FreeMiB: int(d.FreeBytes / mib),
+			UtilPct: d.UtilPct,
 		})
 	}
 	return out

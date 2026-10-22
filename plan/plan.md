@@ -404,8 +404,11 @@ Slices:
   total. Measured kWh is split across a model's callers by dwell share. Box1 prod DB, 7 d,
   read-only: key×model rollup 0.28 s, key-filtered ctx join 0.13 s. Time series dropped — owner:
   "hooked" meant summed and splittable, not charted.
-- ◻ **B. GPU compute %** — agent heartbeat adds `utilization.gpu` from its existing nvidia-smi
-  call (macOS: none); server stores a per-device sample history; query per device per bucket.
+- ✅ **B. GPU compute %** — nvidia-smi `utilization.gpu` → `gpu.Stats.UtilPct` (nil = unreported)
+  → agent `GPUDevice.utilPct` on heartbeat. `runGPUSampler` (main.go, 10 s) writes bound pools to
+  `gpu_samples`, pruned at activity retention. `gpuUtilization` pools carry `computePct`,
+  `computeN`, per-bucket `compute` {n, open, high, low, close, mean, slopePerMin}, computed at
+  read time (owner 10-21: query-time OHLC, no LOD tiers). Live after the next deploy only.
 - ◻ **C. key allocations** — config per key `{usd, period, hard|soft}`; ledger entry per key;
   scheduler refusal on hard; shown in Setup → Budgets.
 - ◻ **D. spend rates** — $/h over the window per key, model, provider budget; projected
@@ -413,13 +416,14 @@ Slices:
 - ◻ **E. UI** — main page dashboard sections on A–D; Traffic trimmed to requests; old usage
   components retired once nothing mounts them.
 
-- **next:** slice B — agent heartbeat GPU util from the existing nvidia-smi call.
+- **next:** slice C — per-key allocation config; read existing model/provider limit code first.
 - **risks:** `activity_conversation` only goes back as far as payload retention, so turns/ctx are short for
   old windows; GPU % sampled at heartbeat rate is coarse.
 - **blocking decisions:** none open.
 - **assumptions:** "fused TPS" = prefill fused (incl. cached prefix), the only fused metric; tg/s
   shown as avg + p90; allocation periods day/week/month, calendar-aligned like provider budgets.
-- **optional extensions:** allocation as a slice of a provider budget; per-key alerts via ntfy.
+- **optional extensions:** allocation as a slice of a provider budget; per-key alerts via ntfy;
+  LOD tiers for `gpu_samples` if retention past 30 d is wanted.
 
 ### ◐ P55 — OIDC sign-in, roles and the Access tab — 2026-10-19
 

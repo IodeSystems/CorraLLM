@@ -35,7 +35,7 @@ var (
 // bound to by `devices:` (or, unbound, every card of the machine agreeing);
 // for any other pool, system RAM. "The machine" is this one for a local
 // server and the agent's last report for an agent-backed one — the same split
-// devicesOn makes. Unified memory (Apple) has no ECC.
+// DevicesOn makes. Unified memory (Apple) has no ECC.
 func (m *Manager) PoolECC(server, pool string) (bool, string) {
 	cfg := m.config()
 	if cfg == nil {
@@ -87,7 +87,7 @@ func (m *Manager) PoolECC(server, pool string) (bool, string) {
 		}
 		st, err := gpu.SelectByUUID(known, sel)
 		if err != nil {
-			devs, derr := m.devicesOn(server)
+			devs, derr := m.DevicesOn(server)
 			if derr != nil {
 				return false, ECCUnknown
 			}

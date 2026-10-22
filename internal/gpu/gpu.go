@@ -33,6 +33,10 @@ type Stats struct {
 	PCIBusID                   string
 	Name                       string
 	TotalMiB, UsedMiB, FreeMiB int
+	// UtilPct is the card's compute utilization, 0..100: the share of the
+	// vendor's last sample period (1/6 s to 1 s for nvidia-smi) a kernel was
+	// running. Nil when the tool does not report one (macOS, an old agent).
+	UtilPct *int
 }
 
 // Matches reports whether selector names this device. A selector is a UUID (or
@@ -321,7 +325,7 @@ func (NVIDIA) Unified() bool { return false }
 // by PCI bus id, and is NOT the order CUDA (or llama.cpp) uses. Each row carries
 // its UUID and bus id so callers can name a card rather than count to it.
 func (NVIDIA) ProbeAll() ([]Stats, error) {
-	out, err := runCmd("nvidia-smi", "--query-gpu=index,uuid,pci.bus_id,name,memory.total,memory.used,memory.free", "--format=csv,noheader,nounits")
+	out, err := runCmd("nvidia-smi", "--query-gpu=index,uuid,pci.bus_id,name,memory.total,memory.used,memory.free,utilization.gpu", "--format=csv,noheader,nounits")
 	if err != nil {
 		return nil, fmt.Errorf("nvidia-smi: %w", err)
 	}
@@ -375,10 +379,12 @@ func (NVIDIA) ProcVRAMByDevice() (map[string]map[int]int, error) {
 }
 
 // parseGPUCSV parses `nvidia-smi
-// --query-gpu=index,uuid,pci.bus_id,name,memory.total,memory.used,memory.free
+// --query-gpu=index,uuid,pci.bus_id,name,memory.total,memory.used,memory.free,utilization.gpu
 // --format=csv,noheader,nounits` output, e.g.
 //
-//	0, GPU-76a4c775-…, 00000000:03:00.0, NVIDIA GeForce RTX 3080, 10240, 4, 10236
+//	0, GPU-76a4c775-…, 00000000:03:00.0, NVIDIA GeForce RTX 3080, 10240, 4, 10236, 37
+//
+// The utilization column is optional, and "[N/A]" there reads as unreported.
 func parseGPUCSV(out []byte) ([]Stats, error) {
 	trimmed := strings.TrimSpace(string(out))
 	if trimmed == "" {
@@ -391,7 +397,7 @@ func parseGPUCSV(out []byte) ([]Stats, error) {
 			continue
 		}
 		fields := strings.Split(line, ",")
-		if len(fields) != 7 {
+		if len(fields) != 7 && len(fields) != 8 {
 			return nil, fmt.Errorf("nvidia-smi: unexpected --query-gpu row %q", line)
 		}
 		nums := make([]int, 0, 4)
@@ -412,6 +418,11 @@ func parseGPUCSV(out []byte) ([]Stats, error) {
 			Name:     strings.TrimSpace(fields[3]),
 			TotalMiB: nums[1], UsedMiB: nums[2], FreeMiB: nums[3],
 		})
+		if len(fields) == 8 {
+			if u, err := strconv.Atoi(strings.TrimSpace(fields[7])); err == nil {
+				stats[len(stats)-1].UtilPct = &u
+			}
+		}
 	}
 	return stats, nil
 }
