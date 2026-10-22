@@ -47,9 +47,9 @@ const (
 
 // OIDCSettings is the resolved provider config, secret expanded.
 type OIDCSettings struct {
-	Issuer               string
-	ClientID             string
-	ClientSecret         string
+	Issuer       string
+	ClientID     string
+	ClientSecret string
 	// RedirectURL is the configured override; "" means the callback on the
 	// address the browser used (RedirectFor).
 	RedirectURL          string
