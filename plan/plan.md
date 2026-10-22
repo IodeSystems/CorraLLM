@@ -466,8 +466,13 @@ testIdentityProvider, setAdminToken (disable only from an SSO admin session). Re
 buttons disabled on Setup, models, model page, active requests. Config revisions name the SSO user.
 Not yet run against Zitadel; live config unchanged.
 
-- **next:** owner creates the Zitadel Web app (auth method PKCE), registers the redirect URI shown
-  in Access, adds self as admin, enables SSO, signs in, then disables the admin token.
+- **next:** deploy a9c84a8, then sign in at https://llm.iodesystems.com. Done 10-21: Zitadel app (auth
+  method None = PKCE, callback https://llm.iodesystems.com/auth/callback), admin user, provider
+  saved. Fixed 10-21 (a9c84a8, not deployed): callback = override or the browser's address (was
+  --public-base, a LAN http URL); issuer trailing slash tolerated; Test probes the authorize
+  endpoint with the client ID + callback. Then disable the admin token.
+- **assumption:** haproxy sends X-Forwarded-Proto: https for llm.iodesystems.com; if not, the
+  derived callback is http:// and Test says so — set the override then.
 - **risks:** viewers can read everything a GET serves, including `keys` (caller API keys, usable on
   `/v1`) and `configExport`; untested against a real provider; every SSO request does one SQLite
   lookup for the cutoff; a literal (non-`${REF}`) client secret is dropped by a form save (UI warns).
