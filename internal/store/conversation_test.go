@@ -194,3 +194,34 @@ func TestCtxStatsByKey(t *testing.T) {
 		t.Errorf("k2 only = %+v", only)
 	}
 }
+
+// TestCtxStatsCountsEmbeddings: an embedding carries no conversation, and its
+// input size is still the context question. Each request is its own session.
+func TestCtxStatsCountsEmbeddings(t *testing.T) {
+	st, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	for i, a := range []Activity{
+		{TS: 1, Served: "e", Path: "/v1/embeddings", Status: 200, PromptTokens: 100},
+		{TS: 2, Served: "e", Path: "/v1/embeddings", Status: 200, PromptTokens: 300},
+		{TS: 3, Served: "e", Path: "/v1/embeddings", Status: 429},                    // turned away: no context
+		{TS: 4, Served: "c", Path: "/v1/completions", Status: 200, PromptTokens: 50}, // not per-request: unchanged
+	} {
+		if err := st.InsertActivity(a); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	rows, _, err := st.CtxStats(Between(1, 9), PerModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Served != "e" {
+		t.Fatalf("rows = %+v, want only the embedding model", rows)
+	}
+	e := rows[0]
+	if e.Requests != 2 || e.RequestAvg != 200 || e.Sessions != 2 || e.TurnsMax != 1 {
+		t.Errorf("embedding ctx = %+v, want 2 requests averaging 200, 2 single-turn sessions", e)
+	}
+}

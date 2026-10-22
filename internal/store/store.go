@@ -522,6 +522,23 @@ var migrations = []string{
 	// The open billing-drift episode per window, so a restart or handoff does
 	// not re-announce it (2026-10-21).
 	billingAlertSchema,
+	// EMBEDDINGS AND RERANK, BACKFILLED (2026-10-22). Both were recorded with
+	// their tokens and nothing else: llama.cpp sends no timings for them, and
+	// they carry no conversation. The proxy now measures prefill as tokens over
+	// the backend's time to first byte; a stored row has that time as
+	// ttfb - queued - load. Idempotent: only rows still at 0.
+	`UPDATE activity
+	   SET prompt_per_sec = MAX(prompt_tokens - cached_tokens, 0) * 1000.0 / (ttfb_ms - queued_ms - load_ms),
+	       speed_source = 'proxy'
+	 WHERE path IN ('/v1/embeddings', '/v1/rerank') AND status BETWEEN 200 AND 299
+	   AND prompt_per_sec = 0 AND completion_tokens = 0 AND prompt_tokens > 0
+	   AND ttfb_ms - queued_ms - load_ms > 0`,
+	// And their context, one single-turn session per request. Only past the
+	// newest such row already written, so a pruned row is not brought back.
+	`INSERT OR IGNORE INTO activity_conversation (activity_id, ts, served, conversation, messages, ctx_tokens)
+	 SELECT id, ts, served, 'req:' || id, 0, prompt_tokens + completion_tokens FROM activity
+	 WHERE path IN ('/v1/embeddings', '/v1/rerank') AND status BETWEEN 200 AND 299 AND prompt_tokens > 0
+	   AND id > (SELECT COALESCE(MAX(activity_id), 0) FROM activity_conversation WHERE conversation LIKE 'req:%')`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -992,11 +1009,29 @@ func (s *Store) InsertActivity(a Activity) error {
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil || a.Conversation == "" {
+	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return s.insertConversation(id, a.TS, a.Served, a.Conversation, a.ConversationMessages,
-		int64(a.PromptTokens+a.CompletionTokens))
+	conv, msgs := a.Conversation, a.ConversationMessages
+	if conv == "" {
+		// NO CONVERSATION, STILL A CONTEXT. An embedding or a rerank carries
+		// its whole input in one request, and how big that input is decides
+		// whether the model's context fits it — the same question the chat
+		// stats answer. Each one is its own single-turn session, so its tail
+		// is itself.
+		if !perRequestContext(a.Path) || a.Status < 200 || a.Status > 299 || a.PromptTokens <= 0 {
+			return nil
+		}
+		conv, msgs = fmt.Sprintf("req:%d", id), 0
+	}
+	return s.insertConversation(id, a.TS, a.Served, conv, msgs, int64(a.PromptTokens+a.CompletionTokens))
+}
+
+// perRequestContext is the set of paths whose context is one request's input:
+// they carry no conversation, so the conversation table would otherwise never
+// see them.
+func perRequestContext(path string) bool {
+	return path == "/v1/embeddings" || path == "/v1/rerank"
 }
 
 // reasoningCol is the stored form of a row's thinking count: -1 when unmeasured.

@@ -1572,6 +1572,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			costUSD = p.cost.AudioRequestUSD(backend.Type, n)
 		default:
 			u = extractUsage(sc.buf, streaming)
+			if !streaming && u.PromptTokens == 0 && len(sc.tail) > 0 {
+				u = usageFromTail(sc.tail)
+			}
 			finishReason = extractFinishReason(sc.buf, streaming)
 			thinking, thinkingMeasured = sc.thinkingTokens(u)
 			if !thinkingMeasured && u.CompletionTokensDetails.ReasoningTokens != nil {
@@ -3700,10 +3703,15 @@ type statusCapture struct {
 	code        int
 	wroteHeader bool
 	streaming   bool
-	buf         []byte    // bounded captured body for usage extraction
-	written     int64     // total response bytes — TTS (P9b) is metered by output size
-	firstWrite  time.Time // time of the first body write — for TTFB (P10b)
-	lastWrite   time.Time // time of the last body write — remote generation speed
+	buf         []byte // bounded captured body for usage extraction
+	// tail is the last bytes of a NON-streamed body past the cap. An embeddings
+	// reply is mostly floats, and llama.cpp writes its keys in alphabetical
+	// order, so "usage" comes after "data": a batch over the cap lost its token
+	// counts. The tail still holds them.
+	tail       []byte
+	written    int64     // total response bytes — TTS (P9b) is metered by output size
+	firstWrite time.Time // time of the first body write — for TTFB (P10b)
+	lastWrite  time.Time // time of the last body write — remote generation speed
 	// thinkChunks counts streamed events carrying reasoning_content, across the
 	// WHOLE stream (buf keeps only a tail). thinkCarry holds the last bytes of
 	// the previous write so a marker split between writes is still counted.
@@ -3760,14 +3768,48 @@ func (s *statusCapture) Write(b []byte) (int, error) {
 		}
 	} else if len(s.buf) < s.limit() {
 		// Non-streaming: capture from the front up to the cap (usage is in the
-		// single JSON object; a reply larger than the cap meters as $0).
+		// single JSON object). What does not fit feeds the tail.
 		if n := s.limit() - len(s.buf); n < len(b) {
 			s.buf = append(s.buf, b[:n]...)
+			s.keepTail(b[n:])
 		} else {
 			s.buf = append(s.buf, b...)
 		}
+	} else {
+		s.keepTail(b)
 	}
 	return s.ResponseWriter.Write(b)
+}
+
+// tailCapture is how much of an over-cap non-streamed body is kept for usage:
+// the usage object and its siblings are a few hundred bytes.
+const tailCapture = 4 << 10
+
+func (s *statusCapture) keepTail(b []byte) {
+	s.tail = append(s.tail, b...)
+	if len(s.tail) > 2*tailCapture {
+		s.tail = append([]byte(nil), s.tail[len(s.tail)-tailCapture:]...)
+	}
+}
+
+// usageFromTail finds the "usage" object in the end of a body too large to
+// parse whole. Last occurrence, so a "usage" string inside the payload earlier
+// on cannot be mistaken for it.
+func usageFromTail(tail []byte) usage {
+	i := bytes.LastIndex(tail, []byte(`"usage"`))
+	if i < 0 {
+		return usage{}
+	}
+	rest := tail[i+len(`"usage"`):]
+	j := bytes.IndexByte(rest, '{')
+	if j < 0 {
+		return usage{}
+	}
+	var u usage
+	if json.NewDecoder(bytes.NewReader(rest[j:])).Decode(&u) != nil {
+		return usage{}
+	}
+	return mergeTimings(u, timings{})
 }
 
 // thinkMarker opens a non-empty reasoning delta in llama-server's stream. One

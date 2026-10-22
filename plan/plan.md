@@ -391,6 +391,13 @@ still open. Items parked on hardware rather than on a decision are in §9.
 - ✅ `corrallm service <verb> --agent | --all` on start/stop/restart/reload/status/logs. `--all` =
   every unit install wrote (by header), server first. `restart` no longer validates an agent's
   `agent.yml` as a server config (it refused every agent restart).
+- ✅ Request log Pause (pins the query's upper bound to the newest row on screen).
+- ✅ Embeddings/rerank: prefill tok/s = uncached prompt tokens / time to first byte (speed
+  source `proxy`; llama.cpp sends no timings for them); usage read from a 4 KiB body tail when the
+  reply is over the 1 MiB capture (llama.cpp puts `usage` after `data`); a per-request context row
+  (`req:<id>`, one single-turn session) so context avg/p90/p99 covers them. Migrations backfill the
+  4266 box1 embed rows (≈38k tok/s mean; checked read-only, 0.03 s + 0.36 s per open). Per-INPUT
+  size in a batch is not known — llama.cpp reports only the batch total.
 - **next:** deploy box1 (server first, then `ui-build` — the new UI needs the new fields); owner
   rebuilds the Mac (`make install`).
 - **risks:** Mac `/models` hang is UNDIAGNOSED — only the overview query hangs there; needs a

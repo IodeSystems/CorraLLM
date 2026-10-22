@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,5 +58,31 @@ func TestKeptHeadersAllowlist(t *testing.T) {
 	want := "fireworks-prompt-tokens: 37\nx-ratelimit-remaining-requests: 59"
 	if got := keptHeaders(h); got != want {
 		t.Errorf("keptHeaders = %q, want %q", got, want)
+	}
+}
+
+// TestUpstreamSpeedsEmbeddingIsAllPrefill: an embedding generates nothing, so
+// its time to first byte is its prompt processing.
+func TestUpstreamSpeedsEmbeddingIsAllPrefill(t *testing.T) {
+	start := time.Unix(100, 0)
+	u := usage{PromptTokens: 2000}
+	got, src := upstreamSpeeds(u, http.Header{}, false, start, start.Add(500*time.Millisecond), start.Add(time.Second))
+	if src != speedProxy || got.PromptPerSec != 4000 {
+		t.Errorf("got %v tok/s source %q, want 4000 from %q", got.PromptPerSec, src, speedProxy)
+	}
+}
+
+// TestUsageFromTailOfOverCapEmbedding: llama.cpp puts "usage" after "data", so
+// a big batch's usage lies past the capture cap.
+func TestUsageFromTailOfOverCapEmbedding(t *testing.T) {
+	sc := &statusCapture{ResponseWriter: httptest.NewRecorder(), bufLimit: 64}
+	body := `{"data":[{"embedding":[` + strings.Repeat("0.123456,", 2000) + `0.1],"index":0}],"model":"m","object":"list","usage":{"prompt_tokens":812,"total_tokens":812}}`
+	_, _ = sc.Write([]byte(body[:100]))
+	_, _ = sc.Write([]byte(body[100:]))
+	if u := extractUsage(sc.buf, false); u.PromptTokens != 0 {
+		t.Fatalf("head parse found %d tokens; the test needs usage past the cap", u.PromptTokens)
+	}
+	if u := usageFromTail(sc.tail); u.PromptTokens != 812 {
+		t.Errorf("usage from tail = %+v, want prompt_tokens 812", u)
 	}
 }

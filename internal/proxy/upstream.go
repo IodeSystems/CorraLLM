@@ -27,7 +27,8 @@ const (
 //
 // Generation speed is completion tokens over the time after the first token.
 // A non-streamed reply arrives in one write, so without provider headers its
-// split is unknown and both speeds stay 0.
+// split is unknown and both speeds stay 0 — except when nothing was generated
+// (embeddings, rerank), where all of the time before the reply is prefill.
 func upstreamSpeeds(u usage, h http.Header, streaming bool, upStart, first, last time.Time) (usage, string) {
 	uncached := max(u.PromptTokens-u.CachedTokens, 0)
 	source := ""
@@ -42,7 +43,21 @@ func upstreamSpeeds(u usage, h http.Header, streaming bool, upStart, first, last
 			u.PredictedPerSec = float64(u.CompletionTokens) / (total - ttft)
 		}
 	}
-	if !streaming || first.IsZero() || upStart.IsZero() {
+	if first.IsZero() || upStart.IsZero() {
+		return u, source
+	}
+	// NOTHING GENERATED: an embedding or a rerank. The backend reads the input
+	// and answers once, so the time to its first byte IS the prompt processing
+	// (plus queueing inside the backend, so a lower bound, as above). llama.cpp
+	// sends no timings for these, which left every embed request at 0 tok/s.
+	if !streaming && u.CompletionTokens == 0 && u.PromptPerSec == 0 && uncached > 0 {
+		if d := first.Sub(upStart).Seconds(); d > 0 {
+			u.PromptPerSec = float64(uncached) / d
+			source = speedProxy
+		}
+		return u, source
+	}
+	if !streaming {
 		return u, source
 	}
 	if u.PromptPerSec == 0 && uncached > 0 {
