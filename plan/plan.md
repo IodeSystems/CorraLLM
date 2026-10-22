@@ -411,23 +411,36 @@ Slices:
   `compute` {n, open, high, low, close, mean, slopePerMin}, merged from the coarsest tier dividing
   the bucket. Synthetic 2 pools × 30 d: raw scan 682 ms → tiers 21 ms at 15 m buckets. Live after
   the next deploy only.
-- ◐ **C. key allocations** — engine done: `keys.<k>.limits` (mapping form, reserved word like
-  `thinking`; `config.Limit`, usd or req, rolling or `calendar-*`), seeded as ledger scope
-  `key:<k>`. Hard → 429 `allocation_exhausted` + Retry-After before routing; soft → reported only.
-  Charged once per served request: `req` 1, `usd` = metered cost (electricity local, bill paid).
-  Test: `proxy/keyallocation_test.go`. Left: show/edit in Setup → Budgets (with slice E).
+- ✅ **C. key allocations** — `keys.<k>.limits` (mapping form, reserved word like `thinking`;
+  `config.Limit`, usd or req, rolling or `calendar-*`), stored in `config_key.limits_json`,
+  seeded as ledger scope `key:<k>`. Hard → 429 `allocation_exhausted` + Retry-After before
+  routing; soft → reported only. Charged once per served request: `req` 1, `usd` = metered cost
+  (electricity local, bill paid). A bare-string key edit keeps the allocation. Edited through the
+  config entry editor (mapping form); no dedicated form.
 - ✅ **D. spend rates** — ledger keeps a 60 × 1-minute charge ring per scope and dimension
   (memory only); `quotaLedger` windows carry `hard`, `ratePerHour`, `rateSpanSec`,
   `exhaustsInSec`, `projectedAtReset`. Covers key, model, credential, provider and box scopes.
   A key or model with no budget gets its $/h from `usageRollup` cost ÷ window (UI, slice E).
-- ◻ **E. UI** — main page dashboard sections on A–D; Traffic trimmed to requests; old usage
-  components retired once nothing mounts them.
-
-- **next:** slice E — UI: dashboard on `/`, Traffic = requests, Fleet → `/machines`.
+- ✅ **E. UI** — `/` = Dashboard (`ui/src/Dashboard.tsx`): state line + faults, then one control row
+  (window, API keys, models, Total / By key / By model / Key × model; all in the URL) over Metrics,
+  Cost, Utilization (serving % + compute % per device) and Budgets (ledger windows with rate,
+  runs-out-in, projected at reset). Row click filters to it. `/traffic` = warnings, active
+  requests, log, turned away, queueing detail. Fleet + GPU 24 h panel → `/machines`. Retired:
+  Throughput strip, `PaidComparison.tsx`, `TrafficHeadline`, `CallerSpend`, `SpeedCacheHeadline`;
+  `/usage` → `/`. Checked in a sandbox (scratch `--home`, fake upstream, `vite dev` on :5179):
+  allocation 429 after 4 × $0.016 on a $0.05/day hard cap; splits, row filter, /traffic,
+  /machines render. Not deployed.
+- **next:** owner decides on deploy (Go binary + `ui/dist` rebuild + restart), then adds a key
+  allocation if wanted (`keys.<k>.limits` via the config entry editor).
 - **risks:** a key's allocation is charged the per-token electricity ESTIMATE, while the dashboard
   may show measured kWh (power config) — the two can differ; key scope charged only on
   `handleInference` (the sole quota charge site) — realtime/websocket audio is not counted;
-  `activity_conversation` only goes back as far as payload retention, so turns/ctx are short for
+  compute chart draws a bucket with no samples as 0% (before the first sample after deploy) —
+  MetricChart has no gaps; ledger rate is in-memory, so for an hour after a restart it is over
+  the time since start (shown as "measuring" under a minute); `usageRollup` over 30 d is ~1.8 s on
+  prod (perf/ctx scans), so a 7 d/30 d dashboard is slow to load; clicking an unkeyed row sets
+  keys=[''], which the server reads as no key filter; `ModelStats` component is now unmounted
+  (its hooks are still used); `activity_conversation` only goes back as far as payload retention, so turns/ctx are short for
   old windows; GPU % sampled at heartbeat rate is coarse.
 - **blocking decisions:** none open.
 - **assumptions:** "fused TPS" = prefill fused (incl. cached prefix), the only fused metric; tg/s

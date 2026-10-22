@@ -129,7 +129,7 @@ export function TrafficWarnings({
         <Row>
           <Typography variant="body2" sx={{ color: C.warn }}>
             {fmtInt(turnedAway)} request{turnedAway === 1 ? ' was' : 's were'} told to retry
-            later (demand did not fit).
+            later — demand did not fit, or a hard budget or key allocation was full.
             {notHonored > 0 && (
               <>
                 {' '}

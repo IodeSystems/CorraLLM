@@ -154,11 +154,11 @@ function CalibrationBanner() {
 // ONE ENTRY PER QUESTION SOMEBODY ARRIVES WITH (P30). Ten entries named after the
 // data they rendered became six plus the lab, each named after what it answers:
 //
-//   Now       is it serving, and if not what is wrong
+//   Dashboard is anything wrong; what did it do and cost, split by key/model (P56)
 //   Models    what can be called, and what state is it in     (was the Overview catalog)
-//   Traffic   what has it been doing, over a span I choose   (was Activity + Usage)
+//   Traffic   the requests themselves: in flight, done, turned away (P56)
 //   Callers   who is asking and what are they allowed        (was Keys + Groups)
-//   Machines  what hardware exists and what is on it         (was Hosts)
+//   Machines  what hardware exists and what is on it         (was Hosts; + fleet, P56)
 //   Setup     what is configured, and what changed           (was Providers + History + Quota)
 //   Bench     which model is worth its VRAM
 //
@@ -172,7 +172,7 @@ function CalibrationBanner() {
 // were collapsed to fix. /machines is a LIST now and the machine page hangs off
 // it; the fuzzy match below already lights this entry up there.
 const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
-  { to: '/', label: 'Now', icon: DashboardOutlined },
+  { to: '/', label: 'Dashboard', icon: DashboardOutlined },
   { to: '/models', label: 'Models', icon: LayersOutlined },
   { to: '/traffic', label: 'Traffic', icon: TimelineOutlined },
   { to: '/callers', label: 'Callers', icon: GroupsOutlined },

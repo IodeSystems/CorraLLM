@@ -4,43 +4,29 @@ import { Box, Button, Chip, Typography } from '@mui/material'
 import { PageHeader } from '@/Panel'
 import { ActivityLog } from '@/ActivityLog'
 import { ActiveRequests } from '@/ActiveRequests'
-import { ModelStats } from '@/ModelStats'
 import { ServiceProfiles } from '@/ServiceProfiles'
 import { TrafficWarnings } from '@/TrafficWarnings'
 import { TurnedAway } from '@/TurnedAway'
-import { CallerSpend, MoreCharts, TrafficHeadline } from '@/routes/usage'
+import { MoreCharts } from '@/routes/usage'
 import { TimeWindowPicker, windowPhrase, type TimeWindow } from '@/TimeWindow'
 import { C } from '@/theme'
 
 /**
- * TRAFFIC — what this box has been doing, over a span you choose.
+ * TRAFFIC — the requests themselves, over a span you choose (P56).
  *
- * The merge of `/activity` and `/usage` (P30 phase B), reordered around what a
- * person opens it for (P30 wave 1). It had become eight panels in the order the
- * data happened to exist: six unbounded lists, each fetched separately, with the
- * charts and the live sessions buried under two tables of rejections and a
- * hundred log rows. "This page looks like it's way too long to find what a user
- * wants."
- *
- * The page now has a HEADER and a BODY, and the split is the point.
- *
- *   Header — what you need without scrolling. Anything wrong, the window's five
- *   totals, two charts, and who is being served right now. Same rule the home
- *   screen already follows: faults first, then what it is getting done.
- *
- *   Body — one panel per question, in the order the questions get asked. What
- *   each model did and how fast it did it; the requests themselves, paged; who
- *   we turned away; who spent the money.
+ * In flight, completed, turned away, and why they waited. The numbers ABOUT
+ * the requests — speed, cache, context, cost, split by caller and model — moved
+ * to the dashboard on the main page in P56. "Traffic is a bit convoluted" was
+ * this page answering two questions at once: what happened, and what it added
+ * up to. It answers the first.
  *
  * Under it, collapsed, the queueing diagnostics — the per-caller service
- * distributions and six charts about the scheduler's own behaviour. Not deleted:
- * they explain the waits above, and somebody investigating a bad hour needs
- * them. They are just not what the page is for, and they are the two heaviest
- * aggregations on it, so they are not fetched until asked for.
+ * distributions and the scheduler's own behaviour over time. They explain the
+ * waits in the log, and they are the two heaviest queries here, so they are
+ * not fetched until asked for.
  *
  * WINDOW IN THE URL, so it can be sent to somebody. "Look at nine this morning"
- * is a link, not an instruction to click four things. State that only exists in
- * a component cannot be shared or repeated.
+ * is a link, not an instruction to click four things.
  */
 function Traffic() {
   const { key, from, to, minutes } = Route.useSearch()
@@ -81,21 +67,11 @@ function Traffic() {
           are still below for whoever wants the rows. */}
       <TrafficWarnings window={window} filterKey={key} />
 
-      {/* What it did and what it cost: five totals and two charts. */}
-      <TrafficHeadline window={window} />
-
-      {/* Who is being served RIGHT NOW. It is also on the home screen, which is
-          the page that answers "right now" — but a person watching a bad hour on
-          this page should not have to leave it to see whether anything is still
-          moving. One component, so the two cannot drift; compact here, because
-          on this page it is a header and not the subject. */}
-      <ActiveRequests compact />
+      {/* Who is being served RIGHT NOW. Its one home since P56 moved it off the
+          main page, so full size here: on this page it is the subject. */}
+      <ActiveRequests />
 
       {/* ── Body ─────────────────────────────────────────────────────────── */}
-
-      {/* One row per model: requests, tp/s and tg/s, tokens processed, generated
-          and cached, cost, and what reaching it cost callers. */}
-      <ModelStats window={window} />
 
       {/* The requests themselves, a page at a time. */}
       <ActivityLog
@@ -114,7 +90,6 @@ function Traffic() {
           promise by promise. */}
       <TurnedAway window={window} filterKey={key} />
 
-      <CallerSpend window={window} />
 
       {/* ── Diagnostics, on request ──────────────────────────────────────── */}
 

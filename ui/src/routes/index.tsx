@@ -1,37 +1,26 @@
-import type { ReactNode } from 'react'
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Box, Chip, Typography } from '@mui/material'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
-import { ActiveRequests } from '@/ActiveRequests'
 import { Panel, PageHeader, Row } from '@/Panel'
+import { Dashboard, type GroupBy, type Split } from '@/Dashboard'
+import type { TimeWindow } from '@/TimeWindow'
 import { C } from '@/theme'
-import { NotYet } from '@/NotYet'
-import { FleetPanel, type FleetResident, type FleetServer } from '@/FleetPanel'
-import { GpuUtilizationPanel, useGpuBusy } from '@/GpuUtilization'
-import { fmtInt, fmtKwh, fmtUSD } from '@/format'
-import { PaidComparison, type ComparisonRow } from '@/PaidComparison'
 
 /**
- * NOW — is this box serving, and if not, what is wrong?
+ * THE DASHBOARD — is anything wrong, and what did the box do and cost (P56).
  *
- * The home screen answers the first question anybody arrives with, and nothing
- * else (P30). It used to also be the model catalog, the memory ledger and the
- * lane definitions: four subjects, of which a person opening the dashboard
- * because something felt wrong wanted one. The catalog is /models, the ledger is
- * /machines, the lanes are /models.
+ * The top is what it always was: a state sentence and the faults behind it,
+ * because an owner opening the main page asks "is it working" first. Under it,
+ * the dashboard (Dashboard.tsx): metrics, cost, utilization and budgets over
+ * one window, kept to the callers and models chosen and split by either or
+ * both.
  *
- * What is left is a state sentence, the faults behind it, what the box is
- * getting DONE, and what is in flight.
- *
- * The throughput strip is a later correction to this page's own doctrine. It
- * carried a panel headed "Nothing else on this page, on purpose", which was a
- * defensible answer to "is it broken" and the wrong answer to the question an
- * owner actually opens a dashboard with — which is two questions, not one: is it
- * working, AND is it doing anything. A home screen that can only say "nothing
- * needs you" cannot distinguish a healthy busy box from a healthy idle one, and
- * those are not the same news to somebody paying for it.
+ * What left in P56: the throughput strip and the paid comparison (the
+ * dashboard's metrics and cost tables say the same, splittable), the fleet and
+ * GPU panels (/machines — they are about the hardware), and the requests in
+ * flight (/traffic — it is the requests page now).
  */
 const NowDoc = graphql(/* GraphQL */ `
   query Now($hourAgo: Long!, $dayAgo: Long!, $now: Long!) {
@@ -42,12 +31,6 @@ const NowDoc = graphql(/* GraphQL */ `
       # two screens in their head, which is what it took to find the 2026-09-05
       # slowdown by hand.
       recent: usageRollup(from: $hourAgo, to: $now) {
-        # THE RATE AND THE BASELINE, ON THE SAME FETCH. An energy figure without
-        # its $/kWh is a number with no basis, and "would have cost $X" without
-        # the type it was priced against is not a claim anybody can check. Both
-        # are window-level, so they ride the query the tiles already make.
-        costPerKwh
-        baselineType
         rows {
           served
           requests
@@ -56,25 +39,6 @@ const NowDoc = graphql(/* GraphQL */ `
           cacheReports
           promptTokens
           cachedTokens
-          completionTokens
-          costUsd
-          # WHAT KIND OF MONEY. A single "Cost" over a mixed fleet is neither
-          # electricity nor a bill; these three are the same total, split by what
-          # actually charges it — and free-tier traffic is a fourth kind that
-          # carries no dollars at all, so it is counted rather than summed.
-          billing
-          energyUsd
-          energyKwh
-          paidUsd
-          unattributedUsd
-          freeRequests
-          mispricedUsd
-          baselineUsd
-          baselineCachedUsd
-          baselineProcessedUsd
-          baselineGeneratedUsd
-          baselineExcluded
-          baselineType
           promptPerSec
           predictedPerSec
         }
@@ -100,18 +64,9 @@ const NowDoc = graphql(/* GraphQL */ `
           server
           agentStatus
           agentLastSeen
-          # WHICH POOL IS THE DEVICE. Only used to say 'device' or 'system'
-          # beside a bar — the word that tells a reader whether 51 GB idle is a
-          # graphics card or spare RAM.
-          devicePool
         }
         models {
           name
-          # WHAT COULD RUN WHERE. A machine holding nothing reads very
-          # differently depending on whether anything is configured to run
-          # there at all, and that is the difference between idle and pointless.
-          server
-          remote
           # OUT OF THE SETUP, WHICH THIS PAGE USES ONLY TO STOP COUNTING IT.
           # It raises no fault here on purpose — a decision already recorded in
           # the config does not also need a card (OB-6) — but "what could run"
@@ -133,12 +88,6 @@ const NowDoc = graphql(/* GraphQL */ `
           sinceMs
         }
       }
-      # THE FLEET, ON THE QUERY THIS PAGE ALREADY MAKES. Everything the
-      # utilisation panel reads is added to the request that was going out
-      # anyway — no second fetch on the home screen, which is the thing P30 was
-      # protecting. The alternative was MachineData's Config query, which is a
-      # survey of every host (agent endpoints, extensions, notes, toolchains)
-      # and would have cost a second round trip to render three bars.
       residency {
         stopping
         servers {
@@ -148,39 +97,11 @@ const NowDoc = graphql(/* GraphQL */ `
             budget
             used
           }
-          # Whether being full here has COST anything. UtilizationBar's contract
-          # is explicit that a percentage cannot settle that and a made-room
-          # count can, so the bars are given one rather than a threshold.
-          madeRoomCount
-          madeRoomEvicted
-          madeRoomFor
-        }
-        # LOCAL BOX ONLY — the attached MacBook's Metal device is not in here.
-        # Read for one thing: which pool names are backed by a card, so a second
-        # GPU the declaration does not name still reads as device memory. Never
-        # for a number; the numbers on this page are all the fleet-wide ledger
-        # above. An unavailable reading means the probe could not answer, so the
-        # record says nothing about its pool either (see FleetPanel.roleOf).
-        gpus {
-          available
-          pool
         }
         models {
           modelName
           server
           state
-          refs
-          remote
-          # What this backend has reserved, per pool — the same ledger the bars
-          # are drawn from, so the parts add up to the whole. Deliberately NOT
-          # footprintMiB: that is the live process measurement, a second and
-          # different reading of the same quantity, and putting it beside a
-          # ledger bar would render two meanings as one. /machines shows both,
-          # side by side, where the difference is the point.
-          usage {
-            pool
-            bytes
-          }
         }
       }
     }
@@ -672,208 +593,6 @@ function BoxStateAsking() {
   )
 }
 
-/**
- * What the box is GETTING DONE — the second question an owner arrives with.
- *
- * Every number carries its unit and its window (OB-4); the window is said once,
- * on the panel, rather than five times. Counts are the last hour because that is
- * the span a person means by "at the moment" when something felt wrong — the
- * same window the slowdown comparison above already reads.
- *
- * Deliberately not a chart. A chart of the last hour invites reading a trend off
- * six points, and what this answers is "how much", not "which way" — Traffic
- * owns the shape over time and says so at the end of the strip (OB-8).
- */
-/**
- * Compact for a headline number. "46,840,478 in" is exact and unreadable at a
- * glance, which is the only way this strip is read; "46.8M in" is the same fact
- * in the shape a person can take in without counting digit groups. Traffic keeps
- * the exact figures, where someone is looking rather than glancing.
- */
-function compact(n: number): string {
-  if (!Number.isFinite(n)) return '—'
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(Math.round(n))
-}
-
-function Throughput({
-  pending = false,
-  machines = 0,
-  ready = 0,
-  configured = 0,
-  requests = 0,
-  promptTokens = 0,
-  cachedTokens = 0,
-  completionTokens = 0,
-  cacheReports = 0,
-  energyUsd = 0,
-  energyKwh = 0,
-  paidUsd = 0,
-  unattributedUsd = 0,
-  freeRequests = 0,
-  mispricedUsd = 0,
-  costPerKwh = 0,
-}: {
-  /** Nothing has been counted yet: the strip renders, the numbers do not. */
-  pending?: boolean
-  machines?: number
-  ready?: number
-  configured?: number
-  requests?: number
-  promptTokens?: number
-  cachedTokens?: number
-  completionTokens?: number
-  cacheReports?: number
-  energyUsd?: number
-  energyKwh?: number
-  paidUsd?: number
-  unattributedUsd?: number
-  /** How many requests cost nothing. The free-tier tile's dollar figure is $0
-   *  by definition, so this is what says whether the $0 was measured. */
-  freeRequests?: number
-  mispricedUsd?: number
-  costPerKwh?: number
-}) {
-  // Idle is a fact, not a blank. A strip of zeroes reads as broken; saying so in
-  // words is the difference between "nothing is wrong" and "nothing is here".
-  //
-  // And "not asked yet" is a third thing again, which is why `pending` is not
-  // folded into `idle`: "none" is a count of zero requests that somebody took,
-  // "not in yet" is no count at all (NotYet.tsx).
-  const idle = requests === 0
-  const stats: { label: string; value: ReactNode; sub?: string }[] = [
-    {
-      label: 'Machines',
-      value: pending ? <NotYet /> : String(machines),
-      sub: pending ? undefined : machines === 1 ? 'this box' : 'this box and attached',
-    },
-    {
-      label: 'Models loaded',
-      value: pending ? <NotYet /> : `${ready} of ${configured}`,
-      sub: 'the rest load on demand',
-    },
-    {
-      label: 'Requests',
-      value: pending ? <NotYet /> : idle ? 'none' : fmtInt(requests),
-      sub: 'in the last hour',
-    },
-    {
-      // CACHED · PROCESSED · GENERATED — the three classes tokens are always
-      // measured in, and the vocabulary the cost model, the metrics and the
-      // owner all already use. "in · out" was two of the three with the
-      // interesting one folded into the first: promptTokens INCLUDES the cached
-      // prefix, so "in" was silently the sum of the work done and the work
-      // avoided, and the cache read — the number that says whether prefix
-      // caching is working at all — was queried here and never shown.
-      label: 'Tokens',
-      value: pending ? (
-        <NotYet />
-      ) : idle ? (
-        '—'
-      ) : (
-        `${cacheReports > 0 ? compact(cachedTokens) : '—'} · ${compact(
-          Math.max(0, promptTokens - cachedTokens),
-        )} · ${compact(completionTokens)}`
-      ),
-      // The label strip is what makes the three readable; without it the value
-      // is three numbers in an order nobody was told.
-      sub:
-        pending || idle
-          ? 'cached · processed · generated'
-          : cacheReports > 0
-            ? `cached · processed · generated — ${((cachedTokens / Math.max(1, promptTokens)) * 100).toFixed(0)}% of prompt from cache`
-            : 'cached · processed · generated — nothing reported a cache',
-    },
-    {
-      // ELECTRICITY, SAID SO, WITH ITS RATE. A local backend's cost IS energy:
-      // token work → Wh → kWh × $/kWh, and the screen never said either half.
-      // The rate is on the tile rather than in a tooltip because a cost figure
-      // whose rate is invisible cannot be checked (OB-4, OB-10).
-      label: 'Electricity',
-      value: pending ? <NotYet /> : fmtUSD(energyUsd),
-      sub:
-        costPerKwh > 0
-          ? `${fmtKwh(energyKwh)} at $${costPerKwh}/kWh`
-          : 'no $/kWh configured — every energy figure is $0 by omission',
-    },
-    {
-      // AND THE PART THAT IS NOT ELECTRICITY. The fleet is mixed: the anthropic
-      // types bill per token and a total over both kinds is neither. A counted
-      // $0 here is a real answer ("nothing went to a paid provider this hour"),
-      // which is why the tile is not hidden when it is zero.
-      label: 'Paid APIs',
-      value: pending ? <NotYet /> : fmtUSD(paidUsd),
-      sub: paidUsd > 0 ? 'billed per token by a provider' : 'nothing billed per token',
-    },
-  ]
-  // A THIRD KIND: SOMEBODY ELSE'S HARDWARE, AT NO CHARGE. The only tile here
-  // whose $0 is the answer rather than the absence of one — the provider charges
-  // nothing, so nothing is what it cost. That is why it is gated on the request
-  // COUNT and not on the dollars: $0 over seven requests is a reading, $0 over
-  // none is an empty category, and only the second belongs off the page.
-  //
-  // The sub-label says whose hardware, because that is the fact a reader can
-  // check and the one that can change — a free tier is a gift, not a property of
-  // this box, and it ends without warning.
-  if (freeRequests > 0) {
-    stats.push({
-      label: 'Free tier',
-      value: fmtUSD(0),
-      sub:
-        mispricedUsd > 0
-          ? `${fmtInt(freeRequests)} requests on another provider, at no charge — ${fmtUSD(mispricedUsd)} of it had been billed as ours`
-          : `${fmtInt(freeRequests)} requests on another provider, at no charge`,
-    })
-  }
-  // A FOURTH, AND IT IS A CONFIG GAP RATHER THAN A READING. An energy-priced
-  // type on a model corrallm does not run, with nothing declaring what that host
-  // charges: the tokens were processed on somebody else's hardware and then
-  // charged against this box's watt-hour coefficients. Not electricity anybody
-  // paid here, not the provider's rate, and not declared free either. It gets a
-  // tile only when it is nonzero — a permanent $0 tile teaches nobody anything,
-  // and this one names an action (OB-6).
-  if (unattributedUsd > 0) {
-    stats.push({
-      label: 'Unattributed',
-      value: fmtUSD(unattributedUsd),
-      sub: 'off-box models priced as our own energy — say what they charge, or declare their free tier',
-    })
-  }
-  return (
-    <Panel
-      title="Activity"
-      subtitle="Last hour"
-      help="Traffic shows the same numbers over any span you pick."
-      // The window stays in the header, because a number without its window is
-      // not a number (OB-4) and the head of the sentence survives a clip. Where
-      // to get another window is the next step, and goes in the help tooltip.
-      dense
-    >
-      <Row>
-        <Box sx={{ display: 'flex', gap: 4, flexWrap: 'wrap', py: 0.5 }}>
-          {stats.map((s) => (
-            <Box key={s.label} sx={{ minWidth: 120 }}>
-              <Typography variant="caption" sx={{ color: C.textFaint, display: 'block' }}>
-                {s.label}
-              </Typography>
-              <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
-                {s.value}
-              </Typography>
-              {s.sub && (
-                <Typography variant="caption" sx={{ color: C.textMuted }}>
-                  {s.sub}
-                </Typography>
-              )}
-            </Box>
-          ))}
-        </Box>
-      </Row>
-    </Panel>
-  )
-}
-
 function WhatIsWrong({ faults }: { faults: Fault[] }) {
   if (!faults.length) return null
   return (
@@ -914,6 +633,26 @@ function WhatIsWrong({ faults }: { faults: Fault[] }) {
 
 
 function Now() {
+  const search = Route.useSearch()
+  const navigate = useNavigate()
+  // WINDOW AND SPLIT IN THE URL, so a view can be sent to somebody: "sk-aw4 on
+  // Swift, last 7 days" is a link, not four clicks to describe.
+  const window: TimeWindow =
+    search.from && search.to
+      ? { kind: 'absolute', fromMS: search.from, toMS: search.to }
+      : { kind: 'relative', minutes: search.minutes ?? 1440 }
+  const split: Split = { keys: search.keys ?? [], models: search.models ?? [], groupBy: search.groupBy ?? 'model' }
+  const go = (w: TimeWindow, sp: Split) =>
+    navigate({
+      to: '/',
+      search: {
+        ...(w.kind === 'absolute' ? { from: w.fromMS, to: w.toMS } : { minutes: w.minutes }),
+        ...(sp.keys.length ? { keys: sp.keys } : {}),
+        ...(sp.models.length ? { models: sp.models } : {}),
+        ...(sp.groupBy !== 'model' ? { groupBy: sp.groupBy } : {}),
+      },
+    })
+
   // Rounded to the minute so the query key is stable between renders — an exact
   // Date.now() would make every render a cache miss and refetch in a loop.
   const nowMs = Math.floor(Date.now() / 60_000) * 60_000
@@ -927,50 +666,10 @@ function Now() {
       }),
     refetchInterval: 10000,
   })
-  const gpuBusy = useGpuBusy()
-
-  if (q.error) {
-    return (
-      <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-        <PageHeader title="Now" />
-        <Panel title="No response from this machine">
-          <Typography variant="body2" sx={{ color: C.textMuted }}>
-            The dashboard could not reach corrallm on this box. It is either restarting, stopped, or
-            not reachable from here — nothing below is current. {String(q.error)}
-          </Typography>
-        </Panel>
-      </Box>
-    )
-  }
 
   const c = q.data?.corrallm
-  // THE PAGE, WHILE IT IS STILL BEING ANSWERED — not a spinner on an empty
-  // frame. This screen used to return `<Loading />` here, so on a box slow
-  // enough to be worth looking at (6 s to answer, reproducibly) the first thing
-  // an owner saw was a nav rail and nothing else: "the one thing I came here for
-  // and it's blank". Traffic has always degraded properly — header, window
-  // picker and panel chrome first, values as they land — so this was an
-  // inconsistency, not an unsolved problem (OB-5).
-  //
-  // Same shape, same order, same panels; every number says it has not arrived
-  // rather than showing a zero, and the state line says so in one sentence at
-  // the top. What is NOT here is a "What needs looking at" placeholder: an empty
-  // fault panel is the false all-clear this page exists to stop, and the state
-  // line above already says nothing below is a reading.
-  if (!c) {
-    return (
-      <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-        <PageHeader title="Now">
-          <BoxStateAsking />
-        </PageHeader>
-        <Throughput pending />
-        <FleetPanel pending />
-        <ActiveRequests />
-      </Box>
-    )
-  }
-  const ov = c.overview
-  const res = c.residency
+  const ov = c?.overview
+  const res = c?.residency
   // THE DENOMINATOR IS WHAT CAN SERVE, not what is written down. This page says
   // "1 of 12 models loaded" and "the next request loads one of 12", and a model
   // out of the setup is never resolved, never spawned and never preloaded — so
@@ -983,240 +682,122 @@ function Now() {
   const stopping = (res?.stopping ?? []).length
   const readyCount = (res?.models ?? []).filter((m) => m.state === 'ready').length
 
-  const slow = slowdownFaults(
-    (c.recent?.rows ?? []).map((r) => ({
-      served: r.served,
-      requests: Number(r.requests),
-      dwellMs: Number(r.dwellMs),
-      cacheHitRate: r.cacheHitRate,
-      cacheReports: Number(r.cacheReports),
-      promptTokens: Number(r.promptTokens),
-      cachedTokens: Number(r.cachedTokens),
-      promptPerSec: r.promptPerSec,
-      predictedPerSec: r.predictedPerSec,
-    })),
-    (c.baseline?.rows ?? []).map((r) => ({
-      served: r.served,
-      requests: Number(r.requests),
-      dwellMs: Number(r.dwellMs),
-      cacheHitRate: r.cacheHitRate,
-      cacheReports: Number(r.cacheReports),
-      promptTokens: Number(r.promptTokens),
-      cachedTokens: Number(r.cachedTokens),
-      promptPerSec: r.promptPerSec,
-      predictedPerSec: r.predictedPerSec,
-    })),
-  )
-
-  const faults = faultsOf(
-    (ov?.servers ?? []).map((x) => ({
-      server: x.server,
-      agentStatus: x.agentStatus,
-      agentLastSeen: String(x.agentLastSeen),
-    })),
-    (res?.models ?? []).map((m) => ({ modelName: m.modelName, server: m.server, state: m.state })),
-    (res?.servers ?? []).map((x) => ({
-      server: x.server,
-      pools: x.pools.map((p) => ({ pool: p.pool, budget: String(p.budget), used: String(p.used) })),
-    })),
-    models.map((m) => ({
-      name: m.name,
-      paused: !!m.paused,
-      pauseReason: m.pauseReason ?? '',
-      pauseResumeMs: String(m.pauseResumeMs ?? 0),
-    })),
-    (ov?.extensions ?? []).map((e) => ({
-      name: e.name,
-      paused: !!e.paused,
-      pauseReason: e.pauseReason ?? '',
-    })),
-    (ov?.refusing ?? []).map((r) => ({
-      backend: r.backend,
-      status: r.status,
-      sinceMs: String(r.sinceMs),
-    })),
-  )
-
-  const all = [...slow, ...faults]
-
-  // THE FLEET, JOINED ONCE. The declared side (which pool is the device, what
-  // could run where) comes from overview; the live side (budget, held, what made
-  // room) from residency; the holders from the resident list. All three are in
-  // the one response above.
-  const num = (v: string | number | null | undefined) => Number(v ?? 0)
-  const liveByServer = new Map((res?.servers ?? []).map((s) => [s.server, s]))
-  const fleetServers: FleetServer[] = (ov?.servers ?? []).map((s) => {
-    const live = liveByServer.get(s.server)
-    return {
-      server: s.server,
-      devicePool: s.devicePool ?? '',
-      agentStatus: s.agentStatus,
-      pools: (live?.pools ?? []).map((p) => ({
-        pool: p.pool,
-        budget: num(p.budget),
-        used: num(p.used),
-      })),
-      madeRoomCount: num(live?.madeRoomCount),
-      madeRoomEvicted: live?.madeRoomEvicted ?? '',
-      madeRoomFor: live?.madeRoomFor ?? '',
-    }
-  })
-  // A remote model is served by a host corrallm does not run. It holds no
-  // residency and must never be counted as loaded on one of your machines.
-  const fleetResident: FleetResident[] = (res?.models ?? [])
-    .filter((m) => !m.remote)
-    .map((m) => ({
-      modelName: m.modelName,
-      server: m.server,
-      state: m.state,
-      refs: num(m.refs),
-      usage: m.usage.map((u) => ({ pool: u.pool, bytes: num(u.bytes) })),
-    }))
-  const declaredByServer = new Map<string, number>()
-  for (const m of models) {
-    if (m.remote || !m.server) continue
-    declaredByServer.set(m.server, (declaredByServer.get(m.server) ?? 0) + 1)
-  }
-  const gpus = res?.gpus ?? []
-  const boundPools = new Set(
-    gpus.filter((g) => g.available && g.pool).map((g) => g.pool as string),
-  )
-  const probeIncomplete = gpus.some((g) => !g.available)
-
-  // Summed across served names, because the strip answers "what is this BOX
-  // doing" — per-model is what Traffic is for.
-  const hour = c.recent?.rows ?? []
-  const totals = hour.reduce(
-    (a, r) => ({
-      requests: a.requests + Number(r.requests ?? 0),
-      promptTokens: a.promptTokens + Number(r.promptTokens ?? 0),
-      cachedTokens: a.cachedTokens + Number(r.cachedTokens ?? 0),
-      completionTokens: a.completionTokens + Number(r.completionTokens ?? 0),
-      cacheReports: a.cacheReports + Number(r.cacheReports ?? 0),
-      // Summed per KIND, never into one figure. The three are the same
-      // costUsd the row already carries, split by what charges it.
-      energyUsd: a.energyUsd + Number(r.energyUsd ?? 0),
-      energyKwh: a.energyKwh + Number(r.energyKwh ?? 0),
-      paidUsd: a.paidUsd + Number(r.paidUsd ?? 0),
-      unattributedUsd: a.unattributedUsd + Number(r.unattributedUsd ?? 0),
-      // Free traffic is COUNTED, not summed: its dollar figure is $0 by
-      // definition, so the count is the only thing that distinguishes a measured
-      // $0 from no such traffic at all.
-      freeRequests: a.freeRequests + Number(r.freeRequests ?? 0),
-      mispricedUsd: a.mispricedUsd + Number(r.mispricedUsd ?? 0),
-    }),
-    {
-      requests: 0,
-      promptTokens: 0,
-      cachedTokens: 0,
-      completionTokens: 0,
-      cacheReports: 0,
-      energyUsd: 0,
-      energyKwh: 0,
-      paidUsd: 0,
-      unattributedUsd: 0,
-      freeRequests: 0,
-      mispricedUsd: 0,
-    },
-  )
-  // The comparison reads the same rows the strip does, so the two cannot
-  // disagree about the hour.
-  const comparisonRows: ComparisonRow[] = hour.map((r) => ({
+  const toRollup = (r: {
+    served: string
+    requests: unknown
+    dwellMs: unknown
+    cacheHitRate: number
+    cacheReports: unknown
+    promptTokens: unknown
+    cachedTokens: unknown
+    promptPerSec: number
+    predictedPerSec: number
+  }) => ({
     served: r.served,
-    billing: r.billing ?? '',
-    requests: Number(r.requests ?? 0),
-    cachedTokens: Number(r.cachedTokens ?? 0),
-    promptTokens: Number(r.promptTokens ?? 0),
-    completionTokens: Number(r.completionTokens ?? 0),
-    energyUsd: Number(r.energyUsd ?? 0),
-    baselineUsd: Number(r.baselineUsd ?? 0),
-    baselineCachedUsd: Number(r.baselineCachedUsd ?? 0),
-    baselineProcessedUsd: Number(r.baselineProcessedUsd ?? 0),
-    baselineGeneratedUsd: Number(r.baselineGeneratedUsd ?? 0),
-    baselineExcluded: r.baselineExcluded ?? '',
-    baselineType: r.baselineType ?? '',
-  }))
+    requests: Number(r.requests),
+    dwellMs: Number(r.dwellMs),
+    cacheHitRate: r.cacheHitRate,
+    cacheReports: Number(r.cacheReports),
+    promptTokens: Number(r.promptTokens),
+    cachedTokens: Number(r.cachedTokens),
+    promptPerSec: r.promptPerSec,
+    predictedPerSec: r.predictedPerSec,
+  })
+  const slow = c ? slowdownFaults((c.recent?.rows ?? []).map(toRollup), (c.baseline?.rows ?? []).map(toRollup)) : []
+
+  const faults = c
+    ? faultsOf(
+        (ov?.servers ?? []).map((x) => ({
+          server: x.server,
+          agentStatus: x.agentStatus,
+          agentLastSeen: String(x.agentLastSeen),
+        })),
+        (res?.models ?? []).map((m) => ({ modelName: m.modelName, server: m.server, state: m.state })),
+        (res?.servers ?? []).map((x) => ({
+          server: x.server,
+          pools: x.pools.map((p) => ({ pool: p.pool, budget: String(p.budget), used: String(p.used) })),
+        })),
+        models.map((m) => ({
+          name: m.name,
+          paused: !!m.paused,
+          pauseReason: m.pauseReason ?? '',
+          pauseResumeMs: String(m.pauseResumeMs ?? 0),
+        })),
+        (ov?.extensions ?? []).map((e) => ({
+          name: e.name,
+          paused: !!e.paused,
+          pauseReason: e.pauseReason ?? '',
+        })),
+        (ov?.refusing ?? []).map((r) => ({
+          backend: r.backend,
+          status: r.status,
+          sinceMs: String(r.sinceMs),
+        })),
+      )
+    : []
+  const all = [...slow, ...faults]
 
   return (
     <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <PageHeader title="Now">
-        <BoxState
-          faults={all}
-          stopping={stopping}
-          ready={readyCount}
-          configured={models.length}
-          outOfSetup={outOfSetup}
-          machines={(ov?.servers ?? []).length}
-          version={c.health?.version ?? 'unknown'}
-        />
+      <PageHeader title="Dashboard">
+        {/* THE STATE LINE, WHILE IT IS STILL BEING ANSWERED — not a blank
+            frame. Every panel below fetches on its own, so the page renders
+            its chrome first and values as they land (OB-5). */}
+        {q.error ? (
+          <Typography variant="body2" sx={{ color: C.error }}>
+            Could not reach corrallm on this box — it is restarting, stopped, or not reachable from
+            here. Nothing below is current. {String(q.error)}
+          </Typography>
+        ) : !c ? (
+          <BoxStateAsking />
+        ) : (
+          <BoxState
+            faults={all}
+            stopping={stopping}
+            ready={readyCount}
+            configured={models.length}
+            outOfSetup={outOfSetup}
+            machines={(ov?.servers ?? []).length}
+            version={c.health?.version ?? 'unknown'}
+          />
+        )}
       </PageHeader>
 
-      {/* Anything wrong comes first — before what is running, before what could
-          run. This is the panel a person opens the dashboard to read. */}
-      <WhatIsWrong faults={all} />
+      {/* Anything wrong comes first. An empty fault panel before the answer
+          arrives would be a false all-clear, so it waits for the answer. */}
+      {c && <WhatIsWrong faults={all} />}
 
-      {/* What the box is doing right now. This is in-flight's ONE home: it used
-          to render here AND on /activity, so two pages showed the same live
-          table and neither was the authority. */}
-      {/* What it is GETTING DONE, under what is wrong with it. Both are the
-          home screen's business: an owner arrives asking whether the box works
-          AND whether it is doing anything, and a page that answered only the
-          first could not tell a healthy busy box from a healthy idle one. */}
-      <Throughput
-        machines={(ov?.servers ?? []).length}
-        ready={readyCount}
-        configured={models.length}
-        requests={totals.requests}
-        promptTokens={totals.promptTokens}
-        cachedTokens={totals.cachedTokens}
-        completionTokens={totals.completionTokens}
-        cacheReports={totals.cacheReports}
-        energyUsd={totals.energyUsd}
-        energyKwh={totals.energyKwh}
-        paidUsd={totals.paidUsd}
-        unattributedUsd={totals.unattributedUsd}
-        freeRequests={totals.freeRequests}
-        mispricedUsd={totals.mispricedUsd}
-        costPerKwh={c.recent?.costPerKwh ?? 0}
+      <Dashboard
+        window={window}
+        split={split}
+        modelOptions={models.map((m) => m.name)}
+        onWindow={(w) => go(w, split)}
+        onSplit={(sp) => go(window, sp)}
       />
-
-      {/* WHAT RUNNING IT HERE IS WORTH, directly under what it cost. The strip
-          above says the electricity; this says what the same tokens would have
-          been billed at on a paid API, and names which one. It sits below rather
-          than inside the strip because its scope is a sentence, not a tile's
-          sub-label: the comparison covers token-billed traffic on our own
-          hardware and nothing else, and a figure whose scope is invisible is the
-          one thing worse than no figure. */}
-      <PaidComparison
-        when="in the last hour"
-        baselineType={c.recent?.baselineType ?? ''}
-        costPerKwh={c.recent?.costPerKwh ?? 0}
-        rows={comparisonRows}
-        pending={q.isLoading}
-      />
-
-      {/* WHERE THE HARDWARE IS GOING, directly under the two tiles that raise
-          the question. The strip says "2 machines" and "1 of 12 models loaded";
-          this is the same two facts with a shape, and it is the only thing on
-          the page that can show a fleet which is simultaneously nearly full and
-          almost entirely idle. It sits BELOW what the box is getting done,
-          because an owner asks "is it working" and "is it doing anything"
-          before "where is it doing it" — and above what is in flight, which is
-          the most volatile thing here and stays last. */}
-      <FleetPanel
-        servers={fleetServers}
-        resident={fleetResident}
-        declaredByServer={declaredByServer}
-        boundPools={boundPools}
-        probeIncomplete={probeIncomplete}
-        busy={gpuBusy}
-      />
-
-      <GpuUtilizationPanel />
-
-      <ActiveRequests />
     </Box>
   )
 }
 
-export const Route = createFileRoute('/')({ component: Now })
+const GROUP_BYS: GroupBy[] = ['none', 'key', 'model', 'key,model']
+
+export const Route = createFileRoute('/')({
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { from?: number; to?: number; minutes?: number; keys?: string[]; models?: string[]; groupBy?: GroupBy } => {
+    const num = (v: unknown) => {
+      const n = Number(v)
+      return Number.isFinite(n) && n > 0 ? n : undefined
+    }
+    const list = (v: unknown) =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : typeof v === 'string' && v ? [v] : undefined
+    return {
+      from: num(s.from),
+      to: num(s.to),
+      minutes: num(s.minutes),
+      keys: list(s.keys),
+      models: list(s.models),
+      groupBy: GROUP_BYS.includes(s.groupBy as GroupBy) ? (s.groupBy as GroupBy) : undefined,
+    }
+  },
+  component: Now,
+})

@@ -1,4 +1,8 @@
+import { useQuery } from '@tanstack/react-query'
 import { Box, Chip, Typography } from '@mui/material'
+import { graphql } from '@/gql'
+import { gqlClient } from '@/gqlClient'
+import { useGpuBusy } from '@/GpuUtilization'
 import { Panel, Row } from '@/Panel'
 import { UtilizationBar } from '@/UtilizationBar'
 import { NotYet } from '@/NotYet'
@@ -305,5 +309,107 @@ export function FleetPanel(props: {
         )
       })}
     </Panel>
+  )
+}
+
+const FleetDoc = graphql(/* GraphQL */ `
+  query Fleet {
+    corrallm {
+      overview {
+        servers {
+          server
+          agentStatus
+          devicePool
+        }
+        models {
+          server
+          remote
+          disabled
+        }
+      }
+      residency {
+        servers {
+          server
+          pools {
+            pool
+            budget
+            used
+          }
+          madeRoomCount
+          madeRoomEvicted
+          madeRoomFor
+        }
+        gpus {
+          available
+          pool
+        }
+        models {
+          modelName
+          server
+          state
+          refs
+          remote
+          usage {
+            pool
+            bytes
+          }
+        }
+      }
+    }
+  }
+`)
+
+/**
+ * The fleet panel with its own fetch, for /machines (P56). It used to ride the
+ * home screen's query; the home screen is now the dashboard, and where the
+ * models sit is a question about the machines.
+ */
+export function FleetSection() {
+  const q = useQuery({ queryKey: ['fleet'], queryFn: () => gqlClient.request(FleetDoc), refetchInterval: 10000 })
+  const busy = useGpuBusy()
+  const c = q.data?.corrallm
+  if (!c) return <FleetPanel pending />
+  const ov = c.overview
+  const res = c.residency
+  const num = (v: string | number | null | undefined) => Number(v ?? 0)
+  const liveByServer = new Map((res?.servers ?? []).map((s) => [s.server, s]))
+  const servers: FleetServer[] = (ov?.servers ?? []).map((s) => {
+    const live = liveByServer.get(s.server)
+    return {
+      server: s.server,
+      devicePool: s.devicePool ?? '',
+      agentStatus: s.agentStatus,
+      pools: (live?.pools ?? []).map((p) => ({ pool: p.pool, budget: num(p.budget), used: num(p.used) })),
+      madeRoomCount: num(live?.madeRoomCount),
+      madeRoomEvicted: live?.madeRoomEvicted ?? '',
+      madeRoomFor: live?.madeRoomFor ?? '',
+    }
+  })
+  // A remote model is served by a host corrallm does not run. It holds no
+  // residency and must never be counted as loaded on one of your machines.
+  const resident: FleetResident[] = (res?.models ?? [])
+    .filter((m) => !m.remote)
+    .map((m) => ({
+      modelName: m.modelName,
+      server: m.server,
+      state: m.state,
+      refs: num(m.refs),
+      usage: m.usage.map((u) => ({ pool: u.pool, bytes: num(u.bytes) })),
+    }))
+  const declaredByServer = new Map<string, number>()
+  for (const m of ov?.models ?? []) {
+    if (m.disabled || m.remote || !m.server) continue
+    declaredByServer.set(m.server, (declaredByServer.get(m.server) ?? 0) + 1)
+  }
+  const gpus = res?.gpus ?? []
+  return (
+    <FleetPanel
+      servers={servers}
+      resident={resident}
+      declaredByServer={declaredByServer}
+      boundPools={new Set(gpus.filter((g) => g.available && g.pool).map((g) => g.pool as string))}
+      probeIncomplete={gpus.some((g) => !g.available)}
+      busy={busy}
+    />
   )
 }

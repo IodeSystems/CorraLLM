@@ -5,6 +5,8 @@ import { Alert, Box, Button, Chip, Stack, Tooltip, Typography } from '@mui/mater
 import { Panel, PageHeader, Row } from '@/Panel'
 import { EntryEditor, type EntryEdit } from '@/EntryEditor'
 import { UtilizationBar } from '@/UtilizationBar'
+import { FleetSection } from '@/FleetPanel'
+import { GpuUtilizationPanel } from '@/GpuUtilization'
 import { graphql } from '@/gql'
 import { gqlClient } from '@/gqlClient'
 import { C } from '@/theme'
@@ -357,6 +359,12 @@ function MachinesPage() {
           />
         ))}
       </Panel>
+
+      {/* Where the models sit and how busy each card is — moved here from the
+          home screen when it became the dashboard (P56). Both are about the
+          hardware, which is this page's subject. */}
+      <FleetSection />
+      <GpuUtilizationPanel />
 
       {/* Belongs to no machine row, so if it is not here it is nowhere — and a
           GPU the scheduler cannot see looks exactly like a GPU that is not
