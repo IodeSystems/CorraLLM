@@ -3,6 +3,29 @@
 Things deliberately NOT being built now. Each says what it is, why it is parked,
 and what would make it worth starting. Nothing here is committed work.
 
+## UI toolchain: TypeScript 7 + oxlint type-aware lint (fleet X-LINT-2)
+
+**What.** `ui/` is on TypeScript ^6.0.3 + eslint ^10.9.1 + typescript-eslint
+^8.69.0. The fleet standard (Carl, 2026-10-22; `~/doc/patterns/standards.md`
+X-LINT-2) is TS 7 + `oxlint --type-aware` (oxlint + oxlint-tsgolint).
+typescript-eslint cannot load TS 7, so the swap is both packages together.
+Applies to the `corrallm.libpath` worktree too.
+
+**Recipe.** Reference: gwag commits c2dd1f6 + 79d4fdd, gwag `ui/.oxlintrc.json`.
+`pnpm add -D typescript@^7 oxlint oxlint-tsgolint`; remove eslint,
+typescript-eslint, eslint-plugin-react-hooks; `npx @oxlint/migrate`, diff the
+rules against gwag's (correctness + recommendedTypeChecked + rules-of-hooks /
+exhaustive-deps); scripts `lint = oxlint --type-aware`, `typecheck = tsc
+--noEmit`; fix findings; build; boot-check.
+
+**Expect.** New typed-rule findings: floating `invalidateQueries` promises,
+no-op casts, and the GraphQL `Long` scalar (codegen `Long: { input: 'string |
+number', output: 'string' }` — the dashboard already `Number()`s Long fields).
+
+**Resume when.** Carl schedules it, or the next UI dependency upgrade. Waits
+on: a decision. Gwag measured type-check 3.4 s → 0.7 s, typed lint 4.2 s →
+0.7 s, same findings. Fleet tracking: `~/inflight/shelf.md`.
+
 ## Free pool: fan out across public IPs, pin for cache
 
 **What.** A free tier is rate-limited per account and often per source IP. With
