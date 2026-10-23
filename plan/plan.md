@@ -400,8 +400,9 @@ still open. Items parked on hardware rather than on a decision are in §9.
   size in a batch is not known — llama.cpp reports only the batch total.
 - **next:** deploy box1 (server first, then `ui-build` — the new UI needs the new fields); owner
   rebuilds the Mac (`make install`).
-- **risks:** Mac `/models` hang is UNDIAGNOSED — only the overview query hangs there; needs a
-  SIGQUIT goroutine dump (`launchctl kill QUIT gui/$(id -u)/com.iodesystems.corrallm`). Port
+- **risks:** Mac `/models` hang: owner reports the Mac good again 10-23 (cause not found —
+  most likely an old build left running; no goroutine dump taken). If it returns: SIGQUIT dump
+  (`launchctl kill QUIT gui/$(id -u)/com.iodesystems.corrallm`). Port
   check dials 127.0.0.1 only: a backend bound to another interface is not seen. Loaded panel and
   per-capability sections were dropped from Models (state is a chip per row).
 - **blocking decisions:** none.
