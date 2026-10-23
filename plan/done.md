@@ -4019,3 +4019,36 @@ axes.
   requests/h 259 → 78. Rolled back 10:34:38; MTP back to 80–120 tg/s. Qwen3.5-2B-Q8_0 downloaded, untested.
 - Measure script: session scratchpad `specmeasure.py FROM TO`.
 - Found: a request QUEUED when a pause drains gets 503 "no backend available", not a 429 (10:20:24, 10:34:22).
+
+## ✅ P57 — Swift OOM loop: `--cache-ram` 56 → 40 GiB; disk tier measured, not built — 2026-10-22
+
+Swift's llama-server was OOM-killed 01:58, 02:26, 02:59 (anon-rss 45.0 / 49.4 / 51.2 GB; host 121 GiB,
+swap 16/16 full, other load ~50-60 GB incl. gopls/tsserver 20-30 GB). Owner: lower it; measure a disk
+tier first. **04:11 `--cache-ram 57344 → 40960`** (config export → one-line edit → `config load
+--force` → reload; reload does not restart a running backend, so I SIGTERMed Swift at 04:16 while
+idle — admin token is disabled, `unloadModel` unavailable). Cost: 1 aw4 stream cut + 3 × 502
+(connection refused) 04:16:17-21; traffic back 04:17:25.
+
+Disk-tier measurement (24 h to 04:17, Swift continuing turns, miss = <50% cached; restarts =
+15 `backend spawned` lines): 5,994 continuing turns, 294 misses, 8.8 Mtok re-prefilled. By cause:
+gap <5 min 194 (5.77 Mtok — divergence, not eviction); a restart in between 74 (2.41 Mtok); gap
+5-30 min 23 (0.68); 30 min-2 h 5 (0.04); >2 h 1 (0.02). Evictions ~20-85/h of ~2 GiB entries.
+**Eviction-attributable ≤ 29 misses/day, ~0.74 Mtok (~6 min prefill/day)**; a write-on-evict tier
+writes ~2 TB/day to the NVMe (990 PRO at 11% wear, 83.85 C stuck) to save that. Not worth it.
+
+**40 GiB read (2026-10-22 04:17 → 10-23 07:50, 27.5 h, same script).** OOM kills: 0 (kernel
+log, both boots). Swift RSS 33.7 GB at the end (no peak sampler; cache state 16 prompts, 31.9 of
+40 GiB). 6,933 continuing turns, 368 misses, 10.87 Mtok re-prefilled. By cause: gap <5 min 264
+(7.52 Mtok); a restart in between 43 (1.61); gap 5-30 min 46 (1.44); 30 min-2 h 13 (0.29); >2 h
+2 (0.01). "removing oldest entry" lines: 3,408 (~124/h; this count may include other llama-servers).
+**Eviction-attributable: 61 misses, 1.74 Mtok in 27.5 h ≈ 53/day, 1.5 Mtok/day (~12 min prefill)**:
+about 2× the 56 GiB figure. That is below the 10× bar, so no disk tier is built.
+Restarts: 8 Swift spawns. 4 were 6-hourly scheduled llama.cpp rebuilds (`tool is BEHIND its pin
+… rebuild=true`, then pause "benchmarking a new llama.cpp build"), 1 was exit status 1 at 04:44, 1
+was a corrallm restart, and 2 came after the 10-23 07:29 reboot. Rebuild restarts cost more
+re-prefill (1.61 Mtok) than eviction did.
+
+Still open, owner decides (unscheduled): (1) after a backend dies, corrallm proxies to its dead
+port for ~5 s (502 connection refused) instead of holding requests for the respawn. Fix = mark
+the backend not-ready on exit. (2) llama.cpp rebuild-on-master every 6 h: each one wipes Swift's
+prompt cache.
