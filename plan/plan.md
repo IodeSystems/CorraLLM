@@ -398,8 +398,7 @@ still open. Items parked on hardware rather than on a decision are in §9.
   (`req:<id>`, one single-turn session) so context avg/p90/p99 covers them. Migrations backfill the
   4266 box1 embed rows (≈38k tok/s mean; checked read-only, 0.03 s + 0.36 s per open). Per-INPUT
   size in a batch is not known — llama.cpp reports only the batch total.
-- **next:** deploy box1 (server first, then `ui-build` — the new UI needs the new fields); owner
-  rebuilds the Mac (`make install`).
+- **next:** none. Deployed to box1 2026-10-23 (39c85d3, `bin/deploy --yes`, handoff); Mac rebuilt by owner.
 - **risks:** Mac `/models` hang: owner reports the Mac good again 10-23 (cause not found —
   most likely an old build left running; no goroutine dump taken). If it returns: SIGQUIT dump
   (`launchctl kill QUIT gui/$(id -u)/com.iodesystems.corrallm`). Port
