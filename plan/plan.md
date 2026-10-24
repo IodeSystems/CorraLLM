@@ -377,7 +377,7 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P60 — Every text reply carries `usage.cost` + `usage.cost_source` — 2026-10-23
+### ✅ P60 — Every text reply carries `usage.cost` + `usage.cost_source` — 2026-10-23
 
 Owner ask (10-23): send cost for measured local models, like the providers' cost we parse. Decided:
 the OpenRouter field (`usage.cost`, USD) in the body, not a header — cost is known only after the
@@ -389,7 +389,9 @@ backend's body, so corrallm's figure is never read back as provider cost); SSE r
 a time, JSON holds its last 64 KiB; 2xx JSON/SSE without Content-Encoding only; Content-Length
 dropped when active. `replyCost` and the row share `classCost`; tests hold body cost == row cost
 (non-stream, stream, >window body, provider cost kept, error untouched).
-- **next:** deploy (not done); check a live Swift and a Fireworks reply.
+- **next:** none. Deployed 10-24 (278ef9f, handoff). Live, key llm-bench: Swift chat, Swift stream,
+  nomic embeddings — body cost == row cost_usd exactly (1.547e-06, 1.484e-06, 8.4e-10). Fireworks
+  path not called live (tests only).
 - **risks:** a non-streamed reply whose usage is > 64 KiB from the end (big rerank `results`)
   gets no cost; a strict client rejecting unknown usage fields; local figure is the old
   coefficient estimate (ed07348: overstates generation).
