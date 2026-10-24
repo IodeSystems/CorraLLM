@@ -1301,6 +1301,20 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				streaming: streaming, join: sttJoin}
 			out = sttRemap
 		}
+		// A cold load this request triggered bills its swap energy to it.
+		var loadCost float64
+		if loaded && backend.Swap != nil {
+			loadCost = p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
+		}
+		// The caller's copy of usage gets corrallm's figure (costinject.go).
+		// Text routes only: image and audio replies carry no usage object.
+		var cw *costWriter
+		if !image && !audio {
+			cw = &costWriter{ResponseWriter: out, price: func(u usage) (float64, string) {
+				return p.replyCost(backend, u, loadCost)
+			}}
+			out = cw
+		}
 		sc := &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: streaming, live: live}
 		if image {
 			// Nothing reads an image reply's body for usage — it has none — and
@@ -1486,6 +1500,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if aw != nil {
 			aw.finish()
 		}
+		// After the shim, whose finish writes the translated body through it.
+		if cw != nil {
+			cw.finish()
+		}
 		// The remap releases first: its output is what the SSE writer reads.
 		if sttRemap != nil {
 			sttRemap.finish()
@@ -1583,26 +1601,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			if status >= 200 && status < 300 && u.PromptPerSec == 0 && u.PredictedPerSec == 0 {
 				u, speedSource = upstreamSpeeds(u, upHeaders, streaming, upstreamStart, sc.firstWrite, sc.lastWrite)
 			}
-			proc := u.PromptTokens - u.CachedTokens
-			if proc < 0 {
-				proc = 0
-			}
-			cCost, pCost, gCost = p.cost.RequestUSDByClass(backend.Type, u.CachedTokens, proc, u.CompletionTokens)
-			// Provider-reported cost wins when present (OpenRouter): treat it as
-			// the authoritative total, keeping the table-derived class ratio (or a
-			// token share when the type is unpriced).
-			if u.Cost > 0 {
-				if s := cCost + pCost + gCost; s > 0 {
-					k := u.Cost / s
-					cCost, pCost, gCost = cCost*k, pCost*k, gCost*k
-				} else if tot := float64(u.PromptTokens + u.CompletionTokens); tot > 0 {
-					cCost = u.Cost * float64(u.CachedTokens) / tot
-					pCost = u.Cost * float64(proc) / tot
-					gCost = u.Cost * float64(u.CompletionTokens) / tot
-				} else {
-					gCost = u.Cost
-				}
-			}
+			cCost, pCost, gCost = p.classCost(backend.Type, u)
 			costUSD = cCost + pCost + gCost
 		}
 		// A DECLARED FREE TIER CHARGES NOTHING, and this box's coefficients are
@@ -1621,11 +1620,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if u.Cost <= 0 && p.cost.NoCharge(backend) {
 			costUSD, cCost, pCost, gCost = 0, 0, 0, 0
 		}
-		var loadCost float64
-		if loaded && backend.Swap != nil {
-			loadCost = p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
-			costUSD += loadCost
-		}
+		costUSD += loadCost
 		release(sched.Done{CostUSD: costUSD})
 
 		// Charge the metered cost against this backend's declared spend windows.

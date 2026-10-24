@@ -377,6 +377,26 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P60 — Every text reply carries `usage.cost` + `usage.cost_source` — 2026-10-23
+
+Owner ask (10-23): send cost for measured local models, like the providers' cost we parse. Decided:
+the OpenRouter field (`usage.cost`, USD) in the body, not a header — cost is known only after the
+usage arrives, and headers are gone by then. `cost_source`: `provider` (upstream's own cost, kept
+as sent), `price-table` (paid type), `energy-estimate` (local watts-per-token), `free-tier`,
+`unpriced`. Local figure is the ESTIMATE (owner OK); measured per-request energy is a later slice.
+Done: `internal/proxy/costinject.go` — `costWriter` outside statusCapture (the row keeps the
+backend's body, so corrallm's figure is never read back as provider cost); SSE rewritten a line at
+a time, JSON holds its last 64 KiB; 2xx JSON/SSE without Content-Encoding only; Content-Length
+dropped when active. `replyCost` and the row share `classCost`; tests hold body cost == row cost
+(non-stream, stream, >window body, provider cost kept, error untouched).
+- **next:** deploy (not done); check a live Swift and a Fireworks reply.
+- **risks:** a non-streamed reply whose usage is > 64 KiB from the end (big rerank `results`)
+  gets no cost; a strict client rejecting unknown usage fields; local figure is the old
+  coefficient estimate (ed07348: overstates generation).
+- **blocking decisions:** none.
+- **optional extensions:** measured per-request energy (request span × card draw, split by
+  concurrency) → `cost_source: energy-measured`; a trailer for clients that never parse bodies.
+
 ### ◐ P59 — Models grouped by provider; Setup → Settings; Load watched to the end — 2026-10-22
 
 - ✅ One Models page: a panel per provider (local by box; extension → providers → models),
