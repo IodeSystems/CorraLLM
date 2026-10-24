@@ -170,4 +170,3 @@ func TestWithCostEmptyUsage(t *testing.T) {
 		t.Errorf("got %s", got)
 	}
 }
-
