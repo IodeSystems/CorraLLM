@@ -32,6 +32,7 @@ import DnsOutlined from '@mui/icons-material/DnsOutlined'
 import TuneOutlined from '@mui/icons-material/TuneOutlined'
 import SpeedOutlined from '@mui/icons-material/SpeedOutlined'
 import TimelineOutlined from '@mui/icons-material/TimelineOutlined'
+import VpnKeyOutlined from '@mui/icons-material/VpnKeyOutlined'
 import { C, theme } from '@/theme'
 import { useLiveEvents } from '@/useLiveEvents'
 import { fetchWhoAmI, getToken, signOut, useAuthGate } from '@/auth'
@@ -178,6 +179,7 @@ const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/models', label: 'Models', icon: LayersOutlined },
   { to: '/traffic', label: 'Traffic', icon: TimelineOutlined },
   { to: '/callers', label: 'Callers', icon: GroupsOutlined },
+  { to: '/requests', label: 'Requests', icon: VpnKeyOutlined },
   { to: '/machines', label: 'Machines', icon: DnsOutlined },
   { to: '/settings', label: 'Settings', icon: TuneOutlined },
 ]

@@ -23,6 +23,7 @@ import { Route as ModelRouteImport } from './routes/model'
 import { Route as ModelsRouteImport } from './routes/models'
 import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as QuotaRouteImport } from './routes/quota'
+import { Route as RequestsRouteImport } from './routes/requests'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SetupRouteImport } from './routes/setup'
 import { Route as TrafficRouteImport } from './routes/traffic'
@@ -105,6 +106,11 @@ const QuotaRoute = QuotaRouteImport.update({
   path: '/quota',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RequestsRoute = RequestsRouteImport.update({
+  id: '/requests',
+  path: '/requests',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -176,6 +182,7 @@ export interface FileRoutesByFullPath {
   '/models': typeof ModelsRoute
   '/providers': typeof ProvidersRoute
   '/quota': typeof QuotaRoute
+  '/requests': typeof RequestsRoute
   '/settings': typeof SettingsRoute
   '/setup': typeof SetupRoute
   '/traffic': typeof TrafficRoute
@@ -203,6 +210,7 @@ export interface FileRoutesByTo {
   '/models': typeof ModelsRoute
   '/providers': typeof ProvidersRoute
   '/quota': typeof QuotaRoute
+  '/requests': typeof RequestsRoute
   '/settings': typeof SettingsRoute
   '/setup': typeof SetupRoute
   '/traffic': typeof TrafficRoute
@@ -231,6 +239,7 @@ export interface FileRoutesById {
   '/models': typeof ModelsRoute
   '/providers': typeof ProvidersRoute
   '/quota': typeof QuotaRoute
+  '/requests': typeof RequestsRoute
   '/settings': typeof SettingsRoute
   '/setup': typeof SetupRoute
   '/traffic': typeof TrafficRoute
@@ -260,6 +269,7 @@ export interface FileRouteTypes {
     | '/models'
     | '/providers'
     | '/quota'
+    | '/requests'
     | '/settings'
     | '/setup'
     | '/traffic'
@@ -287,6 +297,7 @@ export interface FileRouteTypes {
     | '/models'
     | '/providers'
     | '/quota'
+    | '/requests'
     | '/settings'
     | '/setup'
     | '/traffic'
@@ -314,6 +325,7 @@ export interface FileRouteTypes {
     | '/models'
     | '/providers'
     | '/quota'
+    | '/requests'
     | '/settings'
     | '/setup'
     | '/traffic'
@@ -342,6 +354,7 @@ export interface RootRouteChildren {
   ModelsRoute: typeof ModelsRoute
   ProvidersRoute: typeof ProvidersRoute
   QuotaRoute: typeof QuotaRoute
+  RequestsRoute: typeof RequestsRoute
   SettingsRoute: typeof SettingsRoute
   SetupRoute: typeof SetupRoute
   TrafficRoute: typeof TrafficRoute
@@ -455,6 +468,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof QuotaRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/requests': {
+      id: '/requests'
+      path: '/requests'
+      fullPath: '/requests'
+      preLoaderRoute: typeof RequestsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -550,6 +570,7 @@ const rootRouteChildren: RootRouteChildren = {
   ModelsRoute: ModelsRoute,
   ProvidersRoute: ProvidersRoute,
   QuotaRoute: QuotaRoute,
+  RequestsRoute: RequestsRoute,
   SettingsRoute: SettingsRoute,
   SetupRoute: SetupRoute,
   TrafficRoute: TrafficRoute,

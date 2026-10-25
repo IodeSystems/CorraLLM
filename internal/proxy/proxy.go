@@ -3100,10 +3100,15 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 				"curl": fmt.Sprintf("curl -sS %s/v1/reservations -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"slots\":1,\"ttl\":\"5m\"}'", base, chatM),
 				"note": "Your key selects the lane the slots are held for. Re-POST every few minutes to keep the lease; stop to let batch reclaim.",
 			}},
-		{"/v1/keys", "POST", "meta", nil, nil, "Mint a child key with a share of your key's allocation, e.g. one per project. A child runs in your lane with your permissions; its spend counts against its own limits AND yours, and shares may add up to more than you have. Limits are {usd|req, per, hard, model?}: `model` narrows one to that model. GET /v1/keys lists your children and your allocation's live state; GET/PATCH/DELETE /v1/keys/{key} for one. Only a configured key may mint; a child cannot.", nil, false,
+		{"/v1/keys", "POST", "meta", nil, nil, "Mint a child key with a share of your key's allocation, e.g. one per project. A child runs in your lane with your permissions; its spend counts against its own limits AND yours, and shares may add up to more than you have. Limits are {usd|req, per, hard, model?}: `model` narrows one to that model. GET /v1/keys lists your children and your allocation's live state; GET/PATCH/DELETE /v1/keys/{key} for one. Only a key with the mint permission may mint; a child cannot.", nil, false,
 			map[string]any{
 				"curl": fmt.Sprintf("curl -sS %s/v1/keys -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"label\":\"project-x\",\"limits\":[{\"usd\":1,\"per\":\"calendar-day\",\"hard\":true,\"model\":\"%s\"}]}'", base, chatM),
-				"note": "The new key is in the response's `key`. PATCH replaces label and/or limits; spend so far is kept. A deleted key is refused (401), not served as a stranger.",
+				"note": "The new key is in the response's `key`. PATCH replaces label, limits and/or expiry (ttl \"7d\" or expires RFC 3339; \"\" clears); spend so far is kept. A deleted or expired key is refused (401), not served as a stranger. Minting is a permission: ask for it with POST /v1/access-requests {\"mint\": true}.",
+			}},
+		{"/v1/access-requests", "POST", "meta", nil, nil, "Ask the owner for access: a new key (send no Authorization), or more on your own key (send it). Body: {label, purpose, models?, limits?, valueAdds?: [{usd, model?, ttl?}], ttl?, mint?}. The owner approves on the dashboard, editing what is granted. The reply has an id and a claim secret: poll GET /v1/access-requests/{id} with Authorization: Bearer <claim>; after approval the reply carries `key`, ONCE. Who may file is the owner's rules (a subnet, a shared token in X-Corrallm-Request-Token, or a dashboard sign-in); by default direct connections from the LAN.", nil, false,
+			map[string]any{
+				"curl": fmt.Sprintf("curl -sS %s/v1/access-requests -H 'Content-Type: application/json' -d '{\"label\":\"my-bench\",\"purpose\":\"run the X benchmark, ~100 requests\",\"models\":[\"%s\"],\"limits\":[{\"usd\":5,\"per\":\"total\",\"hard\":true}],\"ttl\":\"3d\"}'", base, chatM),
+				"note": "Keep the claim; it is the only way to collect the key. Limits: per calendar-day | calendar-month | total (one-off) | hour | day | month; hard refuses once spent. A value add is extra money with its own expiry, spent only after your limits refuse.",
 			}},
 	}
 
