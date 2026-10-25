@@ -2895,6 +2895,11 @@ The open follow-on ("fix the estimate", formerly P15b) is active in `plan/plan.m
 
 # Resolved decisions
 
+- ✅ **No gpu-unlock (Zagitta/gpu-unlock) on box1** (owner 2026-10-25: not safe). Kernel module that
+  ROP-exploits the SEC2 booter to double FP16/BF16 issue rate on GA10x; would touch only the 3080
+  (Q8_0/Q4_K text paths are INT8 MMQ, unchanged; only f16/bf16 mmproj would gain). Untested on
+  driver 595, 7-day-old repo. Do not propose again without a new reason.
+
 ## Engine & schema decisions (P1–P8, P14)
 - ✅ **Lane vocabulary** (P14) — "lane" now means the config's named fallback list over models
   (the user's term); the priority group keeps its proper name and its API/UI surfaces were
