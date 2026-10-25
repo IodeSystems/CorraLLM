@@ -377,6 +377,43 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P62 — Access requests: agents ask, the owner approves keys, budgets and expiry on one page — 2026-10-25
+
+Owner ask (10-25): access and budget requests from agents (mcpshell wanted Fireworks DeepSeek) must
+be visible to corrallm admins and approved there, with a time limit, recurring or one-off budgets,
+and when the key is disabled. Decisions (owner): anyone may FILE, but only on a direct LAN/loopback
+connection, rate-limited; the requester polls once with a claim secret and receives the key once
+(no secret through chat); minting children is a PERMISSION, granted to keys that already have
+children (aw4), revoked from the rest; a parent changes its children's budgets and expiry; an
+issued key has its OWN permissions (group, credentials, mint, budgets, expiry); a value add
+("$10, expires in 2 days") is an OVERFLOW pool spent only when the key's own limits refuse.
+Design:
+- `child_key` holds every minted key (parent '' = issued by an admin): + expires_at, can_mint,
+  grp, credentials (JSON list of credential scope keys, `cred:<provider>/<name>`).
+- `key_grant`: value adds (key, usd, model, expires_at, spent). `per: total` = one-off budget
+  (ledger window that never resets).
+- `access_request`: id, claim hash, status pending|approved|denied, requester key (if it sent
+  one: a change to its own key), source IP, label, purpose, asked (JSON), granted (JSON), key.
+- `POST /v1/access-requests` (no key needed; ≤3 pending per IP, ≤50 total) → {id, claim};
+  `GET /v1/access-requests/{id}` with the claim → status, and the key ONCE.
+- Who may file (owner 10-25): config `accessRequests.rules`, any rule admits, each rule ANDs what it
+  sets — `cidrs` (direct connection only: haproxy always adds a forwarding header and its own
+  address is on the LAN), `token` (shared, `X-Corrallm-Request-Token`, `${NAME}` ok), `users`
+  (dashboard SSO, same-origin only — CSRF). Absent = direct from loopback/private; `rules: []` = nobody.
+  Each request records the rule (`via`) and the user (`filed_by`).
+- Admin: `/requests` page — pending first; approve with edits, deny; every issued key and child
+  with spend, budget, value adds, expiry; disable now. ntfy on each new request.
+Assumed (not asked): expiry and value adds apply to minted keys and grants also to config keys;
+config keys get no expiry (edit the config); an expired key is kept (shown) and answers 401.
+- **next:** admin API (/api/v1, admin only), then the Requests page + rules editor in Setup, then
+  migration (mint on sk-aw4) + deploy. Done (not deployed): store, config, proxy, tests.
+- **risks:** a request filed during a blue-green handoff is forwarded with a forwarding header →
+  refused by a cidrs rule (retry works); a `token` rule's `${NAME}` from the credential store is read
+  at serve start only; a value add does not lift a MODEL's or provider's own cap (deepseek $3/day is
+  model-wide) — the page must say so; claim secret is the only proof of who filed.
+- **blocking decisions:** none.
+- **optional extensions:** requests by email/Slack; per-request auto-approve rules.
+
 ### ✅ P61 — Child keys: a configured key mints per-project keys with a share of its allocation — 2026-10-24
 
 Owner ask (10-24): aw4 budgets its projects with keys of their own, each taking a share of the aw4

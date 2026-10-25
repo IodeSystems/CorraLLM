@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,11 @@ import (
 // One level: a child cannot mint. Stored in child_key, not the config, so a
 // client minting a key per project adds no config revisions and a config
 // restore cannot delete keys in use.
+//
+// Minting is a PERMISSION (P62): KeyPolicy.Mint for a configured key, CanMint
+// for one an admin issued. The same table holds those admin-issued keys
+// (parent ""), which run under their own group and credentials, and every
+// minted key may carry an expiry, after which it answers 401.
 
 // maxChildKeys bounds one parent's roster. Children cost nothing to the
 // budget, but each is a row and a ledger scope.
@@ -40,7 +46,13 @@ const maxChildKeys = 1000
 
 type childKey struct {
 	store.ChildKey
-	limits config.LimitSet
+	limits      config.LimitSet
+	credentials []string // credential scope keys an issued key may use
+}
+
+// expired reports whether k's expiry has passed at now.
+func (k childKey) expired(now time.Time) bool {
+	return k.ExpiresMS > 0 && now.UnixMilli() >= k.ExpiresMS
 }
 
 // childRoster is the in-memory copy of child_key, read on every request.
@@ -49,11 +61,16 @@ type childRoster struct {
 	byKey map[string]childKey
 }
 
-func (c *childRoster) parentOf(key string) (string, bool) {
+// issued is the roster as config.ResolveCallerWith reads it.
+func (c *childRoster) issued(key string) (config.IssuedKey, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	k, ok := c.byKey[key]
-	return k.Parent, ok
+	if !ok {
+		return config.IssuedKey{}, false
+	}
+	return config.IssuedKey{Parent: k.Parent,
+		Policy: config.KeyPolicy{Group: k.Group, Mint: k.CanMint, Limits: k.limits}}, true
 }
 
 func (c *childRoster) get(key string) (childKey, bool) {
@@ -116,6 +133,11 @@ func (p *Proxy) loadChildKeys() {
 				slog.Warn("child keys: unreadable limits, serving with none", "parent", r.Parent, "label", r.Label, "err", err)
 			}
 		}
+		if r.Credentials != "" {
+			if err := json.Unmarshal([]byte(r.Credentials), &k.credentials); err != nil {
+				slog.Warn("child keys: unreadable credentials, allowing none", "label", r.Label, "err", err)
+			}
+		}
 		p.children.put(k)
 	}
 }
@@ -132,53 +154,83 @@ func (p *Proxy) ChildKeys() map[string]ChildKeyInfo {
 	return out
 }
 
-// resolveCaller is config.ResolveCaller, knowing about child keys.
+// resolveCaller is config.ResolveCaller, knowing about minted keys.
 func (p *Proxy) resolveCaller(cred string) config.Caller {
-	return p.config().ResolveCallerWith(cred, p.children.parentOf)
+	return p.config().ResolveCallerWith(cred, p.children.issued)
+}
+
+// canMint reports whether key may mint child keys: a configured key granted
+// `mint`, or an admin-issued key granted it. Never a child.
+func (p *Proxy) canMint(c config.Caller) bool {
+	if c.Parent != "" || !c.Recognized {
+		return false
+	}
+	if k, ok := p.children.get(c.Key); ok {
+		return k.Parent == "" && k.CanMint
+	}
+	return p.config().Keys[c.Key].Mint
+}
+
+// issuedAllows reports whether an admin-issued key was granted the credential
+// a candidate forwards with: the issued key's own allowlist, beside the
+// config's `allow`.
+func (p *Proxy) issuedAllows(key string, c config.Candidate) bool {
+	k, ok := p.children.get(key)
+	if !ok || k.Parent != "" || c.Credential == nil {
+		return false
+	}
+	sk := c.Credential.ScopeKey(c.Model.ProviderName)
+	for _, cr := range k.credentials {
+		if cr == sk {
+			return true
+		}
+	}
+	return false
 }
 
 // childKeyPrefix marks a minted key, so a deleted one can be told from a
 // stranger.
 const childKeyPrefix = "ck-"
 
-// revokedChild says why a child-shaped credential is refused, or "". By
-// default corrallm serves any key, so without this a DELETED child key would
-// keep working as a stranger — revoking it would do nothing — and a child whose
-// parent left the config would run uncapped.
-func revokedChild(c config.Caller) string {
+// revokedKey says why a minted credential is refused, or "". By default
+// corrallm serves any key, so without this a DELETED minted key would keep
+// working as a stranger — revoking it would do nothing — a child whose parent
+// left the config would run uncapped, and an expiry would mean nothing.
+func (p *Proxy) revokedKey(c config.Caller) string {
+	now := time.Now()
+	k, minted := p.children.get(c.Key)
 	switch {
-	case c.Parent == "" && strings.HasPrefix(c.Key, childKeyPrefix):
-		return "this child key was deleted or never existed"
+	case !minted && strings.HasPrefix(c.Key, childKeyPrefix):
+		return "this key was deleted or never existed"
 	case c.Parent != "" && !c.Recognized:
 		return "this child key's parent is no longer configured"
+	case minted && k.expired(now):
+		return "this key expired at " + time.UnixMilli(k.ExpiresMS).UTC().Format(time.RFC3339)
+	}
+	if pk, ok := p.children.get(c.Parent); ok && c.Parent != "" && pk.expired(now) {
+		return "this key's parent expired at " + time.UnixMilli(pk.ExpiresMS).UTC().Format(time.RFC3339)
 	}
 	return ""
 }
 
-// callerScopes are the key-wide allocation scopes a request is held to and
-// charged against: its own, and its parent's.
-func callerScopes(c config.Caller) []string {
-	out := []string{config.KeyScopeKey(c.Key)}
+// callerChain is every key whose allocation a request answers to: its own,
+// and its parent's.
+func callerChain(c config.Caller) []string {
 	if c.Parent != "" {
-		out = append(out, config.KeyScopeKey(c.Parent))
+		return []string{c.Key, c.Parent}
 	}
-	return out
+	return []string{c.Key}
 }
 
-// callerModelScopes are the per-model shares a request served by model is
-// held to and charged against.
-func callerModelScopes(c config.Caller, model string) []string {
-	out := []string{config.KeyModelScopeKey(c.Key, model)}
-	if c.Parent != "" {
-		out = append(out, config.KeyModelScopeKey(c.Parent, model))
-	}
-	return out
-}
-
-// callerBlocked reports whether a hard allocation in any of scopes is full,
-// and the longest wait among them.
-func (p *Proxy) callerBlocked(scopes []string) (bool, time.Duration) {
+// keyBlocked reports whether key's own hard allocation refuses a request
+// model would serve — its key-wide windows, or its share of model ("" checks
+// the key-wide windows only) — ignoring value adds, and the wait.
+func (p *Proxy) keyBlocked(key, model string) (bool, time.Duration) {
 	full, wait := false, time.Duration(0)
+	scopes := []string{config.KeyScopeKey(key)}
+	if model != "" {
+		scopes = append(scopes, config.KeyModelScopeKey(key, model))
+	}
 	for _, sc := range scopes {
 		if b, d := p.quota.HardBlocked(sc); b {
 			full = true
@@ -188,8 +240,25 @@ func (p *Proxy) callerBlocked(scopes []string) (bool, time.Duration) {
 	return full, wait
 }
 
-// filterByCallerShare drops candidates whose model the caller (or its parent)
-// has used up its share of, so a lane can still serve from another member.
+// callerBlocked reports whether a key in the caller's chain has a full
+// key-wide hard allocation that no value add of its own can cover, and the
+// longest wait among them. A model-bound value add counts here: which model
+// serves is not decided yet, and filterByCallerShare checks it per candidate.
+func (p *Proxy) callerBlocked(c config.Caller) (bool, time.Duration) {
+	full, wait := false, time.Duration(0)
+	for _, k := range callerChain(c) {
+		if b, d := p.keyBlocked(k, ""); b && !p.grants.any(k) {
+			full = true
+			wait = max(wait, d)
+		}
+	}
+	return full, wait
+}
+
+// filterByCallerShare drops candidates that a key in the caller's chain may
+// not spend on — its key-wide allocation or its share of that model is full,
+// and no value add of its own covers that model — so a lane can still serve
+// from another member.
 func (p *Proxy) filterByCallerShare(cands []config.Candidate, c config.Caller) ([]config.Candidate, time.Duration) {
 	if p.quota == nil {
 		return cands, 0
@@ -197,27 +266,39 @@ func (p *Proxy) filterByCallerShare(cands []config.Candidate, c config.Caller) (
 	kept := cands[:0:0]
 	wait := time.Duration(0)
 	for _, cand := range cands {
-		if b, d := p.callerBlocked(callerModelScopes(c, cand.Name)); b {
-			if wait == 0 || d < wait {
-				wait = d
+		ok := true
+		for _, k := range callerChain(c) {
+			if b, d := p.keyBlocked(k, cand.Name); b && !p.grants.usable(k, cand.Name) {
+				ok = false
+				if wait == 0 || d < wait {
+					wait = d
+				}
 			}
-			continue
 		}
-		kept = append(kept, cand)
+		if ok {
+			kept = append(kept, cand)
+		}
 	}
 	return kept, wait
 }
 
 // chargeCaller charges one served request to every allocation it answers to.
+// A key whose own allocation was already full pays the cost from its value
+// adds — that is the only way it was admitted — decided before this request
+// is added to its windows.
 func (p *Proxy) chargeCaller(c config.Caller, model string, costUSD float64) {
 	if p.quota == nil {
 		return
 	}
-	scopes := append(callerScopes(c), callerModelScopes(c, model)...)
-	for _, sc := range scopes {
-		p.quota.Charge(sc, config.DimRequests, 1)
-		if costUSD > 0 {
-			p.quota.Charge(sc, config.DimUSD, costUSD)
+	for _, k := range callerChain(c) {
+		if b, _ := p.keyBlocked(k, model); b && costUSD > 0 {
+			p.grants.spend(p.store, k, model, costUSD)
+		}
+		for _, sc := range []string{config.KeyScopeKey(k), config.KeyModelScopeKey(k, model)} {
+			p.quota.Charge(sc, config.DimRequests, 1)
+			if costUSD > 0 {
+				p.quota.Charge(sc, config.DimUSD, costUSD)
+			}
 		}
 	}
 }
@@ -245,16 +326,76 @@ type childKeyBody struct {
 	Limits  config.LimitSet `json:"limits"`
 	Created string          `json:"created"`
 	Updated string          `json:"updated,omitempty"`
+	// Expires is when the key stops working (RFC 3339); empty = never.
+	Expires string `json:"expires,omitempty"`
 	// Windows is the allocation's live state: each limit's used and limit,
 	// keyed by scope ("key" or the model name).
 	Windows map[string][]quota.Window `json:"windows,omitempty"`
 }
 
 // childKeyInput is what POST and PATCH accept. PATCH replaces each field that
-// is present; limits: [] removes them all.
+// is present; limits: [] removes them all. Expiry: `ttl` ("48h", "7d") from
+// now, or `expires` (RFC 3339); "" for either clears it.
 type childKeyInput struct {
-	Label  *string          `json:"label"`
-	Limits *config.LimitSet `json:"limits"`
+	Label   *string          `json:"label"`
+	Limits  *config.LimitSet `json:"limits"`
+	TTL     *string          `json:"ttl"`
+	Expires *string          `json:"expires"`
+}
+
+// expiryFrom reads an input's ttl/expires into unix millis; set is false when
+// neither is present.
+func expiryFrom(ttl, expires *string, now time.Time) (ms int64, set bool, err error) {
+	switch {
+	case ttl != nil && expires != nil:
+		return 0, false, fmt.Errorf("send ttl or expires, not both")
+	case ttl != nil:
+		if strings.TrimSpace(*ttl) == "" {
+			return 0, true, nil
+		}
+		d, err := ParseTTL(*ttl)
+		if err != nil {
+			return 0, false, err
+		}
+		return now.Add(d).UnixMilli(), true, nil
+	case expires != nil:
+		if strings.TrimSpace(*expires) == "" {
+			return 0, true, nil
+		}
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(*expires))
+		if err != nil {
+			return 0, false, fmt.Errorf("expires: want RFC 3339, e.g. 2026-11-01T00:00:00Z")
+		}
+		return t.UnixMilli(), true, nil
+	}
+	return 0, false, nil
+}
+
+// ParseTTL reads a duration that may also be written in days ("7d", "1d12h").
+// Bounded to a year: a key meant to live longer needs no expiry.
+func ParseTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	var days time.Duration
+	if i := strings.Index(s, "d"); i > 0 {
+		n, err := strconv.Atoi(s[:i])
+		if err != nil {
+			return 0, fmt.Errorf("ttl %q: want e.g. 48h, 7d or 1d12h", s)
+		}
+		days, s = time.Duration(n)*24*time.Hour, s[i+1:]
+	}
+	var rest time.Duration
+	if s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("ttl: want e.g. 48h, 7d or 1d12h")
+		}
+		rest = d
+	}
+	d := days + rest
+	if d <= 0 || d > 366*24*time.Hour {
+		return 0, fmt.Errorf("ttl must be more than 0 and at most 366d")
+	}
+	return d, nil
 }
 
 // handleKeys serves /v1/keys and /v1/keys/{key}.
@@ -276,8 +417,11 @@ func (p *Proxy) handleKeys(w http.ResponseWriter, r *http.Request) {
 	case caller.Parent != "":
 		jsonErr(w, http.StatusForbidden, "a child key cannot manage keys; use the key that minted it")
 		return
-	case !caller.Recognized:
-		jsonErr(w, http.StatusForbidden, "only a configured key can mint child keys")
+	case p.revokedKey(caller) != "":
+		jsonErr(w, http.StatusUnauthorized, p.revokedKey(caller))
+		return
+	case !p.canMint(caller):
+		jsonErr(w, http.StatusForbidden, "this key may not mint child keys; ask for it with POST /v1/access-requests {\"mint\": true, ...}")
 		return
 	}
 	parent := caller.Key
@@ -310,6 +454,7 @@ func (p *Proxy) handleKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.children.remove(k.Key)
+		p.dropGrants(k.Key)
 		p.seedQuota(p.config())
 		jsonResp(w, http.StatusOK, map[string]any{"deleted": k.Key})
 	default:
@@ -324,13 +469,18 @@ func (p *Proxy) listChildKeys(w http.ResponseWriter, parent string) {
 	for _, k := range kids {
 		out = append(out, p.childKeyView(k))
 	}
-	jsonResp(w, http.StatusOK, map[string]any{
-		"self": map[string]any{
-			"limits":  p.config().Keys[parent].Limits,
-			"windows": p.allocationWindows(parent),
-		},
-		"keys": out,
-	})
+	self := map[string]any{
+		"limits":    p.config().Keys[parent].Limits,
+		"windows":   p.allocationWindows(parent),
+		"valueAdds": grantViews(p.grants.of(parent)),
+	}
+	if k, ok := p.children.get(parent); ok {
+		self["limits"] = k.limits
+		if k.ExpiresMS > 0 {
+			self["expires"] = time.UnixMilli(k.ExpiresMS).UTC().Format(time.RFC3339)
+		}
+	}
+	jsonResp(w, http.StatusOK, map[string]any{"self": self, "keys": out})
 }
 
 func (p *Proxy) createChildKey(w http.ResponseWriter, r *http.Request, parent string) {
@@ -366,6 +516,12 @@ func (p *Proxy) createChildKey(w http.ResponseWriter, r *http.Request, parent st
 	if in.Label != nil {
 		k.Label = strings.TrimSpace(*in.Label)
 	}
+	exp, _, err := expiryFrom(in.TTL, in.Expires, time.Now())
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	k.ExpiresMS = exp
 	if !p.saveChildKey(w, k) {
 		return
 	}
@@ -387,6 +543,12 @@ func (p *Proxy) updateChildKey(w http.ResponseWriter, r *http.Request, k childKe
 			return
 		}
 		k.limits = *in.Limits
+	}
+	if exp, set, err := expiryFrom(in.TTL, in.Expires, time.Now()); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	} else if set {
+		k.ExpiresMS = exp
 	}
 	k.UpdatedMS = time.Now().UnixMilli()
 	if !p.saveChildKey(w, k) {
@@ -413,18 +575,41 @@ func (p *Proxy) checkChildLimits(ls config.LimitSet) error {
 // window whose label survives an edit keeps its level, so changing a share
 // does not refund what was already spent.
 func (p *Proxy) saveChildKey(w http.ResponseWriter, k childKey) bool {
-	b, _ := json.Marshal(k.limits)
-	k.Limits = string(b)
-	if len(k.limits) == 0 {
-		k.Limits = ""
-	}
-	if err := p.store.SaveChildKey(k.ChildKey); err != nil {
+	if err := p.persistChildKey(k); err != nil {
 		jsonErr(w, http.StatusInternalServerError, "save: "+err.Error())
 		return false
 	}
+	return true
+}
+
+// persistChildKey writes k, updates the roster and re-seeds the ledger.
+func (p *Proxy) persistChildKey(k childKey) error {
+	k.Limits, k.Credentials = "", ""
+	if len(k.limits) > 0 {
+		b, _ := json.Marshal(k.limits)
+		k.Limits = string(b)
+	}
+	if len(k.credentials) > 0 {
+		b, _ := json.Marshal(k.credentials)
+		k.Credentials = string(b)
+	}
+	if err := p.store.SaveChildKey(k.ChildKey); err != nil {
+		return err
+	}
 	p.children.put(k)
 	p.seedQuota(p.config())
-	return true
+	return nil
+}
+
+// dropGrants deletes a removed key's value adds.
+func (p *Proxy) dropGrants(key string) {
+	for _, g := range p.grants.dropKey(key) {
+		if p.store != nil {
+			if err := p.store.DeleteKeyGrant(g.ID); err != nil {
+				slog.Warn("value add: delete failed", "grant", g.ID, "err", err)
+			}
+		}
+	}
 }
 
 func (p *Proxy) childKeyView(k childKey) childKeyBody {
@@ -436,6 +621,9 @@ func (p *Proxy) childKeyView(k childKey) childKeyBody {
 	}
 	if k.UpdatedMS != k.CreatedMS {
 		out.Updated = time.UnixMilli(k.UpdatedMS).UTC().Format(time.RFC3339)
+	}
+	if k.ExpiresMS > 0 {
+		out.Expires = time.UnixMilli(k.ExpiresMS).UTC().Format(time.RFC3339)
 	}
 	return out
 }

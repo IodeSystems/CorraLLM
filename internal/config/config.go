@@ -145,6 +145,9 @@ type Config struct {
 	// Auth adds dashboard sign-in methods beside the admin token. See authcfg.go.
 	Auth *Auth `yaml:"auth,omitempty"`
 
+	// AccessRequests says who may file an access request. See accessreq.go.
+	AccessRequests *AccessRequests `yaml:"accessRequests,omitempty"`
+
 	// discovered holds models contributed at runtime by a provider's `discover`
 	// block, keyed by served name. Guarded because the refresh loop writes it
 	// while requests read it. Never populated by Load — the file is the static
@@ -2123,29 +2126,45 @@ func (c Caller) PolicyKey() string {
 	return c.Key
 }
 
-// ResolveCallerWith is ResolveCaller for a box that also has child keys.
-// parentOf reports a child key's parent; a credential whose base key is a
-// child resolves exactly as its parent (with the same `:group` suffix) would,
-// then carries the child as Key.
-func (c *Config) ResolveCallerWith(cred string, parentOf func(key string) (string, bool)) Caller {
+// IssuedKey is what caller resolution needs of a key minted at runtime
+// (child_key): the key that minted it, or "" for one an admin issued, which
+// runs under its own Policy instead of a parent's.
+type IssuedKey struct {
+	Parent string
+	Policy KeyPolicy
+}
+
+// ResolveCallerWith is ResolveCaller for a box that also has minted keys.
+// issued reports a minted key. A child resolves exactly as its parent (with
+// the same `:group` suffix) would, then carries the child as Key; an
+// admin-issued key resolves under its own policy, as a configured key would.
+func (c *Config) ResolveCallerWith(cred string, issued func(key string) (IssuedKey, bool)) Caller {
 	base, group := cred, ""
-	parent, ok := parentOf(cred)
+	ik, ok := issued(cred)
 	if !ok {
 		if b, g := splitGroup(cred); g != "" {
-			if pp, found := parentOf(b); found {
-				base, group, parent, ok = b, g, pp, true
+			if k, found := issued(b); found {
+				base, group, ik, ok = b, g, k, true
 			}
 		}
 	}
 	if !ok {
 		return c.ResolveCaller(cred)
 	}
-	as := parent
+	if ik.Parent == "" {
+		return c.resolvePolicy(Caller{Key: base, Requested: group, Recognized: true}, ik.Policy)
+	}
+	as := ik.Parent
 	if group != "" {
 		as += GroupSeparator + group
 	}
-	cr := c.ResolveCaller(as)
-	cr.Key, cr.Parent = base, parent
+	var cr Caller
+	if pk, found := issued(ik.Parent); found && pk.Parent == "" {
+		cr = c.resolvePolicy(Caller{Key: ik.Parent, Requested: group, Recognized: true}, pk.Policy)
+	} else {
+		cr = c.ResolveCaller(as)
+	}
+	cr.Key, cr.Parent = base, ik.Parent
 	return cr
 }
 
@@ -2168,7 +2187,11 @@ func (c *Config) ResolveCaller(cred string) Caller {
 		}
 	}
 	cr.Recognized = known
+	return c.resolvePolicy(cr, pol)
+}
 
+// resolvePolicy fills cr's group from the policy it runs under.
+func (c *Config) resolvePolicy(cr Caller, pol KeyPolicy) Caller {
 	cr.GroupName = pol.Group
 	if cr.GroupName == "" {
 		cr.GroupName = c.UnknownKeys.FallbackGroup()
@@ -2575,6 +2598,9 @@ func (c *Config) Validate() error {
 	if err := c.Power.validate(c.Servers); err != nil {
 		return err
 	}
+	if err := c.AccessRequests.Validate(); err != nil {
+		return err
+	}
 	if err := c.Auth.validate(); err != nil {
 		return err
 	}
@@ -2583,7 +2609,7 @@ func (c *Config) Validate() error {
 	// group by that name would make `thinking: true` mean two things at once,
 	// so it is refused rather than silently reinterpreted — the reader of such a
 	// config would have no way to tell which meaning applied.
-	for _, reserved := range []string{"thinking", "limits"} {
+	for _, reserved := range []string{"thinking", "limits", "mint"} {
 		if _, clash := c.PriorityGroups[reserved]; clash {
 			return fmt.Errorf("priority group %q collides with the reserved key-policy field of the same name; rename the group", reserved)
 		}

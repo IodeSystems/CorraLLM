@@ -101,6 +101,9 @@ func (l Limit) Amount() float64 {
 // "calendar-day" and "calendar-month" are the billing-cycle form: a fixed
 // window that empties at 00:00 UTC / on the 1st, the way a provider bills. The
 // duration returned for them is nominal (display only); see Calendar.
+//
+// "total" is a one-off budget: a fixed window that never empties ("$15 for
+// the whole bench run"). Spent is spent; raising the amount is the only refill.
 func (l Limit) Window() (time.Duration, bool) {
 	per := strings.ToLower(strings.TrimSpace(l.Per))
 	if d, ok := calendarUnits[per]; ok {
@@ -114,9 +117,11 @@ func (l Limit) Window() (time.Duration, bool) {
 var calendarUnits = map[string]time.Duration{
 	"calendar-day":   24 * time.Hour,
 	"calendar-month": 30 * 24 * time.Hour,
+	"total":          100 * 365 * 24 * time.Hour,
 }
 
-// Calendar is "day" or "month" for a fixed-reset window, "" for a falloff one.
+// Calendar is "day" or "month" for a fixed-reset window, "total" for one that
+// never resets, "" for a falloff one.
 func (l Limit) Calendar() string {
 	per := strings.ToLower(strings.TrimSpace(l.Per))
 	if _, ok := calendarUnits[per]; ok {

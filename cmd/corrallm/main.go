@@ -909,6 +909,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// The running bench also heads each model's admission queue: queue time
 	// behind other callers would otherwise be measured as model time.
 	px.SetPriorityCaller(bench.IsRunKey)
+	px.SetRequestFiler(requestFiler(sso))
 	px.SetRequestTimeout(o.requestTimeout)
 	px.SetCapturePayloads(o.capturePayloads)
 	px.SetSlotCache(o.slotCacheDir, int64(o.slotCacheMaxGB)<<30)

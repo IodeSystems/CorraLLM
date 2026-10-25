@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,10 +23,11 @@ type childKeyRig struct {
 	st  *store.Store
 	cfg *config.Config
 	mgr *proc.Manager
+	px  *Proxy
 }
 
 // newChildKeyRig serves model "mock" (and "other") at $0.00105 a request,
-// with configured keys "parent" and "peer".
+// with configured keys "parent" and "peer" (both may mint) and "plain".
 func newChildKeyRig(t *testing.T, parentLimits config.LimitSet) *childKeyRig {
 	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,8 +47,9 @@ func newChildKeyRig(t *testing.T, parentLimits config.LimitSet) *childKeyRig {
 	cfg := meteredConfig(t, "mock", upstream.URL)
 	cfg.Models["other"] = cfg.Models["mock"]
 	cfg.Keys = map[string]config.KeyPolicy{
-		"parent": {Limits: parentLimits},
-		"peer":   {},
+		"parent": {Limits: parentLimits, Mint: true},
+		"peer":   {Mint: true},
+		"plain":  {},
 	}
 	rig := &childKeyRig{t: t, st: st, cfg: cfg, mgr: mgr}
 	rig.mount()
@@ -56,11 +59,17 @@ func newChildKeyRig(t *testing.T, parentLimits config.LimitSet) *childKeyRig {
 // mount builds a fresh proxy over the same store, as a restart would.
 func (k *childKeyRig) mount() {
 	k.r = chi.NewRouter()
-	New(k.cfg, k.mgr, sched.New(), k.st).Mount(k.r)
+	k.px = New(k.cfg, k.mgr, sched.New(), k.st)
+	k.px.SetRequestFiler(func(r *http.Request) config.Filer {
+		return config.Filer{Peer: net.ParseIP("192.168.1.9"), Forwarded: r.Header.Get("X-Test-Remote") != "",
+			User: r.Header.Get("X-Test-User")}
+	})
+	k.px.Mount(k.r)
 }
 
 func (k *childKeyRig) do(method, path, key, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
@@ -172,6 +181,7 @@ func TestChildKeyPermissions(t *testing.T) {
 		{"no key", http.MethodGet, "/v1/keys", "", "", http.StatusUnauthorized},
 		{"a stranger", http.MethodPost, "/v1/keys", "nobody", `{}`, http.StatusForbidden},
 		{"a child minting", http.MethodPost, "/v1/keys", child.Key, `{}`, http.StatusForbidden},
+		{"a key without mint", http.MethodPost, "/v1/keys", "plain", `{}`, http.StatusForbidden},
 		{"another parent's child", http.MethodGet, "/v1/keys/" + child.Key, "peer", "", http.StatusNotFound},
 		{"another parent deleting", http.MethodDelete, "/v1/keys/" + child.Key, "peer", "", http.StatusNotFound},
 		{"an unknown model", http.MethodPost, "/v1/keys", "parent", `{"limits":[{"usd":1,"per":"day","model":"nope"}]}`, http.StatusBadRequest},

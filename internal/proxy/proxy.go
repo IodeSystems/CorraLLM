@@ -58,6 +58,7 @@ type Proxy struct {
 	// children is the child-key roster (childkeys.go); seedMu serialises
 	// seedQuota, which a config reload and a /v1/keys write can both run.
 	children childRoster
+	grants   grantBook
 	seedMu   sync.Mutex
 
 	// slots keeps one conversation per backend slot on disk (nil = off). See
@@ -69,6 +70,7 @@ type Proxy struct {
 	requestTimeout     time.Duration                          // 0 = no corrallm-imposed deadline (defer to client + backend)
 	capturePayloads    bool                                   // capture req/resp payloads onto the activity row (P10b)
 	trustedCaller      func(r *http.Request, key string) bool // passes credential allowlists; see SetTrustedCaller
+	requestFiler       func(r *http.Request) config.Filer     // who is filing an access request; see SetRequestFiler
 	priorityCaller     func(key string) bool                  // heads the admission queue; see SetPriorityCaller
 	alert              *alert.Notifier                        // operator push alerts; nil drops them
 	realtimeIdle       time.Duration                          // 0 = no idle reap of a realtime ws session (P9e)
@@ -414,6 +416,7 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 	// after a restart would not know there was anything to clear.
 	p.loadRefusals()
 	p.loadChildKeys()
+	p.loadGrants()
 	p.seedQuota(cfg)
 	return p
 }
@@ -657,6 +660,8 @@ func (p *Proxy) Mount(mux interface {
 	// share of its allocation (childkeys.go).
 	mux.Handle("/v1/keys", http.HandlerFunc(p.handleKeys))
 	mux.Handle("/v1/keys/*", http.HandlerFunc(p.handleKeys))
+	mux.Handle("/v1/access-requests", http.HandlerFunc(p.handleAccessRequests))
+	mux.Handle("/v1/access-requests/*", http.HandlerFunc(p.handleAccessRequests))
 	// Non-inference UI/passthrough: /upstream/<model>/… serves UNTRACKED once
 	// the backend is up — it must not consume admission/concurrency (the
 	// gatedPaths lesson, structural here). No activity log, no scheduling.
@@ -932,7 +937,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// have finds out, instead of being quietly downgraded forever.
 		w.Header().Set(HeaderGroupDenied, caller.Requested)
 	}
-	if msg := revokedChild(caller); msg != "" {
+	if msg := p.revokedKey(caller); msg != "" {
 		writeJSONError(w, http.StatusUnauthorized, "invalid_api_key", msg)
 		return
 	}
@@ -1058,7 +1063,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// The caller's own allocation before any backend's: it is the same answer
 	// whichever candidate would have served, so there is no walk to steer.
 	if p.quota != nil {
-		if full, wait := p.callerBlocked(callerScopes(caller)); full {
+		if full, wait := p.callerBlocked(caller); full {
 			p.writeAllocationExhausted(w, r, served, key, wait, start, reqBody)
 			return
 		}
@@ -1817,7 +1822,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		cands = kept
 	}
 	rtCaller := p.resolveCaller(key)
-	if msg := revokedChild(rtCaller); msg != "" {
+	if msg := p.revokedKey(rtCaller); msg != "" {
 		writeJSONError(w, http.StatusUnauthorized, "invalid_api_key", msg)
 		return
 	}
@@ -2265,6 +2270,20 @@ func (p *Proxy) writeBudgetExhausted(w http.ResponseWriter, r *http.Request, ser
 // can tell "you have spent yours" from "the backend is out".
 func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request, served, key string,
 	wait time.Duration, start time.Time, reqBody string) {
+	if wait == 0 {
+		// Only a one-off (`per: total`) budget is full: it never refills, so
+		// there is no retry to promise.
+		p.alert.Send("allocation/"+key, key+": budget spent",
+			fmt.Sprintf("Caller **%s** has spent its one-off budget. Its requests are refused until it gets more.", key), "money_with_wings")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_spent"}}`,
+			jsonString("this key's one-off budget is spent; ask for more with POST /v1/access-requests"))
+		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+			Error: "one-off budget spent", ReqBody: reqBody})
+		return
+	}
 	secs := int((wait + time.Second - 1) / time.Second)
 	if secs < 1 {
 		secs = 1
@@ -2341,7 +2360,7 @@ func (p *Proxy) filterByCredential(r *http.Request, cands []config.Candidate, ke
 	}
 	kept := make([]config.Candidate, 0, len(cands))
 	for _, c := range cands {
-		if c.Credential == nil || c.Credential.AllowsKey(key) {
+		if c.Credential == nil || c.Credential.AllowsKey(key) || p.issuedAllows(key, c) {
 			kept = append(kept, c)
 		}
 	}

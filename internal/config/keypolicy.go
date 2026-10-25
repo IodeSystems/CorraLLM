@@ -65,6 +65,11 @@ type KeyPolicy struct {
 	// alternative for a soft limit to steer to. Local traffic charges its
 	// electricity, a paid route its bill: the metered cost of the request.
 	Limits LimitSet
+
+	// Mint lets this key create child keys (POST /v1/keys) and manage their
+	// budgets and expiry. A permission the owner grants, not a default: a key
+	// that can mint can hand its allocation to callers nobody approved.
+	Mint bool
 }
 
 // KeyScopeKey is a caller key's allocation identity in the quota ledger.
@@ -132,6 +137,12 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 				k.Thinking = &b
 				continue
 			}
+			if name == "mint" {
+				if err := node.Decode(&k.Mint); err != nil {
+					return fmt.Errorf("key policy: `mint` must be true or false: %w", err)
+				}
+				continue
+			}
 			if name == "limits" {
 				if err := node.Decode(&k.Limits); err != nil {
 					return fmt.Errorf("key policy: `limits`: %w", err)
@@ -174,7 +185,7 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 // That keeps every existing config byte-identical across a save, so adding this
 // feature does not show up as a diff on every key in the revision history.
 func (k KeyPolicy) MarshalYAML() (any, error) {
-	if len(k.Allow) == 0 && k.Thinking == nil && len(k.Limits) == 0 {
+	if len(k.Allow) == 0 && k.Thinking == nil && len(k.Limits) == 0 && !k.Mint {
 		return k.Group, nil
 	}
 	m := map[string]any{"default": k.Group}
@@ -188,6 +199,9 @@ func (k KeyPolicy) MarshalYAML() (any, error) {
 	}
 	if len(k.Limits) > 0 {
 		m["limits"] = k.Limits
+	}
+	if k.Mint {
+		m["mint"] = true
 	}
 	return m, nil
 }

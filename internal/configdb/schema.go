@@ -147,7 +147,9 @@ CREATE TABLE IF NOT EXISTS config_key (
     -- config was saved.
     thinking   TEXT NOT NULL DEFAULT '',
     -- JSON array of config.Limit: the key's allocation (P56). '' = unlimited.
-    limits_json TEXT NOT NULL DEFAULT ''
+    limits_json TEXT NOT NULL DEFAULT '',
+    -- 1 = the key may mint child keys (POST /v1/keys), P62.
+    mint       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS config_tool (

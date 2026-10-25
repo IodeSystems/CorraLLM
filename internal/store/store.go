@@ -373,19 +373,68 @@ CREATE TABLE IF NOT EXISTS model_pause (
 -- a client like aw4 can give each of its projects its own key and a share of
 -- its own allocation. Operational state, not config: a client creating a key
 -- per project must not add config revisions, and a config load or restore must
--- not delete keys that are in use. One level: a parent is always a configured
--- key, never another child.
+-- not delete keys that are in use. One level: a child cannot mint.
+--
+-- parent '' is a key an ADMIN issued by approving an access request (P62). It
+-- has no parent policy to run under, so it carries its own: grp, credentials
+-- (JSON list of credential scope keys it may use) and can_mint. A child ignores
+-- those three and runs as its parent.
 --
 -- limits is a config.LimitSet as JSON, read whole and written whole.
+-- expires_at: unix millis after which the key answers 401; 0 = never.
 CREATE TABLE IF NOT EXISTS child_key (
-    key        TEXT    NOT NULL PRIMARY KEY,
-    parent     TEXT    NOT NULL,
-    label      TEXT    NOT NULL DEFAULT '',
-    limits     TEXT    NOT NULL DEFAULT '',
-    created_at INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL DEFAULT 0
+    key         TEXT    NOT NULL PRIMARY KEY,
+    parent      TEXT    NOT NULL,
+    label       TEXT    NOT NULL DEFAULT '',
+    limits      TEXT    NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER NOT NULL DEFAULT 0,
+    expires_at  INTEGER NOT NULL DEFAULT 0,
+    grp         TEXT    NOT NULL DEFAULT '',
+    credentials TEXT    NOT NULL DEFAULT '',
+    can_mint    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS child_key_parent ON child_key(parent);
+
+-- key_grant: a one-time value add to a caller key (P62): "$10, expires in two
+-- days". Spent only when the key's own hard limits refuse (an overflow pool),
+-- so it never speeds up spending the recurring budget. model '' = any model.
+-- key is a configured or a minted key. Kept after expiry, for the record.
+CREATE TABLE IF NOT EXISTS key_grant (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    key        TEXT    NOT NULL,
+    usd        REAL    NOT NULL,
+    model      TEXT    NOT NULL DEFAULT '',
+    spent      REAL    NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL DEFAULT 0, -- unix millis; 0 = until spent
+    created_at INTEGER NOT NULL DEFAULT 0,
+    note       TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS key_grant_key ON key_grant(key);
+
+-- access_request: an agent asking for a key or for more on the key it has
+-- (P62), waiting for an admin. claim_hash is the sha256 of the secret the
+-- requester got when filing: the only way to read the decision and, once, the
+-- issued key. asked and granted are JSON (proxy.AccessAsk). requester_key is
+-- the key that filed it, '' for a keyless request (a new key).
+CREATE TABLE IF NOT EXISTS access_request (
+    id            TEXT    NOT NULL PRIMARY KEY,
+    claim_hash    TEXT    NOT NULL,
+    status        TEXT    NOT NULL DEFAULT 'pending', -- pending | approved | denied
+    requester_key TEXT    NOT NULL DEFAULT '',
+    source_ip     TEXT    NOT NULL DEFAULT '',
+    via           TEXT    NOT NULL DEFAULT '',     -- the accessRequests rule that admitted it
+    filed_by      TEXT    NOT NULL DEFAULT '',     -- dashboard user, when filed from the dashboard
+    asked         TEXT    NOT NULL DEFAULT '',
+    granted       TEXT    NOT NULL DEFAULT '',
+    issued_key    TEXT    NOT NULL DEFAULT '',
+    delivered     INTEGER NOT NULL DEFAULT 0,      -- the issued key was handed over
+    reason        TEXT    NOT NULL DEFAULT '',     -- the admin's note on approve/deny
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    decided_at    INTEGER NOT NULL DEFAULT 0,
+    decided_by    TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS access_request_status ON access_request(status, created_at);
 
 -- warning_pref: what the operator said about one dashboard warning — hide it
 -- for a while, or only raise it past a threshold. Operational state, not config:
@@ -428,6 +477,11 @@ var migrations = []string{
 	// would charge every insert twice for one access path.
 	`DROP INDEX IF EXISTS idx_activity_key_ts`,
 	`ALTER TABLE activity ADD COLUMN ticket TEXT NOT NULL DEFAULT ''`,
+	// P62: minted keys gain expiry and, for admin-issued ones, their own policy.
+	`ALTER TABLE child_key ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE child_key ADD COLUMN grp TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE child_key ADD COLUMN credentials TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE child_key ADD COLUMN can_mint INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE activity ADD COLUMN requested TEXT NOT NULL DEFAULT ''`,
 	// AFTER the column, and here rather than in `schema`, because on an
 	// existing database the CREATE TABLE above is a no-op: the schema block

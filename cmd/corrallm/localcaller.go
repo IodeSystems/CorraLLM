@@ -4,6 +4,9 @@ import (
 	"context"
 	"net"
 	"net/http"
+
+	"github.com/iodesystems/corrallm/internal/auth"
+	"github.com/iodesystems/corrallm/internal/config"
 )
 
 // connAddrKey carries the address the TCP connection actually came from.
@@ -46,4 +49,40 @@ func localCaller(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// forwardingHeaders mark a request that came through a proxy. The front proxy
+// always adds one, and its own address is on the LAN, so the TCP peer alone
+// cannot tell public traffic from a LAN client.
+var forwardingHeaders = []string{"X-Forwarded-For", "X-Real-Ip", "True-Client-Ip", "Forwarded", "Cf-Connecting-Ip", "X-Forwarded-Host"}
+
+// requestFiler describes a request filing an access request to the config's
+// accessRequests rules. The dashboard user counts only for a same-origin
+// request: a cross-site page can make a signed-in browser POST a plain-text
+// body without a preflight, and must not file in that user's name.
+func requestFiler(sso *auth.SSO) func(r *http.Request) config.Filer {
+	return func(r *http.Request) config.Filer {
+		var f config.Filer
+		for _, h := range forwardingHeaders {
+			if r.Header.Get(h) != "" {
+				f.Forwarded = true
+			}
+		}
+		addr, _ := r.Context().Value(connAddrKey{}).(string)
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			host = addr
+		}
+		if host == "" || host == "@" {
+			f.Peer = net.IPv6loopback // a Unix socket is this machine
+		} else {
+			f.Peer = net.ParseIP(host)
+		}
+		if sso != nil && r.Header.Get("Sec-Fetch-Site") == "same-origin" {
+			if id, ok := sso.Session(r); ok {
+				f.User = id.Email
+			}
+		}
+		return f
+	}
 }

@@ -173,15 +173,28 @@ func (w *counterWindow) drainAt(now time.Time) time.Time {
 	if lv <= 0 {
 		return time.Time{}
 	}
+	if w.calendar == "total" {
+		return time.Time{} // never drains
+	}
 	if w.calendar != "" {
 		return periodEnd(w.calendar, now)
 	}
 	return now.Add(time.Duration(lv / w.limit * float64(w.dur)))
 }
 
+// totalStart and totalEnd bound a "total" window's one period. The start is
+// 1 ms past the epoch, not zero: the store reads a zero period start as "falloff".
+var (
+	totalStart = time.UnixMilli(1).UTC()
+	totalEnd   = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+)
+
 // periodStart is the start of the UTC calendar day or month holding t.
 func periodStart(unit string, t time.Time) time.Time {
 	t = t.UTC()
+	if unit == "total" {
+		return totalStart
+	}
 	if unit == "month" {
 		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
 	}
@@ -190,6 +203,9 @@ func periodStart(unit string, t time.Time) time.Time {
 
 // periodEnd is when the UTC calendar day or month holding t ends.
 func periodEnd(unit string, t time.Time) time.Time {
+	if unit == "total" {
+		return totalEnd
+	}
 	s := periodStart(unit, t)
 	if unit == "month" {
 		return s.AddDate(0, 1, 0)
@@ -847,6 +863,9 @@ func (l *Ledger) HardBlocked(backend string) (bool, time.Duration) {
 			continue
 		}
 		blocked = true
+		if cw.calendar == "total" {
+			continue // never refills: no wait to promise
+		}
 		if cw.calendar != "" {
 			if d := periodEnd(cw.calendar, now).Sub(now); d > wait {
 				wait = d
@@ -916,7 +935,9 @@ func (l *Ledger) project(w *Window, cw *counterWindow, cs *counterState, now tim
 	room := cw.limit - w.Used
 	if cw.calendar != "" {
 		end := periodEnd(cw.calendar, now)
-		w.ProjectedAtReset = w.Used + w.RatePerHour*end.Sub(now).Hours()
+		if cw.calendar != "total" { // a total never resets: nothing to project to
+			w.ProjectedAtReset = w.Used + w.RatePerHour*end.Sub(now).Hours()
+		}
 		if w.RatePerHour > 0 && room > 0 {
 			if at := now.Add(time.Duration(room / w.RatePerHour * float64(time.Hour))); at.Before(end) {
 				w.ExhaustsAt = at
