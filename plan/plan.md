@@ -405,8 +405,10 @@ Design:
   with spend, budget, value adds, expiry; disable now. ntfy on each new request.
 Assumed (not asked): expiry and value adds apply to minted keys and grants also to config keys;
 config keys get no expiry (edit the config); an expired key is kept (shown) and answers 401.
-- **next:** admin API (/api/v1, admin only), then the Requests page + rules editor in Setup, then
-  migration (mint on sk-aw4) + deploy. Done (not deployed): store, config, proxy, tests.
+- **next:** owner checks /requests in the browser (needs SSO; not verified by me) and denies the
+  deploy-check request `ar-a42a5e40806a2f69` there. Deployed 10-25 (3c719b4); mint granted to aw4's
+  key (config rev 195). Live: aw4 GET /v1/keys 200; a key without mint → 403; keyless filing from
+  loopback → pending, poll → pending; filing with X-Forwarded-For → 403. mcpshell-ea and aw4-7a told.
 - **risks:** a request filed during a blue-green handoff is forwarded with a forwarding header →
   refused by a cidrs rule (retry works); a `token` rule's `${NAME}` from the credential store is read
   at serve start only; a value add does not lift a MODEL's or provider's own cap (deepseek $3/day is
