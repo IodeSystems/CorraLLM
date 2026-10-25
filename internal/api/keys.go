@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/iodesystems/corrallm/internal/proxy"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -54,6 +55,12 @@ type KeyRow struct {
 	// nobody can tell those apart.
 	Recognized bool `json:"recognized"`
 
+	// Parent is set for a child key (POST /v1/keys): the configured key that
+	// minted it, whose group and allocation it runs under.
+	Parent string `json:"parent,omitempty"`
+	// Label is a child key's name, as its parent gave it.
+	Label string `json:"label,omitempty"`
+
 	// Requests and LastSeen come from usage and are zero/empty for a configured
 	// key that has never called. Both are needed, not just the count: a key
 	// assigned a lane months ago and silent since is a different thing from one
@@ -98,20 +105,33 @@ func (h *Handlers) Keys(ctx context.Context, in *KeysInput) (*KeysOutput, error)
 	out.Body.UnknownAllowed = cfg.UnknownKeys.Allowed()
 	out.Body.UnknownGroup = cfg.UnknownKeys.FallbackGroup()
 
+	children := map[string]proxy.ChildKeyInfo{}
+	if h.Proxy != nil {
+		children = h.Proxy.ChildKeys()
+	}
 	rows := map[string]*KeyRow{}
 	add := func(key string) *KeyRow {
 		if r, ok := rows[key]; ok {
 			return r
 		}
-		group, g, recognized := cfg.ResolveGroupRecognized(key)
+		resolveAs := key
+		ck, child := children[key]
+		if child {
+			resolveAs = ck.Parent
+		}
+		group, g, recognized := cfg.ResolveGroupRecognized(resolveAs)
 		r := &KeyRow{
 			Key: key, Hash: KeyHash(key), Group: group,
 			Weight: g.EffectiveWeight(), Recognized: recognized,
+			Parent: ck.Parent, Label: ck.Label,
 		}
 		rows[key] = r
 		return r
 	}
 	for key := range cfg.Keys {
+		add(key)
+	}
+	for key := range children {
 		add(key)
 	}
 
@@ -148,6 +168,9 @@ func (h *Handlers) Keys(ctx context.Context, in *KeysInput) (*KeysOutput, error)
 	if auth.IsViewer(ctx) {
 		for i := range out.Body.Keys {
 			out.Body.Keys[i].Key = "key-" + out.Body.Keys[i].Hash
+			if pk := out.Body.Keys[i].Parent; pk != "" {
+				out.Body.Keys[i].Parent = "key-" + KeyHash(pk)
+			}
 		}
 	}
 	return out, nil

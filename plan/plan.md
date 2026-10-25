@@ -377,6 +377,30 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P61 — Child keys: a configured key mints per-project keys with a share of its allocation — 2026-10-24
+
+Owner ask (10-24): aw4 budgets its projects with keys of their own, each taking a share of the aw4
+key for a model. Decisions (owner): shares may OVERSUBSCRIBE the parent (its own limit stops the
+total); own table `child_key`, not config; ONE level. Assumed (not asked): any configured key may
+mint (children cannot exceed the parent's policy or allocation, so no opt-in flag); max 1000 per
+parent; key format `ck-` + 48 hex.
+Done: `POST/GET /v1/keys`, `GET/PATCH/DELETE /v1/keys/{key}` (proxy/childkeys.go), authenticated by
+the caller's own key; listed in /v1/capabilities. A child resolves as its parent
+(`Config.ResolveCallerWith`, `Caller.PolicyKey`: group, escalation, thinking, sampling, credential
+allowlists, reservations) but is recorded and charged as itself; every request charges child +
+parent scopes. `Limit.Model` (key allocations only, config keys too): a share of one model, ledger
+scope `key:<k>@<model>`; a spent share drops that model's candidates, so a lane spills. A deleted
+`ck-` key or one whose parent left the config → 401 (corrallm serves strangers by default, so
+revocation would otherwise do nothing). Key roster shows `parent`/`label`.
+- **next:** deploy; tell aw4 the API (capabilities manifest has it).
+- **risks:** ledger counters of deleted children stay in the DB (unread); a model share matches
+  the BACKEND that served (lane name ≠ model name); rolling `day` windows leak continuously, so
+  a `req: 1` share admits a 2nd request moments later — use `calendar-day` for hard counts; no UI
+  for minting (API only); realtime sessions are not charged to any key scope (pre-existing).
+- **blocking decisions:** none.
+- **optional extensions:** dashboard tree (parent → children) on Budgets; per-child opt-in flag if
+  a configured key should NOT mint.
+
 ### ✅ P60 — Every text reply carries `usage.cost` + `usage.cost_source` — 2026-10-23
 
 Owner ask (10-23): send cost for measured local models, like the providers' cost we parse. Decided:

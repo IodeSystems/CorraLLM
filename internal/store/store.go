@@ -369,6 +369,24 @@ CREATE TABLE IF NOT EXISTS model_pause (
     resume_at INTEGER NOT NULL DEFAULT 0    -- unix millis it lifts; 0 = indefinite
 );
 
+-- child_key: a caller key minted BY another caller key (POST /v1/keys), so
+-- a client like aw4 can give each of its projects its own key and a share of
+-- its own allocation. Operational state, not config: a client creating a key
+-- per project must not add config revisions, and a config load or restore must
+-- not delete keys that are in use. One level: a parent is always a configured
+-- key, never another child.
+--
+-- limits is a config.LimitSet as JSON, read whole and written whole.
+CREATE TABLE IF NOT EXISTS child_key (
+    key        TEXT    NOT NULL PRIMARY KEY,
+    parent     TEXT    NOT NULL,
+    label      TEXT    NOT NULL DEFAULT '',
+    limits     TEXT    NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS child_key_parent ON child_key(parent);
+
 -- warning_pref: what the operator said about one dashboard warning — hide it
 -- for a while, or only raise it past a threshold. Operational state, not config:
 -- it changes nothing about how a request is served, only what the Warnings panel

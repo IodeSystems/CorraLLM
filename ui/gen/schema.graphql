@@ -2031,8 +2031,10 @@ type corrallm_KeyRow {
   group: String!
   hash: String!
   key: String!
+  label: String
   """RFC3339 timestamp of this key's most recent request; empty if never seen."""
   lastSeen: String
+  parent: String
   recognized: Boolean!
   requests: Long!
   """The group's fairshare weight, which is what actually schedules this caller."""

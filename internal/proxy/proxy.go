@@ -54,6 +54,12 @@ type Proxy struct {
 	store  *store.Store
 	cost   *cost.Model
 	events *events.Broker // optional: live UI events (P8-beyond)
+
+	// children is the child-key roster (childkeys.go); seedMu serialises
+	// seedQuota, which a config reload and a /v1/keys write can both run.
+	children childRoster
+	seedMu   sync.Mutex
+
 	// slots keeps one conversation per backend slot on disk (nil = off). See
 	// slots.go and internal/slotcache.
 	slots *slotcache.Manager
@@ -407,6 +413,7 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 	// of persisting it — so the mirror has to be primed, or the first success
 	// after a restart would not know there was anything to clear.
 	p.loadRefusals()
+	p.loadChildKeys()
 	p.seedQuota(cfg)
 	return p
 }
@@ -418,6 +425,8 @@ func (p *Proxy) seedQuota(cfg *config.Config) {
 	if p.quota == nil {
 		return
 	}
+	p.seedMu.Lock()
+	defer p.seedMu.Unlock()
 	declared := map[string]bool{}
 	setLimits := func(scope string, ls []config.Limit) {
 		declared[scope] = true
@@ -457,11 +466,12 @@ func (p *Proxy) seedQuota(cfg *config.Config) {
 		setLimits(config.GlobalScopeKey, cfg.Limits)
 	}
 	// Caller allocations (P56): the same ledger, keyed by who is asking rather
-	// than by what answers.
+	// than by what answers. Child keys' too (childkeys.go).
 	for key, kp := range cfg.Keys {
-		if len(kp.Limits) > 0 {
-			setLimits(config.KeyScopeKey(key), kp.Limits)
-		}
+		seedCallerLimits(setLimits, key, kp.Limits)
+	}
+	for _, ck := range p.children.of("") {
+		seedCallerLimits(setLimits, ck.Key, ck.limits)
 	}
 	// A scope whose limits were removed stops counting.
 	p.quota.DropLimitsExcept(declared)
@@ -643,6 +653,10 @@ func (p *Proxy) Mount(mux interface {
 	// interactive work has headroom against saturating batch. Short, renewable,
 	// auto-expiring. POST create/renew, DELETE release, GET list.
 	mux.Handle("/v1/reservations", http.HandlerFunc(p.handleReservations))
+	// /v1/keys: a configured key mints and manages child keys, each with a
+	// share of its allocation (childkeys.go).
+	mux.Handle("/v1/keys", http.HandlerFunc(p.handleKeys))
+	mux.Handle("/v1/keys/*", http.HandlerFunc(p.handleKeys))
 	// Non-inference UI/passthrough: /upstream/<model>/… serves UNTRACKED once
 	// the backend is up — it must not consume admission/concurrency (the
 	// gatedPaths lesson, structural here). No activity log, no scheduling.
@@ -872,7 +886,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// Resolved HERE, before the body rewrites, because the sampler now depends on
 	// who is asking and not only on which model answered: an agentic caller and a
 	// person at a chat window want opposite things from the same model.
-	caller := p.config().ResolveCaller(callerKey(r))
+	caller := p.resolveCaller(callerKey(r))
 	// Which conversation this turn belongs to, for the activity row. The same
 	// key the slot cache restores by, so "this conversation" means one thing
 	// across the box. Into the context rather than threaded through every
@@ -885,7 +899,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 	if r.URL.Path == "/v1/chat/completions" {
 		if m, ok := p.config().Models[served]; ok && m.Sampling != nil {
-			if nb, did := applySamplingProfile(body, m.Sampling, p.config().Keys[caller.Key]); did {
+			if nb, did := applySamplingProfile(body, m.Sampling, p.config().Keys[caller.PolicyKey()]); did {
 				body = nb
 				slog.Debug("sampling profile applied", "model", served)
 			}
@@ -917,6 +931,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// entitled to. Said out loud so a caller asking for something it may not
 		// have finds out, instead of being quietly downgraded forever.
 		w.Header().Set(HeaderGroupDenied, caller.Requested)
+	}
+	if msg := revokedChild(caller); msg != "" {
+		writeJSONError(w, http.StatusUnauthorized, "invalid_api_key", msg)
+		return
 	}
 	if !recognized && !p.config().UnknownKeys.Allowed() {
 		// Refusing a stranger is a POLICY, off by default: corrallm has always
@@ -1027,7 +1045,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// Permission before budget: refusing a caller a credential it may not use is
 	// not a capacity question, and gating on budget first would let an
 	// exhausted-but-permitted account mask a forbidden one.
-	if kept := p.filterByCredential(r, cands, key); len(kept) == 0 {
+	if kept := p.filterByCredential(r, cands, caller.PolicyKey()); len(kept) == 0 {
 		// 403, not 503: retrying will not help, the caller is not on the list.
 		http.Error(w, "no permitted credential for this key", http.StatusForbidden)
 		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
@@ -1040,9 +1058,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// The caller's own allocation before any backend's: it is the same answer
 	// whichever candidate would have served, so there is no walk to steer.
 	if p.quota != nil {
-		if full, wait := p.quota.HardBlocked(config.KeyScopeKey(key)); full {
+		if full, wait := p.callerBlocked(callerScopes(caller)); full {
 			p.writeAllocationExhausted(w, r, served, key, wait, start, reqBody)
 			return
+		}
+		// A share of one model (Limit.Model) drops that model only: a lane
+		// can still serve from another member.
+		if kept, wait := p.filterByCallerShare(cands, caller); len(kept) == 0 {
+			p.writeAllocationExhausted(w, r, served, key, wait, start, reqBody)
+			return
+		} else {
+			cands = kept
 		}
 	}
 	if kept, wait := p.filterByQuota(cands); len(kept) == 0 {
@@ -1630,9 +1656,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// The caller's request allocation, once per served request — not per
 		// upstream attempt, and not through ObserveResponse, whose 429 handling
 		// would cool the caller's scope for a backend's refusal.
-		if p.quota != nil {
-			p.quota.Charge(config.KeyScopeKey(key), config.DimRequests, 1)
-		}
+		p.chargeCaller(caller, name, costUSD)
 		if p.quota != nil && costUSD > 0 {
 			// Every scope the candidate answers to: the model, its credential,
 			// that credential's provider, and the box. Spend belongs to the
@@ -1640,9 +1664,6 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			for _, sc := range cand.QuotaScopes(p.config()) {
 				p.quota.Charge(sc, config.DimUSD, costUSD)
 			}
-			// And the caller's allocation: electricity for a local model, the
-			// bill for a paid one — whatever the request was metered at.
-			p.quota.Charge(config.KeyScopeKey(key), config.DimUSD, costUSD)
 		}
 
 		// Prometheus: meter the served request — provider×model with per-class
@@ -1795,7 +1816,11 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	} else {
 		cands = kept
 	}
-	rtCaller := p.config().ResolveCaller(key)
+	rtCaller := p.resolveCaller(key)
+	if msg := revokedChild(rtCaller); msg != "" {
+		writeJSONError(w, http.StatusUnauthorized, "invalid_api_key", msg)
+		return
+	}
 	key = rtCaller.Key
 	groupName, group := rtCaller.GroupName, rtCaller.Group
 	if rtCaller.Denied {
@@ -3055,6 +3080,11 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			map[string]any{
 				"curl": fmt.Sprintf("curl -sS %s/v1/reservations -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"slots\":1,\"ttl\":\"5m\"}'", base, chatM),
 				"note": "Your key selects the lane the slots are held for. Re-POST every few minutes to keep the lease; stop to let batch reclaim.",
+			}},
+		{"/v1/keys", "POST", "meta", nil, nil, "Mint a child key with a share of your key's allocation, e.g. one per project. A child runs in your lane with your permissions; its spend counts against its own limits AND yours, and shares may add up to more than you have. Limits are {usd|req, per, hard, model?}: `model` narrows one to that model. GET /v1/keys lists your children and your allocation's live state; GET/PATCH/DELETE /v1/keys/{key} for one. Only a configured key may mint; a child cannot.", nil, false,
+			map[string]any{
+				"curl": fmt.Sprintf("curl -sS %s/v1/keys -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"label\":\"project-x\",\"limits\":[{\"usd\":1,\"per\":\"calendar-day\",\"hard\":true,\"model\":\"%s\"}]}'", base, chatM),
+				"note": "The new key is in the response's `key`. PATCH replaces label and/or limits; spend so far is kept. A deleted key is refused (401), not served as a stranger.",
 			}},
 	}
 

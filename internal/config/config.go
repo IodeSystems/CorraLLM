@@ -2107,6 +2107,46 @@ type Caller struct {
 	Denied bool
 	// Recognized reports whether the base key was actually in Keys.
 	Recognized bool
+	// Parent is set when Key is a child key (POST /v1/keys): the configured
+	// key it was minted by, whose policy — group, escalation, thinking,
+	// credential allowlists — it runs under. Key stays the child, so its
+	// requests are recorded and charged as its own.
+	Parent string
+}
+
+// PolicyKey is the key whose configured policy applies: the parent for a
+// child key, else the key itself.
+func (c Caller) PolicyKey() string {
+	if c.Parent != "" {
+		return c.Parent
+	}
+	return c.Key
+}
+
+// ResolveCallerWith is ResolveCaller for a box that also has child keys.
+// parentOf reports a child key's parent; a credential whose base key is a
+// child resolves exactly as its parent (with the same `:group` suffix) would,
+// then carries the child as Key.
+func (c *Config) ResolveCallerWith(cred string, parentOf func(key string) (string, bool)) Caller {
+	base, group := cred, ""
+	parent, ok := parentOf(cred)
+	if !ok {
+		if b, g := splitGroup(cred); g != "" {
+			if pp, found := parentOf(b); found {
+				base, group, parent, ok = b, g, pp, true
+			}
+		}
+	}
+	if !ok {
+		return c.ResolveCaller(cred)
+	}
+	as := parent
+	if group != "" {
+		as += GroupSeparator + group
+	}
+	cr := c.ResolveCaller(as)
+	cr.Key, cr.Parent = base, parent
+	return cr
 }
 
 // ResolveCaller maps a credential — optionally carrying a `:group` suffix — to
@@ -2552,13 +2592,8 @@ func (c *Config) Validate() error {
 	// (charged once metered). Nothing charges dwell seconds to a caller, so a
 	// `sec` limit there would never fill.
 	for key, kp := range c.Keys {
-		for _, l := range kp.Limits {
-			if err := l.Validate(); err != nil {
-				return fmt.Errorf("key %q limits: %w", key, err)
-			}
-			if l.Dimension() == DimDwell {
-				return fmt.Errorf("key %q limits: a caller allocation counts req or usd, not sec", key)
-			}
+		if err := kp.Limits.ValidateKey(); err != nil {
+			return fmt.Errorf("key %q limits: %w", key, err)
 		}
 	}
 	if _, err := c.Residency.NonECCMaxAgeDuration(); err != nil {

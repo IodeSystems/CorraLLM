@@ -42,6 +42,14 @@ type Limit struct {
 	// spend the limit was written to stop. A hard limit's backend never serves
 	// while the limit is full, and a caller with nothing else gets a 429.
 	Hard bool `yaml:"hard,omitempty" json:"hard,omitempty"`
+
+	// Model narrows a CALLER allocation to the requests one model served: "this
+	// key may spend $3/day on deepseek". Key limits only — a model's or a
+	// provider's budget is already about one thing, so Validate refuses it
+	// anywhere else. The ledger keeps each model's share in its own scope
+	// (KeyModelScopeKey), so the key-wide windows and every model's are counted
+	// independently.
+	Model string `yaml:"model,omitempty" json:"model,omitempty"`
 }
 
 // limit dimensions, as used for counter labels and error messages.
@@ -125,6 +133,13 @@ func (l Limit) Label() string {
 
 // Validate reports why this limit is unusable, or nil.
 func (l Limit) Validate() error {
+	if l.Model != "" {
+		return fmt.Errorf("limit names model %q: only a caller key's allocation can be narrowed to a model", l.Model)
+	}
+	return l.validateAmount()
+}
+
+func (l Limit) validateAmount() error {
 	dim := l.Dimension()
 	if dim == "" {
 		return fmt.Errorf("limit must set exactly one of req/usd/sec (got %+v)", l)
@@ -242,6 +257,47 @@ func sortLimits(ls LimitSet) {
 			ls[j], ls[j-1] = ls[j-1], ls[j]
 		}
 	}
+}
+
+// ValidateKey checks a caller allocation: Validate's rules, plus `model` is
+// allowed, `sec` is not (nothing charges dwell to a caller, so it would never
+// fill), and no two entries share a model and a window (they would be one
+// counter).
+func (ls LimitSet) ValidateKey() error {
+	seen := map[string]bool{}
+	for _, l := range ls {
+		if err := l.validateAmount(); err != nil {
+			return err
+		}
+		if l.Dimension() == DimDwell {
+			return fmt.Errorf("a caller allocation counts req or usd, not sec")
+		}
+		id := l.Model + "\x00" + l.Label()
+		if seen[id] {
+			if l.Model != "" {
+				return fmt.Errorf("two %s limits on model %q", l.Label(), l.Model)
+			}
+			return fmt.Errorf("two %s limits", l.Label())
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+// ByModel splits a caller allocation into its key-wide limits and each
+// model's share.
+func (ls LimitSet) ByModel() (all LimitSet, byModel map[string]LimitSet) {
+	for _, l := range ls {
+		if l.Model == "" {
+			all = append(all, l)
+			continue
+		}
+		if byModel == nil {
+			byModel = map[string]LimitSet{}
+		}
+		byModel[l.Model] = append(byModel[l.Model], l)
+	}
+	return all, byModel
 }
 
 // Validate reports the first unusable entry.

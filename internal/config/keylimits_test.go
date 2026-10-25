@@ -48,3 +48,40 @@ func TestKeyLimitsValidate(t *testing.T) {
 		t.Errorf("usd/day refused: %v", err)
 	}
 }
+
+// A model filter is a caller-allocation feature: refused on any other limit,
+// allowed (and split out) on a key's.
+func TestLimitModelOnlyOnKeys(t *testing.T) {
+	l := Limit{USD: 1, Per: "day", Model: "m"}
+	if l.Validate() == nil {
+		t.Error("a model filter outside a key allocation was accepted")
+	}
+	ls := LimitSet{l, {USD: 5, Per: "day"}}
+	if err := ls.ValidateKey(); err != nil {
+		t.Fatalf("key allocation with a model share: %v", err)
+	}
+	all, byModel := ls.ByModel()
+	if len(all) != 1 || len(byModel["m"]) != 1 {
+		t.Errorf("ByModel = %v, %v", all, byModel)
+	}
+	if (LimitSet{l, l}).ValidateKey() == nil {
+		t.Error("two usd/day limits on one model were accepted")
+	}
+}
+
+// A child key resolves exactly as its parent, :group suffix included, and is
+// carried as itself.
+func TestResolveCallerWithChild(t *testing.T) {
+	c := &Config{
+		PriorityGroups: map[string]PriorityGroup{"batch": {Weight: 1}, "interactive": {Weight: 4}},
+		Keys:           map[string]KeyPolicy{"sk-aw4": {Group: "batch", Allow: map[string]bool{"interactive": true}}},
+	}
+	parentOf := func(k string) (string, bool) { return "sk-aw4", k == "ck-1" }
+	cr := c.ResolveCallerWith("ck-1:interactive", parentOf)
+	if cr.Key != "ck-1" || cr.Parent != "sk-aw4" || cr.PolicyKey() != "sk-aw4" || !cr.Recognized || cr.GroupName != "interactive" {
+		t.Errorf("child = %+v", cr)
+	}
+	if cr := c.ResolveCallerWith("sk-aw4", parentOf); cr.Parent != "" || cr.Key != "sk-aw4" || cr.GroupName != "batch" {
+		t.Errorf("parent = %+v", cr)
+	}
+}

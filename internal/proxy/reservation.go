@@ -72,7 +72,7 @@ func (p *Proxy) reserveCreate(w http.ResponseWriter, r *http.Request) {
 			ttl = d // scheduler caps it at the max
 		}
 	}
-	lane, _ := p.config().ResolveGroup(callerKey(r))
+	lane := p.resolveCaller(callerKey(r)).GroupName
 	exp := p.sched.Reserve(primary.Name, lane, slots, ttl)
 	p.publish(events.Event{Type: "changed"})
 	jsonResp(w, http.StatusOK, map[string]any{
@@ -92,7 +92,7 @@ func (p *Proxy) reserveRelease(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, fmt.Sprintf("unknown model %q", model))
 		return
 	}
-	lane, _ := p.config().ResolveGroup(callerKey(r))
+	lane := p.resolveCaller(callerKey(r)).GroupName
 	p.sched.Release(primary.Name, lane)
 	p.publish(events.Event{Type: "changed"})
 	jsonResp(w, http.StatusOK, map[string]any{"released": true, "model": model, "lane": lane})

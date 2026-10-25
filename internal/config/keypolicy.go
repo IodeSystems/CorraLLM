@@ -70,6 +70,10 @@ type KeyPolicy struct {
 // KeyScopeKey is a caller key's allocation identity in the quota ledger.
 func KeyScopeKey(key string) string { return "key:" + key }
 
+// KeyModelScopeKey is a caller key's share of one model in the quota ledger:
+// the limits that name that model (Limit.Model).
+func KeyModelScopeKey(key, model string) string { return "key:" + key + "@" + model }
+
 // ThinkingPreference reports this key's reasoning override and whether it has one.
 func (k KeyPolicy) ThinkingPreference() (think bool, set bool) {
 	if k.Thinking == nil {
