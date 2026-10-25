@@ -377,7 +377,7 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P61 — Child keys: a configured key mints per-project keys with a share of its allocation — 2026-10-24
+### ✅ P61 — Child keys: a configured key mints per-project keys with a share of its allocation — 2026-10-24
 
 Owner ask (10-24): aw4 budgets its projects with keys of their own, each taking a share of the aw4
 key for a model. Decisions (owner): shares may OVERSUBSCRIBE the parent (its own limit stops the
@@ -392,7 +392,8 @@ parent scopes. `Limit.Model` (key allocations only, config keys too): a share of
 scope `key:<k>@<model>`; a spent share drops that model's candidates, so a lane spills. A deleted
 `ck-` key or one whose parent left the config → 401 (corrallm serves strangers by default, so
 revocation would otherwise do nothing). Key roster shows `parent`/`label`.
-- **next:** deploy; tell aw4 the API (capabilities manifest has it).
+- **next:** none. Deployed 10-24 (6abf259); live check on box1: mint (req 1/calendar-day on an
+  embed model) → 200 then 429, list shows used=1, DELETE → 200, deleted key → 401. aw4-7a told the API.
 - **risks:** ledger counters of deleted children stay in the DB (unread); a model share matches
   the BACKEND that served (lane name ≠ model name); rolling `day` windows leak continuously, so
   a `req: 1` share admits a 2nd request moments later — use `calendar-day` for hard counts; no UI
