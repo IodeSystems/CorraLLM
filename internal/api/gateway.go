@@ -826,6 +826,58 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Tags:        []string{"observability"},
 	}, h.Reservations)
 
+	// Requests (P62): access requests, minted keys, value adds and who may
+	// file. Admin only — the page shows keys.
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "listRequests",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/requests",
+		Summary:     "Access requests (pending first), every managed key with spend, budgets, value adds and expiry, and the filing rules.",
+		Tags:        []string{"requests"},
+	}, h.ListRequests)
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "approveRequest",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/requests/approve",
+		Summary:     "Approve a pending access request as edited; returns the issued key for a request for a new one.",
+		Tags:        []string{"requests"},
+	}, h.ApproveRequest)
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "denyRequest",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/requests/deny",
+		Summary:     "Deny a pending access request.",
+		Tags:        []string{"requests"},
+	}, h.DenyRequest)
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "updateManagedKey",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/requests/keys/update",
+		Summary:     "Change a key's label, group, credentials, mint permission, budgets and expiry.",
+		Tags:        []string{"requests"},
+	}, h.UpdateManagedKey)
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "managedKeyAction",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/requests/keys/action",
+		Summary:     "Disable (expire now), re-enable or delete a minted key.",
+		Tags:        []string{"requests"},
+	}, h.ManagedKeyAction)
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "editValueAdd",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/requests/value-adds",
+		Summary:     "Add, change or remove a one-time value add on a key.",
+		Tags:        []string{"requests"},
+	}, h.EditValueAdd)
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "setRequestRules",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/requests/rules",
+		Summary:     "Replace who may file access requests: subnets, shared tokens, dashboard users.",
+		Tags:        []string{"requests"},
+	}, h.SetRequestRules)
+
 	// Access: users, roles and the identity provider. Admin only; the viewer
 	// gate in auth.Middleware refuses the writes before they get here.
 	gat.Register(humaAPI, g, huma.Operation{

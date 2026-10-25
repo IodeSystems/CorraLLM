@@ -723,10 +723,13 @@ func (p *Proxy) KeyValueAdds() []GrantView {
 	return out
 }
 
-// UpdateMintedKey applies an admin's edit to a minted key.
-func (p *Proxy) UpdateMintedKey(key string, g AccessAsk) error {
-	if _, ok := p.children.get(key); !ok {
-		return errors.New("no such minted key")
+// UpdateKey applies an admin's edit to a key: a minted key's row, or a
+// configured key's entry through edit. clearExpiry turns off a minted key's
+// expiry when the edit names none.
+func (p *Proxy) UpdateKey(key string, g AccessAsk, clearExpiry bool, edit ConfigEditor) error {
+	_, minted := p.children.get(key)
+	if _, configured := p.config().Keys[key]; !minted && !configured {
+		return errors.New("no such key")
 	}
 	if g.Credentials != nil {
 		if err := p.checkCredentials(*g.Credentials); err != nil {
@@ -738,8 +741,22 @@ func (p *Proxy) UpdateMintedKey(key string, g AccessAsk) error {
 			return err
 		}
 	}
-	return p.applyToKey(key, g, nil, "", time.Now())
+	if g.Group != nil && *g.Group != "" {
+		if _, ok := p.config().PriorityGroups[*g.Group]; !ok {
+			return fmt.Errorf("no priority group %q", *g.Group)
+		}
+	}
+	if err := p.applyToKey(key, g, edit, "edit key "+key, time.Now()); err != nil {
+		return err
+	}
+	if minted && clearExpiry && g.TTL == "" && g.Expires == "" {
+		return p.ClearMintedKeyExpiry(key)
+	}
+	return nil
 }
+
+// KeyWindows is a key's allocation windows, live.
+func (p *Proxy) KeyWindows(key string) []KeyWindow { return p.keyWindows(key) }
 
 // ExpireMintedKey disables a minted key now (it stays listed).
 func (p *Proxy) ExpireMintedKey(key string) error {

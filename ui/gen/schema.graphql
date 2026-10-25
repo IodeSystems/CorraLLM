@@ -6,6 +6,8 @@ schema {
   mutation: Mutation
 }
 
+directive @export(as: String!) on FIELD
+
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
 
 type CorrallmMutationNamespace {
@@ -21,6 +23,7 @@ type CorrallmMutationNamespace {
     Authorization: String
     body: corrallm_HeartbeatInput!
   ): corrallm_HeartbeatAck @derived(operationId: "agentHeartbeat")
+  approveRequest(body: corrallm_ApproveRequestInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "approveRequest")
   assignModel(body: corrallm_AssignModelInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "assignModel")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
@@ -30,8 +33,11 @@ type CorrallmMutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteEntry")
+  denyRequest(body: corrallm_DenyRequestInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "denyRequest")
+  editValueAdd(body: corrallm_ValueAddInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "editValueAdd")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  managedKeyAction(body: corrallm_ManagedKeyActionInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "managedKeyAction")
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
   pauseExtension(body: corrallm_PauseExtensionInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseExtension")
   pauseModel(body: corrallm_PauseModelInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseModel")
@@ -58,6 +64,7 @@ type CorrallmMutationNamespace {
   setIdentityProvider(body: corrallm_SetIdentityProviderInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setIdentityProvider")
   setModelMaxWait(body: corrallm_SetModelMaxWaitInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelMaxWait")
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
+  setRequestRules(body: corrallm_RequestRulesInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setRequestRules")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
@@ -76,6 +83,7 @@ type CorrallmMutationNamespace {
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
   unpauseExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unpauseExtension")
   unpauseModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unpauseModel")
+  updateManagedKey(body: corrallm_UpdateManagedKeyInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "updateManagedKey")
   updateNotes(
     body: corrallm_UpdateNotesInputBodyInput!
     """model | server | lane"""
@@ -208,6 +216,7 @@ type CorrallmQueryNamespace {
   listAccess: corrallm_AccessOutputBody @derived(operationId: "listAccess")
   listProviderPresets: corrallm_ProviderPresetsOutputBody @derived(operationId: "listProviderPresets")
   listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
+  listRequests: corrallm_RequestsOutputBody @derived(operationId: "listRequests")
   listSelections: corrallm_SelectionsOutputBody @derived(operationId: "listSelections")
   localServerProbe: corrallm_LocalServerProbeOutputBody @derived(operationId: "localServerProbe")
   modelLogs(
@@ -383,6 +392,7 @@ type CorrallmV1MutationNamespace {
     Authorization: String
     body: corrallm_HeartbeatInput!
   ): corrallm_HeartbeatAck @derived(operationId: "agentHeartbeat")
+  approveRequest(body: corrallm_ApproveRequestInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "approveRequest")
   assignModel(body: corrallm_AssignModelInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "assignModel")
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
@@ -392,8 +402,11 @@ type CorrallmV1MutationNamespace {
     kind: String!
     name: String!
   ): corrallm_ConfigMutationOutputBody @derived(operationId: "deleteEntry")
+  denyRequest(body: corrallm_DenyRequestInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "denyRequest")
+  editValueAdd(body: corrallm_ValueAddInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "editValueAdd")
   loadExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "loadExtension")
   loadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "loadModel")
+  managedKeyAction(body: corrallm_ManagedKeyActionInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "managedKeyAction")
   mintEnrollmentToken(body: corrallm_MintEnrollmentTokenInputBodyInput!): corrallm_MintEnrollmentTokenOutputBody @derived(operationId: "mintEnrollmentToken")
   pauseExtension(body: corrallm_PauseExtensionInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseExtension")
   pauseModel(body: corrallm_PauseModelInputBodyInput!): corrallm_PauseModelOutputBody @derived(operationId: "pauseModel")
@@ -420,6 +433,7 @@ type CorrallmV1MutationNamespace {
   setIdentityProvider(body: corrallm_SetIdentityProviderInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setIdentityProvider")
   setModelMaxWait(body: corrallm_SetModelMaxWaitInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelMaxWait")
   setModelQueueDepth(body: corrallm_SetModelQueueDepthInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setModelQueueDepth")
+  setRequestRules(body: corrallm_RequestRulesInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setRequestRules")
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
@@ -438,6 +452,7 @@ type CorrallmV1MutationNamespace {
   unloadModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unloadModel")
   unpauseExtension(body: corrallm_ExtensionActionInputBodyInput!): corrallm_ExtensionActionOutputBody @derived(operationId: "unpauseExtension")
   unpauseModel(body: corrallm_ModelActionInputBodyInput!): corrallm_ModelActionOutputBody @derived(operationId: "unpauseModel")
+  updateManagedKey(body: corrallm_UpdateManagedKeyInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "updateManagedKey")
   updateNotes(
     body: corrallm_UpdateNotesInputBodyInput!
     """model | server | lane"""
@@ -569,6 +584,7 @@ type CorrallmV1QueryNamespace {
   listAccess: corrallm_AccessOutputBody @derived(operationId: "listAccess")
   listProviderPresets: corrallm_ProviderPresetsOutputBody @derived(operationId: "listProviderPresets")
   listProviders: corrallm_ProvidersOutputBody @derived(operationId: "listProviders")
+  listRequests: corrallm_RequestsOutputBody @derived(operationId: "listRequests")
   listSelections: corrallm_SelectionsOutputBody @derived(operationId: "listSelections")
   localServerProbe: corrallm_LocalServerProbeOutputBody @derived(operationId: "localServerProbe")
   modelLogs(
@@ -755,6 +771,27 @@ type corrallm_AccessOutputBody {
   users: [corrallm_AccessUser!]!
 }
 
+type corrallm_AccessRequestRow {
+  asked: corrallm_KeyGrant!
+  created: String!
+  decided: String
+  decidedBy: String
+  """The requester has collected the issued key."""
+  delivered: Boolean!
+  filedBy: String
+  granted: corrallm_KeyGrant!
+  id: String!
+  issuedKey: String
+  reason: String
+  """The key asking for more; empty = asking for a new key."""
+  requesterKey: String
+  sourceIp: String!
+  """pending | approved | denied"""
+  status: String!
+  """The filing rule that admitted it."""
+  via: String!
+}
+
 type corrallm_AccessUser {
   email: String!
   lastSignInIp: String!
@@ -913,6 +950,12 @@ type corrallm_AddLocalServerOutputBody {
   ok: Boolean!
   """The server to put spawned models on."""
   server: String!
+}
+
+input corrallm_ApproveRequestInputBodyInput {
+  granted: corrallm_KeyGrantInput!
+  id: String!
+  reason: String
 }
 
 input corrallm_AssignModelInputBodyInput {
@@ -1683,6 +1726,29 @@ input corrallm_CredentialSpecInput {
   secretRef: String
 }
 
+type corrallm_CredentialView {
+  allow: [String!]
+  """Served models that forward with this credential."""
+  models: [String!]
+  name: String!
+  """No allowlist: every key may already use it."""
+  open: Boolean!
+  provider: String!
+  """cred:<provider>/<name>, the value a grant names."""
+  scope: String!
+}
+
+type corrallm_DecisionOutputBody {
+  """The issued key, for a request for a new one. The requester collects it by polling."""
+  key: String
+  ok: Boolean!
+}
+
+input corrallm_DenyRequestInputBodyInput {
+  id: String!
+  reason: String
+}
+
 type corrallm_DepthPoint {
   """Mean in-flight slots in this bucket."""
   avgActive: Float!
@@ -2025,6 +2091,74 @@ type corrallm_KeyDef {
   key: String!
 }
 
+type corrallm_KeyGrant {
+  askedLimits: Boolean
+  askedMint: Boolean
+  """Credential scopes (cred:<provider>/<name>) the key may use."""
+  credentials: [String!]
+  """Key expiry, RFC 3339."""
+  expires: String
+  """Priority group; empty = the fallback group."""
+  group: String
+  label: String
+  limits: [corrallm_KeyLimit!]
+  """May mint child keys."""
+  mint: Boolean
+  """Models the requester said it wants."""
+  models: [String!]
+  purpose: String
+  """Key expires this long after approval: 48h, 7d."""
+  ttl: String
+  valueAdds: [corrallm_ValueAdd!]
+}
+
+input corrallm_KeyGrantInput {
+  askedLimits: Boolean
+  askedMint: Boolean
+  """Credential scopes (cred:<provider>/<name>) the key may use."""
+  credentials: [String!]
+  """Key expiry, RFC 3339."""
+  expires: String
+  """Priority group; empty = the fallback group."""
+  group: String
+  label: String
+  limits: [corrallm_KeyLimitInput!]
+  """May mint child keys."""
+  mint: Boolean
+  """Models the requester said it wants."""
+  models: [String!]
+  purpose: String
+  """Key expires this long after approval: 48h, 7d."""
+  ttl: String
+  valueAdds: [corrallm_ValueAddInput!]
+}
+
+type corrallm_KeyLimit {
+  """Refuse once spent."""
+  hard: Boolean
+  """Narrow to one model; empty = every model."""
+  model: String
+  """Window: minute | hour | day | month | calendar-day | calendar-month | total (one-off, never resets)."""
+  per: String!
+  """Requests."""
+  req: Float
+  """Dollars."""
+  usd: Float
+}
+
+input corrallm_KeyLimitInput {
+  """Refuse once spent."""
+  hard: Boolean
+  """Narrow to one model; empty = every model."""
+  model: String
+  """Window: minute | hour | day | month | calendar-day | calendar-month | total (one-off, never resets)."""
+  per: String!
+  """Requests."""
+  req: Float
+  """Dollars."""
+  usd: Float
+}
+
 type corrallm_KeyRow {
   costUSD: Float!
   dwellMS: Long!
@@ -2069,6 +2203,17 @@ type corrallm_KeyUsageRow {
   promptTokens: Long!
   """Request count."""
   requests: Long!
+}
+
+type corrallm_KeyWindowRow {
+  blocked: Boolean!
+  hard: Boolean!
+  label: String!
+  limit: Float!
+  resetsAt: String
+  """"key" = key-wide, else a model's share."""
+  scope: String!
+  used: Float!
 }
 
 type corrallm_KeysOutputBody {
@@ -2226,6 +2371,36 @@ type corrallm_LocalServerProbeOutputBody {
   poolDetail: [corrallm_LocalPool!]!
   """The memory pools adding this machine would declare, e.g. 'gpu0 24GB, system 64GB'."""
   pools: String!
+}
+
+type corrallm_ManagedKey {
+  created: String
+  credentials: [String!]
+  expired: Boolean!
+  expires: String
+  group: String
+  key: String!
+  """issued (by an admin) | child (minted by a key) | configured"""
+  kind: String!
+  label: String
+  limits: [corrallm_KeyLimit!]!
+  mint: Boolean!
+  parent: String
+  valueAdds: [corrallm_ValueAdd!]!
+  windows: [corrallm_KeyWindowRow!]!
+}
+
+"""disable = expire now (stays listed); enable = clear the expiry; delete = remove it, its children and value adds."""
+enum corrallm_ManagedKeyActionInputBodyAction {
+  delete
+  disable
+  enable
+}
+
+input corrallm_ManagedKeyActionInputBodyInput {
+  """disable = expire now (stays listed); enable = clear the expiry; delete = remove it, its children and value adds."""
+  action: corrallm_ManagedKeyActionInputBodyAction!
+  key: String!
 }
 
 input corrallm_MintEnrollmentTokenInputBodyInput {
@@ -2946,6 +3121,42 @@ type corrallm_RequestOverheadOutputBody {
   totalMs: Long!
 }
 
+type corrallm_RequestRule {
+  """Direct connections from these subnets."""
+  cidrs: [String!]
+  name: String
+  """Shared token sent as X-Corrallm-Request-Token; ${NAME} reads the credential store."""
+  token: String
+  """Dashboard users (SSO emails)."""
+  users: [String!]
+}
+
+input corrallm_RequestRuleInput {
+  """Direct connections from these subnets."""
+  cidrs: [String!]
+  name: String
+  """Shared token sent as X-Corrallm-Request-Token; ${NAME} reads the credential store."""
+  token: String
+  """Dashboard users (SSO emails)."""
+  users: [String!]
+}
+
+input corrallm_RequestRulesInputBodyInput {
+  rules: [corrallm_RequestRuleInput!]
+  useDefault: Boolean
+}
+
+type corrallm_RequestsOutputBody {
+  credentials: [corrallm_CredentialView!]!
+  """No accessRequests block: direct connections from loopback and private networks may file."""
+  defaultRules: Boolean!
+  groups: [String!]!
+  keys: [corrallm_ManagedKey!]!
+  models: [String!]!
+  requests: [corrallm_AccessRequestRow!]!
+  rules: [corrallm_RequestRule!]!
+}
+
 type corrallm_ReservationView {
   """Scheduler backend id (model#0)."""
   backend: String!
@@ -3664,6 +3875,12 @@ type corrallm_UnloadAllOutputBody {
   skipped: JSON
 }
 
+input corrallm_UpdateManagedKeyInputBodyInput {
+  clearExpiry: Boolean
+  edit: corrallm_KeyGrantInput!
+  key: String!
+}
+
 input corrallm_UpdateNotesInputBodyInput {
   notes: String!
 }
@@ -3808,6 +4025,49 @@ type corrallm_UtilizationRow {
   waitForDepthMs: Long!
   """Callers queued right now."""
   waiting: Long!
+}
+
+type corrallm_ValueAdd {
+  active: Boolean
+  created: String
+  """RFC 3339; empty with no ttl = until spent."""
+  expires: String
+  id: Long
+  key: String
+  """Empty = any model."""
+  model: String
+  note: String
+  spent: Float
+  """Expires this long after approval: 48h, 2d."""
+  ttl: String
+  usd: Float!
+}
+
+input corrallm_ValueAddInput {
+  active: Boolean
+  created: String
+  """RFC 3339; empty with no ttl = until spent."""
+  expires: String
+  id: Long
+  key: String
+  """Empty = any model."""
+  model: String
+  note: String
+  spent: Float
+  """Expires this long after approval: 48h, 2d."""
+  ttl: String
+  usd: Float!
+}
+
+enum corrallm_ValueAddInputBodyAction {
+  add
+  delete
+  update
+}
+
+input corrallm_ValueAddInputBodyInput {
+  action: corrallm_ValueAddInputBodyAction!
+  valueAdd: corrallm_ValueAddInput!
 }
 
 type corrallm_Verdict {
