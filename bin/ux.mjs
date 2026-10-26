@@ -209,6 +209,18 @@ for (const step of walk.steps) {
   // knows about that.
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
   await page.waitForTimeout(3500).catch(() => {})
+  // A press, only ever to OPEN something (a dialog) — bin/ux refuses a walk with
+  // one unless the daemon is throwaway. `within` picks the one button of that
+  // name inside the smallest block that also carries that text, the way a person
+  // finds "the Approve next to the request I mean".
+  for (const c of [].concat(step.click || [])) {
+    const btn = page.getByRole('button', { name: c.button })
+    const target = c.within
+      ? page.locator('div').filter({ hasText: c.within }).filter({ has: btn }).last().getByRole('button', { name: c.button }).first()
+      : btn.first()
+    await target.click({ timeout: 10000 })
+    await page.waitForTimeout(1500).catch(() => {})
+  }
 
   const shot = `${nn}-${step.name}.png`
   await page.screenshot({ path: `${out}/${shot}`, fullPage: true })

@@ -73,18 +73,6 @@ WALKFILE="ux/walks/$WALK.json"
 command -v node >/dev/null || die "node is not on PATH"
 command -v curl >/dev/null || die "curl is not on PATH"
 
-# THE READ-ONLY GUARD. A live base serves other people; a step that presses
-# something presses it on their requests. Refuse before the browser starts, not
-# after the button is gone.
-if node -e 'const w=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(w.steps.some(s=>s.click)?0:1)' "$WALKFILE"; then
-  die "$WALK has a step that presses a control, and $BASE is a live daemon.
-       A press here reaches requests somebody is waiting on. Point --base at a
-       throwaway daemon and remove this guard deliberately, or drop the click."
-fi
-
-# Playwright is resolved rather than depended on: it lives outside this tree and
-# adding it to ui/package.json would put a browser download in every clone's
-# install path.
 PW="$(node -e 'try{console.log(require.resolve("playwright"))}catch(e){}' 2>/dev/null || true)"
 if [ -z "$PW" ]; then
   PW_DIR="$(find "$HOME/.npm/_npx" -maxdepth 4 -type d -name playwright 2>/dev/null | head -1 || true)"
@@ -105,6 +93,20 @@ VERSION="$(printf '%s' "$HEALTH" | node -e 'let s="";process.stdin.on("data",d=>
 # THE TOKEN COMES OFF DISK, NEVER OFF THE COMMAND LINE. /health reports the path
 # it loaded (to callers on the server itself), which follows --home; a hardcoded
 # ~/.corrallm would be wrong on any install that moved it.
+# THE READ-ONLY GUARD. A live base serves other people; a step that presses
+# something presses it on their requests. Refuse before the browser starts, not
+# after the button is gone. A daemon counts as THROWAWAY only when it says it
+# runs --insecure (the live one never does: it serves a LAN) and is not on the
+# live port — a sandbox started for a walk that has to open a dialog (owner
+# 10-25: narrowed from "every daemon" so the Requests review can be walked).
+if node -e 'const w=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(w.steps.some(s=>s.click)?0:1)' "$WALKFILE"; then
+  if ! printf '%s' "$HEALTH" | grep -q '"insecure":true' || [[ "$BASE" == *":8111"* ]] || [[ "$BASE" == *"iodesystems.com"* ]]; then
+    die "$WALK has a step that presses a control, and $BASE is a live daemon.
+       A press here reaches requests somebody is waiting on. Point --base at a
+       throwaway --insecure daemon on another port, or drop the click."
+  fi
+fi
+
 TOKEN=""
 if printf '%s' "$HEALTH" | grep -q '"insecure":true'; then
   echo "bin/ux: $BASE is --insecure — no token needed" >&2

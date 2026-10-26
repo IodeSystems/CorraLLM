@@ -1,0 +1,37 @@
+{
+  "name": "approve-an-agents-request",
+  "scenario": "approve-an-agents-request",
+  "goal": "Approve the benchmark you asked for with a limit you understand, decide the two requests you did not ask for, and know afterwards what you have handed out and how to take it back.",
+  "note": "Against a throwaway daemon seeded with three waiting requests, two approved, one denied, and keys handed out earlier. Steps that press a button only open a dialog; nothing is submitted.",
+  "steps": [
+    {
+      "name": "what-is-waiting-for-me",
+      "promise": "I can see what is waiting for my decision, who asked, and which one is the one I asked for.",
+      "goto": "/requests"
+    },
+    {
+      "name": "the-benchmark-before-i-say-yes",
+      "promise": "Before I approve, I can tell what I am handing out, the most it can spend in dollars, and when it stops by itself.",
+      "goto": "/requests",
+      "click": [{ "button": "Review and approve", "within": "mcpshell-bench" }]
+    },
+    {
+      "name": "a-request-i-did-not-ask-for",
+      "promise": "I can tell what this other assistant wants, how much more it could cost me, and for how long.",
+      "goto": "/requests",
+      "click": [{ "button": "Review and approve", "within": "migration review" }]
+    },
+    {
+      "name": "saying-no",
+      "promise": "I can say no, and the one who asked will be told why.",
+      "goto": "/requests",
+      "click": [{ "button": "Deny", "within": "runaway loop" }]
+    },
+    {
+      "name": "taking-something-back",
+      "promise": "I can see every key I have handed out, what each has spent against its limit, and switch one off.",
+      "goto": "/requests",
+      "click": [{ "button": "Delete", "within": "grafana-alerts" }]
+    }
+  ]
+}
