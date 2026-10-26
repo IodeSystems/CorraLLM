@@ -405,10 +405,13 @@ Design:
   with spend, budget, value adds, expiry; disable now. ntfy on each new request.
 Assumed (not asked): expiry and value adds apply to minted keys and grants also to config keys;
 config keys get no expiry (edit the config); an expired key is kept (shown) and answers 401.
-- **next:** owner checks /requests in the browser (needs SSO; not verified by me) and denies the
-  deploy-check request `ar-a42a5e40806a2f69` there. Deployed 10-25 (3c719b4); mint granted to aw4's
-  key (config rev 195). Live: aw4 GET /v1/keys 200; a key without mint → 403; keyless filing from
-  loopback → pending, poll → pending; filing with X-Forwarded-For → 403. mcpshell-ea and aw4-7a told.
+- **next:** stooges round 6 (cheap, all named): one ON toggle per row (disabled + reason for config keys);
+  approve dialogs one ~640 px column; "At most" in the Deny dialog's footer strip; one text-button colour;
+  Review stronger than Deny; drop "Options"/"3 waiting" chip; "On" (model) → "Model"; one requester format;
+  per-request URL /approvals/<id> for the ntfy link. Rounds (Lenny / George / Ives): R1 no/−1/−1, R2 yes/+1/−1,
+  R3 yes/+2/−1, R4 yes/+1/−1, R5 yes/+2/−1 — live 36511a6 (10-25). Walk: ux/walks/approve-an-agents-request
+  on a throwaway --insecure sandbox (bin/ux refuses clicks on the live daemon). Fixed on the way: approving a
+  request for an existing key stripped its settings (5c01806); Decided showed a recomputed expiry.
 - **risks:** a request filed during a blue-green handoff is forwarded with a forwarding header →
   refused by a cidrs rule (retry works); a `token` rule's `${NAME}` from the credential store is read
   at serve start only; a value add does not lift a MODEL's or provider's own cap (deepseek $3/day is
