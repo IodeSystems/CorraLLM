@@ -378,16 +378,39 @@ function formToGrant(f: Form) {
 }
 
 const keyName = (k: Pick<Key, 'key' | 'label'>) => k.label || k.key
-function shortId(k: string): string {
-  return k.length > 16 ? `${k.slice(0, 7)}…${k.slice(-4)}` : k
+type Decision = { head: string; working?: string; open: boolean }
+
+/**
+ * The one line a decision rests on, the same on the card, in Approve and in
+ * Deny. "At most" always means the most that could be spent (stooges pass 4:
+ * on a top-up card it meant the top-up's size, in the dialog the total).
+ */
+function decision(
+  limits: LimitIn[],
+  topUps: { usd: number; ttl?: string | null }[],
+  ttl: string | null | undefined,
+  newKey: boolean,
+  existing?: Key,
+): Decision {
+  if (existing && topUps.length) {
+    const until = Math.max(...topUps.map((v) => Date.now() + (v.ttl ? ttlMs(v.ttl) : DAY)))
+    const w = worstCase(existing, topUps, until)
+    return { head: `At most ${w.about ? 'about ' : ''}${usd(w.usd)} until ${when(new Date(until))}`, working: `${w.parts.join(' + ')}`, open: false }
+  }
+  if (existing && limits.length === 0 && topUps.length === 0 && !ttl) {
+    return { head: 'No change to what it may spend', open: false }
+  }
+  const c = costLine(limits, topUps, ttl, newKey)
+  return { head: c.text, open: c.open }
 }
+
 /**
  * What a request is, by the kind of change — "More for sk-x" covered a cap, a
  * top-up and a permission alike (stooges pass 2) — led by who says they asked.
  */
 function requestTitle(r: Req, d: Data): string {
   const { who, what } = requestParts(r, d)
-  return `${who}: ${what}`
+  return `${who} asked: ${what}`
 }
 
 /** Who asked (self-reported, with the key it holds) and what it asks. */
@@ -395,7 +418,9 @@ function requestParts(r: Req, d: Data): { who: string; what: string } {
   const a = r.asked
   const k = r.requesterKey ? d.keys.find((x) => x.key === r.requesterKey) : undefined
   const name = k ? keyName(k) : (r.requesterKey ?? '')
-  const who = a.from ? (r.requesterKey && a.from !== name ? `${a.from} (key ${name})` : a.from) : r.requesterKey ? name : 'unnamed'
+  // One form for every requester: the name it gave, then the key it holds.
+  const asker = a.from || (r.requesterKey ? `key ${name}` : 'an unnamed assistant')
+  const who = a.from && r.requesterKey && a.from !== name ? `${asker} · key ${name}` : asker
   return { who, what: requestWhat(r, name, k) }
 }
 
@@ -473,6 +498,8 @@ function worstCase(k: Key, newTopUps: { usd: number }[], untilMs: number): { usd
 // An empty select shows its label as a placeholder unless told to keep it up
 // and render the empty choice (stooges pass: "Model" read as unset).
 const selectSlots = { select: { displayEmpty: true }, inputLabel: { shrink: true } }
+// Helper text on the field's own left edge, not indented 14 px past it.
+const helperFlush = { formHelperText: { sx: { mx: 0 } } }
 
 function useData() {
   return useQuery({ queryKey: ['requests'], queryFn: () => gqlClient.request(RequestsDoc), refetchInterval: 10_000 })
@@ -490,7 +517,7 @@ function Requests() {
   return (
     <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
       <PageHeader title="Approvals">
-        {pending.length > 0 && <Chip size="small" color="info" label={`${pending.length} waiting`} />}
+        {pending.length > 0 && <Chip size="small" color="info" label={`${pending.length} waiting`} sx={{ fontSize: 12 }} />}
       </PageHeader>
       <Panel title="Waiting for you" flush>
         {pending.length === 0 ? (
@@ -503,8 +530,8 @@ function Requests() {
           pending.map((r) => <PendingRow key={r.id} r={r} d={d} />)
         )}
       </Panel>
-      <KeysPanel d={d} pendingKeys={pending.map((r) => r.requesterKey ?? '').filter(Boolean)} />
       {decided.length > 0 && <DecidedPanel rows={decided} d={d} />}
+      <KeysPanel d={d} pendingKeys={pending.map((r) => r.requesterKey ?? '').filter(Boolean)} />
     </Box>
   )
 }
@@ -514,26 +541,32 @@ function PendingRow({ r, d }: { r: Req; d: Data }) {
   const [denyOpen, setDenyOpen] = useState(false)
   const a = r.asked
   const { who, what } = requestParts(r, d)
-  const line = costLine(a.limits ?? [], a.valueAdds ?? [], a.ttl, !r.requesterKey)
+  const existingKey = r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined
+  const line = decision(a.limits ?? [], a.valueAdds ?? [], a.ttl, !r.requesterKey, existingKey)
   const odd = r.via !== 'default (direct from LAN)'
   return (
     <Box sx={{ px: 2, py: 1.5, borderBottom: `1px solid ${C.border}`, '&:last-of-type': { borderBottom: 0 } }}>
       <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 260 }}>
-          <Typography variant="caption" color="text.secondary">
-            {who} asks · {fmtAgo(r.created)}
-            {r.filedBy ? ` · filed by ${r.filedBy}` : ''}
-            {odd ? ` · from ${r.sourceIp} (${r.via})` : ''}
-          </Typography>
-          <Typography variant="body2">
-            {what}
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {who} asks: {what}
             {!r.requesterKey && a.models?.length ? ` for ${a.models.map((m) => modelName(m, d)).join(', ')}` : ''}
           </Typography>
           <Typography variant="body1" sx={{ fontWeight: 600, color: line.open ? C.warn : undefined }}>
-            {line.text}
+            {line.head}
           </Typography>
+          {line.working && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+              = {line.working}
+            </Typography>
+          )}
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
             “{a.purpose}”
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {fmtAgo(r.created)}
+            {r.filedBy ? ` · filed by ${r.filedBy}` : ''}
+            {odd ? ` · from ${r.sourceIp} (${r.via})` : ''}
           </Typography>
         </Box>
         <Stack direction="row" spacing={1}>
@@ -545,15 +578,15 @@ function PendingRow({ r, d }: { r: Req; d: Data }) {
           </Button>
         </Stack>
       </Box>
-      {open && <ApproveDialog r={r} d={d} title={`Approve, from ${who}: ${what}?`} onClose={() => setOpen(false)} />}
-      {denyOpen && <DenyDialog r={r} d={d} title={`Deny, from ${who}: ${what}?`} onClose={() => setDenyOpen(false)} />}
+      {open && <ApproveDialog r={r} d={d} title={`Approve: ${what}?`} who={who} onClose={() => setOpen(false)} />}
+      {denyOpen && <DenyDialog r={r} d={d} title={`Deny: ${what}?`} who={who} onClose={() => setDenyOpen(false)} />}
     </Box>
   )
 }
 
-function DenyDialog({ r, d, title, onClose }: { r: Req; d: Data; title: string; onClose: () => void }) {
+function DenyDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: string; who: string; onClose: () => void }) {
   const existing = r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined
-  const line = costLine(r.asked.limits ?? [], r.asked.valueAdds ?? [], r.asked.ttl, !r.requesterKey)
+  const line = decision(r.asked.limits ?? [], r.asked.valueAdds ?? [], r.asked.ttl, !r.requesterKey, r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined)
   const qc = useQueryClient()
   const [reason, setReason] = useState('')
   const [err, setErr] = useState('')
@@ -567,13 +600,18 @@ function DenyDialog({ r, d, title, onClose }: { r: Req; d: Data; title: string; 
   })
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>{title}</DialogTitle>
+      <DialogTitle>
+        {title}
+        <Typography variant="body2" color="text.secondary">
+          asked by {who}
+        </Typography>
+      </DialogTitle>
       <DialogContent>
         {err && <Alert severity="error">{err}</Alert>}
         <Typography variant="body2" sx={{ fontWeight: 600 }}>
-          {line.text}
+          {line.head}
         </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1, whiteSpace: 'pre-wrap' }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1, whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
           “{r.asked.purpose}”
         </Typography>
         {existing && <KeyNow k={existing} d={d} />}
@@ -589,7 +627,7 @@ function DenyDialog({ r, d, title, onClose }: { r: Req; d: Data; title: string; 
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" color="error" onClick={() => deny.mutate()} disabled={deny.isPending}>
+        <Button variant="contained" color="inherit" onClick={() => deny.mutate()} disabled={deny.isPending}>
           Deny
         </Button>
       </DialogActions>
@@ -603,7 +641,7 @@ function DenyDialog({ r, d, title, onClose }: { r: Req; d: Data; title: string; 
  * the key as it is now and only the change asked for — the server applies
  * nothing else (proxy.onlyAsked).
  */
-function ApproveDialog({ r, d, title, onClose }: { r: Req; d: Data; title: string; onClose: () => void }) {
+function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: string; who: string; onClose: () => void }) {
   const qc = useQueryClient()
   const existing = r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined
   const a = r.asked
@@ -614,18 +652,9 @@ function ApproveDialog({ r, d, title, onClose }: { r: Req; d: Data; title: strin
   const set = (p: Partial<Form>) => setF((cur) => ({ ...cur, ...p }))
   const g = formToGrant(f)
   const newTopUps = (g.valueAdds ?? []).map((v) => ({ usd: v.usd, ttl: v.ttl }))
-  let summary = costLine(g.limits, newTopUps, g.ttl, !r.requesterKey)
-  if (existing && newTopUps.length) {
-    // The worst case over the life of the longest new top-up: what the owner
-    // is actually agreeing to (stooges pass 2: "At most a $10 top-up" was not
-    // a total).
-    const until = Math.max(...newTopUps.map((v) => Date.now() + (v.ttl ? ttlMs(v.ttl) : DAY)))
-    const w = worstCase(existing, newTopUps, until)
-    summary = {
-      text: `At most ${w.about ? 'about ' : ''}${usd(w.usd)} until ${when(new Date(until))} = ${w.parts.join(' + ')}`,
-      open: false,
-    }
-  }
+  // The worst case over the life of the longest new top-up: what the owner is
+  // actually agreeing to (stooges pass 2: "At most a $10 top-up" was no total).
+  const summary = decision(g.limits, newTopUps, g.ttl, !r.requesterKey, existing)
   const submit = async () => {
     setBusy(true)
     setErr('')
@@ -645,11 +674,16 @@ function ApproveDialog({ r, d, title, onClose }: { r: Req; d: Data; title: strin
   const paid = d.credentials.filter((c) => f.credentials.includes(c.scope))
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="lg">
-      <DialogTitle>{title}</DialogTitle>
+      <DialogTitle>
+        {title}
+        <Typography variant="body2" color="text.secondary">
+          asked by {who}
+        </Typography>
+      </DialogTitle>
       <DialogContent>
         <Stack spacing={2.5} sx={{ mt: 0.5 }}>
           {err && <Alert severity="error">{err}</Alert>}
-          <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+          <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
             “{a.purpose}”
           </Typography>
           {existing && <KeyNow k={existing} d={d} />}
@@ -685,7 +719,8 @@ function ApproveDialog({ r, d, title, onClose }: { r: Req; d: Data; title: strin
                 onChange={(e) => set({ ttl: e.target.value })}
                 helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}, if you approve now` : 'Write it as 7d or 48h') : 'Never'}
                 error={!!f.ttl && !endsAt(f.ttl)}
-                sx={{ width: 300, mt: 1.5 }}
+                slotProps={helperFlush}
+                sx={{ width: 260, mt: 1.5 }}
               />
             </Box>
           )}
@@ -704,9 +739,14 @@ function ApproveDialog({ r, d, title, onClose }: { r: Req; d: Data; title: strin
         </Stack>
       </DialogContent>
       <Box sx={{ px: 3, pt: 1.5, borderTop: `1px solid ${C.border}` }}>
-        <Typography variant="subtitle2" sx={{ color: summary.open ? C.warn : undefined }}>
-          {summary.text}
+        <Typography variant="body1" sx={{ fontWeight: 600, color: summary.open ? C.warn : undefined }}>
+          {summary.head}
         </Typography>
+        {summary.working && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            = {summary.working}
+          </Typography>
+        )}
         <Typography variant="caption" color="text.secondary">
           {existing
             ? 'Takes effect at once. You can change or switch it off later under Keys, below.'
@@ -743,6 +783,11 @@ function KeyNow({ k, d }: { k: Key; d: Data }) {
 
 function LimitsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
   const setLim = (i: number, p: Partial<Lim>) => set({ limits: f.limits.map((l, j) => (j === i ? { ...l, ...p } : l)) })
+  // Only "how much" and "over what" show by default; the rest are rarely
+  // changed and said nothing at their defaults (stooges pass 4: five fields
+  // for one number). A row that is not at the defaults shows everything.
+  const [opened, setOpened] = useState<Set<number>>(new Set())
+  const full = (l: Lim, i: number) => opened.has(i) || l.unit !== 'usd' || !!l.model || !l.hard
   return (
     <Box>
       <Typography variant="subtitle2">Spending limits</Typography>
@@ -753,11 +798,13 @@ function LimitsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
       )}
       {f.limits.map((l, i) => (
         <Stack key={i} direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <TextField label={l.unit === 'usd' ? 'Amount ($)' : 'Amount (requests)'} size="small" type="number" value={l.amount} onChange={(e) => setLim(i, { amount: e.target.value })} sx={{ width: 130 }} />
-          <TextField select size="small" label="Counts" value={l.unit} onChange={(e) => setLim(i, { unit: e.target.value as Lim['unit'] })} sx={{ width: 120 }}>
-            <MenuItem value="usd">dollars</MenuItem>
-            <MenuItem value="req">requests</MenuItem>
-          </TextField>
+          <TextField label={l.unit === 'usd' ? 'Amount ($)' : 'Amount (requests)'} size="small" type="number" value={l.amount} onChange={(e) => setLim(i, { amount: e.target.value })} sx={{ width: 140 }} />
+          {full(l, i) && (
+            <TextField select size="small" label="Counts" value={l.unit} onChange={(e) => setLim(i, { unit: e.target.value as Lim['unit'] })} sx={{ width: 120 }}>
+              <MenuItem value="usd">dollars</MenuItem>
+              <MenuItem value="req">requests</MenuItem>
+            </TextField>
+          )}
           <TextField select size="small" label="Over" value={l.per} onChange={(e) => setLim(i, { per: e.target.value })} sx={{ width: 250 }}>
             {PERS.map((p) => (
               <MenuItem key={p.v} value={p.v}>
@@ -765,19 +812,28 @@ function LimitsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
               </MenuItem>
             ))}
           </TextField>
-          <TextField select size="small" label="On" value={l.model} onChange={(e) => setLim(i, { model: e.target.value })} slotProps={selectSlots} sx={{ minWidth: 200, flex: 1 }}>
-            <MenuItem value="">every model</MenuItem>
-            {d.models.map((m) => (
-              <MenuItem key={m} value={m}>
-                {modelName(m, d)}
-              </MenuItem>
-            ))}
-          </TextField>
-          <TextField select size="small" label="When reached" value={l.hard ? 'stop' : 'warn'} onChange={(e) => setLim(i, { hard: e.target.value === 'stop' })} sx={{ width: 170 }}>
-            <MenuItem value="stop">refuse requests</MenuItem>
-            <MenuItem value="warn">only warn me</MenuItem>
-          </TextField>
-          <Button size="small" color="inherit" onClick={() => set({ limits: f.limits.filter((_, j) => j !== i) })}>
+          {full(l, i) && (
+            <>
+              <TextField select size="small" label="On" value={l.model} onChange={(e) => setLim(i, { model: e.target.value })} slotProps={selectSlots} sx={{ minWidth: 200, flex: 1 }}>
+                <MenuItem value="">every model</MenuItem>
+                {d.models.map((m) => (
+                  <MenuItem key={m} value={m}>
+                    {modelName(m, d)}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField select size="small" label="When reached" value={l.hard ? 'stop' : 'warn'} onChange={(e) => setLim(i, { hard: e.target.value === 'stop' })} sx={{ width: 170 }}>
+                <MenuItem value="stop">refuse requests</MenuItem>
+                <MenuItem value="warn">only warn me</MenuItem>
+              </TextField>
+            </>
+          )}
+          {!full(l, i) && (
+            <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => setOpened(new Set(opened).add(i))}>
+              Options
+            </Button>
+          )}
+          <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => set({ limits: f.limits.filter((_, j) => j !== i) })}>
             Remove
           </Button>
         </Stack>
@@ -827,10 +883,11 @@ function TopUpRow({ v, set, remove, d }: { v: TopUp; set: (p: Partial<TopUp>) =>
         onChange={(e) => set({ ttl: e.target.value })}
         helperText={v.ttl ? (endsAt(v.ttl) ? `On ${endsAt(v.ttl)}` : 'Write it as 2d or 48h') : 'Until spent'}
         error={!!v.ttl && !endsAt(v.ttl)}
-        sx={{ width: 200 }}
+        slotProps={helperFlush}
+        sx={{ width: 260 }}
       />
       {remove && (
-        <Button size="small" color="inherit" onClick={remove}>
+        <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={remove}>
           Remove
         </Button>
       )}
@@ -889,8 +946,11 @@ function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
   // unless a request is waiting on it, when the owner needs to see it now.
   const managed = (k: Key) =>
     k.kind !== 'configured' || k.mint || k.limits.length > 0 || k.valueAdds.length > 0 || pendingKeys.includes(k.key)
-  const keys = d.keys.filter((k) => showAll || managed(k))
+  const shown = d.keys.filter((k) => showAll || managed(k))
   const hidden = d.keys.length - d.keys.filter(managed).length
+  // Sub-keys under their parent, the way a person reads ownership.
+  const tops = shown.filter((k) => k.kind !== 'child' || !shown.some((p) => p.key === k.parent))
+  const ordered = tops.flatMap((t) => [t, ...shown.filter((k) => k.kind === 'child' && k.parent === t.key)])
   return (
     <Panel
       title="Keys"
@@ -905,19 +965,20 @@ function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
       flush
     >
       <TableContainer>
-        <Table size="small">
+        <Table size="small" sx={{ '& th': { fontSize: 12 } }}>
           <TableHead>
             <TableRow>
               <TableCell>Key</TableCell>
-              <TableCell align="right">Spent today</TableCell>
+              <TableCell>On</TableCell>
+              <TableCell align="right">Spent</TableCell>
               <TableCell align="right">Top-ups left</TableCell>
               <TableCell>Expires</TableCell>
               <TableCell align="right" />
             </TableRow>
           </TableHead>
           <TableBody>
-            {keys.map((k) => (
-              <KeyRow key={k.key} k={k} d={d} />
+            {ordered.map((k) => (
+              <KeyRow key={k.key} k={k} d={d} nested={k.kind === 'child' && tops.some((t) => t.key === k.parent)} />
             ))}
           </TableBody>
         </Table>
@@ -926,7 +987,35 @@ function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
   )
 }
 
-function KeyRow({ k, d }: { k: Key; d: Data }) {
+/** One line for what a key spent: against its main dollar limit when it has one. */
+function spentLines(k: Key, d: Data): { main: string; rest: string[]; blocked: boolean } {
+  const fmtL = (l: Key['limits'][number]) => {
+    const isUsd = (l.usd ?? 0) > 0
+    const w = k.windows.find((x) => x.scope === (l.model || 'key') && x.label === `${isUsd ? 'usd' : 'req'}/${l.per}`)
+    const f = (n: number) => (isUsd ? usd(n) : `${Math.round(n)} requests`)
+    return {
+      text: `${f(w?.used ?? 0)} of ${f(isUsd ? (l.usd ?? 0) : (l.req ?? 0))} ${perShort(l.per)}${l.hard ? '' : ' (warning only)'}`,
+      model: l.model ? `on ${modelName(l.model, d)}` : '',
+      blocked: !!w?.blocked,
+    }
+  }
+  const main = k.limits.find((l) => (l.usd ?? 0) > 0)
+  if (!main) {
+    return {
+      main: `${usd(k.spentToday)} today${k.limits.length === 0 ? ' · no limit' : ''}`,
+      rest: k.limits.map((l) => [fmtL(l).text, fmtL(l).model].filter(Boolean).join(' ')),
+      blocked: k.limits.some((l) => fmtL(l).blocked),
+    }
+  }
+  const m = fmtL(main)
+  return {
+    main: m.text,
+    rest: [m.model, ...k.limits.filter((l) => l !== main).map((l) => [fmtL(l).text, fmtL(l).model].filter(Boolean).join(' '))].filter(Boolean),
+    blocked: m.blocked,
+  }
+}
+
+function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
   const qc = useQueryClient()
   const [edit, setEdit] = useState(false)
   const [addTopUp, setAddTopUp] = useState(false)
@@ -947,12 +1036,12 @@ function KeyRow({ k, d }: { k: Key; d: Data }) {
     onSuccess: refresh,
     onError: (e) => setErr(extractMessage(e)),
   })
-  const parent = k.parent ? d.keys.find((x) => x.key === k.parent) : undefined
-  const who = k.kind === 'child' ? `sub-key of ${parent ? keyName(parent) : shortId(k.parent ?? '')}` : k.kind === 'configured' ? 'set up in the config' : ''
   const configured = k.kind === 'configured'
+  const who = configured ? 'set up in the config' : k.kind === 'child' && !nested ? `sub-key of ${k.parent}` : k.kind === 'child' ? 'sub-key' : ''
+  const sp = spentLines(k, d)
   return (
     <TableRow sx={{ opacity: k.expired ? 0.55 : 1, verticalAlign: 'top' }}>
-      <TableCell sx={{ minWidth: 220 }}>
+      <TableCell sx={{ minWidth: 220, pl: nested ? 4 : undefined }}>
         <Typography variant="body2" sx={{ fontWeight: 600 }}>
           {keyName(k)}
         </Typography>
@@ -965,26 +1054,30 @@ function KeyRow({ k, d }: { k: Key; d: Data }) {
           </Typography>
         )}
       </TableCell>
-      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
-        {!k.limits.some((l) => (l.usd ?? 0) > 0 && !l.model) && (
-          <Typography variant="body2">
-            {usd(k.spentToday)}
-            {k.limits.length === 0 ? ' · no limit' : ''}
+      <TableCell>
+        {configured ? (
+          <Typography variant="body2" color="text.secondary">
+            on
           </Typography>
+        ) : (
+          <Switch
+            size="small"
+            checked={!k.expired}
+            onChange={(e) => act.mutate(e.target.checked ? 'enable' : 'disable')}
+            slotProps={{ input: { 'aria-label': k.expired ? `Switch ${keyName(k)} on` : `Switch ${keyName(k)} off` } }}
+          />
         )}
-        {k.limits.map((l, i) => {
-          const isUsd = (l.usd ?? 0) > 0
-          const w = k.windows.find((x) => x.scope === (l.model || 'key') && x.label === `${isUsd ? 'usd' : 'req'}/${l.per}`)
-          const fmt = (n: number) => (isUsd ? usd(n) : `${Math.round(n)} requests`)
-          return (
-            <Typography key={i} variant={isUsd && !l.model ? 'body2' : 'caption'} color={w?.blocked ? 'error' : isUsd && !l.model ? undefined : 'text.secondary'} sx={{ display: 'block' }}>
-              {fmt(w?.used ?? 0)} of {fmt(isUsd ? (l.usd ?? 0) : (l.req ?? 0))} {perShort(l.per)}
-              {l.model ? ` on ${modelName(l.model, d)}` : ''}
-              {!l.hard ? ' (warning only)' : ''}
-              {w?.blocked ? ' — reached' : ''}
-            </Typography>
-          )
-        })}
+      </TableCell>
+      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+        <Typography variant="body2" sx={{ color: sp.blocked ? C.error : undefined }}>
+          {sp.main}
+          {sp.blocked ? ' — reached' : ''}
+        </Typography>
+        {sp.rest.map((t) => (
+          <Typography key={t} variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            {t}
+          </Typography>
+        ))}
       </TableCell>
       <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
         {k.valueAdds.length === 0 && (
@@ -993,17 +1086,13 @@ function KeyRow({ k, d }: { k: Key; d: Data }) {
           </Typography>
         )}
         {k.valueAdds.map((v) => (
-          <Box key={v.id} sx={{ opacity: v.active ? 1 : 0.55, mb: 0.5 }}>
+          <Box key={v.id} sx={{ opacity: v.active ? 1 : 0.55 }}>
             <Typography variant="body2">
               {usd(Math.max(v.usd - (v.spent ?? 0), 0))} of {usd(v.usd)}
-              {v.model ? ` on ${modelName(v.model, d)}` : ''}
               {!v.active ? ' (over)' : ''}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {v.expires ? `until ${when(v.expires)} · ` : ''}
-              <Box component="span" role="button" tabIndex={0} sx={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => delTopUp.mutate(v.id ?? '')}>
-                remove this top-up
-              </Box>
+              {[v.model ? `on ${modelName(v.model, d)}` : '', v.expires ? `until ${when(v.expires)}` : ''].filter(Boolean).join(' · ')}
             </Typography>
           </Box>
         ))}
@@ -1025,23 +1114,19 @@ function KeyRow({ k, d }: { k: Key; d: Data }) {
         </Button>
         <Menu anchorEl={menu} open={!!menu} onClose={() => setMenu(null)}>
           <MenuItem onClick={() => void navigator.clipboard.writeText(k.key).then(() => setMenu(null))}>Copy the key</MenuItem>
+          {k.valueAdds
+            .filter((v) => v.active)
+            .map((v) => (
+              <MenuItem key={v.id} onClick={() => (setMenu(null), delTopUp.mutate(v.id ?? ''))}>
+                Take back the {usd(Math.max(v.usd - (v.spent ?? 0), 0))} top-up
+              </MenuItem>
+            ))}
           {configured ? (
             <MenuItem disabled>Switch off or delete: edit the config (set up there)</MenuItem>
           ) : (
-            [
-              k.expired ? (
-                <MenuItem key="on" onClick={() => (setMenu(null), act.mutate('enable'))}>
-                  Switch on again
-                </MenuItem>
-              ) : (
-                <MenuItem key="off" onClick={() => (setMenu(null), act.mutate('disable'))}>
-                  Switch off now (stays listed; can be switched on again)
-                </MenuItem>
-              ),
-              <MenuItem key="del" sx={{ color: C.error }} onClick={() => (setMenu(null), setConfirmDelete(true))}>
-                Delete…
-              </MenuItem>,
-            ]
+            <MenuItem sx={{ color: C.error }} onClick={() => (setMenu(null), setConfirmDelete(true))}>
+              Delete…
+            </MenuItem>
           )}
         </Menu>
       </TableCell>
@@ -1051,20 +1136,20 @@ function KeyRow({ k, d }: { k: Key; d: Data }) {
         <DialogTitle>Delete {keyName(k)}?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            The key stops working at once, and so do any sub-keys it made. Its top-ups are removed. Switching it off instead
-            stops it the same way but keeps it listed, and it can be switched on again.
+            The key stops working at once, and so do any sub-keys it made. Its top-ups are removed, and it cannot be brought back.
+            {k.expired ? '' : ' Switching it off stops it the same way but keeps it, and it can be switched on again.'}
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button onClick={() => setConfirmDelete(false)}>Cancel</Button>
+          <Button color="error" onClick={() => act.mutate('delete')} disabled={act.isPending}>
+            Delete for good
+          </Button>
           {!k.expired && (
-            <Button variant="outlined" onClick={() => act.mutate('disable')} disabled={act.isPending}>
+            <Button variant="contained" onClick={() => act.mutate('disable')} disabled={act.isPending}>
               Switch off instead
             </Button>
           )}
-          <Button variant="contained" color="error" onClick={() => act.mutate('delete')} disabled={act.isPending}>
-            Delete
-          </Button>
         </DialogActions>
       </Dialog>
     </TableRow>
@@ -1099,7 +1184,8 @@ function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: ()
               onChange={(e) => set({ ttl: e.target.value })}
               helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}` : 'Write it as 7d or 48h') : k.expires ? `Now: ${when(k.expires)}` : 'Now: never'}
               error={!!f.ttl && !endsAt(f.ttl)}
-              sx={{ width: 300 }}
+              slotProps={helperFlush}
+              sx={{ width: 260 }}
             />
           )}
           {k.kind !== 'child' && <MoreSettings f={f} set={set} d={d} askedModels={[]} />}
