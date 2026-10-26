@@ -13,13 +13,13 @@
       "name": "the-benchmark-before-i-say-yes",
       "promise": "Before I approve, I can tell what I am handing out, the most it can spend in dollars, and when it stops by itself.",
       "goto": "/requests",
-      "click": [{ "button": "Review and approve", "within": "mcpshell-bench" }]
+      "click": [{ "button": "Review", "within": "mcpshell-bench" }]
     },
     {
       "name": "a-request-i-did-not-ask-for",
       "promise": "I can tell what this other assistant wants, how much more it could cost me, and for how long.",
       "goto": "/requests",
-      "click": [{ "button": "Review and approve", "within": "migration review" }]
+      "click": [{ "button": "Review", "within": "migration review" }]
     },
     {
       "name": "saying-no",

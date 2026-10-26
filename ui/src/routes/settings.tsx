@@ -5,6 +5,7 @@ import { ProviderBudgets, RefusingBanner } from '@/SetupBudgets'
 import { HistoryPanels } from '@/SetupHistory'
 import { WarningSettings } from '@/WarningControls'
 import { AccessTab } from '@/SetupAccess'
+import { RequestRulesTab } from '@/RequestRules'
 import { useReadOnly } from '@/auth'
 
 /**
@@ -35,6 +36,7 @@ import { useReadOnly } from '@/auth'
 const TABS = [
   { key: 'access', label: 'Access' },
   { key: 'budgets', label: 'Budgets' },
+  { key: 'requests', label: 'Requests' },
   { key: 'warnings', label: 'Warnings' },
   { key: 'history', label: 'History' },
 ] as const
@@ -49,7 +51,7 @@ function SettingsPage() {
   const navigate = useNavigate()
   const { tab: tabParam } = Route.useSearch()
   const readOnly = useReadOnly()
-  const tabs = TABS.filter((t) => !(readOnly && t.key === 'access'))
+  const tabs = TABS.filter((t) => !(readOnly && (t.key === 'access' || t.key === 'requests')))
   const tab: TabKey = isTab(tabParam) && tabs.some((t) => t.key === tabParam) ? tabParam : tabs[0].key
   // Replaces rather than pushes: a tab is where you ARE on this page, not a
   // place you went, and eight tab clicks should not be eight presses of Back to
@@ -77,6 +79,7 @@ function SettingsPage() {
           polling, and Budgets polls every four seconds. */}
       {tab === 'access' && <AccessTab />}
       {tab === 'budgets' && <ProviderBudgets />}
+      {tab === 'requests' && <RequestRulesTab />}
       {tab === 'warnings' && <WarningSettings />}
       {tab === 'history' && <HistoryPanels />}
     </Box>

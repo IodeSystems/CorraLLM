@@ -216,7 +216,7 @@ for (const step of walk.steps) {
   for (const c of [].concat(step.click || [])) {
     const btn = page.getByRole('button', { name: c.button })
     const target = c.within
-      ? page.locator('div').filter({ hasText: c.within }).filter({ has: btn }).last().getByRole('button', { name: c.button }).first()
+      ? page.locator(':is(div, tr)').filter({ hasText: c.within }).filter({ has: btn }).last().getByRole('button', { name: c.button }).first()
       : btn.first()
     await target.click({ timeout: 10000 })
     await page.waitForTimeout(1500).catch(() => {})

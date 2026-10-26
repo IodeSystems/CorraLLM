@@ -23,18 +23,16 @@ import {
   TableHead,
   TableRow,
   TextField,
-  Tooltip,
   Typography,
 } from '@mui/material'
 import DeleteOutline from '@mui/icons-material/DeleteOutlined'
 import AddIcon from '@mui/icons-material/Add'
-import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import { graphql } from '@/gql'
 import type { RequestsQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
 import { Panel, PageHeader, Row } from '@/Panel'
 import { Loading } from '@/Loading'
-import { extractMessage, fmtAgo, fmtUSD } from '@/format'
+import { extractMessage, fmtAgo } from '@/format'
 import { useReadOnly } from '@/auth'
 import { C } from '@/theme'
 
@@ -50,11 +48,16 @@ import { C } from '@/theme'
  * A grant has three kinds of money, and the page says which is which:
  *   - a budget that refills (per day, per calendar month, …),
  *   - a one-off total (per: total) that never refills,
- *   - a value add: an extra amount with its own expiry, spent only once the
- *     key's own hard budgets refuse.
- * And a key can expire, after which it answers 401 — "disable" is "expire now".
+ *   - a top-up (the API's "value add"): an extra amount with its own expiry,
+ *     spent only once the key's own hard budgets refuse.
+ * And a key can expire, after which it answers 401 — "switch off" is "expire now".
  *
- * A value add raises the KEY's allowance only. A model's or provider's own cap
+ * Words are the owner's, not the API's (stooges pass 10-25): top-up, "stop it /
+ * only warn me" for hard/soft, "sub-keys" for minting, dates instead of "3d",
+ * and the one line that decides — at most $X, stops on <date> — leads each
+ * request and sits above Approve. Who may file lives in Settings → Requests.
+ *
+ * A top-up raises the KEY's allowance only. A model's or provider's own cap
  * (the model-wide DeepSeek $3/day) still applies to everyone; the approve
  * dialog says so when the asked models have one.
  */
@@ -179,13 +182,6 @@ const RequestsDoc = graphql(/* GraphQL */ `
         }
         groups
         models
-        rules {
-          name
-          cidrs
-          token
-          users
-        }
-        defaultRules
       }
     }
   }
@@ -243,16 +239,6 @@ const ValueAddDoc = graphql(/* GraphQL */ `
   }
 `)
 
-const RulesDoc = graphql(/* GraphQL */ `
-  mutation SetRequestRules($body: corrallm_RequestRulesInputBodyInput!) {
-    corrallm {
-      setRequestRules(body: $body) {
-        ok
-        message
-      }
-    }
-  }
-`)
 
 type Data = NonNullable<NonNullable<RequestsQuery['corrallm']>['listRequests']>
 type Req = Data['requests'][number]
@@ -261,50 +247,94 @@ type Cred = Data['credentials'][number]
 
 // The editable form of a grant: the dialog's state.
 type Lim = { amount: string; unit: 'usd' | 'req'; per: string; hard: boolean; model: string }
-type VAdd = { usd: string; model: string; ttl: string; note: string }
+type TopUp = { usd: string; model: string; ttl: string; note: string }
 type Form = {
   label: string
   group: string
   credentials: string[]
   limits: Lim[]
-  valueAdds: VAdd[]
+  topUps: TopUp[]
   ttl: string
   mint: boolean
   reason: string
 }
 
-const PERS: { v: string; label: string }[] = [
-  { v: 'calendar-day', label: 'per day (resets 00:00 UTC)' },
-  { v: 'calendar-month', label: 'per month (resets on the 1st)' },
-  { v: 'total', label: 'one-off total (never resets)' },
-  { v: 'hour', label: 'per hour (rolling)' },
-  { v: 'day', label: 'per 24 h (rolling)' },
-  { v: 'month', label: 'per 30 days (rolling)' },
+// Windows in the words a bill uses. The rolling ones last: nobody budgets in them.
+const PERS: { v: string; label: string; short: string }[] = [
+  { v: 'calendar-day', label: 'a day (resets at midnight UTC)', short: 'a day' },
+  { v: 'calendar-month', label: 'a month (resets on the 1st)', short: 'a month' },
+  { v: 'total', label: 'in total (never resets)', short: 'in total' },
+  { v: 'hour', label: 'per rolling hour', short: 'an hour' },
+  { v: 'day', label: 'per rolling 24 hours', short: 'per 24 hours' },
+  { v: 'month', label: 'per rolling 30 days', short: 'per 30 days' },
 ]
+const perShort = (per: string) => PERS.find((p) => p.v === per)?.short ?? per
 
-function perLabel(per: string): string {
-  return PERS.find((p) => p.v === per)?.label ?? per
+/** Money as a bill shows it: cents, or "$0". */
+function usd(n: number): string {
+  if (!Number.isFinite(n)) return '—'
+  if (n === 0) return '$0'
+  if (n < 0.01) return '<$0.01'
+  return `$${n.toFixed(2)}`
+}
+
+/** A moment as a person reads it: no seconds, no year when it is this year. */
+function when(d: Date | string): string {
+  const t = typeof d === 'string' ? new Date(d) : d
+  const sameYear = t.getFullYear() === new Date().getFullYear()
+  return t.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' }),
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+const DAY = 86_400_000
+/** "2d", "48h", "1d12h" → ms; NaN when it does not parse. Mirrors the server. */
+function ttlMs(s: string): number {
+  const m = /^\s*(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?\s*$/.exec(s)
+  if (!m || !(m[1] || m[2] || m[3])) return NaN
+  return Number(m[1] ?? 0) * DAY + Number(m[2] ?? 0) * 3_600_000 + Number(m[3] ?? 0) * 60_000
+}
+/** When something given a ttl now would stop. */
+function endsAt(ttl: string): string | null {
+  const ms = ttlMs(ttl)
+  return Number.isFinite(ms) ? when(new Date(Date.now() + ms)) : null
 }
 
 type LimitIn = { req?: number | null; usd?: number | null; per: string; hard?: boolean | null; model?: string | null }
 
 function toLim(l: LimitIn): Lim {
-  const usd = (l.usd ?? 0) > 0
-  return {
-    amount: String(usd ? l.usd : (l.req ?? '')),
-    unit: usd ? 'usd' : 'req',
-    per: l.per,
-    hard: !!l.hard,
-    model: l.model ?? '',
-  }
+  const isUsd = (l.usd ?? 0) > 0
+  return { amount: String(isUsd ? l.usd : (l.req ?? '')), unit: isUsd ? 'usd' : 'req', per: l.per, hard: !!l.hard, model: l.model ?? '' }
 }
 
 function limitText(l: LimitIn): string {
-  const amt = (l.usd ?? 0) > 0 ? fmtUSD(l.usd ?? 0) : `${l.req} requests`
-  return `${amt} ${perLabel(l.per)}${l.model ? ` on ${l.model}` : ''}${l.hard ? '' : ' (soft: reported only)'}`
+  const amt = (l.usd ?? 0) > 0 ? usd(l.usd ?? 0) : `${l.req} requests`
+  return `${l.hard ? 'up to' : 'warn past'} ${amt} ${perShort(l.per)}${l.model ? ` on ${l.model}` : ''}`
 }
 
-/** Credentials a request's models need: restricted ones serving those models. */
+/**
+ * The one line the owner decides on: the most it can spend, and when it stops.
+ * Every finding of the stooges pass said this was missing or buried.
+ */
+function costLine(limits: LimitIn[], topUps: { usd: number; ttl?: string | null }[], ttl: string | null | undefined, newKey: boolean): { text: string; open: boolean } {
+  const parts: string[] = []
+  const money = limits.filter((l) => l.hard && (l.usd ?? 0) > 0)
+  for (const l of money) parts.push(`${usd(l.usd ?? 0)} ${perShort(l.per)}${l.model ? ` on ${l.model}` : ''}`)
+  for (const t of topUps) parts.push(`a ${usd(t.usd)} top-up${t.ttl ? ` for ${t.ttl.replace(/d$/, ' days').replace(/h$/, ' hours')}` : ''}`)
+  const open = newKey && money.length === 0
+  let text = parts.length ? `At most ${parts.join(', plus ')}` : open ? 'No spending limit' : 'No change to what it may spend'
+  if (newKey || ttl) {
+    const end = ttl ? endsAt(ttl) : null
+    text += end ? ` · stops working ${end}` : ' · never stops by itself'
+  }
+  return { text, open }
+}
+
+/** Accounts a request's models need: allowlisted ones serving those models. */
 function proposedCreds(models: string[], creds: Cred[]): string[] {
   return creds.filter((c) => !c.open && (c.models ?? []).some((m) => models.includes(m))).map((c) => c.scope)
 }
@@ -316,7 +346,7 @@ function formFromRequest(r: Req, creds: Cred[]): Form {
     group: a.group ?? '',
     credentials: a.credentials?.length ? a.credentials : proposedCreds(a.models ?? [], creds),
     limits: (a.limits ?? []).map(toLim),
-    valueAdds: (a.valueAdds ?? []).map((v) => ({ usd: String(v.usd), model: v.model ?? '', ttl: v.ttl ?? '', note: v.note ?? '' })),
+    topUps: (a.valueAdds ?? []).map((v) => ({ usd: String(v.usd), model: v.model ?? '', ttl: v.ttl ?? '', note: v.note ?? '' })),
     ttl: a.ttl ?? '',
     mint: !!a.mint,
     reason: '',
@@ -324,16 +354,7 @@ function formFromRequest(r: Req, creds: Cred[]): Form {
 }
 
 function formFromKey(k: Key): Form {
-  return {
-    label: k.label ?? '',
-    group: k.group ?? '',
-    credentials: k.credentials ?? [],
-    limits: k.limits.map(toLim),
-    valueAdds: [],
-    ttl: '',
-    mint: k.mint,
-    reason: '',
-  }
+  return { label: k.label ?? '', group: k.group ?? '', credentials: k.credentials ?? [], limits: k.limits.map(toLim), topUps: [], ttl: '', mint: k.mint, reason: '' }
 }
 
 function formToGrant(f: Form) {
@@ -343,13 +364,8 @@ function formToGrant(f: Form) {
     credentials: f.credentials,
     limits: f.limits
       .filter((l) => l.amount.trim() !== '')
-      .map((l) => ({
-        per: l.per,
-        hard: l.hard,
-        model: l.model || undefined,
-        ...(l.unit === 'usd' ? { usd: Number(l.amount) } : { req: Number(l.amount) }),
-      })),
-    valueAdds: f.valueAdds
+      .map((l) => ({ per: l.per, hard: l.hard, model: l.model || undefined, ...(l.unit === 'usd' ? { usd: Number(l.amount) } : { req: Number(l.amount) }) })),
+    valueAdds: f.topUps
       .filter((v) => v.usd.trim() !== '')
       .map((v) => ({ usd: Number(v.usd), model: v.model || undefined, ttl: v.ttl.trim() || undefined, note: v.note.trim() || undefined })),
     ttl: f.ttl.trim() || undefined,
@@ -357,393 +373,401 @@ function formToGrant(f: Form) {
   }
 }
 
+const keyName = (k: Pick<Key, 'key' | 'label'>) => k.label || k.key
+function shortId(k: string): string {
+  return k.length > 16 ? `${k.slice(0, 7)}…${k.slice(-4)}` : k
+}
+/** Who a request is from, in the words its card leads with. */
+function requestTitle(r: Req, d: Data): string {
+  if (!r.requesterKey) return `New key “${r.asked.label}”`
+  const k = d.keys.find((x) => x.key === r.requesterKey)
+  return `More for ${k ? keyName(k) : r.requesterKey}`
+}
+
+// An empty select shows its label as a placeholder unless told to keep it up
+// and render the empty choice (stooges pass: "Model" read as unset).
+const selectSlots = { select: { displayEmpty: true }, inputLabel: { shrink: true } }
+
 function useData() {
-  return useQuery({
-    queryKey: ['requests'],
-    queryFn: () => gqlClient.request(RequestsDoc),
-    refetchInterval: 10_000,
-  })
+  return useQuery({ queryKey: ['requests'], queryFn: () => gqlClient.request(RequestsDoc), refetchInterval: 10_000 })
 }
 
 function Requests() {
   const ro = useReadOnly()
   const q = useData()
   const d = q.data?.corrallm?.listRequests
-  if (ro) {
-    return <Alert severity="info">Requests are for admins: the page shows keys.</Alert>
-  }
+  if (ro) return <Alert severity="info">Requests are for admins: the page shows keys.</Alert>
   if (q.error) return <Alert severity="error">{extractMessage(q.error)}</Alert>
   if (!d) return <Loading />
   const pending = d.requests.filter((r) => r.status === 'pending')
   const decided = d.requests.filter((r) => r.status !== 'pending')
   return (
-    <Stack spacing={2}>
+    <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
       <PageHeader title="Requests">
-        {pending.length > 0 && <Chip size="small" color="warning" label={`${pending.length} waiting`} />}
+        {pending.length > 0 && <Chip size="small" color="info" label={`${pending.length} waiting`} />}
       </PageHeader>
-      <Panel
-        title="Waiting for a decision"
-        subtitle="What agents asked for"
-        note="Approve lets you edit what is granted. The requester collects a new key on its next poll, once."
-      >
+      <Panel title="Waiting for you">
         {pending.length === 0 ? (
           <Row>
             <Typography variant="body2" color="text.secondary">
-              Nothing waiting. Agents file with POST /v1/access-requests (see /v1/capabilities).
+              Nothing is waiting.
             </Typography>
           </Row>
         ) : (
           pending.map((r) => <PendingRow key={r.id} r={r} d={d} />)
         )}
       </Panel>
+      {decided.length > 0 && <DecidedPanel rows={decided} d={d} />}
       <KeysPanel d={d} />
-      <RulesPanel d={d} />
-      {decided.length > 0 && <DecidedPanel rows={decided} />}
-    </Stack>
+    </Box>
   )
 }
 
-function askedSummary(r: Req): string[] {
-  const a = r.asked
-  const out: string[] = []
-  if (a.models?.length) out.push(`models: ${a.models.join(', ')}`)
-  if (a.askedLimits) out.push(a.limits?.length ? `budgets: ${(a.limits ?? []).map(limitText).join('; ')}` : 'budgets: none (unlimited)')
-  for (const v of a.valueAdds ?? []) out.push(`value add: ${fmtUSD(v.usd)}${v.model ? ` on ${v.model}` : ''}${v.ttl ? `, expires after ${v.ttl}` : ''}`)
-  if (a.ttl || a.expires) out.push(`key expires: ${a.ttl ? `after ${a.ttl}` : a.expires}`)
-  if (a.askedMint) out.push(a.mint ? 'may mint child keys' : 'no child keys')
-  return out
-}
-
 function PendingRow({ r, d }: { r: Req; d: Data }) {
-  const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [denyOpen, setDenyOpen] = useState(false)
+  const a = r.asked
+  const title = requestTitle(r, d)
+  const line = costLine(a.limits ?? [], a.valueAdds ?? [], a.ttl, !r.requesterKey)
+  const extra = [
+    ...(a.askedMint ? [a.mint ? 'wants to create its own sub-keys' : 'gives up creating sub-keys'] : []),
+    ...(a.models?.length ? [`for ${a.models.join(', ')}`] : []),
+  ]
+  const odd = r.via !== 'default (direct from LAN)'
+  return (
+    <Row>
+      <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <Box sx={{ flex: 1, minWidth: 260 }}>
+          <Typography variant="subtitle2">{title}</Typography>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: line.open ? C.warn : undefined }}>
+            {line.text}
+          </Typography>
+          {extra.length > 0 && (
+            <Typography variant="body2" color="text.secondary">
+              {extra.join(' · ')}
+            </Typography>
+          )}
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, whiteSpace: 'pre-wrap' }}>
+            “{a.purpose}”
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            asked {fmtAgo(r.created)}
+            {r.filedBy ? ` by ${r.filedBy}` : ''}
+            {odd ? ` · from ${r.sourceIp} (${r.via})` : ''}
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={1}>
+          <Button size="small" color="inherit" onClick={() => setDenyOpen(true)}>
+            Deny
+          </Button>
+          <Button variant="outlined" size="small" onClick={() => setOpen(true)}>
+            Review
+          </Button>
+        </Stack>
+      </Box>
+      {open && <ApproveDialog r={r} d={d} title={title} onClose={() => setOpen(false)} />}
+      {denyOpen && <DenyDialog r={r} title={title} onClose={() => setDenyOpen(false)} />}
+    </Row>
+  )
+}
+
+function DenyDialog({ r, title, onClose }: { r: Req; title: string; onClose: () => void }) {
+  const qc = useQueryClient()
   const [reason, setReason] = useState('')
   const [err, setErr] = useState('')
   const deny = useMutation({
     mutationFn: () => gqlClient.request(DenyDoc, { body: { id: r.id, reason } }),
     onSuccess: () => {
-      setDenyOpen(false)
+      onClose()
       void qc.invalidateQueries({ queryKey: ['requests'] })
     },
     onError: (e) => setErr(extractMessage(e)),
   })
-  const who = r.requesterKey ? `More for key ${r.requesterKey}` : `New key “${r.asked.label}”`
   return (
-    <Row>
-      <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <Box sx={{ flex: 1, minWidth: 260 }}>
-          <Typography variant="subtitle2">{who}</Typography>
-          <Typography variant="body2" sx={{ my: 0.5, whiteSpace: 'pre-wrap' }}>
-            {r.asked.purpose}
-          </Typography>
-          {askedSummary(r).map((s) => (
-            <Typography key={s} variant="caption" sx={{ display: 'block' }} color="text.secondary">
-              {s}
-            </Typography>
-          ))}
-          <Typography variant="caption" color="text.secondary">
-            from {r.sourceIp}
-            {r.filedBy ? ` (${r.filedBy})` : ''} · rule: {r.via} · {fmtAgo(r.created)}
-          </Typography>
-        </Box>
-        <Stack direction="row" spacing={1}>
-          <Button variant="contained" size="small" onClick={() => setOpen(true)}>
-            Review and approve
-          </Button>
-          <Button color="error" size="small" onClick={() => setDenyOpen(true)}>
-            Deny
-          </Button>
-        </Stack>
-      </Box>
-      {open && (
-        <GrantDialog
-          title={who}
-          d={d}
-          initial={formFromRequest(r, d.credentials)}
-          askedModels={r.asked.models ?? []}
-          forConfiguredKey={!!r.requesterKey && d.keys.some((k) => k.key === r.requesterKey && k.kind === 'configured')}
-          withValueAdds
-          withReason
-          submitLabel="Approve"
-          onClose={() => setOpen(false)}
-          onSubmit={async (f) => {
-            await gqlClient.request(ApproveDoc, { body: { id: r.id, granted: formToGrant(f), reason: f.reason } })
-            void qc.invalidateQueries({ queryKey: ['requests'] })
-          }}
-        />
-      )}
-      <Dialog open={denyOpen} onClose={() => setDenyOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Deny: {who}</DialogTitle>
-        <DialogContent>
-          {err && <Alert severity="error">{err}</Alert>}
-          <TextField
-            label="Reason (the requester sees it)"
-            fullWidth
-            margin="dense"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDenyOpen(false)}>Cancel</Button>
-          <Button color="error" onClick={() => deny.mutate()} disabled={deny.isPending}>
-            Deny
-          </Button>
-        </DialogActions>
-      </Dialog>
-    </Row>
-  )
-}
-
-/** The approve / edit form. */
-function GrantDialog(props: {
-  title: string
-  d: Data
-  initial: Form
-  askedModels: string[]
-  forConfiguredKey: boolean
-  withValueAdds?: boolean
-  withReason?: boolean
-  withExpiry?: boolean
-  submitLabel: string
-  onClose: () => void
-  onSubmit: (f: Form) => Promise<void>
-}) {
-  const { d } = props
-  const [f, setF] = useState<Form>(props.initial)
-  const [err, setErr] = useState('')
-  const [busy, setBusy] = useState(false)
-  const set = (p: Partial<Form>) => setF((cur) => ({ ...cur, ...p }))
-  const restricted = d.credentials.filter((c) => !c.open)
-  const setLim = (i: number, p: Partial<Lim>) => set({ limits: f.limits.map((l, j) => (j === i ? { ...l, ...p } : l)) })
-  const setVA = (i: number, p: Partial<VAdd>) => set({ valueAdds: f.valueAdds.map((v, j) => (j === i ? { ...v, ...p } : v)) })
-  const submit = async () => {
-    setBusy(true)
-    setErr('')
-    try {
-      await props.onSubmit(f)
-      props.onClose()
-    } catch (e) {
-      setErr(extractMessage(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <Dialog open onClose={props.onClose} fullWidth maxWidth="md">
-      <DialogTitle>{props.title}</DialogTitle>
+    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle>Deny: {title}?</DialogTitle>
       <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          {err && <Alert severity="error">{err}</Alert>}
-          <Stack direction="row" spacing={2}>
-            <TextField label="Label" size="small" value={f.label} onChange={(e) => set({ label: e.target.value })} sx={{ flex: 1 }} />
-            <TextField
-              select
-              label="Priority group"
-              size="small"
-              value={f.group}
-              onChange={(e) => set({ group: e.target.value })}
-              sx={{ minWidth: 200 }}
-            >
-              <MenuItem value="">fallback group</MenuItem>
-              {d.groups.map((g) => (
-                <MenuItem key={g} value={g}>
-                  {g}
-                </MenuItem>
-              ))}
-            </TextField>
-          </Stack>
-
-          <Box>
-            <Typography variant="subtitle2">Paid accounts it may use</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Accounts with an allowlist. Open accounts (no allowlist) are usable by every key already.
-            </Typography>
-            {restricted.length === 0 && (
-              <Typography variant="body2" color="text.secondary">
-                None: every account is open.
-              </Typography>
-            )}
-            {restricted.map((c) => (
-              <FormControlLabel
-                key={c.scope}
-                sx={{ display: 'flex' }}
-                control={
-                  <Checkbox
-                    size="small"
-                    checked={f.credentials.includes(c.scope)}
-                    onChange={(e) =>
-                      set({
-                        credentials: e.target.checked ? [...f.credentials, c.scope] : f.credentials.filter((x) => x !== c.scope),
-                      })
-                    }
-                  />
-                }
-                label={
-                  <Typography variant="body2">
-                    {c.provider}/{c.name}
-                    <Typography component="span" variant="caption" color="text.secondary">
-                      {' '}
-                      — {(c.models ?? []).join(', ') || 'no models'}
-                      {(c.models ?? []).some((m) => props.askedModels.includes(m)) ? ' (asked for)' : ''}
-                    </Typography>
-                  </Typography>
-                }
-              />
-            ))}
-            {props.forConfiguredKey && (
-              <Typography variant="caption" color="warning.main" sx={{ display: 'block' }}>
-                A configured key is added to an account's allowlist here; unticking does not remove it (edit the provider).
-              </Typography>
-            )}
-          </Box>
-
-          <Box>
-            <Typography variant="subtitle2">Budgets</Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-              No budgets = unlimited. Hard refuses once spent; soft is only reported.
-            </Typography>
-            {f.limits.map((l, i) => (
-              <Stack key={i} direction="row" spacing={1} sx={{ mt: 1, alignItems: 'center' }}>
-                <TextField
-                  label={l.unit === 'usd' ? 'Amount ($)' : 'Amount (requests)'}
-                  size="small"
-                  type="number"
-                  value={l.amount}
-                  onChange={(e) => setLim(i, { amount: e.target.value })}
-                  sx={{ width: 150 }}
-                />
-                <TextField select size="small" label="Unit" value={l.unit} onChange={(e) => setLim(i, { unit: e.target.value as Lim['unit'] })} sx={{ width: 120 }}>
-                  <MenuItem value="usd">dollars</MenuItem>
-                  <MenuItem value="req">requests</MenuItem>
-                </TextField>
-                <TextField select size="small" label="Window" value={l.per} onChange={(e) => setLim(i, { per: e.target.value })} sx={{ width: 240 }}>
-                  {PERS.map((p) => (
-                    <MenuItem key={p.v} value={p.v}>
-                      {p.label}
-                    </MenuItem>
-                  ))}
-                </TextField>
-                <TextField select size="small" label="Model" value={l.model} onChange={(e) => setLim(i, { model: e.target.value })} sx={{ flex: 1 }}>
-                  <MenuItem value="">every model</MenuItem>
-                  {d.models.map((m) => (
-                    <MenuItem key={m} value={m}>
-                      {m}
-                    </MenuItem>
-                  ))}
-                </TextField>
-                <FormControlLabel control={<Switch size="small" checked={l.hard} onChange={(e) => setLim(i, { hard: e.target.checked })} />} label="Hard" />
-                <IconButton size="small" aria-label="Remove budget" onClick={() => set({ limits: f.limits.filter((_, j) => j !== i) })}>
-                  <DeleteOutline fontSize="small" />
-                </IconButton>
-              </Stack>
-            ))}
-            <Button
-              size="small"
-              startIcon={<AddIcon />}
-              sx={{ mt: 1 }}
-              onClick={() => set({ limits: [...f.limits, { amount: '', unit: 'usd', per: 'calendar-day', hard: true, model: '' }] })}
-            >
-              Add budget
-            </Button>
-          </Box>
-
-          {props.withValueAdds && (
-            <Box>
-              <Typography variant="subtitle2">Value adds</Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                A one-time extra amount, spent only after the budgets above refuse. It does not lift a model's own cap.
-              </Typography>
-              {f.valueAdds.map((v, i) => (
-                <Stack key={i} direction="row" spacing={1} sx={{ mt: 1, alignItems: 'center' }}>
-                  <TextField label="Amount ($)" size="small" type="number" value={v.usd} onChange={(e) => setVA(i, { usd: e.target.value })} sx={{ width: 130 }} />
-                  <TextField select size="small" label="Model" value={v.model} onChange={(e) => setVA(i, { model: e.target.value })} sx={{ flex: 1 }}>
-                    <MenuItem value="">any model</MenuItem>
-                    {d.models.map((m) => (
-                      <MenuItem key={m} value={m}>
-                        {m}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                  <TextField
-                    label="Expires after"
-                    placeholder="2d, 48h; empty = until spent"
-                    size="small"
-                    value={v.ttl}
-                    onChange={(e) => setVA(i, { ttl: e.target.value })}
-                    sx={{ width: 220 }}
-                  />
-                  <TextField label="Note" size="small" value={v.note} onChange={(e) => setVA(i, { note: e.target.value })} sx={{ width: 160 }} />
-                  <IconButton size="small" aria-label="Remove value add" onClick={() => set({ valueAdds: f.valueAdds.filter((_, j) => j !== i) })}>
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
-                </Stack>
-              ))}
-              <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1 }} onClick={() => set({ valueAdds: [...f.valueAdds, { usd: '', model: '', ttl: '2d', note: '' }] })}>
-                Add value add
-              </Button>
-            </Box>
-          )}
-
-          <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
-            {!props.forConfiguredKey && (props.withExpiry ?? true) && (
-              <TextField
-                label="Key expires after"
-                placeholder="7d, 48h; empty = never"
-                size="small"
-                value={f.ttl}
-                onChange={(e) => set({ ttl: e.target.value })}
-                helperText="After this the key answers 401. Counted from now."
-                sx={{ width: 280 }}
-              />
-            )}
-            <FormControlLabel
-              control={<Switch checked={f.mint} onChange={(e) => set({ mint: e.target.checked })} />}
-              label="May mint child keys (and set their budgets and expiry)"
-            />
-          </Stack>
-          {props.withReason && (
-            <TextField label="Note to the requester (optional)" size="small" value={f.reason} onChange={(e) => set({ reason: e.target.value })} />
-          )}
-        </Stack>
+        {err && <Alert severity="error">{err}</Alert>}
+        <TextField
+          label="Reason"
+          helperText="The assistant is told this the next time it checks on its request."
+          fullWidth
+          margin="dense"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
       </DialogContent>
       <DialogActions>
-        <Button onClick={props.onClose}>Cancel</Button>
-        <Button variant="contained" onClick={() => void submit()} disabled={busy}>
-          {props.submitLabel}
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="contained" color="error" onClick={() => deny.mutate()} disabled={deny.isPending}>
+          Deny
         </Button>
       </DialogActions>
     </Dialog>
   )
 }
 
-function shortKey(k: string): string {
-  return k.length > 18 ? `${k.slice(0, 10)}…${k.slice(-4)}` : k
+/**
+ * Approve. A request for a NEW key opens the whole grant, spending first and
+ * the rest under More settings. A request for more on an EXISTING key shows
+ * the key as it is now and only the change asked for — the server applies
+ * nothing else (proxy.onlyAsked).
+ */
+function ApproveDialog({ r, d, title, onClose }: { r: Req; d: Data; title: string; onClose: () => void }) {
+  const qc = useQueryClient()
+  const existing = r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined
+  const a = r.asked
+  const [f, setF] = useState<Form>(formFromRequest(r, d.credentials))
+  const [more, setMore] = useState(false)
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const set = (p: Partial<Form>) => setF((cur) => ({ ...cur, ...p }))
+  const g = formToGrant(f)
+  const line = costLine(g.limits, (g.valueAdds ?? []).map((v) => ({ usd: v.usd, ttl: v.ttl })), g.ttl, !r.requesterKey)
+  const submit = async () => {
+    setBusy(true)
+    setErr('')
+    try {
+      await gqlClient.request(ApproveDoc, { body: { id: r.id, granted: g, reason: f.reason } })
+      void qc.invalidateQueries({ queryKey: ['requests'] })
+      onClose()
+    } catch (e) {
+      setErr(extractMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const showLimits = !r.requesterKey || !!a.askedLimits
+  const showTopUps = !r.requesterKey || (a.valueAdds?.length ?? 0) > 0
+  const showExpiry = !r.requesterKey || !!a.ttl || !!a.expires
+  return (
+    <Dialog open onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>Approve: {title}?</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2.5} sx={{ mt: 0.5 }}>
+          {err && <Alert severity="error">{err}</Alert>}
+          <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+            “{a.purpose}”
+          </Typography>
+          {existing && <KeyNow k={existing} />}
+          {showLimits && <LimitsEditor f={f} set={set} d={d} />}
+          {showTopUps && <TopUpsEditor f={f} set={set} d={d} />}
+          {showExpiry && (
+            <TextField
+              label="Stops working after"
+              placeholder="7d, 48h — empty: never"
+              size="small"
+              value={f.ttl}
+              onChange={(e) => set({ ttl: e.target.value })}
+              helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}, if you approve now` : 'Write it as 7d or 48h') : 'Never'}
+              error={!!f.ttl && !endsAt(f.ttl)}
+              sx={{ width: 300 }}
+            />
+          )}
+          {existing && a.askedMint && (
+            <FormControlLabel control={<Switch checked={f.mint} onChange={(e) => set({ mint: e.target.checked })} />} label="May create its own sub-keys, with budgets you cannot see here" />
+          )}
+          {!existing && (
+            <Box>
+              <Button size="small" color="inherit" onClick={() => setMore(!more)}>
+                {more ? 'Fewer settings' : 'More settings: name, priority, paid accounts, sub-keys'}
+              </Button>
+              {more && <MoreSettings f={f} set={set} d={d} askedModels={a.models ?? []} />}
+            </Box>
+          )}
+          <TextField label="Note to the assistant (optional)" size="small" value={f.reason} onChange={(e) => set({ reason: e.target.value })} />
+        </Stack>
+      </DialogContent>
+      <Box sx={{ px: 3, pt: 1, borderTop: `1px solid ${C.border}` }}>
+        <Typography variant="subtitle2" sx={{ color: line.open ? C.warn : undefined }}>
+          {line.text}
+        </Typography>
+        {!existing && (
+          <Typography variant="caption" color="text.secondary">
+            The assistant gets the key the next time it checks, once. You can switch it off later under Keys.
+          </Typography>
+        )}
+      </Box>
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="contained" onClick={() => void submit()} disabled={busy || (!!f.ttl && !endsAt(f.ttl))}>
+          Approve
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
 }
 
-function CopyKey({ k }: { k: string }) {
+/** A key as it stands, for a request that would change it. */
+function KeyNow({ k }: { k: Key }) {
+  const parts = [
+    k.limits.length ? k.limits.map(limitText).join('; ') : 'no spending limit',
+    ...k.valueAdds.filter((v) => v.active).map((v) => `${usd(v.usd - (v.spent ?? 0))} top-up left${v.expires ? ` until ${when(v.expires)}` : ''}`),
+    ...(k.mint ? ['may create sub-keys'] : []),
+  ]
   return (
-    <Tooltip title={`Copy ${k}`}>
-      <IconButton size="small" aria-label="Copy key" onClick={() => void navigator.clipboard.writeText(k)}>
-        <ContentCopyIcon sx={{ fontSize: 14 }} />
-      </IconButton>
-    </Tooltip>
+    <Box sx={{ p: 1.5, border: `1px solid ${C.border}`, borderRadius: 1 }}>
+      <Typography variant="caption" color="text.secondary">
+        {keyName(k)} now
+      </Typography>
+      <Typography variant="body2">{parts.join(' · ')}</Typography>
+      <Typography variant="caption" color="text.secondary">
+        Approving changes only what was asked. To change anything else, use Edit under Keys.
+      </Typography>
+    </Box>
+  )
+}
+
+function LimitsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
+  const setLim = (i: number, p: Partial<Lim>) => set({ limits: f.limits.map((l, j) => (j === i ? { ...l, ...p } : l)) })
+  return (
+    <Box>
+      <Typography variant="subtitle2">Spending limits</Typography>
+      {f.limits.length === 0 && (
+        <Typography variant="body2" sx={{ color: C.warn }}>
+          None: it may spend without limit.
+        </Typography>
+      )}
+      {f.limits.map((l, i) => (
+        <Stack key={i} direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
+          <TextField label={l.unit === 'usd' ? 'Amount ($)' : 'Requests'} size="small" type="number" value={l.amount} onChange={(e) => setLim(i, { amount: e.target.value })} sx={{ width: 130 }} />
+          <TextField select size="small" label="Of" value={l.unit} onChange={(e) => setLim(i, { unit: e.target.value as Lim['unit'] })} sx={{ width: 120 }}>
+            <MenuItem value="usd">dollars</MenuItem>
+            <MenuItem value="req">requests</MenuItem>
+          </TextField>
+          <TextField select size="small" label="Over" value={l.per} onChange={(e) => setLim(i, { per: e.target.value })} sx={{ width: 250 }}>
+            {PERS.map((p) => (
+              <MenuItem key={p.v} value={p.v}>
+                {p.label}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField select size="small" label="On" value={l.model} onChange={(e) => setLim(i, { model: e.target.value })} slotProps={selectSlots} sx={{ minWidth: 200, flex: 1 }}>
+            <MenuItem value="">every model</MenuItem>
+            {d.models.map((m) => (
+              <MenuItem key={m} value={m}>
+                {m}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField select size="small" label="When reached" value={l.hard ? 'stop' : 'warn'} onChange={(e) => setLim(i, { hard: e.target.value === 'stop' })} sx={{ width: 170 }}>
+            <MenuItem value="stop">stop it</MenuItem>
+            <MenuItem value="warn">only warn me</MenuItem>
+          </TextField>
+          <IconButton size="small" aria-label="Remove this limit" onClick={() => set({ limits: f.limits.filter((_, j) => j !== i) })}>
+            <DeleteOutline fontSize="small" />
+          </IconButton>
+        </Stack>
+      ))}
+      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1 }} onClick={() => set({ limits: [...f.limits, { amount: '', unit: 'usd', per: 'calendar-day', hard: true, model: '' }] })}>
+        Add a limit
+      </Button>
+    </Box>
+  )
+}
+
+function TopUpsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
+  const setT = (i: number, p: Partial<TopUp>) => set({ topUps: f.topUps.map((v, j) => (j === i ? { ...v, ...p } : v)) })
+  return (
+    <Box>
+      <Typography variant="subtitle2">Top-ups</Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+        Extra money on top of the limits, used once they are reached, gone when it runs out or expires.
+      </Typography>
+      {f.topUps.map((v, i) => (
+        <TopUpRow key={i} v={v} set={(p) => setT(i, p)} remove={() => set({ topUps: f.topUps.filter((_, j) => j !== i) })} d={d} />
+      ))}
+      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1 }} onClick={() => set({ topUps: [...f.topUps, { usd: '', model: '', ttl: '2d', note: '' }] })}>
+        Add a top-up
+      </Button>
+    </Box>
+  )
+}
+
+function TopUpRow({ v, set, remove, d }: { v: TopUp; set: (p: Partial<TopUp>) => void; remove?: () => void; d: Data }) {
+  return (
+    <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
+      <TextField label="Amount ($)" size="small" type="number" value={v.usd} onChange={(e) => set({ usd: e.target.value })} sx={{ width: 130 }} />
+      <TextField select size="small" label="On" value={v.model} onChange={(e) => set({ model: e.target.value })} slotProps={selectSlots} sx={{ minWidth: 200, flex: 1 }}>
+        <MenuItem value="">every model</MenuItem>
+        {d.models.map((m) => (
+          <MenuItem key={m} value={m}>
+            {m}
+          </MenuItem>
+        ))}
+      </TextField>
+      <TextField
+        label="Expires after"
+        placeholder="2d, 48h"
+        size="small"
+        value={v.ttl}
+        onChange={(e) => set({ ttl: e.target.value })}
+        helperText={v.ttl ? (endsAt(v.ttl) ? `On ${endsAt(v.ttl)}` : 'Write it as 2d or 48h') : 'Until spent'}
+        error={!!v.ttl && !endsAt(v.ttl)}
+        sx={{ width: 200 }}
+      />
+      {remove && (
+        <IconButton size="small" aria-label="Remove this top-up" onClick={remove}>
+          <DeleteOutline fontSize="small" />
+        </IconButton>
+      )}
+    </Stack>
+  )
+}
+
+function MoreSettings({ f, set, d, askedModels }: { f: Form; set: (p: Partial<Form>) => void; d: Data; askedModels: string[] }) {
+  const restricted = d.credentials.filter((c) => !c.open)
+  return (
+    <Stack spacing={2} sx={{ mt: 1.5 }}>
+      <Stack direction="row" spacing={2}>
+        <TextField label="Name" size="small" value={f.label} onChange={(e) => set({ label: e.target.value })} sx={{ flex: 1 }} />
+        <TextField select label="Priority" size="small" value={f.group} onChange={(e) => set({ group: e.target.value })} slotProps={selectSlots} sx={{ minWidth: 200 }}>
+          <MenuItem value="">the default</MenuItem>
+          {d.groups.map((g) => (
+            <MenuItem key={g} value={g}>
+              {g}
+            </MenuItem>
+          ))}
+        </TextField>
+      </Stack>
+      {restricted.length > 0 && (
+        <Box>
+          <Typography variant="subtitle2">Paid accounts it may use</Typography>
+          {restricted.map((c) => (
+            <FormControlLabel
+              key={c.scope}
+              sx={{ display: 'flex' }}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={f.credentials.includes(c.scope)}
+                  onChange={(e) => set({ credentials: e.target.checked ? [...f.credentials, c.scope] : f.credentials.filter((x) => x !== c.scope) })}
+                />
+              }
+              label={
+                <Typography variant="body2">
+                  {c.provider}
+                  {c.name !== 'default' ? ` (${c.name})` : ''}
+                  {(c.models ?? []).some((m) => askedModels.includes(m)) ? ' — needed for what it asked' : ''}
+                </Typography>
+              }
+            />
+          ))}
+        </Box>
+      )}
+      <FormControlLabel control={<Switch checked={f.mint} onChange={(e) => set({ mint: e.target.checked })} />} label="May create its own sub-keys" />
+    </Stack>
   )
 }
 
 function KeysPanel({ d }: { d: Data }) {
   const [showAll, setShowAll] = useState(false)
-  // Configured keys with nothing managed here would crowd the table; listed
-  // when they have a budget, a value add or the mint permission.
+  // Configured keys with nothing managed here would crowd the table.
   const keys = d.keys.filter((k) => showAll || k.kind !== 'configured' || k.mint || k.limits.length > 0 || k.valueAdds.length > 0)
   return (
     <Panel
-      title="Keys"
-      subtitle="Keys handed out here or minted by other keys, and configured keys with a budget, value add or mint permission."
-      actions={
-        <FormControlLabel control={<Switch size="small" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />} label="Every configured key" />
-      }
+      title="Keys you have handed out"
+      actions={<FormControlLabel control={<Switch size="small" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />} label="Show keys with no limits" />}
       flush
     >
       <TableContainer>
@@ -751,11 +775,10 @@ function KeysPanel({ d }: { d: Data }) {
           <TableHead>
             <TableRow>
               <TableCell>Key</TableCell>
-              <TableCell>Kind</TableCell>
-              <TableCell>Budgets (used / limit)</TableCell>
-              <TableCell>Value adds (left)</TableCell>
-              <TableCell>Expires</TableCell>
-              <TableCell align="right">Actions</TableCell>
+              <TableCell>Spent</TableCell>
+              <TableCell>Top-ups left</TableCell>
+              <TableCell>Stops working</TableCell>
+              <TableCell align="right" />
             </TableRow>
           </TableHead>
           <TableBody>
@@ -772,7 +795,7 @@ function KeysPanel({ d }: { d: Data }) {
 function KeyRow({ k, d }: { k: Key; d: Data }) {
   const qc = useQueryClient()
   const [edit, setEdit] = useState(false)
-  const [addVA, setAddVA] = useState(false)
+  const [addTopUp, setAddTopUp] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [err, setErr] = useState('')
   const refresh = () => void qc.invalidateQueries({ queryKey: ['requests'] })
@@ -784,26 +807,33 @@ function KeyRow({ k, d }: { k: Key; d: Data }) {
     },
     onError: (e) => setErr(extractMessage(e)),
   })
-  const delVA = useMutation({
+  const delTopUp = useMutation({
     mutationFn: (id: string) => gqlClient.request(ValueAddDoc, { body: { action: 'delete', valueAdd: { id, usd: 0 } } }),
     onSuccess: refresh,
     onError: (e) => setErr(extractMessage(e)),
   })
-  const kind = k.kind === 'child' ? `child of ${shortKey(k.parent ?? '')}` : k.kind
+  const parent = k.parent ? d.keys.find((x) => x.key === k.parent) : undefined
+  const who = k.kind === 'child' ? `sub-key of ${parent ? keyName(parent) : shortId(k.parent ?? '')}` : k.kind === 'configured' ? 'set up in the config' : 'approved here'
   return (
     <TableRow sx={{ opacity: k.expired ? 0.55 : 1, verticalAlign: 'top' }}>
       <TableCell>
-        <Box sx={{ display: 'flex', alignItems: 'center' }}>
-          <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-            {shortKey(k.key)}
-          </Typography>
-          <CopyKey k={k.key} />
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+          {keyName(k)}
+        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          {k.label && (
+            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+              {shortId(k.key)}
+            </Typography>
+          )}
+          <Button size="small" color="inherit" sx={{ minWidth: 0, px: 0.5, py: 0, fontSize: 12 }} onClick={() => void navigator.clipboard.writeText(k.key)}>
+            copy key
+          </Button>
         </Box>
-        {k.label && (
-          <Typography variant="caption" color="text.secondary">
-            {k.label}
-          </Typography>
-        )}
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+          {who}
+          {k.mint ? ' · may create sub-keys' : ''}
+        </Typography>
         {err && (
           <Typography variant="caption" color="error" sx={{ display: 'block' }}>
             {err}
@@ -811,32 +841,21 @@ function KeyRow({ k, d }: { k: Key; d: Data }) {
         )}
       </TableCell>
       <TableCell>
-        <Typography variant="body2">{kind}</Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-          {k.group || 'fallback group'}
-          {k.mint ? ' · may mint' : ''}
-        </Typography>
-        {(k.credentials ?? []).map((c) => (
-          <Typography key={c} variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-            {c.replace(/^cred:/, '')}
-          </Typography>
-        ))}
-      </TableCell>
-      <TableCell>
         {k.limits.length === 0 && (
-          <Typography variant="body2" color="text.secondary">
-            unlimited
+          <Typography variant="body2" sx={{ color: C.warn }}>
+            no limit
           </Typography>
         )}
         {k.limits.map((l, i) => {
-          const w = k.windows.find((x) => x.scope === (l.model || 'key') && x.label.endsWith('/' + l.per) && x.label.startsWith((l.usd ?? 0) > 0 ? 'usd' : 'req'))
-          const usd = (l.usd ?? 0) > 0
-          const fmt = (n: number) => (usd ? fmtUSD(n) : `${Math.round(n)} req`)
+          const isUsd = (l.usd ?? 0) > 0
+          const w = k.windows.find((x) => x.scope === (l.model || 'key') && x.label === `${isUsd ? 'usd' : 'req'}/${l.per}`)
+          const fmt = (n: number) => (isUsd ? usd(n) : `${Math.round(n)} requests`)
           return (
             <Typography key={i} variant="body2" sx={{ color: w?.blocked ? C.error : undefined }}>
-              {w ? `${fmt(w.used)} / ` : ''}
-              {limitText(l)}
-              {w?.blocked ? ' — full' : ''}
+              {fmt(w?.used ?? 0)} of {fmt(isUsd ? (l.usd ?? 0) : (l.req ?? 0))} {perShort(l.per)}
+              {l.model ? ` on ${l.model}` : ''}
+              {!l.hard ? ' (warning only)' : ''}
+              {w?.blocked ? ' — reached' : ''}
             </Typography>
           )
         })}
@@ -844,92 +863,64 @@ function KeyRow({ k, d }: { k: Key; d: Data }) {
       <TableCell>
         {k.valueAdds.length === 0 && (
           <Typography variant="body2" color="text.secondary">
-            none
+            —
           </Typography>
         )}
         {k.valueAdds.map((v) => (
           <Box key={v.id} sx={{ display: 'flex', alignItems: 'center', opacity: v.active ? 1 : 0.55 }}>
             <Typography variant="body2">
-              {fmtUSD(Math.max(v.usd - (v.spent ?? 0), 0))} of {fmtUSD(v.usd)}
+              {usd(Math.max(v.usd - (v.spent ?? 0), 0))} of {usd(v.usd)}
               {v.model ? ` on ${v.model}` : ''}
-              {v.expires ? ` · until ${new Date(v.expires).toLocaleString()}` : ''}
-              {!v.active ? ' (done)' : ''}
+              {v.expires ? `, until ${when(v.expires)}` : ''}
+              {!v.active ? ' (over)' : ''}
             </Typography>
-            <IconButton size="small" aria-label="Remove value add" onClick={() => delVA.mutate(v.id ?? '')}>
-              <DeleteOutline sx={{ fontSize: 16 }} />
-            </IconButton>
+            <Button size="small" color="inherit" sx={{ minWidth: 0, px: 0.5, py: 0, fontSize: 12 }} onClick={() => delTopUp.mutate(v.id ?? '')}>
+              remove
+            </Button>
           </Box>
         ))}
       </TableCell>
-      <TableCell>
-        {k.kind === 'configured' ? (
-          <Typography variant="body2" color="text.secondary">
-            never (configured)
-          </Typography>
-        ) : k.expires ? (
-          <Typography variant="body2" sx={{ color: k.expired ? C.error : undefined }}>
-            {k.expired ? 'expired ' : ''}
-            {new Date(k.expires).toLocaleString()}
-          </Typography>
-        ) : (
-          <Typography variant="body2" color="text.secondary">
-            never
-          </Typography>
+      <TableCell sx={{ whiteSpace: 'nowrap' }}>
+        <Typography variant="body2" sx={{ color: k.expired ? C.error : undefined }} color={k.expires ? undefined : 'text.secondary'}>
+          {k.kind === 'configured' ? 'never' : k.expires ? `${k.expired ? 'stopped ' : ''}${when(k.expires)}` : 'never'}
+        </Typography>
+      </TableCell>
+      <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+        <Button size="small" onClick={() => setEdit(true)}>
+          Edit
+        </Button>
+        <Button size="small" onClick={() => setAddTopUp(true)}>
+          Top up
+        </Button>
+        {k.kind !== 'configured' &&
+          (k.expired ? (
+            <Button size="small" onClick={() => act.mutate('enable')}>
+              Switch on
+            </Button>
+          ) : (
+            <Button size="small" color="inherit" onClick={() => act.mutate('disable')}>
+              Switch off
+            </Button>
+          ))}
+        {k.kind !== 'configured' && (
+          <Button size="small" color="error" onClick={() => setConfirmDelete(true)}>
+            Delete
+          </Button>
         )}
       </TableCell>
-      <TableCell align="right">
-        <Stack direction="row" spacing={0.5} sx={{ justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-          <Button size="small" onClick={() => setEdit(true)}>
-            Edit
-          </Button>
-          <Button size="small" onClick={() => setAddVA(true)}>
-            Add value
-          </Button>
-          {k.kind !== 'configured' &&
-            (k.expired ? (
-              <Button size="small" onClick={() => act.mutate('enable')}>
-                Enable
-              </Button>
-            ) : (
-              <Button size="small" color="warning" onClick={() => act.mutate('disable')}>
-                Disable now
-              </Button>
-            ))}
-          {k.kind !== 'configured' && (
-            <Button size="small" color="error" onClick={() => setConfirmDelete(true)}>
-              Delete
-            </Button>
-          )}
-        </Stack>
-      </TableCell>
-      {edit && (
-        <GrantDialog
-          title={`Edit ${k.label || shortKey(k.key)}`}
-          d={d}
-          initial={formFromKey(k)}
-          askedModels={[]}
-          forConfiguredKey={k.kind === 'configured'}
-          submitLabel="Save"
-          onClose={() => setEdit(false)}
-          onSubmit={async (f) => {
-            const g = formToGrant(f)
-            await gqlClient.request(UpdateKeyDoc, { body: { key: k.key, edit: { ...g, valueAdds: [] } } })
-            refresh()
-          }}
-        />
-      )}
-      {addVA && <AddValueDialog k={k} d={d} onClose={() => setAddVA(false)} onDone={refresh} />}
+      {edit && <EditKeyDialog k={k} d={d} onClose={() => setEdit(false)} onDone={refresh} />}
+      {addTopUp && <TopUpDialog k={k} d={d} onClose={() => setAddTopUp(false)} onDone={refresh} />}
       <Dialog open={confirmDelete} onClose={() => setConfirmDelete(false)}>
-        <DialogTitle>Delete {k.label || shortKey(k.key)}?</DialogTitle>
+        <DialogTitle>Delete {keyName(k)}?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            The key stops working at once (401), and so do its child keys. Its value adds are removed. To stop it but keep the
-            record, use Disable now instead.
+            The key stops working at once, and so do any sub-keys it made. Its top-ups are removed. To stop it but keep it listed,
+            use Switch off instead.
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setConfirmDelete(false)}>Cancel</Button>
-          <Button color="error" onClick={() => act.mutate('delete')} disabled={act.isPending}>
+          <Button variant="contained" color="error" onClick={() => act.mutate('delete')} disabled={act.isPending}>
             Delete
           </Button>
         </DialogActions>
@@ -938,8 +929,52 @@ function KeyRow({ k, d }: { k: Key; d: Data }) {
   )
 }
 
-function AddValueDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: () => void; onDone: () => void }) {
-  const [v, setV] = useState<VAdd>({ usd: '', model: '', ttl: '2d', note: '' })
+function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: () => void; onDone: () => void }) {
+  const [f, setF] = useState<Form>(formFromKey(k))
+  const [err, setErr] = useState('')
+  const set = (p: Partial<Form>) => setF((cur) => ({ ...cur, ...p }))
+  const save = useMutation({
+    mutationFn: () => gqlClient.request(UpdateKeyDoc, { body: { key: k.key, edit: { ...formToGrant(f), valueAdds: [] } } }),
+    onSuccess: () => {
+      onDone()
+      onClose()
+    },
+    onError: (e) => setErr(extractMessage(e)),
+  })
+  return (
+    <Dialog open onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>Edit {keyName(k)}</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2.5} sx={{ mt: 0.5 }}>
+          {err && <Alert severity="error">{err}</Alert>}
+          <LimitsEditor f={f} set={set} d={d} />
+          {k.kind !== 'configured' && (
+            <TextField
+              label="Stops working after"
+              placeholder="7d, 48h — empty: keep as is"
+              size="small"
+              value={f.ttl}
+              onChange={(e) => set({ ttl: e.target.value })}
+              helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}` : 'Write it as 7d or 48h') : k.expires ? `Now: ${when(k.expires)}` : 'Now: never'}
+              error={!!f.ttl && !endsAt(f.ttl)}
+              sx={{ width: 300 }}
+            />
+          )}
+          {k.kind !== 'child' && <MoreSettings f={f} set={set} d={d} askedModels={[]} />}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="contained" onClick={() => save.mutate()} disabled={save.isPending || (!!f.ttl && !endsAt(f.ttl))}>
+          Save
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
+function TopUpDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: () => void; onDone: () => void }) {
+  const [v, setV] = useState<TopUp>({ usd: '', model: '', ttl: '2d', note: '' })
   const [err, setErr] = useState('')
   const add = useMutation({
     mutationFn: () =>
@@ -952,200 +987,71 @@ function AddValueDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: (
     },
     onError: (e) => setErr(extractMessage(e)),
   })
+  const stops = k.limits.some((l) => l.hard)
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Value add for {k.label || shortKey(k.key)}</DialogTitle>
+      <DialogTitle>Top up {keyName(k)}</DialogTitle>
       <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
+        <Stack spacing={2} sx={{ mt: 0.5 }}>
           {err && <Alert severity="error">{err}</Alert>}
           <Typography variant="body2" color="text.secondary">
-            Spent only after the key's own hard budgets refuse. {k.limits.some((l) => l.hard) ? '' : 'This key has no hard budget, so a value add will not be used until it has one.'}
+            {stops ? 'Used only after its limits are reached.' : 'This key has no limit that stops it, so a top-up would never be used.'}
           </Typography>
-          <TextField label="Amount ($)" type="number" size="small" value={v.usd} onChange={(e) => setV({ ...v, usd: e.target.value })} />
-          <TextField select label="Model" size="small" value={v.model} onChange={(e) => setV({ ...v, model: e.target.value })}>
-            <MenuItem value="">any model</MenuItem>
-            {d.models.map((m) => (
-              <MenuItem key={m} value={m}>
-                {m}
-              </MenuItem>
-            ))}
-          </TextField>
-          <TextField label="Expires after" placeholder="2d, 48h; empty = until spent" size="small" value={v.ttl} onChange={(e) => setV({ ...v, ttl: e.target.value })} />
-          <TextField label="Note" size="small" value={v.note} onChange={(e) => setV({ ...v, note: e.target.value })} />
+          <TopUpRow v={v} set={(p) => setV({ ...v, ...p })} d={d} />
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={() => add.mutate()} disabled={add.isPending || !(Number(v.usd) > 0)}>
-          Add
+        <Button variant="contained" onClick={() => add.mutate()} disabled={add.isPending || !(Number(v.usd) > 0) || (!!v.ttl && !endsAt(v.ttl))}>
+          Add {Number(v.usd) > 0 ? usd(Number(v.usd)) : ''}
         </Button>
       </DialogActions>
     </Dialog>
   )
 }
 
-type RuleForm = { name: string; cidrs: string; token: string; users: string }
-
-const splitList = (s: string) =>
-  s
-    .split(/[,\s]+/)
-    .map((x) => x.trim())
-    .filter(Boolean)
-
-function RulesPanel({ d }: { d: Data }) {
-  const qc = useQueryClient()
-  const [useDefault, setUseDefault] = useState(d.defaultRules)
-  const [rules, setRules] = useState<RuleForm[]>(
-    d.rules.map((r) => ({ name: r.name ?? '', cidrs: (r.cidrs ?? []).join(', '), token: r.token ?? '', users: (r.users ?? []).join(', ') })),
-  )
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
-  const save = useMutation({
-    mutationFn: () =>
-      gqlClient.request(RulesDoc, {
-        body: {
-          useDefault,
-          rules: rules.map((r) => ({ name: r.name.trim(), cidrs: splitList(r.cidrs), token: r.token.trim(), users: splitList(r.users) })),
-        },
-      }),
-    onSuccess: () => {
-      setMsg({ ok: true, text: 'Saved.' })
-      void qc.invalidateQueries({ queryKey: ['requests'] })
-    },
-    onError: (e) => setMsg({ ok: false, text: extractMessage(e) }),
-  })
-  const setRule = (i: number, p: Partial<RuleForm>) => setRules(rules.map((r, j) => (j === i ? { ...r, ...p } : r)))
+function DecidedPanel({ rows, d }: { rows: Req[]; d: Data }) {
   return (
-    <Panel
-      title="Who may ask"
-      subtitle="Filing a request grants nothing; these rules only decide who can put one on this page."
-    >
-      <Row>
-        <Stack spacing={1.5}>
-          {msg && <Alert severity={msg.ok ? 'success' : 'error'}>{msg.text}</Alert>}
-          <FormControlLabel
-            control={<Switch checked={useDefault} onChange={(e) => setUseDefault(e.target.checked)} />}
-            label="Default: direct connections from this machine and private networks (not through the public endpoint)"
-          />
-          {!useDefault && (
-            <>
-              <Typography variant="body2" color="text.secondary">
-                A request is accepted when any rule matches. Within a rule, every field you fill must match. No rules = nobody may ask.
-              </Typography>
-              {rules.map((r, i) => (
-                <Stack key={i} direction="row" spacing={1} useFlexGap sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
-                  <TextField label="Name" size="small" value={r.name} onChange={(e) => setRule(i, { name: e.target.value })} sx={{ width: 140 }} />
-                  <TextField
-                    label="Subnets"
-                    placeholder="192.168.1.0/24, 127.0.0.0/8"
-                    helperText="Direct connections only"
-                    size="small"
-                    value={r.cidrs}
-                    onChange={(e) => setRule(i, { cidrs: e.target.value })}
-                    sx={{ width: 240 }}
-                  />
-                  <TextField
-                    label="Shared token"
-                    placeholder="${ACCESS_REQUEST_TOKEN}"
-                    helperText="Sent as X-Corrallm-Request-Token"
-                    size="small"
-                    value={r.token}
-                    onChange={(e) => setRule(i, { token: e.target.value })}
-                    sx={{ width: 240 }}
-                  />
-                  <TextField
-                    label="Dashboard users"
-                    placeholder="carl@example.com"
-                    helperText="SSO emails, also under Access"
-                    size="small"
-                    value={r.users}
-                    onChange={(e) => setRule(i, { users: e.target.value })}
-                    sx={{ width: 240 }}
-                  />
-                  <IconButton aria-label="Remove rule" onClick={() => setRules(rules.filter((_, j) => j !== i))}>
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
-                </Stack>
-              ))}
-              <Box>
-                <Button size="small" startIcon={<AddIcon />} onClick={() => setRules([...rules, { name: '', cidrs: '', token: '', users: '' }])}>
-                  Add rule
-                </Button>
-              </Box>
-              {rules.some((r) => r.token && !r.token.trim().startsWith('${')) && (
-                <Alert severity="warning">
-                  A literal token is stored in the config, where config history keeps it. Prefer a credential-store reference like
-                  {' ${ACCESS_REQUEST_TOKEN}'} (corrallm config secret set; read at start-up).
-                </Alert>
-              )}
-            </>
-          )}
-          <Box>
-            <Button variant="contained" size="small" onClick={() => save.mutate()} disabled={save.isPending}>
-              Save rules
-            </Button>
-          </Box>
-        </Stack>
-      </Row>
-    </Panel>
-  )
-}
-
-function DecidedPanel({ rows }: { rows: Req[] }) {
-  return (
-    <Panel title="Decided" subtitle="Most recent first." flush>
+    <Panel title="Decided" flush>
       <TableContainer>
         <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Request</TableCell>
-              <TableCell>Decision</TableCell>
-              <TableCell>Granted</TableCell>
-              <TableCell>Key</TableCell>
-            </TableRow>
-          </TableHead>
           <TableBody>
-            {rows.map((r) => (
-              <TableRow key={r.id} sx={{ verticalAlign: 'top' }}>
-                <TableCell>
-                  <Typography variant="body2">{r.requesterKey ? `more for ${shortKey(r.requesterKey)}` : `new key “${r.asked.label}”`}</Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {r.asked.purpose}
-                  </Typography>
-                </TableCell>
-                <TableCell>
-                  <Chip size="small" color={r.status === 'approved' ? 'success' : 'default'} label={r.status} />
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                    {r.decidedBy} · {fmtAgo(r.decided)}
-                  </Typography>
-                  {r.reason && <Typography variant="caption">{r.reason}</Typography>}
-                </TableCell>
-                <TableCell>
-                  {r.status === 'approved' &&
-                    [
-                      ...(r.granted.limits ?? []).map(limitText),
-                      ...(r.granted.valueAdds ?? []).map((v) => `value add ${fmtUSD(v.usd)}${v.ttl ? ` for ${v.ttl}` : ''}`),
-                      ...(r.granted.ttl ? [`expires after ${r.granted.ttl}`] : []),
-                      ...(r.granted.mint ? ['may mint'] : []),
-                    ].map((s) => (
-                      <Typography key={s} variant="caption" sx={{ display: 'block' }}>
-                        {s}
-                      </Typography>
-                    ))}
-                </TableCell>
-                <TableCell>
-                  {r.issuedKey && (
-                    <>
-                      <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                        {shortKey(r.issuedKey)}
-                      </Typography>
+            {rows.map((r) => {
+              const g = r.granted
+              const line = r.status === 'approved' ? costLine(g.limits ?? [], g.valueAdds ?? [], g.ttl, !r.requesterKey).text : ''
+              return (
+                <TableRow key={r.id} sx={{ verticalAlign: 'top' }}>
+                  <TableCell>
+                    <Typography variant="body2">{requestTitle(r, d)}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      “{r.asked.purpose}”
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Chip size="small" color={r.status === 'approved' ? 'success' : 'default'} label={r.status} />
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                      {fmtAgo(r.decided)}
+                      {r.decidedBy && r.decidedBy !== 'admin token' ? ` by ${r.decidedBy}` : ''}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2">{line}</Typography>
+                    {r.reason && (
                       <Typography variant="caption" color="text.secondary">
-                        {r.delivered ? 'collected by the requester' : 'not collected yet'}
+                        your note: {r.reason}
                       </Typography>
-                    </>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {r.issuedKey && (
+                      <Typography variant="caption" color="text.secondary">
+                        {r.delivered ? 'the assistant has its key' : 'the assistant has not collected its key yet'}
+                      </Typography>
+                    )}
+                  </TableCell>
+                </TableRow>
+              )
+            })}
           </TableBody>
         </Table>
       </TableContainer>
