@@ -214,9 +214,12 @@ for (const step of walk.steps) {
   // name inside the smallest block that also carries that text, the way a person
   // finds "the Approve next to the request I mean".
   for (const c of [].concat(step.click || [])) {
-    const btn = page.getByRole('button', { name: c.button })
+    // { button } or { menuitem } — an item of a menu the previous press opened.
+    const role = c.menuitem ? 'menuitem' : 'button'
+    const name = c.menuitem || c.button
+    const btn = page.getByRole(role, { name })
     const target = c.within
-      ? page.locator(':is(div, tr)').filter({ hasText: c.within }).filter({ has: btn }).last().getByRole('button', { name: c.button }).first()
+      ? page.locator(':is(div, tr)').filter({ hasText: c.within }).filter({ has: btn }).last().getByRole(role, { name }).first()
       : btn.first()
     await target.click({ timeout: 10000 })
     await page.waitForTimeout(1500).catch(() => {})

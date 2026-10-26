@@ -179,7 +179,7 @@ const NAV: { to: string; label: string; icon: SvgIconComponent }[] = [
   { to: '/models', label: 'Models', icon: LayersOutlined },
   { to: '/traffic', label: 'Traffic', icon: TimelineOutlined },
   { to: '/callers', label: 'Callers', icon: GroupsOutlined },
-  { to: '/requests', label: 'Requests', icon: VpnKeyOutlined },
+  { to: '/approvals', label: 'Approvals', icon: VpnKeyOutlined },
   { to: '/machines', label: 'Machines', icon: DnsOutlined },
   { to: '/settings', label: 'Settings', icon: TuneOutlined },
 ]

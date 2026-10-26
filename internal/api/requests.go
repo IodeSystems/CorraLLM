@@ -12,9 +12,10 @@ import (
 	"github.com/iodesystems/corrallm/internal/auth"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/proxy"
+	"github.com/iodesystems/corrallm/internal/store"
 )
 
-// The Requests page (P62): access requests waiting for a decision, every key
+// The Approvals page (P62): access requests waiting for a decision, every key
 // minted at runtime with its spend, budgets, value adds and expiry, and the
 // rules for who may file. Admin only — it shows keys.
 //
@@ -71,6 +72,7 @@ func fromGrantViews(in []proxy.GrantView) []ValueAdd {
 
 // KeyGrant is what a request asks for, or an approval grants.
 type KeyGrant struct {
+	From        string     `json:"from,omitempty" required:"false" doc:"Who asked, in their own words (self-reported)."`
 	Label       string     `json:"label,omitempty" required:"false"`
 	Purpose     string     `json:"purpose,omitempty" required:"false"`
 	Models      []string   `json:"models,omitempty" required:"false" doc:"Models the requester said it wants."`
@@ -87,7 +89,7 @@ type KeyGrant struct {
 }
 
 func fromAsk(a proxy.AccessAsk) KeyGrant {
-	g := KeyGrant{Label: a.Label, Purpose: a.Purpose, Models: a.Models, TTL: a.TTL, Expires: a.Expires}
+	g := KeyGrant{From: a.From, Label: a.Label, Purpose: a.Purpose, Models: a.Models, TTL: a.TTL, Expires: a.Expires}
 	if a.Group != nil {
 		g.Group = *a.Group
 	}
@@ -162,6 +164,10 @@ type ManagedKey struct {
 	Expired     bool           `json:"expired"`
 	ValueAdds   []ValueAdd     `json:"valueAdds"`
 	Windows     []KeyWindowRow `json:"windows"`
+	// What the key itself spent since 00:00 UTC (its children are their own
+	// rows), from the request log: shown for every key, limit or not.
+	SpentToday    float64 `json:"spentToday"`
+	RequestsToday int64   `json:"requestsToday"`
 }
 
 // RequestRule is one accessRequests rule.
@@ -192,7 +198,7 @@ func (h *Handlers) proxyOrErr() (*proxy.Proxy, error) {
 	return h.Proxy, nil
 }
 
-// ListRequests is the Requests page.
+// ListRequests is the Approvals page.
 func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutput, error) {
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err
@@ -214,6 +220,16 @@ func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutp
 			IssuedKey: r.IssuedKey, Delivered: r.Delivered, Reason: r.Reason, Created: r.Created,
 			Decided: r.Decided, DecidedBy: r.DecidedBy})
 	}
+	today := map[string]store.KeyRollup{}
+	if h.Store != nil {
+		now := time.Now().UTC()
+		midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		if rs, err := h.Store.RollupByKey(store.Since(midnight.UnixMilli())); err == nil {
+			for _, r := range rs {
+				today[r.Key] = r
+			}
+		}
+	}
 	b.Keys = []ManagedKey{}
 	for _, k := range p.MintedKeys() {
 		kind := "issued"
@@ -222,7 +238,8 @@ func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutp
 		}
 		b.Keys = append(b.Keys, ManagedKey{Key: k.Key, Kind: kind, Parent: k.Parent, Label: k.Label, Group: k.Group,
 			Credentials: k.Credentials, Mint: k.Mint, Limits: toKeyLimits(k.Limits), Created: k.Created,
-			Expires: k.Expires, Expired: k.Expired, ValueAdds: fromGrantViews(k.ValueAdds), Windows: windowRows(k.Windows)})
+			Expires: k.Expires, Expired: k.Expired, ValueAdds: fromGrantViews(k.ValueAdds), Windows: windowRows(k.Windows),
+			SpentToday: today[k.Key].CostUSD, RequestsToday: today[k.Key].Requests})
 	}
 	cfg := h.config()
 	adds := map[string][]proxy.GrantView{}
@@ -239,7 +256,7 @@ func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutp
 		}
 		b.Keys = append(b.Keys, ManagedKey{Key: key, Kind: "configured", Group: kp.Group, Credentials: creds,
 			Mint: kp.Mint, Limits: toKeyLimits(kp.Limits), ValueAdds: fromGrantViews(adds[key]),
-			Windows: windowRows(p.KeyWindows(key))})
+			Windows: windowRows(p.KeyWindows(key)), SpentToday: today[key].CostUSD, RequestsToday: today[key].Requests})
 	}
 	b.Credentials = p.Credentials()
 	b.Groups = sortedNames(cfg.PriorityGroups)

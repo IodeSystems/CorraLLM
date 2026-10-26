@@ -2098,6 +2098,8 @@ type corrallm_KeyGrant {
   credentials: [String!]
   """Key expiry, RFC 3339."""
   expires: String
+  """Who asked, in their own words (self-reported)."""
+  from: String
   """Priority group; empty = the fallback group."""
   group: String
   label: String
@@ -2119,6 +2121,8 @@ input corrallm_KeyGrantInput {
   credentials: [String!]
   """Key expiry, RFC 3339."""
   expires: String
+  """Who asked, in their own words (self-reported)."""
+  from: String
   """Priority group; empty = the fallback group."""
   group: String
   label: String
@@ -2386,6 +2390,8 @@ type corrallm_ManagedKey {
   limits: [corrallm_KeyLimit!]!
   mint: Boolean!
   parent: String
+  requestsToday: Long!
+  spentToday: Float!
   valueAdds: [corrallm_ValueAdd!]!
   windows: [corrallm_KeyWindowRow!]!
 }

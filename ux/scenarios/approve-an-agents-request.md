@@ -11,9 +11,10 @@ the paid account it can fall back to: the card on file is yours. Your team's
 assistants — programs that write code and run jobs for people — use the machine,
 and some of them may use the paid account.
 
-This morning you told one of those assistants to run a benchmark against the
-paid model. It answered that it is not allowed to use the paid model yet and
-that it has "filed a request" for you to approve. Two other requests turned up
+This morning you told one of those assistants — the one whose window says
+"mcpshell-ea" — to run a benchmark against the paid model. It answered that it
+is not allowed to use the paid model yet and that it has "filed a request" for
+you to approve. Two other requests turned up
 too, from other assistants; you did not ask for those and do not know what they
 want. You got a notification on your phone that said there was something to
 approve.

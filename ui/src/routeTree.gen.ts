@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ActivityRouteImport } from './routes/activity'
+import { Route as ApprovalsRouteImport } from './routes/approvals'
 import { Route as BenchRouteImport } from './routes/bench'
 import { Route as CallersRouteImport } from './routes/callers'
 import { Route as ConfigRouteImport } from './routes/config'
@@ -44,6 +45,11 @@ const IndexRoute = IndexRouteImport.update({
 const ActivityRoute = ActivityRouteImport.update({
   id: '/activity',
   path: '/activity',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApprovalsRoute = ApprovalsRouteImport.update({
+  id: '/approvals',
+  path: '/approvals',
   getParentRoute: () => rootRouteImport,
 } as any)
 const BenchRoute = BenchRouteImport.update({
@@ -170,6 +176,7 @@ const MachinesNameRoute = MachinesNameRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/approvals': typeof ApprovalsRoute
   '/bench': typeof BenchRoute
   '/callers': typeof CallersRoute
   '/config': typeof ConfigRoute
@@ -198,6 +205,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/approvals': typeof ApprovalsRoute
   '/bench': typeof BenchRoute
   '/callers': typeof CallersRoute
   '/config': typeof ConfigRoute
@@ -227,6 +235,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/approvals': typeof ApprovalsRoute
   '/bench': typeof BenchRoute
   '/callers': typeof CallersRoute
   '/config': typeof ConfigRoute
@@ -257,6 +266,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/activity'
+    | '/approvals'
     | '/bench'
     | '/callers'
     | '/config'
@@ -285,6 +295,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/activity'
+    | '/approvals'
     | '/bench'
     | '/callers'
     | '/config'
@@ -313,6 +324,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/activity'
+    | '/approvals'
     | '/bench'
     | '/callers'
     | '/config'
@@ -342,6 +354,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActivityRoute: typeof ActivityRoute
+  ApprovalsRoute: typeof ApprovalsRoute
   BenchRoute: typeof BenchRoute
   CallersRoute: typeof CallersRoute
   ConfigRoute: typeof ConfigRoute
@@ -382,6 +395,13 @@ declare module '@tanstack/react-router' {
       path: '/activity'
       fullPath: '/activity'
       preLoaderRoute: typeof ActivityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/approvals': {
+      id: '/approvals'
+      path: '/approvals'
+      fullPath: '/approvals'
+      preLoaderRoute: typeof ApprovalsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/bench': {
@@ -558,6 +578,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
+  ApprovalsRoute: ApprovalsRoute,
   BenchRoute: BenchRoute,
   CallersRoute: CallersRoute,
   ConfigRoute: ConfigRoute,

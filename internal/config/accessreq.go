@@ -10,7 +10,7 @@ import (
 // AccessRequests says who may FILE an access request (P62): an agent or a
 // person asking for a key, or for more on the key it has. Filing grants
 // nothing — an admin approves each request — but an open door would let
-// anyone fill the Requests page, so it is narrowed here.
+// anyone fill the Approvals page, so it is narrowed here.
 //
 //	accessRequests:
 //	  rules:

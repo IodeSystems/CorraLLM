@@ -18,7 +18,7 @@ import (
 )
 
 // Access requests (P62): an agent asks for a key — or for more on the key it
-// has — and an admin approves it on the dashboard's Requests page, editing
+// has — and an admin approves it on the dashboard's Approvals page, editing
 // what is granted. The agent never sees a secret pass through a person: it
 // gets a claim secret when filing and polls with it, and the approved key is
 // handed over ONCE, on the first poll after approval.
@@ -44,6 +44,9 @@ type AccessAsk struct {
 	Label string `json:"label,omitempty"`
 	// Purpose is why, in the requester's words. Required.
 	Purpose string `json:"purpose,omitempty"`
+	// From names who is asking ("mcpshell-ea"), so the owner can tell the
+	// request they asked an assistant to file from the others. Self-reported.
+	From string `json:"from,omitempty"`
 	// Models the requester wants to use. Informational: the admin grants
 	// credentials, and the page proposes the ones these models need.
 	Models []string `json:"models,omitempty"`
@@ -90,8 +93,8 @@ func (a AccessAsk) check(cfg *config.Config, forNewKey bool) error {
 	if strings.TrimSpace(a.Purpose) == "" {
 		return errors.New("purpose: say what the access is for")
 	}
-	if len(a.Purpose) > 2000 || len(a.Label) > 80 {
-		return errors.New("label is at most 80 characters, purpose at most 2000")
+	if len(a.Purpose) > 2000 || len(a.Label) > 80 || len(a.From) > 80 {
+		return errors.New("label and from are at most 80 characters, purpose at most 2000")
 	}
 	if forNewKey && strings.TrimSpace(a.Label) == "" {
 		return errors.New("label: name the key you are asking for")
@@ -251,8 +254,11 @@ func (p *Proxy) fileAccessRequest(w http.ResponseWriter, r *http.Request) {
 	if requester != "" {
 		what = "more for key **" + requester + "**"
 	}
+	if ask.From != "" {
+		what += " (says it is " + ask.From + ")"
+	}
 	p.alert.Send("access-request/"+ar.ID, "Access request: "+firstNonEmpty(ask.Label, requester),
-		fmt.Sprintf("%s asks for %s.\n\n%s\n\nApprove or deny on the Requests page.", ip, what, ask.Purpose), "key")
+		fmt.Sprintf("%s asks for %s.\n\n%s\n\nApprove or deny on the Approvals page (/approvals).", ip, what, ask.Purpose), "key")
 	jsonResp(w, http.StatusCreated, map[string]any{
 		"id": ar.ID, "claim": accessClaimPrefx + claimHex, "status": ar.Status,
 		"poll": "/v1/access-requests/" + ar.ID,
