@@ -379,10 +379,13 @@ func (p *Proxy) ApproveAccess(id, by, reason string, g AccessAsk, edit ConfigEdi
 	case ar.Status != "pending":
 		return "", ErrNotPending
 	}
+	var asked AccessAsk
+	_ = json.Unmarshal([]byte(ar.Asked), &asked)
 	if g.Purpose == "" {
-		var asked AccessAsk
-		_ = json.Unmarshal([]byte(ar.Asked), &asked)
 		g.Purpose = asked.Purpose
+	}
+	if ar.RequesterKey != "" {
+		g = onlyAsked(g, asked)
 	}
 	if err := g.check(p.config(), ar.RequesterKey == ""); err != nil {
 		return "", err
@@ -410,6 +413,34 @@ func (p *Proxy) ApproveAccess(id, by, reason string, g AccessAsk, edit ConfigEdi
 	gj, _ := json.Marshal(g)
 	ar.Status, ar.Granted, ar.Reason, ar.DecidedBy, ar.DecidedMS = "approved", string(gj), reason, by, now.UnixMilli()
 	return key, p.store.SaveAccessRequest(ar)
+}
+
+// onlyAsked narrows a grant on an EXISTING key to the parts its request asked
+// to change. The dashboard sends a grant as the full state of a form, and a
+// form for "$10 more" carries an empty budget list and mint off — applied
+// whole, approving a top-up would strip the key's own cap and permissions.
+// What was not asked for stays as the key has it; the admin changes that with
+// Edit, not by approving someone else's request.
+func onlyAsked(g, asked AccessAsk) AccessAsk {
+	if asked.Label == "" {
+		g.Label = ""
+	}
+	if asked.Group == nil {
+		g.Group = nil
+	}
+	if asked.Credentials == nil {
+		g.Credentials = nil
+	}
+	if asked.Limits == nil {
+		g.Limits = nil
+	}
+	if asked.Mint == nil {
+		g.Mint = nil
+	}
+	if asked.TTL == "" && asked.Expires == "" {
+		g.TTL, g.Expires = "", ""
+	}
+	return g
 }
 
 // checkCredentials refuses a credential scope key this box does not have.

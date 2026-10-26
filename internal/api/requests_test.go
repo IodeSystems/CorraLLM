@@ -125,3 +125,29 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+// Approving a top-up for an existing key from the dashboard (which sends the
+// whole form: no budgets, mint off) must not strip the key's own cap or mint.
+func TestApproveTopUpKeepsTheKey(t *testing.T) {
+	h := requestHandlers(t)
+	if err := h.UpdateConfig(context.Background(), "seed", func(c *config.Config) error {
+		c.Keys["sk-team"] = config.KeyPolicy{Group: "default", Mint: true,
+			Limits: config.LimitSet{{USD: 3, Per: "calendar-day", Hard: true}}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Proxy.SetConfig(h.config())
+	id := fileRequest(t, h, "sk-team", proxy.AccessAsk{Purpose: "more today",
+		ValueAdds: []proxy.ValueAddAsk{{USD: 10, TTL: "2d"}}})
+	in := &ApproveRequestInput{}
+	in.Body.ID = id
+	in.Body.Granted = KeyGrant{ValueAdds: []ValueAdd{{USD: 10, TTL: "2d"}}} // the form: no budgets, mint off
+	if _, err := h.ApproveRequest(ctxAdmin, in); err != nil {
+		t.Fatal(err)
+	}
+	kp := reloadStored(t, h, "after top-up").Keys["sk-team"]
+	if !kp.Mint || len(kp.Limits) != 1 || kp.Limits[0].USD != 3 {
+		t.Errorf("approving a top-up changed the key: %+v", kp)
+	}
+}
