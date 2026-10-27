@@ -377,6 +377,35 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P64 — /v1/messages (Anthropic API) and /v1/tokenize — 2026-10-27
+
+Owner asks (10-27): a tokenize endpoint; Claude Code against corrallm for dun's agent benchmark
+(relayed by dun-a8); "when we run out of tokens on claude … switch to corrallm without missing a
+beat … optionally map claude to openai format and back"; strip Claude Code's per-request billing
+line so local prompt caches work. Shipped (24821b5, 170cfc1, be50ca1, live):
+- `/v1/tokenize`, `/v1/detokenize` (+ root aliases): vLLM shape and llama.cpp shape, detected by
+  fields; local = backend tokenizer (loads the model); remote = chars/4 marked `estimated`.
+- `/v1/messages`: through the inference walk. `api: anthropic` member → body as sent
+  (`callerAuth: true` forwards the caller's own credential when the corrallm key comes in
+  X-Corrallm-Key); other members → translated to chat completions and back (JSON + SSE).
+  429/503/529 from Anthropic spills to the next lane member; `anthropic-ratelimit-unified-reset`
+  becomes the cooldown. count_tokens estimates for non-Anthropic models and lanes.
+- Live: Claude Code ran a Read tool call against `chat`; turn 2 reused 11,363/11,480 cached tokens.
+- **next:** the subscription fallback is NOT live — no `api: anthropic` model is configured. Needs a
+  model `{host: api.anthropic.com, port: 443, api: anthropic, callerAuth: true}` + `upstream:` id
+  and a lane [claude, chat]; then a Claude Code run with ANTHROPIC_CUSTOM_HEADERS="X-Corrallm-Key: …".
+- **risks:** (1) unverified that Claude Code signed in to a subscription still sends its OAuth
+  token when ANTHROPIC_BASE_URL is set. (2) Cooldown is per BACKEND, but under callerAuth the
+  credential is per caller: one caller's spent subscription cools Claude for every caller.
+  (3) Switching back to Claude mid tool-loop: corrallm-made thinking blocks are stripped and
+  thinking is switched off for that request (Anthropic would refuse their signatures). Untested
+  against the real API. (4) Translated path drops thinking settings, cache_control, server tools,
+  context_management, output_config; model sampling profiles apply only when a MODEL is named
+  (true on /v1/chat/completions too: a lane like `chat` gets none — check if intended).
+- **blocking decisions:** owner configures the Claude model + lane (config change).
+- **optional extensions:** per-caller cooldown under callerAuth; JSON 404 for unknown `/v1/*`
+  (today the dashboard HTML with 200); map `thinking.budget_tokens` to the reasoning budget.
+
 ### ◐ P63 — Keys you can make: created switched off, and credentials allowed by pattern with budgets — 2026-10-26
 
 Owner ask (10-26): "we can approve them, but we cannot make them" — being able to make and manage
