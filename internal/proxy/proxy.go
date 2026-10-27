@@ -1061,6 +1061,16 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if kept := filterByCallerAuth(r, cands); len(kept) == 0 {
+		writeJSONError(w, http.StatusUnauthorized, "authentication_error",
+			"model \""+served+"\" uses the caller's own Anthropic sign-in: send it in Authorization (or x-api-key) and your corrallm key in X-Corrallm-Key")
+		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
+			Status: http.StatusUnauthorized, DwellMS: time.Since(start).Milliseconds(),
+			Error: "no caller credential for callerAuth", ReqBody: reqBody})
+		return
+	} else {
+		cands = kept
+	}
 	// Permission before budget: refusing a caller a credential it may not use is
 	// not a capacity question, and gating on budget first would let an
 	// exhausted-but-permitted account mask a forbidden one.

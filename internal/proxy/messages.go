@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/iodesystems/corrallm/internal/config"
 )
 
 // POST /v1/messages: Anthropic's Messages API, in front of every model.
@@ -976,4 +978,24 @@ func anthropicResetAsRetryAfter(h http.Header) {
 	if secs := reset - time.Now().Unix(); secs > 0 {
 		h.Set("Retry-After", strconv.FormatInt(secs, 10))
 	}
+}
+
+// filterByCallerAuth drops a callerAuth candidate when the caller brought no
+// Anthropic credential of its own. Tried anyway, Anthropic answers 401, and a
+// free-tier backend is marked down on a 401 for EVERY caller: one caller with
+// no Claude sign-in would switch Claude off for the one who has it.
+func filterByCallerAuth(r *http.Request, cands []config.Candidate) []config.Candidate {
+	has := r.URL.Path == "/v1/messages" && r.Header.Get("X-Corrallm-Key") != "" &&
+		(r.Header.Get("Authorization") != "" || r.Header.Get("X-Api-Key") != "")
+	if has {
+		return cands
+	}
+	kept := cands[:0:0]
+	for _, c := range cands {
+		if t, err := c.Model.ProxyTarget(); err == nil && t != nil && t.CallerAuth {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept
 }

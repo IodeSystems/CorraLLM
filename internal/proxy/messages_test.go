@@ -225,12 +225,19 @@ func TestMessagesPassesThroughToClaude(t *testing.T) {
 		t.Errorf("activity row = %+v, want Anthropic's usage metered", rows)
 	}
 
-	// The corrallm key in Authorization (no X-Corrallm-Key) is never forwarded.
-	postMessages(h, sent, map[string]string{"Authorization": "Bearer k"})
-	postMessages(h, sent, map[string]string{"x-api-key": "k"})
+	// The corrallm key alone (no X-Corrallm-Key) is not an Anthropic sign-in:
+	// refused here, never forwarded, and Anthropic is not asked.
 	got.Lock()
-	if got.hdr.Get("Authorization") != "" || got.hdr.Get("X-Api-Key") != "" {
-		t.Errorf("the corrallm key reached Anthropic: %v", got.hdr)
+	got.hdr = nil
+	got.Unlock()
+	for _, hdr := range []map[string]string{{"Authorization": "Bearer k"}, {"x-api-key": "k"}} {
+		if rec := postMessages(h, sent, hdr); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "authentication_error") {
+			t.Errorf("%v: %d %s, want a 401", hdr, rec.Code, rec.Body)
+		}
+	}
+	got.Lock()
+	if got.hdr != nil {
+		t.Errorf("Anthropic was asked without the caller's sign-in: %v", got.hdr)
 	}
 	got.Unlock()
 }
