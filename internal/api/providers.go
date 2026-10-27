@@ -18,11 +18,17 @@ import (
 // /api/v1/config/* serves. Set the value through SetSecret instead — write
 // only, never read back.
 type CredentialSpec struct {
-	Name       string   `json:"name" doc:"Account name; also the budget key, stable across restarts."`
-	SecretRef  string   `json:"secretRef" required:"false" doc:"Name of the credential-store entry holding this account's token. Referenced as ${NAME}; the value never enters config."`
-	HeaderName string   `json:"headerName" required:"false" doc:"Header to carry it in (default authorization, as 'Bearer <value>')."`
-	Allow      []string `json:"allow" required:"false" doc:"LEGACY: a key's own allow patterns are the way to say this now; still enforced where set. corrallm keys permitted to use this account. Empty = all."`
-	Limits     []Limit  `json:"limits" required:"false" doc:"Budgets for this account alone."`
+	Name       string `json:"name" doc:"Account name; also the budget key, stable across restarts."`
+	SecretRef  string `json:"secretRef" required:"false" doc:"Name of the credential-store entry holding this account's token. Referenced as ${NAME}; the value never enters config."`
+	HeaderName string `json:"headerName" required:"false" doc:"Header to carry it in (default authorization, as 'Bearer <value>')."`
+	// Allow is ACCEPTED and IGNORED. It was how an account named the keys that
+	// could spend it, which is a fact about the caller now: a key's own
+	// `credentials:` patterns. Kept in the wire type because an older dashboard
+	// sends the field and a 422 over a field the server no longer reads would be
+	// a worse answer than a save that simply does not carry it. Nothing writes it
+	// back, so the stored config loses the key on the first save.
+	Allow  []string `json:"allow" required:"false" doc:"Ignored: grants are written on the key (credentials patterns), not on the account."`
+	Limits []Limit  `json:"limits" required:"false" doc:"Budgets for this account alone."`
 	// Output-only: reported so a form can show which refs resolve, ignored on
 	// input. Marked optional or every write would have to echo it back.
 	HasSecret bool `json:"hasSecret" required:"false" doc:"Whether the referenced entry exists in the store. The value itself is never returned."`
@@ -187,6 +193,8 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 				ref, header := secretRefOf(cr)
 				ps.Credentials = append(ps.Credentials, CredentialSpec{
 					Name: cr.Name, SecretRef: ref, HeaderName: header,
+					// Read-side: report the stored list so a migration in
+					// progress is visible, and never for the form to edit.
 					Allow: cr.Allow, Limits: toWireLimits(cr.Limits),
 					HasSecret: ref != "" && have[ref],
 				})
@@ -355,7 +363,11 @@ func (h *Handlers) UpsertProvider(ctx context.Context, in *UpsertProviderInput) 
 			// form does not model (extra headers, authTokenCommand) survive a
 			// save. Rebuilding from the form alone silently dropped them.
 			cc, _ := pv.CredentialNamed(cs.Name)
-			cc.Name, cc.Allow, cc.Limits = cs.Name, cs.Allow, toConfigLimits(cs.Limits)
+			cc.Name, cc.Limits = cs.Name, toConfigLimits(cs.Limits)
+			// cc.Allow is deliberately NOT set: whatever the caller sent, the
+			// account no longer carries a permission list. A stored one is
+			// migrated onto the keys once, at load.
+			cc.Allow = nil
 			if cs.SecretRef != "" {
 				header := cs.HeaderName
 				if header == "" {

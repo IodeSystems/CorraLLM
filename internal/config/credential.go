@@ -59,17 +59,18 @@ type Credential struct {
 	// its directory. An old config still carrying the key loads fine and the
 	// field is ignored.
 
-	// Allow lists the corrallm keys permitted to use this credential. Empty
-	// means every caller may. An ALLOWlist rather than a denylist: the failure
-	// direction is "denied" rather than "spent someone else's money".
+	// Allow listED the corrallm keys permitted to use this credential. Empty
+	// meant every caller may.
 	//
-	// LEGACY (P63): a key's own `credentials:` patterns are the way to say this
-	// now — the permission is a fact about the CALLER, and it belongs on the
-	// caller's entry instead of scattered across every provider here. This list
-	// is still ENFORCED as an extra restriction (a key must pass both), because
-	// dropping it would silently widen access for every config carrying one.
-	// Nothing writes it any more; it disappears as configs are rewritten, and a
-	// `disabled`-style removal can follow once none are left.
+	// REMOVED as a permission (P63). A key's own `credentials:` patterns say
+	// which accounts it may spend, and Config.Finalize moves an existing list
+	// onto the keys it names and then forgets it (MigrateCredentialAllowlists).
+	//
+	// The field survives only as the INPUT to that migration, which is why it is
+	// still parsed: a config written before P63 has to be read once to be
+	// translated. Nothing writes it, `corrallm config export` never emits it,
+	// and an empty list is what every save produces — so it disappears from
+	// stored config on the first edit.
 	Allow []string `yaml:"allow,omitempty" json:"allow,omitempty"`
 }
 
@@ -79,7 +80,15 @@ func (c Credential) ScopeKey(provider string) string {
 	return "cred:" + provider + "/" + c.Name
 }
 
-// AllowsKey reports whether the corrallm key may use this credential.
+// AllowsKey reports whether this credential's LEGACY allow list named key.
+// True when there is no list, so callers that have not been taught patterns yet
+// keep working.
+//
+// It is NOT the permission check any more — Proxy.credentialVerdict asks the
+// caller's patterns — and it exists for the one reader that still needs the
+// list as written: the migration. After a config has been finalized the field
+// is empty and this returns true for everything, which is correct: the list has
+// become patterns, and asking it again would be a second source of truth.
 func (c Credential) AllowsKey(key string) bool {
 	if len(c.Allow) == 0 {
 		return true

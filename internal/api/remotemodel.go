@@ -42,7 +42,7 @@ type RemoteModelSpec struct {
 	MaxTokens     int     `json:"maxTokens" required:"false" doc:"Output-token cap injected when a caller sets none. 0 = no cap."`
 	MaxConcurrent int     `json:"maxConcurrent" required:"false" doc:"Concurrent requests corrallm admits. 0 = 8."`
 
-	Allow  []string `json:"allow" required:"false" doc:"corrallm keys allowed to use this key. Empty = every caller."`
+	Allow  []string `json:"allow" required:"false" doc:"Ignored: allowed callers are written on the key (credentials patterns), not on the account."`
 	Limits []Limit  `json:"limits" required:"false" doc:"Budgets on this key. Use hard: true for spend caps."`
 
 	Pricing *RemotePricing `json:"pricing,omitempty" required:"false" doc:"Per-1M-token prices, so cost, budgets and the paid comparison are right."`
@@ -137,7 +137,6 @@ func (h *Handlers) AddRemoteModel(ctx context.Context, in *AddRemoteModelInput) 
 
 		cred, _ := pv.CredentialNamed(config.DefaultCredentialName)
 		cred.Name = config.DefaultCredentialName
-		cred.Allow = b.Allow
 		cred.Limits = toConfigLimits(b.Limits)
 		cred.Headers = nil
 		if b.SecretRef != "" {

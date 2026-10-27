@@ -656,7 +656,6 @@ func (p *Proxy) applyToKey(key string, g AccessAsk, edit ConfigEditor, note stri
 	})
 }
 
-
 // AddValueAdd stores a value add on key.
 func (p *Proxy) AddValueAdd(key string, v ValueAddAsk, now time.Time) (GrantView, error) {
 	if p.store == nil {
@@ -765,10 +764,10 @@ func contains(list []string, s string) bool {
 
 // MintedKeyView is a minted key as the admin page shows it.
 type MintedKeyView struct {
-	Key         string          `json:"key"`
-	Parent      string          `json:"parent,omitempty" doc:"Empty = issued by an admin."`
-	Label       string          `json:"label"`
-	Group       string          `json:"group,omitempty"`
+	Key         string                 `json:"key"`
+	Parent      string                 `json:"parent,omitempty" doc:"Empty = issued by an admin."`
+	Label       string                 `json:"label"`
+	Group       string                 `json:"group,omitempty"`
 	Credentials []config.KeyCredential `json:"credentials" doc:"Allow patterns: which credentials this key may use, each with its own budgets. Empty = every credential."`
 	Mint        bool                   `json:"mint"`
 	Limits      config.LimitSet        `json:"limits"`
@@ -776,8 +775,8 @@ type MintedKeyView struct {
 	Expires     string                 `json:"expires,omitempty"`
 	Expired     bool                   `json:"expired" doc:"Past its expiry. Still listed, and can be re-enabled."`
 	Disabled    bool                   `json:"disabled" doc:"Switched off by an admin. Kept, with its budgets, until switched back on."`
-	ValueAdds   []GrantView     `json:"valueAdds"`
-	Windows     []KeyWindow     `json:"windows"`
+	ValueAdds   []GrantView            `json:"valueAdds"`
+	Windows     []KeyWindow            `json:"windows"`
 }
 
 // KeyWindow is one allocation window's live state, flattened for the page.

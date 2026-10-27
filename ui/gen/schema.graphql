@@ -1703,7 +1703,7 @@ input corrallm_CreateKeyInputBodyInput {
 }
 
 type corrallm_CredentialSpec {
-  """LEGACY: a key's own allow patterns are the way to say this now; still enforced where set. corrallm keys permitted to use this account. Empty = all."""
+  """Ignored: grants are written on the key (credentials patterns), not on the account."""
   allow: [String!]
   """Whether the referenced entry exists in the store. The value itself is never returned."""
   hasSecret: Boolean
@@ -1718,7 +1718,7 @@ type corrallm_CredentialSpec {
 }
 
 input corrallm_CredentialSpecInput {
-  """LEGACY: a key's own allow patterns are the way to say this now; still enforced where set. corrallm keys permitted to use this account. Empty = all."""
+  """Ignored: grants are written on the key (credentials patterns), not on the account."""
   allow: [String!]
   """Whether the referenced entry exists in the store. The value itself is never returned."""
   hasSecret: Boolean
@@ -3062,7 +3062,7 @@ type corrallm_RefusingBackendView {
 }
 
 input corrallm_RemoteModelSpecInput {
-  """corrallm keys allowed to use this key. Empty = every caller."""
+  """Ignored: allowed callers are written on the key (credentials patterns), not on the account."""
   allow: [String!]
   """Wire format upstream: openai (default) or anthropic (Messages API with prompt caching)."""
   api: String

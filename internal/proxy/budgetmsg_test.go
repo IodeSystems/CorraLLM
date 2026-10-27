@@ -52,3 +52,20 @@ func TestHumanWait(t *testing.T) {
 		}
 	}
 }
+
+// A caller with no key entry spends no declared account, whatever the keys'
+// patterns say: patterns live on keys, and "no patterns" means every account.
+func TestStrangerSpendsNoAccount(t *testing.T) {
+	k := newChildKeyRig(t, nil)
+	paid := config.Candidate{Name: "m", Model: config.Model{ProviderName: "fw"}, Credential: &config.Credential{Name: "main"}}
+	if v := k.px.credentialVerdict(k.px.resolveCaller("someone-on-the-lan"), paid); v.allowed {
+		t.Error("a stranger may forward with a declared credential")
+	}
+	if v := k.px.credentialVerdict(k.px.resolveCaller("parent"), paid); !v.allowed {
+		t.Error("a configured key with no patterns lost every account")
+	}
+	open := config.Candidate{Name: "local", Model: config.Model{}}
+	if v := k.px.credentialVerdict(k.px.resolveCaller("someone-on-the-lan"), open); !v.allowed {
+		t.Error("a stranger lost a backend with no credential")
+	}
+}

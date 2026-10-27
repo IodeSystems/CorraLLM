@@ -46,8 +46,8 @@ const maxChildKeys = 1000
 
 type childKey struct {
 	store.ChildKey
-	limits     config.LimitSet
-	keyCreds   []config.KeyCredential // allow patterns; empty = every credential
+	limits   config.LimitSet
+	keyCreds []config.KeyCredential // allow patterns; empty = every credential
 }
 
 // expired reports whether k's expiry has passed at now.
@@ -181,13 +181,13 @@ func (p *Proxy) canMint(c config.Caller) bool {
 // what its parent may spend, never widens it. No patterns admits everything,
 // with no budget of its own — what every key did before patterns existed.
 //
-// A credential's own legacy `allow:` list is still enforced as an ADDITIONAL
-// restriction. It is the pre-patterns way of saying who may spend an account,
-// and it is on its way out — the dashboard writes patterns now — but a config
-// carrying one must not start serving callers down to nobody on upgrade, so
-// dropping it would be a silent widening of access. Kept here rather than
-// migrated on load: a migration would have to invent a pattern per key per
-// credential and rewrite a rule the operator can still read.
+// A caller with NO key entry — a stranger, served by default on this box —
+// forwards with no declared credential at all. Patterns live on keys; a
+// stranger has none, and "no patterns" means every account, so without this
+// the move from per-account `allow:` lists to key patterns (P63) would have
+// handed every paid upstream to anyone who can reach the port (owner 10-27:
+// "I'm on a network and I don't want anyone using my cost"). A provider with
+// no credentials block (cand.Credential nil) stays open, as before.
 //
 // The winning pattern is the most specific one across the whole chain, and it
 // belongs to the key that declared it (the child, if the child declares one):
@@ -196,6 +196,9 @@ func (p *Proxy) credentialVerdict(c config.Caller, cand config.Candidate) creden
 	v := credentialAccess{allowed: true}
 	if cand.Credential == nil {
 		return v
+	}
+	if !c.Recognized {
+		return credentialAccess{}
 	}
 	scope := cand.Credential.ScopeKey(cand.Model.ProviderName)
 	for _, k := range callerChain(c) {
@@ -207,9 +210,6 @@ func (p *Proxy) credentialVerdict(c config.Caller, cand config.Candidate) creden
 		if matched && (v.pattern == "" || config.CredentialPatternWins(pat.Credential, v.pattern)) {
 			v.pattern, v.limits, v.owner = pat.Credential, pat.Limits, k
 		}
-	}
-	if !cand.Credential.AllowsKey(c.PolicyKey()) {
-		return credentialAccess{}
 	}
 	return v
 }

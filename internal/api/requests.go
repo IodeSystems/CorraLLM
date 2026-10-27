@@ -101,17 +101,17 @@ func fromGrantViews(in []proxy.GrantView) []ValueAdd {
 
 // KeyGrant is what a request asks for, or an approval grants.
 type KeyGrant struct {
-	From        string     `json:"from,omitempty" required:"false" doc:"Who asked, in their own words (self-reported)."`
-	Label       string     `json:"label,omitempty" required:"false"`
-	Purpose     string     `json:"purpose,omitempty" required:"false"`
-	Models      []string   `json:"models,omitempty" required:"false" doc:"Models the requester said it wants."`
-	Group       string     `json:"group,omitempty" required:"false" doc:"Priority group; empty = the fallback group."`
+	From        string       `json:"from,omitempty" required:"false" doc:"Who asked, in their own words (self-reported)."`
+	Label       string       `json:"label,omitempty" required:"false"`
+	Purpose     string       `json:"purpose,omitempty" required:"false"`
+	Models      []string     `json:"models,omitempty" required:"false" doc:"Models the requester said it wants."`
+	Group       string       `json:"group,omitempty" required:"false" doc:"Priority group; empty = the fallback group."`
 	Credentials []KeyPattern `json:"credentials,omitempty" required:"false" doc:"Allow patterns: which credentials the key may use, each with an optional budget of its own. Empty = every credential."`
-	Limits      []KeyLimit `json:"limits,omitempty" required:"false"`
-	ValueAdds   []ValueAdd `json:"valueAdds,omitempty" required:"false"`
-	TTL         string     `json:"ttl,omitempty" required:"false" doc:"Key expires this long after approval: 48h, 7d."`
-	Expires     string     `json:"expires,omitempty" required:"false" doc:"Key expiry, RFC 3339."`
-	Mint        bool       `json:"mint,omitempty" required:"false" doc:"May mint child keys."`
+	Limits      []KeyLimit   `json:"limits,omitempty" required:"false"`
+	ValueAdds   []ValueAdd   `json:"valueAdds,omitempty" required:"false"`
+	TTL         string       `json:"ttl,omitempty" required:"false" doc:"Key expires this long after approval: 48h, 7d."`
+	Expires     string       `json:"expires,omitempty" required:"false" doc:"Key expiry, RFC 3339."`
+	Mint        bool         `json:"mint,omitempty" required:"false" doc:"May mint child keys."`
 	// The asked side only: which fields the requester set at all.
 	AskedLimits bool `json:"askedLimits,omitempty" required:"false"`
 	AskedMint   bool `json:"askedMint,omitempty" required:"false"`

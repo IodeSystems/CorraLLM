@@ -232,15 +232,17 @@ func TestIssuedKeyCredentials(t *testing.T) {
 	if v := k.px.credentialVerdict(caller, cand("fw", "other")); v.allowed {
 		t.Error("credential allowed without a pattern")
 	}
-	// The permission is about the CALLER: a key with no patterns may use every
-	// credential, and a credential's own legacy allowlist still restricts it.
+	// The permission is about the CALLER and nothing else (P63): a key with no
+	// patterns may use every credential, whatever list the credential used to
+	// carry. A credential's own `allow:` is migrated onto keys by Finalize and is
+	// never consulted here again.
 	if v := k.px.credentialVerdict(k.px.resolveCaller("parent"), cand("fw", "main")); !v.allowed {
-		t.Error("a key with no patterns should reach an open credential")
+		t.Error("a key with no patterns should reach every credential")
 	}
-	closed := cand("fw", "main")
-	closed.Credential.Allow = []string{"sk-someone-else"}
-	if v := k.px.credentialVerdict(k.px.resolveCaller("parent"), closed); v.allowed {
-		t.Error("a credential's own allowlist must still refuse a key it excludes")
+	legacy := cand("fw", "main")
+	legacy.Credential.Allow = []string{"sk-someone-else"}
+	if v := k.px.credentialVerdict(k.px.resolveCaller("parent"), legacy); !v.allowed {
+		t.Error("a credential's stale allow: list decided a permission the key's patterns own")
 	}
 }
 

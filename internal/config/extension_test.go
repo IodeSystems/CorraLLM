@@ -505,6 +505,10 @@ extensions:
             allow: [sk-aw4]
         provides:
           haiku-*: { type: anthropic-haiku, quality: 3 }
+priorityGroups: { default: { weight: 1 } }
+keys:
+  sk-aw4: default
+  yscr: default
 `
 	c, err := loadYAML(t, y)
 	if err != nil {
@@ -518,7 +522,33 @@ extensions:
 	if cr == nil {
 		t.Fatal("glob candidate has no credential: allowlist bypassed")
 	}
-	if !cr.AllowsKey("sk-aw4") || cr.AllowsKey("stranger") {
-		t.Errorf("allowlist not applied: aw4=%v stranger=%v", cr.AllowsKey("sk-aw4"), cr.AllowsKey("stranger"))
+	// The allowlist has MOVED (P63): Finalize now writes it onto the keys it
+	// names as allow patterns, and clears the field, so the permission lives on
+	// the key rather than on the account. The named key gains the pattern; a key
+	// the config never heard of gains nothing.
+	if len(cr.Allow) != 0 {
+		t.Errorf("the legacy list survived the migration: %v", cr.Allow)
+	}
+	pol, ok := c.Keys["sk-aw4"]
+	if !ok || len(pol.Credentials) != 1 || pol.Credentials[0].Credential != "cred:claude/api" {
+		t.Fatalf("sk-aw4 patterns = %+v (present=%v), want cred:claude/api", pol.Credentials, ok)
+	}
+	if _, allowed := PermitsCredential(c.Keys["sk-aw4"].Credentials, "cred:claude/api"); !allowed {
+		t.Error("the named key cannot reach the account it was granted")
+	}
+	// A CONFIGURED key the list did not name can reach nothing: it would have
+	// had no patterns, and empty means every account, so the migration writes
+	// ":none" into it rather than handing it a paid upstream.
+	if got := c.Keys["yscr"].Credentials; len(got) != 1 || got[0].Credential != NoCredentialPattern {
+		t.Fatalf("unnamed configured key = %+v, want %s", got, NoCredentialPattern)
+	}
+	if _, allowed := PermitsCredential(c.Keys["yscr"].Credentials, "cred:claude/api"); allowed {
+		t.Error("a configured key the list did not name reaches the account")
+	}
+	// A caller with NO entry cannot be given a pattern at all, which is the one
+	// case the migration cannot close — it warns about it instead (and points at
+	// unknownKeys.allow). Asserted so the exposure is written down, not assumed.
+	if _, allowed := PermitsCredential(c.Keys["stranger"].Credentials, "cred:claude/api"); !allowed {
+		t.Error("a caller with no key entry is expected to pass here: the migration warns rather than inventing an entry")
 	}
 }

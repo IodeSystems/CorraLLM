@@ -121,11 +121,11 @@ func TestPermitsCredential(t *testing.T) {
 // that matches nothing can reach no upstream at all.
 func TestValidateKeyCredentials(t *testing.T) {
 	for _, bad := range [][]KeyCredential{
-		{{Credential: "fireworks/*"}},          // no cred: prefix
-		{{Credential: "cred:fireworks"}},       // no account
-		{{Credential: "cred:/main"}},           // no provider
-		{{Credential: "cred:fw/ma\x01in"}},       // control character, mid-name
-		{{Credential: "cred:fw/main\x7f"}},       // DEL
+		{{Credential: "fireworks/*"}},                                             // no cred: prefix
+		{{Credential: "cred:fireworks"}},                                          // no account
+		{{Credential: "cred:/main"}},                                              // no provider
+		{{Credential: "cred:fw/ma\x01in"}},                                        // control character, mid-name
+		{{Credential: "cred:fw/main\x7f"}},                                        // DEL
 		{{Credential: "cred:fw/*"}, {Credential: "cred:fw/*"}},                    // written twice
 		{{Credential: "cred:fw/*", Limits: LimitSet{{Sec: 60, Per: "hour"}}}},     // dwell is never charged
 		{{Credential: "cred:fw/*", Limits: LimitSet{{USD: 5, Per: "fortnight"}}}}, // no such window

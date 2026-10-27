@@ -59,8 +59,10 @@ func TestAddRemoteModel(t *testing.T) {
 	if cr.Headers["authorization"] != "Bearer ${FIREWORKS_API_KEY}" {
 		t.Errorf("auth header = %q, want a reference", cr.Headers["authorization"])
 	}
-	if !cr.AllowsKey("sk-aw4") || cr.AllowsKey("stranger") {
-		t.Errorf("allowlist not applied: %v", cr.Allow)
+	// Who may spend the account is written on the key now (P63); the form's
+	// allow list is accepted and not stored.
+	if len(cr.Allow) != 0 {
+		t.Errorf("an account carries an allow list again: %v", cr.Allow)
 	}
 	if len(cr.Limits) != 1 || !cr.Limits[0].Hard || cr.Limits[0].USD != 5 {
 		t.Errorf("limits = %+v, want one hard $5/day", cr.Limits)

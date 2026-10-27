@@ -2276,6 +2276,10 @@ func (c *Config) Finalize() error {
 		})
 		c.Thermal = nil
 	}
+	// Before resolution and validation, because it reads the credential
+	// allowlists that neither touches and rewrites key policies that Validate
+	// would otherwise judge twice over (keycred.go).
+	c.MigrateCredentialAllowlists()
 	c.projectFirstPlacement()
 	if err := c.resolveExtensions(); err != nil {
 		return err

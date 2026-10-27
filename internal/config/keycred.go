@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
+	"sync"
 )
 
 // A key's ALLOW PATTERNS: which provider credentials it may forward with, and
@@ -85,7 +88,7 @@ func MatchCredential(patterns []KeyCredential, scope string) (KeyCredential, boo
 	best := -1
 	var bestLen, bestLit int
 	for i, p := range patterns {
-		if !globMatch(p.Credential, scope) {
+		if p.Credential == NoCredentialPattern || !globMatch(p.Credential, scope) {
 			continue
 		}
 		length, literal := specificity(p.Credential)
@@ -130,6 +133,137 @@ func specificity(p string) (length, literal int) {
 	return len(p), len(p)
 }
 
+// NoCredentialPattern is a pattern that admits NOTHING. It exists for one
+// purpose: writing down, in the key's own entry, that the key may use no paid
+// account at all.
+//
+// Before patterns, that was said on the OTHER side — every credential's
+// `allow:` list simply omitted the key, so "this key may not spend this account"
+// was spelled as an absence across N entries. Absence is not expressible on the
+// caller's side, and `credentials:` empty already means the opposite (every
+// account), so the migration that moves those lists onto the keys needs a
+// pattern that matches nothing and reads as what it is.
+//
+// It cannot collide: a credential scope always starts with "cred:" and always
+// has a provider and a name, so ":none" matches none of them.
+const NoCredentialPattern = ":none"
+
+// IsNoCredential reports whether a pattern list says "no account at all", as
+// opposed to an EMPTY list, which says "every account".
+func IsNoCredential(patterns []KeyCredential) bool {
+	for _, p := range patterns {
+		if p.Credential == NoCredentialPattern {
+			return true
+		}
+	}
+	return false
+}
+
+// MigrateCredentialAllowlists moves every credential's `allow:` list onto the
+// keys it names, as allow patterns, and clears the lists. It is idempotent:
+// with no allow lists left there is nothing to move.
+//
+// Why a migration and not a load-time fallback: two sources of truth for one
+// permission is how they drift. The dashboard writes patterns and the config
+// history shows them, so leaving an old list in place means the page can show
+// "every account" for a key the proxy still refuses, or the reverse. The old
+// field is enforced only until this has run once.
+//
+// WHAT IT MUST NOT DO is widen access. A credential with an allow list refused
+// every key NOT named in it, so:
+//
+//   - a key named there gets that credential's scope as a pattern;
+//   - a key with NO patterns after every list is read gets NoCredentialPattern —
+//     it could reach no account before, and an empty list would mean "every
+//     account" now, which is a paid upstream handed to a caller nobody approved.
+//
+// A caller with no key entry at all has nowhere to write a pattern into; the
+// proxy refuses such a caller every declared credential (credentialVerdict),
+// so the lists' refusal of strangers survives the move.
+func (c *Config) MigrateCredentialAllowlists() {
+	type scope struct{ allow []string }
+	byScope := map[string]scope{}
+	found := false
+	for xname, ext := range c.Extensions {
+		for pname, pv := range ext.Providers {
+			if len(pv.Credentials) == 0 {
+				continue // the synthesised default credential carries no list
+			}
+			for i, cr := range pv.Credentials {
+				if len(cr.Allow) == 0 {
+					continue
+				}
+				found = true
+				byScope[cr.ScopeKey(pname)] = scope{allow: cr.Allow}
+				// Cleared, so no later write emits a field that no longer decides
+				// anything — a stale list in stored config is a second answer to a
+				// question the keys have already answered.
+				pv.Credentials[i].Allow = nil
+				ext.Providers[pname] = pv
+			}
+		}
+		c.Extensions[xname] = ext
+	}
+	if !found {
+		return
+	}
+	// Sorted so the patterns a key gains do not depend on map order: the same
+	// config must migrate to the same thing on every load.
+	scopes := make([]string, 0, len(byScope))
+	for sc := range byScope {
+		scopes = append(scopes, sc)
+	}
+	sort.Strings(scopes)
+	for key, pol := range c.Keys {
+		for _, sc := range scopes {
+			if !allowsKey(byScope[sc].allow, key) {
+				continue
+			}
+			// A key that already HAS this pattern keeps it, and its budget: this
+			// runs on every load, and appending twice would grow the list each
+			// boot.
+			if containsPattern(pol.Credentials, sc) {
+				continue
+			}
+			pol.Credentials = append(pol.Credentials, KeyCredential{Credential: sc, Limits: LimitSet{}})
+		}
+		if len(pol.Credentials) == 0 {
+			pol.Credentials = []KeyCredential{{Credential: NoCredentialPattern, Limits: LimitSet{}}}
+		}
+		c.Keys[key] = pol
+	}
+	c.warnMigratedAllowlists(scopes)
+}
+
+// warnMigratedAllowlists names the accounts whose list moved, once per process
+// (the daemon reloads config on every save).
+func (c *Config) warnMigratedAllowlists(scopes []string) {
+	migrateWarn.Do(func() {
+		slog.Info("credential `allow:` lists moved onto the keys they named (P63); the field is no longer read",
+			"accounts", strings.Join(scopes, " "))
+	})
+}
+
+var migrateWarn sync.Once
+
+func allowsKey(list []string, key string) bool {
+	for _, k := range list {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPattern(list []KeyCredential, pattern string) bool {
+	for _, p := range list {
+		if p.Credential == pattern {
+			return true
+		}
+	}
+	return false
+}
+
 // PermitsCredential reports whether a key with these patterns may forward with
 // scope, and which limits that permission carries. No patterns allows
 // everything, with no budget of its own.
@@ -168,6 +302,11 @@ func ValidateKeyCredentials(patterns []KeyCredential) error {
 // match anything: the cred: prefix, a provider, a slash, a credential name.
 // Wildcards are allowed anywhere in the provider and name.
 func ValidateCredentialPattern(p string) error {
+	// The one pattern that is deliberately shaped like no credential at all; see
+	// NoCredentialPattern.
+	if p == NoCredentialPattern {
+		return nil
+	}
 	const want = `a credential scope: cred:<provider>/<name>, with * as a wildcard (e.g. cred:fireworks/*)`
 	if !strings.HasPrefix(p, "cred:") {
 		return fmt.Errorf("credential %q: want %s", p, want)
@@ -189,6 +328,9 @@ func ValidateCredentialPattern(p string) error {
 func KeyCredentialsSummary(patterns []KeyCredential) string {
 	if len(patterns) == 0 {
 		return "every credential"
+	}
+	if IsNoCredential(patterns) {
+		return "no paid account"
 	}
 	parts := make([]string, 0, len(patterns))
 	for _, p := range patterns {
