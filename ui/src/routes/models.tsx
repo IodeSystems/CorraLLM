@@ -814,6 +814,22 @@ function ModelsPage() {
               </Button>
             </>
           )}
+          {/* A model declared by hand on a remote provider ("Declare a model")
+              is neither a local entry nor a catalog choice, and had no way off
+              the page (owner 10-27). Its delete is the config entry's. */}
+          {!local && !s && m.extension && (
+            <Button
+              size="small"
+              color="error"
+              disabled={readOnly}
+              onClick={stop(() => {
+                setDeleteErr('')
+                setConfirmDelete({ served: m.name, hasCmd: false })
+              })}
+            >
+              Delete
+            </Button>
+          )}
           {s && (
             <Tooltip title="Takes it off the list chosen from this provider's catalog; requests for it are then refused. Anything mid-answer finishes.">
               <Button

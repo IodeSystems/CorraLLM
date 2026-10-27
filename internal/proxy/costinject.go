@@ -260,7 +260,8 @@ func (c *costWriter) withCost(b []byte, u usage) []byte {
 	usd, source := c.price(u)
 	var add []string
 	if _, ok := have["cost"]; !ok {
-		add = append(add, `"cost":`+strconv.FormatFloat(usd, 'f', -1, 64))
+		// 10 significant digits: float sums print as 0.0000009380000000000001.
+		add = append(add, `"cost":`+strconv.FormatFloat(usd, 'g', 10, 64))
 	}
 	if _, ok := have["cost_source"]; !ok {
 		add = append(add, `"cost_source":"`+source+`"`)
@@ -277,4 +278,45 @@ func (c *costWriter) withCost(b []byte, u usage) []byte {
 	out = append(out, b[:closeAt]...)
 	out = append(out, ins...)
 	return append(out, b[closeAt:]...)
+}
+
+// withStreamUsage asks for the usage chunk on a streamed request that did not
+// say. llama.cpp (and OpenAI's own API) send a stream's usage only when asked
+// with stream_options.include_usage; OpenRouter always sends it. A client
+// written for OpenRouter therefore saw no cost from corrallm on any stream
+// (owner 10-27). The usage chunk is part of the OpenAI stream contract — a
+// chunk with empty choices — so a client that did not ask can still parse it.
+// An explicit include_usage, true or false, is the caller's and is kept.
+func withStreamUsage(body []byte) ([]byte, bool) {
+	var probe struct {
+		Stream        bool `json:"stream"`
+		StreamOptions *struct {
+			IncludeUsage *bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+	if json.Unmarshal(body, &probe) != nil || !probe.Stream {
+		return body, false
+	}
+	if probe.StreamOptions != nil && probe.StreamOptions.IncludeUsage != nil {
+		return body, false
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return body, false
+	}
+	opts := map[string]json.RawMessage{}
+	if raw, ok := m["stream_options"]; ok {
+		_ = json.Unmarshal(raw, &opts)
+	}
+	opts["include_usage"] = json.RawMessage("true")
+	b, err := json.Marshal(opts)
+	if err != nil {
+		return body, false
+	}
+	m["stream_options"] = b
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body, false
+	}
+	return out, true
 }

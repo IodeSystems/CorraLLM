@@ -919,6 +919,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions" {
+		if nb, did := withStreamUsage(body); did {
+			body = nb
+		}
+	}
 	// Only impose a deadline when one is configured. A fixed cap here would turn
 	// long-but-valid requests (big prompts, image data on a 27B/220k-ctx model)
 	// into spurious timeouts — the regression that surfaced as 502s in production.
@@ -2251,11 +2256,21 @@ func (p *Proxy) writeBudgetExhausted(w http.ResponseWriter, r *http.Request, ser
 	p.alert.Send("budget/"+served, served+": spend cap reached",
 		fmt.Sprintf("A hard spend limit on **%s** is full. Requests are refused for %s.", served,
 			(time.Duration(secs)*time.Second).String()), "money_with_wings")
+	var scopes []string
+	for _, c := range cands {
+		scopes = append(scopes, c.QuotaScopes(p.config())...)
+	}
+	notes := p.budgetNotes(scopes)
+	msg := fmt.Sprintf("%s: refused by a spending limit; retry after %d seconds", served, secs)
+	if len(notes) > 0 {
+		msg = fmt.Sprintf("%s: refused by %s. This is not your key's own limit: no request on this model is served until then.",
+			served, summaries(notes))
+	}
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusTooManyRequests)
-	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"budget_exhausted","retry_after":%d}}`,
-		jsonString(fmt.Sprintf("%s: budget exhausted (hard limit); retry after %d seconds", served, secs)), secs)
+	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"budget_exhausted","retry_after":%d,"budgets":%s}}`,
+		jsonString(msg), secs, mustJSON(notes))
 	var refused string
 	if len(cands) > 0 {
 		refused = cands[0].Name
@@ -2275,10 +2290,15 @@ func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request,
 		// there is no retry to promise.
 		p.alert.Send("allocation/"+key, key+": budget spent",
 			fmt.Sprintf("Caller **%s** has spent its one-off budget. Its requests are refused until it gets more.", key), "money_with_wings")
+		notes := p.budgetNotes(p.keyScopes(key))
+		msg := "this key's one-off budget is spent"
+		if len(notes) > 0 {
+			msg = "refused by " + summaries(notes)
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_spent"}}`,
-			jsonString("this key's one-off budget is spent; ask for more with POST /v1/access-requests"))
+		_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_spent","budgets":%s}}`,
+			jsonString(msg+". Ask the owner for more with POST /v1/access-requests (see /v1/capabilities)."), mustJSON(notes))
 		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 			Error: "one-off budget spent", ReqBody: reqBody})
@@ -2291,11 +2311,16 @@ func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request,
 	p.alert.Send("allocation/"+key, key+": allocation reached",
 		fmt.Sprintf("Caller **%s** has used its hard allocation. Its requests are refused for %s.", key,
 			(time.Duration(secs)*time.Second).String()), "money_with_wings")
+	notes := p.budgetNotes(p.keyScopes(key))
+	msg := fmt.Sprintf("this key's allocation is used up (hard limit); retry after %d seconds", secs)
+	if len(notes) > 0 {
+		msg = "refused by " + summaries(notes)
+	}
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusTooManyRequests)
-	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_exhausted","retry_after":%d}}`,
-		jsonString(fmt.Sprintf("this key's allocation is used up (hard limit); retry after %d seconds", secs)), secs)
+	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_exhausted","retry_after":%d,"budgets":%s}}`,
+		jsonString(msg+". Ask the owner for more with POST /v1/access-requests (see /v1/capabilities)."), secs, mustJSON(notes))
 	p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
 		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
 		Error: "hard allocation exhausted", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})

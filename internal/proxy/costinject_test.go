@@ -170,3 +170,36 @@ func TestWithCostEmptyUsage(t *testing.T) {
 		t.Errorf("got %s", got)
 	}
 }
+
+// TestWithStreamUsage: a stream that did not say gets the usage chunk asked
+// for; one that said either way, or a non-stream, is left as sent.
+func TestWithStreamUsage(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want bool // rewritten
+	}{
+		{`{"model":"m","stream":true}`, true},
+		{`{"model":"m","stream":true,"stream_options":{"foo":1}}`, true},
+		{`{"model":"m","stream":true,"stream_options":{"include_usage":false}}`, false},
+		{`{"model":"m","stream":true,"stream_options":{"include_usage":true}}`, false},
+		{`{"model":"m"}`, false},
+		{`not json`, false},
+	} {
+		out, did := withStreamUsage([]byte(c.in))
+		if did != c.want {
+			t.Errorf("%s: rewritten=%v, want %v", c.in, did, c.want)
+			continue
+		}
+		if did {
+			var r struct {
+				StreamOptions map[string]any `json:"stream_options"`
+			}
+			if err := json.Unmarshal(out, &r); err != nil || r.StreamOptions["include_usage"] != true {
+				t.Errorf("%s → %s", c.in, out)
+			}
+			if strings.Contains(c.in, "foo") && r.StreamOptions["foo"] == nil {
+				t.Errorf("other stream_options dropped: %s", out)
+			}
+		}
+	}
+}
