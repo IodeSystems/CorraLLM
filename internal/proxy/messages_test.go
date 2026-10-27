@@ -315,3 +315,24 @@ func TestStripCorrallmThinkingTurnsThinkingOffForTheLastTurn(t *testing.T) {
 		t.Error("a body with nothing to strip must keep its bytes")
 	}
 }
+
+// An Anthropic sign-in sent without X-Corrallm-Key is not taken as the
+// corrallm key: it must never be stored in an activity row.
+func TestMessagesNeverLogsAnAnthropicCredentialAsTheKey(t *testing.T) {
+	f := newFakeOpenAIChat(t)
+	h, st := refusalRig(t, map[string]config.Model{"chat": modelTo(t, f.srv.URL, "chat")}, nil)
+	for _, hdr := range []map[string]string{{"Authorization": "Bearer sk-ant-oat01-secret"}, {"x-api-key": "sk-ant-api03-secret"}} {
+		if rec := postMessages(h, fmt.Sprintf(claudeCodeBody, "chat", false), hdr); rec.Code != 200 {
+			t.Fatalf("%v: %d %s", hdr, rec.Code, rec.Body)
+		}
+	}
+	rows, _ := st.RecentActivity(store.Window{}, 10, "", "", "")
+	for _, r := range rows {
+		if strings.Contains(r.Key, "sk-ant") {
+			t.Errorf("an Anthropic credential was logged as the key: %q", r.Key)
+		}
+	}
+	if len(rows) != 2 {
+		t.Errorf("rows = %d, want 2", len(rows))
+	}
+}

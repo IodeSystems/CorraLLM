@@ -49,6 +49,10 @@ import (
 // model's reasoning. It is not a valid Anthropic signature, on purpose.
 const thinkingSigCorrallm = "corrallm"
 
+// anthropicCredPrefix starts every Anthropic credential: API keys
+// (sk-ant-api…) and Claude subscription sign-ins (sk-ant-oat…).
+const anthropicCredPrefix = "sk-ant-"
+
 // nativeMessagesKey marks an upstream request as /v1/messages passthrough, for
 // the Director (callerAuth).
 type nativeMessagesKey struct{}
@@ -57,6 +61,18 @@ func (p *Proxy) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAnthropicError(w, http.StatusMethodNotAllowed, "use POST")
 		return
+	}
+	// An Anthropic credential (a subscription sign-in, an API key) is never a
+	// corrallm key. Without X-Corrallm-Key, corrallm would read it AS the key
+	// and store it in every activity row. Dropped: the caller is served as
+	// unkeyed, and it is not forwarded (callerAuth needs X-Corrallm-Key).
+	if r.Header.Get("X-Corrallm-Key") == "" {
+		if strings.HasPrefix(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), anthropicCredPrefix) {
+			r.Header.Del("Authorization")
+		}
+		if strings.HasPrefix(r.Header.Get("X-Api-Key"), anthropicCredPrefix) {
+			r.Header.Del("X-Api-Key")
+		}
 	}
 	// Anthropic clients send the key as x-api-key. corrallm reads its key from
 	// Authorization; move it there, and off x-api-key, so it can never be
