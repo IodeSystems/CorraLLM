@@ -471,10 +471,10 @@ func (p *Proxy) seedQuota(cfg *config.Config) {
 	// Caller allocations (P56): the same ledger, keyed by who is asking rather
 	// than by what answers. Child keys' too (childkeys.go).
 	for key, kp := range cfg.Keys {
-		seedCallerLimits(setLimits, key, kp.Limits)
+		seedCallerLimits(setLimits, key, kp.Limits, kp.Credentials)
 	}
 	for _, ck := range p.children.of("") {
-		seedCallerLimits(setLimits, ck.Key, ck.limits)
+		seedCallerLimits(setLimits, ck.Key, ck.limits, ck.keyCreds)
 	}
 	// A scope whose limits were removed stops counting.
 	p.quota.DropLimitsExcept(declared)
@@ -1050,7 +1050,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// Permission before budget: refusing a caller a credential it may not use is
 	// not a capacity question, and gating on budget first would let an
 	// exhausted-but-permitted account mask a forbidden one.
-	if kept := p.filterByCredential(r, cands, caller.PolicyKey()); len(kept) == 0 {
+	if kept := p.filterByCredential(r, cands, caller); len(kept) == 0 {
 		// 403, not 503: retrying will not help, the caller is not on the list.
 		http.Error(w, "no permitted credential for this key", http.StatusForbidden)
 		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
@@ -1661,7 +1661,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// The caller's request allocation, once per served request — not per
 		// upstream attempt, and not through ObserveResponse, whose 429 handling
 		// would cool the caller's scope for a backend's refusal.
-		p.chargeCaller(caller, name, costUSD)
+		p.chargeCaller(caller, name, costUSD, p.credentialScopesFor(caller, cand))
 		if p.quota != nil && costUSD > 0 {
 			// Every scope the candidate answers to: the model, its credential,
 			// that credential's provider, and the box. Spend belongs to the
@@ -2354,13 +2354,26 @@ func (p *Proxy) filterByOutput(cands []config.Candidate, want string) []config.C
 // anyway is arguably better than failing; a permission is not. If nothing is
 // permitted the walk ends and the caller gets the same "no backend" answer as
 // any other empty candidate set.
-func (p *Proxy) filterByCredential(r *http.Request, cands []config.Candidate, key string) []config.Candidate {
-	if p.trustedCaller != nil && p.trustedCaller(r, key) {
+//
+// The permission comes from the CALLER's allow patterns (KeyPolicy.Credentials),
+// not from a credential's own allowlist: who may spend an account is a fact
+// about the key. A matched pattern may carry budgets, which are gated here —
+// before the candidate is walked, like every other hard limit — and charged on
+// the request that pattern admits (chargeCaller). The verdict names the winning
+// pattern and the key that owns it, so both sides count the same scope.
+func (p *Proxy) filterByCredential(r *http.Request, cands []config.Candidate, caller config.Caller) []config.Candidate {
+	if p.trustedCaller != nil && p.trustedCaller(r, caller.Key) {
 		return cands
 	}
 	kept := make([]config.Candidate, 0, len(cands))
 	for _, c := range cands {
-		if c.Credential == nil || c.Credential.AllowsKey(key) || p.issuedAllows(key, c) {
+		v := p.credentialVerdict(caller, c)
+		if v.allowed && len(v.limits) > 0 && p.quota != nil {
+			if full, _ := p.quota.HardBlocked(v.scope()); full {
+				v.allowed = false
+			}
+		}
+		if v.allowed {
 			kept = append(kept, c)
 		}
 	}

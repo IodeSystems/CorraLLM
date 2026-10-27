@@ -28,6 +28,7 @@ type CorrallmMutationNamespace {
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
   configRestore(body: corrallm_ConfigRestoreInputBodyInput!): corrallm_ConfigRestoreOutputBody @derived(operationId: "configRestore")
+  createKey(body: corrallm_CreateKeyInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "createKey")
   deleteEntry(
     """model | server | lane | group | extension | tool | key"""
     kind: String!
@@ -397,6 +398,7 @@ type CorrallmV1MutationNamespace {
   cancelBenchRun: corrallm_BenchRunStatus @derived(operationId: "cancelBenchRun")
   cancelRequest(body: corrallm_CancelRequestInputBodyInput!): corrallm_CancelRequestOutputBody @derived(operationId: "cancelRequest")
   configRestore(body: corrallm_ConfigRestoreInputBodyInput!): corrallm_ConfigRestoreOutputBody @derived(operationId: "configRestore")
+  createKey(body: corrallm_CreateKeyInputBodyInput!): corrallm_DecisionOutputBody @derived(operationId: "createKey")
   deleteEntry(
     """model | server | lane | group | extension | tool | key"""
     kind: String!
@@ -1696,8 +1698,12 @@ type corrallm_ConfigYAMLOutputBody {
   yaml: String!
 }
 
+input corrallm_CreateKeyInputBodyInput {
+  key: corrallm_KeyGrantInput!
+}
+
 type corrallm_CredentialSpec {
-  """corrallm keys permitted to use this account. Empty = all."""
+  """LEGACY: a key's own allow patterns are the way to say this now; still enforced where set. corrallm keys permitted to use this account. Empty = all."""
   allow: [String!]
   """Whether the referenced entry exists in the store. The value itself is never returned."""
   hasSecret: Boolean
@@ -1712,7 +1718,7 @@ type corrallm_CredentialSpec {
 }
 
 input corrallm_CredentialSpecInput {
-  """corrallm keys permitted to use this account. Empty = all."""
+  """LEGACY: a key's own allow patterns are the way to say this now; still enforced where set. corrallm keys permitted to use this account. Empty = all."""
   allow: [String!]
   """Whether the referenced entry exists in the store. The value itself is never returned."""
   hasSecret: Boolean
@@ -2094,8 +2100,8 @@ type corrallm_KeyDef {
 type corrallm_KeyGrant {
   askedLimits: Boolean
   askedMint: Boolean
-  """Credential scopes (cred:<provider>/<name>) the key may use."""
-  credentials: [String!]
+  """Allow patterns: which credentials the key may use, each with an optional budget of its own. Empty = every credential."""
+  credentials: [corrallm_KeyPattern!]
   """Key expiry, RFC 3339."""
   expires: String
   """Who asked, in their own words (self-reported)."""
@@ -2117,8 +2123,8 @@ type corrallm_KeyGrant {
 input corrallm_KeyGrantInput {
   askedLimits: Boolean
   askedMint: Boolean
-  """Credential scopes (cred:<provider>/<name>) the key may use."""
-  credentials: [String!]
+  """Allow patterns: which credentials the key may use, each with an optional budget of its own. Empty = every credential."""
+  credentials: [corrallm_KeyPatternInput!]
   """Key expiry, RFC 3339."""
   expires: String
   """Who asked, in their own words (self-reported)."""
@@ -2163,6 +2169,20 @@ input corrallm_KeyLimitInput {
   usd: Float
 }
 
+type corrallm_KeyPattern {
+  """cred:<provider>/<name>, with * as a wildcard (e.g. cred:fireworks/*)."""
+  credential: String!
+  """What this pattern may spend. Only the most specific matching pattern's budgets are charged."""
+  limits: [corrallm_KeyLimit!]
+}
+
+input corrallm_KeyPatternInput {
+  """cred:<provider>/<name>, with * as a wildcard (e.g. cred:fireworks/*)."""
+  credential: String!
+  """What this pattern may spend. Only the most specific matching pattern's budgets are charged."""
+  limits: [corrallm_KeyLimitInput!]
+}
+
 type corrallm_KeyRow {
   costUSD: Float!
   dwellMS: Long!
@@ -2172,6 +2192,7 @@ type corrallm_KeyRow {
   label: String
   """RFC3339 timestamp of this key's most recent request; empty if never seen."""
   lastSeen: String
+  off: Boolean!
   parent: String
   recognized: Boolean!
   requests: Long!
@@ -2379,7 +2400,10 @@ type corrallm_LocalServerProbeOutputBody {
 
 type corrallm_ManagedKey {
   created: String
-  credentials: [String!]
+  """Allow patterns: which credentials this key may use, each with its own budgets. Empty = every credential."""
+  credentials: [corrallm_KeyPattern!]!
+  """Switched off by an admin. Kept, with its budgets and patterns, until switched back on."""
+  disabled: Boolean!
   expired: Boolean!
   expires: String
   group: String
@@ -2396,7 +2420,7 @@ type corrallm_ManagedKey {
   windows: [corrallm_KeyWindowRow!]!
 }
 
-"""disable = expire now (stays listed); enable = clear the expiry; delete = remove it, its children and value adds."""
+"""disable = switch it off now (stays listed, can be switched on); enable = switch it on and clear any expiry that passed; delete = remove it, its children and value adds."""
 enum corrallm_ManagedKeyActionInputBodyAction {
   delete
   disable
@@ -2404,7 +2428,7 @@ enum corrallm_ManagedKeyActionInputBodyAction {
 }
 
 input corrallm_ManagedKeyActionInputBodyInput {
-  """disable = expire now (stays listed); enable = clear the expiry; delete = remove it, its children and value adds."""
+  """disable = switch it off now (stays listed, can be switched on); enable = switch it on and clear any expiry that passed; delete = remove it, its children and value adds."""
   action: corrallm_ManagedKeyActionInputBodyAction!
   key: String!
 }

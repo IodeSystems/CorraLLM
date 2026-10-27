@@ -267,14 +267,21 @@ func (h *Handlers) PutEntryYAML(ctx context.Context, in *PutEntryYAMLInput) (*Co
 			// The bare-string form carries no escalations, and must not silently
 			// REVOKE the ones a key already had — that endpoint sets where a key
 			// lands. A mapping states the whole policy and replaces it.
-			bare := len(pol.Allow) == 0 && pol.Thinking == nil && len(pol.Limits) == 0
+			bare := len(pol.Allow) == 0 && pol.Thinking == nil && len(pol.Limits) == 0 && len(pol.Credentials) == 0
 			if len(pol.Allow) == 0 {
 				pol.Allow = c.Keys[name].Allow
 			}
 			// Nor its allocation (P56): moving a key to another group must not
-			// make it unlimited.
+			// make it unlimited. The same goes for its allow patterns and its
+			// on/off switch (P63) — a bare string sets where a key lands and
+			// nothing else, and must not quietly open it up or lock it out.
 			if bare {
 				pol.Limits = c.Keys[name].Limits
+				pol.Credentials = c.Keys[name].Credentials
+				pol.Disabled = c.Keys[name].Disabled
+			}
+			if err := config.ValidateKeyCredentials(pol.Credentials); err != nil {
+				return huma.Error400BadRequest(err.Error())
 			}
 			c.Keys[name] = pol
 		default:

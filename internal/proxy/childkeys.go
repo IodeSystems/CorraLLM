@@ -46,8 +46,8 @@ const maxChildKeys = 1000
 
 type childKey struct {
 	store.ChildKey
-	limits      config.LimitSet
-	credentials []string // credential scope keys an issued key may use
+	limits     config.LimitSet
+	keyCreds   []config.KeyCredential // allow patterns; empty = every credential
 }
 
 // expired reports whether k's expiry has passed at now.
@@ -70,7 +70,8 @@ func (c *childRoster) issued(key string) (config.IssuedKey, bool) {
 		return config.IssuedKey{}, false
 	}
 	return config.IssuedKey{Parent: k.Parent,
-		Policy: config.KeyPolicy{Group: k.Group, Mint: k.CanMint, Limits: k.limits}}, true
+		Policy: config.KeyPolicy{Group: k.Group, Mint: k.CanMint, Limits: k.limits,
+			Credentials: k.keyCreds, Disabled: k.Disabled}}, true
 }
 
 func (c *childRoster) get(key string) (childKey, bool) {
@@ -134,8 +135,8 @@ func (p *Proxy) loadChildKeys() {
 			}
 		}
 		if r.Credentials != "" {
-			if err := json.Unmarshal([]byte(r.Credentials), &k.credentials); err != nil {
-				slog.Warn("child keys: unreadable credentials, allowing none", "label", r.Label, "err", err)
+			if err := json.Unmarshal([]byte(r.Credentials), &k.keyCreds); err != nil {
+				slog.Warn("child keys: unreadable allow patterns, allowing none", "label", r.Label, "err", err)
 			}
 		}
 		p.children.put(k)
@@ -171,21 +172,83 @@ func (p *Proxy) canMint(c config.Caller) bool {
 	return p.config().Keys[c.Key].Mint
 }
 
-// issuedAllows reports whether an admin-issued key was granted the credential
-// a candidate forwards with: the issued key's own allowlist, beside the
-// config's `allow`.
-func (p *Proxy) issuedAllows(key string, c config.Candidate) bool {
-	k, ok := p.children.get(key)
-	if !ok || k.Parent != "" || c.Credential == nil {
-		return false
+// credentialVerdict decides one candidate's credential for this caller: whether
+// the caller may forward with it at all, and WHICH allow pattern admitted it —
+// with the key that owns that pattern — so the gate and the charge name the same
+// budget scope.
+//
+// Every policy in the caller's chain must admit the credential: a child narrows
+// what its parent may spend, never widens it. No patterns admits everything,
+// with no budget of its own — what every key did before patterns existed.
+//
+// A credential's own legacy `allow:` list is still enforced as an ADDITIONAL
+// restriction. It is the pre-patterns way of saying who may spend an account,
+// and it is on its way out — the dashboard writes patterns now — but a config
+// carrying one must not start serving callers down to nobody on upgrade, so
+// dropping it would be a silent widening of access. Kept here rather than
+// migrated on load: a migration would have to invent a pattern per key per
+// credential and rewrite a rule the operator can still read.
+//
+// The winning pattern is the most specific one across the whole chain, and it
+// belongs to the key that declared it (the child, if the child declares one):
+// a budget is kept on the key whose entry spells it out.
+func (p *Proxy) credentialVerdict(c config.Caller, cand config.Candidate) credentialAccess {
+	v := credentialAccess{allowed: true}
+	if cand.Credential == nil {
+		return v
 	}
-	sk := c.Credential.ScopeKey(c.Model.ProviderName)
-	for _, cr := range k.credentials {
-		if cr == sk {
-			return true
+	scope := cand.Credential.ScopeKey(cand.Model.ProviderName)
+	for _, k := range callerChain(c) {
+		pats := p.keyCredentials(k)
+		pat, matched := config.MatchCredential(pats, scope)
+		if len(pats) > 0 && !matched {
+			return credentialAccess{}
+		}
+		if matched && (v.pattern == "" || config.CredentialPatternWins(pat.Credential, v.pattern)) {
+			v.pattern, v.limits, v.owner = pat.Credential, pat.Limits, k
 		}
 	}
-	return false
+	if !cand.Credential.AllowsKey(c.PolicyKey()) {
+		return credentialAccess{}
+	}
+	return v
+}
+
+// credentialAccess is one candidate's credential verdict: permitted or not, and
+// which pattern budget (if any) admitted it.
+type credentialAccess struct {
+	allowed bool
+	pattern string // the winning pattern; "" when none matched
+	limits  config.LimitSet
+	owner   string // the key whose entry declares the winning pattern
+}
+
+// scope is the ledger scope the winning pattern's budget is kept under.
+func (v credentialAccess) scope() string {
+	if v.pattern == "" {
+		return ""
+	}
+	return config.KeyCredentialScopeKey(v.owner, v.pattern)
+}
+
+// keyCredentials is one key's allow patterns, from whichever source holds it.
+func (p *Proxy) keyCredentials(key string) []config.KeyCredential {
+	if ck, ok := p.children.get(key); ok {
+		return ck.keyCreds
+	}
+	return p.config().Keys[key].Credentials
+}
+
+// credentialScopesFor is the allow-pattern scopes one SERVED request is charged
+// to: the winning pattern under the key that declares it. Empty when that
+// pattern carries no budget, and empty when the caller has no patterns at all —
+// nothing extra to count.
+func (p *Proxy) credentialScopesFor(c config.Caller, cand config.Candidate) []string {
+	v := p.credentialVerdict(c, cand)
+	if !v.allowed || v.pattern == "" || len(v.limits) == 0 {
+		return nil
+	}
+	return []string{v.scope()}
 }
 
 // childKeyPrefix marks a minted key, so a deleted one can be told from a
@@ -204,11 +267,19 @@ func (p *Proxy) revokedKey(c config.Caller) string {
 		return "this key was deleted or never existed"
 	case c.Parent != "" && !c.Recognized:
 		return "this child key's parent is no longer configured"
+	case minted && k.Disabled:
+		return "this key is switched off"
 	case minted && k.expired(now):
 		return "this key expired at " + time.UnixMilli(k.ExpiresMS).UTC().Format(time.RFC3339)
+	case c.Disabled:
+		return "this key is switched off"
 	}
-	if pk, ok := p.children.get(c.Parent); ok && c.Parent != "" && pk.expired(now) {
-		return "this key's parent expired at " + time.UnixMilli(pk.ExpiresMS).UTC().Format(time.RFC3339)
+	if c.Parent != "" {
+		if pk, ok := p.children.get(c.Parent); ok && pk.Disabled {
+			return "the key that made this one is switched off"
+		} else if ok && pk.expired(now) {
+			return "this key's parent expired at " + time.UnixMilli(pk.ExpiresMS).UTC().Format(time.RFC3339)
+		}
 	}
 	return ""
 }
@@ -286,7 +357,13 @@ func (p *Proxy) filterByCallerShare(cands []config.Candidate, c config.Caller) (
 // A key whose own allocation was already full pays the cost from its value
 // adds — that is the only way it was admitted — decided before this request
 // is added to its windows.
-func (p *Proxy) chargeCaller(c config.Caller, model string, costUSD float64) {
+//
+// credLimits are the allow pattern's own budgets, when the pattern that
+// admitted this request carries any (filterByCredential returned them): they
+// are charged beside the key's allocation, under the key-and-pattern scope the
+// gate checked, so a pattern that says "$2/day on this account" is counted
+// separately from one that says "$20/day on every account".
+func (p *Proxy) chargeCaller(c config.Caller, model string, costUSD float64, credScopes []string) {
 	if p.quota == nil {
 		return
 	}
@@ -301,17 +378,32 @@ func (p *Proxy) chargeCaller(c config.Caller, model string, costUSD float64) {
 			}
 		}
 	}
+	// A pattern budget belongs to the key whose pattern it is. Charging it for
+	// every key in the chain would make a child's requests fill its parent's
+	// pattern twice over.
+	for _, sc := range credScopes {
+		p.quota.Charge(sc, config.DimRequests, 1)
+		if costUSD > 0 {
+			p.quota.Charge(sc, config.DimUSD, costUSD)
+		}
+	}
 }
 
 // seedCallerLimits registers one key's allocation: the key-wide limits under
-// its key scope, each model's share under its own.
-func seedCallerLimits(set func(string, []config.Limit), key string, ls config.LimitSet) {
+// its key scope, each model's share under its own, and each allow pattern's
+// budget under the key-and-pattern scope the gate checks.
+func seedCallerLimits(set func(string, []config.Limit), key string, ls config.LimitSet, creds []config.KeyCredential) {
 	all, byModel := ls.ByModel()
 	if len(all) > 0 {
 		set(config.KeyScopeKey(key), all)
 	}
 	for m, ml := range byModel {
 		set(config.KeyModelScopeKey(key, m), ml)
+	}
+	for _, pat := range creds {
+		if len(pat.Limits) > 0 {
+			set(config.KeyCredentialScopeKey(key, pat.Credential), pat.Limits)
+		}
 	}
 }
 
@@ -328,6 +420,9 @@ type childKeyBody struct {
 	Updated string          `json:"updated,omitempty"`
 	// Expires is when the key stops working (RFC 3339); empty = never.
 	Expires string `json:"expires,omitempty"`
+	// Disabled mirrors the admin switch: a key created off answers 401 until it
+	// is switched on, and says so here rather than looking broken.
+	Disabled bool `json:"disabled"`
 	// Windows is the allocation's live state: each limit's used and limit,
 	// keyed by scope ("key" or the model name).
 	Windows map[string][]quota.Window `json:"windows,omitempty"`
@@ -337,10 +432,12 @@ type childKeyBody struct {
 // is present; limits: [] removes them all. Expiry: `ttl` ("48h", "7d") from
 // now, or `expires` (RFC 3339); "" for either clears it.
 type childKeyInput struct {
-	Label   *string          `json:"label"`
-	Limits  *config.LimitSet `json:"limits"`
-	TTL     *string          `json:"ttl"`
-	Expires *string          `json:"expires"`
+	Label    *string                 `json:"label"`
+	Limits   *config.LimitSet        `json:"limits"`
+	TTL      *string                 `json:"ttl"`
+	Expires  *string                 `json:"expires"`
+	Disabled *bool                   `json:"disabled"`
+	Patterns *[]config.KeyCredential `json:"credentials"`
 }
 
 // expiryFrom reads an input's ttl/expires into unix millis; set is false when
@@ -511,6 +608,12 @@ func (p *Proxy) createChildKey(w http.ResponseWriter, r *http.Request, parent st
 		return
 	}
 	now := time.Now().UnixMilli()
+	// A child minted by a PARENT is live at once: the parent is the party that
+	// decided, on its own allocation, and it hands the key straight to a project
+	// that is waiting for it. The default-off rule belongs where a PERSON makes
+	// a key for a caller they have not met yet (Proxy.CreateKey) — not here,
+	// where making an agent mint a key and then switch it on is two steps to
+	// reach the state it asked for.
 	k := childKey{ChildKey: store.ChildKey{Key: childKeyPrefix + hex.EncodeToString(raw), Parent: parent,
 		CreatedMS: now, UpdatedMS: now}, limits: limits}
 	if in.Label != nil {
@@ -549,6 +652,16 @@ func (p *Proxy) updateChildKey(w http.ResponseWriter, r *http.Request, k childKe
 		return
 	} else if set {
 		k.ExpiresMS = exp
+	}
+	if in.Disabled != nil {
+		k.Disabled = *in.Disabled
+	}
+	if in.Patterns != nil {
+		if err := p.checkCredentials(*in.Patterns); err != nil {
+			jsonErr(w, http.StatusBadRequest, "credentials: "+err.Error())
+			return
+		}
+		k.keyCreds = clonePatterns(*in.Patterns)
 	}
 	k.UpdatedMS = time.Now().UnixMilli()
 	if !p.saveChildKey(w, k) {
@@ -589,8 +702,8 @@ func (p *Proxy) persistChildKey(k childKey) error {
 		b, _ := json.Marshal(k.limits)
 		k.Limits = string(b)
 	}
-	if len(k.credentials) > 0 {
-		b, _ := json.Marshal(k.credentials)
+	if len(k.keyCreds) > 0 {
+		b, _ := json.Marshal(config.ToKeyCredentials(k.keyCreds))
 		k.Credentials = string(b)
 	}
 	if err := p.store.SaveChildKey(k.ChildKey); err != nil {
@@ -613,7 +726,7 @@ func (p *Proxy) dropGrants(key string) {
 }
 
 func (p *Proxy) childKeyView(k childKey) childKeyBody {
-	out := childKeyBody{Key: k.Key, Label: k.Label, Limits: k.limits,
+	out := childKeyBody{Key: k.Key, Label: k.Label, Limits: k.limits, Disabled: k.Disabled,
 		Created: time.UnixMilli(k.CreatedMS).UTC().Format(time.RFC3339),
 		Windows: p.allocationWindows(k.Key)}
 	if out.Limits == nil {

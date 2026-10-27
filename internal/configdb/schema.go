@@ -149,7 +149,14 @@ CREATE TABLE IF NOT EXISTS config_key (
     -- JSON array of config.Limit: the key's allocation (P56). '' = unlimited.
     limits_json TEXT NOT NULL DEFAULT '',
     -- 1 = the key may mint child keys (POST /v1/keys), P62.
-    mint       INTEGER NOT NULL DEFAULT 0
+    mint       INTEGER NOT NULL DEFAULT 0,
+    -- 1 = refused outright, keeping the entry and its budgets for later; the
+    -- same statement a model's disabled flag makes, on a caller (P63).
+    disabled   INTEGER NOT NULL DEFAULT 0,
+    -- JSON array of config.KeyCredential: the key's allow patterns — which
+    -- credentials it may forward with, each with its own budgets (P63).
+    -- '' = every credential, the behaviour every key had before patterns.
+    credentials_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS config_tool (

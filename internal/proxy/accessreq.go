@@ -52,9 +52,10 @@ type AccessAsk struct {
 	Models []string `json:"models,omitempty"`
 	// Group is the priority group a new key runs in; "" = the fallback group.
 	Group *string `json:"group,omitempty"`
-	// Credentials are credential scope keys (cred:<provider>/<name>) the key may
-	// use beyond those open to every key.
-	Credentials *[]string `json:"credentials,omitempty"`
+	// Credentials are this key's ALLOW PATTERNS (config.KeyCredential): which
+	// credentials it may use, each with an optional budget of its own. Empty =
+	// every credential.
+	Credentials *[]config.KeyCredential `json:"credentials,omitempty"`
 	// Limits are the recurring (and `per: total` one-off) budgets.
 	Limits *config.LimitSet `json:"limits,omitempty"`
 	// ValueAdds are one-time amounts, spent once the limits refuse.
@@ -449,22 +450,93 @@ func onlyAsked(g, asked AccessAsk) AccessAsk {
 	return g
 }
 
-// checkCredentials refuses a credential scope key this box does not have.
-func (p *Proxy) checkCredentials(list []string) error {
+// checkCredentials refuses a pattern this box cannot honour: a malformed scope,
+// or one naming a credential that does not exist and carrying no wildcard — a
+// typo that would otherwise be a silent lockout.
+func (p *Proxy) checkCredentials(list []config.KeyCredential) error {
+	if err := config.ValidateKeyCredentials(list); err != nil {
+		return fmt.Errorf("credentials: %w", err)
+	}
 	known := map[string]bool{}
 	for _, c := range p.Credentials() {
 		known[c.Scope] = true
 	}
-	for _, c := range list {
-		if !known[c] {
-			return fmt.Errorf("credentials: no credential %q", c)
+	for _, pat := range list {
+		if strings.Contains(pat.Credential, "*") || known[pat.Credential] {
+			continue
 		}
+		return fmt.Errorf("credentials: no credential %q (see GET /api/v1/providers)", pat.Credential)
 	}
 	return nil
 }
 
-// IssueKey mints an admin-issued key (parent "") from a grant.
+// clonePatterns copies a pattern list so a key's stored permission cannot alias
+// the request that created it.
+func clonePatterns(in []config.KeyCredential) []config.KeyCredential {
+	out := make([]config.KeyCredential, 0, len(in))
+	for _, p := range in {
+		ls := append(config.LimitSet{}, p.Limits...)
+		out = append(out, config.KeyCredential{Credential: p.Credential, Limits: ls})
+	}
+	return out
+}
+
+// CreateKey mints a key on an admin's order, without an access request behind
+// it.
+//
+// It is the same row IssueKey writes, and it differs in exactly one way: the key
+// is created DISABLED (owner, 10-26). An admin who makes a key has decided what
+// it may do, not that its first caller may start spending immediately — and a
+// key handed over a chat window may be pasted somewhere before anyone has
+// checked the budgets on it. Switching it on is one row's toggle.
+func (p *Proxy) CreateKey(g AccessAsk, now time.Time) (string, error) {
+	if p.store == nil {
+		return "", errors.New("keys need the database")
+	}
+	if err := g.check(p.config(), true); err != nil {
+		return "", err
+	}
+	if g.Credentials != nil {
+		if err := p.checkCredentials(*g.Credentials); err != nil {
+			return "", err
+		}
+	}
+	if g.Limits != nil {
+		if err := p.checkChildLimits(*g.Limits); err != nil {
+			return "", err
+		}
+	}
+	if g.Group != nil && *g.Group != "" {
+		if _, ok := p.config().PriorityGroups[*g.Group]; !ok {
+			return "", fmt.Errorf("no priority group %q", *g.Group)
+		}
+	}
+	key, err := p.issueKey(g, now, true)
+	if err != nil {
+		return "", err
+	}
+	// Value adds are part of the key being created, so they are written here
+	// rather than left to the caller: a top-up with no key is a row nobody can
+	// find.
+	for _, v := range g.ValueAdds {
+		if _, err := p.AddValueAdd(key, v, now); err != nil {
+			return key, err
+		}
+	}
+	return key, nil
+}
+
+// IssueKey mints an admin-issued key (parent "") from an approved grant.
+//
+// An approved key is LIVE: the owner read a request, decided what it may do and
+// said yes, and making them switch it on afterwards would answer a question
+// they have just answered.
 func (p *Proxy) IssueKey(g AccessAsk, now time.Time) (string, error) {
+	return p.issueKey(g, now, false)
+}
+
+// issueKey is the row both paths write; disabled is the one field they differ on.
+func (p *Proxy) issueKey(g AccessAsk, now time.Time, disabled bool) (string, error) {
 	raw, err := randomHex(24)
 	if err != nil {
 		return "", err
@@ -474,12 +546,12 @@ func (p *Proxy) IssueKey(g AccessAsk, now time.Time) (string, error) {
 		return "", err
 	}
 	k := childKey{ChildKey: store.ChildKey{Key: childKeyPrefix + raw, Label: strings.TrimSpace(g.Label),
-		CreatedMS: now.UnixMilli(), UpdatedMS: now.UnixMilli(), ExpiresMS: exp}}
+		CreatedMS: now.UnixMilli(), UpdatedMS: now.UnixMilli(), ExpiresMS: exp, Disabled: disabled}}
 	if g.Group != nil {
 		k.Group = *g.Group
 	}
 	if g.Credentials != nil {
-		k.credentials = *g.Credentials
+		k.keyCreds = clonePatterns(*g.Credentials)
 	}
 	if g.Limits != nil {
 		k.limits = *g.Limits
@@ -491,6 +563,35 @@ func (p *Proxy) IssueKey(g AccessAsk, now time.Time) (string, error) {
 		return "", err
 	}
 	return k.Key, nil
+}
+
+// SetKeyDisabled switches a key off or on, keeping it and its budgets: the
+// deliberate pause, as opposed to an expiry that runs out on its own.
+//
+// A configured key is edited through edit, because its entry lives in the
+// config; a minted one is a row. Both end up answering 401 when off (see
+// revokedKey), which is the only thing a caller can observe.
+func (p *Proxy) SetKeyDisabled(key string, off bool, edit ConfigEditor) error {
+	if k, ok := p.children.get(key); ok {
+		k.Disabled, k.UpdatedMS = off, time.Now().UnixMilli()
+		return p.persistChildKey(k)
+	}
+	if _, ok := p.config().Keys[key]; !ok {
+		return errors.New("no such key")
+	}
+	if edit == nil {
+		return errors.New("config is not editable here")
+	}
+	verbed := "enable"
+	if off {
+		verbed = "disable"
+	}
+	return edit(verbed+" key "+key, func(c *config.Config) error {
+		kp := c.Keys[key]
+		kp.Disabled = off
+		c.Keys[key] = kp
+		return nil
+	})
 }
 
 // applyToKey changes an existing key as g says: a minted key's row, or a
@@ -515,7 +616,7 @@ func (p *Proxy) applyToKey(key string, g AccessAsk, edit ConfigEditor, note stri
 				k.Group = *g.Group
 			}
 			if g.Credentials != nil {
-				k.credentials = *g.Credentials
+				k.keyCreds = clonePatterns(*g.Credentials)
 			}
 			if g.Mint != nil {
 				k.CanMint = *g.Mint
@@ -547,33 +648,14 @@ func (p *Proxy) applyToKey(key string, g AccessAsk, edit ConfigEditor, note stri
 		if g.Group != nil && *g.Group != "" {
 			kp.Group = *g.Group
 		}
-		c.Keys[key] = kp
 		if g.Credentials != nil {
-			allowCredentials(c, key, *g.Credentials)
+			kp.Credentials = config.ToKeyCredentials(*g.Credentials)
 		}
+		c.Keys[key] = kp
 		return nil
 	})
 }
 
-// allowCredentials puts key on the `allow` list of each named credential.
-func allowCredentials(c *config.Config, key string, scopes []string) {
-	want := map[string]bool{}
-	for _, s := range scopes {
-		want[s] = true
-	}
-	for en, ext := range c.Extensions {
-		for pn, pv := range ext.Providers {
-			for i, cr := range pv.Credentials {
-				if !want[cr.ScopeKey(pn)] || cr.AllowsKey(key) {
-					continue
-				}
-				pv.Credentials[i].Allow = append(pv.Credentials[i].Allow, key)
-			}
-			ext.Providers[pn] = pv
-		}
-		c.Extensions[en] = ext
-	}
-}
 
 // AddValueAdd stores a value add on key.
 func (p *Proxy) AddValueAdd(key string, v ValueAddAsk, now time.Time) (GrantView, error) {
@@ -687,12 +769,13 @@ type MintedKeyView struct {
 	Parent      string          `json:"parent,omitempty" doc:"Empty = issued by an admin."`
 	Label       string          `json:"label"`
 	Group       string          `json:"group,omitempty"`
-	Credentials []string        `json:"credentials,omitempty"`
-	Mint        bool            `json:"mint"`
-	Limits      config.LimitSet `json:"limits"`
-	Created     string          `json:"created"`
-	Expires     string          `json:"expires,omitempty"`
-	Expired     bool            `json:"expired"`
+	Credentials []config.KeyCredential `json:"credentials" doc:"Allow patterns: which credentials this key may use, each with its own budgets. Empty = every credential."`
+	Mint        bool                   `json:"mint"`
+	Limits      config.LimitSet        `json:"limits"`
+	Created     string                 `json:"created"`
+	Expires     string                 `json:"expires,omitempty"`
+	Expired     bool                   `json:"expired" doc:"Past its expiry. Still listed, and can be re-enabled."`
+	Disabled    bool                   `json:"disabled" doc:"Switched off by an admin. Kept, with its budgets, until switched back on."`
 	ValueAdds   []GrantView     `json:"valueAdds"`
 	Windows     []KeyWindow     `json:"windows"`
 }
@@ -735,9 +818,11 @@ func (p *Proxy) MintedKeys() []MintedKeyView {
 	sort.SliceStable(all, func(i, j int) bool { return all[i].Parent == "" && all[j].Parent != "" })
 	out := make([]MintedKeyView, 0, len(all))
 	for _, k := range all {
-		v := MintedKeyView{Key: k.Key, Parent: k.Parent, Label: k.Label, Group: k.Group, Credentials: k.credentials,
-			Mint: k.CanMint, Limits: k.limits, Created: time.UnixMilli(k.CreatedMS).UTC().Format(time.RFC3339),
-			Expired: k.expired(now), ValueAdds: grantViews(p.grants.of(k.Key)), Windows: p.keyWindows(k.Key)}
+		v := MintedKeyView{Key: k.Key, Parent: k.Parent, Label: k.Label, Group: k.Group,
+			Credentials: config.ToKeyCredentials(k.keyCreds),
+			Mint:        k.CanMint, Limits: k.limits, Created: time.UnixMilli(k.CreatedMS).UTC().Format(time.RFC3339),
+			Expired: k.expired(now), Disabled: k.Disabled,
+			ValueAdds: grantViews(p.grants.of(k.Key)), Windows: p.keyWindows(k.Key)}
 		if v.Limits == nil {
 			v.Limits = config.LimitSet{}
 		}
@@ -790,6 +875,17 @@ func (p *Proxy) UpdateKey(key string, g AccessAsk, clearExpiry bool, edit Config
 		return p.ClearMintedKeyExpiry(key)
 	}
 	return nil
+}
+
+// MintedKey reports a minted key and whether it is one (as opposed to a
+// configured key, whose entry lives in the config).
+func (p *Proxy) MintedKey(key string) (MintedKeyView, bool) {
+	for _, v := range p.MintedKeys() {
+		if v.Key == key {
+			return v, true
+		}
+	}
+	return MintedKeyView{}, false
 }
 
 // KeyWindows is a key's allocation windows, live.

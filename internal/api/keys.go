@@ -58,6 +58,10 @@ type KeyRow struct {
 	// Parent is set for a child key (POST /v1/keys): the configured key that
 	// minted it, whose group and allocation it runs under.
 	Parent string `json:"parent,omitempty"`
+	// Off is true when this key may not spend: switched off by an admin, or past
+	// its expiry. The roster shows it because a caller that has been cut off
+	// deliberately must not look like one that is merely idle.
+	Off bool `json:"off"`
 	// Label is a child key's name, as its parent gave it.
 	Label string `json:"label,omitempty"`
 
@@ -120,10 +124,19 @@ func (h *Handlers) Keys(ctx context.Context, in *KeysInput) (*KeysOutput, error)
 			resolveAs = ck.Parent
 		}
 		group, g, recognized := cfg.ResolveGroupRecognized(resolveAs)
+		// Whether the key is switched off, from whichever source holds it: its
+		// config entry, or its minted row. A child answers to its PARENT's
+		// switch, since that is the policy it runs under.
+		off := cfg.Keys[resolveAs].Disabled
+		if h.Proxy != nil {
+			if mk, ok := h.Proxy.MintedKey(resolveAs); ok {
+				off = off || mk.Disabled || mk.Expired
+			}
+		}
 		r := &KeyRow{
 			Key: key, Hash: KeyHash(key), Group: group,
 			Weight: g.EffectiveWeight(), Recognized: recognized,
-			Parent: ck.Parent, Label: ck.Label,
+			Parent: ck.Parent, Label: ck.Label, Off: off,
 		}
 		rows[key] = r
 		return r

@@ -1,9 +1,13 @@
 package store
 
 // ChildKey is one row of child_key. Limits is the JSON of a config.LimitSet
-// and Credentials a JSON list of credential scope keys; the store interprets
-// neither. Parent "" is a key an admin issued (P62), which carries its own
-// Group, Credentials and CanMint; a child's are unused.
+// and Credentials a JSON list of credential scope keys; Grants is the JSON of a
+// config.Grant list (the key's allow patterns). The store interprets none of
+// them. Parent "" is a key an admin issued (P62), which carries its own Group,
+// Credentials, Grants, CanMint and Disabled; a child's are unused.
+//
+// Disabled is the one flag every key carries: a runtime key is created with it
+// SET, so minting a key is not the same act as allowing it to spend.
 type ChildKey struct {
 	Key         string
 	Parent      string
@@ -15,16 +19,20 @@ type ChildKey struct {
 	Group       string
 	Credentials string
 	CanMint     bool
+	Disabled    bool
+	Grants      string
 }
 
 // SaveChildKey upserts a child key. created_at is kept on update.
 func (s *Store) SaveChildKey(k ChildKey) error {
 	_, err := s.db.Exec(`
-INSERT INTO child_key (key, parent, label, limits, created_at, updated_at, expires_at, grp, credentials, can_mint)
-VALUES (?,?,?,?,?,?,?,?,?,?)
+INSERT INTO child_key (key, parent, label, limits, created_at, updated_at, expires_at, grp, credentials, can_mint, disabled, grants)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(key) DO UPDATE SET label=excluded.label, limits=excluded.limits, updated_at=excluded.updated_at,
-  expires_at=excluded.expires_at, grp=excluded.grp, credentials=excluded.credentials, can_mint=excluded.can_mint`,
-		k.Key, k.Parent, k.Label, k.Limits, k.CreatedMS, k.UpdatedMS, k.ExpiresMS, k.Group, k.Credentials, boolInt(k.CanMint))
+  expires_at=excluded.expires_at, grp=excluded.grp, credentials=excluded.credentials, can_mint=excluded.can_mint,
+  disabled=excluded.disabled, grants=excluded.grants`,
+		k.Key, k.Parent, k.Label, k.Limits, k.CreatedMS, k.UpdatedMS, k.ExpiresMS, k.Group, k.Credentials,
+		boolInt(k.CanMint), boolInt(k.Disabled), k.Grants)
 	return err
 }
 
@@ -36,7 +44,7 @@ func (s *Store) DeleteChildKey(key string) error {
 
 // LoadChildKeys returns every child key, for the proxy's in-memory roster.
 func (s *Store) LoadChildKeys() ([]ChildKey, error) {
-	rows, err := s.db.Query(`SELECT key, parent, label, limits, created_at, updated_at, expires_at, grp, credentials, can_mint
+	rows, err := s.db.Query(`SELECT key, parent, label, limits, created_at, updated_at, expires_at, grp, credentials, can_mint, disabled, grants
 FROM child_key ORDER BY parent, created_at, key`)
 	if err != nil {
 		return nil, err
@@ -45,12 +53,12 @@ FROM child_key ORDER BY parent, created_at, key`)
 	var out []ChildKey
 	for rows.Next() {
 		var k ChildKey
-		var mint int
+		var mint, disabled int
 		if err := rows.Scan(&k.Key, &k.Parent, &k.Label, &k.Limits, &k.CreatedMS, &k.UpdatedMS,
-			&k.ExpiresMS, &k.Group, &k.Credentials, &mint); err != nil {
+			&k.ExpiresMS, &k.Group, &k.Credentials, &mint, &disabled, &k.Grants); err != nil {
 			return nil, err
 		}
-		k.CanMint = mint != 0
+		k.CanMint, k.Disabled = mint != 0, disabled != 0
 		out = append(out, k)
 	}
 	return out, rows.Err()

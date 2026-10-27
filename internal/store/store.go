@@ -392,7 +392,14 @@ CREATE TABLE IF NOT EXISTS child_key (
     expires_at  INTEGER NOT NULL DEFAULT 0,
     grp         TEXT    NOT NULL DEFAULT '',
     credentials TEXT    NOT NULL DEFAULT '',
-    can_mint    INTEGER NOT NULL DEFAULT 0
+    can_mint    INTEGER NOT NULL DEFAULT 0,
+    -- 1 = created but not yet allowed to spend. Runtime keys are minted
+    -- DISABLED (owner, 10-26): issuing one is not the same decision as
+    -- letting it run, and a key nobody has looked at should not be live.
+    disabled    INTEGER NOT NULL DEFAULT 0,
+    -- JSON list of config.Grant: the key's allow patterns (cred:<provider>/<name>
+    -- globs, each with its own budgets). '' = every credential.
+    grants      TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS child_key_parent ON child_key(parent);
 
@@ -482,6 +489,10 @@ var migrations = []string{
 	`ALTER TABLE child_key ADD COLUMN grp TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE child_key ADD COLUMN credentials TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE child_key ADD COLUMN can_mint INTEGER NOT NULL DEFAULT 0`,
+	// DEFAULT 0 keeps every existing key working: a key minted before this
+	// column existed was live the moment it was issued, and that stays true.
+	`ALTER TABLE child_key ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE child_key ADD COLUMN grants TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE activity ADD COLUMN requested TEXT NOT NULL DEFAULT ''`,
 	// AFTER the column, and here rather than in `schema`, because on an
 	// existing database the CREATE TABLE above is a no-op: the schema block

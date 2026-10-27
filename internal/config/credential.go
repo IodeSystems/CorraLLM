@@ -62,6 +62,14 @@ type Credential struct {
 	// Allow lists the corrallm keys permitted to use this credential. Empty
 	// means every caller may. An ALLOWlist rather than a denylist: the failure
 	// direction is "denied" rather than "spent someone else's money".
+	//
+	// LEGACY (P63): a key's own `credentials:` patterns are the way to say this
+	// now — the permission is a fact about the CALLER, and it belongs on the
+	// caller's entry instead of scattered across every provider here. This list
+	// is still ENFORCED as an extra restriction (a key must pass both), because
+	// dropping it would silently widen access for every config carrying one.
+	// Nothing writes it any more; it disappears as configs are rewritten, and a
+	// `disabled`-style removal can follow once none are left.
 	Allow []string `yaml:"allow,omitempty" json:"allow,omitempty"`
 }
 

@@ -21,7 +21,7 @@ type CredentialSpec struct {
 	Name       string   `json:"name" doc:"Account name; also the budget key, stable across restarts."`
 	SecretRef  string   `json:"secretRef" required:"false" doc:"Name of the credential-store entry holding this account's token. Referenced as ${NAME}; the value never enters config."`
 	HeaderName string   `json:"headerName" required:"false" doc:"Header to carry it in (default authorization, as 'Bearer <value>')."`
-	Allow      []string `json:"allow" required:"false" doc:"corrallm keys permitted to use this account. Empty = all."`
+	Allow      []string `json:"allow" required:"false" doc:"LEGACY: a key's own allow patterns are the way to say this now; still enforced where set. corrallm keys permitted to use this account. Empty = all."`
 	Limits     []Limit  `json:"limits" required:"false" doc:"Budgets for this account alone."`
 	// Output-only: reported so a form can show which refs resolve, ignored on
 	// input. Marked optional or every write would have to echo it back.

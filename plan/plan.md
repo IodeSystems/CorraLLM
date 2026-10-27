@@ -377,6 +377,41 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P63 — Keys you can make: created switched off, and credentials allowed by pattern with budgets — 2026-10-26
+
+Owner ask (10-26): "we can approve them, but we cannot make them" — being able to make and manage
+keys, default disabled when created. And: providers should not manage their keys in the yaml config;
+keys are permitted on the KEY, with allow patterns, patterns can carry budgets, most specific wins.
+Design:
+- `KeyPolicy.credentials` on the key (`config.KeyCredential`): a glob over a credential scope
+  (`cred:<provider>/<name>`, `*` anywhere), with its own `limits`. Most specific wins — longest
+  pattern, then most literal bytes before the first wildcard, then the lexically smaller one — and
+  only the winning pattern's budget is gated and charged, under the ledger scope
+  `keycred:<key>><pattern>` (the key that DECLARES the pattern owns the budget). No patterns = every
+  credential, which is what every key had before.
+- `KeyPolicy.disabled` on the key; a runtime key is created with it SET. A configured key can be
+  switched off too (the config editor writes it), and switching a key off stops the children it
+  minted, since a child runs as its parent.
+- A credential's legacy `allow:` list stays ENFORCED as an extra restriction (a key must pass both)
+  so no existing config silently widens; nothing writes it any more.
+Done: `POST /api/v1/requests/keys/create` (`proxy.CreateKey`, admin) → the key once, created off;
+`managedKeyAction` disable/enable now reach configured keys, and `delete` refuses one (its entry is a
+line in the config). `IssuedKey` is unchanged and stays LIVE — an approved request is a decision the
+owner has already made. Approvals page: "New key" dialog, a switch that reflects off-or-expired for
+every row, and an accounts-by-pattern editor with per-pattern limits (the old credential checklist is
+gone). Roster (`/callers`) marks a key off.
+- **next:** check the dialog and the pattern editor in a sandbox daemon; then close → done.md.
+- **risks:** a pattern naming an account that does not exist is refused when saved through the API but
+  accepted by a hand-written config that only matches nothing (Validate checks shape, not existence);
+  a pattern budget is charged on INFERENCE only, like the key allocation (realtime audio is not
+  counted); the winning pattern is chosen across the chain rather than per key, so a child's wider
+  pattern loses to its parent's narrower one — no budget is double-counted, but the child cannot see
+  which of its own patterns lost.
+- **blocking decisions:** none.
+- **optional extensions:** migrate a credential `allow:` list into per-key patterns in one pass and
+  refuse the old field (needs a decision: a migration has to invent a pattern from an allowlist); a
+  pattern editor that lists this box's accounts as suggestions.
+
 ### ◐ P62 — Access requests: agents ask, the owner approves keys, budgets and expiry on one page — 2026-10-25
 
 Owner ask (10-25): access and budget requests from agents (mcpshell wanted Fireworks DeepSeek) must

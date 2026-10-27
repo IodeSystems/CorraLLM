@@ -70,6 +70,20 @@ type KeyPolicy struct {
 	// budgets and expiry. A permission the owner grants, not a default: a key
 	// that can mint can hand its allocation to callers nobody approved.
 	Mint bool
+
+	// Credentials are this key's ALLOW PATTERNS (keycred.go): which provider
+	// credentials it may forward with, each with an optional budget of its own.
+	// Empty means every credential, which is what every key had before this.
+	//
+	// It lives here rather than on a credential's `allow` list because the
+	// question it answers is about the CALLER: "what may this key spend".
+	Credentials []KeyCredential
+
+	// Disabled refuses this key outright, keeping its entry (and its budgets)
+	// for later — the same statement a model's `disabled` makes. Keys minted at
+	// runtime are created disabled by default, so they must be turned on before
+	// they can spend anything.
+	Disabled bool
 }
 
 // KeyScopeKey is a caller key's allocation identity in the quota ledger.
@@ -143,6 +157,20 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 				}
 				continue
 			}
+			if name == "disabled" {
+				if err := node.Decode(&k.Disabled); err != nil {
+					return fmt.Errorf("key policy: `disabled` must be true or false: %w", err)
+				}
+				continue
+			}
+			if name == "credentials" {
+				var list []KeyCredential
+				if err := node.Decode(&list); err != nil {
+					return fmt.Errorf("key policy: `credentials` must be a list of {credential, limits}: %w", err)
+				}
+				k.Credentials = list
+				continue
+			}
 			if name == "limits" {
 				if err := node.Decode(&k.Limits); err != nil {
 					return fmt.Errorf("key policy: `limits`: %w", err)
@@ -185,7 +213,8 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 // That keeps every existing config byte-identical across a save, so adding this
 // feature does not show up as a diff on every key in the revision history.
 func (k KeyPolicy) MarshalYAML() (any, error) {
-	if len(k.Allow) == 0 && k.Thinking == nil && len(k.Limits) == 0 && !k.Mint {
+	if len(k.Allow) == 0 && k.Thinking == nil && len(k.Limits) == 0 && !k.Mint &&
+		len(k.Credentials) == 0 && !k.Disabled {
 		return k.Group, nil
 	}
 	m := map[string]any{"default": k.Group}
@@ -202,6 +231,12 @@ func (k KeyPolicy) MarshalYAML() (any, error) {
 	}
 	if k.Mint {
 		m["mint"] = true
+	}
+	if len(k.Credentials) > 0 {
+		m["credentials"] = k.Credentials
+	}
+	if k.Disabled {
+		m["disabled"] = true
 	}
 	return m, nil
 }

@@ -56,6 +56,7 @@ export const KeysDoc = graphql(/* GraphQL */ `
           weight
           recognized
           requests
+          off
           lastSeen
           costUSD
           dwellMS
@@ -225,6 +226,11 @@ function Callers() {
                       {k.hash}
                     </TableCell>
                     <TableCell>
+                      {k.off && (
+                        <Tooltip title="Switched off: this key answers 401. Switch it back on where keys are managed (Approvals).">
+                          <Chip size="small" color="error" label="off" sx={{ mr: 0.5 }} />
+                        </Tooltip>
+                      )}
                       {k.recognized ? (
                         <Chip size="small" label={k.group} />
                       ) : (

@@ -216,19 +216,31 @@ func TestParseTTL(t *testing.T) {
 // An issued key passes a credential allowlist it was granted, and only that.
 func TestIssuedKeyCredentials(t *testing.T) {
 	k := newChildKeyRig(t, nil)
-	key, err := k.px.IssueKey(AccessAsk{Label: "x", Credentials: &[]string{"cred:fw/main"}}, time.Now())
+	key, err := k.px.IssueKey(AccessAsk{Label: "x",
+		Credentials: &[]config.KeyCredential{{Credential: "cred:fw/main"}}}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	cand := func(provider, name string) config.Candidate {
 		return config.Candidate{Name: "m", Model: config.Model{ProviderName: provider},
-			Credential: &config.Credential{Name: name, Allow: []string{"sk-other"}}}
+			Credential: &config.Credential{Name: name}}
 	}
-	if !k.px.issuedAllows(key, cand("fw", "main")) {
+	caller := k.px.resolveCaller(key)
+	if v := k.px.credentialVerdict(caller, cand("fw", "main")); !v.allowed {
 		t.Error("granted credential refused")
 	}
-	if k.px.issuedAllows(key, cand("fw", "other")) || k.px.issuedAllows("parent", cand("fw", "main")) {
-		t.Error("credential allowed without a grant")
+	if v := k.px.credentialVerdict(caller, cand("fw", "other")); v.allowed {
+		t.Error("credential allowed without a pattern")
+	}
+	// The permission is about the CALLER: a key with no patterns may use every
+	// credential, and a credential's own legacy allowlist still restricts it.
+	if v := k.px.credentialVerdict(k.px.resolveCaller("parent"), cand("fw", "main")); !v.allowed {
+		t.Error("a key with no patterns should reach an open credential")
+	}
+	closed := cand("fw", "main")
+	closed.Credential.Allow = []string{"sk-someone-else"}
+	if v := k.px.credentialVerdict(k.px.resolveCaller("parent"), closed); v.allowed {
+		t.Error("a credential's own allowlist must still refuse a key it excludes")
 	}
 }
 

@@ -857,10 +857,17 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Tags:        []string{"requests"},
 	}, h.UpdateManagedKey)
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "createKey",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/requests/keys/create",
+		Summary:     "Make a key from scratch (label, group, allow patterns with budgets, expiry). It starts switched OFF.",
+		Tags:        []string{"requests"},
+	}, h.CreateKey)
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "managedKeyAction",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/requests/keys/action",
-		Summary:     "Disable (expire now), re-enable or delete a minted key.",
+		Summary:     "Switch a key off or on (configured or minted; it stays listed), or delete a minted one.",
 		Tags:        []string{"requests"},
 	}, h.ManagedKeyAction)
 	gat.Register(humaAPI, g, huma.Operation{

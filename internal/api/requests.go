@@ -31,10 +31,39 @@ type KeyLimit struct {
 	Model string  `json:"model,omitempty" required:"false" doc:"Narrow to one model; empty = every model."`
 }
 
+// KeyPattern is one ALLOW PATTERN on a key: a credential scope glob, with an
+// optional budget of its own. `cred:fireworks/*` is every account of one
+// provider; `cred:fireworks/main` is one of them. When several match, the most
+// specific wins, and only its budgets are charged.
+type KeyPattern struct {
+	Credential string     `json:"credential" doc:"cred:<provider>/<name>, with * as a wildcard (e.g. cred:fireworks/*)."`
+	Limits     []KeyLimit `json:"limits" required:"false" doc:"What this pattern may spend. Only the most specific matching pattern's budgets are charged."`
+}
+
+// toKeyLimits converts a key's allocation to the wire; nil stays an empty list
+// so a form editing one always has something to append to.
 func toKeyLimits(in config.LimitSet) []KeyLimit {
 	out := make([]KeyLimit, 0, len(in))
 	for _, l := range in {
 		out = append(out, KeyLimit{Req: l.Req, USD: l.USD, Per: l.Per, Hard: l.Hard, Model: l.Model})
+	}
+	return out
+}
+
+// toPatterns / fromPatterns convert a key's allow patterns between the wire and
+// the config's own type.
+func toPatterns(in []KeyPattern) []config.KeyCredential {
+	out := make([]config.KeyCredential, 0, len(in))
+	for _, p := range in {
+		out = append(out, config.KeyCredential{Credential: strings.TrimSpace(p.Credential), Limits: fromKeyLimits(p.Limits)})
+	}
+	return out
+}
+
+func fromPatterns(in []config.KeyCredential) []KeyPattern {
+	out := make([]KeyPattern, 0, len(in))
+	for _, p := range in {
+		out = append(out, KeyPattern{Credential: p.Credential, Limits: toKeyLimits(p.Limits)})
 	}
 	return out
 }
@@ -77,7 +106,7 @@ type KeyGrant struct {
 	Purpose     string     `json:"purpose,omitempty" required:"false"`
 	Models      []string   `json:"models,omitempty" required:"false" doc:"Models the requester said it wants."`
 	Group       string     `json:"group,omitempty" required:"false" doc:"Priority group; empty = the fallback group."`
-	Credentials []string   `json:"credentials,omitempty" required:"false" doc:"Credential scopes (cred:<provider>/<name>) the key may use."`
+	Credentials []KeyPattern `json:"credentials,omitempty" required:"false" doc:"Allow patterns: which credentials the key may use, each with an optional budget of its own. Empty = every credential."`
 	Limits      []KeyLimit `json:"limits,omitempty" required:"false"`
 	ValueAdds   []ValueAdd `json:"valueAdds,omitempty" required:"false"`
 	TTL         string     `json:"ttl,omitempty" required:"false" doc:"Key expires this long after approval: 48h, 7d."`
@@ -94,7 +123,7 @@ func fromAsk(a proxy.AccessAsk) KeyGrant {
 		g.Group = *a.Group
 	}
 	if a.Credentials != nil {
-		g.Credentials = *a.Credentials
+		g.Credentials = fromPatterns(*a.Credentials)
 	}
 	if a.Limits != nil {
 		g.Limits, g.AskedLimits = toKeyLimits(*a.Limits), true
@@ -111,7 +140,7 @@ func fromAsk(a proxy.AccessAsk) KeyGrant {
 // toAsk is a full-state grant: every field set.
 func (g KeyGrant) toAsk() proxy.AccessAsk {
 	lim := fromKeyLimits(g.Limits)
-	creds := append([]string{}, g.Credentials...)
+	creds := toPatterns(g.Credentials)
 	a := proxy.AccessAsk{Label: g.Label, Purpose: g.Purpose, Models: g.Models, Group: &g.Group,
 		Credentials: &creds, Limits: &lim, TTL: g.TTL, Expires: g.Expires, Mint: &g.Mint}
 	for _, v := range g.ValueAdds {
@@ -156,12 +185,13 @@ type ManagedKey struct {
 	Parent      string         `json:"parent,omitempty" required:"false"`
 	Label       string         `json:"label,omitempty" required:"false"`
 	Group       string         `json:"group,omitempty" required:"false"`
-	Credentials []string       `json:"credentials,omitempty" required:"false"`
+	Credentials []KeyPattern   `json:"credentials" doc:"Allow patterns: which credentials this key may use, each with its own budgets. Empty = every credential."`
 	Mint        bool           `json:"mint"`
 	Limits      []KeyLimit     `json:"limits"`
 	Created     string         `json:"created,omitempty" required:"false"`
 	Expires     string         `json:"expires,omitempty" required:"false"`
 	Expired     bool           `json:"expired"`
+	Disabled    bool           `json:"disabled" doc:"Switched off by an admin. Kept, with its budgets and patterns, until switched back on."`
 	ValueAdds   []ValueAdd     `json:"valueAdds"`
 	Windows     []KeyWindowRow `json:"windows"`
 	// What the key itself spent since 00:00 UTC (its children are their own
@@ -237,8 +267,9 @@ func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutp
 			kind = "child"
 		}
 		b.Keys = append(b.Keys, ManagedKey{Key: k.Key, Kind: kind, Parent: k.Parent, Label: k.Label, Group: k.Group,
-			Credentials: k.Credentials, Mint: k.Mint, Limits: toKeyLimits(k.Limits), Created: k.Created,
-			Expires: k.Expires, Expired: k.Expired, ValueAdds: fromGrantViews(k.ValueAdds), Windows: windowRows(k.Windows),
+			Credentials: fromPatterns(k.Credentials), Mint: k.Mint, Limits: toKeyLimits(k.Limits), Created: k.Created,
+			Expires: k.Expires, Expired: k.Expired, Disabled: k.Disabled,
+			ValueAdds: fromGrantViews(k.ValueAdds), Windows: windowRows(k.Windows),
 			SpentToday: today[k.Key].CostUSD, RequestsToday: today[k.Key].Requests})
 	}
 	cfg := h.config()
@@ -248,13 +279,8 @@ func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutp
 	}
 	for _, key := range sortedNames(cfg.Keys) {
 		kp := cfg.Keys[key]
-		var creds []string
-		for _, c := range p.Credentials() {
-			if !c.Open && hasString(c.Allow, key) {
-				creds = append(creds, c.Scope)
-			}
-		}
-		b.Keys = append(b.Keys, ManagedKey{Key: key, Kind: "configured", Group: kp.Group, Credentials: creds,
+		b.Keys = append(b.Keys, ManagedKey{Key: key, Kind: "configured", Group: kp.Group,
+			Credentials: fromPatterns(kp.Credentials), Disabled: kp.Disabled,
 			Mint: kp.Mint, Limits: toKeyLimits(kp.Limits), ValueAdds: fromGrantViews(adds[key]),
 			Windows: windowRows(p.KeyWindows(key)), SpentToday: today[key].CostUSD, RequestsToday: today[key].Requests})
 	}
@@ -288,15 +314,6 @@ func sortedNames[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func hasString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 // actor names who made a decision.
@@ -383,6 +400,37 @@ func (h *Handlers) DenyRequest(ctx context.Context, in *DenyRequestInput) (*Deci
 	return out, nil
 }
 
+type CreateKeyInput struct {
+	Body struct {
+		// Key is the full desired state of the key. It is created DISABLED: a key
+		// an admin makes is a decision about what it may do, not a decision to
+		// start serving with it.
+		Key KeyGrant `json:"key"`
+	}
+}
+
+// CreateKey makes a key on an admin's order, without an access request behind
+// it. The key starts switched off (see ManagedKeyAction to switch it on), and
+// the reply carries it ONCE — the same rule a claimed request follows, since the
+// value is a bearer credential nobody should be able to re-read off the page.
+func (h *Handlers) CreateKey(ctx context.Context, in *CreateKeyInput) (*DecisionOutput, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+	p, err := h.proxyOrErr()
+	if err != nil {
+		return nil, err
+	}
+	g := in.Body.Key.toAsk()
+	key, err := p.CreateKey(g, time.Now())
+	if err != nil {
+		return nil, decisionErr(err)
+	}
+	out := &DecisionOutput{}
+	out.Body.OK, out.Body.Key = true, key
+	return out, nil
+}
+
 type UpdateManagedKeyInput struct {
 	Body struct {
 		Key string `json:"key"`
@@ -417,11 +465,15 @@ func (h *Handlers) UpdateManagedKey(ctx context.Context, in *UpdateManagedKeyInp
 type ManagedKeyActionInput struct {
 	Body struct {
 		Key    string `json:"key"`
-		Action string `json:"action" enum:"disable,enable,delete" doc:"disable = expire now (stays listed); enable = clear the expiry; delete = remove it, its children and value adds."`
+		Action string `json:"action" enum:"disable,enable,delete" doc:"disable = switch it off now (stays listed, can be switched on); enable = switch it on and clear any expiry that passed; delete = remove it, its children and value adds."`
 	}
 }
 
-// ManagedKeyAction disables, re-enables or deletes a minted key.
+// ManagedKeyAction disables, re-enables or deletes a key — configured or minted.
+//
+// A configured key's switch is the same statement as a minted one's: the entry
+// stays, with its budgets and patterns, and the caller answers 401 meanwhile.
+// The config path is used for it because that is where its entry lives.
 func (h *Handlers) ManagedKeyAction(ctx context.Context, in *ManagedKeyActionInput) (*DecisionOutput, error) {
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err
@@ -432,10 +484,24 @@ func (h *Handlers) ManagedKeyAction(ctx context.Context, in *ManagedKeyActionInp
 	}
 	switch in.Body.Action {
 	case "disable":
-		err = p.ExpireMintedKey(in.Body.Key)
+		err = p.SetKeyDisabled(in.Body.Key, true, h.configEditor(ctx))
 	case "enable":
-		err = p.ClearMintedKeyExpiry(in.Body.Key)
+		// A minted key's expiry may have PASSED, which is the other way it got
+		// switched off; clearing it is what "on" means for such a key.
+		err = p.SetKeyDisabled(in.Body.Key, false, h.configEditor(ctx))
+		if err == nil {
+			if _, minted := p.MintedKey(in.Body.Key); minted {
+				err = p.ClearMintedKeyExpiry(in.Body.Key)
+			}
+		}
 	case "delete":
+		// A configured key is not deleted from here: its entry is a line in the
+		// operator's config, and removing it would rewrite their file from a
+		// page that never showed them what else was in it. Switching it off is
+		// the reversible act this page offers; deleting is an edit.
+		if _, ok := h.config().Keys[in.Body.Key]; ok && !mintedExist(p, in.Body.Key) {
+			return nil, huma.Error400BadRequest("a configured key is deleted in the config; switch it off here instead")
+		}
 		err = p.DeleteMintedKey(in.Body.Key)
 	default:
 		err = errors.New("action: disable | enable | delete")
@@ -446,6 +512,14 @@ func (h *Handlers) ManagedKeyAction(ctx context.Context, in *ManagedKeyActionInp
 	out := &DecisionOutput{}
 	out.Body.OK = true
 	return out, nil
+}
+
+// mintedExist reports whether key has a runtime row of its own, which is what
+// makes it deletable (a configured key may also have been issued a row, and
+// then the row is what goes).
+func mintedExist(p *proxy.Proxy, key string) bool {
+	_, ok := p.MintedKey(key)
+	return ok
 }
 
 type ValueAddInput struct {

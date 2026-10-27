@@ -5,7 +5,6 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Chip,
   Dialog,
   DialogActions,
@@ -80,7 +79,16 @@ const RequestsDoc = graphql(/* GraphQL */ `
             purpose
             models
             group
-            credentials
+            credentials {
+              credential
+              limits {
+                req
+                usd
+                per
+                hard
+                model
+              }
+            }
             limits {
               req
               usd
@@ -107,7 +115,16 @@ const RequestsDoc = graphql(/* GraphQL */ `
             purpose
             models
             group
-            credentials
+            credentials {
+              credential
+              limits {
+                req
+                usd
+                per
+                hard
+                model
+              }
+            }
             limits {
               req
               usd
@@ -142,7 +159,16 @@ const RequestsDoc = graphql(/* GraphQL */ `
           parent
           label
           group
-          credentials
+          credentials {
+            credential
+            limits {
+              req
+              usd
+              per
+              hard
+              model
+            }
+          }
           mint
           limits {
             req
@@ -154,6 +180,7 @@ const RequestsDoc = graphql(/* GraphQL */ `
           created
           expires
           expired
+          disabled
           valueAdds {
             id
             key
@@ -223,6 +250,17 @@ const UpdateKeyDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const CreateKeyDoc = graphql(/* GraphQL */ `
+  mutation CreateKey($body: corrallm_CreateKeyInputBodyInput!) {
+    corrallm {
+      createKey(body: $body) {
+        ok
+        key
+      }
+    }
+  }
+`)
+
 const KeyActionDoc = graphql(/* GraphQL */ `
   mutation ManagedKeyAction($body: corrallm_ManagedKeyActionInputBodyInput!) {
     corrallm {
@@ -252,10 +290,12 @@ type Cred = Data['credentials'][number]
 // The editable form of a grant: the dialog's state.
 type Lim = { amount: string; unit: 'usd' | 'req'; per: string; hard: boolean; model: string }
 type TopUp = { usd: string; model: string; ttl: string; note: string }
+/** One allow pattern as the form edits it: a scope glob and its own budget. */
+type Pattern = { credential: string; limits: Lim[] }
 type Form = {
   label: string
   group: string
-  credentials: string[]
+  credentials: Pattern[]
   limits: Lim[]
   topUps: TopUp[]
   ttl: string
@@ -343,12 +383,31 @@ function proposedCreds(models: string[], creds: Cred[]): string[] {
   return creds.filter((c) => !c.open && (c.models ?? []).some((m) => models.includes(m))).map((c) => c.scope)
 }
 
+/** A grant's patterns as the form edits them. */
+function toPatterns(list: Key['credentials'] | Req['asked']['credentials'] | null | undefined): Pattern[] {
+  return (list ?? []).map((p) => ({ credential: p.credential, limits: (p.limits ?? []).map(toLim) }))
+}
+
+/** The form's patterns back to the wire; a pattern with no scope is dropped. */
+function fromPatterns(list: Pattern[]) {
+  return list
+    .filter((p) => p.credential.trim() !== '')
+    .map((p) => ({
+      credential: p.credential.trim(),
+      limits: p.limits
+        .filter((l) => l.amount.trim() !== '')
+        .map((l) => ({ per: l.per, hard: l.hard, model: l.model || undefined, ...(l.unit === 'usd' ? { usd: Number(l.amount) } : { req: Number(l.amount) }) })),
+    }))
+}
+
 function formFromRequest(r: Req, creds: Cred[]): Form {
   const a = r.asked
   return {
     label: a.label ?? '',
     group: a.group ?? '',
-    credentials: a.credentials?.length ? a.credentials : proposedCreds(a.models ?? [], creds),
+    credentials: a.credentials?.length
+      ? toPatterns(a.credentials)
+      : proposedCreds(a.models ?? [], creds).map((c) => ({ credential: c, limits: [] })),
     limits: (a.limits ?? []).map(toLim),
     topUps: (a.valueAdds ?? []).map((v) => ({ usd: String(v.usd), model: v.model ?? '', ttl: v.ttl ?? '', note: v.note ?? '' })),
     ttl: a.ttl ?? '',
@@ -358,14 +417,14 @@ function formFromRequest(r: Req, creds: Cred[]): Form {
 }
 
 function formFromKey(k: Key): Form {
-  return { label: k.label ?? '', group: k.group ?? '', credentials: k.credentials ?? [], limits: k.limits.map(toLim), topUps: [], ttl: '', mint: k.mint, reason: '' }
+  return { label: k.label ?? '', group: k.group ?? '', credentials: toPatterns(k.credentials), limits: k.limits.map(toLim), topUps: [], ttl: '', mint: k.mint, reason: '' }
 }
 
 function formToGrant(f: Form) {
   return {
     label: f.label.trim(),
     group: f.group,
-    credentials: f.credentials,
+    credentials: fromPatterns(f.credentials),
     limits: f.limits
       .filter((l) => l.amount.trim() !== '')
       .map((l) => ({ per: l.per, hard: l.hard, model: l.model || undefined, ...(l.unit === 'usd' ? { usd: Number(l.amount) } : { req: Number(l.amount) }) })),
@@ -671,7 +730,9 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
   const showLimits = !r.requesterKey || !!a.askedLimits
   const showTopUps = (a.valueAdds?.length ?? 0) > 0 || f.topUps.length > 0
   const showExpiry = !r.requesterKey || !!a.ttl || !!a.expires
-  const paid = d.credentials.filter((c) => f.credentials.includes(c.scope))
+  // The accounts its patterns name EXACTLY: a glob says "whatever matches", so
+  // it is reported by its pattern rather than expanded into a list here.
+  const paid = d.credentials.filter((c) => f.credentials.some((p) => p.credential === c.scope))
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="lg">
       <DialogTitle>
@@ -693,7 +754,11 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
               <Typography variant="body2">
                 {a.models?.length ? a.models.map((m) => modelName(m, d)).join(', ') : 'any model'}
                 {' · '}
-                {paid.length ? `paid account: ${paid.map((c) => c.provider).join(', ')}` : 'no paid account'}
+                {paid.length
+                  ? `paid account: ${paid.map((c) => c.provider).join(', ')}`
+                  : f.credentials.length
+                    ? `accounts: ${f.credentials.map((p) => p.credential || 'unnamed').join(', ')}`
+                    : 'any account'}
               </Typography>
             </Box>
           )}
@@ -730,9 +795,9 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
           {!existing && (
             <Box>
               <Button size="small" color="inherit" sx={{ px: 0 }} endIcon={more ? <ExpandLess /> : <ExpandMore />} onClick={() => setMore(!more)}>
-                More settings: name, priority, paid accounts, sub-keys
+                More settings: name, priority, accounts it may use, sub-keys
               </Button>
-              {more && <MoreSettings f={f} set={set} d={d} askedModels={a.models ?? []} />}
+              {more && <MoreSettings f={f} set={set} d={d} />}
             </Box>
           )}
           <TextField label="Note to the assistant (optional)" size="small" value={f.reason} onChange={(e) => set({ reason: e.target.value })} />
@@ -782,12 +847,6 @@ function KeyNow({ k, d }: { k: Key; d: Data }) {
 }
 
 function LimitsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
-  const setLim = (i: number, p: Partial<Lim>) => set({ limits: f.limits.map((l, j) => (j === i ? { ...l, ...p } : l)) })
-  // Only "how much" and "over what" show by default; the rest are rarely
-  // changed and said nothing at their defaults (stooges pass 4: five fields
-  // for one number). A row that is not at the defaults shows everything.
-  const [opened, setOpened] = useState<Set<number>>(new Set())
-  const full = (l: Lim, i: number) => opened.has(i) || l.unit !== 'usd' || !!l.model || !l.hard
   return (
     <Box>
       <Typography variant="subtitle2">Spending limits</Typography>
@@ -796,7 +855,43 @@ function LimitsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
           None: it may spend without limit.
         </Typography>
       )}
-      {f.limits.map((l, i) => (
+      <LimitRows limits={f.limits} setLimits={(limits) => set({ limits })} d={d} empty="" addLabel="Add a limit" />
+    </Box>
+  )
+}
+
+/**
+ * The rows of one limit list — a key's own, and each allow pattern's, which is
+ * the same question asked one level down.
+ *
+ * Only "how much" and "over what" show by default; the rest are rarely changed
+ * and said nothing at their defaults (stooges pass 4: five fields for one
+ * number). A row that is not at the defaults shows everything.
+ */
+function LimitRows({
+  limits,
+  setLimits,
+  d,
+  empty,
+  addLabel,
+}: {
+  limits: Lim[]
+  setLimits: (l: Lim[]) => void
+  d: Data
+  empty: string
+  addLabel: string
+}) {
+  const setLim = (i: number, p: Partial<Lim>) => setLimits(limits.map((l, j) => (j === i ? { ...l, ...p } : l)))
+  const [opened, setOpened] = useState<Set<number>>(new Set())
+  const full = (l: Lim, i: number) => opened.has(i) || l.unit !== 'usd' || !!l.model || !l.hard
+  return (
+    <Box>
+      {empty && limits.length === 0 && (
+        <Typography variant="body2" color="text.secondary">
+          {empty}
+        </Typography>
+      )}
+      {limits.map((l, i) => (
         <Stack key={i} direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, alignItems: 'flex-start', flexWrap: 'wrap' }}>
           <TextField label={l.unit === 'usd' ? 'Amount ($)' : 'Amount (requests)'} size="small" type="number" value={l.amount} onChange={(e) => setLim(i, { amount: e.target.value })} sx={{ width: 140 }} />
           {full(l, i) && (
@@ -833,13 +928,13 @@ function LimitsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
               Options
             </Button>
           )}
-          <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => set({ limits: f.limits.filter((_, j) => j !== i) })}>
+          <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => setLimits(limits.filter((_, j) => j !== i))}>
             Remove
           </Button>
         </Stack>
       ))}
-      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => set({ limits: [...f.limits, { amount: '', unit: 'usd', per: 'calendar-day', hard: true, model: '' }] })}>
-        Add a limit
+      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => setLimits([...limits, { amount: '', unit: 'usd', per: 'calendar-day', hard: true, model: '' }])}>
+        {addLabel}
       </Button>
     </Box>
   )
@@ -895,8 +990,78 @@ function TopUpRow({ v, set, remove, d }: { v: TopUp; set: (p: Partial<TopUp>) =>
   )
 }
 
-function MoreSettings({ f, set, d, askedModels }: { f: Form; set: (p: Partial<Form>) => void; d: Data; askedModels: string[] }) {
-  const restricted = d.credentials.filter((c) => !c.open)
+/**
+ * Accounts a key may use, as ALLOW PATTERNS: a credential scope or a glob over
+ * one, each with its own budget.
+ *
+ * A list rather than a checklist of the accounts this box happens to have,
+ * because the permission outlives them: `cred:fireworks/*` keeps working when an
+ * account is added, and a pattern naming an account that has gone is a row an
+ * operator can see and remove instead of a checkbox that vanished. When several
+ * patterns match one credential, the most specific wins and only its budget is
+ * charged — so a narrow budget can sit inside a wide permission.
+ */
+function PatternsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
+  const setPat = (i: number, p: Partial<Pattern>) => set({ credentials: f.credentials.map((x, j) => (j === i ? { ...x, ...p } : x)) })
+  const known = d.credentials.map((c) => c.scope)
+  return (
+    <Box>
+      <Typography variant="subtitle2">Accounts it may use</Typography>
+      {f.credentials.length === 0 && (
+        <Typography variant="body2" color="text.secondary">
+          Every account, with no limit of its own.
+        </Typography>
+      )}
+      {f.credentials.map((p, i) => (
+        <Box key={i} sx={{ mt: 1.5, p: 1.5, border: `1px solid ${C.border}`, borderRadius: 1 }}>
+          <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <TextField
+              label="Account"
+              placeholder="cred:fireworks/* or cred:fireworks/main"
+              size="small"
+              value={p.credential}
+              onChange={(e) => setPat(i, { credential: e.target.value })}
+              sx={{ minWidth: 300, flex: 1 }}
+              helperText={
+                known.includes(p.credential)
+                  ? 'One account'
+                  : p.credential.includes('*')
+                    ? 'Every account whose name matches'
+                    : 'No such account on this box — is it spelled right?'
+              }
+              slotProps={{
+                input: { sx: { fontFamily: 'monospace', fontSize: 13 } },
+                formHelperText: { sx: { mx: 0 } },
+              }}
+              error={p.credential.trim() !== '' && !p.credential.includes('*') && !known.includes(p.credential)}
+            />
+            <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => set({ credentials: f.credentials.filter((_, j) => j !== i) })}>
+              Remove
+            </Button>
+          </Stack>
+          <Box sx={{ mt: 1 }}>
+            <Typography variant="caption" color="text.secondary">
+              What it may spend on these accounts. When several patterns match one account the most
+              specific wins, and only its limit is counted.
+            </Typography>
+            <LimitRows
+              limits={p.limits}
+              setLimits={(limits) => setPat(i, { limits })}
+              d={d}
+              empty="No limit of its own."
+              addLabel="Add a limit to this account"
+            />
+          </Box>
+        </Box>
+      ))}
+      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => set({ credentials: [...f.credentials, { credential: '', limits: [] }] })}>
+        Add an account
+      </Button>
+    </Box>
+  )
+}
+
+function MoreSettings({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
   return (
     <Stack spacing={2} sx={{ mt: 1.5 }}>
       <Stack direction="row" spacing={2}>
@@ -910,31 +1075,7 @@ function MoreSettings({ f, set, d, askedModels }: { f: Form; set: (p: Partial<Fo
           ))}
         </TextField>
       </Stack>
-      {restricted.length > 0 && (
-        <Box>
-          <Typography variant="subtitle2">Paid accounts it may use</Typography>
-          {restricted.map((c) => (
-            <FormControlLabel
-              key={c.scope}
-              sx={{ display: 'flex' }}
-              control={
-                <Checkbox
-                  size="small"
-                  checked={f.credentials.includes(c.scope)}
-                  onChange={(e) => set({ credentials: e.target.checked ? [...f.credentials, c.scope] : f.credentials.filter((x) => x !== c.scope) })}
-                />
-              }
-              label={
-                <Typography variant="body2">
-                  {c.provider}
-                  {c.name !== 'default' ? ` (${c.name})` : ''}
-                  {(c.models ?? []).some((m) => askedModels.includes(m)) ? ' — needed for what it asked' : ''}
-                </Typography>
-              }
-            />
-          ))}
-        </Box>
-      )}
+      <PatternsEditor f={f} set={set} d={d} />
       <FormControlLabel control={<Switch checked={f.mint} onChange={(e) => set({ mint: e.target.checked })} />} label="May create its own sub-keys" />
     </Stack>
   )
@@ -942,6 +1083,7 @@ function MoreSettings({ f, set, d, askedModels }: { f: Form; set: (p: Partial<Fo
 
 function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
   const [showAll, setShowAll] = useState(false)
+  const [create, setCreate] = useState(false)
   // A configured key nobody set anything on here is not something handed out —
   // unless a request is waiting on it, when the owner needs to see it now.
   const managed = (k: Key) =>
@@ -955,12 +1097,17 @@ function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
     <Panel
       title="Keys"
       actions={
-        hidden > 0 && (
-          <FormControlLabel
-            control={<Switch size="small" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />}
-            label={<Typography variant="body2" color="text.secondary">{`Also show ${hidden} other configured key${hidden === 1 ? '' : 's'}`}</Typography>}
-          />
-        )
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+          {hidden > 0 && (
+            <FormControlLabel
+              control={<Switch size="small" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />}
+              label={<Typography variant="body2" color="text.secondary">{`Also show ${hidden} other configured key${hidden === 1 ? '' : 's'}`}</Typography>}
+            />
+          )}
+          <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={() => setCreate(true)}>
+            New key
+          </Button>
+        </Stack>
       }
       flush
     >
@@ -983,6 +1130,7 @@ function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
           </TableBody>
         </Table>
       </TableContainer>
+      {create && <CreateKeyDialog d={d} onClose={() => setCreate(false)} />}
     </Panel>
   )
 }
@@ -1039,14 +1187,19 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
   const configured = k.kind === 'configured'
   const who = configured ? 'set up in the config' : k.kind === 'child' && !nested ? `sub-key of ${k.parent}` : k.kind === 'child' ? 'sub-key' : ''
   const sp = spentLines(k, d)
+  // Off for two different reasons — an admin switched it off, or its expiry
+  // passed — and the switch is the same either way: one control to turn a key
+  // back on, whichever stopped it.
+  const off = k.disabled || k.expired
+  const stoppedBy = k.disabled ? 'switched off' : k.expired ? 'expired' : ''
   return (
-    <TableRow sx={{ opacity: k.expired ? 0.55 : 1, verticalAlign: 'top' }}>
+    <TableRow sx={{ opacity: off ? 0.55 : 1, verticalAlign: 'top' }}>
       <TableCell sx={{ minWidth: 220, pl: nested ? 4 : undefined }}>
         <Typography variant="body2" sx={{ fontWeight: 600 }}>
           {keyName(k)}
         </Typography>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', whiteSpace: 'nowrap' }}>
-          {[who, k.mint ? 'may create sub-keys' : ''].filter(Boolean).join(' · ')}
+          {[who, stoppedBy, k.mint ? 'may create sub-keys' : ''].filter(Boolean).join(' · ')}
         </Typography>
         {err && (
           <Typography variant="caption" color="error" sx={{ display: 'block' }}>
@@ -1055,18 +1208,12 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
         )}
       </TableCell>
       <TableCell>
-        {configured ? (
-          <Typography variant="body2" color="text.secondary">
-            on
-          </Typography>
-        ) : (
-          <Switch
-            size="small"
-            checked={!k.expired}
-            onChange={(e) => act.mutate(e.target.checked ? 'enable' : 'disable')}
-            slotProps={{ input: { 'aria-label': k.expired ? `Switch ${keyName(k)} on` : `Switch ${keyName(k)} off` } }}
-          />
-        )}
+        <Switch
+          size="small"
+          checked={!off}
+          onChange={(e) => act.mutate(e.target.checked ? 'enable' : 'disable')}
+          slotProps={{ input: { 'aria-label': off ? `Switch ${keyName(k)} on` : `Switch ${keyName(k)} off` } }}
+        />
       </TableCell>
       <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
         <Typography variant="body2" sx={{ color: sp.blocked ? C.error : undefined }}>
@@ -1122,7 +1269,7 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
               </MenuItem>
             ))}
           {configured ? (
-            <MenuItem disabled>Switch off or delete: edit the config (set up there)</MenuItem>
+            <MenuItem disabled>Delete: edit the config (set up there)</MenuItem>
           ) : (
             <MenuItem sx={{ color: C.error }} onClick={() => (setMenu(null), setConfirmDelete(true))}>
               Delete…
@@ -1137,7 +1284,7 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
         <DialogContent>
           <Typography variant="body2">
             The key stops working at once, and so do any sub-keys it made. Its top-ups are removed, and it cannot be brought back.
-            {k.expired ? '' : ' Switching it off stops it the same way but keeps it, and it can be switched on again.'}
+            {off ? '' : ' Switching it off stops it the same way but keeps it, and it can be switched on again.'}
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -1145,7 +1292,7 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
           <Button color="error" onClick={() => act.mutate('delete')} disabled={act.isPending}>
             Delete for good
           </Button>
-          {!k.expired && (
+          {!off && (
             <Button variant="contained" onClick={() => act.mutate('disable')} disabled={act.isPending}>
               Switch off instead
             </Button>
@@ -1188,7 +1335,7 @@ function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: ()
               sx={{ width: 260 }}
             />
           )}
-          {k.kind !== 'child' && <MoreSettings f={f} set={set} d={d} askedModels={[]} />}
+          {k.kind !== 'child' && <MoreSettings f={f} set={set} d={d} />}
         </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -1196,6 +1343,92 @@ function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: ()
         <Button variant="contained" onClick={() => save.mutate()} disabled={save.isPending || (!!f.ttl && !endsAt(f.ttl))}>
           Save
         </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
+/**
+ * Making a key, on the owner's own initiative rather than from a request.
+ *
+ * The form is the same one Approve uses — label, priority, accounts with their
+ * limits, a spending limit, an expiry — because a key made here and a key
+ * granted there are the same object; what differs is only which page you were
+ * on when you decided. The one deliberate difference is that the key is created
+ * SWITCHED OFF: a grant is an answer to someone waiting, while a key made here
+ * is usually destined for a machine that is not listening yet, and it should
+ * not be able to spend anything before its first caller is expected.
+ *
+ * The key is shown ONCE, and only once it is switched on: it is a bearer
+ * credential, and there is nowhere else to read it back.
+ */
+function CreateKeyDialog({ d, onClose }: { d: Data; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [f, setF] = useState<Form>({ label: '', group: '', credentials: [], limits: [], topUps: [], ttl: '', mint: false, reason: '' })
+  const [err, setErr] = useState('')
+  const [made, setMade] = useState('')
+  const set = (p: Partial<Form>) => setF((cur) => ({ ...cur, ...p }))
+  const create = useMutation({
+    mutationFn: () => gqlClient.request(CreateKeyDoc, { body: { key: { ...formToGrant(f), valueAdds: [], purpose: 'made by an admin' } } }),
+    onSuccess: (r) => {
+      setMade(r.corrallm?.createKey?.key ?? '')
+      void qc.invalidateQueries({ queryKey: ['requests'] })
+    },
+    onError: (e) => setErr(extractMessage(e)),
+  })
+  const line = costLine(f.limits, [], f.ttl, true)
+  return (
+    <Dialog open onClose={onClose} fullWidth maxWidth="lg">
+      <DialogTitle>{made ? 'Key made' : 'New key'}</DialogTitle>
+      <DialogContent>
+        {made ? (
+          <Stack spacing={2} sx={{ mt: 0.5 }}>
+            <Alert severity="warning">Copy it now: it is not shown again.</Alert>
+            <TextField value={made} size="small" fullWidth slotProps={{ input: { readOnly: true, sx: { fontFamily: 'monospace' } } }} />
+            <Typography variant="body2">
+              It is <b>switched off</b>. It answers 401 until you switch it on in the Keys table, which is
+              also where its spending is reported.
+            </Typography>
+          </Stack>
+        ) : (
+          <Stack spacing={2.5} sx={{ mt: 0.5 }}>
+            {err && <Alert severity="error">{err}</Alert>}
+            <Typography variant="body2" color={line.open ? C.warn : undefined} sx={{ fontWeight: 600 }}>
+              {line.text}
+            </Typography>
+            <MoreSettings f={f} set={set} d={d} />
+            <LimitsEditor f={f} set={set} d={d} />
+            <TextField
+              label="Key expires after"
+              placeholder="7d, 48h — empty: never"
+              size="small"
+              value={f.ttl}
+              onChange={(e) => set({ ttl: e.target.value })}
+              helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}` : 'Write it as 7d or 48h') : 'Never expires'}
+              error={!!f.ttl && !endsAt(f.ttl)}
+              slotProps={helperFlush}
+              sx={{ width: 260 }}
+            />
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        {made ? (
+          <Button variant="contained" onClick={onClose}>
+            Done
+          </Button>
+        ) : (
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="contained"
+              onClick={() => create.mutate()}
+              disabled={create.isPending || f.label.trim() === '' || (!!f.ttl && !endsAt(f.ttl))}
+            >
+              Make the key, switched off
+            </Button>
+          </>
+        )}
       </DialogActions>
     </Dialog>
   )

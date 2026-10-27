@@ -454,9 +454,11 @@ func writeKeys(ctx context.Context, tx querier, c *config.Config) error {
 			limits = string(b)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO config_key (key, group_name, allow, thinking, limits_json, mint) VALUES (?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO config_key (key, group_name, allow, thinking, limits_json, mint, disabled, credentials_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			k, c.Keys[k].Group, encodeAllow(c.Keys[k].Allow),
-			encodeThinking(c.Keys[k].Thinking), limits, boolInt(c.Keys[k].Mint)); err != nil {
+			encodeThinking(c.Keys[k].Thinking), limits, boolInt(c.Keys[k].Mint),
+			boolInt(c.Keys[k].Disabled), encodeKeyCredentials(c.Keys[k].Credentials)); err != nil {
 			return fmt.Errorf("write key: %w", err)
 		}
 	}
@@ -489,19 +491,20 @@ func decodeThinking(s string) *bool {
 }
 
 func readKeys(ctx context.Context, db querier, c *config.Config) error {
-	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, thinking, limits_json, mint FROM config_key`)
+	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, thinking, limits_json, mint, disabled, credentials_json FROM config_key`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	keys := map[string]config.KeyPolicy{}
 	for rows.Next() {
-		var k, g, allow, thinking, limits string
-		var mint int
-		if err := rows.Scan(&k, &g, &allow, &thinking, &limits, &mint); err != nil {
+		var k, g, allow, thinking, limits, creds string
+		var mint, disabled int
+		if err := rows.Scan(&k, &g, &allow, &thinking, &limits, &mint, &disabled, &creds); err != nil {
 			return err
 		}
-		kp := config.KeyPolicy{Group: g, Allow: decodeAllow(allow), Thinking: decodeThinking(thinking), Mint: mint != 0}
+		kp := config.KeyPolicy{Group: g, Allow: decodeAllow(allow), Thinking: decodeThinking(thinking),
+			Mint: mint != 0, Disabled: disabled != 0, Credentials: decodeKeyCredentials(creds)}
 		if limits != "" {
 			var ls []config.Limit
 			if err := json.Unmarshal([]byte(limits), &ls); err != nil {
@@ -796,6 +799,40 @@ func readProviders(ctx context.Context, db querier, c *config.Config) error {
 		c.Extensions[xname] = x
 	}
 	return rows.Err()
+}
+
+// encodeKeyCredentials renders a key's allow patterns (P63) as JSON, sorted by
+// pattern for the same reason encodeAllow sorts: the revision history diffs
+// these rows, so an unordered list would show a change on every save.
+func encodeKeyCredentials(in []config.KeyCredential) string {
+	if len(in) == 0 {
+		return ""
+	}
+	sorted := append([]config.KeyCredential(nil), in...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Credential < sorted[j].Credential })
+	b, err := json.Marshal(sorted)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// decodeKeyCredentials reads it back. An unparseable value is NO patterns, which
+// is every credential allowed — the pre-patterns behaviour. Failing OPEN is the
+// right direction here and the opposite of decodeAllow's: a pattern list is a
+// restriction, and a key that silently keeps every credential it already had is
+// the status quo, while one left with an empty-than-intended list is locked out
+// of upstreams nobody meant to take away. Validate refuses a malformed list on
+// the next load, so this only ever papers over a corrupt row for one boot.
+func decodeKeyCredentials(s string) []config.KeyCredential {
+	if s == "" {
+		return nil
+	}
+	var out []config.KeyCredential
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // encodeAllow renders a key's permitted escalations as a JSON array, sorted so

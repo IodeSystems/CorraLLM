@@ -2115,6 +2115,12 @@ type Caller struct {
 	// credential allowlists — it runs under. Key stays the child, so its
 	// requests are recorded and charged as its own.
 	Parent string
+	// Disabled is true when the policy this caller runs under says it is
+	// switched off. It carries the PARENT's answer for a child key: a child
+	// runs as its parent, so switching the parent off stops everything it
+	// minted, which is the only reading that cannot be worked around by
+	// minting another key.
+	Disabled bool
 }
 
 // PolicyKey is the key whose configured policy applies: the parent for a
@@ -2192,6 +2198,7 @@ func (c *Config) ResolveCaller(cred string) Caller {
 
 // resolvePolicy fills cr's group from the policy it runs under.
 func (c *Config) resolvePolicy(cr Caller, pol KeyPolicy) Caller {
+	cr.Disabled = pol.Disabled
 	cr.GroupName = pol.Group
 	if cr.GroupName == "" {
 		cr.GroupName = c.UnknownKeys.FallbackGroup()
@@ -2878,6 +2885,13 @@ func (c *Config) Validate() error {
 		if len(pol.Allow) > 0 && strings.Contains(key, GroupSeparator) {
 			return fmt.Errorf("key %q contains %q, so it cannot use the `key:group` form; "+
 				"rename the key or drop its escalations", key, GroupSeparator)
+		}
+		// Allow patterns (keycred.go). Checked here rather than only at the API
+		// so a hand-edited config fails at load: a pattern keeps the key off
+		// every credential it does not match, so a typo in one is a lockout,
+		// and finding it while the file is open beats finding it as a 403.
+		if err := ValidateKeyCredentials(pol.Credentials); err != nil {
+			return fmt.Errorf("key %q: %w", key, err)
 		}
 	}
 	if err := c.validateTools(); err != nil {
