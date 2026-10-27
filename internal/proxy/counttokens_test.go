@@ -129,69 +129,32 @@ func TestCountTokensMatchesAGlobTemplate(t *testing.T) {
 	}
 }
 
-// TestCountTokensRefusesALocalBackend — a llama.cpp backend has no such route,
-// and the caller's fix is a different URL, not a different model. A blank 404
-// sends them looking for the model instead.
-func TestCountTokensRefusesALocalBackend(t *testing.T) {
-	// A locally-spawned backend DOES have a proxy target — a loopback port is how
-	// corrallm reaches the llama.cpp process it started. The first version of
-	// this fixture used an empty Model, so "has a proxy target" looked like a
-	// valid discriminator and the test passed while the live route 502'd.
+// TestCountTokensEstimatesWhatAnthropicDoesNotServe — a local backend, a
+// proxy pointing at this box, and a lane have no count_tokens route (a lane's
+// members do not even share a tokenizer). Claude Code calls it anyway, so each
+// gets an estimate, marked as one so it cannot pass for a tokenizer's count.
+func TestCountTokensEstimatesWhatAnthropicDoesNotServe(t *testing.T) {
 	p := countTokensProxy(t, map[string]config.Model{
+		// A locally-spawned backend DOES have a proxy target — a loopback port
+		// is how corrallm reaches the llama.cpp process it started.
 		"Qwen3-6-27B-MPT": {Proxy: proxyNode(t, "127.0.0.1", 5800)},
+		"local-alias":     {Proxy: proxyNode(t, "localhost", 5801)},
 	})
-	rec := httptest.NewRecorder()
-	body := `{"model":"Qwen3-6-27B-MPT","messages":[]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
-	p.handleCountTokens(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status %d, want 404", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "/upstream/Qwen3-6-27B-MPT/tokenize") {
-		t.Errorf("refusal must name the route that does work here, got: %s", rec.Body.String())
-	}
-}
-
-// TestCountTokensRefusesAProxyPointingAtThisBox — the subtle half of the same
-// rule. A pure-proxy model with no cmd of its own can still point at a LOCAL
-// port another model spawns; it holds no residency but it is not a remote
-// provider, and it cannot answer count_tokens either.
-func TestCountTokensRefusesAProxyPointingAtThisBox(t *testing.T) {
-	p := countTokensProxy(t, map[string]config.Model{
-		"local-alias": {Proxy: proxyNode(t, "localhost", 5801)},
-	})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens",
-		strings.NewReader(`{"model":"local-alias","messages":[]}`))
-	p.handleCountTokens(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status %d, want 404 for a loopback target", rec.Code)
-	}
-}
-
-// TestCountTokensRefusesALane — a token count belongs to one tokenizer.
-// Answering off a lane's first member attributes a count to a model the caller
-// never named, and it would look exactly like a correct answer.
-func TestCountTokensRefusesALane(t *testing.T) {
-	p := &Proxy{}
-	p.SetConfig(&config.Config{
-		Models: map[string]config.Model{"a": {}, "b": {}},
-		Lanes: map[string]config.Lane{
-			"chat": {Members: []config.LaneMember{{Model: "a"}, {Model: "b"}}},
-		},
-	})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens",
-		strings.NewReader(`{"model":"chat","messages":[]}`))
-	p.handleCountTokens(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status %d, want 400 for a lane", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "not a lane") {
-		t.Errorf("refusal should say why, got: %s", rec.Body.String())
+	cfg := *p.config()
+	cfg.Lanes = map[string]config.Lane{"chat": {Members: []config.LaneMember{{Model: "Qwen3-6-27B-MPT"}, {Model: "local-alias"}}}}
+	p.SetConfig(&cfg)
+	for _, model := range []string{"Qwen3-6-27B-MPT", "local-alias", "chat"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens",
+			strings.NewReader(`{"model":"`+model+`","system":"12345678","messages":[{"role":"user","content":"hi"}]}`))
+		p.handleCountTokens(rec, req)
+		var out struct {
+			InputTokens int  `json:"input_tokens"`
+			Estimated   bool `json:"estimated"`
+		}
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.InputTokens <= 0 || !out.Estimated {
+			t.Errorf("%s: %d %s, want 200 with an estimate marked estimated", model, rec.Code, rec.Body)
+		}
 	}
 }
 

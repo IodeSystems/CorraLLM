@@ -648,6 +648,9 @@ func (p *Proxy) Mount(mux interface {
 	// mounted outside handleInference so it never takes an admission slot. See
 	// handleCountTokens.
 	mux.Handle("/v1/messages/count_tokens", http.HandlerFunc(p.handleCountTokens))
+	// /v1/messages: Anthropic's Messages API in front of every model, through
+	// the inference walk (messages.go).
+	mux.Handle("/v1/messages", http.HandlerFunc(p.handleMessages))
 	// /v1/tokenize, /v1/detokenize: vLLM's and llama.cpp's shapes, untracked
 	// for the same reason (tokenize.go). Also at the root, where vLLM has them.
 	for _, pre := range []string{"/v1", ""} {
@@ -1309,6 +1312,24 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}
 			outBody = ab
 		}
+		// /v1/messages (messages.go): an Anthropic backend gets the body as
+		// sent, every other backend gets it translated to chat completions.
+		messages := r.URL.Path == "/v1/messages"
+		nativeMessages := messages && pr.Target != nil && pr.Target.API == config.APIAnthropic
+		if nativeMessages {
+			outBody = stripCorrallmThinking(outBody)
+		} else if messages {
+			ob, terr := anthropicToOpenAI(outBody)
+			if terr != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid_request_error", terr.Error())
+				p.logReq(r, store.Activity{Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path,
+					Status: http.StatusBadRequest, DwellMS: time.Since(start).Milliseconds(),
+					QueuedMS: queuedMS, LoadMS: loadMS, Error: "messages translation: " + terr.Error(), ReqBody: reqBody,
+					InflightID: takeMarker()})
+				return
+			}
+			outBody = ob
+		}
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
 		p.markInflight(live, inflightStreaming, name)
@@ -1351,7 +1372,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// The caller's copy of usage gets corrallm's figure (costinject.go).
 		// Text routes only: image and audio replies carry no usage object.
 		var cw *costWriter
-		if !image && !audio {
+		// Not on /v1/messages: Anthropic's usage objects are not OpenAI's, and
+		// its clients do not read a cost.
+		if !image && !audio && !messages {
 			cw = &costWriter{ResponseWriter: out, price: func(u usage) (float64, string) {
 				return p.replyCost(backend, u, loadCost)
 			}}
@@ -1414,8 +1437,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			if remote && isHardFail(resp.StatusCode) {
 				p.noteRefusal(name, resp.StatusCode) // paid key: alert, no spill
 			}
-			if remote && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) {
+			if remote && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable ||
+				resp.StatusCode == statusOverloaded) {
 				upstreamRefusal = resp.StatusCode
+				anthropicResetAsRetryAfter(resp.Header)
 				fallback := 15 * time.Second // 503: load shedding, usually brief
 				if resp.StatusCode == http.StatusTooManyRequests {
 					fallback = time.Minute
@@ -1462,6 +1487,16 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			dst = aw
 			u := *upReq.URL
 			u.Path, u.RawPath = "/v1/messages", ""
+			upReq.URL = &u
+		}
+		var mw *messagesWriter
+		if nativeMessages {
+			upReq = upReq.WithContext(context.WithValue(upReq.Context(), nativeMessagesKey{}, true))
+		} else if messages {
+			mw = newMessagesWriter(sc, served)
+			dst = mw
+			u := *upReq.URL
+			u.Path, u.RawPath = "/v1/chat/completions", ""
 			upReq.URL = &u
 		}
 		aborted := serveCatchingAbort(rp, dst, upReq)
@@ -1541,6 +1576,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// promises whether or not the backend sent one.
 		if aw != nil {
 			aw.finish()
+		}
+		if mw != nil {
+			mw.finish()
 		}
 		// After the shim, whose finish writes the translated body through it.
 		if cw != nil {
@@ -2733,9 +2771,8 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	newReverseProxy(pr.Target).ServeHTTP(w, r)
 }
 
-// handleCountTokens proxies POST /v1/messages/count_tokens to a proxied
-// provider that answers it — today that is Anthropic, behind the `claude`
-// extension.
+// handleCountTokens answers POST /v1/messages/count_tokens (Anthropic's shape;
+// Claude Code calls it).
 //
 // UNTRACKED, and that is the design. Counting tokens runs no inference, holds no
 // GPU, and costs nothing; putting it through handleInference would make it take
@@ -2744,10 +2781,10 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 // backlog it was trying to measure against. Same reasoning that makes
 // handleUpstream untracked.
 //
-// PROXY-ONLY, on purpose. A local llama.cpp backend has no such route — its
-// equivalent is /upstream/<model>/tokenize, which counts a raw string. The
-// refusal says so rather than 404ing blankly, because the two are easy to
-// confuse and the fix is a different URL, not a different model.
+// A model Anthropic serves (`api: anthropic`) gets the request forwarded, with
+// the caller's own credential under callerAuth. Any other model, and a lane,
+// gets an estimate (messages.go): a lane's members have different
+// tokenizers, and Claude Code only needs the size roughly.
 //
 // The model is resolved through ResolveServed, so a glob template
 // (`claude-haiku-*`) matches the concrete dated id a caller asks for. The body
@@ -2757,56 +2794,44 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 // dated variant.
 func (p *Proxy) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAnthropicError(w, http.StatusMethodNotAllowed, "use POST")
 		return
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
 	if err != nil {
-		http.Error(w, "unreadable body", http.StatusBadRequest)
+		writeAnthropicError(w, http.StatusBadRequest, "unreadable body")
 		return
 	}
 	var req struct {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil || strings.TrimSpace(req.Model) == "" {
-		http.Error(w, `body must be JSON with a "model" field`, http.StatusBadRequest)
+		writeAnthropicError(w, http.StatusBadRequest, `body must be JSON with a "model" field`)
 		return
 	}
 	cands, ok := p.config().ResolveServed(req.Model)
 	if !ok || len(cands) == 0 {
-		writeJSONError(w, http.StatusNotFound, "invalid_request_error", p.noSuchModel(req.Model))
+		writeAnthropicError(w, http.StatusNotFound, p.noSuchModel(req.Model))
 		return
 	}
-	// A lane resolves to several candidates; token counts are a property of one
-	// tokenizer, so answering off the lane's first member would attribute a
-	// count to a model the caller never named. Require a concrete model.
-	if len(cands) > 1 {
-		http.Error(w, "count_tokens needs a model, not a lane: "+req.Model+
-			" resolves to "+strconv.Itoa(len(cands))+" members with different tokenizers",
-			http.StatusBadRequest)
-		return
+	var target *config.ProxyTarget
+	if len(cands) == 1 && isRemote(cands[0].Model) {
+		if t, err := cands[0].Model.ProxyTarget(); err == nil && t != nil && t.URL != nil {
+			target = t
+		}
 	}
-	// Remote() is the predicate, NOT "has a proxy target". Every locally-spawned
-	// backend also has one — a loopback address is how corrallm reaches the
-	// llama.cpp process it started — so testing for a target merely forwards
-	// this to a local server that has no such route, and the caller gets a 502
-	// from a dead port instead of an answer. Remote() means no local process AND
-	// a non-loopback host: a provider we do not run, which is the only kind that
-	// can answer this.
-	if !cands[0].Model.Remote() {
-		http.Error(w, "model "+req.Model+" is served locally, and a local backend has no "+
-			"count_tokens route; use POST /upstream/"+req.Model+"/tokenize to count a raw string",
-			http.StatusNotFound)
-		return
-	}
-	target, err := cands[0].Model.ProxyTarget()
-	if err != nil || target == nil || target.URL == nil {
-		http.Error(w, "model "+req.Model+" has no reachable proxy target", http.StatusNotFound)
+	if target == nil {
+		// "estimated" marks it: a count from no tokenizer must not pass for one.
+		jsonResp(w, http.StatusOK, map[string]any{"input_tokens": estimateAnthropicTokens(body), "estimated": true})
 		return
 	}
 	if target.Model != "" {
 		body = rewriteModelField(body, target.Model)
 	}
+	if k := r.Header.Get("X-Api-Key"); k != "" && r.Header.Get("X-Corrallm-Key") == "" && r.Header.Get("Authorization") == "" {
+		r.Header.Del("X-Api-Key") // corrallm's key, not Anthropic's
+	}
+	r = r.WithContext(context.WithValue(r.Context(), nativeMessagesKey{}, true))
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	newReverseProxy(target).ServeHTTP(w, r)
@@ -3135,6 +3160,8 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 					"receive {\"type\":\"conversation.item.input_audio_transcription.completed\",\"transcript\":\"...\"}",
 				},
 			}},
+		{"/v1/messages", "POST", "chat", txtImg, txt, "Anthropic Messages API (streamed or not) in front of every chat model: point Claude Code at this base URL (ANTHROPIC_BASE_URL) and set ANTHROPIC_MODEL / ANTHROPIC_SMALL_FAST_MODEL to a model or lane here — unknown claude-* names are 404. A model whose proxy is `api: anthropic` gets the request as sent; any other model gets it translated to chat completions and back (tools, tool results, images, thinking). A lane [claude, local] serves Claude until Anthropic refuses (429/503/529), then the same request goes to the next member. Send your key as x-api-key or Authorization: Bearer; with a Claude subscription (proxy callerAuth: true) send the corrallm key in X-Corrallm-Key (ANTHROPIC_CUSTOM_HEADERS) so the sign-in token goes to Anthropic. POST /v1/messages/count_tokens: forwarded for an Anthropic model, else an estimate marked \"estimated\": true.", byCap["chat"], true,
+			jsonExample("/v1/messages", map[string]any{"model": chatM, "max_tokens": 256, "messages": []map[string]string{{"role": "user", "content": "Hello"}}})},
 		{"/v1/tokenize", "POST", "meta", txt, nil, "Count and list the tokens of a prompt. vLLM shape {model, prompt | messages} → {count, max_model_len, tokens}; messages are rendered through the model's chat template first. llama.cpp shape {model, content} → llama.cpp's reply. A local model answers from its own tokenizer and is loaded if needed; a remote model gets an estimate (characters/4) marked \"estimated\": true, with no token ids. POST /v1/detokenize {model, tokens} → {prompt, content} (local models only). A lane is refused: name one model.", nil, false,
 			jsonExample("/v1/tokenize", map[string]any{"model": chatM, "messages": []map[string]string{{"role": "user", "content": "Hello"}}})},
 		{"/v1/models", "GET", "meta", nil, nil, "OpenAI model catalog enriched with corrallm metadata (state, modality, types, context length).", nil, false,
@@ -3491,12 +3518,31 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 			// upstream provider, and on a provider with no key configured (or
 			// one using authTokenCommand) it went out AS the credential. A
 			// backend that needs auth gets it from its configured headers.
-			req.Header.Del("Authorization")
+			//
+			// The one exception is callerAuth (/v1/messages passthrough, a
+			// Claude Code signed in to a subscription): the caller's
+			// Authorization / x-api-key is ITS Anthropic credential, forwarded
+			// only when the caller named its corrallm key separately in
+			// X-Corrallm-Key, so a corrallm key can never be the one sent.
+			callerCred := t.CallerAuth && t.API == config.APIAnthropic &&
+				req.Header.Get("X-Corrallm-Key") != "" && req.Context().Value(nativeMessagesKey{}) != nil
+			if !callerCred {
+				req.Header.Del("Authorization")
+				req.Header.Del("X-Api-Key")
+			}
 			req.Header.Del("X-Corrallm-Key")
 			if t.API == config.APIAnthropic {
-				// Required on every Messages call. A default only: a version
-				// pinned in the config's headers overwrites it just below.
-				req.Header.Set("anthropic-version", anthropicVersion)
+				// Required on every Messages call. A default only: the caller's
+				// own (passthrough), then a version pinned in the config's
+				// headers, overwrite it.
+				if req.Header.Get("anthropic-version") == "" {
+					req.Header.Set("anthropic-version", anthropicVersion)
+				}
+			} else {
+				// A /v1/messages request translated for an OpenAI upstream:
+				// Anthropic's headers mean nothing there.
+				req.Header.Del("anthropic-version")
+				req.Header.Del("anthropic-beta")
 			}
 			for k, v := range t.Headers {
 				req.Header.Set(k, v)
@@ -3699,6 +3745,9 @@ func extractUsage(buf []byte, streaming bool) usage {
 	if len(buf) == 0 {
 		return usage{}
 	}
+	if u, _, ok := anthropicReplyUsage(buf, streaming); ok {
+		return u
+	}
 	if !streaming {
 		var r struct {
 			Usage   usage   `json:"usage"`
@@ -3744,6 +3793,9 @@ func extractUsage(buf []byte, streaming bool) usage {
 func extractFinishReason(buf []byte, streaming bool) string {
 	if len(buf) == 0 {
 		return ""
+	}
+	if _, stop, ok := anthropicReplyUsage(buf, streaming); ok {
+		return stop
 	}
 	type choice struct {
 		FinishReason string `json:"finish_reason"`

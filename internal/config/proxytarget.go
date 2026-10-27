@@ -52,6 +52,13 @@ type ProxyTarget struct {
 	// default, cheapest write) or "1h" (pricier write, survives a long pause
 	// between turns). Refused for any other API.
 	CacheTTL string
+
+	// CallerAuth forwards the CALLER's own Anthropic credential instead of one
+	// configured here: a Claude Code signed in to a Claude subscription sends
+	// its sign-in token, and corrallm passes it on. The caller then names its
+	// corrallm key in X-Corrallm-Key, so the two are never confused. Only with
+	// api: anthropic, and only on /v1/messages (the native passthrough).
+	CallerAuth bool
 }
 
 // API dialects a proxy target may speak. See ProxyTarget.API.
@@ -64,7 +71,7 @@ const (
 // refused rather than treated as the default: `api: antropic` silently
 // forwarding OpenAI bodies would look like it worked and lose the caching it
 // was written to get.
-func validateAPI(api, ttl string) error {
+func validateAPI(api, ttl string, callerAuth bool) error {
 	switch api {
 	case "", APIOpenAI, APIAnthropic:
 	default:
@@ -78,6 +85,9 @@ func validateAPI(api, ttl string) error {
 	if ttl != "" && api != APIAnthropic {
 		return fmt.Errorf("proxy cacheTTL is only meaningful with api: %s", APIAnthropic)
 	}
+	if callerAuth && api != APIAnthropic {
+		return fmt.Errorf("proxy callerAuth is only meaningful with api: %s", APIAnthropic)
+	}
 	return nil
 }
 
@@ -88,13 +98,14 @@ func ValidateProxyAPI(n yaml.Node) error {
 		return nil
 	}
 	var o struct {
-		API      string `yaml:"api"`
-		CacheTTL string `yaml:"cacheTTL"`
+		API        string `yaml:"api"`
+		CacheTTL   string `yaml:"cacheTTL"`
+		CallerAuth bool   `yaml:"callerAuth"`
 	}
 	if err := n.Decode(&o); err != nil {
 		return nil // shape errors are proxyTarget's to report
 	}
-	return validateAPI(o.API, o.CacheTTL)
+	return validateAPI(o.API, o.CacheTTL, o.CallerAuth)
 }
 
 // BaseURLString is the full prefix a caller should hang a path off: the target
@@ -123,6 +134,7 @@ type proxyObj struct {
 	AuthTokenCommand string            `yaml:"authTokenCommand"`
 	API              string            `yaml:"api"`
 	CacheTTL         string            `yaml:"cacheTTL"`
+	CallerAuth       bool              `yaml:"callerAuth"`
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -184,10 +196,10 @@ func (m Model) proxyTarget() (*ProxyTarget, error) {
 		t.BasePath = normalizeBasePath(o.BasePath)
 		t.Model = o.Model
 		t.AuthTokenCommand = o.AuthTokenCommand
-		if err := validateAPI(o.API, o.CacheTTL); err != nil {
+		if err := validateAPI(o.API, o.CacheTTL, o.CallerAuth); err != nil {
 			return nil, err
 		}
-		t.API, t.CacheTTL = o.API, o.CacheTTL
+		t.API, t.CacheTTL, t.CallerAuth = o.API, o.CacheTTL, o.CallerAuth
 		return t, nil
 	default:
 		return nil, fmt.Errorf("unsupported proxy target kind %d", n.Kind)
