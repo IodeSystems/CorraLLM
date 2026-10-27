@@ -648,6 +648,12 @@ func (p *Proxy) Mount(mux interface {
 	// mounted outside handleInference so it never takes an admission slot. See
 	// handleCountTokens.
 	mux.Handle("/v1/messages/count_tokens", http.HandlerFunc(p.handleCountTokens))
+	// /v1/tokenize, /v1/detokenize: vLLM's and llama.cpp's shapes, untracked
+	// for the same reason (tokenize.go). Also at the root, where vLLM has them.
+	for _, pre := range []string{"/v1", ""} {
+		mux.Handle(pre+"/tokenize", http.HandlerFunc(p.handleTokenize))
+		mux.Handle(pre+"/detokenize", http.HandlerFunc(p.handleDetokenize))
+	}
 	// /v1/capabilities is a public, self-describing manifest (endpoints + models by
 	// capability + lanes + examples) — point an LLM/client at it to build a
 	// compatible client. Synthesized from config; never exposes API keys.
@@ -3129,6 +3135,8 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 					"receive {\"type\":\"conversation.item.input_audio_transcription.completed\",\"transcript\":\"...\"}",
 				},
 			}},
+		{"/v1/tokenize", "POST", "meta", txt, nil, "Count and list the tokens of a prompt. vLLM shape {model, prompt | messages} → {count, max_model_len, tokens}; messages are rendered through the model's chat template first. llama.cpp shape {model, content} → llama.cpp's reply. A local model answers from its own tokenizer and is loaded if needed; a remote model gets an estimate (characters/4) marked \"estimated\": true, with no token ids. POST /v1/detokenize {model, tokens} → {prompt, content} (local models only). A lane is refused: name one model.", nil, false,
+			jsonExample("/v1/tokenize", map[string]any{"model": chatM, "messages": []map[string]string{{"role": "user", "content": "Hello"}}})},
 		{"/v1/models", "GET", "meta", nil, nil, "OpenAI model catalog enriched with corrallm metadata (state, modality, types, context length).", nil, false,
 			map[string]any{"curl": fmt.Sprintf("curl -sS %s/v1/models", base)}},
 		{"/v1/capabilities", "GET", "meta", nil, nil, "This manifest.", nil, false,
