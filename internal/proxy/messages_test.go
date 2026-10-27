@@ -237,13 +237,20 @@ func TestMessagesPassesThroughToClaude(t *testing.T) {
 
 // Out of Claude: a 429 moves the same request to the next lane member,
 // translated, and the reset keeps Claude cooled for the following requests.
+// Through a template lane, so Claude Code needs no model settings.
 func TestMessagesFallsBackWhenClaudeIsSpent(t *testing.T) {
 	treatAsRemote(t)
 	claudeHits := 0
 	var mu sync.Mutex
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var sentModel string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&b)
 		mu.Lock()
 		claudeHits++
+		sentModel = b.Model
 		mu.Unlock()
 		w.Header().Set("anthropic-ratelimit-unified-reset", strconv.FormatInt(time.Now().Add(3*time.Hour).Unix(), 10))
 		w.Header().Set("Content-Type", "application/json")
@@ -253,18 +260,22 @@ func TestMessagesFallsBackWhenClaudeIsSpent(t *testing.T) {
 	t.Cleanup(up.Close)
 	f := newFakeOpenAIChat(t)
 	h, _ := refusalRig(t, map[string]config.Model{
-		"claude": claudeModel(t, up.URL, "callerAuth: true\n"),
-		"chat":   modelTo(t, f.srv.URL, "chat"),
-	}, map[string]config.Lane{"cc": {Members: []config.LaneMember{{Model: "claude"}, {Model: "chat"}}}})
+		"claude-sub-*": claudeModel(t, up.URL, "callerAuth: true\n"),
+		"chat":         modelTo(t, f.srv.URL, "chat"),
+	}, map[string]config.Lane{"claude-*": {Members: []config.LaneMember{{Model: "claude-sub-*"}, {Model: "chat"}}}})
 
 	for i := range 2 {
-		rec := postMessages(h, fmt.Sprintf(claudeCodeBody, "cc", false), map[string]string{"X-Corrallm-Key": "k", "Authorization": "Bearer sub"})
+		rec := postMessages(h, fmt.Sprintf(claudeCodeBody, "claude-opus-5-5", false), map[string]string{"X-Corrallm-Key": "k", "Authorization": "Bearer sub"})
 		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"type":"message"`) {
 			t.Fatalf("request %d: %d %s", i, rec.Code, rec.Body)
 		}
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	// Claude Code's own model name, through the template lane, unchanged.
+	if sentModel != "claude-opus-5-5" {
+		t.Errorf("Anthropic got model %q, want the id the caller sent", sentModel)
+	}
 	if claudeHits != 1 || f.hits != 2 {
 		t.Errorf("claude hits %d, fallback hits %d: want 1 and 2 (Claude cooled after its 429)", claudeHits, f.hits)
 	}

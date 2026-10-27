@@ -1524,34 +1524,47 @@ func (c *Config) expandCredentials(in []Candidate) []Candidate {
 // next one exactly as it would if that rung had never been written down, which
 // is the point of taking something out of the setup. A model named DIRECTLY
 // resolves to nothing — see DisabledServed for the answer a caller gets.
+// laneCandidates is a lane's ladder. laneName is the lane's key; requested is
+// the name the caller sent, which differs from it only for a template lane.
+func (c *Config) laneCandidates(laneName string, lane Lane, requested string) ([]Candidate, bool) {
+	cands := make([]Candidate, 0, len(lane.Members))
+	for _, mem := range lane.Members {
+		if mem.IsSelector() {
+			// Explicit members keep their exact declared position; a
+			// selector expands in place, so the two forms compose in one
+			// ordered ladder rather than competing.
+			cands = append(cands, c.selectorMembers(mem)...)
+			continue
+		}
+		m, ok := c.Models[mem.Model]
+		if !ok || m.Disabled {
+			continue
+		}
+		name := mem.Model
+		// In a template lane, a template member serves the id the caller
+		// asked for: `claude-*` → [claude-sub-*, chat] sends claude-opus-5-5
+		// to Anthropic as claude-opus-5-5.
+		if requested != laneName && strings.Contains(name, "*") {
+			name = requested
+		}
+		cands = append(cands, Candidate{Name: name, Model: m, Sticky: mem.Sticky})
+	}
+	// Models placed INTO this lane by a selection join after its declared
+	// members, at the priority chosen when they were placed. Declared
+	// membership is an operator's explicit ladder and keeps the front of
+	// it; a selection is a later, per-model addition rather than a
+	// reordering of what was written down.
+	cands = append(cands, c.selectedLaneMembers(laneName)...)
+	// A virtual extension's pool joins the same way, at the priority the
+	// pool declares. This is what makes `model: "free"` mean "try the free
+	// tier" rather than naming one provider's model.
+	cands = append(cands, c.virtualLaneMembers(laneName)...)
+	return c.expandCredentials(cands), len(cands) > 0
+}
+
 func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 	if lane, ok := c.Lanes[served]; ok {
-		cands := make([]Candidate, 0, len(lane.Members))
-		for _, mem := range lane.Members {
-			if mem.IsSelector() {
-				// Explicit members keep their exact declared position; a
-				// selector expands in place, so the two forms compose in one
-				// ordered ladder rather than competing.
-				cands = append(cands, c.selectorMembers(mem)...)
-				continue
-			}
-			m, ok := c.Models[mem.Model]
-			if !ok || m.Disabled {
-				continue
-			}
-			cands = append(cands, Candidate{Name: mem.Model, Model: m, Sticky: mem.Sticky})
-		}
-		// Models placed INTO this lane by a selection join after its declared
-		// members, at the priority chosen when they were placed. Declared
-		// membership is an operator's explicit ladder and keeps the front of
-		// it; a selection is a later, per-model addition rather than a
-		// reordering of what was written down.
-		cands = append(cands, c.selectedLaneMembers(served)...)
-		// A virtual extension's pool joins the same way, at the priority the
-		// pool declares. This is what makes `model: "free"` mean "try the free
-		// tier" rather than naming one provider's model.
-		cands = append(cands, c.virtualLaneMembers(served)...)
-		return c.expandCredentials(cands), len(cands) > 0
+		return c.laneCandidates(served, lane, served)
 	}
 	if m, ok := c.Models[served]; ok {
 		if m.Disabled {
@@ -1594,6 +1607,23 @@ func (c *Config) ResolveServed(served string) ([]Candidate, bool) {
 			return nil, false
 		}
 		return c.expandCredentials([]Candidate{{Name: served, Model: dm}}), true
+	}
+	// Template lanes: a lane key containing '*' is a glob pattern, checked
+	// before template models — a lane is the more deliberate statement (a
+	// ladder, not one forwarding rule). This is what lets Claude Code keep its
+	// own model names: lane `claude-*` → [an Anthropic template, a local
+	// model] serves every Claude id from Anthropic and falls back locally.
+	lanePatterns := make([]string, 0)
+	for name := range c.Lanes {
+		if strings.Contains(name, "*") {
+			lanePatterns = append(lanePatterns, name)
+		}
+	}
+	sort.Strings(lanePatterns)
+	for _, p := range lanePatterns {
+		if globMatch(p, served) {
+			return c.laneCandidates(p, c.Lanes[p], served)
+		}
 	}
 	// Template models: a model key containing '*' is a glob pattern. When no
 	// exact model or lane matches, a served name matching a pattern resolves to

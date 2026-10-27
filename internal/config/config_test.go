@@ -315,3 +315,25 @@ func TestValidateSamplingDefault(t *testing.T) {
 		t.Error("an empty sampling block must be rejected")
 	}
 }
+
+// A template lane serves any matching name; its template member takes the
+// requested id, a plain member keeps its own, and an exact lane still wins.
+func TestTemplateLane(t *testing.T) {
+	c := &Config{
+		Models: map[string]Model{"claude-sub-*": {}, "chat-model": {}},
+		Lanes: map[string]Lane{
+			"claude-*":     {Members: []LaneMember{{Model: "claude-sub-*"}, {Model: "chat-model"}}},
+			"claude-exact": {Members: []LaneMember{{Model: "chat-model"}}},
+		},
+	}
+	cands, ok := c.ResolveServed("claude-opus-5-5")
+	if !ok || len(cands) != 2 || cands[0].Name != "claude-opus-5-5" || cands[1].Name != "chat-model" {
+		t.Fatalf("claude-opus-5-5 → %+v", cands)
+	}
+	if cands, _ := c.ResolveServed("claude-exact"); len(cands) != 1 || cands[0].Name != "chat-model" {
+		t.Errorf("exact lane lost to the template: %+v", cands)
+	}
+	if _, ok := c.ResolveServed("gpt-4"); ok {
+		t.Error("a name no pattern matches resolved")
+	}
+}
