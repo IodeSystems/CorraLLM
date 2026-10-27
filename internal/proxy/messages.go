@@ -379,8 +379,21 @@ func anthropicToOpenAI(body []byte) ([]byte, error) {
 			if len(parts) > 0 {
 				msgs = append(msgs, map[string]any{"role": "user", "content": userContent(parts)})
 			}
+		case "system":
+			// Claude Code sends its environment block as a system message
+			// AFTER the first user turn. Most chat templates refuse a system
+			// message that is not first (Qwen's raises), so it goes as a user
+			// message in the same place: the prefix before it stays the same,
+			// which is what a prompt cache keys on.
+			var text []string
+			for _, b := range blocks {
+				if b.Type == "text" {
+					text = append(text, b.Text)
+				}
+			}
+			msgs = append(msgs, map[string]any{"role": "user", "content": strings.Join(text, "\n\n")})
 		default:
-			return nil, fmt.Errorf("messages[%d]: role %q is not user or assistant", i, m.Role)
+			return nil, fmt.Errorf("messages[%d]: role %q is not user, assistant or system", i, m.Role)
 		}
 	}
 	out["messages"] = msgs

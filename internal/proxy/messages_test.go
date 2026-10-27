@@ -87,7 +87,8 @@ const claudeCodeBody = `{"model":"%s","max_tokens":1000,"stream":%t,
 		{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"corrallm"},{"type":"text","text":"ok"},
 			{"type":"tool_use","id":"toolu_1","name":"Read","input":{"path":"a"}}]},
 		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"contents"}]},
-			{"type":"text","text":"now summarise"}]}]}`
+			{"type":"text","text":"now summarise"}]},
+		{"role":"system","content":[{"type":"text","text":"# Environment"}]}]}`
 
 func postMessages(h http.Handler, body string, hdr map[string]string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -110,7 +111,7 @@ func TestMessagesTranslatesForAnOpenAIModel(t *testing.T) {
 	// The request the backend saw.
 	b, _ := json.Marshal(f.body)
 	for _, want := range []string{`"content":"You are Claude Code.","role":"system"`, `"content":"contents","role":"tool","tool_call_id":"toolu_1"`,
-		`"tool_calls":[{"function":{"arguments":"{\"path\":\"a\"}","name":"Read"}`, `"parameters":{"properties"`, `"content":"now summarise","role":"user"`} {
+		`"tool_calls":[{"function":{"arguments":"{\"path\":\"a\"}","name":"Read"}`, `"parameters":{"properties"`, `"content":"now summarise","role":"user"`, `{"content":"# Environment","role":"user"}`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("backend body lacks %s:\n%s", want, b)
 		}
