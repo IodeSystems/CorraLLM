@@ -109,3 +109,19 @@ func TestCacheHeaders(t *testing.T) {
 		t.Errorf("index Cache-Control = %q", got)
 	}
 }
+
+// An API path nothing serves is a JSON 404, not the SPA shell with a 200; a
+// client route still gets the shell.
+func TestUnknownAPIPathIsAJSON404(t *testing.T) {
+	h := Handler("", fstest.MapFS{"index.html": {Data: []byte("SHELL")}})
+	for _, p := range []string{"/v1/nope", "/api/v1/nope"} {
+		rec := get(t, h, p)
+		if rec.Code != http.StatusNotFound || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") ||
+			!strings.Contains(rec.Body.String(), `"no such endpoint: GET `+p+`"`) {
+			t.Errorf("%s: %d %q %s", p, rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+		}
+	}
+	if rec := get(t, h, "/approvals"); rec.Code != http.StatusOK || rec.Body.String() != "SHELL" {
+		t.Errorf("client route: %d %q", rec.Code, rec.Body)
+	}
+}

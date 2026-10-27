@@ -10,6 +10,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"io"
 	"io/fs"
 	"net/http"
@@ -33,6 +34,16 @@ func Handler(webRoot string, embedded fs.FS) http.Handler {
 			upath = "index.html"
 		}
 		f, err := root.Open(upath)
+		if err != nil && (strings.HasPrefix(upath, "v1/") || strings.HasPrefix(upath, "api/")) {
+			// An API path nothing serves is a 404 in the API's own shape. The
+			// SPA shell here answered 200 with HTML, and a client parsing JSON
+			// failed far from the cause (POST /v1/messages before it existed).
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			msg, _ := json.Marshal("no such endpoint: " + r.Method + " /" + upath)
+			_, _ = io.WriteString(w, `{"error":{"message":`+string(msg)+`,"type":"invalid_request_error"}}`)
+			return
+		}
 		if err != nil {
 			// Unknown path → SPA shell. The router resolves it client-side.
 			w.Header().Set("Cache-Control", "no-cache")
