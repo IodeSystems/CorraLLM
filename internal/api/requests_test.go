@@ -151,3 +151,21 @@ func TestApproveTopUpKeepsTheKey(t *testing.T) {
 		t.Errorf("approving a top-up changed the key: %+v", kp)
 	}
 }
+
+// An admin edit names a configured key; the name is stored in the config.
+func TestUpdateKeySetsAConfiguredKeysLabel(t *testing.T) {
+	h := requestHandlers(t)
+	if err := h.UpdateConfig(context.Background(), "seed", func(c *config.Config) error {
+		c.Keys["sk-team"] = config.KeyPolicy{Group: "default"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Proxy.SetConfig(h.config())
+	if err := h.Proxy.UpdateKey("sk-team", proxy.AccessAsk{Label: "team"}, false, h.configEditor(ctxAdmin)); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloadStored(t, h, "after label").Keys["sk-team"].Label; got != "team" {
+		t.Errorf("label = %q", got)
+	}
+}

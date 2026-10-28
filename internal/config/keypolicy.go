@@ -57,6 +57,11 @@ type KeyPolicy struct {
 	// the hard one, and that judgement is better than any default here.
 	Thinking *bool
 
+	// Label is the key's name on the dashboard ("aw4"). A configured key's
+	// own string is its credential, so the page shows it masked; without a
+	// label the row would be named by a fragment of a secret.
+	Label string
+
 	// Models are the selectors (keyaccess.go) naming what this key may see and
 	// use. Empty = every model.
 	Models []string
@@ -166,6 +171,12 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 				k.Thinking = &b
 				continue
 			}
+			if name == "label" {
+				if err := node.Decode(&k.Label); err != nil {
+					return fmt.Errorf("key policy: `label` must be text: %w", err)
+				}
+				continue
+			}
 			if name == "mint" {
 				if err := node.Decode(&k.Mint); err != nil {
 					return fmt.Errorf("key policy: `mint` must be true or false: %w", err)
@@ -245,7 +256,7 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 // feature does not show up as a diff on every key in the revision history.
 func (k KeyPolicy) MarshalYAML() (any, error) {
 	if len(k.Allow) == 0 && k.Thinking == nil && len(k.Limits) == 0 && !k.Mint &&
-		len(k.Credentials) == 0 && !k.Disabled && len(k.Models) == 0 && len(k.Budgets) == 0 {
+		len(k.Credentials) == 0 && !k.Disabled && len(k.Models) == 0 && len(k.Budgets) == 0 && k.Label == "" {
 		return k.Group, nil
 	}
 	m := map[string]any{"default": k.Group}
@@ -271,6 +282,9 @@ func (k KeyPolicy) MarshalYAML() (any, error) {
 	}
 	if len(k.Models) > 0 {
 		m["models"] = k.Models
+	}
+	if k.Label != "" {
+		m["label"] = k.Label
 	}
 	if len(k.Budgets) > 0 {
 		m["budgets"] = k.Budgets

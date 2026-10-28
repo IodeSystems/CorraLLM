@@ -161,7 +161,9 @@ CREATE TABLE IF NOT EXISTS config_key (
     -- and JSON object selector → limits (what it may spend). They replace
     -- limits_json and credentials_json, which are read once and migrated.
     models_json TEXT NOT NULL DEFAULT '',
-    budgets_json TEXT NOT NULL DEFAULT ''
+    budgets_json TEXT NOT NULL DEFAULT '',
+    -- the key's name on the dashboard; '' = none
+    label TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS config_tool (

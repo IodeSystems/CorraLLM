@@ -192,3 +192,18 @@ func TestKeyBudgetsValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestKeyLabelRoundTrip(t *testing.T) {
+	var k KeyPolicy
+	if err := yaml.Unmarshal([]byte("default: batch\nlabel: aw4\n"), &k); err != nil {
+		t.Fatal(err)
+	}
+	if k.Label != "aw4" || k.Allow["label"] {
+		t.Fatalf("k = %+v", k)
+	}
+	out, _ := yaml.Marshal(k)
+	var back KeyPolicy
+	if err := yaml.Unmarshal(out, &back); err != nil || back.Label != "aw4" {
+		t.Errorf("round trip: %+v %v\n%s", back, err, out)
+	}
+}

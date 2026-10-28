@@ -276,7 +276,7 @@ func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutp
 	}
 	for _, key := range sortedNames(cfg.Keys) {
 		kp := cfg.Keys[key]
-		b.Keys = append(b.Keys, ManagedKey{Key: key, Kind: "configured", Group: kp.Group,
+		b.Keys = append(b.Keys, ManagedKey{Key: key, Kind: "configured", Label: kp.Label, Group: kp.Group,
 			Models: nonNil(kp.Models), Budgets: toBudgets(kp.Budgets), Warnings: nonNil(p.Oversubscription(key)),
 			Disabled: kp.Disabled, Mint: kp.Mint, ValueAdds: fromGrantViews(adds[key]),
 			Windows: windowRows(p.KeyWindows(key)), SpentToday: today[key].CostUSD, RequestsToday: today[key].Requests})

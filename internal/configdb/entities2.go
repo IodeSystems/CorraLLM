@@ -466,11 +466,11 @@ func writeKeys(ctx context.Context, tx querier, c *config.Config) error {
 			budgets = string(b)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO config_key (key, group_name, allow, thinking, limits_json, mint, disabled, credentials_json, models_json, budgets_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO config_key (key, group_name, allow, thinking, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			k, c.Keys[k].Group, encodeAllow(c.Keys[k].Allow),
 			encodeThinking(c.Keys[k].Thinking), limits, boolInt(c.Keys[k].Mint),
-			boolInt(c.Keys[k].Disabled), encodeKeyCredentials(c.Keys[k].Credentials), models, budgets); err != nil {
+			boolInt(c.Keys[k].Disabled), encodeKeyCredentials(c.Keys[k].Credentials), models, budgets, c.Keys[k].Label); err != nil {
 			return fmt.Errorf("write key: %w", err)
 		}
 	}
@@ -503,20 +503,20 @@ func decodeThinking(s string) *bool {
 }
 
 func readKeys(ctx context.Context, db querier, c *config.Config) error {
-	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, thinking, limits_json, mint, disabled, credentials_json, models_json, budgets_json FROM config_key`)
+	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, thinking, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label FROM config_key`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	keys := map[string]config.KeyPolicy{}
 	for rows.Next() {
-		var k, g, allow, thinking, limits, creds, models, budgets string
+		var k, g, allow, thinking, limits, creds, models, budgets, label string
 		var mint, disabled int
-		if err := rows.Scan(&k, &g, &allow, &thinking, &limits, &mint, &disabled, &creds, &models, &budgets); err != nil {
+		if err := rows.Scan(&k, &g, &allow, &thinking, &limits, &mint, &disabled, &creds, &models, &budgets, &label); err != nil {
 			return err
 		}
 		kp := config.KeyPolicy{Group: g, Allow: decodeAllow(allow), Thinking: decodeThinking(thinking),
-			Mint: mint != 0, Disabled: disabled != 0, Credentials: decodeKeyCredentials(creds)}
+			Mint: mint != 0, Disabled: disabled != 0, Credentials: decodeKeyCredentials(creds), Label: label}
 		if limits != "" {
 			var ls []config.Limit
 			if err := json.Unmarshal([]byte(limits), &ls); err != nil {

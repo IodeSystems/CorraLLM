@@ -643,7 +643,7 @@ func (p *Proxy) applyToKey(key string, g AccessAsk, edit ConfigEditor, note stri
 	if _, ok := p.config().Keys[key]; !ok {
 		return fmt.Errorf("key %q is neither configured nor minted any more", key)
 	}
-	if g.Models == nil && g.Budgets == nil && g.Mint == nil && g.Group == nil {
+	if g.Models == nil && g.Budgets == nil && g.Mint == nil && g.Group == nil && g.Label == "" {
 		return nil
 	}
 	if g.TTL != "" || g.Expires != "" {
@@ -654,6 +654,9 @@ func (p *Proxy) applyToKey(key string, g AccessAsk, edit ConfigEditor, note stri
 	}
 	return edit(note, func(c *config.Config) error {
 		kp := c.Keys[key]
+		if g.Label != "" {
+			kp.Label = strings.TrimSpace(g.Label)
+		}
 		if g.Models != nil {
 			kp.Models = append([]string(nil), *g.Models...)
 		}
