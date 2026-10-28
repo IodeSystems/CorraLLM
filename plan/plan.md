@@ -416,7 +416,18 @@ Deployed 10-28 07:31 (28acee4, handoff); live config keys and 5 child_key rows m
 subkey counters carried: aw4-hd $0.45 of $1.70); stored config re-saved in the new shape (export →
 scratch load → diff = keys only → load --force); DB backup before: scratchpad corrallm-before-p65.db.
 Live: `corrallm keys info` as aw4-hd OK; aw4-7a told the CLI and the breaking /v1/keys change.
-- **next:** owner opens Approvals once (not seen in a browser: SSO); watch aw4's first `request more`.
+API Keys page (owner 10-28: rename Approvals → API Keys, keys masked first4…last4 with a reveal button,
+search; a stooges run): path stays /approvals (ntfy links). Config keys gained an optional `label`
+(01131eb; owner chose it over derived names); display name = label → asker of the newest request about
+the key → masked id. `local` no longer admits a candidate with a provider account (6d12c7a).
+Stooges on a throwaway --insecure sandbox (127.0.0.1:6520, scratchpad uxsbx2 + uxdist2, seed2.sh;
+walk gained search + reveal steps and a `fill` action in bin/ux.mjs): Lenny / George / Ives —
+R1 ≈+1/+1/−1, R2 yes/+1/−1, R3 yes/+1/−1, R5 yes/+2/−1 (Ives: consistency only). Owner: one more
+round, then deploy.
+- **next:** round 6 fixes (subagent) → rerun the three → deploy (bin/deploy --yes) → owner opens API Keys.
+- **open (not in scope, owner may ask):** "Last used" column (server field); marking the request the
+  owner asked for (needs a requester-side field); clearing a label from the page (empty = unchanged);
+  Callers page still shows whole keys.
 - **risks:** Approvals page untested by hand; `keys info` for a subkey says "mint one with…" though
   a subkey cannot mint; worst-case $ on the page sums several `*` windows (overstates); counters for
   selectors with no 1:1 old scope start at 0; UI pages that edit `credentials`/`limits` break until
