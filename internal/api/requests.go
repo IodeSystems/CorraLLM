@@ -15,7 +15,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
-// The Approvals page (P62): access requests waiting for a decision, every key
+// The API Keys page (P62): access requests waiting for a decision, every key
 // minted at runtime with its spend, budgets, value adds and expiry, and the
 // rules for who may file. Admin only — it shows keys.
 //
@@ -225,7 +225,7 @@ func (h *Handlers) proxyOrErr() (*proxy.Proxy, error) {
 	return h.Proxy, nil
 }
 
-// ListRequests is the Approvals page.
+// ListRequests is the API Keys page.
 func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutput, error) {
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err

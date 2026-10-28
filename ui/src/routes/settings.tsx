@@ -36,7 +36,7 @@ import { useReadOnly } from '@/auth'
 const TABS = [
   { key: 'access', label: 'Access' },
   { key: 'budgets', label: 'Budgets' },
-  { key: 'requests', label: 'Approvals' },
+  { key: 'requests', label: 'Access requests' },
   { key: 'warnings', label: 'Warnings' },
   { key: 'history', label: 'History' },
 ] as const

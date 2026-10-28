@@ -186,7 +186,7 @@ func newRequestCmd() *cobra.Command {
 		Use:   "request",
 		Short: "Ask the owner for a key, or for more on yours (access requests)",
 		Long: "Files an access request with a running corrallm and follows it. The owner approves or denies it\n" +
-			"on the dashboard's Approvals page. The claim secret and any issued key are saved under\n" +
+			"on the dashboard's API Keys page. The claim secret and any issued key are saved under\n" +
 			"<home>/requests/ (0600); a new key is handed over by the server only once.\n\n" +
 			"A subkey asks for more with its own key (CORRALLM_KEY); its parent can also change it directly\n" +
 			"with `corrallm keys set`.",

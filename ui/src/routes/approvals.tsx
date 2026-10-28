@@ -12,6 +12,8 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
+  IconButton,
+  InputAdornment,
   Menu,
   MenuItem,
   Stack,
@@ -23,9 +25,13 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
+import SearchIcon from '@mui/icons-material/Search'
+import VisibilityOutlined from '@mui/icons-material/VisibilityOutlined'
+import VisibilityOffOutlined from '@mui/icons-material/VisibilityOffOutlined'
 import ExpandMore from '@mui/icons-material/ExpandMore'
 import ExpandLess from '@mui/icons-material/ExpandLess'
 import { graphql } from '@/gql'
@@ -471,7 +477,30 @@ function formToGrant(f: Form) {
   }
 }
 
-const keyName = (k: Pick<Key, 'key' | 'label'>) => k.label || k.key
+/**
+ * A key string as the page shows it: the first four and last four characters
+ * (owner 10-28). A key IS its own credential, so the page never prints one
+ * whole unless the owner presses the eye on that row. Short config keys
+ * ("aw3") show two characters.
+ */
+export function maskKey(key: string): string {
+  if (key.length > 8) return `${key.slice(0, 4)}…${key.slice(-4)}`
+  return `${key.slice(0, 2)}…`
+}
+
+const keyName = (k: Pick<Key, 'key' | 'label'>) => k.label || maskKey(k.key)
+
+/** The search box matches these words of a request. */
+function requestMatches(r: Req, q: string): boolean {
+  const a = r.asked
+  return [a.label, a.from, a.purpose, r.requesterKey, r.issuedKey, ...(a.models ?? [])].some((v) => !!v && v.toLowerCase().includes(q))
+}
+
+/** The search box matches these words of a key; a sub-key also matches on its parent. */
+function keyMatches(k: Key, q: string, d: Data): boolean {
+  const parent = k.parent ? d.keys.find((p) => p.key === k.parent) : undefined
+  return [k.key, k.label, k.parent, parent?.label, ...k.models].some((v) => !!v && v.toLowerCase().includes(q))
+}
 type Decision = { head: string; working?: string; open: boolean }
 
 /**
@@ -603,21 +632,40 @@ function Requests() {
   const ro = useReadOnly()
   const q = useData()
   const d = q.data?.corrallm?.listRequests
-  if (ro) return <Alert severity="info">Approvals are for admins: the page shows keys.</Alert>
+  const [search, setSearch] = useState('')
+  if (ro) return <Alert severity="info">API Keys is for admins: the page shows keys.</Alert>
   if (q.error) return <Alert severity="error">{extractMessage(q.error)}</Alert>
   if (!d) return <Loading />
-  const pending = d.requests.filter((r) => r.status === 'pending')
-  const decided = d.requests.filter((r) => r.status !== 'pending')
+  const needle = search.trim().toLowerCase()
+  const pending = d.requests.filter((r) => r.status === 'pending' && (!needle || requestMatches(r, needle)))
+  const decided = d.requests.filter((r) => r.status !== 'pending' && (!needle || requestMatches(r, needle)))
   return (
     <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <PageHeader title="Approvals">
+      <PageHeader title="API Keys">
         {pending.length > 0 && <Chip size="small" color="info" label={`${pending.length} waiting`} sx={{ fontSize: 12 }} />}
+        <TextField
+          size="small"
+          placeholder="Search keys and requests"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ ml: 'auto', width: 280 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            },
+            htmlInput: { 'aria-label': 'Search keys and requests' },
+          }}
+        />
       </PageHeader>
       <Panel title="Waiting for you" flush>
         {pending.length === 0 ? (
           <Box sx={{ px: 2, py: 1.5 }}>
             <Typography variant="body2" color="text.secondary">
-              Nothing is waiting.
+              {needle ? 'Nothing waiting matches the search.' : 'Nothing is waiting.'}
             </Typography>
           </Box>
         ) : (
@@ -625,7 +673,7 @@ function Requests() {
         )}
       </Panel>
       {decided.length > 0 && <DecidedPanel rows={decided} d={d} />}
-      <KeysPanel d={d} pendingKeys={pending.map((r) => r.requesterKey ?? '').filter(Boolean)} />
+      <KeysPanel d={d} needle={needle} pendingKeys={pending.map((r) => r.requesterKey ?? '').filter(Boolean)} />
     </Box>
   )
 }
@@ -1132,14 +1180,16 @@ function MoreSettings({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
   )
 }
 
-function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
+function KeysPanel({ d, pendingKeys, needle }: { d: Data; pendingKeys: string[]; needle: string }) {
   const [showAll, setShowAll] = useState(false)
   const [create, setCreate] = useState(false)
   // A configured key nobody set anything on here is not something handed out —
   // unless a request is waiting on it, when the owner needs to see it now.
   const managed = (k: Key) =>
     k.kind !== 'configured' || k.mint || k.budgets.length > 0 || k.models.length > 0 || k.valueAdds.length > 0 || pendingKeys.includes(k.key)
-  const shown = d.keys.filter((k) => showAll || managed(k))
+  // A search looks at every key, configured ones included: the owner is
+  // looking for one by name.
+  const shown = d.keys.filter((k) => (needle ? keyMatches(k, needle, d) : showAll || managed(k)))
   const hidden = d.keys.length - d.keys.filter(managed).length
   // Sub-keys under their parent, the way a person reads ownership.
   const tops = shown.filter((k) => k.kind !== 'child' || !shown.some((p) => p.key === k.parent))
@@ -1149,7 +1199,7 @@ function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
       title="Keys"
       actions={
         <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-          {hidden > 0 && (
+          {hidden > 0 && !needle && (
             <FormControlLabel
               control={<Switch size="small" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />}
               label={<Typography variant="body2" color="text.secondary">{`Also show ${hidden} other configured key${hidden === 1 ? '' : 's'}`}</Typography>}
@@ -1178,6 +1228,15 @@ function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
             {ordered.map((k) => (
               <KeyRow key={k.key} k={k} d={d} nested={k.kind === 'child' && tops.some((t) => t.key === k.parent)} />
             ))}
+            {ordered.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={6}>
+                  <Typography variant="body2" color="text.secondary">
+                    {needle ? 'No key matches the search.' : 'No keys.'}
+                  </Typography>
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </TableContainer>
@@ -1224,6 +1283,7 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [menu, setMenu] = useState<HTMLElement | null>(null)
   const [err, setErr] = useState('')
+  const [reveal, setReveal] = useState(false)
   const refresh = () => void qc.invalidateQueries({ queryKey: ['requests'] })
   const act = useMutation({
     mutationFn: (action: 'disable' | 'enable' | 'delete') => gqlClient.request(KeyActionDoc, { body: { key: k.key, action } }),
@@ -1239,7 +1299,14 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
     onError: (e) => setErr(extractMessage(e)),
   })
   const configured = k.kind === 'configured'
-  const who = configured ? 'set up in the config' : k.kind === 'child' && !nested ? `sub-key of ${k.parent}` : k.kind === 'child' ? 'sub-key' : ''
+  const parent = k.parent ? d.keys.find((p) => p.key === k.parent) : undefined
+  const who = configured
+    ? 'set up in the config'
+    : k.kind === 'child' && !nested
+      ? `sub-key of ${parent ? keyName(parent) : maskKey(k.parent ?? '')}`
+      : k.kind === 'child'
+        ? 'sub-key'
+        : ''
   const sp = spentLines(k)
   // Off for two different reasons — an admin switched it off, or its expiry
   // passed — and the switch is the same either way: one control to turn a key
@@ -1252,6 +1319,16 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
         <Typography variant="body2" sx={{ fontWeight: 600 }}>
           {keyName(k)}
         </Typography>
+        <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+          <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', wordBreak: 'break-all' }}>
+            {reveal ? k.key : maskKey(k.key)}
+          </Typography>
+          <Tooltip title={reveal ? 'Hide the key' : 'Show the whole key'}>
+            <IconButton size="small" onClick={() => setReveal(!reveal)} aria-label={reveal ? `Hide ${keyName(k)}` : `Show ${keyName(k)}`} sx={{ p: 0.25 }}>
+              {reveal ? <VisibilityOffOutlined sx={{ fontSize: 14 }} /> : <VisibilityOutlined sx={{ fontSize: 14 }} />}
+            </IconButton>
+          </Tooltip>
+        </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', whiteSpace: 'nowrap' }}>
           {[who, stoppedBy, k.mint ? 'may create sub-keys' : ''].filter(Boolean).join(' · ')}
         </Typography>

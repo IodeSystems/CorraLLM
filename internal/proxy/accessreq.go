@@ -18,7 +18,7 @@ import (
 )
 
 // Access requests (P62): an agent asks for a key — or for more on the key it
-// has — and an admin approves it on the dashboard's Approvals page, editing
+// has — and an admin approves it on the dashboard's API Keys page, editing
 // what is granted. The agent never sees a secret pass through a person: it
 // gets a claim secret when filing and polls with it, and the approved key is
 // handed over ONCE, on the first poll after approval.
@@ -315,7 +315,7 @@ func (p *Proxy) fileAccessRequest(w http.ResponseWriter, r *http.Request) {
 		what += " (says it is " + ask.From + ")"
 	}
 	p.alert.Send("access-request/"+ar.ID, "Access request: "+firstNonEmpty(ask.Label, requester),
-		fmt.Sprintf("%s asks for %s.\n\n%s\n\nApprove or deny on the Approvals page (/approvals).", ip, what, ask.Purpose), "key")
+		fmt.Sprintf("%s asks for %s.\n\n%s\n\nApprove or deny on the API Keys page (/approvals).", ip, what, ask.Purpose), "key")
 	jsonResp(w, http.StatusCreated, map[string]any{
 		"id": ar.ID, "claim": accessClaimPrefx + claimHex, "status": ar.Status,
 		"poll": "/v1/access-requests/" + ar.ID,

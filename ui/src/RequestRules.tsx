@@ -11,7 +11,7 @@ import { Loading } from '@/Loading'
 import { extractMessage } from '@/format'
 
 /**
- * Settings → Approvals: who may put an access request on the Approvals page.
+ * Settings → Access requests: who may put an access request on the API Keys page.
  *
  * Moved off the Requests page (stooges pass 10-25): it is a setting changed
  * once, and between the keys and the decisions it read as part of the decision.
@@ -86,7 +86,7 @@ function RulesForm({ d }: { d: RulesData }) {
   })
   const setRule = (i: number, p: Partial<RuleForm>) => setRules(rules.map((r, j) => (j === i ? { ...r, ...p } : r)))
   return (
-    <Panel title="Who may ask for access" note="Asking grants nothing: you still approve each request on the Approvals page.">
+    <Panel title="Who may ask for access" note="Asking grants nothing: you still approve each request on the API Keys page.">
       <Row>
         <Stack spacing={1.5}>
           {msg && <Alert severity={msg.ok ? 'success' : 'error'}>{msg.text}</Alert>}

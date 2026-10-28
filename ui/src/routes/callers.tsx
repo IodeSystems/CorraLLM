@@ -227,7 +227,7 @@ function Callers() {
                     </TableCell>
                     <TableCell>
                       {k.off && (
-                        <Tooltip title="Switched off: this key answers 401. Switch it back on where keys are managed (Approvals).">
+                        <Tooltip title="Switched off: this key answers 401. Switch it back on where keys are managed (API Keys).">
                           <Chip size="small" color="error" label="off" sx={{ mr: 0.5 }} />
                         </Tooltip>
                       )}
