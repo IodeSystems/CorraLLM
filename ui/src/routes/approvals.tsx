@@ -34,6 +34,8 @@ import VisibilityOutlined from '@mui/icons-material/VisibilityOutlined'
 import VisibilityOffOutlined from '@mui/icons-material/VisibilityOffOutlined'
 import ExpandMore from '@mui/icons-material/ExpandMore'
 import ExpandLess from '@mui/icons-material/ExpandLess'
+import ContentCopy from '@mui/icons-material/ContentCopy'
+import WarningAmberOutlined from '@mui/icons-material/WarningAmberOutlined'
 import { graphql } from '@/gql'
 import type { RequestsQuery } from '@/gql/graphql'
 import { gqlClient } from '@/gqlClient'
@@ -351,16 +353,37 @@ function normSel(s: string): string {
   return `model:${t}`
 }
 
-/** What a selector names, in words ("*" is "everything"). */
+/**
+ * What a selector names, in words, for running text: "everything", a model's
+ * name, "local models", "paid providers", "fireworks models", "the
+ * fireworks/main account". The one place a selector becomes words; the page
+ * never shows the selector itself (UX review 10-28).
+ */
 function selWords(s: string): string {
-  return s === '*' ? 'everything' : s
+  const t = normSel(s)
+  if (t === '*') return 'everything'
+  if (t === 'local') return 'local models'
+  if (t === 'proxy') return 'paid providers'
+  const [kind, name] = [t.slice(0, t.indexOf(':')), t.slice(t.indexOf(':') + 1)]
+  const glob = name.includes('*')
+  if (kind === 'provider') return glob ? `models of providers matching ${name}` : `${name} models`
+  if (kind === 'cred') return glob ? `accounts matching ${name}` : `the ${name} account`
+  if (kind === 'model') return glob ? `models matching ${name}` : name
+  return t
+}
+
+/** A selector as a choice in a picker: "Every model", "Local models", a model's name. */
+function selOption(s: string): string {
+  if (normSel(s) === '*') return 'Every model'
+  const w = selWords(s)
+  return normSel(s).startsWith('model:') ? w : w.charAt(0).toUpperCase() + w.slice(1)
 }
 
 /** What a selector covers, for the field's helper text. */
 function selHint(s: string): string {
   const t = normSel(s)
   if (t === '') return ''
-  if (t === '*') return 'Every model'
+  if (t === '*') return 'Counts every request it makes'
   if (t === 'local') return 'Models that run on this box'
   if (t === 'proxy') return 'Models served by a remote provider'
   const glob = t.includes('*')
@@ -414,7 +437,7 @@ function modelsText(models: string[] | null | undefined): string {
 function costLine(budgets: BudgetIn[], topUps: { usd: number; ttl?: string | null }[], ttl: string | null | undefined, newKey: boolean): { text: string; open: boolean } {
   const money = flatLimits(budgets).filter((x) => x.l.hard && (x.l.usd ?? 0) > 0)
   const wide = money.filter((x) => x.on === '*')
-  const fmt = (x: { on: string; l: LimitIn }) => `${usd(x.l.usd ?? 0)} ${perShort(x.l.per)}${x.on === '*' ? '' : ` on ${x.on}`}`
+  const fmt = (x: { on: string; l: LimitIn }) => `${usd(x.l.usd ?? 0)} ${perShort(x.l.per)}${x.on === '*' ? '' : ` on ${selWords(x.on)}`}`
   const parts = (wide.length ? wide : money).map(fmt)
   for (const t of topUps) parts.push(`a ${usd(t.usd)} top-up${t.ttl ? ` for ${t.ttl.replace(/d$/, ' days').replace(/h$/, ' hours')}` : ''}`)
   const open = newKey && wide.length === 0
@@ -569,12 +592,6 @@ function ttlWords(t: string): string {
   return t.replace(/^(\d+)d$/, (_, n) => `${n} day${n === '1' ? '' : 's'}`).replace(/^(\d+)h$/, (_, n) => `${n} hour${n === '1' ? '' : 's'}`)
 }
 
-/** A model name without the provider prefix it carries ("fireworks-…"). */
-function modelName(m: string, d: Data): string {
-  const p = d.credentials.map((c) => c.provider).find((pr) => m.startsWith(pr + '-'))
-  return p ? m.slice(p.length + 1) : m
-}
-
 /**
  * The most a key could still spend between now and `until`, from its hard
  * dollar limits and top-ups: the remaining day (or month, or one-off), each
@@ -593,7 +610,7 @@ function worstCase(k: Key, newTopUps: { usd: number }[], untilMs: number): { usd
   for (const { on, l } of use) {
     const w = k.windows.find((x) => x.scope === on && x.label === `usd/${l.per}`)
     const left = Math.max((l.usd ?? 0) - (w?.used ?? 0), 0)
-    const sfx = on === '*' ? '' : ` on ${on}`
+    const sfx = on === '*' ? '' : ` on ${selWords(on)}`
     if (l.per === 'calendar-day') {
       const midnights = Math.max(0, Math.floor(untilMs / DAY) - Math.floor(now / DAY))
       total += left + midnights * (l.usd ?? 0)
@@ -637,13 +654,16 @@ function Requests() {
   if (ro) return <Alert severity="info">API Keys is for admins: the page shows keys.</Alert>
   if (q.error) return <Alert severity="error">{extractMessage(q.error)}</Alert>
   if (!d) return <Loading />
-  const needle = search.trim().toLowerCase()
+  const query = search.trim()
+  const needle = query.toLowerCase()
+  // The chip counts everything waiting; the search only narrows the lists.
+  const waiting = d.requests.filter((r) => r.status === 'pending').length
   const pending = d.requests.filter((r) => r.status === 'pending' && (!needle || requestMatches(r, needle)))
   const decided = d.requests.filter((r) => r.status !== 'pending' && (!needle || requestMatches(r, needle)))
   return (
     <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
       <PageHeader title="API Keys">
-        {pending.length > 0 && <Chip size="small" color="info" label={`${pending.length} waiting`} sx={{ fontSize: 12 }} />}
+        {waiting > 0 && <Chip size="small" color="info" label={`${waiting} waiting`} sx={{ fontSize: 12 }} />}
         <TextField
           size="small"
           placeholder="Search keys and requests"
@@ -662,7 +682,7 @@ function Requests() {
           }}
         />
       </PageHeader>
-      <Panel title="Waiting for you" flush>
+      <Panel title="Waiting for you" subtitle={needle ? requestsMatch(pending.length) : undefined} flush>
         {pending.length === 0 ? (
           <Box sx={{ px: 2, py: 1.5 }}>
             <Typography variant="body2" color="text.secondary">
@@ -673,11 +693,13 @@ function Requests() {
           pending.map((r) => <PendingRow key={r.id} r={r} d={d} />)
         )}
       </Panel>
-      {decided.length > 0 && <DecidedPanel rows={decided} d={d} />}
-      <KeysPanel d={d} needle={needle} pendingKeys={pending.map((r) => r.requesterKey ?? '').filter(Boolean)} />
+      {decided.length > 0 && <DecidedPanel rows={decided} d={d} subtitle={needle ? requestsMatch(decided.length) : undefined} />}
+      <KeysPanel d={d} needle={needle} query={query} pendingKeys={pending.map((r) => r.requesterKey ?? '').filter(Boolean)} />
     </Box>
   )
 }
+
+const requestsMatch = (n: number) => `${n} request${n === 1 ? ' matches' : 's match'}`
 
 function PendingRow({ r, d }: { r: Req; d: Data }) {
   const [open, setOpen] = useState(false)
@@ -693,7 +715,7 @@ function PendingRow({ r, d }: { r: Req; d: Data }) {
         <Box sx={{ flex: 1, minWidth: 260 }}>
           <Typography variant="body2" sx={{ fontWeight: 600 }}>
             {who} asks: {what}
-            {!r.requesterKey && a.models?.length ? ` for ${a.models.map((m) => modelName(m, d)).join(', ')}` : ''}
+            {!r.requesterKey && a.models?.length ? ` for ${a.models.map(selWords).join(', ')}` : ''}
           </Typography>
           <Typography variant="body1" sx={{ fontWeight: 600, color: line.open ? C.warn : undefined }}>
             {line.head}
@@ -751,9 +773,14 @@ function DenyDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: str
       </DialogTitle>
       <DialogContent>
         {err && <Alert severity="error">{err}</Alert>}
-        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+        <Typography variant="body1" sx={{ fontWeight: 600, color: line.open ? C.warn : undefined }}>
           {line.head}
         </Typography>
+        {line.working && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            = {line.working}
+          </Typography>
+        )}
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1, whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
           “{r.asked.purpose}”
         </Typography>
@@ -766,6 +793,7 @@ function DenyDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: str
           margin="dense"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
+          slotProps={helperFlush}
         />
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -918,41 +946,74 @@ function KeyNow({ k }: { k: Key }) {
         {keyName(k)} now
       </Typography>
       <Typography variant="body2">{parts.join(' · ')}</Typography>
-      <Warnings k={k} />
     </Box>
   )
 }
 
-/** Where a key's sub-keys promise more than it has. Allowed, but said. */
+/**
+ * Where a key's sub-keys promise more than it has. Allowed, but said: one
+ * sentence per line, as the server writes it, the icon alone in amber.
+ */
 function Warnings({ k }: { k: Key }) {
   return k.warnings.map((w) => (
-    <Typography key={w} variant="caption" sx={{ display: 'block', color: C.warn }}>
-      {w}
-    </Typography>
+    <Stack key={w} direction="row" spacing={0.5} sx={{ alignItems: 'flex-start', mt: 0.25 }}>
+      <WarningAmberOutlined sx={{ fontSize: 14, color: C.warn, mt: '2px' }} />
+      <Typography variant="caption" color="text.secondary">
+        {w}
+      </Typography>
+    </Stack>
   ))
 }
 
 /**
- * A selector field: free text, with the kinds and this box's providers,
- * accounts and models offered.
+ * A selector field. The choices show in words ("Every model", "Local models",
+ * a model's name) and the value kept is the selector. With `free`, a person
+ * may also type one: a model's name, or a glob such as *deepseek*.
+ *
+ * The field keeps its own text: MUI would write the chosen option's words
+ * back into the box on every value change, which would rewrite "local" to
+ * "Local models" in the middle of typing it.
  */
-function SelectorField({ value, onChange, d, label }: { value: string; onChange: (v: string) => void; d: Data; label: string }) {
+function SelectorField({
+  value,
+  onChange,
+  options,
+  label,
+  helper,
+  free = true,
+}: {
+  value: string
+  onChange: (v: string) => void
+  options: string[]
+  label: string
+  helper: string
+  free?: boolean
+}) {
+  const [text, setText] = useState(value ? selOption(value) : '')
+  // Typed words that name a choice are that choice; anything else is a selector as typed.
+  const resolve = (t: string) => options.find((o) => o === t.trim() || selOption(o).toLowerCase() === t.trim().toLowerCase()) ?? t.trim()
+  // A value changed from outside (a budget above this one removed) replaces the text.
+  const [seen, setSeen] = useState(value)
+  if (value !== seen) {
+    setSeen(value)
+    if (resolve(text) !== value) setText(value ? selOption(value) : '')
+  }
   return (
     <Autocomplete
-      freeSolo
+      freeSolo={free}
       size="small"
-      options={selectorOptions(d)}
-      value={value}
-      inputValue={value}
-      onInputChange={(_, v) => onChange(v)}
+      options={options}
+      getOptionLabel={selOption}
+      value={value || null}
+      onChange={(_, v) => onChange(v == null ? '' : resolve(v))}
+      inputValue={text}
+      onInputChange={(_, v, reason) => {
+        if (reason === 'reset') return
+        setText(v)
+        if (free && reason === 'input') onChange(resolve(v))
+      }}
       renderInput={(p) => (
-        <TextField
-          {...p}
-          label={label}
-          placeholder="*, local, provider:fireworks, model:*deepseek*"
-          helperText={selHint(value) || 'Which models this counts'}
-          slotProps={{ ...p.slotProps, formHelperText: { sx: { mx: 0 } } }}
-        />
+        <TextField {...p} label={label} placeholder={free ? 'Pick one, or type a model name' : 'Pick one'} helperText={helper} slotProps={{ ...p.slotProps, formHelperText: { sx: { mx: 0 } } }} />
       )}
       sx={{ minWidth: 300, flex: 1 }}
     />
@@ -970,11 +1031,12 @@ function BudgetsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void
   return (
     <Box>
       <Typography variant="subtitle2">Spending limits</Typography>
-      {f.budgets.length === 0 ? (
+      {f.budgets.length === 0 && (
         <Typography variant="body2" sx={{ color: C.warn }}>
           None: it may spend without limit.
         </Typography>
-      ) : (
+      )}
+      {f.budgets.length > 1 && (
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
           Every limit that matches a request counts: a limit on one model sits inside a limit on everything.
         </Typography>
@@ -982,12 +1044,18 @@ function BudgetsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void
       {f.budgets.map((b, i) => (
         <Box key={i} sx={{ mt: 1.5, p: 1.5, border: `1px solid ${C.border}`, borderRadius: 1 }}>
           <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <SelectorField label="On" value={b.on} onChange={(on) => setB(i, { on })} d={d} />
+            <SelectorField
+              label="Applies to"
+              value={b.on}
+              onChange={(on) => setB(i, { on })}
+              options={selectorOptions(d)}
+              helper={selHint(b.on) || 'Which models this counts'}
+            />
             <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => set({ budgets: f.budgets.filter((_, j) => j !== i) })}>
-              Remove
+              Remove budget
             </Button>
           </Stack>
-          <LimitRows limits={b.limits} setLimits={(limits) => setB(i, { limits })} empty="No limit: add one, or remove this row." addLabel="Add a limit on these" blank={blank} />
+          <LimitRows limits={b.limits} setLimits={(limits) => setB(i, { limits })} empty="No limit: add one, or remove this budget." blank={blank} />
         </Box>
       ))}
       <Button
@@ -996,7 +1064,7 @@ function BudgetsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void
         sx={{ mt: 1, px: 0 }}
         onClick={() => set({ budgets: [...f.budgets, { on: f.budgets.some((b) => b.on === '*') ? '' : '*', limits: [blank] }] })}
       >
-        Add a limit
+        Add a budget
       </Button>
     </Box>
   )
@@ -1013,13 +1081,11 @@ function LimitRows({
   limits,
   setLimits,
   empty,
-  addLabel,
   blank,
 }: {
   limits: Lim[]
   setLimits: (l: Lim[]) => void
   empty: string
-  addLabel: string
   blank: Lim
 }) {
   const setLim = (i: number, p: Partial<Lim>) => setLimits(limits.map((l, j) => (j === i ? { ...l, ...p } : l)))
@@ -1056,16 +1122,18 @@ function LimitRows({
           )}
           {!full(l, i) && (
             <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => setOpened(new Set(opened).add(i))}>
-              Options
+              Count requests, or only warn
             </Button>
           )}
-          <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => setLimits(limits.filter((_, j) => j !== i))}>
-            Remove
-          </Button>
+          {limits.length > 1 && (
+            <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => setLimits(limits.filter((_, j) => j !== i))}>
+              Remove limit
+            </Button>
+          )}
         </Stack>
       ))}
       <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => setLimits([...limits, blank])}>
-        {addLabel}
+        Add a limit
       </Button>
     </Box>
   )
@@ -1093,14 +1161,14 @@ function TopUpRow({ v, set, remove, d }: { v: TopUp; set: (p: Partial<TopUp>) =>
   return (
     <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       <TextField label="Amount ($)" size="small" type="number" value={v.usd} onChange={(e) => set({ usd: e.target.value })} sx={{ width: 130 }} />
-      <TextField select size="small" label="On" value={v.model} onChange={(e) => set({ model: e.target.value })} slotProps={selectSlots} sx={{ minWidth: 200, flex: 1 }}>
-        <MenuItem value="">every model</MenuItem>
-        {d.models.map((m) => (
-          <MenuItem key={m} value={m}>
-            {modelName(m, d)}
-          </MenuItem>
-        ))}
-      </TextField>
+      <SelectorField
+        label="Applies to"
+        free={false}
+        value={v.model ? `model:${v.model}` : '*'}
+        onChange={(s) => set({ model: s.startsWith('model:') ? s.slice('model:'.length) : '' })}
+        options={['*', ...d.models.map((m) => `model:${m}`)]}
+        helper={v.model ? 'Spent only on this model' : 'Spent on any model'}
+      />
       <TextField
         label="Top-up expires after"
         placeholder="2d, 48h"
@@ -1132,6 +1200,8 @@ function TopUpRow({ v, set, remove, d }: { v: TopUp; set: (p: Partial<TopUp>) =>
  * operator can see and remove instead of a checkbox that vanished.
  */
 function ModelsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
+  // Typed words that name a choice ("local models") are that choice.
+  const fromWords = (t: string) => selectorOptions(d).find((o) => selOption(o).toLowerCase() === t.trim().toLowerCase()) ?? normSel(t)
   return (
     <Box>
       <Typography variant="subtitle2">Models it may use</Typography>
@@ -1141,12 +1211,13 @@ function ModelsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
         autoSelect
         size="small"
         options={selectorOptions(d).filter((s) => s !== '*')}
+        getOptionLabel={selOption}
         value={f.models}
-        onChange={(_, v) => set({ models: [...new Set(v.map(normSel).filter(Boolean))] })}
+        onChange={(_, v) => set({ models: [...new Set(v.map(fromWords).filter(Boolean))] })}
         renderInput={(p) => (
           <TextField
             {...p}
-            placeholder={f.models.length ? '' : 'every model — or type local, proxy, provider:…, model:…'}
+            placeholder={f.models.length ? '' : 'Every model — or pick some'}
             helperText={
               f.models.length
                 ? 'Only what these name. * is a wildcard in a name; a bare name is one model.'
@@ -1181,7 +1252,7 @@ function MoreSettings({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
   )
 }
 
-function KeysPanel({ d, pendingKeys, needle }: { d: Data; pendingKeys: string[]; needle: string }) {
+function KeysPanel({ d, pendingKeys, needle, query }: { d: Data; pendingKeys: string[]; needle: string; query: string }) {
   const [showAll, setShowAll] = useState(false)
   const [create, setCreate] = useState(false)
   // A configured key nobody set anything on here is not something handed out —
@@ -1189,8 +1260,11 @@ function KeysPanel({ d, pendingKeys, needle }: { d: Data; pendingKeys: string[];
   const managed = (k: Key) =>
     k.kind !== 'configured' || k.mint || k.budgets.length > 0 || k.models.length > 0 || k.valueAdds.length > 0 || pendingKeys.includes(k.key)
   // A search looks at every key, configured ones included: the owner is
-  // looking for one by name.
-  const shown = d.keys.filter((k) => (needle ? keyMatches(k, needle, d) : showAll || managed(k)))
+  // looking for one by name. A parent whose sub-key matches shows too, dimmed,
+  // so the sub-key keeps its place under it.
+  const matched = needle ? d.keys.filter((k) => keyMatches(k, needle, d)) : []
+  const context = d.keys.filter((p) => !matched.includes(p) && matched.some((k) => k.parent === p.key))
+  const shown = needle ? d.keys.filter((k) => matched.includes(k) || context.includes(k)) : d.keys.filter((k) => showAll || managed(k))
   const hidden = d.keys.length - d.keys.filter(managed).length
   // Sub-keys under their parent, the way a person reads ownership.
   const tops = shown.filter((k) => k.kind !== 'child' || !shown.some((p) => p.key === k.parent))
@@ -1198,6 +1272,7 @@ function KeysPanel({ d, pendingKeys, needle }: { d: Data; pendingKeys: string[];
   return (
     <Panel
       title="Keys"
+      subtitle={needle ? `${matched.length} key${matched.length === 1 ? ' matches' : 's match'} “${query}”` : undefined}
       actions={
         <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
           {hidden > 0 && !needle && (
@@ -1206,7 +1281,7 @@ function KeysPanel({ d, pendingKeys, needle }: { d: Data; pendingKeys: string[];
               label={<Typography variant="body2" color="text.secondary">{`Also show ${hidden} other configured key${hidden === 1 ? '' : 's'}`}</Typography>}
             />
           )}
-          <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={() => setCreate(true)}>
+          <Button size="small" variant="outlined" startIcon={<AddIcon />} onClick={() => setCreate(true)}>
             New key
           </Button>
         </Stack>
@@ -1218,8 +1293,8 @@ function KeysPanel({ d, pendingKeys, needle }: { d: Data; pendingKeys: string[];
           <TableHead>
             <TableRow>
               <TableCell>Key</TableCell>
-              <TableCell>On</TableCell>
-              <TableCell align="right">Spent</TableCell>
+              <TableCell align="center">On</TableCell>
+              <TableCell align="right">Used</TableCell>
               <TableCell align="right">Top-ups left</TableCell>
               <TableCell>Expires</TableCell>
               <TableCell align="right" />
@@ -1227,7 +1302,7 @@ function KeysPanel({ d, pendingKeys, needle }: { d: Data; pendingKeys: string[];
           </TableHead>
           <TableBody>
             {ordered.map((k) => (
-              <KeyRow key={k.key} k={k} d={d} nested={k.kind === 'child' && tops.some((t) => t.key === k.parent)} />
+              <KeyRow key={k.key} k={k} d={d} nested={k.kind === 'child' && tops.some((t) => t.key === k.parent)} context={context.includes(k)} />
             ))}
             {ordered.length === 0 && (
               <TableRow>
@@ -1246,38 +1321,41 @@ function KeysPanel({ d, pendingKeys, needle }: { d: Data; pendingKeys: string[];
   )
 }
 
-/** One line for what a key spent: against its main dollar limit when it has one. */
+/**
+ * What a key used against its limits: the main dollar limit first when it has
+ * one. "on <model>" shows only where the row does not already say it — not for
+ * a budget on everything, not once per limit when every budget is on the same
+ * thing, and not when the "may use" line names it.
+ */
 function spentLines(k: Key): { main: string; rest: string[]; blocked: boolean } {
+  const all = flatLimits(k.budgets)
+  const sels = [...new Set(all.map((x) => normSel(x.on)))]
+  const only = sels.length === 1 ? sels[0] : null
+  const named = (on: string) => k.models.some((m) => normSel(m) === normSel(on))
+  const onWords = (on: string) => (normSel(on) === '*' || only !== null || named(on) ? '' : `on ${selWords(on)}`)
   const fmtL = ({ on, l }: { on: string; l: LimitIn }) => {
     const isUsd = (l.usd ?? 0) > 0
     const w = k.windows.find((x) => x.scope === on && x.label === `${isUsd ? 'usd' : 'req'}/${l.per}`)
-    const f = (n: number) => (isUsd ? usd(n) : `${Math.round(n)} requests`)
+    const used = isUsd ? usd(w?.used ?? 0) : String(Math.round(w?.used ?? 0))
+    const of = isUsd ? usd(l.usd ?? 0) : `${l.req ?? 0} requests`
     return {
-      text: `${f(w?.used ?? 0)} of ${f(isUsd ? (l.usd ?? 0) : (l.req ?? 0))} ${perShort(l.per)}${l.hard ? '' : ' (warning only)'}`,
-      on: on === '*' ? '' : `on ${on}`,
+      text: `${used} of ${of} ${perShort(l.per)}${l.hard ? '' : ' (warning only)'}`,
       blocked: !!w?.blocked,
     }
   }
-  const all = flatLimits(k.budgets)
-  const line = (x: { on: string; l: LimitIn }) => [fmtL(x).text, fmtL(x).on].filter(Boolean).join(' ')
+  const line = (x: { on: string; l: LimitIn }) => [fmtL(x).text, onWords(x.on)].filter(Boolean).join(' ')
+  // Every budget on one thing the row does not name yet: say it once.
+  const once = only !== null && only !== '*' && !named(only) ? `on ${selWords(only)}` : ''
+  const blocked = all.some((x) => fmtL(x).blocked)
   // The main line: a dollar limit on everything, else any dollar limit.
   const main = all.find((x) => x.on === '*' && (x.l.usd ?? 0) > 0) ?? all.find((x) => (x.l.usd ?? 0) > 0)
   if (!main) {
-    return {
-      main: `${usd(k.spentToday)} today${all.length === 0 ? ' · no limit' : ''}`,
-      rest: all.map(line),
-      blocked: all.some((x) => fmtL(x).blocked),
-    }
+    return { main: `${usd(k.spentToday)} today${all.length === 0 ? ' · no limit' : ''}`, rest: [...all.map(line), once].filter(Boolean), blocked }
   }
-  const m = fmtL(main)
-  return {
-    main: m.text,
-    rest: [m.on, ...all.filter((x) => x !== main).map(line)].filter(Boolean),
-    blocked: all.some((x) => fmtL(x).blocked),
-  }
+  return { main: fmtL(main).text, rest: [onWords(main.on) || once, ...all.filter((x) => x !== main).map(line)].filter(Boolean), blocked }
 }
 
-function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
+function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; context: boolean }) {
   const qc = useQueryClient()
   const [edit, setEdit] = useState(false)
   const [addTopUp, setAddTopUp] = useState(false)
@@ -1285,6 +1363,12 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
   const [menu, setMenu] = useState<HTMLElement | null>(null)
   const [err, setErr] = useState('')
   const [reveal, setReveal] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const copy = () =>
+    void navigator.clipboard.writeText(k.key).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
   const refresh = () => void qc.invalidateQueries({ queryKey: ['requests'] })
   const act = useMutation({
     mutationFn: (action: 'disable' | 'enable' | 'delete') => gqlClient.request(KeyActionDoc, { body: { key: k.key, action } }),
@@ -1315,18 +1399,13 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
   const off = k.disabled || k.expired
   const stoppedBy = k.disabled ? 'switched off' : k.expired ? 'expired' : ''
   return (
-    <TableRow sx={{ opacity: off ? 0.55 : 1, verticalAlign: 'top' }}>
+    <TableRow sx={{ opacity: off ? 0.55 : context ? 0.7 : 1, verticalAlign: 'top' }}>
       <TableCell sx={{ minWidth: 220, pl: nested ? 4 : undefined }}>
-        {k.label && (
-          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-            {k.label}
-          </Typography>
-        )}
+        <Typography variant="body2" color={k.label ? undefined : 'text.secondary'} sx={{ fontWeight: 600 }}>
+          {k.label || 'Unnamed key'}
+        </Typography>
         <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
-          <Typography
-            variant={k.label ? 'caption' : 'body2'}
-            sx={{ fontFamily: 'monospace', color: k.label ? 'text.secondary' : undefined, fontWeight: k.label ? undefined : 600, wordBreak: 'break-all' }}
-          >
+          <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
             {reveal ? k.key : maskKey(k.key)}
           </Typography>
           <Tooltip title={reveal ? 'Hide the key' : 'Show the whole key'}>
@@ -1334,7 +1413,19 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
               {reveal ? <VisibilityOffOutlined sx={{ fontSize: 14 }} /> : <VisibilityOutlined sx={{ fontSize: 14 }} />}
             </IconButton>
           </Tooltip>
+          {reveal && (
+            <Tooltip title={copied ? 'Copied' : 'Copy the key'}>
+              <IconButton size="small" onClick={copy} aria-label={`Copy ${keyName(k)}`} sx={{ p: 0.25 }}>
+                <ContentCopy sx={{ fontSize: 14 }} />
+              </IconButton>
+            </Tooltip>
+          )}
         </Stack>
+        {context && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            shown because its sub-keys match
+          </Typography>
+        )}
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', whiteSpace: 'nowrap' }}>
           {[who, stoppedBy, k.mint ? 'may create sub-keys' : ''].filter(Boolean).join(' · ')}
         </Typography>
@@ -1350,7 +1441,7 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
           </Typography>
         )}
       </TableCell>
-      <TableCell>
+      <TableCell align="center">
         <Switch
           size="small"
           checked={!off}
@@ -1358,7 +1449,7 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
           slotProps={{ input: { 'aria-label': off ? `Switch ${keyName(k)} on` : `Switch ${keyName(k)} off` } }}
         />
       </TableCell>
-      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
         <Typography variant="body2" sx={{ color: sp.blocked ? C.error : undefined }}>
           {sp.main}
           {sp.blocked ? ' — reached' : ''}
@@ -1381,15 +1472,15 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
               {usd(Math.max(v.usd - (v.spent ?? 0), 0))} of {usd(v.usd)}
               {!v.active ? ' (over)' : ''}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {[v.model ? `on ${modelName(v.model, d)}` : '', v.expires ? `until ${when(v.expires)}` : ''].filter(Boolean).join(' · ')}
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', whiteSpace: 'nowrap' }}>
+              {[v.model ? `on ${selWords(v.model)}` : '', v.expires ? `until ${when(v.expires)}` : ''].filter(Boolean).join(' · ')}
             </Typography>
           </Box>
         ))}
       </TableCell>
       <TableCell sx={{ whiteSpace: 'nowrap' }}>
-        <Typography variant="body2" sx={{ color: k.expired ? C.error : undefined }} color={k.expires ? undefined : 'text.secondary'}>
-          {configured ? 'never' : k.expires ? `${k.expired ? 'stopped ' : ''}${when(k.expires)}` : 'never'}
+        <Typography variant="body2" sx={{ color: k.expired ? C.error : undefined }} color={!configured && k.expires ? undefined : 'text.secondary'}>
+          {!configured && k.expires ? `${k.expired ? 'stopped ' : ''}${when(k.expires)}` : '—'}
         </Typography>
       </TableCell>
       <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
@@ -1615,11 +1706,12 @@ function TopUpDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: () =
   )
 }
 
-function DecidedPanel({ rows, d }: { rows: Req[]; d: Data }) {
+function DecidedPanel({ rows, d, subtitle }: { rows: Req[]; d: Data; subtitle?: string }) {
   const [open, setOpen] = useState(false)
   return (
     <Panel
       title={`Decided · ${rows.length}`}
+      subtitle={subtitle}
       actions={
         <Button size="small" color="inherit" endIcon={open ? <ExpandLess /> : <ExpandMore />} onClick={() => setOpen(!open)}>
           {open ? 'Hide' : 'Show'}
