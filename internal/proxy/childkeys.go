@@ -398,7 +398,8 @@ func ParseTTL(s string) (time.Duration, error) {
 
 // handleKeys serves /v1/keys and /v1/keys/{key}.
 //
-//	GET    /v1/keys          this key's allocation and its children
+//	GET    /v1/keys          this key's models, budgets and spend, and its
+//	                         children (any key; one that cannot mint has none)
 //	POST   /v1/keys          mint a child: {label, models, budgets, ttl}
 //	GET    /v1/keys/{key}    one child
 //	PATCH  /v1/keys/{key}    change its label, models, budgets, expiry, on/off
@@ -408,6 +409,14 @@ func ParseTTL(s string) (time.Duration, error) {
 // keys, and only its own children.
 func (p *Proxy) handleKeys(w http.ResponseWriter, r *http.Request) {
 	caller := p.resolveCaller(callerKey(r))
+	// Any key may read its own models, budgets and spend (GET /v1/keys with no
+	// subkeys listed): a subkey or a key without mint must be able to check
+	// what it has before it asks for more.
+	if r.Method == http.MethodGet && strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/keys"), "/") == "" &&
+		caller.Key != "" && caller.Recognized && p.revokedKey(caller) == "" && !p.canMint(caller) {
+		p.listChildKeys(w, caller.Key)
+		return
+	}
 	switch {
 	case caller.Key == "":
 		jsonErr(w, http.StatusUnauthorized, "send your corrallm key as Authorization: Bearer <key>")

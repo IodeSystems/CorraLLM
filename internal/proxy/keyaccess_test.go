@@ -139,3 +139,22 @@ func TestUnknownSelectorNameRefused(t *testing.T) {
 		t.Errorf("%d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Any key reads its own entry; only a minting key manages subkeys.
+func TestAnyKeyReadsItsOwnBudgets(t *testing.T) {
+	k := newChildKeyRig(t, nil)
+	child := k.mint(`{"label":"kid","budgets":{"*":["$2/calendar-day,hard"]}}`)
+	rec := k.do(http.MethodGet, "/v1/keys", child.Key, "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"budgets":{"*":[{"usd":2`) {
+		t.Errorf("child reads itself: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := k.do(http.MethodPost, "/v1/keys", child.Key, `{"label":"x"}`); rec.Code != http.StatusForbidden {
+		t.Errorf("child mints: %d", rec.Code)
+	}
+	if rec := k.do(http.MethodGet, "/v1/keys", "plain", ""); rec.Code != http.StatusOK {
+		t.Errorf("a configured key without mint: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := k.do(http.MethodGet, "/v1/keys", "ck-nope", ""); rec.Code == http.StatusOK {
+		t.Error("an unknown key read an entry")
+	}
+}

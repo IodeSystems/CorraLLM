@@ -83,7 +83,7 @@ func newRoot() *cobra.Command {
 		// unaffected.
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) { warnIfStaleFor(cmd.Name()) },
 	}
-	root.AddCommand(newServeCmd(), newAgentCmd(), newConfigCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd(), newServiceCmd(), newToolsCmd(), newAuthCmd())
+	root.AddCommand(newServeCmd(), newAgentCmd(), newConfigCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd(), newServiceCmd(), newToolsCmd(), newAuthCmd(), newRequestCmd(), newKeysCmd())
 	return root
 }
 
