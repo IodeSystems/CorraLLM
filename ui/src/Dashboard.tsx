@@ -167,6 +167,12 @@ function bucketMinutesFor(w: TimeWindow): string {
 
 const pct = (n: number) => `${Math.round(n * 100)}%`
 const tps = (n: number) => (n > 0 ? `${Math.round(n).toLocaleString()} tok/s` : '—')
+// Token totals: 1.2M, not 1,234,567 — the column header carries the unit.
+function tokSum(n: number): ReactNode {
+  if (n <= 0) return '—'
+  const s = n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(Math.round(n))
+  return <span title={`${Math.round(n).toLocaleString()} tokens`}>{s}</span>
+}
 const toks = (n: number) => (n > 0 ? `${Math.round(n).toLocaleString()} tok` : '—')
 
 function fmtDur(sec: number): string {
@@ -240,6 +246,9 @@ type Row = {
   key: string
   served: string
   requests: number
+  promptTokens: number
+  cachedTokens: number
+  completionTokens: number
   cacheHitRate: number
   cacheReports: number
   prefillN: number
@@ -272,6 +281,9 @@ function toRow(r: RawRow): Row {
     key: String(r.key ?? ''),
     served: String(r.served ?? ''),
     requests: n(r.requests),
+    promptTokens: n(r.promptTokens),
+    cachedTokens: n(r.cachedTokens),
+    completionTokens: n(r.completionTokens),
     cacheHitRate: n(r.cacheHitRate),
     cacheReports: n(r.cacheReports),
     prefillN: n(r.prefillN),
@@ -421,6 +433,9 @@ function CostTable({
       <TableCell sx={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {isTotal ? 'Total' : rowLabel(r, groupBy)}
       </TableCell>
+      <Num>{tokSum(r.cachedTokens)}</Num>
+      <Num>{tokSum(Math.max(r.promptTokens - r.cachedTokens, 0))}</Num>
+      <Num>{tokSum(r.completionTokens)}</Num>
       <Num muted={r.baselineUsd === 0}>{r.baselineUsd > 0 ? fmtUSD(r.baselineUsd) : '—'}</Num>
       <Num muted={r.paidUsd === 0}>{fmtUSD(r.paidUsd)}</Num>
       <Num muted={r.energyUsd === 0}>
@@ -443,6 +458,9 @@ function CostTable({
         <TableHead>
           <TableRow>
             <TableCell>{GROUPS.find((g) => g.v === groupBy)?.label ?? ''}</TableCell>
+            <Head name="Cached" unit="prompt tokens" hint="Prompt tokens the backend read from its cache (KV cache, or a provider's prompt cache). Priced lowest." />
+            <Head name="Processed" unit="prompt tokens" hint="Prompt tokens not in the cache: prompt minus cached. Prefill work." />
+            <Head name="Generated" unit="tokens" hint="Completion tokens, reasoning included." />
             <Head
               name="Estimated API"
               unit={baselineType ? `$ at ${baselineType}` : '$ (no paid type configured)'}
