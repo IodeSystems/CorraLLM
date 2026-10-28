@@ -408,9 +408,13 @@ the old reach); pattern budgets → `budgets[pattern]`. Ledger scopes kept where
 `key:<k>@<m>`, `keycred:<k>><pattern>`) so today's counters carry over. Only HARD key budgets refuse
 (unchanged). Strangers still get no credentialed candidate. Old pending access requests: their
 informational `models` list becomes a filter proposal the admin edits on approval.
-- **next:** config types + selector matching + migration (tests) → proxy gate/charge/messages →
-  child keys (DB columns `models`, `budgets`) + access requests → API/GraphQL + Approvals/Access UI →
-  CLI (`cmd/corrallm/clientcmd.go` started: flags, apiCall, limit parsing) → live config load + check aw4.
+Done (not deployed): backend 87ea049 (config/configdb/child_key migration, gate, charge, 403 naming
+the filter, filtered /v1/models, refusals naming the budget, oversubscription warnings, API wire
+`models`/`budgets`); CLI db6c9b3 (`corrallm request new|more|status`, `corrallm keys
+list|info|mint|set|disable|enable|revoke`; GET /v1/keys answers any key with its own entry).
+- **next:** Approvals UI moved to models/budgets (subagent) → deploy (backend + UI together: the old
+  page breaks on the new API) → check live: config keys migrated to the same reach, aw4 subkeys'
+  counters carried over → tell aw4-7a the CLI.
 - **risks:** migration must not widen access (test against the live config's keys); counters for
   selectors with no 1:1 old scope start at 0; UI pages that edit `credentials`/`limits` break until
   moved; GraphQL schema change breaks external readers of those fields.
