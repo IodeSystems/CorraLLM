@@ -32,8 +32,10 @@ import (
 // SELECTORS name a set of candidate backends:
 //
 //	*                    everything
-//	local                runs on hardware corrallm manages (Model.Remote false)
-//	proxy                served by a host corrallm does not run (Model.Remote)
+//	local                runs on this box or a host corrallm manages, and
+//	                     forwards with no provider account
+//	proxy                everything else: a host corrallm does not run, or
+//	                     any candidate that forwards with an account
 //	provider:<glob>      the provider the model is declared under
 //	cred:<prov>/<glob>   the account a candidate forwards with
 //	model:<glob>         the backend model's name
@@ -109,10 +111,13 @@ func SelectorMatches(sel string, t Target) bool {
 	switch {
 	case sel == SelectAll:
 		return true
+	// An account makes a candidate paid wherever it is served — a provider
+	// reached through a loopback tunnel is still the provider — so `local`
+	// never admits one.
 	case sel == SelectLocal:
-		return !t.Remote
+		return !t.Remote && t.Cred == ""
 	case sel == SelectProxy:
-		return t.Remote
+		return t.Remote || t.Cred != ""
 	case strings.HasPrefix(sel, "provider:"):
 		return globMatch(strings.TrimPrefix(sel, "provider:"), t.Provider)
 	case strings.HasPrefix(sel, "cred:"):

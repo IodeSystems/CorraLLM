@@ -21,6 +21,9 @@ func TestSelectorMatches(t *testing.T) {
 		{"local", fw, false},
 		{"proxy", fw, true},
 		{"proxy", local, false},
+		// A paid account served on loopback is not local.
+		{"local", Target{Model: "fw-tunnel", Provider: "fireworks", Cred: "cred:fireworks/default"}, false},
+		{"proxy", Target{Model: "fw-tunnel", Provider: "fireworks", Cred: "cred:fireworks/default"}, true},
 		{"provider:fireworks", fw, true},
 		{"provider:fire*", fw, true},
 		{"provider:fireworks", claude, false},
