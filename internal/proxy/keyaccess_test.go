@@ -116,7 +116,7 @@ func TestOversubscriptionWarns(t *testing.T) {
 	k.mount()
 	k.mint(`{"label":"a","budgets":{"model:mock":["$1.70/calendar-day,hard"]}}`)
 	b := k.mint(`{"label":"b","budgets":{"model:mock":["$1.70/calendar-day,hard"]}}`)
-	if len(b.Warnings) != 1 || !strings.Contains(b.Warnings[0], "add up to $3.40, more than the parent's own $3/calendar-day,hard on model:mock") {
+	if len(b.Warnings) != 1 || b.Warnings[0] != "Sub-keys can spend $3.40 a day on mock together; this key's own $3.00 a day stops them first." {
 		t.Errorf("warnings = %v", b.Warnings)
 	}
 	var list struct {
@@ -132,7 +132,7 @@ func TestOversubscriptionWarns(t *testing.T) {
 	k.cfg.Keys["parent"] = config.KeyPolicy{Mint: true,
 		Budgets: config.KeyBudgets{"*": {{USD: 3, Per: "calendar-day", Hard: true}}}}
 	k.mount()
-	if w := k.px.oversubscription("parent"); len(w) != 1 || !strings.Contains(w[0], "on *;") {
+	if w := k.px.oversubscription("parent"); len(w) != 1 || !strings.Contains(w[0], "this key's own $3.00 a day stops them first") {
 		t.Errorf("warnings against the parent's * budget = %v", w)
 	}
 }

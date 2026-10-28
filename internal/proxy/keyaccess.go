@@ -250,35 +250,97 @@ func (p *Proxy) oversubscription(parent string) []string {
 	}
 	_, pBudgets := p.keyAccess(parent)
 	shared := p.sharedCaps()
+	// One plain sentence per oversubscribed budget, naming only the cap that
+	// stops the subkeys first (stooges 10-28: three config-syntax sentences
+	// for one fact were the loudest thing on the page).
+	type cap struct {
+		owner  string
+		amount float64
+	}
 	var out []string
 	for s, sum := range sums {
-		words := fmt.Sprintf("subkeys' %s budgets on %s add up to %s", s.dim+"/"+pers[s], s.sel, amountWords(s.dim, sum))
-		// The parent's budget on the same selector, and its budget on `*`,
-		// which covers every selector.
+		var caps []cap
 		for _, psel := range []string{s.sel, config.SelectAll} {
 			for _, l := range pBudgets[psel] {
-				if d, ok := l.Window(); ok && d == s.dur && l.Dimension() == s.dim && sum > l.Amount() {
-					out = append(out, fmt.Sprintf("%s, more than the parent's own %s on %s; the parent's budget stops the total",
-						words, l.Compact(), psel))
+				if d, ok := l.Window(); ok && d == s.dur && l.Dimension() == s.dim {
+					caps = append(caps, cap{"this key's own", l.Amount()})
 				}
 			}
 			if s.sel == config.SelectAll {
 				break
 			}
 		}
-		model, literal := strings.CutPrefix(s.sel, "model:")
-		if !literal || strings.Contains(model, "*") {
-			continue
-		}
-		for _, c := range shared[model] {
-			if c.dur == s.dur && c.dim == s.dim && sum > c.amount {
-				out = append(out, fmt.Sprintf("%s, more than %s of %s; every key shares that cap",
-					words, scopeOwner(c.scope), amountWords(c.dim, c.amount)))
+		if model, literal := strings.CutPrefix(s.sel, "model:"); literal && !strings.Contains(model, "*") {
+			for _, c := range shared[model] {
+				if c.dur == s.dur && c.dim == s.dim {
+					caps = append(caps, cap{sharedOwner(c.scope), c.amount})
+				}
 			}
 		}
+		tight := -1
+		for i, c := range caps {
+			if sum > c.amount && (tight < 0 || c.amount < caps[tight].amount) {
+				tight = i
+			}
+		}
+		if tight < 0 {
+			continue
+		}
+		per := perWords(pers[s])
+		out = append(out, fmt.Sprintf("Sub-keys can spend %s %s on %s together; %s %s %s stops them first.",
+			amountWords(s.dim, sum), per, selectorPlain(s.sel), caps[tight].owner, amountWords(s.dim, caps[tight].amount), per))
 	}
 	sort.Strings(out)
 	return out
+}
+
+// sharedOwner names a cap every key shares, as a warning says it.
+func sharedOwner(scope string) string {
+	switch {
+	case scope == config.GlobalScopeKey:
+		return "the box's shared"
+	case strings.HasPrefix(scope, "prov:"):
+		return "the " + strings.TrimPrefix(scope, "prov:") + " provider's shared"
+	case strings.HasPrefix(scope, "cred:"):
+		return "the " + strings.TrimPrefix(scope, "cred:") + " account's shared"
+	}
+	return "the model's shared"
+}
+
+// selectorPlain is a selector in words: "everything", a model's name, …
+func selectorPlain(sel string) string {
+	switch {
+	case sel == config.SelectAll:
+		return "everything"
+	case sel == config.SelectLocal:
+		return "local models"
+	case sel == config.SelectProxy:
+		return "paid providers"
+	case strings.HasPrefix(sel, "model:"):
+		return strings.TrimPrefix(sel, "model:")
+	case strings.HasPrefix(sel, "provider:"):
+		return strings.TrimPrefix(sel, "provider:") + " models"
+	case strings.HasPrefix(sel, "cred:"):
+		return "the " + strings.TrimPrefix(sel, "cred:") + " account"
+	}
+	return sel
+}
+
+// perWords is a window as a sentence says it: "a day", "in total".
+func perWords(per string) string {
+	switch strings.TrimPrefix(strings.ToLower(per), "calendar-") {
+	case "minute":
+		return "a minute"
+	case "hour":
+		return "an hour"
+	case "day":
+		return "a day"
+	case "month":
+		return "a month"
+	case "total":
+		return "in total"
+	}
+	return "per " + per
 }
 
 // Oversubscription is oversubscription for the admin API.
@@ -325,6 +387,9 @@ func (p *Proxy) sharedCaps() map[string][]sharedCap {
 func amountWords(dim string, n float64) string {
 	if dim == config.DimUSD {
 		return fmt.Sprintf("$%.2f", n)
+	}
+	if dim == config.DimRequests {
+		return fmt.Sprintf("%g requests", n)
 	}
 	return fmt.Sprintf("%g %s", n, dim)
 }
