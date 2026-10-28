@@ -1,18 +1,18 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   Alert,
   Autocomplete,
   Box,
   Button,
+  Checkbox,
   Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   FormControlLabel,
-  IconButton,
   InputAdornment,
   Menu,
   MenuItem,
@@ -25,16 +25,12 @@ import {
   TableHead,
   TableRow,
   TextField,
-  Tooltip,
   Typography,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import SearchIcon from '@mui/icons-material/Search'
-import VisibilityOutlined from '@mui/icons-material/VisibilityOutlined'
-import VisibilityOffOutlined from '@mui/icons-material/VisibilityOffOutlined'
 import ExpandMore from '@mui/icons-material/ExpandMore'
 import ExpandLess from '@mui/icons-material/ExpandLess'
-import ContentCopy from '@mui/icons-material/ContentCopy'
 import WarningAmberOutlined from '@mui/icons-material/WarningAmberOutlined'
 import { graphql } from '@/gql'
 import type { RequestsQuery } from '@/gql/graphql'
@@ -523,7 +519,7 @@ function requestMatches(r: Req, q: string): boolean {
 /** The search box matches these words of a key; a sub-key also matches on its parent. */
 function keyMatches(k: Key, q: string, d: Data): boolean {
   const parent = k.parent ? d.keys.find((p) => p.key === k.parent) : undefined
-  return [k.key, k.label, k.parent, parent?.label, ...k.models].some((v) => !!v && v.toLowerCase().includes(q))
+  return [k.key, k.label, k.parent, parent?.label, ...k.models, ...askers(k.key, d)].some((v) => !!v && v.toLowerCase().includes(q))
 }
 type Decision = { head: string; working?: string; open: boolean }
 
@@ -797,8 +793,10 @@ function DenyDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: str
         />
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" color="inherit" onClick={() => deny.mutate()} disabled={deny.isPending}>
+        <Button color="inherit" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="contained" onClick={() => deny.mutate()} disabled={deny.isPending}>
           Deny
         </Button>
       </DialogActions>
@@ -843,8 +841,13 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
   const showModels = !!r.requesterKey && !!a.askedModels
   const showTopUps = (a.valueAdds?.length ?? 0) > 0 || f.topUps.length > 0
   const showExpiry = !r.requesterKey || !!a.ttl || !!a.expires
+  const addTopUp = (
+    <Button size="small" startIcon={<AddIcon />} sx={{ px: 0 }} onClick={() => set({ topUps: [newTopUp()] })}>
+      Add a top-up
+    </Button>
+  )
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="lg">
+    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
       <DialogTitle>
         {title}
         <Typography variant="body2" color="text.secondary">
@@ -858,24 +861,10 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
             “{a.purpose}”
           </Typography>
           {existing && <KeyNow k={existing} />}
-          {!existing && (
-            <Box>
-              <Typography variant="subtitle2">What it can use</Typography>
-              <Typography variant="body2">{modelsText(formToGrant(f).models)}</Typography>
-            </Box>
-          )}
           {showModels && <ModelsEditor f={f} set={set} d={d} />}
-          {showBudgets && <BudgetsEditor f={f} set={set} d={d} />}
-          {showTopUps ? (
-            <TopUpsEditor f={f} set={set} d={d} />
-          ) : (
-            <Box>
-              <Typography variant="subtitle2">Top-ups</Typography>
-              <Button size="small" startIcon={<AddIcon />} sx={{ px: 0 }} onClick={() => set({ topUps: [{ usd: '', model: '', ttl: '2d', note: '' }] })}>
-                Add a top-up
-              </Button>
-            </Box>
-          )}
+          {showBudgets && <BudgetsEditor f={f} set={set} d={d} extra={!showTopUps && addTopUp} />}
+          {showTopUps && <TopUpsEditor f={f} set={set} d={d} />}
+          {!showTopUps && !showBudgets && <Box>{addTopUp}</Box>}
           {showExpiry && (
             <Box>
               <Typography variant="subtitle2">Expires</Typography>
@@ -898,7 +887,7 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
           {!existing && (
             <Box>
               <Button size="small" color="inherit" sx={{ px: 0 }} endIcon={more ? <ExpandLess /> : <ExpandMore />} onClick={() => setMore(!more)}>
-                More settings: name, priority, models it may use, sub-keys
+                More settings: name, priority, which models, sub-keys
               </Button>
               {more && <MoreSettings f={f} set={set} d={d} />}
             </Box>
@@ -915,6 +904,8 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
             = {summary.working}
           </Typography>
         )}
+        {/* What a new key may use, said once: here, not also as a line above the form. */}
+        {!existing && <Typography variant="body2">May use {modelsText(g.models)}</Typography>}
         <Typography variant="caption" color="text.secondary">
           {existing
             ? 'Takes effect at once. You can change or switch it off later under Keys, below.'
@@ -922,7 +913,9 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
         </Typography>
       </Box>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose}>Cancel</Button>
+        <Button color="inherit" onClick={onClose}>
+          Cancel
+        </Button>
         <Button variant="contained" onClick={() => void submit()} disabled={busy || (!!f.ttl && !endsAt(f.ttl))}>
           Approve
         </Button>
@@ -931,21 +924,24 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
   )
 }
 
-/** A key as it stands, for a request that would change it. */
+/**
+ * A key as it stands, for a request that would change it: the two facts a
+ * top-up or a cap is decided on, one short line each.
+ */
 function KeyNow({ k }: { k: Key }) {
-  const parts = [
-    `spent ${usd(k.spentToday)} today`,
-    k.budgets.length ? flatLimits(k.budgets).map((x) => limitText(x.l, x.on)).join('; ') : 'no spending limit',
-    `may use ${modelsText(k.models)}`,
-    ...k.valueAdds.filter((v) => v.active).map((v) => `${usd(v.usd - (v.spent ?? 0))} top-up left${v.expires ? ` until ${when(v.expires)}` : ''}`),
-    ...(k.mint ? ['may create sub-keys'] : []),
-  ]
+  const top = k.valueAdds.filter((v) => v.active)
   return (
     <Box sx={{ borderTop: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, py: 1.25 }}>
       <Typography variant="caption" color="text.secondary">
         {keyName(k)} now
       </Typography>
-      <Typography variant="body2">{parts.join(' · ')}</Typography>
+      <Typography variant="body2">Used: {spentLines(k).main}</Typography>
+      {top.map((v) => (
+        <Typography key={v.id} variant="body2">
+          Top-up left: {usd(Math.max(v.usd - (v.spent ?? 0), 0))}
+          {v.expires ? ` until ${when(v.expires)}` : ''}
+        </Typography>
+      ))}
     </Box>
   )
 }
@@ -1015,17 +1011,24 @@ function SelectorField({
       renderInput={(p) => (
         <TextField {...p} label={label} placeholder={free ? 'Pick one, or type a model name' : 'Pick one'} helperText={helper} slotProps={{ ...p.slotProps, formHelperText: { sx: { mx: 0 } } }} />
       )}
-      sx={{ minWidth: 300, flex: 1 }}
+      sx={{ minWidth: 220, flex: 1 }}
     />
   )
 }
 
+const newTopUp = (): TopUp => ({ usd: '', model: '', ttl: '2d', note: '' })
+
 /**
- * What a key may spend, as BUDGETS by selector. Budgets nest: every one that
- * matches a request is charged, so "$20 a day on everything" and "$3 a day on
- * model:*deepseek*" are two rows, and a deepseek request counts against both.
+ * What a key may spend, as LIMITS by what they apply to (the wire calls one a
+ * budget). Each limit has one or more periods: "$20 a day" and "$100 a month"
+ * on the same models. Limits nest: every one that matches a request is
+ * charged, so "$20 a day on everything" and "$3 a day on *deepseek*" are two
+ * limits, and a deepseek request counts against both.
+ *
+ * One word, "limit", for the thing a person sets (UX review round 2: "budget",
+ * "limit" and "add a limit on these" read as three things).
  */
-function BudgetsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
+function BudgetsEditor({ f, set, d, extra }: { f: Form; set: (p: Partial<Form>) => void; d: Data; extra?: ReactNode }) {
   const setB = (i: number, p: Partial<Budget>) => set({ budgets: f.budgets.map((x, j) => (j === i ? { ...x, ...p } : x)) })
   const blank: Lim = { amount: '', unit: 'usd', per: 'calendar-day', hard: true }
   return (
@@ -1042,7 +1045,7 @@ function BudgetsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void
         </Typography>
       )}
       {f.budgets.map((b, i) => (
-        <Box key={i} sx={{ mt: 1.5, p: 1.5, border: `1px solid ${C.border}`, borderRadius: 1 }}>
+        <Box key={i} sx={{ mt: 1.5, ...(i > 0 ? { pt: 1.5, borderTop: `1px solid ${C.border}` } : {}) }}>
           <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
             <SelectorField
               label="Applies to"
@@ -1052,88 +1055,63 @@ function BudgetsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void
               helper={selHint(b.on) || 'Which models this counts'}
             />
             <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => set({ budgets: f.budgets.filter((_, j) => j !== i) })}>
-              Remove budget
+              Remove this limit
             </Button>
           </Stack>
-          <LimitRows limits={b.limits} setLimits={(limits) => setB(i, { limits })} empty="No limit: add one, or remove this budget." blank={blank} />
+          <LimitRows limits={b.limits} setLimits={(limits) => setB(i, { limits })} blank={blank} />
         </Box>
       ))}
-      <Button
-        size="small"
-        startIcon={<AddIcon />}
-        sx={{ mt: 1, px: 0 }}
-        onClick={() => set({ budgets: [...f.budgets, { on: f.budgets.some((b) => b.on === '*') ? '' : '*', limits: [blank] }] })}
-      >
-        Add a budget
-      </Button>
+      <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
+        <Button
+          size="small"
+          startIcon={<AddIcon />}
+          sx={{ px: 0 }}
+          onClick={() => set({ budgets: [...f.budgets, { on: f.budgets.some((b) => b.on === '*') ? '' : '*', limits: [blank] }] })}
+        >
+          {f.budgets.length ? 'Limit for other models' : 'Add a limit'}
+        </Button>
+        {extra}
+      </Stack>
     </Box>
   )
 }
 
 /**
- * The rows of one budget's limits.
- *
- * Only "how much" and "over what" show by default; the rest are rarely changed
- * and said nothing at their defaults (stooges pass 4: five fields for one
- * number). A row that is not at the defaults shows everything.
+ * The periods of one limit: how much, in what, over what, and whether reaching
+ * it refuses or only warns. Every control shows on every row; hiding two of
+ * them behind a button left people unable to find them (UX review round 2).
  */
-function LimitRows({
-  limits,
-  setLimits,
-  empty,
-  blank,
-}: {
-  limits: Lim[]
-  setLimits: (l: Lim[]) => void
-  empty: string
-  blank: Lim
-}) {
+function LimitRows({ limits, setLimits, blank }: { limits: Lim[]; setLimits: (l: Lim[]) => void; blank: Lim }) {
   const setLim = (i: number, p: Partial<Lim>) => setLimits(limits.map((l, j) => (j === i ? { ...l, ...p } : l)))
-  const [opened, setOpened] = useState<Set<number>>(new Set())
-  const full = (l: Lim, i: number) => opened.has(i) || l.unit !== 'usd' || !l.hard
   return (
     <Box>
-      {empty && limits.length === 0 && (
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          {empty}
-        </Typography>
-      )}
       {limits.map((l, i) => (
-        <Stack key={i} direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <TextField label={l.unit === 'usd' ? 'Amount ($)' : 'Amount (requests)'} size="small" type="number" value={l.amount} onChange={(e) => setLim(i, { amount: e.target.value })} sx={{ width: 140 }} />
-          {full(l, i) && (
-            <TextField select size="small" label="Counts" value={l.unit} onChange={(e) => setLim(i, { unit: e.target.value as Lim['unit'] })} sx={{ width: 120 }}>
-              <MenuItem value="usd">dollars</MenuItem>
-              <MenuItem value="req">requests</MenuItem>
-            </TextField>
-          )}
-          <TextField select size="small" label="Over" value={l.per} onChange={(e) => setLim(i, { per: e.target.value })} sx={{ width: 250 }}>
+        <Stack key={i} direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
+          <TextField label="Amount" size="small" type="number" value={l.amount} onChange={(e) => setLim(i, { amount: e.target.value })} sx={{ width: 110 }} />
+          <TextField select size="small" label="In" value={l.unit} onChange={(e) => setLim(i, { unit: e.target.value as Lim['unit'] })} sx={{ width: 120 }}>
+            <MenuItem value="usd">dollars</MenuItem>
+            <MenuItem value="req">requests</MenuItem>
+          </TextField>
+          <TextField select size="small" label="Over" value={l.per} onChange={(e) => setLim(i, { per: e.target.value })} sx={{ width: 240 }}>
             {PERS.map((p) => (
               <MenuItem key={p.v} value={p.v}>
                 {p.label}
               </MenuItem>
             ))}
           </TextField>
-          {full(l, i) && (
-            <TextField select size="small" label="When reached" value={l.hard ? 'stop' : 'warn'} onChange={(e) => setLim(i, { hard: e.target.value === 'stop' })} sx={{ width: 170 }}>
-              <MenuItem value="stop">refuse requests</MenuItem>
-              <MenuItem value="warn">only warn me</MenuItem>
-            </TextField>
-          )}
-          {!full(l, i) && (
-            <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => setOpened(new Set(opened).add(i))}>
-              Count requests, or only warn
-            </Button>
-          )}
+          <FormControlLabel
+            control={<Checkbox size="small" checked={!l.hard} onChange={(e) => setLim(i, { hard: !e.target.checked })} />}
+            label={<Typography variant="body2">Only warn, don't block</Typography>}
+          />
           {limits.length > 1 && (
-            <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => setLimits(limits.filter((_, j) => j !== i))}>
-              Remove limit
+            <Button size="small" color="inherit" onClick={() => setLimits(limits.filter((_, j) => j !== i))}>
+              Remove period
             </Button>
           )}
         </Stack>
       ))}
       <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => setLimits([...limits, blank])}>
-        Add a limit
+        Another period
       </Button>
     </Box>
   )
@@ -1150,7 +1128,7 @@ function TopUpsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
       {f.topUps.map((v, i) => (
         <TopUpRow key={i} v={v} set={(p) => setT(i, p)} remove={() => set({ topUps: f.topUps.filter((_, j) => j !== i) })} d={d} />
       ))}
-      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => set({ topUps: [...f.topUps, { usd: '', model: '', ttl: '2d', note: '' }] })}>
+      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => set({ topUps: [...f.topUps, newTopUp()] })}>
         Add a top-up
       </Button>
     </Box>
@@ -1178,11 +1156,11 @@ function TopUpRow({ v, set, remove, d }: { v: TopUp; set: (p: Partial<TopUp>) =>
         helperText={v.ttl ? (endsAt(v.ttl) ? `On ${endsAt(v.ttl)}` : 'Write it as 2d or 48h') : 'Until spent'}
         error={!!v.ttl && !endsAt(v.ttl)}
         slotProps={helperFlush}
-        sx={{ width: 260 }}
+        sx={{ width: 200 }}
       />
       {remove && (
         <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={remove}>
-          Remove
+          Remove this top-up
         </Button>
       )}
     </Stack>
@@ -1289,15 +1267,22 @@ function KeysPanel({ d, pendingKeys, needle, query }: { d: Data; pendingKeys: st
       flush
     >
       <TableContainer>
-        <Table size="small" sx={{ '& th': { fontSize: 12 } }}>
+        {/* Fixed widths: a search that hides rows must not move the columns. */}
+        <Table size="small" sx={{ tableLayout: 'fixed', minWidth: 960, '& th': { fontSize: 12 } }}>
           <TableHead>
             <TableRow>
               <TableCell>Key</TableCell>
-              <TableCell align="center">On</TableCell>
-              <TableCell align="right">Used</TableCell>
-              <TableCell align="right">Top-ups left</TableCell>
-              <TableCell>Expires</TableCell>
-              <TableCell align="right" />
+              <TableCell align="center" sx={{ width: 100 }}>
+                On
+              </TableCell>
+              <TableCell align="right" sx={{ width: 230 }}>
+                Used
+              </TableCell>
+              <TableCell align="right" sx={{ width: 160 }}>
+                Top-ups left
+              </TableCell>
+              <TableCell sx={{ width: 150 }}>Expires</TableCell>
+              <TableCell align="right" sx={{ width: 130 }} />
             </TableRow>
           </TableHead>
           <TableBody>
@@ -1322,10 +1307,12 @@ function KeysPanel({ d, pendingKeys, needle, query }: { d: Data; pendingKeys: st
 }
 
 /**
- * What a key used against its limits: the main dollar limit first when it has
- * one. "on <model>" shows only where the row does not already say it — not for
- * a budget on everything, not once per limit when every budget is on the same
- * thing, and not when the "may use" line names it.
+ * What a key used against its limits, in one form for every row: the main
+ * dollar limit ("$X of $Y a day"), or "$X today · no limit"; then every other
+ * limit, requests last, one per line in the same form. "on <model>" shows only
+ * where the row does not already say it — not for a budget on everything, not
+ * once per limit when every budget is on the same thing, and not when the "may
+ * use" line names it.
  */
 function spentLines(k: Key): { main: string; rest: string[]; blocked: boolean } {
   const all = flatLimits(k.budgets)
@@ -1347,13 +1334,22 @@ function spentLines(k: Key): { main: string; rest: string[]; blocked: boolean } 
   // Every budget on one thing the row does not name yet: say it once.
   const once = only !== null && only !== '*' && !named(only) ? `on ${selWords(only)}` : ''
   const blocked = all.some((x) => fmtL(x).blocked)
+  const dollars = all.filter((x) => (x.l.usd ?? 0) > 0)
   // The main line: a dollar limit on everything, else any dollar limit.
-  const main = all.find((x) => x.on === '*' && (x.l.usd ?? 0) > 0) ?? all.find((x) => (x.l.usd ?? 0) > 0)
-  if (!main) {
-    return { main: `${usd(k.spentToday)} today${all.length === 0 ? ' · no limit' : ''}`, rest: [...all.map(line), once].filter(Boolean), blocked }
-  }
-  return { main: fmtL(main).text, rest: [onWords(main.on) || once, ...all.filter((x) => x !== main).map(line)].filter(Boolean), blocked }
+  const main = dollars.find((x) => x.on === '*') ?? dollars[0]
+  const others = [...dollars.filter((x) => x !== main), ...all.filter((x) => !((x.l.usd ?? 0) > 0))].map(line)
+  if (!main) return { main: `${usd(k.spentToday)} today · no ${all.length ? 'dollar ' : ''}limit`, rest: [...others, once].filter(Boolean), blocked }
+  return { main: fmtL(main).text, rest: [onWords(main.on) || once, ...others].filter(Boolean), blocked }
 }
+
+/** Who said, in a request, that they hold this key or were given it. */
+function askers(key: string, d: Data): string[] {
+  return [...new Set(d.requests.flatMap((r) => ((r.requesterKey === key || r.issuedKey === key) && r.asked.from ? [r.asked.from] : [])))]
+}
+
+// A small text button that does not compete with the numbers in a row.
+const quiet = { minWidth: 0, fontWeight: 400, color: 'text.secondary' } as const
+const quieter = { ...quiet, px: 0.5, py: 0, fontSize: 12, lineHeight: 1.5 } as const
 
 function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; context: boolean }) {
   const qc = useQueryClient()
@@ -1393,45 +1389,55 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
         ? 'sub-key'
         : ''
   const sp = spentLines(k)
+  // A top-up is spent only once a hard limit refuses; with none it would never be used.
+  const stops = k.budgets.some((b) => (b.limits ?? []).some((l) => l.hard))
+  const asked = askers(k.key, d)
   // Off for two different reasons — an admin switched it off, or its expiry
   // passed — and the switch is the same either way: one control to turn a key
   // back on, whichever stopped it.
   const off = k.disabled || k.expired
   const stoppedBy = k.disabled ? 'switched off' : k.expired ? 'expired' : ''
+  // One caption of facts, so no line holds a single word ("sub-key").
+  const facts = [
+    who,
+    stoppedBy,
+    k.mint ? 'may create sub-keys' : '',
+    asked.length ? `asked by ${asked.join(', ')}` : '',
+    k.models.length ? `may use ${modelsText(k.models)}` : '',
+  ].filter(Boolean)
+  const id = (
+    <Typography
+      variant={k.label ? 'caption' : 'body2'}
+      sx={{ fontFamily: 'monospace', wordBreak: 'break-all', fontWeight: k.label ? undefined : 600, color: reveal || !k.label ? 'text.primary' : 'text.secondary' }}
+    >
+      {reveal ? k.key : maskKey(k.key)}
+    </Typography>
+  )
   return (
     <TableRow sx={{ opacity: off ? 0.55 : context ? 0.7 : 1, verticalAlign: 'top' }}>
-      <TableCell sx={{ minWidth: 220, pl: nested ? 4 : undefined }}>
-        <Typography variant="body2" color={k.label ? undefined : 'text.secondary'} sx={{ fontWeight: 600 }}>
-          {k.label || 'Unnamed key'}
-        </Typography>
-        <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
-          <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
-            {reveal ? k.key : maskKey(k.key)}
+      <TableCell sx={{ pl: nested ? 4 : undefined }}>
+        {k.label && (
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {k.label}
           </Typography>
-          <Tooltip title={reveal ? 'Hide the key' : 'Show the whole key'}>
-            <IconButton size="small" onClick={() => setReveal(!reveal)} aria-label={reveal ? `Hide ${keyName(k)}` : `Show ${keyName(k)}`} sx={{ p: 0.25 }}>
-              {reveal ? <VisibilityOffOutlined sx={{ fontSize: 14 }} /> : <VisibilityOutlined sx={{ fontSize: 14 }} />}
-            </IconButton>
-          </Tooltip>
-          {reveal && (
-            <Tooltip title={copied ? 'Copied' : 'Copy the key'}>
-              <IconButton size="small" onClick={copy} aria-label={`Copy ${keyName(k)}`} sx={{ p: 0.25 }}>
-                <ContentCopy sx={{ fontSize: 14 }} />
-              </IconButton>
-            </Tooltip>
-          )}
+        )}
+        <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+          {id}
+          <Button size="small" sx={quieter} onClick={() => setReveal(!reveal)} aria-label={reveal ? `Hide ${keyName(k)}` : `Show ${keyName(k)}`}>
+            {reveal ? 'Hide' : 'Show'}
+          </Button>
+          <Button size="small" sx={quieter} onClick={copy} aria-label={`Copy ${keyName(k)}`}>
+            {copied ? 'Copied' : 'Copy'}
+          </Button>
         </Stack>
         {context && (
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
             shown because its sub-keys match
           </Typography>
         )}
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', whiteSpace: 'nowrap' }}>
-          {[who, stoppedBy, k.mint ? 'may create sub-keys' : ''].filter(Boolean).join(' · ')}
-        </Typography>
-        {k.models.length > 0 && (
+        {facts.length > 0 && (
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-            may use {modelsText(k.models)}
+            {facts.join(' · ')}
           </Typography>
         )}
         <Warnings k={k} />
@@ -1442,15 +1448,20 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
         )}
       </TableCell>
       <TableCell align="center">
-        <Switch
-          size="small"
-          checked={!off}
-          onChange={(e) => act.mutate(e.target.checked ? 'enable' : 'disable')}
-          slotProps={{ input: { 'aria-label': off ? `Switch ${keyName(k)} on` : `Switch ${keyName(k)} off` } }}
-        />
+        <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'center' }}>
+          <Switch
+            size="small"
+            checked={!off}
+            onChange={(e) => act.mutate(e.target.checked ? 'enable' : 'disable')}
+            slotProps={{ input: { 'aria-label': off ? `Switch ${keyName(k)} on` : `Switch ${keyName(k)} off` } }}
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ width: 22, textAlign: 'left' }}>
+            {off ? 'Off' : 'On'}
+          </Typography>
+        </Stack>
       </TableCell>
-      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-        <Typography variant="body2" sx={{ color: sp.blocked ? C.error : undefined }}>
+      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+        <Typography variant="body2" sx={{ color: sp.blocked ? C.error : undefined, whiteSpace: 'nowrap' }}>
           {sp.main}
           {sp.blocked ? ' — reached' : ''}
         </Typography>
@@ -1484,17 +1495,14 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
         </Typography>
       </TableCell>
       <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-        <Button size="small" color="inherit" onClick={() => setEdit(true)}>
+        <Button size="small" sx={quiet} onClick={() => setEdit(true)}>
           Edit
         </Button>
-        <Button size="small" color="inherit" onClick={() => setAddTopUp(true)}>
-          Top up
-        </Button>
-        <Button size="small" color="inherit" endIcon={<ExpandMore />} onClick={(e) => setMenu(e.currentTarget)}>
+        <Button size="small" sx={quiet} endIcon={<ExpandMore />} onClick={(e) => setMenu(e.currentTarget)}>
           More
         </Button>
         <Menu anchorEl={menu} open={!!menu} onClose={() => setMenu(null)}>
-          <MenuItem onClick={() => void navigator.clipboard.writeText(k.key).then(() => setMenu(null))}>Copy the key</MenuItem>
+          {stops && <MenuItem onClick={() => (setMenu(null), setAddTopUp(true))}>Top up…</MenuItem>}
           {k.valueAdds
             .filter((v) => v.active)
             .map((v) => (
@@ -1513,16 +1521,18 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
       </TableCell>
       {edit && <EditKeyDialog k={k} d={d} onClose={() => setEdit(false)} onDone={refresh} />}
       {addTopUp && <TopUpDialog k={k} d={d} onClose={() => setAddTopUp(false)} onDone={refresh} />}
-      <Dialog open={confirmDelete} onClose={() => setConfirmDelete(false)}>
+      <Dialog open={confirmDelete} onClose={() => setConfirmDelete(false)} fullWidth maxWidth="sm">
         <DialogTitle>Delete {keyName(k)}?</DialogTitle>
         <DialogContent>
-          <Typography variant="body2">
+          <Typography variant="body2" sx={{ maxWidth: '72ch' }}>
             The key stops working at once, and so do any sub-keys it made. Its top-ups are removed, and it cannot be brought back.
             {off ? '' : ' Switching it off stops it the same way but keeps it, and it can be switched on again.'}
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setConfirmDelete(false)}>Cancel</Button>
+          <Button color="inherit" onClick={() => setConfirmDelete(false)}>
+            Cancel
+          </Button>
           <Button color="error" onClick={() => act.mutate('delete')} disabled={act.isPending}>
             Delete for good
           </Button>
@@ -1550,7 +1560,7 @@ function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: ()
     onError: (e) => setErr(extractMessage(e)),
   })
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="lg">
+    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
       <DialogTitle>Edit {keyName(k)}</DialogTitle>
       <DialogContent>
         <Stack spacing={2.5} sx={{ mt: 0.5 }}>
@@ -1574,7 +1584,9 @@ function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: ()
         </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose}>Cancel</Button>
+        <Button color="inherit" onClick={onClose}>
+          Cancel
+        </Button>
         <Button variant="contained" onClick={() => save.mutate()} disabled={save.isPending || (!!f.ttl && !endsAt(f.ttl))}>
           Save
         </Button>
@@ -1613,7 +1625,7 @@ function CreateKeyDialog({ d, onClose }: { d: Data; onClose: () => void }) {
   })
   const line = costLine(formToGrant(f).budgets, [], f.ttl, true)
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="lg">
+    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
       <DialogTitle>{made ? 'Key made' : 'New key'}</DialogTitle>
       <DialogContent>
         {made ? (
@@ -1654,7 +1666,9 @@ function CreateKeyDialog({ d, onClose }: { d: Data; onClose: () => void }) {
           </Button>
         ) : (
           <>
-            <Button onClick={onClose}>Cancel</Button>
+            <Button color="inherit" onClick={onClose}>
+          Cancel
+        </Button>
             <Button
               variant="contained"
               onClick={() => create.mutate()}
@@ -1683,7 +1697,6 @@ function TopUpDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: () =
     },
     onError: (e) => setErr(extractMessage(e)),
   })
-  const stops = k.budgets.some((b) => b.limits.some((l) => l.hard))
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="sm">
       <DialogTitle>Top up {keyName(k)}</DialogTitle>
@@ -1691,13 +1704,15 @@ function TopUpDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: () =
         <Stack spacing={2} sx={{ mt: 0.5 }}>
           {err && <Alert severity="error">{err}</Alert>}
           <Typography variant="body2" color="text.secondary">
-            {stops ? 'Used only after its limits are reached.' : 'This key has no limit that stops it, so a top-up would never be used.'}
+            Used only after its limits are reached.
           </Typography>
           <TopUpRow v={v} set={(p) => setV({ ...v, ...p })} d={d} />
         </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose}>Cancel</Button>
+        <Button color="inherit" onClick={onClose}>
+          Cancel
+        </Button>
         <Button variant="contained" onClick={() => add.mutate()} disabled={add.isPending || !(Number(v.usd) > 0) || (!!v.ttl && !endsAt(v.ttl))}>
           Add {Number(v.usd) > 0 ? usd(Number(v.usd)) : ''}
         </Button>
