@@ -16,6 +16,7 @@ import {
   InputAdornment,
   Menu,
   MenuItem,
+  Select,
   Stack,
   Switch,
   Table,
@@ -379,7 +380,7 @@ function selOption(s: string): string {
 function selHint(s: string): string {
   const t = normSel(s)
   if (t === '') return ''
-  if (t === '*') return 'Counts every request it makes'
+  if (t === '*') return ''
   if (t === 'local') return 'Models that run on this box'
   if (t === 'proxy') return 'Models served by a remote provider'
   const glob = t.includes('*')
@@ -508,7 +509,22 @@ export function maskKey(key: string): string {
   return `${key.slice(0, Math.min(4, key.length - 1))}…`
 }
 
-const keyName = (k: Pick<Key, 'key' | 'label'>) => k.label || maskKey(k.key)
+/**
+ * The name of the assistant that asked about this key — the `from` of the
+ * newest request it filed with the key or was given it by — or ''.
+ */
+function askedName(key: string, d: Data): string {
+  const rs = d.requests.filter((r) => (r.requesterKey === key || r.issuedKey === key) && r.asked.from)
+  rs.sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime())
+  return rs[0]?.asked.from ?? ''
+}
+
+/**
+ * A key's name wherever the page names it (owner 10-28): its label, else the
+ * assistant that asked about it, else its masked id. A configured key has a
+ * label only when someone gave it one here.
+ */
+const keyName = (k: Pick<Key, 'key' | 'label'>, d: Data) => k.label || askedName(k.key, d) || maskKey(k.key)
 
 /** The search box matches these words of a request. */
 function requestMatches(r: Req, q: string): boolean {
@@ -560,27 +576,50 @@ function requestTitle(r: Req, d: Data): string {
 function requestParts(r: Req, d: Data): { who: string; what: string } {
   const a = r.asked
   const k = r.requesterKey ? d.keys.find((x) => x.key === r.requesterKey) : undefined
-  const name = k ? keyName(k) : (r.requesterKey ?? '')
-  // One form for every requester: the name it gave, then the key it holds.
-  const asker = a.from || (r.requesterKey ? `key ${name}` : 'an unnamed assistant')
-  const who = a.from && r.requesterKey && a.from !== name ? `${asker} · key ${name}` : asker
-  return { who, what: requestWhat(r, name, k) }
+  const name = k ? keyName(k, d) : (r.requesterKey ?? '')
+  // The key is named once: as the asker when it gave no name, else in what it asks.
+  const self = !a.from || a.from === name
+  const who = a.from || (r.requesterKey ? `key ${name}` : 'an unnamed assistant')
+  return { who, what: requestWhat(r, self ? null : `key ${name}`, k) }
 }
 
-function requestWhat(r: Req, name: string, k?: Key): string {
+/** What a request asks; `key` names the key, or null when the asker already did ("it"). */
+function requestWhat(r: Req, key: string | null, k?: Key): string {
   const a = r.asked
   if (!r.requesterKey) return `new key “${a.label}”`
+  const it = key ?? 'it'
+  const its = key ? `${key}'s` : 'its'
   const kinds: string[] = []
-  for (const v of a.valueAdds ?? []) kinds.push(`top up ${name} with ${usd(v.usd)}${v.ttl ? ` for ${ttlWords(v.ttl)}` : ''}`)
+  for (const v of a.valueAdds ?? []) kinds.push(`${key ? `top up ${key}` : 'top it up'} with ${usd(v.usd)}${v.ttl ? ` for ${ttlWords(v.ttl)}` : ''}`)
   if (a.askedBudgets) {
     // Now → asked, so a cap reads as a cap (stooges pass 3: "$2.00 a day" alone
     // could not say whether it tightened or loosened anything).
-    kinds.push(`change ${name}'s limit from ${k ? budgetsText(k.budgets) : '?'} to ${budgetsText(a.budgets ?? [])}`)
+    kinds.push(`change ${its} limit from ${k ? budgetsText(k.budgets) : '?'} to ${budgetsText(a.budgets ?? [])}`)
   }
-  if (a.askedModels) kinds.push(`change what ${name} may use from ${k ? modelsText(k.models) : '?'} to ${modelsText(a.models)}`)
-  if (a.askedMint) kinds.push(a.mint ? `let ${name} create sub-keys` : `stop ${name} creating sub-keys`)
-  if (a.ttl || a.expires) kinds.push(`change when ${name} expires`)
-  return kinds.length ? kinds.join(' · ') : `change ${name}`
+  if (a.askedModels) kinds.push(`change what ${it} may use from ${k ? modelsText(k.models) : '?'} to ${modelsText(a.models)}`)
+  if (a.askedMint) kinds.push(a.mint ? `let ${it} create sub-keys` : `stop ${it} creating sub-keys`)
+  if (a.ttl || a.expires) kinds.push(`change when ${it} expires`)
+  return kinds.length ? kinds.join(' · ') : `change ${it}`
+}
+
+/**
+ * What stays if the owner denies, from what the request is about: "If you
+ * deny, sk-a… keeps $3.00 a day on everything and $5.00 of top-up."
+ */
+function keepsLine(r: Req, k: Key | undefined, d: Data): string {
+  if (!k) return 'If you deny, no key is made.'
+  const a = r.asked
+  const parts: string[] = []
+  if (a.askedBudgets || a.valueAdds?.length) parts.push(budgetsText(k.budgets))
+  if (a.valueAdds?.length) {
+    const left = k.valueAdds.filter((v) => v.active).reduce((n, v) => n + Math.max(v.usd - (v.spent ?? 0), 0), 0)
+    parts.push(left > 0 ? `${usd(left)} of top-up` : 'no top-up')
+  }
+  if (a.askedModels) parts.push(`access to ${modelsText(k.models)}`)
+  if (a.askedMint) parts.push(k.mint ? 'the right to create sub-keys' : 'no right to create sub-keys')
+  if (a.ttl || a.expires) parts.push(k.expires ? `its expiry on ${when(k.expires)}` : 'no expiry')
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : (parts[0] ?? 'what it has')
+  return `If you deny, ${keyName(k, d)} keeps ${list}.`
 }
 
 /** "2d" → "2 days", "48h" → "48 hours". */
@@ -637,6 +676,51 @@ function worstCase(k: Key, newTopUps: { usd: number }[], untilMs: number): { usd
 const selectSlots = { select: { displayEmpty: true }, inputLabel: { shrink: true } }
 // Helper text on the field's own left edge, not indented 14 px past it.
 const helperFlush = { formHelperText: { sx: { mx: 0 } } }
+
+// Text buttons by role (UX review round 3). Neutral — Edit, More, Show, Copy,
+// Remove — is quiet, so it does not compete with the numbers; dismiss (Cancel,
+// in a dialog) is plain text at full strength.
+const quiet = { minWidth: 0, fontWeight: 400, color: 'text.secondary' } as const
+const quieter = { ...quiet, px: 0.5, py: 0, fontSize: 12, lineHeight: 1.5 } as const
+const dismiss = { color: 'text.primary', fontWeight: 600 } as const
+
+// The width kept at the end of every form row in a dialog, for the control
+// that removes that row, so the fields' right edges line up whether a row has
+// one or not.
+const END_W = 128
+
+/** One form row of a dialog: fields that share the width, then the end slot. */
+function Row({ children, end, mt = 1.5 }: { children: ReactNode; end?: ReactNode; mt?: number }) {
+  return (
+    <Stack direction="row" spacing={1} sx={{ alignItems: 'flex-start', mt }}>
+      <Stack direction="row" spacing={1} sx={{ flex: 1, minWidth: 0, alignItems: 'flex-start' }}>
+        {children}
+      </Stack>
+      <Box sx={{ width: END_W, flexShrink: 0, textAlign: 'right', pt: 0.5 }}>{end}</Box>
+    </Stack>
+  )
+}
+
+/** The control at the end of a row that removes it. */
+function RemoveButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <Button size="small" sx={{ ...quiet, px: 0.5 }} onClick={onClick}>
+      {label}
+    </Button>
+  )
+}
+
+/** One warning line: the icon alone in amber, the sentence as the server wrote it. */
+function WarningLine({ text }: { text: string }) {
+  return (
+    <Stack direction="row" spacing={0.5} sx={{ alignItems: 'flex-start', mt: 0.25 }}>
+      <WarningAmberOutlined sx={{ fontSize: 14, color: C.warn, mt: '2px' }} />
+      <Typography variant="caption" color="text.secondary">
+        {text}
+      </Typography>
+    </Stack>
+  )
+}
 
 function useData() {
   return useQuery({ queryKey: ['requests'], queryFn: () => gqlClient.request(RequestsDoc), refetchInterval: 10_000 })
@@ -716,11 +800,6 @@ function PendingRow({ r, d }: { r: Req; d: Data }) {
           <Typography variant="body1" sx={{ fontWeight: 600, color: line.open ? C.warn : undefined }}>
             {line.head}
           </Typography>
-          {line.working && (
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-              = {line.working}
-            </Typography>
-          )}
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
             “{a.purpose}”
           </Typography>
@@ -747,7 +826,7 @@ function PendingRow({ r, d }: { r: Req; d: Data }) {
 
 function DenyDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: string; who: string; onClose: () => void }) {
   const existing = r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined
-  const line = decision(r.asked.budgets ?? [], r.asked.valueAdds ?? [], r.asked.ttl, !r.requesterKey, r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined)
+  const line = decision(r.asked.budgets ?? [], r.asked.valueAdds ?? [], r.asked.ttl, !r.requesterKey, existing)
   const qc = useQueryClient()
   const [reason, setReason] = useState('')
   const [err, setErr] = useState('')
@@ -766,34 +845,29 @@ function DenyDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: str
         <Typography variant="body2" color="text.secondary">
           asked by {who}
         </Typography>
+        <Typography variant="body2">{keepsLine(r, existing, d)}</Typography>
       </DialogTitle>
       <DialogContent>
-        {err && <Alert severity="error">{err}</Alert>}
-        <Typography variant="body1" sx={{ fontWeight: 600, color: line.open ? C.warn : undefined }}>
-          {line.head}
-        </Typography>
-        {line.working && (
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-            = {line.working}
+        <Stack spacing={2.5} sx={{ mt: 0.5 }}>
+          {err && <Alert severity="error">{err}</Alert>}
+          <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
+            “{r.asked.purpose}”
           </Typography>
-        )}
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1, whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
-          “{r.asked.purpose}”
-        </Typography>
-        {existing && <KeyNow k={existing} />}
-        <TextField
-          label="Reason (optional)"
-          helperText="The assistant is told this the next time it checks on its request."
-          fullWidth
-          size="small"
-          margin="dense"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          slotProps={helperFlush}
-        />
+          {existing && <KeyNow k={existing} d={d} />}
+          <TextField
+            label="Reason (optional)"
+            helperText="The assistant is told this the next time it checks on its request."
+            fullWidth
+            size="small"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            slotProps={{ ...helperFlush, inputLabel: { shrink: true } }}
+          />
+        </Stack>
       </DialogContent>
+      <DecideFooter line={line} />
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button color="inherit" onClick={onClose}>
+        <Button sx={dismiss} onClick={onClose}>
           Cancel
         </Button>
         <Button variant="contained" onClick={() => deny.mutate()} disabled={deny.isPending}>
@@ -860,7 +934,7 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
           <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
             “{a.purpose}”
           </Typography>
-          {existing && <KeyNow k={existing} />}
+          {existing && <KeyNow k={existing} d={d} />}
           {showModels && <ModelsEditor f={f} set={set} d={d} />}
           {showBudgets && <BudgetsEditor f={f} set={set} d={d} extra={!showTopUps && addTopUp} />}
           {showTopUps && <TopUpsEditor f={f} set={set} d={d} />}
@@ -868,17 +942,19 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
           {showExpiry && (
             <Box>
               <Typography variant="subtitle2">Expires</Typography>
-              <TextField
-                label="Key expires after"
-                placeholder="7d, 48h — empty: never"
-                size="small"
-                value={f.ttl}
-                onChange={(e) => set({ ttl: e.target.value })}
-                helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}, if you approve now` : 'Write it as 7d or 48h') : 'Never'}
-                error={!!f.ttl && !endsAt(f.ttl)}
-                slotProps={helperFlush}
-                sx={{ width: 260, mt: 1.5 }}
-              />
+              <Row>
+                <TextField
+                  label="Key expires after"
+                  placeholder="7d, 48h — empty: never"
+                  size="small"
+                  fullWidth
+                  value={f.ttl}
+                  onChange={(e) => set({ ttl: e.target.value })}
+                  helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}, if you approve now` : 'Write it as 7d or 48h') : 'Never'}
+                  error={!!f.ttl && !endsAt(f.ttl)}
+                  slotProps={{ ...helperFlush, inputLabel: { shrink: true } }}
+                />
+              </Row>
             </Box>
           )}
           {existing && a.askedMint && (
@@ -886,34 +962,33 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
           )}
           {!existing && (
             <Box>
-              <Button size="small" color="inherit" sx={{ px: 0 }} endIcon={more ? <ExpandLess /> : <ExpandMore />} onClick={() => setMore(!more)}>
+              <Button size="small" sx={{ ...quiet, px: 0, fontSize: 14 }} endIcon={more ? <ExpandLess /> : <ExpandMore />} onClick={() => setMore(!more)}>
                 More settings: name, priority, which models, sub-keys
               </Button>
               {more && <MoreSettings f={f} set={set} d={d} />}
             </Box>
           )}
-          <TextField label="Note to the assistant (optional)" size="small" value={f.reason} onChange={(e) => set({ reason: e.target.value })} />
+          <Row>
+            <TextField
+              label="Note to the assistant (optional)"
+              size="small"
+              fullWidth
+              value={f.reason}
+              onChange={(e) => set({ reason: e.target.value })}
+              slotProps={{ inputLabel: { shrink: true } }}
+            />
+          </Row>
         </Stack>
       </DialogContent>
-      <Box sx={{ px: 3, pt: 1.5, borderTop: `1px solid ${C.border}` }}>
-        <Typography variant="body1" sx={{ fontWeight: 600, color: summary.open ? C.warn : undefined }}>
-          {summary.head}
-        </Typography>
-        {summary.working && (
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-            = {summary.working}
-          </Typography>
-        )}
+      <DecideFooter line={summary}>
         {/* What a new key may use, said once: here, not also as a line above the form. */}
         {!existing && <Typography variant="body2">May use {modelsText(g.models)}</Typography>}
         <Typography variant="caption" color="text.secondary">
-          {existing
-            ? 'Takes effect at once. You can change or switch it off later under Keys, below.'
-            : 'The assistant gets the key the next time it checks, once. You can switch it off later under Keys, below.'}
+          {existing ? 'Takes effect at once.' : 'The assistant gets the key the next time it checks.'}
         </Typography>
-      </Box>
+      </DecideFooter>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button color="inherit" onClick={onClose}>
+        <Button sx={dismiss} onClick={onClose}>
           Cancel
         </Button>
         <Button variant="contained" onClick={() => void submit()} disabled={busy || (!!f.ttl && !endsAt(f.ttl))}>
@@ -925,15 +1000,35 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
 }
 
 /**
+ * The foot of a decide dialog, above its buttons: the one line the decision
+ * rests on, and how it was worked out. Approve and Deny share it.
+ */
+function DecideFooter({ line, children }: { line: Decision; children?: ReactNode }) {
+  return (
+    <Box sx={{ px: 3, pt: 1.5, borderTop: `1px solid ${C.border}` }}>
+      <Typography variant="body1" sx={{ fontWeight: 600, color: line.open ? C.warn : undefined }}>
+        {line.head}
+      </Typography>
+      {line.working && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+          = {line.working}
+        </Typography>
+      )}
+      {children}
+    </Box>
+  )
+}
+
+/**
  * A key as it stands, for a request that would change it: the two facts a
  * top-up or a cap is decided on, one short line each.
  */
-function KeyNow({ k }: { k: Key }) {
+function KeyNow({ k, d }: { k: Key; d: Data }) {
   const top = k.valueAdds.filter((v) => v.active)
   return (
     <Box sx={{ borderTop: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, py: 1.25 }}>
       <Typography variant="caption" color="text.secondary">
-        {keyName(k)} now
+        {keyName(k, d)} now
       </Typography>
       <Typography variant="body2">Used: {spentLines(k).main}</Typography>
       {top.map((v) => (
@@ -947,24 +1042,9 @@ function KeyNow({ k }: { k: Key }) {
 }
 
 /**
- * Where a key's sub-keys promise more than it has. Allowed, but said: one
- * sentence per line, as the server writes it, the icon alone in amber.
- */
-function Warnings({ k }: { k: Key }) {
-  return k.warnings.map((w) => (
-    <Stack key={w} direction="row" spacing={0.5} sx={{ alignItems: 'flex-start', mt: 0.25 }}>
-      <WarningAmberOutlined sx={{ fontSize: 14, color: C.warn, mt: '2px' }} />
-      <Typography variant="caption" color="text.secondary">
-        {w}
-      </Typography>
-    </Stack>
-  ))
-}
-
-/**
  * A selector field. The choices show in words ("Every model", "Local models",
- * a model's name) and the value kept is the selector. With `free`, a person
- * may also type one: a model's name, or a glob such as *deepseek*.
+ * a model's name) and the value kept is the selector. A person may also type
+ * one: a model's name, or a glob such as *deepseek*.
  *
  * The field keeps its own text: MUI would write the chosen option's words
  * back into the box on every value change, which would rewrite "local" to
@@ -976,19 +1056,17 @@ function SelectorField({
   options,
   label,
   helper,
-  free = true,
 }: {
   value: string
   onChange: (v: string) => void
   options: string[]
   label: string
   helper: string
-  free?: boolean
 }) {
   const [text, setText] = useState(value ? selOption(value) : '')
   // Typed words that name a choice are that choice; anything else is a selector as typed.
   const resolve = (t: string) => options.find((o) => o === t.trim() || selOption(o).toLowerCase() === t.trim().toLowerCase()) ?? t.trim()
-  // A value changed from outside (a budget above this one removed) replaces the text.
+  // A value changed from outside (a limit above this one removed) replaces the text.
   const [seen, setSeen] = useState(value)
   if (value !== seen) {
     setSeen(value)
@@ -996,7 +1074,7 @@ function SelectorField({
   }
   return (
     <Autocomplete
-      freeSolo={free}
+      freeSolo
       size="small"
       options={options}
       getOptionLabel={selOption}
@@ -1006,12 +1084,18 @@ function SelectorField({
       onInputChange={(_, v, reason) => {
         if (reason === 'reset') return
         setText(v)
-        if (free && reason === 'input') onChange(resolve(v))
+        if (reason === 'input') onChange(resolve(v))
       }}
       renderInput={(p) => (
-        <TextField {...p} label={label} placeholder={free ? 'Pick one, or type a model name' : 'Pick one'} helperText={helper} slotProps={{ ...p.slotProps, formHelperText: { sx: { mx: 0 } } }} />
+        <TextField
+          {...p}
+          label={label}
+          placeholder="Pick one, or type a model name"
+          helperText={helper || undefined}
+          slotProps={{ ...p.slotProps, formHelperText: { sx: { mx: 0 } } }}
+        />
       )}
-      sx={{ minWidth: 220, flex: 1 }}
+      sx={{ flex: 1, minWidth: 0 }}
     />
   )
 }
@@ -1026,11 +1110,28 @@ const newTopUp = (): TopUp => ({ usd: '', model: '', ttl: '2d', note: '' })
  * limits, and a deepseek request counts against both.
  *
  * One word, "limit", for the thing a person sets (UX review round 2: "budget",
- * "limit" and "add a limit on these" read as three things).
+ * "limit" and "add a limit on these" read as three things). `warnings` are the
+ * server's sentences about sub-keys promised more than the key has: said here,
+ * next to the limits they are about, and nowhere in the key list.
  */
-function BudgetsEditor({ f, set, d, extra }: { f: Form; set: (p: Partial<Form>) => void; d: Data; extra?: ReactNode }) {
+function BudgetsEditor({
+  f,
+  set,
+  d,
+  extra,
+  warnings = [],
+}: {
+  f: Form
+  set: (p: Partial<Form>) => void
+  d: Data
+  extra?: ReactNode
+  warnings?: string[]
+}) {
   const setB = (i: number, p: Partial<Budget>) => set({ budgets: f.budgets.map((x, j) => (j === i ? { ...x, ...p } : x)) })
   const blank: Lim = { amount: '', unit: 'usd', per: 'calendar-day', hard: true }
+  // A limit on everything already covers a key that may use one model or every
+  // model; a limit for other models is only worth offering past that.
+  const covered = f.budgets.some((b) => normSel(b.on) === '*') && f.models.length <= 1
   return (
     <Box>
       <Typography variant="subtitle2">Spending limits</Typography>
@@ -1044,32 +1145,34 @@ function BudgetsEditor({ f, set, d, extra }: { f: Form; set: (p: Partial<Form>) 
           Every limit that matches a request counts: a limit on one model sits inside a limit on everything.
         </Typography>
       )}
+      {warnings.map((w) => (
+        <WarningLine key={w} text={w} />
+      ))}
       {f.budgets.map((b, i) => (
-        <Box key={i} sx={{ mt: 1.5, ...(i > 0 ? { pt: 1.5, borderTop: `1px solid ${C.border}` } : {}) }}>
-          <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <Box key={i} sx={{ mt: 1.5, ...(i > 0 ? { pt: 0.5, borderTop: `1px solid ${C.border}` } : {}) }}>
+          <Row end={<RemoveButton label="Remove this limit" onClick={() => set({ budgets: f.budgets.filter((_, j) => j !== i) })} />}>
             <SelectorField
               label="Applies to"
               value={b.on}
               onChange={(on) => setB(i, { on })}
               options={selectorOptions(d)}
-              helper={selHint(b.on) || 'Which models this counts'}
+              helper={b.on.trim() === '' ? 'Which models this counts' : selHint(b.on)}
             />
-            <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => set({ budgets: f.budgets.filter((_, j) => j !== i) })}>
-              Remove this limit
-            </Button>
-          </Stack>
+          </Row>
           <LimitRows limits={b.limits} setLimits={(limits) => setB(i, { limits })} blank={blank} />
         </Box>
       ))}
       <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
-        <Button
-          size="small"
-          startIcon={<AddIcon />}
-          sx={{ px: 0 }}
-          onClick={() => set({ budgets: [...f.budgets, { on: f.budgets.some((b) => b.on === '*') ? '' : '*', limits: [blank] }] })}
-        >
-          {f.budgets.length ? 'Limit for other models' : 'Add a limit'}
-        </Button>
+        {!covered && (
+          <Button
+            size="small"
+            startIcon={<AddIcon />}
+            sx={{ px: 0 }}
+            onClick={() => set({ budgets: [...f.budgets, { on: f.budgets.some((b) => b.on === '*') ? '' : '*', limits: [blank] }] })}
+          >
+            {f.budgets.length ? 'Limit for other models' : 'Add a limit'}
+          </Button>
+        )}
         {extra}
       </Stack>
     </Box>
@@ -1077,40 +1180,61 @@ function BudgetsEditor({ f, set, d, extra }: { f: Form; set: (p: Partial<Form>) 
 }
 
 /**
- * The periods of one limit: how much, in what, over what, and whether reaching
- * it refuses or only warns. Every control shows on every row; hiding two of
- * them behind a button left people unable to find them (UX review round 2).
+ * The periods of one limit: how much (one field, its unit picked at its end),
+ * over what, and whether reaching it refuses or only warns. Every control
+ * shows on every row; hiding two of them behind a button left people unable
+ * to find them (UX review round 2).
  */
 function LimitRows({ limits, setLimits, blank }: { limits: Lim[]; setLimits: (l: Lim[]) => void; blank: Lim }) {
   const setLim = (i: number, p: Partial<Lim>) => setLimits(limits.map((l, j) => (j === i ? { ...l, ...p } : l)))
   return (
     <Box>
       {limits.map((l, i) => (
-        <Stack key={i} direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
-          <TextField label="Amount" size="small" type="number" value={l.amount} onChange={(e) => setLim(i, { amount: e.target.value })} sx={{ width: 110 }} />
-          <TextField select size="small" label="In" value={l.unit} onChange={(e) => setLim(i, { unit: e.target.value as Lim['unit'] })} sx={{ width: 120 }}>
-            <MenuItem value="usd">dollars</MenuItem>
-            <MenuItem value="req">requests</MenuItem>
-          </TextField>
-          <TextField select size="small" label="Over" value={l.per} onChange={(e) => setLim(i, { per: e.target.value })} sx={{ width: 240 }}>
-            {PERS.map((p) => (
-              <MenuItem key={p.v} value={p.v}>
-                {p.label}
-              </MenuItem>
-            ))}
-          </TextField>
+        <Box key={i}>
+          <Row end={limits.length > 1 && <RemoveButton label="Remove period" onClick={() => setLimits(limits.filter((_, j) => j !== i))} />}>
+            <TextField
+              label={l.unit === 'usd' ? 'Amount ($)' : 'Amount (requests)'}
+              size="small"
+              type="number"
+              value={l.amount}
+              onChange={(e) => setLim(i, { amount: e.target.value })}
+              sx={{ flex: 1, minWidth: 0 }}
+              slotProps={{
+                inputLabel: { shrink: true },
+                input: {
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <Select
+                        variant="standard"
+                        disableUnderline
+                        value={l.unit}
+                        onChange={(e) => setLim(i, { unit: e.target.value as Lim['unit'] })}
+                        inputProps={{ 'aria-label': 'Counts in' }}
+                        sx={{ fontSize: 14 }}
+                      >
+                        <MenuItem value="usd">$</MenuItem>
+                        <MenuItem value="req">requests</MenuItem>
+                      </Select>
+                    </InputAdornment>
+                  ),
+                },
+              }}
+            />
+            <TextField select size="small" label="Over" value={l.per} onChange={(e) => setLim(i, { per: e.target.value })} sx={{ flex: 1, minWidth: 0 }}>
+              {PERS.map((p) => (
+                <MenuItem key={p.v} value={p.v}>
+                  {p.label}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Row>
           <FormControlLabel
             control={<Checkbox size="small" checked={!l.hard} onChange={(e) => setLim(i, { hard: !e.target.checked })} />}
             label={<Typography variant="body2">Only warn, don't block</Typography>}
           />
-          {limits.length > 1 && (
-            <Button size="small" color="inherit" onClick={() => setLimits(limits.filter((_, j) => j !== i))}>
-              Remove period
-            </Button>
-          )}
-        </Stack>
+        </Box>
       ))}
-      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => setLimits([...limits, blank])}>
+      <Button size="small" startIcon={<AddIcon />} sx={{ px: 0 }} onClick={() => setLimits([...limits, blank])}>
         Another period
       </Button>
     </Box>
@@ -1135,35 +1259,47 @@ function TopUpsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
   )
 }
 
+/**
+ * One top-up: amount, what it applies to, when it expires. "Applies to" is a
+ * plain select — a top-up names one model this box has, or every model, and
+ * nothing may be typed.
+ */
 function TopUpRow({ v, set, remove, d }: { v: TopUp; set: (p: Partial<TopUp>) => void; remove?: () => void; d: Data }) {
   return (
-    <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-      <TextField label="Amount ($)" size="small" type="number" value={v.usd} onChange={(e) => set({ usd: e.target.value })} sx={{ width: 130 }} />
-      <SelectorField
-        label="Applies to"
-        free={false}
-        value={v.model ? `model:${v.model}` : '*'}
-        onChange={(s) => set({ model: s.startsWith('model:') ? s.slice('model:'.length) : '' })}
-        options={['*', ...d.models.map((m) => `model:${m}`)]}
-        helper={v.model ? 'Spent only on this model' : 'Spent on any model'}
-      />
-      <TextField
-        label="Top-up expires after"
-        placeholder="2d, 48h"
-        size="small"
-        value={v.ttl}
-        onChange={(e) => set({ ttl: e.target.value })}
-        helperText={v.ttl ? (endsAt(v.ttl) ? `On ${endsAt(v.ttl)}` : 'Write it as 2d or 48h') : 'Until spent'}
-        error={!!v.ttl && !endsAt(v.ttl)}
-        slotProps={helperFlush}
-        sx={{ width: 200 }}
-      />
-      {remove && (
-        <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={remove}>
-          Remove this top-up
-        </Button>
-      )}
-    </Stack>
+    <Box>
+      <Row end={remove && <RemoveButton label="Remove this top-up" onClick={remove} />}>
+        <TextField
+          label="Amount ($)"
+          size="small"
+          type="number"
+          value={v.usd}
+          onChange={(e) => set({ usd: e.target.value })}
+          slotProps={{ inputLabel: { shrink: true } }}
+          sx={{ width: 120, flexShrink: 0 }}
+        />
+        <TextField select size="small" label="Applies to" value={v.model} onChange={(e) => set({ model: e.target.value })} slotProps={selectSlots} sx={{ flex: 1, minWidth: 0 }}>
+          <MenuItem value="">Every model</MenuItem>
+          {d.models.map((m) => (
+            <MenuItem key={m} value={m}>
+              {selOption(m)}
+            </MenuItem>
+          ))}
+        </TextField>
+      </Row>
+      <Row>
+        <TextField
+          label="Top-up expires after"
+          placeholder="2d, 48h"
+          size="small"
+          fullWidth
+          value={v.ttl}
+          onChange={(e) => set({ ttl: e.target.value })}
+          helperText={v.ttl ? (endsAt(v.ttl) ? `On ${endsAt(v.ttl)}` : 'Write it as 2d or 48h') : 'Until spent'}
+          error={!!v.ttl && !endsAt(v.ttl)}
+          slotProps={{ ...helperFlush, inputLabel: { shrink: true } }}
+        />
+      </Row>
+    </Box>
   )
 }
 
@@ -1183,6 +1319,7 @@ function ModelsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
   return (
     <Box>
       <Typography variant="subtitle2">Models it may use</Typography>
+      <Row mt={1}>
       <Autocomplete
         multiple
         freeSolo
@@ -1204,18 +1341,27 @@ function ModelsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
             slotProps={{ ...p.slotProps, formHelperText: { sx: { mx: 0 } } }}
           />
         )}
-        sx={{ mt: 1 }}
+        sx={{ flex: 1, minWidth: 0 }}
       />
+      </Row>
     </Box>
   )
 }
 
-function MoreSettings({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
+function MoreSettings({ f, set, d, namePlaceholder }: { f: Form; set: (p: Partial<Form>) => void; d: Data; namePlaceholder?: string }) {
   return (
     <Stack spacing={2} sx={{ mt: 1.5 }}>
-      <Stack direction="row" spacing={2}>
-        <TextField label="Name" size="small" value={f.label} onChange={(e) => set({ label: e.target.value })} sx={{ flex: 1 }} />
-        <TextField select label="Priority" size="small" value={f.group} onChange={(e) => set({ group: e.target.value })} slotProps={selectSlots} sx={{ minWidth: 200 }}>
+      <Row mt={0}>
+        <TextField
+          label="Name"
+          size="small"
+          value={f.label}
+          placeholder={namePlaceholder}
+          onChange={(e) => set({ label: e.target.value })}
+          slotProps={namePlaceholder ? { inputLabel: { shrink: true } } : undefined}
+          sx={{ flex: 1, minWidth: 0 }}
+        />
+        <TextField select label="Priority" size="small" value={f.group} onChange={(e) => set({ group: e.target.value })} slotProps={selectSlots} sx={{ width: 180, flexShrink: 0 }}>
           <MenuItem value="">the default</MenuItem>
           {d.groups.map((g) => (
             <MenuItem key={g} value={g}>
@@ -1223,7 +1369,7 @@ function MoreSettings({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
             </MenuItem>
           ))}
         </TextField>
-      </Stack>
+      </Row>
       <ModelsEditor f={f} set={set} d={d} />
       <FormControlLabel control={<Switch checked={f.mint} onChange={(e) => set({ mint: e.target.checked })} />} label="May create its own sub-keys" />
     </Stack>
@@ -1272,9 +1418,7 @@ function KeysPanel({ d, pendingKeys, needle, query }: { d: Data; pendingKeys: st
           <TableHead>
             <TableRow>
               <TableCell>Key</TableCell>
-              <TableCell align="center" sx={{ width: 100 }}>
-                On
-              </TableCell>
+              <TableCell sx={{ width: 80 }}>On</TableCell>
               <TableCell align="right" sx={{ width: 230 }}>
                 Used
               </TableCell>
@@ -1347,10 +1491,6 @@ function askers(key: string, d: Data): string[] {
   return [...new Set(d.requests.flatMap((r) => ((r.requesterKey === key || r.issuedKey === key) && r.asked.from ? [r.asked.from] : [])))]
 }
 
-// A small text button that does not compete with the numbers in a row.
-const quiet = { minWidth: 0, fontWeight: 400, color: 'text.secondary' } as const
-const quieter = { ...quiet, px: 0.5, py: 0, fontSize: 12, lineHeight: 1.5 } as const
-
 function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; context: boolean }) {
   const qc = useQueryClient()
   const [edit, setEdit] = useState(false)
@@ -1384,7 +1524,7 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
   const who = configured
     ? 'set up in the config'
     : k.kind === 'child' && !nested
-      ? `sub-key of ${parent ? keyName(parent) : maskKey(k.parent ?? '')}`
+      ? `sub-key of ${parent ? keyName(parent, d) : maskKey(k.parent ?? '')}`
       : k.kind === 'child'
         ? 'sub-key'
         : ''
@@ -1392,6 +1532,9 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
   // A top-up is spent only once a hard limit refuses; with none it would never be used.
   const stops = k.budgets.some((b) => (b.limits ?? []).some((l) => l.hard))
   const asked = askers(k.key, d)
+  // A name, when it has one: its label, or the assistant that asked about it.
+  // A name taken from the asker is not said again as "asked by".
+  const name = k.label || askedName(k.key, d)
   // Off for two different reasons — an admin switched it off, or its expiry
   // passed — and the switch is the same either way: one control to turn a key
   // back on, whichever stopped it.
@@ -1402,33 +1545,39 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
     who,
     stoppedBy,
     k.mint ? 'may create sub-keys' : '',
-    asked.length ? `asked by ${asked.join(', ')}` : '',
+    k.label && asked.length ? `asked by ${asked.join(', ')}` : '',
     k.models.length ? `may use ${modelsText(k.models)}` : '',
   ].filter(Boolean)
-  const id = (
-    <Typography
-      variant={k.label ? 'caption' : 'body2'}
-      sx={{ fontFamily: 'monospace', wordBreak: 'break-all', fontWeight: k.label ? undefined : 600, color: reveal || !k.label ? 'text.primary' : 'text.secondary' }}
-    >
-      {reveal ? k.key : maskKey(k.key)}
-    </Typography>
-  )
+  // Show and Copy come BEFORE the key, so they stay put when it is revealed:
+  // the whole key then shows, wrapping onto further lines (owner 10-28).
+  // Copy gives the whole key without revealing it.
   return (
     <TableRow sx={{ opacity: off ? 0.55 : context ? 0.7 : 1, verticalAlign: 'top' }}>
       <TableCell sx={{ pl: nested ? 4 : undefined }}>
-        {k.label && (
+        {name && (
           <Typography variant="body2" sx={{ fontWeight: 600 }}>
-            {k.label}
+            {name}
           </Typography>
         )}
-        <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
-          {id}
-          <Button size="small" sx={quieter} onClick={() => setReveal(!reveal)} aria-label={reveal ? `Hide ${keyName(k)}` : `Show ${keyName(k)}`}>
+        <Stack direction="row" spacing={0.5} sx={{ alignItems: 'flex-start' }}>
+          <Button size="small" sx={{ ...quieter, width: 40, flexShrink: 0, pl: 0, justifyContent: 'flex-start' }} onClick={() => setReveal(!reveal)} aria-label={reveal ? `Hide ${keyName(k, d)}` : `Show ${keyName(k, d)}`}>
             {reveal ? 'Hide' : 'Show'}
           </Button>
-          <Button size="small" sx={quieter} onClick={copy} aria-label={`Copy ${keyName(k)}`}>
+          <Button size="small" sx={{ ...quieter, width: 52, flexShrink: 0 }} onClick={copy} aria-label={`Copy ${keyName(k, d)}`}>
             {copied ? 'Copied' : 'Copy'}
           </Button>
+          <Typography
+            variant={name ? 'caption' : 'body2'}
+            sx={{
+              fontFamily: 'monospace',
+              wordBreak: 'break-all',
+              minWidth: 0,
+              fontWeight: name ? undefined : 600,
+              color: reveal || !name ? 'text.primary' : 'text.secondary',
+            }}
+          >
+            {reveal ? k.key : maskKey(k.key)}
+          </Typography>
         </Stack>
         {context && (
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -1440,25 +1589,21 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
             {facts.join(' · ')}
           </Typography>
         )}
-        <Warnings k={k} />
         {err && (
           <Typography variant="caption" color="error" sx={{ display: 'block' }}>
             {err}
           </Typography>
         )}
       </TableCell>
-      <TableCell align="center">
-        <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'center' }}>
-          <Switch
-            size="small"
-            checked={!off}
-            onChange={(e) => act.mutate(e.target.checked ? 'enable' : 'disable')}
-            slotProps={{ input: { 'aria-label': off ? `Switch ${keyName(k)} on` : `Switch ${keyName(k)} off` } }}
-          />
-          <Typography variant="caption" color="text.secondary" sx={{ width: 22, textAlign: 'left' }}>
-            {off ? 'Off' : 'On'}
-          </Typography>
-        </Stack>
+      <TableCell>
+        {/* The switch's own inset pulled back, so its track starts under the header's first letter. */}
+        <Switch
+          size="small"
+          checked={!off}
+          onChange={(e) => act.mutate(e.target.checked ? 'enable' : 'disable')}
+          slotProps={{ input: { 'aria-label': off ? `Switch ${keyName(k, d)} on` : `Switch ${keyName(k, d)} off` } }}
+          sx={{ ml: '-4px' }}
+        />
       </TableCell>
       <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
         <Typography variant="body2" sx={{ color: sp.blocked ? C.error : undefined, whiteSpace: 'nowrap' }}>
@@ -1480,7 +1625,7 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
         {k.valueAdds.map((v) => (
           <Box key={v.id} sx={{ opacity: v.active ? 1 : 0.55 }}>
             <Typography variant="body2">
-              {usd(Math.max(v.usd - (v.spent ?? 0), 0))} of {usd(v.usd)}
+              {usd(Math.max(v.usd - (v.spent ?? 0), 0))} left
               {!v.active ? ' (over)' : ''}
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', whiteSpace: 'nowrap' }}>
@@ -1491,7 +1636,7 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
       </TableCell>
       <TableCell sx={{ whiteSpace: 'nowrap' }}>
         <Typography variant="body2" sx={{ color: k.expired ? C.error : undefined }} color={!configured && k.expires ? undefined : 'text.secondary'}>
-          {!configured && k.expires ? `${k.expired ? 'stopped ' : ''}${when(k.expires)}` : '—'}
+          {!configured && k.expires ? `${k.expired ? 'stopped ' : ''}${when(k.expires)}` : 'never'}
         </Typography>
       </TableCell>
       <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
@@ -1522,7 +1667,7 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
       {edit && <EditKeyDialog k={k} d={d} onClose={() => setEdit(false)} onDone={refresh} />}
       {addTopUp && <TopUpDialog k={k} d={d} onClose={() => setAddTopUp(false)} onDone={refresh} />}
       <Dialog open={confirmDelete} onClose={() => setConfirmDelete(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Delete {keyName(k)}?</DialogTitle>
+        <DialogTitle>Delete {keyName(k, d)}?</DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ maxWidth: '72ch' }}>
             The key stops working at once, and so do any sub-keys it made. Its top-ups are removed, and it cannot be brought back.
@@ -1530,7 +1675,7 @@ function KeyRow({ k, d, nested, context }: { k: Key; d: Data; nested: boolean; c
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button color="inherit" onClick={() => setConfirmDelete(false)}>
+          <Button sx={dismiss} onClick={() => setConfirmDelete(false)}>
             Cancel
           </Button>
           <Button color="error" onClick={() => act.mutate('delete')} disabled={act.isPending}>
@@ -1559,32 +1704,52 @@ function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: ()
     },
     onError: (e) => setErr(extractMessage(e)),
   })
+  // Where sub-keys promise more than this key, or its parent, has: said here,
+  // next to the limits, and not in the key list (UX review round 3).
+  const parent = k.parent ? d.keys.find((p) => p.key === k.parent) : undefined
+  const warnings = [...k.warnings, ...(parent?.warnings ?? [])]
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Edit {keyName(k)}</DialogTitle>
+      <DialogTitle>Edit {keyName(k, d)}</DialogTitle>
       <DialogContent>
         <Stack spacing={2.5} sx={{ mt: 0.5 }}>
           {err && <Alert severity="error">{err}</Alert>}
-          <BudgetsEditor f={f} set={set} d={d} />
+          <BudgetsEditor f={f} set={set} d={d} warnings={warnings} />
           {k.kind === 'child' && <ModelsEditor f={f} set={set} d={d} />}
           {k.kind !== 'configured' && (
-            <TextField
-              label="Key expires after"
-              placeholder="7d, 48h — empty: keep as is"
-              size="small"
-              value={f.ttl}
-              onChange={(e) => set({ ttl: e.target.value })}
-              helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}` : 'Write it as 7d or 48h') : k.expires ? `Now: ${when(k.expires)}` : 'Now: never'}
-              error={!!f.ttl && !endsAt(f.ttl)}
-              slotProps={helperFlush}
-              sx={{ width: 260 }}
-            />
+            <Row mt={0}>
+              <TextField
+                label="Key expires after"
+                placeholder="7d, 48h — empty: keep as is"
+                size="small"
+                fullWidth
+                value={f.ttl}
+                onChange={(e) => set({ ttl: e.target.value })}
+                helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}` : 'Write it as 7d or 48h') : k.expires ? `Now: ${when(k.expires)}` : 'Now: never'}
+                error={!!f.ttl && !endsAt(f.ttl)}
+                slotProps={{ ...helperFlush, inputLabel: { shrink: true } }}
+              />
+            </Row>
           )}
-          {k.kind !== 'child' && <MoreSettings f={f} set={set} d={d} />}
+          {k.kind !== 'child' ? (
+            <MoreSettings f={f} set={set} d={d} namePlaceholder={askedName(k.key, d) || maskKey(k.key)} />
+          ) : (
+            <Row mt={0}>
+              <TextField
+                label="Name"
+                size="small"
+                fullWidth
+                value={f.label}
+                placeholder={askedName(k.key, d) || maskKey(k.key)}
+                onChange={(e) => set({ label: e.target.value })}
+                slotProps={{ inputLabel: { shrink: true } }}
+              />
+            </Row>
+          )}
         </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button color="inherit" onClick={onClose}>
+        <Button sx={dismiss} onClick={onClose}>
           Cancel
         </Button>
         <Button variant="contained" onClick={() => save.mutate()} disabled={save.isPending || (!!f.ttl && !endsAt(f.ttl))}>
@@ -1645,17 +1810,19 @@ function CreateKeyDialog({ d, onClose }: { d: Data; onClose: () => void }) {
             </Typography>
             <MoreSettings f={f} set={set} d={d} />
             <BudgetsEditor f={f} set={set} d={d} />
-            <TextField
-              label="Key expires after"
-              placeholder="7d, 48h — empty: never"
-              size="small"
-              value={f.ttl}
-              onChange={(e) => set({ ttl: e.target.value })}
-              helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}` : 'Write it as 7d or 48h') : 'Never expires'}
-              error={!!f.ttl && !endsAt(f.ttl)}
-              slotProps={helperFlush}
-              sx={{ width: 260 }}
-            />
+            <Row mt={0}>
+              <TextField
+                label="Key expires after"
+                placeholder="7d, 48h — empty: never"
+                size="small"
+                fullWidth
+                value={f.ttl}
+                onChange={(e) => set({ ttl: e.target.value })}
+                helperText={f.ttl ? (endsAt(f.ttl) ? `On ${endsAt(f.ttl)}` : 'Write it as 7d or 48h') : 'Never expires'}
+                error={!!f.ttl && !endsAt(f.ttl)}
+                slotProps={{ ...helperFlush, inputLabel: { shrink: true } }}
+              />
+            </Row>
           </Stack>
         )}
       </DialogContent>
@@ -1666,7 +1833,7 @@ function CreateKeyDialog({ d, onClose }: { d: Data; onClose: () => void }) {
           </Button>
         ) : (
           <>
-            <Button color="inherit" onClick={onClose}>
+            <Button sx={dismiss} onClick={onClose}>
           Cancel
         </Button>
             <Button
@@ -1699,7 +1866,7 @@ function TopUpDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: () =
   })
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Top up {keyName(k)}</DialogTitle>
+      <DialogTitle>Top up {keyName(k, d)}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 0.5 }}>
           {err && <Alert severity="error">{err}</Alert>}
@@ -1710,7 +1877,7 @@ function TopUpDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: () =
         </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button color="inherit" onClick={onClose}>
+        <Button sx={dismiss} onClick={onClose}>
           Cancel
         </Button>
         <Button variant="contained" onClick={() => add.mutate()} disabled={add.isPending || !(Number(v.usd) > 0) || (!!v.ttl && !endsAt(v.ttl))}>
@@ -1728,7 +1895,7 @@ function DecidedPanel({ rows, d, subtitle }: { rows: Req[]; d: Data; subtitle?: 
       title={`Decided · ${rows.length}`}
       subtitle={subtitle}
       actions={
-        <Button size="small" color="inherit" endIcon={open ? <ExpandLess /> : <ExpandMore />} onClick={() => setOpen(!open)}>
+        <Button size="small" sx={quiet} endIcon={open ? <ExpandLess /> : <ExpandMore />} onClick={() => setOpen(!open)}>
           {open ? 'Hide' : 'Show'}
         </Button>
       }
