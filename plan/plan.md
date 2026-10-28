@@ -422,9 +422,15 @@ search; a stooges run): path stays /approvals (ntfy links). Config keys gained a
 the key → masked id. `local` no longer admits a candidate with a provider account (6d12c7a).
 Stooges on a throwaway --insecure sandbox (127.0.0.1:6520, scratchpad uxsbx2 + uxdist2, seed2.sh;
 walk gained search + reveal steps and a `fill` action in bin/ux.mjs): Lenny / George / Ives —
-R1 ≈+1/+1/−1, R2 yes/+1/−1, R3 yes/+1/−1, R5 yes/+2/−1 (Ives: consistency only). Owner: one more
-round, then deploy.
-- **next:** round 6 fixes (subagent) → rerun the three → deploy (bin/deploy --yes) → owner opens API Keys.
+R1 ≈+1/+1/−1, R2 yes/+1/−1, R3 yes/+1/−1, R5 yes/+2/−1, R6 yes/+2/−1 — not a pass (Ives: DES-6
+ids as names, DES-10 button looks; dialogs alone +2). Deployed 10-28 (2b578ff) per owner: one more
+round, then deploy. Live 10-28 07:33–07:35: aw4-7a cleared its subkeys' budgets itself and asked for
+one $3/calendar-day DeepSeek budget on sk-aw4; owner approved (revision 200).
+- **next:** owner opens API Keys once. Ives's remaining fixes if wanted: requester as its own name on
+  request cards; four button looks (filled / outlined neutral / one tertiary text / danger); "3 days"
+  in the expiry field itself; masked value before Show/Copy; one filter-count phrasing; a consequence
+  line for "Switch off instead" (George asked to drop it — a trade). George: "Last used" column,
+  `?q=` in the URL, "Decided · Show" vs key "Show".
 - **open (not in scope, owner may ask):** "Last used" column (server field); marking the request the
   owner asked for (needs a requester-side field); clearing a label from the page (empty = unchanged);
   Callers page still shows whole keys.
