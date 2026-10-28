@@ -412,10 +412,13 @@ Done (not deployed): backend 87ea049 (config/configdb/child_key migration, gate,
 the filter, filtered /v1/models, refusals naming the budget, oversubscription warnings, API wire
 `models`/`budgets`); CLI db6c9b3 (`corrallm request new|more|status`, `corrallm keys
 list|info|mint|set|disable|enable|revoke`; GET /v1/keys answers any key with its own entry).
-- **next:** Approvals UI moved to models/budgets (subagent) → deploy (backend + UI together: the old
-  page breaks on the new API) → check live: config keys migrated to the same reach, aw4 subkeys'
-  counters carried over → tell aw4-7a the CLI.
-- **risks:** migration must not widen access (test against the live config's keys); counters for
+Deployed 10-28 07:31 (28acee4, handoff); live config keys and 5 child_key rows migrated (aw4
+subkey counters carried: aw4-hd $0.45 of $1.70); stored config re-saved in the new shape (export →
+scratch load → diff = keys only → load --force); DB backup before: scratchpad corrallm-before-p65.db.
+Live: `corrallm keys info` as aw4-hd OK; aw4-7a told the CLI and the breaking /v1/keys change.
+- **next:** owner opens Approvals once (not seen in a browser: SSO); watch aw4's first `request more`.
+- **risks:** Approvals page untested by hand; `keys info` for a subkey says "mint one with…" though
+  a subkey cannot mint; worst-case $ on the page sums several `*` windows (overstates); counters for
   selectors with no 1:1 old scope start at 0; UI pages that edit `credentials`/`limits` break until
   moved; GraphQL schema change breaks external readers of those fields.
 - **blocking decisions:** none.
