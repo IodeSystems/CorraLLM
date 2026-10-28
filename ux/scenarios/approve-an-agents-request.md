@@ -32,6 +32,9 @@ password a program uses. You do not know what most of the other words mean.
 > its access stops by itself. The other two I want to understand well enough to
 > say yes or no and mean it — and if I say no, I want whoever asked to know why.
 > Afterwards I want to be able to see what I have handed out and take it back.
+> One assistant, "aw4", has several keys of its own; I want to find all of them
+> by name and see what each may use and spend. People walk past my desk: I do
+> not want whole keys sitting on the screen unless I ask for one.
 
 ## What would make you stop
 
@@ -41,6 +44,7 @@ password a program uses. You do not know what most of the other words mean.
   decision is.
 - Not being able to tell which request is the one you asked for.
 - Being unsure whether pressing a button is final.
+- A whole key on the screen that I did not ask to see.
 
 ## What success would feel like
 

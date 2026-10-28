@@ -213,6 +213,14 @@ for (const step of walk.steps) {
   // one unless the daemon is throwaway. `within` picks the one button of that
   // name inside the smallest block that also carries that text, the way a person
   // finds "the Approve next to the request I mean".
+  // Typing into a field, found by its label or placeholder the way a person
+  // finds "the search box": { field, text }. Typing changes nothing on the
+  // server; it is allowed on a live daemon.
+  for (const f of [].concat(step.fill || [])) {
+    const box = page.getByRole('textbox', { name: f.field }).or(page.getByPlaceholder(f.field)).first()
+    await box.fill(f.text, { timeout: 10000 })
+    await page.waitForTimeout(800).catch(() => {})
+  }
   for (const c of [].concat(step.click || [])) {
     // { button } or { menuitem } — an item of a menu the previous press opened.
     const role = c.menuitem ? 'menuitem' : 'button'

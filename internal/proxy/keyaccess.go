@@ -253,9 +253,17 @@ func (p *Proxy) oversubscription(parent string) []string {
 	var out []string
 	for s, sum := range sums {
 		words := fmt.Sprintf("subkeys' %s budgets on %s add up to %s", s.dim+"/"+pers[s], s.sel, amountWords(s.dim, sum))
-		for _, l := range pBudgets[s.sel] {
-			if d, ok := l.Window(); ok && d == s.dur && l.Dimension() == s.dim && sum > l.Amount() {
-				out = append(out, fmt.Sprintf("%s, more than the parent's own %s; the parent's budget stops the total", words, l.Compact()))
+		// The parent's budget on the same selector, and its budget on `*`,
+		// which covers every selector.
+		for _, psel := range []string{s.sel, config.SelectAll} {
+			for _, l := range pBudgets[psel] {
+				if d, ok := l.Window(); ok && d == s.dur && l.Dimension() == s.dim && sum > l.Amount() {
+					out = append(out, fmt.Sprintf("%s, more than the parent's own %s on %s; the parent's budget stops the total",
+						words, l.Compact(), psel))
+				}
+			}
+			if s.sel == config.SelectAll {
+				break
 			}
 		}
 		model, literal := strings.CutPrefix(s.sel, "model:")

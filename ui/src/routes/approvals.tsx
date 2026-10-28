@@ -480,12 +480,13 @@ function formToGrant(f: Form) {
 /**
  * A key string as the page shows it: the first four and last four characters
  * (owner 10-28). A key IS its own credential, so the page never prints one
- * whole unless the owner presses the eye on that row. Short config keys
- * ("aw3") show two characters.
+ * whole unless the owner presses the eye on that row. A key of eight
+ * characters or fewer shows its first four ("sk-a…"), since four and four would
+ * be the whole key.
  */
 export function maskKey(key: string): string {
   if (key.length > 8) return `${key.slice(0, 4)}…${key.slice(-4)}`
-  return `${key.slice(0, 2)}…`
+  return `${key.slice(0, Math.min(4, key.length - 1))}…`
 }
 
 const keyName = (k: Pick<Key, 'key' | 'label'>) => k.label || maskKey(k.key)
@@ -1316,11 +1317,16 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
   return (
     <TableRow sx={{ opacity: off ? 0.55 : 1, verticalAlign: 'top' }}>
       <TableCell sx={{ minWidth: 220, pl: nested ? 4 : undefined }}>
-        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-          {keyName(k)}
-        </Typography>
+        {k.label && (
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {k.label}
+          </Typography>
+        )}
         <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
-          <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', wordBreak: 'break-all' }}>
+          <Typography
+            variant={k.label ? 'caption' : 'body2'}
+            sx={{ fontFamily: 'monospace', color: k.label ? 'text.secondary' : undefined, fontWeight: k.label ? undefined : 600, wordBreak: 'break-all' }}
+          >
             {reveal ? k.key : maskKey(k.key)}
           </Typography>
           <Tooltip title={reveal ? 'Hide the key' : 'Show the whole key'}>

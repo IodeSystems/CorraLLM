@@ -1,7 +1,7 @@
 {
   "name": "approve-an-agents-request",
   "scenario": "approve-an-agents-request",
-  "goal": "Approve the benchmark you asked for with a limit you understand, decide the two requests you did not ask for, and know afterwards what you have handed out and how to take it back.",
+  "goal": "Approve the benchmark you asked for with a limit you understand, decide the two requests you did not ask for, and know afterwards what you have handed out, how to find one assistant's keys, and how to take one back.",
   "note": "Against a throwaway daemon seeded with three waiting requests, two approved, one denied, and keys handed out earlier. Steps that press a button only open a dialog; nothing is submitted.",
   "steps": [
     {
@@ -13,25 +13,75 @@
       "name": "the-benchmark-before-i-say-yes",
       "promise": "Before I approve, I can tell what I am handing out, the most it can spend in dollars, and when it stops by itself.",
       "goto": "/approvals",
-      "click": [{ "button": "Review", "within": "mcpshell-bench" }]
+      "click": [
+        {
+          "button": "Review",
+          "within": "mcpshell-bench"
+        }
+      ]
     },
     {
       "name": "a-request-i-did-not-ask-for",
       "promise": "I can tell what this other assistant wants, how much more it could cost me, and for how long.",
       "goto": "/approvals",
-      "click": [{ "button": "Review", "within": "migration review" }]
+      "click": [
+        {
+          "button": "Review",
+          "within": "migration review"
+        }
+      ]
     },
     {
       "name": "saying-no",
       "promise": "I can say no, and the one who asked will be told why.",
       "goto": "/approvals",
-      "click": [{ "button": "Deny", "within": "runaway loop" }]
+      "click": [
+        {
+          "button": "Deny",
+          "within": "runaway loop"
+        }
+      ]
+    },
+    {
+      "name": "finding-one-assistants-keys",
+      "promise": "I can find every key one assistant has by typing its name, see what each may use and spend, and no whole key is on my screen.",
+      "goto": "/approvals",
+      "fill": [
+        {
+          "field": "Search keys and requests",
+          "text": "aw4"
+        }
+      ]
+    },
+    {
+      "name": "seeing-a-key-when-i-need-it",
+      "promise": "When I do need a key itself, I can show it for that one key, and hide it again.",
+      "goto": "/approvals",
+      "fill": [
+        {
+          "field": "Search keys and requests",
+          "text": "aw4"
+        }
+      ],
+      "click": [
+        {
+          "button": "Show aw4-hd"
+        }
+      ]
     },
     {
       "name": "taking-something-back",
       "promise": "I can see every key I have handed out, what each has spent against its limit, and switch one off.",
       "goto": "/approvals",
-      "click": [{ "button": "More", "within": "grafana-alerts" }, { "menuitem": "Delete" }]
+      "click": [
+        {
+          "button": "More",
+          "within": "grafana-alerts"
+        },
+        {
+          "menuitem": "Delete"
+        }
+      ]
     }
   ]
 }
