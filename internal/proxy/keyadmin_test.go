@@ -88,127 +88,89 @@ func TestDisableReachesConfiguredKeysAndTheirChildren(t *testing.T) {
 	}
 }
 
-// A pattern's budget is its own: spent on the account it names, and refusing
-// that account alone while another pattern still admits the request.
-func TestCredentialPatternBudget(t *testing.T) {
+// A budget on a selector is its own: it refuses what it names and nothing
+// else, so the walk still has the other account.
+func TestSelectorBudgetDropsOnlyWhatItNames(t *testing.T) {
 	k := newChildKeyRig(t, nil)
-	// Two accounts on one provider, each with a model of its own: the walk over
-	// one served name yields one candidate per credential (expandCredentials).
 	tiny, big := k.cfg.Models["mock"], k.cfg.Models["mock"]
 	tiny.ProviderName, tiny.Extension = "fw", "ext"
 	big.ProviderName, big.Extension = "fw", "ext"
 	k.cfg.Models = map[string]config.Model{"tiny": tiny, "big": big}
-	k.cfg.Keys["spender"] = config.KeyPolicy{Group: "default", Credentials: []config.KeyCredential{
-		{Credential: "cred:fw/tiny", Limits: config.LimitSet{{Req: 1, Per: "calendar-day", Hard: true}}},
-		{Credential: "cred:fw/*"},
-	}}
+	k.cfg.Keys["spender"] = config.KeyPolicy{Group: "default", Models: []string{"cred:fw/*"},
+		Budgets: config.KeyBudgets{"cred:fw/tiny": {{Req: 1, Per: "calendar-day", Hard: true}}}}
 	cand := func(model, cred string) config.Candidate {
 		return config.Candidate{Name: model, Model: k.cfg.Models[model],
 			Credential: &config.Credential{Name: cred}}
 	}
 	caller := config.Caller{Key: "spender", GroupName: "default", Recognized: true}
+	k.px.SetConfig(k.cfg)
 
-	// The narrower pattern admits its account with its budget; the wildcard
-	// admits the other with none of its own.
-	if v := k.px.credentialVerdict(caller, cand("tiny", "tiny")); !v.allowed || len(v.limits) != 1 || v.limits[0].Req != 1 {
-		t.Fatalf("tiny: %+v, want the 1-request budget", v)
-	}
-	if v := k.px.credentialVerdict(caller, cand("big", "big")); !v.allowed || len(v.limits) != 0 {
-		t.Fatalf("big: %+v, want admitted with no budget", v)
-	}
-	// The wildcard covers every OTHER account of the provider; an account on a
-	// provider no pattern names at all is refused.
-	if v := k.px.credentialVerdict(caller, cand("tiny", "elsewhere")); !v.allowed {
-		t.Error("the wildcard should cover another account of the same provider")
+	if !k.permits(caller, cand("tiny", "elsewhere")) {
+		t.Error("cred:fw/* should cover another account of the same provider")
 	}
 	elsewhere := cand("tiny", "elsewhere")
 	elsewhere.Model.ProviderName = "groq"
-	if v := k.px.credentialVerdict(caller, elsewhere); v.allowed {
+	if k.permits(caller, elsewhere) {
 		t.Error("an account on an unlisted provider was admitted")
 	}
-	if sc := k.px.credentialScopesFor(caller, cand("tiny", "tiny")); len(sc) != 1 ||
-		sc[0] != config.KeyCredentialScopeKey("spender", "cred:fw/tiny") {
-		t.Errorf("charge scopes = %v", sc)
+	if h := k.px.budgetHits(caller, cand("tiny", "tiny")); len(h) != 1 ||
+		h[0].scope != config.KeyCredentialScopeKey("spender", "cred:fw/tiny") {
+		t.Errorf("tiny hits = %+v", h)
 	}
-	if sc := k.px.credentialScopesFor(caller, cand("big", "big")); len(sc) != 0 {
-		t.Errorf("the wildcard carries no budget, but charged %v", sc)
+	if h := k.px.budgetHits(caller, cand("big", "big")); len(h) != 0 {
+		t.Errorf("no budget names big, but it hit %+v", h)
 	}
-	// Spent once, the gate drops that account and keeps the other.
-	k.px.SetConfig(k.cfg) // seed the ledger's pattern scopes
 	k.px.quota.Charge(config.KeyCredentialScopeKey("spender", "cred:fw/tiny"), config.DimRequests, 1)
-	if kept := k.px.filterByCredential(nil, []config.Candidate{cand("tiny", "tiny"), cand("big", "big")}, caller); len(kept) != 1 || kept[0].Name != "big" {
-		t.Fatalf("kept %d candidates, want only the unbudgeted account", len(kept))
+	kept, full, _ := k.px.filterByKeyBudgets([]config.Candidate{cand("tiny", "tiny"), cand("big", "big")}, caller)
+	if len(kept) != 1 || kept[0].Name != "big" || len(full) != 1 {
+		t.Fatalf("kept %+v full %v, want only big", kept, full)
 	}
 }
 
-// A child's own pattern narrows its parent's, and the budget that gates and
-// charges it belongs to the CHILD — the key whose entry spells it out. Gating
-// under the caller while charging under the owner (or the reverse) would check a
-// scope nothing was ever seeded under, silently making a budget unlimited.
-func TestChildPatternBudgetIsTheChilds(t *testing.T) {
+// A subkey answers to its own budgets and its parent's: both are checked, each
+// under the key that declares it, so spending the subkey's own leaves the
+// parent's alone.
+func TestChildBudgetAndParentBudgetBothApply(t *testing.T) {
 	k := newChildKeyRig(t, nil)
-	limited := config.KeyCredential{Credential: "cred:fw/main",
-		Limits: config.LimitSet{{Req: 1, Per: "calendar-day", Hard: true}}}
+	oneReq := config.LimitSet{{Req: 1, Per: "calendar-day", Hard: true}}
 	k.cfg.Keys["parent"] = config.KeyPolicy{Group: "default", Mint: true,
-		Credentials: []config.KeyCredential{{Credential: "cred:fw/*"}, limited}}
-	child, err := k.px.issueKey(AccessAsk{Label: "kid", Credentials: &[]config.KeyCredential{limited}}, time.Now(), true)
+		Budgets: config.KeyBudgets{"cred:fw/main": oneReq}}
+	child, err := k.px.issueKey(AccessAsk{Label: "kid", Budgets: &config.KeyBudgets{"cred:fw/main": oneReq}}, time.Now(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A child is a minted row with a PARENT (exactly what POST /v1/keys writes).
 	ck, _ := k.px.children.get(child)
 	ck.Parent = "parent"
 	if err := k.px.persistChildKey(ck); err != nil {
 		t.Fatal(err)
 	}
-	other, err := k.px.IssueKey(AccessAsk{Label: "loose"}, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	k.px.SetConfig(k.cfg)
 	cand := config.Candidate{Name: "m", Model: config.Model{ProviderName: "fw"},
 		Credential: &config.Credential{Name: "main"}}
-
 	childCaller := k.px.resolveCaller(child)
 	if childCaller.Parent != "parent" {
 		t.Fatalf("child resolves as %+v", childCaller)
 	}
-	if sc := k.px.credentialScopesFor(childCaller, cand); len(sc) != 1 ||
-		sc[0] != config.KeyCredentialScopeKey(child, "cred:fw/main") {
-		t.Errorf("child charge scopes = %v, want its own", sc)
+	hits := k.px.budgetHits(childCaller, cand)
+	if len(hits) != 2 || hits[0].scope != config.KeyCredentialScopeKey(child, "cred:fw/main") ||
+		hits[1].scope != config.KeyCredentialScopeKey("parent", "cred:fw/main") {
+		t.Errorf("child hits = %+v, want its own then its parent's", hits)
 	}
-	// The same pattern on the parent is the PARENT's budget when the parent calls.
-	if sc := k.px.credentialScopesFor(k.px.resolveCaller("parent"), cand); len(sc) != 1 ||
-		sc[0] != config.KeyCredentialScopeKey("parent", "cred:fw/main") {
-		t.Errorf("parent charge scopes = %v", sc)
-	}
-	// A key with no patterns of its own inherits the parent's permission, and
-	// its budget with it.
-	if sc := k.px.credentialScopesFor(k.px.resolveCaller(other), cand); len(sc) != 0 {
-		t.Errorf("an admin-issued key has no parent pattern, but charged %v", sc)
-	}
-
-	// Spend the child's budget: its model is refused while the parent's own is
-	// untouched, because they are two budgets.
-	k.px.SetConfig(k.cfg)
 	k.px.quota.Charge(config.KeyCredentialScopeKey(child, "cred:fw/main"), config.DimRequests, 1)
-	if kept := k.px.filterByCredential(nil, []config.Candidate{cand}, childCaller); len(kept) != 0 {
-		t.Error("the child spent its pattern budget and was still admitted")
+	if kept, _, _ := k.px.filterByKeyBudgets([]config.Candidate{cand}, childCaller); len(kept) != 0 {
+		t.Error("the child spent its budget and was still admitted")
 	}
-	if kept := k.px.filterByCredential(nil, []config.Candidate{cand}, k.px.resolveCaller("parent")); len(kept) != 1 {
-		t.Error("the parent's budget was spent by its child's requests")
+	if kept, _, _ := k.px.filterByKeyBudgets([]config.Candidate{cand}, k.px.resolveCaller("parent")); len(kept) != 1 {
+		t.Error("the parent was refused by its child's budget")
 	}
 }
 
-// A child may not widen what its parent may spend: the chain must admit, so a
-// pattern on the child that the parent's patterns exclude is no pattern at all.
+// A subkey may not widen what its parent may use: both filters must admit.
 func TestChildCannotWidenItsParent(t *testing.T) {
 	k := newChildKeyRig(t, nil)
-	k.cfg.Keys["parent"] = config.KeyPolicy{Group: "default", Mint: true,
-		Credentials: []config.KeyCredential{{Credential: "cred:groq/*"}}}
-	// A child is a minted row with a parent, so write one: the parent's own
-	// patterns are the ceiling, whatever the child was given.
-	key, err := k.px.issueKey(AccessAsk{Label: "kid",
-		Credentials: &[]config.KeyCredential{{Credential: "cred:fw/*"}}}, time.Now(), true)
+	k.cfg.Keys["parent"] = config.KeyPolicy{Group: "default", Mint: true, Models: []string{"cred:groq/*"}}
+	k.px.SetConfig(k.cfg)
+	key, err := k.px.issueKey(AccessAsk{Label: "kid", Models: &[]string{"cred:fw/*"}}, time.Now(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,17 +180,14 @@ func TestChildCannotWidenItsParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	caller := k.px.resolveCaller(key)
-	if caller.Parent != "parent" {
-		t.Fatalf("caller = %+v", caller)
-	}
 	fw := config.Candidate{Name: "m", Model: config.Model{ProviderName: "fw"},
 		Credential: &config.Credential{Name: "main"}}
-	if v := k.px.credentialVerdict(caller, fw); v.allowed {
+	if k.permits(caller, fw) {
 		t.Error("a child reached a provider its parent may not")
 	}
 	groq := config.Candidate{Name: "m", Model: config.Model{ProviderName: "groq"},
 		Credential: &config.Credential{Name: "main"}}
-	if v := k.px.credentialVerdict(caller, groq); v.allowed {
-		t.Error("a child reached an account its OWN patterns exclude")
+	if k.permits(caller, groq) {
+		t.Error("a child reached an account its OWN models exclude")
 	}
 }

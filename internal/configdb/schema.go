@@ -156,7 +156,12 @@ CREATE TABLE IF NOT EXISTS config_key (
     -- JSON array of config.KeyCredential: the key's allow patterns — which
     -- credentials it may forward with, each with its own budgets (P63).
     -- '' = every credential, the behaviour every key had before patterns.
-    credentials_json TEXT NOT NULL DEFAULT ''
+    credentials_json TEXT NOT NULL DEFAULT '',
+    -- P65: JSON array of selectors (what the key may see and use; '' = all)
+    -- and JSON object selector → limits (what it may spend). They replace
+    -- limits_json and credentials_json, which are read once and migrated.
+    models_json TEXT NOT NULL DEFAULT '',
+    budgets_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS config_tool (

@@ -57,6 +57,18 @@ type KeyPolicy struct {
 	// the hard one, and that judgement is better than any default here.
 	Thinking *bool
 
+	// Models are the selectors (keyaccess.go) naming what this key may see and
+	// use. Empty = every model.
+	Models []string
+
+	// Budgets are what this key may spend, by selector (keyaccess.go). Every
+	// matching budget applies. Only a hard one refuses.
+	Budgets KeyBudgets
+
+	// Limits is the pre-P65 allocation, read from old configs only:
+	// MigrateKeyAccess moves it into Budgets at load. What follows is its
+	// original meaning.
+	//
 	// Limits are this caller's ALLOCATION (P56): what it may spend across
 	// every model, refilled each period. Empty is unlimited. Same shape and
 	// hard/soft meaning as a model's or provider's budgets; a hard one refuses
@@ -71,6 +83,9 @@ type KeyPolicy struct {
 	// that can mint can hand its allocation to callers nobody approved.
 	Mint bool
 
+	// Credentials is the pre-P65 allow-pattern list, read from old configs
+	// only: MigrateKeyAccess moves it into Models and Budgets at load.
+	//
 	// Credentials are this key's ALLOW PATTERNS (keycred.go): which provider
 	// credentials it may forward with, each with an optional budget of its own.
 	// Empty means every credential, which is what every key had before this.
@@ -171,6 +186,22 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 				k.Credentials = list
 				continue
 			}
+			if name == "models" {
+				var list []string
+				if err := node.Decode(&list); err != nil {
+					return fmt.Errorf("key policy: `models` must be a list of selectors: %w", err)
+				}
+				k.Models = NormalizeSelectors(list)
+				continue
+			}
+			if name == "budgets" {
+				var b map[string]LimitSet
+				if err := node.Decode(&b); err != nil {
+					return fmt.Errorf("key policy: `budgets` must map a selector to a list of limits: %w", err)
+				}
+				k.Budgets = KeyBudgets(b).Normalized()
+				continue
+			}
 			if name == "limits" {
 				if err := node.Decode(&k.Limits); err != nil {
 					return fmt.Errorf("key policy: `limits`: %w", err)
@@ -214,7 +245,7 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 // feature does not show up as a diff on every key in the revision history.
 func (k KeyPolicy) MarshalYAML() (any, error) {
 	if len(k.Allow) == 0 && k.Thinking == nil && len(k.Limits) == 0 && !k.Mint &&
-		len(k.Credentials) == 0 && !k.Disabled {
+		len(k.Credentials) == 0 && !k.Disabled && len(k.Models) == 0 && len(k.Budgets) == 0 {
 		return k.Group, nil
 	}
 	m := map[string]any{"default": k.Group}
@@ -237,6 +268,12 @@ func (k KeyPolicy) MarshalYAML() (any, error) {
 	}
 	if k.Disabled {
 		m["disabled"] = true
+	}
+	if len(k.Models) > 0 {
+		m["models"] = k.Models
+	}
+	if len(k.Budgets) > 0 {
+		m["budgets"] = k.Budgets
 	}
 	return m, nil
 }

@@ -471,10 +471,10 @@ func (p *Proxy) seedQuota(cfg *config.Config) {
 	// Caller allocations (P56): the same ledger, keyed by who is asking rather
 	// than by what answers. Child keys' too (childkeys.go).
 	for key, kp := range cfg.Keys {
-		seedCallerLimits(setLimits, key, kp.Limits, kp.Credentials)
+		seedCallerBudgets(setLimits, key, kp.Budgets)
 	}
 	for _, ck := range p.children.of("") {
-		seedCallerLimits(setLimits, ck.Key, ck.limits, ck.keyCreds)
+		seedCallerBudgets(setLimits, ck.Key, ck.budgets)
 	}
 	// A scope whose limits were removed stops counting.
 	p.quota.DropLimitsExcept(declared)
@@ -1054,34 +1054,27 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	} else {
 		cands = kept
 	}
-	// Permission before budget: refusing a caller a credential it may not use is
+	// Permission before budget: refusing a caller a model it may not use is
 	// not a capacity question, and gating on budget first would let an
-	// exhausted-but-permitted account mask a forbidden one.
-	if kept := p.filterByCredential(r, cands, caller); len(kept) == 0 {
-		// 403, not 503: retrying will not help, the caller is not on the list.
-		http.Error(w, "no permitted credential for this key", http.StatusForbidden)
+	// exhausted-but-permitted model mask a forbidden one.
+	if kept, why := p.filterByAccess(r, cands, caller); len(kept) == 0 {
+		// 403, not 503: retrying will not help, the key does not reach it.
+		writeJSONError(w, http.StatusForbidden, "permission_error", why)
 		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
 			Status: http.StatusForbidden, DwellMS: time.Since(start).Milliseconds(),
-			Error: "no permitted credential", ReqBody: reqBody})
+			Error: "not permitted: " + why, ReqBody: reqBody})
 		return
 	} else {
 		cands = kept
 	}
-	// The caller's own allocation before any backend's: it is the same answer
-	// whichever candidate would have served, so there is no walk to steer.
-	if p.quota != nil {
-		if full, wait := p.callerBlocked(caller); full {
-			p.writeAllocationExhausted(w, r, served, key, wait, start, reqBody)
-			return
-		}
-		// A share of one model (Limit.Model) drops that model only: a lane
-		// can still serve from another member.
-		if kept, wait := p.filterByCallerShare(cands, caller); len(kept) == 0 {
-			p.writeAllocationExhausted(w, r, served, key, wait, start, reqBody)
-			return
-		} else {
-			cands = kept
-		}
+	// The caller's own budgets (and its parent's) before any backend's. A
+	// budget on one selector drops only what it names, so a lane can still
+	// serve from another member.
+	if kept, full, wait := p.filterByKeyBudgets(cands, caller); len(kept) == 0 {
+		p.writeAllocationExhausted(w, r, served, caller, full, wait, start, reqBody)
+		return
+	} else {
+		cands = kept
 	}
 	if kept, wait := p.filterByQuota(cands); len(kept) == 0 {
 		p.writeBudgetExhausted(w, r, served, key, cands, wait, start, reqBody)
@@ -1706,7 +1699,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// The caller's request allocation, once per served request — not per
 		// upstream attempt, and not through ObserveResponse, whose 429 handling
 		// would cool the caller's scope for a backend's refusal.
-		p.chargeCaller(caller, name, costUSD, p.credentialScopesFor(caller, cand))
+		p.chargeCaller(caller, cand, costUSD)
 		if p.quota != nil && costUSD > 0 {
 			// Every scope the candidate answers to: the model, its credential,
 			// that credential's provider, and the box. Spend belongs to the
@@ -2324,31 +2317,38 @@ func (p *Proxy) writeBudgetExhausted(w http.ResponseWriter, r *http.Request, ser
 	}
 	p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refused, Key: key, Path: r.URL.Path,
 		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-		Error: "hard budget exhausted", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
+		Error: "hard budget exhausted: " + msg, ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
 }
 
-// writeAllocationExhausted refuses a caller whose own hard allocation is full
-// (P56). Same 429 shape as a backend's budget, with its own type so a client
-// can tell "you have spent yours" from "the backend is out".
-func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request, served, key string,
-	wait time.Duration, start time.Time, reqBody string) {
+// writeAllocationExhausted refuses a caller whose own hard budget, or its
+// parent's, is full (P56, P65). Same 429 shape as a backend's budget, with its
+// own type so a client can tell "your key's budget is spent" from "the
+// backend is out". full are the budget scopes that refused; the message names
+// each one — whose, which selector, how much of how much.
+func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request, served string, caller config.Caller,
+	full []string, wait time.Duration, start time.Time, reqBody string) {
+	key := caller.Key
+	notes := p.budgetNotesFor(caller, full)
+	msg := "this key's budget is used up (hard limit)"
+	if len(notes) > 0 {
+		msg = "refused by " + summaries(notes)
+	}
+	ask := ". Ask the owner for more with POST /v1/access-requests (see /v1/capabilities, or `corrallm request more`)."
+	if caller.Parent != "" {
+		ask = ". Ask the key that made this one, or the owner (`corrallm request more`)."
+	}
 	if wait == 0 {
 		// Only a one-off (`per: total`) budget is full: it never refills, so
 		// there is no retry to promise.
 		p.alert.Send("allocation/"+key, key+": budget spent",
-			fmt.Sprintf("Caller **%s** has spent its one-off budget. Its requests are refused until it gets more.", key), "money_with_wings")
-		notes := p.budgetNotes(p.keyScopes(key))
-		msg := "this key's one-off budget is spent"
-		if len(notes) > 0 {
-			msg = "refused by " + summaries(notes)
-		}
+			fmt.Sprintf("Caller **%s**: %s. Its requests are refused until it gets more.", key, msg), "money_with_wings")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_spent","budgets":%s}}`,
-			jsonString(msg+". Ask the owner for more with POST /v1/access-requests (see /v1/capabilities)."), mustJSON(notes))
+			jsonString(msg+ask), mustJSON(notes))
 		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
 			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-			Error: "one-off budget spent", ReqBody: reqBody})
+			Error: "one-off budget spent: " + msg, ReqBody: reqBody})
 		return
 	}
 	secs := int((wait + time.Second - 1) / time.Second)
@@ -2356,21 +2356,16 @@ func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request,
 		secs = 1
 	}
 	p.alert.Send("allocation/"+key, key+": allocation reached",
-		fmt.Sprintf("Caller **%s** has used its hard allocation. Its requests are refused for %s.", key,
+		fmt.Sprintf("Caller **%s**: %s. Its requests are refused for %s.", key, msg,
 			(time.Duration(secs)*time.Second).String()), "money_with_wings")
-	notes := p.budgetNotes(p.keyScopes(key))
-	msg := fmt.Sprintf("this key's allocation is used up (hard limit); retry after %d seconds", secs)
-	if len(notes) > 0 {
-		msg = "refused by " + summaries(notes)
-	}
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusTooManyRequests)
 	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_exhausted","retry_after":%d,"budgets":%s}}`,
-		jsonString(msg+". Ask the owner for more with POST /v1/access-requests (see /v1/capabilities)."), secs, mustJSON(notes))
+		jsonString(msg+ask), secs, mustJSON(notes))
 	p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
 		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-		Error: "hard allocation exhausted", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
+		Error: "key budget exhausted: " + msg, ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
 }
 
 func (p *Proxy) filterByPaused(cands []config.Candidate) []config.Candidate {
@@ -2409,43 +2404,6 @@ func (p *Proxy) filterByOutput(cands []config.Candidate, want string) []config.C
 	kept := make([]config.Candidate, 0, len(cands))
 	for _, c := range cands {
 		if p.modelIO(c).Emits(want) {
-			kept = append(kept, c)
-		}
-	}
-	return kept
-}
-
-// filterByCredential drops candidates whose credential this caller may not use.
-//
-// Beside filterByPaused/filterByQuota rather than a new exit, so it composes
-// with the existing walk: a caller with no permitted credential on one provider
-// falls through to the next backend exactly as an exhausted budget does.
-//
-// Unlike filterByQuota this does NOT fall back to the unfiltered list when
-// everything is dropped. An exhausted budget is a temporary state where serving
-// anyway is arguably better than failing; a permission is not. If nothing is
-// permitted the walk ends and the caller gets the same "no backend" answer as
-// any other empty candidate set.
-//
-// The permission comes from the CALLER's allow patterns (KeyPolicy.Credentials),
-// not from a credential's own allowlist: who may spend an account is a fact
-// about the key. A matched pattern may carry budgets, which are gated here —
-// before the candidate is walked, like every other hard limit — and charged on
-// the request that pattern admits (chargeCaller). The verdict names the winning
-// pattern and the key that owns it, so both sides count the same scope.
-func (p *Proxy) filterByCredential(r *http.Request, cands []config.Candidate, caller config.Caller) []config.Candidate {
-	if p.trustedCaller != nil && p.trustedCaller(r, caller.Key) {
-		return cands
-	}
-	kept := make([]config.Candidate, 0, len(cands))
-	for _, c := range cands {
-		v := p.credentialVerdict(caller, c)
-		if v.allowed && len(v.limits) > 0 && p.quota != nil {
-			if full, _ := p.quota.HardBlocked(v.scope()); full {
-				v.allowed = false
-			}
-		}
-		if v.allowed {
 			kept = append(kept, c)
 		}
 	}
@@ -2869,7 +2827,14 @@ func (p *Proxy) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 // quality/type/backend shape from config plus live state + context length from
 // the residency snapshot. Standard fields (id/object/created/owned_by) keep it
 // drop-in compatible.
-func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
+func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
+	// A key lists only what its `models` let it use (P65), as the request
+	// path would admit it: a model the key cannot reach is not offered.
+	caller := p.resolveCaller(callerKey(req))
+	usable := func(cands []config.Candidate) []config.Candidate {
+		kept, _ := p.filterByAccess(req, cands, caller)
+		return kept
+	}
 	// First resident backend per BACKING PROCESS → live state + parsed context
 	// length. Keyed by ProcKey, not ModelName: oidio's four models are one
 	// process, and keying by name reported whichever one spawned it as ready
@@ -2931,6 +2896,9 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 
 	for _, name := range names {
 		mc := all[name]
+		if cands, ok := p.config().ResolveServed(name); ok && len(usable(cands)) == 0 {
+			continue
+		}
 		e := model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",
@@ -2970,6 +2938,9 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	sort.Strings(laneNames)
 	for _, name := range laneNames {
 		cands, _ := p.config().ResolveServed(name)
+		if cands = usable(cands); len(cands) == 0 {
+			continue
+		}
 		members := make([]string, 0, len(cands))
 		// Lane modalities/capability follow the PRIMARY member: a lane advertises
 		// what its first-choice model accepts (a fallback may support less).

@@ -529,26 +529,20 @@ keys:
 	if len(cr.Allow) != 0 {
 		t.Errorf("the legacy list survived the migration: %v", cr.Allow)
 	}
+	// Then P65 moved the patterns into `models`: the named key reaches the
+	// account; a configured key the list did not name reaches local models only.
+	acct := Target{Model: "claude-haiku-4-5-20251001", Provider: "claude", Cred: "cred:claude/api", Remote: true}
 	pol, ok := c.Keys["sk-aw4"]
-	if !ok || len(pol.Credentials) != 1 || pol.Credentials[0].Credential != "cred:claude/api" {
-		t.Fatalf("sk-aw4 patterns = %+v (present=%v), want cred:claude/api", pol.Credentials, ok)
+	if !ok || !ModelsPermit(pol.Models, acct) {
+		t.Fatalf("sk-aw4 models = %v (present=%v), want the account cred:claude/api", pol.Models, ok)
 	}
-	if _, allowed := PermitsCredential(c.Keys["sk-aw4"].Credentials, "cred:claude/api"); !allowed {
-		t.Error("the named key cannot reach the account it was granted")
-	}
-	// A CONFIGURED key the list did not name can reach nothing: it would have
-	// had no patterns, and empty means every account, so the migration writes
-	// ":none" into it rather than handing it a paid upstream.
-	if got := c.Keys["yscr"].Credentials; len(got) != 1 || got[0].Credential != NoCredentialPattern {
-		t.Fatalf("unnamed configured key = %+v, want %s", got, NoCredentialPattern)
-	}
-	if _, allowed := PermitsCredential(c.Keys["yscr"].Credentials, "cred:claude/api"); allowed {
-		t.Error("a configured key the list did not name reaches the account")
+	if got := c.Keys["yscr"].Models; len(got) != 1 || got[0] != SelectLocal {
+		t.Fatalf("unnamed configured key models = %v, want [local]", got)
 	}
 	// A caller with NO entry cannot be given a pattern at all, which is the one
 	// case the migration cannot close — it warns about it instead (and points at
 	// unknownKeys.allow). Asserted so the exposure is written down, not assumed.
-	if _, allowed := PermitsCredential(c.Keys["stranger"].Credentials, "cred:claude/api"); !allowed {
-		t.Error("a caller with no key entry is expected to pass here: the migration warns rather than inventing an entry")
+	if !ModelsPermit(c.Keys["stranger"].Models, acct) {
+		t.Error("a caller with no key entry is expected to pass here: the proxy refuses strangers every account (credentialVerdict)")
 	}
 }

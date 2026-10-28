@@ -213,11 +213,10 @@ func TestParseTTL(t *testing.T) {
 	}
 }
 
-// An issued key passes a credential allowlist it was granted, and only that.
-func TestIssuedKeyCredentials(t *testing.T) {
+// An issued key reaches the models its selectors name, and only those.
+func TestIssuedKeyModels(t *testing.T) {
 	k := newChildKeyRig(t, nil)
-	key, err := k.px.IssueKey(AccessAsk{Label: "x",
-		Credentials: &[]config.KeyCredential{{Credential: "cred:fw/main"}}}, time.Now())
+	key, err := k.px.IssueKey(AccessAsk{Label: "x", Models: &[]string{"cred:fw/main"}}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,23 +225,27 @@ func TestIssuedKeyCredentials(t *testing.T) {
 			Credential: &config.Credential{Name: name}}
 	}
 	caller := k.px.resolveCaller(key)
-	if v := k.px.credentialVerdict(caller, cand("fw", "main")); !v.allowed {
-		t.Error("granted credential refused")
+	if !k.permits(caller, cand("fw", "main")) {
+		t.Error("granted account refused")
 	}
-	if v := k.px.credentialVerdict(caller, cand("fw", "other")); v.allowed {
-		t.Error("credential allowed without a pattern")
+	if k.permits(caller, cand("fw", "other")) {
+		t.Error("an account its models do not name was allowed")
 	}
-	// The permission is about the CALLER and nothing else (P63): a key with no
-	// patterns may use every credential, whatever list the credential used to
-	// carry. A credential's own `allow:` is migrated onto keys by Finalize and is
-	// never consulted here again.
-	if v := k.px.credentialVerdict(k.px.resolveCaller("parent"), cand("fw", "main")); !v.allowed {
-		t.Error("a key with no patterns should reach every credential")
-	}
+	// A key with no filter reaches everything, whatever list the credential
+	// used to carry: a credential's own `allow:` is never consulted (P63).
 	legacy := cand("fw", "main")
 	legacy.Credential.Allow = []string{"sk-someone-else"}
-	if v := k.px.credentialVerdict(k.px.resolveCaller("parent"), legacy); !v.allowed {
-		t.Error("a credential's stale allow: list decided a permission the key's patterns own")
+	if !k.permits(k.px.resolveCaller("parent"), legacy) {
+		t.Error("a credential's stale allow: list decided a permission the key owns")
+	}
+	// The old request shape still works: credentials become models.
+	old, err := k.px.CreateKey(AccessAsk{Label: "old", Purpose: "p",
+		Credentials: &[]config.KeyCredential{{Credential: "cred:fw/main"}}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ck, _ := k.px.children.get(old); !containsStr(ck.models, "cred:fw/main") || !containsStr(ck.models, "local") {
+		t.Errorf("legacy credentials became models %v", ck.models)
 	}
 }
 

@@ -26,7 +26,7 @@ func TestRefusalNamesTheBudget(t *testing.T) {
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	if rec.Code != http.StatusTooManyRequests || len(body.Error.Budgets) != 1 ||
-		!strings.Contains(body.Error.Message, "key parent's own limit: 1 requests of 1 requests spent today (UTC)") ||
+		!strings.Contains(body.Error.Message, "key parent's budget on everything: 1 requests of 1 requests spent today (UTC)") ||
 		!strings.Contains(body.Error.Message, "UTC)") || body.Error.Budgets[0].RoomAt == "" {
 		t.Errorf("%d %s", rec.Code, rec.Body.String())
 	}
@@ -53,19 +53,19 @@ func TestHumanWait(t *testing.T) {
 	}
 }
 
-// A caller with no key entry spends no declared account, whatever the keys'
-// patterns say: patterns live on keys, and "no patterns" means every account.
+// A caller with no key entry spends no declared account: filters and budgets
+// live on keys, and a stranger has none.
 func TestStrangerSpendsNoAccount(t *testing.T) {
 	k := newChildKeyRig(t, nil)
 	paid := config.Candidate{Name: "m", Model: config.Model{ProviderName: "fw"}, Credential: &config.Credential{Name: "main"}}
-	if v := k.px.credentialVerdict(k.px.resolveCaller("someone-on-the-lan"), paid); v.allowed {
+	if k.permits(k.px.resolveCaller("someone-on-the-lan"), paid) {
 		t.Error("a stranger may forward with a declared credential")
 	}
-	if v := k.px.credentialVerdict(k.px.resolveCaller("parent"), paid); !v.allowed {
-		t.Error("a configured key with no patterns lost every account")
+	if !k.permits(k.px.resolveCaller("parent"), paid) {
+		t.Error("a configured key with no models filter lost every account")
 	}
 	open := config.Candidate{Name: "local", Model: config.Model{}}
-	if v := k.px.credentialVerdict(k.px.resolveCaller("someone-on-the-lan"), open); !v.allowed {
+	if !k.permits(k.px.resolveCaller("someone-on-the-lan"), open) {
 		t.Error("a stranger lost a backend with no credential")
 	}
 }

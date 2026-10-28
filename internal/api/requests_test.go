@@ -147,7 +147,7 @@ func TestApproveTopUpKeepsTheKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	kp := reloadStored(t, h, "after top-up").Keys["sk-team"]
-	if !kp.Mint || len(kp.Limits) != 1 || kp.Limits[0].USD != 3 {
+	if b := kp.Budgets["*"]; !kp.Mint || len(b) != 1 || b[0].USD != 3 {
 		t.Errorf("approving a top-up changed the key: %+v", kp)
 	}
 }

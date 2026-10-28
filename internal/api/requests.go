@@ -22,58 +22,54 @@ import (
 // Wire types are flat (no pointers): the page always sends the full state it
 // wants, prefilled from what is there now.
 
-// KeyLimit is one budget on a caller key.
+// KeyLimit is one limit inside a key budget.
 type KeyLimit struct {
-	Req   float64 `json:"req,omitempty" required:"false" doc:"Requests."`
-	USD   float64 `json:"usd,omitempty" required:"false" doc:"Dollars."`
-	Per   string  `json:"per" doc:"Window: minute | hour | day | month | calendar-day | calendar-month | total (one-off, never resets)."`
-	Hard  bool    `json:"hard,omitempty" required:"false" doc:"Refuse once spent."`
-	Model string  `json:"model,omitempty" required:"false" doc:"Narrow to one model; empty = every model."`
+	Req  float64 `json:"req,omitempty" required:"false" doc:"Requests."`
+	USD  float64 `json:"usd,omitempty" required:"false" doc:"Dollars."`
+	Per  string  `json:"per" doc:"Window: minute | hour | day | month | calendar-day | calendar-month | total (one-off, never resets)."`
+	Hard bool    `json:"hard,omitempty" required:"false" doc:"Refuse once spent."`
 }
 
-// KeyPattern is one ALLOW PATTERN on a key: a credential scope glob, with an
-// optional budget of its own. `cred:fireworks/*` is every account of one
-// provider; `cred:fireworks/main` is one of them. When several match, the most
-// specific wins, and only its budgets are charged.
-type KeyPattern struct {
-	Credential string     `json:"credential" doc:"cred:<provider>/<name>, with * as a wildcard (e.g. cred:fireworks/*)."`
-	Limits     []KeyLimit `json:"limits" required:"false" doc:"What this pattern may spend. Only the most specific matching pattern's budgets are charged."`
+// KeyBudget is what a key may spend on what one selector names (P65). Every
+// matching budget applies.
+type KeyBudget struct {
+	On     string     `json:"on" doc:"Selector: * | local | proxy | provider:<name> | cred:<provider>/<name> | model:<name>; * is a wildcard in names."`
+	Limits []KeyLimit `json:"limits"`
 }
 
-// toKeyLimits converts a key's allocation to the wire; nil stays an empty list
-// so a form editing one always has something to append to.
-func toKeyLimits(in config.LimitSet) []KeyLimit {
-	out := make([]KeyLimit, 0, len(in))
-	for _, l := range in {
-		out = append(out, KeyLimit{Req: l.Req, USD: l.USD, Per: l.Per, Hard: l.Hard, Model: l.Model})
+// toBudgets converts a key's budgets to the wire, sorted by selector; nil
+// stays an empty list so a form editing one always has something to append to.
+func toBudgets(in config.KeyBudgets) []KeyBudget {
+	out := make([]KeyBudget, 0, len(in))
+	for _, sel := range in.Selectors() {
+		b := KeyBudget{On: sel, Limits: make([]KeyLimit, 0, len(in[sel]))}
+		for _, l := range in[sel] {
+			b.Limits = append(b.Limits, KeyLimit{Req: l.Req, USD: l.USD, Per: l.Per, Hard: l.Hard})
+		}
+		out = append(out, b)
 	}
 	return out
 }
 
-// toPatterns / fromPatterns convert a key's allow patterns between the wire and
-// the config's own type.
-func toPatterns(in []KeyPattern) []config.KeyCredential {
-	out := make([]config.KeyCredential, 0, len(in))
-	for _, p := range in {
-		out = append(out, config.KeyCredential{Credential: strings.TrimSpace(p.Credential), Limits: fromKeyLimits(p.Limits)})
+func fromBudgets(in []KeyBudget) config.KeyBudgets {
+	out := config.KeyBudgets{}
+	for _, b := range in {
+		sel := strings.TrimSpace(b.On)
+		if sel == "" {
+			continue
+		}
+		for _, l := range b.Limits {
+			out[sel] = append(out[sel], config.Limit{Req: l.Req, USD: l.USD, Per: l.Per, Hard: l.Hard})
+		}
 	}
-	return out
+	return out.Normalized()
 }
 
-func fromPatterns(in []config.KeyCredential) []KeyPattern {
-	out := make([]KeyPattern, 0, len(in))
-	for _, p := range in {
-		out = append(out, KeyPattern{Credential: p.Credential, Limits: toKeyLimits(p.Limits)})
+func nonNil(in []string) []string {
+	if in == nil {
+		return []string{}
 	}
-	return out
-}
-
-func fromKeyLimits(in []KeyLimit) config.LimitSet {
-	out := make(config.LimitSet, 0, len(in))
-	for _, l := range in {
-		out = append(out, config.Limit{Req: l.Req, USD: l.USD, Per: l.Per, Hard: l.Hard, Model: l.Model})
-	}
-	return out
+	return in
 }
 
 // ValueAdd is a one-time amount on a key, spent once its own limits refuse.
@@ -101,32 +97,32 @@ func fromGrantViews(in []proxy.GrantView) []ValueAdd {
 
 // KeyGrant is what a request asks for, or an approval grants.
 type KeyGrant struct {
-	From        string       `json:"from,omitempty" required:"false" doc:"Who asked, in their own words (self-reported)."`
-	Label       string       `json:"label,omitempty" required:"false"`
-	Purpose     string       `json:"purpose,omitempty" required:"false"`
-	Models      []string     `json:"models,omitempty" required:"false" doc:"Models the requester said it wants."`
-	Group       string       `json:"group,omitempty" required:"false" doc:"Priority group; empty = the fallback group."`
-	Credentials []KeyPattern `json:"credentials,omitempty" required:"false" doc:"Allow patterns: which credentials the key may use, each with an optional budget of its own. Empty = every credential."`
-	Limits      []KeyLimit   `json:"limits,omitempty" required:"false"`
-	ValueAdds   []ValueAdd   `json:"valueAdds,omitempty" required:"false"`
-	TTL         string       `json:"ttl,omitempty" required:"false" doc:"Key expires this long after approval: 48h, 7d."`
-	Expires     string       `json:"expires,omitempty" required:"false" doc:"Key expiry, RFC 3339."`
-	Mint        bool         `json:"mint,omitempty" required:"false" doc:"May mint child keys."`
+	From      string      `json:"from,omitempty" required:"false" doc:"Who asked, in their own words (self-reported)."`
+	Label     string      `json:"label,omitempty" required:"false"`
+	Purpose   string      `json:"purpose,omitempty" required:"false"`
+	Models    []string    `json:"models,omitempty" required:"false" doc:"Selectors naming what the key may see and use. Empty = every model."`
+	Group     string      `json:"group,omitempty" required:"false" doc:"Priority group; empty = the fallback group."`
+	Budgets   []KeyBudget `json:"budgets,omitempty" required:"false" doc:"What the key may spend, by selector."`
+	ValueAdds []ValueAdd  `json:"valueAdds,omitempty" required:"false"`
+	TTL       string      `json:"ttl,omitempty" required:"false" doc:"Key expires this long after approval: 48h, 7d."`
+	Expires   string      `json:"expires,omitempty" required:"false" doc:"Key expiry, RFC 3339."`
+	Mint      bool        `json:"mint,omitempty" required:"false" doc:"May mint child keys."`
 	// The asked side only: which fields the requester set at all.
-	AskedLimits bool `json:"askedLimits,omitempty" required:"false"`
-	AskedMint   bool `json:"askedMint,omitempty" required:"false"`
+	AskedModels  bool `json:"askedModels,omitempty" required:"false"`
+	AskedBudgets bool `json:"askedBudgets,omitempty" required:"false"`
+	AskedMint    bool `json:"askedMint,omitempty" required:"false"`
 }
 
 func fromAsk(a proxy.AccessAsk) KeyGrant {
-	g := KeyGrant{From: a.From, Label: a.Label, Purpose: a.Purpose, Models: a.Models, TTL: a.TTL, Expires: a.Expires}
+	g := KeyGrant{From: a.From, Label: a.Label, Purpose: a.Purpose, TTL: a.TTL, Expires: a.Expires}
 	if a.Group != nil {
 		g.Group = *a.Group
 	}
-	if a.Credentials != nil {
-		g.Credentials = fromPatterns(*a.Credentials)
+	if a.Models != nil {
+		g.Models, g.AskedModels = *a.Models, true
 	}
-	if a.Limits != nil {
-		g.Limits, g.AskedLimits = toKeyLimits(*a.Limits), true
+	if a.Budgets != nil {
+		g.Budgets, g.AskedBudgets = toBudgets(*a.Budgets), true
 	}
 	if a.Mint != nil {
 		g.Mint, g.AskedMint = *a.Mint, true
@@ -139,10 +135,10 @@ func fromAsk(a proxy.AccessAsk) KeyGrant {
 
 // toAsk is a full-state grant: every field set.
 func (g KeyGrant) toAsk() proxy.AccessAsk {
-	lim := fromKeyLimits(g.Limits)
-	creds := toPatterns(g.Credentials)
-	a := proxy.AccessAsk{Label: g.Label, Purpose: g.Purpose, Models: g.Models, Group: &g.Group,
-		Credentials: &creds, Limits: &lim, TTL: g.TTL, Expires: g.Expires, Mint: &g.Mint}
+	models := nonNil(g.Models)
+	budgets := fromBudgets(g.Budgets)
+	a := proxy.AccessAsk{Label: g.Label, Purpose: g.Purpose, Models: &models, Group: &g.Group,
+		Budgets: &budgets, TTL: g.TTL, Expires: g.Expires, Mint: &g.Mint}
 	for _, v := range g.ValueAdds {
 		a.ValueAdds = append(a.ValueAdds, proxy.ValueAddAsk{USD: v.USD, Model: v.Model, TTL: v.TTL, Expires: v.Expires, Note: v.Note})
 	}
@@ -169,7 +165,7 @@ type AccessRequestRow struct {
 
 // KeyWindowRow is one allocation window's live state.
 type KeyWindowRow struct {
-	Scope    string  `json:"scope" doc:"\"key\" = key-wide, else a model's share."`
+	Scope    string  `json:"scope" doc:"The budget's selector (* = everything)."`
 	Label    string  `json:"label"`
 	Limit    float64 `json:"limit"`
 	Used     float64 `json:"used"`
@@ -180,20 +176,21 @@ type KeyWindowRow struct {
 
 // ManagedKey is a key the page manages: minted at runtime, or configured.
 type ManagedKey struct {
-	Key         string         `json:"key"`
-	Kind        string         `json:"kind" doc:"issued (by an admin) | child (minted by a key) | configured"`
-	Parent      string         `json:"parent,omitempty" required:"false"`
-	Label       string         `json:"label,omitempty" required:"false"`
-	Group       string         `json:"group,omitempty" required:"false"`
-	Credentials []KeyPattern   `json:"credentials" doc:"Allow patterns: which credentials this key may use, each with its own budgets. Empty = every credential."`
-	Mint        bool           `json:"mint"`
-	Limits      []KeyLimit     `json:"limits"`
-	Created     string         `json:"created,omitempty" required:"false"`
-	Expires     string         `json:"expires,omitempty" required:"false"`
-	Expired     bool           `json:"expired"`
-	Disabled    bool           `json:"disabled" doc:"Switched off by an admin. Kept, with its budgets and patterns, until switched back on."`
-	ValueAdds   []ValueAdd     `json:"valueAdds"`
-	Windows     []KeyWindowRow `json:"windows"`
+	Key       string         `json:"key"`
+	Kind      string         `json:"kind" doc:"issued (by an admin) | child (minted by a key) | configured"`
+	Parent    string         `json:"parent,omitempty" required:"false"`
+	Label     string         `json:"label,omitempty" required:"false"`
+	Group     string         `json:"group,omitempty" required:"false"`
+	Models    []string       `json:"models" doc:"Selectors naming what this key may see and use. Empty = every model (a subkey: every model its parent may use)."`
+	Budgets   []KeyBudget    `json:"budgets" doc:"What this key may spend, by selector. Every matching budget applies."`
+	Warnings  []string       `json:"warnings" doc:"Where this key's subkeys' budgets add up to more than what they sit under. Allowed; the parent's own budget stops the total."`
+	Mint      bool           `json:"mint"`
+	Created   string         `json:"created,omitempty" required:"false"`
+	Expires   string         `json:"expires,omitempty" required:"false"`
+	Expired   bool           `json:"expired"`
+	Disabled  bool           `json:"disabled" doc:"Switched off by an admin. Kept, with its budgets, until switched back on."`
+	ValueAdds []ValueAdd     `json:"valueAdds"`
+	Windows   []KeyWindowRow `json:"windows"`
 	// What the key itself spent since 00:00 UTC (its children are their own
 	// rows), from the request log: shown for every key, limit or not.
 	SpentToday    float64 `json:"spentToday"`
@@ -267,7 +264,7 @@ func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutp
 			kind = "child"
 		}
 		b.Keys = append(b.Keys, ManagedKey{Key: k.Key, Kind: kind, Parent: k.Parent, Label: k.Label, Group: k.Group,
-			Credentials: fromPatterns(k.Credentials), Mint: k.Mint, Limits: toKeyLimits(k.Limits), Created: k.Created,
+			Models: nonNil(k.Models), Budgets: toBudgets(k.Budgets), Warnings: nonNil(k.Warnings), Mint: k.Mint, Created: k.Created,
 			Expires: k.Expires, Expired: k.Expired, Disabled: k.Disabled,
 			ValueAdds: fromGrantViews(k.ValueAdds), Windows: windowRows(k.Windows),
 			SpentToday: today[k.Key].CostUSD, RequestsToday: today[k.Key].Requests})
@@ -280,8 +277,8 @@ func (h *Handlers) ListRequests(ctx context.Context, _ *struct{}) (*RequestsOutp
 	for _, key := range sortedNames(cfg.Keys) {
 		kp := cfg.Keys[key]
 		b.Keys = append(b.Keys, ManagedKey{Key: key, Kind: "configured", Group: kp.Group,
-			Credentials: fromPatterns(kp.Credentials), Disabled: kp.Disabled,
-			Mint: kp.Mint, Limits: toKeyLimits(kp.Limits), ValueAdds: fromGrantViews(adds[key]),
+			Models: nonNil(kp.Models), Budgets: toBudgets(kp.Budgets), Warnings: nonNil(p.Oversubscription(key)),
+			Disabled: kp.Disabled, Mint: kp.Mint, ValueAdds: fromGrantViews(adds[key]),
 			Windows: windowRows(p.KeyWindows(key)), SpentToday: today[key].CostUSD, RequestsToday: today[key].Requests})
 	}
 	b.Credentials = p.Credentials()

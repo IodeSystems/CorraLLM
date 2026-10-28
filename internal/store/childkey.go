@@ -21,18 +21,22 @@ type ChildKey struct {
 	CanMint     bool
 	Disabled    bool
 	Grants      string
+	// Models and Budgets (P65) are the JSON of a selector list and of a
+	// config.KeyBudgets. They replace Limits and Credentials.
+	Models  string
+	Budgets string
 }
 
 // SaveChildKey upserts a child key. created_at is kept on update.
 func (s *Store) SaveChildKey(k ChildKey) error {
 	_, err := s.db.Exec(`
-INSERT INTO child_key (key, parent, label, limits, created_at, updated_at, expires_at, grp, credentials, can_mint, disabled, grants)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO child_key (key, parent, label, limits, created_at, updated_at, expires_at, grp, credentials, can_mint, disabled, grants, models, budgets)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(key) DO UPDATE SET label=excluded.label, limits=excluded.limits, updated_at=excluded.updated_at,
   expires_at=excluded.expires_at, grp=excluded.grp, credentials=excluded.credentials, can_mint=excluded.can_mint,
-  disabled=excluded.disabled, grants=excluded.grants`,
+  disabled=excluded.disabled, grants=excluded.grants, models=excluded.models, budgets=excluded.budgets`,
 		k.Key, k.Parent, k.Label, k.Limits, k.CreatedMS, k.UpdatedMS, k.ExpiresMS, k.Group, k.Credentials,
-		boolInt(k.CanMint), boolInt(k.Disabled), k.Grants)
+		boolInt(k.CanMint), boolInt(k.Disabled), k.Grants, k.Models, k.Budgets)
 	return err
 }
 
@@ -44,7 +48,7 @@ func (s *Store) DeleteChildKey(key string) error {
 
 // LoadChildKeys returns every child key, for the proxy's in-memory roster.
 func (s *Store) LoadChildKeys() ([]ChildKey, error) {
-	rows, err := s.db.Query(`SELECT key, parent, label, limits, created_at, updated_at, expires_at, grp, credentials, can_mint, disabled, grants
+	rows, err := s.db.Query(`SELECT key, parent, label, limits, created_at, updated_at, expires_at, grp, credentials, can_mint, disabled, grants, models, budgets
 FROM child_key ORDER BY parent, created_at, key`)
 	if err != nil {
 		return nil, err
@@ -55,7 +59,7 @@ FROM child_key ORDER BY parent, created_at, key`)
 		var k ChildKey
 		var mint, disabled int
 		if err := rows.Scan(&k.Key, &k.Parent, &k.Label, &k.Limits, &k.CreatedMS, &k.UpdatedMS,
-			&k.ExpiresMS, &k.Group, &k.Credentials, &mint, &disabled, &k.Grants); err != nil {
+			&k.ExpiresMS, &k.Group, &k.Credentials, &mint, &disabled, &k.Grants, &k.Models, &k.Budgets); err != nil {
 			return nil, err
 		}
 		k.CanMint, k.Disabled = mint != 0, disabled != 0

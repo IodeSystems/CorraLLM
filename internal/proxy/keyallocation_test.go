@@ -36,7 +36,7 @@ func TestKeyAllocationRefusesOnlyThatCaller(t *testing.T) {
 
 	cfg := meteredConfig(t, "mock", upstream.URL) // $0.00105 a request
 	cfg.Keys = map[string]config.KeyPolicy{
-		"capped": {Limits: config.LimitSet{{USD: 0.001, Per: "calendar-day", Hard: true}}},
+		"capped": {Budgets: config.KeyBudgets{"*": {{USD: 0.001, Per: "calendar-day", Hard: true}}}},
 		"free":   {},
 	}
 	r := chi.NewRouter()

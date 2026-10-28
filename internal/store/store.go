@@ -399,7 +399,12 @@ CREATE TABLE IF NOT EXISTS child_key (
     disabled    INTEGER NOT NULL DEFAULT 0,
     -- JSON list of config.Grant: the key's allow patterns (cred:<provider>/<name>
     -- globs, each with its own budgets). '' = every credential.
-    grants      TEXT    NOT NULL DEFAULT ''
+    grants      TEXT    NOT NULL DEFAULT '',
+    -- P65: JSON list of selectors (what the key may see and use; '' = all)
+    -- and JSON object selector → limits (what it may spend). They replace
+    -- limits and credentials, which are read once and migrated.
+    models      TEXT    NOT NULL DEFAULT '',
+    budgets     TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS child_key_parent ON child_key(parent);
 
@@ -493,6 +498,8 @@ var migrations = []string{
 	// column existed was live the moment it was issued, and that stays true.
 	`ALTER TABLE child_key ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE child_key ADD COLUMN grants TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE child_key ADD COLUMN models TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE child_key ADD COLUMN budgets TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE activity ADD COLUMN requested TEXT NOT NULL DEFAULT ''`,
 	// AFTER the column, and here rather than in `schema`, because on an
 	// existing database the CREATE TABLE above is a no-op: the schema block

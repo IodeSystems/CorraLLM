@@ -267,23 +267,27 @@ func (h *Handlers) PutEntryYAML(ctx context.Context, in *PutEntryYAMLInput) (*Co
 			// The bare-string form carries no escalations, and must not silently
 			// REVOKE the ones a key already had — that endpoint sets where a key
 			// lands. A mapping states the whole policy and replaces it.
-			bare := len(pol.Allow) == 0 && pol.Thinking == nil && len(pol.Limits) == 0 && len(pol.Credentials) == 0
+			bare := len(pol.Allow) == 0 && pol.Thinking == nil && len(pol.Limits) == 0 && len(pol.Credentials) == 0 &&
+				len(pol.Models) == 0 && len(pol.Budgets) == 0
 			if len(pol.Allow) == 0 {
 				pol.Allow = c.Keys[name].Allow
 			}
-			// Nor its allocation (P56): moving a key to another group must not
-			// make it unlimited. The same goes for its allow patterns and its
-			// on/off switch (P63) — a bare string sets where a key lands and
+			// Nor its budgets (P56): moving a key to another group must not make
+			// it unlimited. The same goes for its models filter and its on/off
+			// switch (P63, P65) — a bare string sets where a key lands and
 			// nothing else, and must not quietly open it up or lock it out.
 			if bare {
-				pol.Limits = c.Keys[name].Limits
-				pol.Credentials = c.Keys[name].Credentials
+				pol.Models = c.Keys[name].Models
+				pol.Budgets = c.Keys[name].Budgets
 				pol.Disabled = c.Keys[name].Disabled
 			}
 			if err := config.ValidateKeyCredentials(pol.Credentials); err != nil {
 				return huma.Error400BadRequest(err.Error())
 			}
 			c.Keys[name] = pol
+			// A mapping written in the pre-P65 shape (limits, credentials) is
+			// stored in the new one.
+			c.MigrateKeyAccess()
 		default:
 			return huma.Error400BadRequest("kind must be model, server, lane, group, extension, tool or key")
 		}

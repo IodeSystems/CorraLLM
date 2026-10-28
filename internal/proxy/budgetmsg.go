@@ -37,15 +37,9 @@ func scopeOwner(scope string) string {
 		return "the " + strings.TrimPrefix(scope, "prov:") + " provider's limit (every key)"
 	case strings.HasPrefix(scope, "cred:"):
 		return "the " + strings.TrimPrefix(scope, "cred:") + " account's limit (every key using it)"
-	case strings.HasPrefix(scope, "keycred:"):
-		k, pat, _ := strings.Cut(strings.TrimPrefix(scope, "keycred:"), ">")
-		return "key " + k + "'s limit on accounts " + pat
-	case strings.HasPrefix(scope, "key:"):
-		k, model, share := strings.Cut(strings.TrimPrefix(scope, "key:"), "@")
-		if share {
-			return "key " + k + "'s share of " + model
-		}
-		return "key " + k + "'s own limit"
+	}
+	if k, sel, ok := keyBudgetOf(scope); ok {
+		return "key " + k + "'s budget " + selectorWords(sel)
 	}
 	return "the model-wide limit on " + scope + " (every key)"
 }
@@ -104,26 +98,46 @@ func (p *Proxy) budgetNotes(scopes []string) []BudgetNote {
 	return out
 }
 
-// keyScopes are a caller's own allocation scopes in the ledger: its key-wide
-// ones and its per-model shares, and its parent's.
-func (p *Proxy) keyScopes(key string) []string {
-	if p.quota == nil {
-		return nil
+// keyBudgetOf reads a key budget scope (config.KeyBudgetScope) back into the
+// key and the selector.
+func keyBudgetOf(scope string) (key, sel string, ok bool) {
+	switch {
+	case strings.HasPrefix(scope, "keycred:"):
+		k, pat, _ := strings.Cut(strings.TrimPrefix(scope, "keycred:"), ">")
+		return k, pat, true
+	case strings.HasPrefix(scope, "key:"):
+		rest := strings.TrimPrefix(scope, "key:")
+		if k, s, found := strings.Cut(rest, "|"); found {
+			return k, s, true
+		}
+		if k, m, found := strings.Cut(rest, "@"); found {
+			return k, "model:" + m, true
+		}
+		return rest, config.SelectAll, true
 	}
-	keys := []string{key}
-	if parent, ok := p.children.get(key); ok && parent.Parent != "" {
-		keys = append(keys, parent.Parent)
+	return "", "", false
+}
+
+// selectorWords is a budget's selector as a refusal says it.
+func selectorWords(sel string) string {
+	if sel == config.SelectAll {
+		return "on everything"
 	}
-	var out []string
-	for _, e := range p.quota.Snapshot() {
-		for _, k := range keys {
-			if e.Backend == config.KeyScopeKey(k) || strings.HasPrefix(e.Backend, config.KeyScopeKey(k)+"@") ||
-				strings.HasPrefix(e.Backend, "keycred:"+k+">") {
-				out = append(out, e.Backend)
-			}
+	return "on " + sel
+}
+
+// budgetNotesFor is budgetNotes worded for the caller: its parent's budgets
+// say "parent key".
+func (p *Proxy) budgetNotesFor(c config.Caller, scopes []string) []BudgetNote {
+	notes := p.budgetNotes(scopes)
+	for i, n := range notes {
+		if k, sel, ok := keyBudgetOf(n.Scope); ok && c.Parent != "" && k == c.Parent {
+			owner := "parent key " + k + "'s budget " + selectorWords(sel)
+			notes[i].Summary = owner + strings.TrimPrefix(n.Summary, n.Owner)
+			notes[i].Owner = owner
 		}
 	}
-	return out
+	return notes
 }
 
 // humanWait says a wait the way a person reads it.

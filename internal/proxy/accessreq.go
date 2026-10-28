@@ -47,17 +47,20 @@ type AccessAsk struct {
 	// From names who is asking ("mcpshell-ea"), so the owner can tell the
 	// request they asked an assistant to file from the others. Self-reported.
 	From string `json:"from,omitempty"`
-	// Models the requester wants to use. Informational: the admin grants
-	// credentials, and the page proposes the ones these models need.
-	Models []string `json:"models,omitempty"`
+	// Models are selectors (config/keyaccess.go) naming what the key may see
+	// and use: local, proxy, provider:<name>, cred:<provider>/<name>,
+	// model:<name>, or a bare model name. Empty list = every model; absent =
+	// unchanged (for a request about an existing key).
+	Models *[]string `json:"models,omitempty"`
+	// Budgets are what it may spend, by selector: recurring, or `per: total`
+	// for a one-off amount.
+	Budgets *config.KeyBudgets `json:"budgets,omitempty"`
 	// Group is the priority group a new key runs in; "" = the fallback group.
 	Group *string `json:"group,omitempty"`
-	// Credentials are this key's ALLOW PATTERNS (config.KeyCredential): which
-	// credentials it may use, each with an optional budget of its own. Empty =
-	// every credential.
+	// Credentials and Limits are the pre-P65 shape, still accepted from
+	// requests filed before it; upgrade converts them into Models and Budgets.
 	Credentials *[]config.KeyCredential `json:"credentials,omitempty"`
-	// Limits are the recurring (and `per: total` one-off) budgets.
-	Limits *config.LimitSet `json:"limits,omitempty"`
+	Limits      *config.LimitSet        `json:"limits,omitempty"`
 	// ValueAdds are one-time amounts, spent once the limits refuse.
 	ValueAdds []ValueAddAsk `json:"valueAdds,omitempty"`
 	// TTL ("48h", "7d") or Expires (RFC 3339): when the key stops working.
@@ -89,6 +92,60 @@ func expiresAt(ttl, expires string, now time.Time) (int64, error) {
 	return ms, err
 }
 
+// upgrade converts the pre-P65 fields into Models and Budgets
+// (config.LegacyAccess) and clears them. A pre-P65 `models` list was
+// informational bare names; it is kept as a filter of those models, which the
+// admin edits on approval.
+func (a *AccessAsk) upgrade(cfg *config.Config) {
+	if a.Credentials == nil && a.Limits == nil {
+		return
+	}
+	var creds []config.KeyCredential
+	if a.Credentials != nil {
+		creds = *a.Credentials
+	}
+	var limits config.LimitSet
+	if a.Limits != nil {
+		limits = *a.Limits
+	}
+	models, budgets := config.LegacyAccess(limits, creds, cfg.OpenRemoteProviders())
+	if a.Credentials != nil && a.Models == nil {
+		a.Models = &models
+	}
+	if a.Limits != nil || len(budgets) > 0 {
+		merged := config.KeyBudgets{}
+		if a.Budgets != nil {
+			for s, ls := range *a.Budgets {
+				merged[s] = append(merged[s], ls...)
+			}
+		}
+		for s, ls := range budgets {
+			merged[s] = append(merged[s], ls...)
+		}
+		a.Budgets = &merged
+	}
+	a.Credentials, a.Limits = nil, nil
+}
+
+// normalize upgrades the legacy fields and normalizes selectors.
+func (a *AccessAsk) normalize(cfg *config.Config) {
+	a.upgrade(cfg)
+	if a.Models != nil {
+		n := config.NormalizeSelectors(*a.Models)
+		if n == nil {
+			n = []string{}
+		}
+		a.Models = &n
+	}
+	if a.Budgets != nil {
+		n := a.Budgets.Normalized()
+		if n == nil {
+			n = config.KeyBudgets{}
+		}
+		a.Budgets = &n
+	}
+}
+
 // check validates an ask against cfg. forNewKey also requires a label.
 func (a AccessAsk) check(cfg *config.Config, forNewKey bool) error {
 	if strings.TrimSpace(a.Purpose) == "" {
@@ -100,24 +157,22 @@ func (a AccessAsk) check(cfg *config.Config, forNewKey bool) error {
 	if forNewKey && strings.TrimSpace(a.Label) == "" {
 		return errors.New("label: name the key you are asking for")
 	}
-	for _, m := range a.Models {
-		if _, ok := cfg.Models[m]; !ok {
-			return fmt.Errorf("models: no model %q (see GET /v1/models)", m)
+	if a.Models != nil {
+		if err := cfg.CheckSelectorNames(*a.Models); err != nil {
+			return fmt.Errorf("models: %w", err)
+		}
+	}
+	if a.Budgets != nil {
+		if err := a.Budgets.Validate(); err != nil {
+			return fmt.Errorf("budgets: %w", err)
+		}
+		if err := cfg.CheckSelectorNames(a.Budgets.Selectors()); err != nil {
+			return fmt.Errorf("budgets: %w", err)
 		}
 	}
 	if a.Group != nil && *a.Group != "" {
 		if _, ok := cfg.PriorityGroups[*a.Group]; !ok {
 			return fmt.Errorf("group: no priority group %q", *a.Group)
-		}
-	}
-	if a.Limits != nil {
-		if err := a.Limits.ValidateKey(); err != nil {
-			return fmt.Errorf("limits: %w", err)
-		}
-		for _, l := range *a.Limits {
-			if _, ok := cfg.Models[l.Model]; l.Model != "" && !ok {
-				return fmt.Errorf("limits: no model %q", l.Model)
-			}
 		}
 	}
 	if _, err := expiresAt(a.TTL, a.Expires, time.Now()); err != nil {
@@ -205,6 +260,7 @@ func (p *Proxy) fileAccessRequest(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "body: "+err.Error())
 		return
 	}
+	ask.normalize(p.config())
 	requester := ""
 	if cred := callerKey(r); cred != "" {
 		c := p.resolveCaller(cred)
@@ -318,14 +374,16 @@ type AccessRequestView struct {
 	DecidedBy    string    `json:"decidedBy,omitempty"`
 }
 
-func accessView(ar store.AccessRequest) AccessRequestView {
+func (p *Proxy) accessView(ar store.AccessRequest) AccessRequestView {
 	v := AccessRequestView{ID: ar.ID, Status: ar.Status, RequesterKey: ar.RequesterKey, SourceIP: ar.SourceIP,
 		Via: ar.Via, FiledBy: ar.FiledBy,
 		IssuedKey: ar.IssuedKey, Delivered: ar.Delivered, Reason: ar.Reason, DecidedBy: ar.DecidedBy,
 		Created: time.UnixMilli(ar.CreatedMS).UTC().Format(time.RFC3339)}
 	_ = json.Unmarshal([]byte(ar.Asked), &v.Asked)
+	v.Asked.normalize(p.config())
 	if ar.Granted != "" {
 		_ = json.Unmarshal([]byte(ar.Granted), &v.Granted)
+		v.Granted.normalize(p.config())
 	}
 	if ar.DecidedMS > 0 {
 		v.Decided = time.UnixMilli(ar.DecidedMS).UTC().Format(time.RFC3339)
@@ -344,7 +402,7 @@ func (p *Proxy) AccessRequests() ([]AccessRequestView, error) {
 	}
 	out := make([]AccessRequestView, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, accessView(r))
+		out = append(out, p.accessView(r))
 	}
 	return out, nil
 }
@@ -388,6 +446,8 @@ func (p *Proxy) ApproveAccess(id, by, reason string, g AccessAsk, edit ConfigEdi
 	}
 	var asked AccessAsk
 	_ = json.Unmarshal([]byte(ar.Asked), &asked)
+	asked.normalize(p.config())
+	g.normalize(p.config())
 	if g.Purpose == "" {
 		g.Purpose = asked.Purpose
 	}
@@ -396,11 +456,6 @@ func (p *Proxy) ApproveAccess(id, by, reason string, g AccessAsk, edit ConfigEdi
 	}
 	if err := g.check(p.config(), ar.RequesterKey == ""); err != nil {
 		return "", err
-	}
-	if g.Credentials != nil {
-		if err := p.checkCredentials(*g.Credentials); err != nil {
-			return "", err
-		}
 	}
 	now := time.Now()
 	key := ar.RequesterKey
@@ -435,11 +490,11 @@ func onlyAsked(g, asked AccessAsk) AccessAsk {
 	if asked.Group == nil {
 		g.Group = nil
 	}
-	if asked.Credentials == nil {
-		g.Credentials = nil
+	if asked.Models == nil {
+		g.Models = nil
 	}
-	if asked.Limits == nil {
-		g.Limits = nil
+	if asked.Budgets == nil {
+		g.Budgets = nil
 	}
 	if asked.Mint == nil {
 		g.Mint = nil
@@ -448,37 +503,6 @@ func onlyAsked(g, asked AccessAsk) AccessAsk {
 		g.TTL, g.Expires = "", ""
 	}
 	return g
-}
-
-// checkCredentials refuses a pattern this box cannot honour: a malformed scope,
-// or one naming a credential that does not exist and carrying no wildcard — a
-// typo that would otherwise be a silent lockout.
-func (p *Proxy) checkCredentials(list []config.KeyCredential) error {
-	if err := config.ValidateKeyCredentials(list); err != nil {
-		return fmt.Errorf("credentials: %w", err)
-	}
-	known := map[string]bool{}
-	for _, c := range p.Credentials() {
-		known[c.Scope] = true
-	}
-	for _, pat := range list {
-		if strings.Contains(pat.Credential, "*") || known[pat.Credential] {
-			continue
-		}
-		return fmt.Errorf("credentials: no credential %q (see GET /api/v1/providers)", pat.Credential)
-	}
-	return nil
-}
-
-// clonePatterns copies a pattern list so a key's stored permission cannot alias
-// the request that created it.
-func clonePatterns(in []config.KeyCredential) []config.KeyCredential {
-	out := make([]config.KeyCredential, 0, len(in))
-	for _, p := range in {
-		ls := append(config.LimitSet{}, p.Limits...)
-		out = append(out, config.KeyCredential{Credential: p.Credential, Limits: ls})
-	}
-	return out
 }
 
 // CreateKey mints a key on an admin's order, without an access request behind
@@ -493,18 +517,9 @@ func (p *Proxy) CreateKey(g AccessAsk, now time.Time) (string, error) {
 	if p.store == nil {
 		return "", errors.New("keys need the database")
 	}
+	g.normalize(p.config())
 	if err := g.check(p.config(), true); err != nil {
 		return "", err
-	}
-	if g.Credentials != nil {
-		if err := p.checkCredentials(*g.Credentials); err != nil {
-			return "", err
-		}
-	}
-	if g.Limits != nil {
-		if err := p.checkChildLimits(*g.Limits); err != nil {
-			return "", err
-		}
 	}
 	if g.Group != nil && *g.Group != "" {
 		if _, ok := p.config().PriorityGroups[*g.Group]; !ok {
@@ -550,11 +565,11 @@ func (p *Proxy) issueKey(g AccessAsk, now time.Time, disabled bool) (string, err
 	if g.Group != nil {
 		k.Group = *g.Group
 	}
-	if g.Credentials != nil {
-		k.keyCreds = clonePatterns(*g.Credentials)
+	if g.Models != nil {
+		k.models = append([]string(nil), *g.Models...)
 	}
-	if g.Limits != nil {
-		k.limits = *g.Limits
+	if g.Budgets != nil {
+		k.budgets = g.Budgets.Normalized()
 	}
 	if g.Mint != nil {
 		k.CanMint = *g.Mint
@@ -601,8 +616,11 @@ func (p *Proxy) applyToKey(key string, g AccessAsk, edit ConfigEditor, note stri
 		if g.Label != "" {
 			k.Label = strings.TrimSpace(g.Label)
 		}
-		if g.Limits != nil {
-			k.limits = *g.Limits
+		if g.Models != nil {
+			k.models = append([]string(nil), *g.Models...)
+		}
+		if g.Budgets != nil {
+			k.budgets = g.Budgets.Normalized()
 		}
 		if g.TTL != "" || g.Expires != "" {
 			exp, err := expiresAt(g.TTL, g.Expires, now)
@@ -615,9 +633,6 @@ func (p *Proxy) applyToKey(key string, g AccessAsk, edit ConfigEditor, note stri
 			if g.Group != nil {
 				k.Group = *g.Group
 			}
-			if g.Credentials != nil {
-				k.keyCreds = clonePatterns(*g.Credentials)
-			}
 			if g.Mint != nil {
 				k.CanMint = *g.Mint
 			}
@@ -628,7 +643,7 @@ func (p *Proxy) applyToKey(key string, g AccessAsk, edit ConfigEditor, note stri
 	if _, ok := p.config().Keys[key]; !ok {
 		return fmt.Errorf("key %q is neither configured nor minted any more", key)
 	}
-	if g.Limits == nil && g.Mint == nil && g.Group == nil && g.Credentials == nil {
+	if g.Models == nil && g.Budgets == nil && g.Mint == nil && g.Group == nil {
 		return nil
 	}
 	if g.TTL != "" || g.Expires != "" {
@@ -639,17 +654,17 @@ func (p *Proxy) applyToKey(key string, g AccessAsk, edit ConfigEditor, note stri
 	}
 	return edit(note, func(c *config.Config) error {
 		kp := c.Keys[key]
-		if g.Limits != nil {
-			kp.Limits = *g.Limits
+		if g.Models != nil {
+			kp.Models = append([]string(nil), *g.Models...)
+		}
+		if g.Budgets != nil {
+			kp.Budgets = g.Budgets.Normalized()
 		}
 		if g.Mint != nil {
 			kp.Mint = *g.Mint
 		}
 		if g.Group != nil && *g.Group != "" {
 			kp.Group = *g.Group
-		}
-		if g.Credentials != nil {
-			kp.Credentials = config.ToKeyCredentials(*g.Credentials)
 		}
 		c.Keys[key] = kp
 		return nil
@@ -764,24 +779,25 @@ func contains(list []string, s string) bool {
 
 // MintedKeyView is a minted key as the admin page shows it.
 type MintedKeyView struct {
-	Key         string                 `json:"key"`
-	Parent      string                 `json:"parent,omitempty" doc:"Empty = issued by an admin."`
-	Label       string                 `json:"label"`
-	Group       string                 `json:"group,omitempty"`
-	Credentials []config.KeyCredential `json:"credentials" doc:"Allow patterns: which credentials this key may use, each with its own budgets. Empty = every credential."`
-	Mint        bool                   `json:"mint"`
-	Limits      config.LimitSet        `json:"limits"`
-	Created     string                 `json:"created"`
-	Expires     string                 `json:"expires,omitempty"`
-	Expired     bool                   `json:"expired" doc:"Past its expiry. Still listed, and can be re-enabled."`
-	Disabled    bool                   `json:"disabled" doc:"Switched off by an admin. Kept, with its budgets, until switched back on."`
-	ValueAdds   []GrantView            `json:"valueAdds"`
-	Windows     []KeyWindow            `json:"windows"`
+	Key       string            `json:"key"`
+	Parent    string            `json:"parent,omitempty" doc:"Empty = issued by an admin."`
+	Label     string            `json:"label"`
+	Group     string            `json:"group,omitempty"`
+	Models    []string          `json:"models" doc:"Selectors naming what this key may see and use. Empty = every model (a subkey: every model its parent may use)."`
+	Budgets   config.KeyBudgets `json:"budgets" doc:"What this key may spend, by selector. Every matching budget applies."`
+	Warnings  []string          `json:"warnings,omitempty" doc:"Where this key's subkeys' budgets add up to more than what they sit under."`
+	Mint      bool              `json:"mint"`
+	Created   string            `json:"created"`
+	Expires   string            `json:"expires,omitempty"`
+	Expired   bool              `json:"expired" doc:"Past its expiry. Still listed, and can be re-enabled."`
+	Disabled  bool              `json:"disabled" doc:"Switched off by an admin. Kept, with its budgets, until switched back on."`
+	ValueAdds []GrantView       `json:"valueAdds"`
+	Windows   []KeyWindow       `json:"windows"`
 }
 
 // KeyWindow is one allocation window's live state, flattened for the page.
 type KeyWindow struct {
-	Scope    string  `json:"scope" doc:"\"key\" for the key-wide windows, else the model's name."`
+	Scope    string  `json:"scope" doc:"The budget's selector (\"*\" for everything)."`
 	Label    string  `json:"label"`
 	Limit    float64 `json:"limit"`
 	Used     float64 `json:"used"`
@@ -792,7 +808,7 @@ type KeyWindow struct {
 
 func (p *Proxy) keyWindows(key string) []KeyWindow {
 	out := []KeyWindow{}
-	for scope, ws := range p.allocationWindows(key) {
+	for scope, ws := range p.budgetWindows(key) {
 		for _, w := range ws {
 			kw := KeyWindow{Scope: scope, Label: w.Label, Limit: w.Limit, Used: w.Used, Blocked: w.Blocked, Hard: w.Hard}
 			if !w.ResetsAt.IsZero() {
@@ -818,13 +834,10 @@ func (p *Proxy) MintedKeys() []MintedKeyView {
 	out := make([]MintedKeyView, 0, len(all))
 	for _, k := range all {
 		v := MintedKeyView{Key: k.Key, Parent: k.Parent, Label: k.Label, Group: k.Group,
-			Credentials: config.ToKeyCredentials(k.keyCreds),
-			Mint:        k.CanMint, Limits: k.limits, Created: time.UnixMilli(k.CreatedMS).UTC().Format(time.RFC3339),
+			Models: nonNilSelectors(k.models), Budgets: nonNilBudgets(k.budgets), Warnings: p.oversubscription(k.Key),
+			Mint: k.CanMint, Created: time.UnixMilli(k.CreatedMS).UTC().Format(time.RFC3339),
 			Expired: k.expired(now), Disabled: k.Disabled,
 			ValueAdds: grantViews(p.grants.of(k.Key)), Windows: p.keyWindows(k.Key)}
-		if v.Limits == nil {
-			v.Limits = config.LimitSet{}
-		}
 		if k.ExpiresMS > 0 {
 			v.Expires = time.UnixMilli(k.ExpiresMS).UTC().Format(time.RFC3339)
 		}
@@ -852,15 +865,9 @@ func (p *Proxy) UpdateKey(key string, g AccessAsk, clearExpiry bool, edit Config
 	if _, configured := p.config().Keys[key]; !minted && !configured {
 		return errors.New("no such key")
 	}
-	if g.Credentials != nil {
-		if err := p.checkCredentials(*g.Credentials); err != nil {
-			return err
-		}
-	}
-	if g.Limits != nil {
-		if err := p.checkChildLimits(*g.Limits); err != nil {
-			return err
-		}
+	g.normalize(p.config())
+	if err := p.checkAccess(g.Models, g.Budgets); err != nil {
+		return err
 	}
 	if g.Group != nil && *g.Group != "" {
 		if _, ok := p.config().PriorityGroups[*g.Group]; !ok {

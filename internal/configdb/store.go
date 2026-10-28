@@ -58,6 +58,8 @@ var migrations = []string{
 	`ALTER TABLE config_key ADD COLUMN mint INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE config_key ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE config_key ADD COLUMN credentials_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE config_key ADD COLUMN models_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE config_key ADD COLUMN budgets_json TEXT NOT NULL DEFAULT ''`,
 	// DEFAULT 0 is what makes this safe on the live database: every model
 	// already stored comes back enabled, which is what it was.
 	`ALTER TABLE config_model ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,

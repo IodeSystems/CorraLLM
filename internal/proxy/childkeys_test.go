@@ -47,13 +47,25 @@ func newChildKeyRig(t *testing.T, parentLimits config.LimitSet) *childKeyRig {
 	cfg := meteredConfig(t, "mock", upstream.URL)
 	cfg.Models["other"] = cfg.Models["mock"]
 	cfg.Keys = map[string]config.KeyPolicy{
-		"parent": {Limits: parentLimits, Mint: true},
+		"parent": {Budgets: legacyBudgets(parentLimits), Mint: true},
 		"peer":   {Mint: true},
 		"plain":  {},
 	}
 	rig := &childKeyRig{t: t, st: st, cfg: cfg, mgr: mgr}
 	rig.mount()
 	return rig
+}
+
+// legacyBudgets is a pre-P65 limit list as budgets (config.LegacyAccess).
+func legacyBudgets(ls config.LimitSet) config.KeyBudgets {
+	_, b := config.LegacyAccess(ls, nil, nil)
+	return b
+}
+
+// permits reports whether the access filter lets caller use cand.
+func (k *childKeyRig) permits(c config.Caller, cand config.Candidate) bool {
+	kept, _ := k.px.filterByAccess(httptest.NewRequest(http.MethodGet, "/", nil), []config.Candidate{cand}, c)
+	return len(kept) == 1
 }
 
 // mount builds a fresh proxy over the same store, as a restart would.
@@ -165,7 +177,7 @@ func TestChildKeyChargesParent(t *testing.T) {
 	if len(list.Keys) != 2 || !labels["a"] || !labels["b"] {
 		t.Errorf("list = %+v", list.Keys)
 	}
-	if w := list.Self.Windows["key"]; len(w) != 1 || w[0].Used < 0.002 {
+	if w := list.Self.Windows["*"]; len(w) != 1 || w[0].Used < 0.002 {
 		t.Errorf("parent windows = %+v, want the children's spend", list.Self.Windows)
 	}
 }
