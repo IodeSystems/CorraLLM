@@ -2088,6 +2088,18 @@ type corrallm_JourneysOutputBody {
   open: Long!
 }
 
+type corrallm_KeyBudget {
+  limits: [corrallm_KeyLimit!]!
+  """Selector: * | local | proxy | provider:<name> | cred:<provider>/<name> | model:<name>; * is a wildcard in names."""
+  on: String!
+}
+
+input corrallm_KeyBudgetInput {
+  limits: [corrallm_KeyLimitInput!]
+  """Selector: * | local | proxy | provider:<name> | cred:<provider>/<name> | model:<name>; * is a wildcard in names."""
+  on: String!
+}
+
 type corrallm_KeyDef {
   """Priority groups this key may escalate into via key:group."""
   allow: [String!]
@@ -2098,10 +2110,11 @@ type corrallm_KeyDef {
 }
 
 type corrallm_KeyGrant {
-  askedLimits: Boolean
+  askedBudgets: Boolean
   askedMint: Boolean
-  """Allow patterns: which credentials the key may use, each with an optional budget of its own. Empty = every credential."""
-  credentials: [corrallm_KeyPattern!]
+  askedModels: Boolean
+  """What the key may spend, by selector."""
+  budgets: [corrallm_KeyBudget!]
   """Key expiry, RFC 3339."""
   expires: String
   """Who asked, in their own words (self-reported)."""
@@ -2109,10 +2122,9 @@ type corrallm_KeyGrant {
   """Priority group; empty = the fallback group."""
   group: String
   label: String
-  limits: [corrallm_KeyLimit!]
   """May mint child keys."""
   mint: Boolean
-  """Models the requester said it wants."""
+  """Selectors naming what the key may see and use. Empty = every model."""
   models: [String!]
   purpose: String
   """Key expires this long after approval: 48h, 7d."""
@@ -2121,10 +2133,11 @@ type corrallm_KeyGrant {
 }
 
 input corrallm_KeyGrantInput {
-  askedLimits: Boolean
+  askedBudgets: Boolean
   askedMint: Boolean
-  """Allow patterns: which credentials the key may use, each with an optional budget of its own. Empty = every credential."""
-  credentials: [corrallm_KeyPatternInput!]
+  askedModels: Boolean
+  """What the key may spend, by selector."""
+  budgets: [corrallm_KeyBudgetInput!]
   """Key expiry, RFC 3339."""
   expires: String
   """Who asked, in their own words (self-reported)."""
@@ -2132,10 +2145,9 @@ input corrallm_KeyGrantInput {
   """Priority group; empty = the fallback group."""
   group: String
   label: String
-  limits: [corrallm_KeyLimitInput!]
   """May mint child keys."""
   mint: Boolean
-  """Models the requester said it wants."""
+  """Selectors naming what the key may see and use. Empty = every model."""
   models: [String!]
   purpose: String
   """Key expires this long after approval: 48h, 7d."""
@@ -2146,8 +2158,6 @@ input corrallm_KeyGrantInput {
 type corrallm_KeyLimit {
   """Refuse once spent."""
   hard: Boolean
-  """Narrow to one model; empty = every model."""
-  model: String
   """Window: minute | hour | day | month | calendar-day | calendar-month | total (one-off, never resets)."""
   per: String!
   """Requests."""
@@ -2159,28 +2169,12 @@ type corrallm_KeyLimit {
 input corrallm_KeyLimitInput {
   """Refuse once spent."""
   hard: Boolean
-  """Narrow to one model; empty = every model."""
-  model: String
   """Window: minute | hour | day | month | calendar-day | calendar-month | total (one-off, never resets)."""
   per: String!
   """Requests."""
   req: Float
   """Dollars."""
   usd: Float
-}
-
-type corrallm_KeyPattern {
-  """cred:<provider>/<name>, with * as a wildcard (e.g. cred:fireworks/*)."""
-  credential: String!
-  """What this pattern may spend. Only the most specific matching pattern's budgets are charged."""
-  limits: [corrallm_KeyLimit!]
-}
-
-input corrallm_KeyPatternInput {
-  """cred:<provider>/<name>, with * as a wildcard (e.g. cred:fireworks/*)."""
-  credential: String!
-  """What this pattern may spend. Only the most specific matching pattern's budgets are charged."""
-  limits: [corrallm_KeyLimitInput!]
 }
 
 type corrallm_KeyRow {
@@ -2236,7 +2230,7 @@ type corrallm_KeyWindowRow {
   label: String!
   limit: Float!
   resetsAt: String
-  """"key" = key-wide, else a model's share."""
+  """The budget's selector (* = everything)."""
   scope: String!
   used: Float!
 }
@@ -2399,10 +2393,10 @@ type corrallm_LocalServerProbeOutputBody {
 }
 
 type corrallm_ManagedKey {
+  """What this key may spend, by selector. Every matching budget applies."""
+  budgets: [corrallm_KeyBudget!]!
   created: String
-  """Allow patterns: which credentials this key may use, each with its own budgets. Empty = every credential."""
-  credentials: [corrallm_KeyPattern!]!
-  """Switched off by an admin. Kept, with its budgets and patterns, until switched back on."""
+  """Switched off by an admin. Kept, with its budgets, until switched back on."""
   disabled: Boolean!
   expired: Boolean!
   expires: String
@@ -2411,12 +2405,15 @@ type corrallm_ManagedKey {
   """issued (by an admin) | child (minted by a key) | configured"""
   kind: String!
   label: String
-  limits: [corrallm_KeyLimit!]!
   mint: Boolean!
+  """Selectors naming what this key may see and use. Empty = every model (a subkey: every model its parent may use)."""
+  models: [String!]!
   parent: String
   requestsToday: Long!
   spentToday: Float!
   valueAdds: [corrallm_ValueAdd!]!
+  """Where this key's subkeys' budgets add up to more than what they sit under. Allowed; the parent's own budget stops the total."""
+  warnings: [String!]!
   windows: [corrallm_KeyWindowRow!]!
 }
 

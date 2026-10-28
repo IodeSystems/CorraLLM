@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -79,22 +80,14 @@ const RequestsDoc = graphql(/* GraphQL */ `
             purpose
             models
             group
-            credentials {
-              credential
+            budgets {
+              on
               limits {
                 req
                 usd
                 per
                 hard
-                model
               }
-            }
-            limits {
-              req
-              usd
-              per
-              hard
-              model
             }
             valueAdds {
               usd
@@ -106,31 +99,23 @@ const RequestsDoc = graphql(/* GraphQL */ `
             ttl
             expires
             mint
-            askedLimits
+            askedModels
+            askedBudgets
             askedMint
-            
           }
           granted {
             label
             purpose
             models
             group
-            credentials {
-              credential
+            budgets {
+              on
               limits {
                 req
                 usd
                 per
                 hard
-                model
               }
-            }
-            limits {
-              req
-              usd
-              per
-              hard
-              model
             }
             valueAdds {
               usd
@@ -142,9 +127,9 @@ const RequestsDoc = graphql(/* GraphQL */ `
             ttl
             expires
             mint
-            askedLimits
+            askedModels
+            askedBudgets
             askedMint
-            
           }
           issuedKey
           delivered
@@ -159,24 +144,18 @@ const RequestsDoc = graphql(/* GraphQL */ `
           parent
           label
           group
-          credentials {
-            credential
+          models
+          budgets {
+            on
             limits {
               req
               usd
               per
               hard
-              model
             }
           }
+          warnings
           mint
-          limits {
-            req
-            usd
-            per
-            hard
-            model
-          }
           created
           expires
           expired
@@ -285,18 +264,18 @@ const ValueAddDoc = graphql(/* GraphQL */ `
 type Data = NonNullable<NonNullable<RequestsQuery['corrallm']>['listRequests']>
 type Req = Data['requests'][number]
 type Key = Data['keys'][number]
-type Cred = Data['credentials'][number]
 
 // The editable form of a grant: the dialog's state.
-type Lim = { amount: string; unit: 'usd' | 'req'; per: string; hard: boolean; model: string }
+type Lim = { amount: string; unit: 'usd' | 'req'; per: string; hard: boolean }
 type TopUp = { usd: string; model: string; ttl: string; note: string }
-/** One allow pattern as the form edits it: a scope glob and its own budget. */
-type Pattern = { credential: string; limits: Lim[] }
+/** One budget as the form edits it: a selector and what may be spent on it. */
+type Budget = { on: string; limits: Lim[] }
 type Form = {
   label: string
   group: string
-  credentials: Pattern[]
-  limits: Lim[]
+  /** Selectors naming what the key may use; empty = every model. */
+  models: string[]
+  budgets: Budget[]
   topUps: TopUp[]
   ttl: string
   mint: boolean
@@ -348,29 +327,94 @@ function endsAt(ttl: string): string | null {
   return Number.isFinite(ms) ? when(new Date(Date.now() + ms)) : null
 }
 
-type LimitIn = { req?: number | null; usd?: number | null; per: string; hard?: boolean | null; model?: string | null }
+type LimitIn = { req?: number | null; usd?: number | null; per: string; hard?: boolean | null }
+type BudgetIn = { on: string; limits?: LimitIn[] | null }
 
 function toLim(l: LimitIn): Lim {
   const isUsd = (l.usd ?? 0) > 0
-  return { amount: String(isUsd ? l.usd : (l.req ?? '')), unit: isUsd ? 'usd' : 'req', per: l.per, hard: !!l.hard, model: l.model ?? '' }
+  return { amount: String(isUsd ? l.usd : (l.req ?? '')), unit: isUsd ? 'usd' : 'req', per: l.per, hard: !!l.hard }
 }
 
-function limitText(l: LimitIn): string {
+/**
+ * A selector as the server stores it: a bare name means model:<name>. Mirrors
+ * config.NormalizeSelector.
+ */
+function normSel(s: string): string {
+  const t = s.trim()
+  if (t === '' || t === '*' || t === 'local' || t === 'proxy' || /^(provider|cred|model):/.test(t)) return t
+  return `model:${t}`
+}
+
+/** What a selector names, in words ("*" is "everything"). */
+function selWords(s: string): string {
+  return s === '*' ? 'everything' : s
+}
+
+/** What a selector covers, for the field's helper text. */
+function selHint(s: string): string {
+  const t = normSel(s)
+  if (t === '') return ''
+  if (t === '*') return 'Every model'
+  if (t === 'local') return 'Models that run on this box'
+  if (t === 'proxy') return 'Models served by a remote provider'
+  const glob = t.includes('*')
+  if (t.startsWith('provider:')) return glob ? 'Every provider whose name matches' : 'Every model of this provider'
+  if (t.startsWith('cred:')) return glob ? 'Every account whose name matches' : 'One account'
+  return glob ? 'Every model whose name matches' : 'One model'
+}
+
+/**
+ * Selectors to offer: the kinds, then each provider, account and model this
+ * box has. Free text is allowed too — a glob, or a name added later.
+ */
+function selectorOptions(d: Data): string[] {
+  const out = ['*', 'local', 'proxy']
+  for (const c of d.credentials) out.push(`provider:${c.provider}`)
+  for (const c of d.credentials) out.push(c.scope)
+  for (const m of d.models) out.push(`model:${m}`)
+  return [...new Set(out)]
+}
+
+function limitText(l: LimitIn, on: string): string {
   const amt = (l.usd ?? 0) > 0 ? usd(l.usd ?? 0) : `${l.req} requests`
-  return `${l.hard ? 'up to' : 'warn past'} ${amt} ${perShort(l.per)}${l.model ? ` on ${l.model}` : ''}`
+  return `${l.hard ? 'up to' : 'warn past'} ${amt} ${perShort(l.per)} on ${selWords(on)}`
+}
+
+/** Every limit of every budget, each with the selector it sits on. */
+function flatLimits(budgets: BudgetIn[]): { on: string; l: LimitIn }[] {
+  return budgets.flatMap((b) => (b.limits ?? []).map((l) => ({ on: b.on, l })))
+}
+
+/** A key's budgets in one line; "no limit" when it has none. */
+function budgetsText(budgets: BudgetIn[]): string {
+  const all = flatLimits(budgets)
+  return all.length ? all.map((x) => limitText(x.l, x.on).replace(/^up to /, '')).join(', ') : 'no limit'
+}
+
+/** A key's models in one line. */
+function modelsText(models: string[] | null | undefined): string {
+  return models?.length ? models.map(selWords).join(', ') : 'every model'
 }
 
 /**
  * The one line the owner decides on: the most it can spend, and when it stops.
  * Every finding of the stooges pass said this was missing or buried.
+ *
+ * Budgets nest — every one that matches a request is charged — so the most a
+ * key can spend is what its budgets on everything ("*") allow. A narrower
+ * budget only limits a part of that. With no budget on everything, the
+ * narrower ones are added up, and the rest has no limit.
  */
-function costLine(limits: LimitIn[], topUps: { usd: number; ttl?: string | null }[], ttl: string | null | undefined, newKey: boolean): { text: string; open: boolean } {
-  const parts: string[] = []
-  const money = limits.filter((l) => l.hard && (l.usd ?? 0) > 0)
-  for (const l of money) parts.push(`${usd(l.usd ?? 0)} ${perShort(l.per)}${l.model ? ` on ${l.model}` : ''}`)
+function costLine(budgets: BudgetIn[], topUps: { usd: number; ttl?: string | null }[], ttl: string | null | undefined, newKey: boolean): { text: string; open: boolean } {
+  const money = flatLimits(budgets).filter((x) => x.l.hard && (x.l.usd ?? 0) > 0)
+  const wide = money.filter((x) => x.on === '*')
+  const fmt = (x: { on: string; l: LimitIn }) => `${usd(x.l.usd ?? 0)} ${perShort(x.l.per)}${x.on === '*' ? '' : ` on ${x.on}`}`
+  const parts = (wide.length ? wide : money).map(fmt)
   for (const t of topUps) parts.push(`a ${usd(t.usd)} top-up${t.ttl ? ` for ${t.ttl.replace(/d$/, ' days').replace(/h$/, ' hours')}` : ''}`)
-  const open = newKey && money.length === 0
+  const open = newKey && wide.length === 0
   let text = parts.length ? `At most ${parts.join(', plus ')}` : open ? 'No spending limit' : 'No change to what it may spend'
+  if (wide.length && money.length > wide.length) text += `, of it at most ${money.filter((x) => x.on !== '*').map(fmt).join(', ')}`
+  if (!wide.length && money.length) text += newKey ? '; no limit on anything else' : ''
   if (newKey || ttl) {
     const end = ttl ? endsAt(ttl) : null
     text += end ? ` · expires ${end}` : ' · never expires'
@@ -378,37 +422,30 @@ function costLine(limits: LimitIn[], topUps: { usd: number; ttl?: string | null 
   return { text, open }
 }
 
-/** Accounts a request's models need: allowlisted ones serving those models. */
-function proposedCreds(models: string[], creds: Cred[]): string[] {
-  return creds.filter((c) => !c.open && (c.models ?? []).some((m) => models.includes(m))).map((c) => c.scope)
+/** A grant's budgets as the form edits them. */
+function toBudgets(list: BudgetIn[] | null | undefined): Budget[] {
+  return (list ?? []).map((b) => ({ on: b.on, limits: (b.limits ?? []).map(toLim) }))
 }
 
-/** A grant's patterns as the form edits them. */
-function toPatterns(list: Key['credentials'] | Req['asked']['credentials'] | null | undefined): Pattern[] {
-  return (list ?? []).map((p) => ({ credential: p.credential, limits: (p.limits ?? []).map(toLim) }))
-}
-
-/** The form's patterns back to the wire; a pattern with no scope is dropped. */
-function fromPatterns(list: Pattern[]) {
+/** The form's budgets back to the wire; a budget with no selector or no amount is dropped. */
+function fromBudgets(list: Budget[]) {
   return list
-    .filter((p) => p.credential.trim() !== '')
-    .map((p) => ({
-      credential: p.credential.trim(),
-      limits: p.limits
+    .map((b) => ({
+      on: normSel(b.on),
+      limits: b.limits
         .filter((l) => l.amount.trim() !== '')
-        .map((l) => ({ per: l.per, hard: l.hard, model: l.model || undefined, ...(l.unit === 'usd' ? { usd: Number(l.amount) } : { req: Number(l.amount) }) })),
+        .map((l) => ({ per: l.per, hard: l.hard, ...(l.unit === 'usd' ? { usd: Number(l.amount) } : { req: Number(l.amount) }) })),
     }))
+    .filter((b) => b.on !== '' && b.limits.length > 0)
 }
 
-function formFromRequest(r: Req, creds: Cred[]): Form {
+function formFromRequest(r: Req): Form {
   const a = r.asked
   return {
     label: a.label ?? '',
     group: a.group ?? '',
-    credentials: a.credentials?.length
-      ? toPatterns(a.credentials)
-      : proposedCreds(a.models ?? [], creds).map((c) => ({ credential: c, limits: [] })),
-    limits: (a.limits ?? []).map(toLim),
+    models: a.models ?? [],
+    budgets: toBudgets(a.budgets),
     topUps: (a.valueAdds ?? []).map((v) => ({ usd: String(v.usd), model: v.model ?? '', ttl: v.ttl ?? '', note: v.note ?? '' })),
     ttl: a.ttl ?? '',
     mint: !!a.mint,
@@ -417,17 +454,15 @@ function formFromRequest(r: Req, creds: Cred[]): Form {
 }
 
 function formFromKey(k: Key): Form {
-  return { label: k.label ?? '', group: k.group ?? '', credentials: toPatterns(k.credentials), limits: k.limits.map(toLim), topUps: [], ttl: '', mint: k.mint, reason: '' }
+  return { label: k.label ?? '', group: k.group ?? '', models: k.models, budgets: toBudgets(k.budgets), topUps: [], ttl: '', mint: k.mint, reason: '' }
 }
 
 function formToGrant(f: Form) {
   return {
     label: f.label.trim(),
     group: f.group,
-    credentials: fromPatterns(f.credentials),
-    limits: f.limits
-      .filter((l) => l.amount.trim() !== '')
-      .map((l) => ({ per: l.per, hard: l.hard, model: l.model || undefined, ...(l.unit === 'usd' ? { usd: Number(l.amount) } : { req: Number(l.amount) }) })),
+    models: [...new Set(f.models.map(normSel).filter(Boolean))],
+    budgets: fromBudgets(f.budgets),
     valueAdds: f.topUps
       .filter((v) => v.usd.trim() !== '')
       .map((v) => ({ usd: Number(v.usd), model: v.model || undefined, ttl: v.ttl.trim() || undefined, note: v.note.trim() || undefined })),
@@ -445,7 +480,7 @@ type Decision = { head: string; working?: string; open: boolean }
  * on a top-up card it meant the top-up's size, in the dialog the total).
  */
 function decision(
-  limits: LimitIn[],
+  budgets: BudgetIn[],
   topUps: { usd: number; ttl?: string | null }[],
   ttl: string | null | undefined,
   newKey: boolean,
@@ -456,10 +491,10 @@ function decision(
     const w = worstCase(existing, topUps, until)
     return { head: `At most ${w.about ? 'about ' : ''}${usd(w.usd)} until ${when(new Date(until))}`, working: `${w.parts.join(' + ')}`, open: false }
   }
-  if (existing && limits.length === 0 && topUps.length === 0 && !ttl) {
+  if (existing && budgets.length === 0 && topUps.length === 0 && !ttl) {
     return { head: 'No change to what it may spend', open: false }
   }
-  const c = costLine(limits, topUps, ttl, newKey)
+  const c = costLine(budgets, topUps, ttl, newKey)
   return { head: c.text, open: c.open }
 }
 
@@ -488,13 +523,12 @@ function requestWhat(r: Req, name: string, k?: Key): string {
   if (!r.requesterKey) return `new key “${a.label}”`
   const kinds: string[] = []
   for (const v of a.valueAdds ?? []) kinds.push(`top up ${name} with ${usd(v.usd)}${v.ttl ? ` for ${ttlWords(v.ttl)}` : ''}`)
-  if (a.askedLimits) {
+  if (a.askedBudgets) {
     // Now → asked, so a cap reads as a cap (stooges pass 3: "$2.00 a day" alone
     // could not say whether it tightened or loosened anything).
-    const now = k ? (k.limits.length ? k.limits.map((l) => limitText(l).replace(/^up to /, '')).join(', ') : 'no limit') : '?'
-    const next = a.limits?.length ? (a.limits ?? []).map((l) => limitText(l).replace(/^up to /, '')).join(', ') : 'no limit'
-    kinds.push(`change ${name}'s limit from ${now} to ${next}`)
+    kinds.push(`change ${name}'s limit from ${k ? budgetsText(k.budgets) : '?'} to ${budgetsText(a.budgets ?? [])}`)
   }
+  if (a.askedModels) kinds.push(`change what ${name} may use from ${k ? modelsText(k.models) : '?'} to ${modelsText(a.models)}`)
   if (a.askedMint) kinds.push(a.mint ? `let ${name} create sub-keys` : `stop ${name} creating sub-keys`)
   if (a.ttl || a.expires) kinds.push(`change when ${name} expires`)
   return kinds.length ? kinds.join(' · ') : `change ${name}`
@@ -514,33 +548,34 @@ function modelName(m: string, d: Data): string {
 /**
  * The most a key could still spend between now and `until`, from its hard
  * dollar limits and top-ups: the remaining day (or month, or one-off), each
- * whole day after, and every top-up that is still live. Model-only limits are
- * summed when there is no key-wide one. `about` marks a rolling window, which
- * this can only bound loosely.
+ * whole day after, and every top-up that is still live. Budgets nest, so only
+ * those on everything ("*") bound the total; with none, the narrower ones are
+ * summed. `about` marks a rolling window, which this can only bound loosely.
  */
 function worstCase(k: Key, newTopUps: { usd: number }[], untilMs: number): { usd: number; about: boolean; parts: string[] } {
   const parts: string[] = []
-  const hard = k.limits.filter((l) => l.hard && (l.usd ?? 0) > 0)
-  const wide = hard.filter((l) => !l.model)
+  const hard = flatLimits(k.budgets).filter((x) => x.l.hard && (x.l.usd ?? 0) > 0)
+  const wide = hard.filter((x) => x.on === '*')
   const use = wide.length ? wide : hard
   let total = 0
   let about = false
   const now = Date.now()
-  for (const l of use) {
-    const w = k.windows.find((x) => x.scope === (l.model || 'key') && x.label === `usd/${l.per}`)
+  for (const { on, l } of use) {
+    const w = k.windows.find((x) => x.scope === on && x.label === `usd/${l.per}`)
     const left = Math.max((l.usd ?? 0) - (w?.used ?? 0), 0)
+    const sfx = on === '*' ? '' : ` on ${on}`
     if (l.per === 'calendar-day') {
       const midnights = Math.max(0, Math.floor(untilMs / DAY) - Math.floor(now / DAY))
       total += left + midnights * (l.usd ?? 0)
-      parts.push(`${usd(left)} left today`)
-      if (midnights) parts.push(`${usd(midnights * (l.usd ?? 0))} for ${midnights} more day${midnights === 1 ? '' : 's'}`)
+      parts.push(`${usd(left)} left today${sfx}`)
+      if (midnights) parts.push(`${usd(midnights * (l.usd ?? 0))} for ${midnights} more day${midnights === 1 ? '' : 's'}${sfx}`)
     } else if (l.per === 'total' || l.per === 'calendar-month') {
       total += left
-      parts.push(`${usd(left)} left ${l.per === 'total' ? 'of its total' : 'this month'}`)
+      parts.push(`${usd(left)} left ${l.per === 'total' ? 'of its total' : 'this month'}${sfx}`)
     } else {
       about = true
       total += left
-      parts.push(`about ${usd(left)} ${perShort(l.per)}`)
+      parts.push(`about ${usd(left)} ${perShort(l.per)}${sfx}`)
     }
   }
   for (const v of k.valueAdds.filter((x) => x.active)) {
@@ -601,7 +636,7 @@ function PendingRow({ r, d }: { r: Req; d: Data }) {
   const a = r.asked
   const { who, what } = requestParts(r, d)
   const existingKey = r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined
-  const line = decision(a.limits ?? [], a.valueAdds ?? [], a.ttl, !r.requesterKey, existingKey)
+  const line = decision(a.budgets ?? [], a.valueAdds ?? [], a.ttl, !r.requesterKey, existingKey)
   const odd = r.via !== 'default (direct from LAN)'
   return (
     <Box sx={{ px: 2, py: 1.5, borderBottom: `1px solid ${C.border}`, '&:last-of-type': { borderBottom: 0 } }}>
@@ -645,7 +680,7 @@ function PendingRow({ r, d }: { r: Req; d: Data }) {
 
 function DenyDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: string; who: string; onClose: () => void }) {
   const existing = r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined
-  const line = decision(r.asked.limits ?? [], r.asked.valueAdds ?? [], r.asked.ttl, !r.requesterKey, r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined)
+  const line = decision(r.asked.budgets ?? [], r.asked.valueAdds ?? [], r.asked.ttl, !r.requesterKey, r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined)
   const qc = useQueryClient()
   const [reason, setReason] = useState('')
   const [err, setErr] = useState('')
@@ -673,7 +708,7 @@ function DenyDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: str
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1, whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
           “{r.asked.purpose}”
         </Typography>
-        {existing && <KeyNow k={existing} d={d} />}
+        {existing && <KeyNow k={existing} />}
         <TextField
           label="Reason (optional)"
           helperText="The assistant is told this the next time it checks on its request."
@@ -704,7 +739,7 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
   const qc = useQueryClient()
   const existing = r.requesterKey ? d.keys.find((k) => k.key === r.requesterKey) : undefined
   const a = r.asked
-  const [f, setF] = useState<Form>(formFromRequest(r, d.credentials))
+  const [f, setF] = useState<Form>(formFromRequest(r))
   const [more, setMore] = useState(false)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
@@ -713,7 +748,7 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
   const newTopUps = (g.valueAdds ?? []).map((v) => ({ usd: v.usd, ttl: v.ttl }))
   // The worst case over the life of the longest new top-up: what the owner is
   // actually agreeing to (stooges pass 2: "At most a $10 top-up" was no total).
-  const summary = decision(g.limits, newTopUps, g.ttl, !r.requesterKey, existing)
+  const summary = decision(g.budgets, newTopUps, g.ttl, !r.requesterKey, existing)
   const submit = async () => {
     setBusy(true)
     setErr('')
@@ -727,12 +762,10 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
       setBusy(false)
     }
   }
-  const showLimits = !r.requesterKey || !!a.askedLimits
+  const showBudgets = !r.requesterKey || !!a.askedBudgets
+  const showModels = !!r.requesterKey && !!a.askedModels
   const showTopUps = (a.valueAdds?.length ?? 0) > 0 || f.topUps.length > 0
   const showExpiry = !r.requesterKey || !!a.ttl || !!a.expires
-  // The accounts its patterns name EXACTLY: a glob says "whatever matches", so
-  // it is reported by its pattern rather than expanded into a list here.
-  const paid = d.credentials.filter((c) => f.credentials.some((p) => p.credential === c.scope))
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="lg">
       <DialogTitle>
@@ -747,22 +780,15 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
           <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', maxWidth: '72ch' }}>
             “{a.purpose}”
           </Typography>
-          {existing && <KeyNow k={existing} d={d} />}
+          {existing && <KeyNow k={existing} />}
           {!existing && (
             <Box>
               <Typography variant="subtitle2">What it can use</Typography>
-              <Typography variant="body2">
-                {a.models?.length ? a.models.map((m) => modelName(m, d)).join(', ') : 'any model'}
-                {' · '}
-                {paid.length
-                  ? `paid account: ${paid.map((c) => c.provider).join(', ')}`
-                  : f.credentials.length
-                    ? `accounts: ${f.credentials.map((p) => p.credential || 'unnamed').join(', ')}`
-                    : 'any account'}
-              </Typography>
+              <Typography variant="body2">{modelsText(formToGrant(f).models)}</Typography>
             </Box>
           )}
-          {showLimits && <LimitsEditor f={f} set={set} d={d} />}
+          {showModels && <ModelsEditor f={f} set={set} d={d} />}
+          {showBudgets && <BudgetsEditor f={f} set={set} d={d} />}
           {showTopUps ? (
             <TopUpsEditor f={f} set={set} d={d} />
           ) : (
@@ -795,7 +821,7 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
           {!existing && (
             <Box>
               <Button size="small" color="inherit" sx={{ px: 0 }} endIcon={more ? <ExpandLess /> : <ExpandMore />} onClick={() => setMore(!more)}>
-                More settings: name, priority, accounts it may use, sub-keys
+                More settings: name, priority, models it may use, sub-keys
               </Button>
               {more && <MoreSettings f={f} set={set} d={d} />}
             </Box>
@@ -829,10 +855,11 @@ function ApproveDialog({ r, d, title, who, onClose }: { r: Req; d: Data; title: 
 }
 
 /** A key as it stands, for a request that would change it. */
-function KeyNow({ k, d }: { k: Key; d: Data }) {
+function KeyNow({ k }: { k: Key }) {
   const parts = [
     `spent ${usd(k.spentToday)} today`,
-    k.limits.length ? k.limits.map((l) => limitText({ ...l, model: l.model ? modelName(l.model, d) : l.model })).join('; ') : 'no spending limit',
+    k.budgets.length ? flatLimits(k.budgets).map((x) => limitText(x.l, x.on)).join('; ') : 'no spending limit',
+    `may use ${modelsText(k.models)}`,
     ...k.valueAdds.filter((v) => v.active).map((v) => `${usd(v.usd - (v.spent ?? 0))} top-up left${v.expires ? ` until ${when(v.expires)}` : ''}`),
     ...(k.mint ? ['may create sub-keys'] : []),
   ]
@@ -842,27 +869,92 @@ function KeyNow({ k, d }: { k: Key; d: Data }) {
         {keyName(k)} now
       </Typography>
       <Typography variant="body2">{parts.join(' · ')}</Typography>
+      <Warnings k={k} />
     </Box>
   )
 }
 
-function LimitsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
+/** Where a key's sub-keys promise more than it has. Allowed, but said. */
+function Warnings({ k }: { k: Key }) {
+  return k.warnings.map((w) => (
+    <Typography key={w} variant="caption" sx={{ display: 'block', color: C.warn }}>
+      {w}
+    </Typography>
+  ))
+}
+
+/**
+ * A selector field: free text, with the kinds and this box's providers,
+ * accounts and models offered.
+ */
+function SelectorField({ value, onChange, d, label }: { value: string; onChange: (v: string) => void; d: Data; label: string }) {
+  return (
+    <Autocomplete
+      freeSolo
+      size="small"
+      options={selectorOptions(d)}
+      value={value}
+      inputValue={value}
+      onInputChange={(_, v) => onChange(v)}
+      renderInput={(p) => (
+        <TextField
+          {...p}
+          label={label}
+          placeholder="*, local, provider:fireworks, model:*deepseek*"
+          helperText={selHint(value) || 'Which models this counts'}
+          slotProps={{ ...p.slotProps, formHelperText: { sx: { mx: 0 } } }}
+        />
+      )}
+      sx={{ minWidth: 300, flex: 1 }}
+    />
+  )
+}
+
+/**
+ * What a key may spend, as BUDGETS by selector. Budgets nest: every one that
+ * matches a request is charged, so "$20 a day on everything" and "$3 a day on
+ * model:*deepseek*" are two rows, and a deepseek request counts against both.
+ */
+function BudgetsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
+  const setB = (i: number, p: Partial<Budget>) => set({ budgets: f.budgets.map((x, j) => (j === i ? { ...x, ...p } : x)) })
+  const blank: Lim = { amount: '', unit: 'usd', per: 'calendar-day', hard: true }
   return (
     <Box>
       <Typography variant="subtitle2">Spending limits</Typography>
-      {f.limits.length === 0 && (
+      {f.budgets.length === 0 ? (
         <Typography variant="body2" sx={{ color: C.warn }}>
           None: it may spend without limit.
         </Typography>
+      ) : (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+          Every limit that matches a request counts: a limit on one model sits inside a limit on everything.
+        </Typography>
       )}
-      <LimitRows limits={f.limits} setLimits={(limits) => set({ limits })} d={d} empty="" addLabel="Add a limit" />
+      {f.budgets.map((b, i) => (
+        <Box key={i} sx={{ mt: 1.5, p: 1.5, border: `1px solid ${C.border}`, borderRadius: 1 }}>
+          <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <SelectorField label="On" value={b.on} onChange={(on) => setB(i, { on })} d={d} />
+            <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => set({ budgets: f.budgets.filter((_, j) => j !== i) })}>
+              Remove
+            </Button>
+          </Stack>
+          <LimitRows limits={b.limits} setLimits={(limits) => setB(i, { limits })} empty="No limit: add one, or remove this row." addLabel="Add a limit on these" blank={blank} />
+        </Box>
+      ))}
+      <Button
+        size="small"
+        startIcon={<AddIcon />}
+        sx={{ mt: 1, px: 0 }}
+        onClick={() => set({ budgets: [...f.budgets, { on: f.budgets.some((b) => b.on === '*') ? '' : '*', limits: [blank] }] })}
+      >
+        Add a limit
+      </Button>
     </Box>
   )
 }
 
 /**
- * The rows of one limit list — a key's own, and each allow pattern's, which is
- * the same question asked one level down.
+ * The rows of one budget's limits.
  *
  * Only "how much" and "over what" show by default; the rest are rarely changed
  * and said nothing at their defaults (stooges pass 4: five fields for one
@@ -871,23 +963,23 @@ function LimitsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
 function LimitRows({
   limits,
   setLimits,
-  d,
   empty,
   addLabel,
+  blank,
 }: {
   limits: Lim[]
   setLimits: (l: Lim[]) => void
-  d: Data
   empty: string
   addLabel: string
+  blank: Lim
 }) {
   const setLim = (i: number, p: Partial<Lim>) => setLimits(limits.map((l, j) => (j === i ? { ...l, ...p } : l)))
   const [opened, setOpened] = useState<Set<number>>(new Set())
-  const full = (l: Lim, i: number) => opened.has(i) || l.unit !== 'usd' || !!l.model || !l.hard
+  const full = (l: Lim, i: number) => opened.has(i) || l.unit !== 'usd' || !l.hard
   return (
     <Box>
       {empty && limits.length === 0 && (
-        <Typography variant="body2" color="text.secondary">
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
           {empty}
         </Typography>
       )}
@@ -908,20 +1000,10 @@ function LimitRows({
             ))}
           </TextField>
           {full(l, i) && (
-            <>
-              <TextField select size="small" label="On" value={l.model} onChange={(e) => setLim(i, { model: e.target.value })} slotProps={selectSlots} sx={{ minWidth: 200, flex: 1 }}>
-                <MenuItem value="">every model</MenuItem>
-                {d.models.map((m) => (
-                  <MenuItem key={m} value={m}>
-                    {modelName(m, d)}
-                  </MenuItem>
-                ))}
-              </TextField>
-              <TextField select size="small" label="When reached" value={l.hard ? 'stop' : 'warn'} onChange={(e) => setLim(i, { hard: e.target.value === 'stop' })} sx={{ width: 170 }}>
-                <MenuItem value="stop">refuse requests</MenuItem>
-                <MenuItem value="warn">only warn me</MenuItem>
-              </TextField>
-            </>
+            <TextField select size="small" label="When reached" value={l.hard ? 'stop' : 'warn'} onChange={(e) => setLim(i, { hard: e.target.value === 'stop' })} sx={{ width: 170 }}>
+              <MenuItem value="stop">refuse requests</MenuItem>
+              <MenuItem value="warn">only warn me</MenuItem>
+            </TextField>
           )}
           {!full(l, i) && (
             <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => setOpened(new Set(opened).add(i))}>
@@ -933,7 +1015,7 @@ function LimitRows({
           </Button>
         </Stack>
       ))}
-      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => setLimits([...limits, { amount: '', unit: 'usd', per: 'calendar-day', hard: true, model: '' }])}>
+      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => setLimits([...limits, blank])}>
         {addLabel}
       </Button>
     </Box>
@@ -991,72 +1073,41 @@ function TopUpRow({ v, set, remove, d }: { v: TopUp; set: (p: Partial<TopUp>) =>
 }
 
 /**
- * Accounts a key may use, as ALLOW PATTERNS: a credential scope or a glob over
- * one, each with its own budget.
+ * What a key may see and use, as SELECTORS: `local`, `proxy`,
+ * `provider:fireworks`, `cred:fireworks/main`, `model:*deepseek*`, or a bare
+ * model name. Empty = every model.
  *
- * A list rather than a checklist of the accounts this box happens to have,
- * because the permission outlives them: `cred:fireworks/*` keeps working when an
- * account is added, and a pattern naming an account that has gone is a row an
- * operator can see and remove instead of a checkbox that vanished. When several
- * patterns match one credential, the most specific wins and only its budget is
- * charged — so a narrow budget can sit inside a wide permission.
+ * A list rather than a checklist of what this box happens to have, because
+ * the permission outlives it: `provider:fireworks` keeps working when a model
+ * is added there, and a selector naming something that has gone is a chip an
+ * operator can see and remove instead of a checkbox that vanished.
  */
-function PatternsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
-  const setPat = (i: number, p: Partial<Pattern>) => set({ credentials: f.credentials.map((x, j) => (j === i ? { ...x, ...p } : x)) })
-  const known = d.credentials.map((c) => c.scope)
+function ModelsEditor({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void; d: Data }) {
   return (
     <Box>
-      <Typography variant="subtitle2">Accounts it may use</Typography>
-      {f.credentials.length === 0 && (
-        <Typography variant="body2" color="text.secondary">
-          Every account, with no limit of its own.
-        </Typography>
-      )}
-      {f.credentials.map((p, i) => (
-        <Box key={i} sx={{ mt: 1.5, p: 1.5, border: `1px solid ${C.border}`, borderRadius: 1 }}>
-          <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <TextField
-              label="Account"
-              placeholder="cred:fireworks/* or cred:fireworks/main"
-              size="small"
-              value={p.credential}
-              onChange={(e) => setPat(i, { credential: e.target.value })}
-              sx={{ minWidth: 300, flex: 1 }}
-              helperText={
-                known.includes(p.credential)
-                  ? 'One account'
-                  : p.credential.includes('*')
-                    ? 'Every account whose name matches'
-                    : 'No such account on this box — is it spelled right?'
-              }
-              slotProps={{
-                input: { sx: { fontFamily: 'monospace', fontSize: 13 } },
-                formHelperText: { sx: { mx: 0 } },
-              }}
-              error={p.credential.trim() !== '' && !p.credential.includes('*') && !known.includes(p.credential)}
-            />
-            <Button size="small" color="inherit" sx={{ mt: 0.5 }} onClick={() => set({ credentials: f.credentials.filter((_, j) => j !== i) })}>
-              Remove
-            </Button>
-          </Stack>
-          <Box sx={{ mt: 1 }}>
-            <Typography variant="caption" color="text.secondary">
-              What it may spend on these accounts. When several patterns match one account the most
-              specific wins, and only its limit is counted.
-            </Typography>
-            <LimitRows
-              limits={p.limits}
-              setLimits={(limits) => setPat(i, { limits })}
-              d={d}
-              empty="No limit of its own."
-              addLabel="Add a limit to this account"
-            />
-          </Box>
-        </Box>
-      ))}
-      <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1, px: 0 }} onClick={() => set({ credentials: [...f.credentials, { credential: '', limits: [] }] })}>
-        Add an account
-      </Button>
+      <Typography variant="subtitle2">Models it may use</Typography>
+      <Autocomplete
+        multiple
+        freeSolo
+        autoSelect
+        size="small"
+        options={selectorOptions(d).filter((s) => s !== '*')}
+        value={f.models}
+        onChange={(_, v) => set({ models: [...new Set(v.map(normSel).filter(Boolean))] })}
+        renderInput={(p) => (
+          <TextField
+            {...p}
+            placeholder={f.models.length ? '' : 'every model — or type local, proxy, provider:…, model:…'}
+            helperText={
+              f.models.length
+                ? 'Only what these name. * is a wildcard in a name; a bare name is one model.'
+                : 'Every model.'
+            }
+            slotProps={{ ...p.slotProps, formHelperText: { sx: { mx: 0 } } }}
+          />
+        )}
+        sx={{ mt: 1 }}
+      />
     </Box>
   )
 }
@@ -1075,7 +1126,7 @@ function MoreSettings({ f, set, d }: { f: Form; set: (p: Partial<Form>) => void;
           ))}
         </TextField>
       </Stack>
-      <PatternsEditor f={f} set={set} d={d} />
+      <ModelsEditor f={f} set={set} d={d} />
       <FormControlLabel control={<Switch checked={f.mint} onChange={(e) => set({ mint: e.target.checked })} />} label="May create its own sub-keys" />
     </Stack>
   )
@@ -1087,7 +1138,7 @@ function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
   // A configured key nobody set anything on here is not something handed out —
   // unless a request is waiting on it, when the owner needs to see it now.
   const managed = (k: Key) =>
-    k.kind !== 'configured' || k.mint || k.limits.length > 0 || k.valueAdds.length > 0 || pendingKeys.includes(k.key)
+    k.kind !== 'configured' || k.mint || k.budgets.length > 0 || k.models.length > 0 || k.valueAdds.length > 0 || pendingKeys.includes(k.key)
   const shown = d.keys.filter((k) => showAll || managed(k))
   const hidden = d.keys.length - d.keys.filter(managed).length
   // Sub-keys under their parent, the way a person reads ownership.
@@ -1136,30 +1187,33 @@ function KeysPanel({ d, pendingKeys }: { d: Data; pendingKeys: string[] }) {
 }
 
 /** One line for what a key spent: against its main dollar limit when it has one. */
-function spentLines(k: Key, d: Data): { main: string; rest: string[]; blocked: boolean } {
-  const fmtL = (l: Key['limits'][number]) => {
+function spentLines(k: Key): { main: string; rest: string[]; blocked: boolean } {
+  const fmtL = ({ on, l }: { on: string; l: LimitIn }) => {
     const isUsd = (l.usd ?? 0) > 0
-    const w = k.windows.find((x) => x.scope === (l.model || 'key') && x.label === `${isUsd ? 'usd' : 'req'}/${l.per}`)
+    const w = k.windows.find((x) => x.scope === on && x.label === `${isUsd ? 'usd' : 'req'}/${l.per}`)
     const f = (n: number) => (isUsd ? usd(n) : `${Math.round(n)} requests`)
     return {
       text: `${f(w?.used ?? 0)} of ${f(isUsd ? (l.usd ?? 0) : (l.req ?? 0))} ${perShort(l.per)}${l.hard ? '' : ' (warning only)'}`,
-      model: l.model ? `on ${modelName(l.model, d)}` : '',
+      on: on === '*' ? '' : `on ${on}`,
       blocked: !!w?.blocked,
     }
   }
-  const main = k.limits.find((l) => (l.usd ?? 0) > 0)
+  const all = flatLimits(k.budgets)
+  const line = (x: { on: string; l: LimitIn }) => [fmtL(x).text, fmtL(x).on].filter(Boolean).join(' ')
+  // The main line: a dollar limit on everything, else any dollar limit.
+  const main = all.find((x) => x.on === '*' && (x.l.usd ?? 0) > 0) ?? all.find((x) => (x.l.usd ?? 0) > 0)
   if (!main) {
     return {
-      main: `${usd(k.spentToday)} today${k.limits.length === 0 ? ' · no limit' : ''}`,
-      rest: k.limits.map((l) => [fmtL(l).text, fmtL(l).model].filter(Boolean).join(' ')),
-      blocked: k.limits.some((l) => fmtL(l).blocked),
+      main: `${usd(k.spentToday)} today${all.length === 0 ? ' · no limit' : ''}`,
+      rest: all.map(line),
+      blocked: all.some((x) => fmtL(x).blocked),
     }
   }
   const m = fmtL(main)
   return {
     main: m.text,
-    rest: [m.model, ...k.limits.filter((l) => l !== main).map((l) => [fmtL(l).text, fmtL(l).model].filter(Boolean).join(' '))].filter(Boolean),
-    blocked: m.blocked,
+    rest: [m.on, ...all.filter((x) => x !== main).map(line)].filter(Boolean),
+    blocked: all.some((x) => fmtL(x).blocked),
   }
 }
 
@@ -1186,7 +1240,7 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
   })
   const configured = k.kind === 'configured'
   const who = configured ? 'set up in the config' : k.kind === 'child' && !nested ? `sub-key of ${k.parent}` : k.kind === 'child' ? 'sub-key' : ''
-  const sp = spentLines(k, d)
+  const sp = spentLines(k)
   // Off for two different reasons — an admin switched it off, or its expiry
   // passed — and the switch is the same either way: one control to turn a key
   // back on, whichever stopped it.
@@ -1201,6 +1255,12 @@ function KeyRow({ k, d, nested }: { k: Key; d: Data; nested: boolean }) {
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', whiteSpace: 'nowrap' }}>
           {[who, stoppedBy, k.mint ? 'may create sub-keys' : ''].filter(Boolean).join(' · ')}
         </Typography>
+        {k.models.length > 0 && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            may use {modelsText(k.models)}
+          </Typography>
+        )}
+        <Warnings k={k} />
         {err && (
           <Typography variant="caption" color="error" sx={{ display: 'block' }}>
             {err}
@@ -1321,7 +1381,8 @@ function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: ()
       <DialogContent>
         <Stack spacing={2.5} sx={{ mt: 0.5 }}>
           {err && <Alert severity="error">{err}</Alert>}
-          <LimitsEditor f={f} set={set} d={d} />
+          <BudgetsEditor f={f} set={set} d={d} />
+          {k.kind === 'child' && <ModelsEditor f={f} set={set} d={d} />}
           {k.kind !== 'configured' && (
             <TextField
               label="Key expires after"
@@ -1351,8 +1412,8 @@ function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: ()
 /**
  * Making a key, on the owner's own initiative rather than from a request.
  *
- * The form is the same one Approve uses — label, priority, accounts with their
- * limits, a spending limit, an expiry — because a key made here and a key
+ * The form is the same one Approve uses — label, priority, the models it may
+ * use, its spending limits, an expiry — because a key made here and a key
  * granted there are the same object; what differs is only which page you were
  * on when you decided. The one deliberate difference is that the key is created
  * SWITCHED OFF: a grant is an answer to someone waiting, while a key made here
@@ -1364,7 +1425,7 @@ function EditKeyDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: ()
  */
 function CreateKeyDialog({ d, onClose }: { d: Data; onClose: () => void }) {
   const qc = useQueryClient()
-  const [f, setF] = useState<Form>({ label: '', group: '', credentials: [], limits: [], topUps: [], ttl: '', mint: false, reason: '' })
+  const [f, setF] = useState<Form>({ label: '', group: '', models: [], budgets: [], topUps: [], ttl: '', mint: false, reason: '' })
   const [err, setErr] = useState('')
   const [made, setMade] = useState('')
   const set = (p: Partial<Form>) => setF((cur) => ({ ...cur, ...p }))
@@ -1376,7 +1437,7 @@ function CreateKeyDialog({ d, onClose }: { d: Data; onClose: () => void }) {
     },
     onError: (e) => setErr(extractMessage(e)),
   })
-  const line = costLine(f.limits, [], f.ttl, true)
+  const line = costLine(formToGrant(f).budgets, [], f.ttl, true)
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="lg">
       <DialogTitle>{made ? 'Key made' : 'New key'}</DialogTitle>
@@ -1397,7 +1458,7 @@ function CreateKeyDialog({ d, onClose }: { d: Data; onClose: () => void }) {
               {line.text}
             </Typography>
             <MoreSettings f={f} set={set} d={d} />
-            <LimitsEditor f={f} set={set} d={d} />
+            <BudgetsEditor f={f} set={set} d={d} />
             <TextField
               label="Key expires after"
               placeholder="7d, 48h — empty: never"
@@ -1448,7 +1509,7 @@ function TopUpDialog({ k, d, onClose, onDone }: { k: Key; d: Data; onClose: () =
     },
     onError: (e) => setErr(extractMessage(e)),
   })
-  const stops = k.limits.some((l) => l.hard)
+  const stops = k.budgets.some((b) => b.limits.some((l) => l.hard))
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="sm">
       <DialogTitle>Top up {keyName(k)}</DialogTitle>
@@ -1492,7 +1553,7 @@ function DecidedPanel({ rows, d }: { rows: Req[]; d: Data }) {
               // The key's real expiry, not one recomputed from the ttl now
               // (stooges pass 2: one key showed two stop times).
               const issued = r.issuedKey ? d.keys.find((k) => k.key === r.issuedKey) : undefined
-              let line = r.status === 'approved' ? costLine(g.limits ?? [], g.valueAdds ?? [], undefined, false).text : ''
+              let line = r.status === 'approved' ? costLine(g.budgets ?? [], g.valueAdds ?? [], undefined, false).text : ''
               if (issued) line += issued.expires ? ` · expires ${when(issued.expires)}` : ' · never expires'
               return (
                 <TableRow key={r.id} sx={{ verticalAlign: 'top' }}>
