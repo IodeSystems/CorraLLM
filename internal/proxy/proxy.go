@@ -2265,23 +2265,30 @@ func (p *Proxy) writePaused(w http.ResponseWriter, r *http.Request, served, key 
 	if secs < 1 {
 		secs = 1
 	}
+	// The first paused rung, the one the walk would have tried first, is the
+	// one that refused. Its reason goes to the caller and the activity row: a
+	// pause is often automatic (a build benchmark), and "paused" alone sends
+	// whoever reads it looking at budgets instead.
+	var refused, reason string
+	for _, c := range cands {
+		if pz, ok := p.mgr.PauseOf(c.Name); ok {
+			refused, reason = c.Name, pz.Reason
+			break
+		}
+	}
+	msg, logged := served+" is paused", "model paused"
+	if reason != "" {
+		msg += ": " + reason
+		logged += ": " + reason
+	}
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusTooManyRequests)
 	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"paused","retry_after":%d}}`,
-		jsonString(fmt.Sprintf("%s is paused by the operator; retry after %d seconds", served, secs)), secs)
-	// The first paused rung, the one the walk would have tried first, is the
-	// one that refused.
-	var refused string
-	for _, c := range cands {
-		if p.mgr.IsPaused(c.Name) {
-			refused = c.Name
-			break
-		}
-	}
+		jsonString(fmt.Sprintf("%s; retry after %d seconds", msg, secs)), secs)
 	p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refused, Key: key, Path: r.URL.Path,
 		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
-		Error: "model paused", ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
+		Error: logged, ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
 }
 
 // writeBudgetExhausted answers a request every candidate of which is held by a

@@ -104,11 +104,16 @@ func TestPausedMemberFallsThrough(t *testing.T) {
 func TestAllMembersPaused429(t *testing.T) {
 	r, mgr := pauseLaneFixture(t)
 	for _, m := range []string{"m-1", "m-2"} {
-		if _, err := mgr.PauseModel(m, "", time.Time{}); err != nil {
+		if _, err := mgr.PauseModel(m, "benchmarking a new llama.cpp build", time.Time{}); err != nil {
 			t.Fatalf("Pause %s: %v", m, err)
 		}
 	}
 	rec := sendToLane(t, r, "m")
+	// The reason reaches the caller: a pause is often automatic, and "paused"
+	// alone reads as a budget or an operator.
+	if !strings.Contains(rec.Body.String(), "m is paused: benchmarking a new llama.cpp build; retry after") {
+		t.Errorf("body = %s, want the pause's reason", rec.Body.String())
+	}
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("want 429, got %d (%s)", rec.Code, rec.Body.String())
 	}
