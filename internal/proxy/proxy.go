@@ -911,23 +911,6 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if r.URL.Path == "/v1/chat/completions" {
-		if m, ok := p.config().Models[served]; ok && m.Sampling != nil {
-			if nb, did := applySamplingProfile(body, m.Sampling, p.config().Keys[caller.PolicyKey()]); did {
-				body = nb
-				slog.Debug("sampling profile applied", "model", served)
-			}
-			// AFTER the profile, because it only applies to a request that is
-			// going to think, and the profile is what settles that. Sized from
-			// the context the prompt has not used — the proxy is the only party
-			// holding both numbers: the caller does not know the model's window,
-			// and the launch flag cannot see the request.
-			if nb, did := applyReasoningBudget(body, m.Sampling, m.ContextPerRequest); did {
-				body = nb
-				slog.Debug("reasoning budget set", "model", served, "bodyBytes", len(body))
-			}
-		}
-	}
 	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions" {
 		if nb, did := withStreamUsage(body); did {
 			body = nb
@@ -1302,6 +1285,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				outBody = rewriteModelField(outBody, upstream)
 			}
 		}
+		if r.URL.Path == "/v1/chat/completions" {
+			outBody = p.withSampling(outBody, backend, name, caller)
+		}
 		// Anthropic Messages shim (anthropic.go): a backend whose proxy says
 		// `api: anthropic` gets the native Messages body — with prompt-cache
 		// breakpoints — and its reply is translated back below. Per candidate,
@@ -1338,7 +1324,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 					InflightID: takeMarker()})
 				return
 			}
-			outBody = ob
+			outBody = p.withSampling(ob, backend, name, caller)
 		}
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
@@ -2779,6 +2765,30 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	defer done()
 	r.URL.Path = "/" + tail
 	newReverseProxy(pr.Target).ServeHTTP(w, r)
+}
+
+// withSampling applies a model's sampling profile and reasoning budget to a
+// chat body bound for it. Per candidate, not per requested name: a profile
+// belongs to the MODEL. Keyed on the requested name, it was skipped for every
+// alias and lane — 98% of the Swift model's traffic in the week to 10-27.
+func (p *Proxy) withSampling(body []byte, backend config.Model, name string, caller config.Caller) []byte {
+	if backend.Sampling == nil {
+		return body
+	}
+	if nb, did := applySamplingProfile(body, backend.Sampling, p.config().Keys[caller.PolicyKey()]); did {
+		body = nb
+		slog.Debug("sampling profile applied", "model", name)
+	}
+	// AFTER the profile, because it only applies to a request that is going
+	// to think, and the profile is what settles that. Sized from the context
+	// the prompt has not used — the proxy is the only party holding both
+	// numbers: the caller does not know the model's window, and the launch
+	// flag cannot see the request.
+	if nb, did := applyReasoningBudget(body, backend.Sampling, backend.ContextPerRequest); did {
+		body = nb
+		slog.Debug("reasoning budget set", "model", name, "bodyBytes", len(body))
+	}
+	return body
 }
 
 // handleCountTokens answers POST /v1/messages/count_tokens (Anthropic's shape;
