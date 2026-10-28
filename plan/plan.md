@@ -377,6 +377,46 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P65 — Key access and budgets by selector; `corrallm request` / `corrallm keys` CLI — 2026-10-28
+
+Owner ask (10-28): asking for keys and budget changes (keys and subkeys) from a cobra CLI; aw4's limits
+"read kinda clunky" — one shape for what a key may SEE and what it may SPEND, the same on a subkey.
+Found 10-28: aw4's Swift 429s were build-benchmark pauses (7 on 10-27; reply said "paused by the
+operator" → now names the reason, 2ad7a26); its DeepSeek 429s were the MODEL's shared $3/rolling-day
+cap (children spent $4.03/24 h, their shares sum $5.10), not its own $1.70 shares.
+Decisions (owner 10-28):
+- Selectors: `*` · `local` (Model.Remote false) · `proxy` (Remote) · `provider:<glob>` ·
+  `cred:<provider>/<name>` (glob) · `model:<glob>` (backend name); a bare name = `model:<name>`.
+- `models: [selectors]` = what the key may see and use (empty = all). REPLACES `credentials` patterns
+  and `:none`. A hidden model → **403 naming the filter**; /v1/models lists only what the key may use.
+- `budgets: {selector: [limits]}` REPLACES `limits` (+`limits[].model`) and pattern budgets. Every
+  matching budget applies (nested caps), not most-specific-wins. Compact limit form `$3/calendar-day,hard`,
+  `100req/hour` accepted in YAML/JSON/CLI; objects still read.
+- Subkeys: same two fields; usable = child ∩ parent; a request charges every matching budget of child
+  and parent. Oversubscription stays ALLOWED (P61) — saving returns a WARNING when subkey budgets on a
+  selector sum over the parent's (or over a model/provider cap they sit under).
+- Every refusal names the budget that refused: whose (this key / parent key / model / provider /
+  account), selector, amount/window, used — e.g. "parent key sk-aw4's budget model:*deepseek*
+  $3/calendar-day is used up ($3.01 used)". Activity rows carry the same text.
+- CLI: subcommands of `corrallm`; key from CORRALLM_KEY or --key-file, never an argument; claim saved
+  to `<home>/requests/<id>.json` (0600), `--wait` polls, the issued key printed once and saved beside it.
+  Requester side only (approvals stay on the dashboard).
+Assumed (not asked): migration on load, old fields still read, written back in the new shape:
+`limits` → `budgets["*"]` / `budgets["model:<m>"]`; `credentials` → `models: [local, provider:<p> for
+each remote provider with no credentials, <patterns>]`, `:none` → the same without patterns (exactly
+the old reach); pattern budgets → `budgets[pattern]`. Ledger scopes kept where they map 1:1 (`key:<k>`,
+`key:<k>@<m>`, `keycred:<k>><pattern>`) so today's counters carry over. Only HARD key budgets refuse
+(unchanged). Strangers still get no credentialed candidate. Old pending access requests: their
+informational `models` list becomes a filter proposal the admin edits on approval.
+- **next:** config types + selector matching + migration (tests) → proxy gate/charge/messages →
+  child keys (DB columns `models`, `budgets`) + access requests → API/GraphQL + Approvals/Access UI →
+  CLI (`cmd/corrallm/clientcmd.go` started: flags, apiCall, limit parsing) → live config load + check aw4.
+- **risks:** migration must not widen access (test against the live config's keys); counters for
+  selectors with no 1:1 old scope start at 0; UI pages that edit `credentials`/`limits` break until
+  moved; GraphQL schema change breaks external readers of those fields.
+- **blocking decisions:** none.
+- **optional extensions:** value adds by selector (today: model name); `corrallm request approve`.
+
 ### ◐ P64 — /v1/messages (Anthropic API), Claude-subscription fallback, /v1/tokenize — 2026-10-27
 
 Owner asks (10-27): a tokenize endpoint; Claude Code against corrallm (dun-a8's benchmark); "when we
