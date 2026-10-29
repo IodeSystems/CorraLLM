@@ -1989,3 +1989,52 @@ func TestReverseProxyStripsCallerKey(t *testing.T) {
 		}
 	}
 }
+
+// A caller that sends nothing about thinking gets the model's default; the
+// catalog says what that is, and context_length is one request's window, not
+// a shared pool.
+func TestModelsCatalogReasoningAndPerRequestContext(t *testing.T) {
+	st, _ := store.Open(context.Background(), ":memory:")
+	defer func() { _ = st.Close() }()
+	cfg := mkConfig(t, "mock", "http://127.0.0.1:1")
+	m := cfg.Models["mock"]
+	m.Cmd = "llama-server --reasoning on --reasoning-effort medium --parallel 2 --kv-unified -c 172032"
+	m.ContextPerRequest = 86016
+	m.Sampling = &config.SamplingConfig{
+		Default:         "thinking",
+		ReasoningBudget: &config.ReasoningBudget{FractionOfRemaining: 0.2, Min: 2048, Max: 8192},
+	}
+	cfg.Models["mock"] = m
+	cfg.Models["plain"] = modelTo(t, "http://127.0.0.1:1", "local")
+	r := chi.NewRouter()
+	New(cfg, proc.NewManager(&config.Config{}), sched.New(), st).Mount(r)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	var got struct {
+		Data []struct {
+			ID            string          `json:"id"`
+			ContextLength int             `json:"context_length"`
+			Reasoning     *modelReasoning `json:"reasoning"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]int{}
+	for i, d := range got.Data {
+		byID[d.ID] = i
+	}
+	mock := got.Data[byID["mock"]]
+	if mock.ContextLength != 86016 {
+		t.Errorf("context_length = %d, want contextPerRequest 86016", mock.ContextLength)
+	}
+	r0 := mock.Reasoning
+	if r0 == nil || r0.Default != "thinking" || r0.Effort != "medium" ||
+		r0.Budget == nil || r0.Budget.FractionOfRemaining != 0.2 || r0.Budget.Min != 2048 || r0.Budget.Max != 8192 {
+		t.Errorf("reasoning = %+v", r0)
+	}
+	if p := got.Data[byID["plain"]].Reasoning; p != nil {
+		t.Errorf("a model with no stated default reported %+v", p)
+	}
+}

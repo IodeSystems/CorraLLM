@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -2862,7 +2863,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		Remote        bool     `json:"remote,omitempty"`
 		Members       []string `json:"members,omitempty"`        // lane member model names, in fallback order
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
-		ContextLength int      `json:"context_length,omitempty"` // parsed n_ctx (if resident)
+		ContextLength int      `json:"context_length,omitempty"` // one request's window: n_ctx (if resident), capped by contextPerRequest
 		Slots         int      `json:"slots,omitempty"`          // admission concurrency (maxConcurrent / --parallel)
 		// Modalities: accepted input modalities keyed by name (text|image|audio),
 		// each with optional metadata (image maxResolution/formats, text maxTokens).
@@ -2874,6 +2875,9 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		// is inferred from the cost type — see config.TypeIO.
 		Outputs    []string `json:"outputs"`
 		Capability string   `json:"capability"` // chat|embeddings|audio.stt|audio.tts|image.generate|rerank
+		// Reasoning: what a request that says nothing about thinking gets.
+		// Absent when the config does not say.
+		Reasoning *modelReasoning `json:"reasoning,omitempty"`
 	}
 	// Data starts non-nil so an empty config serialises as [] rather than null.
 	// OpenAI clients iterate the list without a nil check, and a fresh install
@@ -2907,6 +2911,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 			Modalities: mc.EffectiveModalities(name, p.cost.IsAudioType(mc.Type)),
 			Outputs:    config.ModelIO(name, mc, p.cost.IsAudioType(mc.Type)).Out,
 			Capability: config.ModelCapability(mc),
+			Reasoning:  reasoningOf(mc),
 		}
 		// A remote model has no residency to report. It used to inherit the
 		// process state, which latched to "ready" on the first request and never
@@ -2917,6 +2922,11 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		} else if r, ok := resident[mc.ProcKey(name)]; ok {
 			e.State = r.State
 			e.ContextLength = r.NCtx
+		}
+		// With a shared KV pool n_ctx is the POOL, not what one request may
+		// use. A caller sizes its compaction from this number.
+		if mc.ContextPerRequest > 0 && (e.ContextLength == 0 || mc.ContextPerRequest < e.ContextLength) {
+			e.ContextLength = mc.ContextPerRequest
 		}
 		// Paused outranks everything above: "absent" would say a request could
 		// load it, and an extension's paused model would otherwise inherit its
@@ -2946,11 +2956,13 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		// what its first-choice model accepts (a fallback may support less).
 		var modalities map[string]config.ModalitySpec
 		var outputs []string
+		var reasoning *modelReasoning
 		capability, state := "chat", "absent"
 		for i, c := range cands {
 			members = append(members, c.Name)
 			if i == 0 {
 				capability = config.ModelCapability(c.Model)
+				reasoning = reasoningOf(c.Model)
 				modalities = c.Model.EffectiveModalities(c.Name, p.cost.IsAudioType(c.Model.Type))
 				outputs = p.modelIO(c).Out
 			}
@@ -2974,10 +2986,58 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: state, Quality: config.MaxQuality(cands), Kind: "lane",
 			Members: members, Slots: laneSlots, Modalities: modalities, Outputs: outputs, Capability: capability,
+			Reasoning: reasoning,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// modelReasoning is a model's thinking default in /v1/models, so a caller can
+// show what "send nothing" gets. A request still decides for itself with
+// chat_template_kwargs.enable_thinking and reasoning_budget_tokens.
+type modelReasoning struct {
+	Default string `json:"default"`          // thinking|instruct
+	Effort  string `json:"effort,omitempty"` // --reasoning-effort, if launched with one
+	// Budget is the cap corrallm adds to a thinking request that sends no
+	// reasoning_budget_tokens: fraction of the context the prompt leaves,
+	// at least min (else no cap), at most max (0 = none).
+	Budget *modelReasoningBudget `json:"budget,omitempty"`
+}
+
+type modelReasoningBudget struct {
+	FractionOfRemaining float64 `json:"fraction_of_remaining"`
+	Min                 int     `json:"min,omitempty"`
+	Max                 int     `json:"max,omitempty"`
+}
+
+var (
+	reReasoningFlag   = regexp.MustCompile(`(?:^|\s)--reasoning\s+(on|off)(?:\s|$)`)
+	reReasoningEffort = regexp.MustCompile(`(?:^|\s)--reasoning-effort\s+(\S+)`)
+)
+
+// reasoningOf reads the sampling config first: it is the default the proxy
+// samples by (an unset default there is instruct). A model without one falls back to its --reasoning flag.
+func reasoningOf(mc config.Model) *modelReasoning {
+	r := &modelReasoning{}
+	if mc.Sampling != nil {
+		r.Default = "instruct"
+		if mc.Sampling.DefaultThinking() {
+			r.Default = "thinking"
+		}
+	} else if m := reReasoningFlag.FindStringSubmatch(mc.Cmd); m != nil {
+		r.Default = map[string]string{"on": "thinking", "off": "instruct"}[m[1]]
+	} else {
+		return nil
+	}
+	if m := reReasoningEffort.FindStringSubmatch(mc.Cmd); m != nil {
+		r.Effort = m[1]
+	}
+	if mc.Sampling != nil && mc.Sampling.ReasoningBudget != nil && mc.Sampling.ReasoningBudget.FractionOfRemaining > 0 {
+		b := mc.Sampling.ReasoningBudget
+		r.Budget = &modelReasoningBudget{FractionOfRemaining: b.FractionOfRemaining, Min: b.Min, Max: b.Max}
+	}
+	return r
 }
 
 // handleCapabilities returns the public self-describing manifest: the OpenAI
