@@ -377,6 +377,35 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P66 — Swift at 2 slots (shared KV) under live aw4 load — 2026-10-28
+
+Why: aw4-7a reported slower Swift and low 5090 load. Findings (owner-facing):
+no llama.cpp regression (per-build A/B bench 2,460–2,590 prefill / 121–128
+decode tok/s, flat); token-weighted prefill flat at 0.64–0.76 ms/tok; aw4's
+calls changed shape (10-14..16: ~290 calls/h, 5.4k new + 745 out tokens;
+10-28: ~530 calls/h, 2k new + 200 out). Last hour at 1 slot: prefill 22%,
+decode 35%, prompt-cache save+load 25% (~1.3 s/call), idle 18%.
+
+Live 17:50: `--parallel 2 --kv-unified -c 163840 --kv-unified-per-slot 131072
+--slot-prompt-similarity 0.9`, maxConcurrent 2, footprint 31,356 MiB on the
+5090 (was 29,210). The estimator fix: `--kv-unified` no longer prices KV per
+slot, and tuneCmd leaves such a cmd alone (`internal/proc/manager.go`).
+
+- **next:** compare an hour of 2-slot load against the 1-slot baseline above
+  (output tok/h, calls/h, prompt-cache update ms, per-call decode tok/s).
+- **risks:** two concurrent requests >160k total exhaust the shared pool
+  (p99 per request 96k); per-call decode under concurrency unmeasured;
+  `-sps 0.9` false matches on new conversations shorter than ~18k.
+- **gaps found (not fixed):** (1) tune profile is keyed by (card, model), not
+  cmd — a cmd change inherits old peaks; (2) a process split over two cards
+  was summed and filed as one card's peak (33,446 MiB; corrected by hand in
+  `vram-profile.json`, backup in the session scratchpad); (3) the UI shows
+  "exceeds pool budget" with no estimate, budget or source; (4) Swift hung
+  >5 min on SIGTERM at "cleaning up before exit"; a second signal exits.
+- **blocking decisions:** whether to fix gaps 1–4.
+- **assumption:** the dropped `CUDA_VISIBLE_DEVICES` line in the proposed cmd
+  was my error; restored with the comment history.
+
 ### ◐ P65 — Key access and budgets by selector; `corrallm request` / `corrallm keys` CLI — 2026-10-28
 
 Owner ask (10-28): asking for keys and budget changes (keys and subkeys) from a cobra CLI; aw4's limits

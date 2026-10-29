@@ -116,3 +116,23 @@ func itoa(n int) string {
 	}
 	return string(b)
 }
+
+// With a shared pool the operator's --parallel and -c are final: dividing or
+// multiplying -c by slots, or lowering --parallel by per-slot KV, would undo it.
+func TestTuneCmd_UnifiedKVLeavesCmdAlone(t *testing.T) {
+	cache := ctxCache(t, tune.Profile{
+		BaseMiB: 24702, PerSlotMiB: 4352, PeakMiB: 29210,
+		MeasuredSlots: 1, Ctx: 131072, Source: tune.SourceBench,
+	})
+	m := NewManager(&config.Config{})
+	m.SetTuneCache(cache)
+
+	const want = "llama-server --parallel 2 --kv-unified -c 163840 --kv-unified-per-slot 131072"
+	cmd := want
+	if n := m.tuneCmd("m", &cmd, 2, 131072); n != 0 {
+		t.Errorf("tuned slots = %d, want 0 (untouched)", n)
+	}
+	if cmd != want {
+		t.Errorf("cmd rewritten to %q", cmd)
+	}
+}

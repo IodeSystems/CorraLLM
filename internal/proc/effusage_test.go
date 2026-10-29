@@ -343,3 +343,23 @@ func TestVRAMBudget_IgnoresOtherServersPinnedModels(t *testing.T) {
 		t.Errorf("budget = %d, want %d — the mac's 40GB pinned model was subtracted from box1's card", got, want)
 	}
 }
+
+// A shared KV pool (--kv-unified) does not grow with --parallel: the measured KV
+// is the whole pool. Pricing it per slot refused Swift at 2 slots on 10-28
+// (33406 MiB estimated on a 32607 MiB card).
+func TestEffectiveUsage_UnifiedKVDoesNotScaleWithSlots(t *testing.T) {
+	m := usageMgr(t, &tune.Profile{
+		BaseMiB: 24702, PerSlotMiB: 4352, PeakMiB: 29210,
+		MeasuredSlots: 1, Source: tune.SourceServing,
+	})
+	mdl := config.Model{Server: "box", MaxConcurrent: 2,
+		Cmd:      "llama-server --parallel 2 --kv-unified -c 163840",
+		RAMUsage: map[string]string{"gpu0": "1GB"}}
+	if got := m.effectiveUsage("m", mdl)["gpu0"] / mib; got != 29210 {
+		t.Errorf("unified 2-slot estimate = %d MiB, want the measured 29210", got)
+	}
+	mdl.Cmd = "llama-server --parallel 2 -c 163840"
+	if got := m.effectiveUsage("m", mdl)["gpu0"] / mib; got != 24702+2*4352 {
+		t.Errorf("per-slot 2-slot estimate = %d MiB, want %d", got, 24702+2*4352)
+	}
+}

@@ -51,6 +51,14 @@ var reParallel = regexp.MustCompile(`--parallel\s+\d+`)
 // additive contract as reParallel: a cmd with no ctx flag is left untouched.
 var reCtx = regexp.MustCompile(`(-c|--ctx-size)\s+\d+`)
 
+// reKVUnified matches llama-server's shared-KV flag. With it, -c is ONE pool
+// that every slot draws from (and --kv-unified-per-slot caps each request), so
+// the KV cache does not grow with --parallel and -c is not divided by it.
+// Swift on box1 (10-28): the per-slot model priced 2 slots at 33406 MiB on a
+// 32607 MiB card and refused to load it; the real cost of the second slot is
+// its recurrent state, ~750 MiB.
+var reKVUnified = regexp.MustCompile(`(^|\s)(--kv-unified|-kvu)(\s|$)`)
+
 // ErrNoCapacity means a backend can't be made to fit its server even after
 // considering eviction — the caller should spill to the next backend.
 // Returned wrapped in a *CapacityError; match with errors.Is.
@@ -1229,7 +1237,14 @@ func (m *Manager) effectiveUsage(name string, mdl config.Model) map[string]int64
 	}
 
 	slots := mdl.Slots()
-	est := prof.BaseMiB + slots*prof.PerSlotMiB
+	kvSlots := slots
+	if reKVUnified.MatchString(mdl.Cmd) && prof.MeasuredSlots > 0 {
+		// One shared pool: the KV that was measured is the KV there is. A
+		// spawn at more slots adds per-slot state the profile cannot see yet;
+		// its own measurement (KV/n_slots) corrects the next estimate.
+		kvSlots = prof.MeasuredSlots
+	}
+	est := prof.BaseMiB + kvSlots*prof.PerSlotMiB
 	// The peak is a FLOOR on the estimate, never a discount: base+slots stands
 	// whenever it is larger. EffectivePeakMiB lets an expired outlier stop
 	// inflating that floor without ever dropping below the modelled cost.
@@ -1342,6 +1357,12 @@ func (m *Manager) tuneCmd(model string, cmdStr *string, maxConcurrent, perReq in
 	if !reParallel.MatchString(*cmdStr) {
 		// No --parallel flag to tune: leave the cmd completely untouched rather
 		// than injecting one (spec: additive only, never alter cmd shape).
+		return 0
+	}
+	if reKVUnified.MatchString(*cmdStr) {
+		// The per-slot arithmetic below assumes -c is divided across slots.
+		// With a shared pool it is not: the operator's --parallel, -c and
+		// --kv-unified-per-slot already say what each request gets.
 		return 0
 	}
 	budget := m.vramBudget(stats, model)
