@@ -391,7 +391,13 @@ Live 17:50: `--parallel 2 --kv-unified -c 163840 --kv-unified-per-slot 131072
 5090 (was 29,210). The estimator fix: `--kv-unified` no longer prices KV per
 slot, and tuneCmd leaves such a cmd alone (`internal/proc/manager.go`).
 
-- **next:** compare an hour of 2-slot load against the 1-slot baseline above
+- **status 18:00:** the 2nd slot is idle. aw4's gate reads lanes from
+  `/v1/models` `slots` by exact id; aw4 asks for the alias `local-Qwen3.8-27B`,
+  which the listing omits, so it runs 1 lane. aw4 fixes this in its gate
+  (alias resolution, fill until X-Corrallm-Queued-Ms grows or a refusal):
+  aw4 i_1m62jhryh65zn03jnh4baq. Listing aliases in `/v1/models` was offered and
+  then withdrawn by aw4; not built.
+- **next:** when aw4 reports 2 calls in flight, compare an hour of 2-slot load against the 1-slot baseline above
   (output tok/h, calls/h, prompt-cache update ms, per-call decode tok/s).
 - **risks:** two concurrent requests >160k total exhaust the shared pool
   (p99 per request 96k); per-call decode under concurrency unmeasured;
