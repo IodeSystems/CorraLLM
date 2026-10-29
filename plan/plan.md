@@ -412,6 +412,12 @@ slot, and tuneCmd leaves such a cmd alone (`internal/proc/manager.go`).
   15.9 vs 17.2 min; drafted tokens kept 66% vs 68%. 256k at 3 slots: llama.cpp
   "failed to fit params". 3-slot 160k = 31,622 MiB, 39 over the 31,583 budget.
   Outcome: Swift stays; bench entries removed; GGUF kept in models/.
+- **context 20:45 (owner: "lower the reserve"):** box1 gpu0 reserve 1GiB → 512MiB,
+  Swift `-c 163840` → `172032` (cap 131k per request unchanged): 31,728 MiB at rest;
+  a vision request (~+600 MiB, P42) leaves ~0.3 GB of the card. Overflow of the
+  shared pool (two requests > 168k together) still fails BOTH in-flight requests
+  ("Context size has been exceeded.", llama.cpp server-context.cpp decode()); the
+  fix offered is corrallm admission by in-flight tokens — not built.
 - **noticed, not changed:** Swift `quality: 131072` (was 2) — looks like a
   context value typed into the quality field.
 - **next:** when aw4 reports 2 calls in flight, compare an hour of 2-slot load against the 1-slot baseline above
