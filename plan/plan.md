@@ -397,6 +397,23 @@ slot, and tuneCmd leaves such a cmd alone (`internal/proc/manager.go`).
   (alias resolution, fill until X-Corrallm-Queued-Ms grows or a refusal):
   aw4 i_1m62jhryh65zn03jnh4baq. Listing aliases in `/v1/models` was offered and
   then withdrawn by aw4; not built.
+- **decode drop root cause (found 19:20):** c5a3e9c (10-27 17:07) made sampling
+  profiles apply to aliases; sk-aw4 carries `thinking: false` since 09-27, so
+  from 10-27 17:00 aw4 runs without reasoning on the instruct sampler (temp
+  0.7, presence 1.5). Same hour: reasoning calls 120–138 tok/s, none 94–110;
+  reasoning share of output 42–46% → 0%; output/call ~800 → ~200.
+  **Blocking decision (owner):** keep `thinking: false` on sk-aw4 or remove it.
+- **SLQ trial (19:52–20:25, owner: "we go swift on 2 stream"):**
+  kaitchup/Qwen3.8-27B-SLQ-GGUF EAR99 (base Qwen3.8, 22.07 GiB, sha256
+  4250097e…, no mmproj) vs a Swift prod clone, llm-bench coding/tooluse/
+  adversarial, 3 concurrent runs per arm. SLQ 95/108 (3 slots, 152k pool,
+  31,312 MiB), Swift 97/108 (2 slots); the gap is 2 single failures
+  (mcpshell-architecture s1, overrefusal-pii-fixture s0), within noise. Wall
+  15.9 vs 17.2 min; drafted tokens kept 66% vs 68%. 256k at 3 slots: llama.cpp
+  "failed to fit params". 3-slot 160k = 31,622 MiB, 39 over the 31,583 budget.
+  Outcome: Swift stays; bench entries removed; GGUF kept in models/.
+- **noticed, not changed:** Swift `quality: 131072` (was 2) — looks like a
+  context value typed into the quality field.
 - **next:** when aw4 reports 2 calls in flight, compare an hour of 2-slot load against the 1-slot baseline above
   (output tok/h, calls/h, prompt-cache update ms, per-call decode tok/s).
 - **risks:** two concurrent requests >160k total exhaust the shared pool
