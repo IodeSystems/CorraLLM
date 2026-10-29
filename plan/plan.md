@@ -407,8 +407,13 @@ slot, and tuneCmd leaves such a cmd alone (`internal/proc/manager.go`).
   The 2-slot vs 1-slot comparison is dropped (owner: no clean A/B needed).
   Owner view: thinking is the caller's choice. A request's
   `chat_template_kwargs.enable_thinking` already outranks the key (418e4e5,
-  09-07). **Blocking decision (owner):** remove the per-key `thinking` override
-  completely? **risks:** 09-07 measured aw4 req/min 9.89 → 0.85 with thinking
+  09-07). **10-29 06:54: per-key `thinking` retired (owner: "use the model's
+  default"), 6b20601, live by handover; requests 200 with reasoning after.**
+  Found: `/v1/models` carries no reasoning metadata (default on/off, effort,
+  budget), so dun's `/effort default` cannot show what it gets; dun `high`
+  (no budget sent) is capped by corrallm's own budget (20% of remaining,
+  max 8192). **Blocking decision (owner):** add `reasoning` to `/v1/models`;
+  skip corrallm's budget when the request sets enable_thinking itself. **risks:** 09-07 measured aw4 req/min 9.89 → 0.85 with thinking
   on; watch aw4 landings/h (10-28 baseline 1.24/h, review pass 0.62).
 - **SLQ trial (19:52–20:25, owner: "we go swift on 2 stream"):**
   kaitchup/Qwen3.8-27B-SLQ-GGUF EAR99 (base Qwen3.8, 22.07 GiB, sha256
