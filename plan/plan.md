@@ -402,7 +402,14 @@ slot, and tuneCmd leaves such a cmd alone (`internal/proc/manager.go`).
   from 10-27 17:00 aw4 runs without reasoning on the instruct sampler (temp
   0.7, presence 1.5). Same hour: reasoning calls 120–138 tok/s, none 94–110;
   reasoning share of output 42–46% → 0%; output/call ~800 → ~200.
-  **Blocking decision (owner):** keep `thinking: false` on sk-aw4 or remove it.
+  **10-28 22:18 (owner): `thinking: false` removed from sk-aw4** (config
+  reload). Verified: aw4-hd / aw4-fleet-ops calls carry reasoning, budget 8192.
+  The 2-slot vs 1-slot comparison is dropped (owner: no clean A/B needed).
+  Owner view: thinking is the caller's choice. A request's
+  `chat_template_kwargs.enable_thinking` already outranks the key (418e4e5,
+  09-07). **Blocking decision (owner):** remove the per-key `thinking` override
+  completely? **risks:** 09-07 measured aw4 req/min 9.89 → 0.85 with thinking
+  on; watch aw4 landings/h (10-28 baseline 1.24/h, review pass 0.62).
 - **SLQ trial (19:52–20:25, owner: "we go swift on 2 stream"):**
   kaitchup/Qwen3.8-27B-SLQ-GGUF EAR99 (base Qwen3.8, 22.07 GiB, sha256
   4250097e…, no mmproj) vs a Swift prod clone, llm-bench coding/tooluse/
