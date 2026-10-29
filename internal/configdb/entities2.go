@@ -466,10 +466,10 @@ func writeKeys(ctx context.Context, tx querier, c *config.Config) error {
 			budgets = string(b)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO config_key (key, group_name, allow, thinking, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO config_key (key, group_name, allow, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			k, c.Keys[k].Group, encodeAllow(c.Keys[k].Allow),
-			encodeThinking(c.Keys[k].Thinking), limits, boolInt(c.Keys[k].Mint),
+			limits, boolInt(c.Keys[k].Mint),
 			boolInt(c.Keys[k].Disabled), encodeKeyCredentials(c.Keys[k].Credentials), models, budgets, c.Keys[k].Label); err != nil {
 			return fmt.Errorf("write key: %w", err)
 		}
@@ -477,45 +477,20 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return nil
 }
 
-// encodeThinking stores THREE states in one column, because unset is not false:
-// a key with no opinion follows the model, and collapsing that into false would
-// silently pin every caller to instruct the first time the config was saved.
-func encodeThinking(b *bool) string {
-	if b == nil {
-		return ""
-	}
-	if *b {
-		return "true"
-	}
-	return "false"
-}
-
-func decodeThinking(s string) *bool {
-	switch s {
-	case "true":
-		t := true
-		return &t
-	case "false":
-		f := false
-		return &f
-	}
-	return nil
-}
-
 func readKeys(ctx context.Context, db querier, c *config.Config) error {
-	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, thinking, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label FROM config_key`)
+	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label FROM config_key`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	keys := map[string]config.KeyPolicy{}
 	for rows.Next() {
-		var k, g, allow, thinking, limits, creds, models, budgets, label string
+		var k, g, allow, limits, creds, models, budgets, label string
 		var mint, disabled int
-		if err := rows.Scan(&k, &g, &allow, &thinking, &limits, &mint, &disabled, &creds, &models, &budgets, &label); err != nil {
+		if err := rows.Scan(&k, &g, &allow, &limits, &mint, &disabled, &creds, &models, &budgets, &label); err != nil {
 			return err
 		}
-		kp := config.KeyPolicy{Group: g, Allow: decodeAllow(allow), Thinking: decodeThinking(thinking),
+		kp := config.KeyPolicy{Group: g, Allow: decodeAllow(allow),
 			Mint: mint != 0, Disabled: disabled != 0, Credentials: decodeKeyCredentials(creds), Label: label}
 		if limits != "" {
 			var ls []config.Limit

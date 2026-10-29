@@ -2647,11 +2647,12 @@ func (c *Config) Validate() error {
 	if err := c.Auth.validate(); err != nil {
 		return err
 	}
-	// `thinking` is reserved inside a key policy (see KeyPolicy.UnmarshalYAML),
+	// These names are reserved inside a key policy (see KeyPolicy.UnmarshalYAML),
 	// where every other name means "may escalate into that group". A priority
-	// group by that name would make `thinking: true` mean two things at once,
-	// so it is refused rather than silently reinterpreted — the reader of such a
-	// config would have no way to tell which meaning applied.
+	// group by one of them would make the word mean two things at once, so it
+	// is refused rather than silently reinterpreted — the reader of such a
+	// config would have no way to tell which meaning applied. `thinking` is
+	// retired but stays reserved, so an old config never reads it as a group.
 	for _, reserved := range []string{"thinking", "limits", "mint", "models", "budgets", "credentials", "disabled", "label"} {
 		if _, clash := c.PriorityGroups[reserved]; clash {
 			return fmt.Errorf("priority group %q collides with the reserved key-policy field of the same name; rename the group", reserved)

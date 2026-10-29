@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -40,22 +42,6 @@ type KeyPolicy struct {
 	// permitted — asking by name for the weighting you already have is not an
 	// escalation.
 	Allow map[string]bool
-
-	// Thinking overrides the MODEL's reasoning default for this caller. nil
-	// (the default) follows the model.
-	//
-	// It exists because the two callers on this box want opposite things from
-	// the same model. An agentic client — every request a tool call — is
-	// throttled by reasoning it did not ask for: turning thinking on took
-	// sk-aw4 from 9.89 requests a minute to 0.85, with a third of its requests
-	// exhausting an 8k reasoning budget in full, because a tool call is a
-	// decision the model can usually make without deliberating about it. A
-	// person at a chat window wants the opposite. The mode was a property of
-	// the model, so they could not differ.
-	//
-	// A REQUEST still outranks this. The caller knows which of its own calls is
-	// the hard one, and that judgement is better than any default here.
-	Thinking *bool
 
 	// Label is the key's name on the dashboard ("aw4"). A configured key's
 	// own string is its credential, so the page shows it masked; without a
@@ -113,14 +99,6 @@ func KeyScopeKey(key string) string { return "key:" + key }
 // the limits that name that model (Limit.Model).
 func KeyModelScopeKey(key, model string) string { return "key:" + key + "@" + model }
 
-// ThinkingPreference reports this key's reasoning override and whether it has one.
-func (k KeyPolicy) ThinkingPreference() (think bool, set bool) {
-	if k.Thinking == nil {
-		return false, false
-	}
-	return *k.Thinking, true
-}
-
 // Permits reports whether this key may run in group g.
 func (k KeyPolicy) Permits(g string) bool {
 	if g == "" || g == k.Group {
@@ -128,6 +106,8 @@ func (k KeyPolicy) Permits(g string) bool {
 	}
 	return k.Allow[g]
 }
+
+var keyThinkingWarn sync.Once
 
 // UnmarshalYAML accepts both shapes, because the string form is what every
 // existing config is written in and this feature must not rewrite them:
@@ -158,17 +138,14 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 		}
 		k.Allow = map[string]bool{}
 		for name, node := range raw {
-			// RESERVED, like `default`, and for the same reason: this mapping's
-			// open form is "any other name permits that group", so a reserved
-			// word is the only way to carry anything that is not a group. A
-			// priority group actually named `thinking` would collide, which
-			// Validate refuses rather than silently reinterpreting.
+			// RETIRED (owner, 10-29): whether to think is the request's
+			// choice, else the model's default. A stored `thinking:` loads,
+			// warns once and is dropped on the next save. The name stays
+			// reserved so it is never read as a group permission.
 			if name == "thinking" {
-				var b bool
-				if err := node.Decode(&b); err != nil {
-					return fmt.Errorf("key policy: `thinking` must be true or false: %w", err)
-				}
-				k.Thinking = &b
+				keyThinkingWarn.Do(func() {
+					slog.Warn("key policy `thinking:` is no longer used (a request sets enable_thinking, else the model default applies); it is ignored and dropped on the next save")
+				})
 				continue
 			}
 			if name == "label" {
@@ -255,7 +232,7 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 // That keeps every existing config byte-identical across a save, so adding this
 // feature does not show up as a diff on every key in the revision history.
 func (k KeyPolicy) MarshalYAML() (any, error) {
-	if len(k.Allow) == 0 && k.Thinking == nil && len(k.Limits) == 0 && !k.Mint &&
+	if len(k.Allow) == 0 && len(k.Limits) == 0 && !k.Mint &&
 		len(k.Credentials) == 0 && !k.Disabled && len(k.Models) == 0 && len(k.Budgets) == 0 && k.Label == "" {
 		return k.Group, nil
 	}
@@ -264,9 +241,6 @@ func (k KeyPolicy) MarshalYAML() (any, error) {
 		if ok {
 			m[g] = true
 		}
-	}
-	if k.Thinking != nil {
-		m["thinking"] = *k.Thinking
 	}
 	if len(k.Limits) > 0 {
 		m["limits"] = k.Limits

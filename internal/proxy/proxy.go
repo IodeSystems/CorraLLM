@@ -2740,7 +2740,7 @@ func (p *Proxy) withSampling(body []byte, backend config.Model, name string, cal
 	if backend.Sampling == nil {
 		return body
 	}
-	if nb, did := applySamplingProfile(body, backend.Sampling, p.config().Keys[caller.PolicyKey()]); did {
+	if nb, did := applySamplingProfile(body, backend.Sampling); did {
 		body = nb
 		slog.Debug("sampling profile applied", "model", name)
 	}

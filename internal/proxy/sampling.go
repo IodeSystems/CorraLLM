@@ -71,7 +71,7 @@ func requestWantsThinking(req map[string]any) (think bool, ok bool) {
 // and reproducible measurement depends on exactly that — llm-bench's
 // --pin-sampling sends temperature 0 and a seed precisely so a probe is not a
 // coin flip, and a proxy that overwrote it would silently restore the coin flip.
-func applySamplingProfile(body []byte, cfg *config.SamplingConfig, caller config.KeyPolicy) ([]byte, bool) {
+func applySamplingProfile(body []byte, cfg *config.SamplingConfig) ([]byte, bool) {
 	if cfg == nil {
 		return body, false
 	}
@@ -85,30 +85,10 @@ func applySamplingProfile(body []byte, cfg *config.SamplingConfig, caller config
 	changed := false
 	think, stated := requestWantsThinking(req)
 	if !stated {
-		if pref, set := caller.ThinkingPreference(); set {
-			// THE BACKEND HAS TO BE TOLD, not just the sampler chosen.
-			//
-			// llama-server was launched with one mode, and picking the other
-			// profile here would sample for a mode the model is not in — the
-			// exact silent degradation this file exists to prevent, arrived at
-			// from the opposite direction. Writing the request's own switch
-			// makes the two agree whichever way the process was started, and
-			// leaves the body self-describing for applyReasoningBudget, which
-			// reads the same field rather than re-deriving the decision.
-			think = pref
-			kw, _ := req["chat_template_kwargs"].(map[string]any)
-			if kw == nil {
-				kw = map[string]any{}
-			}
-			kw["enable_thinking"] = think
-			req["chat_template_kwargs"] = kw
-			changed = true
-		} else {
-			think = cfg.DefaultThinking()
-		}
+		think = cfg.DefaultThinking()
 	}
 	prof := cfg.ProfileFor(think)
-	if prof.Empty() && !changed {
+	if prof.Empty() {
 		return body, false
 	}
 
