@@ -2006,6 +2006,10 @@ func TestModelsCatalogReasoningAndPerRequestContext(t *testing.T) {
 	}
 	cfg.Models["mock"] = m
 	cfg.Models["plain"] = modelTo(t, "http://127.0.0.1:1", "local")
+	small := modelTo(t, "http://127.0.0.1:1", "local")
+	small.ContextPerRequest = 32768 // not resident: contextPerRequest is the only source
+	cfg.Models["small"] = small
+	cfg.Lanes = map[string]config.Lane{"both": {Members: []config.LaneMember{{Model: "mock"}, {Model: "small"}, {Model: "plain"}}}}
 	r := chi.NewRouter()
 	New(cfg, proc.NewManager(&config.Config{}), sched.New(), st).Mount(r)
 
@@ -2036,5 +2040,12 @@ func TestModelsCatalogReasoningAndPerRequestContext(t *testing.T) {
 	}
 	if p := got.Data[byID["plain"]].Reasoning; p != nil {
 		t.Errorf("a model with no stated default reported %+v", p)
+	}
+	if n := got.Data[byID["small"]].ContextLength; n != 32768 {
+		t.Errorf("non-resident context_length = %d, want 32768", n)
+	}
+	// A lane request may land on any member: the smallest stated window.
+	if n := got.Data[byID["both"]].ContextLength; n != 32768 {
+		t.Errorf("lane context_length = %d, want 32768", n)
 	}
 }

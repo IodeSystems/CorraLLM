@@ -2921,13 +2921,8 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 			e.Remote, e.State = true, "proxy"
 		} else if r, ok := resident[mc.ProcKey(name)]; ok {
 			e.State = r.State
-			e.ContextLength = r.NCtx
 		}
-		// With a shared KV pool n_ctx is the POOL, not what one request may
-		// use. A caller sizes its compaction from this number.
-		if mc.ContextPerRequest > 0 && (e.ContextLength == 0 || mc.ContextPerRequest < e.ContextLength) {
-			e.ContextLength = mc.ContextPerRequest
-		}
+		e.ContextLength = requestWindow(mc, name, resident)
 		// Paused outranks everything above: "absent" would say a request could
 		// load it, and an extension's paused model would otherwise inherit its
 		// still-running sibling's "ready". The model stays LISTED — it is still
@@ -2957,6 +2952,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		var modalities map[string]config.ModalitySpec
 		var outputs []string
 		var reasoning *modelReasoning
+		laneCtx := 0
 		capability, state := "chat", "absent"
 		for i, c := range cands {
 			members = append(members, c.Name)
@@ -2974,6 +2970,11 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 				}
 				continue
 			}
+			// A lane request may land on any member, so the lane's window is
+			// the smallest one a member states.
+			if n := requestWindow(c.Model, c.Name, resident); n > 0 && (laneCtx == 0 || n < laneCtx) {
+				laneCtx = n
+			}
 			if r, ok := resident[c.Model.ProcKey(c.Name)]; ok && (state == "absent" || state == "proxy") {
 				state = r.State
 			}
@@ -2986,11 +2987,26 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: state, Quality: config.MaxQuality(cands), Kind: "lane",
 			Members: members, Slots: laneSlots, Modalities: modalities, Outputs: outputs, Capability: capability,
-			Reasoning: reasoning,
+			Reasoning: reasoning, ContextLength: laneCtx,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// requestWindow is the context one request may use: n_ctx if resident, capped
+// by contextPerRequest. With a shared KV pool n_ctx is the POOL, not what one
+// request may use, and a remote model has no n_ctx, so contextPerRequest is
+// its only source. A caller sizes its compaction from this number. 0 = unknown.
+func requestWindow(mc config.Model, name string, resident map[string]proc.ResidentModel) int {
+	n := 0
+	if r, ok := resident[mc.ProcKey(name)]; ok && !mc.Remote() {
+		n = r.NCtx
+	}
+	if mc.ContextPerRequest > 0 && (n == 0 || mc.ContextPerRequest < n) {
+		n = mc.ContextPerRequest
+	}
+	return n
 }
 
 // modelReasoning is a model's thinking default in /v1/models, so a caller can
