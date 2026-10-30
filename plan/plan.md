@@ -404,8 +404,13 @@ Sources per provider (to check before building):
   remaining); DeepSeek `/user/balance`.
 - Response headers: Claude subscription unified windows (5 h / weekly) on
   every reply, not only on 429.
-- No API: Fireworks cap or prepaid credit → declared in config (amount,
-  period, reset day), drawn down by the billed figure.
+- **Fireworks (verified 10-30):** `GET /v1/accounts/{id}/quotas` →
+  `monthly-spend-usd` value 100, usage 17.54 (= our October billed total),
+  maxValue 9999999; also `serverless-inference-rpm` 20000. No reset time in
+  the reply: "monthly" assumed calendar month, timezone unverified (check
+  the usage drop at the month turn, 11-01). Inference replies carry only
+  per-token rate limits (`x-ratelimit-limit-tokens-*`,
+  `x-ratelimit-remaining-tokens-prompt`, `x-ratelimit-over-limit`), no $.
 
 - **next:** owner answers the blocking decisions.
 - **blocking decisions:** which providers first; declared-in-config shape for
