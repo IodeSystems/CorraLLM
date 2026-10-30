@@ -2001,6 +2001,8 @@ func TestModelsCatalogReasoningAndPerRequestContext(t *testing.T) {
 	m.Cmd = "llama-server --reasoning on --reasoning-effort medium --parallel 2 --kv-unified -c 172032"
 	m.ContextPerRequest = 86016
 	m.Sampling = &config.SamplingConfig{
+		Thinking:        config.SamplingProfile{Temperature: f(1.0)},
+		Instruct:        config.SamplingProfile{Temperature: f(0.7)},
 		Default:         "thinking",
 		ReasoningBudget: &config.ReasoningBudget{FractionOfRemaining: 0.2, Min: 2048, Max: 8192},
 	}
@@ -2017,9 +2019,12 @@ func TestModelsCatalogReasoningAndPerRequestContext(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	var got struct {
 		Data []struct {
-			ID            string          `json:"id"`
-			ContextLength int             `json:"context_length"`
-			Reasoning     *modelReasoning `json:"reasoning"`
+			ID              string                `json:"id"`
+			ContextLength   int                   `json:"context_length"`
+			ThinkingDefault string                `json:"thinking_default"`
+			ThinkingModes   []string              `json:"thinking_modes"`
+			ThinkingEffort  string                `json:"thinking_effort"`
+			ThinkingBudget  *modelReasoningBudget `json:"thinking_budget"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
@@ -2033,12 +2038,12 @@ func TestModelsCatalogReasoningAndPerRequestContext(t *testing.T) {
 	if mock.ContextLength != 86016 {
 		t.Errorf("context_length = %d, want contextPerRequest 86016", mock.ContextLength)
 	}
-	r0 := mock.Reasoning
-	if r0 == nil || r0.Default != "thinking" || r0.Effort != "medium" ||
-		r0.Budget == nil || r0.Budget.FractionOfRemaining != 0.2 || r0.Budget.Min != 2048 || r0.Budget.Max != 8192 {
-		t.Errorf("reasoning = %+v", r0)
+	b := mock.ThinkingBudget
+	if mock.ThinkingDefault != "on" || strings.Join(mock.ThinkingModes, ",") != "off,on" || mock.ThinkingEffort != "medium" ||
+		b == nil || b.FractionOfRemaining != 0.2 || b.Min != 2048 || b.Max != 8192 {
+		t.Errorf("thinking = %+v", mock)
 	}
-	if p := got.Data[byID["plain"]].Reasoning; p != nil {
+	if p := got.Data[byID["plain"]]; p.ThinkingDefault != "" || p.ThinkingModes != nil {
 		t.Errorf("a model with no stated default reported %+v", p)
 	}
 	if n := got.Data[byID["small"]].ContextLength; n != 32768 {
