@@ -419,6 +419,10 @@ slot, and tuneCmd leaves such a cmd alone (`internal/proc/manager.go`).
   (`--kv-unified-per-slot`, contextPerRequest), live 08:30; the restart cut
   ~10 aw4 calls (502). 7 d: 370 of ~43.8k aw4 calls (0.8%) were > 84k and
   will be refused now unless aw4 compacts by context_length (sent to aw4-7a).
+  **10-30 (dun-a8 ask):** context_length also for non-resident and remote
+  models (contextPerRequest) and lanes (smallest member window), 5bd17e8;
+  Fireworks deepseek-v4p1-flash-1017 + glm-5p3-flash contextPerRequest
+  1048576 (Fireworks /v1/models). No window yet: claude-sub-*, embed, audio.
   **risks:** 09-07 measured aw4 req/min 9.89 → 0.85 with thinking
   on; watch aw4 landings/h (10-28 baseline 1.24/h, review pass 0.62).
 - **SLQ trial (19:52–20:25, owner: "we go swift on 2 stream"):**
