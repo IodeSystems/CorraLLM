@@ -487,16 +487,22 @@ tokens every C/110 s):
 
 - **next:** owner answers the blocking decisions; then a design note
   (`plan/p67-guardrails.md`) with the config shape and the header names.
+- **decided (owner 10-30):** guard model = **Shieldstral 1.0 3B** (Q8_0 +
+  mmproj, `~/.corrallm/models/guards/`), a normal corrallm model on the 3080
+  (gpu1), NOT pinned: it swaps with the OCR models. Streams: cumulative
+  chunks, cut to the last ~10k only near the guard's context limit.
 - **blocking decisions:**
   - May a header switch OFF a default-on guard? (Recommend: no.)
   - Failure action: refuse (which status?), or pass and flag?
   - Which surfaces first: input only, then tool calls, then responses?
-  - Streaming: buffer the whole reply, check in chunks (Qwen3Guard-Stream),
-    or check only after the stream ends (flag, no block)?
-  - Where guards run: CPU llama-server through corrallm's own model table, or
-    a separate sidecar for non-GGUF models (Prompt Guard 2)?
-- **risks:** latency added to every guarded call; a guard model on CPU
-  competes with box1 CPU work; false positives block real aw4 work.
+  - Stream on a fail: cut with `finish_reason: "content_filter"` after the
+    client saw the text (stream first), or hold each chunk until it passes?
+  - A guarded request while OCR holds the 3080: wait for the swap (cold load
+    ~7 s + the OCR job), or pass and flag?
+- **risks:** latency on every guarded call; a swap puts a cold load (~7 s,
+  measured once) in front of a guarded request and evicts OCR mid-batch;
+  false positives block real aw4 work; prompt guard (injection) not covered
+  by Shieldstral unless a policy asks for it.
 - **optional extensions:** guard verdicts on the Traffic page; per-subkey
   overrides; guard cost counted in `usage.cost`.
 
