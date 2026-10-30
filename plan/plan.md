@@ -505,6 +505,12 @@ tokens every C/110 s):
     scheduler answers a swap-blocked request today, and the existing retry
     promises (`store.RetryPromises`) to score the estimate. Risk: OCR and
     guard traffic at once thrash the 3080 (sticky ttl 2m limits it).
+- **guard residency (owner 10-30):** `sticky: {evictCost: high}`, no
+  `idleUnload` (config only: stays until OCR needs the card), PLUS a new
+  `sticky.preferred: true` (`internal/proc/manager.go`): evictable like any
+  model, but reloaded when its pool frees (OCR idle-unloads after 5m).
+  `persistent` is not it: it pins, so OCR could never load. Optional: OCR
+  `idleUnload` 5m → ~1m (more OCR cold loads, ~12 s each).
 - **risks:** latency on every guarded call; a swap puts a cold load (~7 s,
   measured once) in front of a guarded request and evicts OCR mid-batch;
   false positives block real aw4 work; prompt guard (injection) not covered
