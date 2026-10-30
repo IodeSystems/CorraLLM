@@ -460,6 +460,31 @@ Streaming options (researched 10-30):
   re-reading earlier ones, but needs Qwen3 tokenizer IDs and a custom head:
   transformers sidecar, not llama.cpp.
 
+Owner (10-30): streams are checked cumulatively in chunks; only when the
+guard's context is near full, keep the last ~10k tokens (one cold re-read)
+and go on. No sliding on every check.
+
+Bench 10-30 (scratchpad `guardbench/bench.py`; llama-server aa588a34, 1 slot,
+`--cache-ram 0`, `-c 16384`, a nonce per run so no cross-run cache hits;
+reply = 19k tokens of plan.md, chunks checked to 3k; Swift sends a chunk of C
+tokens every C/110 s):
+
+| guard (Q8_0) | where | chunk 25 / 50 / 200 p50 | 10k cut | VRAM @16k |
+|---|---|---|---|---|
+| Qwen3Guard-Gen-0.6B | 3080 | 31 / 32 / 35 ms (2–14% of one stream) | 0.66 s | 2,698 MiB |
+| Qwen3Guard-Gen-0.6B | CPU 12 t | 0.97 / 1.4 / 4.3 s (238–427%: falls behind) | 115 s | — |
+| Shieldstral-1.0-3B + mmproj | 3080 | 20 / 22 / 46 ms (3–9%) | 1.97 s | 6,352 MiB |
+
+- CPU is ruled out (box1 CPU also shared; p90 up to 13 s).
+- Re-read per check: Qwen3Guard ~119 tokens (its question follows the
+  reply); Shieldstral 1 token (the document ends the prompt).
+- KV: Qwen3Guard ~113 KiB/token (1,800 MiB @8k → 2,704 @16k).
+- Both flip on a crude unsafe reply (Safe → Unsafe; no → yes).
+- **3080 fit:** chandra-ocr-2 = 4.9 GB Q8 + 0.64 GB mmproj + 32k KV
+  (est. ~8 GB, not measured). Shieldstral does not fit beside it;
+  Qwen3Guard @8k (1.8 GB) is tight. A pinned guard means OCR shrinks its
+  context or waits.
+
 - **next:** owner answers the blocking decisions; then a design note
   (`plan/p67-guardrails.md`) with the config shape and the header names.
 - **blocking decisions:**
