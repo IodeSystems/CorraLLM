@@ -390,6 +390,15 @@ It has `notificationSettings.monthlySpendThresholds` $100 / $1,000 / $10,000
 Claude subscription: `anthropic-ratelimit-unified-reset` is read only on a
 refusal (`internal/proxy/messages.go`).
 
+Goals (owner 10-30):
+- **Oversubscription warning:** when the key budgets that can spend on an
+  account add up to more than the account allows in the same refresh period,
+  saving warns (same rule as P61/P65: allowed, warned, never refused).
+- **Say which budget ran out:** a refusal because the UPSTREAM account is
+  empty or capped names the account and its reset time, distinct from a key
+  budget refusal (own `refused_by` and reply text), so a caller does not
+  read a provider outage as its own overspend.
+
 Sources per provider (to check before building):
 - API balance: OpenRouter `/api/v1/credits` and `/api/v1/key` (limit,
   remaining); DeepSeek `/user/balance`.
