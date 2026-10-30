@@ -377,6 +377,45 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◻ P67 — Guardrails: per root key, default-on or opt-in, set by header — 2026-10-30
+
+Owner design (10-30):
+- Guardrail configuration sits on the ROOT key; subkeys inherit it.
+- Each guard is `default-on` or `opt-in`.
+- A request may carry guardrail headers. corrallm strips them before the
+  upstream call and applies them (opt in to a guard; the rules for opting out
+  of a default-on guard are not decided).
+- Where a guard applies is not decided: request input, tool calls, responses.
+  Streaming responses are an open question.
+
+Candidate guard models (checked on Hugging Face 10-30; nothing benched):
+- **Llama Prompt Guard 2** 22M/86M: injection and jailbreak, BERT-class,
+  ONNX. CPU in ms. Not a GGUF; llama.cpp cannot serve it (needs a sidecar or
+  an ONNX runtime in Go).
+- **Shieldstral 1.0 3B** (Mistral, Apache 2.0): policy in plain language at
+  request time, text + image, one yes/no token = a score. Community GGUFs;
+  vision in llama.cpp unverified. CPU latency unmeasured (estimate 1–3 s per
+  1k-token prompt).
+- **Qwen3Guard** Gen 0.6B/4B/8B (fixed categories); Stream 0.6B/4B scores
+  output token by token (a candidate answer to the streaming question).
+- Granite Guardian 4.1 8B (RAG groundedness, function calls): GPU only.
+- VL-JEPA: not a guard; official weights gated, noncommercial.
+
+- **next:** owner answers the blocking decisions; then a design note
+  (`plan/p67-guardrails.md`) with the config shape and the header names.
+- **blocking decisions:**
+  - May a header switch OFF a default-on guard? (Recommend: no.)
+  - Failure action: refuse (which status?), or pass and flag?
+  - Which surfaces first: input only, then tool calls, then responses?
+  - Streaming: buffer the whole reply, check in chunks (Qwen3Guard-Stream),
+    or check only after the stream ends (flag, no block)?
+  - Where guards run: CPU llama-server through corrallm's own model table, or
+    a separate sidecar for non-GGUF models (Prompt Guard 2)?
+- **risks:** latency added to every guarded call; a guard model on CPU
+  competes with box1 CPU work; false positives block real aw4 work.
+- **optional extensions:** guard verdicts on the Traffic page; per-subkey
+  overrides; guard cost counted in `usage.cost`.
+
 ### ◐ P66 — Swift at 2 slots (shared KV) under live aw4 load — 2026-10-28
 
 Why: aw4-7a reported slower Swift and low 5090 load. Findings (owner-facing):
