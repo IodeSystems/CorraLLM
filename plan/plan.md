@@ -377,6 +377,36 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◻ P68 — External balances and their refresh periods — 2026-10-30
+
+Owner ask (10-30): track what each provider ACCOUNT allows and has left, and
+when it refreshes. Today corrallm knows only its own caps (Fireworks cred
+$5/calendar-day, $100/calendar-month, hard) and the bill (`internal/billing`,
+Fireworks usageCosts hourly; October $17.54).
+
+Found 10-30 (Fireworks `GET /v1/accounts`): no balance or spend-cap field.
+It has `notificationSettings.monthlySpendThresholds` $100 / $1,000 / $10,000
+(email alerts, not caps), `ratelimitTier` 2, `suspendState` UNSUSPENDED.
+Claude subscription: `anthropic-ratelimit-unified-reset` is read only on a
+refusal (`internal/proxy/messages.go`).
+
+Sources per provider (to check before building):
+- API balance: OpenRouter `/api/v1/credits` and `/api/v1/key` (limit,
+  remaining); DeepSeek `/user/balance`.
+- Response headers: Claude subscription unified windows (5 h / weekly) on
+  every reply, not only on 429.
+- No API: Fireworks cap or prepaid credit → declared in config (amount,
+  period, reset day), drawn down by the billed figure.
+
+- **next:** owner answers the blocking decisions.
+- **blocking decisions:** which providers first; declared-in-config shape for
+  accounts with no API; alert threshold (percent left, or days to empty at
+  the current burn); where it shows (Settings → providers, Dashboard tile).
+- **risks:** a declared balance drifts from the real one (the bill only
+  corrects spend, not top-ups); provider APIs change without notice.
+- **optional extensions:** ntfy on a low balance; route away from a provider
+  before its account runs out.
+
 ### ◻ P67 — Guardrails: per root key, default-on or opt-in, set by header — 2026-10-30
 
 Owner design (10-30):
