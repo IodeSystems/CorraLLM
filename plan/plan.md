@@ -497,8 +497,14 @@ tokens every C/110 s):
   - Which surfaces first: input only, then tool calls, then responses?
   - Stream on a fail: cut with `finish_reason: "content_filter"` after the
     client saw the text (stream first), or hold each chunk until it passes?
-  - A guarded request while OCR holds the 3080: wait for the swap (cold load
-    ~7 s + the OCR job), or pass and flag?
+  - ~~A guarded request while OCR holds the 3080~~ → **owner 10-30: 429 with
+    a stacked Retry-After** = time for the OCR job in flight to clear +
+    OCR unload + guard load. Measured (14 d): chandra job avg 6.7 s (max
+    245 s), chandra load avg 11.9 s (39 loads), Shieldstral load 7.3 s (one
+    warm-cache start), unload not recorded. Read before building: how the
+    scheduler answers a swap-blocked request today, and the existing retry
+    promises (`store.RetryPromises`) to score the estimate. Risk: OCR and
+    guard traffic at once thrash the 3080 (sticky ttl 2m limits it).
 - **risks:** latency on every guarded call; a swap puts a cold load (~7 s,
   measured once) in front of a guarded request and evicts OCR mid-batch;
   false positives block real aw4 work; prompt guard (injection) not covered
