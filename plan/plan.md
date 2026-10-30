@@ -445,6 +445,21 @@ Candidate guard models (checked on Hugging Face 10-30; nothing benched):
 - Granite Guardian 4.1 8B (RAG groundedness, function calls): GPU only.
 - VL-JEPA: not a guard; official weights gated, noncommercial.
 
+Streaming options (researched 10-30):
+- **Hold back tool calls only:** a client runs a tool call after the stream
+  ends, so corrallm can buffer the `tool_calls` deltas, check them, then send
+  them. Text keeps streaming. Little or no added latency the client can see.
+- **Chunked, stream first** (NeMo Guardrails `stream_first: true`,
+  `chunk_size` 200 / `context_size` 50 tokens): forward at once, check each
+  chunk + overlap; on a fail cut the stream with `finish_reason:
+  "content_filter"` (OpenAI/Azure value). The client has already seen the
+  text before the bad chunk.
+- **Chunked, check first** (`stream_first: false`): hold each chunk until it
+  passes. Text arrives in bursts; delay = chunk time + check time.
+- **Token-level:** Qwen3Guard-Stream (0.6B/4B/8B) scores every token without
+  re-reading earlier ones, but needs Qwen3 tokenizer IDs and a custom head:
+  transformers sidecar, not llama.cpp.
+
 - **next:** owner answers the blocking decisions; then a design note
   (`plan/p67-guardrails.md`) with the config shape and the header names.
 - **blocking decisions:**
