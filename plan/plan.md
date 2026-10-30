@@ -2176,6 +2176,13 @@ hides the two that are real.
 
 ## 8. Deployment (production cutover)
 
+> **Releases (owner, 2026-10-30).** A pushed `v*` tag runs `.github/workflows/release.yml`:
+> `make release-dist` → `corrallm-<tag>-{linux-amd64,linux-arm64,darwin-arm64}.tar.gz`
+> (corrallm with UI embedded, llm-bench, llm-bench-mcp, README) + `SHA256SUMS`, notes generated
+> from commits. Semver; first tag v0.1.0. Windows left out (unverified, see the `agents` target).
+> Never run `release-dist` on box1's checkout: `ui-build` rewrites `ui/dist`, the live web root.
+> Box1 itself still deploys from source (`bin/deploy`), not from a release.
+
 corrallm **replaced the llama-swap fork on `:8111`** for the live workload.
 
 > **CORRECTION (2026-08-14).** The live config is **`~/.corrallm/config.yml`**, not

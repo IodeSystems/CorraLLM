@@ -1,4 +1,4 @@
-.PHONY: hooks install install-bin bindir gen dump-schema lint golangci run build dist agents dev deploy test ui-build clean verify-deps verify-docker
+.PHONY: hooks install install-bin bindir gen dump-schema lint golangci run build dist agents release-dist dev deploy test ui-build clean verify-deps verify-docker
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -89,6 +89,27 @@ agents:           ## Cross-compile agent binaries into bin/agents/ for the daemo
 	done
 	@printf '%s' "$(VERSION)" > bin/agents/VERSION
 	@ls -la bin/agents/
+
+# Release archives, built by .github/workflows/release.yml on a v* tag.
+# One tar.gz per platform (corrallm with the UI embedded, llm-bench,
+# llm-bench-mcp) + SHA256SUMS in dist/. No srcDir stamp, like the agents: the
+# binaries run where this checkout does not exist.
+# NOT on box1's checkout: ui-build rewrites ui/dist, the live web root.
+RELEASE_PLATFORMS ?= linux/amd64 linux/arm64 darwin/arm64
+
+release-dist: ui-build ## Build release archives into dist/ (CI; rewrites ui/dist)
+	@rm -rf dist && mkdir -p dist
+	@for p in $(RELEASE_PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; name=corrallm-$(VERSION)-$$os-$$arch; \
+		echo "==> $$name"; mkdir -p dist/$$name; \
+		for b in corrallm llm-bench llm-bench-mcp; do \
+			CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
+			  go build -trimpath -ldflags "$(AGENT_LDFLAGS)" -o dist/$$name/$$b ./cmd/$$b || exit 1; \
+		done; \
+		cp README.md dist/$$name/; \
+		tar -C dist -czf dist/$$name.tar.gz $$name && rm -rf dist/$$name; \
+	done
+	@cd dist && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
 
 # `pnpm gen` first: ui/src/gql is generated (gitignored) from the tracked
 # ui/gen/schema.graphql, so a clean checkout cannot typecheck without it.

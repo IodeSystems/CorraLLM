@@ -75,6 +75,18 @@ It runs in production today, fronting a mixed embeddings and chat workload.
 
 ## Quick start
 
+Download an archive for your platform (linux amd64/arm64, macOS arm64) from
+[Releases](https://github.com/IodeSystems/CorraLLM/releases). It holds
+`corrallm` with the dashboard built in, `llm-bench` and `llm-bench-mcp`;
+`SHA256SUMS` checks the download.
+
+```sh
+tar -xzf corrallm-<version>-linux-amd64.tar.gz
+ADDR=:8111 ./corrallm-<version>-linux-amd64/corrallm serve --config ./corrallm.yaml
+```
+
+Or build from source:
+
 ```sh
 make dist                 # build the UI + the ./bin/corrallm binary
 ADDR=:8111 ./bin/corrallm serve --config ./corrallm.yaml
@@ -274,6 +286,11 @@ make build        # build ./bin/corrallm
 make dist         # build UI + binary
 make test
 ```
+
+Release: tag `main` and push the tag (`git tag v0.2.0 && git push origin v0.2.0`).
+`.github/workflows/release.yml` runs `make release-dist` and publishes the
+archives with notes from the commits since the previous tag. Versions are
+semver; before 1.0 a minor bump may break config or API.
 
 Register once, typed everywhere: add a `gat.Register(...)` in
 `internal/api/gateway.go`, run `make gen`, and the typed GraphQL client appears in
