@@ -423,6 +423,11 @@ slot, and tuneCmd leaves such a cmd alone (`internal/proc/manager.go`).
   models (contextPerRequest) and lanes (smallest member window), 5bd17e8;
   Fireworks deepseek-v4p1-flash-1017 + glm-5p3-flash contextPerRequest
   1048576 (Fireworks /v1/models). No window yet: claude-sub-*, embed, audio.
+  `reasoning` block → flat `thinking_default` (on|off), `thinking_modes`,
+  `thinking_effort`, `thinking_budget` (4219b2e, owner). Swift listed text-only:
+  modality probes are keyed by served name and Swift was never probed under its
+  current name → declared `modalities: image+text` in config (llama-server
+  /props: vision true). Gap: probes lost on rename; catalog could read /props.
   **risks:** 09-07 measured aw4 req/min 9.89 → 0.85 with thinking
   on; watch aw4 landings/h (10-28 baseline 1.24/h, review pass 0.62).
 - **SLQ trial (19:52–20:25, owner: "we go swift on 2 stream"):**
