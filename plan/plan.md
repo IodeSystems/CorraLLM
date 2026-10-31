@@ -505,6 +505,20 @@ tokens every C/110 s):
   more; `maxHold` tokens caps the hold, then the band falls to the guard's
   hard/soft rule. Unverified: llama-server returns the yes/no probabilities
   (`n_probs`) for Shieldstral's first token.
+- **thresholds (owner 10-30):** each check returns a probability; each
+  guard has an `incomplete` and a `complete` threshold. Assumed reading:
+  on a partial check, `score < incomplete` → flush, else hold (held text
+  never reaches the client, so a partial check need not block); the
+  complete check (stream end or `maxHold`) blocks at `score ≥ complete`.
+  Optional: an early block on a partial check above `complete`, to stop
+  generation sooner.
+- **fail reply (owner 10-30):** mid-stream, a last chunk with
+  `finish_reason: "content_filter"` + a `corrallm.guardrail` object (guard,
+  score, threshold, hard/soft). Before the stream: **422** with an OpenAI
+  error body `{"error": {"type": "guardrail", "code": "content_filter",
+  ...}}` (any 4xx carries a body; Azure OpenAI uses 400 + `content_filter`;
+  422 is not retried by the OpenAI SDKs). Owner to confirm 422 vs 400.
+- **surfaces (owner 10-30):** input first, then tool calls, then responses.
 - **blocking decisions:**
   - ~~`need more` at `maxHold` or stream end~~ → **owner 10-30: force a
     decision**: the band collapses to one cut (`score ≥ blockAbove` →
