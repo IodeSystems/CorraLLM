@@ -390,8 +390,9 @@ Measured: replay of 1,315 sessions (a third of the last 30k chat rows): 4 fire, 
 replies. The 0.23% is a lower bound: no thinking in the corpus, and clients had already cut.
 
 - **next:** deploy, set `loopDetection: {tolerance: -1}` on the models to watch, read a week of
-  metrics, thinking included, then pick a tolerance. aw4's models stay count-only until its tree
-  hash lands in test results (i_1m69c3ck65az99qb48pbv3). `loopDetection` also applies to dun's
+  metrics, thinking included, then pick a tolerance. aw4 measured 48 h and withdrew its count-only
+  request: test.run never repeated a result (timings in the output), and no tight static loop
+  was found. That also means a result with a timestamp never counts as a repeat. `loopDetection` also applies to dun's
   traffic, and dun cannot opt out of it.
   No polling exemption (owner 10-31): repeating a call for an unchanged result is a bad signal
   and counts as a loop. Clients wait on an event instead.
