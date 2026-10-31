@@ -377,6 +377,34 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P69 — Loop detection on streamed chat replies — 2026-10-31
+
+Owner: move loop and churn detection into agentkit, installed here on streams before the
+guardrails, input session + stream chunk (no cache), output a loop count, cut at a tolerance.
+`agentkit/loopdetector` is the detector; `internal/proxy/loopwatch.go` installs it when
+`loopDetection:` is set (off by default). `tolerance: -1` only counts. Metrics:
+`corrallm_loop_{watched,detected,count,interrupted}_total`. A cut stream ends with
+`finish_reason: content_filter` and a `loop` object, the activity row says `loop cut: …`.
+Reviewed by aw4 and dun; agentkit v0.16.1 has what they asked for.
+Measured: replay of 1,315 sessions (a third of the last 30k chat rows): 4 fire, 1 of 2,172
+replies. The 0.23% is a lower bound: no thinking in the corpus, and clients had already cut.
+
+- **next:** deploy, set `loopDetection: {tolerance: -1}` on the models to watch, read a week of
+  metrics, thinking included, then pick a tolerance. aw4's models stay count-only until its tree
+  hash lands in test results (i_1m69c3ck65az99qb48pbv3). `loopDetection` also applies to dun's
+  traffic, and dun cannot opt out of it.
+  No polling exemption (owner 10-31): repeating a call for an unchanged result is a bad signal
+  and counts as a loop. Clients wait on an event instead.
+  A loop found and not cut is still reported, on the reply's final event: the proxy cannot know
+  a client's semantics, so it reports and the client judges (owner 10-31).
+- **risks:** not on `/v1/messages` or non-streamed replies. False positives in thinking are
+  unmeasured. A cut mid tool call sends the caller a partial call with `content_filter`.
+- **blocking decisions:** the tolerance to cut at, once the count-only numbers are in (owner).
+- **assumptions:** set per model (owner 10-31): `models.<name>.loopDetection` replaces the
+  top-level one whole, `off: true` exempts. agentkit clients watch too; the proxy cutting first
+  is intended, it saves the guardrail work.
+- **optional extensions:** per-key opt-in like guardrails; loop count on the activity row.
+
 ### ◻ P68 — External balances and their refresh periods — 2026-10-30
 
 Owner ask (10-30): track what each provider ACCOUNT allows and has left, and
