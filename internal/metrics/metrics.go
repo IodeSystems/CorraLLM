@@ -31,6 +31,26 @@ var (
 		Help: "Request cost in USD, by provider, model, and class. Phase 1 emits class=\"total\".",
 	}, []string{"provider", "model", "class"})
 
+	loopWatched = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "corrallm_loop_watched_total",
+		Help: "Streamed chat replies watched for loops, by model.",
+	}, []string{"model"})
+
+	loopDetected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "corrallm_loop_detected_total",
+		Help: "Replies found in a loop, by model and kind (exact|cycle|phrase|tool).",
+	}, []string{"model", "kind"})
+
+	loopCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "corrallm_loop_count_total",
+		Help: "Times round the loop, summed over the replies found in one, by model and kind.",
+	}, []string{"model", "kind"})
+
+	loopInterrupted = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "corrallm_loop_interrupted_total",
+		Help: "Streams cut because the loop count reached the tolerance, by model and kind.",
+	}, []string{"model", "kind"})
+
 	modelLoaded = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "corrallm_model_loaded",
 		Help: "1 while a model is resident (ready); series absent when not loaded.",
@@ -43,7 +63,7 @@ var (
 )
 
 func init() {
-	reg.MustRegister(requests, tokens, cost, modelLoaded, modelLoadTS)
+	reg.MustRegister(requests, tokens, cost, loopWatched, loopDetected, loopCount, loopInterrupted, modelLoaded, modelLoadTS)
 }
 
 // Handler serves the Prometheus exposition for corrallm's registry.
@@ -52,6 +72,19 @@ func Handler() http.Handler { return promhttp.HandlerFor(reg, promhttp.HandlerOp
 // Request counts one served request.
 func Request(provider, model, status string) {
 	requests.WithLabelValues(provider, model, status).Inc()
+}
+
+// Loop counts one watched reply: kind is "" when it was not in a loop.
+func Loop(model, kind string, loops int, interrupted bool) {
+	loopWatched.WithLabelValues(model).Inc()
+	if kind == "" {
+		return
+	}
+	loopDetected.WithLabelValues(model, kind).Inc()
+	loopCount.WithLabelValues(model, kind).Add(float64(loops))
+	if interrupted {
+		loopInterrupted.WithLabelValues(model, kind).Inc()
+	}
 }
 
 // Tokens adds n tokens of the given class (cached|processed|generated).

@@ -479,6 +479,7 @@ func advancedFields(m config.Model) []string {
 	// worst answer.
 	add(len(m.Placements) > 0, "placements")
 	add(m.Sampling != nil, "sampling")
+	add(m.LoopDetection != nil, "loopDetection")
 	add(m.Swap != nil, "swap")
 	add(m.ContextPerRequest > 0, "contextPerRequest")
 	add(len(m.Modalities) > 0, "modalities")

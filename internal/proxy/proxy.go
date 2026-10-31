@@ -1383,6 +1383,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			gw = &guardOutWriter{ResponseWriter: out, check: p.checkToolCalls(r, gs)}
 			out = gw
 		}
+		// Before the guardrails: a cut stream ends in events they read as any other.
+		var lw *loopWriter
+		if cfg := p.config().LoopDetectionFor(backend); cfg != nil && streaming && r.URL.Path == "/v1/chat/completions" {
+			lw = newLoopWriter(out, cfg, body, func() { cancelReq(errLoopCut) })
+			out = lw
+		}
 		sc := &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: streaming, live: live}
 		if image {
 			// Nothing reads an image reply's body for usage — it has none — and
@@ -1583,6 +1589,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if mw != nil {
 			mw.finish()
 		}
+		if lw != nil {
+			lw.release()
+		}
 		// After the shim, whose finish writes the translated body through it,
 		// and before the cost, whose finish reads what this one released.
 		if gw != nil {
@@ -1623,6 +1632,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(context.Cause(reqCtx), sched.ErrPreempted) {
 			status, errReason = 499, "preempted" // slot reclaimed by a higher-priority group mid-request
+		}
+		if lw != nil {
+			lw.done(name)
+			if lw.cut != nil {
+				// The caller got a finished stream, so the row says 200 and why.
+				status, errReason, aborted = http.StatusOK, "loop cut: the model "+lw.cut.String(), false
+			}
 		}
 		if aborted && errReason == "" {
 			errReason = "stream cut: the upstream broke off"

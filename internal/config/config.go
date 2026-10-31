@@ -21,6 +21,37 @@ import (
 //
 // The schema mirrors ~/doc/plan/corrallm.md §3. Sections not yet consumed are
 // still parsed so configs are forward-compatible and round-trippable.
+// LoopDetection is agentkit's loopdetector, installed on the proxy. Zero values
+// take its defaults.
+type LoopDetection struct {
+	// Off exempts a model from the top-level setting.
+	Off bool `yaml:"off,omitempty"`
+	// Tolerance is the loop count at which a stream is cut. 0 is the default of
+	// 3; negative only counts, for the metrics, and never cuts.
+	Tolerance  int     `yaml:"tolerance,omitempty"`
+	Window     int     `yaml:"window,omitempty"`
+	MinShare   float64 `yaml:"minShare,omitempty"`
+	Similarity float64 `yaml:"similarity,omitempty"`
+	ToolWindow int     `yaml:"toolWindow,omitempty"`
+	// ToolTolerance is Tolerance for repeated tool calls. 0 is Tolerance;
+	// negative counts them and never cuts.
+	ToolTolerance int `yaml:"toolTolerance,omitempty"`
+	// SampleBytes caps the first and last repeat in the loop object (default 200).
+	SampleBytes int `yaml:"sampleBytes,omitempty"`
+}
+
+// LoopDetectionFor returns what applies to a model, nil when nothing does.
+func (c *Config) LoopDetectionFor(m Model) *LoopDetection {
+	l := m.LoopDetection
+	if l == nil {
+		l = c.LoopDetection
+	}
+	if l == nil || l.Off {
+		return nil
+	}
+	return l
+}
+
 type Config struct {
 	// Include names further config files to merge into this one, relative to
 	// THIS file's directory. Earlier entries load first; a later file's entry
@@ -127,6 +158,10 @@ type Config struct {
 	// Guardrails are the named checks a key can hold its requests to (P67);
 	// see Guardrail. A key lists the ones it uses in its own `guardrails`.
 	Guardrails map[string]Guardrail `yaml:"guardrails,omitempty"`
+
+	// LoopDetection watches streamed chat replies for loops (loopwatch.go). Nil
+	// is off. See LoopDetection.
+	LoopDetection *LoopDetection `yaml:"loopDetection,omitempty"`
 
 	// Scheduler holds global admission knobs (queue bounds).
 	Scheduler SchedulerConfig `yaml:"scheduler,omitempty"`
@@ -904,6 +939,10 @@ type Model struct {
 	// so keeping them independent means a direct-to-backend request still gets a
 	// sane sampler rather than none.
 	Sampling *SamplingConfig `yaml:"sampling,omitempty"`
+
+	// LoopDetection replaces the top-level LoopDetection for this model, whole:
+	// nothing is merged. `off: true` exempts the model from it.
+	LoopDetection *LoopDetection `yaml:"loopDetection,omitempty"`
 
 	// Aliases are ADDITIONAL served names that resolve to this model. They exist
 	// for version cutovers: a caller that hardcodes last quarter's model id keeps
