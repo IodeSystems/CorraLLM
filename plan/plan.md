@@ -506,8 +506,10 @@ tokens every C/110 s):
   hard/soft rule. Unverified: llama-server returns the yes/no probabilities
   (`n_probs`) for Shieldstral's first token.
 - **blocking decisions:**
-  - `need more` at `maxHold` or at stream end: block (hard) / flag (soft),
-    or flush?
+  - ~~`need more` at `maxHold` or stream end~~ → **owner 10-30: force a
+    decision**: the band collapses to one cut (`score ≥ blockAbove` →
+    unsafe, else safe and flushed). At stream end the forced check sees the
+    whole reply.
   - Default `flushBelow` / `blockAbove` (proposal 0.2 / 0.5, the card's
     threshold; tune from flagged traffic).
   - Hard fail status and body (proposal: 400 with a `guardrail` error naming
