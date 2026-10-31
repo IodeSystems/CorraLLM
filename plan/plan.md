@@ -523,15 +523,36 @@ tokens every C/110 s):
   (removed): bread 0.000 pass; pipe bomb soft 0.995 flagged and passed,
   `=hard` 422 in 0.02 s, never reached Swift; first call 11.9 s incl. the
   guard's cold load. llama-server returns the yes/no top_logprobs (verified).
-- **next:** slice 2 — tool calls (hold the `tool_calls` deltas, check the
-  arguments, then release); slice 3 — responses with the held-chunk stream;
+- ✅ **slice 2 — tool calls (2a4aaee, live 10-31):** `guardOutWriter`
+  (`internal/proxy/guardout.go`) between statusCapture and costWriter, on
+  `/v1/chat/completions` (also behind the Anthropic upstream shim). Text
+  before the first tool-call delta streams; from it on the stream is held to
+  `[DONE]`; the calls are joined (`calls the tool NAME with the arguments
+  ARGS`, label `[Assistant]`) and checked once per guardrail. Hard fail:
+  non-streamed → the guardrail's status + error body; streamed → held events
+  dropped, a `finish_reason: content_filter` chunk with the guardrail object,
+  usage chunks kept, `[DONE]`. Hard guard unavailable → fails closed (503 /
+  429 non-streamed; content_filter streamed). The activity row keeps the
+  backend body; Error names the refusal. Live (temporary key, removed):
+  clean call passes (2 header values non-streamed); harmful query placed in
+  the system message (the input check reads only the newest user turn):
+  soft flagged 0.989 and passed; hard streamed ended `content_filter` 0.989.
+  Hard non-streamed not caught live (Swift refused by itself 4/4); unit test.
+- **assumption (catch it):** every active guardrail runs on every surface; no
+  per-guardrail `surfaces:` field. Slice 3 would then guard all responses of
+  any guarded key.
+- **next:** slice 3 — responses with the held-chunk stream;
   `sticky.preferred`; stacked 429 (read how the scheduler answers a
   swap-blocked request first).
 - **blocking decisions:** which keys get which guardrails, and the policy
   text of each (only `violence` exists).
 - **not covered yet:** `/v1/messages` (Anthropic surface, its own handler);
+  a streamed tool-call check's verdict is not in a header (status is sent);
+  only logged; older turns and the system message are not input-checked;
   `/v1/responses`; guard cost is charged to the caller but not shown apart.
-- **risks:** latency on every guarded call; a swap puts a cold load (~7 s,
+- **risks:** latency on every guarded call; a held reply calls the guard
+  while it holds its own slot (deadlock if the guard is behind the same
+  backend's maxConcurrent); a swap puts a cold load (~7 s,
   measured once) in front of a guarded request and evicts OCR mid-batch;
   false positives block real aw4 work; prompt guard (injection) not covered
   by Shieldstral unless a policy asks for it.
