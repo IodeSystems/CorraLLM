@@ -491,12 +491,17 @@ tokens every C/110 s):
   mmproj, `~/.corrallm/models/guards/`), a normal corrallm model on the 3080
   (gpu1), NOT pinned: it swaps with the OCR models. Streams: cumulative
   chunks, cut to the last ~10k only near the guard's context limit.
+- **decided (owner 10-30):** streams HOLD each chunk until it passes (no
+  text reaches the client before its check). Each guard is **hard** (a fail
+  blocks) or **soft** (a fail is flagged, the request goes on); a caller may
+  opt a soft guard in to hard by header. Assumed from that: a header can
+  only tighten (opt in a guard, soft → hard), never switch a guard off or
+  hard → soft.
 - **blocking decisions:**
-  - May a header switch OFF a default-on guard? (Recommend: no.)
-  - Failure action: refuse (which status?), or pass and flag?
+  - Hard fail status and body (proposal: 400 with a `guardrail` error naming
+    the guard; mid-stream: a final chunk with `finish_reason:
+    "content_filter"`).
   - Which surfaces first: input only, then tool calls, then responses?
-  - Stream on a fail: cut with `finish_reason: "content_filter"` after the
-    client saw the text (stream first), or hold each chunk until it passes?
   - ~~A guarded request while OCR holds the 3080~~ → **owner 10-30: 429 with
     a stacked Retry-After** = time for the OCR job in flight to clear +
     OCR unload + guard load. Measured (14 d): chandra job avg 6.7 s (max
