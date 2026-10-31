@@ -554,8 +554,11 @@ tokens every C/110 s):
 - **next:** slice 3 — responses with the held-chunk stream;
   `sticky.preferred`; stacked 429 (read how the scheduler answers a
   swap-blocked request first).
-- **blocking decisions:** which keys get which guardrails, and the policy
-  text of each (only `violence` exists).
+- **owner 10-31:** no guardrails assigned to any key for now; "keys should be
+  able to do that".
+- **blocking decisions:** whether a key may opt in to a guardrail its config
+  does not list (today a header ask for an unlisted guard is ignored); the
+  policy text of each guardrail (only `violence` exists).
 - **not covered yet:** `/v1/messages` (Anthropic surface, its own handler);
   a streamed tool-call check's verdict is not in a header (status is sent);
   only logged; older turns are not input-checked, nor the system message
