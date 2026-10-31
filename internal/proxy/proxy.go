@@ -953,7 +953,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 	// Guardrails on what the request adds (P67), before it queues: a refused
 	// request must not wait behind a saturated backend to find that out.
-	if !p.checkInput(w, r, caller, served, body, start, reqBody) {
+	guards, ok := p.checkInput(w, r, caller, served, body, start, reqBody)
+	if !ok {
 		return
 	}
 
@@ -1376,6 +1377,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}}
 			out = cw
 		}
+		// The tool calls of a chat reply wait for the guardrails (guardout.go).
+		var gw *guardOutWriter
+		if len(guards) > 0 && r.URL.Path == "/v1/chat/completions" {
+			gw = &guardOutWriter{ResponseWriter: out, check: p.checkToolCalls(r, guards)}
+			out = gw
+		}
 		sc := &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: streaming, live: live}
 		if image {
 			// Nothing reads an image reply's body for usage — it has none — and
@@ -1576,6 +1583,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if mw != nil {
 			mw.finish()
 		}
+		// After the shim, whose finish writes the translated body through it,
+		// and before the cost, whose finish reads what this one released.
+		if gw != nil {
+			gw.finish()
+		}
 		// After the shim, whose finish writes the translated body through it.
 		if cw != nil {
 			cw.finish()
@@ -1616,6 +1628,18 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			errReason = "stream cut: the upstream broke off"
 			if r.Context().Err() != nil {
 				errReason = "stream cut: the caller hung up"
+			}
+		}
+		if gw != nil && gw.Refused != nil && errReason == "" {
+			v := *gw.Refused
+			errReason, _ = guardrailFailBody(v, "tool_calls")
+			if v.Unavailable != "" {
+				errReason = fmt.Sprintf("guardrail %q could not check the tool calls: %s", v.Name, v.Unavailable)
+			}
+			if gw.Status != 0 {
+				status = gw.Status
+			} else {
+				errReason += "; the stream ended with content_filter"
 			}
 		}
 		var retryAfterMS int64

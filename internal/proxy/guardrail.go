@@ -49,6 +49,8 @@ type guardVerdict struct {
 	Unavailable string
 	Status      int
 	RetryAfter  string
+	// FailStatus is the status a hard fail replies with.
+	FailStatus int
 }
 
 func (v guardVerdict) header() string {
@@ -131,15 +133,16 @@ func guardInput(path string, body []byte) (text string, images []json.RawMessage
 // guardBody is the guard's request: policy and document in Shieldstral's
 // layout, with the document LAST so a guard's prompt cache reuses everything
 // before new text. One output token, with its top logprobs for the score.
-func guardBody(g config.Guardrail, text string, images []json.RawMessage) []byte {
+// label names who wrote the document: "User" or "Assistant".
+func guardBody(g config.Guardrail, label, text string, images []json.RawMessage) []byte {
 	head := "<Instruct>: " + g.InstructText() + "\n\n<Query>: " + g.Policy + "\n\n<Document>: "
-	var content any = head + "[User] " + text
+	var content any = head + "[" + label + "] " + text
 	if len(images) > 0 {
 		parts := []any{map[string]string{"type": "text", "text": head}}
 		for _, img := range images {
 			parts = append(parts, img)
 		}
-		content = append(parts, map[string]string{"type": "text", "text": " [User] " + text})
+		content = append(parts, map[string]string{"type": "text", "text": " [" + label + "] " + text})
 	}
 	b, _ := json.Marshal(map[string]any{
 		"model": g.Model,
@@ -219,14 +222,14 @@ func (b *bufferedResponse) WriteHeader(code int) {
 // runGuard asks one guardrail about the content. The guard is called through
 // corrallm itself, with the caller's own credential, so it is scheduled,
 // loaded, swapped and charged like any other request by that caller.
-func (p *Proxy) runGuard(r *http.Request, g config.ActiveGuard, text string, images []json.RawMessage, complete bool) guardVerdict {
+func (p *Proxy) runGuard(r *http.Request, g config.ActiveGuard, label, text string, images []json.RawMessage, complete bool) guardVerdict {
 	v := guardVerdict{Name: g.Name, Hard: g.Hard, Threshold: g.Guard.CompleteThreshold()}
 	if !complete {
 		v.Threshold = g.Guard.IncompleteThreshold()
 	}
 	ctx := context.WithValue(r.Context(), guardSkipKey{}, true)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions",
-		bytes.NewReader(guardBody(g.Guard, text, images)))
+		bytes.NewReader(guardBody(g.Guard, label, text, images)))
 	if err != nil {
 		v.Unavailable = err.Error()
 		return v
@@ -259,11 +262,12 @@ func (p *Proxy) runGuard(r *http.Request, g config.ActiveGuard, text string, ima
 }
 
 // checkInput runs the caller's guardrails on what the request adds. It writes
-// the reply and returns false when a hard guardrail refuses the request.
+// the reply and returns ok false when a hard guardrail refuses the request.
+// active is the guardrails the reply is held to as well.
 func (p *Proxy) checkInput(w http.ResponseWriter, r *http.Request, caller config.Caller,
-	served string, body []byte, start time.Time, reqBody string) bool {
+	served string, body []byte, start time.Time, reqBody string) (active []config.ActiveGuard, ok bool) {
 	if r.Context().Value(guardSkipKey{}) != nil {
-		return true
+		return nil, true
 	}
 	root := caller.Key
 	if caller.Parent != "" {
@@ -274,32 +278,32 @@ func (p *Proxy) checkInput(w http.ResponseWriter, r *http.Request, caller config
 		w.Header().Set(HeaderGuardrailIgnored, strings.Join(ignored, ", "))
 	}
 	if len(active) == 0 {
-		return true
+		return nil, true
 	}
-	text, images, ok := guardInput(r.URL.Path, body)
-	if !ok {
-		return true
+	text, images, has := guardInput(r.URL.Path, body)
+	if !has {
+		return active, true
 	}
 	var report []string
 	for _, g := range active {
-		v := p.runGuard(r, g, text, images, true)
+		v := p.runGuard(r, g, "User", text, images, true)
 		report = append(report, v.header())
 		w.Header().Set(HeaderGuardrail, strings.Join(report, ", "))
 		switch {
 		case v.Unavailable != "" && v.Hard:
 			p.writeGuardrailUnavailable(w, r, served, caller.Key, v, start, reqBody)
-			return false
+			return nil, false
 		case v.Unavailable != "":
 			slog.Warn("soft guardrail could not run; request passed", "guardrail", v.Name, "key", caller.Key, "err", v.Unavailable)
 		case v.Failed && v.Hard:
 			p.writeGuardrailFail(w, r, served, caller.Key, g.Guard.FailStatus(), v, "input", start, reqBody)
-			return false
+			return nil, false
 		case v.Failed:
 			slog.Warn("soft guardrail flagged a request", "guardrail", v.Name, "key", caller.Key,
 				"surface", "input", "score", v.Score, "threshold", v.Threshold)
 		}
 	}
-	return true
+	return active, true
 }
 
 // writeGuardrailFail refuses a request a hard guardrail failed: the
@@ -307,21 +311,36 @@ func (p *Proxy) checkInput(w http.ResponseWriter, r *http.Request, caller config
 // the guard, so a caller can tell a policy refusal from a broken request.
 func (p *Proxy) writeGuardrailFail(w http.ResponseWriter, r *http.Request, served, key string,
 	status int, v guardVerdict, surface string, start time.Time, reqBody string) {
-	msg := fmt.Sprintf("refused by guardrail %q on the %s (score %.3f >= %.3f)", v.Name, surface, v.Score, v.Threshold)
-	b, _ := json.Marshal(map[string]any{"error": map[string]any{
-		"message": msg,
-		"type":    "guardrail",
-		"code":    "content_filter",
-		"guardrail": map[string]any{
-			"name": v.Name, "surface": surface, "mode": "hard",
-			"score": v.Score, "threshold": v.Threshold,
-		},
-	}})
+	msg, b := guardrailFailBody(v, surface)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
 	p.logReq(r, store.Activity{Served: served, Requested: served, Key: key,
 		Path: r.URL.Path, Status: status, DwellMS: time.Since(start).Milliseconds(), Error: msg, ReqBody: reqBody})
+}
+
+// guardrailFailBody is a hard fail's message and OpenAI-shaped error body.
+func guardrailFailBody(v guardVerdict, surface string) (string, []byte) {
+	msg := fmt.Sprintf("refused by guardrail %q on the %s (score %.3f >= %.3f)", v.Name, surface, v.Score, v.Threshold)
+	b, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"message":   msg,
+		"type":      "guardrail",
+		"code":      "content_filter",
+		"guardrail": v.object(surface),
+	}})
+	return msg, b
+}
+
+// object is the guardrail object of a refusal: in a 422 body, or on the
+// content_filter chunk that ends a refused stream.
+func (v guardVerdict) object(surface string) map[string]any {
+	o := map[string]any{"name": v.Name, "surface": surface, "mode": "hard"}
+	if v.Unavailable != "" {
+		o["unavailable"] = v.Unavailable
+	} else {
+		o["score"], o["threshold"] = v.Score, v.Threshold
+	}
+	return o
 }
 
 // writeGuardrailUnavailable refuses a request a hard guardrail could not

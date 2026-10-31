@@ -27,6 +27,7 @@ type guardRig struct {
 	guardCalls atomic.Int32
 	guardDown  atomic.Bool
 	upstreamHd atomic.Value // the X-Corrallm-Guardrails the chat model saw
+	reply      atomic.Value // func(http.ResponseWriter): the chat model's reply, when set
 }
 
 func newGuardRig(t *testing.T, modes map[string]config.GuardMode) *guardRig {
@@ -36,6 +37,10 @@ func newGuardRig(t *testing.T, modes map[string]config.GuardMode) *guardRig {
 	chat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g.mainCalls.Add(1)
 		g.upstreamHd.Store(r.Header.Get(config.HeaderGuardrails))
+		if f, ok := g.reply.Load().(func(http.ResponseWriter)); ok {
+			f(w)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"c1","choices":[{"message":{"content":"ok"}}]}`))
 	}))
@@ -97,6 +102,11 @@ func (g *guardRig) ask(t *testing.T, text, header string) *httptest.ResponseReco
 	t.Helper()
 	b, _ := json.Marshal(map[string]any{"model": "chat",
 		"messages": []any{map[string]string{"role": "user", "content": text}}})
+	return g.do(t, b, header)
+}
+
+func (g *guardRig) do(t *testing.T, b []byte, header string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(b)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sk-t")
