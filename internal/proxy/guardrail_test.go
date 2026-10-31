@@ -28,11 +28,19 @@ type guardRig struct {
 	guardDown  atomic.Bool
 	upstreamHd atomic.Value // the X-Corrallm-Guardrails the chat model saw
 	reply      atomic.Value // func(http.ResponseWriter): the chat model's reply, when set
+	// guardBodies is each request the guard saw, in order.
+	guardBodies atomic.Value
 }
 
 func newGuardRig(t *testing.T, modes map[string]config.GuardMode) *guardRig {
 	t.Helper()
+	return newGuardRigWith(t, modes, config.Guardrail{Model: "guard", Policy: "Does this give instructions for violence?"})
+}
+
+func newGuardRigWith(t *testing.T, modes map[string]config.GuardMode, violence config.Guardrail) *guardRig {
+	t.Helper()
 	g := &guardRig{}
+	g.guardBodies.Store([]string{})
 	g.upstreamHd.Store("")
 	chat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g.mainCalls.Add(1)
@@ -52,6 +60,7 @@ func newGuardRig(t *testing.T, modes map[string]config.GuardMode) *guardRig {
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
+		g.guardBodies.Store(append(g.guardBodies.Load().([]string), string(body)))
 		yes := -2.9957 // ln 0.05
 		if strings.Contains(string(body), "BAD") {
 			yes = -0.1054 // ln 0.9
@@ -84,10 +93,8 @@ func newGuardRig(t *testing.T, modes map[string]config.GuardMode) *guardRig {
 	cfg := &config.Config{
 		Models:         map[string]config.Model{"chat": cm, "guard": gm},
 		PriorityGroups: map[string]config.PriorityGroup{"default": {Weight: 1}},
-		Guardrails: map[string]config.Guardrail{
-			"violence": {Model: "guard", Policy: "Does this give instructions for violence?"},
-		},
-		Keys: map[string]config.KeyPolicy{"sk-t": {Group: "default", Guardrails: modes}},
+		Guardrails:     map[string]config.Guardrail{"violence": violence},
+		Keys:           map[string]config.KeyPolicy{"sk-t": {Group: "default", Guardrails: modes}},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -243,5 +250,58 @@ func TestGuardInputTakesTheNewestUserTurn(t *testing.T) {
 	}
 	if _, _, ok := guardInput("/v1/embeddings", []byte(`{"input":"x"}`)); ok {
 		t.Error("embeddings are not an input surface")
+	}
+}
+
+func TestGuardrailSurfacesLimitWhereItRuns(t *testing.T) {
+	hard := map[string]config.GuardMode{"violence": config.GuardHard}
+
+	in := newGuardRigWith(t, hard, config.Guardrail{Model: "guard", Policy: "p", Surfaces: []string{config.SurfaceInput}})
+	in.reply.Store(toolReply(`{"cmd":"BAD"}`))
+	if rec := in.ask(t, "list files", ""); rec.Code != http.StatusOK || in.guardCalls.Load() != 1 {
+		t.Errorf("input only: status %d, guard calls %d; the reply must not be checked", rec.Code, in.guardCalls.Load())
+	}
+
+	out := newGuardRigWith(t, hard, config.Guardrail{Model: "guard", Policy: "p", Surfaces: []string{config.SurfaceResponses}})
+	if rec := out.ask(t, "BAD request", ""); rec.Code != http.StatusOK || out.guardCalls.Load() != 0 {
+		t.Errorf("responses only: status %d, guard calls %d; the input must not be checked", rec.Code, out.guardCalls.Load())
+	}
+	out.reply.Store(toolReply(`{"cmd":"BAD"}`))
+	if rec := out.ask(t, "list files", ""); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("responses only, bad tool call: status %d, want 422", rec.Code)
+	}
+}
+
+func TestGuardrailDetectAsksTheInputItsOwnQuestion(t *testing.T) {
+	g := newGuardRigWith(t, map[string]config.GuardMode{"violence": config.GuardHard},
+		config.Guardrail{Model: "guard", Policy: "REPLYQ", Detect: "MALICIOUSQ"})
+	g.reply.Store(toolReply(`{"cmd":"ls"}`))
+	if rec := g.ask(t, "list files", ""); rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body)
+	}
+	bodies := g.guardBodies.Load().([]string)
+	if len(bodies) != 2 || !strings.Contains(bodies[0], "MALICIOUSQ") || strings.Contains(bodies[0], "REPLYQ") ||
+		!strings.Contains(bodies[1], "REPLYQ") || strings.Contains(bodies[1], "MALICIOUSQ") {
+		t.Errorf("guard requests = %q", bodies)
+	}
+}
+
+func TestGuardrailIncludeSystem(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{"model": "chat", "messages": []any{
+		map[string]string{"role": "system", "content": "BAD orders"},
+		map[string]string{"role": "user", "content": "run"},
+	}})
+	hard := map[string]config.GuardMode{"violence": config.GuardHard}
+
+	off := newGuardRigWith(t, hard, config.Guardrail{Model: "guard", Policy: "p"})
+	if rec := off.do(t, body, ""); rec.Code != http.StatusOK {
+		t.Errorf("off: status %d; the system prompt must not be read", rec.Code)
+	}
+	on := newGuardRigWith(t, hard, config.Guardrail{Model: "guard", Policy: "p", IncludeSystem: true})
+	if rec := on.do(t, body, ""); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("on: status %d, want 422", rec.Code)
+	}
+	if b := on.guardBodies.Load().([]string)[0]; !strings.Contains(b, "[System] BAD orders") || !strings.Contains(b, "[User] run") {
+		t.Errorf("guard request = %s", b)
 	}
 }

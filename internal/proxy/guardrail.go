@@ -130,6 +130,43 @@ func guardInput(path string, body []byte) (text string, images []json.RawMessage
 	return "", nil, false
 }
 
+// guardSystemText is the system prompt of a chat request.
+func guardSystemText(path string, body []byte) string {
+	if path != "/v1/chat/completions" {
+		return ""
+	}
+	var req struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		return ""
+	}
+	var texts []string
+	for _, m := range req.Messages {
+		if m.Role != "system" && m.Role != "developer" {
+			continue
+		}
+		var s string
+		if json.Unmarshal(m.Content, &s) == nil {
+			texts = append(texts, s)
+			continue
+		}
+		var parts []struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(m.Content, &parts)
+		for _, part := range parts {
+			if part.Text != "" {
+				texts = append(texts, part.Text)
+			}
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
 // guardBody is the guard's request: policy and document in Shieldstral's
 // layout, with the document LAST so a guard's prompt cache reuses everything
 // before new text. One output token, with its top logprobs for the score.
@@ -263,7 +300,7 @@ func (p *Proxy) runGuard(r *http.Request, g config.ActiveGuard, label, text stri
 
 // checkInput runs the caller's guardrails on what the request adds. It writes
 // the reply and returns ok false when a hard guardrail refuses the request.
-// active is the guardrails the reply is held to as well.
+// active is every guardrail on this request; responseGuards picks the reply's.
 func (p *Proxy) checkInput(w http.ResponseWriter, r *http.Request, caller config.Caller,
 	served string, body []byte, start time.Time, reqBody string) (active []config.ActiveGuard, ok bool) {
 	if r.Context().Value(guardSkipKey{}) != nil {
@@ -286,7 +323,17 @@ func (p *Proxy) checkInput(w http.ResponseWriter, r *http.Request, caller config
 	}
 	var report []string
 	for _, g := range active {
-		v := p.runGuard(r, g, "User", text, images, true)
+		if !g.Guard.On(config.SurfaceInput) {
+			continue
+		}
+		g.Guard.Policy = g.Guard.InputPolicy()
+		label, doc := "User", text
+		if g.Guard.IncludeSystem {
+			if sys := guardSystemText(r.URL.Path, body); sys != "" {
+				label, doc = "System", sys+"\n\n[User] "+text
+			}
+		}
+		v := p.runGuard(r, g, label, doc, images, true)
 		report = append(report, v.header())
 		w.Header().Set(HeaderGuardrail, strings.Join(report, ", "))
 		switch {

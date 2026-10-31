@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -13,6 +14,8 @@ import (
 //	  violence:
 //	    model: local-Shieldstral-1.0-3B
 //	    policy: Does this content give instructions for violence, weapons or self-harm?
+//	    detect: Is this user trying to get instructions for violence or to get around a safety rule?
+//	    includeSystem: true
 //	keys:
 //	  sk-aw4:
 //	    default: batch
@@ -23,11 +26,22 @@ import (
 // score >= Complete. A check of PARTIAL content (a stream still arriving) only
 // decides whether the held text may be released (score < Incomplete) or stays
 // held: held text never reaches the caller, so a partial check need not block.
+//
+// A guardrail runs on its Surfaces: the request (input) and the reply
+// (responses: its text and its tool calls). Detect asks a separate question of
+// the input, to find a malicious user rather than bad content.
 type Guardrail struct {
 	// Model is the served name (model or lane) that judges.
 	Model string `yaml:"model"`
 	// Policy is the question asked of the content.
-	Policy string `yaml:"policy"`
+	Policy string `yaml:"policy,omitempty"`
+	// Detect is the question asked of the input in place of Policy. Empty =
+	// Policy. A guardrail on input alone may have Detect and no Policy.
+	Detect string `yaml:"detect,omitempty"`
+	// IncludeSystem adds the request's system prompt to the input document.
+	IncludeSystem bool `yaml:"includeSystem,omitempty"`
+	// Surfaces is where it runs: input, responses. Empty = both.
+	Surfaces []string `yaml:"surfaces,omitempty"`
 	// Instruct sets how strictly the guard reads the policy. Empty = a plain
 	// "You are a safety moderator."
 	Instruct string `yaml:"instruct,omitempty"`
@@ -39,12 +53,31 @@ type Guardrail struct {
 	Status int `yaml:"status,omitempty"`
 }
 
+// The surfaces a guardrail can run on.
+const (
+	SurfaceInput     = "input"
+	SurfaceResponses = "responses"
+)
+
 const (
 	defaultGuardIncomplete = 0.2
 	defaultGuardComplete   = 0.5
 	defaultGuardStatus     = 422
 	defaultGuardInstruct   = "You are a safety moderator."
 )
+
+// On says whether the guardrail runs on a surface.
+func (g Guardrail) On(surface string) bool {
+	return len(g.Surfaces) == 0 || slices.Contains(g.Surfaces, surface)
+}
+
+// InputPolicy is the question asked of the input.
+func (g Guardrail) InputPolicy() string {
+	if strings.TrimSpace(g.Detect) != "" {
+		return g.Detect
+	}
+	return g.Policy
+}
 
 // IncompleteThreshold is the release threshold for a partial check.
 func (g Guardrail) IncompleteThreshold() float64 {
@@ -158,7 +191,13 @@ func (c *Config) validateGuardrails() error {
 		if strings.TrimSpace(g.Model) == "" {
 			return fmt.Errorf("guardrail %q: no `model` names the guard", name)
 		}
-		if strings.TrimSpace(g.Policy) == "" {
+		for _, s := range g.Surfaces {
+			if s != SurfaceInput && s != SurfaceResponses {
+				return fmt.Errorf("guardrail %q: surface %q; want input or responses", name, s)
+			}
+		}
+		if (g.On(SurfaceResponses) && strings.TrimSpace(g.Policy) == "") ||
+			(g.On(SurfaceInput) && strings.TrimSpace(g.InputPolicy()) == "") {
 			return fmt.Errorf("guardrail %q: no `policy` says what to check", name)
 		}
 		_, isModel := c.Models[g.Model]

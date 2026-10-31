@@ -16,7 +16,8 @@ func TestGuardrailsSurviveTheDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := policyConfig()
-	c.Guardrails = map[string]config.Guardrail{"violence": {Model: "guard", Policy: "p", Complete: 0.7, Status: 451}}
+	c.Guardrails = map[string]config.Guardrail{"violence": {Model: "guard", Policy: "p", Complete: 0.7, Status: 451,
+		Detect: "d", IncludeSystem: true, Surfaces: []string{config.SurfaceInput}}}
 	kp := c.Keys["sk-aw4"]
 	kp.Guardrails = map[string]config.GuardMode{"violence": config.GuardHard, "pii": config.GuardOptIn}
 	c.Keys["sk-aw4"] = kp
@@ -30,7 +31,8 @@ func TestGuardrailsSurviveTheDatabase(t *testing.T) {
 	if g := got.Keys["sk-aw4"].Guardrails; g["violence"] != config.GuardHard || g["pii"] != config.GuardOptIn {
 		t.Errorf("key guardrails = %v", g)
 	}
-	if g := got.Guardrails["violence"]; g.Model != "guard" || g.Complete != 0.7 || g.Status != 451 {
+	if g := got.Guardrails["violence"]; g.Model != "guard" || g.Complete != 0.7 || g.Status != 451 ||
+		g.Detect != "d" || !g.IncludeSystem || len(g.Surfaces) != 1 {
 		t.Errorf("named guardrail = %+v", g)
 	}
 	if g := got.Keys["yscr"].Guardrails; len(g) != 0 {

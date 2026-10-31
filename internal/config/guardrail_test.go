@@ -89,6 +89,26 @@ func TestActiveGuardrailsOnlyTighten(t *testing.T) {
 	}
 }
 
+func TestGuardrailSurfacesAndDetect(t *testing.T) {
+	c := guardConfig(t, `
+models:
+  guard: {proxy: {host: 127.0.0.1, port: 1}}
+guardrails:
+  who: {model: guard, detect: "malicious?", includeSystem: true, surfaces: [input]}
+  both: {model: guard, policy: p}
+`)
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	who, both := c.Guardrails["who"], c.Guardrails["both"]
+	if !who.On(SurfaceInput) || who.On(SurfaceResponses) || who.InputPolicy() != "malicious?" || !who.IncludeSystem {
+		t.Errorf("who = %+v", who)
+	}
+	if !both.On(SurfaceInput) || !both.On(SurfaceResponses) || both.InputPolicy() != "p" {
+		t.Errorf("both = %+v", both)
+	}
+}
+
 func TestGuardrailValidation(t *testing.T) {
 	for name, tc := range map[string]struct{ edit, want string }{
 		"unknown model":       {`guardrails: {g: {model: nope, policy: p}}`, "not a configured model"},
@@ -97,6 +117,8 @@ func TestGuardrailValidation(t *testing.T) {
 		"bad status":          {`guardrails: {g: {model: guard, policy: p, status: 200}}`, "not a 4xx"},
 		"unknown guard":       {"keys: {sk-b: {default: batch, guardrails: {g: hard}}}", "no guardrail named"},
 		"bad mode":            {"guardrails: {g: {model: guard, policy: p}}\nkeys: {sk-b: {default: batch, guardrails: {g: strict}}}", "want hard, soft or opt-in"},
+		"bad surface":         {`guardrails: {g: {model: guard, policy: p, surfaces: [output]}}`, "want input or responses"},
+		"responses no policy": {`guardrails: {g: {model: guard, detect: d}}`, "no `policy`"},
 		"guard not in models": {"guardrails: {g: {model: guard, policy: p}}\nkeys: {sk-b: {default: batch, models: [other], guardrails: {g: hard}}}", "do not include guardrail"},
 	} {
 		c := guardConfig(t, "models:\n  guard: {proxy: {host: 127.0.0.1, port: 1}}\npriorityGroups:\n  batch: {weight: 1}\n"+tc.edit)

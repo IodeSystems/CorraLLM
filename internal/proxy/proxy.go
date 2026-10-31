@@ -1379,8 +1379,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		// The tool calls of a chat reply wait for the guardrails (guardout.go).
 		var gw *guardOutWriter
-		if len(guards) > 0 && r.URL.Path == "/v1/chat/completions" {
-			gw = &guardOutWriter{ResponseWriter: out, check: p.checkToolCalls(r, guards)}
+		if gs := responseGuards(guards); len(gs) > 0 && r.URL.Path == "/v1/chat/completions" {
+			gw = &guardOutWriter{ResponseWriter: out, check: p.checkToolCalls(r, gs)}
 			out = gw
 		}
 		sc := &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: streaming, live: live}

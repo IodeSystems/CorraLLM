@@ -538,9 +538,19 @@ tokens every C/110 s):
   the system message (the input check reads only the newest user turn):
   soft flagged 0.989 and passed; hard streamed ended `content_filter` 0.989.
   Hard non-streamed not caught live (Swift refused by itself 4/4); unit test.
-- **assumption (catch it):** every active guardrail runs on every surface; no
-  per-guardrail `surfaces:` field. Slice 3 would then guard all responses of
-  any guarded key.
+- ✅ **surfaces, detect, includeSystem (owner 10-31):** per guardrail:
+  `surfaces: [input, responses]` (empty = both); `detect:` an optional
+  separate question for the input, to find a malicious user (`policy` is
+  then not required on an input-only guardrail); `includeSystem: true` puts
+  the system/developer messages in the input document (`[System] … [User] …`).
+  Unit tests only; no guardrail in the live config uses them.
+- **assumption (catch it):** "responses" covers the reply's text AND its tool
+  calls (owner said input+responses; a tool call is part of the reply). The
+  refusal's `surface` value stays `tool_calls`. "Checkbox" is the config field
+  `includeSystem`: no guardrail UI exists.
+- **category/reason:** a verdict has the guardrail's name, score, threshold,
+  surface, mode. No reason text: Shieldstral answers one token. `category`
+  label and a generated reason are not built.
 - **next:** slice 3 — responses with the held-chunk stream;
   `sticky.preferred`; stacked 429 (read how the scheduler answers a
   swap-blocked request first).
@@ -548,7 +558,8 @@ tokens every C/110 s):
   text of each (only `violence` exists).
 - **not covered yet:** `/v1/messages` (Anthropic surface, its own handler);
   a streamed tool-call check's verdict is not in a header (status is sent);
-  only logged; older turns and the system message are not input-checked;
+  only logged; older turns are not input-checked, nor the system message
+  without `includeSystem`; guardrail editing in the UI;
   `/v1/responses`; guard cost is charged to the caller but not shown apart.
 - **risks:** latency on every guarded call; a held reply calls the guard
   while it holds its own slot (deadlock if the guard is behind the same

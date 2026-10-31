@@ -370,6 +370,17 @@ func (g *guardOutWriter) toolCallsIn(body []byte) bool {
 	return len(g.calls) > 0
 }
 
+// responseGuards are the guardrails that run on the reply.
+func responseGuards(active []config.ActiveGuard) []config.ActiveGuard {
+	var out []config.ActiveGuard
+	for _, g := range active {
+		if g.Guard.On(config.SurfaceResponses) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 // checkToolCalls runs each guardrail on the tool calls, as complete content.
 func (p *Proxy) checkToolCalls(r *http.Request, guards []config.ActiveGuard) func(string) []guardVerdict {
 	return func(text string) []guardVerdict {
