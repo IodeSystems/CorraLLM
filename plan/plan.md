@@ -497,7 +497,19 @@ tokens every C/110 s):
   opt a soft guard in to hard by header. Assumed from that: a header can
   only tighten (opt in a guard, soft → hard), never switch a guard off or
   hard → soft.
+- **verdicts (owner 10-30): three states, not two** — `safe` flushes the
+  held chunks to the client; `unsafe` fails (hard blocks, soft flags);
+  `need more` keeps holding and checks again with the next chunk.
+  Proposal: from Shieldstral's yes/no probability (score = P(yes)),
+  `score < flushBelow` → safe, `score ≥ blockAbove` → unsafe, between → need
+  more; `maxHold` tokens caps the hold, then the band falls to the guard's
+  hard/soft rule. Unverified: llama-server returns the yes/no probabilities
+  (`n_probs`) for Shieldstral's first token.
 - **blocking decisions:**
+  - `need more` at `maxHold` or at stream end: block (hard) / flag (soft),
+    or flush?
+  - Default `flushBelow` / `blockAbove` (proposal 0.2 / 0.5, the card's
+    threshold; tune from flagged traffic).
   - Hard fail status and body (proposal: 400 with a `guardrail` error naming
     the guard; mid-stream: a final chunk with `finish_reason:
     "content_filter"`).
