@@ -124,6 +124,10 @@ type Config struct {
 	// answers rather than one the code answers by omission.
 	UnknownKeys UnknownKeyPolicy `yaml:"unknownKeys,omitempty"`
 
+	// Guardrails are the named checks a key can hold its requests to (P67);
+	// see Guardrail. A key lists the ones it uses in its own `guardrails`.
+	Guardrails map[string]Guardrail `yaml:"guardrails,omitempty"`
+
 	// Scheduler holds global admission knobs (queue bounds).
 	Scheduler SchedulerConfig `yaml:"scheduler,omitempty"`
 
@@ -2653,10 +2657,13 @@ func (c *Config) Validate() error {
 	// is refused rather than silently reinterpreted — the reader of such a
 	// config would have no way to tell which meaning applied. `thinking` is
 	// retired but stays reserved, so an old config never reads it as a group.
-	for _, reserved := range []string{"thinking", "limits", "mint", "models", "budgets", "credentials", "disabled", "label"} {
+	for _, reserved := range []string{"thinking", "limits", "mint", "models", "budgets", "credentials", "disabled", "label", "guardrails"} {
 		if _, clash := c.PriorityGroups[reserved]; clash {
 			return fmt.Errorf("priority group %q collides with the reserved key-policy field of the same name; rename the group", reserved)
 		}
+	}
+	if err := c.validateGuardrails(); err != nil {
+		return err
 	}
 	// A key allocation counts requests (charged as each completes) and dollars
 	// (charged once metered). Nothing charges dwell seconds to a caller, so a

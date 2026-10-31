@@ -465,12 +465,17 @@ func writeKeys(ctx context.Context, tx querier, c *config.Config) error {
 			}
 			budgets = string(b)
 		}
+		guards := ""
+		if gs := c.Keys[k].Guardrails; len(gs) > 0 {
+			b, _ := json.Marshal(gs)
+			guards = string(b)
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO config_key (key, group_name, allow, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO config_key (key, group_name, allow, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label, guardrails_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			k, c.Keys[k].Group, encodeAllow(c.Keys[k].Allow),
 			limits, boolInt(c.Keys[k].Mint),
-			boolInt(c.Keys[k].Disabled), encodeKeyCredentials(c.Keys[k].Credentials), models, budgets, c.Keys[k].Label); err != nil {
+			boolInt(c.Keys[k].Disabled), encodeKeyCredentials(c.Keys[k].Credentials), models, budgets, c.Keys[k].Label, guards); err != nil {
 			return fmt.Errorf("write key: %w", err)
 		}
 	}
@@ -478,16 +483,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 }
 
 func readKeys(ctx context.Context, db querier, c *config.Config) error {
-	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label FROM config_key`)
+	rows, err := db.QueryContext(ctx, `SELECT key, group_name, allow, limits_json, mint, disabled, credentials_json, models_json, budgets_json, label, guardrails_json FROM config_key`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	keys := map[string]config.KeyPolicy{}
 	for rows.Next() {
-		var k, g, allow, limits, creds, models, budgets, label string
+		var k, g, allow, limits, creds, models, budgets, label, guards string
 		var mint, disabled int
-		if err := rows.Scan(&k, &g, &allow, &limits, &mint, &disabled, &creds, &models, &budgets, &label); err != nil {
+		if err := rows.Scan(&k, &g, &allow, &limits, &mint, &disabled, &creds, &models, &budgets, &label, &guards); err != nil {
 			return err
 		}
 		kp := config.KeyPolicy{Group: g, Allow: decodeAllow(allow),
@@ -509,6 +514,12 @@ func readKeys(ctx context.Context, db querier, c *config.Config) error {
 		if budgets != "" {
 			if err := json.Unmarshal([]byte(budgets), &kp.Budgets); err != nil {
 				return fmt.Errorf("read key %s budgets: %w", k, err)
+			}
+		}
+		// Fail CLOSED here too: an unreadable row must not drop a key's guards.
+		if guards != "" {
+			if err := json.Unmarshal([]byte(guards), &kp.Guardrails); err != nil {
+				return fmt.Errorf("read key %s guardrails: %w", k, err)
 			}
 		}
 		keys[k] = kp

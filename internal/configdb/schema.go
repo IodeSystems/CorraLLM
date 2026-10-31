@@ -163,7 +163,9 @@ CREATE TABLE IF NOT EXISTS config_key (
     models_json TEXT NOT NULL DEFAULT '',
     budgets_json TEXT NOT NULL DEFAULT '',
     -- the key's name on the dashboard; '' = none
-    label TEXT NOT NULL DEFAULT ''
+    label TEXT NOT NULL DEFAULT '',
+    -- P67: JSON object guardrail name → hard | soft | opt-in; '' = none
+    guardrails_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS config_tool (

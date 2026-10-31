@@ -85,6 +85,11 @@ type KeyPolicy struct {
 	// question it answers is about the CALLER: "what may this key spend".
 	Credentials []KeyCredential
 
+	// Guardrails are the guardrails (Config.Guardrails) this key's requests
+	// are held to, by name: hard, soft or opt-in (see GuardMode). Set on a
+	// configured key; a child key runs under its parent's.
+	Guardrails map[string]GuardMode
+
 	// Disabled refuses this key outright, keeping its entry (and its budgets)
 	// for later — the same statement a model's `disabled` makes. Keys minted at
 	// runtime are created disabled by default, so they must be turned on before
@@ -166,6 +171,12 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 				}
 				continue
 			}
+			if name == "guardrails" {
+				if err := node.Decode(&k.Guardrails); err != nil {
+					return fmt.Errorf("key policy: `guardrails` must map a guardrail name to hard, soft or opt-in: %w", err)
+				}
+				continue
+			}
 			if name == "credentials" {
 				var list []KeyCredential
 				if err := node.Decode(&list); err != nil {
@@ -233,7 +244,8 @@ func (k *KeyPolicy) UnmarshalYAML(value *yaml.Node) error {
 // feature does not show up as a diff on every key in the revision history.
 func (k KeyPolicy) MarshalYAML() (any, error) {
 	if len(k.Allow) == 0 && len(k.Limits) == 0 && !k.Mint &&
-		len(k.Credentials) == 0 && !k.Disabled && len(k.Models) == 0 && len(k.Budgets) == 0 && k.Label == "" {
+		len(k.Credentials) == 0 && !k.Disabled && len(k.Models) == 0 && len(k.Budgets) == 0 && k.Label == "" &&
+		len(k.Guardrails) == 0 {
 		return k.Group, nil
 	}
 	m := map[string]any{"default": k.Group}
@@ -262,6 +274,9 @@ func (k KeyPolicy) MarshalYAML() (any, error) {
 	}
 	if len(k.Budgets) > 0 {
 		m["budgets"] = k.Budgets
+	}
+	if len(k.Guardrails) > 0 {
+		m["guardrails"] = k.Guardrails
 	}
 	return m, nil
 }

@@ -268,7 +268,7 @@ func (h *Handlers) PutEntryYAML(ctx context.Context, in *PutEntryYAMLInput) (*Co
 			// REVOKE the ones a key already had — that endpoint sets where a key
 			// lands. A mapping states the whole policy and replaces it.
 			bare := len(pol.Allow) == 0 && len(pol.Limits) == 0 && len(pol.Credentials) == 0 &&
-				len(pol.Models) == 0 && len(pol.Budgets) == 0
+				len(pol.Models) == 0 && len(pol.Budgets) == 0 && len(pol.Guardrails) == 0
 			if len(pol.Allow) == 0 {
 				pol.Allow = c.Keys[name].Allow
 			}
@@ -280,6 +280,7 @@ func (h *Handlers) PutEntryYAML(ctx context.Context, in *PutEntryYAMLInput) (*Co
 				pol.Models = c.Keys[name].Models
 				pol.Budgets = c.Keys[name].Budgets
 				pol.Disabled = c.Keys[name].Disabled
+				pol.Guardrails = c.Keys[name].Guardrails
 			}
 			if err := config.ValidateKeyCredentials(pol.Credentials); err != nil {
 				return huma.Error400BadRequest(err.Error())

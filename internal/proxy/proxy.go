@@ -951,6 +951,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 	weight := group.EffectiveWeight()
 
+	// Guardrails on what the request adds (P67), before it queues: a refused
+	// request must not wait behind a saturated backend to find that out.
+	if !p.checkInput(w, r, caller, served, body, start, reqBody) {
+		return
+	}
+
 	// A cancellable context wrapping the request's own, so an operator can abort
 	// this request from ANY state. Derived here rather than at admission
 	// because a request wedged in a queue has no slot and no backend to be
@@ -3619,6 +3625,8 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 				req.Header.Del("X-Api-Key")
 			}
 			req.Header.Del("X-Corrallm-Key")
+			// corrallm's own ask (P67); it means nothing upstream.
+			req.Header.Del(config.HeaderGuardrails)
 			if t.API == config.APIAnthropic {
 				// Required on every Messages call. A default only: the caller's
 				// own (passthrough), then a version pinned in the config's
