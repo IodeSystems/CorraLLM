@@ -398,8 +398,8 @@ replies. The 0.23% is a lower bound: no thinking in the corpus, and clients had 
   and counts as a loop. Clients wait on an event instead.
   A loop found and not cut is still reported, on the reply's final event: the proxy cannot know
   a client's semantics, so it reports and the client judges (owner 10-31).
-  Measured for the tolerance: text is not settled (aw4 thinking: 14 blocks cut at 3, 1 at 5-8,
-  0 at 9, of 13,454; dun has one real text loop at 6). Tools at 3 held up in dun's 298 sessions.
+  agentkit v0.16.3 defaults, tuned on aw4's and dun's real traces: 0 cuts at tolerance 3 in aw4's
+  13,454 thinking blocks; the real 40-sentence cycle and dun's tool loops are still found.
 - **risks:** not on `/v1/messages` or non-streamed replies. False positives in thinking are
   unmeasured. A cut mid tool call sends the caller a partial call with `content_filter`.
 - **blocking decisions:** the tolerance to cut at, once the count-only numbers are in (owner).
