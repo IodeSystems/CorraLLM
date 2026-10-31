@@ -421,7 +421,7 @@ Sources per provider (to check before building):
 - **optional extensions:** ntfy on a low balance; route away from a provider
   before its account runs out.
 
-### ◻ P67 — Guardrails: per root key, default-on or opt-in, set by header — 2026-10-30
+### ◐ P67 — Guardrails: per root key, default-on or opt-in, set by header — 2026-10-30
 
 Owner design (10-30):
 - Guardrail configuration sits on the ROOT key; subkeys inherit it.
@@ -485,65 +485,52 @@ tokens every C/110 s):
   Qwen3Guard @8k (1.8 GB) is tight. A pinned guard means OCR shrinks its
   context or waits.
 
-- **next:** owner answers the blocking decisions; then a design note
-  (`plan/p67-guardrails.md`) with the config shape and the header names.
-- **decided (owner 10-30):** guard model = **Shieldstral 1.0 3B** (Q8_0 +
-  mmproj, `~/.corrallm/models/guards/`), a normal corrallm model on the 3080
-  (gpu1), NOT pinned: it swaps with the OCR models. Streams: cumulative
-  chunks, cut to the last ~10k only near the guard's context limit.
-- **decided (owner 10-30):** streams HOLD each chunk until it passes (no
-  text reaches the client before its check). Each guard is **hard** (a fail
-  blocks) or **soft** (a fail is flagged, the request goes on); a caller may
-  opt a soft guard in to hard by header. Assumed from that: a header can
-  only tighten (opt in a guard, soft → hard), never switch a guard off or
-  hard → soft.
-- **verdicts (owner 10-30): three states, not two** — `safe` flushes the
-  held chunks to the client; `unsafe` fails (hard blocks, soft flags);
-  `need more` keeps holding and checks again with the next chunk.
-  Proposal: from Shieldstral's yes/no probability (score = P(yes)),
-  `score < flushBelow` → safe, `score ≥ blockAbove` → unsafe, between → need
-  more; `maxHold` tokens caps the hold, then the band falls to the guard's
-  hard/soft rule. Unverified: llama-server returns the yes/no probabilities
-  (`n_probs`) for Shieldstral's first token.
-- **thresholds (owner 10-30):** each check returns a probability; each
-  guard has an `incomplete` and a `complete` threshold. Assumed reading:
-  on a partial check, `score < incomplete` → flush, else hold (held text
-  never reaches the client, so a partial check need not block); the
-  complete check (stream end or `maxHold`) blocks at `score ≥ complete`.
-  Optional: an early block on a partial check above `complete`, to stop
-  generation sooner.
-- **fail reply (owner 10-30):** mid-stream, a last chunk with
-  `finish_reason: "content_filter"` + a `corrallm.guardrail` object (guard,
-  score, threshold, hard/soft). Before the stream: **422** with an OpenAI
-  error body `{"error": {"type": "guardrail", "code": "content_filter",
-  ...}}` (any 4xx carries a body; Azure OpenAI uses 400 + `content_filter`;
-  422 is not retried by the OpenAI SDKs). Owner to confirm 422 vs 400.
-- **surfaces (owner 10-30):** input first, then tool calls, then responses.
-- **blocking decisions:**
-  - ~~`need more` at `maxHold` or stream end~~ → **owner 10-30: force a
-    decision**: the band collapses to one cut (`score ≥ blockAbove` →
-    unsafe, else safe and flushed). At stream end the forced check sees the
-    whole reply.
-  - Default `flushBelow` / `blockAbove` (proposal 0.2 / 0.5, the card's
-    threshold; tune from flagged traffic).
-  - Hard fail status and body (proposal: 400 with a `guardrail` error naming
-    the guard; mid-stream: a final chunk with `finish_reason:
-    "content_filter"`).
-  - Which surfaces first: input only, then tool calls, then responses?
-  - ~~A guarded request while OCR holds the 3080~~ → **owner 10-30: 429 with
-    a stacked Retry-After** = time for the OCR job in flight to clear +
-    OCR unload + guard load. Measured (14 d): chandra job avg 6.7 s (max
-    245 s), chandra load avg 11.9 s (39 loads), Shieldstral load 7.3 s (one
-    warm-cache start), unload not recorded. Read before building: how the
-    scheduler answers a swap-blocked request today, and the existing retry
-    promises (`store.RetryPromises`) to score the estimate. Risk: OCR and
-    guard traffic at once thrash the 3080 (sticky ttl 2m limits it).
-- **guard residency (owner 10-30):** `sticky: {evictCost: high}`, no
-  `idleUnload` (config only: stays until OCR needs the card), PLUS a new
-  `sticky.preferred: true` (`internal/proc/manager.go`): evictable like any
-  model, but reloaded when its pool frees (OCR idle-unloads after 5m).
-  `persistent` is not it: it pins, so OCR could never load. Optional: OCR
-  `idleUnload` 5m → ~1m (more OCR cold loads, ~12 s each).
+- **decided (owner 10-30):**
+  - Guard model **Shieldstral 1.0 3B** (Q8_0 + mmproj,
+    `~/.corrallm/models/guards/`), a normal model on the 3080 (gpu1), not
+    pinned: it swaps with the OCR models.
+  - Each guard is **hard** (a fail refuses) or **soft** (a fail is flagged,
+    the request goes on); a key may also list one **opt-in**. A request's
+    `X-Corrallm-Guardrails` only tightens (opt in; soft → hard).
+  - Score = P(yes). Thresholds tunable per guardrail: `incomplete` (default
+    0.2: a partial check below it releases held text, else holds) and
+    `complete` (default 0.5: the complete check fails at or above it).
+    `maxHold` and stream end force the complete check.
+  - Streams HOLD each chunk until it passes; chunks checked cumulatively,
+    cut to the last ~10k tokens only near the guard's context limit.
+  - Hard fail: **422** by default (`status` per guardrail), OpenAI error
+    `type: guardrail, code: content_filter`; mid-stream a last chunk with
+    `finish_reason: "content_filter"` + the guard object.
+  - Order: input → tool calls → responses.
+  - Swap-blocked guard call: 429 with a stacked Retry-After (OCR job in
+    flight + OCR unload + guard load). Measured (14 d): chandra job avg 6.7 s
+    (max 245 s), chandra load avg 11.9 s, Shieldstral cold load ~6 s live.
+  - Guard residency: `sticky: {evictCost: high}`, no `idleUnload`, plus a new
+    `sticky.preferred: true` (reload when its pool frees). `persistent` is
+    not it (it pins; OCR could never load).
+- ✅ **slice 1 — input (711b6e6, live 10-30):** `guardrails:` (model,
+  policy, instruct, incomplete, complete, status) + key `guardrails: {name:
+  hard|soft|opt-in}` (DB column `guardrails_json`); a child runs under its
+  parent's. The newest user turn (text + images) of `/v1/chat/completions`
+  and `/v1/completions` is checked before admission; the guard is called
+  in-process through `handleInference` with the caller's credential (so it
+  is scheduled, loaded and charged as that caller). Headers
+  `X-Corrallm-Guardrail` (per check: pass/flag/block/unavailable + score),
+  `X-Corrallm-Guardrail-Ignored`. A guard that cannot answer: hard fails
+  closed (503, or its 429 + Retry-After), soft passes. Live: model
+  `local-Shieldstral-1.0-3B` (port 5813, `-c 16384`, 6.4 GB on gpu1),
+  guardrail `violence`; NO key uses it yet. E2E with a temporary opt-in key
+  (removed): bread 0.000 pass; pipe bomb soft 0.995 flagged and passed,
+  `=hard` 422 in 0.02 s, never reached Swift; first call 11.9 s incl. the
+  guard's cold load. llama-server returns the yes/no top_logprobs (verified).
+- **next:** slice 2 — tool calls (hold the `tool_calls` deltas, check the
+  arguments, then release); slice 3 — responses with the held-chunk stream;
+  `sticky.preferred`; stacked 429 (read how the scheduler answers a
+  swap-blocked request first).
+- **blocking decisions:** which keys get which guardrails, and the policy
+  text of each (only `violence` exists).
+- **not covered yet:** `/v1/messages` (Anthropic surface, its own handler);
+  `/v1/responses`; guard cost is charged to the caller but not shown apart.
 - **risks:** latency on every guarded call; a swap puts a cold load (~7 s,
   measured once) in front of a guarded request and evicts OCR mid-batch;
   false positives block real aw4 work; prompt guard (injection) not covered
