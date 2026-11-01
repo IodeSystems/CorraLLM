@@ -377,28 +377,27 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ⏸ P71 — Anthropic spend: admin credential held here, cost tokens for clients — 2026-11-01
+### ◐ P71 — Spend: the ledger is the source, cost tokens for clients — 2026-11-01
 
-Owner, via dun-a8: `ant` (Anthropic's CLI) gives a browser login and short-lived tokens. Console orgs
-have no read-only scope, so reading cost needs full admin. Clients must never hold admin: corrallm
-holds it, or the login, and mints its own tokens that read spend and nothing else. dun-a8 builds the
-stdlib agentkit package (credential resolve, login, month-to-date cost). Waits for its tag.
+Owner, via dun-a8: billed spend is not worth chasing. An `org:admin` `ant` login on an Individual Org
+gets 403 from the cost report, so no `ant`, no admin login here. corrallm's ledger is the source: exact
+tokens from every reply at corrallm's prices, and it can refuse past a budget.
 
-Design: Anthropic is one more `billing.Provider`, so the reconciler alone makes the admin call, on its
-schedule, into `provider_billing`, with the drift check as for Fireworks. `GET /v1/spend` reads stored
-rows: a client can never cause an admin call. A cost token is its own table (hash only, label, expiry,
-revoked, last used), prefix `spend-`, not a `KeyPolicy`. Inference must refuse the prefix before key
-lookup, because `unknownKeys` may admit a stranger. No corrallm doctor exists: `ant` goes in as a
-`internal/toolchain` recipe, optional, estimates only without it. Also feeds P68's balances.
+Done, not deployed: `GET /v1/spend` with a `spend-` cost token, which is refused on every other route (a
+stranger's key is admitted by default, so the guard is what stops one spending). Tokens are hashed, in
+their own table. `remaining_usd` is against the tightest calendar-month USD limit on the Claude
+provider or credential, which already refuses when hard. `corrallm spend`, `spend reconcile <usd>`,
+`spend token create|list|revoke`; `/api/v1/spend*` for the same. Reconcile stores the figure and its
+time, only spend after it is estimated, and raises the budget counters so a hard limit acts on it.
+Last month's figure is ignored. A caller's own sign-in is not corrallm's spend.
 
-- **next:** owner decisions below, then dun's tag.
-- **risks:** org:admin can manage API keys and members, on a service reachable from the internet, so a
-  compromise here is the whole org, not spend. Admin stays out of the config API, exports, logs and the
-  activity row, and is only sent to the one cost URL. The login stays on this box, not a web page.
-- **blocking decisions (owner):** login or admin key here (recommended: `ant` login, short-lived, no
-  stored admin secret); who starts the login (recommended: CLI only, `corrallm` on the box, never the
-  dashboard); token expiry default (recommended: 90 days).
-- **assumptions:** tokens are global, not per key. A client sees org spend, not its own share.
+- **next:** deploy. Set a `$N/calendar-month,hard` limit on the Claude credential for a budget.
+  Tell dun-a8 when `/v1/spend` is live.
+- **risks:** the estimate drifts from the bill by what the price table has wrong and what bypasses
+  corrallm. Not on the dashboard.
+- **assumptions:** tokens last 90 days by default (`--days`). One org-wide figure, not a client's
+  share. `anthropicadmin` unused: no credential here to use it with.
+- **optional extensions:** a dashboard tile; drift alert after a reconcile; P68's other providers.
 
 ### ◐ P70 — Claude translation moved to openai-claude-api-shim — 2026-11-01
 
@@ -416,7 +415,6 @@ behind a Claude name. Not charged: a caller's own sign-in, a declared free tier.
   now uses the shim's table, so its recorded cost moves. A stream whose backend sends no chat
   completion ends empty after its 200, as it did before.
 - **blocking decisions:** where the price override lives. Assumed: `claudePrices:` in `corrallm.yaml`.
-  The "remaining budget" number is not built: no provider balance for Claude is read yet.
 - **assumptions:** kept corrallm's 16000 max_tokens fallback over the shim's 64000.
 
 ### ◐ P69 — Loop detection on streamed chat replies — 2026-10-31
