@@ -624,6 +624,9 @@ func (p *Proxy) SetRealtimeTimeouts(idle, maxSession time.Duration) {
 func (p *Proxy) Mount(mux interface {
 	Handle(pattern string, h http.Handler)
 }) {
+	// The one route a cost token opens; everything after this refuses one.
+	mux.Handle("/v1/spend", http.HandlerFunc(p.handleSpend))
+	mux = spendTokenGuard{mux}
 	for _, path := range []string{
 		"/v1/chat/completions",
 		"/v1/completions",

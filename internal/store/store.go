@@ -608,6 +608,8 @@ var migrations = []string{
 	`ALTER TABLE activity_inflight ADD COLUMN owner_start TEXT NOT NULL DEFAULT ''`,
 	// What each provider's own bill says next to what corrallm metered (2026-10-20).
 	providerBillingSchema,
+	spendTokenSchema,
+	spendReconcileSchema,
 	providerBillingFetchSchema,
 	// The open billing-drift episode per window, so a restart or handoff does
 	// not re-announce it (2026-10-21).

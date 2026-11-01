@@ -69,6 +69,9 @@ type CorrallmMutationNamespace {
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
+  spendReconcile(body: corrallm_SpendReconcileInputBodyInput!): corrallm_SpendReport @derived(operationId: "spendReconcile")
+  spendTokenCreate(body: corrallm_SpendTokenCreateInputBodyInput!): corrallm_SpendTokenCreateOutputBody @derived(operationId: "spendTokenCreate")
+  spendTokenRevoke(body: corrallm_SpendTokenRevokeInputBodyInput!): corrallm_SpendTokenRevokeOutputBody @derived(operationId: "spendTokenRevoke")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
   testIdentityProvider(body: corrallm_TestIdentityProviderInputBodyInput!): corrallm_TestIdentityProviderOutputBody @derived(operationId: "testIdentityProvider")
@@ -291,6 +294,8 @@ type CorrallmQueryNamespace {
     """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
     to: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  spend: corrallm_SpendReport @derived(operationId: "spend")
+  spendTokens: corrallm_SpendTokensOutputBody @derived(operationId: "spendTokens")
   toolBuildHistory(
     """Scope to one host. Empty means any."""
     host: String
@@ -439,6 +444,9 @@ type CorrallmV1MutationNamespace {
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
+  spendReconcile(body: corrallm_SpendReconcileInputBodyInput!): corrallm_SpendReport @derived(operationId: "spendReconcile")
+  spendTokenCreate(body: corrallm_SpendTokenCreateInputBodyInput!): corrallm_SpendTokenCreateOutputBody @derived(operationId: "spendTokenCreate")
+  spendTokenRevoke(body: corrallm_SpendTokenRevokeInputBodyInput!): corrallm_SpendTokenRevokeOutputBody @derived(operationId: "spendTokenRevoke")
   startBenchRun(body: corrallm_BenchRunInputBodyInput!): corrallm_BenchRunOutputBody @derived(operationId: "startBenchRun")
   suppressWarning(body: corrallm_SuppressWarningInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "suppressWarning")
   testIdentityProvider(body: corrallm_TestIdentityProviderInputBodyInput!): corrallm_TestIdentityProviderOutputBody @derived(operationId: "testIdentityProvider")
@@ -660,6 +668,8 @@ type CorrallmV1QueryNamespace {
     """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
     to: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  spend: corrallm_SpendReport @derived(operationId: "spend")
+  spendTokens: corrallm_SpendTokensOutputBody @derived(operationId: "spendTokens")
   toolBuildHistory(
     """Scope to one host. Empty means any."""
     host: String
@@ -3603,6 +3613,66 @@ type corrallm_SlowSpellView {
   worstAtMs: Long!
   """The slowest single request."""
   worstMs: Long!
+}
+
+type corrallm_SpendProvider {
+  billedUsd: Float
+  costEstimated: Boolean!
+  estimatedUsd: Float!
+  period: String!
+  provider: String!
+  remainingUsd: Float
+  source: String!
+  staleSeconds: Long
+}
+
+input corrallm_SpendReconcileInputBodyInput {
+  """What the provider's console shows this month, in USD."""
+  usd: Float!
+}
+
+type corrallm_SpendReport {
+  asOf: String!
+  currency: String!
+  object: String!
+  providers: [corrallm_SpendProvider!]!
+}
+
+input corrallm_SpendTokenCreateInputBodyInput {
+  """Days until it expires. 0 is 90; negative never expires."""
+  days: Long
+  """What the token is for."""
+  label: String
+}
+
+type corrallm_SpendTokenCreateOutputBody {
+  id: Long!
+  token: String!
+}
+
+input corrallm_SpendTokenRevokeInputBodyInput {
+  id: Long!
+}
+
+type corrallm_SpendTokenRevokeOutputBody {
+  ok: Boolean!
+}
+
+type corrallm_SpendTokenView {
+  """Unix milliseconds."""
+  createdMs: Long!
+  """Unix milliseconds; 0 never expires."""
+  expiresMs: Long!
+  id: Long!
+  label: String!
+  """Unix milliseconds; 0 is live."""
+  revokedMs: Long!
+  """Unix milliseconds of the last read; 0 never used."""
+  usedMs: Long!
+}
+
+type corrallm_SpendTokensOutputBody {
+  tokens: [corrallm_SpendTokenView!]!
 }
 
 type corrallm_StageView {

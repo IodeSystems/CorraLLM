@@ -339,6 +339,46 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.ProviderBilling)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "spend",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/spend",
+		Summary:     "Claude spend this month: the ledger estimate, any real figure given, and the budget left.",
+		Tags:        []string{"observability"},
+	}, h.SpendReport)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "spendReconcile",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/spend/reconcile",
+		Summary:     "Give the real figure off the provider's console. Only spend after it is estimated.",
+		Tags:        []string{"control"},
+	}, h.SpendReconcile)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "spendTokens",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/spend/tokens",
+		Summary:     "List cost tokens. A token is never shown again after it is made.",
+		Tags:        []string{"observability"},
+	}, h.SpendTokens)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "spendTokenCreate",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/spend/tokens",
+		Summary:     "Make a cost token: it reads GET /v1/spend and nothing else.",
+		Tags:        []string{"control"},
+	}, h.SpendTokenCreate)
+
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "spendTokenRevoke",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/spend/tokens/revoke",
+		Summary:     "End a cost token.",
+		Tags:        []string{"control"},
+	}, h.SpendTokenRevoke)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "benchArmMatrix",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/bench/arms",
