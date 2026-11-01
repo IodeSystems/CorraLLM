@@ -232,5 +232,12 @@ github.com/iodesystems/openai-claude-api-shim v0.1.0 (stdlib, bytes in and out) 
 what a caller gets: temperature/top_p/top_k are no longer sent; a stream defaults to 64000
 max_tokens; usage carries the two cache classes, which `extractUsage` and the cost classes must
 read; a tool result with no matching call becomes text. Not covered by the shim: `messages.go` and
-`callerAuth`. The loop detector needs OpenAI SSE ahead of `loopWriter`, as today. Stay on agentkit
-v0.16.3 until agentkit has dropped the SDK.
+`callerAuth`. The loop detector needs OpenAI SSE ahead of `loopWriter`, as today. agentkit v0.19.0 has
+dropped the SDK, so the pin can move once v0.19.0 is reviewed here.
+
+Pricing (owner 11-01): a cost that is an estimate must say so, and dun and corrallm each keep their
+own price override, because either may be installed without the other. Shim v0.2.0: usage carries
+`cost` and `cost_estimated: true`, `StreamOptions.Prices` overrides its built-in list, `Response`
+takes `StreamOptions`. **blocking decision (owner):** where corrallm's override lives. Assumed:
+in `corrallm.yaml`, beside the model costs, not a second file. `cost_estimated` must reach the
+activity row and the reply, and must not be summed into billed USD unmarked.
