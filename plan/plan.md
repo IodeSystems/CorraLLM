@@ -377,6 +377,29 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ⏸ P71 — Anthropic spend: admin credential held here, cost tokens for clients — 2026-11-01
+
+Owner, via dun-a8: `ant` (Anthropic's CLI) gives a browser login and short-lived tokens. Console orgs
+have no read-only scope, so reading cost needs full admin. Clients must never hold admin: corrallm
+holds it, or the login, and mints its own tokens that read spend and nothing else. dun-a8 builds the
+stdlib agentkit package (credential resolve, login, month-to-date cost). Waits for its tag.
+
+Design: Anthropic is one more `billing.Provider`, so the reconciler alone makes the admin call, on its
+schedule, into `provider_billing`, with the drift check as for Fireworks. `GET /v1/spend` reads stored
+rows: a client can never cause an admin call. A cost token is its own table (hash only, label, expiry,
+revoked, last used), prefix `spend-`, not a `KeyPolicy`. Inference must refuse the prefix before key
+lookup, because `unknownKeys` may admit a stranger. No corrallm doctor exists: `ant` goes in as a
+`internal/toolchain` recipe, optional, estimates only without it. Also feeds P68's balances.
+
+- **next:** owner decisions below, then dun's tag.
+- **risks:** org:admin can manage API keys and members, on a service reachable from the internet, so a
+  compromise here is the whole org, not spend. Admin stays out of the config API, exports, logs and the
+  activity row, and is only sent to the one cost URL. The login stays on this box, not a web page.
+- **blocking decisions (owner):** login or admin key here (recommended: `ant` login, short-lived, no
+  stored admin secret); who starts the login (recommended: CLI only, `corrallm` on the box, never the
+  dashboard); token expiry default (recommended: 90 days).
+- **assumptions:** tokens are global, not per key. A client sees org spend, not its own share.
+
 ### ◐ P70 — Claude translation moved to openai-claude-api-shim — 2026-11-01
 
 Owner: corrallm's Claude translation moves to the shared layer, so it is not paid for twice.
