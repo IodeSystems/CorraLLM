@@ -15,6 +15,7 @@ import (
 // meter reading.
 const (
 	costFromProvider = "provider"        // the upstream said so (OpenRouter's usage.cost)
+	costFromEstimate = "estimate"        // worked out from Claude's tokens, not billed by anyone
 	costFromPrices   = "price-table"     // a paid type's per-token rates
 	costFromEnergy   = "energy-estimate" // this box's watts-per-token coefficients
 	costFromFree     = "free-tier"       // a declared free tier: $0
@@ -44,22 +45,38 @@ func (p *Proxy) classCost(typ string, u usage) (cCost, pCost, gCost float64) {
 	return cCost, pCost, gCost
 }
 
+// free reports that a request costs corrallm nothing. An estimate does not outrank
+// a declared free tier, or a caller's own Claude sign-in, which that caller pays
+// for: only a provider's own figure says money was spent here.
+func (p *Proxy) free(backend config.Model, u usage) bool {
+	if u.Cost > 0 && !u.CostEstimated {
+		return false
+	}
+	if p.cost.NoCharge(backend) {
+		return true
+	}
+	t, err := backend.ProxyTarget()
+	return u.CostEstimated && err == nil && t != nil && t.CallerAuth
+}
+
 // replyCost is the $ the activity row records for a text request, and its
 // source. The same steps as the accounting in serve, in the same order —
 // costinject_test holds the two equal.
 func (p *Proxy) replyCost(backend config.Model, u usage, loadCost float64) (float64, string) {
 	c, pr, g := p.classCost(backend.Type, u)
 	usd := c + pr + g
-	free := u.Cost <= 0 && p.cost.NoCharge(backend)
+	free := p.free(backend, u)
 	if free {
 		usd = 0
 	}
 	usd += loadCost
 	switch {
-	case u.Cost > 0:
-		return usd, costFromProvider
 	case free:
 		return usd, costFromFree
+	case u.CostEstimated:
+		return usd, costFromEstimate
+	case u.Cost > 0:
+		return usd, costFromProvider
 	case p.cost.IsPaidType(backend.Type):
 		return usd, costFromPrices
 	case usd > 0:

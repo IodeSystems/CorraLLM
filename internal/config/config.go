@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	shim "github.com/iodesystems/openai-claude-api-shim"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,6 +22,42 @@ import (
 //
 // The schema mirrors ~/doc/plan/corrallm.md §3. Sections not yet consumed are
 // still parsed so configs are forward-compatible and round-trippable.
+// ClaudePrice is a model's rates in USD per million tokens. Long, when set,
+// replaces them for a request whose prompt is over LongOver tokens.
+type ClaudePrice struct {
+	Input    float64      `yaml:"input"`
+	Write5m  float64      `yaml:"write5m"`
+	Write1h  float64      `yaml:"write1h"`
+	Read     float64      `yaml:"read"`
+	Output   float64      `yaml:"output"`
+	Long     *ClaudePrice `yaml:"long,omitempty"`
+	LongOver int          `yaml:"longOver,omitempty"`
+}
+
+func (p ClaudePrice) shim() shim.Price {
+	out := shim.Price{Input: p.Input, Write5m: p.Write5m, Write1h: p.Write1h, Read: p.Read, Output: p.Output, LongOver: p.LongOver}
+	if p.Long != nil {
+		long := p.Long.shim()
+		out.Long = &long
+	}
+	return out
+}
+
+// ClaudePrices maps a model id, or a prefix of one, to its rates.
+type ClaudePrices map[string]ClaudePrice
+
+// Shim is the table in the shim's form, nil when there is none.
+func (c ClaudePrices) Shim() shim.Prices {
+	if len(c) == 0 {
+		return nil
+	}
+	out := make(shim.Prices, len(c))
+	for name, p := range c {
+		out[name] = p.shim()
+	}
+	return out
+}
+
 // LoopDetection is agentkit's loopdetector, installed on the proxy. Zero values
 // take its defaults.
 type LoopDetection struct {
@@ -158,6 +195,12 @@ type Config struct {
 	// Guardrails are the named checks a key can hold its requests to (P67);
 	// see Guardrail. A key lists the ones it uses in its own `guardrails`.
 	Guardrails map[string]Guardrail `yaml:"guardrails,omitempty"`
+
+	// ClaudePrices override the shim's built-in Claude prices, by model id or
+	// prefix. Anthropic reports tokens and no money, so a cost for Claude is an
+	// estimate either way and is marked as one. corrallm's own, not shared with
+	// dun's: either may be installed without the other.
+	ClaudePrices ClaudePrices `yaml:"claudePrices,omitempty"`
 
 	// LoopDetection watches streamed chat replies for loops (loopwatch.go). Nil
 	// is off. See LoopDetection.

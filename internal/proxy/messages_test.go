@@ -15,6 +15,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	shim "github.com/iodesystems/openai-claude-api-shim"
+
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/store"
 )
@@ -306,12 +308,12 @@ func TestMessagesErrorsInAnthropicShape(t *testing.T) {
 func TestStripCorrallmThinkingTurnsThinkingOffForTheLastTurn(t *testing.T) {
 	in := `{"thinking":{"type":"enabled","budget_tokens":1000},"messages":[{"role":"user","content":"x"},
 		{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"corrallm"},{"type":"tool_use","id":"a","name":"R","input":{}}]}]}`
-	out := string(stripCorrallmThinking([]byte(in)))
+	out := string(shim.StripThinking([]byte(in), thinkingSigCorrallm))
 	if strings.Contains(out, "corrallm") || strings.Contains(out, `"budget_tokens"`) || !strings.Contains(out, "tool_use") {
 		t.Errorf("got %s", out)
 	}
 	plain := `{"messages":[{"role":"user","content":"x"}]}`
-	if string(stripCorrallmThinking([]byte(plain))) != plain {
+	if string(shim.StripThinking([]byte(plain), thinkingSigCorrallm)) != plain {
 		t.Error("a body with nothing to strip must keep its bytes")
 	}
 }

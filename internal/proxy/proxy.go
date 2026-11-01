@@ -32,6 +32,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	shim "github.com/iodesystems/openai-claude-api-shim"
+
 	"github.com/iodesystems/corrallm/internal/alert"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
@@ -1297,7 +1299,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		anthropic := pr.Target != nil && pr.Target.API == config.APIAnthropic &&
 			r.URL.Path == "/v1/chat/completions"
 		if anthropic {
-			ab, terr := toAnthropicRequest(outBody, anthropicOpts{MaxTokens: backend.MaxTokens, CacheTTL: pr.Target.CacheTTL})
+			ab, terr := claudeRequest(outBody, backend, pr.Target.CacheTTL)
 			if terr != nil {
 				// The deferred release()/done() free the slot and the ref.
 				writeJSONError(w, http.StatusBadRequest, "invalid_request_error", terr.Error())
@@ -1314,9 +1316,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		messages := r.URL.Path == "/v1/messages"
 		nativeMessages := messages && pr.Target != nil && pr.Target.API == config.APIAnthropic
 		if nativeMessages {
-			outBody = stripCorrallmThinking(outBody)
+			outBody = shim.StripThinking(outBody, thinkingSigCorrallm)
 		} else if messages {
-			ob, terr := anthropicToOpenAI(outBody)
+			ob, terr := shim.ReverseRequest(outBody)
 			if terr != nil {
 				writeJSONError(w, http.StatusBadRequest, "invalid_request_error", terr.Error())
 				p.logReq(r, store.Activity{Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path,
@@ -1492,7 +1494,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		var aw *anthropicWriter
 		upReq := r.WithContext(reqCtx)
 		if anthropic {
-			aw = newAnthropicWriter(sc)
+			aw = newAnthropicWriter(sc, p.config().ClaudePrices.Shim())
 			dst = aw
 			u := *upReq.URL
 			u.Path, u.RawPath = "/v1/messages", ""
@@ -1709,6 +1711,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			if !streaming && u.PromptTokens == 0 && len(sc.tail) > 0 {
 				u = usageFromTail(sc.tail)
 			}
+			if nativeMessages {
+				u = withClaudeEstimate(u, sc.buf, streaming, p.config().ClaudePrices.Shim())
+			}
 			finishReason = extractFinishReason(sc.buf, streaming)
 			thinking, thinkingMeasured = sc.thinkingTokens(u)
 			if !thinkingMeasured && u.CompletionTokensDetails.ReasoningTokens != nil {
@@ -1733,7 +1738,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// if the upstream says a request cost money, it costs money whatever the
 		// config declares, and that is the path a `freeTier` usd cap is charged
 		// through. Only the TABLE-DERIVED figure is dropped.
-		if u.Cost <= 0 && p.cost.NoCharge(backend) {
+		if p.free(backend, u) {
 			costUSD, cCost, pCost, gCost = 0, 0, 0, 0
 		}
 		costUSD += loadCost
@@ -2854,7 +2859,7 @@ func (p *Proxy) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	if target == nil {
 		// "estimated" marks it: a count from no tokenizer must not pass for one.
-		jsonResp(w, http.StatusOK, map[string]any{"input_tokens": estimateAnthropicTokens(body), "estimated": true})
+		jsonResp(w, http.StatusOK, map[string]any{"input_tokens": shim.EstimateTokens(body), "estimated": true})
 		return
 	}
 	if target.Model != "" {
@@ -3672,7 +3677,7 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 				// own (passthrough), then a version pinned in the config's
 				// headers, overwrite it.
 				if req.Header.Get("anthropic-version") == "" {
-					req.Header.Set("anthropic-version", anthropicVersion)
+					req.Header.Set("anthropic-version", shim.APIVersion)
 				}
 			} else {
 				// A /v1/messages request translated for an OpenAI upstream:
@@ -3825,6 +3830,9 @@ type usage struct {
 	PromptTokens     int     `json:"prompt_tokens"`
 	CompletionTokens int     `json:"completion_tokens"`
 	Cost             float64 `json:"cost"` // provider-reported $ (OpenRouter); 0 if absent
+	// CostEstimated says Cost was worked out from tokens, by the shim, and no
+	// provider billed it.
+	CostEstimated bool `json:"cost_estimated"`
 	// PromptTokensDetails is the OpenAI-shape cached-token report nested under
 	// "usage". extractUsage collapses it into CachedTokens.
 	PromptTokensDetails struct {
