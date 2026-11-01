@@ -377,6 +377,25 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P70 — Claude translation moved to openai-claude-api-shim — 2026-11-01
+
+Owner: corrallm's Claude translation moves to the shared layer, so it is not paid for twice.
+`anthropic.go` and `messages.go` are now the HTTP around shim v0.3.0, both directions (-1,870 lines);
+agentkit v0.19.0. Stays here: the candidate walk, `callerAuth`, X-Corrallm-Key, the backends, the writers.
+Cost (owner 11-01): the shim's estimate replaces the type's rates for Claude, so cache writes are
+priced at their own rate. It is marked: `cost_estimated`, `cost_source: estimate`. `replyCost` no longer
+reads it as a provider's bill. A passthrough is estimated from its tokens. Not estimated: a local model
+behind a Claude name. Not charged: a caller's own sign-in, a declared free tier.
+
+- **next:** deploy after review. Set `claudePrices:` only if the shim's table is wrong for a model.
+- **risks:** not run against real Anthropic. Callers lose temperature/top_p/top_k to Claude, and an
+  orphan tool result now becomes text; both are the shim's choice. A Claude model that a `type` priced
+  now uses the shim's table, so its recorded cost moves. A stream whose backend sends no chat
+  completion ends empty after its 200, as it did before.
+- **blocking decisions:** where the price override lives. Assumed: `claudePrices:` in `corrallm.yaml`.
+  The "remaining budget" number is not built: no provider balance for Claude is read yet.
+- **assumptions:** kept corrallm's 16000 max_tokens fallback over the shim's 64000.
+
 ### ◐ P69 — Loop detection on streamed chat replies — 2026-10-31
 
 Owner: move loop and churn detection into agentkit, installed here on streams before the

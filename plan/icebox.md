@@ -224,29 +224,3 @@ GGUF figure) at ≤ 0.0016, and someone reports 5090 decode with MTP above our l
 Qwen3.8-27B in one CUDA megakernel; two-GPU tensor parallel, up to 8 slots batched (622 tok/s total, ~75–78 per request, Q4_K_M on two 3090s). **Two-GPU on this box: no** — needs two identical cards (3080 10 GB cannot hold half of a Q5+ quant; slower card paces both), PCIe P2P (`nvidia-smi topo -p2p r` = NS; needs a patched open kernel module), 3080 is on PCIe x4. Text only (Swift uses `--mmproj`), Q6_K untuned/unchecked, no repetition penalties, top-k ≤ 32, AGPL-3.0, single author. One-GPU build (1.5–1.9× llama.cpp decode on a 3090, slots run serially) is the only candidate; owner declined an A/B 10-21.
 
 **Resume when.** Someone reports the one-GPU build on a 5090 (sm_120) beating llama.cpp+MTP's ~105–138 tok/s on a Q5+ quant with vision, or the two-GPU path supports unequal cards.
-
-## Adopt openai-claude-api-shim for both Claude directions (2026-11-01)
-
-Owner: corrallm's Claude translation moves to the shared layer, so it is not paid for twice. dun-a8
-ports `anthropicToOpenAI`, `openAIToAnthropic` and `messagesStream` into the shim as its second
-direction and says the tag. Do not start before that tag.
-
-**next:** after the tag, adopt the shim for both directions and delete both copies. Move the agentkit
-pin off v0.16.3 to v0.19.0 or later (no SDK; v0.17.0 is retracted). Stays here: `handleMessages`,
-the candidate walk, `callerAuth` (`filterByCallerAuth`, `anthropicCredPrefix`),
-`anthropicResetAsRetryAfter`, X-Corrallm-Key, the backends, the http.ResponseWriter wrappers.
-
-**risks:** behavior a caller sees changes: temperature/top_p/top_k no longer sent; a stream defaults
-to 64000 max_tokens; a tool result with no matching call becomes text. The thinking signature must
-stay `corrallm`: sessions hold blocks signed with it, and a rename sends them to Anthropic, which
-refuses them. The loop detector needs OpenAI SSE ahead of `loopWriter`, as today. `extractUsage` and
-the cost classes must read the two cache classes.
-
-Cost (owner 11-01): the shim houses the estimator; dun and corrallm each supply estimated prices from
-their own file, because either may be installed without the other. Three numbers: estimated cost,
-remaining budget, true cost when there is one. An estimate says so, and is not summed into billed USD
-unmarked. corrallm takes the estimate from the shim in place of `costinject.go`'s Claude path, which
-also ends the 1× cache-write undercount.
-
-**blocking decision (owner):** where corrallm's price file lives. Assumed: `corrallm.yaml`, beside the
-model costs, not a second file.
