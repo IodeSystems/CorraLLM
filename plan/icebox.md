@@ -224,3 +224,13 @@ GGUF figure) at ≤ 0.0016, and someone reports 5090 decode with MTP above our l
 Qwen3.8-27B in one CUDA megakernel; two-GPU tensor parallel, up to 8 slots batched (622 tok/s total, ~75–78 per request, Q4_K_M on two 3090s). **Two-GPU on this box: no** — needs two identical cards (3080 10 GB cannot hold half of a Q5+ quant; slower card paces both), PCIe P2P (`nvidia-smi topo -p2p r` = NS; needs a patched open kernel module), 3080 is on PCIe x4. Text only (Swift uses `--mmproj`), Q6_K untuned/unchecked, no repetition penalties, top-k ≤ 32, AGPL-3.0, single author. One-GPU build (1.5–1.9× llama.cpp decode on a 3090, slots run serially) is the only candidate; owner declined an A/B 10-21.
 
 **Resume when.** Someone reports the one-GPU build on a 5090 (sm_120) beating llama.cpp+MTP's ~105–138 tok/s on a Q5+ quant with vision, or the two-GPU path supports unequal cards.
+
+## Adopt openai-claude-api-shim in place of `internal/proxy/anthropic.go` (2026-11-01)
+
+github.com/iodesystems/openai-claude-api-shim v0.1.0 (stdlib, bytes in and out) started from
+`anthropic.go`, with its tests. Opt-in, unscheduled. Check before adopting, because each changes
+what a caller gets: temperature/top_p/top_k are no longer sent; a stream defaults to 64000
+max_tokens; usage carries the two cache classes, which `extractUsage` and the cost classes must
+read; a tool result with no matching call becomes text. Not covered by the shim: `messages.go` and
+`callerAuth`. The loop detector needs OpenAI SSE ahead of `loopWriter`, as today. Stay on agentkit
+v0.16.3 until agentkit has dropped the SDK.
