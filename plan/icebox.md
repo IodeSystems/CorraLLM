@@ -225,19 +225,28 @@ Qwen3.8-27B in one CUDA megakernel; two-GPU tensor parallel, up to 8 slots batch
 
 **Resume when.** Someone reports the one-GPU build on a 5090 (sm_120) beating llama.cpp+MTP's ~105–138 tok/s on a Q5+ quant with vision, or the two-GPU path supports unequal cards.
 
-## Adopt openai-claude-api-shim in place of `internal/proxy/anthropic.go` (2026-11-01)
+## Adopt openai-claude-api-shim for both Claude directions (2026-11-01)
 
-github.com/iodesystems/openai-claude-api-shim v0.1.0 (stdlib, bytes in and out) started from
-`anthropic.go`, with its tests. Opt-in, unscheduled. Check before adopting, because each changes
-what a caller gets: temperature/top_p/top_k are no longer sent; a stream defaults to 64000
-max_tokens; usage carries the two cache classes, which `extractUsage` and the cost classes must
-read; a tool result with no matching call becomes text. Not covered by the shim: `messages.go` and
-`callerAuth`. The loop detector needs OpenAI SSE ahead of `loopWriter`, as today. agentkit v0.19.0 has
-dropped the SDK, so the pin can move once v0.19.0 is reviewed here.
+Owner: corrallm's Claude translation moves to the shared layer, so it is not paid for twice. dun-a8
+ports `anthropicToOpenAI`, `openAIToAnthropic` and `messagesStream` into the shim as its second
+direction and says the tag. Do not start before that tag.
 
-Pricing (owner 11-01): a cost that is an estimate must say so, and dun and corrallm each keep their
-own price override, because either may be installed without the other. Shim v0.2.0: usage carries
-`cost` and `cost_estimated: true`, `StreamOptions.Prices` overrides its built-in list, `Response`
-takes `StreamOptions`. **blocking decision (owner):** where corrallm's override lives. Assumed:
-in `corrallm.yaml`, beside the model costs, not a second file. `cost_estimated` must reach the
-activity row and the reply, and must not be summed into billed USD unmarked.
+**next:** after the tag, adopt the shim for both directions and delete both copies. Move the agentkit
+pin off v0.16.3 to v0.19.0 or later (no SDK; v0.17.0 is retracted). Stays here: `handleMessages`,
+the candidate walk, `callerAuth` (`filterByCallerAuth`, `anthropicCredPrefix`),
+`anthropicResetAsRetryAfter`, X-Corrallm-Key, the backends, the http.ResponseWriter wrappers.
+
+**risks:** behavior a caller sees changes: temperature/top_p/top_k no longer sent; a stream defaults
+to 64000 max_tokens; a tool result with no matching call becomes text. The thinking signature must
+stay `corrallm`: sessions hold blocks signed with it, and a rename sends them to Anthropic, which
+refuses them. The loop detector needs OpenAI SSE ahead of `loopWriter`, as today. `extractUsage` and
+the cost classes must read the two cache classes.
+
+Cost (owner 11-01): the shim houses the estimator; dun and corrallm each supply estimated prices from
+their own file, because either may be installed without the other. Three numbers: estimated cost,
+remaining budget, true cost when there is one. An estimate says so, and is not summed into billed USD
+unmarked. corrallm takes the estimate from the shim in place of `costinject.go`'s Claude path, which
+also ends the 1× cache-write undercount.
+
+**blocking decision (owner):** where corrallm's price file lives. Assumed: `corrallm.yaml`, beside the
+model costs, not a second file.
