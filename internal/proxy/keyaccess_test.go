@@ -56,7 +56,7 @@ func TestParentBudgetRefusalSaysParent(t *testing.T) {
 	}
 	rec := k.do(http.MethodPost, "/v1/chat/completions", child.Key, `{"model":"mock"}`)
 	if rec.Code != http.StatusTooManyRequests ||
-		!strings.Contains(rec.Body.String(), "parent key parent's budget on model:mock: 1 requests of 1 requests spent today (UTC)") {
+		!strings.Contains(rec.Body.String(), "parent key parent's budget on model:mock: budget of 1 requests created on ") {
 		t.Fatalf("over the parent's budget: %d %s", rec.Code, rec.Body.String())
 	}
 	// The child's own `*` budget charged too, and another model still serves.

@@ -384,3 +384,25 @@ func TestRenewingLimitReportsItsOwnPeriod(t *testing.T) {
 		t.Fatalf("provider = %+v", got)
 	}
 }
+
+func TestRefusalSaysTheBudgetAndItsDates(t *testing.T) {
+	p, _, cand := timedRig(t)
+	now := time.Now().UTC()
+	scope := config.ProviderScopeKey("anthropic")
+	if err := p.AddBudget("anthropic", 3, "", now.Add(48*time.Hour).Format(time.RFC3339), "", now); err != nil {
+		t.Fatal(err)
+	}
+	p.quota.Charge(scope, config.DimUSD, 10)
+	p.grants.spend(p.store, scope, cand.Name, 3)
+	notes := p.budgetNotes([]string{scope})
+	if len(notes) != 1 {
+		t.Fatalf("notes = %+v", notes)
+	}
+	start := config.PeriodStart("month", 15, now)
+	want := "the anthropic provider's limit (every key): budget of $10.00 created on " + start.Format("2006-01-02") +
+		", expires on " + start.AddDate(0, 1, 0).Format("2006-01-02") + " 00:00 UTC; $10.00 spent; timed budget of $3.00 created on " +
+		now.Format("2006-01-02") + ", expires on " + now.Add(48*time.Hour).Format("2006-01-02 15:04 UTC") + "; $3.00 spent"
+	if notes[0].Summary != want {
+		t.Errorf("summary:\n got %s\nwant %s", notes[0].Summary, want)
+	}
+}

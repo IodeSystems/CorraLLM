@@ -62,6 +62,9 @@ type Window struct {
 	Blocked  bool      `json:"blocked,omitempty"`  // level has reached the limit
 	Hard     bool      `json:"hard,omitempty"`     // blocked refuses, never served anyway
 	ResetsAt time.Time `json:"resetsAt,omitempty"` // when the level fully drains to zero
+	// StartedAt is when a calendar window's current period began; zero for a
+	// falloff window and a total, which have no period.
+	StartedAt time.Time `json:"startedAt,omitempty"`
 	// SPEND RATE (P56): this window's dimension charged to the scope over the
 	// last hour (or since this process started, when sooner), per hour.
 	RatePerHour float64 `json:"ratePerHour,omitempty"`
@@ -940,6 +943,9 @@ func (l *Ledger) Snapshot() []Entry {
 				}
 				if d := cw.drainAt(now); !d.IsZero() {
 					w.ResetsAt = d
+				}
+				if cw.calendar != "" && cw.calendar != "total" {
+					w.StartedAt = periodStart(cw.calendar, cw.renews, now)
 				}
 				l.project(&w, cw, cs, now)
 				v.Windows = append(v.Windows, w)

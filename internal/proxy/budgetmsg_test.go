@@ -18,6 +18,7 @@ func TestRefusalNamesTheBudget(t *testing.T) {
 		t.Fatalf("first: %d", c)
 	}
 	rec := k.do(http.MethodPost, "/v1/chat/completions", "parent", `{"model":"mock"}`)
+	today, tomorrow := time.Now().UTC().Format("2006-01-02"), time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
 	var body struct {
 		Error struct {
 			Message string       `json:"message"`
@@ -26,8 +27,8 @@ func TestRefusalNamesTheBudget(t *testing.T) {
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	if rec.Code != http.StatusTooManyRequests || len(body.Error.Budgets) != 1 ||
-		!strings.Contains(body.Error.Message, "key parent's budget on everything: 1 requests of 1 requests spent today (UTC)") ||
-		!strings.Contains(body.Error.Message, "UTC)") || body.Error.Budgets[0].RoomAt == "" {
+		!strings.Contains(body.Error.Message, "key parent's budget on everything: budget of 1 requests created on "+today+", expires on "+tomorrow+" 00:00 UTC; 1 requests spent") ||
+		body.Error.Budgets[0].RoomAt == "" {
 		t.Errorf("%d %s", rec.Code, rec.Body.String())
 	}
 

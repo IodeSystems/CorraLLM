@@ -44,23 +44,45 @@ func scopeOwner(scope string) string {
 	return "the model-wide limit on " + scope + " (every key)"
 }
 
-// windowWords renders a window label ("usd/calendar-day") and amounts.
-func windowWords(label string, used, limit float64) string {
-	dim, per, _ := strings.Cut(label, "/")
-	amt := func(n float64) string {
-		if dim == config.DimUSD {
-			return fmt.Sprintf("$%.2f", n)
-		}
-		return fmt.Sprintf("%.0f %s", n, map[string]string{config.DimRequests: "requests", config.DimDwell: "s"}[dim])
+// labelAmount renders an amount in a window label's dimension.
+func labelAmount(label string, n float64) string {
+	dim, _, _ := strings.Cut(label, "/")
+	return amountWords(dim, n)
+}
+
+// budgetWords says a budget with a start and an end.
+func budgetWords(label string, amount float64, start, end time.Time) string {
+	return fmt.Sprintf("budget of %s created on %s, expires on %s", labelAmount(label, amount),
+		start.UTC().Format("2006-01-02"), end.UTC().Format("2006-01-02 15:04 UTC"))
+}
+
+// timedBudgetWords adds a provider's unexpired timed budgets to its refusal: they
+// are spent, or this refusal would not have happened.
+func (p *Proxy) timedBudgetWords(scope string, now time.Time) string {
+	if !config.IsProviderScope(scope) {
+		return ""
 	}
+	var b strings.Builder
+	for _, g := range p.grants.of(scope) {
+		if g.ExpiresMS > now.UnixMilli() {
+			fmt.Fprintf(&b, "; timed %s; $%.2f spent", budgetWords("usd/", g.USD,
+				time.UnixMilli(g.CreatedMS), time.UnixMilli(g.ExpiresMS)), g.Spent)
+		}
+	}
+	return b.String()
+}
+
+// windowWords renders a window with no period: a falloff one or a total.
+func windowWords(label string, used, limit float64) string {
+	_, per, _ := strings.Cut(label, "/")
 	pw := map[string]string{
-		"calendar-day": "today (UTC)", "calendar-month": "this month (UTC)", "total": "in total",
+		"total": "in total",
 		"minute": "in the last minute", "hour": "in the last hour", "day": "in the last 24 hours", "month": "in the last 30 days",
 	}[per]
 	if pw == "" {
 		pw = "per " + per
 	}
-	return fmt.Sprintf("%s of %s spent %s", amt(used), amt(limit), pw)
+	return fmt.Sprintf("%s of %s spent %s", labelAmount(label, used), labelAmount(label, limit), pw)
 }
 
 // budgetNotes describes every full hard window among scopes.
@@ -91,6 +113,11 @@ func (p *Proxy) budgetNotes(scopes []string) []BudgetNote {
 				room = "room again in " + humanWait(wait) + " (" + at.UTC().Format("15:04 UTC") + ")"
 			}
 			n.Summary = fmt.Sprintf("%s: %s; %s", n.Owner, windowWords(w.Label, w.Used, w.Limit), room)
+			if !w.StartedAt.IsZero() {
+				n.Summary = fmt.Sprintf("%s: %s; %s spent", n.Owner,
+					budgetWords(w.Label, w.Limit, w.StartedAt, w.ResetsAt), labelAmount(w.Label, w.Used))
+			}
+			n.Summary += p.timedBudgetWords(e.Backend, now)
 			out = append(out, n)
 		}
 	}

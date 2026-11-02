@@ -383,7 +383,7 @@ Owner, via dun-a8: billed spend is not worth chasing. An `org:admin` `ant` login
 gets 403 from the cost report, so no `ant`, no admin login here. corrallm's ledger is the source: exact
 tokens from every reply at corrallm's prices, and it can refuse past a budget.
 
-Live 11-02 (v0.1.0-37-dirty, the code below is uncommitted): provider `anthropic`, credential `default`
+Live 11-02: provider `anthropic`, credential `default`
 (`${ANTHROPIC_API_KEY}`, the key dun held), `$200/calendar-month,renews=15,hard` on the provider. Models are
 explicit, `anthropic-claude-{opus-5-5,sonnet-5-5,haiku-5-5,fable-5-1}`, in no lane (owner: Claude is selected
 on purpose). Access: `dun`, `sk-aw4` and its 5 subkeys (empty `models`, so the parent's list decides).
@@ -401,14 +401,15 @@ timed budgets and re-applies the reconciled figure. Last period's figure is igno
 not corrallm's spend.
 
 Checked live: dun, `sk-aw4`, one subkey served and costed; real 429s from both a key budget and the provider
-limit (types `allocation_exhausted`, `budget_exhausted`), `room_at` on the 14th. CLI checked on a copy of the
-config tables. Timed budgets and reconcile: unit tests and that copy, not through a real full limit.
+limit (types `allocation_exhausted`, `budget_exhausted`), `room_at` on the 14th. End to end on a sandbox daemon
+and a fake upstream: a full limit refuses; a timed budget pays, runs out, is corrected, expires; reconcile
+reopens and closes the limit and survives a restart. Refusals read "budget of $Z created on X, expires on Y".
 
-- **next:** commit. Mint a cost token and tell dun-a8 `/v1/spend` is live.
+- **next:** mint a cost token and tell dun-a8 `/v1/spend` is live.
 - **risks:** the estimate drifts from the bill by what the price table has wrong and what bypasses corrallm;
   other keys in the Console org share the credit unseen. Not on the dashboard: timed budgets are CLI and API.
-  A dun session pinned to `claude-*` hits lane `claude-*` and gets local Swift with no error. A refusal says
-  "this month" for a renewing window. `corrallm spend` needs the box: no remote form.
+  A dun session pinned to `claude-*` hits lane `claude-*` and gets local Swift with no error. A timed budget
+  overshoots by at most one request, as a hard limit does. `corrallm spend` needs the box: no remote form.
 - **assumptions:** tokens last 90 days by default (`--days`). One org-wide figure, not a client's share.
   `anthropicadmin` unused: no credential here to use it with.
 - **optional extensions:** a dashboard panel; drift alert after a reconcile; P68's other providers.
