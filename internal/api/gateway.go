@@ -353,6 +353,13 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 		Summary:     "Give the real figure off the provider's console. Only spend after it is estimated.",
 		Tags:        []string{"control"},
 	}, h.SpendReconcile)
+	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "spendBudget",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/spend/budgets",
+		Summary:     "Add, change or remove a timed budget: dollars on a provider, past its hard limit, until an expiry.",
+		Tags:        []string{"control"},
+	}, h.SpendBudget)
 
 	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "spendTokens",

@@ -338,6 +338,8 @@ func (m *memCounterStore) AddQuotaCounter(backend, label string, amt, limit floa
 	return m.put(backend, label, lv+amt, at), nil
 }
 
+func (m *memCounterStore) SetQuotaCounter(string, string, float64, time.Time) error { return nil }
+
 func (m *memCounterStore) RaiseQuotaCounter(backend, label string, floor float64, periodStart, at time.Time) (float64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

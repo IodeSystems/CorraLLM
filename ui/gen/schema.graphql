@@ -6,8 +6,6 @@ schema {
   mutation: Mutation
 }
 
-directive @export(as: String!) on FIELD
-
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
 
 type CorrallmMutationNamespace {
@@ -69,6 +67,7 @@ type CorrallmMutationNamespace {
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
+  spendBudget(body: corrallm_SpendBudgetInputBodyInput!): corrallm_SpendReport @derived(operationId: "spendBudget")
   spendReconcile(body: corrallm_SpendReconcileInputBodyInput!): corrallm_SpendReport @derived(operationId: "spendReconcile")
   spendTokenCreate(body: corrallm_SpendTokenCreateInputBodyInput!): corrallm_SpendTokenCreateOutputBody @derived(operationId: "spendTokenCreate")
   spendTokenRevoke(body: corrallm_SpendTokenRevokeInputBodyInput!): corrallm_SpendTokenRevokeOutputBody @derived(operationId: "spendTokenRevoke")
@@ -444,6 +443,7 @@ type CorrallmV1MutationNamespace {
   setSecret(body: corrallm_SetSecretInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setSecret")
   setServerEphemeral(body: corrallm_SetServerEphemeralInputBodyInput!, name: String!): corrallm_ConfigMutationOutputBody @derived(operationId: "setServerEphemeral")
   setWarningThreshold(body: corrallm_SetWarningThresholdInputBodyInput!): corrallm_ConfigMutationOutputBody @derived(operationId: "setWarningThreshold")
+  spendBudget(body: corrallm_SpendBudgetInputBodyInput!): corrallm_SpendReport @derived(operationId: "spendBudget")
   spendReconcile(body: corrallm_SpendReconcileInputBodyInput!): corrallm_SpendReport @derived(operationId: "spendReconcile")
   spendTokenCreate(body: corrallm_SpendTokenCreateInputBodyInput!): corrallm_SpendTokenCreateOutputBody @derived(operationId: "spendTokenCreate")
   spendTokenRevoke(body: corrallm_SpendTokenRevokeInputBodyInput!): corrallm_SpendTokenRevokeOutputBody @derived(operationId: "spendTokenRevoke")
@@ -3615,20 +3615,59 @@ type corrallm_SlowSpellView {
   worstMs: Long!
 }
 
+type corrallm_SpendBudget {
+  active: Boolean!
+  expires: String!
+  id: Long!
+  leftUsd: Float!
+  note: String
+  provider: String!
+  spentUsd: Float!
+  usd: Float!
+}
+
+enum corrallm_SpendBudgetInputBodyAction {
+  add
+  delete
+  update
+}
+
+input corrallm_SpendBudgetInputBodyInput {
+  action: corrallm_SpendBudgetInputBodyAction!
+  """When it expires, RFC 3339."""
+  expires: String
+  """The budget, for update and delete."""
+  id: Long
+  """Set the amount so that this much USD remains."""
+  left: Float
+  note: String
+  """The provider, for add."""
+  provider: String
+  """Time from now until it expires, e.g. 72h."""
+  ttl: String
+  """The amount in USD."""
+  usd: Float
+}
+
 type corrallm_SpendProvider {
   billedUsd: Float
+  budgets: [corrallm_SpendBudget!]
   costEstimated: Boolean!
   estimatedUsd: Float!
+  limitUsd: Float
   period: String!
   provider: String!
   remainingUsd: Float
+  resetsAt: String
   source: String!
   staleSeconds: Long
 }
 
 input corrallm_SpendReconcileInputBodyInput {
-  """What the provider's console shows this month, in USD."""
-  usd: Float!
+  """What the provider's console shows left of the credit, in USD."""
+  left: Float
+  """What the provider's console shows spent this period, in USD."""
+  usd: Float
 }
 
 type corrallm_SpendReport {

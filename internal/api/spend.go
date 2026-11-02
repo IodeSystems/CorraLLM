@@ -29,10 +29,11 @@ func (h *Handlers) SpendReport(_ context.Context, _ *struct{}) (*SpendReportOutp
 	return &SpendReportOutput{Body: rep}, nil
 }
 
-// SpendReconcileInput is the real figure.
+// SpendReconcileInput is the real figure: what was spent, or what is left.
 type SpendReconcileInput struct {
 	Body struct {
-		USD float64 `json:"usd" minimum:"0" doc:"What the provider's console shows this month, in USD."`
+		USD  *float64 `json:"usd,omitempty" minimum:"0" doc:"What the provider's console shows spent this period, in USD."`
+		Left *float64 `json:"left,omitempty" minimum:"0" doc:"What the provider's console shows left of the credit, in USD."`
 	}
 }
 
@@ -41,9 +42,67 @@ func (h *Handlers) SpendReconcile(_ context.Context, in *SpendReconcileInput) (*
 	if h.Proxy == nil {
 		return nil, huma.Error503ServiceUnavailable("proxy unavailable")
 	}
+	var usd float64
+	switch b := in.Body; {
+	case (b.USD == nil) == (b.Left == nil):
+		return nil, huma.Error400BadRequest("give usd or left")
+	case b.USD != nil:
+		usd = *b.USD
+	default:
+		var err error
+		if usd, err = proxy.SpentFromLeft(h.Proxy.Config(), *b.Left); err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+	}
 	now := time.Now()
-	if err := h.Proxy.ReconcileSpend(in.Body.USD, now); err != nil {
+	if err := h.Proxy.ReconcileSpend(usd, now); err != nil {
 		return nil, err
+	}
+	rep, err := h.Proxy.Spend(now)
+	if err != nil {
+		return nil, err
+	}
+	return &SpendReportOutput{Body: rep}, nil
+}
+
+// SpendBudgetInput adds, changes or removes a timed budget on a provider.
+type SpendBudgetInput struct {
+	Body struct {
+		Action   string   `json:"action" enum:"add,update,delete"`
+		ID       int64    `json:"id,omitempty" doc:"The budget, for update and delete."`
+		Provider string   `json:"provider,omitempty" doc:"The provider, for add."`
+		USD      *float64 `json:"usd,omitempty" doc:"The amount in USD."`
+		Left     *float64 `json:"left,omitempty" doc:"Set the amount so that this much USD remains."`
+		TTL      string   `json:"ttl,omitempty" doc:"Time from now until it expires, e.g. 72h."`
+		Expires  string   `json:"expires,omitempty" doc:"When it expires, RFC 3339."`
+		Note     *string  `json:"note,omitempty"`
+	}
+}
+
+// SpendBudget changes a timed budget and returns the report with it.
+func (h *Handlers) SpendBudget(_ context.Context, in *SpendBudgetInput) (*SpendReportOutput, error) {
+	if h.Proxy == nil {
+		return nil, huma.Error503ServiceUnavailable("proxy unavailable")
+	}
+	b, now := in.Body, time.Now()
+	var err error
+	switch b.Action {
+	case "add":
+		note, usd := "", 0.0
+		if b.Note != nil {
+			note = *b.Note
+		}
+		if b.USD != nil {
+			usd = *b.USD
+		}
+		err = h.Proxy.AddBudget(b.Provider, usd, b.TTL, b.Expires, note, now)
+	case "update":
+		err = h.Proxy.EditBudget(b.ID, proxy.BudgetEdit{USD: b.USD, Left: b.Left, TTL: b.TTL, Expires: b.Expires, Note: b.Note}, now)
+	case "delete":
+		err = h.Proxy.RemoveBudget(b.ID)
+	}
+	if err != nil {
+		return nil, huma.Error400BadRequest(err.Error())
 	}
 	rep, err := h.Proxy.Spend(now)
 	if err != nil {

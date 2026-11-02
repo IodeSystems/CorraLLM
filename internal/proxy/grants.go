@@ -17,7 +17,8 @@ import (
 //
 // A value add covers the KEY's allocation only. A model's or provider's own
 // budget (the model-wide deepseek cap) still refuses: that is a different
-// owner's limit.
+// owner's limit. A provider has its own: a timed budget (spend.go) is this same
+// row with the provider's scope where the key would be.
 
 // grantBook is the in-memory copy of key_grant, read on every request.
 type grantBook struct {
@@ -179,6 +180,24 @@ func (g *grantBook) dropKey(key string) []store.KeyGrant {
 	}
 	delete(g.byKey, key)
 	return out
+}
+
+// reloadGrants replaces the book with what the database holds.
+func (p *Proxy) reloadGrants() {
+	if p.store == nil {
+		return
+	}
+	rows, err := p.store.LoadKeyGrants()
+	if err != nil {
+		slog.Warn("value adds: reload failed", "err", err)
+		return
+	}
+	p.grants.mu.Lock()
+	p.grants.byKey = map[string][]*store.KeyGrant{}
+	p.grants.mu.Unlock()
+	for _, r := range rows {
+		p.grants.put(r)
+	}
 }
 
 func (p *Proxy) loadGrants() {

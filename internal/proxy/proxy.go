@@ -491,6 +491,10 @@ func (q quotaCounterStore) AddQuotaCounter(backend, label string, amt, limit flo
 	return q.st.AddQuotaCounter(backend, label, amt, limit, dur.Milliseconds(), unixMSOrZero(periodStart), at.UnixMilli())
 }
 
+func (q quotaCounterStore) SetQuotaCounter(backend, label string, level float64, at time.Time) error {
+	return q.st.SaveQuotaCounter(backend, label, level, at.UnixMilli())
+}
+
 func (q quotaCounterStore) RaiseQuotaCounter(backend, label string, floor float64, periodStart, at time.Time) (float64, error) {
 	return q.st.RaiseQuotaCounter(backend, label, floor, unixMSOrZero(periodStart), at.UnixMilli())
 }
@@ -1760,6 +1764,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			// that credential's provider, and the box. Spend belongs to the
 			// account that paid for it AND counts against everything above it.
 			for _, sc := range cand.QuotaScopes(p.config()) {
+				if b, _ := p.quota.HardBlocked(sc); b && config.IsProviderScope(sc) {
+					p.grants.spend(p.store, sc, cand.Name, costUSD)
+				}
 				p.quota.Charge(sc, config.DimUSD, costUSD)
 			}
 		}
@@ -2477,7 +2484,7 @@ func (p *Proxy) filterByQuota(cands []config.Candidate) (out []config.Candidate,
 	for _, c := range cands {
 		blocked, until := false, time.Duration(0)
 		for _, sc := range c.QuotaScopes(p.config()) {
-			if b, d := p.quota.HardBlocked(sc); b {
+			if b, d := p.quota.HardBlocked(sc); b && !p.timedBudgetCovers(sc, c.Name) {
 				blocked = true
 				if d > until {
 					until = d
@@ -2500,7 +2507,7 @@ func (p *Proxy) filterByQuota(cands []config.Candidate) (out []config.Candidate,
 		// cannot spend past its provider's, and nothing past the box's.
 		ok := true
 		for _, sc := range c.QuotaScopes(p.config()) {
-			if !p.quota.Available(sc) {
+			if !p.quota.Available(sc) && !p.timedBudgetCovers(sc, c.Name) {
 				ok = false
 				break
 			}
@@ -4179,6 +4186,9 @@ func (p *Proxy) SetConfig(cfg *config.Config) {
 	p.cfg.Store(cfg)
 	p.cost = cost.NewModel(cfg)
 	p.seedQuota(cfg)
+	// The operator's CLI writes the database and asks for a reload.
+	p.reloadGrants()
+	p.syncSpendCounters(time.Now())
 }
 
 // RetryableHeader lets a CALLER volunteer its request for preemption.

@@ -92,3 +92,24 @@ func TestSetLimitsAgainKeepsLevelsAndDropRemovesScopes(t *testing.T) {
 		t.Fatalf("after reload = %+v, want used 3 of limit 4", got)
 	}
 }
+
+func TestCalendarMonthRenewsOnItsDay(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	l := New()
+	l.now = func() time.Time { return now }
+	l.SetLimits("b", []config.Limit{{USD: 200, Per: "calendar-month", Hard: true, Renews: 15}})
+	l.Charge("b", config.DimUSD, 200)
+
+	now = time.Date(2026, 11, 14, 23, 0, 0, 0, time.UTC)
+	blocked, wait := l.HardBlocked("b")
+	if !blocked {
+		t.Fatal("the 1st must not empty a window that renews on the 15th")
+	}
+	if wait != time.Hour {
+		t.Errorf("wait = %v, want 1h (until 11-15 00:00 UTC)", wait)
+	}
+	now = time.Date(2026, 11, 15, 0, 0, 1, 0, time.UTC)
+	if blocked, _ := l.HardBlocked("b"); blocked {
+		t.Fatal("renewal day: want unblocked")
+	}
+}

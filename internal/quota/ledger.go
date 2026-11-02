@@ -10,6 +10,7 @@
 package quota
 
 import (
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -124,6 +125,7 @@ type counterWindow struct {
 	// calendar is "day" or "month" for a fixed window that empties at the UTC
 	// period boundary instead of leaking; "" = falloff.
 	calendar string
+	renews   int       // day a calendar month turns over; 0 is the 1st
 	hard     bool      // a full window refuses even when nothing else can serve
 	used     float64   // fill level as of `at`
 	at       time.Time // when `used` was last computed
@@ -137,7 +139,7 @@ func (w *counterWindow) levelAt(now time.Time) float64 {
 		return w.used
 	}
 	if w.calendar != "" {
-		if w.at.Before(periodStart(w.calendar, now)) {
+		if w.at.Before(periodStart(w.calendar, w.renews, now)) {
 			return 0 // last charged in an earlier period
 		}
 		return w.used
@@ -177,7 +179,7 @@ func (w *counterWindow) drainAt(now time.Time) time.Time {
 		return time.Time{} // never drains
 	}
 	if w.calendar != "" {
-		return periodEnd(w.calendar, now)
+		return periodEnd(w.calendar, w.renews, now)
 	}
 	return now.Add(time.Duration(lv / w.limit * float64(w.dur)))
 }
@@ -189,24 +191,20 @@ var (
 	totalEnd   = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
-// periodStart is the start of the UTC calendar day or month holding t.
-func periodStart(unit string, t time.Time) time.Time {
-	t = t.UTC()
+// periodStart is the start of the period holding t.
+func periodStart(unit string, renews int, t time.Time) time.Time {
 	if unit == "total" {
 		return totalStart
 	}
-	if unit == "month" {
-		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
-	}
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return config.PeriodStart(unit, renews, t)
 }
 
 // periodEnd is when the UTC calendar day or month holding t ends.
-func periodEnd(unit string, t time.Time) time.Time {
+func periodEnd(unit string, renews int, t time.Time) time.Time {
 	if unit == "total" {
 		return totalEnd
 	}
-	s := periodStart(unit, t)
+	s := periodStart(unit, renews, t)
 	if unit == "month" {
 		return s.AddDate(0, 1, 0)
 	}
@@ -246,6 +244,8 @@ type CounterStore interface {
 	// RaiseQuotaCounter lifts a calendar window's stored level to at least
 	// floor for the period starting at periodStart; returns the result.
 	RaiseQuotaCounter(backend, label string, floor float64, periodStart, at time.Time) (float64, error)
+	// SetQuotaCounter stores a window's level as given, up or down.
+	SetQuotaCounter(backend, label string, level float64, at time.Time) error
 }
 
 // pendingSave is one charge to apply to the store, outside the ledger lock.
@@ -367,6 +367,7 @@ func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 		}
 		w.hard = lim.Hard
 		w.calendar = lim.Calendar()
+		w.renews = lim.Renews
 		windows = append(windows, w)
 	}
 	if len(windows) == 0 {
@@ -541,7 +542,7 @@ func (l *Ledger) flush(store CounterStore, saves []pendingSave) {
 	for _, sv := range saves {
 		var ps time.Time
 		if sv.w.calendar != "" {
-			ps = periodStart(sv.w.calendar, sv.at)
+			ps = periodStart(sv.w.calendar, sv.w.renews, sv.at)
 		}
 		var stored float64
 		var err error
@@ -571,7 +572,7 @@ func (l *Ledger) flush(store CounterStore, saves []pendingSave) {
 // Caller holds l.mu.
 func (l *Ledger) mergeLocked(w *counterWindow, stored float64, at time.Time) {
 	now := l.now()
-	other := counterWindow{limit: w.limit, dur: w.dur, calendar: w.calendar, used: stored, at: at}
+	other := counterWindow{limit: w.limit, dur: w.dur, calendar: w.calendar, renews: w.renews, used: stored, at: at}
 	if lv := other.levelAt(now); lv > w.levelAt(now) {
 		w.used, w.at = lv, now
 	}
@@ -673,6 +674,38 @@ func (l *Ledger) RaiseCalendarFloor(backend, dim, unit string, floor float64) fl
 	l.mu.Unlock()
 	l.flush(store, saves)
 	return raised
+}
+
+// SetCalendarLevel sets a scope's calendar window to level, up or down, for an
+// operator correcting an estimate. RaiseCalendarFloor is the automatic path and may
+// only rise; this one is a person saying what the figure is. The store is written
+// first in effect as well as in memory: the merge takes the higher level, so a
+// lower one left only in memory would be undone by the next charge.
+func (l *Ledger) SetCalendarLevel(backend, dim, unit string, level float64) {
+	l.mu.Lock()
+	cs := l.counters[backend]
+	if cs == nil {
+		l.mu.Unlock()
+		return
+	}
+	now := l.now()
+	var labels []string
+	for _, w := range cs.windows {
+		if w.calendar == unit && strings.HasPrefix(w.label, dim+"/") {
+			w.used, w.at = level, now
+			labels = append(labels, w.label)
+		}
+	}
+	store := l.store
+	l.mu.Unlock()
+	if store == nil {
+		return
+	}
+	for _, label := range labels {
+		if err := store.SetQuotaCounter(backend, label, level, now); err != nil {
+			slog.Warn("quota: level not saved", "scope", backend, "err", err)
+		}
+	}
 }
 
 // updateBucket reads the limit/remaining/reset triple for one window. The reset
@@ -867,7 +900,7 @@ func (l *Ledger) HardBlocked(backend string) (bool, time.Duration) {
 			continue // never refills: no wait to promise
 		}
 		if cw.calendar != "" {
-			if d := periodEnd(cw.calendar, now).Sub(now); d > wait {
+			if d := periodEnd(cw.calendar, cw.renews, now).Sub(now); d > wait {
 				wait = d
 			}
 			continue
@@ -934,7 +967,7 @@ func (l *Ledger) project(w *Window, cw *counterWindow, cs *counterState, now tim
 	w.RatePerHour = r.lastHour(now) / span.Hours()
 	room := cw.limit - w.Used
 	if cw.calendar != "" {
-		end := periodEnd(cw.calendar, now)
+		end := periodEnd(cw.calendar, cw.renews, now)
 		if cw.calendar != "total" { // a total never resets: nothing to project to
 			w.ProjectedAtReset = w.Used + w.RatePerHour*end.Sub(now).Hours()
 		}

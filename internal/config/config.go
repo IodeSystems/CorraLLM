@@ -1514,6 +1514,9 @@ const GlobalScopeKey = "*"
 // ProviderScopeKey is a provider's joint budget across all its credentials.
 func ProviderScopeKey(provider string) string { return "prov:" + provider }
 
+// IsProviderScope reports whether scope is a provider's own budget.
+func IsProviderScope(scope string) bool { return strings.HasPrefix(scope, "prov:") }
+
 // QuotaScopes lists every budget this candidate is charged against and gated
 // on, narrowest first.
 //

@@ -250,3 +250,137 @@ func TestATokenIsStoredOnlyAsItsHash(t *testing.T) {
 		t.Errorf("its hash was not: %v %v", ok, err)
 	}
 }
+
+// timedRig is a paid provider with a $10 hard monthly limit that renews on the 15th.
+func timedRig(t *testing.T) (*Proxy, *store.Store, config.Candidate) {
+	t.Helper()
+	p, st, _ := spendRig(t, "http://127.0.0.1:1", func(c *config.Config) {
+		m := c.Models["claude"]
+		m.Extension, m.ProviderName = "x", "anthropic"
+		c.Models["claude"] = m
+		c.Extensions = map[string]config.Extension{"x": {Providers: map[string]config.Provider{"anthropic": {
+			Limits:      config.LimitSet{{USD: 10, Per: "calendar-month", Hard: true, Renews: 15}},
+			Credentials: []config.Credential{{Name: "default"}},
+		}}}}
+	})
+	cands, ok := p.config().ResolveServed("claude")
+	if !ok || len(cands) != 1 || cands[0].Credential == nil {
+		t.Fatalf("candidates = %+v", cands)
+	}
+	return p, st, cands[0]
+}
+
+func TestTimedBudgetPaysPastTheProviderLimit(t *testing.T) {
+	p, _, cand := timedRig(t)
+	scope := config.ProviderScopeKey("anthropic")
+	p.quota.Charge(scope, config.DimUSD, 10)
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
+		t.Fatal("a full hard limit with no timed budget must refuse")
+	}
+	now := time.Now()
+	if err := p.AddBudget("anthropic", 3, "1h", "", "", now); err != nil {
+		t.Fatal(err)
+	}
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 1 {
+		t.Fatal("a timed budget must admit past the full limit")
+	}
+	p.grants.spend(p.store, scope, cand.Name, 3)
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
+		t.Fatal("a spent timed budget must refuse again")
+	}
+	rep, err := p.Spend(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := rep.Providers[0].Budgets; len(b) != 1 || b[0].SpentUSD != 3 || b[0].LeftUSD != 0 {
+		t.Fatalf("budgets = %+v", b)
+	}
+	if err := p.EditBudget(b0(rep), BudgetEdit{Left: ptr(2.5)}, now); err != nil {
+		t.Fatal(err)
+	}
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 1 {
+		t.Fatal("a budget corrected to $2.50 left must admit")
+	}
+	spendRow(t, p.store, "claude", 13, now.Add(-time.Second))
+	rep, _ = p.Spend(now)
+	if got := rep.Providers[0]; got.RemainingUSD == nil || *got.RemainingUSD != 2.5 {
+		t.Fatalf("remaining = %+v", got.RemainingUSD)
+	}
+}
+
+func b0(rep SpendReport) int64 { return rep.Providers[0].Budgets[0].ID }
+
+func TestExpiredTimedBudgetDoesNotPay(t *testing.T) {
+	p, _, cand := timedRig(t)
+	p.quota.Charge(config.ProviderScopeKey("anthropic"), config.DimUSD, 10)
+	now := time.Now()
+	if err := p.AddBudget("anthropic", 3, "", now.Add(-time.Minute).Format(time.RFC3339), "", now); err != nil {
+		t.Fatal(err)
+	}
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
+		t.Fatal("an expired timed budget must not admit")
+	}
+}
+
+func TestTimedBudgetNeedsAHardLimitAndAnExpiry(t *testing.T) {
+	p, _, _ := timedRig(t)
+	now := time.Now()
+	if err := p.AddBudget("anthropic", 3, "", "", "", now); err == nil {
+		t.Error("no expiry: want an error")
+	}
+	if err := p.AddBudget("nobody", 3, "1h", "", "", now); err == nil {
+		t.Error("no such provider: want an error")
+	}
+}
+
+func TestReconcileLowersTheCounter(t *testing.T) {
+	p, _, cand := timedRig(t)
+	scope := config.ProviderScopeKey("anthropic")
+	p.quota.Charge(scope, config.DimUSD, 10)
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
+		t.Fatal("want refused while the estimate says $10")
+	}
+	if err := p.ReconcileSpend(4, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 1 {
+		t.Fatal("a real figure of $4 must reopen the limit")
+	}
+	// The merge takes the higher level, so the store must have come down as well.
+	p.quota.Resync()
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 1 {
+		t.Fatal("a resync undid the correction")
+	}
+}
+
+func TestAReloadAppliesWhatTheCLIStored(t *testing.T) {
+	p, st, cand := timedRig(t)
+	p.quota.Charge(config.ProviderScopeKey("anthropic"), config.DimUSD, 10)
+	if err := st.SetSpendReconcile("anthropic", 1, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddProviderBudget(p.config(), st, "anthropic", 1, "1h", "", "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	p.SetConfig(p.config())
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 1 {
+		t.Fatal("reload: want the stored figure applied")
+	}
+	if !p.grants.usable(config.ProviderScopeKey("anthropic"), cand.Name) {
+		t.Fatal("reload: want the stored timed budget in memory")
+	}
+}
+
+func TestRenewingLimitReportsItsOwnPeriod(t *testing.T) {
+	p, st, _ := timedRig(t)
+	spendRow(t, st, "claude", 7, time.Date(2026, 10, 14, 23, 0, 0, 0, time.UTC))
+	spendRow(t, st, "claude", 2, time.Date(2026, 10, 15, 1, 0, 0, 0, time.UTC))
+	rep, err := p.Spend(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rep.Providers[0]
+	if got.Period != "2026-10-15" || got.EstimatedUSD != 2 || got.ResetsAt != "2026-11-15T00:00:00Z" {
+		t.Fatalf("provider = %+v", got)
+	}
+}

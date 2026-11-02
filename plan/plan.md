@@ -383,21 +383,35 @@ Owner, via dun-a8: billed spend is not worth chasing. An `org:admin` `ant` login
 gets 403 from the cost report, so no `ant`, no admin login here. corrallm's ledger is the source: exact
 tokens from every reply at corrallm's prices, and it can refuse past a budget.
 
-Done, not deployed: `GET /v1/spend` with a `spend-` cost token, which is refused on every other route (a
-stranger's key is admitted by default, so the guard is what stops one spending). Tokens are hashed, in
-their own table. `remaining_usd` is against the tightest calendar-month USD limit on the Claude
-provider or credential, which already refuses when hard. `corrallm spend`, `spend reconcile <usd>`,
-`spend token create|list|revoke`; `/api/v1/spend*` for the same. Reconcile stores the figure and its
-time, only spend after it is estimated, and raises the budget counters so a hard limit acts on it.
-Last month's figure is ignored. A caller's own sign-in is not corrallm's spend.
+Live 11-02 (v0.1.0-37-dirty, the code below is uncommitted): provider `anthropic`, credential `default`
+(`${ANTHROPIC_API_KEY}`, the key dun held), `$200/calendar-month,renews=15,hard` on the provider. Models are
+explicit, `anthropic-claude-{opus-5-5,sonnet-5-5,haiku-5-5,fable-5-1}`, in no lane (owner: Claude is selected
+on purpose). Access: `dun`, `sk-aw4` and its 5 subkeys (empty `models`, so the parent's list decides).
+`sk-aw4` has `$16/calendar-day,hard` on `cred:anthropic/default`, shared with the subkeys. dun's `anthropic`
+provider points at corrallm with key `dun`. Credit: the $200 Ultra API credit, which appears under Promotional
+credits in the Console and refills on the 15th. The $250 is Claude Code credit, not reachable by an API key.
 
-- **next:** deploy. Set a `$N/calendar-month,hard` limit on the Claude credential for a budget.
-  Tell dun-a8 when `/v1/spend` is live.
-- **risks:** the estimate drifts from the bill by what the price table has wrong and what bypasses
-  corrallm. Not on the dashboard.
-- **assumptions:** tokens last 90 days by default (`--days`). One org-wide figure, not a client's
-  share. `anthropicadmin` unused: no credential here to use it with.
-- **optional extensions:** a dashboard tile; drift alert after a reconcile; P68's other providers.
+Built: `Limit.renews` (a calendar month that turns over on a day, 1 to 28). Timed budgets: a `key_grant` row
+with `prov:<name>` as its key, needing an expiry, paying past the provider's full hard limit, soonest expiring
+first. `corrallm spend budget add|set|rm`; `POST /api/v1/spend/budgets`. Reconcile sets the counters up or down
+(`SetCalendarLevel`) and on the provider scope, which it missed before; `--left` takes the Console's balance.
+`corrallm spend` opens the database directly and runs `service reload`, because the admin token is disabled.
+`GET /v1/spend` with a `spend-` cost token, refused on every other route. Tokens are hashed. A reload re-reads
+timed budgets and re-applies the reconciled figure. Last period's figure is ignored. A caller's own sign-in is
+not corrallm's spend.
+
+Checked live: dun, `sk-aw4`, one subkey served and costed; real 429s from both a key budget and the provider
+limit (types `allocation_exhausted`, `budget_exhausted`), `room_at` on the 14th. CLI checked on a copy of the
+config tables. Timed budgets and reconcile: unit tests and that copy, not through a real full limit.
+
+- **next:** commit. Mint a cost token and tell dun-a8 `/v1/spend` is live.
+- **risks:** the estimate drifts from the bill by what the price table has wrong and what bypasses corrallm;
+  other keys in the Console org share the credit unseen. Not on the dashboard: timed budgets are CLI and API.
+  A dun session pinned to `claude-*` hits lane `claude-*` and gets local Swift with no error. A refusal says
+  "this month" for a renewing window. `corrallm spend` needs the box: no remote form.
+- **assumptions:** tokens last 90 days by default (`--days`). One org-wide figure, not a client's share.
+  `anthropicadmin` unused: no credential here to use it with.
+- **optional extensions:** a dashboard panel; drift alert after a reconcile; P68's other providers.
 
 ### ◐ P70 — Claude translation moved to openai-claude-api-shim — 2026-11-01
 

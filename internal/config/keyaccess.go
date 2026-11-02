@@ -292,9 +292,9 @@ func KeyBudgetScope(key, sel string) string {
 // --- compact limits ---------------------------------------------------------
 
 // LimitSyntax describes the compact form, for error messages and help text.
-const LimitSyntax = "AMOUNT/PER[,hard]: AMOUNT is $N (dollars), Nreq (requests) or Nsec (seconds); " +
+const LimitSyntax = "AMOUNT/PER[,renews=DAY][,hard]: AMOUNT is $N (dollars), Nreq (requests) or Nsec (seconds); " +
 	"PER is a window (minute, hour, day, calendar-day, month, calendar-month, total). " +
-	"E.g. $3/calendar-day,hard or 100req/hour"
+	"E.g. $3/calendar-day,hard, 100req/hour or $200/calendar-month,renews=15,hard"
 
 // ParseLimit reads the compact form: "$3/calendar-day,hard", "100req/hour".
 func ParseLimit(s string) (Limit, error) {
@@ -302,6 +302,13 @@ func ParseLimit(s string) (Limit, error) {
 	rest := strings.TrimSpace(s)
 	if r, ok := strings.CutSuffix(rest, ",hard"); ok {
 		l.Hard, rest = true, strings.TrimSpace(r)
+	}
+	if r, day, ok := strings.Cut(rest, ",renews="); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(day))
+		if err != nil {
+			return l, fmt.Errorf("limit %q: renews wants a day of the month", s)
+		}
+		l.Renews, rest = n, strings.TrimSpace(r)
 	}
 	amount, per, ok := strings.Cut(rest, "/")
 	amount, per = strings.TrimSpace(amount), strings.TrimSpace(per)
@@ -355,6 +362,9 @@ func (l Limit) Compact() string {
 	s += "/" + l.Per
 	if l.Model != "" {
 		s += "@" + l.Model
+	}
+	if l.Renews != 0 {
+		s += ",renews=" + strconv.Itoa(l.Renews)
 	}
 	if l.Hard {
 		s += ",hard"

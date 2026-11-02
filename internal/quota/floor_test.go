@@ -14,6 +14,8 @@ func (m *memCounters) AddQuotaCounter(b, label string, amt, _ float64, _ time.Du
 	m.saved[b+"/"+label] += amt
 	return m.saved[b+"/"+label], nil
 }
+func (m *memCounters) SetQuotaCounter(string, string, float64, time.Time) error { return nil }
+
 func (m *memCounters) RaiseQuotaCounter(b, label string, floor float64, _, _ time.Time) (float64, error) {
 	m.saved[b+"/"+label] = max(m.saved[b+"/"+label], floor)
 	return m.saved[b+"/"+label], nil

@@ -123,3 +123,21 @@ func TestLimitValidationRejectsAmbiguous(t *testing.T) {
 		}
 	}
 }
+
+func TestRenewsParsesAndValidates(t *testing.T) {
+	l, err := ParseLimit("$200/calendar-month,renews=15,hard")
+	if err != nil || l.Renews != 15 || !l.Hard || l.USD != 200 {
+		t.Fatalf("limit = %+v, err %v", l, err)
+	}
+	if got := l.Compact(); got != "$200/calendar-month,renews=15,hard" {
+		t.Errorf("compact = %q", got)
+	}
+	for _, bad := range []Limit{
+		{USD: 1, Per: "calendar-month", Renews: 29},
+		{USD: 1, Per: "calendar-day", Renews: 15},
+	} {
+		if bad.Validate() == nil {
+			t.Errorf("%+v: want an error", bad)
+		}
+	}
+}

@@ -50,6 +50,26 @@ type Limit struct {
 	// (KeyModelScopeKey), so the key-wide windows and every model's are counted
 	// independently.
 	Model string `yaml:"model,omitempty" json:"model,omitempty"`
+
+	// Renews moves a calendar-month window's boundary from the 1st to this day of
+	// the month, 00:00 UTC, for a provider whose money turns over on a billing
+	// cycle. 1 to 28, so every month has the day. Calendar-month limits only.
+	Renews int `yaml:"renews,omitempty" json:"renews,omitempty"`
+}
+
+// PeriodStart is the start of the UTC period holding t: a day, a month, or a month
+// that turns over on day renews (0 is the 1st).
+func PeriodStart(unit string, renews int, t time.Time) time.Time {
+	t = t.UTC()
+	if unit != "month" {
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	day := max(renews, 1)
+	s := time.Date(t.Year(), t.Month(), day, 0, 0, 0, 0, time.UTC)
+	if t.Before(s) {
+		s = s.AddDate(0, -1, 0)
+	}
+	return s
 }
 
 // limit dimensions, as used for counter labels and error messages.
@@ -145,6 +165,14 @@ func (l Limit) Validate() error {
 }
 
 func (l Limit) validateAmount() error {
+	if l.Renews != 0 {
+		if l.Renews < 1 || l.Renews > 28 {
+			return fmt.Errorf("limit renews %d: want a day from 1 to 28", l.Renews)
+		}
+		if l.Calendar() != "month" {
+			return fmt.Errorf("limit renews: only a calendar-month limit renews on a day")
+		}
+	}
 	dim := l.Dimension()
 	if dim == "" {
 		return fmt.Errorf("limit must set exactly one of req/usd/sec (got %+v)", l)
