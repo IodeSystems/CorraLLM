@@ -405,7 +405,10 @@ limit (types `allocation_exhausted`, `budget_exhausted`), `room_at` on the 14th.
 and a fake upstream: a full limit refuses; a timed budget pays, runs out, is corrected, expires; reconcile
 reopens and closes the limit and survives a restart. Refusals read "budget of $Z created on X, expires on Y".
 
-- **next:** mint a cost token and tell dun-a8 `/v1/spend` is live.
+11-03: cost token 1 (`dun-a8`, expires 2027-02-01) is in `~/.dun/corrallm-spend.token`; sent to dun-2c.
+It gets a 200 on `/v1/spend` locally and through llm.iodesystems.com, and a 401 on `/v1/models`.
+
+- **next:** none. Reconcile against the Console when the owner reads it (`corrallm spend reconcile`).
 - **risks:** the estimate drifts from the bill by what the price table has wrong and what bypasses corrallm;
   other keys in the Console org share the credit unseen. Not on the dashboard: timed budgets are CLI and API.
   A dun session pinned to `claude-*` hits lane `claude-*` and gets local Swift with no error. A timed budget
