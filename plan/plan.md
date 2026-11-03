@@ -424,8 +424,12 @@ priced at their own rate. It is marked: `cost_estimated`, `cost_source: estimate
 reads it as a provider's bill. A passthrough is estimated from its tokens. Not estimated: a local model
 behind a Claude name. Not charged: a caller's own sign-in, a declared free tier.
 
-- **next:** deploy after review. Set `claudePrices:` only if the shim's table is wrong for a model.
-- **risks:** not run against real Anthropic. Callers lose temperature/top_p/top_k to Claude, and an
+Live since 11-01 (deployed with P71). Run against real Anthropic 11-01/11-02: Haiku 5.5 through both
+`/v1/chat/completions` and `/v1/messages`, costed at the shim's table, which matched Anthropic's pricing page
+for Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1.
+
+- **next:** none. Set `claudePrices:` only if the shim's table is wrong for a model.
+- **risks:** Opus, Sonnet and Fable not called yet. Callers lose temperature/top_p/top_k to Claude, and an
   orphan tool result now becomes text; both are the shim's choice. A Claude model that a `type` priced
   now uses the shim's table, so its recorded cost moves. A stream whose backend sends no chat
   completion ends empty after its 200, as it did before.
