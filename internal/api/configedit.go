@@ -104,6 +104,14 @@ func (h *Handlers) UpsertModel(ctx context.Context, in *UpsertModelInput) (*Conf
 	if name == "" {
 		return nil, huma.Error400BadRequest("a model needs a name")
 	}
+	// A model a catalog selection made exists only at runtime. Saving it writes it
+	// under its provider, starting from what is served, so the selection's
+	// upstream id and the template's fields are kept.
+	discovered, fromCatalog := h.config().Discovered()[name]
+	fromCatalog = fromCatalog && discovered.Extension != "" && discovered.ProviderName != ""
+	if fromCatalog && in.Provider == "" {
+		in.Provider, in.Extension = discovered.ProviderName, discovered.Extension
+	}
 	err := h.mutateConfig(ctx, "model "+name+" saved", func(c *config.Config) error {
 		prev, existed := c.Models[name]
 		if existed && prev.Extension != "" && prev.ProviderName == "" {
@@ -123,6 +131,8 @@ func (h *Handlers) UpsertModel(ctx context.Context, in *UpsertModelInput) (*Conf
 		}
 		if existed {
 			m = applySpec(prev, m)
+		} else if fromCatalog {
+			m = applySpec(discovered, m)
 		}
 		// A remote provider's model: authored under
 		// extensions.<ext>.providers.<p>.provides. Handles create AND edit,
@@ -399,6 +409,11 @@ func (h *Handlers) GetModelSpec(_ context.Context, in *ModelSpecInput) (*ModelSp
 	}
 	out := &ModelSpecOutput{}
 	m, ok := cfg.Models[in.Name]
+	if !ok {
+		// A model a catalog selection made is served but not written down. Its
+		// spec is what is served, and a save writes it under its provider.
+		m, ok = cfg.Discovered()[in.Name]
+	}
 	if !ok {
 		out.Body.Advanced = []string{}
 		return out, nil // a new model: an empty spec is the right answer, not a 404

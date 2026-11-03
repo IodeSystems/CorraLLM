@@ -2858,7 +2858,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 			pauses[p.Key] = p
 		}
 	}
-	for name, m := range h.config().Models {
+	for name, m := range listedModels(h.config()) {
 		md := ModelDef{
 			Name: name, Provider: m.ProviderName, Extension: m.Extension, Persistent: m.Persistent, Disabled: m.Disabled, Capability: config.ModelCapability(m),
 			ContextPerRequest: m.ContextPerRequest,
@@ -3364,4 +3364,20 @@ func (h *Handlers) CancelRequest(_ context.Context, in *CancelRequestInput) (*Ca
 	// they wanted anyway.
 	out.Body.Message = fmt.Sprintf("no live request with id %d (it may have just finished)", in.Body.ID)
 	return out, nil
+}
+
+// listedModels is every model the overview lists: the written ones, disabled
+// included, and the ones a catalog selection or discover filter made. Those last
+// are served and must be editable, so they cannot be left off the page.
+func listedModels(cfg *config.Config) map[string]config.Model {
+	out := make(map[string]config.Model, len(cfg.Models))
+	for k, v := range cfg.Models {
+		out[k] = v
+	}
+	for k, v := range cfg.Discovered() {
+		if _, ok := out[k]; !ok {
+			out[k] = v
+		}
+	}
+	return out
 }
