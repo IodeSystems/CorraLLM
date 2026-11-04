@@ -408,7 +408,24 @@ reopens and closes the limit and survives a restart. Refusals read "budget of $Z
 11-03: cost token 1 (`dun-a8`, expires 2027-02-01) is in `~/.dun/corrallm-spend.token`; sent to dun-2c.
 It gets a 200 on `/v1/spend` locally and through llm.iodesystems.com, and a 401 on `/v1/models`.
 
-- **next:** none. Reconcile against the Console when the owner reads it (`corrallm spend reconcile`).
+11-04 paced day (UIOLI, use it or lose it), live as v0.1.0-43-g8cc741d. `pace/calendar-day,hard` beside the
+`$200/calendar-month,renews=15,hard` on provider `anthropic` is one shared daily pool for all keys:
+(month limit − month spent + today spent) ÷ days to renewal, today included. Unspent days roll forward.
+`sk-aw4`'s `$16/calendar-day` on `cred:anthropic/default` was removed (owner: shared pool). A timed budget pays
+past the month's limit, not past a paced day (`Ledger.LimitFull`). `corrallm spend` and `/v1/spend` show
+`today_usd` and `today_spent_usd`. Checked live: the day counter on `prov:anthropic` counts. Today's day counter
+started at deploy, so on 11-04 the pool admits about $6.70 more than the pace. This corrects from 11-05.
+
+- **next:** UIBJ, decided by the owner (below). Reconcile against the Console when the owner reads it.
+- **UIBJ (use it but justify), owner 11-04, semantics open:** a second budget kind beside UIOLI. A cost budget the
+  caller spends at its discretion, but each spend logs why and what value it produced: justify the spend, do not
+  minimise waste. Owner: a key's daily budget is the sum of its UIOLI share and its UIBJ budget. Later: a ratio
+  per key of the UIOLI pool, and a "danger zone" release, where shares not used near renewal go back to the pool.
+  The ratio needs spend-rate tracking per key first, to see how fast each key drains. The owner said a ratio is
+  not needed until two systems saturate the pool and compete.
+- **blocking decisions (owner):** where a UIBJ justification is recorded (a request header, a field on the
+  activity row, a separate log) and who reads it. Whether a request with no justification is refused or only flagged.
+  What the danger zone is (how many days before renewal).
 - **risks:** the estimate drifts from the bill by what the price table has wrong and what bypasses corrallm;
   other keys in the Console org share the credit unseen. Not on the dashboard: timed budgets are CLI and API.
   A dun session pinned to `claude-*` hits lane `claude-*` and gets local Swift with no error. A timed budget
