@@ -95,3 +95,12 @@ func TestRefusalStatusByWindow(t *testing.T) {
 		t.Errorf("mixed: %d, want 402", got)
 	}
 }
+
+func TestCapabilitiesStateTheErrorContract(t *testing.T) {
+	raw, _ := json.Marshal(errorContract)
+	for _, want := range []string{`"status":402`, `"status":429`, "do not retry", "allocation_spent"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("error contract lacks %q: %s", want, raw)
+		}
+	}
+}

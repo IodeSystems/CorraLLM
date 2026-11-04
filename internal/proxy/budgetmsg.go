@@ -226,3 +226,23 @@ func refusalStatus(notes []BudgetNote, secs int, w http.ResponseWriter) int {
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	return http.StatusTooManyRequests
 }
+
+// errorContract is what a refusal's status means and what a client MUST do with
+// it, served in /v1/capabilities. The status codes are corrallm's contract: a
+// client library may handle them where it can, and an integrator has to.
+var errorContract = map[string]any{
+	"shape": `{"error":{"message","type","retry_after"?,"budgets"?:[{scope,owner,window,used,limit,room_at,summary}]}}`,
+	"statuses": []map[string]any{
+		{"status": 402, "types": []string{"budget_exhausted", "allocation_exhausted", "allocation_spent"},
+			"means": "a budget that refills at a reset time (calendar day, paced day, calendar month, total) is spent; no Retry-After",
+			"do":    "do not retry; fall back to another model or fail now; retry_after and budgets[].room_at say when it reopens (allocation_spent never does)"},
+		{"status": 429, "types": []string{"budget_exhausted", "allocation_exhausted", "paused", ""},
+			"means": "a rolling budget is full, a model is paused, or the scheduler is busy; Retry-After is set",
+			"do":    "wait Retry-After seconds and retry, or fall back"},
+		{"status": 503, "means": "no backend is available, or corrallm is restarting",
+			"do": "on \"restarting\" retry in a few seconds; otherwise fall back"},
+		{"status": 401, "means": "no key, or a key corrallm does not know", "do": "fail"},
+		{"status": 403, "means": "this key may not use this model", "do": "fail, or use a model the key may use"},
+		{"status": 400, "means": "the request is malformed", "do": "fail"},
+	},
+}

@@ -3374,6 +3374,7 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"description": "Under contention you get HTTP 429 with Retry-After + X-RateLimit-Capacity/-InFlight/-Waiting headers (and a JSON hint). Honor Retry-After and back off.",
 			"headers":     []string{"Retry-After", "X-RateLimit-Capacity", "X-RateLimit-InFlight", "X-RateLimit-Waiting"},
 		},
+		"errors": errorContract,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
