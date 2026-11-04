@@ -203,7 +203,7 @@ func (p *Proxy) HasRosterRefresh() bool {
 	// A virtual pool rides the same loop, and needs it even when nothing is
 	// declared: the pool's entire membership comes from the refresh, so without
 	// this the loop never starts and the pool is permanently empty.
-	return len(p.config().VirtualTargets()) > 0
+	return len(p.config().VirtualTargets()) > 0 || len(p.config().PassthroughTargets()) > 0
 }
 
 // RefreshRoster does one refresh pass: for each refresh-opted backend, pull its
@@ -244,6 +244,41 @@ func (p *Proxy) RefreshRoster(ctx context.Context) {
 		}
 	}
 	p.refreshVirtual(ctx, hc)
+	p.refreshPassthrough(ctx, hc)
+}
+
+// refreshPassthrough serves every row of each passthrough provider's catalogue,
+// one contribution per (provider, credential), because each key sees its own
+// list. A fetch error keeps that credential's last rows: an outage must not
+// take models away that were serving a minute ago.
+func (p *Proxy) refreshPassthrough(ctx context.Context, hc *http.Client) {
+	cfg := p.config()
+	for _, t := range cfg.PassthroughTargets() {
+		if t.Target.AuthTokenCommand != "" {
+			// The token is minted per request; a catalogue read has no hook for it.
+			slog.Warn("passthrough: a credential with authTokenCommand cannot list its catalogue", "provider", t.Provider, "credential", t.Credential)
+			continue
+		}
+		modelsURL := strings.TrimRight(t.Target.URL.String(), "/") + t.Target.BasePath + "/v1/models"
+		cat, err := freeroster.FetchCatalog(ctx, hc, modelsURL, t.Target.Headers)
+		if err != nil {
+			slog.Warn("passthrough: catalogue fetch failed", "provider", t.Provider, "credential", t.Credential, "err", err)
+			continue
+		}
+		models := make(map[string]config.Model, len(cat))
+		unpriced := 0
+		for _, e := range cat {
+			served, m, ok := cfg.PassthroughModelFor(t, config.CatalogRow{ID: e.ID, Free: e.Free, PromptUSD: e.PromptUSD, CompletionUSD: e.CompletionUSD})
+			if !ok {
+				unpriced++
+				continue
+			}
+			models[served] = m
+		}
+		cfg.SetDiscoveredFor(t.Provider, t.Credential, models)
+		slog.Info("passthrough refreshed", "provider", t.Provider, "credential", t.Credential,
+			"models", len(models), "unpriced_left_out", unpriced)
+	}
 }
 
 // poolCandidate is one catalogue row and the (virtual, source, credential) it
