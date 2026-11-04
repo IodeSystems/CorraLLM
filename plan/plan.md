@@ -416,16 +416,24 @@ past the month's limit, not past a paced day (`Ledger.LimitFull`). `corrallm spe
 `today_usd` and `today_spent_usd`. Checked live: the day counter on `prov:anthropic` counts. Today's day counter
 started at deploy, so on 11-04 the pool admits about $6.70 more than the pace. This corrects from 11-05.
 
-- **next:** UIBJ, decided by the owner (below). Reconcile against the Console when the owner reads it.
+11-04 refusal status (7dd6d17, committed, NOT deployed): a budget that refills at a reset time (calendar day
+or month, total) answers 402 with no Retry-After; a rolling window keeps 429 with Retry-After. error.type and
+retry_after are unchanged. Deploy waits on agentkit: `llm/client.go:945` parses only a 429, so a 402 would reach
+aw4 as a plain failure and skip its fallback. Asked agentkit-6c on 11-04. The contract was sent to aw4-bd. dun-2c is
+gone, so dun has not been told.
+
+- **next:** deploy 7dd6d17 when agentkit-6c reports a version that handles 402; then tell aw4 and dun.
+  UIBJ, decided by the owner (below). Reconcile against the Console when the owner reads it.
 - **UIBJ (use it but justify), owner 11-04, semantics open:** a second budget kind beside UIOLI. A cost budget the
   caller spends at its discretion, but each spend logs why and what value it produced: justify the spend, do not
   minimise waste. Owner: a key's daily budget is the sum of its UIOLI share and its UIBJ budget. Later: a ratio
   per key of the UIOLI pool, and a "danger zone" release, where shares not used near renewal go back to the pool.
   The ratio needs spend-rate tracking per key first, to see how fast each key drains. The owner said a ratio is
-  not needed until two systems saturate the pool and compete.
+  not needed until two systems saturate the pool and compete. Owner 11-04: a request that would spend UIBJ
+  without its justification is refused with 402.
 - **blocking decisions (owner):** where a UIBJ justification is recorded (a request header, a field on the
   activity row, a separate log) and who reads it. Whether a request with no justification is refused or only flagged.
-  What the danger zone is (how many days before renewal).
+  What the danger zone is (how many days before renewal). The header or field names for the reason and value.
 - **risks:** the estimate drifts from the bill by what the price table has wrong and what bypasses corrallm;
   other keys in the Console org share the credit unseen. Not on the dashboard: timed budgets are CLI and API.
   A dun session pinned to `claude-*` hits lane `claude-*` and gets local Swift with no error. A timed budget
