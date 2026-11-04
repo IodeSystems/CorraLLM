@@ -84,3 +84,45 @@ func TestTheOverriddenDepthActuallyRejects(t *testing.T) {
 	rel()
 	<-queued
 }
+
+// A provider gate admits a request its model slot already admitted: it reads the
+// provider's queue bounds and does not charge the group's budget a second time.
+func TestProviderGateTakesItsBoundsAndChargesNothing(t *testing.T) {
+	cfg := &config.Config{
+		Scheduler: config.SchedulerConfig{MaxQueueDepth: 8},
+		Extensions: map[string]config.Extension{"corp": {Providers: map[string]config.Provider{
+			"gw": {MaxConcurrent: 1, Scheduler: &config.SchedulerConfig{MaxQueueDepth: 2, MaxWait: "40ms"}},
+		}}},
+		PriorityGroups: map[string]config.PriorityGroup{"g": {Weight: 1, Limits: map[string]string{"requests": "1/min"}}},
+	}
+	s := NewWithConfig(cfg)
+	gate := config.ProviderGateKey("corp", "gw")
+	if w, d := s.boundsFor(gate); d != 2 || w != 40*time.Millisecond {
+		t.Errorf("gate bounds = %v/%d, want the provider's 40ms/2", w, d)
+	}
+	ctx := context.Background()
+	rel, _, err := s.Admit(ctx, "m", "chat", 1, "g", 1, false, config.Stage{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The group's one request a minute is spent on the model slot; the gate
+	// must not refuse it as a second request.
+	grel, _, err := s.Admit(ctx, gate, "chat", 1, "g", 1, false, config.Stage{})
+	if err != nil {
+		t.Fatalf("gate refused a request the model admitted: %v", err)
+	}
+	grel()
+	rel()
+}
+
+// A passthrough model lives in the discovered overlay, not cfg.Models; its
+// template's queue bound must still apply.
+func TestADiscoveredModelsQueueBoundApplies(t *testing.T) {
+	cfg := &config.Config{Scheduler: config.SchedulerConfig{MaxQueueDepth: 8}}
+	cfg.SetDiscoveredFor("gw", config.DefaultCredentialName, map[string]config.Model{
+		"gw-x": {Scheduler: &config.SchedulerConfig{MaxQueueDepth: 3}},
+	})
+	if got := depthOf(NewWithConfig(cfg), "gw-x"); got != 3 {
+		t.Errorf("depth = %d, want the template's 3", got)
+	}
+}

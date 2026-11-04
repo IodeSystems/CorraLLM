@@ -1189,7 +1189,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		admitStart := time.Now()
 		// group.Interruptible OR the request's own opt-in. A caller can only
 		// widen this, never narrow it — see retryableRequest.
-		release, reqCtx, err := p.sched.Admit(p.admitCtx(ctx, r, key), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible || retryable, stage)
+		release, reqCtx, err := p.admit(p.admitCtx(ctx, r, key), name, backend, groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if errors.Is(err, sched.ErrDraining) {
 			if p.handOver(w, r, arrivedCT, arrivedBody, time.Since(start)) {
@@ -1207,7 +1207,6 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
-				bp.Backend = name
 				if bp.Reason == "spill" {
 					bestBP = keepSoonest(bestBP, bp)
 					continue // advance to the next backend
@@ -1993,7 +1992,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		stage := group.StageFor(backend.Type)
 
 		admitStart := time.Now()
-		release, reqCtx, err := p.sched.Admit(p.admitCtx(r.Context(), r, key), name, backend.Type, backend.Slots(), groupName, weight, group.Interruptible, stage)
+		release, reqCtx, err := p.admit(p.admitCtx(r.Context(), r, key), name, backend, groupName, weight, group.Interruptible, stage)
 		queuedMS += time.Since(admitStart).Milliseconds()
 		if errors.Is(err, sched.ErrDraining) {
 			if p.handOver(w, r, "", nil, time.Since(start)) {
@@ -2006,7 +2005,6 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var bp *sched.BackpressureError
 			if errors.As(err, &bp) {
-				bp.Backend = name
 				if bp.Reason == "spill" {
 					lastBP = keepSoonest(lastBP, bp)
 					continue
@@ -3528,6 +3526,41 @@ func keepSoonest(cur, next *sched.BackpressureError) *sched.BackpressureError {
 		return next
 	}
 	return cur
+}
+
+// admit takes the model's slot, then its provider's gate when the provider caps
+// in-flight requests across its models. The model slot comes first so a request
+// queued behind a busy model holds none of the provider's slots. A refusal
+// names what refused: the model, or the gate (config.ProviderGateKey).
+func (p *Proxy) admit(ctx context.Context, name string, backend config.Model, group string, weight int, interruptible bool, stage config.Stage) (func(...sched.Done), context.Context, error) {
+	named := func(err error, by string) error {
+		var bp *sched.BackpressureError
+		if errors.As(err, &bp) {
+			bp.Backend = by
+		}
+		return err
+	}
+	release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), group, weight, interruptible, stage)
+	if err != nil {
+		return nil, nil, named(err, name)
+	}
+	key, capacity, ok := p.config().ProviderGate(backend)
+	if !ok {
+		return release, reqCtx, nil
+	}
+	// Never preempt at the gate: the victim would be another model's request.
+	gs := stage
+	if gs.Preempt {
+		gs.Preempt = false
+		gs.Queue = gs.Queue || gs.Then == "queue"
+		gs.Spill = gs.Spill || gs.Then == "spill" || gs.Then == "fallThrough"
+	}
+	gateRelease, _, err := p.sched.Admit(ctx, key, backend.Type, capacity, group, weight, false, gs)
+	if err != nil {
+		release()
+		return nil, nil, named(err, key)
+	}
+	return func(d ...sched.Done) { gateRelease(d...); release(d...) }, reqCtx, nil
 }
 
 // refusedBy is the backend that turned a request away, for the 429 row's

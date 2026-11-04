@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -130,6 +131,10 @@ func NewWithConfig(cfg *config.Config) *Scheduler {
 	return s
 }
 
+// isGate reports a provider-wide gate key (config.ProviderGateKey), which
+// admits requests a model slot already admitted.
+func isGate(key string) bool { return strings.HasPrefix(key, config.ProviderGatePrefix) }
+
 // boundsFor resolves the queue bounds for one model: its own override where it
 // has one, the box-wide values otherwise.
 //
@@ -142,7 +147,17 @@ func (s *Scheduler) boundsFor(model string) (time.Duration, int) {
 	if cfg == nil {
 		return maxWait, depth
 	}
-	m, ok := cfg.Models[model]
+	if isGate(model) {
+		sc := cfg.ProviderSchedulerFor(model)
+		if d, err := time.ParseDuration(sc.MaxWait); err == nil && d > 0 {
+			maxWait = d
+		}
+		if sc.MaxQueueDepth > 0 {
+			depth = sc.MaxQueueDepth
+		}
+		return maxWait, depth
+	}
+	m, ok := cfg.ServedModel(model) // a passthrough model's bounds come from its template
 	if !ok || m.Scheduler == nil {
 		return maxWait, depth
 	}
@@ -254,7 +269,10 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	// budget, so an over-budget request advances (spill) if the stage allows,
 	// else backs off with the time until the window frees. (Capacity saturation
 	// below keeps the full preempt/queue/reject sequence.)
-	if over, retry := s.overBudgetLocked(now, group, backendType); over {
+	// A provider gate is a second slot for a request the model already
+	// admitted; its budgets were checked and charged there.
+	gate := isGate(backend)
+	if over, retry := s.overBudgetLocked(now, group, backendType); over && !gate {
 		if spills(stage) {
 			be := bs.backpressure("spill")
 			s.mu.Unlock()
@@ -273,7 +291,9 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	// count against it), so it gets an already-free slot; other lanes saturate early.
 	if bs.active < s.effCapLocked(bs, backend, group, now) {
 		bs.grant(sl, now)
-		s.recordAdmitLocked(now, group, backendType)
+		if !gate {
+			s.recordAdmitLocked(now, group, backendType)
+		}
 		s.mu.Unlock()
 		return s.releaser(backend, sl), reqCtx, nil
 	}
@@ -488,6 +508,9 @@ func (s *Scheduler) Snapshot() SchedSnapshot {
 	defer s.mu.Unlock()
 	var snap SchedSnapshot
 	for name, bs := range s.backends {
+		if isGate(name) {
+			continue // not a backend: counting it would count each request twice
+		}
 		bl := BackendLoad{
 			Backend: name, Capacity: bs.capacity, Active: bs.active, Waiting: len(bs.waiters),
 			// Reuses backpressure's own arithmetic rather than restating it here:
@@ -543,12 +566,17 @@ func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 				delete(bs.groupActive, sl.group)
 			}
 			bs.removeSlot(sl)
-			s.recordReleaseLocked(now, sl.group, sl.backendType, dwell, cost)
+			gate := isGate(backend)
+			if !gate {
+				s.recordReleaseLocked(now, sl.group, sl.backendType, dwell, cost)
+			}
 			bs.addShare(now, sl, dwell, cost)
 			// Charge each promoted (queued) request against its requests budget —
 			// the direct-grant path charges at admit, the queue path here.
 			for _, ps := range s.promote(bs, backend, now) {
-				s.recordAdmitLocked(now, ps.group, ps.backendType)
+				if !gate {
+					s.recordAdmitLocked(now, ps.group, ps.backendType)
+				}
 			}
 			s.mu.Unlock()
 			sl.cancel(nil) // free the request context (no-op if already canceled)

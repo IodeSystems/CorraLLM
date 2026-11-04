@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -143,5 +144,49 @@ func TestPassthroughLeavesOutUnpricedRowsUnderAUSDLimit(t *testing.T) {
 	}
 	if _, ok := got["gw-vendor-unpriced"]; ok {
 		t.Error("an unpriced row was served on a provider with a USD limit")
+	}
+}
+
+func TestProviderCapHoldsAcrossItsModels(t *testing.T) {
+	g := newGateway(t)
+	g.hold = make(chan struct{})
+	p, h := passthroughRig(t, g, "        maxConcurrent: 1\n")
+	first := make(chan int)
+	go func() { first <- chat(h, "gw-vendor-priced").Code }()
+	waitFor(t, func() bool { g.mu.Lock(); defer g.mu.Unlock(); return len(g.asked) == 1 })
+
+	// another model, with a free slot of its own: the provider is full
+	rec := chat(h, "gw-vendor-unpriced")
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("status %d (Retry-After %q), want 429 from the provider cap", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	promises, err := p.store.RetryPromises(store.Window{}, 10, "")
+	if err != nil || len(promises) != 1 || promises[0].RefusedBy != config.ProviderGateKey("corp", "gw") {
+		t.Errorf("refused by %+v (err %v), want the provider gate", promises, err)
+	}
+	// the gate is not a backend in the load views
+	for _, b := range p.sched.Snapshot().Backends {
+		if strings.HasPrefix(b.Backend, config.ProviderGatePrefix) {
+			t.Errorf("gate %q shows as a backend", b.Backend)
+		}
+	}
+
+	close(g.hold)
+	if code := <-first; code != 200 {
+		t.Fatalf("first request: %d", code)
+	}
+	if rec := chat(h, "gw-vendor-unpriced"); rec.Code != 200 {
+		t.Errorf("after the first finished: %d, want the gate slot back", rec.Code)
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met in 5s")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
