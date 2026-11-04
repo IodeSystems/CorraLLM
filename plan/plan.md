@@ -425,7 +425,10 @@ gone, so dun has not been told.
 Deployed after aw4-bd confirmed aw4 08fdf8018 (fallback on 402) runs on agentkit ae96290. Not seen yet: a live 402
 end to end; aw4-bd watches for the first FellBack. Sessions still on aw4's old pid fail on a 402 until it retires.
 
-- **next:** tell dun about 402 when a dun session runs.
+dun-09 told 11-04. Owner's decision for dun: a 402 fails the turn and shows whose budget is spent and when it
+resets; no fallback. Waits on an agentkit tag with ae96290 (aw4 issue i_1m6kgwfqk9xypxe9pqj0dg, project dun).
+
+- **next:** none here. The release is agentkit-6c (push and tag v0.23.0), then dun-09.
   UIBJ, decided by the owner (below). Reconcile against the Console when the owner reads it.
 - **UIBJ (use it but justify), owner 11-04, semantics open:** a second budget kind beside UIOLI. A cost budget the
   caller spends at its discretion, but each spend logs why and what value it produced: justify the spend, do not
