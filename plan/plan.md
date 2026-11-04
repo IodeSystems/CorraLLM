@@ -400,9 +400,19 @@ Design (my calls, catchable):
   SKIPPED when the provider or a credential has a USD limit (spend never invisible).
 - Refresh on the 30-min roster loop (first pass ~3 s after start); a fetch error keeps the last rows.
 
-Slices: ◐ S1 config + price + bounds · ◻ S2 refresh · ◻ S3 sched gate + proxy · ◻ S4 API + UI · ◻ S5 sandbox check.
+Slices: ✅ S1 config + price + bounds (be232cb) · ✅ S2 refresh (a05cc0f) · ✅ S3 sched gate + proxy (f95f0b2) ·
+✅ S4 API + UI (974c9b0) · ✅ provider queue is waited on (5c8abf3: the default stage rejects, so a provider's line
+never applied; now it queues when the provider sets `scheduler`, unless the group spills) · ◐ S5 checks.
+**Sandbox 11-04** (scratchpad `pt/`, fake gateway :6591, `corrallm serve --insecure` 127.0.0.1:6502; provider
+maxConcurrent 1, queue 1 / 5s; template maxConcurrent 2): catalogue read 3 s after start, 2 models served; A 200
+in 2.0 s, B (other model) waited 1.7 s at the provider line then 200, C (model slot free) 429 Retry-After 2; an
+unlisted id 404; the upstream got the catalogue ids; cost $0.005 / $0.004 = catalogue prices. **Not checked:** the
+dialog in a browser (extension did not answer); a real gateway.
+- **next:** owner configures the corp gateway (Models → provider → edit); look at the dialog then.
 - **risks:** a catalogue of hundreds lists them all in `/v1/models`; cold start serves nothing until the first
-  fetch; `usage.cost` from the upstream still overrides the price (existing rule).
+  fetch; `usage.cost` from the upstream still overrides the price (existing rule); per-model queue defaults apply
+  only when the caller's group queues (same as any model); a credential with authTokenCommand cannot list its
+  catalogue (logged, skipped).
 - **optional:** filter on passthrough rows; provider gate load in the UI; editing one virtual model's settings
   without declaring it.
 
