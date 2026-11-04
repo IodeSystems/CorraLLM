@@ -422,7 +422,8 @@ retry_after are unchanged. Deploy waits on agentkit: `llm/client.go:945` parses 
 aw4 as a plain failure and skip its fallback. Asked agentkit-6c on 11-04. The contract was sent to aw4-bd. dun-2c is
 gone, so dun has not been told.
 
-- **next:** deploy 7dd6d17 when agentkit-6c reports a version that handles 402; then tell aw4 and dun.
+- **next:** deploy 7dd6d17 when aw4-bd confirms its fallback accepts 402 and it runs agentkit ae96290 (agentkit-6c, 11-04:
+  handles 402, local on main, not pushed). Deploying earlier gives aw4 an immediate error with no fallback. Then tell dun.
   UIBJ, decided by the owner (below). Reconcile against the Console when the owner reads it.
 - **UIBJ (use it but justify), owner 11-04, semantics open:** a second budget kind beside UIOLI. A cost budget the
   caller spends at its discretion, but each spend logs why and what value it produced: justify the spend, do not
