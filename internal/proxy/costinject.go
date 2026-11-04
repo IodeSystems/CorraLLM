@@ -27,9 +27,9 @@ const (
 // Provider-reported cost wins when present (OpenRouter): treat it as the
 // authoritative total, keeping the table-derived class ratio (or a token share
 // when the type is unpriced).
-func (p *Proxy) classCost(typ string, u usage) (cCost, pCost, gCost float64) {
+func (p *Proxy) classCost(backend config.Model, u usage) (cCost, pCost, gCost float64) {
 	proc := max(u.PromptTokens-u.CachedTokens, 0)
-	cCost, pCost, gCost = p.cost.RequestUSDByClass(typ, u.CachedTokens, proc, u.CompletionTokens)
+	cCost, pCost, gCost = p.cost.ModelUSDByClass(backend, u.CachedTokens, proc, u.CompletionTokens)
 	if u.Cost > 0 {
 		if s := cCost + pCost + gCost; s > 0 {
 			k := u.Cost / s
@@ -63,7 +63,7 @@ func (p *Proxy) free(backend config.Model, u usage) bool {
 // source. The same steps as the accounting in serve, in the same order —
 // costinject_test holds the two equal.
 func (p *Proxy) replyCost(backend config.Model, u usage, loadCost float64) (float64, string) {
-	c, pr, g := p.classCost(backend.Type, u)
+	c, pr, g := p.classCost(backend, u)
 	usd := c + pr + g
 	free := p.free(backend, u)
 	if free {
@@ -77,7 +77,7 @@ func (p *Proxy) replyCost(backend config.Model, u usage, loadCost float64) (floa
 		return usd, costFromEstimate
 	case u.Cost > 0:
 		return usd, costFromProvider
-	case p.cost.IsPaidType(backend.Type):
+	case p.cost.IsPaidModel(backend):
 		return usd, costFromPrices
 	case usd > 0:
 		return usd, costFromEnergy

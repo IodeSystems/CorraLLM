@@ -617,6 +617,17 @@ type Provider struct {
 	// at runtime: the selections do the work, and this only says they are
 	// expected.
 	Manual bool `yaml:"manual,omitempty"`
+
+	// Passthrough serves every model this provider's /v1/models lists, shaped by
+	// its template (see passthrough.go). Nil: only the models written down.
+	Passthrough *Passthrough `yaml:"passthrough,omitempty"`
+
+	// MaxConcurrent caps in-flight requests across ALL of this provider's models
+	// together, on top of each model's own maxConcurrent. 0: no provider cap.
+	MaxConcurrent int `yaml:"maxConcurrent,omitempty"`
+	// Scheduler bounds the queue at that cap (maxQueueDepth, maxWait). Nil
+	// inherits the box-wide values. Read only when MaxConcurrent is set.
+	Scheduler *SchedulerConfig `yaml:"scheduler,omitempty"`
 }
 
 // Discover enumerates a provider's /v1/models and contributes the rows that
@@ -1129,6 +1140,10 @@ type Model struct {
 	// reach. Making zero mean unbounded here would make the common case — an
 	// override that sets one field — silently unbound the other.
 	Scheduler *SchedulerConfig `yaml:"scheduler,omitempty"`
+
+	// Price is this model's own per-token rates. It beats its type's
+	// commandCosts. Nil: priced by type, as before.
+	Price *Price `yaml:"price,omitempty"`
 
 	// ContextPerRequest is the context window each REQUEST must get, in tokens.
 	//
@@ -2550,8 +2565,17 @@ func (c *Config) resolveExtensions() error {
 				// extension that pools its catalogue. A `directory` filter alone
 				// is NOT enough any more — it enrols nothing, so a provider
 				// carrying only that would contribute nothing and reach nothing.
-				if len(pv.Provides) == 0 && !pv.Manual && ext.Virtual == nil {
-					return fmt.Errorf("extension %q provider %q: contributes no models (needs provides, manual: true to choose from its directory, or a virtual extension pooling it)", name, pn)
+				if len(pv.Provides) == 0 && !pv.Manual && ext.Virtual == nil && pv.Passthrough == nil {
+					return fmt.Errorf("extension %q provider %q: contributes no models (needs provides, manual: true to choose from its directory, passthrough, or a virtual extension pooling it)", name, pn)
+				}
+				if pv.MaxConcurrent < 0 {
+					return fmt.Errorf("extension %q provider %q: maxConcurrent %d is negative", name, pn, pv.MaxConcurrent)
+				}
+				if pt := pv.Passthrough; pt != nil {
+					t := pt.Template
+					if t.Cmd != "" || !t.Proxy.IsZero() || t.Server != "" || t.Extension != "" || t.Upstream != "" {
+						return fmt.Errorf("extension %q provider %q: passthrough template sets cmd/proxy/server/extension/upstream; those come from the provider and the catalogue", name, pn)
+					}
 				}
 				if err := validateCredentials(name, pn, pv); err != nil {
 					return err
@@ -3067,7 +3091,7 @@ func LoadBytesForTest(b []byte) (*Config, error) {
 // check membership first.
 func (c *Config) SchedulerFor(model string) SchedulerConfig {
 	out := c.Scheduler
-	m, ok := c.Models[model]
+	m, ok := c.ServedModel(model) // a passthrough model's bounds come from its template
 	if !ok || m.Scheduler == nil {
 		return out
 	}

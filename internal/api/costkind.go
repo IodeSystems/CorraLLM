@@ -160,7 +160,7 @@ func classify(known map[string]config.Model, cm *cost.Model, served string) cost
 	}
 	k := costKind{Type: m.Type}
 	switch {
-	case cm.IsPaidType(m.Type):
+	case cm.IsPaidModel(m):
 		k.Billing, k.Exclude = BillPaid, ExcludePaid
 	case cm.NoCharge(m):
 		// Declared free, so the cost is $0 and the comparison SPEAKS for it —

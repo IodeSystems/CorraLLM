@@ -85,3 +85,20 @@ func TestAudioRequestUSD(t *testing.T) {
 	// Zero bytes → $0.
 	approx(t, m.AudioRequestUSD("stt", 0), 0)
 }
+
+func TestAModelsOwnPriceBeatsItsType(t *testing.T) {
+	m := NewModel(&config.Config{CommandCosts: map[string]map[string]any{
+		"paid": {"extract": map[string]any{"costFactor": 1.0}},
+	}})
+	b := config.Model{Type: "paid", Price: &config.Price{InputPerM: 2, OutputPerM: 8}}
+	c, p, g := m.ModelUSDByClass(b, 1_000_000, 1_000_000, 1_000_000)
+	if c != 2 || p != 2 || g != 8 {
+		t.Errorf("cached/processed/generated = %v/%v/%v, want 2/2/8 (cached falls back to input)", c, p, g)
+	}
+	if !m.IsPaidModel(config.Model{Type: "unpriced", Price: &config.Price{}}) {
+		t.Error("a $0 price is a price, not an energy estimate")
+	}
+	if c, p, g := m.ModelUSDByClass(config.Model{Type: "paid"}, 1, 1, 1); c != 1 || p != 1 || g != 1 {
+		t.Errorf("no price: want the type's rates, got %v/%v/%v", c, p, g)
+	}
+}

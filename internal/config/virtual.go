@@ -287,8 +287,10 @@ func (c *Config) contributorExistsLocked(key string) bool {
 		_, ok = ext.Providers[parts[2]]
 		return ok
 	case len(parts) == 3 && parts[0] == "provider":
-		_, _, ok := c.findProvider(parts[1])
-		return ok
+		// Passthrough is the only writer of this key now; turning it off must
+		// take its models out at the reload, not leave them serving forever.
+		_, pv, ok := c.findProvider(parts[1])
+		return ok && pv.Passthrough != nil
 	}
 	return false
 }

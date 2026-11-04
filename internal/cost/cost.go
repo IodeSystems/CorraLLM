@@ -134,7 +134,27 @@ func (m *Model) IsPaidType(typ string) bool { return m.byType[typ].paid() }
 // $0; what asserts it is the block PLUS a type that names no rate. A backend
 // whose type does name rates is paid, whatever else is declared about it.
 func (m *Model) NoCharge(b config.Model) bool {
-	return b.FreeTier != nil && b.Remote() && !m.IsPaidType(b.Type)
+	return b.FreeTier != nil && b.Remote() && !m.IsPaidModel(b)
+}
+
+// IsPaidModel reports a backend that bills per token: its own price, or a paid
+// type. A price of all zeros is still a price (a free catalogue row): $0, said
+// by the provider, not an energy estimate.
+func (m *Model) IsPaidModel(b config.Model) bool {
+	return b.Price != nil || m.IsPaidType(b.Type)
+}
+
+// ModelUSDByClass is RequestUSDByClass for one backend: its own price when it
+// has one, else its type's.
+func (m *Model) ModelUSDByClass(b config.Model, cached, processed, generated int) (cachedUSD, processedUSD, generatedUSD float64) {
+	if p := b.Price; p != nil {
+		cr := p.CachedPerM
+		if cr == 0 {
+			cr = p.InputPerM
+		}
+		return float64(cached) * cr / 1e6, float64(processed) * p.InputPerM / 1e6, float64(generated) * p.OutputPerM / 1e6
+	}
+	return m.RequestUSDByClass(b.Type, cached, processed, generated)
 }
 
 // PaidTypes lists the configured types that bill per token, sorted cheapest

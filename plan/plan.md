@@ -377,6 +377,35 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P72 — Passthrough providers + provider-wide concurrency — 2026-11-04
+
+Owner ask 11-04 (dun-09 relayed the same): serve an upstream gateway's (corp OpenRouter/LiteLLM) models without
+adding each one; one in-flight limit + queue per provider; default concurrency + queue for its virtual models.
+Owner decisions 11-04: accept only ids in the provider's `/v1/models` catalogue; price from the catalogue; scope
+includes the edit API + UI.
+
+Design (my calls, catchable):
+- `Provider.passthrough.template` (a Model) opts in. Every catalogue row becomes a discovered model
+  `<provider>-<id>` (ServedName) via the existing overlay (`SetDiscoveredFor`, key `provider\0<p>\0<cred>`): name
+  resolution, credential expansion, reload carry-over and listing come with it. Declared and selected models win.
+  Turning passthrough off drops the rows at the next reload (`contributorExistsLocked` checks it).
+- Defaults for virtual models = template `maxConcurrent` + `scheduler.{maxQueueDepth,maxWait}`. Override one model
+  by declaring/selecting it. Fix: `boundsFor`/`SchedulerFor` read `cfg.Models` only → now also the overlay.
+- `Provider.maxConcurrent` + `Provider.scheduler.{maxQueueDepth,maxWait}`: a second admission gate keyed
+  `provider:<ext>/<name>`, over ALL that provider's models (declared too). Taken AFTER the model slot, so a
+  request queued on a busy model holds no provider slot. Gate skips group budgets (no double count) and is left
+  out of `Snapshot` (lane samples, Groups view). Full → 429 + Retry-After like a model.
+- Price: new `Model.price {inputPerM, outputPerM, cachedPerM}` beats the type's commandCosts. Catalogue
+  PromptUSD/CompletionUSD fill it; a row with no price falls back to the template's; a row still unpriced is
+  SKIPPED when the provider or a credential has a USD limit (spend never invisible).
+- Refresh on the 30-min roster loop (first pass ~3 s after start); a fetch error keeps the last rows.
+
+Slices: ◐ S1 config + price + bounds · ◻ S2 refresh · ◻ S3 sched gate + proxy · ◻ S4 API + UI · ◻ S5 sandbox check.
+- **risks:** a catalogue of hundreds lists them all in `/v1/models`; cold start serves nothing until the first
+  fetch; `usage.cost` from the upstream still overrides the price (existing rule).
+- **optional:** filter on passthrough rows; provider gate load in the UI; editing one virtual model's settings
+  without declaring it.
+
 ### ◐ P71 — Spend: the ledger is the source, cost tokens for clients — 2026-11-01
 
 Owner, via dun-a8: billed spend is not worth chasing. An `org:admin` `ant` login on an Individual Org

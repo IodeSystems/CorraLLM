@@ -1729,7 +1729,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			if status >= 200 && status < 300 && u.PromptPerSec == 0 && u.PredictedPerSec == 0 {
 				u, speedSource = upstreamSpeeds(u, upHeaders, streaming, upstreamStart, sc.firstWrite, sc.lastWrite)
 			}
-			cCost, pCost, gCost = p.classCost(backend.Type, u)
+			cCost, pCost, gCost = p.classCost(backend, u)
 			costUSD = cCost + pCost + gCost
 		}
 		// A DECLARED FREE TIER CHARGES NOTHING, and this box's coefficients are
