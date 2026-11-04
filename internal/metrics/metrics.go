@@ -63,7 +63,9 @@ var (
 	}, []string{"model"})
 
 	// Spend gauges mirror GET /v1/spend. A figure corrallm does not have is an
-	// absent series, never 0, as in the JSON.
+	// absent series, never 0, as in the JSON. The names are a contract: Grafana
+	// homelab-claude-usage (panels 11/12) and the alert "Claude API credit low"
+	// query them. Do not rename.
 	spendEstimated = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "corrallm_spend_estimated_usd",
 		Help: "Spend this period in USD: the last reconciled figure plus the ledger after it.",

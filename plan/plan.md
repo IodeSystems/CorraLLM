@@ -417,7 +417,8 @@ past the month's limit, not past a paced day (`Ledger.LimitFull`). `corrallm spe
 started at deploy, so on 11-04 the pool admits about $6.70 more than the pace. This corrects from 11-05.
 
 11-04 (grafana-a7 ask, 2ec1818, live v0.1.0-56): /v1/spend as gauges `corrallm_spend_*{provider}` on /metrics,
-sampled 60 s; an absent JSON field = absent series. Not exported: today_usd / today_spent_usd. Open (owner):
+sampled 60 s; an absent JSON field = absent series. Names are fixed: Grafana `homelab-claude-usage` v9 panels 11/12
+and alert uid cg3bn3l4sei9sc (left < $20 or projected > limit, 15m) use them. today_* not needed. Open (owner):
 Console credit cycle is 10-17 → 11-17, corrallm `Renews: 15`; grafana-a7 asked the owner whether to set 17.
 
 11-04 refusal status (7dd6d17), live as v0.1.0-49-g10236d5 with the contract in `/v1/capabilities` `errors`: a budget that refills at a reset time (calendar day
