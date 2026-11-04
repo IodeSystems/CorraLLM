@@ -98,15 +98,15 @@ func TestPassthroughPrices(t *testing.T) {
 func TestProviderGateAppliesToEveryModelOfTheProvider(t *testing.T) {
 	c := passthroughCfg(t, "")
 	_, m, _ := c.PassthroughModelFor(gwTarget(t, c), CatalogRow{ID: "x", Free: true})
-	key, capacity, ok := c.ProviderGate(m)
-	if !ok || key != "provider:corp/gw" || capacity != 4 {
-		t.Fatalf("gate = %q %d %v", key, capacity, ok)
+	key, capacity, queues, ok := c.ProviderGate(m)
+	if !ok || key != "provider:corp/gw" || capacity != 4 || !queues {
+		t.Fatalf("gate = %q %d queues %v ok %v", key, capacity, queues, ok)
 	}
 	sc := c.ProviderSchedulerFor(key)
 	if sc.MaxQueueDepth != 7 || sc.MaxWait != "30s" {
 		t.Errorf("gate bounds = %+v", sc)
 	}
-	if _, _, ok := c.ProviderGate(Model{Type: "chat"}); ok {
+	if _, _, _, ok := c.ProviderGate(Model{Type: "chat"}); ok {
 		t.Error("a model with no provider has no gate")
 	}
 }

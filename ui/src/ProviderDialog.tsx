@@ -639,8 +639,9 @@ export function ProviderDialog(props: {
           </Divider>
           <Typography variant="caption" sx={{ color: C.textFaint, mt: -1 }}>
             Requests in flight across ALL this provider&apos;s models together, on top of each
-            model&apos;s own limit. Past it, requests wait in line; a full line, or a wait past the
-            limit, gets a 429 with Retry-After. Empty = no provider limit.
+            model&apos;s own limit. Empty = no provider limit. Past it, a request gets a 429 with
+            Retry-After — unless you set a line below: then it waits, and a full line or a wait
+            past the longest wait gets the 429. A caller whose group falls back moves on instead.
           </Typography>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
             <TextField
@@ -705,7 +706,7 @@ export function ProviderDialog(props: {
                   value={d.ptQueue}
                   onChange={(e) => set({ ptQueue: e.target.value.replace(/\D/g, '') })}
                   sx={{ width: 180 }}
-                  helperText="Per model. Empty = box default"
+                  helperText="Per model, if the caller's group queues"
                 />
                 <TextField
                   size="small"

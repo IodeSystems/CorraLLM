@@ -36,13 +36,15 @@ func ProviderGateKey(extension, provider string) string {
 }
 
 // ProviderGate reports the provider-wide gate a model's requests pass, when its
-// provider sets maxConcurrent.
-func (c *Config) ProviderGate(m Model) (key string, capacity int, ok bool) {
+// provider sets maxConcurrent. queues is true when the provider sets its own
+// queue (scheduler): a request at the cap then waits in that line, whatever the
+// group's saturation stage, unless the group spills to a fallback.
+func (c *Config) ProviderGate(m Model) (key string, capacity int, queues, ok bool) {
 	pv, ok := c.providerOf(m.Extension, m.ProviderName)
 	if !ok || pv.MaxConcurrent <= 0 {
-		return "", 0, false
+		return "", 0, false, false
 	}
-	return ProviderGateKey(m.Extension, m.ProviderName), pv.MaxConcurrent, true
+	return ProviderGateKey(m.Extension, m.ProviderName), pv.MaxConcurrent, pv.Scheduler != nil, true
 }
 
 // ProviderSchedulerFor resolves a provider gate's queue bounds: the provider's

@@ -3544,7 +3544,7 @@ func (p *Proxy) admit(ctx context.Context, name string, backend config.Model, gr
 	if err != nil {
 		return nil, nil, named(err, name)
 	}
-	key, capacity, ok := p.config().ProviderGate(backend)
+	key, capacity, queues, ok := p.config().ProviderGate(backend)
 	if !ok {
 		return release, reqCtx, nil
 	}
@@ -3554,6 +3554,11 @@ func (p *Proxy) admit(ctx context.Context, name string, backend config.Model, gr
 		gs.Preempt = false
 		gs.Queue = gs.Queue || gs.Then == "queue"
 		gs.Spill = gs.Spill || gs.Then == "spill" || gs.Then == "fallThrough"
+	}
+	// A provider that sets its own queue is waited on; a group that spills
+	// still moves on to its fallback instead.
+	if queues && !(gs.Spill || gs.FallThrough || gs.Then == "spill" || gs.Then == "fallThrough") {
+		gs.Queue, gs.Reject = true, false
 	}
 	gateRelease, _, err := p.sched.Admit(ctx, key, backend.Type, capacity, group, weight, false, gs)
 	if err != nil {

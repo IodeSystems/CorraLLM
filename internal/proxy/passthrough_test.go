@@ -37,7 +37,8 @@ func newGateway(t *testing.T) *gateway {
 		if r.URL.Path == "/v1/models" {
 			_, _ = io.WriteString(w, `{"data":[
 				{"id":"vendor/priced","pricing":{"prompt":"0.000001","completion":"0.000004"}},
-				{"id":"vendor/unpriced"}
+				{"id":"vendor/unpriced"},
+				{"id":"vendor/third","pricing":{"prompt":"0.000001","completion":"0.000001"}}
 			]}`)
 			return
 		}
@@ -188,5 +189,32 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met in 5s")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A provider that sets its own queue is waited on even though the group's
+// stage would reject: the second request waits for the first, the third finds
+// the line full.
+func TestProviderQueueWaitsThenRejectsWhenFull(t *testing.T) {
+	g := newGateway(t)
+	g.hold = make(chan struct{})
+	p, h := passthroughRig(t, g, "        maxConcurrent: 1\n        scheduler: {maxQueueDepth: 1, maxWait: 5s}\n")
+	first, second := make(chan int), make(chan int)
+	go func() { first <- chat(h, "gw-vendor-priced").Code }()
+	waitFor(t, func() bool { g.mu.Lock(); defer g.mu.Unlock(); return len(g.asked) == 1 })
+	go func() { second <- chat(h, "gw-vendor-unpriced").Code }()
+	time.Sleep(100 * time.Millisecond) // let it join the provider's line
+
+	// a third model, its own slot free: only the provider's full line refuses it
+	if rec := chat(h, "gw-vendor-third"); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("third request: %d, want 429 with the provider's line full", rec.Code)
+	}
+	promises, _ := p.store.RetryPromises(store.Window{}, 10, "")
+	if len(promises) != 1 || promises[0].RefusedBy != config.ProviderGateKey("corp", "gw") {
+		t.Errorf("refusals %+v, want one from the provider gate", promises)
+	}
+	close(g.hold)
+	if a, b := <-first, <-second; a != 200 || b != 200 {
+		t.Errorf("first %d second %d, want both served (the second after waiting)", a, b)
 	}
 }
