@@ -222,3 +222,22 @@ func (c *Config) ServedModel(name string) (Model, bool) {
 	m, ok := c.discovered[name]
 	return m, ok
 }
+
+// PassthroughServed counts the models a provider's passthrough serves now,
+// across its credentials. 0 before the first refresh.
+func (c *Config) PassthroughServed(provider string) int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	names := map[string]bool{}
+	for key, con := range c.fetched {
+		if !strings.HasPrefix(key, "provider\x00"+provider+"\x00") {
+			continue
+		}
+		for n := range con.models {
+			if _, declared := c.Models[n]; !declared {
+				names[n] = true
+			}
+		}
+	}
+	return len(names)
+}

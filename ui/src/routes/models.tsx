@@ -741,6 +741,22 @@ function ModelsPage() {
         }
       : null,
     limits: (p.limits ?? []).map(toLimit),
+    cap: {
+      maxConcurrent: Number(p.maxConcurrent ?? 0),
+      maxQueueDepth: Number(p.maxQueueDepth ?? 0),
+      maxWait: p.maxWait ?? '',
+    },
+    passthrough: p.passthrough?.enabled
+      ? {
+          maxConcurrent: Number(p.passthrough.maxConcurrent ?? 0),
+          maxQueueDepth: Number(p.passthrough.maxQueueDepth ?? 0),
+          maxWait: p.passthrough.maxWait ?? '',
+          type: p.passthrough.type ?? '',
+          inputPerM: p.passthrough.inputPerM ?? 0,
+          outputPerM: p.passthrough.outputPerM ?? 0,
+          models: Number(p.passthrough.models ?? 0),
+        }
+      : null,
     credentials: (p.credentials ?? []).map((cr) => ({
       name: cr.name,
       secretRef: cr.secretRef ?? '',

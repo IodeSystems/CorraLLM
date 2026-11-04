@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -75,6 +76,31 @@ type ProviderSpec struct {
 	// to SAY there is one — otherwise a provider that declares its models looks
 	// identical to one that contributes nothing.
 	Provides int `json:"provides" required:"false" doc:"How many models this provider declares in config by hand. Read-only here; edit them in the extension YAML."`
+
+	// Passthrough serves every model the provider's /v1/models lists. Nil on a
+	// save keeps what is stored; enabled=false turns it off.
+	Passthrough *PassthroughSpec `json:"passthrough,omitempty" required:"false" doc:"Serve every model the provider's catalogue lists, as <provider>-<id>."`
+
+	// The provider-wide cap: in-flight requests across ALL its models, and the
+	// queue at that cap. Pointers: nil on a save keeps what is stored; 0 or ""
+	// clears.
+	MaxConcurrent *int    `json:"maxConcurrent,omitempty" required:"false" doc:"Requests in flight across all this provider's models together; 0 = no provider cap."`
+	MaxQueueDepth *int    `json:"maxQueueDepth,omitempty" required:"false" doc:"Requests that may wait once the provider cap is reached; 0 = the box-wide default."`
+	MaxWait       *string `json:"maxWait,omitempty" required:"false" doc:"How long a request may wait at the provider cap before a 429, e.g. 30s; empty = the box-wide default."`
+}
+
+// PassthroughSpec is a provider's passthrough switch and the defaults every
+// model it serves that way gets. One model gets its own settings by being
+// added (declared or chosen) under the same name.
+type PassthroughSpec struct {
+	Enabled       bool    `json:"enabled" doc:"Serve the provider's whole catalogue."`
+	MaxConcurrent int     `json:"maxConcurrent" required:"false" doc:"Default requests in flight per model; 0 = 1."`
+	MaxQueueDepth int     `json:"maxQueueDepth" required:"false" doc:"Default requests that may wait per model; 0 = the box-wide default."`
+	MaxWait       string  `json:"maxWait" required:"false" doc:"Default wait per model before a 429, e.g. 30s; empty = the box-wide default."`
+	Type          string  `json:"type" required:"false" doc:"Cost class for these models (default chat)."`
+	InputPerM     float64 `json:"inputPerM" required:"false" doc:"USD per 1M input tokens for a model the catalogue does not price."`
+	OutputPerM    float64 `json:"outputPerM" required:"false" doc:"USD per 1M output tokens for a model the catalogue does not price."`
+	Models        int     `json:"models" required:"false" doc:"Read-only: models served this way now. 0 before the first catalogue read."`
 }
 
 // DiscoverSpec is the filter a provider's catalogue is admitted through.
@@ -176,6 +202,24 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 			ps.Manual = pv.Manual
 			ps.Provides = len(pv.Provides)
 			ps.BarePrecedence = pv.BarePrecedence
+			if pv.MaxConcurrent > 0 {
+				ps.MaxConcurrent = &pv.MaxConcurrent
+			}
+			if sc := pv.Scheduler; sc != nil {
+				ps.MaxQueueDepth, ps.MaxWait = &sc.MaxQueueDepth, &sc.MaxWait
+			}
+			if pt := pv.Passthrough; pt != nil {
+				t := pt.Template
+				spec := &PassthroughSpec{Enabled: true, MaxConcurrent: t.MaxConcurrent, Type: t.Type,
+					Models: cfg.PassthroughServed(pn)}
+				if t.Scheduler != nil {
+					spec.MaxQueueDepth, spec.MaxWait = t.Scheduler.MaxQueueDepth, t.Scheduler.MaxWait
+				}
+				if t.Price != nil {
+					spec.InputPerM, spec.OutputPerM = t.Price.InputPerM, t.Price.OutputPerM
+				}
+				ps.Passthrough = spec
+			}
 			// Reported so an edit form can ROUND-TRIP the filter. Without it a
 			// form could only ever send a filter it had invented, and the only
 			// safe thing to do with the field was omit it — which made "edit
@@ -357,6 +401,53 @@ func (h *Handlers) UpsertProvider(ctx context.Context, in *UpsertProviderInput) 
 			}
 		}
 
+		if b.MaxConcurrent != nil {
+			pv.MaxConcurrent = max(*b.MaxConcurrent, 0)
+		}
+		if b.MaxQueueDepth != nil || b.MaxWait != nil {
+			sc := config.SchedulerConfig{}
+			if pv.Scheduler != nil {
+				sc = *pv.Scheduler // a fresh copy: the stored pointer may be shared
+			}
+			if b.MaxQueueDepth != nil {
+				sc.MaxQueueDepth = max(*b.MaxQueueDepth, 0)
+			}
+			if b.MaxWait != nil {
+				sc.MaxWait = strings.TrimSpace(*b.MaxWait)
+			}
+			if err := checkWait(sc.MaxWait); err != nil {
+				return err
+			}
+			pv.Scheduler = nil
+			if sc != (config.SchedulerConfig{}) {
+				pv.Scheduler = &sc
+			}
+		}
+		if pt := b.Passthrough; pt != nil {
+			if !pt.Enabled {
+				pv.Passthrough = nil
+			} else {
+				var t config.Model
+				if pv.Passthrough != nil {
+					t = pv.Passthrough.Template // keep fields the form does not model
+				}
+				t.MaxConcurrent = max(pt.MaxConcurrent, 0)
+				t.Type = pt.Type
+				if err := checkWait(pt.MaxWait); err != nil {
+					return err
+				}
+				t.Scheduler = nil
+				if pt.MaxQueueDepth > 0 || pt.MaxWait != "" {
+					t.Scheduler = &config.SchedulerConfig{MaxQueueDepth: pt.MaxQueueDepth, MaxWait: strings.TrimSpace(pt.MaxWait)}
+				}
+				t.Price = nil
+				if pt.InputPerM > 0 || pt.OutputPerM > 0 {
+					t.Price = &config.Price{InputPerM: pt.InputPerM, OutputPerM: pt.OutputPerM}
+				}
+				pv.Passthrough = &config.Passthrough{Template: t}
+			}
+		}
+
 		creds := make([]config.Credential, 0, len(b.Credentials))
 		for _, cs := range b.Credentials {
 			// Start from the stored credential of the same name, so fields the
@@ -429,4 +520,17 @@ func (h *Handlers) SetSecret(_ context.Context, in *SetSecretInput) (*ConfigMuta
 		out.Body.Message = "stored " + in.Body.Name
 	}
 	return out, nil
+}
+
+// checkWait refuses a wait that is not a positive duration, so a typo is an
+// error on save rather than a bound that silently does not apply.
+func checkWait(w string) error {
+	w = strings.TrimSpace(w)
+	if w == "" {
+		return nil
+	}
+	if d, err := time.ParseDuration(w); err != nil || d <= 0 {
+		return fmt.Errorf("maxWait %q is not a duration such as 30s", w)
+	}
+	return nil
 }

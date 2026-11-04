@@ -6,6 +6,8 @@ schema {
   mutation: Mutation
 }
 
+directive @export(as: String!) on FIELD
+
 directive @derived(operationId: String) on FIELD_DEFINITION | OBJECT | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ENUM | SCALAR | UNION | INTERFACE | ARGUMENT_DEFINITION
 
 type CorrallmMutationNamespace {
@@ -2661,6 +2663,44 @@ type corrallm_OverviewOutputBody {
   servers: [corrallm_ServerDef!]!
 }
 
+type corrallm_PassthroughSpec {
+  """Serve the provider's whole catalogue."""
+  enabled: Boolean!
+  """USD per 1M input tokens for a model the catalogue does not price."""
+  inputPerM: Float
+  """Default requests in flight per model; 0 = 1."""
+  maxConcurrent: Long
+  """Default requests that may wait per model; 0 = the box-wide default."""
+  maxQueueDepth: Long
+  """Default wait per model before a 429, e.g. 30s; empty = the box-wide default."""
+  maxWait: String
+  """Read-only: models served this way now. 0 before the first catalogue read."""
+  models: Long
+  """USD per 1M output tokens for a model the catalogue does not price."""
+  outputPerM: Float
+  """Cost class for these models (default chat)."""
+  type: String
+}
+
+input corrallm_PassthroughSpecInput {
+  """Serve the provider's whole catalogue."""
+  enabled: Boolean!
+  """USD per 1M input tokens for a model the catalogue does not price."""
+  inputPerM: Float
+  """Default requests in flight per model; 0 = 1."""
+  maxConcurrent: Long
+  """Default requests that may wait per model; 0 = the box-wide default."""
+  maxQueueDepth: Long
+  """Default wait per model before a 429, e.g. 30s; empty = the box-wide default."""
+  maxWait: String
+  """Read-only: models served this way now. 0 before the first catalogue read."""
+  models: Long
+  """USD per 1M output tokens for a model the catalogue does not price."""
+  outputPerM: Float
+  """Cost class for these models (default chat)."""
+  type: String
+}
+
 input corrallm_PauseExtensionInputBodyInput {
   """Extension name (e.g. oidio)."""
   extension: String!
@@ -2932,8 +2972,15 @@ type corrallm_ProviderSpec {
   limits: [corrallm_Limit!]
   """Models are chosen by hand from this provider's directory."""
   manual: Boolean
+  """Requests in flight across all this provider's models together; 0 = no provider cap."""
+  maxConcurrent: Long
+  """Requests that may wait once the provider cap is reached; 0 = the box-wide default."""
+  maxQueueDepth: Long
+  """How long a request may wait at the provider cap before a 429, e.g. 30s; empty = the box-wide default."""
+  maxWait: String
   """Provider name; served models are <provider>-<id>."""
   name: String!
+  passthrough: corrallm_PassthroughSpec
   """Upstream port (default 443)."""
   port: Long
   """How many models this provider declares in config by hand. Read-only here; edit them in the extension YAML."""
@@ -2956,8 +3003,15 @@ input corrallm_ProviderSpecInput {
   limits: [corrallm_LimitInput!]
   """Models are chosen by hand from this provider's directory."""
   manual: Boolean
+  """Requests in flight across all this provider's models together; 0 = no provider cap."""
+  maxConcurrent: Long
+  """Requests that may wait once the provider cap is reached; 0 = the box-wide default."""
+  maxQueueDepth: Long
+  """How long a request may wait at the provider cap before a 429, e.g. 30s; empty = the box-wide default."""
+  maxWait: String
   """Provider name; served models are <provider>-<id>."""
   name: String!
+  passthrough: corrallm_PassthroughSpecInput
   """Upstream port (default 443)."""
   port: Long
   """How many models this provider declares in config by hand. Read-only here; edit them in the extension YAML."""
@@ -3661,6 +3715,8 @@ type corrallm_SpendProvider {
   resetsAt: String
   source: String!
   staleSeconds: Long
+  todaySpentUsd: Float
+  todayUsd: Float
 }
 
 input corrallm_SpendReconcileInputBodyInput {

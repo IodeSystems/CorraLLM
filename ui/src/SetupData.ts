@@ -69,6 +69,19 @@ export const ProvidersDoc = graphql(/* GraphQL */ `
             freeOnly
             minContext
           }
+          maxConcurrent
+          maxQueueDepth
+          maxWait
+          passthrough {
+            enabled
+            maxConcurrent
+            maxQueueDepth
+            maxWait
+            type
+            inputPerM
+            outputPerM
+            models
+          }
           limits {
             req
             usd

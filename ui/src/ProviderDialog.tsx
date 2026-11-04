@@ -221,6 +221,18 @@ export type ProviderInitial = {
    */
   limits: LimitValue[]
   credentials: CredentialValue[]
+  /** The provider-wide cap: in flight across all its models, and its queue. */
+  cap: { maxConcurrent: number; maxQueueDepth: number; maxWait: string }
+  /** Serving the whole catalogue, and the defaults each such model gets. Null: off. */
+  passthrough: null | {
+    maxConcurrent: number
+    maxQueueDepth: number
+    maxWait: string
+    type: string
+    inputPerM: number
+    outputPerM: number
+    models: number
+  }
 }
 
 const isRpm = (l: LimitValue) => !!l.req && l.per === 'minute'
@@ -238,6 +250,15 @@ type Draft = {
   rpm: string
   freeOnly: boolean
   minContext: string
+  capConcurrent: string
+  capQueue: string
+  capWait: string
+  pt: boolean
+  ptConcurrent: string
+  ptQueue: string
+  ptWait: string
+  ptInputPerM: string
+  ptOutputPerM: string
 }
 
 const BLANK: Draft = {
@@ -252,6 +273,24 @@ const BLANK: Draft = {
   rpm: '',
   freeOnly: true,
   minContext: '8192',
+  capConcurrent: '',
+  capQueue: '',
+  capWait: '',
+  pt: false,
+  ptConcurrent: '',
+  ptQueue: '',
+  ptWait: '',
+  ptInputPerM: '',
+  ptOutputPerM: '',
+}
+
+// '' for 0, so an unset number shows as an empty field rather than a "0" that
+// reads like a limit of nothing.
+const num = (n?: number | null) => (n ? String(n) : '')
+// '30' is read as seconds; a duration such as 2m is kept as written.
+const toWait = (v: string) => {
+  const t = v.trim()
+  return /^\d+(\.\d+)?$/.test(t) ? `${t}s` : t
 }
 
 const GROUP_LABEL: Record<string, string> = {
@@ -309,6 +348,15 @@ export function ProviderDialog(props: {
             secretRef: initial.credentials[0]?.secretRef ?? '',
             rpm: String(initial.credentials[0]?.limits.find(isRpm)?.req ?? ''),
             monthlyUSD: String(initial.limits.find(isMonthlyUsd)?.usd ?? ''),
+            capConcurrent: num(initial.cap.maxConcurrent),
+            capQueue: num(initial.cap.maxQueueDepth),
+            capWait: initial.cap.maxWait,
+            pt: initial.passthrough != null,
+            ptConcurrent: num(initial.passthrough?.maxConcurrent),
+            ptQueue: num(initial.passthrough?.maxQueueDepth),
+            ptWait: initial.passthrough?.maxWait ?? '',
+            ptInputPerM: num(initial.passthrough?.inputPerM),
+            ptOutputPerM: num(initial.passthrough?.outputPerM),
           }
         : BLANK,
     )
@@ -383,6 +431,18 @@ export function ProviderDialog(props: {
           quality: 0,
         },
         credentials: credentialsFor(initial?.credentials ?? [], d.secretRef, d.rpm),
+        maxConcurrent: String(Number(d.capConcurrent || 0)),
+        maxQueueDepth: String(Number(d.capQueue || 0)),
+        maxWait: toWait(d.capWait),
+        passthrough: {
+          enabled: d.pt,
+          maxConcurrent: String(Number(d.ptConcurrent || 0)),
+          maxQueueDepth: String(Number(d.ptQueue || 0)),
+          maxWait: toWait(d.ptWait),
+          type: initial?.passthrough?.type ?? '',
+          inputPerM: Number(d.ptInputPerM || 0),
+          outputPerM: Number(d.ptOutputPerM || 0),
+        },
       })
       const res = r.corrallm?.upsertProvider
       // The mutation reports refusal in the body, not as an error — a rejected
@@ -574,6 +634,113 @@ export function ProviderDialog(props: {
               helperText="Across all its accounts"
             />
           </Stack>
+          <Divider textAlign="left">
+            <Typography variant="caption">Provider limit</Typography>
+          </Divider>
+          <Typography variant="caption" sx={{ color: C.textFaint, mt: -1 }}>
+            Requests in flight across ALL this provider&apos;s models together, on top of each
+            model&apos;s own limit. Past it, requests wait in line; a full line, or a wait past the
+            limit, gets a 429 with Retry-After. Empty = no provider limit.
+          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <TextField
+              size="small"
+              label="Requests in flight"
+              value={d.capConcurrent}
+              onChange={(e) => set({ capConcurrent: e.target.value.replace(/\D/g, '') })}
+              sx={{ width: 160 }}
+              helperText="All models together"
+            />
+            <TextField
+              size="small"
+              label="Requests waiting"
+              value={d.capQueue}
+              onChange={(e) => set({ capQueue: e.target.value.replace(/\D/g, '') })}
+              sx={{ width: 160 }}
+              helperText="Empty = box default"
+              disabled={!d.capConcurrent}
+            />
+            <TextField
+              size="small"
+              label="Longest wait (seconds)"
+              value={d.capWait}
+              onChange={(e) => set({ capWait: e.target.value })}
+              sx={{ width: 180 }}
+              helperText="Or a duration, e.g. 2m"
+              disabled={!d.capConcurrent}
+            />
+          </Stack>
+
+          <Divider textAlign="left">
+            <Typography variant="caption">Serve the whole catalogue</Typography>
+          </Divider>
+          <FormControlLabel
+            control={<Switch size="small" checked={d.pt} onChange={(e) => set({ pt: e.target.checked })} />}
+            label={
+              <Typography variant="body2">
+                Serve every model this provider lists, as {d.name || '<name>'}-&lt;model id&gt;
+              </Typography>
+            }
+          />
+          <Typography variant="caption" sx={{ color: C.textFaint, mt: -1.5 }}>
+            Only ids in the provider&apos;s /v1/models are served; the list is read every 30 minutes.
+            Prices come from the list where it has them.
+            {initial?.passthrough ? ` Serving ${initial.passthrough.models} models now.` : ''} To
+            give one model its own settings, add it by hand under the same name.
+          </Typography>
+          {d.pt && (
+            <>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                <TextField
+                  size="small"
+                  label="Requests in flight, each"
+                  value={d.ptConcurrent}
+                  onChange={(e) => set({ ptConcurrent: e.target.value.replace(/\D/g, '') })}
+                  sx={{ width: 180 }}
+                  helperText="Per model. Empty = 1"
+                />
+                <TextField
+                  size="small"
+                  label="Requests waiting, each"
+                  value={d.ptQueue}
+                  onChange={(e) => set({ ptQueue: e.target.value.replace(/\D/g, '') })}
+                  sx={{ width: 180 }}
+                  helperText="Per model. Empty = box default"
+                />
+                <TextField
+                  size="small"
+                  label="Longest wait (seconds)"
+                  value={d.ptWait}
+                  onChange={(e) => set({ ptWait: e.target.value })}
+                  sx={{ width: 180 }}
+                  helperText="Per model. Or e.g. 2m"
+                />
+              </Stack>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                <TextField
+                  size="small"
+                  label="$ per 1M input tokens"
+                  value={d.ptInputPerM}
+                  onChange={(e) => set({ ptInputPerM: e.target.value })}
+                  sx={{ width: 180 }}
+                  helperText="Only where the list has no price"
+                />
+                <TextField
+                  size="small"
+                  label="$ per 1M output tokens"
+                  value={d.ptOutputPerM}
+                  onChange={(e) => set({ ptOutputPerM: e.target.value })}
+                  sx={{ width: 180 }}
+                  helperText="Only where the list has no price"
+                />
+              </Stack>
+              <Typography variant="caption" sx={{ color: C.textFaint, mt: -1 }}>
+                With a $ limit on this provider, a model with no price from the list or here is not
+                served, so no spend goes uncounted.
+              </Typography>
+            </>
+          )}
+
           <Divider textAlign="left">
             <Typography variant="caption">Directory defaults</Typography>
           </Divider>
