@@ -416,14 +416,16 @@ past the month's limit, not past a paced day (`Ledger.LimitFull`). `corrallm spe
 `today_usd` and `today_spent_usd`. Checked live: the day counter on `prov:anthropic` counts. Today's day counter
 started at deploy, so on 11-04 the pool admits about $6.70 more than the pace. This corrects from 11-05.
 
-11-04 refusal status (7dd6d17, committed, NOT deployed): a budget that refills at a reset time (calendar day
+11-04 refusal status (7dd6d17), live as v0.1.0-49-g10236d5 with the contract in `/v1/capabilities` `errors`: a budget that refills at a reset time (calendar day
 or month, total) answers 402 with no Retry-After; a rolling window keeps 429 with Retry-After. error.type and
 retry_after are unchanged. Deploy waits on agentkit: `llm/client.go:945` parses only a 429, so a 402 would reach
 aw4 as a plain failure and skip its fallback. Asked agentkit-6c on 11-04. The contract was sent to aw4-bd. dun-2c is
 gone, so dun has not been told.
 
-- **next:** deploy 7dd6d17 when aw4-bd confirms its fallback accepts 402 and it runs agentkit ae96290 (agentkit-6c, 11-04:
-  handles 402, local on main, not pushed). Deploying earlier gives aw4 an immediate error with no fallback. Then tell dun.
+Deployed after aw4-bd confirmed aw4 08fdf8018 (fallback on 402) runs on agentkit ae96290. Not seen yet: a live 402
+end to end; aw4-bd watches for the first FellBack. Sessions still on aw4's old pid fail on a 402 until it retires.
+
+- **next:** tell dun about 402 when a dun session runs.
   UIBJ, decided by the owner (below). Reconcile against the Console when the owner reads it.
 - **UIBJ (use it but justify), owner 11-04, semantics open:** a second budget kind beside UIOLI. A cost budget the
   caller spends at its discretion, but each spend logs why and what value it produced: justify the spend, do not
