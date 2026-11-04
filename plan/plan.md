@@ -432,7 +432,7 @@ gone, so dun has not been told.
   not needed until two systems saturate the pool and compete. Owner 11-04: a request that would spend UIBJ
   without its justification is refused with 402.
 - **blocking decisions (owner):** where a UIBJ justification is recorded (a request header, a field on the
-  activity row, a separate log) and who reads it. Whether a request with no justification is refused or only flagged.
+  activity row, a separate log) and who reads it.
   What the danger zone is (how many days before renewal). The header or field names for the reason and value.
 - **risks:** the estimate drifts from the bill by what the price table has wrong and what bypasses corrallm;
   other keys in the Console org share the credit unseen. Not on the dashboard: timed budgets are CLI and API.
