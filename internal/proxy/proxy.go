@@ -2368,9 +2368,8 @@ func (p *Proxy) writeBudgetExhausted(w http.ResponseWriter, r *http.Request, ser
 		msg = fmt.Sprintf("%s: refused by %s. This is not your key's own limit: no request on this model is served until then.",
 			served, summaries(notes))
 	}
-	w.Header().Set("Retry-After", strconv.Itoa(secs))
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusTooManyRequests)
+	status := refusalStatus(notes, secs, w)
+	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"budget_exhausted","retry_after":%d,"budgets":%s}}`,
 		jsonString(msg), secs, mustJSON(notes))
 	var refused string
@@ -2378,7 +2377,7 @@ func (p *Proxy) writeBudgetExhausted(w http.ResponseWriter, r *http.Request, ser
 		refused = cands[0].Name
 	}
 	p.logReq(r, store.Activity{Served: served, Requested: served, RefusedBy: refused, Key: key, Path: r.URL.Path,
-		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+		Status: status, DwellMS: time.Since(start).Milliseconds(),
 		Error: "hard budget exhausted: " + msg, ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
 }
 
@@ -2405,11 +2404,11 @@ func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request,
 		p.alert.Send("allocation/"+key, key+": budget spent",
 			fmt.Sprintf("Caller **%s**: %s. Its requests are refused until it gets more.", key, msg), "money_with_wings")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusTooManyRequests)
+		w.WriteHeader(http.StatusPaymentRequired)
 		_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_spent","budgets":%s}}`,
 			jsonString(msg+ask), mustJSON(notes))
 		p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
-			Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+			Status: http.StatusPaymentRequired, DwellMS: time.Since(start).Milliseconds(),
 			Error: "one-off budget spent: " + msg, ReqBody: reqBody})
 		return
 	}
@@ -2420,13 +2419,12 @@ func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request,
 	p.alert.Send("allocation/"+key, key+": allocation reached",
 		fmt.Sprintf("Caller **%s**: %s. Its requests are refused for %s.", key, msg,
 			(time.Duration(secs)*time.Second).String()), "money_with_wings")
-	w.Header().Set("Retry-After", strconv.Itoa(secs))
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusTooManyRequests)
+	status := refusalStatus(notes, secs, w)
+	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_exhausted","retry_after":%d,"budgets":%s}}`,
 		jsonString(msg+ask), secs, mustJSON(notes))
 	p.logReq(r, store.Activity{Served: served, Requested: served, Key: key, Path: r.URL.Path,
-		Status: http.StatusTooManyRequests, DwellMS: time.Since(start).Milliseconds(),
+		Status: status, DwellMS: time.Since(start).Milliseconds(),
 		Error: "key budget exhausted: " + msg, ReqBody: reqBody, RetryAfterMS: int64(secs) * 1000})
 }
 

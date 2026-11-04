@@ -64,7 +64,7 @@ func TestAccessRequestNewKey(t *testing.T) {
 		t.Fatalf("issued key: %d", c)
 	}
 	rec = k.do(http.MethodPost, "/v1/chat/completions", key, `{"model":"mock"}`)
-	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "allocation_spent") ||
+	if rec.Code != http.StatusPaymentRequired || !strings.Contains(rec.Body.String(), "allocation_spent") ||
 		rec.Header().Get("Retry-After") != "" {
 		t.Errorf("one-off budget spent: %d %q %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
 	}
@@ -144,13 +144,13 @@ func TestValueAddOverflow(t *testing.T) {
 	if c := k.chat("parent", "mock"); c != http.StatusOK {
 		t.Fatalf("first: %d", c)
 	}
-	if c := k.chat("parent", "mock"); c != http.StatusTooManyRequests {
+	if c := k.chat("parent", "mock"); c != http.StatusPaymentRequired {
 		t.Fatalf("over the limit, no value add: %d", c)
 	}
 	if _, err := k.px.AddValueAdd("parent", ValueAddAsk{USD: 0.002, Model: "other"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if c := k.chat("parent", "mock"); c != http.StatusTooManyRequests {
+	if c := k.chat("parent", "mock"); c != http.StatusPaymentRequired {
 		t.Errorf("a value add for another model covered mock: %d", c)
 	}
 	if c := k.chat("parent", "other"); c != http.StatusOK {
@@ -159,8 +159,8 @@ func TestValueAddOverflow(t *testing.T) {
 	if c := k.chat("parent", "other"); c != http.StatusOK {
 		t.Fatalf("second on the value add: %d", c)
 	}
-	if c := k.chat("parent", "other"); c != http.StatusTooManyRequests {
-		t.Errorf("value add spent: %d, want 429", c)
+	if c := k.chat("parent", "other"); c != http.StatusPaymentRequired {
+		t.Errorf("value add spent: %d, want 402", c)
 	}
 	gs := k.px.grants.of("parent")
 	if len(gs) != 1 || gs[0].Spent < 0.0021-1e-9 {

@@ -3,7 +3,9 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -207,4 +209,20 @@ func mustJSON(v []BudgetNote) string {
 		return "[]"
 	}
 	return string(b)
+}
+
+// refusalStatus picks a budget refusal's status and sets its headers. A budget that
+// refills at a reset time (a calendar day or month, a total) is out of money until
+// then: 402, with no Retry-After, because clients retry a 429 with backoff and this
+// wait is hours or days. A rolling window refills as it leaks: 429 with Retry-After.
+// error.type and retry_after in the body are the same either way.
+func refusalStatus(notes []BudgetNote, secs int, w http.ResponseWriter) int {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	for _, n := range notes {
+		if _, per, _ := strings.Cut(n.Window, "/"); per == "total" || strings.HasPrefix(per, "calendar-") {
+			return http.StatusPaymentRequired
+		}
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	return http.StatusTooManyRequests
 }

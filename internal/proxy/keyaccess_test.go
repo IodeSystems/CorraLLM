@@ -55,7 +55,7 @@ func TestParentBudgetRefusalSaysParent(t *testing.T) {
 		t.Fatalf("first: %d", c)
 	}
 	rec := k.do(http.MethodPost, "/v1/chat/completions", child.Key, `{"model":"mock"}`)
-	if rec.Code != http.StatusTooManyRequests ||
+	if rec.Code != http.StatusPaymentRequired ||
 		!strings.Contains(rec.Body.String(), "parent key parent's budget on model:mock: budget of 1 requests created on ") {
 		t.Fatalf("over the parent's budget: %d %s", rec.Code, rec.Body.String())
 	}
@@ -66,7 +66,7 @@ func TestParentBudgetRefusalSaysParent(t *testing.T) {
 	acts, _ := k.st.RecentActivity(store.Window{}, 10, "", "", "")
 	found := false
 	for _, a := range acts {
-		if a.Status == http.StatusTooManyRequests && strings.Contains(a.Error, "parent key parent's budget on model:mock") {
+		if a.Status == http.StatusPaymentRequired && strings.Contains(a.Error, "parent key parent's budget on model:mock") {
 			found = true
 		}
 	}

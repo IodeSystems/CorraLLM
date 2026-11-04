@@ -53,11 +53,13 @@ func TestKeyAllocationRefusesOnlyThatCaller(t *testing.T) {
 		t.Fatalf("first request: %d %s", rec.Code, rec.Body.String())
 	}
 	rec := call("capped")
-	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "allocation_exhausted") {
-		t.Fatalf("over allocation: %d %s, want 429 allocation_exhausted", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusPaymentRequired || !strings.Contains(rec.Body.String(), "allocation_exhausted") {
+		t.Fatalf("over allocation: %d %s, want 402 allocation_exhausted", rec.Code, rec.Body.String())
 	}
-	if rec.Header().Get("Retry-After") == "" {
-		t.Error("no Retry-After on the refusal")
+	// A calendar budget is out until its reset: no Retry-After to invite a
+	// retry loop, and the wait is in the body.
+	if rec.Header().Get("Retry-After") != "" || !strings.Contains(rec.Body.String(), `"retry_after":`) {
+		t.Errorf("Retry-After %q on a 402, body %s", rec.Header().Get("Retry-After"), rec.Body.String())
 	}
 	if rec := call("free"); rec.Code != http.StatusOK {
 		t.Errorf("another caller: %d %s, want served", rec.Code, rec.Body.String())

@@ -117,7 +117,7 @@ func TestChildKeyModelShare(t *testing.T) {
 		t.Fatalf("first: %d", c)
 	}
 	rec := k.do(http.MethodPost, "/v1/chat/completions", child.Key, `{"model":"mock"}`)
-	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "allocation_exhausted") {
+	if rec.Code != http.StatusPaymentRequired || !strings.Contains(rec.Body.String(), "allocation_exhausted") {
 		t.Fatalf("over share: %d %s", rec.Code, rec.Body.String())
 	}
 	if c := k.chat(child.Key, "other"); c != http.StatusOK {
@@ -151,11 +151,11 @@ func TestChildKeyChargesParent(t *testing.T) {
 		t.Fatalf("b: %d", c)
 	}
 	// $0.0021 spent across both children: the parent's $0.002 is full.
-	if c := k.chat(a.Key, "mock"); c != http.StatusTooManyRequests {
-		t.Errorf("a after the parent is spent: %d, want 429", c)
+	if c := k.chat(a.Key, "mock"); c != http.StatusPaymentRequired {
+		t.Errorf("a after the parent is spent: %d, want 402", c)
 	}
-	if c := k.chat("parent", "mock"); c != http.StatusTooManyRequests {
-		t.Errorf("parent: %d, want 429", c)
+	if c := k.chat("parent", "mock"); c != http.StatusPaymentRequired {
+		t.Errorf("parent: %d, want 402", c)
 	}
 	if c := k.chat("peer", "mock"); c != http.StatusOK {
 		t.Errorf("an unrelated key: %d, want served", c)
@@ -221,8 +221,8 @@ func TestChildKeyLifecycle(t *testing.T) {
 	if c := k.chat(child.Key, "mock"); c != http.StatusOK {
 		t.Fatalf("second: %d", c)
 	}
-	if c := k.chat(child.Key, "mock"); c != http.StatusTooManyRequests {
-		t.Errorf("third: %d, want 429 (2/day, spend kept across the edit)", c)
+	if c := k.chat(child.Key, "mock"); c != http.StatusPaymentRequired {
+		t.Errorf("third: %d, want 402 (2/day, spend kept across the edit)", c)
 	}
 	if rec := k.do(http.MethodDelete, "/v1/keys/"+child.Key, "parent", ""); rec.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())

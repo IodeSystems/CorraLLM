@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestRefusalNamesTheBudget(t *testing.T) {
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if rec.Code != http.StatusTooManyRequests || len(body.Error.Budgets) != 1 ||
+	if rec.Code != http.StatusPaymentRequired || len(body.Error.Budgets) != 1 ||
 		!strings.Contains(body.Error.Message, "key parent's budget on everything: budget of 1 requests created on "+today+", expires on "+tomorrow+" 00:00 UTC; 1 requests spent") ||
 		body.Error.Budgets[0].RoomAt == "" {
 		t.Errorf("%d %s", rec.Code, rec.Body.String())
@@ -40,7 +41,7 @@ func TestRefusalNamesTheBudget(t *testing.T) {
 		t.Fatalf("other first: %d", c)
 	}
 	rec = k.do(http.MethodPost, "/v1/chat/completions", "peer", `{"model":"other"}`)
-	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "the model-wide limit on other (every key)") ||
+	if rec.Code != http.StatusPaymentRequired || !strings.Contains(rec.Body.String(), "the model-wide limit on other (every key)") ||
 		!strings.Contains(rec.Body.String(), "not your key's own limit") {
 		t.Errorf("model cap: %d %s", rec.Code, rec.Body.String())
 	}
@@ -68,5 +69,29 @@ func TestStrangerSpendsNoAccount(t *testing.T) {
 	open := config.Candidate{Name: "local", Model: config.Model{}}
 	if !k.permits(k.px.resolveCaller("someone-on-the-lan"), open) {
 		t.Error("a stranger lost a backend with no credential")
+	}
+}
+
+func TestRefusalStatusByWindow(t *testing.T) {
+	for _, c := range []struct {
+		window string
+		want   int
+		retry  bool
+	}{
+		{"usd/hour", http.StatusTooManyRequests, true},
+		{"req/minute", http.StatusTooManyRequests, true},
+		{"usd/calendar-day", http.StatusPaymentRequired, false},
+		{"usd/calendar-month", http.StatusPaymentRequired, false},
+		{"req/total", http.StatusPaymentRequired, false},
+	} {
+		rec := httptest.NewRecorder()
+		got := refusalStatus([]BudgetNote{{Window: c.window}}, 30, rec)
+		if got != c.want || (rec.Header().Get("Retry-After") != "") != c.retry {
+			t.Errorf("%s: %d, Retry-After %q; want %d, retry %v", c.window, got, rec.Header().Get("Retry-After"), c.want, c.retry)
+		}
+	}
+	// A calendar window beside a rolling one: out until the reset either way.
+	if got := refusalStatus([]BudgetNote{{Window: "usd/hour"}, {Window: "usd/calendar-day"}}, 30, httptest.NewRecorder()); got != http.StatusPaymentRequired {
+		t.Errorf("mixed: %d, want 402", got)
 	}
 }
