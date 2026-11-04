@@ -422,8 +422,11 @@ retry_after are unchanged. Deploy waits on agentkit: `llm/client.go:945` parses 
 aw4 as a plain failure and skip its fallback. Asked agentkit-6c on 11-04. The contract was sent to aw4-bd. dun-2c is
 gone, so dun has not been told.
 
-Deployed after aw4-bd confirmed aw4 08fdf8018 (fallback on 402) runs on agentkit ae96290. Not seen yet: a live 402
-end to end; aw4-bd watches for the first FellBack. Sessions still on aw4's old pid fail on a 402 until it retires.
+Deployed after aw4-bd confirmed aw4 08fdf8018 (fallback on 402) runs on agentkit ae96290. **Seen live 11-04 (aw4-bd
+report):** 7 `session.model_fell_back` sonnet-5-5 → local-Qwen3.8-27B, 10:36–11:08 PST, until 00:00 UTC; refusal was
+the provider day pace ($17.75 spent of $17.55 share). 5 sessions ended normally, 2 still on local, 1 paused on a
+caller-error cap (not yet tied to the switch); none failed on the 402. aw4 holds the spent window in memory only, so
+each session after its 10:53 restart spent one refused call to learn it (aw4's side, not ours).
 
 dun-09 told 11-04. Owner's decision for dun: a 402 fails the turn and shows whose budget is spent and when it
 resets; no fallback. Waits on an agentkit tag with ae96290 (aw4 issue i_1m6kgwfqk9xypxe9pqj0dg, project dun).
