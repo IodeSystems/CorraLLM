@@ -55,16 +55,20 @@ type SpendBudget struct {
 // SpendProvider is one provider's period. A figure corrallm does not have is
 // absent, never 0: a client must not read "no budget" as "nothing left".
 type SpendProvider struct {
-	Provider      string        `json:"provider"`
-	Period        string        `json:"period"`
-	BilledUSD     *float64      `json:"billed_usd,omitempty"`
-	EstimatedUSD  float64       `json:"estimated_usd"`
-	RemainingUSD  *float64      `json:"remaining_usd,omitempty"`
-	LimitUSD      *float64      `json:"limit_usd,omitempty"`
-	ResetsAt      string        `json:"resets_at,omitempty"`
-	CostEstimated bool          `json:"cost_estimated"`
-	Source        string        `json:"source"`
-	StaleSeconds  *int64        `json:"stale_seconds,omitempty"`
+	Provider      string   `json:"provider"`
+	Period        string   `json:"period"`
+	BilledUSD     *float64 `json:"billed_usd,omitempty"`
+	EstimatedUSD  float64  `json:"estimated_usd"`
+	RemainingUSD  *float64 `json:"remaining_usd,omitempty"`
+	LimitUSD      *float64 `json:"limit_usd,omitempty"`
+	ResetsAt      string   `json:"resets_at,omitempty"`
+	CostEstimated bool     `json:"cost_estimated"`
+	Source        string   `json:"source"`
+	StaleSeconds  *int64   `json:"stale_seconds,omitempty"`
+	// TodayUSD is a paced day's allowance: what is left of the month, over the
+	// days to its renewal. TodaySpentUSD is what today has spent of it.
+	TodayUSD      *float64      `json:"today_usd,omitempty"`
+	TodaySpentUSD *float64      `json:"today_spent_usd,omitempty"`
 	Budgets       []SpendBudget `json:"budgets,omitempty"`
 }
 
@@ -83,6 +87,7 @@ type claudeSpend struct {
 	served []string
 	scopes []string
 	limit  config.Limit // USD 0 when there is none
+	paced  bool         // a paced calendar-day limit sits beside it
 }
 
 func claudeBackends(cfg *config.Config) claudeSpend {
@@ -96,6 +101,9 @@ func claudeBackends(cfg *config.Config) claudeSpend {
 	}
 	limit := func(ls config.LimitSet) {
 		for _, l := range ls {
+			if l.Pace {
+				out.paced = true
+			}
 			if l.USD > 0 && l.Calendar() == "month" && (out.limit.USD == 0 || l.USD < out.limit.USD) {
 				out.limit = l
 			}
@@ -182,6 +190,21 @@ func ReportSpend(cfg *config.Config, st *store.Store, now time.Time) (SpendRepor
 		left := max(claude.limit.USD-out.EstimatedUSD, 0) + timedLeft
 		out.RemainingUSD = &left
 		out.ResetsAt = start.AddDate(0, 1, 0).Format(time.RFC3339)
+		if claude.paced {
+			day := config.PeriodStart("day", 0, now).UnixMilli()
+			today, err := st.RecordedCostByHour(claude.served, day, now.UnixMilli()+1)
+			if err != nil {
+				return rep, err
+			}
+			var spent float64
+			for _, hours := range today {
+				for _, v := range hours {
+					spent += v
+				}
+			}
+			allow := config.PacedAllowance(claude.limit.USD, out.EstimatedUSD, spent, claude.limit.Renews, now)
+			out.TodayUSD, out.TodaySpentUSD = &allow, &spent
+		}
 	}
 	rep.Providers = append(rep.Providers, out)
 	return rep, nil
@@ -243,7 +266,7 @@ func (p *Proxy) syncSpendCounters(now time.Time) {
 // timedBudgetCovers reports whether a provider's timed budget pays past scope's
 // full hard limit.
 func (p *Proxy) timedBudgetCovers(scope, model string) bool {
-	return config.IsProviderScope(scope) && p.grants.usable(scope, model)
+	return config.IsProviderScope(scope) && p.quota.LimitFull(scope) && p.grants.usable(scope, model)
 }
 
 // A timed budget is a dollar amount on a provider with an expiry: "$50 more, until

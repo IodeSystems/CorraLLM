@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -55,6 +57,28 @@ type Limit struct {
 	// the month, 00:00 UTC, for a provider whose money turns over on a billing
 	// cycle. 1 to 28, so every month has the day. Calendar-month limits only.
 	Renews int `yaml:"renews,omitempty" json:"renews,omitempty"`
+
+	// Pace makes a calendar-day dollar limit's amount computed, not declared: what
+	// is left of the calendar-month dollar limit beside it, spread evenly over the
+	// days to that month's renewal, recomputed as the day turns. A light day leaves
+	// more for the days after, so credit that is lost at renewal is used, while a
+	// runaway still cannot spend the month in a day. It sets no amount of its own.
+	Pace bool `yaml:"pace,omitempty" json:"pace,omitempty"`
+}
+
+// PacedAllowance is a paced day's amount at now: the month's amount less what the
+// month spent before today, over the days from today to the month's end (today
+// included). monthUsed includes today's spend, dayUsed is today's alone, so the
+// answer stays the same all day as both rise together.
+func PacedAllowance(monthAmount, monthUsed, dayUsed float64, renews int, now time.Time) float64 {
+	day := PeriodStart("day", 0, now)
+	end := PeriodStart("month", renews, now).AddDate(0, 1, 0)
+	days := math.Ceil(end.Sub(day).Hours() / 24)
+	left := monthAmount - monthUsed + dayUsed
+	if days < 1 || left <= 0 {
+		return max(left, 0)
+	}
+	return left / days
 }
 
 // PeriodStart is the start of the UTC period holding t: a day, a month, or a month
@@ -82,6 +106,9 @@ const (
 // Dimension names which budget this limit constrains, or "" when the entry does
 // not name exactly one.
 func (l Limit) Dimension() string {
+	if l.Pace && l.Req == 0 && l.USD == 0 && l.Sec == 0 {
+		return DimUSD
+	}
 	n, dim := 0, ""
 	for _, c := range []struct {
 		v float64
@@ -172,6 +199,15 @@ func (l Limit) validateAmount() error {
 		if l.Calendar() != "month" {
 			return fmt.Errorf("limit renews: only a calendar-month limit renews on a day")
 		}
+	}
+	if l.Pace {
+		if l.Req != 0 || l.USD != 0 || l.Sec != 0 {
+			return fmt.Errorf("limit pace: a paced limit has no amount of its own")
+		}
+		if l.Calendar() != "day" {
+			return fmt.Errorf("limit pace: only a calendar-day limit is paced")
+		}
+		return nil
 	}
 	dim := l.Dimension()
 	if dim == "" {
@@ -314,7 +350,7 @@ func (ls LimitSet) ValidateKey() error {
 		}
 		seen[id] = true
 	}
-	return nil
+	return ls.validatePace()
 }
 
 // ByModel splits a caller allocation into its key-wide limits and each
@@ -338,6 +374,25 @@ func (ls LimitSet) Validate(where string) error {
 	for _, l := range ls {
 		if err := l.Validate(); err != nil {
 			return fmt.Errorf("%s: %w", where, err)
+		}
+	}
+	if err := ls.validatePace(); err != nil {
+		return fmt.Errorf("%s: %w", where, err)
+	}
+	return nil
+}
+
+// validatePace checks that every paced day has a calendar-month dollar limit on
+// the same model to take its amount from.
+func (ls LimitSet) validatePace() error {
+	for _, p := range ls {
+		if !p.Pace {
+			continue
+		}
+		if !slices.ContainsFunc(ls, func(m Limit) bool {
+			return !m.Pace && m.USD > 0 && m.Calendar() == "month" && m.Model == p.Model
+		}) {
+			return fmt.Errorf("limit pace: a paced day needs a usd calendar-month limit beside it")
 		}
 	}
 	return nil

@@ -1764,7 +1764,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			// that credential's provider, and the box. Spend belongs to the
 			// account that paid for it AND counts against everything above it.
 			for _, sc := range cand.QuotaScopes(p.config()) {
-				if b, _ := p.quota.HardBlocked(sc); b && config.IsProviderScope(sc) {
+				if config.IsProviderScope(sc) && p.quota.LimitFull(sc) {
 					p.grants.spend(p.store, sc, cand.Name, costUSD)
 				}
 				p.quota.Charge(sc, config.DimUSD, costUSD)

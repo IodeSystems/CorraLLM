@@ -294,7 +294,8 @@ func KeyBudgetScope(key, sel string) string {
 // LimitSyntax describes the compact form, for error messages and help text.
 const LimitSyntax = "AMOUNT/PER[,renews=DAY][,hard]: AMOUNT is $N (dollars), Nreq (requests) or Nsec (seconds); " +
 	"PER is a window (minute, hour, day, calendar-day, month, calendar-month, total). " +
-	"E.g. $3/calendar-day,hard, 100req/hour or $200/calendar-month,renews=15,hard"
+	"AMOUNT pace on a calendar-day spreads the calendar-month limit beside it over the days left. " +
+	"E.g. $3/calendar-day,hard, 100req/hour, $200/calendar-month,renews=15,hard or pace/calendar-day,hard"
 
 // ParseLimit reads the compact form: "$3/calendar-day,hard", "100req/hour".
 func ParseLimit(s string) (Limit, error) {
@@ -316,6 +317,13 @@ func ParseLimit(s string) (Limit, error) {
 		return l, fmt.Errorf("limit %q: want %s", s, LimitSyntax)
 	}
 	l.Per = per
+	if amount == "pace" {
+		l.Pace = true
+		if err := l.validateAmount(); err != nil {
+			return l, fmt.Errorf("limit %q: %w", s, err)
+		}
+		return l, nil
+	}
 	num, unit := amount, DimUSD
 	switch {
 	case strings.HasPrefix(amount, "$"):
@@ -352,6 +360,8 @@ func ParseLimit(s string) (Limit, error) {
 func (l Limit) Compact() string {
 	var s string
 	switch {
+	case l.Pace:
+		s = "pace"
 	case l.USD != 0:
 		s = "$" + strconv.FormatFloat(l.USD, 'f', -1, 64)
 	case l.Req != 0:

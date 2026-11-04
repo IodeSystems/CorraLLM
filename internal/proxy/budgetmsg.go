@@ -76,7 +76,7 @@ func (p *Proxy) timedBudgetWords(scope string, now time.Time) string {
 func windowWords(label string, used, limit float64) string {
 	_, per, _ := strings.Cut(label, "/")
 	pw := map[string]string{
-		"total": "in total",
+		"total":  "in total",
 		"minute": "in the last minute", "hour": "in the last hour", "day": "in the last 24 hours", "month": "in the last 30 days",
 	}[per]
 	if pw == "" {
@@ -113,7 +113,10 @@ func (p *Proxy) budgetNotes(scopes []string) []BudgetNote {
 				room = "room again in " + humanWait(wait) + " (" + at.UTC().Format("15:04 UTC") + ")"
 			}
 			n.Summary = fmt.Sprintf("%s: %s; %s", n.Owner, windowWords(w.Label, w.Used, w.Limit), room)
-			if !w.StartedAt.IsZero() {
+			if w.Paced {
+				n.Summary = fmt.Sprintf("%s: today's share of the month, %s, is spent ($%.2f); it is what is left of the month over the days to its renewal; %s",
+					n.Owner, labelAmount(w.Label, w.Limit), w.Used, room)
+			} else if !w.StartedAt.IsZero() {
 				n.Summary = fmt.Sprintf("%s: %s; %s spent", n.Owner,
 					budgetWords(w.Label, w.Limit, w.StartedAt, w.ResetsAt), labelAmount(w.Label, w.Used))
 			}

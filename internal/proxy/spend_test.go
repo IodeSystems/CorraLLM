@@ -254,12 +254,17 @@ func TestATokenIsStoredOnlyAsItsHash(t *testing.T) {
 // timedRig is a paid provider with a $10 hard monthly limit that renews on the 15th.
 func timedRig(t *testing.T) (*Proxy, *store.Store, config.Candidate) {
 	t.Helper()
+	return limitRig(t, config.LimitSet{{USD: 10, Per: "calendar-month", Hard: true, Renews: 15}})
+}
+
+func limitRig(t *testing.T, limits config.LimitSet) (*Proxy, *store.Store, config.Candidate) {
+	t.Helper()
 	p, st, _ := spendRig(t, "http://127.0.0.1:1", func(c *config.Config) {
 		m := c.Models["claude"]
 		m.Extension, m.ProviderName = "x", "anthropic"
 		c.Models["claude"] = m
 		c.Extensions = map[string]config.Extension{"x": {Providers: map[string]config.Provider{"anthropic": {
-			Limits:      config.LimitSet{{USD: 10, Per: "calendar-month", Hard: true, Renews: 15}},
+			Limits:      limits,
 			Credentials: []config.Credential{{Name: "default"}},
 		}}}}
 	})
@@ -404,5 +409,36 @@ func TestRefusalSaysTheBudgetAndItsDates(t *testing.T) {
 		now.Format("2006-01-02") + ", expires on " + now.Add(48*time.Hour).Format("2006-01-02 15:04 UTC") + "; $3.00 spent"
 	if notes[0].Summary != want {
 		t.Errorf("summary:\n got %s\nwant %s", notes[0].Summary, want)
+	}
+}
+
+func TestPacedDayRefusesAndTimedBudgetDoesNotPay(t *testing.T) {
+	p, _, cand := limitRig(t, config.LimitSet{
+		{USD: 10, Per: "calendar-month", Hard: true, Renews: 15},
+		{Pace: true, Per: "calendar-day", Hard: true},
+	})
+	scope := config.ProviderScopeKey("anthropic")
+	now := time.Now()
+	allow := config.PacedAllowance(10, 0, 0, 15, now)
+	p.quota.Charge(scope, config.DimUSD, allow+0.01)
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
+		t.Fatal("today's share spent must refuse")
+	}
+	if err := p.AddBudget("anthropic", 3, "1h", "", "", now); err != nil {
+		t.Fatal(err)
+	}
+	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
+		t.Fatal("a timed budget pays past the month, not past today's share")
+	}
+	notes := p.budgetNotes([]string{scope})
+	if len(notes) != 1 || !strings.Contains(notes[0].Summary, "today's share of the month") {
+		t.Fatalf("notes = %+v", notes)
+	}
+	rep, err := p.Spend(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr := rep.Providers[0]; pr.TodayUSD == nil {
+		t.Fatalf("report has no paced day: %+v", pr)
 	}
 }

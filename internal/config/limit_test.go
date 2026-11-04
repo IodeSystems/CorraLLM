@@ -141,3 +141,50 @@ func TestRenewsParsesAndValidates(t *testing.T) {
 		}
 	}
 }
+
+func TestPacedAllowance(t *testing.T) {
+	// 11-04 12:00, a month renewing on the 15th: 11 days left, today included.
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	if got, want := PacedAllowance(200, 6.85, 0, 15, now), (200-6.85)/11; got != want {
+		t.Errorf("allowance = %v, want %v", got, want)
+	}
+	// Spend today raises both levels together, so the allowance holds all day.
+	if got, want := PacedAllowance(200, 16.85, 10, 15, now), (200-6.85)/11; got != want {
+		t.Errorf("allowance after spend = %v, want %v", got, want)
+	}
+	// The last day gets all that is left.
+	last := time.Date(2026, 11, 14, 23, 0, 0, 0, time.UTC)
+	if got := PacedAllowance(200, 150, 0, 15, last); got != 50 {
+		t.Errorf("last day = %v, want 50", got)
+	}
+	// A spent month leaves nothing, not a negative.
+	if got := PacedAllowance(200, 210, 0, 15, now); got != 0 {
+		t.Errorf("overspent = %v, want 0", got)
+	}
+}
+
+func TestPaceParseAndValidate(t *testing.T) {
+	l, err := ParseLimit("pace/calendar-day,hard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.Pace || !l.Hard || l.Dimension() != DimUSD || l.Compact() != "pace/calendar-day,hard" {
+		t.Fatalf("parsed = %+v (%s)", l, l.Compact())
+	}
+	if _, err := ParseLimit("pace/calendar-month"); err == nil {
+		t.Error("a paced month must be refused")
+	}
+	month := Limit{USD: 200, Per: "calendar-month", Renews: 15, Hard: true}
+	if err := (LimitSet{month, l}).Validate("p"); err != nil {
+		t.Errorf("pace beside a month: %v", err)
+	}
+	if err := (LimitSet{l}).Validate("p"); err == nil {
+		t.Error("pace with no month beside it must be refused")
+	}
+	if err := (LimitSet{month, l}).ValidateKey(); err != nil {
+		t.Errorf("pace on a key: %v", err)
+	}
+	if err := (LimitSet{{USD: 5, Pace: true, Per: "calendar-day"}, month}).Validate("p"); err == nil {
+		t.Error("a paced limit with an amount must be refused")
+	}
+}

@@ -236,7 +236,7 @@ func (p *Proxy) oversubscription(parent string) []string {
 		for sel, ls := range k.budgets {
 			for _, l := range ls {
 				d, ok := l.Window()
-				if !ok {
+				if !ok || l.Pace {
 					continue
 				}
 				s := slot{sel, l.Dimension(), d}
@@ -262,7 +262,7 @@ func (p *Proxy) oversubscription(parent string) []string {
 		var caps []cap
 		for _, psel := range []string{s.sel, config.SelectAll} {
 			for _, l := range pBudgets[psel] {
-				if d, ok := l.Window(); ok && d == s.dur && l.Dimension() == s.dim {
+				if d, ok := l.Window(); ok && !l.Pace && d == s.dur && l.Dimension() == s.dim {
 					caps = append(caps, cap{"this key's own", l.Amount()})
 				}
 			}

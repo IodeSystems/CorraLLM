@@ -349,6 +349,8 @@ func limitsWords(ls LimitSet) string {
 	for _, l := range ls {
 		amount := ""
 		switch {
+		case l.Pace:
+			amount = "paced"
 		case l.USD > 0:
 			amount = fmt.Sprintf("$%g", l.USD)
 		case l.Req > 0:

@@ -113,3 +113,42 @@ func TestCalendarMonthRenewsOnItsDay(t *testing.T) {
 		t.Fatal("renewal day: want unblocked")
 	}
 }
+
+func TestPacedDaySpreadsTheMonth(t *testing.T) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	l := New()
+	l.now = func() time.Time { return now }
+	l.SetLimits("b", []config.Limit{
+		{USD: 200, Per: "calendar-month", Hard: true, Renews: 15},
+		{Pace: true, Per: "calendar-day", Hard: true},
+	})
+	l.Charge("b", config.DimUSD, 24) // 200-24 over 11 days is 16/day
+	if blocked, _ := l.HardBlocked("b"); !blocked {
+		t.Fatal("$24 today is past a $200 month spread over 11 days")
+	}
+	if l.LimitFull("b") {
+		t.Fatal("the month itself is not spent")
+	}
+	// Tomorrow: $176 over 10 days, and nothing spent today yet.
+	now = time.Date(2026, 11, 5, 0, 0, 1, 0, time.UTC)
+	if blocked, _ := l.HardBlocked("b"); blocked {
+		t.Fatal("a new day must admit")
+	}
+	var day Window
+	for _, w := range l.Snapshot()[0].Windows {
+		if w.Paced {
+			day = w
+		}
+	}
+	if day.Limit != 17.6 {
+		t.Errorf("tomorrow's allowance = %v, want 17.6", day.Limit)
+	}
+	// A light day rolls forward: $1 on the 5th leaves (176-1)/9 for the 6th.
+	l.Charge("b", config.DimUSD, 1)
+	now = time.Date(2026, 11, 6, 1, 0, 0, 0, time.UTC)
+	for _, w := range l.Snapshot()[0].Windows {
+		if w.Paced && w.Limit != 175.0/9 {
+			t.Errorf("after a light day = %v, want %v", w.Limit, 175.0/9)
+		}
+	}
+}

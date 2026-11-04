@@ -65,6 +65,9 @@ func spendText(rep proxy.SpendReport) string {
 		}
 		if p.RemainingUSD != nil {
 			fmt.Fprintf(&b, "  budget left: $%.2f of a $%.2f limit, which resets %s\n", *p.RemainingUSD, *p.LimitUSD, p.ResetsAt)
+			if p.TodayUSD != nil {
+				fmt.Fprintf(&b, "  today (paced): $%.2f spent of $%.2f\n", *p.TodaySpentUSD, *p.TodayUSD)
+			}
 		} else {
 			fmt.Fprintln(&b, "  no monthly budget set")
 		}

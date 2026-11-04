@@ -62,6 +62,8 @@ type Window struct {
 	Blocked  bool      `json:"blocked,omitempty"`  // level has reached the limit
 	Hard     bool      `json:"hard,omitempty"`     // blocked refuses, never served anyway
 	ResetsAt time.Time `json:"resetsAt,omitempty"` // when the level fully drains to zero
+	// Paced is a day whose Limit is the month's remainder over the days left.
+	Paced bool `json:"paced,omitempty"`
 	// StartedAt is when a calendar window's current period began; zero for a
 	// falloff window and a total, which have no period.
 	StartedAt time.Time `json:"startedAt,omitempty"`
@@ -130,6 +132,7 @@ type counterWindow struct {
 	calendar string
 	renews   int       // day a calendar month turns over; 0 is the 1st
 	hard     bool      // a full window refuses even when nothing else can serve
+	pace     bool      // limit is computed from the calendar-month window beside it
 	used     float64   // fill level as of `at`
 	at       time.Time // when `used` was last computed
 }
@@ -218,6 +221,26 @@ func periodEnd(unit string, renews int, t time.Time) time.Time {
 type counterState struct {
 	windows []*counterWindow
 	recent  map[string]*rateRing // by dimension
+}
+
+// limitOf is w's limit at now. A paced day's is what is left of the tightest
+// calendar-month window in its dimension, over the days to that month's end.
+func (cs *counterState) limitOf(w *counterWindow, now time.Time) float64 {
+	if !w.pace {
+		return w.limit
+	}
+	dim, _, _ := strings.Cut(w.label, "/")
+	best, found := 0.0, false
+	for _, m := range cs.windows {
+		if m.calendar != "month" || m.pace || !strings.HasPrefix(m.label, dim+"/") {
+			continue
+		}
+		a := config.PacedAllowance(m.limit, m.levelAt(now), w.levelAt(now), m.renews, now)
+		if !found || a < best {
+			best, found = a, true
+		}
+	}
+	return best
 }
 
 // PersistedCounter is one falloff window's durable state (see CounterStore).
@@ -353,7 +376,7 @@ func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 	var windows []*counterWindow
 	for _, lim := range limits {
 		dur, ok := lim.Window()
-		if !ok || lim.Amount() <= 0 || lim.Dimension() == "" {
+		if !ok || (lim.Amount() <= 0 && !lim.Pace) || lim.Dimension() == "" {
 			continue // validated at config load; skip defensively rather than panic
 		}
 		// Label is dimension+window ("req/day", "usd/month"), so several windows
@@ -371,6 +394,7 @@ func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 		w.hard = lim.Hard
 		w.calendar = lim.Calendar()
 		w.renews = lim.Renews
+		w.pace = lim.Pace
 		windows = append(windows, w)
 	}
 	if len(windows) == 0 {
@@ -872,7 +896,7 @@ func (l *Ledger) Available(backend string) bool {
 	// Counter-mode windows: exhausted while the decayed fill is at the limit.
 	if cs := l.counters[backend]; cs != nil {
 		for _, cw := range cs.windows {
-			if cw.levelAt(now) >= cw.limit {
+			if cw.levelAt(now) >= cs.limitOf(cw, now) {
 				return false
 			}
 		}
@@ -895,7 +919,7 @@ func (l *Ledger) HardBlocked(backend string) (bool, time.Duration) {
 	blocked, wait := false, time.Duration(0)
 	for _, cw := range cs.windows {
 		lv := cw.levelAt(now)
-		if !cw.hard || lv < cw.limit {
+		if !cw.hard || lv < cs.limitOf(cw, now) {
 			continue
 		}
 		blocked = true
@@ -918,6 +942,25 @@ func (l *Ledger) HardBlocked(backend string) (bool, time.Duration) {
 	return blocked, wait
 }
 
+// LimitFull reports whether a hard window that is not paced is at its limit: the
+// budget itself is spent, not only today's share of it. A timed budget pays past
+// the first and not the second.
+func (l *Ledger) LimitFull(backend string) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	cs := l.counters[backend]
+	if cs == nil {
+		return false
+	}
+	now := l.now()
+	for _, cw := range cs.windows {
+		if cw.hard && !cw.pace && cw.levelAt(now) >= cw.limit {
+			return true
+		}
+	}
+	return false
+}
+
 // Snapshot returns a copy of every tracked entry, backend-sorted, for display.
 func (l *Ledger) Snapshot() []Entry {
 	l.mu.RLock()
@@ -934,12 +977,14 @@ func (l *Ledger) Snapshot() []Entry {
 			v.Windows = make([]Window, 0, len(cs.windows))
 			for _, cw := range cs.windows {
 				lv := cw.levelAt(now)
+				limit := cs.limitOf(cw, now)
 				w := Window{
 					Label:   cw.label,
-					Limit:   cw.limit,
+					Limit:   limit,
 					Used:    lv,
-					Blocked: lv >= cw.limit,
+					Blocked: lv >= limit,
 					Hard:    cw.hard,
+					Paced:   cw.pace,
 				}
 				if d := cw.drainAt(now); !d.IsZero() {
 					w.ResetsAt = d
@@ -971,7 +1016,7 @@ func (l *Ledger) project(w *Window, cw *counterWindow, cs *counterState, now tim
 	}
 	w.RateSpan = span
 	w.RatePerHour = r.lastHour(now) / span.Hours()
-	room := cw.limit - w.Used
+	room := w.Limit - w.Used
 	if cw.calendar != "" {
 		end := periodEnd(cw.calendar, cw.renews, now)
 		if cw.calendar != "total" { // a total never resets: nothing to project to
