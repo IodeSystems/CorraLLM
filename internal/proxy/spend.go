@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/metrics"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -70,6 +71,11 @@ type SpendProvider struct {
 	TodayUSD      *float64      `json:"today_usd,omitempty"`
 	TodaySpentUSD *float64      `json:"today_spent_usd,omitempty"`
 	Budgets       []SpendBudget `json:"budgets,omitempty"`
+
+	// for the Prometheus gauges; the JSON carries these as strings
+	periodStart  time.Time
+	resetsAt     *time.Time
+	reconciledAt *time.Time
 }
 
 // SpendReport is the body of GET /v1/spend.
@@ -148,7 +154,7 @@ func ReportSpend(cfg *config.Config, st *store.Store, now time.Time) (SpendRepor
 		period = start.Format("2006-01-02")
 	}
 	month := start.UnixMilli()
-	out := SpendProvider{Provider: spendAnthropic, Period: period, CostEstimated: true, Source: spendFromEstimate}
+	out := SpendProvider{Provider: spendAnthropic, Period: period, CostEstimated: true, Source: spendFromEstimate, periodStart: start}
 	from := month
 	usd, at, ok, err := st.SpendReconcile(spendAnthropic)
 	if err != nil {
@@ -162,6 +168,8 @@ func ReportSpend(cfg *config.Config, st *store.Store, now time.Time) (SpendRepor
 		out.Source = spendFromReconciled
 		stale := (now.UnixMilli() - at) / 1000
 		out.StaleSeconds = &stale
+		rat := time.UnixMilli(at).UTC()
+		out.reconciledAt = &rat
 	}
 	recorded, err := st.RecordedCostByHour(claude.served, from, now.UnixMilli()+1)
 	if err != nil {
@@ -189,7 +197,9 @@ func ReportSpend(cfg *config.Config, st *store.Store, now time.Time) (SpendRepor
 		out.LimitUSD = &claude.limit.USD
 		left := max(claude.limit.USD-out.EstimatedUSD, 0) + timedLeft
 		out.RemainingUSD = &left
-		out.ResetsAt = start.AddDate(0, 1, 0).Format(time.RFC3339)
+		resets := start.AddDate(0, 1, 0)
+		out.ResetsAt = resets.Format(time.RFC3339)
+		out.resetsAt = &resets
 		if claude.paced {
 			day := config.PeriodStart("day", 0, now).UnixMilli()
 			today, err := st.RecordedCostByHour(claude.served, day, now.UnixMilli()+1)
@@ -213,6 +223,23 @@ func ReportSpend(cfg *config.Config, st *store.Store, now time.Time) (SpendRepor
 // Spend reports the period so far.
 func (p *Proxy) Spend(now time.Time) (SpendReport, error) {
 	return ReportSpend(p.config(), p.store, now)
+}
+
+// SpendMetrics turns a report into the spend gauges' input.
+func SpendMetrics(rep SpendReport) []metrics.Spend {
+	out := make([]metrics.Spend, 0, len(rep.Providers))
+	for _, p := range rep.Providers {
+		out = append(out, metrics.Spend{
+			Provider:     p.Provider,
+			EstimatedUSD: p.EstimatedUSD,
+			LimitUSD:     p.LimitUSD,
+			RemainingUSD: p.RemainingUSD,
+			ResetsAt:     p.resetsAt,
+			PeriodStart:  p.periodStart,
+			ReconciledAt: p.reconciledAt,
+		})
+	}
+	return out
 }
 
 // SpentFromLeft turns what the Console says is left of the credit into what has

@@ -1029,6 +1029,8 @@ func serve(ctx context.Context, o serveOpts) error {
 	// load-timestamp → uptime). Sampled rather than event-driven so the gauges
 	// self-heal after any missed load/evict signal.
 	go runResidencySampler(jobsCtx, mgr, 10*time.Second)
+	// The /v1/spend figures as gauges, for a dashboard that cannot hold a cost token.
+	go runSpendSampler(jobsCtx, px, time.Minute)
 
 	// Periodically refresh each opted-in provider's free-model roster (P16e), so a
 	// free model that churns out (goes paid or is removed) is skipped proactively.
@@ -1161,6 +1163,25 @@ func runResidencySampler(ctx context.Context, mgr *proc.Manager, interval time.D
 			res = append(res, metrics.Resident{Model: m.ModelName, LoadedUnix: m.ReadyAtMS / 1000})
 		}
 		metrics.SetResidency(res)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// runSpendSampler publishes GET /v1/spend to Prometheus every interval. On an
+// error the last gauges stay, and the error is logged.
+func runSpendSampler(ctx context.Context, px *proxy.Proxy, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		if rep, err := px.Spend(time.Now()); err != nil {
+			slog.Warn("spend gauges not updated", "err", err)
+		} else {
+			metrics.SetSpend(proxy.SpendMetrics(rep))
+		}
 		select {
 		case <-ctx.Done():
 			return

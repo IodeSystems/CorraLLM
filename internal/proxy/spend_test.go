@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/metrics"
 	"github.com/iodesystems/corrallm/internal/proc"
 	"github.com/iodesystems/corrallm/internal/sched"
 	"github.com/iodesystems/corrallm/internal/store"
@@ -440,5 +442,65 @@ func TestPacedDayRefusesAndTimedBudgetDoesNotPay(t *testing.T) {
 	}
 	if pr := rep.Providers[0]; pr.TodayUSD == nil {
 		t.Fatalf("report has no paced day: %+v", pr)
+	}
+}
+
+func scrapeMetrics(t *testing.T) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
+}
+
+func TestSpendGaugesMirrorTheReport(t *testing.T) {
+	p, st, _ := timedRig(t)
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	rat := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	if err := st.SetSpendReconcile("anthropic", 3, rat.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	spendRow(t, st, "claude", 2, time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC))
+	rep, err := p.Spend(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics.SetSpend(SpendMetrics(rep))
+	body := scrapeMetrics(t)
+	// the exposition writes floats as strconv 'g'
+	g := func(v float64) string { return strconv.FormatFloat(v, 'g', -1, 64) }
+	unix := func(t time.Time) string { return g(float64(t.Unix())) }
+	for _, want := range []string{
+		`corrallm_spend_estimated_usd{provider="anthropic"} 5`,
+		`corrallm_spend_limit_usd{provider="anthropic"} 10`,
+		`corrallm_spend_remaining_usd{provider="anthropic"} 5`,
+		`corrallm_spend_resets_at_seconds{provider="anthropic"} ` + unix(time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)),
+		`corrallm_spend_period_start_seconds{provider="anthropic"} ` + unix(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)),
+		`corrallm_spend_reconciled_at_seconds{provider="anthropic"} ` + unix(rat),
+		`corrallm_spend_reconciled{provider="anthropic"} 1`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+func TestSpendGaugesLeaveOutWhatIsNotKnown(t *testing.T) {
+	p, st, _ := spendRig(t, "http://127.0.0.1:1", nil)
+	now := time.Now()
+	spendRow(t, st, "claude", 1, now.Add(-time.Second))
+	rep, err := p.Spend(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics.SetSpend(SpendMetrics(rep))
+	body := scrapeMetrics(t)
+	if !strings.Contains(body, `corrallm_spend_reconciled{provider="anthropic"} 0`) || !strings.Contains(body, `corrallm_spend_estimated_usd{provider="anthropic"} 1`) {
+		t.Errorf("want estimate-only series:\n%s", body)
+	}
+	// no limit is not $0 left, and no real figure has no time
+	for _, absent := range []string{"corrallm_spend_limit_usd{", "corrallm_spend_remaining_usd{", "corrallm_spend_resets_at_seconds{", "corrallm_spend_reconciled_at_seconds{"} {
+		if strings.Contains(body, absent) {
+			t.Errorf("%s should be absent:\n%s", absent, body)
+		}
 	}
 }

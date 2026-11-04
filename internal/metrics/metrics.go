@@ -6,6 +6,7 @@ package metrics
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -60,10 +61,52 @@ var (
 		Name: "corrallm_model_load_timestamp_seconds",
 		Help: "Unix time a resident model became ready; uptime = time() - this.",
 	}, []string{"model"})
+
+	// Spend gauges mirror GET /v1/spend. A figure corrallm does not have is an
+	// absent series, never 0, as in the JSON.
+	spendEstimated = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "corrallm_spend_estimated_usd",
+		Help: "Spend this period in USD: the last reconciled figure plus the ledger after it.",
+	}, []string{"provider"})
+
+	spendLimit = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "corrallm_spend_limit_usd",
+		Help: "Calendar-month USD limit; absent when there is none.",
+	}, []string{"provider"})
+
+	spendRemaining = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "corrallm_spend_remaining_usd",
+		Help: "USD left this period, timed budgets included; absent when there is no limit.",
+	}, []string{"provider"})
+
+	spendResetsAt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "corrallm_spend_resets_at_seconds",
+		Help: "Unix time the period renews; absent when there is no limit.",
+	}, []string{"provider"})
+
+	spendPeriodStart = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "corrallm_spend_period_start_seconds",
+		Help: "Unix time the period started.",
+	}, []string{"provider"})
+
+	spendReconciledAt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "corrallm_spend_reconciled_at_seconds",
+		Help: "Unix time of the last real figure this period; absent when the figure is an estimate only.",
+	}, []string{"provider"})
+
+	spendReconciled = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "corrallm_spend_reconciled",
+		Help: "1 when this period has a real figure (source=reconciled), 0 when the ledger alone (source=estimate).",
+	}, []string{"provider"})
 )
+
+var spendGauges = []*prometheus.GaugeVec{spendEstimated, spendLimit, spendRemaining, spendResetsAt, spendPeriodStart, spendReconciledAt, spendReconciled}
 
 func init() {
 	reg.MustRegister(requests, tokens, cost, loopWatched, loopDetected, loopCount, loopInterrupted, modelLoaded, modelLoadTS)
+	for _, g := range spendGauges {
+		reg.MustRegister(g)
+	}
 }
 
 // Handler serves the Prometheus exposition for corrallm's registry.
@@ -105,6 +148,45 @@ func Cost(provider, model, class string, usd float64) {
 type Resident struct {
 	Model      string
 	LoadedUnix int64 // seconds; 0 if unknown
+}
+
+// Spend is one provider's period, as GET /v1/spend reports it. A nil field
+// leaves its series absent.
+type Spend struct {
+	Provider     string
+	EstimatedUSD float64
+	LimitUSD     *float64
+	RemainingUSD *float64
+	ResetsAt     *time.Time
+	PeriodStart  time.Time
+	ReconciledAt *time.Time // nil when the figure is an estimate only
+}
+
+// SetSpend replaces the spend gauges with the current report.
+func SetSpend(providers []Spend) {
+	for _, g := range spendGauges {
+		g.Reset()
+	}
+	for _, s := range providers {
+		p := s.Provider
+		spendEstimated.WithLabelValues(p).Set(s.EstimatedUSD)
+		spendPeriodStart.WithLabelValues(p).Set(float64(s.PeriodStart.Unix()))
+		if s.LimitUSD != nil {
+			spendLimit.WithLabelValues(p).Set(*s.LimitUSD)
+		}
+		if s.RemainingUSD != nil {
+			spendRemaining.WithLabelValues(p).Set(*s.RemainingUSD)
+		}
+		if s.ResetsAt != nil {
+			spendResetsAt.WithLabelValues(p).Set(float64(s.ResetsAt.Unix()))
+		}
+		if s.ReconciledAt != nil {
+			spendReconciledAt.WithLabelValues(p).Set(float64(s.ReconciledAt.Unix()))
+			spendReconciled.WithLabelValues(p).Set(1)
+		} else {
+			spendReconciled.WithLabelValues(p).Set(0)
+		}
+	}
 }
 
 // SetResidency replaces the residency gauges with the current resident set.
