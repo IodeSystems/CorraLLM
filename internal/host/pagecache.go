@@ -3,11 +3,13 @@ package host
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Every spawn reads its weights from DISK, never from the page cache.
@@ -36,14 +38,68 @@ var reShard = regexp.MustCompile(`^(.*)-(\d{5})-of-(\d{5})\.gguf$`)
 // EvictPageCache drops the page cache of every model file cmd names, and logs
 // what it dropped. Best effort: a file that cannot be opened is logged and
 // skipped; nothing here can fail a spawn.
-func EvictPageCache(cmd string) {
+func EvictPageCache(cmd string) { evictPageCache(cmd, "before spawn") }
+
+func evictPageCache(cmd, when string) {
 	for _, path := range modelFiles(cmd) {
 		evicted, measured, err := dropPageCache(path)
 		switch {
 		case err != nil:
-			slog.Warn("page cache: could not drop model file before spawn", "file", path, "err", err)
+			slog.Warn("page cache: could not drop model file "+when, "file", path, "err", err)
 		case measured:
-			slog.Info("page cache: dropped model file before spawn", "file", path, "evictedBytes", evicted)
+			slog.Info("page cache: dropped model file "+when, "file", path, "evictedBytes", evicted)
+		}
+	}
+}
+
+// AFTER the backend is ready, the model files are dropped again.
+//
+// Loading reads the whole file through the page cache, and with every layer on
+// the GPU llama.cpp unmaps it afterwards, so those pages are cache nobody uses:
+// ~27 GB for Swift on box1, charged to the backend's cgroup. On 2026-11-05 that
+// cache plus ~43 GiB of pinned prompt cache left too little room for other
+// services' bursts; session memory pressure reached 90 % and systemd-oomd
+// killed two of them, and a manual memory.reclaim of exactly this cache took
+// pressure back to ~0. A file a live process still maps keeps its pages
+// (DONTNEED does not touch them), so a CPU-offloaded model is unaffected.
+
+// evictAfterReady is the drop itself; a var so a test can observe it.
+var evictAfterReady = func(cmd string) { evictPageCache(cmd, "after ready") }
+
+// readyPoll is how often the post-ready drop asks the backend for /health, and
+// readyWait how long it keeps asking. Vars for tests.
+var (
+	readyPoll = 2 * time.Second
+	readyWait = 30 * time.Minute
+)
+
+// evictWhenReady waits for http://127.0.0.1:port/health to answer 2xx, then
+// drops the model files cmd names from the page cache. It gives up when done
+// closes (the backend exited) or after readyWait. Best effort, like the drop
+// before spawn: nothing here can fail or delay a backend.
+func evictWhenReady(port int, cmd string, done <-chan struct{}) {
+	if port <= 0 || len(modelFiles(cmd)) == 0 {
+		return
+	}
+	client := &http.Client{Timeout: time.Second}
+	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+	deadline := time.Now().Add(readyWait)
+	tick := time.NewTicker(readyPoll)
+	defer tick.Stop()
+	for time.Now().Before(deadline) {
+		select {
+		case <-done:
+			return
+		case <-tick.C:
+		}
+		resp, err := client.Get(url)
+		if err != nil {
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			evictAfterReady(cmd)
+			return
 		}
 	}
 }

@@ -1,10 +1,15 @@
 package host
 
 import (
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func touch(t *testing.T, p string) {
@@ -83,4 +88,65 @@ func TestDropPageCacheRuns(t *testing.T) {
 		t.Fatalf("dropPageCache: %v", err)
 	}
 	EvictPageCache("llama-server -m " + p) // the logging wrapper, same file
+}
+
+// The model files are dropped once /health answers 2xx, not while it answers
+// "loading" (llama-server: 503), and not at all if the backend exits first.
+func TestEvictWhenReadyWaitsForHealth(t *testing.T) {
+	model := filepath.Join(t.TempDir(), "w.gguf")
+	if err := os.WriteFile(model, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := "llama-server -m " + model
+
+	oldPoll, oldEvict := readyPoll, evictAfterReady
+	t.Cleanup(func() { readyPoll, evictAfterReady = oldPoll, oldEvict })
+	readyPoll = 10 * time.Millisecond
+	dropped := make(chan string, 4)
+	evictAfterReady = func(c string) { dropped <- c }
+
+	var ready atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !ready.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+
+	done := make(chan struct{})
+	go evictWhenReady(port, cmd, done)
+	select {
+	case <-dropped:
+		t.Fatal("dropped while /health still answered 503")
+	case <-time.After(100 * time.Millisecond):
+	}
+	ready.Store(true)
+	select {
+	case c := <-dropped:
+		if c != cmd {
+			t.Errorf("dropped for %q, want %q", c, cmd)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("not dropped after /health answered 200")
+	}
+
+	// A backend that exits before it is ready: nothing is dropped.
+	ready.Store(false)
+	done2 := make(chan struct{})
+	finished := make(chan struct{})
+	go func() { evictWhenReady(port, cmd, done2); close(finished) }()
+	close(done2)
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("evictWhenReady kept polling after the backend exited")
+	}
+	select {
+	case <-dropped:
+		t.Fatal("dropped for a backend that exited before it was ready")
+	default:
+	}
 }

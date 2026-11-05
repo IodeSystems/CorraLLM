@@ -57,6 +57,9 @@ func (l *Local) Start(s Spec) (Handle, error) {
 		h.mu.Unlock()
 		close(h.done)
 	}()
+	// And again once it is ready: the load left the whole file in the page
+	// cache, charged to this backend (pagecache.go).
+	go evictWhenReady(s.Port, s.Cmd, h.done)
 	return h, nil
 }
 
