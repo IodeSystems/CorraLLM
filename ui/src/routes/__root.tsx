@@ -152,6 +152,73 @@ function CalibrationBanner() {
   )
 }
 
+// A scheduled tool build that failed — most often a llama.cpp build the
+// benchmark rolled back — is otherwise visible only in the log and the build
+// history on the machine's Tooling tab. Shown for 24 h after the build started,
+// and only while that build is still the newest one for its tool and host: the
+// next good build clears it.
+const ToolBuildBannerDoc = graphql(/* GraphQL */ `
+  query ToolBuildBanner {
+    corrallm {
+      toolBuildHistory(limit: 20) {
+        builds {
+          id
+          tool
+          host
+          status
+          startedAt
+          error
+        }
+      }
+    }
+  }
+`)
+
+const TOOL_BANNER_WINDOW_MS = 24 * 3600 * 1000
+
+function ToolBuildBanner() {
+  const { data } = useQuery({
+    queryKey: ['toolBuildBanner'],
+    queryFn: () => gqlClient.request(ToolBuildBannerDoc),
+    refetchInterval: 60_000,
+  })
+  const builds = data?.corrallm?.toolBuildHistory?.builds ?? []
+  // Newest first from the server; keep the first finished build per tool@host.
+  const newest = new Map<string, (typeof builds)[number]>()
+  for (const b of builds) {
+    if (b.status === 'running') continue
+    const k = `${b.tool}@${b.host}`
+    if (!newest.has(k)) newest.set(k, b)
+  }
+  const failed = [...newest.values()].filter(
+    (b) => b.status === 'failed' && Date.now() - Date.parse(b.startedAt) < TOOL_BANNER_WINDOW_MS,
+  )
+  if (failed.length === 0) return null
+  return (
+    <>
+      {failed.map((b) => {
+        const rolledBack = (b.error ?? '').includes('rolled back')
+        const at = new Date(b.startedAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })
+        return (
+          <Alert key={b.id} severity="warning" square sx={{ borderRadius: 0 }}>
+            <AlertTitle>
+              {b.tool} build {rolledBack ? 'rolled back' : 'failed'} on {b.host} (started {at})
+            </AlertTitle>
+            The previous build is still serving.
+            {rolledBack && ' That commit is held: the next scheduled build tries again only once upstream has a newer one.'}{' '}
+            <Box component="span" sx={{ display: 'block', fontFamily: 'monospace', fontSize: 12, mt: 0.5, wordBreak: 'break-word' }}>
+              {(b.error ?? '').slice(0, 400)}
+            </Box>
+            <Link to="/machines/$name" params={{ name: b.host }} search={{ tab: 'tooling' }}>
+              Build history and log →
+            </Link>
+          </Alert>
+        )
+      })}
+    </>
+  )
+}
+
 // ONE ENTRY PER QUESTION SOMEBODY ARRIVES WITH (P30). Ten entries named after the
 // data they rendered became six plus the lab, each named after what it answers:
 //
@@ -384,6 +451,7 @@ function RootLayout() {
         }}
       >
         <CalibrationBanner />
+        <ToolBuildBanner />
         <Outlet />
       </Box>
     </>
