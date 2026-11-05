@@ -60,7 +60,8 @@ func TestReconcile_AdoptsMatchingBackends(t *testing.T) {
 func TestReconcile_FreesPoolsForVanishedBackends(t *testing.T) {
 	m, _ := reconcileMgr(t)
 	m.mu.Lock()
-	m.procs["m"] = &Process{Name: "m", key: "m", server: "mac1", usage: map[string]int64{"system": 1 << 30}, ready: make(chan struct{})}
+	m.procs["m"] = &Process{Name: "m", key: "m", server: "mac1", usage: map[string]int64{"system": 1 << 30}, ready: make(chan struct{}),
+		handle: agentMemHandle{}, loadedAt: time.Now().Add(-time.Hour)}
 	m.reserveLocked("mac1", map[string]int64{"system": 1 << 30})
 	m.mu.Unlock()
 
@@ -139,5 +140,34 @@ func TestReconcile_FreshSpawnMissingFromReportIsNotVanished(t *testing.T) {
 	m.mu.Unlock()
 	if _, _, vanished := m.ReconcileAgent(context.Background(), "mac1", nil); vanished != 1 {
 		t.Fatalf("vanished = %d past the grace; want 1", vanished)
+	}
+}
+
+// A Process registered but not yet spawned (no handle, no loadedAt) must not be
+// declared vanished, and the backend the agent reports for it moments later is
+// ours, not an orphan. 2026-11-05: a build benchmark's second trial was dropped
+// two seconds after registration and its backend reaped 60 s later.
+func TestReconcile_SpawnInFlightIsClaimedNotVanished(t *testing.T) {
+	m, _ := reconcileMgr(t)
+	m.mu.Lock()
+	m.procs["trial:x"] = &Process{Name: "x", key: "trial:x", server: "mac1", usage: map[string]int64{"system": 1 << 30}, ready: make(chan struct{})}
+	m.reserveLocked("mac1", map[string]int64{"system": 1 << 30})
+	m.mu.Unlock()
+
+	if _, _, vanished := m.ReconcileAgent(context.Background(), "mac1", nil); vanished != 0 {
+		t.Fatalf("vanished = %d for a spawn still in flight; want 0", vanished)
+	}
+	m.mu.Lock()
+	_, still := m.procs["trial:x"]
+	m.mu.Unlock()
+	if !still {
+		t.Fatal("the in-flight trial was dropped from the table")
+	}
+	// The agent now reports its backend, started long enough ago that the
+	// orphan grace no longer protects it: it must be counted as ours.
+	adopted, reaped, _ := m.ReconcileAgent(context.Background(), "mac1",
+		[]agent.Backend{{ID: "b11", Key: "trial:x", Alive: true, Started: time.Now().Add(-2 * adoptionGrace).UnixMilli()}})
+	if reaped != 0 || adopted != 1 {
+		t.Fatalf("adopted=%d reaped=%d for the in-flight trial's backend; want 1/0", adopted, reaped)
 	}
 }

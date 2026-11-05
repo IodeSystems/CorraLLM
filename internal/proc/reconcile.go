@@ -86,9 +86,19 @@ func (m *Manager) ReconcileAgent(ctx context.Context, server string, reported []
 		h, loadedAt := p.handle, p.loadedAt
 		p.mu.Unlock()
 		id := ""
+		if h == nil {
+			// Registered, spawn still in flight: the agent cannot have reported
+			// it yet and loadedAt is not set, so the fresh-spawn grace below does
+			// not see it. Claim the key and never declare it vanished. On
+			// 2026-11-05 a build benchmark's second trial was inserted two
+			// seconds before a heartbeat, declared vanished, dropped from the
+			// table, and its backend reaped as an orphan 60 s later.
+			ourIDs[key] = ""
+			continue
+		}
 		if a, ok := h.(interface{ AgentID() string }); ok {
 			id = a.AgentID()
-		} else if h != nil {
+		} else {
 			// A LOCAL child on a server that has since been bound to an
 			// agent. The agent cannot know it, so its absence from the
 			// report says nothing; declaring it vanished would free its
