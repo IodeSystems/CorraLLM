@@ -247,3 +247,39 @@ func TestBenchmarkValidationAndDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestRebuildAtValidated(t *testing.T) {
+	for _, tc := range []struct {
+		at      string
+		rebuild bool
+		ok      bool
+	}{
+		{"06:00", true, true}, {"23:59", true, true},
+		{"6am", true, false}, {"24:00", true, false}, {"06:00", false, false},
+	} {
+		tl := validTool()
+		tl.RebuildAt, tl.Rebuild = tc.at, tc.rebuild
+		err := toolsCfg(tl).validateTools()
+		if (err == nil) != tc.ok {
+			t.Errorf("rebuildAt %q rebuild=%v: err=%v, want ok=%v", tc.at, tc.rebuild, err, tc.ok)
+		}
+	}
+}
+
+func TestRebuildSlotIsTheMostRecentOne(t *testing.T) {
+	loc := time.FixedZone("PST", -8*3600)
+	tl := Tool{RebuildAt: "06:00"}
+	for _, tc := range []struct{ now, want time.Time }{
+		{time.Date(2026, 11, 6, 6, 0, 0, 0, loc), time.Date(2026, 11, 6, 6, 0, 0, 0, loc)},
+		{time.Date(2026, 11, 6, 13, 0, 0, 0, loc), time.Date(2026, 11, 6, 6, 0, 0, 0, loc)},
+		{time.Date(2026, 11, 6, 5, 59, 0, 0, loc), time.Date(2026, 11, 5, 6, 0, 0, 0, loc)},
+	} {
+		got, ok := RebuildSlot(tl, tc.now)
+		if !ok || !got.Equal(tc.want) {
+			t.Errorf("RebuildSlot at %v = %v,%v; want %v", tc.now, got, ok, tc.want)
+		}
+	}
+	if _, ok := RebuildSlot(Tool{}, time.Now()); ok {
+		t.Error("no rebuildAt must mean no slot")
+	}
+}

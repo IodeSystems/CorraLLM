@@ -99,6 +99,17 @@ type Tool struct {
 	// stays a decision rather than a timer.
 	Rebuild bool `yaml:"rebuild,omitempty"`
 
+	// RebuildAt, "HH:MM" in the primary's local time, limits scheduled builds
+	// to ONE attempt a day, started within RebuildWindow after that time. The
+	// check still runs on `check:` and reports drift; only building waits.
+	// Empty builds whenever a check finds drift (up to every `check:`).
+	//
+	// Why (owner, 2026-11-05): every build pauses production for ~2.5 min
+	// (benchmark), and upstream moves several times a day — six builds in 27 h.
+	// One attempt a day at a known time caps that, and a bad build found then is
+	// rolled back and held until the next day's attempt takes a newer commit.
+	RebuildAt string `yaml:"rebuildAt,omitempty"`
+
 	// Benchmark measures a new build against the one it replaces, on a real
 	// model, before the new one is kept. Nil skips it.
 	Benchmark *ToolBenchmark `yaml:"benchmark,omitempty"`
@@ -210,6 +221,29 @@ func CheckIntervalOf(t Tool) (d time.Duration, ok bool) {
 	return d, true
 }
 
+// RebuildWindow is how long after RebuildAt a scheduled build may still start.
+// Long enough for the minute tick and a slow check; short enough that a daemon
+// started mid-day does not take the day's build at a time nobody expects.
+const RebuildWindow = time.Hour
+
+// RebuildSlot is the most recent RebuildAt at or before now, in now's location.
+// ok=false when RebuildAt is unset (or malformed; Validate refuses that).
+func RebuildSlot(t Tool, now time.Time) (slot time.Time, ok bool) {
+	s := strings.TrimSpace(t.RebuildAt)
+	if s == "" {
+		return time.Time{}, false
+	}
+	hm, err := time.Parse("15:04", s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	slot = time.Date(now.Year(), now.Month(), now.Day(), hm.Hour(), hm.Minute(), 0, 0, now.Location())
+	if slot.After(now) {
+		slot = slot.AddDate(0, 0, -1)
+	}
+	return slot, true
+}
+
 // EffectiveRef is what a checkout should be aligned to: the pin when there is
 // one, the tracked ref otherwise.
 func EffectiveRef(t Tool) string {
@@ -282,6 +316,14 @@ func (c *Config) validateTools() error {
 		if t.Rebuild {
 			if _, ok := CheckIntervalOf(t); !ok {
 				return fmt.Errorf("tool %q: rebuild is on but check is off — a scheduled rebuild is driven by the check, so this would never fire", name)
+			}
+		}
+		if s := strings.TrimSpace(t.RebuildAt); s != "" {
+			if _, err := time.Parse("15:04", s); err != nil {
+				return fmt.Errorf("tool %q: rebuildAt %q is not a 24-hour HH:MM time (e.g. 06:00)", name, t.RebuildAt)
+			}
+			if !t.Rebuild {
+				return fmt.Errorf("tool %q: rebuildAt is set but rebuild is off — nothing would be built at that time", name)
 			}
 		}
 		if b := t.Benchmark; b != nil {

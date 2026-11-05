@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,8 +38,9 @@ type Watcher struct {
 	// Now is injectable so a test can drive a 6h cadence without waiting 6h.
 	Now func() time.Time
 
-	mu   sync.Mutex
-	last map[string]time.Time // tool -> when it was last checked
+	mu    sync.Mutex
+	last  map[string]time.Time // tool -> when it was last checked
+	slots map[string]time.Time // tool@host -> the daily slot that started a build
 }
 
 // watchTick is how often the loop looks for due tools.
@@ -108,7 +110,10 @@ func (w *Watcher) CheckDue(ctx context.Context) {
 		if !on {
 			continue
 		}
-		if !w.due(name, every) {
+		// A rebuild slot makes the check due at that time too, or the daily
+		// build would wait for whichever 6h check happens to land after it.
+		slot, hasSlot := config.RebuildSlot(t, w.now())
+		if !w.due(name, every, slot, hasSlot && t.Rebuild) {
 			continue
 		}
 		// Stamped BEFORE the survey, not after. A host behind a VPN can take the
@@ -119,13 +124,16 @@ func (w *Watcher) CheckDue(ctx context.Context) {
 	}
 }
 
-func (w *Watcher) due(tool string, every time.Duration) bool {
+func (w *Watcher) due(tool string, every time.Duration, slot time.Time, hasSlot bool) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	last, seen := w.last[tool]
 	if !seen {
 		// Never checked in this process. Due now — a restart is exactly when
 		// somebody wants to know what drifted while it was down.
+		return true
+	}
+	if hasSlot && last.Before(slot) {
 		return true
 	}
 	return w.now().Sub(last) >= every
@@ -225,6 +233,9 @@ func (w *Watcher) report(ctx context.Context, name string, t config.Tool, st Sta
 	if ctx.Err() != nil {
 		return
 	}
+	if !w.mayBuild(ctx, name, t, st) {
+		return
+	}
 	j, err := w.Builder.Start(name, st.Host, false)
 	if err != nil {
 		// Almost always "a build is already running". Not an error worth
@@ -232,5 +243,69 @@ func (w *Watcher) report(ctx context.Context, name string, t config.Tool, st Sta
 		slog.Info("scheduled rebuild not started", "tool", name, "host", st.Host, "err", err)
 		return
 	}
+	if slot, ok := config.RebuildSlot(t, w.now()); ok {
+		w.takeSlot(name, st.Host, slot)
+	}
 	slog.Warn("scheduled rebuild STARTED", "tool", name, "host", st.Host, "job", j.ID)
+}
+
+// mayBuild applies the two limits on a scheduled build: the daily slot
+// (rebuildAt) and the hold on a commit that was already rolled back.
+//
+// The hold applies with or without a slot. Without it, a commit that failed
+// the benchmark is rebuilt, benchmarked and rolled back again at every check
+// until upstream moves — each round a ~2.5 min production pause for a known
+// answer. It lifts by itself when upstream moves past that commit; a manual
+// build is never held.
+func (w *Watcher) mayBuild(ctx context.Context, name string, t config.Tool, st State) bool {
+	now := w.now()
+	last, found := w.Builder.LastBuild(ctx, name, st.Host)
+	if slot, ok := config.RebuildSlot(t, now); ok {
+		next := slot.AddDate(0, 0, 1)
+		if now.Sub(slot) > config.RebuildWindow {
+			slog.Info("drift found; the scheduled build waits for its daily slot",
+				"tool", name, "host", st.Host, "next", next.Format(time.RFC3339))
+			return false
+		}
+		if w.slotTaken(name, st.Host, slot) || (found && !last.StartedAt.Before(slot)) {
+			slog.Info("today's scheduled build already ran; the next waits for its daily slot",
+				"tool", name, "host", st.Host, "next", next.Format(time.RFC3339))
+			return false
+		}
+	}
+	if found && last.Status == "failed" && sameCommit(StampHead(last.Stamp), st.Drift.RemoteHead) {
+		slog.Warn("HELD BACK: upstream is still at the commit whose build was rolled back; waiting for a newer one",
+			"tool", name, "host", st.Host, "commit", st.Drift.RemoteHead)
+		return false
+	}
+	return true
+}
+
+// sameCommit compares two shas that may be abbreviated differently.
+func sameCommit(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return strings.HasPrefix(b, a)
+}
+
+// slotTaken and takeSlot remember, in this process, which daily slot already
+// started a build. The store says the same across restarts (LastBuild); this
+// covers a builder with no store and the moment before its row is written.
+func (w *Watcher) slotTaken(tool, host string, slot time.Time) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return !w.slots[tool+"@"+host].Before(slot)
+}
+
+func (w *Watcher) takeSlot(tool, host string, slot time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.slots == nil {
+		w.slots = map[string]time.Time{}
+	}
+	w.slots[tool+"@"+host] = slot
 }

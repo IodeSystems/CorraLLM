@@ -239,3 +239,138 @@ func TestUnreachableHostIsNotDrift(t *testing.T) {
 		t.Error("an unreachable host should still stamp the cadence, or it retries every tick")
 	}
 }
+
+// fakeHistory is a store that answers LastBuild with a canned record.
+type fakeHistory struct{ last *BuildRecord }
+
+func (h fakeHistory) Start(context.Context, string, string, time.Time) (int64, error) { return 1, nil }
+func (h fakeHistory) Finish(context.Context, int64, string, time.Time, bool, string, string, string, string) error {
+	return nil
+}
+func (h fakeHistory) LastBuild(context.Context, string, string) (BuildRecord, bool, error) {
+	if h.last == nil {
+		return BuildRecord{}, false, nil
+	}
+	return *h.last, true, nil
+}
+
+func noBuild(t *testing.T, r *watchRunner, why string) {
+	t.Helper()
+	select {
+	case <-r.built:
+		t.Fatal(why)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// rebuildAt: drift found before the slot waits; the check at the slot builds.
+func TestRebuildAtWaitsForItsDailySlot(t *testing.T) {
+	r := newWatchRunner(driftingAnswers())
+	cfg := watchCfg("6h", true, config.ToolHost{})
+	tl := cfg.Tools["llama.cpp"]
+	tl.RebuildAt = "06:00"
+	cfg.Tools["llama.cpp"] = tl
+	w, _ := newWatcher(cfg, r)
+	loc := time.FixedZone("PST", -8*3600)
+	now := time.Date(2026, 11, 6, 5, 0, 0, 0, loc)
+	w.Now = func() time.Time { return now }
+
+	w.CheckDue(context.Background())
+	noBuild(t, r, "05:00 is outside the 06:00 slot (yesterday's slot ended at 07:00); nothing should build")
+
+	now = time.Date(2026, 11, 6, 6, 1, 0, 0, loc) // 1h01m after the last check, under 6h
+	w.CheckDue(context.Background())
+	if r.saw(VerbUpstream) != 2 {
+		t.Fatalf("the slot should make the check due even though check: 6h has not elapsed; upstream asked %d times", r.saw(VerbUpstream))
+	}
+	if !waitForBuild(t, r) {
+		t.Fatal("drift at 06:01 with rebuildAt 06:00: the daily build should have started")
+	}
+}
+
+// One churn a day: a second check inside the same slot does not build again.
+func TestRebuildAtBuildsOncePerSlot(t *testing.T) {
+	r := newWatchRunner(driftingAnswers())
+	cfg := watchCfg("1m", true, config.ToolHost{})
+	tl := cfg.Tools["llama.cpp"]
+	tl.RebuildAt = "06:00"
+	cfg.Tools["llama.cpp"] = tl
+	w, b := newWatcher(cfg, r)
+	now := time.Date(2026, 11, 6, 6, 1, 0, 0, time.UTC)
+	w.Now = func() time.Time { return now }
+
+	w.CheckDue(context.Background())
+	if !waitForBuild(t, r) {
+		t.Fatal("first check in the slot should build")
+	}
+	for i := 0; i < 100; i++ { // let the job finish so the slot is free of "already running"
+		if cur, _ := b.State(); cur == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	now = now.Add(30 * time.Minute)
+	w.CheckDue(context.Background())
+	time.Sleep(300 * time.Millisecond)
+	if n := r.saw(VerbBuild); n != 1 {
+		t.Fatalf("still in the same slot: want 1 build, got %d", n)
+	}
+
+	now = now.Add(24 * time.Hour) // next day's slot
+	w.CheckDue(context.Background())
+	time.Sleep(300 * time.Millisecond)
+	if n := r.saw(VerbBuild); n != 2 {
+		t.Fatalf("next day's slot should build again: want 2 builds, got %d", n)
+	}
+}
+
+// The store's record of today's build counts too, so a restart inside the
+// window does not churn a second time.
+func TestRebuildAtHonoursABuildTheStoreRemembers(t *testing.T) {
+	r := newWatchRunner(driftingAnswers())
+	cfg := watchCfg("6h", true, config.ToolHost{})
+	tl := cfg.Tools["llama.cpp"]
+	tl.RebuildAt = "06:00"
+	cfg.Tools["llama.cpp"] = tl
+	w, b := newWatcher(cfg, r)
+	now := time.Date(2026, 11, 6, 6, 40, 0, 0, time.UTC)
+	w.Now = func() time.Time { return now }
+	b.History = fakeHistory{last: &BuildRecord{StartedAt: now.Add(-35 * time.Minute), Status: "ok", Stamp: "head=aaaa"}}
+
+	w.CheckDue(context.Background())
+	noBuild(t, r, "the store says today's slot already built; a restarted daemon must not build again")
+}
+
+// A commit whose build was rolled back is held until upstream moves.
+func TestRolledBackCommitIsHeldUntilUpstreamMoves(t *testing.T) {
+	r := newWatchRunner(driftingAnswers()) // upstream at 34af94cd9
+	w, b := newWatcher(watchCfg("6h", true, config.ToolHost{}), r)
+	b.History = fakeHistory{last: &BuildRecord{StartedAt: time.Now().Add(-time.Hour), Status: "failed",
+		Stamp: "head=34af94cd9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa patches=x archs=86"}}
+
+	w.CheckDue(context.Background())
+	noBuild(t, r, "upstream is still at the rolled-back commit; it must be held")
+
+	r2 := newWatchRunner(driftingAnswers())
+	a := driftingAnswers()
+	a[VerbUpstream] = Upstream{Ref: "master", RemoteHead: "5555beef0", Local: "0b1bad14f", Behind: true}
+	r2.answers = a
+	w2, b2 := newWatcher(watchCfg("6h", true, config.ToolHost{}), r2)
+	b2.History = b.History
+	w2.CheckDue(context.Background())
+	if !waitForBuild(t, r2) {
+		t.Fatal("upstream moved past the rolled-back commit; the hold should lift")
+	}
+}
+
+func TestStampHead(t *testing.T) {
+	if got := StampHead("head=abc patches=none archs=86"); got != "abc" {
+		t.Errorf("StampHead = %q", got)
+	}
+	if got := StampHead(""); got != "" {
+		t.Errorf("StampHead(\"\") = %q", got)
+	}
+	if !sameCommit("34af94cd9", "34af94cd9aaaa") || sameCommit("", "x") || sameCommit("abc", "abd") {
+		t.Error("sameCommit wrong")
+	}
+}

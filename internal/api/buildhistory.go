@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/store"
+	"github.com/iodesystems/corrallm/internal/toolchain"
 )
 
 // BuildHistoryStore adapts the store to the narrow interface the Builder wants.
@@ -26,4 +27,14 @@ func (b BuildHistoryStore) Finish(ctx context.Context, id int64, status string, 
 		Status: status, FinishedAt: finishedAt, Skipped: skipped,
 		Version: version, Stamp: stamp, Error: errMsg, Log: log,
 	})
+}
+
+// LastBuild is the newest build of tool on host (toolchain.BuildLookup).
+func (b BuildHistoryStore) LastBuild(ctx context.Context, tool, host string) (toolchain.BuildRecord, bool, error) {
+	rows, err := b.S.RecentToolBuilds(ctx, tool, host, 1)
+	if err != nil || len(rows) == 0 {
+		return toolchain.BuildRecord{}, false, err
+	}
+	r := rows[0]
+	return toolchain.BuildRecord{StartedAt: r.StartedAt, Status: r.Status, Stamp: r.Stamp}, true, nil
 }

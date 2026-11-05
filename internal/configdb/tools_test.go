@@ -108,3 +108,27 @@ func TestToolPinSurvivesTheStore(t *testing.T) {
 		t.Errorf("ref lost while pinned: %q", tool.Ref)
 	}
 }
+
+// rebuildAt has no column; it rides in the tool's rest blob and must survive.
+func TestToolRebuildAtSurvivesTheStore(t *testing.T) {
+	ctx := context.Background()
+	src := &Source{DB: openDB(t)}
+	in := &config.Config{
+		Servers: map[string]config.Server{"box1": {Pools: map[string]string{"gpu0": "24GB"}}},
+		Tools: map[string]config.Tool{"llama.cpp": {
+			URL: "https://github.com/ggml-org/llama.cpp.git", Ref: "master", Bin: "llama-server",
+			Rebuild: true, RebuildAt: "06:00",
+			Hosts: map[string]config.ToolHost{"box1": {}},
+		}},
+	}
+	if err := src.Save(ctx, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := src.Load(ctx)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if at := got.Tools["llama.cpp"].RebuildAt; at != "06:00" {
+		t.Errorf("rebuildAt did not round-trip: %q", at)
+	}
+}

@@ -83,12 +83,58 @@ func (b *Builder) Stop() {
 
 // BuildHistory is the persistence a Builder needs, and no more.
 //
-// Start returns an opaque id handed back to Finish. The Builder never reads
-// history — the UI does, straight from the store — so there is no Recent here.
+// Start returns an opaque id handed back to Finish. The UI reads history
+// straight from the store; the scheduler reads only the newest build, through
+// the optional BuildLookup.
 type BuildHistory interface {
 	Start(ctx context.Context, tool, host string, at time.Time) (int64, error)
 	Finish(ctx context.Context, id int64, status string, finishedAt time.Time,
 		skipped bool, version, stamp, errMsg, log string) error
+}
+
+// BuildRecord is what the scheduler needs to know about a past build.
+type BuildRecord struct {
+	StartedAt time.Time
+	Status    string // running | ok | failed | interrupted
+	Stamp     string // "head=<sha> patches=… archs=…"; set on a rolled-back build too
+}
+
+// BuildLookup is optional on a BuildHistory: the newest build of tool on host.
+// The watcher uses it so "already built in today's slot" and "this commit was
+// rolled back" survive a restart.
+type BuildLookup interface {
+	LastBuild(ctx context.Context, tool, host string) (BuildRecord, bool, error)
+}
+
+// LastBuild is the newest build of tool on host: from the store when it can
+// answer, else this process's last job.
+func (b *Builder) LastBuild(ctx context.Context, tool, host string) (BuildRecord, bool) {
+	if l, ok := b.History.(BuildLookup); ok {
+		if r, found, err := l.LastBuild(ctx, tool, host); err == nil {
+			return r, found
+		} else {
+			slog.Warn("could not read the last tool build", "tool", tool, "host", host, "err", err)
+		}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, j := range []*Job{b.current, b.last} {
+		if j != nil && j.Tool == tool && j.Host == host {
+			s := j.Snapshot()
+			return BuildRecord{StartedAt: s.StartedAt, Status: s.Status, Stamp: s.Stamp}, true
+		}
+	}
+	return BuildRecord{}, false
+}
+
+// StampHead is the head= field of a build stamp, "" when absent.
+func StampHead(stamp string) string {
+	for _, f := range strings.Fields(stamp) {
+		if h, ok := strings.CutPrefix(f, "head="); ok {
+			return h
+		}
+	}
+	return ""
 }
 
 // Job is one build, running or finished.
@@ -277,15 +323,21 @@ func (b *Builder) run(j *Job, force bool) {
 
 	j.mu.Lock()
 	j.FinishedAt = time.Now()
+	// The stamp is kept on a failure too: a build that compiled and was then
+	// rolled back names the commit the watcher must hold back from.
+	if res != nil {
+		j.Skipped, j.Version, j.Stamp = res.Skipped, res.Version, res.Stamp
+	}
 	if err != nil {
 		j.Status, j.Error = "failed", err.Error()
 	} else {
 		j.Status = "ok"
-		if res != nil {
-			j.Skipped, j.Version, j.Stamp = res.Skipped, res.Version, res.Stamp
-		}
 	}
 	j.mu.Unlock()
+	if err != nil {
+		slog.Error("TOOL BUILD FAILED — the previous build keeps serving",
+			"tool", j.Tool, "host", j.Host, "job", j.ID, "commit", StampHead(j.Stamp), "err", err)
+	}
 
 	b.mu.Lock()
 	b.last, b.current = j, nil
