@@ -130,6 +130,10 @@ type Upstream struct {
 	// is at 34af94cd9, you are holding 0b1bad14f"). Always false when not
 	// pinned, where Behind already says it.
 	Ahead bool `json:"ahead,omitempty"`
+	// PatchesChanged means the installed build was stamped with a different
+	// patch set than the one in patches/ now, so it is Behind even when the
+	// commit matches.
+	PatchesChanged bool `json:"patchesChanged,omitempty"`
 	// PinUnsupported means this host's recipe PREDATES pins, so its answer was
 	// computed against the tracked ref and says nothing about the pin.
 	//

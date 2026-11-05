@@ -797,6 +797,17 @@ emit_upstream() {
         ahead=1
     fi
 
+    # A changed patch set is drift too: the installed build was stamped with the
+    # patches it was built with, and a patch added, edited or retired since then
+    # means the binary is not what the patch set describes. Without this a patch
+    # change waited for upstream to move (2026-11-05: two hours with no commit).
+    # Only for builds corrallm stamped; an adopted install has no stamp.
+    local patches_changed=0 stamped
+    stamped=$(stamp_field "$(stamp_read "$(tool_bin_dir)")" patches)
+    if [ -n "$stamped" ] && [ "$stamped" != "$(patch_set_hash)" ]; then
+        patches_changed=1 behind=1
+    fi
+
     # A pin makes the remote round trip optional rather than load-bearing: the
     # target is known locally, so an unreachable remote costs the "how far has
     # the branch run" half and nothing else. Reporting it as an error would put
@@ -804,7 +815,7 @@ emit_upstream() {
     local err=""
     [ -z "$rhead" ] && [ -z "$pin" ] && err=$(printf 'could not reach %s' "$TOOL_URL")
 
-    printf '{"ref":%s,"pin":%s,"remoteHead":%s,"local":%s,"behind":%s,"ahead":%s,"error":%s}\n' \
+    printf '{"ref":%s,"pin":%s,"remoteHead":%s,"local":%s,"behind":%s,"ahead":%s,"patchesChanged":%s,"error":%s}\n' \
         "$(jstr "$TOOL_REF")" "$(jstr "$pin")" "$(jstr "$rhead")" "$(jstr "$localrev")" \
-        "$(jbool "$behind")" "$(jbool "$ahead")" "$(jstr "$err")"
+        "$(jbool "$behind")" "$(jbool "$ahead")" "$(jbool "$patches_changed")" "$(jstr "$err")"
 }

@@ -214,7 +214,7 @@ func (w *Watcher) report(ctx context.Context, name string, t config.Tool, st Sta
 	slog.Warn("tool is BEHIND its pin",
 		"tool", name, "host", st.Host, "ref", st.Drift.Ref,
 		"local", st.Drift.Local, "upstream", st.Drift.RemoteHead,
-		"rebuild", t.Rebuild)
+		"patchesChanged", st.Drift.PatchesChanged, "rebuild", t.Rebuild)
 
 	if !t.Rebuild {
 		return

@@ -256,3 +256,75 @@ func TestUnapplyNeverRevertsAPatchUpstreamMerged(t *testing.T) {
 		t.Fatalf("a retired patch stayed in the tree:\n%s", st)
 	}
 }
+
+// A patch added, edited or retired since the installed build was stamped makes
+// the tool Behind even at the same commit; the same patch set does not
+// (2026-11-05: a patch-only change waited two hours for upstream to move).
+func TestUpstreamReportsAChangedPatchSetAsBehind(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	recipes := t.TempDir()
+	if err := Extract(recipes); err != nil {
+		t.Fatal(err)
+	}
+	prefix := t.TempDir()
+	const head = "0b1bad14f0b1bad14f0b1bad14f0b1bad14f0b1b"
+	bin := filepath.Join(prefix, "bin")
+	pd := filepath.Join(prefix, "patches")
+	for _, d := range []string{bin, pd} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(pd, "0001-a.patch"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	upstream := func() string {
+		t.Helper()
+		// Pinned at the installed commit, so no network is needed and the
+		// commit alone says "not behind".
+		cmd := exec.Command("bash", "-c", `source "$1/common.sh"; emit_upstream "$2"`, "_", recipes, head)
+		cmd.Env = append(os.Environ(), "TOOL_NAME=llama.cpp", "TOOL_PREFIX="+prefix,
+			"TOOL_URL=https://example.invalid/x.git", "TOOL_REF=master", "TOOL_PIN="+head)
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("emit_upstream: %v\n%s", err, b)
+		}
+		return string(b)
+	}
+	hash := func() string {
+		t.Helper()
+		cmd := exec.Command("bash", "-c", `source "$1/common.sh"; patch_set_hash`, "_", recipes)
+		cmd.Env = append(os.Environ(), "TOOL_NAME=llama.cpp", "TOOL_PREFIX="+prefix)
+		b, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	stamp := func(patches string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(bin, ".corrallm-stamp"),
+			[]byte("head="+head+" patches="+patches+" archs=86"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stamp(hash())
+	if out := upstream(); !strings.Contains(out, `"behind":false`) || !strings.Contains(out, `"patchesChanged":false`) {
+		t.Fatalf("same commit, same patch set: want not behind\n%s", out)
+	}
+	if err := os.WriteFile(filepath.Join(pd, "0002-b.patch"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := upstream(); !strings.Contains(out, `"behind":true`) || !strings.Contains(out, `"patchesChanged":true`) {
+		t.Fatalf("a patch was added after the build: want behind + patchesChanged\n%s", out)
+	}
+	if err := os.Remove(filepath.Join(bin, ".corrallm-stamp")); err != nil {
+		t.Fatal(err)
+	}
+	if out := upstream(); !strings.Contains(out, `"behind":false`) {
+		t.Fatalf("no stamp (adopted install): a patch change must not count\n%s", out)
+	}
+}
