@@ -141,3 +141,118 @@ func TestPruneKeepsTheBuildThisInstallReplaced(t *testing.T) {
 		t.Error("nothing was pruned: the retention count did not apply")
 	}
 }
+
+// patchCycle runs one rebuild's patch steps — unapply, then apply — the way
+// build() does, with <prefix>/patches as the patch set.
+func patchCycle(t *testing.T, recipes, prefix, src string) string {
+	t.Helper()
+	cmd := exec.Command("bash", "-c", `source "$1/common.sh"; unapply_patches "$2" && apply_patches "$2"`, "_", recipes, src)
+	cmd.Env = append(os.Environ(), "TOOL_NAME=llama.cpp", "TOOL_PREFIX="+prefix)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("patch cycle: %v\n%s", err, b)
+	}
+	return string(b)
+}
+
+// 2026-11-05: upstream merged #30137, which corrallm carried as a patch. The
+// recipe logged it "already" — correct — but the next unapply reverted every
+// patch that reverse-checks clean, and an upstreamed patch does: it would have
+// reverted upstream's own code. Only what apply_patches applied is reverted.
+func TestUnapplyNeverRevertsAPatchUpstreamMerged(t *testing.T) {
+	for _, tool := range []string{"bash", "git"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " not available")
+		}
+	}
+	recipes := t.TempDir()
+	if err := Extract(recipes); err != nil {
+		t.Fatal(err)
+	}
+	prefix := t.TempDir()
+	src := filepath.Join(prefix, "src")
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", src, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, b)
+		}
+		return string(b)
+	}
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "-q")
+	write("a.txt", "a1\na2\na3\n")
+	write("b.txt", "b1\nb2\nb3\n")
+	git("add", ".")
+	git("commit", "-qm", "base")
+
+	// Two corrallm patches, made from the tree and then undone.
+	pd := filepath.Join(prefix, "patches")
+	if err := os.MkdirAll(pd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write("a.txt", "a1\nUPSTREAMED\na3\n")
+	if err := os.WriteFile(filepath.Join(pd, "0001-upstreamed.patch"), []byte(git("diff")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("checkout", "--", ".")
+	write("b.txt", "b1\nOURS\nb3\n")
+	if err := os.WriteFile(filepath.Join(pd, "0002-ours.patch"), []byte(git("diff")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("checkout", "--", ".")
+
+	if out := patchCycle(t, recipes, prefix, src); !strings.Contains(out, "applied  0001") || !strings.Contains(out, "applied  0002") {
+		t.Fatalf("first build did not apply both:\n%s", out)
+	}
+
+	// Upstream merges 0001: what align_tree does is unapply, move, apply.
+	cmd := exec.Command("bash", "-c", `source "$1/common.sh"; unapply_patches "$2"`, "_", recipes, src)
+	cmd.Env = append(os.Environ(), "TOOL_NAME=llama.cpp", "TOOL_PREFIX="+prefix)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("unapply: %v\n%s", err, b)
+	}
+	if st := git("status", "--porcelain"); st != "" {
+		t.Fatalf("unapply left the tree dirty:\n%s", st)
+	}
+	write("a.txt", "a1\nUPSTREAMED\na3\n")
+	git("commit", "-qam", "upstream merges 0001")
+
+	if out := patchCycle(t, recipes, prefix, src); !strings.Contains(out, "already  0001") {
+		t.Fatalf("second build did not see 0001 as upstream:\n%s", out)
+	}
+	// The rebuild after that is the one that used to revert upstream.
+	patchCycle(t, recipes, prefix, src)
+	cmd = exec.Command("bash", "-c", `source "$1/common.sh"; unapply_patches "$2"`, "_", recipes, src)
+	cmd.Env = append(os.Environ(), "TOOL_NAME=llama.cpp", "TOOL_PREFIX="+prefix)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("unapply: %v\n%s", err, b)
+	}
+	if st := git("status", "--porcelain"); st != "" {
+		t.Fatalf("unapply reverted upstream's merged code (or left ours):\n%s", st)
+	}
+
+	// A patch retired from patches/ while applied is still reverted: the
+	// record holds its content, not just its name.
+	patchCycle(t, recipes, prefix, src)
+	if err := os.Rename(filepath.Join(pd, "0002-ours.patch"), filepath.Join(prefix, "0002-ours.retired")); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("bash", "-c", `source "$1/common.sh"; unapply_patches "$2"`, "_", recipes, src)
+	cmd.Env = append(os.Environ(), "TOOL_NAME=llama.cpp", "TOOL_PREFIX="+prefix)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("unapply: %v\n%s", err, b)
+	}
+	if st := git("status", "--porcelain"); st != "" {
+		t.Fatalf("a retired patch stayed in the tree:\n%s", st)
+	}
+}

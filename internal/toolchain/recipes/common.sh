@@ -265,22 +265,46 @@ patch_set_hash() {
     cat $files | sha256sum | cut -c1-12
 }
 
+# applied_dir holds a copy of each patch apply_patches applied to this tree.
+#
+# Only these are ever reverted. A patch upstream has merged also reverse-checks
+# clean, so reverting "whatever reverses" reverts UPSTREAM's code (#30137,
+# 2026-11-05). The copy, not a name, because the file in patches/ can be edited
+# or retired while its old content is still in the tree.
+applied_dir() {
+    local gd; gd=$(cd "$1" 2>/dev/null && git rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    printf '%s/corrallm-applied' "$gd"
+}
+
 # unapply_patches reverts our patches so align_tree sees a pristine tree.
 #
-# Load-bearing: `git reset --hard` would destroy them anyway, and align_tree
+# Required: `git reset --hard` would destroy them anyway, and align_tree
 # REFUSES to move a tree with uncommitted tracked changes — which applied
 # patches are. Left alone, the tree freezes at the patched commit and silently
 # stops taking upstream. Best-effort by design: a patch that will not reverse
 # cleanly is left, and align_tree's own guard then warns instead of clobbering.
+#
+# A tree patched before the record existed has no applied_dir; it falls back to
+# reverting every current patch that reverses, the old rule.
 unapply_patches() {
-    local dir=$1 f
+    local dir=$1 f ad
     [ -d "$dir" ] || return 0
+    ad=$(applied_dir "$dir") || return 0
+    if [ ! -d "$ad" ]; then
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if (cd "$dir" && git apply -R --check "$f" >/dev/null 2>&1); then
+                (cd "$dir" && git apply -R "$f")
+            fi
+        done < <(patch_files | tac)
+        return 0
+    fi
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         if (cd "$dir" && git apply -R --check "$f" >/dev/null 2>&1); then
-            (cd "$dir" && git apply -R "$f")
+            (cd "$dir" && git apply -R "$f") && rm -f "$f"
         fi
-    done < <(patch_files | tac)
+    done < <(find "$ad" -maxdepth 1 -name '*.patch' -type f 2>/dev/null | LC_ALL=C sort | tac)
 }
 
 # apply_patches applies the set idempotently. An already-applied patch is not an
@@ -288,13 +312,17 @@ unapply_patches() {
 # fatal, because building an unpatched tree you believe is patched is worse than
 # not building at all.
 apply_patches() {
-    local dir=$1 f n=0
+    local dir=$1 f n=0 ad
+    ad=$(applied_dir "$dir") || return 1
+    mkdir -p "$ad" || return 1
     local files; files=$(patch_files)
     [ -z "$files" ] && return 0
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         if (cd "$dir" && git apply --check "$f" >/dev/null 2>&1); then
-            (cd "$dir" && git apply "$f"); say "    applied  $(basename "$f")"
+            (cd "$dir" && git apply "$f") || return 1
+            cp "$f" "$ad/" || return 1
+            say "    applied  $(basename "$f")"
         elif (cd "$dir" && git apply -R --check "$f" >/dev/null 2>&1); then
             say "    already  $(basename "$f")"
         else
