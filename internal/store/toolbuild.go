@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS tool_build (
     version     TEXT    NOT NULL DEFAULT '',
     stamp       TEXT    NOT NULL DEFAULT '',
     error       TEXT    NOT NULL DEFAULT '',
-    log         TEXT    NOT NULL DEFAULT ''
+    log         TEXT    NOT NULL DEFAULT '',
+    runner      TEXT    NOT NULL DEFAULT ''   -- corrallm version that ran the build
 );
 CREATE INDEX IF NOT EXISTS idx_tool_build_started ON tool_build(started_at);
 CREATE INDEX IF NOT EXISTS idx_tool_build_target ON tool_build(tool, host, started_at);
@@ -50,6 +51,9 @@ type ToolBuild struct {
 	Stamp      string
 	Error      string
 	Log        string
+	// Runner is the corrallm version that ran the build, "" for rows from
+	// before it was recorded.
+	Runner string
 }
 
 // maxBuildLogBytes caps what is written per build.
@@ -66,9 +70,14 @@ const maxBuildLogBytes = 256 * 1024
 // leaves evidence. Without it, deploying mid-build makes twenty minutes of work
 // vanish with no trace that it ever ran.
 func (s *Store) StartToolBuild(ctx context.Context, tool, host string, at time.Time) (int64, error) {
+	return s.StartToolBuildBy(ctx, tool, host, "", at)
+}
+
+// StartToolBuildBy is StartToolBuild recording which corrallm version runs it.
+func (s *Store) StartToolBuildBy(ctx context.Context, tool, host, runner string, at time.Time) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO tool_build (tool, host, status, started_at) VALUES (?, ?, 'running', ?)`,
-		tool, host, at.UnixMilli())
+		`INSERT INTO tool_build (tool, host, status, started_at, runner) VALUES (?, ?, 'running', ?, ?)`,
+		tool, host, at.UnixMilli(), runner)
 	if err != nil {
 		return 0, err
 	}
@@ -116,7 +125,7 @@ func (s *Store) RecentToolBuilds(ctx context.Context, tool, host string, limit i
 	if limit <= 0 {
 		limit = 20
 	}
-	q := `SELECT id, tool, host, status, started_at, finished_at, skipped, version, stamp, error
+	q := `SELECT id, tool, host, status, started_at, finished_at, skipped, version, stamp, error, runner
 	      FROM tool_build`
 	var where []string
 	var args []any
@@ -145,7 +154,7 @@ func (s *Store) RecentToolBuilds(ctx context.Context, tool, host string, limit i
 		var b ToolBuild
 		var started, finished, skipped int64
 		if err := rows.Scan(&b.ID, &b.Tool, &b.Host, &b.Status, &started, &finished,
-			&skipped, &b.Version, &b.Stamp, &b.Error); err != nil {
+			&skipped, &b.Version, &b.Stamp, &b.Error, &b.Runner); err != nil {
 			return nil, err
 		}
 		b.StartedAt = time.UnixMilli(started)

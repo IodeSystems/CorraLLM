@@ -155,3 +155,18 @@ func TestPruneKeepsNewest(t *testing.T) {
 		t.Error("ordering is not newest-first")
 	}
 }
+
+func TestToolBuildRecordsItsRunner(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	if _, err := s.StartToolBuildBy(ctx, "llama.cpp", "box1", "v0.1.0-85", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.RecentToolBuilds(ctx, "llama.cpp", "box1", 1)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+	if rows[0].Runner != "v0.1.0-85" {
+		t.Errorf("runner = %q", rows[0].Runner)
+	}
+}

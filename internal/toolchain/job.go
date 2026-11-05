@@ -34,6 +34,10 @@ type Builder struct {
 	// is somebody else's decision.
 	History BuildHistory
 
+	// Runner is this corrallm's version, recorded on every build so a hold on a
+	// rolled-back commit can lift once corrallm itself has changed.
+	Runner string
+
 	// Check, when set, runs something real on the build a job just activated.
 	// A failure puts bin/ back on the build that was active before, so a build
 	// becomes current only if it works. ran=false means nothing could be run
@@ -87,7 +91,7 @@ func (b *Builder) Stop() {
 // straight from the store; the scheduler reads only the newest build, through
 // the optional BuildLookup.
 type BuildHistory interface {
-	Start(ctx context.Context, tool, host string, at time.Time) (int64, error)
+	Start(ctx context.Context, tool, host, runner string, at time.Time) (int64, error)
 	Finish(ctx context.Context, id int64, status string, finishedAt time.Time,
 		skipped bool, version, stamp, errMsg, log string) error
 }
@@ -97,6 +101,7 @@ type BuildRecord struct {
 	StartedAt time.Time
 	Status    string // running | ok | failed | interrupted
 	Stamp     string // "head=<sha> patches=… archs=…"; set on a rolled-back build too
+	Runner    string // corrallm version that ran it; "" when unknown
 }
 
 // BuildLookup is optional on a BuildHistory: the newest build of tool on host.
@@ -121,7 +126,7 @@ func (b *Builder) LastBuild(ctx context.Context, tool, host string) (BuildRecord
 	for _, j := range []*Job{b.current, b.last} {
 		if j != nil && j.Tool == tool && j.Host == host {
 			s := j.Snapshot()
-			return BuildRecord{StartedAt: s.StartedAt, Status: s.Status, Stamp: s.Stamp}, true
+			return BuildRecord{StartedAt: s.StartedAt, Status: s.Status, Stamp: s.Stamp, Runner: b.Runner}, true
 		}
 	}
 	return BuildRecord{}, false
@@ -262,7 +267,7 @@ func (b *Builder) Start(tool, host string, force bool) (*Job, error) {
 	// Recorded as it BEGINS, so a build killed by a restart leaves evidence
 	// rather than vanishing along with twenty minutes of work.
 	if b.History != nil {
-		if id, err := b.History.Start(context.Background(), j.Tool, j.Host, j.StartedAt); err != nil {
+		if id, err := b.History.Start(context.Background(), j.Tool, j.Host, b.Runner, j.StartedAt); err != nil {
 			slog.Warn("could not record the start of a tool build", "tool", j.Tool, "host", j.Host, "err", err)
 		} else {
 			j.rowID = id

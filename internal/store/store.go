@@ -484,6 +484,10 @@ CREATE TABLE IF NOT EXISTS warning_pref (
 //     fresh install, the source is already gone; that is the migration having
 //     succeeded, not a failure.
 var migrations = []string{
+	// 2026-11-05: which corrallm version ran a tool build, so a hold on a
+	// rolled-back commit lifts when corrallm itself changed (the failure may
+	// have been corrallm's).
+	`ALTER TABLE tool_build ADD COLUMN runner TEXT NOT NULL DEFAULT ''`,
 	// Superseded by idx_activity_key_rollup, which starts with the same
 	// (key, ts) columns and additionally covers the rollup's sums. Keeping both
 	// would charge every insert twice for one access path.

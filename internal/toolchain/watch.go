@@ -274,6 +274,15 @@ func (w *Watcher) mayBuild(ctx context.Context, name string, t config.Tool, st S
 		}
 	}
 	if found && last.Status == "failed" && sameCommit(StampHead(last.Stamp), st.Drift.RemoteHead) {
+		// The failure may have been corrallm's own (2026-11-05: a reconcile race
+		// reaped the benchmark trial). A different corrallm since then is worth
+		// one more attempt; the same corrallm on the same commit is not.
+		if last.Runner != w.Builder.Runner {
+			slog.Warn("hold lifted: corrallm changed since the rolled-back build; trying the commit again",
+				"tool", name, "host", st.Host, "commit", st.Drift.RemoteHead,
+				"failedUnder", last.Runner, "now", w.Builder.Runner)
+			return true
+		}
 		slog.Warn("HELD BACK: upstream is still at the commit whose build was rolled back; waiting for a newer one",
 			"tool", name, "host", st.Host, "commit", st.Drift.RemoteHead)
 		return false

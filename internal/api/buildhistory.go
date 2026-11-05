@@ -17,8 +17,8 @@ import (
 // interface.
 type BuildHistoryStore struct{ S *store.Store }
 
-func (b BuildHistoryStore) Start(ctx context.Context, tool, host string, at time.Time) (int64, error) {
-	return b.S.StartToolBuild(ctx, tool, host, at)
+func (b BuildHistoryStore) Start(ctx context.Context, tool, host, runner string, at time.Time) (int64, error) {
+	return b.S.StartToolBuildBy(ctx, tool, host, runner, at)
 }
 
 func (b BuildHistoryStore) Finish(ctx context.Context, id int64, status string, finishedAt time.Time,
@@ -36,5 +36,5 @@ func (b BuildHistoryStore) LastBuild(ctx context.Context, tool, host string) (to
 		return toolchain.BuildRecord{}, false, err
 	}
 	r := rows[0]
-	return toolchain.BuildRecord{StartedAt: r.StartedAt, Status: r.Status, Stamp: r.Stamp}, true, nil
+	return toolchain.BuildRecord{StartedAt: r.StartedAt, Status: r.Status, Stamp: r.Stamp, Runner: r.Runner}, true, nil
 }

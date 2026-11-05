@@ -243,7 +243,9 @@ func TestUnreachableHostIsNotDrift(t *testing.T) {
 // fakeHistory is a store that answers LastBuild with a canned record.
 type fakeHistory struct{ last *BuildRecord }
 
-func (h fakeHistory) Start(context.Context, string, string, time.Time) (int64, error) { return 1, nil }
+func (h fakeHistory) Start(context.Context, string, string, string, time.Time) (int64, error) {
+	return 1, nil
+}
 func (h fakeHistory) Finish(context.Context, int64, string, time.Time, bool, string, string, string, string) error {
 	return nil
 }
@@ -372,5 +374,27 @@ func TestStampHead(t *testing.T) {
 	}
 	if !sameCommit("34af94cd9", "34af94cd9aaaa") || sameCommit("", "x") || sameCommit("abc", "abd") {
 		t.Error("sameCommit wrong")
+	}
+}
+
+// A hold lifts when corrallm itself changed since the rolled-back build: the
+// failure may have been corrallm's (2026-11-05, a reconcile race reaped the
+// trial). Under the same corrallm the commit stays held.
+func TestHoldLiftsWhenCorrallmChanged(t *testing.T) {
+	failed := &BuildRecord{StartedAt: time.Now().Add(-time.Hour), Status: "failed",
+		Stamp: "head=34af94cd9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa patches=x archs=86", Runner: "v0.1.0-84"}
+
+	same := newWatchRunner(driftingAnswers())
+	w, b := newWatcher(watchCfg("6h", true, config.ToolHost{}), same)
+	b.History, b.Runner = fakeHistory{last: failed}, "v0.1.0-84"
+	w.CheckDue(context.Background())
+	noBuild(t, same, "same corrallm, same rolled-back commit: must stay held")
+
+	changed := newWatchRunner(driftingAnswers())
+	w2, b2 := newWatcher(watchCfg("6h", true, config.ToolHost{}), changed)
+	b2.History, b2.Runner = fakeHistory{last: failed}, "v0.1.0-85"
+	w2.CheckDue(context.Background())
+	if !waitForBuild(t, changed) {
+		t.Fatal("corrallm changed since the rolled-back build: the hold should lift")
 	}
 }
