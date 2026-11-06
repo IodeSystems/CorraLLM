@@ -92,6 +92,27 @@ func convertChatPDFs(ctx context.Context, body []byte, cfg config.ConvertConfig)
 	return nb, converted
 }
 
+// readsPDFNatively reports whether a backend takes a PDF content part as is.
+// The signal is the one the Anthropic shim already switches on, api anthropic:
+// shim v0.5+ sends the part to Claude as a native document block. No modality
+// key describes PDFs (KnownModalities is text/image/audio), so nothing else in
+// the config can say it.
+func readsPDFNatively(m config.Model) bool {
+	t, err := m.ProxyTarget()
+	return err == nil && t != nil && t.API == config.APIAnthropic
+}
+
+// allReadPDFNatively reports whether every candidate reads PDFs natively, in
+// which case converting would be wasted work. False on an empty list.
+func allReadPDFNatively(cands []config.Candidate) bool {
+	for _, c := range cands {
+		if !readsPDFNatively(c.Model) {
+			return false
+		}
+	}
+	return len(cands) > 0
+}
+
 // convertOnePDF produces the replacement content part(s) for one PDF: a single
 // text part (text strategy) or a caption + N image_url parts (vision strategy).
 func convertOnePDF(ctx context.Context, pdf []byte, name string, cfg config.ConvertConfig) ([]any, bool) {

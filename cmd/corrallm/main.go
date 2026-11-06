@@ -482,7 +482,7 @@ func newServeCmd() *cobra.Command {
 	f.DurationVar(&requestTimeout, "request-timeout", 0, "max wall-clock for one proxied request before corrallm cancels it (or CORRALLM_REQUEST_TIMEOUT; 0 = no corrallm deadline, defer to client + backend)")
 	f.BoolVar(&insecure, "insecure", envBool("CORRALLM_INSECURE"), "serve the management API and dashboard with NO admin token — anyone who can reach the port is an operator. For a trusted single-user box or a first look; never on a shared or reachable network.")
 	f.BoolVar(&capturePayloads, "capture-payloads", true, "capture per-request request/response payloads onto the activity log (capped; binary audio summarized; cleared at --payload-retention, and dropped with the row at --activity-retention)")
-	f.BoolVar(&convertPDFs, "convert-pdfs", true, "auto-extract PDF attachments in chat requests into injected text (via pdftotext) so text models can read them")
+	f.BoolVar(&convertPDFs, "convert-pdfs", true, "master switch for PDF attachment conversion in chat requests: text (pdftotext, the default) or vision (page images) per convert.pdf, global or per model; off skips it. A backend that reads PDFs natively (api: anthropic) always gets the PDF unchanged")
 	f.IntVar(&pdfMaxChars, "pdf-max-chars", 400000, "cap on extracted text per PDF injected into the prompt")
 	f.BoolVar(&ocrPDFs, "ocr-pdfs", true, "OCR fallback for scanned/image PDFs that have no text layer (rasterize via pdftoppm + tesseract); no-op if tesseract is not installed")
 	f.IntVar(&ocrMaxPages, "ocr-max-pages", 20, "max pages to OCR per scanned PDF (bounds latency)")

@@ -1973,7 +1973,9 @@ type ConvertConfig struct {
 	AudioMaxSeconds int `yaml:"audioMaxSeconds,omitempty"`
 }
 
-// DefaultConvert is the built-in base every resolution starts from.
+// DefaultConvert is the built-in base every resolution starts from. Its PDF
+// strategy is text; a backend that reads PDFs natively skips conversion
+// whatever the strategy (proxy readsPDFNatively).
 func DefaultConvert() ConvertConfig {
 	on := true
 	return ConvertConfig{PDF: "text", DPI: 200, Quality: 85, Format: "jpeg", MaxPages: 20, MaxChars: 400000, OCR: &on,

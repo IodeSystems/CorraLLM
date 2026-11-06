@@ -818,10 +818,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// document text injected below.
 	reqBody := p.capturePayload(body, audio && !tts, r.Header.Get("Content-Type"), reqBodyCap)
 
-	// PDF auto-conversion (P13): a text model can't read an attached PDF, so replace
-	// any PDF content part in a chat request with its extracted text. Done once here
-	// (not per backend in the loop); a no-op when there are no PDFs.
-	if p.convertEnabled && r.URL.Path == "/v1/chat/completions" {
+	// PDF conversion (P13): replace each PDF content part with extracted text or
+	// page images per the strategy (built-in default text ← global ← the first
+	// lane member's convert.pdf; "off" converts nothing). Done once here (not per
+	// backend in the loop); a no-op when there are no PDFs.
+	//
+	// A backend that reads PDFs natively (readsPDFNatively: api anthropic) gets
+	// rawBody instead, whatever the strategy says (owner, 2026-11-06) — chosen
+	// per candidate in the walk, because a lane may mix Claude with a local
+	// fallback. When every candidate is native, nothing is converted at all.
+	rawBody := body
+	if p.convertEnabled && r.URL.Path == "/v1/chat/completions" && !allReadPDFNatively(cands) {
 		// Resolve the per-model ingestion config (global default ← model's override).
 		eff := p.config().ConvertFor(p.convertGlobal, served)
 		if nb, n := convertChatPDFs(r.Context(), body, eff); n > 0 {
@@ -1306,11 +1313,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// the same prefix (measured 2026-09-05). Cost when it does not: one map
 		// lookup. Every failure inside is survivable — the request proceeds either
 		// way, at worst as slowly as it would have without any of this.
-		p.swapSlot(reqCtx, pr.Target, name, backend, key, r, body)
+		// This candidate's body: the PDF-converted one, or the original for a
+		// backend that reads PDFs natively (see the conversion above).
+		candBody := body
+		if pr.Target != nil && pr.Target.API == config.APIAnthropic {
+			candBody = rawBody
+		}
+		p.swapSlot(reqCtx, pr.Target, name, backend, key, r, candBody)
 
 		// Restore the buffered body for the proxy, clamping max_tokens to this
 		// backend's cap when it declares one (degrade transform, P7).
-		outBody := clampMaxTokens(body, backend)
+		outBody := clampMaxTokens(candBody, backend)
 		// Rewrite the body's `model` to the upstream's own id for a remote that
 		// declares one (P16): corrallm routed on the served name, but the remote
 		// does not know it. A local backend leaves Target.Model empty and the
@@ -1429,7 +1442,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// Before the guardrails: a cut stream ends in events they read as any other.
 		var lw *loopWriter
 		if cfg := p.config().LoopDetectionFor(backend); cfg != nil && streaming && r.URL.Path == "/v1/chat/completions" {
-			lw = newLoopWriter(out, cfg, body, func() { cancelReq(errLoopCut) })
+			lw = newLoopWriter(out, cfg, candBody, func() { cancelReq(errLoopCut) })
 			out = lw
 		}
 		sc := &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: streaming, live: live}

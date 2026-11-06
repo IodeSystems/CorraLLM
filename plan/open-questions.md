@@ -274,13 +274,20 @@ that were (the `stream=true` answer and the canonical schema) are both shipped. 
 left blocks the three contracts nobody has started — 2 blocks contract 3, 5 blocks
 contract 4, 6 blocks contract 5 — and 7 only improves one that already works.
 
-## 6. ❓ Native PDFs to Claude, or keep converting them to text?
+## 6. ✅ Native PDFs to Claude — DECIDED 2026-11-06 (revised same day)
 
-Since a18fe07 (shim v0.5.0, 2026-11-06), the Claude path CAN send a PDF as a native
-`document` block. It never does today: `--convert-pdfs` (default on) replaces every PDF
-part with pdftotext output in `proxy.go` before any backend is picked, Claude included.
-The shim's document block is reached only when conversion is off or fails on a PDF.
-Options: (a) leave as is — cheap, text-only, layout and images lost; (b) a per-model
-convert opt-out (e.g. `convert: {pdf: native}`) for `api: anthropic` models — Claude
-reads the real PDF, paid at Anthropic's per-page token cost. **Your call: (b) is a config
-schema and cost change.** Not blocking anything.
+Owner (relayed by agentkit-6c), per chat PDF part, per candidate backend:
+1. A backend that reads PDFs natively gets the part unchanged, **even if a strategy is set**.
+2. Else the model's or global `convert.pdf` (text|vision|off) applies; `off` passes it through.
+3. Else the built-in default `text` (pdftotext).
+
+**Signal for "native": the backend's proxy `api: anthropic`** (`readsPDFNatively`, pdf.go) — the
+field the shim already switches on; covers the anthropic and claude (sub-*) providers. No
+ModalitySpec key describes PDFs (KnownModalities = text/image/audio), so no new list.
+Conversion still runs once, before the walk, with the lane's first member's strategy; each
+non-native candidate gets that body, each native one the original. Skipped entirely when every
+candidate is native. Consequence: the `claude-*` lane's Swift fallback gets the global default
+(text), not Swift's own `pdf: vision`, because the lane's first member is `claude-sub-*` — same
+as before this change.
+Live config: no anthropic/claude model sets an explicit strategy, so rule 1 overrides nothing
+today. Fireworks `deepseek-v4p1-flash-1017` and `glm-5p3-flash` keep PDF reading (default text).

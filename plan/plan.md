@@ -55,9 +55,9 @@ cost equivalents, P46 housekeeping, P47 speed/cache/heat on Traffic. **10-02 →
 thermal + hourly weather, P50 Home Assistant temperatures (◐), P51 CUDA 12.4 link regression fixed,
 P52 library record + benchmark gate on new builds.
 
-**a18fe07 (2026-11-06): agentkit v0.24.0 + shim v0.5.0 — tests green, committed, NOT deployed (owner pushes/deploys).** **Five decisions need you** — [`open-questions.md`](open-questions.md): agent lease self-reap (§1),
+**a18fe07 (2026-11-06): agentkit v0.24.0 + shim v0.5.0 — tests green, committed, NOT deployed (owner pushes/deploys); PDFs pass through to Claude natively, others convert, default text (open-questions §6, decided).** **Four decisions need you** — [`open-questions.md`](open-questions.md): agent lease self-reap (§1),
 whether an honest wait estimate is wanted (§2), whether aw4 should ride the `chat` lane (§4), the
-calls the remap-out may not guess (§5), and native PDFs to Claude (§6). None blocks current work.
+calls the remap-out may not guess (§5). None blocks current work.
 
 ### Next steps — triaged 2026-10-06
 

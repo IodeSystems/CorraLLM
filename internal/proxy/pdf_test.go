@@ -54,7 +54,7 @@ func TestPdfFromPartShapes(t *testing.T) {
 func TestConvertChatPDFsNoOp(t *testing.T) {
 	// no "application/pdf" anywhere → byte-exact passthrough
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hello"}]}`)
-	out, n := convertChatPDFs(context.Background(), body, config.DefaultConvert())
+	out, n := convertChatPDFs(context.Background(), body, textCfg())
 	if n != 0 || string(out) != string(body) {
 		t.Errorf("plain chat should be untouched: n=%d", n)
 	}
@@ -82,7 +82,7 @@ func TestConvertChatPDFsExtracts(t *testing.T) {
 			}},
 		},
 	})
-	out, n := convertChatPDFs(context.Background(), body, config.DefaultConvert())
+	out, n := convertChatPDFs(context.Background(), body, textCfg())
 	if n != 1 {
 		t.Fatalf("expected 1 PDF converted, got %d", n)
 	}
@@ -123,7 +123,7 @@ func TestConvertChatPDFsKeepsImageAsArray(t *testing.T) {
 			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"}},
 		}}},
 	})
-	out, n := convertChatPDFs(context.Background(), body, config.DefaultConvert())
+	out, n := convertChatPDFs(context.Background(), body, textCfg())
 	if n != 1 {
 		t.Fatalf("n=%d", n)
 	}
@@ -177,7 +177,7 @@ func TestConvertChatPDFsOCR(t *testing.T) {
 		"model":    "m",
 		"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "file", "file": map[string]any{"file_data": url}}}}},
 	})
-	out, n := convertChatPDFs(context.Background(), body, config.DefaultConvert())
+	out, n := convertChatPDFs(context.Background(), body, textCfg())
 	if n != 1 {
 		t.Fatalf("OCR should have converted the scanned PDF, n=%d", n)
 	}
@@ -198,9 +198,12 @@ func TestExtractNoOCRWhenDisabled(t *testing.T) {
 	}
 }
 
-func tinyCapCfg() config.ConvertConfig { c := config.DefaultConvert(); c.MaxChars = 5; return c }
+// textCfg is the built-in default with the text strategy named, so the tests
+// below do not depend on what the default happens to be.
+func textCfg() config.ConvertConfig    { c := config.DefaultConvert(); c.PDF = "text"; return c }
+func tinyCapCfg() config.ConvertConfig { c := textCfg(); c.MaxChars = 5; return c }
 func noOCRCfg() config.ConvertConfig {
-	c := config.DefaultConvert()
+	c := textCfg()
 	off := false
 	c.OCR = &off
 	return c
