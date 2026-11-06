@@ -291,3 +291,18 @@ candidate is native. Consequence: the `claude-*` lane's Swift fallback gets the 
 as before this change.
 Live config: no anthropic/claude model sets an explicit strategy, so rule 1 overrides nothing
 today. Fireworks `deepseek-v4p1-flash-1017` and `glm-5p3-flash` keep PDF reading (default text).
+
+## 7. ❓ Swift's `pdf: vision` crashes Swift — what should a PDF to Swift do?
+
+**Measured 2026-11-06 11:09 (post-deploy check, v0.1.0-97-g1fc9519):** a 1-page A4 PDF sent to
+Swift by its canonical name was rasterized (vision, 200 dpi) and crashed llama-server: `CUDA
+error: out of memory` in `cudaMalloc(cublas_workspaces…)` inside `clip_encode`. The card holds
+Swift at 31.7 of 32.6 GiB, so the vision encoder has no room for its workspace. Swift was down
+11:09:25–11:10:56 (auto-reloaded); 4 sk-aw4 requests got 502.
+**Why it never fired before:** `ConvertFor` looks the served name up in Lanes and Models but
+not in Aliases. Every caller uses an alias (`local-Qwen3.8-27B`), so Swift's `pdf: vision`
+is ignored and the global default `text` applies (verified: 59 prompt tokens, correct answer).
+**Do not fix the alias lookup alone** — that would route every PDF to Swift through vision and
+crash it each time. Options: (a) Swift `pdf: text`, then fix the alias lookup; (b) keep vision
+with lower `dpi`/`maxResolution` and measure the encoder's VRAM first; (c) leave as is (alias
+path = text, canonical name = crash). Owner's call; not changed.
