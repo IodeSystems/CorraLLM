@@ -273,3 +273,14 @@ transcription body are all shipped and self-contained, and P35 phase 2 (PCM boun
 that were (the `stream=true` answer and the canonical schema) are both shipped. What is
 left blocks the three contracts nobody has started — 2 blocks contract 3, 5 blocks
 contract 4, 6 blocks contract 5 — and 7 only improves one that already works.
+
+## 6. ❓ Native PDFs to Claude, or keep converting them to text?
+
+Since a18fe07 (shim v0.5.0, 2026-11-06), the Claude path CAN send a PDF as a native
+`document` block. It never does today: `--convert-pdfs` (default on) replaces every PDF
+part with pdftotext output in `proxy.go` before any backend is picked, Claude included.
+The shim's document block is reached only when conversion is off or fails on a PDF.
+Options: (a) leave as is — cheap, text-only, layout and images lost; (b) a per-model
+convert opt-out (e.g. `convert: {pdf: native}`) for `api: anthropic` models — Claude
+reads the real PDF, paid at Anthropic's per-page token cost. **Your call: (b) is a config
+schema and cost change.** Not blocking anything.
