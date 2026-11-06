@@ -45,12 +45,12 @@ github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
-github.com/iodesystems/agentkit v0.19.0 h1:khIm/K6S34Oz5Sm4Q5Tlfwsll7RFmGsMUE2JV8IZjds=
-github.com/iodesystems/agentkit v0.19.0/go.mod h1:8+FOriwcOi+xKv2y4nFXrCpAVVhWps1qh5t0SLykm+8=
+github.com/iodesystems/agentkit v0.24.0 h1:2ojP7hUH85mSSi+Bu5C2uzBhReWVnL2vwWQK9nObsmE=
+github.com/iodesystems/agentkit v0.24.0/go.mod h1:QknznlQRmU0Ywotk64RrZVAYKH+8HBw4Uhfg2HdQ8As=
 github.com/iodesystems/gwag/v2 v2.1.2 h1:X7hKESbgxDLqN0cWtChE2LlQrlB5BBayIFnUbnBPoyc=
 github.com/iodesystems/gwag/v2 v2.1.2/go.mod h1:DhwtM+vBI1xKDCmJf5Up85GwhBoSZI3mSrYSCwXRqHk=
-github.com/iodesystems/openai-claude-api-shim v0.3.0 h1:3Y5+I/J9uthFyHawW9UUZuVMfz8ps/8PZWHVswqS9eU=
-github.com/iodesystems/openai-claude-api-shim v0.3.0/go.mod h1:AyPLwyzGcME+wU6ggxHvDj8s0tek7NFx/vbZHhog0nM=
+github.com/iodesystems/openai-claude-api-shim v0.5.0 h1:jXVz48LGnJ/fB9uf4GTM9JiPL06d1IaQx6nQoovZ+ug=
+github.com/iodesystems/openai-claude-api-shim v0.5.0/go.mod h1:AyPLwyzGcME+wU6ggxHvDj8s0tek7NFx/vbZHhog0nM=
 github.com/klauspost/compress v1.20.1 h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=
 github.com/klauspost/compress v1.20.1/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
