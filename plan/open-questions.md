@@ -300,6 +300,7 @@ scratchpad `cfg-pre-pdftext.yaml`). Verified: a PDF to Swift's canonical name, w
 it at 11:09, now answers from pdftotext (59 prompt tokens), Swift stays up.
 Why it mattered: `pdf: vision` (200 dpi) ran llama-server out of VRAM in `clip_encode`
 (cuBLAS workspace; Swift holds 31.7 of 32.6 GiB) — down 11:09:25–11:10:56, 4 sk-aw4 502s.
-Open, minor: `ConvertFor` resolves lanes and model names, not aliases, so an aliased
-request uses the global strategy, not the model's. Harmless now that Swift says text.
-Fixing it is safe from here on, not urgent.
+Alias gap fixed (code, not yet deployed): `ConvertFor` now resolves an alias to its
+canonical model's convert block (test: TestConvertForResolvesNameLaneAndAlias). Safe only
+because Swift says text. Models still on `pdf: vision`: LightOnOCR-3-4B and chandra-ocr-2
+(the OCR models; unchanged).

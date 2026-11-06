@@ -2039,7 +2039,19 @@ func (c *Config) ConvertFor(global ConvertConfig, served string) ConvertConfig {
 	if lane, ok := c.Lanes[served]; ok && len(lane.Members) > 0 {
 		name = lane.Members[0].Model
 	}
-	if m, ok := c.Models[name]; ok && m.Convert != nil {
+	m, ok := c.Models[name]
+	if !ok {
+		// An alias names its canonical model, so it gets that model's block
+		// (callers reach Swift as local-Qwen3.8-27B). Validate guarantees at
+		// most one model claims any alias.
+		for _, cand := range c.Models {
+			if slices.Contains(cand.Aliases, name) {
+				m, ok = cand, true
+				break
+			}
+		}
+	}
+	if ok && m.Convert != nil {
 		eff = eff.Merge(*m.Convert)
 	}
 	return eff
