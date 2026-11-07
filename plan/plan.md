@@ -527,6 +527,18 @@ past the month's limit, not past a paced day (`Ledger.LimitFull`). `corrallm spe
 `today_usd` and `today_spent_usd`. Checked live: the day counter on `prov:anthropic` counts. Today's day counter
 started at deploy, so on 11-04 the pool admits about $6.70 more than the pace. This corrects from 11-05.
 
+11-07 Fireworks (owner): $5/day is use it or lose it, and a top-up banks.
+`prov:fireworks` has {hard, calendar-day, $5}, and timed budget id 1 is $10
+until 2027-11-07 (dun Terminal-Bench). A timed budget extends only `prov:`
+limits, and Fireworks' limits were all on `cred:fireworks/default`. The
+credential keeps its $100/month and 120 req/min. **next (after 2026-11-08
+00:00 UTC):** remove `{hard, calendar-day, $5}` from the credential. It was
+kept for 11-07 only, because the new provider counter started at $0 (the
+ledger loads saved counters only at startup) and today's $3.01 could not be
+copied without a restart. Until it is removed, the $10 never pays (the
+credential's day still refuses). The stale `usd/total` row on the credential
+is harmless.
+
 11-04 (grafana-a7 ask, 2ec1818, live v0.1.0-56): /v1/spend as gauges `corrallm_spend_*{provider}` on /metrics,
 sampled 60 s; an absent JSON field = absent series. Names are fixed: Grafana `homelab-claude-usage` v9 panels 11/12
 and alert uid cg3bn3l4sei9sc (left < $20 or projected > limit, 15m) use them. today_* not needed. Open (owner):
