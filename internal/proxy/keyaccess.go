@@ -39,12 +39,31 @@ func nonNilBudgets(in config.KeyBudgets) config.KeyBudgets {
 	return in
 }
 
-// keyRole names a key in the chain as the caller reads it.
-func keyRole(c config.Caller, key string) string {
-	if c.Parent != "" && key == c.Parent {
-		return "parent key " + key
+// keyName is how a refusal or alert names a key: its label when it has one,
+// else a short masked prefix. Never the whole secret.
+func (p *Proxy) keyName(key string) string {
+	if ck, ok := p.children.get(key); ok {
+		if ck.Label != "" {
+			return ck.Label
+		}
+	} else if l := p.config().Keys[key].Label; l != "" {
+		return l
 	}
-	return "key " + key
+	if len(key) > 8 {
+		return key[:6] + "…"
+	}
+	if len(key) > 2 {
+		return key[:2] + "…"
+	}
+	return "…"
+}
+
+// keyRole names a key in the chain as the caller reads it.
+func (p *Proxy) keyRole(c config.Caller, key string) string {
+	if c.Parent != "" && key == c.Parent {
+		return "parent key " + p.keyName(key)
+	}
+	return "key " + p.keyName(key)
 }
 
 // filterByAccess drops the candidates the caller may not use, and says why
@@ -72,7 +91,7 @@ func (p *Proxy) filterByAccess(r *http.Request, cands []config.Candidate, c conf
 			models, _ := p.keyAccess(k)
 			if !config.ModelsPermit(models, t) {
 				ok = false
-				why = fmt.Sprintf("%s may not use %s: its models are [%s]", keyRole(c, k), cand.Name, strings.Join(models, ", "))
+				why = fmt.Sprintf("%s may not use %s: its models are [%s]", p.keyRole(c, k), cand.Name, strings.Join(models, ", "))
 				break
 			}
 		}

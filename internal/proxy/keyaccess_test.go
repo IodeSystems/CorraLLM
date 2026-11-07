@@ -20,7 +20,7 @@ func TestHiddenModelIs403NamingTheFilter(t *testing.T) {
 		t.Fatalf("permitted model: %d", c)
 	}
 	rec := k.do(http.MethodPost, "/v1/chat/completions", "narrow", `{"model":"other"}`)
-	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "key narrow may not use other: its models are [model:mock]") {
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "key na… may not use other: its models are [model:mock]") {
 		t.Fatalf("hidden model: %d %s", rec.Code, rec.Body.String())
 	}
 	var list struct {
@@ -39,7 +39,7 @@ func TestHiddenModelIs403NamingTheFilter(t *testing.T) {
 	k.mount()
 	child := k.mint(`{"label":"kid"}`)
 	rec = k.do(http.MethodPost, "/v1/chat/completions", child.Key, `{"model":"other"}`)
-	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "parent key parent may not use other") {
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "parent key pa… may not use other") {
 		t.Errorf("child: %d %s", rec.Code, rec.Body.String())
 	}
 }
@@ -56,7 +56,7 @@ func TestParentBudgetRefusalSaysParent(t *testing.T) {
 	}
 	rec := k.do(http.MethodPost, "/v1/chat/completions", child.Key, `{"model":"mock"}`)
 	if rec.Code != http.StatusPaymentRequired ||
-		!strings.Contains(rec.Body.String(), "parent key parent's budget on model:mock: budget of 1 requests created on ") {
+		!strings.Contains(rec.Body.String(), "parent key pa…'s budget on model:mock: budget of 1 requests created on ") {
 		t.Fatalf("over the parent's budget: %d %s", rec.Code, rec.Body.String())
 	}
 	// The child's own `*` budget charged too, and another model still serves.
@@ -66,7 +66,7 @@ func TestParentBudgetRefusalSaysParent(t *testing.T) {
 	acts, _ := k.st.RecentActivity(store.Window{}, 10, "", "", "")
 	found := false
 	for _, a := range acts {
-		if a.Status == http.StatusPaymentRequired && strings.Contains(a.Error, "parent key parent's budget on model:mock") {
+		if a.Status == http.StatusPaymentRequired && strings.Contains(a.Error, "parent key pa…'s budget on model:mock") {
 			found = true
 		}
 	}

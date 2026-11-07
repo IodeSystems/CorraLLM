@@ -505,6 +505,18 @@ func (p *Proxy) createChildKey(w http.ResponseWriter, r *http.Request, parent st
 		jsonErr(w, http.StatusBadRequest, "body: "+err.Error())
 		return
 	}
+	label := ""
+	if in.Label != nil {
+		label = strings.TrimSpace(*in.Label)
+	}
+	if label == "" {
+		jsonErr(w, http.StatusBadRequest, "label: a subkey needs a name (say what it is for, e.g. \"proj-a\")")
+		return
+	}
+	if err := p.checkLabelFree(parent, "", label); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if len(p.children.of(parent)) >= maxChildKeys {
 		jsonErr(w, http.StatusConflict, fmt.Sprintf("this key already has %d child keys; delete some first", maxChildKeys))
 		return
@@ -540,9 +552,7 @@ func (p *Proxy) createChildKey(w http.ResponseWriter, r *http.Request, parent st
 	if budgets != nil {
 		k.budgets = *budgets
 	}
-	if in.Label != nil {
-		k.Label = strings.TrimSpace(*in.Label)
-	}
+	k.Label = label
 	exp, _, err := expiryFrom(in.TTL, in.Expires, time.Now())
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
@@ -562,7 +572,16 @@ func (p *Proxy) updateChildKey(w http.ResponseWriter, r *http.Request, k childKe
 		return
 	}
 	if in.Label != nil {
-		k.Label = strings.TrimSpace(*in.Label)
+		label := strings.TrimSpace(*in.Label)
+		if label == "" {
+			jsonErr(w, http.StatusBadRequest, "label: a subkey needs a name")
+			return
+		}
+		if err := p.checkLabelFree(k.Parent, k.Key, label); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		k.Label = label
 	}
 	models, budgets := in.access(p.config())
 	if err := p.checkAccess(models, budgets); err != nil {
@@ -612,6 +631,17 @@ func (p *Proxy) checkAccess(models *[]string, budgets *config.KeyBudgets) error 
 		}
 		if err := p.config().CheckSelectorNames(budgets.Selectors()); err != nil {
 			return fmt.Errorf("budgets: %w", err)
+		}
+	}
+	return nil
+}
+
+// checkLabelFree refuses a label another subkey of the same parent already
+// has. except is the key being renamed.
+func (p *Proxy) checkLabelFree(parent, except, label string) error {
+	for _, k := range p.children.of(parent) {
+		if k.Key != except && strings.EqualFold(k.Label, label) {
+			return fmt.Errorf("label: this key already has a subkey named %q; names must be unique", label)
 		}
 	}
 	return nil

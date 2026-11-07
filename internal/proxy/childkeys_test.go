@@ -289,3 +289,62 @@ func TestChildBudgetOverdraft(t *testing.T) {
 		t.Errorf("overdrawn child served: %d", code)
 	}
 }
+
+// A subkey needs a name, and names are unique among one parent's subkeys.
+func TestSubkeyNameRequiredAndUnique(t *testing.T) {
+	k := newChildKeyRig(t, nil)
+	for _, body := range []string{`{}`, `{"label":"  "}`} {
+		if rec := k.do(http.MethodPost, "/v1/keys", "parent", body); rec.Code != http.StatusBadRequest {
+			t.Errorf("mint %s: %d, want 400", body, rec.Code)
+		}
+	}
+	a := k.mint(`{"label":"proj-a"}`)
+	if rec := k.do(http.MethodPost, "/v1/keys", "parent", `{"label":"PROJ-A"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("duplicate: %d, want 400", rec.Code)
+	}
+	// Another parent may reuse the name.
+	if rec := k.do(http.MethodPost, "/v1/keys", "peer", `{"label":"proj-a"}`); rec.Code != http.StatusCreated {
+		t.Errorf("other parent: %d %s", rec.Code, rec.Body.String())
+	}
+	b := k.mint(`{"label":"proj-b"}`)
+	if rec := k.do(http.MethodPatch, "/v1/keys/"+b.Key, "parent", `{"label":"proj-a"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("rename to a taken name: %d, want 400", rec.Code)
+	}
+	if rec := k.do(http.MethodPatch, "/v1/keys/"+a.Key, "parent", `{"label":"proj-a"}`); rec.Code != http.StatusOK {
+		t.Errorf("rename to itself: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Refusals name a key by its label, never by the secret.
+func TestRefusalShowsKeyLabel(t *testing.T) {
+	k := newChildKeyRig(t, nil)
+	k.cfg.Keys["sk-secret-parent-key"] = config.KeyPolicy{Label: "Billing Team",
+		Budgets: config.KeyBudgets{"*": {{Req: 1, Per: "calendar-day", Hard: true}}}}
+	k.mount()
+	k.chat("sk-secret-parent-key", "mock")
+	rec := k.do(http.MethodPost, "/v1/chat/completions", "sk-secret-parent-key", `{"model":"mock"}`)
+	var body struct{ Error struct{ Message string } }
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != http.StatusPaymentRequired || !strings.Contains(body.Error.Message, "key Billing Team's budget") ||
+		strings.Contains(body.Error.Message, "sk-secret-parent-key") {
+		t.Errorf("%d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A subkey's refusal over its parent's budget must not carry the parent's
+// secret, in the message or in the budgets' scope.
+func TestParentSecretNotShownToSubkey(t *testing.T) {
+	k := newChildKeyRig(t, nil)
+	k.cfg.Keys["sk-secret-parent-key"] = config.KeyPolicy{Label: "Billing Team",
+		Budgets: config.KeyBudgets{"*": {{Req: 1, Per: "calendar-day", Hard: true}}}}
+	k.mount()
+	rec := k.do(http.MethodPost, "/v1/keys", "sk-secret-parent-key", `{"label":"kid"}`)
+	var kid childKeyBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &kid)
+	k.chat(kid.Key, "mock")
+	rec = k.do(http.MethodPost, "/v1/chat/completions", kid.Key, `{"model":"mock"}`)
+	if rec.Code != http.StatusPaymentRequired || !strings.Contains(rec.Body.String(), "parent key Billing Team's budget") ||
+		strings.Contains(rec.Body.String(), "sk-secret-parent-key") {
+		t.Errorf("%d %s", rec.Code, rec.Body.String())
+	}
+}

@@ -28,7 +28,7 @@ func TestRefusalNamesTheBudget(t *testing.T) {
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	if rec.Code != http.StatusPaymentRequired || len(body.Error.Budgets) != 1 ||
-		!strings.Contains(body.Error.Message, "key parent's budget on everything: budget of 1 requests created on "+today+", expires on "+tomorrow+" 00:00 UTC; 1 requests spent") ||
+		!strings.Contains(body.Error.Message, "key pa…'s budget on everything: budget of 1 requests created on "+today+", expires on "+tomorrow+" 00:00 UTC; 1 requests spent") ||
 		body.Error.Budgets[0].RoomAt == "" {
 		t.Errorf("%d %s", rec.Code, rec.Body.String())
 	}

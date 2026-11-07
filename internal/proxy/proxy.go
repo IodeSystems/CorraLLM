@@ -2460,6 +2460,7 @@ func (p *Proxy) writeBudgetExhausted(w http.ResponseWriter, r *http.Request, ser
 func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request, served string, caller config.Caller,
 	full []string, wait time.Duration, start time.Time, reqBody string) {
 	key := caller.Key
+	name := p.keyName(key)
 	notes := p.budgetNotesFor(caller, full)
 	msg := "this key's budget is used up (hard limit)"
 	if len(notes) > 0 {
@@ -2472,8 +2473,8 @@ func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request,
 	if wait == 0 {
 		// Only a one-off (`per: total`) budget is full: it never refills, so
 		// there is no retry to promise.
-		p.alert.Send("allocation/"+key, key+": budget spent",
-			fmt.Sprintf("Caller **%s**: %s. Its requests are refused until it gets more.", key, msg), "money_with_wings")
+		p.alert.Send("allocation/"+key, name+": budget spent",
+			fmt.Sprintf("Caller **%s**: %s. Its requests are refused until it gets more.", name, msg), "money_with_wings")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusPaymentRequired)
 		_, _ = fmt.Fprintf(w, `{"error":{"message":%s,"type":"allocation_spent","budgets":%s}}`,
@@ -2487,8 +2488,8 @@ func (p *Proxy) writeAllocationExhausted(w http.ResponseWriter, r *http.Request,
 	if secs < 1 {
 		secs = 1
 	}
-	p.alert.Send("allocation/"+key, key+": allocation reached",
-		fmt.Sprintf("Caller **%s**: %s. Its requests are refused for %s.", key, msg,
+	p.alert.Send("allocation/"+key, name+": allocation reached",
+		fmt.Sprintf("Caller **%s**: %s. Its requests are refused for %s.", name, msg,
 			(time.Duration(secs)*time.Second).String()), "money_with_wings")
 	status := refusalStatus(notes, secs, w)
 	w.WriteHeader(status)

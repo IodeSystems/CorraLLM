@@ -31,7 +31,7 @@ type BudgetNote struct {
 }
 
 // scopeOwner says whose budget a ledger scope is, in words.
-func scopeOwner(scope string) string {
+func (p *Proxy) scopeOwner(scope string) string {
 	switch {
 	case scope == config.GlobalScopeKey:
 		return "the box-wide limit (every key)"
@@ -41,7 +41,7 @@ func scopeOwner(scope string) string {
 		return "the " + strings.TrimPrefix(scope, "cred:") + " account's limit (every key using it)"
 	}
 	if k, sel, ok := keyBudgetOf(scope); ok {
-		return "key " + k + "'s budget " + selectorWords(sel)
+		return "key " + p.keyName(k) + "'s budget " + selectorWords(sel)
 	}
 	return "the model-wide limit on " + scope + " (every key)"
 }
@@ -107,7 +107,7 @@ func (p *Proxy) budgetNotes(scopes []string) []BudgetNote {
 			if !w.Hard || !w.Blocked {
 				continue
 			}
-			n := BudgetNote{Scope: e.Backend, Owner: scopeOwner(e.Backend), Window: w.Label, Used: w.Used, Limit: w.Limit}
+			n := BudgetNote{Scope: e.Backend, Owner: p.scopeOwner(e.Backend), Window: w.Label, Used: w.Used, Limit: w.Limit}
 			room := "it does not refill"
 			if !strings.HasSuffix(w.Label, "/total") && wait > 0 {
 				at := now.Add(wait)
@@ -164,9 +164,11 @@ func (p *Proxy) budgetNotesFor(c config.Caller, scopes []string) []BudgetNote {
 	notes := p.budgetNotes(scopes)
 	for i, n := range notes {
 		if k, sel, ok := keyBudgetOf(n.Scope); ok && c.Parent != "" && k == c.Parent {
-			owner := "parent key " + k + "'s budget " + selectorWords(sel)
+			owner := "parent key " + p.keyName(k) + "'s budget " + selectorWords(sel)
 			notes[i].Summary = owner + strings.TrimPrefix(n.Summary, n.Owner)
 			notes[i].Owner = owner
+			// The scope embeds the parent's secret; a child must not read it.
+			notes[i].Scope = "parent:" + sel
 		}
 	}
 	return notes
