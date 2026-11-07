@@ -94,17 +94,6 @@ func (p *Proxy) keyAccount(key string, now time.Time) KeyAccount {
 	return out
 }
 
-// keyName is a key as the view shows it: its label, never the secret.
-func (p *Proxy) keyName(key string) string {
-	if ck, ok := p.children.get(key); ok && ck.Label != "" {
-		return ck.Label
-	}
-	if kp, ok := p.config().Keys[key]; ok && kp.Label != "" {
-		return kp.Label
-	}
-	return "(no label)"
-}
-
 func (p *Proxy) newKeyAccountCtx(now time.Time) *keyAccountCtx {
 	cx := &keyAccountCtx{p: p, now: now, windows: map[string][]quota.Window{}, providers: map[string]*Account{}}
 	if p.quota != nil {
