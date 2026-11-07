@@ -460,6 +460,15 @@ a daily chunk sized from the month's remainder.
       account view show "effective $X (limited by <whose>)". The available
       balance is the minimum over the chain and the provider, so nobody is
       shown a nominal slice they cannot spend.
+  - REBALANCING (owner 11-07): a key sets its subkeys' budgets however it
+    likes through `corrallm keys set`, within the child ≤ parent rule. It may
+    move a budget BELOW what the subkey already spent in the window
+    (historical overdraft). That is allowed, not an error.
+    - The account view shows such a subkey as overdrawn (available < 0,
+      "overdrawn $X"). It is refused until its window refills.
+    - For a one-off or banked budget, it stays refused until topped up.
+    - The spend already made is never rewritten. It stays attributed to the
+      subkey, and it still counts against the key and the provider.
   - NAMES (owner 11-07): every key has a name, configured keys and subkeys
     alike, so an account problem is never reported as a bare key or hash.
     The name is required at mint; a configured key without one is a config
