@@ -180,6 +180,7 @@ func newKeysCmd() *cobra.Command {
 			for _, s := range out.Self.Warnings {
 				fmt.Fprintf(w, "  warning: %s\n", s)
 			}
+			printKeyAccount(w, raw)
 			if len(out.Keys) == 0 {
 				fmt.Fprintln(w, "\nno subkeys (mint one with: corrallm keys mint --label NAME)")
 				return nil

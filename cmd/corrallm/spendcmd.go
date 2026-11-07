@@ -54,7 +54,7 @@ func spendReload(cmd *cobra.Command) {
 
 func spendText(rep proxy.SpendReport) string {
 	if len(rep.Providers) == 0 {
-		return "no Claude backend is paid for through corrallm\n"
+		return "no Claude backend, and no provider with a dollar limit, is paid for through corrallm\n"
 	}
 	var b strings.Builder
 	for _, p := range rep.Providers {
@@ -81,6 +81,10 @@ func spendText(rep proxy.SpendReport) string {
 				fmt.Fprintf(&b, " (%s)", t.Note)
 			}
 			fmt.Fprintln(&b)
+		}
+		if p.Account != nil {
+			fmt.Fprintln(&b, "  account (what the ledger admits now):")
+			writeAccount(&b, "    ", p.Account)
 		}
 	}
 	return b.String()
@@ -115,7 +119,7 @@ func newSpendCmd() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "spend",
-		Short: "Show Claude spend this period; correct it; manage timed budgets and cost tokens",
+		Short: "Show paid providers' spend this period; correct it; manage timed budgets and cost tokens",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, st, done, err := spendDB(cmd.Context())
