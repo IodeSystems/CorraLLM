@@ -415,7 +415,9 @@ dependency.
 - **placement (sent to agentkit-f2 11-07):** TranslateBody after `withSampling`
   in `proxy.go`, at the chat path before `claudeRequest` and at the
   /v1/messages→chat path, skipping native Anthropic. LearnResponse in the
-  deferred finish with `sc.buf`. A record-only `llm.Client` per (Target URL,
+  deferred finish with `sc.buf`. This includes `api: anthropic` targets,
+  because agentkit reads Anthropic refusal bodies; `sent` is the OpenAI-shaped
+  body from before the shim (agentkit-f2 11-07). A record-only `llm.Client` per (Target URL,
   upstream id), stored in a new SQLite `capability` table. Keep
   `clampMaxTokens`. Remote OpenAI-API backends only. No probe, because it
   spends paid tokens.
