@@ -378,36 +378,59 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◻ P74 — Spend shown as an account: available, expiring chunks, banked — 2026-11-07
+### ◻ P74 — Budgets as chunks: expiry, refill, banked; spend shown as an account — 2026-11-07
 
-Why (owner 11-07): "hard day limit + timed budget past it" reads as caps. Show
-each provider as an account instead:
-- **available:** everything spendable now.
-- **expiring chunks:** today's use-it-or-lose-it allowance (ends 00:00 UTC) and
-  each timed budget, each with its amount left and its expiry.
-- **banked:** chunks with no expiry.
-- The report says the drain order: soonest-expiring first.
+Why (owner 11-07): "hard day limit + timed budget past it" reads as caps. The
+owner's model is CHUNKS of money. Each chunk has:
+- **amount**, and what is left of it.
+- **expiry** (optional): unspent money lapses then.
+- **refill** (optional): a date or a period on which the chunk is topped up.
+  The report states the next refill date.
+- **banked** (flag): a banked chunk's money lasts until spent, so a refill adds
+  to it. An unbanked chunk is use it or lose it: its leftover lapses at the
+  refill or the expiry.
 
-The drain order already works this way: the day allowance is drawn before any
-timed budget, and timed budgets drain soonest first (`grants`). So this is the
-same mechanics, presented as an account.
+Examples:
+- $5 daily: refill every UTC day, not banked.
+- $10 today: one-time, banked, no expiry.
+- **Commitment catch-up / revenue-share fund:** one-time banked, with or
+  without an expiry, OR re-upped by amounts that are not known in advance.
+  A re-up records each deposit. The report shows the history (last, mean, and
+  range of the re-up amounts and intervals), so the next re-up can be
+  estimated.
 
-- **next:** add an `account` object to `SpendProvider` (additive: dun's
-  cost-token reader and the grafana gauges keep their fields), with
-  `available_usd`, `chunks[]` {kind: day|budget|banked, usd, left_usd,
-  expires} and `drain: "soonest-expiring first"`. Then `corrallm spend` prints
-  it.
-- **risks:** `ReportSpend` covers Claude providers only (`claudeBackends`), so
-  Fireworks is not in `/v1/spend` today. This needs P68's every-provider
-  report first, or with it. A monthly hard cap is a ceiling, not a chunk: show
-  it as a ceiling line.
-- **assumptions:** "banked" means a chunk with no expiry. Timed budgets require
-  an expiry today, so banked is empty until that requirement is relaxed (a
-  small change to `AddProviderBudget`). The dashboard is out of scope until the
-  owner asks.
-- **blocking decisions:** owner: may a chunk be banked with no expiry?
-- **optional extensions:** a dashboard panel; a header on a refusal naming the
-  chunk that ran out.
+Account view for each provider:
+- available_usd
+- chunks[] {name, kind, usd, left_usd, banked, expires, refills_at,
+  refill_usd | refill_history}
+- ceilings[], for hard caps such as $100/month
+- `drain: "soonest-expiring first"`: unbanked and expiring chunks are spent
+  before banked ones, and the report says so
+
+Mapping from today's pieces: a hard calendar-day limit is an unbanked daily
+chunk. A timed budget is a one-time chunk with an expiry. A paced day (P71) is
+a daily chunk sized from the month's remainder.
+
+- **next:** owner picks the decision below, then a design note (store schema,
+  how the ledger draws from chunks, migration of `limits`/`key_grant`), then
+  code.
+- **risks:**
+  - `ReportSpend` covers Claude providers only, so this needs every provider
+    (P68).
+  - Changing what refuses a request changes refusal codes and messages, and
+    those are corrallm's contract (/v1/capabilities).
+  - dun's cost-token reader and the grafana gauges read today's
+    `/v1/spend` fields, so the change must be additive or versioned.
+  - Re-up estimates from a few deposits are noise; label them with n.
+- **blocking decisions:** owner:
+  - Are chunks the budget PRIMITIVE, replacing day limits and timed budgets
+    in config and the ledger? Or a VIEW over today's limits and budgets?
+    Recommended: primitive, because banked refills and unknown-amount re-ups
+    cannot be expressed as limits.
+  - Who records a re-up: an operator CLI/API call, or a provider billing fetch
+    (P68)?
+- **optional extensions:** a dashboard panel; an alert when a refill is due and
+  the banked chunk is low.
 
 ### ◐ P73 — Model capability records from agentkit, used on the proxy side — 2026-11-07
 
