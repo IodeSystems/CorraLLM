@@ -1470,6 +1470,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// caller gets a Retry-After, and tries the next candidate if one is left.
 		remote := isRemote(backend)
 		upstreamRefusal := 0
+		fundsNote := "" // set when the refusal was a billing one
 		var coolTo time.Time
 		upstreamStart := time.Now()
 		var upHeaders http.Header // the upstream's own headers, before ours are added
@@ -1498,6 +1499,23 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			if remote && strings.EqualFold(resp.Header.Get("X-Ratelimit-Over-Limit"), "yes") {
 				p.alert.Send("overlimit/"+name, name+": provider reports over limit",
 					fmt.Sprintf("**%s** answered with `x-ratelimit-over-limit: yes` (status %d). Expect 429s.", name, resp.StatusCode), "warning")
+			}
+			// The account corrallm pays with is out of funds (fundsrefusal.go):
+			// spill to the next candidate, or answer 402 upstream_funds_exhausted.
+			if remote {
+				provider := backend.ProviderName
+				if provider == "" {
+					provider = name
+				}
+				if fr, ok := peekFunds(resp, provider); ok {
+					p.alertFunds(fr)
+					if !lastCand {
+						upstreamRefusal, fundsNote, coolTo = fr.Status, fr.Message(), time.Now()
+						return errBackendDown
+					}
+					fr.rewrite(resp)
+					return nil
+				}
 			}
 			if remote && isHardFail(resp.StatusCode) {
 				p.noteRefusal(name, resp.StatusCode) // paid key: alert, no spill
@@ -1622,7 +1640,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				lastHardFail = fmt.Sprintf("%s refused with %d", name, upstreamRefusal)
 				p.logReq(r, store.Activity{Served: name, Requested: served, RefusedBy: name, Key: key, Path: r.URL.Path,
 					Status: upstreamRefusal, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
-					Error: fmt.Sprintf("upstream %d; tried the next model", upstreamRefusal), ReqBody: reqBody,
+					Error: spillNote(upstreamRefusal, fundsNote), ReqBody: reqBody,
 					RespHeaders: keptHeaders(upHeaders), RetryAfterMS: time.Until(coolTo).Milliseconds(),
 					InflightID: takeMarker()})
 				p.markInflight(live, inflightQueued, "")

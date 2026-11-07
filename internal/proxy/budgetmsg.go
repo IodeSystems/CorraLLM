@@ -231,11 +231,14 @@ func refusalStatus(notes []BudgetNote, secs int, w http.ResponseWriter) int {
 // it, served in /v1/capabilities. The status codes are corrallm's contract: a
 // client library may handle them where it can, and an integrator has to.
 var errorContract = map[string]any{
-	"shape": `{"error":{"message","type","retry_after"?,"budgets"?:[{scope,owner,window,used,limit,room_at,summary}]}}`,
+	"shape": `{"error":{"message","type","retry_after"?,"provider"?,"upstream_status"?,"budgets"?:[{scope,owner,window,used,limit,room_at,summary}]}}`,
 	"statuses": []map[string]any{
 		{"status": 402, "types": []string{"budget_exhausted", "allocation_exhausted", "allocation_spent"},
 			"means": "a budget that refills at a reset time (calendar day, paced day, calendar month, total) is spent; no Retry-After",
 			"do":    "do not retry; fall back to another model or fail now; retry_after and budgets[].room_at say when it reopens (allocation_spent never does)"},
+		{"status": 402, "types": []string{"upstream_funds_exhausted"},
+			"means": "not your balance: the remote account corrallm pays with is out of funds or over its billing quota, and no other candidate could serve; the body adds provider and upstream_status",
+			"do":    "do not retry; fall back to another model; the owner has been alerted"},
 		{"status": 429, "types": []string{"budget_exhausted", "allocation_exhausted", "paused", ""},
 			"means": "a rolling budget is full, a model is paused, or the scheduler is busy; Retry-After is set",
 			"do":    "wait Retry-After seconds and retry, or fall back"},
