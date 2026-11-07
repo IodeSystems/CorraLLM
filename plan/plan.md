@@ -425,8 +425,8 @@ a daily chunk sized from the month's remainder.
      upstream's body passes through as-is. A corrallm-side limit stays
      `budget_exhausted` (shared) or `allocation_*` (your key).
 - **next:**
-  - (a) mint for every configured key: default `mint` on, or drop the gate in
-    `canMint`.
+  - (a) mint for every key, configured and subkeys: drop the gate in
+    `canMint`, add nesting (decision 5).
   - (b) a new refusal type for upstream funds or quota, with its status code
     and an entry in /v1/capabilities. Map provider bodies to it (Fireworks,
     OpenAI, Anthropic `credit balance is too low`).
@@ -442,11 +442,26 @@ a daily chunk sized from the month's remainder.
   - The view must be additive: dun's cost-token reader and the grafana gauges
     keep their fields.
   - Re-up estimates from a few deposits are noise; label them with n.
-- **assumptions:** "all keys" means configured keys. Subkeys still cannot mint
-  (one level). Re-ups are recorded by an operator CLI/API call until P68
+- **owner decision 5 (11-07):** subkeys NEST. A subkey can mint its own
+  subkeys, so accounting rolls up. A request is charged to, and gated by, its
+  key and EVERY ancestor up to the configured root.
+  - Today it is one level: `canMint` refuses a child, and `Caller.Parent` is
+    one string, read in about 20 places (key access, budget notes, guardrail
+    root, `chargeScopes` returning [key, parent]).
+  - The change is a `Caller.Ancestors` list (nearest first) and a `Root`, and
+    each of those call sites moves to the list.
+  - A child may only narrow what its parent permits (models, budgets,
+    expiry), checked against the whole chain.
+  - Revoking or disabling a key cuts its whole subtree.
+  - `keys list` shows the tree, with spend rolled up per node.
+- **assumptions:** "all keys" means configured keys and every subkey below
+  them. Re-ups are recorded by an operator CLI/API call until P68
   fetches provider billing.
-- **blocking decisions:** owner: the status code for upstream funds
-  exhaustion. 402 matches the meaning; 503 says "not your fault, try later".
+- **blocking decisions:** owner:
+  - The status code for upstream funds exhaustion. 402 matches the meaning;
+    503 says "not your fault, try later".
+  - A depth cap for nested subkeys. Recommended: 4 levels. Each level adds
+    ledger scopes to every request, and a cap stops a runaway minting loop.
 - **optional extensions:** a dashboard panel; an alert when a refill is due and
   the banked chunk is low.
 
