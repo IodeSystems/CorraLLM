@@ -408,12 +408,25 @@ dependency.
   canonical id only. It treats `thinking_budget` as corrallm's own cap.
   **Rule:** any new capability field in `/v1/models` goes to agentkit-f2
   first, so that LoadDeclared reads it.
-- **next:** wait for agentkit-f2's record type, probe API and callback. Do not
-  build a corrallm-only catalog.
+- **agentkit API (main 75c1d1d, untagged, 11-07):** `SetCapabilities`,
+  `OnLearn`, `OnTranslate`, `TranslateBody(map) []Translation` (handles
+  reasoning_effort and max_tokens), `LearnResponse(sent, status, body)`
+  (never resends), `LoadDeclared`, `ProbeCapabilities`.
+- **placement (sent to agentkit-f2 11-07):** TranslateBody after `withSampling`
+  in `proxy.go`, at the chat path before `claudeRequest` and at the
+  /v1/messages→chat path, skipping native Anthropic. LearnResponse in the
+  deferred finish with `sc.buf`. A record-only `llm.Client` per (Target URL,
+  upstream id), stored in a new SQLite `capability` table. Keep
+  `clampMaxTokens`. Remote OpenAI-API backends only. No probe, because it
+  spends paid tokens.
+- **next:** after an agentkit tag and the owner's decisions below, send the diff
+  to agentkit-f2 before committing. Do not build a corrallm-only catalog.
+  Do not refactor toward a transform chain before the owner decides on it.
 - **risks:** translating requests (3) changes what a caller sends upstream,
   for every key that uses a remote model.
 - **blocking decisions:** owner: does (3) apply to every key, or only to keys
-  that opt in?
+  that opt in? Does every request rewrite become one ordered transform chain?
+  Does corrallm run the probe on paid upstreams?
 - **optional extensions:** a dashboard column for each model's record.
 
 ### ◐ P72 — Passthrough providers + provider-wide concurrency — 2026-11-04
