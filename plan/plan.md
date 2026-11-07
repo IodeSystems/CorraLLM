@@ -531,13 +531,11 @@ started at deploy, so on 11-04 the pool admits about $6.70 more than the pace. T
 `prov:fireworks` has {hard, calendar-day, $5}, and timed budget id 1 is $10
 until 2027-11-07 (dun Terminal-Bench). A timed budget extends only `prov:`
 limits, and Fireworks' limits were all on `cred:fireworks/default`. The
-credential keeps its $100/month and 120 req/min. **next (after 2026-11-08
-00:00 UTC):** remove `{hard, calendar-day, $5}` from the credential. It was
-kept for 11-07 only, because the new provider counter started at $0 (the
-ledger loads saved counters only at startup) and today's $3.01 could not be
-copied without a restart. Until it is removed, the $10 never pays (the
-credential's day still refuses). The stale `usd/total` row on the credential
-is harmless.
+credential keeps its $100/month and 120 req/min. Its own day cap was removed
+at 17:28 UTC (owner: use the bank today). The provider day counter started at
+16:07 UTC, so 11-07 allowed about $3.28 more on the day cap than intended,
+before the bank. The stale `usd/total` and `usd/calendar-day` rows on the
+credential are harmless.
 
 11-04 (grafana-a7 ask, 2ec1818, live v0.1.0-56): /v1/spend as gauges `corrallm_spend_*{provider}` on /metrics,
 sampled 60 s; an absent JSON field = absent series. Names are fixed: Grafana `homelab-claude-usage` v9 panels 11/12
