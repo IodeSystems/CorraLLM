@@ -3,6 +3,8 @@ package proxy
 import (
 	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +17,16 @@ import (
 // $5/calendar-day hard, its credential $100/calendar-month hard.
 func fireworksRig(t *testing.T) (*Proxy, *store.Store, config.Candidate) {
 	t.Helper()
-	p, st, _ := spendRig(t, "http://127.0.0.1:1", func(c *config.Config) {
+	p, st, _, cand := fireworksRigWith(t, nil)
+	return p, st, cand
+}
+
+func fireworksRigWith(t *testing.T, extra func(*config.Config)) (*Proxy, *store.Store, http.Handler, config.Candidate) {
+	t.Helper()
+	p, st, h := spendRig(t, "http://127.0.0.1:1", func(c *config.Config) {
+		if extra != nil {
+			extra(c)
+		}
 		fw := claudeModel(t, "http://127.0.0.1:1", "")
 		fw.Proxy.Content[5].Value = "openai" // api: anthropic → openai
 		fw.Extension, fw.ProviderName = "fx", "fireworks"
@@ -30,7 +41,7 @@ func fireworksRig(t *testing.T) (*Proxy, *store.Store, config.Candidate) {
 	if !ok || len(cands) != 1 || cands[0].Credential == nil {
 		t.Fatalf("candidates = %+v", cands)
 	}
-	return p, st, cands[0]
+	return p, st, h, cands[0]
 }
 
 // spendAs charges usd the way a served request does: past the full day, the
@@ -196,5 +207,98 @@ func TestClaudeStaysFirstAndOtherProvidersFollow(t *testing.T) {
 	}
 	if f.EstimatedUSD != 0.25 || f.Source != "estimate" || f.BilledUSD != nil {
 		t.Errorf("fireworks = %+v", f)
+	}
+}
+
+func fireworksDay(usd float64) config.KeyBudgets {
+	return config.KeyBudgets{"provider:fireworks": {{USD: usd, Per: "calendar-day", Hard: true}}}
+}
+
+// keyAccountRig is fireworksRig with key aw4 ($20/calendar-day on fireworks)
+// and its subkey tbench ($3/calendar-day there), $1 spent through tbench.
+func keyAccountRig(t *testing.T) (*Proxy, http.Handler) {
+	t.Helper()
+	p, st, h, cand := fireworksRigWith(t, func(c *config.Config) {
+		c.Keys["aw4"] = config.KeyPolicy{Group: "default", Label: "aw4", Budgets: fireworksDay(20)}
+	})
+	p.children.put(childKey{ChildKey: store.ChildKey{Key: "ck-1", Parent: "aw4", Label: "tbench"}, budgets: fireworksDay(3)})
+	p.seedQuota(p.config())
+	p.chargeCaller(config.Caller{Key: "ck-1", Parent: "aw4", Recognized: true}, cand, 1)
+	spendAs(p, cand, 1)
+	if err := st.InsertActivity(store.Activity{TS: time.Now().UnixMilli(), Served: cand.Name, Key: "ck-1", Status: 200, CostUSD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	return p, h
+}
+
+func TestKeyAccountEffectiveIsTheLeastOverTheChain(t *testing.T) {
+	p, h := keyAccountRig(t)
+	acc := p.keyAccount("aw4", time.Now())
+	raw, _ := json.MarshalIndent(acc, "", "  ")
+	t.Logf("key account:\n%s", raw)
+	if len(acc.Budgets) != 1 {
+		t.Fatalf("budgets = %+v", acc.Budgets)
+	}
+	own := acc.Budgets[0]
+	// $19 of aw4's own, but the provider's day has $4 left.
+	if own.Account == nil || !usdNear(*own.AvailableUSD, 19) || own.EffectiveUSD == nil || !usdNear(*own.EffectiveUSD, 4) ||
+		own.LimitedBy != "provider fireworks" {
+		t.Errorf("own = %+v", own)
+	}
+	if len(acc.Subkeys) != 1 {
+		t.Fatalf("subkeys = %+v", acc.Subkeys)
+	}
+	sk := acc.Subkeys[0]
+	b := sk.Budgets[0]
+	if sk.Label != "tbench" || sk.SpentTodayUSD != 1 || !usdNear(*b.AvailableUSD, 2) || !usdNear(*b.EffectiveUSD, 2) || b.LimitedBy != "subkey tbench" {
+		t.Errorf("subkey = %+v, budget %+v", sk, b)
+	}
+
+	// Rebalanced below what it spent: overdrawn, refused until the day refills.
+	k, _ := p.children.get("ck-1")
+	k.budgets = config.KeyBudgets{"provider:fireworks": {{USD: 0.5, Per: "calendar-day", Hard: true}}}
+	p.children.put(k)
+	p.seedQuota(p.config())
+	b = p.keyAccount("aw4", time.Now()).Subkeys[0].Budgets[0]
+	if !b.Overdrawn || !usdNear(*b.AvailableUSD, -0.5) || !usdNear(*b.EffectiveUSD, -0.5) || b.LimitedBy != "subkey tbench" {
+		t.Errorf("overdrawn subkey = %+v", b)
+	}
+
+	// The subkey's own view names its parent by label.
+	sub := p.keyAccount("ck-1", time.Now())
+	if len(sub.Budgets) != 1 || sub.Subkeys != nil {
+		t.Fatalf("subkey's own view = %+v", sub)
+	}
+
+	// GET /v1/keys carries it.
+	req := httptest.NewRequest(http.MethodGet, "/v1/keys", nil)
+	req.Header.Set("Authorization", "Bearer aw4")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"effective_usd"`) {
+		t.Errorf("GET /v1/keys %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestKeyAccountParentBindsASubkey(t *testing.T) {
+	p, _ := keyAccountRig(t)
+	cfg := p.config()
+	kp := cfg.Keys["aw4"]
+	kp.Budgets = config.KeyBudgets{"*": {{USD: 1.5, Per: "calendar-day", Hard: true}}}
+	cfg.Keys["aw4"] = kp
+	p.seedQuota(cfg)
+	p.chargeCaller(config.Caller{Key: "aw4", Recognized: true}, config.Candidate{Name: "claude"}, 1)
+	b := p.keyAccount("aw4", time.Now()).Subkeys[0].Budgets
+	// tbench's $2 left on fireworks sits under aw4's $1.50 on everything,
+	// $1 of it spent: $0.50.
+	var fw KeyBudgetAccount
+	for _, e := range b {
+		if e.Selector == "provider:fireworks" {
+			fw = e
+		}
+	}
+	if fw.EffectiveUSD == nil || !usdNear(*fw.EffectiveUSD, 0.5) || fw.LimitedBy != "this key" {
+		raw, _ := json.MarshalIndent(b, "", "  ")
+		t.Errorf("budgets:\n%s", raw)
 	}
 }

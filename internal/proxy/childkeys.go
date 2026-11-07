@@ -483,6 +483,7 @@ func (p *Proxy) listChildKeys(w http.ResponseWriter, parent string) {
 		"budgets":   nonNilBudgets(budgets),
 		"windows":   p.budgetWindows(parent),
 		"valueAdds": grantViews(p.grants.of(parent)),
+		"account":   p.keyAccount(parent, time.Now()),
 	}
 	if w := p.oversubscription(parent); len(w) > 0 {
 		self["warnings"] = w
