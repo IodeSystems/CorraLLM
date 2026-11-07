@@ -466,6 +466,10 @@ a daily chunk sized from the month's remainder.
     error. Names are unique within a key's subkeys, so "dun/tbench" means one
     key. Refusals, `keys list`, `/v1/spend`, the dashboard and alerts all
     show the name, never the secret.
+    - **gap (11-07):** all 10 configured keys have an empty label; all 7
+      subkeys have one. Required names would fail config load until the 10
+      are named, so the names are backfilled first, with the owner choosing
+      them (e.g. `sk-agentkit-bcae…` → agentkit).
   - ATTRIBUTION (owner 11-07): a key's usage breaks down by subkey. A refusal
     names whose limit refused: the provider, the key, or the subkey. The
     activity row already records the subkey, and its key is derived from it
