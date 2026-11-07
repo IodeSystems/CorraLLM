@@ -378,7 +378,7 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◻ P74 — Budgets as chunks: expiry, refill, banked; spend shown as an account — 2026-11-07
+### ◻ P74 — Account view over limits; every key mints subkeys; upstream-funds refusal — 2026-11-07
 
 Why (owner 11-07): "hard day limit + timed budget past it" reads as caps. The
 owner's model is CHUNKS of money. Each chunk has:
@@ -411,24 +411,42 @@ Mapping from today's pieces: a hard calendar-day limit is an unbanked daily
 chunk. A timed budget is a one-time chunk with an expiry. A paced day (P71) is
 a daily chunk sized from the month's remainder.
 
-- **next:** owner picks the decision below, then a design note (store schema,
-  how the ledger draws from chunks, migration of `limits`/`key_grant`), then
-  code.
+- **owner decisions (11-07):**
+  1. KEEP LIMITS. Chunks are the account VIEW over limits and timed budgets,
+     not a new primitive. Banked and refill are what a view shows of them.
+  2. EVERY key may mint subkeys with limits (daily), so cost accounting is
+     done per subkey inside one account. Today only `sk-aw4` has `mint`; dun
+     and the other keys cannot mint.
+  3. Self-serve through the existing `corrallm keys` CLI: list, mint, set,
+     disable and revoke on your own key. `keys list` gains the account view.
+  4. A SEPARATE refusal for provider funds: "not your balance". Use it when the
+     UPSTREAM account corrallm pays with is out of funds or over its quota
+     (e.g. a provider 402, or OpenAI-style `insufficient_quota`). Today the
+     upstream's body passes through as-is. A corrallm-side limit stays
+     `budget_exhausted` (shared) or `allocation_*` (your key).
+- **next:**
+  - (a) mint for every configured key: default `mint` on, or drop the gate in
+    `canMint`.
+  - (b) a new refusal type for upstream funds or quota, with its status code
+    and an entry in /v1/capabilities. Map provider bodies to it (Fireworks,
+    OpenAI, Anthropic `credit balance is too low`).
+  - (c) the `account` object in `/v1/spend` and `keys list`: available,
+    chunks with expiry/refill/banked, ceilings, drain order.
+  - (d) every provider in the spend report (P68).
+  - Each is its own commit.
 - **risks:**
-  - `ReportSpend` covers Claude providers only, so this needs every provider
-    (P68).
-  - Changing what refuses a request changes refusal codes and messages, and
-    those are corrallm's contract (/v1/capabilities).
-  - dun's cost-token reader and the grafana gauges read today's
-    `/v1/spend` fields, so the change must be additive or versioned.
+  - (b) changes what callers see on an upstream 402/429, and that is
+    corrallm's contract: dun and aw4 must handle the new type.
+  - (a) lets any key create keys. A subkey can only use what its parent
+    permits, so it cannot widen access.
+  - The view must be additive: dun's cost-token reader and the grafana gauges
+    keep their fields.
   - Re-up estimates from a few deposits are noise; label them with n.
-- **blocking decisions:** owner:
-  - Are chunks the budget PRIMITIVE, replacing day limits and timed budgets
-    in config and the ledger? Or a VIEW over today's limits and budgets?
-    Recommended: primitive, because banked refills and unknown-amount re-ups
-    cannot be expressed as limits.
-  - Who records a re-up: an operator CLI/API call, or a provider billing fetch
-    (P68)?
+- **assumptions:** "all keys" means configured keys. Subkeys still cannot mint
+  (one level). Re-ups are recorded by an operator CLI/API call until P68
+  fetches provider billing.
+- **blocking decisions:** owner: the status code for upstream funds
+  exhaustion. 402 matches the meaning; 503 says "not your fault, try later".
 - **optional extensions:** a dashboard panel; an alert when a refill is due and
   the banked chunk is low.
 
