@@ -249,3 +249,43 @@ func TestChildKeyLifecycle(t *testing.T) {
 		t.Errorf("deleted key: %d, want 401", c)
 	}
 }
+
+// A child budget may not exceed the parent's for the same window and
+// dimension, at mint and at set (P74). Siblings may add up to more.
+func TestChildBudgetUnderParent(t *testing.T) {
+	k := newChildKeyRig(t, config.LimitSet{{USD: 5, Per: "calendar-day", Hard: true}})
+	over := `{"label":"over","budgets":{"*":["$6/calendar-day"]}}`
+	rec := k.do(http.MethodPost, "/v1/keys", "parent", over)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "parent key's budget of $5.00") {
+		t.Fatalf("mint over parent: %d %s", rec.Code, rec.Body.String())
+	}
+	a := k.mint(`{"label":"a","budgets":{"*":["$5/calendar-day"]}}`)
+	k.mint(`{"label":"b","budgets":{"*":["$5/calendar-day"]}}`) // siblings may oversubscribe
+	rec = k.do(http.MethodPatch, "/v1/keys/"+a.Key, "parent", `{"budgets":{"*":["$6/calendar-day"]}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("set over parent: %d %s", rec.Code, rec.Body.String())
+	}
+	// A different window or dimension is not comparable.
+	if rec := k.do(http.MethodPatch, "/v1/keys/"+a.Key, "parent", `{"budgets":{"*":["$50/calendar-month"]}}`); rec.Code != http.StatusOK {
+		t.Errorf("other window: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Setting a child's budget below what it already spent is allowed: it is
+// overdrawn and refused until the window turns, never an error at set.
+func TestChildBudgetOverdraft(t *testing.T) {
+	k := newChildKeyRig(t, nil)
+	c := k.mint(`{"label":"c","limits":[{"req":5,"per":"calendar-day","hard":true}]}`)
+	for i := 0; i < 3; i++ {
+		if code := k.chat(c.Key, "mock"); code != http.StatusOK {
+			t.Fatalf("chat %d: %d", i, code)
+		}
+	}
+	rec := k.do(http.MethodPatch, "/v1/keys/"+c.Key, "parent", `{"limits":[{"req":1,"per":"calendar-day","hard":true}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set below spend: %d %s", rec.Code, rec.Body.String())
+	}
+	if code := k.chat(c.Key, "mock"); code != http.StatusPaymentRequired && code != http.StatusTooManyRequests {
+		t.Errorf("overdrawn child served: %d", code)
+	}
+}

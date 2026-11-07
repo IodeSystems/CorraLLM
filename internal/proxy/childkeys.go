@@ -514,6 +514,12 @@ func (p *Proxy) createChildKey(w http.ResponseWriter, r *http.Request, parent st
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if budgets != nil {
+		if err := p.checkUnderParent(parent, *budgets); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
 		jsonErr(w, http.StatusInternalServerError, "mint: "+err.Error())
@@ -563,6 +569,12 @@ func (p *Proxy) updateChildKey(w http.ResponseWriter, r *http.Request, k childKe
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if budgets != nil {
+		if err := p.checkUnderParent(k.Parent, *budgets); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	if models != nil {
 		k.models = *models
 	}
@@ -600,6 +612,39 @@ func (p *Proxy) checkAccess(models *[]string, budgets *config.KeyBudgets) error 
 		}
 		if err := p.config().CheckSelectorNames(budgets.Selectors()); err != nil {
 			return fmt.Errorf("budgets: %w", err)
+		}
+	}
+	return nil
+}
+
+// checkUnderParent refuses a child budget larger than the parent's own budget
+// for the same window and dimension (P74: child <= parent). A parent budget is
+// comparable when it sits on the same selector or on everything. Siblings may
+// still add up to more than the parent (oversubscription), a parent may
+// exceed its providers, and a child set below what it already spent is fine
+// (overdraft): only the amounts are compared, never the spend.
+func (p *Proxy) checkUnderParent(parent string, budgets config.KeyBudgets) error {
+	_, pBudgets := p.keyAccess(parent)
+	for _, sel := range budgets.Selectors() {
+		for _, l := range budgets[sel] {
+			d, ok := l.Window()
+			if !ok || l.Pace {
+				continue
+			}
+			for _, psel := range []string{sel, config.SelectAll} {
+				for _, pl := range pBudgets[psel] {
+					pd, pok := pl.Window()
+					if !pok || pl.Pace || pd != d || pl.Dimension() != l.Dimension() || l.Amount() <= pl.Amount() {
+						continue
+					}
+					return fmt.Errorf("budgets: %s per %s %s is more than the parent key's budget of %s per %s %s",
+						amountWords(l.Dimension(), l.Amount()), l.Per, selectorWords(sel),
+						amountWords(pl.Dimension(), pl.Amount()), pl.Per, selectorWords(psel))
+				}
+				if sel == config.SelectAll {
+					break
+				}
+			}
 		}
 	}
 	return nil
