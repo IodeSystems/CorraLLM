@@ -378,6 +378,33 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ❓ P73 — Model capability records from agentkit, used on the proxy side — 2026-11-07
+
+Why: `/v1/models` fills `thinking_*` only for local llama.cpp models, from
+their launch flags. Remote models (`fireworks-glm-5p3-flash`,
+`deepseek-v4p1-flash`) publish nothing. Fireworks GLM-5.3, measured 11-07 by
+dun-bb: `reasoning_effort:"none"` → 400 "thinking-only model"; unset → the
+model default (`max_tokens` 300 all spent on thinking); `"low"`, `"minimal"`
+and an integer (64) accepted; `thinking.budget_tokens` must be ≥ 1024.
+
+Split (owner, via dun-bb; aw4 i_1m6v7hh0a8x9g9erzy6dcg): agentkit owns the
+capability record per (endpoint, model), the probe (it measures reasoning
+tokens spent, because a 200 alone proves nothing), learning from refusals,
+and request translation (aw4 i_1m6v7hgpwcwrk5pbswp0w6, agentkit-f2).
+corrallm uses those helpers to: (1) read upstream refusals, (2) probe each
+model next to the modality probes, (3) translate a request by the record
+before forwarding it, (4) publish the record in `/v1/models`. Clients must
+also work without corrallm, so the record is a shortcut for them, not a
+dependency.
+
+- **next:** wait for agentkit-f2's record type and probe API, or co-design it
+  with them. Do not build a corrallm-only catalog.
+- **risks:** translating requests (3) changes what a caller sends upstream,
+  for every key that uses a remote model.
+- **blocking decisions:** owner: does (3) apply to every key, or only to keys
+  that opt in?
+- **optional extensions:** a dashboard column for each model's record.
+
 ### ◐ P72 — Passthrough providers + provider-wide concurrency — 2026-11-04
 
 Owner ask 11-04 (dun-09 relayed the same): serve an upstream gateway's (corp OpenRouter/LiteLLM) models without
