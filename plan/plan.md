@@ -378,7 +378,7 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ❓ P73 — Model capability records from agentkit, used on the proxy side — 2026-11-07
+### ◐ P73 — Model capability records from agentkit, used on the proxy side — 2026-11-07
 
 Why: `/v1/models` fills `thinking_*` only for local llama.cpp models, from
 their launch flags. Remote models (`fireworks-glm-5p3-flash`,
@@ -421,14 +421,32 @@ dependency.
   upstream id), stored in a new SQLite `capability` table. Keep
   `clampMaxTokens`. Remote OpenAI-API backends only. No probe, because it
   spends paid tokens.
-- **next:** after an agentkit tag and the owner's decisions below, send the diff
-  to agentkit-f2 before committing. Do not build a corrallm-only catalog.
-  Do not refactor toward a transform chain before the owner decides on it.
-- **risks:** translating requests (3) changes what a caller sends upstream,
-  for every key that uses a remote model.
-- **blocking decisions:** owner: does (3) apply to every key, or only to keys
-  that opt in? Does every request rewrite become one ordered transform chain?
-  Does corrallm run the probe on paid upstreams?
+- **owner decisions (via agentkit-f2, 11-07):** the transform applies to every
+  remote target, the Anthropic ones included. It is never switched per key.
+  The probe runs only manually (admin API or dashboard, per backend+model),
+  never on a schedule. Build ONE ordered transform chain; the OpenAI alignment
+  and the guardrails (P67) are stages in it.
+- **design (sent to agentkit-f2 11-07):** a new `internal/proxy/chain.go` with
+  BodyStage, WriterStage and ReplyStage, each with Applies. The order is two
+  literal slices in `candidateChain()`, pinned by a test.
+  - Body stages: wire-in (ReverseRequest, moved first) → clamp → model rewrite
+    → sampling → align (TranslateBody) → wire-out (claudeRequest /
+    StripThinking).
+  - Writer stages, backend outward: NEW raw tap (8 KiB, errors only) → wire
+    adapter → statusCapture → loop → guard-out → cost → stt remap → stt SSE.
+  - Guard-in runs once, before queueing. PDF conversion and transcode stay
+    outside the chain.
+  - LearnResponse reads the raw tap, because statusCapture holds the
+    shim-translated body.
+- **commits:** (1) refactor: the chain, with the existing stages moved in; no
+  behavior change except wire-in moving first. (2) raw tap, align stage,
+  `capability` table and registry; this needs the agentkit tag. (3) manual
+  probe endpoint. Each diff goes to agentkit-f2 before it is committed.
+- **next:** agentkit-f2's answer to the design note, then commit 1.
+- **risks:** step 1 reorders the /v1/messages path. The writer order is
+  load-bearing and only a test pins it. About 400 lines of the candidate block
+  in `proxy.go` move.
+- **blocking decisions:** owner: tag agentkit, which commit 2 needs.
 - **optional extensions:** a dashboard column for each model's record.
 
 ### ◐ P72 — Passthrough providers + provider-wide concurrency — 2026-11-04
