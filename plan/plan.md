@@ -378,7 +378,7 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◻ P74 — Account view over limits; every key mints subkeys; upstream-funds refusal — 2026-11-07
+### ◐ P74 — Account view over limits; every key mints subkeys; upstream-funds refusal — 2026-11-07
 
 Why (owner 11-07): "hard day limit + timed budget past it" reads as caps. The
 owner's model is CHUNKS of money. Each chunk has:
@@ -485,9 +485,26 @@ a daily chunk sized from the month's remainder.
     at report time.
 - **assumptions:** "all keys" means configured keys. Re-ups are recorded by an operator CLI/API call until P68
   fetches provider billing.
-- **blocking decisions:** owner:
-  - The status code for upstream funds exhaustion. 402 matches the meaning;
-    503 says "not your fault, try later".
+- **decided 11-07:** upstream funds or quota exhausted → **402**, type
+  `upstream_funds_exhausted`, with the message "not your balance: the
+  <provider> account corrallm pays with is out of funds". corrallm's own
+  `allocation_spent` also uses 402, so callers tell the two apart by `type`.
+  dun and aw4 should stop and report on it, not retry.
+- **slices (sub-agents, one worktree each, merged by the main session):**
+  - S1 keys: mint for every configured key; child ≤ parent at mint and at
+    set; overdraft allowed; names required at mint and unique among
+    siblings; names shown in refusals and alerts. `internal/proxy/childkeys.go`,
+    `budgetmsg.go`, `internal/config`.
+  - S2 funds refusal: map upstream billing/quota refusals to 402
+    `upstream_funds_exhausted`; add it to /v1/capabilities. In `proxy.go` the
+    change is limited to the ModifyResponse remote-refusal branch, so it
+    merges cleanly with the P73 chain refactor.
+  - S3 account view: an additive `account` object in `/v1/spend` and
+    `keys list`; every provider in the report (P68).
+  - Ops after merge and deploy (main session): name the 10 configured keys.
+- **blocking decisions:** owner: confirm names for `sk-aw4` → aw4,
+  `sk-agentkit-bcae…` → agentkit, `sk-bintag` → bintag. The other 7 keep
+  their id as their name.
 - **optional extensions:** fair-share between oversubscribed siblings when
   the provider is the binding limit (today: first come, first served); a
   dashboard panel; an alert when a refill is due and
