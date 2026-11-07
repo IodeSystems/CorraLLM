@@ -453,13 +453,19 @@ a daily chunk sized from the month's remainder.
     - A parent's budgets MAY exceed the provider's: slices are often idle, so
       oversubscription is intended. Siblings may also add up to more than
       their parent; that is already allowed and warned about (owner 10-24).
-    - Every request is gated by the provider, its key and every ancestor, as
+    - Every request is gated by the provider, its key and its subkey, as
       today. So a subkey obeys any rebalancing above it at once.
     - When a parent is lowered below a child, the child's stored budget stays
       as it is, but its EFFECTIVE budget is the parent's. `keys list` and the
       account view show "effective $X (limited by <whose>)". The available
       balance is the minimum over the chain and the provider, so nobody is
       shown a nominal slice they cannot spend.
+  - NAMES (owner 11-07): every key has a name, configured keys and subkeys
+    alike, so an account problem is never reported as a bare key or hash.
+    The name is required at mint; a configured key without one is a config
+    error. Names are unique within a key's subkeys, so "dun/tbench" means one
+    key. Refusals, `keys list`, `/v1/spend`, the dashboard and alerts all
+    show the name, never the secret.
   - ATTRIBUTION (owner 11-07): a key's usage breaks down by subkey. A refusal
     names whose limit refused: the provider, the key, or the subkey. The
     activity row already records the subkey, and its key is derived from it
