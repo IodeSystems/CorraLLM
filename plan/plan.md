@@ -454,6 +454,20 @@ a daily chunk sized from the month's remainder.
     expiry), checked against the whole chain.
   - Revoking or disabling a key cuts its whole subtree.
   - `keys list` shows the tree, with spend rolled up per node.
+  - LAYERING (owner 11-07):
+    - Providers have budgets, keys have budgets, and subkeys have budgets.
+    - A subkey's budget may NOT exceed its parent's, per window and selector.
+      This is checked at mint and at set. Today it is not checked.
+    - A parent's budgets MAY exceed the provider's: slices are often idle, so
+      oversubscription is intended. Siblings may also add up to more than
+      their parent; that is already allowed and warned about (owner 10-24).
+    - Every request is gated by the provider, its key and every ancestor, as
+      today. So a subkey obeys any rebalancing above it at once.
+    - When a parent is lowered below a child, the child's stored budget stays
+      as it is, but its EFFECTIVE budget is the parent's. `keys list` and the
+      account view show "effective $X (limited by <whose>)". The available
+      balance is the minimum over the chain and the provider, so nobody is
+      shown a nominal slice they cannot spend.
   - ATTRIBUTION (owner 11-07): rolled-up spend keeps its attribution. An
     ancestor's usage breaks down by the descendant that spent it, down to the
     leaf. A refusal names whose limit refused, e.g. "parent ck-x's
@@ -468,7 +482,9 @@ a daily chunk sized from the month's remainder.
     503 says "not your fault, try later".
   - A depth cap for nested subkeys. Recommended: 4 levels. Each level adds
     ledger scopes to every request, and a cap stops a runaway minting loop.
-- **optional extensions:** a dashboard panel; an alert when a refill is due and
+- **optional extensions:** fair-share between oversubscribed siblings when
+  the provider is the binding limit (today: first come, first served); a
+  dashboard panel; an alert when a refill is due and
   the banked chunk is low.
 
 ### ◐ P73 — Model capability records from agentkit, used on the proxy side — 2026-11-07
