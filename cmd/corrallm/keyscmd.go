@@ -16,8 +16,7 @@ import (
 
 // `corrallm keys …` manages the subkeys of the caller's own key (/v1/keys):
 // mint one per project, change its models, budgets and expiry, switch it off,
-// revoke it. The key must be allowed to mint (`mint: true`); ask for that with
-// `corrallm request more --mint`.
+// revoke it. Every configured key may mint; a subkey may not.
 
 // keyView is a key as /v1/keys shows it.
 type keyView struct {
@@ -49,7 +48,7 @@ type accessFlags struct {
 
 func (a *accessFlags) bind(cmd *cobra.Command, forSet bool) {
 	f := cmd.Flags()
-	f.StringVar(&a.label, "label", "", "the key's name")
+	f.StringVar(&a.label, "label", "", "the key's name (required at mint, unique among your subkeys)")
 	f.StringSliceVar(&a.models, "models", nil, "selectors it may see and use, comma-separated: local, proxy, provider:<name>, cred:<provider>/<name>, model:<name> (default: every model the parent may use)")
 	f.StringArrayVar(&a.budgets, "budget", nil, "a budget, repeatable: "+budgetSyntax)
 	f.StringVar(&a.ttl, "ttl", "", "expires this long from now: 48h, 7d")
@@ -206,11 +205,15 @@ func newKeysCmd() *cobra.Command {
 	mintCmd := &cobra.Command{
 		Use:   "mint",
 		Short: "Mint a subkey; its key is printed alone on stdout",
-		Long: "Mints a subkey of your key. It is live at once.\n\n" +
+		Long: "Mints a subkey of your key. It is live at once. --label is required and must be unique\n" +
+			"among your subkeys. A subkey budget may not exceed your own budget for the same window.\n\n" +
 			"  corrallm keys mint --label proj-a --models local,model:*deepseek* \\\n" +
 			"      --budget 'model:*deepseek*=$1.70/calendar-day,hard' --ttl 30d",
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
+			if strings.TrimSpace(ma.label) == "" {
+				return fmt.Errorf("--label is required: name the subkey for what it is used for")
+			}
 			body, err := ma.body(c)
 			if err != nil {
 				return err
@@ -228,7 +231,9 @@ func newKeysCmd() *cobra.Command {
 	setCmd := &cobra.Command{
 		Use:   "set KEY",
 		Short: "Change a subkey: label, models, budgets, expiry",
-		Long: "Changes only what you pass. --budget replaces ALL of the subkey's budgets and --models its\n" +
+		Long: "Changes only what you pass. A budget may not exceed your own for the same window; one below\n" +
+			"what the subkey already spent is allowed (it is refused until the window turns).\n" +
+			"--budget replaces ALL of the subkey's budgets and --models its\n" +
 			"whole filter, so list every one you want to keep.\n\n" +
 			"  corrallm keys set ck-… --budget '*=$4/calendar-day' --budget 'model:*deepseek*=$2/calendar-day,hard'",
 		Args: cobra.ExactArgs(1),
