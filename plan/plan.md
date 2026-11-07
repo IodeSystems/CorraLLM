@@ -397,8 +397,14 @@ before forwarding it, (4) publish the record in `/v1/models`. Clients must
 also work without corrallm, so the record is a shortcut for them, not a
 dependency.
 
-- **next:** wait for agentkit-f2's record type and probe API, or co-design it
-  with them. Do not build a corrallm-only catalog.
+- **storage (owner, via agentkit-f2 11-07):** agentkit reports what it learns
+  through a callback. corrallm stores the record and passes it back when it
+  creates an agentkit Client.
+- **sent to agentkit-f2 11-07:** the exact `/v1/models` fields. Gaps the record
+  will need to fill: no effort list, no thinking-only flag, no max output, no
+  tools/streaming/structured-output fields, no provenance, aliases not listed.
+- **next:** wait for agentkit-f2's record type, probe API and callback. Do not
+  build a corrallm-only catalog.
 - **risks:** translating requests (3) changes what a caller sends upstream,
   for every key that uses a remote model.
 - **blocking decisions:** owner: does (3) apply to every key, or only to keys
