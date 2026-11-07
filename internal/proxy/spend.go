@@ -71,7 +71,12 @@ type SpendProvider struct {
 	TodayUSD      *float64      `json:"today_usd,omitempty"`
 	TodaySpentUSD *float64      `json:"today_spent_usd,omitempty"`
 	Budgets       []SpendBudget `json:"budgets,omitempty"`
+	// Account is the same money as chunks and ceilings (P74), from the ledger's
+	// counters: what the gate admits. It can differ from remaining_usd, which is
+	// read from the activity log, when a counter started later than the period.
+	Account *Account `json:"account,omitempty"`
 
+	names []string // the config's provider names this entry covers
 	// for the Prometheus gauges; the JSON carries these as strings
 	periodStart  time.Time
 	resetsAt     *time.Time
@@ -94,6 +99,8 @@ type claudeSpend struct {
 	scopes []string
 	limit  config.Limit // USD 0 when there is none
 	paced  bool         // a paced calendar-day limit sits beside it
+	// providers are the config's provider names the models are declared under.
+	providers []string
 }
 
 func claudeBackends(cfg *config.Config) claudeSpend {
@@ -121,6 +128,9 @@ func claudeBackends(cfg *config.Config) claudeSpend {
 			continue
 		}
 		out.served = append(out.served, name)
+		if m.ProviderName != "" && !slices.Contains(out.providers, m.ProviderName) {
+			out.providers = append(out.providers, m.ProviderName)
+		}
 		if ext, ok := cfg.Extensions[m.Extension]; ok {
 			if pv, ok := ext.Providers[m.ProviderName]; ok {
 				limit(pv.Limits)
@@ -136,53 +146,82 @@ func claudeBackends(cfg *config.Config) claudeSpend {
 	}
 	sort.Strings(out.served)
 	sort.Strings(out.scopes)
+	sort.Strings(out.providers)
 	return out
 }
 
 // ReportSpend reads the period so far from the config and the database, so the
-// operator's CLI answers without the daemon.
+// operator's CLI answers without the daemon. Claude comes first, as it always
+// has; then every other provider with a dollar limit (its own or a
+// credential's) or a timed budget, by name (P74).
 func ReportSpend(cfg *config.Config, st *store.Store, now time.Time) (SpendReport, error) {
 	now = now.UTC()
 	rep := SpendReport{Object: "spend", AsOf: now.Format(time.RFC3339), Currency: "usd", Providers: []SpendProvider{}}
-	claude := claudeBackends(cfg)
-	if len(claude.served) == 0 || st == nil {
+	if st == nil {
 		return rep, nil
 	}
+	timed, err := providerBudgets(st, now)
+	if err != nil {
+		return rep, err
+	}
+	counters, err := counterIndex(st)
+	if err != nil {
+		return rep, err
+	}
+	claude := claudeBackends(cfg)
+	sources := otherProviders(cfg, claude, timed)
+	if len(claude.served) > 0 {
+		sources = append([]namedSpend{{spendAnthropic, claude}}, sources...)
+	}
+	for _, src := range sources {
+		out, err := reportProvider(cfg, st, src.name, src.spend, timed, counters, now)
+		if err != nil {
+			return rep, err
+		}
+		rep.Providers = append(rep.Providers, out)
+	}
+	return rep, nil
+}
+
+// reportProvider is one provider's period. Only Claude can have a reconciled
+// figure (`corrallm spend reconcile` reads Anthropic's Console); the rest are
+// the ledger alone.
+func reportProvider(cfg *config.Config, st *store.Store, name string, claude claudeSpend, timed []SpendBudget,
+	counters map[string]store.QuotaCounter, now time.Time) (SpendProvider, error) {
 	start := config.PeriodStart("month", claude.limit.Renews, now)
 	period := now.Format("2006-01")
 	if claude.limit.Renews > 0 {
 		period = start.Format("2006-01-02")
 	}
 	month := start.UnixMilli()
-	out := SpendProvider{Provider: spendAnthropic, Period: period, CostEstimated: true, Source: spendFromEstimate, periodStart: start}
+	out := SpendProvider{Provider: name, Period: period, CostEstimated: true, Source: spendFromEstimate, periodStart: start,
+		names: claude.providers}
 	from := month
-	usd, at, ok, err := st.SpendReconcile(spendAnthropic)
-	if err != nil {
-		return rep, err
-	}
-	// Last period's figure says nothing about this one.
-	if ok && at >= month {
-		from = at
-		out.BilledUSD = &usd
-		out.EstimatedUSD = usd
-		out.Source = spendFromReconciled
-		stale := (now.UnixMilli() - at) / 1000
-		out.StaleSeconds = &stale
-		rat := time.UnixMilli(at).UTC()
-		out.reconciledAt = &rat
+	if name == spendAnthropic {
+		usd, at, ok, err := st.SpendReconcile(spendAnthropic)
+		if err != nil {
+			return out, err
+		}
+		// Last period's figure says nothing about this one.
+		if ok && at >= month {
+			from = at
+			out.BilledUSD = &usd
+			out.EstimatedUSD = usd
+			out.Source = spendFromReconciled
+			stale := (now.UnixMilli() - at) / 1000
+			out.StaleSeconds = &stale
+			rat := time.UnixMilli(at).UTC()
+			out.reconciledAt = &rat
+		}
 	}
 	recorded, err := st.RecordedCostByHour(claude.served, from, now.UnixMilli()+1)
 	if err != nil {
-		return rep, err
+		return out, err
 	}
 	for _, hours := range recorded {
 		for _, v := range hours {
 			out.EstimatedUSD += v
 		}
-	}
-	timed, err := providerBudgets(st, now)
-	if err != nil {
-		return rep, err
 	}
 	var timedLeft float64
 	for _, b := range timed {
@@ -204,7 +243,7 @@ func ReportSpend(cfg *config.Config, st *store.Store, now time.Time) (SpendRepor
 			day := config.PeriodStart("day", 0, now).UnixMilli()
 			today, err := st.RecordedCostByHour(claude.served, day, now.UnixMilli()+1)
 			if err != nil {
-				return rep, err
+				return out, err
 			}
 			var spent float64
 			for _, hours := range today {
@@ -216,8 +255,83 @@ func ReportSpend(cfg *config.Config, st *store.Store, now time.Time) (SpendRepor
 			out.TodayUSD, out.TodaySpentUSD = &allow, &spent
 		}
 	}
-	rep.Providers = append(rep.Providers, out)
-	return rep, nil
+	out.Account = providerAccount(cfg, claude.scopes, out.Budgets, counters, now)
+	return out, nil
+}
+
+type namedSpend struct {
+	name  string
+	spend claudeSpend
+}
+
+// otherProviders is every provider but Claude's with a dollar limit on it or on
+// one of its credentials, or a timed budget, sorted by name. Its models are the
+// declared ones and what discovery added (passthrough). A CLI run has no
+// discovery, so there estimated_usd misses a passthrough model's spend; the
+// account view reads the ledger's counters and misses nothing.
+func otherProviders(cfg *config.Config, claude claudeSpend, timed []SpendBudget) []namedSpend {
+	byName := map[string]*claudeSpend{}
+	limit := func(out *claudeSpend, ls config.LimitSet) bool {
+		has := false
+		for _, l := range ls {
+			if l.Dimension() != config.DimUSD {
+				continue
+			}
+			has = true
+			if l.Pace {
+				out.paced = true
+			}
+			if l.USD > 0 && l.Calendar() == "month" && (out.limit.USD == 0 || l.USD < out.limit.USD) {
+				out.limit = l
+			}
+		}
+		return has
+	}
+	for _, ext := range cfg.Extensions {
+		for pn, pv := range ext.Providers {
+			if slices.Contains(claude.providers, pn) {
+				continue
+			}
+			s := byName[pn]
+			if s == nil {
+				s = &claudeSpend{providers: []string{pn}}
+			}
+			has := limit(s, pv.Limits)
+			if len(pv.Limits) > 0 && !slices.Contains(s.scopes, config.ProviderScopeKey(pn)) {
+				s.scopes = append(s.scopes, config.ProviderScopeKey(pn))
+			}
+			for _, c := range pv.CredentialList() {
+				has = limit(s, c.Limits) || has
+				if !slices.Contains(s.scopes, c.ScopeKey(pn)) {
+					s.scopes = append(s.scopes, c.ScopeKey(pn))
+				}
+			}
+			if has || byName[pn] != nil || slices.ContainsFunc(timed, func(b SpendBudget) bool { return b.Provider == pn }) {
+				byName[pn] = s
+			}
+		}
+	}
+	models := cfg.Discovered()
+	for n, m := range cfg.Models {
+		models[n] = m
+	}
+	out := make([]namedSpend, 0, len(byName))
+	for name, s := range byName {
+		for n, m := range models {
+			if m.ProviderName != name {
+				continue
+			}
+			if t, err := m.ProxyTarget(); err == nil && t != nil && t.CallerAuth {
+				continue // the caller's own sign-in, not corrallm's spend
+			}
+			s.served = append(s.served, n)
+		}
+		sort.Strings(s.served)
+		sort.Strings(s.scopes)
+		out = append(out, namedSpend{name, *s})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
 }
 
 // Spend reports the period so far.
