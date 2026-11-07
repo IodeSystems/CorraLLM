@@ -454,6 +454,12 @@ a daily chunk sized from the month's remainder.
     expiry), checked against the whole chain.
   - Revoking or disabling a key cuts its whole subtree.
   - `keys list` shows the tree, with spend rolled up per node.
+  - ATTRIBUTION (owner 11-07): rolled-up spend keeps its attribution. An
+    ancestor's usage breaks down by the descendant that spent it, down to the
+    leaf. A refusal names whose limit refused, e.g. "parent ck-x's
+    $5/calendar-day". The activity row already records the leaf key, and the
+    chain is derived from it at report time, so there is no per-ancestor
+    copy of each row.
 - **assumptions:** "all keys" means configured keys and every subkey below
   them. Re-ups are recorded by an operator CLI/API call until P68
   fetches provider billing.
