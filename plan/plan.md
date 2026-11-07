@@ -378,6 +378,37 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◻ P74 — Spend shown as an account: available, expiring chunks, banked — 2026-11-07
+
+Why (owner 11-07): "hard day limit + timed budget past it" reads as caps. Show
+each provider as an account instead:
+- **available:** everything spendable now.
+- **expiring chunks:** today's use-it-or-lose-it allowance (ends 00:00 UTC) and
+  each timed budget, each with its amount left and its expiry.
+- **banked:** chunks with no expiry.
+- The report says the drain order: soonest-expiring first.
+
+The drain order already works this way: the day allowance is drawn before any
+timed budget, and timed budgets drain soonest first (`grants`). So this is the
+same mechanics, presented as an account.
+
+- **next:** add an `account` object to `SpendProvider` (additive: dun's
+  cost-token reader and the grafana gauges keep their fields), with
+  `available_usd`, `chunks[]` {kind: day|budget|banked, usd, left_usd,
+  expires} and `drain: "soonest-expiring first"`. Then `corrallm spend` prints
+  it.
+- **risks:** `ReportSpend` covers Claude providers only (`claudeBackends`), so
+  Fireworks is not in `/v1/spend` today. This needs P68's every-provider
+  report first, or with it. A monthly hard cap is a ceiling, not a chunk: show
+  it as a ceiling line.
+- **assumptions:** "banked" means a chunk with no expiry. Timed budgets require
+  an expiry today, so banked is empty until that requirement is relaxed (a
+  small change to `AddProviderBudget`). The dashboard is out of scope until the
+  owner asks.
+- **blocking decisions:** owner: may a chunk be banked with no expiry?
+- **optional extensions:** a dashboard panel; a header on a refusal naming the
+  chunk that ran out.
+
 ### ◐ P73 — Model capability records from agentkit, used on the proxy side — 2026-11-07
 
 Why: `/v1/models` fills `thinking_*` only for local llama.cpp models, from
