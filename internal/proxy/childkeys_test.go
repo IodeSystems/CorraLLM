@@ -27,7 +27,7 @@ type childKeyRig struct {
 }
 
 // newChildKeyRig serves model "mock" (and "other") at $0.00105 a request,
-// with configured keys "parent" and "peer" (both may mint) and "plain".
+// with configured keys "parent" and "peer" and "plain" (every key may mint).
 func newChildKeyRig(t *testing.T, parentLimits config.LimitSet) *childKeyRig {
 	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +193,6 @@ func TestChildKeyPermissions(t *testing.T) {
 		{"no key", http.MethodGet, "/v1/keys", "", "", http.StatusUnauthorized},
 		{"a stranger", http.MethodPost, "/v1/keys", "nobody", `{}`, http.StatusForbidden},
 		{"a child minting", http.MethodPost, "/v1/keys", child.Key, `{}`, http.StatusForbidden},
-		{"a key without mint", http.MethodPost, "/v1/keys", "plain", `{}`, http.StatusForbidden},
 		{"another parent's child", http.MethodGet, "/v1/keys/" + child.Key, "peer", "", http.StatusNotFound},
 		{"another parent deleting", http.MethodDelete, "/v1/keys/" + child.Key, "peer", "", http.StatusNotFound},
 		{"an unknown model", http.MethodPost, "/v1/keys", "parent", `{"limits":[{"usd":1,"per":"day","model":"nope"}]}`, http.StatusBadRequest},
@@ -202,6 +201,20 @@ func TestChildKeyPermissions(t *testing.T) {
 		if rec := k.do(c.method, c.path, c.key, c.body); rec.Code != c.want {
 			t.Errorf("%s: %d %s, want %d", c.name, rec.Code, rec.Body.String(), c.want)
 		}
+	}
+}
+
+// Every configured key may mint, with or without the old `mint` flag (P74).
+func TestEveryConfiguredKeyMints(t *testing.T) {
+	k := newChildKeyRig(t, nil)
+	rec := k.do(http.MethodPost, "/v1/keys", "plain", `{"label":"x"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("plain key mint: %d %s", rec.Code, rec.Body.String())
+	}
+	var sub childKeyBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &sub)
+	if rec := k.do(http.MethodPost, "/v1/keys", sub.Key, `{"label":"y"}`); rec.Code != http.StatusForbidden {
+		t.Errorf("subkey mint: %d, want 403", rec.Code)
 	}
 }
 

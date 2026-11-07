@@ -35,8 +35,8 @@ import (
 // client minting a key per project adds no config revisions and a config
 // restore cannot delete keys in use.
 //
-// Minting is a PERMISSION (P62): KeyPolicy.Mint for a configured key, CanMint
-// for one an admin issued. The same table holds those admin-issued keys
+// Every recognized key may mint (P74); the old `mint` permission (P62) is kept
+// in storage but no longer checked. The same table holds those admin-issued keys
 // (parent ""), which run under their own group and credentials, and every
 // minted key may carry an expiry, after which it answers 401.
 
@@ -204,16 +204,17 @@ func (p *Proxy) resolveCaller(cred string) config.Caller {
 	return p.config().ResolveCallerWith(cred, p.children.issued)
 }
 
-// canMint reports whether key may mint child keys: a configured key granted
-// `mint`, or an admin-issued key granted it. Never a child.
+// canMint reports whether key may mint child keys: every recognized key that
+// is not itself a child (P74, owner 11-07). The `mint` flag (KeyPolicy.Mint,
+// CanMint) is still stored and shown but no longer decides anything.
 func (p *Proxy) canMint(c config.Caller) bool {
 	if c.Parent != "" || !c.Recognized {
 		return false
 	}
 	if k, ok := p.children.get(c.Key); ok {
-		return k.Parent == "" && k.CanMint
+		return k.Parent == ""
 	}
-	return p.config().Keys[c.Key].Mint
+	return true
 }
 
 // childKeyPrefix marks a minted key, so a deleted one can be told from a
