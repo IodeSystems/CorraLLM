@@ -403,6 +403,11 @@ dependency.
 - **sent to agentkit-f2 11-07:** the exact `/v1/models` fields. Gaps the record
   will need to fill: no effort list, no thinking-only flag, no max output, no
   tools/streaming/structured-output fields, no provenance, aliases not listed.
+  agentkit `LoadDeclared` (opt-in, agentkit c7d5392) reads `context_length` > 0,
+  the `modalities` keys and `thinking_default/modes/effort`, matched by
+  canonical id only. It treats `thinking_budget` as corrallm's own cap.
+  **Rule:** any new capability field in `/v1/models` goes to agentkit-f2
+  first, so that LoadDeclared reads it.
 - **next:** wait for agentkit-f2's record type, probe API and callback. Do not
   build a corrallm-only catalog.
 - **risks:** translating requests (3) changes what a caller sends upstream,
