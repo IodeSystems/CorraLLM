@@ -425,8 +425,8 @@ a daily chunk sized from the month's remainder.
      upstream's body passes through as-is. A corrallm-side limit stays
      `budget_exhausted` (shared) or `allocation_*` (your key).
 - **next:**
-  - (a) mint for every key, configured and subkeys: drop the gate in
-    `canMint`, add nesting (decision 5).
+  - (a) mint for every configured key: default `mint` on. A subkey stays
+    unable to mint. Check child ≤ parent at mint and at set.
   - (b) a new refusal type for upstream funds or quota, with its status code
     and an entry in /v1/capabilities. Map provider bodies to it (Fireworks,
     OpenAI, Anthropic `credit balance is too low`).
@@ -442,18 +442,10 @@ a daily chunk sized from the month's remainder.
   - The view must be additive: dun's cost-token reader and the grafana gauges
     keep their fields.
   - Re-up estimates from a few deposits are noise; label them with n.
-- **owner decision 5 (11-07):** subkeys NEST. A subkey can mint its own
-  subkeys, so accounting rolls up. A request is charged to, and gated by, its
-  key and EVERY ancestor up to the configured root.
-  - Today it is one level: `canMint` refuses a child, and `Caller.Parent` is
-    one string, read in about 20 places (key access, budget notes, guardrail
-    root, `chargeScopes` returning [key, parent]).
-  - The change is a `Caller.Ancestors` list (nearest first) and a `Root`, and
-    each of those call sites moves to the list.
-  - A child may only narrow what its parent permits (models, budgets,
-    expiry), checked against the whole chain.
-  - Revoking or disabling a key cuts its whole subtree.
-  - `keys list` shows the tree, with spend rolled up per node.
+- **owner decision 5 (11-07):** THREE LAYERS: provider → key → subkey. A
+  subkey cannot mint, which is today's one level and stays. Every configured
+  key may mint. A request is charged to, and gated by, the provider, its key
+  and its subkey.
   - LAYERING (owner 11-07):
     - Providers have budgets, keys have budgets, and subkeys have budgets.
     - A subkey's budget may NOT exceed its parent's, per window and selector.
@@ -468,20 +460,15 @@ a daily chunk sized from the month's remainder.
       account view show "effective $X (limited by <whose>)". The available
       balance is the minimum over the chain and the provider, so nobody is
       shown a nominal slice they cannot spend.
-  - ATTRIBUTION (owner 11-07): rolled-up spend keeps its attribution. An
-    ancestor's usage breaks down by the descendant that spent it, down to the
-    leaf. A refusal names whose limit refused, e.g. "parent ck-x's
-    $5/calendar-day". The activity row already records the leaf key, and the
-    chain is derived from it at report time, so there is no per-ancestor
-    copy of each row.
-- **assumptions:** "all keys" means configured keys and every subkey below
-  them. Re-ups are recorded by an operator CLI/API call until P68
+  - ATTRIBUTION (owner 11-07): a key's usage breaks down by subkey. A refusal
+    names whose limit refused: the provider, the key, or the subkey. The
+    activity row already records the subkey, and its key is derived from it
+    at report time.
+- **assumptions:** "all keys" means configured keys. Re-ups are recorded by an operator CLI/API call until P68
   fetches provider billing.
 - **blocking decisions:** owner:
   - The status code for upstream funds exhaustion. 402 matches the meaning;
     503 says "not your fault, try later".
-  - A depth cap for nested subkeys. Recommended: 4 levels. Each level adds
-    ledger scopes to every request, and a cap stops a runaway minting loop.
 - **optional extensions:** fair-share between oversubscribed siblings when
   the provider is the binding limit (today: first come, first served); a
   dashboard panel; an alert when a refill is due and
