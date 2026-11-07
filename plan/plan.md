@@ -502,6 +502,32 @@ a daily chunk sized from the month's remainder.
   - S3 account view: an additive `account` object in `/v1/spend` and
     `keys list`; every provider in the report (P68).
   - Ops after merge and deploy (main session): name the 10 configured keys.
+- **status 11-07 (merged on main, not deployed):**
+  - S2 `06440c9`: 402 `upstream_funds_exhausted`. Spills to the next candidate
+    first, alerts at most once per 30 min per provider. Fireworks is matched
+    on its 402 only (no documented wording). On the Anthropic-shim path the
+    body keeps `type` and `message` and loses `provider`/`upstream_status`.
+  - S1 `bb4d35f..1b19c91`: every configured key mints; child ≤ parent at
+    mint/set (same selector or `*`, same window); overdraft allowed; subkey
+    names required and unique per parent. Refusals show the name, or a masked
+    prefix (`sk-aw…`). `budgets[].scope` of a parent budget is now
+    `parent:<selector>`, not the parent's secret; nothing in agentkit, aw4
+    or dun parses it. The `mint` flag is now cosmetic; removing it from the
+    UI and the access-request flow is a follow-up.
+  - S3: `/v1/spend` covers every provider with dollar limits. It adds the
+    `account` object (available_usd, chunks, ceilings, drain, drain_order,
+    drain_note). `GET /v1/keys` and `corrallm keys list` show the effective
+    budget with "limited by".
+  - **Drain-order finding:** the real order is NOT always soonest-expiring
+    first. Limit windows are spent first, and timed budgets only once a
+    non-paced limit is full; then soonest-expiring first. It differs when a
+    timed budget expires before today's day chunk refills, when a banked
+    `total` limit is spent before an expiring budget, and when a paced day
+    binds. `drain_order` reports the real order and `drain_note` names the
+    case. Owner: change the ledger to match the stated rule, or keep stating
+    the real order.
+  - Unrelated: `internal/toolchain` `TestRebuildAtBuildsOncePerSlot` fails
+    on main by time of day (already before P74).
 - **blocking decisions:** owner: confirm names for `sk-aw4` → aw4,
   `sk-agentkit-bcae…` → agentkit, `sk-bintag` → bintag. The other 7 keep
   their id as their name.
