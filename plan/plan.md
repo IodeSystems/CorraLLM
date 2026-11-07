@@ -759,6 +759,15 @@ Live 17:50: `--parallel 2 --kv-unified -c 163840 --kv-unified-per-slot 131072
 5090 (was 29,210). The estimator fix: `--kv-unified` no longer prices KV per
 slot, and tuneCmd leaves such a cmd alone (`internal/proc/manager.go`).
 
+- **context overflow 11-06 16:59:** one aw4 request was 89,653 tokens against
+  the 86,016 per-slot window and got a 400 three times. It was agentkit's fold
+  call: the history was sent raw, with no size limit. Fixed in agentkit 68c81e8,
+  4a8dd0c and 7c2b1aa (fold in stages within the window; a 4xx overflow is
+  typed; shrink and retry once). aw4 picks this up at its next rebuild. corrallm
+  now records a backend's error message in `activity.error`; before this, these
+  400s had an empty error. **risks:** aw4 resent the refused context twice (aw4
+  i_1m6sy2eb). aw4's CLI paths read the window as 0 because the alias is not in
+  `/v1/models`; listing aliases there is still not built (see next bullet).
 - **status 18:00:** the 2nd slot is idle. aw4's gate reads lanes from
   `/v1/models` `slots` by exact id; aw4 asks for the alias `local-Qwen3.8-27B`,
   which the listing omits, so it runs 1 lane. aw4 fixes this in its gate

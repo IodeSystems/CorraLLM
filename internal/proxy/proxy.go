@@ -1719,6 +1719,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			errReason = fmt.Sprintf("upstream %d", upstreamRefusal)
 			retryAfterMS = max(time.Until(coolTo).Milliseconds(), 0)
 		}
+		// A backend's own 4xx/5xx with nothing above to say why: keep its
+		// message. Without it a llama-server "request (89653 tokens) exceeds the
+		// available context size (86016 tokens)" was a bare 400 in the activity
+		// table, and only the journal said what happened.
+		if errReason == "" && status >= 400 {
+			errReason = upstreamErrorText(sc.buf)
+		}
 		// Meter the served request and resolve it to $ via the backend's cost
 		// class. Audio routes carry no token usage, so they cost by byte size
 		// (P9c/P9b, file-bytes basis): STT bills the uploaded INPUT audio; TTS
@@ -4073,6 +4080,35 @@ func extractFinishReason(buf []byte, streaming bool) string {
 // extraction: the whole body for a (small) non-streaming reply, or the tail for
 // a stream (usage rides in the final event).
 const usageCaptureLimit = 1 << 20 // 1 MiB
+
+// upstreamErrorText is the message of a backend's error body: error.message
+// (OpenAI, llama.cpp, Anthropic), a string error, or a top-level message (vLLM);
+// else the body's first 300 bytes. "" for an empty body.
+func upstreamErrorText(body []byte) string {
+	var j struct {
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+	}
+	if json.Unmarshal(body, &j) == nil {
+		var e struct {
+			Message string `json:"message"`
+		}
+		var str string
+		switch {
+		case json.Unmarshal(j.Error, &e) == nil && e.Message != "":
+			return e.Message
+		case json.Unmarshal(j.Error, &str) == nil && str != "":
+			return str
+		case j.Message != "":
+			return j.Message
+		}
+	}
+	t := strings.TrimSpace(string(body))
+	if len(t) > 300 {
+		t = strings.ToValidUTF8(t[:300], "") + "…"
+	}
+	return t
+}
 
 // errorCaptureLimit is the retention used where the only body worth keeping is
 // an error. Comfortably over payloadCap, so what is stored is what is capped for
