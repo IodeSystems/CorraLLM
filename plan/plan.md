@@ -635,16 +635,14 @@ dependency.
     (A), diff first. ✅ a6d67d0 (reviewed by agentkit-f2). With loop detection
     on, tool_use reaches Messages callers only at the end of the message, and a
     cut reply carries no tool_use.
-  - (C) open, owner's call: the plain chat path still sends partial
-    tool_calls before a cut's content_filter. A client that ignores
-    finish_reason could run half the arguments. agentkit-f2 recommends the same
-    hold in loopWriter for tool-call deltas.
+  - (C) ✅ owner approved via agentkit-f2: loopWriter holds chat tool
+    calls with loop detection on; a cut or an unfinished stream sends none.
   - (D) owner approved (via agentkit-f2): shim 290b9de (untagged) ends a
     dropped stream with one `error` event. corrallm side ✅ (the held events
     are dropped and the error goes out alone). **next:** after shim v0.6.0 is
     tagged, bump go.mod and flip TestAConvertedStreamThatDropsReleasesTheHeldToolCall
     (TODO in the test).
-- **next:** owner decisions (C) and (D). Commit 2 (raw tap, align stage,
+- **next:** shim v0.6.0 bump (flip the converted drop test). Commit 2 (raw tap, align stage,
   `capability` table) waits on the agentkit tag.
 - **risks:** step 1 reorders the /v1/messages path. The writer order is
   load-bearing and only a test pins it. About 400 lines of the candidate block
