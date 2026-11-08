@@ -334,8 +334,12 @@ func accountOf(all, anyOf []acctScope, now time.Time) Account {
 	if bound {
 		acc.AvailableUSD = &avail
 	}
+	// A provider's chunks are spent in turn, so one chunk below zero (a day
+	// that went over before the order changed) is not a refusal while a later
+	// chunk has money: only the total says so. Key limits all apply at once,
+	// so any one of them below zero refuses.
 	var over float64
-	for _, c := range acc.Chunks {
+	for _, c := range append(limits[:len(limits):len(limits)], extras...) {
 		if c.LeftUSD < 0 {
 			over += -c.LeftUSD
 		}
