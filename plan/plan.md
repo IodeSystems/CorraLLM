@@ -524,8 +524,17 @@ a daily chunk sized from the month's remainder.
     timed budget expires before today's day chunk refills, when a banked
     `total` limit is spent before an expiring budget, and when a paced day
     binds. `drain_order` reports the real order and `drain_note` names the
-    case. Owner: change the ledger to match the stated rule, or keep stating
-    the real order.
+    case.
+  - **S4 drain order (owner 11-08, decided):** spend (1) non-renewing chunks
+    that expire, soonest expiry first; (2) renewing chunks (calendar-day,
+    paced day); (3) banked chunks (banked timed budgets, `total` limits).
+    A timed budget gets a `banked` flag: the Fireworks $10 (id 1) is banked,
+    so it is spent after the daily $5; the Anthropic $104.54 (id 2) is not
+    banked, so it is spent before the $0.01 day. Month limits (and other
+    non-chunk windows: sliding, req) stay CEILINGS that always apply.
+    Assumed: a request paid by a chunk does not fill an earlier-ranked
+    chunk's counter; a cost larger than a chunk's remainder spills to the
+    next chunk. ◐ sub-agent; after deploy, set banked=1 on grant 1.
   - Unrelated: `internal/toolchain` `TestRebuildAtBuildsOncePerSlot` fails
     on main by time of day (already before P74).
 - **blocking decisions:** owner: confirm names for `sk-aw4` → aw4,
