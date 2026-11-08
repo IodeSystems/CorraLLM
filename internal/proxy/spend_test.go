@@ -277,65 +277,105 @@ func limitRig(t *testing.T, limits config.LimitSet) (*Proxy, *store.Store, confi
 	return p, st, cands[0]
 }
 
-func TestTimedBudgetPaysPastTheProviderLimit(t *testing.T) {
-	p, _, cand := timedRig(t)
+// dayRig is the Claude model with a $10 hard calendar-day on its provider under
+// a $100 calendar-month ceiling.
+func dayRig(t *testing.T) (*Proxy, *store.Store, config.Candidate) {
+	t.Helper()
+	return limitRig(t, config.LimitSet{
+		{USD: 10, Per: "calendar-day", Hard: true},
+		{USD: 100, Per: "calendar-month", Hard: true, Renews: 15},
+	})
+}
+
+func admits(p *Proxy, cand config.Candidate) bool {
+	kept, _ := p.filterByQuota([]config.Candidate{cand})
+	return len(kept) == 1
+}
+
+func TestTimedBudgetPaysPastTheProviderDay(t *testing.T) {
+	p, _, cand := dayRig(t)
 	scope := config.ProviderScopeKey("anthropic")
-	p.quota.Charge(scope, config.DimUSD, 10)
-	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
-		t.Fatal("a full hard limit with no timed budget must refuse")
+	spendAs(p, cand, 10)
+	if admits(p, cand) {
+		t.Fatal("a full day with no timed budget must refuse")
 	}
 	now := time.Now()
-	if err := p.AddBudget("anthropic", 3, "1h", "", "", now); err != nil {
+	if err := p.AddBudget("anthropic", 3, "1h", "", "", true, now); err != nil {
 		t.Fatal(err)
 	}
-	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 1 {
-		t.Fatal("a timed budget must admit past the full limit")
+	if !admits(p, cand) {
+		t.Fatal("a banked timed budget must admit past the full day")
 	}
-	p.grants.spend(p.store, scope, cand.Name, 3)
-	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
+	spendAs(p, cand, 3)
+	if admits(p, cand) {
 		t.Fatal("a spent timed budget must refuse again")
+	}
+	if got := dayLevel(p, scope); got != 10 {
+		t.Errorf("day = %v, want 10: the budget's $3 is not the day's", got)
 	}
 	rep, err := p.Spend(now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b := rep.Providers[0].Budgets; len(b) != 1 || b[0].SpentUSD != 3 || b[0].LeftUSD != 0 {
+	if b := rep.Providers[0].Budgets; len(b) != 1 || b[0].SpentUSD != 3 || b[0].LeftUSD != 0 || !b[0].Banked {
 		t.Fatalf("budgets = %+v", b)
 	}
-	if err := p.EditBudget(b0(rep), BudgetEdit{Left: ptr(2.5)}, now); err != nil {
+	if err := p.EditBudget(b0(rep), BudgetEdit{Left: ptr(2.5), Banked: ptr(false)}, now); err != nil {
 		t.Fatal(err)
 	}
-	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 1 {
+	if !admits(p, cand) {
 		t.Fatal("a budget corrected to $2.50 left must admit")
 	}
-	spendRow(t, p.store, "claude", 13, now.Add(-time.Second))
 	rep, _ = p.Spend(now)
-	if got := rep.Providers[0]; got.RemainingUSD == nil || *got.RemainingUSD != 2.5 {
-		t.Fatalf("remaining = %+v", got.RemainingUSD)
+	if b := rep.Providers[0].Budgets[0]; b.Banked || b.LeftUSD != 2.5 {
+		t.Fatalf("after the edit: %+v", b)
 	}
+}
+
+// dayLevel is the provider scope's calendar-day counter.
+func dayLevel(p *Proxy, scope string) float64 {
+	for _, e := range p.quota.Snapshot() {
+		if e.Backend != scope {
+			continue
+		}
+		for _, w := range e.Windows {
+			if w.Label == "usd/calendar-day" {
+				return w.Used
+			}
+		}
+	}
+	return -1
 }
 
 func b0(rep SpendReport) int64 { return rep.Providers[0].Budgets[0].ID }
 
 func TestExpiredTimedBudgetDoesNotPay(t *testing.T) {
-	p, _, cand := timedRig(t)
-	p.quota.Charge(config.ProviderScopeKey("anthropic"), config.DimUSD, 10)
+	p, _, cand := dayRig(t)
+	scope := config.ProviderScopeKey("anthropic")
 	now := time.Now()
-	if err := p.AddBudget("anthropic", 3, "", now.Add(-time.Minute).Format(time.RFC3339), "", now); err != nil {
+	if err := p.AddBudget("anthropic", 3, "", now.Add(-time.Minute).Format(time.RFC3339), "", false, now); err != nil {
 		t.Fatal(err)
 	}
-	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
+	spendAs(p, cand, 4)
+	if got := dayLevel(p, scope); got != 4 {
+		t.Errorf("day = %v, want 4: an expired budget is skipped", got)
+	}
+	spendAs(p, cand, 6)
+	if admits(p, cand) {
 		t.Fatal("an expired timed budget must not admit")
+	}
+	if g := p.grants.of(scope); len(g) != 1 || g[0].Spent != 0 {
+		t.Errorf("grants = %+v", g)
 	}
 }
 
 func TestTimedBudgetNeedsAHardLimitAndAnExpiry(t *testing.T) {
 	p, _, _ := timedRig(t)
 	now := time.Now()
-	if err := p.AddBudget("anthropic", 3, "", "", "", now); err == nil {
+	if err := p.AddBudget("anthropic", 3, "", "", "", false, now); err == nil {
 		t.Error("no expiry: want an error")
 	}
-	if err := p.AddBudget("nobody", 3, "1h", "", "", now); err == nil {
+	if err := p.AddBudget("nobody", 3, "1h", "", "", false, now); err == nil {
 		t.Error("no such provider: want an error")
 	}
 }
@@ -366,7 +406,7 @@ func TestAReloadAppliesWhatTheCLIStored(t *testing.T) {
 	if err := st.SetSpendReconcile("anthropic", 1, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AddProviderBudget(p.config(), st, "anthropic", 1, "1h", "", "", time.Now()); err != nil {
+	if _, err := AddProviderBudget(p.config(), st, "anthropic", 1, "1h", "", "", false, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	p.SetConfig(p.config())
@@ -396,7 +436,7 @@ func TestRefusalSaysTheBudgetAndItsDates(t *testing.T) {
 	p, _, cand := timedRig(t)
 	now := time.Now().UTC()
 	scope := config.ProviderScopeKey("anthropic")
-	if err := p.AddBudget("anthropic", 3, "", now.Add(48*time.Hour).Format(time.RFC3339), "", now); err != nil {
+	if err := p.AddBudget("anthropic", 3, "", now.Add(48*time.Hour).Format(time.RFC3339), "", false, now); err != nil {
 		t.Fatal(err)
 	}
 	p.quota.Charge(scope, config.DimUSD, 10)
@@ -414,7 +454,7 @@ func TestRefusalSaysTheBudgetAndItsDates(t *testing.T) {
 	}
 }
 
-func TestPacedDayRefusesAndTimedBudgetDoesNotPay(t *testing.T) {
+func TestPacedDayRefusesUntilATimedBudgetPays(t *testing.T) {
 	p, _, cand := limitRig(t, config.LimitSet{
 		{USD: 10, Per: "calendar-month", Hard: true, Renews: 15},
 		{Pace: true, Per: "calendar-day", Hard: true},
@@ -422,19 +462,19 @@ func TestPacedDayRefusesAndTimedBudgetDoesNotPay(t *testing.T) {
 	scope := config.ProviderScopeKey("anthropic")
 	now := time.Now()
 	allow := config.PacedAllowance(10, 0, 0, 15, now)
-	p.quota.Charge(scope, config.DimUSD, allow+0.01)
-	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
+	spendAs(p, cand, allow+0.01)
+	if admits(p, cand) {
 		t.Fatal("today's share spent must refuse")
-	}
-	if err := p.AddBudget("anthropic", 3, "1h", "", "", now); err != nil {
-		t.Fatal(err)
-	}
-	if kept, _ := p.filterByQuota([]config.Candidate{cand}); len(kept) != 0 {
-		t.Fatal("a timed budget pays past the month, not past today's share")
 	}
 	notes := p.budgetNotes([]string{scope})
 	if len(notes) != 1 || !strings.Contains(notes[0].Summary, "today's share of the month") {
 		t.Fatalf("notes = %+v", notes)
+	}
+	if err := p.AddBudget("anthropic", 3, "1h", "", "", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if allow+0.01 < 10 && !admits(p, cand) {
+		t.Fatal("a banked timed budget pays past today's share (P74 S4)")
 	}
 	rep, err := p.Spend(now)
 	if err != nil {

@@ -76,6 +76,7 @@ type SpendBudgetInput struct {
 		TTL      string   `json:"ttl,omitempty" doc:"Time from now until it expires, e.g. 72h."`
 		Expires  string   `json:"expires,omitempty" doc:"When it expires, RFC 3339."`
 		Note     *string  `json:"note,omitempty"`
+		Banked   *bool    `json:"banked,omitempty" doc:"Spent after the provider's renewing chunks (calendar day), not before them. Default false."`
 	}
 }
 
@@ -95,9 +96,9 @@ func (h *Handlers) SpendBudget(_ context.Context, in *SpendBudgetInput) (*SpendR
 		if b.USD != nil {
 			usd = *b.USD
 		}
-		err = h.Proxy.AddBudget(b.Provider, usd, b.TTL, b.Expires, note, now)
+		err = h.Proxy.AddBudget(b.Provider, usd, b.TTL, b.Expires, note, b.Banked != nil && *b.Banked, now)
 	case "update":
-		err = h.Proxy.EditBudget(b.ID, proxy.BudgetEdit{USD: b.USD, Left: b.Left, TTL: b.TTL, Expires: b.Expires, Note: b.Note}, now)
+		err = h.Proxy.EditBudget(b.ID, proxy.BudgetEdit{USD: b.USD, Left: b.Left, TTL: b.TTL, Expires: b.Expires, Note: b.Note, Banked: b.Banked}, now)
 	case "delete":
 		err = h.Proxy.RemoveBudget(b.ID)
 	}

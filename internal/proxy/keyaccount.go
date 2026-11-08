@@ -204,7 +204,7 @@ func (cx *keyAccountCtx) keyScope(key, sel string, ls config.LimitSet) acctScope
 			note = strings.TrimSpace("only " + g.Model + "; " + note)
 		}
 		s.extras = append(s.extras, acctExtra{name: "value add " + strconv.FormatInt(g.ID, 10), kind: "value-add", usd: g.USD, spent: g.Spent,
-			expiresMS: g.ExpiresMS, active: grantActive(&g, cx.now), note: strings.TrimSuffix(note, "; "), pays: g.Model == ""})
+			expiresMS: g.ExpiresMS, active: grantActive(&g, cx.now), note: strings.TrimSuffix(note, "; "), pays: g.Model == "", banked: true})
 	}
 	return s
 }

@@ -126,8 +126,8 @@ func TestPacedDaySpreadsTheMonth(t *testing.T) {
 	if blocked, _ := l.HardBlocked("b"); !blocked {
 		t.Fatal("$24 today is past a $200 month spread over 11 days")
 	}
-	if l.LimitFull("b") {
-		t.Fatal("the month itself is not spent")
+	if b, _ := l.CeilingBlocked("b"); b {
+		t.Fatal("the month itself (a ceiling) is not spent")
 	}
 	// Tomorrow: $176 over 10 days, and nothing spent today yet.
 	now = time.Date(2026, 11, 5, 0, 0, 1, 0, time.UTC)

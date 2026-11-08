@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
+	"github.com/iodesystems/corrallm/internal/quota"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -20,16 +21,18 @@ import (
 //	paced calendar-day       → chunk "paced-day", not banked, refills at 00:00 UTC;
 //	                           what is unspent goes back to the month it is cut from
 //	total hard limit         → chunk "once", banked, no expiry, no refill
-//	timed budget (provider)  → chunk "budget", banked, with its expiry
+//	timed budget (provider)  → chunk "budget", banked by its flag, with its expiry
 //	value add (key)          → chunk "value-add", banked, expiry optional
 //	calendar-month / rolling → a ceiling: a cap, not money of its own
 //
 // Only HARD dollar limits are in the view. A soft limit steers the walk and is
 // served past when nothing else can serve, so it neither holds money nor caps it.
 
-// drainRule is what the owner asked the report to say (P74). drain_order is the
-// order the ledger really spends in, and drain_note says where the two differ.
-const drainRule = "soonest-expiring first"
+// drainRule is the order the owner decided (P74 S4). drain_order is the order
+// the ledger really spends in, and drain_note says where the two differ. A
+// provider scope spends in the rule's order (spend.go provChunks); a key's
+// limits are still spent together before its value adds.
+const drainRule = "non-renewing expiring first (soonest), then renewing, then banked"
 
 // Account is one provider's or key budget's money, as chunks and ceilings.
 type Account struct {
@@ -78,7 +81,7 @@ type acctWindow struct {
 	used  float64
 }
 
-// acctExtra is a timed budget or value add: money that pays once a limit is full.
+// acctExtra is a timed budget or a value add: money of its own, beside the limits.
 type acctExtra struct {
 	name      string
 	kind      string
@@ -88,16 +91,26 @@ type acctExtra struct {
 	active    bool
 	note      string
 	pays      bool // counted in the room (a value add narrowed to one model is not)
+	banked    bool
 }
 
-// acctScope is one ledger scope: every request through it is charged to all of
-// its windows. Extras pay past a full window: past a non-paced one for a
-// provider's timed budget (Ledger.LimitFull), past any for a key's value add
-// (filterByKeyBudgets uses HardBlocked).
+// acctScope is one ledger scope. A key's scope (not chunked) charges every
+// request to all of its windows, and its value adds pay past any full hard
+// window (filterByKeyBudgets uses HardBlocked). A provider's scope is CHUNKED
+// (spend.go provChunks): its day and total windows and its timed budgets are
+// chunks spent one after another, and its other windows are ceilings.
 type acctScope struct {
 	windows  []acctWindow
 	extras   []acctExtra
 	pastPace bool
+	chunked  bool
+}
+
+// isChunk reports whether w is a chunk window of a chunked scope, as the
+// ledger's counterWindow.chunk decides (every window here is hard and in usd).
+func isChunk(w acctWindow) bool {
+	cal := w.lim.Calendar()
+	return cal == "day" || cal == "total"
 }
 
 // paidPast is what the extras have paid since they were made. A window's level
@@ -116,6 +129,9 @@ func (s acctScope) paidPast() float64 {
 // left is a window's own money left, net of what the extras paid past it.
 func (s acctScope) left(w acctWindow) float64 {
 	used := w.used
+	if s.chunked {
+		return w.limit - used // a chunk's counter holds what it paid, no more
+	}
 	if used > w.limit {
 		used = max(used-s.paidPast(), w.limit)
 	}
@@ -149,6 +165,9 @@ func (s acctScope) room() (float64, bool) {
 	if len(s.windows) == 0 {
 		return 0, false
 	}
+	if s.chunked {
+		return s.chunkedRoom()
+	}
 	head, paced := math.Inf(1), math.Inf(1)
 	for _, w := range s.windows {
 		l := s.left(w)
@@ -170,11 +189,49 @@ func (s acctScope) room() (float64, bool) {
 	return head + extra, true
 }
 
-// chunks and ceilings of a scope, in drain order: the limits (spent together)
-// first, then the extras soonest-expiring first, a no-expiry one last, as
-// grantBook.spend takes them.
+// chunkedRoom is a chunked scope's room: what its chunks hold, under the
+// tightest ceiling. With no chunk the ceilings alone bound it; with every chunk
+// spent it is their (negative) overdraft.
+//
+//	room = min(min over ceilings of (limit − used), chunks' left)
+func (s acctScope) chunkedRoom() (float64, bool) {
+	head, pos, neg, chunks := math.Inf(1), 0.0, 0.0, 0
+	add := func(l float64) {
+		chunks++
+		if l > 0 {
+			pos += l
+		} else {
+			neg += l
+		}
+	}
+	for _, w := range s.windows {
+		if isChunk(w) {
+			add(s.left(w))
+		} else {
+			head = min(head, w.limit-w.used)
+		}
+	}
+	for _, e := range s.extras {
+		if e.active && e.pays {
+			add(e.usd - e.spent)
+		}
+	}
+	switch {
+	case chunks == 0:
+		return head, !math.IsInf(head, 1)
+	case pos > 0:
+		return min(head, pos), true
+	}
+	return min(head, neg), true
+}
+
+// chunks and ceilings of a scope, in drain order. A chunked (provider) scope:
+// unbanked extras soonest-expiring first, the day chunks, banked extras, the
+// once chunks, as provChunks spends them. A key's scope: its limits (spent
+// together) first, then the extras soonest-expiring first, a no-expiry one
+// last, as grantBook.spend takes them.
 func (s acctScope) view(now time.Time) ([]AccountChunk, []AccountCeiling) {
-	var chunks []AccountChunk
+	var limits, days, onces []AccountChunk // limits: both, in config order
 	var ceilings []AccountCeiling
 	for _, w := range s.windows {
 		cal := w.lim.Calendar()
@@ -186,10 +243,11 @@ func (s acctScope) view(now time.Time) ([]AccountChunk, []AccountCeiling) {
 			if w.lim.Pace {
 				c.Kind, c.Note = "paced-day", "today's share of the month; unspent goes back to the month"
 			}
-			chunks = append(chunks, c)
+			days, limits = append(days, c), append(limits, c)
 		case cal == "total":
-			chunks = append(chunks, AccountChunk{Name: w.name, Kind: "once", USD: w.limit, LeftUSD: s.left(w), Banked: true,
-				Note: "one-off: refilled only by raising it"})
+			c := AccountChunk{Name: w.name, Kind: "once", USD: w.limit, LeftUSD: s.left(w), Banked: true,
+				Note: "one-off: refilled only by raising it"}
+			onces, limits = append(onces, c), append(limits, c)
 		default:
 			c := AccountCeiling{Scope: w.scope, Window: w.lim.Per, USD: w.limit, UsedUSD: w.used}
 			if cal == "month" {
@@ -211,13 +269,22 @@ func (s acctScope) view(now time.Time) ([]AccountChunk, []AccountCeiling) {
 		}
 		return a < b
 	})
+	var unbanked, banked []AccountChunk
 	for _, e := range extras {
-		c := AccountChunk{Name: e.name, Kind: e.kind, USD: e.usd, LeftUSD: e.usd - e.spent, Banked: true, Note: e.note}
+		c := AccountChunk{Name: e.name, Kind: e.kind, USD: e.usd, LeftUSD: e.usd - e.spent, Banked: e.banked, Note: e.note}
 		if e.expiresMS > 0 {
 			c.Expires = time.UnixMilli(e.expiresMS).UTC().Format(time.RFC3339)
 		}
-		chunks = append(chunks, c)
+		if e.banked || !s.chunked {
+			banked = append(banked, c)
+		} else {
+			unbanked = append(unbanked, c)
+		}
 	}
+	if !s.chunked {
+		return append(limits, banked...), ceilings
+	}
+	chunks := append(append(append(unbanked, days...), banked...), onces...)
 	return chunks, ceilings
 }
 
@@ -246,19 +313,24 @@ func accountOf(all, anyOf []acctScope, now time.Time) Account {
 			avail, bound = min(avail, sum), true
 		}
 	}
-	var limits, extras []AccountChunk
+	// A chunked scope's chunks keep its order; a key's limits come before
+	// every extra.
+	var chunked, limits, extras []AccountChunk
 	for _, s := range append(append([]acctScope{}, all...), anyOf...) {
 		ch, ce := s.view(now)
 		acc.Ceilings = append(acc.Ceilings, ce...)
 		for _, c := range ch {
-			if c.Kind == "budget" || c.Kind == "value-add" {
+			switch {
+			case s.chunked:
+				chunked = append(chunked, c)
+			case c.Kind == "budget" || c.Kind == "value-add":
 				extras = append(extras, c)
-			} else {
+			default:
 				limits = append(limits, c)
 			}
 		}
 	}
-	acc.Chunks = append(append(acc.Chunks, limits...), extras...)
+	acc.Chunks = append(append(append(acc.Chunks, chunked...), limits...), extras...)
 	if bound {
 		acc.AvailableUSD = &avail
 	}
@@ -274,42 +346,54 @@ func accountOf(all, anyOf []acctScope, now time.Time) Account {
 	if over > 0 {
 		acc.Overdrawn, acc.OverdrawnUSD = true, &over
 	}
-	acc.DrainOrder, acc.DrainNote = drainOrder(limits, extras)
+	acc.DrainOrder, acc.DrainNote = drainOrder(acc.Chunks)
 	return acc
 }
 
-// drainOrder is the order the ledger spends in: the limit chunks together, as
-// every request is charged to each of them, then the extras soonest-expiring
-// first. That is "soonest-expiring first" only while no extra lapses before the
-// limit chunks refill, and no limit chunk is banked; the note says when not.
-func drainOrder(limits, extras []AccountChunk) ([]string, string) {
-	if len(limits)+len(extras) == 0 {
+// drainRank is a chunk's place under drainRule: non-renewing expiring (1),
+// renewing (2), banked expiring (3), banked with no expiry (4), once (5). Two
+// expiring chunks of one rank go soonest first.
+func drainRank(c AccountChunk) int {
+	switch {
+	case c.RefillsAt != "":
+		return 2
+	case c.Kind == "once":
+		return 5
+	case !c.Banked && c.Expires != "":
+		return 1
+	case c.Expires != "":
+		return 3
+	}
+	return 4
+}
+
+// drainBefore reports whether the rule spends a before b.
+func drainBefore(a, b AccountChunk) bool {
+	ra, rb := drainRank(a), drainRank(b)
+	if ra != rb {
+		return ra < rb
+	}
+	return (ra == 1 || ra == 3) && a.Expires < b.Expires
+}
+
+// drainOrder is chunks' names, in the order the ledger spends them, and a note
+// naming each pair the ledger spends against the rule; "" when none.
+func drainOrder(chunks []AccountChunk) ([]string, string) {
+	if len(chunks) == 0 {
 		return nil, ""
 	}
-	var order []string
-	for _, c := range limits {
+	var order, notes []string
+	for i, c := range chunks {
 		order = append(order, c.Name)
-	}
-	for _, c := range extras {
-		order = append(order, c.Name)
-	}
-	var notes []string
-	for _, l := range limits {
-		for _, e := range extras {
-			switch {
-			case l.Banked:
-				notes = append(notes, fmt.Sprintf("%s (banked, no expiry) is spent before %s, which expires", l.Name, e.Name))
-			case e.Expires != "" && l.RefillsAt != "" && e.Expires < l.RefillsAt:
-				notes = append(notes, fmt.Sprintf("%s expires %s, before %s refills, and is spent only after it", e.Name, e.Expires, l.Name))
-			default:
-				continue
+		for _, later := range chunks[i+1:] {
+			if drainBefore(later, c) {
+				notes = append(notes, fmt.Sprintf("%s is spent before %s", c.Name, later.Name))
 			}
-			break
 		}
 	}
 	note := ""
 	if len(notes) > 0 {
-		note = "limits are spent before timed money: " + strings.Join(notes, "; ")
+		note = "not in the rule's order: " + strings.Join(notes, "; ")
 	}
 	return order, note
 }
@@ -340,8 +424,9 @@ func storedLevel(c store.QuotaCounter, l config.Limit, now time.Time) float64 {
 // usdWindows is a scope's hard dollar limits with their levels. level reads a
 // limit's fill now. A paced day's amount is the month's remainder over the days
 // left, from the tightest calendar-month dollar limit in the scope (as
-// counterState.limitOf computes it).
-func usdWindows(scope, shown string, ls config.LimitSet, level func(config.Limit) float64, now time.Time) []acctWindow {
+// counterState.limitOf computes it). timed reads what timed budgets paid in that
+// month's period, which the pacing leaves out of the month's spend.
+func usdWindows(scope, shown string, ls config.LimitSet, level, timed func(config.Limit) float64, now time.Time) []acctWindow {
 	var all []acctWindow
 	for _, l := range ls {
 		if l.Dimension() != config.DimUSD {
@@ -355,7 +440,7 @@ func usdWindows(scope, shown string, ls config.LimitSet, level func(config.Limit
 			best, found := 0.0, false
 			for _, m := range all {
 				if m.lim.Calendar() == "month" && !m.lim.Pace {
-					a := config.PacedAllowance(m.limit, m.used, w.used, m.lim.Renews, now)
+					a := config.PacedAllowance(m.limit, max(m.used-timed(m.lim), 0), w.used, m.lim.Renews, now)
 					if !found || a < best {
 						best, found = a, true
 					}
@@ -378,7 +463,8 @@ func providerAccount(cfg *config.Config, scopes []string, timed []SpendBudget, c
 	var all, anyOf []acctScope
 	for _, sc := range scopes {
 		level := func(l config.Limit) float64 { return storedLevel(counters[sc+"\x00"+l.Label()], l, now) }
-		s := acctScope{windows: usdWindows(sc, sc, limits[sc], level, now)}
+		paidTimed := func(m config.Limit) float64 { return storedLevel(counters[sc+"\x00"+quota.TimedPaidLabel], m, now) }
+		s := acctScope{windows: usdWindows(sc, sc, limits[sc], level, paidTimed, now)}
 		if config.IsProviderScope(sc) {
 			for _, b := range timed {
 				if config.ProviderScopeKey(b.Provider) != sc {
@@ -386,8 +472,9 @@ func providerAccount(cfg *config.Config, scopes []string, timed []SpendBudget, c
 				}
 				exp, _ := time.Parse(time.RFC3339, b.Expires)
 				s.extras = append(s.extras, acctExtra{name: fmt.Sprintf("budget %d", b.ID), kind: "budget", usd: b.USD,
-					spent: b.SpentUSD, expiresMS: exp.UnixMilli(), active: b.Active, note: b.Note, pays: true})
+					spent: b.SpentUSD, expiresMS: exp.UnixMilli(), active: b.Active, note: b.Note, pays: true, banked: b.Banked})
 			}
+			s.chunked = true
 			if len(s.windows) > 0 || len(s.extras) > 0 {
 				all = append(all, s)
 			}

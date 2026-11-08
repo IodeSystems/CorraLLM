@@ -713,7 +713,7 @@ func (p *Proxy) UpdateValueAdd(id int64, usd float64, ttl, expires, note string)
 			return GrantView{}, err
 		}
 	}
-	if err := p.store.UpdateKeyGrant(id, usd, exp, note); err != nil {
+	if err := p.store.UpdateKeyGrant(id, usd, exp, note, g.Banked); err != nil {
 		return GrantView{}, err
 	}
 	g.USD, g.ExpiresMS, g.Note = usd, exp, note

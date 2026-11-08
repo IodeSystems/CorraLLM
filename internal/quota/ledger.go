@@ -221,6 +221,21 @@ func periodEnd(unit string, renews int, t time.Time) time.Time {
 type counterState struct {
 	windows []*counterWindow
 	recent  map[string]*rateRing // by dimension
+	// timed is this calendar month's spend that timed budgets paid (ChargeSplit),
+	// beside the scope's usd calendar-month window; nil without one. A paced day
+	// leaves it out of the month's spend: that money was not the month's credit.
+	timed *counterWindow
+}
+
+// TimedPaidLabel is the persisted label of counterState.timed. Its dimension is
+// not "usd", so no limit and no Charge ever touches it.
+const TimedPaidLabel = "usd-timed/calendar-month"
+
+// chunk reports whether w is a CHUNK of a provider scope's money (P74 S4): a
+// hard dollar calendar-day (paced or not) or total. Every other window is a
+// ceiling. Only ChargeSplit and the Ceiling*/Chunks methods use the split.
+func (w *counterWindow) chunk() bool {
+	return w.hard && strings.HasPrefix(w.label, config.DimUSD+"/") && (w.calendar == "day" || w.calendar == "total")
 }
 
 // limitOf is w's limit at now. A paced day's is what is left of the tightest
@@ -235,7 +250,11 @@ func (cs *counterState) limitOf(w *counterWindow, now time.Time) float64 {
 		if m.calendar != "month" || m.pace || !strings.HasPrefix(m.label, dim+"/") {
 			continue
 		}
-		a := config.PacedAllowance(m.limit, m.levelAt(now), w.levelAt(now), m.renews, now)
+		used := m.levelAt(now)
+		if cs.timed != nil && dim == config.DimUSD {
+			used = max(used-cs.timed.levelAt(now), 0)
+		}
+		a := config.PacedAllowance(m.limit, used, w.levelAt(now), m.renews, now)
 		if !found || a < best {
 			best, found = a, true
 		}
@@ -402,10 +421,22 @@ func (l *Ledger) SetLimits(backend string, limits []config.Limit) {
 		return
 	}
 	recent := map[string]*rateRing{}
+	var timed *counterWindow
 	if cur := l.counters[backend]; cur != nil {
-		recent = cur.recent
+		recent, timed = cur.recent, cur.timed
 	}
-	l.counters[backend] = &counterState{windows: windows, recent: recent}
+	cs := &counterState{windows: windows, recent: recent}
+	for _, w := range windows {
+		if w.label == config.DimUSD+"/calendar-month" {
+			t := l.seedWindow(backend, TimedPaidLabel, w.limit, w.dur)
+			if timed != nil {
+				t.used, t.at = timed.used, timed.at
+			}
+			t.calendar, t.renews = "month", w.renews
+			cs.timed = t
+		}
+	}
+	l.counters[backend] = cs
 	// Create the entry now so a counter-mode backend shows its declared budget in
 	// the ledger before its first call (header-mode backends are discovered on
 	// first response; counter-mode is declared, so surface it up front).
@@ -632,6 +663,9 @@ func (l *Ledger) Resync() {
 				l.mergeLocked(w, r.Used, r.At)
 			}
 		}
+		if cs.timed != nil && cs.timed.label == r.Label {
+			l.mergeLocked(cs.timed, r.Used, r.At)
+		}
 	}
 }
 
@@ -652,6 +686,105 @@ func (l *Ledger) Charge(backend, dim string, amt float64) {
 	l.mu.Unlock()
 	// Same discipline as ObserveResponse: I/O outside the lock, best-effort.
 	l.flush(store, saves)
+}
+
+// ChargeSplit charges a provider scope's dollar cost by chunk (P74 S4): every
+// ceiling (each usd window that is not a chunk) gets amt in full; each chunk
+// window gets only paid[label], what it paid of amt; timed is what timed budgets
+// paid, kept for pacing (counterState.timed). So spend an earlier chunk paid
+// does not fill a later chunk's counter.
+func (l *Ledger) ChargeSplit(backend string, amt float64, paid map[string]float64, timed float64) {
+	if amt <= 0 {
+		return
+	}
+	l.mu.Lock()
+	cs := l.counters[backend]
+	if cs == nil {
+		l.mu.Unlock()
+		return
+	}
+	now := l.now()
+	if cs.recent[config.DimUSD] == nil {
+		cs.recent[config.DimUSD] = &rateRing{}
+	}
+	cs.recent[config.DimUSD].add(now, amt)
+	var saves []pendingSave
+	charge := func(w *counterWindow, a float64) {
+		if a <= 0 {
+			return
+		}
+		w.add(now, a)
+		if l.store != nil {
+			saves = append(saves, pendingSave{backend: backend, w: w, amt: a, at: now})
+		}
+	}
+	for _, w := range cs.windows {
+		if !strings.HasPrefix(w.label, config.DimUSD+"/") {
+			continue
+		}
+		if w.chunk() {
+			charge(w, paid[w.label])
+		} else {
+			charge(w, amt)
+		}
+	}
+	if cs.timed != nil {
+		charge(cs.timed, timed)
+	}
+	store := l.store
+	l.mu.Unlock()
+	l.flush(store, saves)
+}
+
+// Chunk is one chunk window of a scope with its room now.
+type Chunk struct {
+	Label    string
+	Calendar string  // "day" or "total"
+	Room     float64 // limit − level; ≤ 0 when spent
+	// RefillIn is the time to the next UTC day for a day chunk; 0 for a total.
+	RefillIn time.Duration
+}
+
+// Chunks lists the scope's chunk windows (see counterWindow.chunk) in config
+// order.
+func (l *Ledger) Chunks(backend string) []Chunk {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	cs := l.counters[backend]
+	if cs == nil {
+		return nil
+	}
+	now := l.now()
+	var out []Chunk
+	for _, w := range cs.windows {
+		if !w.chunk() {
+			continue
+		}
+		c := Chunk{Label: w.label, Calendar: w.calendar, Room: cs.limitOf(w, now) - w.levelAt(now)}
+		if w.calendar == "day" {
+			c.RefillIn = periodEnd("day", 0, now).Sub(now)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// CeilingBlocked is HardBlocked over the ceilings alone: chunk windows are left
+// out, as the chunk walk decides those.
+func (l *Ledger) CeilingBlocked(backend string) (bool, time.Duration) {
+	return l.hardBlocked(backend, true)
+}
+
+// CeilingAvailable is Available with chunk windows left out.
+func (l *Ledger) CeilingAvailable(backend string) bool {
+	return l.available(backend, true)
+}
+
+// SetClock replaces the ledger's clock (tests in other packages).
+func (l *Ledger) SetClock(now func() time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.now = now
 }
 
 // RaiseCalendarFloor lifts the level of a scope's calendar window in dimension
@@ -870,6 +1003,10 @@ func (l *Ledger) MarkDown(backend string) time.Duration {
 // the first response, and refusing a backend we know nothing about would strand
 // it forever.
 func (l *Ledger) Available(backend string) bool {
+	return l.available(backend, false)
+}
+
+func (l *Ledger) available(backend string, ceilings bool) bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	e := l.entries[backend]
@@ -896,6 +1033,9 @@ func (l *Ledger) Available(backend string) bool {
 	// Counter-mode windows: exhausted while the decayed fill is at the limit.
 	if cs := l.counters[backend]; cs != nil {
 		for _, cw := range cs.windows {
+			if ceilings && cw.chunk() {
+				continue
+			}
 			if cw.levelAt(now) >= cs.limitOf(cw, now) {
 				return false
 			}
@@ -909,6 +1049,10 @@ func (l *Ledger) Available(backend string) bool {
 // Unlike Available it ignores soft windows, cooling and staleness: those steer
 // the walk, while this is the one answer the walk may not overrule.
 func (l *Ledger) HardBlocked(backend string) (bool, time.Duration) {
+	return l.hardBlocked(backend, false)
+}
+
+func (l *Ledger) hardBlocked(backend string, ceilings bool) (bool, time.Duration) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	cs := l.counters[backend]
@@ -919,7 +1063,7 @@ func (l *Ledger) HardBlocked(backend string) (bool, time.Duration) {
 	blocked, wait := false, time.Duration(0)
 	for _, cw := range cs.windows {
 		lv := cw.levelAt(now)
-		if !cw.hard || lv < cs.limitOf(cw, now) {
+		if !cw.hard || lv < cs.limitOf(cw, now) || (ceilings && cw.chunk()) {
 			continue
 		}
 		blocked = true
@@ -940,25 +1084,6 @@ func (l *Ledger) HardBlocked(backend string) (bool, time.Duration) {
 		}
 	}
 	return blocked, wait
-}
-
-// LimitFull reports whether a hard window that is not paced is at its limit: the
-// budget itself is spent, not only today's share of it. A timed budget pays past
-// the first and not the second.
-func (l *Ledger) LimitFull(backend string) bool {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	cs := l.counters[backend]
-	if cs == nil {
-		return false
-	}
-	now := l.now()
-	for _, cw := range cs.windows {
-		if cw.hard && !cw.pace && cw.levelAt(now) >= cw.limit {
-			return true
-		}
-	}
-	return false
 }
 
 // Snapshot returns a copy of every tracked entry, backend-sorted, for display.

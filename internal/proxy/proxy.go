@@ -1743,15 +1743,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// would cool the caller's scope for a backend's refusal.
 		p.chargeCaller(caller, cand, costUSD)
 		if p.quota != nil && costUSD > 0 {
-			// Every scope the candidate answers to: the model, its credential,
-			// that credential's provider, and the box. Spend belongs to the
-			// account that paid for it AND counts against everything above it.
-			for _, sc := range cand.QuotaScopes(p.config()) {
-				if config.IsProviderScope(sc) && p.quota.LimitFull(sc) {
-					p.grants.spend(p.store, sc, cand.Name, costUSD)
-				}
-				p.quota.Charge(sc, config.DimUSD, costUSD)
-			}
+			p.chargeScopes(cand, costUSD)
 		}
 
 		// Prometheus: meter the served request — provider×model with per-class
@@ -2465,7 +2457,11 @@ func (p *Proxy) filterByQuota(cands []config.Candidate) (out []config.Candidate,
 	for _, c := range cands {
 		blocked, until := false, time.Duration(0)
 		for _, sc := range c.QuotaScopes(p.config()) {
-			if b, d := p.quota.HardBlocked(sc); b && !p.timedBudgetCovers(sc, c.Name) {
+			b, d := p.quota.HardBlocked(sc)
+			if config.IsProviderScope(sc) {
+				b, d = p.provBlocked(sc, c.Name) // ceilings and the chunk walk
+			}
+			if b {
 				blocked = true
 				if d > until {
 					until = d
@@ -2488,7 +2484,11 @@ func (p *Proxy) filterByQuota(cands []config.Candidate) (out []config.Candidate,
 		// cannot spend past its provider's, and nothing past the box's.
 		ok := true
 		for _, sc := range c.QuotaScopes(p.config()) {
-			if !p.quota.Available(sc) && !p.timedBudgetCovers(sc, c.Name) {
+			avail := p.quota.Available
+			if config.IsProviderScope(sc) {
+				avail = p.quota.CeilingAvailable // the chunks passed above
+			}
+			if !avail(sc) {
 				ok = false
 				break
 			}

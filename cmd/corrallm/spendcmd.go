@@ -77,6 +77,9 @@ func spendText(rep proxy.SpendReport) string {
 				state = "ended"
 			}
 			fmt.Fprintf(&b, "  timed budget %d: $%.2f, $%.2f spent, %s, expires %s", t.ID, t.USD, t.SpentUSD, state, t.Expires)
+			if t.Banked {
+				fmt.Fprint(&b, ", banked")
+			}
 			if t.Note != "" {
 				fmt.Fprintf(&b, " (%s)", t.Note)
 			}
@@ -166,8 +169,9 @@ func newSpendCmd() *cobra.Command {
 }
 
 func newSpendBudgetCmd() *cobra.Command {
-	budget := &cobra.Command{Use: "budget", Short: "Timed budgets: dollars on a provider, past its hard limit, until an expiry"}
+	budget := &cobra.Command{Use: "budget", Short: "Timed budgets: dollars on a provider until an expiry; unbanked ones are spent before the day limit, banked ones after"}
 	var provider, ttl, expires, note string
+	var banked bool
 	add := &cobra.Command{
 		Use:   "add USD",
 		Short: "Add a timed budget; it needs --ttl or --expires",
@@ -182,7 +186,7 @@ func newSpendBudgetCmd() *cobra.Command {
 				return err
 			}
 			defer done()
-			if _, err := proxy.AddProviderBudget(cfg, st, provider, usd, ttl, expires, note, time.Now()); err != nil {
+			if _, err := proxy.AddProviderBudget(cfg, st, provider, usd, ttl, expires, note, banked, time.Now()); err != nil {
 				return err
 			}
 			spendReload(cmd)
@@ -194,13 +198,14 @@ func newSpendBudgetCmd() *cobra.Command {
 		c.Flags().StringVar(&ttl, "ttl", "", "time until it expires, e.g. 72h")
 		c.Flags().StringVar(&expires, "expires", "", "when it expires, RFC 3339")
 		c.Flags().StringVar(&note, "note", "", "what it is for")
+		c.Flags().BoolVar(&banked, "banked", false, "spend it after the renewing chunks (calendar day), not before them")
 	}
 	expiry(add)
 
 	var usdFlag, leftFlag string
 	set := &cobra.Command{
 		Use:   "set ID",
-		Short: "Correct a timed budget: --usd, --left, --ttl, --expires, --note",
+		Short: "Correct a timed budget: --usd, --left, --ttl, --expires, --note, --banked=true|false",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := strconv.ParseInt(args[0], 10, 64)
@@ -224,6 +229,9 @@ func newSpendBudgetCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("note") {
 				e.Note = &note
+			}
+			if cmd.Flags().Changed("banked") {
+				e.Banked = &banked
 			}
 			cfg, st, done, err := spendDB(cmd.Context())
 			if err != nil {

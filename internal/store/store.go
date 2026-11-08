@@ -420,7 +420,10 @@ CREATE TABLE IF NOT EXISTS key_grant (
     spent      REAL    NOT NULL DEFAULT 0,
     expires_at INTEGER NOT NULL DEFAULT 0, -- unix millis; 0 = until spent
     created_at INTEGER NOT NULL DEFAULT 0,
-    note       TEXT    NOT NULL DEFAULT ''
+    note       TEXT    NOT NULL DEFAULT '',
+    -- P74 S4: a provider's timed budget is spent after the renewing chunks (1)
+    -- or before them (0).
+    banked     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS key_grant_key ON key_grant(key);
 
@@ -484,6 +487,9 @@ CREATE TABLE IF NOT EXISTS warning_pref (
 //     fresh install, the source is already gone; that is the migration having
 //     succeeded, not a failure.
 var migrations = []string{
+	// 2026-11-08 (P74 S4): a provider's timed budget is banked (spent after the
+	// renewing chunks) or not (spent before them). Existing budgets are not.
+	`ALTER TABLE key_grant ADD COLUMN banked INTEGER NOT NULL DEFAULT 0`,
 	// 2026-11-05: which corrallm version ran a tool build, so a hold on a
 	// rolled-back commit lifts when corrallm itself changed (the failure may
 	// have been corrallm's).

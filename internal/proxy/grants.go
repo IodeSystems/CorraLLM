@@ -114,6 +114,25 @@ func (g *grantBook) spend(st *store.Store, key, model string, usd float64) {
 	}
 }
 
+// take adds usd to one grant's spend (a provider's chunk walk picked it).
+func (g *grantBook) take(st *store.Store, id int64, usd float64) {
+	g.mu.Lock()
+	for _, list := range g.byKey {
+		for _, gr := range list {
+			if gr.ID == id {
+				gr.Spent += usd
+			}
+		}
+	}
+	g.mu.Unlock()
+	if st == nil {
+		return
+	}
+	if _, err := st.SpendKeyGrant(id, usd); err != nil {
+		slog.Warn("timed budget: spend not saved", "grant", id, "err", err)
+	}
+}
+
 // of lists key's grants, oldest first, as copies.
 func (g *grantBook) of(key string) []store.KeyGrant {
 	g.mu.Lock()

@@ -44,16 +44,8 @@ func fireworksRigWith(t *testing.T, extra func(*config.Config)) (*Proxy, *store.
 	return p, st, h, cands[0]
 }
 
-// spendAs charges usd the way a served request does: past the full day, the
-// timed budget pays; every scope counts it.
-func spendAs(p *Proxy, cand config.Candidate, usd float64) {
-	for _, sc := range cand.QuotaScopes(p.config()) {
-		if config.IsProviderScope(sc) && p.quota.LimitFull(sc) {
-			p.grants.spend(p.store, sc, cand.Name, usd)
-		}
-		p.quota.Charge(sc, config.DimUSD, usd)
-	}
-}
+// spendAs charges usd the way a served request does.
+func spendAs(p *Proxy, cand config.Candidate, usd float64) { p.chargeScopes(cand, usd) }
 
 func fireworks(t *testing.T, p *Proxy, now time.Time) SpendProvider {
 	t.Helper()
@@ -76,7 +68,7 @@ func TestFireworksAccountChunksCeilingsAndDrain(t *testing.T) {
 	p, _, cand := fireworksRig(t)
 	now := time.Now().UTC()
 	exp := now.Add(48 * time.Hour)
-	if err := p.AddBudget("fireworks", 10, "", exp.Format(time.RFC3339), "bank", now); err != nil {
+	if err := p.AddBudget("fireworks", 10, "", exp.Format(time.RFC3339), "bank", true, now); err != nil {
 		t.Fatal(err)
 	}
 	spendAs(p, cand, 3)
@@ -110,7 +102,7 @@ func TestFireworksAccountChunksCeilingsAndDrain(t *testing.T) {
 	if c.Scope != "cred:fireworks/default" || c.Window != "calendar-month" || c.USD != 100 || !usdNear(c.UsedUSD, 3) || c.ResetsAt != monthEnd {
 		t.Errorf("ceiling = %+v", c)
 	}
-	if a.Drain != "soonest-expiring first" || strings.Join(a.DrainOrder, ",") != day.Name+","+bud.Name || a.DrainNote != "" {
+	if a.Drain != drainRule || strings.Join(a.DrainOrder, ",") != day.Name+","+bud.Name || a.DrainNote != "" {
 		t.Errorf("drain = %q %v %q", a.Drain, a.DrainOrder, a.DrainNote)
 	}
 	// The legacy fields come from the credential's month.
@@ -147,45 +139,52 @@ func TestAccountOverdrawn(t *testing.T) {
 	}
 }
 
-func TestDrainNoteSaysWhereTheLedgerIsNotSoonestExpiring(t *testing.T) {
-	limits := []AccountChunk{{Name: "day", Kind: "day", RefillsAt: "2026-11-08T00:00:00Z"}}
-	soon := []AccountChunk{{Name: "budget 1", Kind: "budget", Expires: "2026-11-07T18:00:00Z"}}
-	order, note := drainOrder(limits, soon)
-	if strings.Join(order, ",") != "day,budget 1" || !strings.Contains(note, "budget 1 expires 2026-11-07T18:00:00Z, before day refills") {
-		t.Errorf("order %v, note %q", order, note)
+func TestDrainNoteSaysWhereTheLedgerIsNotTheRule(t *testing.T) {
+	day := AccountChunk{Name: "day", Kind: "day", RefillsAt: "2026-11-08T00:00:00Z"}
+	soon := AccountChunk{Name: "budget 1", Kind: "budget", Expires: "2026-11-07T18:00:00Z"}
+	later := AccountChunk{Name: "budget 2", Kind: "budget", Expires: "2026-11-09T00:00:00Z"}
+	bank := AccountChunk{Name: "budget 3", Kind: "budget", Banked: true, Expires: "2026-11-07T00:00:00Z"}
+	once := AccountChunk{Name: "once", Kind: "once", Banked: true}
+	order, note := drainOrder([]AccountChunk{soon, later, day, bank, once})
+	if strings.Join(order, ",") != "budget 1,budget 2,day,budget 3,once" || note != "" {
+		t.Errorf("the rule's order: %v, note %q", order, note)
 	}
-	if _, note := drainOrder(limits, []AccountChunk{{Name: "b", Expires: "2026-11-09T00:00:00Z"}}); note != "" {
-		t.Errorf("a budget outliving the day: note %q", note)
+	// A key: its limits are spent together, before its value adds.
+	_, note = drainOrder([]AccountChunk{day, once, {Name: "value add 1", Kind: "value-add", Banked: true}})
+	if note != "not in the rule's order: once is spent before value add 1" {
+		t.Errorf("key order: note %q", note)
 	}
-	once := []AccountChunk{{Name: "once", Kind: "once", Banked: true}}
-	if _, note := drainOrder(once, soon); !strings.Contains(note, "once (banked, no expiry) is spent before budget 1") {
-		t.Errorf("banked limit first: note %q", note)
+	if _, note := drainOrder([]AccountChunk{day, soon}); !strings.Contains(note, "day is spent before budget 1") {
+		t.Errorf("unbanked after the day: note %q", note)
 	}
 }
 
-func TestPacedDayAccountTimedBudgetWaits(t *testing.T) {
+func TestPacedDayAccountUnbankedBudgetPaysFirst(t *testing.T) {
 	p, _, cand := limitRig(t, config.LimitSet{
 		{USD: 10, Per: "calendar-month", Hard: true, Renews: 15},
 		{Pace: true, Per: "calendar-day", Hard: true},
 	})
 	now := time.Now().UTC()
-	if err := p.AddBudget("anthropic", 3, "48h", "", "", now); err != nil {
+	if err := p.AddBudget("anthropic", 3, "48h", "", "", false, now); err != nil {
 		t.Fatal(err)
 	}
-	p.quota.Charge(config.ProviderScopeKey("anthropic"), config.DimUSD, 0.1)
-	_ = cand
+	spendAs(p, cand, 0.1)
 	rep, err := p.Spend(now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := rep.Providers[0].Account
-	allow := config.PacedAllowance(10, 0.1, 0.1, 15, now)
-	// The paced day binds and a timed budget does not pay past it.
-	if a == nil || a.AvailableUSD == nil || !usdNear(*a.AvailableUSD, allow-0.1) {
-		t.Fatalf("account = %+v, want today's share less its spend", a)
+	// The budget paid the $0.10, so the month's own credit is whole for pacing.
+	allow := config.PacedAllowance(10, 0, 0, 15, now)
+	if a == nil || len(a.Chunks) != 2 || a.Chunks[0].Kind != "budget" || !usdNear(a.Chunks[0].LeftUSD, 2.9) ||
+		a.Chunks[1].Kind != "paced-day" || !usdNear(a.Chunks[1].USD, allow) || !usdNear(a.Chunks[1].LeftUSD, allow) {
+		t.Fatalf("account = %+v", a)
 	}
-	if a.Chunks[0].Kind != "paced-day" || !usdNear(a.Chunks[0].USD, allow) || len(a.Ceilings) != 1 {
-		t.Errorf("chunks %+v ceilings %+v", a.Chunks, a.Ceilings)
+	if len(a.Ceilings) != 1 || !usdNear(a.Ceilings[0].UsedUSD, 0.1) {
+		t.Errorf("ceilings %+v: the month sees the budget's spend", a.Ceilings)
+	}
+	if want := min(9.9, 2.9+allow); a.AvailableUSD == nil || !usdNear(*a.AvailableUSD, want) || a.DrainNote != "" {
+		t.Errorf("available %v, want %v; note %q", a.AvailableUSD, want, a.DrainNote)
 	}
 }
 

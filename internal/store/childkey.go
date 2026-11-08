@@ -78,12 +78,15 @@ type KeyGrant struct {
 	ExpiresMS int64 // 0 = until spent
 	CreatedMS int64
 	Note      string
+	// Banked marks a provider's timed budget as spent after the renewing chunks
+	// (P74 S4); unbanked, it is spent before them. Unused on a key's value add.
+	Banked bool
 }
 
 // AddKeyGrant stores a new grant and returns its id.
 func (s *Store) AddKeyGrant(g KeyGrant) (int64, error) {
-	res, err := s.db.Exec(`INSERT INTO key_grant (key, usd, model, spent, expires_at, created_at, note) VALUES (?,?,?,?,?,?,?)`,
-		g.Key, g.USD, g.Model, g.Spent, g.ExpiresMS, g.CreatedMS, g.Note)
+	res, err := s.db.Exec(`INSERT INTO key_grant (key, usd, model, spent, expires_at, created_at, note, banked) VALUES (?,?,?,?,?,?,?,?)`,
+		g.Key, g.USD, g.Model, g.Spent, g.ExpiresMS, g.CreatedMS, g.Note, g.Banked)
 	if err != nil {
 		return 0, err
 	}
@@ -98,9 +101,9 @@ func (s *Store) SpendKeyGrant(id int64, usd float64) (float64, error) {
 	return spent, err
 }
 
-// UpdateKeyGrant changes a grant's amount, expiry and note.
-func (s *Store) UpdateKeyGrant(id int64, usd float64, expiresMS int64, note string) error {
-	_, err := s.db.Exec(`UPDATE key_grant SET usd = ?, expires_at = ?, note = ? WHERE id = ?`, usd, expiresMS, note, id)
+// UpdateKeyGrant changes a grant's amount, expiry, note and banked flag.
+func (s *Store) UpdateKeyGrant(id int64, usd float64, expiresMS int64, note string, banked bool) error {
+	_, err := s.db.Exec(`UPDATE key_grant SET usd = ?, expires_at = ?, note = ?, banked = ? WHERE id = ?`, usd, expiresMS, note, banked, id)
 	return err
 }
 
@@ -112,7 +115,7 @@ func (s *Store) DeleteKeyGrant(id int64) error {
 
 // LoadKeyGrants returns every grant, oldest first.
 func (s *Store) LoadKeyGrants() ([]KeyGrant, error) {
-	rows, err := s.db.Query(`SELECT id, key, usd, model, spent, expires_at, created_at, note FROM key_grant ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, key, usd, model, spent, expires_at, created_at, note, banked FROM key_grant ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +123,7 @@ func (s *Store) LoadKeyGrants() ([]KeyGrant, error) {
 	var out []KeyGrant
 	for rows.Next() {
 		var g KeyGrant
-		if err := rows.Scan(&g.ID, &g.Key, &g.USD, &g.Model, &g.Spent, &g.ExpiresMS, &g.CreatedMS, &g.Note); err != nil {
+		if err := rows.Scan(&g.ID, &g.Key, &g.USD, &g.Model, &g.Spent, &g.ExpiresMS, &g.CreatedMS, &g.Note, &g.Banked); err != nil {
 			return nil, err
 		}
 		out = append(out, g)

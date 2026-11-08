@@ -51,6 +51,8 @@ type SpendBudget struct {
 	Expires  string  `json:"expires"`
 	Active   bool    `json:"active"`
 	Note     string  `json:"note,omitempty"`
+	// Banked: spent after the renewing chunks (calendar day), not before them.
+	Banked bool `json:"banked"`
 }
 
 // SpendProvider is one provider's period. A figure corrallm does not have is
@@ -404,16 +406,154 @@ func (p *Proxy) syncSpendCounters(now time.Time) {
 	}
 }
 
-// timedBudgetCovers reports whether a provider's timed budget pays past scope's
-// full hard limit.
-func (p *Proxy) timedBudgetCovers(scope, model string) bool {
-	return config.IsProviderScope(scope) && p.quota.LimitFull(scope) && p.grants.usable(scope, model)
+// DRAIN ORDER (P74 S4, owner 11-08). A provider scope (prov:) spends its money
+// in CHUNKS, in this order:
+//
+//  1. timed budgets NOT banked, soonest expiry first;
+//  2. renewing chunks: hard calendar-day dollar limits, paced or not;
+//  3. banked timed budgets, soonest expiry first, then hard `total` limits.
+//
+// Every other window on the scope (calendar month, sliding windows, requests,
+// soft limits) is a CEILING: it always applies and is charged the full cost.
+// A request is admitted when every ceiling has room and at least one chunk has
+// room; its cost goes to the first chunk with room and spills to the next.
+// A chunk window's counter holds only what that chunk paid (Ledger.ChargeSplit).
+
+// provChunk is one chunk of a provider scope: a ledger chunk window (label) or a
+// timed budget (grant).
+type provChunk struct {
+	label    string
+	grant    int64
+	room     float64
+	refillIn time.Duration // a day window's time to its refill; 0 otherwise
+}
+
+// provChunks is scope's chunks with room now, in drain order. Spent windows are
+// listed (room ≤ 0); spent and lapsed budgets are not.
+func (p *Proxy) provChunks(scope, model string) []provChunk {
+	now := p.grants.clock()
+	var unbanked, banked []store.KeyGrant
+	for _, g := range p.grants.of(scope) {
+		if !grantActive(&g, now) || (g.Model != "" && g.Model != model) {
+			continue
+		}
+		if g.Banked {
+			banked = append(banked, g)
+		} else {
+			unbanked = append(unbanked, g)
+		}
+	}
+	soonest := func(gs []store.KeyGrant) {
+		sort.SliceStable(gs, func(i, j int) bool {
+			a, b := gs[i].ExpiresMS, gs[j].ExpiresMS
+			if (a == 0) != (b == 0) {
+				return b == 0
+			}
+			return a < b
+		})
+	}
+	soonest(unbanked)
+	soonest(banked)
+	grants := func(out []provChunk, gs []store.KeyGrant) []provChunk {
+		for _, g := range gs {
+			out = append(out, provChunk{grant: g.ID, room: g.USD - g.Spent})
+		}
+		return out
+	}
+	windows := p.quota.Chunks(scope)
+	ws := func(out []provChunk, cal string) []provChunk {
+		for _, w := range windows {
+			if w.Calendar == cal {
+				out = append(out, provChunk{label: w.Label, room: w.Room, refillIn: w.RefillIn})
+			}
+		}
+		return out
+	}
+	out := grants(nil, unbanked)
+	out = ws(out, "day")
+	out = grants(out, banked)
+	return ws(out, "total")
+}
+
+// provBlocked reports whether a provider scope refuses model now: a hard
+// ceiling is full, or the scope has chunks and none has room. wait is when it
+// admits again (0 when nothing refills by itself).
+func (p *Proxy) provBlocked(scope, model string) (bool, time.Duration) {
+	if b, d := p.quota.CeilingBlocked(scope); b {
+		return true, d
+	}
+	chunks := p.provChunks(scope, model)
+	if len(chunks) == 0 {
+		return false, 0 // no chunk: the ceilings alone bound it
+	}
+	wait := time.Duration(0)
+	for _, c := range chunks {
+		if c.room > 0 {
+			return false, 0
+		}
+		if c.refillIn > 0 && (wait == 0 || c.refillIn < wait) {
+			wait = c.refillIn
+		}
+	}
+	return true, wait
+}
+
+// chargeScopes charges a served request's cost to every scope the candidate
+// answers to: the model, its credential, that credential's provider, and the
+// box. Spend belongs to the account that paid for it AND counts against
+// everything above it. A provider's own scope is charged by chunk.
+func (p *Proxy) chargeScopes(cand config.Candidate, usd float64) {
+	for _, sc := range cand.QuotaScopes(p.config()) {
+		if config.IsProviderScope(sc) {
+			p.chargeProvider(sc, cand.Name, usd)
+			continue
+		}
+		p.quota.Charge(sc, config.DimUSD, usd)
+	}
+}
+
+// chargeProvider charges a served request's cost to a provider scope: to the
+// first chunk with room, spilling into the next, and in full to every ceiling.
+// What no chunk can hold (the request was admitted, and its cost is known only
+// after) goes to the last chunk with room, as grantBook.spend does.
+func (p *Proxy) chargeProvider(scope, model string, usd float64) {
+	chunks := p.provChunks(scope, model)
+	last := len(chunks) - 1
+	for i := last; i >= 0; i-- {
+		if chunks[i].room > 0 {
+			last = i
+			break
+		}
+	}
+	paid := map[string]float64{}
+	var timed float64
+	left := usd
+	for i, c := range chunks {
+		if left <= 0 {
+			break
+		}
+		amt := min(left, max(c.room, 0))
+		if i == last {
+			amt = left
+		}
+		if amt <= 0 {
+			continue
+		}
+		left -= amt
+		if c.grant != 0 {
+			p.grants.take(p.store, c.grant, amt)
+			timed += amt
+		} else {
+			paid[c.label] += amt
+		}
+	}
+	p.quota.ChargeSplit(scope, usd, paid, timed)
 }
 
 // A timed budget is a dollar amount on a provider with an expiry: "$50 more, until
-// Friday". It pays once the provider's hard limit is full, and what is unspent at
-// expiry is gone. It is a key_grant row with the provider's scope for its key, so
-// the expiring-first spend and the persistence are the value add's.
+// Friday". Where it is spent in the drain order is its banked flag (above); what
+// is unspent at expiry is gone. It is a key_grant row with the provider's scope
+// for its key, so the persistence is the value add's.
 
 // BudgetEdit is a change to a timed budget. Nil and empty fields stay as they are.
 // Left sets the amount so that this much remains.
@@ -421,10 +561,11 @@ type BudgetEdit struct {
 	USD, Left    *float64
 	TTL, Expires string
 	Note         *string
+	Banked       *bool
 }
 
 // AddProviderBudget stores a timed budget.
-func AddProviderBudget(cfg *config.Config, st *store.Store, provider string, usd float64, ttl, expires, note string, now time.Time) (store.KeyGrant, error) {
+func AddProviderBudget(cfg *config.Config, st *store.Store, provider string, usd float64, ttl, expires, note string, banked bool, now time.Time) (store.KeyGrant, error) {
 	if !hardLimited(cfg, provider) {
 		return store.KeyGrant{}, fmt.Errorf("provider %q has no hard limit for a timed budget to extend", provider)
 	}
@@ -438,7 +579,7 @@ func AddProviderBudget(cfg *config.Config, st *store.Store, provider string, usd
 	if err != nil {
 		return store.KeyGrant{}, err
 	}
-	g := store.KeyGrant{Key: config.ProviderScopeKey(provider), USD: usd, ExpiresMS: exp, CreatedMS: now.UnixMilli(), Note: note}
+	g := store.KeyGrant{Key: config.ProviderScopeKey(provider), USD: usd, ExpiresMS: exp, CreatedMS: now.UnixMilli(), Note: note, Banked: banked}
 	g.ID, err = st.AddKeyGrant(g)
 	return g, err
 }
@@ -475,7 +616,10 @@ func EditProviderBudget(st *store.Store, id int64, e BudgetEdit, now time.Time) 
 	if e.Note != nil {
 		g.Note = *e.Note
 	}
-	return st.UpdateKeyGrant(id, g.USD, g.ExpiresMS, g.Note)
+	if e.Banked != nil {
+		g.Banked = *e.Banked
+	}
+	return st.UpdateKeyGrant(id, g.USD, g.ExpiresMS, g.Note, g.Banked)
 }
 
 // RemoveProviderBudget deletes a timed budget.
@@ -513,7 +657,7 @@ func providerBudgets(st *store.Store, now time.Time) ([]SpendBudget, error) {
 		}
 		active := grantActive(&g, now)
 		b := SpendBudget{ID: g.ID, Provider: strings.TrimPrefix(g.Key, "prov:"), USD: g.USD, SpentUSD: g.Spent,
-			Expires: time.UnixMilli(g.ExpiresMS).UTC().Format(time.RFC3339), Active: active, Note: g.Note}
+			Expires: time.UnixMilli(g.ExpiresMS).UTC().Format(time.RFC3339), Active: active, Note: g.Note, Banked: g.Banked}
 		if active {
 			b.LeftUSD = g.USD - g.Spent
 		}
@@ -524,11 +668,11 @@ func providerBudgets(st *store.Store, now time.Time) ([]SpendBudget, error) {
 
 // AddBudget, EditBudget and RemoveBudget are the same for a running daemon, which
 // holds budgets in memory.
-func (p *Proxy) AddBudget(provider string, usd float64, ttl, expires, note string, now time.Time) error {
+func (p *Proxy) AddBudget(provider string, usd float64, ttl, expires, note string, banked bool, now time.Time) error {
 	if p.store == nil {
 		return errors.New("no store")
 	}
-	_, err := AddProviderBudget(p.config(), p.store, provider, usd, ttl, expires, note, now)
+	_, err := AddProviderBudget(p.config(), p.store, provider, usd, ttl, expires, note, banked, now)
 	p.reloadGrants()
 	return err
 }
