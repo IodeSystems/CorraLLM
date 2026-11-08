@@ -7,9 +7,9 @@ require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/go-chi/chi/v5 v5.3.2
-	github.com/iodesystems/agentkit v0.24.0
+	github.com/iodesystems/agentkit v0.26.0
 	github.com/iodesystems/gwag/v2 v2.1.2
-	github.com/iodesystems/openai-claude-api-shim v0.5.0
+	github.com/iodesystems/openai-claude-api-shim v0.6.0
 	github.com/mark3labs/mcp-go v1.2.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/spf13/cobra v1.10.2
