@@ -21,21 +21,22 @@ func TestCandidateChainOrder(t *testing.T) {
 	for _, s := range body {
 		bn = append(bn, s.name)
 	}
-	if want := []string{"guard-in", "wire-in", "clamp", "model", "sampling", "wire-out"}; !reflect.DeepEqual(bn, want) {
+	if want := []string{"guard-in", "wire-in", "clamp", "model", "sampling", "align", "wire-out"}; !reflect.DeepEqual(bn, want) {
 		t.Errorf("body stages = %v, want %v", bn, want)
 	}
-	// Backend outward. loop and guard-out read the chat shape: outside
-	// anthropicWriter, inside messagesWriter.
-	if want := []string{"wire", "status", "loop", "guard-out", "cost", "stt-remap", "stt-sse"}; !reflect.DeepEqual(stageNames(writers.chat), want) {
+	// Backend outward. The raw tap is innermost on every path, so it holds
+	// the backend's own bytes. loop and guard-out read the chat shape:
+	// outside anthropicWriter, inside messagesWriter.
+	if want := []string{"tap", "wire", "status", "loop", "guard-out", "cost", "stt-remap", "stt-sse"}; !reflect.DeepEqual(stageNames(writers.chat), want) {
 		t.Errorf("chat writer stages = %v, want %v", stageNames(writers.chat), want)
 	}
-	if want := []string{"status", "loop", "guard-out", "wire", "cost", "stt-remap", "stt-sse"}; !reflect.DeepEqual(stageNames(writers.converted), want) {
+	if want := []string{"tap", "status", "loop", "guard-out", "wire", "cost", "stt-remap", "stt-sse"}; !reflect.DeepEqual(stageNames(writers.converted), want) {
 		t.Errorf("converted /v1/messages writer stages = %v, want %v", stageNames(writers.converted), want)
 	}
 	// Native /v1/messages is Messages-shaped end to end: the capture records
 	// the backend's reply, the tee watches a translated copy, and the hold
 	// sees the tee's ending as any other.
-	if want := []string{"status", "loop-tee", "guard-hold"}; !reflect.DeepEqual(stageNames(writers.native), want) {
+	if want := []string{"tap", "status", "loop-tee", "guard-hold"}; !reflect.DeepEqual(stageNames(writers.native), want) {
 		t.Errorf("native /v1/messages writer stages = %v, want %v", stageNames(writers.native), want)
 	}
 	// The request stages come first, so the slice is the order they run in.
@@ -108,10 +109,10 @@ func TestWriterOrderPerPath(t *testing.T) {
 		name, path, api string
 		want            []string
 	}{
-		{"chat to OpenAI", "/v1/chat/completions", "", []string{"status", "loop", "guard-out", "cost"}},
-		{"chat to anthropic", "/v1/chat/completions", config.APIAnthropic, []string{"wire", "status", "loop", "guard-out", "cost"}},
-		{"converted /v1/messages", "/v1/messages", "", []string{"status", "loop", "guard-out", "wire"}},
-		{"native /v1/messages", "/v1/messages", config.APIAnthropic, []string{"status", "loop-tee", "guard-hold"}},
+		{"chat to OpenAI", "/v1/chat/completions", "", []string{"tap", "status", "loop", "guard-out", "cost"}},
+		{"chat to anthropic", "/v1/chat/completions", config.APIAnthropic, []string{"tap", "wire", "status", "loop", "guard-out", "cost"}},
+		{"converted /v1/messages", "/v1/messages", "", []string{"tap", "status", "loop", "guard-out", "wire"}},
+		{"native /v1/messages", "/v1/messages", config.APIAnthropic, []string{"tap", "status", "loop-tee", "guard-hold"}},
 	} {
 		c := &chainCtx{p: p, r: httptest.NewRequest("POST", tc.path, nil), streaming: true,
 			guards: []config.ActiveGuard{{Name: "g", Hard: true}},

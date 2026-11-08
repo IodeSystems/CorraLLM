@@ -111,6 +111,9 @@ type Proxy struct {
 	// The table is the truth; this is the index that keeps consulting it cheap.
 	refusingMu sync.Mutex
 	refusing   map[string]bool
+
+	// caps is the capability-record registry (capability.go, P73).
+	caps capRegistry
 }
 
 // noteRefusal records that a backend refused outright (401/402/403), starting
@@ -453,6 +456,7 @@ func New(cfg *config.Config, mgr *proc.Manager, sc *sched.Scheduler, st *store.S
 	// of persisting it — so the mirror has to be primed, or the first success
 	// after a restart would not know there was anything to clear.
 	p.loadRefusals()
+	p.loadCapabilities()
 	p.loadChildKeys()
 	p.loadGrants()
 	p.seedQuota(cfg)
@@ -1338,7 +1342,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			p.logReq(r, store.Activity{Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path,
 				Status: refused.status, DwellMS: time.Since(start).Milliseconds(),
 				QueuedMS: queuedMS, LoadMS: loadMS, Error: refused.msg, ReqBody: reqBody,
-				InflightID: takeMarker()})
+				Note: strings.Join(c.notes, "; "), InflightID: takeMarker()})
 			return
 		}
 		outBody := c.body
@@ -1536,7 +1540,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 					Status: upstreamRefusal, DwellMS: time.Since(start).Milliseconds(), QueuedMS: queuedMS,
 					Error: spillNote(upstreamRefusal, fundsNote), ReqBody: reqBody,
 					RespHeaders: keptHeaders(upHeaders), RetryAfterMS: time.Until(coolTo).Milliseconds(),
-					InflightID: takeMarker()})
+					Note: strings.Join(c.notes, "; "), InflightID: takeMarker()})
 				p.markInflight(live, inflightQueued, "")
 				continue
 			}
@@ -1602,6 +1606,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				slog.Debug("stt stream terminated", "model", name, "path", r.URL.Path,
 					"backendSentDone", sttSSE.sawDone)
 			}
+		}
+		// The capability record learns from the backend's own answer (raw
+		// tap). Never a resend: the caller already has it.
+		if proxyErr == nil {
+			c.learn()
 		}
 		status := sc.code
 		errReason := ""
@@ -1821,7 +1830,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			ReqBody: reqBody, RespBody: respBody, RespHeaders: respHeaders, FinishReason: finishReason,
 			RetryAfterMS:    retryAfterMS,
 			ReasoningTokens: thinking, ReasoningMeasured: thinkingMeasured,
-			InflightID: takeMarker(),
+			Note: strings.Join(c.notes, "; "), InflightID: takeMarker(),
 		})
 		if aborted {
 			// Metered and logged; now abort the connection as ReverseProxy
@@ -2920,6 +2929,9 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		// Embedded so its thinking_* fields sit beside context_length. Absent
 		// when the config does not say.
 		*modelReasoning
+		// Capabilities: the capability record of a remote model (P73), keyed
+		// by agentkit's Cap* keys. Absent when there is none.
+		Capabilities map[string]capView `json:"capabilities,omitempty"`
 	}
 	// Data starts non-nil so an empty config serialises as [] rather than null.
 	// OpenAI clients iterate the list without a nil check, and a fresh install
@@ -2954,6 +2966,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 			Outputs:        config.ModelIO(name, mc, p.cost.IsAudioType(mc.Type)).Out,
 			Capability:     config.ModelCapability(mc),
 			modelReasoning: reasoningOf(mc),
+			Capabilities:   p.capabilitiesOf(name, mc),
 		}
 		// A remote model has no residency to report. It used to inherit the
 		// process state, which latched to "ready" on the first request and never

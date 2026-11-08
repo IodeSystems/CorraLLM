@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/iodesystems/agentkit/llm"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/proc"
 	shim "github.com/iodesystems/openai-claude-api-shim"
@@ -34,7 +35,12 @@ import (
 //   - clamp: max_tokens down to the backend's cap (P7).
 //   - model: the body's `model` set to the upstream's own id (P16).
 //   - sampling: the backend's sampling profile and reasoning budget.
-//   - (align: commit 2 of P73 puts the capability-record translation here.)
+//   - align: the body translated by the backend's capability record
+//     (agentkit TranslateBody; capability.go). Every remote target, OpenAI
+//     API and `api: anthropic` alike, on chat completions and converted
+//     /v1/messages, on the chat-shaped body. Never on native /v1/messages, a
+//     local backend or another route, and never switched per key. It may
+//     lower max_tokens but never raise it above what clamp left.
 //   - wire-out: chat completions to an `api: anthropic` backend becomes a
 //     Messages body (claudeRequest); a native /v1/messages body loses the
 //     thinking blocks corrallm signed (shim.StripThinking).
@@ -50,18 +56,25 @@ import (
 // reads the chat shape (loop, guard-out) sits on the side of the wire adapter
 // where the reply is in the chat shape.
 //
-//   - chat completions: wire (anthropicWriter, Messages → chat) →
+//   - chat completions: tap → wire (anthropicWriter, Messages → chat) →
 //     statusCapture → loop → guard-out → cost → stt remap → stt SSE.
 //   - converted /v1/messages: the backend answers in the chat shape and
 //     messagesWriter turns it into Messages, so loop and guard-out go first:
-//     statusCapture → loop → guard-out → wire (messagesWriter) → cost → stt
+//     tap → statusCapture → loop → guard-out → wire (messagesWriter) → cost → stt
 //     remap → stt SSE (cost and the stt writers do not apply there).
-//   - native /v1/messages: there is no chat side, so statusCapture → loop
-//     tee → guard hold. The tee (looptee.go) sends the stream on unchanged
+//   - native /v1/messages: there is no chat side, so tap → statusCapture →
+//     loop tee → guard hold. The tee (looptee.go) sends the stream on unchanged
 //     and feeds a copy, translated to chat by the shim, to a loopWriter that
 //     only detects; at a cut it ends the stream in the Messages shape itself.
 //     The hold (guardhold.go) holds the tool_use blocks in the Messages shape
 //     and shares guardOutWriter's verdict code.
+//
+// The raw tap (capability.go) is innermost on every path: the backend writes
+// to it first, so it holds the backend's own error body, before any wire
+// adapter, for LearnResponse. It keeps nothing on a 2xx and at most 8 KiB on
+// an error. Its own stage, not statusCapture: on the chat path to an
+// `api: anthropic` backend statusCapture sits outside anthropicWriter and
+// holds the shim's translation, and it keeps up to 1 MiB of every reply.
 //
 // statusCapture records what the backend sent, on every path: it sits inside
 // loop and guard-out, so the activity row shows the reply before a cut or a
@@ -135,7 +148,15 @@ type chainCtx struct {
 	live      *inflightEntry
 	cancelReq func(cause error)
 
+	// Set by align: the record-only client and the body as align left it, for
+	// LearnResponse. nil when align did not apply.
+	capc *llm.Client
+	sent map[string]any
+	// notes are what the stages changed in the body, for the activity row.
+	notes []string
+
 	// The writers the writer stages built; nil when a stage did not apply.
+	tap      *rawTap
 	aw       *anthropicWriter
 	mw       *messagesWriter
 	sc       *statusCapture
@@ -168,6 +189,15 @@ func (c *chainCtx) convertedMessages() bool { return c.messages() && !c.anthropi
 // where loop and guard-out read it. Native /v1/messages is Messages-shaped
 // end to end.
 func (c *chainCtx) chatReply() bool { return c.chat() || c.convertedMessages() }
+
+// alignKey is the capability record align uses, or false when align does not
+// apply: a remote target on chat completions or converted /v1/messages.
+func (c *chainCtx) alignKey() (capKey, bool) {
+	if !c.chat() && !c.convertedMessages() || c.pr == nil {
+		return capKey{}, false
+	}
+	return capKeyFor(c.name, c.backend, c.pr.Target)
+}
 
 // chatBody is the request in the chat shape, for the loop detector's
 // history: the body after wire-in on converted /v1/messages, the body before
@@ -238,7 +268,11 @@ func candidateChain() ([]BodyStage, writerOrders) {
 			return nil
 		}},
 		{name: "clamp", applies: always, run: func(c *chainCtx) *stageError {
+			before := c.body
 			c.body = clampMaxTokens(c.body, c.backend)
+			if c.backend.MaxTokens > 0 {
+				c.notes = append(c.notes, clampNotes(before, c.body)...)
+			}
 			return nil
 		}},
 		// Rewrite the body's `model` to the upstream's own id for a remote that
@@ -264,8 +298,11 @@ func candidateChain() ([]BodyStage, writerOrders) {
 			c.body = c.p.withSampling(c.body, c.backend, c.name, c.caller)
 			return nil
 		}},
-		// align (P73 commit 2) goes here.
-		//
+		{name: "align", applies: func(c *chainCtx) bool { _, ok := c.alignKey(); return ok }, run: func(c *chainCtx) *stageError {
+			k, _ := c.alignKey()
+			c.align(k)
+			return nil
+		}},
 		// Anthropic Messages shim (anthropic.go): a backend whose proxy says
 		// `api: anthropic` gets the native Messages body — with prompt-cache
 		// breakpoints — and its reply is translated back by the wire adapter.
@@ -301,6 +338,11 @@ func candidateChain() ([]BodyStage, writerOrders) {
 			c.mw.holdTools = c.p.config().LoopDetectionFor(c.backend) != nil && c.streaming
 			return c.mw
 		}}
+	// The backend's own bytes, for LearnResponse (capability.go).
+	tap := WriterStage{name: "tap", applies: always, wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+		c.tap = &rawTap{ResponseWriter: out, code: http.StatusOK}
+		return c.tap
+	}}
 	status := WriterStage{name: "status", applies: always, wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
 		c.sc = &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: c.streaming, live: c.live}
 		if c.image {
@@ -386,9 +428,9 @@ func candidateChain() ([]BodyStage, writerOrders) {
 	// the chat side of the wire adapter: outside anthropicWriter, inside
 	// messagesWriter. Native /v1/messages has no chat side: its own two.
 	writers := writerOrders{
-		chat:      []WriterStage{wire, status, loop, guardOut, cost, sttRemap, sttSSE},
-		converted: []WriterStage{status, loop, guardOut, wire, cost, sttRemap, sttSSE},
-		native:    []WriterStage{status, loopTeeStage, guardHold},
+		chat:      []WriterStage{tap, wire, status, loop, guardOut, cost, sttRemap, sttSSE},
+		converted: []WriterStage{tap, status, loop, guardOut, wire, cost, sttRemap, sttSSE},
+		native:    []WriterStage{tap, status, loopTeeStage, guardHold},
 	}
 	return body, writers
 }

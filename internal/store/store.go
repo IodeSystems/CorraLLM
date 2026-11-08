@@ -487,6 +487,11 @@ CREATE TABLE IF NOT EXISTS warning_pref (
 //     fresh install, the source is already gone; that is the migration having
 //     succeeded, not a failure.
 var migrations = []string{
+	// 2026-11-08 (P73): the capability record per remote (target, model), and
+	// a note on the activity row for what corrallm changed in the request
+	// (clamp lowered max_tokens, align translated a field).
+	capabilitySchema,
+	`ALTER TABLE activity ADD COLUMN note TEXT NOT NULL DEFAULT ''`,
 	// 2026-11-08 (P74 S4): a provider's timed budget is banked (spent after the
 	// renewing chunks) or not (spent before them). Existing budgets are not.
 	`ALTER TABLE key_grant ADD COLUMN banked INTEGER NOT NULL DEFAULT 0`,
@@ -1024,6 +1029,10 @@ type Activity struct {
 	// conversation.go. Empty/0 for anything that is not a chat turn.
 	Conversation         string
 	ConversationMessages int
+	// Note says what corrallm changed in the request on the way to the
+	// backend (P73): clamp lowered max_tokens, align translated a field by the
+	// capability record. "; "-separated; "" when nothing changed.
+	Note string
 }
 
 // movePayloads moves req_body/resp_body out of an activity table created
@@ -1083,13 +1092,13 @@ func (s *Store) InsertActivity(a Activity) error {
 		                       prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		                       ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec,
 		                       finish_reason, load_ms, retry_after_ms, ticket, reasoning_tokens, refused_by,
-		                       speed_source)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       speed_source, note)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.TS, a.Served, a.Requested, a.Placement, a.Key, a.SourceIP, a.Path, a.Status, a.DwellMS,
 		a.PromptTokens, a.CompletionTokens, a.CostUSD, a.QueuedMS, a.AudioBytes, a.Error,
 		a.TTFBMs, a.CachedTokens, a.PromptPerSec, a.PredictedPerSec,
 		a.FinishReason, a.LoadMS, a.RetryAfterMS, a.Ticket, reasoningCol(a), a.RefusedBy,
-		a.SpeedSource,
+		a.SpeedSource, a.Note,
 	)
 	if err != nil {
 		return err
@@ -1154,13 +1163,13 @@ func (s *Store) ActivityByID(id int64) (Activity, error) {
 		        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error,
 		        ttfb_ms, cached_tokens, prompt_per_sec, predicted_per_sec,
 		        COALESCE(p.req_body, ''), COALESCE(p.resp_body, ''), COALESCE(p.resp_headers, ''),
-		        finish_reason, load_ms, retry_after_ms, ticket, speed_source
+		        finish_reason, load_ms, retry_after_ms, ticket, speed_source, note
 		 FROM activity LEFT JOIN activity_payload p ON p.activity_id = activity.id
 		 WHERE id = ?`, id).Scan(
 		&a.ID, &a.TS, &a.Served, &a.Requested, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 		&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error,
 		&a.TTFBMs, &a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.ReqBody, &a.RespBody, &a.RespHeaders,
-		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS, &a.Ticket, &a.SpeedSource)
+		&a.FinishReason, &a.LoadMS, &a.RetryAfterMS, &a.Ticket, &a.SpeedSource, &a.Note)
 	return a, err
 }
 
@@ -1303,7 +1312,7 @@ func (s *Store) RecentActivityPage(w Window, limit, offset int, served, key, pla
 	const cols = `id, ts, served, requested, placement, key, source_ip, path, status, dwell_ms,
 	        prompt_tokens, completion_tokens, cost_usd, queued_ms, audio_bytes, error, ttfb_ms,
 	        cached_tokens, prompt_per_sec, predicted_per_sec, finish_reason, load_ms, retry_after_ms,
-	        ticket, speed_source`
+	        ticket, speed_source, note`
 	q := `SELECT ` + cols + ` FROM activity`
 	wWhere, wArgs := w.ts()
 	// The window is a WHERE like any other filter, and it goes on first so the
@@ -1339,7 +1348,7 @@ func (s *Store) RecentActivityPage(w Window, limit, offset int, served, key, pla
 		if err := rows.Scan(&a.ID, &a.TS, &a.Served, &a.Requested, &a.Placement, &a.Key, &a.SourceIP, &a.Path, &a.Status, &a.DwellMS,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.QueuedMS, &a.AudioBytes, &a.Error, &a.TTFBMs,
 			&a.CachedTokens, &a.PromptPerSec, &a.PredictedPerSec, &a.FinishReason, &a.LoadMS,
-			&a.RetryAfterMS, &a.Ticket, &a.SpeedSource); err != nil {
+			&a.RetryAfterMS, &a.Ticket, &a.SpeedSource, &a.Note); err != nil {
 			return nil, false, err
 		}
 		out = append(out, a)
