@@ -621,8 +621,18 @@ dependency.
   /v1/messages, both accepted: max_completion_tokens alone now reaches the
   backend as max_tokens = cap; a fractional max_tokens above the cap is a 400.
   chain.go also notes the converted-messages gap: loop and guard-out skip that path.
-- **next:** commit 2 (raw tap, align stage, `capability` table), after the
-  agentkit tag.
+- **owner ask (via agentkit-f2, 11-08): close the output gaps.**
+  - (A) converted /v1/messages: order the writers by shape, so loop and
+    guard-out sit inside mw and read OpenAI shape. ◐ sub-agent; diff to
+    agentkit-f2 first.
+  - (B) native /v1/messages, agreed with agentkit-f2: loop through a
+    translated tee (detect only); guard-out as a Messages-shape hold that
+    shares the verdict code. A cut must end the stream in Messages shape:
+    message_delta with stop_reason and a loop note, then message_stop. Test:
+    a looping native stream is cut and ends well-formed. Its own commit after
+    (A), diff first.
+- **next:** finish (A), then (B). Commit 2 (raw tap, align stage,
+  `capability` table) waits on the agentkit tag.
 - **risks:** step 1 reorders the /v1/messages path. The writer order is
   load-bearing and only a test pins it. About 400 lines of the candidate block
   in `proxy.go` move.
