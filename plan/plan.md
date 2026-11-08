@@ -534,7 +534,13 @@ a daily chunk sized from the month's remainder.
     non-chunk windows: sliding, req) stay CEILINGS that always apply.
     Assumed: a request paid by a chunk does not fill an earlier-ranked
     chunk's counter; a cost larger than a chunk's remainder spills to the
-    next chunk. ◐ sub-agent; after deploy, set banked=1 on grant 1.
+    next chunk. ✅ committed (see git log, feat(spend) 11-08). Chosen by the
+    sub-agent, to confirm with the owner: budget spend is left out of the month
+    the paced day divides; the month ceiling counts it. **After deploy:**
+    `corrallm spend budget set 1 --banked=true` (Fireworks $10) AT ONCE, or the
+    $10 pays before today's $5. Still inconsistent with the model: /v1/spend
+    `today_usd` (from the activity log) and `remaining_usd` (month left + timed
+    left, can overstate).
   - Unrelated: `internal/toolchain` `TestRebuildAtBuildsOncePerSlot` fails
     on main by time of day (already before P74).
 - **blocking decisions:** owner: confirm names for `sk-aw4` → aw4,
