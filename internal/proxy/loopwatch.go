@@ -28,6 +28,13 @@ import (
 // one, and the request is cancelled so the backend stops generating. agentkit
 // clients read the loop object as a cut of their own (llm.RepetitionInfo).
 //
+// Tool calls are held: from the first tool-call delta to the chunk with
+// finish_reason, every line (content too, so the order stays exact) waits,
+// and goes out unchanged ahead of that chunk. A cut drops them, so a cut
+// stream carries no tool call, and so does a stream that ends without a
+// finish_reason: a client must never get a call with half its arguments.
+// SSE comments pass while holding.
+//
 // IT SITS BEFORE THE GUARDRAILS, inside guardOutWriter: they see the same events
 // the caller would, the closing ones included.
 
@@ -42,6 +49,13 @@ type loopWriter struct {
 	calls   map[int]*toolCall
 	order   []int
 	first   []byte // the first event, for its id and model
+
+	// holding: a tool-call delta was seen and the reply has not ended, so
+	// every line from it on is held in held, in order. A reply that ends
+	// releases them unchanged ahead of its last line; a cut, or a stream that
+	// ends without finish_reason, drops them.
+	holding bool
+	held    []byte
 
 	// cut is the finding that ended the stream.
 	cut *llm.RepetitionInfo
@@ -105,8 +119,10 @@ func (l *loopWriter) Write(b []byte) (int, error) {
 		line := rest[:i+1]
 		rest = rest[i+1:]
 		out, info := l.event(line)
-		if _, err := l.ResponseWriter.Write(out); err != nil {
-			return 0, err
+		if len(out) > 0 {
+			if _, err := l.ResponseWriter.Write(out); err != nil {
+				return 0, err
+			}
 		}
 		if info != nil {
 			l.interrupt(info)
@@ -116,12 +132,24 @@ func (l *loopWriter) Write(b []byte) (int, error) {
 }
 
 // release sends a last line that had no newline. Runs before the guardrails
-// finish, which is the end of the stream as far as the caller can tell.
+// finish, which is the end of the stream as far as the caller can tell. A
+// reply still held there never finished: its lines are dropped, so the caller
+// gets no tool call with its arguments cut short.
 func (l *loopWriter) release() {
 	if len(l.line) > 0 && l.cut == nil {
-		_, _ = l.ResponseWriter.Write(l.line)
+		out := l.line
+		var info *llm.RepetitionInfo
+		if l.holding {
+			out, info = l.event(l.line)
+		}
+		if len(out) > 0 {
+			_, _ = l.ResponseWriter.Write(out)
+		}
+		if info != nil {
+			l.interrupt(info)
+		}
 	}
-	l.line = nil
+	l.line, l.held, l.holding = nil, nil, false
 }
 
 func (l *loopWriter) Flush() {
@@ -133,20 +161,46 @@ func (l *loopWriter) Flush() {
 // event feeds one line of the stream to the detector and returns the line to
 // send: the same, unless it ends the reply and a loop was found. Then it carries
 // the finding, cut or not, for the caller to weigh.
+//
+// From the first tool-call delta to the line that ends the reply, every line
+// but an SSE comment is held instead (see holding). The line that ends the
+// reply goes out after them; a cut drops them.
 func (l *loopWriter) event(line []byte) ([]byte, *llm.RepetitionInfo) {
 	info, finished := l.watch(line)
-	f := l.session.Finding()
-	if info != nil || !finished || f == nil {
+	if info != nil {
+		if l.holding {
+			l.held, l.holding = nil, false // the cut call never reaches the caller
+			return nil, info
+		}
 		return line, info
 	}
-	found, err := json.Marshal(f)
-	end := bytes.LastIndexByte(line, '}')
-	if err != nil || end < 0 {
-		return line, nil
+	if l.holding && !finished {
+		trimmed := bytes.TrimSpace(line)
+		switch {
+		case bytes.HasPrefix(trimmed, []byte(":")):
+			return line, nil // a comment keeps the connection alive
+		case bytes.Equal(trimmed, []byte("data: [DONE]")) || bytes.Equal(trimmed, []byte("data:[DONE]")):
+			// The reply ended unfinished: the calls may be cut short.
+			l.held, l.holding = nil, false
+			return line, nil
+		}
+		l.held = append(l.held, line...)
+		return nil, nil
 	}
-	out := append([]byte(nil), line[:end]...)
-	out = append(append(out, `,"loop":`...), found...)
-	return append(out, line[end:]...), nil
+	out := line
+	if f := l.session.Finding(); finished && f != nil {
+		found, err := json.Marshal(f)
+		if end := bytes.LastIndexByte(line, '}'); err == nil && end >= 0 {
+			out = append([]byte(nil), line[:end]...)
+			out = append(append(out, `,"loop":`...), found...)
+			out = append(out, line[end:]...)
+		}
+	}
+	if l.holding {
+		out = append(l.held, out...)
+		l.held, l.holding = nil, false
+	}
+	return out, nil
 }
 
 // watch feeds one line to the detector. finished says it ended the reply.
@@ -193,6 +247,7 @@ func (l *loopWriter) watch(line []byte) (cut *llm.RepetitionInfo, finished bool)
 			return info, false
 		}
 		for _, td := range c.Delta.ToolCalls {
+			l.holding = true
 			call := l.calls[td.Index]
 			if call == nil {
 				call = &toolCall{}

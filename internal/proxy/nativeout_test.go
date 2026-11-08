@@ -495,15 +495,15 @@ func TestMessagesGuardHoldPingAndEndWithoutStop(t *testing.T) {
 }
 
 // A converted stream with loop detection on whose backend drops inside a
-// tool call (no finish_reason, no [DONE]): messagesWriter's finish ends the
-// shim's stream, and the held tool_use block goes out before message_delta
-// and message_stop. Nothing held is lost.
+// tool call (no finish_reason, no [DONE]): loopWriter drops the call it held,
+// so messagesWriter never opens a tool_use block, and its finish ends the
+// shim's stream after the text.
 //
-// TODO(shim bump): this is the ending of the pinned shim. From shim 290b9de
-// (v0.6.0) End() with no finish_reason sends one `error` event and nothing
-// after it; at that bump this test must expect that error event and no
-// tool_use (messagesWriter.hold drops the held call on an error).
-func TestAConvertedStreamThatDropsReleasesTheHeldToolCall(t *testing.T) {
+// TODO(shim bump): this is the ending of the pinned shim (message_delta,
+// message_stop). From shim 290b9de (v0.6.0) End() with no finish_reason
+// sends one `error` event and nothing after it; at that bump this test must
+// expect that error event as the stream's end.
+func TestAConvertedStreamThatDropsSendsNoToolCall(t *testing.T) {
 	treatAsRemote(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -528,14 +528,12 @@ func TestAConvertedStreamThatDropsReleasesTheHeldToolCall(t *testing.T) {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	out := string(b)
-	start := strings.Index(out, `"type":"tool_use"`)
-	args := strings.Index(out, `"partial_json":"\"ls\"}"`)
-	delta := strings.Index(out, "event: message_delta")
-	if start < 0 || args < 0 || delta < 0 || !(start < args && args < delta) {
-		t.Fatalf("the held tool_use block was lost or out of order: %s", out)
+	if strings.Contains(out, "tool_use") || strings.Contains(out, "input_json_delta") {
+		t.Fatalf("a call cut short by the drop reached the caller: %s", out)
 	}
-	if strings.Count(out, "event: content_block_stop") != 2 || !strings.HasSuffix(strings.TrimSpace(out), messageStopEnd) {
-		t.Errorf("not a closed Messages stream: %s", out)
+	if !strings.Contains(out, "Let me look.") || strings.Count(out, "event: content_block_stop") != 1 ||
+		!strings.HasSuffix(strings.TrimSpace(out), messageStopEnd) {
+		t.Errorf("not the text, then the pinned shim's ending: %s", out)
 	}
 }
 
