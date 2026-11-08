@@ -616,8 +616,13 @@ dependency.
   observations still win. The evidence stays on the dashboard. Send
   agentkit-f2 a live sample body when it exists. (3) No resend after a taught
   refusal; agentkit ResendOnRefusal stays off by default.
-- **next:** commit 1 (chain refactor); send its diff to agentkit-f2 before
-  committing.
+- **commit 1 done (9d67f4e, 11-08, reviewed OK by agentkit-f2):** chain.go
+  with the stage order pinned by a test. Two changes on converted
+  /v1/messages, both accepted: max_completion_tokens alone now reaches the
+  backend as max_tokens = cap; a fractional max_tokens above the cap is a 400.
+  chain.go also notes the converted-messages gap: loop and guard-out skip that path.
+- **next:** commit 2 (raw tap, align stage, `capability` table), after the
+  agentkit tag.
 - **risks:** step 1 reorders the /v1/messages path. The writer order is
   load-bearing and only a test pins it. About 400 lines of the candidate block
   in `proxy.go` move.
