@@ -1355,6 +1355,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		c.loadCost = loadCost
 		dst := wrapWriters(writerStages.forPath(c), c, w)
 		aw, mw, sc, lw, gw, cw, sttRemap, sttSSE := c.aw, c.mw, c.sc, c.lw, c.gw, c.cw, c.sttRemap, c.sttSSE
+		tee, mgw := c.tee, c.mgw
 		// Capture the proxy error so the activity log can say WHY a request failed
 		// (P10a) and map it to an honest status: a canceled connection (client or an
 		// upstream front-proxy giving up) is 499, not a backend 502; corrallm's own
@@ -1552,17 +1553,24 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// promises whether or not the backend sent one.
 		// Backend outward, as candidateChain orders the writers: each finish
 		// writes through the writers outside it. anthropicWriter is inside
-		// loop and guard-out, messagesWriter outside them.
+		// loop and guard-out, messagesWriter outside them. On native
+		// /v1/messages the tee is inside the guard hold.
 		if aw != nil {
 			aw.finish()
 		}
 		if lw != nil {
 			lw.release()
 		}
+		if tee != nil {
+			tee.finish()
+		}
 		// After the shim, whose finish writes the translated body through it,
 		// and before the cost, whose finish reads what this one released.
 		if gw != nil {
 			gw.finish()
+		}
+		if mgw != nil {
+			mgw.finish()
 		}
 		if mw != nil {
 			mw.finish()
@@ -1616,16 +1624,23 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				errReason = "stream cut: the caller hung up"
 			}
 		}
-		if gw != nil && gw.Refused != nil && errReason == "" {
-			v := *gw.Refused
+		guardRefused, guardStatus, streamEnd := (*guardVerdict)(nil), 0, "content_filter"
+		if gw != nil {
+			guardRefused, guardStatus = gw.Refused, gw.Status
+		}
+		if mgw != nil {
+			guardRefused, guardStatus, streamEnd = mgw.Refused, mgw.Status, "stop_reason refusal"
+		}
+		if guardRefused != nil && errReason == "" {
+			v := *guardRefused
 			errReason, _ = guardrailFailBody(v, "tool_calls")
 			if v.Unavailable != "" {
 				errReason = fmt.Sprintf("guardrail %q could not check the tool calls: %s", v.Name, v.Unavailable)
 			}
-			if gw.Status != 0 {
-				status = gw.Status
+			if guardStatus != 0 {
+				status = guardStatus
 			} else {
-				errReason += "; the stream ended with content_filter"
+				errReason += "; the stream ended with " + streamEnd
 			}
 		}
 		var retryAfterMS int64

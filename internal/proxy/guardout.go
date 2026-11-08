@@ -41,7 +41,7 @@ type guardOutWriter struct {
 
 	holding bool     // streamed: a tool call was seen, every line from it on is held
 	lines   [][]byte // streamed: the held lines
-	calls   map[toolKey]*toolCall
+	calls   toolCalls
 	first   []byte // streamed: the first held chunk, for its id and model
 	done    bool
 
@@ -173,20 +173,24 @@ func (g *guardOutWriter) addDeltas(data []byte) bool {
 	for _, ch := range c.Choices {
 		for _, tc := range ch.Delta.ToolCalls {
 			found = true
-			g.addCall(toolKey{ch.Index, tc.Index}, tc.Function.Name, tc.Function.Arguments)
+			g.calls.add(toolKey{ch.Index, tc.Index}, tc.Function.Name, tc.Function.Arguments)
 		}
 	}
 	return found
 }
 
-func (g *guardOutWriter) addCall(k toolKey, name, args string) {
-	if g.calls == nil {
-		g.calls = map[toolKey]*toolCall{}
+// toolCalls are a reply's tool calls, by choice and index, as the guardrails
+// read them. guardOutWriter and messagesGuardWriter (guardhold.go) share them.
+type toolCalls map[toolKey]*toolCall
+
+func (t *toolCalls) add(k toolKey, name, args string) {
+	if *t == nil {
+		*t = toolCalls{}
 	}
-	c := g.calls[k]
+	c := (*t)[k]
 	if c == nil {
 		c = &toolCall{}
-		g.calls[k] = c
+		(*t)[k] = c
 	}
 	if name != "" {
 		c.name = name
@@ -195,9 +199,9 @@ func (g *guardOutWriter) addCall(k toolKey, name, args string) {
 }
 
 // document is the tool calls as the guard reads them, one per line.
-func (g *guardOutWriter) document() string {
-	keys := make([]toolKey, 0, len(g.calls))
-	for k := range g.calls {
+func (t toolCalls) document() string {
+	keys := make([]toolKey, 0, len(t))
+	for k := range t {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
@@ -208,7 +212,7 @@ func (g *guardOutWriter) document() string {
 	})
 	var lines []string
 	for _, k := range keys {
-		c := g.calls[k]
+		c := t[k]
 		lines = append(lines, fmt.Sprintf("calls the tool %s with the arguments %s", c.name, c.args.String()))
 	}
 	return strings.Join(lines, "\n")
@@ -241,7 +245,7 @@ func (g *guardOutWriter) release(terminator []byte) []byte {
 	g.done = true
 	held := g.lines
 	g.lines, g.holding = nil, false
-	hit := refusal(g.check(g.document()))
+	hit := refusal(g.check(g.calls.document()))
 	if hit == nil {
 		return append(bytes.Join(held, nil), terminator...)
 	}
@@ -306,7 +310,7 @@ func (g *guardOutWriter) finish() {
 		_, _ = g.ResponseWriter.Write(body)
 		return
 	}
-	vs := g.check(g.document())
+	vs := g.check(g.calls.document())
 	var report []string
 	for _, v := range vs {
 		report = append(report, v.header())
@@ -319,28 +323,37 @@ func (g *guardOutWriter) finish() {
 		return
 	}
 	g.Refused = hit
-	g.Status = http.StatusServiceUnavailable
-	var b []byte
+	var msg string
+	g.Status, msg = toolCallRefusal(g.Header(), *hit)
+	code := "content_filter"
 	if hit.Unavailable != "" {
-		b, _ = json.Marshal(map[string]any{"error": map[string]any{
-			"message":   fmt.Sprintf("guardrail %q could not check the tool calls: %s", hit.Name, hit.Unavailable),
-			"type":      "guardrail",
-			"code":      "guardrail_unavailable",
-			"guardrail": hit.object("tool_calls"),
-		}})
-		if hit.Status == http.StatusTooManyRequests {
-			g.Status = http.StatusTooManyRequests
-			if hit.RetryAfter != "" {
-				g.Header().Set("Retry-After", hit.RetryAfter)
-			}
-		}
-	} else {
-		g.Status = hit.FailStatus
-		_, b = guardrailFailBody(*hit, "tool_calls")
+		code = "guardrail_unavailable"
 	}
+	b, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"message": msg, "type": "guardrail", "code": code, "guardrail": hit.object("tool_calls"),
+	}})
 	g.Header().Set("Content-Type", "application/json; charset=utf-8")
 	g.ResponseWriter.WriteHeader(g.Status)
 	_, _ = g.ResponseWriter.Write(b)
+}
+
+// toolCallRefusal is the status and message a refused non-streamed reply
+// gets instead: the guardrail's fail status, or for a hard guardrail that
+// could not run 503 (429, with its Retry-After set on h, when the guard was
+// busy). guardOutWriter and messagesGuardWriter put them in their own shape.
+func toolCallRefusal(h http.Header, hit guardVerdict) (int, string) {
+	if hit.Unavailable == "" {
+		msg, _ := guardrailFailBody(hit, "tool_calls")
+		return hit.FailStatus, msg
+	}
+	msg := fmt.Sprintf("guardrail %q could not check the tool calls: %s", hit.Name, hit.Unavailable)
+	if hit.Status != http.StatusTooManyRequests {
+		return http.StatusServiceUnavailable, msg
+	}
+	if hit.RetryAfter != "" {
+		h.Set("Retry-After", hit.RetryAfter)
+	}
+	return http.StatusTooManyRequests, msg
 }
 
 // toolCallsIn reads a non-streamed reply's tool calls into the writer.
@@ -366,7 +379,7 @@ func (g *guardOutWriter) toolCallsIn(body []byte) bool {
 	}
 	for _, ch := range r.Choices {
 		for i, tc := range ch.Message.ToolCalls {
-			g.addCall(toolKey{ch.Index, i}, tc.Function.Name, tc.Function.Arguments)
+			g.calls.add(toolKey{ch.Index, i}, tc.Function.Name, tc.Function.Arguments)
 		}
 	}
 	return len(g.calls) > 0

@@ -39,30 +39,37 @@ import (
 //     Messages body (claudeRequest); a native /v1/messages body loses the
 //     thinking blocks corrallm signed (shim.StripThinking).
 //
-// The native /v1/messages gap: a /v1/messages request to an `api: anthropic`
-// backend passes through in Anthropic shape. wire-in skips it, so a stage
-// that assumes the OpenAI shape (sampling today, align later) must not apply
-// to it. clamp and model work on both shapes because max_tokens and model are
-// the same fields in both. The reply is Messages-shaped end to end too, so
-// loop and guard-out (which read the chat shape) do not run there. Still open.
+// Native /v1/messages: a /v1/messages request to an `api: anthropic` backend
+// passes through in Anthropic shape. wire-in skips it, so a stage that
+// assumes the OpenAI shape (sampling today, align later) must not apply to
+// it. clamp and model work on both shapes because max_tokens and model are
+// the same fields in both. The reply is Messages-shaped end to end too, so it
+// has writers of its own for loop and guard-out (below).
 //
 // Writer stages, backend outward, one order per path. The rule: a writer that
 // reads the chat shape (loop, guard-out) sits on the side of the wire adapter
 // where the reply is in the chat shape.
 //
-//   - chat completions (and native /v1/messages, where no wire adapter and no
-//     chat reader applies): wire (anthropicWriter, Messages → chat) →
+//   - chat completions: wire (anthropicWriter, Messages → chat) →
 //     statusCapture → loop → guard-out → cost → stt remap → stt SSE.
 //   - converted /v1/messages: the backend answers in the chat shape and
 //     messagesWriter turns it into Messages, so loop and guard-out go first:
 //     statusCapture → loop → guard-out → wire (messagesWriter) → cost → stt
 //     remap → stt SSE (cost and the stt writers do not apply there).
+//   - native /v1/messages: there is no chat side, so statusCapture → loop
+//     tee → guard hold. The tee (looptee.go) sends the stream on unchanged
+//     and feeds a copy, translated to chat by the shim, to a loopWriter that
+//     only detects; at a cut it ends the stream in the Messages shape itself.
+//     The hold (guardhold.go) holds the tool_use blocks in the Messages shape
+//     and shares guardOutWriter's verdict code.
 //
 // statusCapture records what the backend sent, on every path: it sits inside
 // loop and guard-out, so the activity row shows the reply before a cut or a
 // refusal. It reads either shape (extractUsage and extractFinishReason try
 // Messages first): the chat shape behind anthropicWriter and on converted
-// /v1/messages, the Messages shape on the native passthrough.
+// /v1/messages, the Messages shape on the native passthrough. On native
+// /v1/messages it sits inside the loop tee and the guard hold for the same
+// reason.
 //
 // wrapWriters builds a path's stages from the caller's writer inward, so the
 // first stage in a slice is the one the backend writes to.
@@ -132,8 +139,10 @@ type chainCtx struct {
 	aw       *anthropicWriter
 	mw       *messagesWriter
 	sc       *statusCapture
-	lw       *loopWriter
+	lw       *loopWriter // on native /v1/messages, the tee's detector
+	tee      *loopTee
 	gw       *guardOutWriter
+	mgw      *messagesGuardWriter
 	cw       *costWriter
 	sttRemap *sttRemapWriter
 	sttSSE   *sttStreamWriter
@@ -162,10 +171,16 @@ func (c *chainCtx) chatReply() bool { return c.chat() || c.convertedMessages() }
 
 // chatBody is the request in the chat shape, for the loop detector's
 // history: the body after wire-in on converted /v1/messages, the body before
-// wire-out on chat completions.
+// wire-out on chat completions, the request translated by the shim on native
+// /v1/messages.
 func (c *chainCtx) chatBody() []byte {
 	if c.convertedMessages() {
 		return c.body
+	}
+	if c.nativeMessages() {
+		if b, err := shim.ReverseRequest(c.candBody); err == nil {
+			return b
+		}
 	}
 	return c.candBody
 }
@@ -190,14 +205,18 @@ func always(*chainCtx) bool { return true }
 // writerOrders holds the writer stages once per path, backend outward. See
 // the comment at the top.
 type writerOrders struct {
-	chat      []WriterStage // chat completions, and native /v1/messages
+	chat      []WriterStage // chat completions
 	converted []WriterStage // converted /v1/messages
+	native    []WriterStage // native /v1/messages
 }
 
 // forPath is the writer order of this request's path.
 func (o writerOrders) forPath(c *chainCtx) []WriterStage {
-	if c.convertedMessages() {
+	switch {
+	case c.convertedMessages():
 		return o.converted
+	case c.nativeMessages():
+		return o.native
 	}
 	return o.chat
 }
@@ -277,6 +296,9 @@ func candidateChain() ([]BodyStage, writerOrders) {
 				return c.aw
 			}
 			c.mw = newMessagesWriter(out, c.served)
+			// The loop stage below applies: a cut must not leave a tool_use
+			// block with half its input.
+			c.mw.holdTools = c.p.config().LoopDetectionFor(c.backend) != nil && c.streaming
 			return c.mw
 		}}
 	status := WriterStage{name: "status", applies: always, wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
@@ -302,6 +324,21 @@ func candidateChain() ([]BodyStage, writerOrders) {
 		wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
 			c.gw = &guardOutWriter{ResponseWriter: out, check: c.p.checkToolCalls(c.r, responseGuards(c.guards))}
 			return c.gw
+		}}
+	// Native /v1/messages: the loop detector on a translated copy (looptee.go).
+	loopTeeStage := WriterStage{name: "loop-tee", applies: func(c *chainCtx) bool {
+		return c.p.config().LoopDetectionFor(c.backend) != nil && c.streaming && c.nativeMessages()
+	}, wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+		c.tee = newLoopTee(out, c.p.config().LoopDetectionFor(c.backend), c.chatBody(), func() { c.cancelReq(errLoopCut) })
+		c.lw = c.tee.lw
+		return c.tee
+	}}
+	// Native /v1/messages: the tool_use blocks wait for the guardrails
+	// (guardhold.go).
+	guardHold := WriterStage{name: "guard-hold", applies: func(c *chainCtx) bool { return len(responseGuards(c.guards)) > 0 && c.nativeMessages() },
+		wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+			c.mgw = &messagesGuardWriter{ResponseWriter: out, check: c.p.checkToolCalls(c.r, responseGuards(c.guards))}
+			return c.mgw
 		}}
 	// The caller's copy of usage gets corrallm's figure (costinject.go).
 	// Text routes only: image and audio replies carry no usage object.
@@ -347,10 +384,11 @@ func candidateChain() ([]BodyStage, writerOrders) {
 		}}
 	// Backend outward. loop and guard-out read the chat shape, so they sit on
 	// the chat side of the wire adapter: outside anthropicWriter, inside
-	// messagesWriter.
+	// messagesWriter. Native /v1/messages has no chat side: its own two.
 	writers := writerOrders{
 		chat:      []WriterStage{wire, status, loop, guardOut, cost, sttRemap, sttSSE},
 		converted: []WriterStage{status, loop, guardOut, wire, cost, sttRemap, sttSSE},
+		native:    []WriterStage{status, loopTeeStage, guardHold},
 	}
 	return body, writers
 }

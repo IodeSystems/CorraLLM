@@ -39,6 +39,13 @@ func newGuardRig(t *testing.T, modes map[string]config.GuardMode) *guardRig {
 
 func newGuardRigWith(t *testing.T, modes map[string]config.GuardMode, violence config.Guardrail) *guardRig {
 	t.Helper()
+	return newGuardRigFor(t, modes, violence, nil)
+}
+
+// newGuardRigFor is newGuardRigWith with the chat model made by chatModel
+// from the mock's URL (nil: a plain OpenAI model).
+func newGuardRigFor(t *testing.T, modes map[string]config.GuardMode, violence config.Guardrail, chatModel func(url string) config.Model) *guardRig {
+	t.Helper()
 	g := &guardRig{}
 	g.guardBodies.Store([]string{})
 	g.upstreamHd.Store("")
@@ -90,6 +97,9 @@ func newGuardRigWith(t *testing.T, modes map[string]config.GuardMode, violence c
 	t.Cleanup(mgr.Shutdown)
 
 	cm, gm := modelTo(t, chat.URL, "local"), modelTo(t, guard.URL, "local")
+	if chatModel != nil {
+		cm = chatModel(chat.URL)
+	}
 	cfg := &config.Config{
 		Models:         map[string]config.Model{"chat": cm, "guard": gm},
 		PriorityGroups: map[string]config.PriorityGroup{"default": {Weight: 1}},

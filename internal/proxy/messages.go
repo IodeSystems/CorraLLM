@@ -186,7 +186,8 @@ func (e *anthropicErrorWriter) finish() {
 // content_filter with a `loop` or `guardrail` object) ends with stop_reason
 // "refusal", even when a tool call had started, and its message_delta
 // carries the same object. A `loop` object on a stream that was not cut
-// goes onto message_delta as well.
+// goes onto message_delta as well. With a loop writer on, a cut stream
+// drops its tool_use blocks (holdTools).
 type messagesWriter struct {
 	http.ResponseWriter
 	model  string
@@ -198,12 +199,47 @@ type messagesWriter struct {
 	line  []byte                     // stream: the partial line, for notes
 	notes map[string]json.RawMessage // corrallm's loop / guardrail objects
 	cut   bool                       // a note came with finish_reason content_filter
+
+	// holdTools: a loop writer watches the chat stream, so from the first
+	// tool_use block on every event is held to message_delta, and a cut
+	// drops them: the caller never gets a tool call with half its input.
+	holdTools bool
+	holding   bool
+	toolHeld  [][]byte
 }
 
 func newMessagesWriter(w http.ResponseWriter, model string) *messagesWriter {
 	m := &messagesWriter{ResponseWriter: w, model: model}
-	m.stream = shim.NewReverseStream(func(b []byte) { _, _ = m.ResponseWriter.Write(m.withNotes(b)) }, model, thinkingSigCorrallm)
+	m.stream = shim.NewReverseStream(func(b []byte) {
+		if b = m.hold(m.withNotes(b)); len(b) > 0 {
+			_, _ = m.ResponseWriter.Write(b)
+		}
+	}, model, thinkingSigCorrallm)
 	return m
+}
+
+// hold returns what of one translated event goes out now (see holdTools).
+func (m *messagesWriter) hold(ev []byte) []byte {
+	if !m.holdTools {
+		return ev
+	}
+	e := parseMessagesEvent(ev)
+	if !m.holding && e.Type == "content_block_start" && e.ContentBlock.Type == "tool_use" {
+		m.holding = true
+	}
+	if !m.holding {
+		return ev
+	}
+	if e.Type != "message_delta" {
+		m.toolHeld = append(m.toolHeld, ev)
+		return nil
+	}
+	held := m.toolHeld
+	m.toolHeld, m.holding = nil, false
+	if m.cut {
+		return ev
+	}
+	return append(bytes.Join(held, nil), ev...)
 }
 
 // note reads corrallm's loop and guardrail objects off the complete lines of

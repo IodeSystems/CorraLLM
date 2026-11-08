@@ -32,6 +32,12 @@ func TestCandidateChainOrder(t *testing.T) {
 	if want := []string{"status", "loop", "guard-out", "wire", "cost", "stt-remap", "stt-sse"}; !reflect.DeepEqual(stageNames(writers.converted), want) {
 		t.Errorf("converted /v1/messages writer stages = %v, want %v", stageNames(writers.converted), want)
 	}
+	// Native /v1/messages is Messages-shaped end to end: the capture records
+	// the backend's reply, the tee watches a translated copy, and the hold
+	// sees the tee's ending as any other.
+	if want := []string{"status", "loop-tee", "guard-hold"}; !reflect.DeepEqual(stageNames(writers.native), want) {
+		t.Errorf("native /v1/messages writer stages = %v, want %v", stageNames(writers.native), want)
+	}
 	// The request stages come first, so the slice is the order they run in.
 	seenCand := false
 	for _, s := range body {
@@ -105,8 +111,7 @@ func TestWriterOrderPerPath(t *testing.T) {
 		{"chat to OpenAI", "/v1/chat/completions", "", []string{"status", "loop", "guard-out", "cost"}},
 		{"chat to anthropic", "/v1/chat/completions", config.APIAnthropic, []string{"wire", "status", "loop", "guard-out", "cost"}},
 		{"converted /v1/messages", "/v1/messages", "", []string{"status", "loop", "guard-out", "wire"}},
-		// Still open: a native reply is Messages-shaped, and loop and guard-out read chat.
-		{"native /v1/messages", "/v1/messages", config.APIAnthropic, []string{"status"}},
+		{"native /v1/messages", "/v1/messages", config.APIAnthropic, []string{"status", "loop-tee", "guard-hold"}},
 	} {
 		c := &chainCtx{p: p, r: httptest.NewRequest("POST", tc.path, nil), streaming: true,
 			guards: []config.ActiveGuard{{Name: "g", Hard: true}},
