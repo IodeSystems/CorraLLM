@@ -298,7 +298,10 @@ func TestRebuildAtBuildsOncePerSlot(t *testing.T) {
 	tl.RebuildAt = "06:00"
 	cfg.Tools["llama.cpp"] = tl
 	w, b := newWatcher(cfg, r)
-	now := time.Date(2026, 11, 6, 6, 1, 0, 0, time.UTC)
+	// A job stamps StartedAt with the real clock, so the simulated slots must
+	// lie after it: a fixed past date failed once the real date passed it.
+	y, m, d := time.Now().UTC().AddDate(1, 0, 0).Date()
+	now := time.Date(y, m, d, 6, 1, 0, 0, time.UTC)
 	w.Now = func() time.Time { return now }
 
 	w.CheckDue(context.Background())
