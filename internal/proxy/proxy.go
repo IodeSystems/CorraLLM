@@ -1004,10 +1004,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 	// Guardrails on what the request adds (P67), before it queues: a refused
 	// request must not wait behind a saturated backend to find that out.
-	guards, ok := p.checkInput(w, r, caller, served, body, start, reqBody)
-	if !ok {
+	// The request stages of the chain (chain.go): guard-in.
+	bodyStages, writerStages := candidateChain()
+	gc := &chainCtx{p: p, w: w, r: r, caller: caller, served: served, body: body}
+	if _, refused := runBody(bodyStages, gc, true); refused != nil {
+		refused.write(w)
+		p.logReq(r, store.Activity{Served: served, Requested: served, Key: caller.Key,
+			Path: r.URL.Path, Status: refused.status, DwellMS: time.Since(start).Milliseconds(), Error: refused.msg,
+			ReqBody: reqBody, RetryAfterMS: refused.retryAfterMS})
 		return
 	}
+	guards := gc.guards
 
 	// A cancellable context wrapping the request's own, so an operator can abort
 	// this request from ANY state. Derived here rather than at admission
@@ -1321,138 +1328,33 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		p.swapSlot(reqCtx, pr.Target, name, backend, key, r, candBody)
 
-		// Restore the buffered body for the proxy, clamping max_tokens to this
-		// backend's cap when it declares one (degrade transform, P7).
-		outBody := clampMaxTokens(candBody, backend)
-		// Rewrite the body's `model` to the upstream's own id for a remote that
-		// declares one (P16): corrallm routed on the served name, but the remote
-		// does not know it. A local backend leaves Target.Model empty and the
-		// body forwards unchanged.
-		upstream := upstreamID(backend, pr)
-		if upstream != "" {
-			// JSON bodies (chat/embeddings) and multipart bodies (audio) carry the
-			// model in different places, and rewriting only the former silently
-			// forwarded the served name upstream on every audio request.
-			if ct := r.Header.Get("Content-Type"); strings.HasPrefix(ct, "multipart/form-data") {
-				if nb, nct, ok := rewriteModelMultipart(outBody, ct, upstream); ok {
-					outBody = nb
-					r.Header.Set("Content-Type", nct)
-				}
-			} else {
-				outBody = rewriteModelField(outBody, upstream)
-			}
+		// The candidate stages of the chain (chain.go): this backend's body.
+		c := &chainCtx{p: p, w: w, r: r, caller: caller, served: served, body: candBody, guards: guards,
+			name: name, backend: backend, pr: pr, candBody: candBody, streaming: streaming, image: image, audio: audio,
+			sttReq: sttReq, sttJoin: sttJoin, live: live, cancelReq: cancelReq}
+		if _, refused := runBody(bodyStages, c, false); refused != nil {
+			// The deferred release()/done() free the slot and the ref.
+			refused.write(w)
+			p.logReq(r, store.Activity{Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path,
+				Status: refused.status, DwellMS: time.Since(start).Milliseconds(),
+				QueuedMS: queuedMS, LoadMS: loadMS, Error: refused.msg, ReqBody: reqBody,
+				InflightID: takeMarker()})
+			return
 		}
-		if r.URL.Path == "/v1/chat/completions" {
-			outBody = p.withSampling(outBody, backend, name, caller)
-		}
-		// Anthropic Messages shim (anthropic.go): a backend whose proxy says
-		// `api: anthropic` gets the native Messages body — with prompt-cache
-		// breakpoints — and its reply is translated back below. Per candidate,
-		// after the model rewrite and the max_tokens clamp, because both are
-		// properties of THIS backend and the translation reads the result.
-		anthropic := pr.Target != nil && pr.Target.API == config.APIAnthropic &&
-			r.URL.Path == "/v1/chat/completions"
-		if anthropic {
-			ab, terr := claudeRequest(outBody, backend, pr.Target.CacheTTL)
-			if terr != nil {
-				// The deferred release()/done() free the slot and the ref.
-				writeJSONError(w, http.StatusBadRequest, "invalid_request_error", terr.Error())
-				p.logReq(r, store.Activity{Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path,
-					Status: http.StatusBadRequest, DwellMS: time.Since(start).Milliseconds(),
-					QueuedMS: queuedMS, LoadMS: loadMS, Error: "anthropic translation: " + terr.Error(), ReqBody: reqBody,
-					InflightID: takeMarker()})
-				return
-			}
-			outBody = ab
-		}
-		// /v1/messages (messages.go): an Anthropic backend gets the body as
-		// sent, every other backend gets it translated to chat completions.
-		messages := r.URL.Path == "/v1/messages"
-		nativeMessages := messages && pr.Target != nil && pr.Target.API == config.APIAnthropic
-		if nativeMessages {
-			outBody = shim.StripThinking(outBody, thinkingSigCorrallm)
-		} else if messages {
-			ob, terr := shim.ReverseRequest(outBody)
-			if terr != nil {
-				writeJSONError(w, http.StatusBadRequest, "invalid_request_error", terr.Error())
-				p.logReq(r, store.Activity{Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path,
-					Status: http.StatusBadRequest, DwellMS: time.Since(start).Milliseconds(),
-					QueuedMS: queuedMS, LoadMS: loadMS, Error: "messages translation: " + terr.Error(), ReqBody: reqBody,
-					InflightID: takeMarker()})
-				return
-			}
-			outBody = p.withSampling(ob, backend, name, caller)
-		}
+		outBody := c.body
+		anthropic, messages, nativeMessages := c.anthropic(), c.messages(), c.nativeMessages()
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
 		p.markInflight(live, inflightStreaming, name)
-		// Remap-out contract 2 (P35 §9.1): the caller asked for a stream on an
-		// STT route and the backend answers with a finished JSON body, because
-		// oidio's diarize path never reads the flag. corrallm emits the OpenAI
-		// transcription event sequence itself rather than handing a client that
-		// is parsing SSE a lump of JSON.
-		//
-		// The latency benefit is a FICTION and sttstream.go says so at length:
-		// the body is complete before the first event goes out. What this buys
-		// is one client code path, and nothing else.
-		//
-		// OUTSIDE statusCapture, so the capture still sees the BACKEND's body:
-		// the activity row records what was actually served, metering is
-		// untouched, and /v1/audio/speech is excluded by audioUploadRoute.
-		var sttSSE *sttStreamWriter
-		out := w
-		if streaming && audioUploadRoute(r.URL.Path) {
-			sttSSE = &sttStreamWriter{ResponseWriter: w}
-			out = sttSSE
-		}
-		// The canonical remap (P35 §12) sits BETWEEN the two, and the order is
-		// the design rather than an accident. Inside the SSE writer, so the
-		// events are synthesised from corrallm's canonical body and carry the
-		// canonical speaker labels — "A", not a UUID a client must not key on.
-		// Outside statusCapture, so the activity row still records the
-		// BACKEND's body and metering is untouched, exactly as §9.1 arranged.
-		var sttRemap *sttRemapWriter
-		if sttReq.remaps() {
-			sttRemap = &sttRemapWriter{ResponseWriter: out, req: sttReq, model: served,
-				streaming: streaming, join: sttJoin}
-			out = sttRemap
-		}
 		// A cold load this request triggered bills its swap energy to it.
 		var loadCost float64
 		if loaded && backend.Swap != nil {
 			loadCost = p.cost.SwapUSD(backend.Swap.LoadSeconds, backend.Swap.LoadWatts)
 		}
-		// The caller's copy of usage gets corrallm's figure (costinject.go).
-		// Text routes only: image and audio replies carry no usage object.
-		var cw *costWriter
-		// Not on /v1/messages: Anthropic's usage objects are not OpenAI's, and
-		// its clients do not read a cost.
-		if !image && !audio && !messages {
-			cw = &costWriter{ResponseWriter: out, price: func(u usage) (float64, string) {
-				return p.replyCost(backend, u, loadCost)
-			}}
-			out = cw
-		}
-		// The tool calls of a chat reply wait for the guardrails (guardout.go).
-		var gw *guardOutWriter
-		if gs := responseGuards(guards); len(gs) > 0 && r.URL.Path == "/v1/chat/completions" {
-			gw = &guardOutWriter{ResponseWriter: out, check: p.checkToolCalls(r, gs)}
-			out = gw
-		}
-		// Before the guardrails: a cut stream ends in events they read as any other.
-		var lw *loopWriter
-		if cfg := p.config().LoopDetectionFor(backend); cfg != nil && streaming && r.URL.Path == "/v1/chat/completions" {
-			lw = newLoopWriter(out, cfg, candBody, func() { cancelReq(errLoopCut) })
-			out = lw
-		}
-		sc := &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: streaming, live: live}
-		if image {
-			// Nothing reads an image reply's body for usage — it has none — and
-			// the only body worth retaining is a small JSON error. Retaining
-			// the default 1 MiB would hold a megabyte of base64 per in-flight
-			// generation for no reader.
-			sc.bufLimit = errorCaptureLimit
-		}
+		// The writer stages of the chain (chain.go), backend outward.
+		c.loadCost = loadCost
+		dst := wrapWriters(writerStages, c, w)
+		aw, mw, sc, lw, gw, cw, sttRemap, sttSSE := c.aw, c.mw, c.sc, c.lw, c.gw, c.cw, c.sttRemap, c.sttSSE
 		// Capture the proxy error so the activity log can say WHY a request failed
 		// (P10a) and map it to an honest status: a canceled connection (client or an
 		// upstream front-proxy giving up) is 499, not a backend 502; corrallm's own
@@ -1558,26 +1460,17 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}
 			rw.WriteHeader(code)
 		}
-		// The Anthropic shim's writer sits OUTSIDE statusCapture, so the capture
-		// — usage, finish_reason, the activity row's body — reads the OpenAI
-		// shape the caller gets. Only the outgoing request's path changes; r
-		// keeps /v1/chat/completions for the row.
-		var dst http.ResponseWriter = sc
-		var aw *anthropicWriter
+		// Only the outgoing request's path changes; r keeps
+		// /v1/chat/completions for the row.
 		upReq := r.WithContext(reqCtx)
 		if anthropic {
-			aw = newAnthropicWriter(sc, p.config().ClaudePrices.Shim())
-			dst = aw
 			u := *upReq.URL
 			u.Path, u.RawPath = "/v1/messages", ""
 			upReq.URL = &u
 		}
-		var mw *messagesWriter
 		if nativeMessages {
 			upReq = upReq.WithContext(context.WithValue(upReq.Context(), nativeMessagesKey{}, true))
 		} else if messages {
-			mw = newMessagesWriter(sc, served)
-			dst = mw
 			u := *upReq.URL
 			u.Path, u.RawPath = "/v1/chat/completions", ""
 			upReq.URL = &u
