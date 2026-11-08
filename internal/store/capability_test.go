@@ -29,3 +29,25 @@ func TestCapabilityRoundTrip(t *testing.T) {
 		t.Errorf("rows = %+v\nwant %+v", got, want)
 	}
 }
+
+// Two learns of one key can arrive out of order: the older one must not
+// overwrite the newer.
+func TestCapabilityKeepsTheNewerFact(t *testing.T) {
+	st := openTest(t)
+	newer := CapabilityFact{Endpoint: "https://api.fireworks.ai/inference", Model: "glm", Key: "reasoning.efforts.refused",
+		Value: `"minimal,none"`, Source: "refused", AtMS: 3000}
+	older := newer
+	older.Value, older.AtMS = `"none"`, 1000
+	for _, f := range []CapabilityFact{newer, older} {
+		if err := st.PutCapability(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.Capabilities()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []CapabilityFact{newer}; !reflect.DeepEqual(got, want) {
+		t.Errorf("rows = %+v\nwant %+v", got, want)
+	}
+}

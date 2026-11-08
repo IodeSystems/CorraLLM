@@ -29,13 +29,17 @@ type CapabilityFact struct {
 	Evidence             string
 }
 
-// PutCapability stores one fact, replacing the one of the same key.
+// PutCapability stores one fact, replacing the one of the same key unless the
+// stored one is newer. agentkit calls OnLearn after it releases its lock, so
+// two learns of one key can reach here in either order; the fact's own time
+// decides, and the table keeps what the record in memory holds.
 func (s *Store) PutCapability(f CapabilityFact) error {
 	_, err := s.db.Exec(
 		`INSERT INTO capability (endpoint, model, key, value, source, at, evidence)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(endpoint, model, key) DO UPDATE SET
-		   value = excluded.value, source = excluded.source, at = excluded.at, evidence = excluded.evidence`,
+		   value = excluded.value, source = excluded.source, at = excluded.at, evidence = excluded.evidence
+		 WHERE excluded.at >= capability.at`,
 		f.Endpoint, f.Model, f.Key, f.Value, f.Source, f.AtMS, f.Evidence)
 	return err
 }
