@@ -623,14 +623,16 @@ dependency.
   chain.go also notes the converted-messages gap: loop and guard-out skip that path.
 - **owner ask (via agentkit-f2, 11-08): close the output gaps.**
   - (A) converted /v1/messages: order the writers by shape, so loop and
-    guard-out sit inside mw and read OpenAI shape. ◐ sub-agent; diff to
-    agentkit-f2 first.
+    guard-out sit inside mw and read OpenAI shape. ✅ 92d4f13 (reviewed by
+    agentkit-f2). statusCapture is innermost there, so the row keeps the
+    backend's chat reply on every path. Optional: on a non-streamed 422,
+    anthropicErrorWriter could keep the `guardrail` object as a top-level field.
   - (B) native /v1/messages, agreed with agentkit-f2: loop through a
     translated tee (detect only); guard-out as a Messages-shape hold that
     shares the verdict code. A cut must end the stream in Messages shape:
     message_delta with stop_reason and a loop note, then message_stop. Test:
     a looping native stream is cut and ends well-formed. Its own commit after
-    (A), diff first.
+    (A), diff first. ◐ sub-agent.
 - **next:** finish (A), then (B). Commit 2 (raw tap, align stage,
   `capability` table) waits on the agentkit tag.
 - **risks:** step 1 reorders the /v1/messages path. The writer order is
