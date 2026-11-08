@@ -23,7 +23,9 @@ import (
 // chunks still go out, so the caller can count what it was charged.
 //
 // IT SITS OUTSIDE statusCapture, like costWriter: the activity row keeps the
-// backend's reply, which is what an operator reviewing a refusal needs.
+// backend's reply, which is what an operator reviewing a refusal needs. On
+// converted /v1/messages too: there it sits inside messagesWriter and outside
+// statusCapture, so the row keeps the backend's chat reply (chain.go).
 
 // guardOutWriter holds a chat reply's tool calls for the guardrails.
 type guardOutWriter struct {

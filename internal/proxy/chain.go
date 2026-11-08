@@ -43,16 +43,29 @@ import (
 // backend passes through in Anthropic shape. wire-in skips it, so a stage
 // that assumes the OpenAI shape (sampling today, align later) must not apply
 // to it. clamp and model work on both shapes because max_tokens and model are
-// the same fields in both.
+// the same fields in both. The reply is Messages-shaped end to end too, so
+// loop and guard-out (which read the chat shape) do not run there. Still open.
 //
-// The converted /v1/messages gap: loop and guard-out apply to the chat path
-// only. On converted /v1/messages they would sit outside messagesWriter and
-// read the Messages shape, so that path runs without them, as before P73.
+// Writer stages, backend outward, one order per path. The rule: a writer that
+// reads the chat shape (loop, guard-out) sits on the side of the wire adapter
+// where the reply is in the chat shape.
 //
-// Writer stages, backend outward: wire adapter → statusCapture → loop →
-// guard-out → cost → stt remap → stt SSE. wrapWriters builds them from the
-// caller's writer inward, so the first stage here is the one the backend
-// writes to.
+//   - chat completions (and native /v1/messages, where no wire adapter and no
+//     chat reader applies): wire (anthropicWriter, Messages → chat) →
+//     statusCapture → loop → guard-out → cost → stt remap → stt SSE.
+//   - converted /v1/messages: the backend answers in the chat shape and
+//     messagesWriter turns it into Messages, so loop and guard-out go first:
+//     statusCapture → loop → guard-out → wire (messagesWriter) → cost → stt
+//     remap → stt SSE (cost and the stt writers do not apply there).
+//
+// statusCapture records what the backend sent, on every path: it sits inside
+// loop and guard-out, so the activity row shows the reply before a cut or a
+// refusal. It reads either shape (extractUsage and extractFinishReason try
+// Messages first): the chat shape behind anthropicWriter and on converted
+// /v1/messages, the Messages shape on the native passthrough.
+//
+// wrapWriters builds a path's stages from the caller's writer inward, so the
+// first stage in a slice is the one the backend writes to.
 //
 // PDF conversion and audio transcode stay outside the chain: they run once
 // per request before the walk, and choose the body a candidate starts from.
@@ -142,6 +155,21 @@ func (c *chainCtx) nativeMessages() bool { return c.messages() && c.anthropicTar
 // convertedMessages: a /v1/messages request to any other backend.
 func (c *chainCtx) convertedMessages() bool { return c.messages() && !c.anthropicTarget() }
 
+// chatReply: the reply is in the chat shape on one side of the wire adapter,
+// where loop and guard-out read it. Native /v1/messages is Messages-shaped
+// end to end.
+func (c *chainCtx) chatReply() bool { return c.chat() || c.convertedMessages() }
+
+// chatBody is the request in the chat shape, for the loop detector's
+// history: the body after wire-in on converted /v1/messages, the body before
+// wire-out on chat completions.
+func (c *chainCtx) chatBody() []byte {
+	if c.convertedMessages() {
+		return c.body
+	}
+	return c.candBody
+}
+
 // BodyStage changes the body bound for a backend, or ends the request.
 type BodyStage struct {
 	name    string
@@ -159,8 +187,23 @@ type WriterStage struct {
 
 func always(*chainCtx) bool { return true }
 
+// writerOrders holds the writer stages once per path, backend outward. See
+// the comment at the top.
+type writerOrders struct {
+	chat      []WriterStage // chat completions, and native /v1/messages
+	converted []WriterStage // converted /v1/messages
+}
+
+// forPath is the writer order of this request's path.
+func (o writerOrders) forPath(c *chainCtx) []WriterStage {
+	if c.convertedMessages() {
+		return o.converted
+	}
+	return o.chat
+}
+
 // candidateChain is the order of the stages. See the comment at the top.
-func candidateChain() ([]BodyStage, []WriterStage) {
+func candidateChain() ([]BodyStage, writerOrders) {
 	body := []BodyStage{
 		{name: "guard-in", request: true, applies: always, run: func(c *chainCtx) *stageError {
 			var refused *stageError
@@ -222,86 +265,92 @@ func candidateChain() ([]BodyStage, []WriterStage) {
 			return nil
 		}},
 	}
-	writers := []WriterStage{
-		// The Anthropic shim's writer sits OUTSIDE statusCapture, so the capture
-		// — usage, finish_reason, the activity row's body — reads the OpenAI
-		// shape the caller gets. The /v1/messages writer (messages.go) sits in
-		// the same place.
-		{name: "wire", applies: func(c *chainCtx) bool { return c.anthropic() || c.convertedMessages() },
-			wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
-				if c.anthropic() {
-					c.aw = newAnthropicWriter(out, c.p.config().ClaudePrices.Shim())
-					return c.aw
-				}
-				c.mw = newMessagesWriter(out, c.served)
-				return c.mw
-			}},
-		{name: "status", applies: always, wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
-			c.sc = &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: c.streaming, live: c.live}
-			if c.image {
-				// Nothing reads an image reply's body for usage — it has none — and
-				// the only body worth retaining is a small JSON error. Retaining
-				// the default 1 MiB would hold a megabyte of base64 per in-flight
-				// generation for no reader.
-				c.sc.bufLimit = errorCaptureLimit
+	// On the chat path the wire adapter sits right inside statusCapture, so
+	// behind anthropicWriter the capture (usage, finish_reason, the activity
+	// row's body) reads the chat shape. On converted /v1/messages
+	// messagesWriter (messages.go) sits outside it, so the capture reads the
+	// backend's chat reply.
+	wire := WriterStage{name: "wire", applies: func(c *chainCtx) bool { return c.anthropic() || c.convertedMessages() },
+		wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+			if c.anthropic() {
+				c.aw = newAnthropicWriter(out, c.p.config().ClaudePrices.Shim())
+				return c.aw
 			}
-			return c.sc
-		}},
-		// Before the guardrails: a cut stream ends in events they read as any other.
-		{name: "loop", applies: func(c *chainCtx) bool {
-			return c.p.config().LoopDetectionFor(c.backend) != nil && c.streaming && c.chat()
-		}, wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
-			c.lw = newLoopWriter(out, c.p.config().LoopDetectionFor(c.backend), c.candBody, func() { c.cancelReq(errLoopCut) })
-			return c.lw
-		}},
-		// The tool calls of a chat reply wait for the guardrails (guardout.go).
-		{name: "guard-out", applies: func(c *chainCtx) bool { return len(responseGuards(c.guards)) > 0 && c.chat() },
-			wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
-				c.gw = &guardOutWriter{ResponseWriter: out, check: c.p.checkToolCalls(c.r, responseGuards(c.guards))}
-				return c.gw
-			}},
-		// The caller's copy of usage gets corrallm's figure (costinject.go).
-		// Text routes only: image and audio replies carry no usage object.
-		// Not on /v1/messages: Anthropic's usage objects are not OpenAI's, and
-		// its clients do not read a cost.
-		{name: "cost", applies: func(c *chainCtx) bool { return !c.image && !c.audio && !c.messages() },
-			wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
-				backend, loadCost := c.backend, c.loadCost
-				c.cw = &costWriter{ResponseWriter: out, price: func(u usage) (float64, string) {
-					return c.p.replyCost(backend, u, loadCost)
-				}}
-				return c.cw
-			}},
-		// The canonical remap (P35 §12) sits BETWEEN the two stt writers, and the
-		// order is the design rather than an accident. Inside the SSE writer, so
-		// the events are synthesised from corrallm's canonical body and carry the
-		// canonical speaker labels — "A", not a UUID a client must not key on.
-		// Outside statusCapture, so the activity row still records the
-		// BACKEND's body and metering is untouched, exactly as §9.1 arranged.
-		{name: "stt-remap", applies: func(c *chainCtx) bool { return c.sttReq.remaps() },
-			wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
-				c.sttRemap = &sttRemapWriter{ResponseWriter: out, req: c.sttReq, model: c.served,
-					streaming: c.streaming, join: c.sttJoin}
-				return c.sttRemap
-			}},
-		// Remap-out contract 2 (P35 §9.1): the caller asked for a stream on an
-		// STT route and the backend answers with a finished JSON body, because
-		// oidio's diarize path never reads the flag. corrallm emits the OpenAI
-		// transcription event sequence itself rather than handing a client that
-		// is parsing SSE a lump of JSON.
-		//
-		// The latency benefit is a FICTION and sttstream.go says so at length:
-		// the body is complete before the first event goes out. What this buys
-		// is one client code path, and nothing else.
-		//
-		// OUTSIDE statusCapture, so the capture still sees the BACKEND's body:
-		// the activity row records what was actually served, metering is
-		// untouched, and /v1/audio/speech is excluded by audioUploadRoute.
-		{name: "stt-sse", applies: func(c *chainCtx) bool { return c.streaming && audioUploadRoute(c.r.URL.Path) },
-			wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
-				c.sttSSE = &sttStreamWriter{ResponseWriter: out}
-				return c.sttSSE
-			}},
+			c.mw = newMessagesWriter(out, c.served)
+			return c.mw
+		}}
+	status := WriterStage{name: "status", applies: always, wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+		c.sc = &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: c.streaming, live: c.live}
+		if c.image {
+			// Nothing reads an image reply's body for usage — it has none — and
+			// the only body worth retaining is a small JSON error. Retaining
+			// the default 1 MiB would hold a megabyte of base64 per in-flight
+			// generation for no reader.
+			c.sc.bufLimit = errorCaptureLimit
+		}
+		return c.sc
+	}}
+	// Before the guardrails: a cut stream ends in events they read as any other.
+	loop := WriterStage{name: "loop", applies: func(c *chainCtx) bool {
+		return c.p.config().LoopDetectionFor(c.backend) != nil && c.streaming && c.chatReply()
+	}, wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+		c.lw = newLoopWriter(out, c.p.config().LoopDetectionFor(c.backend), c.chatBody(), func() { c.cancelReq(errLoopCut) })
+		return c.lw
+	}}
+	// The tool calls of a chat reply wait for the guardrails (guardout.go).
+	guardOut := WriterStage{name: "guard-out", applies: func(c *chainCtx) bool { return len(responseGuards(c.guards)) > 0 && c.chatReply() },
+		wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+			c.gw = &guardOutWriter{ResponseWriter: out, check: c.p.checkToolCalls(c.r, responseGuards(c.guards))}
+			return c.gw
+		}}
+	// The caller's copy of usage gets corrallm's figure (costinject.go).
+	// Text routes only: image and audio replies carry no usage object.
+	// Not on /v1/messages: Anthropic's usage objects are not OpenAI's, and
+	// its clients do not read a cost.
+	cost := WriterStage{name: "cost", applies: func(c *chainCtx) bool { return !c.image && !c.audio && !c.messages() },
+		wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+			backend, loadCost := c.backend, c.loadCost
+			c.cw = &costWriter{ResponseWriter: out, price: func(u usage) (float64, string) {
+				return c.p.replyCost(backend, u, loadCost)
+			}}
+			return c.cw
+		}}
+	// The canonical remap (P35 §12) sits BETWEEN the two stt writers, and the
+	// order is the design rather than an accident. Inside the SSE writer, so
+	// the events are synthesised from corrallm's canonical body and carry the
+	// canonical speaker labels — "A", not a UUID a client must not key on.
+	// Outside statusCapture, so the activity row still records the
+	// BACKEND's body and metering is untouched, exactly as §9.1 arranged.
+	sttRemap := WriterStage{name: "stt-remap", applies: func(c *chainCtx) bool { return c.sttReq.remaps() },
+		wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+			c.sttRemap = &sttRemapWriter{ResponseWriter: out, req: c.sttReq, model: c.served,
+				streaming: c.streaming, join: c.sttJoin}
+			return c.sttRemap
+		}}
+	// Remap-out contract 2 (P35 §9.1): the caller asked for a stream on an
+	// STT route and the backend answers with a finished JSON body, because
+	// oidio's diarize path never reads the flag. corrallm emits the OpenAI
+	// transcription event sequence itself rather than handing a client that
+	// is parsing SSE a lump of JSON.
+	//
+	// The latency benefit is a FICTION and sttstream.go says so at length:
+	// the body is complete before the first event goes out. What this buys
+	// is one client code path, and nothing else.
+	//
+	// OUTSIDE statusCapture, so the capture still sees the BACKEND's body:
+	// the activity row records what was actually served, metering is
+	// untouched, and /v1/audio/speech is excluded by audioUploadRoute.
+	sttSSE := WriterStage{name: "stt-sse", applies: func(c *chainCtx) bool { return c.streaming && audioUploadRoute(c.r.URL.Path) },
+		wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
+			c.sttSSE = &sttStreamWriter{ResponseWriter: out}
+			return c.sttSSE
+		}}
+	// Backend outward. loop and guard-out read the chat shape, so they sit on
+	// the chat side of the wire adapter: outside anthropicWriter, inside
+	// messagesWriter.
+	writers := writerOrders{
+		chat:      []WriterStage{wire, status, loop, guardOut, cost, sttRemap, sttSSE},
+		converted: []WriterStage{status, loop, guardOut, wire, cost, sttRemap, sttSSE},
 	}
 	return body, writers
 }

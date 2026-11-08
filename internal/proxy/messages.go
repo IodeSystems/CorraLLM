@@ -176,11 +176,17 @@ func (e *anthropicErrorWriter) finish() {
 
 // --- request: Anthropic → OpenAI ---
 
-// messagesWriter sits between the reverse proxy and statusCapture on the
-// translated path, so the capture, the activity row and the caller all see
-// Anthropic's shape. A 200 stream is translated as it arrives; a 200 JSON body
-// is held and translated by finish(); anything else passes through for
-// anthropicErrorWriter to restate.
+// messagesWriter sits between the chat-shape writers (loop, guard-out) and
+// statusCapture on the translated path, so the capture, the activity row and
+// the caller all see Anthropic's shape. A 200 stream is translated as it
+// arrives; a 200 JSON body is held and translated by finish(); anything else
+// passes through for anthropicErrorWriter to restate.
+//
+// A stream that loopWriter or guardOutWriter ended (finish_reason
+// content_filter with a `loop` or `guardrail` object) ends with stop_reason
+// "refusal", even when a tool call had started, and its message_delta
+// carries the same object. A `loop` object on a stream that was not cut
+// goes onto message_delta as well.
 type messagesWriter struct {
 	http.ResponseWriter
 	model  string
@@ -188,12 +194,84 @@ type messagesWriter struct {
 	mode   int // 0 undecided, 1 stream, 2 json, 3 passthrough
 	held   []byte
 	stream *shim.ReverseStream
+
+	line  []byte                     // stream: the partial line, for notes
+	notes map[string]json.RawMessage // corrallm's loop / guardrail objects
+	cut   bool                       // a note came with finish_reason content_filter
 }
 
 func newMessagesWriter(w http.ResponseWriter, model string) *messagesWriter {
 	m := &messagesWriter{ResponseWriter: w, model: model}
-	m.stream = shim.NewReverseStream(func(b []byte) { _, _ = m.ResponseWriter.Write(b) }, model, thinkingSigCorrallm)
+	m.stream = shim.NewReverseStream(func(b []byte) { _, _ = m.ResponseWriter.Write(m.withNotes(b)) }, model, thinkingSigCorrallm)
 	return m
+}
+
+// note reads corrallm's loop and guardrail objects off the complete lines of
+// a chat stream. Before the shim reads them: their line comes before [DONE].
+func (m *messagesWriter) note(b []byte) {
+	m.line = append(m.line, b...)
+	i := bytes.LastIndexByte(m.line, '\n')
+	if i < 0 {
+		return
+	}
+	for _, line := range bytes.Split(m.line[:i], []byte("\n")) {
+		data, ok := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:"))
+		if !ok || !(bytes.Contains(data, []byte(`"loop"`)) || bytes.Contains(data, []byte(`"guardrail"`))) {
+			continue
+		}
+		var c struct {
+			Choices []struct {
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Loop      json.RawMessage `json:"loop"`
+			Guardrail json.RawMessage `json:"guardrail"`
+		}
+		if json.Unmarshal(bytes.TrimSpace(data), &c) != nil || (c.Loop == nil && c.Guardrail == nil) {
+			continue
+		}
+		if m.notes == nil {
+			m.notes = map[string]json.RawMessage{}
+		}
+		if c.Loop != nil {
+			m.notes["loop"] = c.Loop
+		}
+		if c.Guardrail != nil {
+			m.notes["guardrail"] = c.Guardrail
+		}
+		if len(c.Choices) > 0 && c.Choices[0].FinishReason == "content_filter" {
+			m.cut = true
+		}
+	}
+	m.line = append(m.line[:0], m.line[i+1:]...)
+}
+
+// withNotes adds the notes to the shim's message_delta event, and makes a cut
+// stream's stop_reason "refusal": the shim says "tool_use" once a tool call
+// started, and a client would run a call the cut left half-written.
+func (m *messagesWriter) withNotes(b []byte) []byte {
+	const prefix = "event: message_delta\ndata: "
+	if m.notes == nil || !bytes.HasPrefix(b, []byte(prefix)) {
+		return b
+	}
+	var ev map[string]json.RawMessage
+	if json.Unmarshal(bytes.TrimSpace(b[len(prefix):]), &ev) != nil {
+		return b
+	}
+	if m.cut {
+		var d map[string]json.RawMessage
+		if json.Unmarshal(ev["delta"], &d) == nil {
+			d["stop_reason"] = json.RawMessage(`"refusal"`)
+			ev["delta"], _ = json.Marshal(d)
+		}
+	}
+	for k, v := range m.notes {
+		ev[k] = v
+	}
+	out, err := json.Marshal(ev)
+	if err != nil {
+		return b
+	}
+	return append(append([]byte(prefix), out...), "\n\n"...)
 }
 
 func (m *messagesWriter) WriteHeader(code int) {
@@ -221,6 +299,7 @@ func (m *messagesWriter) Write(b []byte) (int, error) {
 	}
 	switch m.mode {
 	case 1:
+		m.note(b)
 		m.stream.Feed(b)
 		return len(b), nil
 	case 2:

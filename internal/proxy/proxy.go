@@ -1353,7 +1353,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		// The writer stages of the chain (chain.go), backend outward.
 		c.loadCost = loadCost
-		dst := wrapWriters(writerStages, c, w)
+		dst := wrapWriters(writerStages.forPath(c), c, w)
 		aw, mw, sc, lw, gw, cw, sttRemap, sttSSE := c.aw, c.mw, c.sc, c.lw, c.gw, c.cw, c.sttRemap, c.sttSSE
 		// Capture the proxy error so the activity log can say WHY a request failed
 		// (P10a) and map it to an honest status: a canceled connection (client or an
@@ -1550,11 +1550,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// held body is released now — as events if it parsed, verbatim if not —
 		// and a passed-through event stream gets the terminator the route
 		// promises whether or not the backend sent one.
+		// Backend outward, as candidateChain orders the writers: each finish
+		// writes through the writers outside it. anthropicWriter is inside
+		// loop and guard-out, messagesWriter outside them.
 		if aw != nil {
 			aw.finish()
-		}
-		if mw != nil {
-			mw.finish()
 		}
 		if lw != nil {
 			lw.release()
@@ -1563,6 +1563,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// and before the cost, whose finish reads what this one released.
 		if gw != nil {
 			gw.finish()
+		}
+		if mw != nil {
+			mw.finish()
 		}
 		// After the shim, whose finish writes the translated body through it.
 		if cw != nil {

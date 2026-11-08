@@ -225,3 +225,51 @@ func TestRequestHistoryReadsBothContentShapes(t *testing.T) {
 		t.Error("a body that is not JSON must give no history")
 	}
 }
+
+// A converted /v1/messages stream is watched too: the loop writer reads the
+// backend's chat stream inside messagesWriter, and the cut reaches the caller
+// as a well-formed Messages ending with the loop object on message_delta.
+func TestALoopingConvertedMessagesStreamIsCut(t *testing.T) {
+	url, sent := loopRig(t, &config.LoopDetection{}, 2000)
+	req, _ := http.NewRequest(http.MethodPost, url+"/v1/messages",
+		strings.NewReader(`{"model":"fw","max_tokens":1000,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "k")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	out := string(b)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d: %s", resp.StatusCode, out)
+	}
+	if sent.Load() > 500 {
+		t.Errorf("backend sent %d events before it stopped", sent.Load())
+	}
+	if strings.Contains(out, "[DONE]") || strings.Contains(out, "chat.completion.chunk") {
+		t.Errorf("chat events reached a Messages caller: ...%s", out[max(0, len(out)-300):])
+	}
+	if !strings.HasSuffix(strings.TrimSpace(out), "event: message_stop\ndata: {\"type\":\"message_stop\"}") {
+		t.Fatalf("stream does not end with message_stop: ...%s", out[max(0, len(out)-300):])
+	}
+	var delta struct {
+		Delta struct {
+			StopReason string `json:"stop_reason"`
+		} `json:"delta"`
+		Loop *llm.RepetitionInfo `json:"loop"`
+	}
+	for _, ev := range strings.Split(out, "\n\n") {
+		if data, ok := strings.CutPrefix(ev, "event: message_delta\ndata: "); ok {
+			if err := json.Unmarshal([]byte(data), &delta); err != nil {
+				t.Fatalf("message_delta: %v: %s", err, data)
+			}
+		}
+	}
+	if delta.Delta.StopReason != "refusal" {
+		t.Errorf("stop_reason = %q, want refusal", delta.Delta.StopReason)
+	}
+	if delta.Loop == nil || delta.Loop.Kind != "cycle" || delta.Loop.Where != llm.ChannelReasoning {
+		t.Errorf("loop on message_delta = %+v", delta.Loop)
+	}
+}

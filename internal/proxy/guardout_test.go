@@ -178,3 +178,70 @@ func TestGuardrailNoToolCallsPassesUntouched(t *testing.T) {
 		t.Errorf("guard calls = %d, want 1 (the input only)", n)
 	}
 }
+
+func (g *guardRig) askMessages(t *testing.T, text string, stream bool) *httptest.ResponseRecorder {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"model": "chat", "max_tokens": 100, "stream": stream,
+		"messages": []any{map[string]string{"role": "user", "content": text}}})
+	return postMessages(g.router, string(b), map[string]string{"x-api-key": "sk-t"})
+}
+
+// guard-out runs on converted /v1/messages, inside messagesWriter: it reads
+// the backend's chat reply, and the caller gets Messages.
+func TestGuardrailToolCallsOnConvertedMessages(t *testing.T) {
+	g := newGuardRig(t, map[string]config.GuardMode{"violence": config.GuardHard})
+
+	// Streamed, released: one well-formed tool_use block.
+	g.reply.Store(toolStream(`{"cmd":`, `"ls"}`))
+	rec := g.askMessages(t, "list files", true)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, `"content_block":{"id":"t1","input":{},"name":"shell","type":"tool_use"}`) ||
+		!strings.Contains(body, `"partial_json":"{\"cmd\":"`) || !strings.Contains(body, `"partial_json":"\"ls\"}"`) ||
+		!strings.Contains(body, `"stop_reason":"tool_use"`) || !strings.HasSuffix(strings.TrimSpace(body), `{"type":"message_stop"}`) {
+		t.Fatalf("a clean streamed tool call: status %d, body %s", rec.Code, body)
+	}
+	if n := strings.Count(body, "event: content_block_stop"); n != 2 {
+		t.Errorf("content blocks closed = %d, want 2 (text, tool_use): %s", n, body)
+	}
+	if bodies := g.guardBodies.Load().([]string); len(bodies) == 0 || !strings.Contains(bodies[len(bodies)-1], "calls the tool shell") {
+		t.Errorf("the guard did not read the tool calls: %q", bodies)
+	}
+
+	// Streamed, refused: the text goes out, the call does not, and the stream
+	// ends with stop_reason refusal and the guardrail object.
+	g.reply.Store(toolStream(`{"cmd":"BA`, `D"}`))
+	rec = g.askMessages(t, "list files", true)
+	body = rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, "Let me look.") {
+		t.Fatalf("refused stream: status %d, body %s", rec.Code, body)
+	}
+	if strings.Contains(body, "tool_use") || strings.Contains(body, "cmd") {
+		t.Errorf("the refused tool call reached the caller: %s", body)
+	}
+	if !strings.Contains(body, `"stop_reason":"refusal"`) || !strings.Contains(body, `"surface":"tool_calls"`) ||
+		!strings.HasSuffix(strings.TrimSpace(body), `{"type":"message_stop"}`) || strings.Contains(body, "[DONE]") {
+		t.Errorf("refused stream did not end as a Messages refusal: %s", body)
+	}
+
+	// Not streamed, refused: an Anthropic error with the guardrail's status.
+	g.reply.Store(toolReply(`{"cmd":"BAD"}`))
+	rec = g.askMessages(t, "list files", false)
+	var e struct {
+		Type  string
+		Error struct{ Type, Message string }
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || rec.Code != http.StatusUnprocessableEntity ||
+		e.Type != "error" || e.Error.Type != "invalid_request_error" || !strings.Contains(e.Error.Message, "tool_calls") {
+		t.Fatalf("refused reply: status %d, body %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "BAD") {
+		t.Errorf("the refused tool call reached the caller: %s", rec.Body)
+	}
+
+	// Not streamed, released: a Messages reply with the tool_use block.
+	g.reply.Store(toolReply(`{"cmd":"ls"}`))
+	rec = g.askMessages(t, "list files", false)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `{"id":"t1","input":{"cmd":"ls"},"name":"shell","type":"tool_use"}`) {
+		t.Fatalf("clean reply: status %d, body %s", rec.Code, rec.Body)
+	}
+}

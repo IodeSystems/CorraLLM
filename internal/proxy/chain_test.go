@@ -17,19 +17,20 @@ import (
 // what the next stage reads.
 func TestCandidateChainOrder(t *testing.T) {
 	body, writers := candidateChain()
-	var bn, wn []string
+	var bn []string
 	for _, s := range body {
 		bn = append(bn, s.name)
-	}
-	for _, s := range writers {
-		wn = append(wn, s.name)
 	}
 	if want := []string{"guard-in", "wire-in", "clamp", "model", "sampling", "wire-out"}; !reflect.DeepEqual(bn, want) {
 		t.Errorf("body stages = %v, want %v", bn, want)
 	}
-	// Backend outward.
-	if want := []string{"wire", "status", "loop", "guard-out", "cost", "stt-remap", "stt-sse"}; !reflect.DeepEqual(wn, want) {
-		t.Errorf("writer stages = %v, want %v", wn, want)
+	// Backend outward. loop and guard-out read the chat shape: outside
+	// anthropicWriter, inside messagesWriter.
+	if want := []string{"wire", "status", "loop", "guard-out", "cost", "stt-remap", "stt-sse"}; !reflect.DeepEqual(stageNames(writers.chat), want) {
+		t.Errorf("chat writer stages = %v, want %v", stageNames(writers.chat), want)
+	}
+	if want := []string{"status", "loop", "guard-out", "wire", "cost", "stt-remap", "stt-sse"}; !reflect.DeepEqual(stageNames(writers.converted), want) {
+		t.Errorf("converted /v1/messages writer stages = %v, want %v", stageNames(writers.converted), want)
 	}
 	// The request stages come first, so the slice is the order they run in.
 	seenCand := false
@@ -80,6 +81,45 @@ func TestChainAppliesAtEachPosition(t *testing.T) {
 	}
 	if fmt.Sprint(got["messages"]) != "[map[content:hi role:user]]" {
 		t.Errorf("body is not the chat shape: %s", c.body)
+	}
+}
+
+func stageNames(stages []WriterStage) []string {
+	var n []string
+	for _, s := range stages {
+		n = append(n, s.name)
+	}
+	return n
+}
+
+// The writers that apply on each path, backend outward, with loop detection
+// and a response guardrail on and a streamed text request.
+func TestWriterOrderPerPath(t *testing.T) {
+	_, writers := candidateChain()
+	p := &Proxy{}
+	p.cfg.Store(&config.Config{LoopDetection: &config.LoopDetection{}})
+	for _, tc := range []struct {
+		name, path, api string
+		want            []string
+	}{
+		{"chat to OpenAI", "/v1/chat/completions", "", []string{"status", "loop", "guard-out", "cost"}},
+		{"chat to anthropic", "/v1/chat/completions", config.APIAnthropic, []string{"wire", "status", "loop", "guard-out", "cost"}},
+		{"converted /v1/messages", "/v1/messages", "", []string{"status", "loop", "guard-out", "wire"}},
+		// Still open: a native reply is Messages-shaped, and loop and guard-out read chat.
+		{"native /v1/messages", "/v1/messages", config.APIAnthropic, []string{"status"}},
+	} {
+		c := &chainCtx{p: p, r: httptest.NewRequest("POST", tc.path, nil), streaming: true,
+			guards: []config.ActiveGuard{{Name: "g", Hard: true}},
+			pr:     &proc.Process{Target: &config.ProxyTarget{API: tc.api}}}
+		var got []string
+		for _, s := range writers.forPath(c) {
+			if s.applies(c) {
+				got = append(got, s.name)
+			}
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: writers %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

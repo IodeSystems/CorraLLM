@@ -338,3 +338,57 @@ func TestMessagesNeverLogsAnAnthropicCredentialAsTheKey(t *testing.T) {
 		t.Errorf("rows = %d, want 2", len(rows))
 	}
 }
+
+// A loop cut in the middle of a tool call ends with stop_reason refusal, not
+// tool_use: a client must not run the half-written call. A loop object on a
+// stream that was not cut rides on message_delta and leaves stop_reason alone.
+func TestMessagesWriterCarriesCorrallmNotes(t *testing.T) {
+	run := func(events ...string) string {
+		rec := httptest.NewRecorder()
+		rec.Header().Set("Content-Type", "text/event-stream")
+		m := newMessagesWriter(rec, "m")
+		m.WriteHeader(http.StatusOK)
+		for _, e := range events {
+			_, _ = m.Write([]byte("data: " + e + "\n\n"))
+		}
+		_, _ = m.Write([]byte("data: [DONE]\n\n"))
+		m.finish()
+		return rec.Body.String()
+	}
+	delta := func(out string) map[string]any {
+		for _, ev := range strings.Split(out, "\n\n") {
+			if data, ok := strings.CutPrefix(ev, "event: message_delta\ndata: "); ok {
+				var d map[string]any
+				if err := json.Unmarshal([]byte(data), &d); err != nil {
+					t.Fatalf("message_delta: %v: %s", err, data)
+				}
+				return d
+			}
+		}
+		t.Fatalf("no message_delta: %s", out)
+		return nil
+	}
+	stop := func(d map[string]any) any { return d["delta"].(map[string]any)["stop_reason"] }
+	tool := `{"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"t1","function":{"name":"Read","arguments":"{\"pa"}}]}}]}`
+
+	out := run(tool, `{"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"loop":{"kind":"cycle"}}`)
+	d := delta(out)
+	if stop(d) != "refusal" || d["loop"] == nil || d["loop"].(map[string]any)["kind"] != "cycle" {
+		t.Errorf("cut tool call: message_delta = %v", d)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(out), `{"type":"message_stop"}`) {
+		t.Errorf("no message_stop: %s", out)
+	}
+
+	d = delta(run(`{"id":"c1","choices":[{"index":0,"delta":{"content":"hi"}}]}`,
+		`{"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"loop":{"kind":"cycle"}}`))
+	if stop(d) != "end_turn" || d["loop"] == nil {
+		t.Errorf("counted loop: message_delta = %v", d)
+	}
+
+	d = delta(run(`{"id":"c1","choices":[{"index":0,"delta":{"content":"hi"}}]}`,
+		`{"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`))
+	if _, ok := d["loop"]; ok || stop(d) != "end_turn" {
+		t.Errorf("quiet stream: message_delta = %v", d)
+	}
+}
