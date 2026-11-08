@@ -537,8 +537,9 @@ a daily chunk sized from the month's remainder.
     next chunk. ✅ committed (see git log, feat(spend) 11-08). Chosen by the
     sub-agent, to confirm with the owner: budget spend is left out of the month
     the paced day divides; the month ceiling counts it. **After deploy:**
-    `corrallm spend budget set 1 --banked=true` (Fireworks $10) AT ONCE, or the
-    $10 pays before today's $5. Still inconsistent with the model: /v1/spend
+    done 11-08 15:55 UTC. Old day counters still hold pre-deploy budget spend
+    (Fireworks day showed −$6.06 until the 11-09 refill); 9dd1973 stops the view
+    calling that overdrawn. Still inconsistent with the model: /v1/spend
     `today_usd` (from the activity log) and `remaining_usd` (month left + timed
     left, can overstate).
   - Unrelated: `internal/toolchain` `TestRebuildAtBuildsOncePerSlot` fails
@@ -657,7 +658,12 @@ dependency.
     are dropped and the error goes out alone). **next:** after shim v0.6.0 is
     tagged, bump go.mod and flip TestAConvertedStreamThatDropsReleasesTheHeldToolCall
     (TODO in the test).
-- **next:** shim v0.6.0 bump (flip the converted drop test). Commit 2 (raw tap, align stage,
+- ✅ 11-08 live in v0.2.0 (deployed 9dd1973): bump to agentkit v0.26.0 + shim
+  v0.6.0 (7d5327e); commit 2, e23eccd: raw tap, align, `capability` table keyed
+  on the normalized endpoint, activity.note, `/v1/models` `capabilities`.
+  The table was still empty right after deploy.
+- **next:** commit 3 (manual probe endpoint); activity.note in GraphQL/UI; a
+  live `/v1/models` sample to agentkit-f2 once a record exists. Old next: Commit 2 (raw tap, align stage,
   `capability` table) waits on the agentkit tag.
 - **risks:** step 1 reorders the /v1/messages path. The writer order is
   load-bearing and only a test pins it. About 400 lines of the candidate block
