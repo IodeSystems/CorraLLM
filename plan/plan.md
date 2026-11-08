@@ -632,8 +632,16 @@ dependency.
     shares the verdict code. A cut must end the stream in Messages shape:
     message_delta with stop_reason and a loop note, then message_stop. Test:
     a looping native stream is cut and ends well-formed. Its own commit after
-    (A), diff first. ◐ sub-agent.
-- **next:** finish (A), then (B). Commit 2 (raw tap, align stage,
+    (A), diff first. ✅ a6d67d0 (reviewed by agentkit-f2). With loop detection
+    on, tool_use reaches Messages callers only at the end of the message, and a
+    cut reply carries no tool_use.
+  - (C) open, owner's call: the plain chat path still sends partial
+    tool_calls before a cut's content_filter. A client that ignores
+    finish_reason could run half the arguments. agentkit-f2 recommends the same
+    hold in loopWriter for tool-call deltas.
+  - (D) open, owner's call: a converted stream that drops mid tool call ends
+    with stop_reason tool_use and possibly truncated input (shim End()).
+- **next:** owner decisions (C) and (D). Commit 2 (raw tap, align stage,
   `capability` table) waits on the agentkit tag.
 - **risks:** step 1 reorders the /v1/messages path. The writer order is
   load-bearing and only a test pins it. About 400 lines of the candidate block
