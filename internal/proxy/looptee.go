@@ -107,6 +107,13 @@ func (t *loopTee) event(ev []byte) error {
 			_, err := t.ResponseWriter.Write(append(out, ev...))
 			return err
 		}
+	case t.holding && e.Type == "error":
+		// The backend ended the reply unfinished: the error goes out alone,
+		// without the held call, and nothing after it.
+		t.ended = true
+		t.held, t.delta = nil, nil
+		_, err := t.ResponseWriter.Write(ev)
+		return err
 	case t.holding && e.Type != "ping":
 		t.held = append(t.held, ev)
 	default:

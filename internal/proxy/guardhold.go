@@ -41,6 +41,7 @@ type messagesGuardWriter struct {
 	events  [][]byte // streamed: the held events
 	calls   toolCalls
 	done    bool
+	errored bool // streamed: an error event ended a held reply; nothing more goes out
 
 	// Refused is the hard fail that replaced the reply, for the activity row.
 	Refused *guardVerdict
@@ -116,6 +117,9 @@ func (g *messagesGuardWriter) Flush() {
 // event passes one event before the first tool_use block and holds the rest.
 // At message_stop the held events are checked and released or refused.
 func (g *messagesGuardWriter) event(ev []byte) []byte {
+	if g.errored {
+		return nil
+	}
 	if g.done {
 		return ev
 	}
@@ -143,6 +147,12 @@ func (g *messagesGuardWriter) event(ev []byte) []byte {
 		}
 	case "message_stop":
 		return g.release(ev)
+	case "error":
+		// The backend ended the reply unfinished: the error goes out alone,
+		// without the held calls (unchecked), and nothing after it.
+		g.done, g.errored = true, true
+		g.events, g.holding = nil, false
+		return ev
 	}
 	g.events = append(g.events, ev)
 	return nil

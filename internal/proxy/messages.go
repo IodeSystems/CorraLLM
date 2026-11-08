@@ -202,7 +202,8 @@ type messagesWriter struct {
 
 	// holdTools: a loop writer watches the chat stream, so from the first
 	// tool_use block on every event is held to message_delta, and a cut
-	// drops them: the caller never gets a tool call with half its input.
+	// drops them: the caller never gets a tool call with half its input. An
+	// error event drops them too.
 	holdTools bool
 	holding   bool
 	toolHeld  [][]byte
@@ -230,13 +231,15 @@ func (m *messagesWriter) hold(ev []byte) []byte {
 	if !m.holding {
 		return ev
 	}
-	if e.Type != "message_delta" {
+	if e.Type != "message_delta" && e.Type != "error" {
 		m.toolHeld = append(m.toolHeld, ev)
 		return nil
 	}
 	held := m.toolHeld
 	m.toolHeld, m.holding = nil, false
-	if m.cut {
+	// An error ends the reply unfinished (a newer shim says so for a stream
+	// with no finish_reason): it goes out alone, without the held call.
+	if m.cut || e.Type == "error" {
 		return ev
 	}
 	return append(bytes.Join(held, nil), ev...)

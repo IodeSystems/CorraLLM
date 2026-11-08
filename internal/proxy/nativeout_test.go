@@ -498,6 +498,11 @@ func TestMessagesGuardHoldPingAndEndWithoutStop(t *testing.T) {
 // tool call (no finish_reason, no [DONE]): messagesWriter's finish ends the
 // shim's stream, and the held tool_use block goes out before message_delta
 // and message_stop. Nothing held is lost.
+//
+// TODO(shim bump): this is the ending of the pinned shim. From shim 290b9de
+// (v0.6.0) End() with no finish_reason sends one `error` event and nothing
+// after it; at that bump this test must expect that error event and no
+// tool_use (messagesWriter.hold drops the held call on an error).
 func TestAConvertedStreamThatDropsReleasesTheHeldToolCall(t *testing.T) {
 	treatAsRemote(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -531,5 +536,77 @@ func TestAConvertedStreamThatDropsReleasesTheHeldToolCall(t *testing.T) {
 	}
 	if strings.Count(out, "event: content_block_stop") != 2 || !strings.HasSuffix(strings.TrimSpace(out), messageStopEnd) {
 		t.Errorf("not a closed Messages stream: %s", out)
+	}
+}
+
+// Hand-written events, so the error tests do not depend on the shim version.
+const (
+	evTextStart = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
+	evTextDelta = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Let me look.\"}}\n\n"
+	evTextStop  = "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+	evToolStart = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"shell\",\"input\":{}}}\n\n"
+	evToolDelta = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\"}}\n\n"
+	evError     = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"the reply is incomplete\"}}\n\n"
+	evAfter     = "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	evStart     = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+)
+
+// errorEnding checks that out holds the text, then ends with the error event
+// alone: no tool_use, nothing after the error.
+func errorEnding(t *testing.T, out string) {
+	t.Helper()
+	if strings.Contains(out, "tool_use") || strings.Contains(out, "input_json_delta") {
+		t.Errorf("the held tool call reached the caller: %s", out)
+	}
+	if !strings.Contains(out, "Let me look.") || !strings.HasSuffix(out, evError) || strings.Count(out, "event: error") != 1 {
+		t.Errorf("not the text then the error alone: %q", out)
+	}
+}
+
+func TestMessagesWriterHoldDropsTheCallOnAnError(t *testing.T) {
+	m := newMessagesWriter(httptest.NewRecorder(), "m")
+	m.holdTools = true
+	var out string
+	for _, ev := range []string{evStart, evTextStart, evTextDelta, evTextStop, evToolStart, evToolDelta, evError} {
+		out += string(m.hold([]byte(ev)))
+	}
+	errorEnding(t, out)
+	// Not holding, an error passes as before.
+	m = newMessagesWriter(httptest.NewRecorder(), "m")
+	m.holdTools = true
+	if got := string(m.hold([]byte(evError))); got != evError {
+		t.Errorf("an error with nothing held = %q", got)
+	}
+}
+
+func TestLoopTeeSendsABackendErrorAloneWhileHolding(t *testing.T) {
+	rec := httptest.NewRecorder()
+	cancelled := false
+	tee := newLoopTee(rec, &config.LoopDetection{}, nil, func() { cancelled = true })
+	tee.Header().Set("Content-Type", "text/event-stream")
+	tee.WriteHeader(http.StatusOK)
+	for _, ev := range []string{evStart, evTextStart, evTextDelta, evTextStop, evToolStart, evToolDelta, evError, evAfter} {
+		_, _ = tee.Write([]byte(ev))
+	}
+	tee.finish()
+	errorEnding(t, rec.Body.String())
+	if cancelled || tee.lw.cut != nil {
+		t.Error("an error was taken for a loop cut")
+	}
+}
+
+func TestMessagesGuardHoldSendsABackendErrorAlone(t *testing.T) {
+	rec := httptest.NewRecorder()
+	checks := 0
+	g := &messagesGuardWriter{ResponseWriter: rec, check: func(string) []guardVerdict { checks++; return nil }}
+	g.Header().Set("Content-Type", "text/event-stream")
+	g.WriteHeader(http.StatusOK)
+	for _, ev := range []string{evStart, evTextStart, evTextDelta, evTextStop, evToolStart, evToolDelta, evError, evAfter} {
+		_, _ = g.Write([]byte(ev))
+	}
+	g.finish()
+	errorEnding(t, rec.Body.String())
+	if checks != 0 || g.Refused != nil {
+		t.Errorf("checks = %d, refused = %v: a call that never finished was judged", checks, g.Refused)
 	}
 }
