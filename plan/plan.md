@@ -600,7 +600,24 @@ dependency.
   behavior change except wire-in moving first. (2) raw tap, align stage,
   `capability` table and registry; this needs the agentkit tag. (3) manual
   probe endpoint. Each diff goes to agentkit-f2 before it is committed.
-- **next:** agentkit-f2's answer to the design note, then commit 1.
+- **agentkit-f2 approved the design (11-07) with 6 changes:** guard-in becomes
+  a body stage that can end the request (stageError {status, body}); Applies
+  is evaluated at each stage's position (test: native /v1/messages skips
+  align, converted /v1/messages reaches it); a test that clamp still lands on
+  a converted /v1/messages body; raw tap innermost, 8 KiB, errors only, nil
+  body on 2xx (commit 2); chain.go notes the native-messages gap; no resend
+  after a taught refusal.
+- **owner decisions (via agentkit-f2, 11-08; not yet confirmed by Carl here):**
+  (1) limits only narrow downstream: corrallm's window and clampMaxTokens are
+  the ceiling, and the client may only ask for smaller; the smallest value
+  wins. When clamp lowers max_tokens, write an activity note. (2) `/v1/models`
+  gets `capabilities`: key → {value, source, at}, with agentkit Cap* keys;
+  agentkit LoadDeclared reads it as `declared`, so the client's own
+  observations still win. The evidence stays on the dashboard. Send
+  agentkit-f2 a live sample body when it exists. (3) No resend after a taught
+  refusal; agentkit ResendOnRefusal stays off by default.
+- **next:** commit 1 (chain refactor); send its diff to agentkit-f2 before
+  committing.
 - **risks:** step 1 reorders the /v1/messages path. The writer order is
   load-bearing and only a test pins it. About 400 lines of the candidate block
   in `proxy.go` move.
