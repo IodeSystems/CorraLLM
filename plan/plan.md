@@ -639,8 +639,11 @@ dependency.
     tool_calls before a cut's content_filter. A client that ignores
     finish_reason could run half the arguments. agentkit-f2 recommends the same
     hold in loopWriter for tool-call deltas.
-  - (D) open, owner's call: a converted stream that drops mid tool call ends
-    with stop_reason tool_use and possibly truncated input (shim End()).
+  - (D) owner approved (via agentkit-f2): shim 290b9de (untagged) ends a
+    dropped stream with one `error` event. corrallm side ✅ (the held events
+    are dropped and the error goes out alone). **next:** after shim v0.6.0 is
+    tagged, bump go.mod and flip TestAConvertedStreamThatDropsReleasesTheHeldToolCall
+    (TODO in the test).
 - **next:** owner decisions (C) and (D). Commit 2 (raw tap, align stage,
   `capability` table) waits on the agentkit tag.
 - **risks:** step 1 reorders the /v1/messages path. The writer order is
