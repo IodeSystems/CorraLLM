@@ -338,7 +338,7 @@ func (t *rawTap) Flush() {
 // learn tells the record what the backend answered to the body align sent.
 // Never a resend: the caller already has the answer.
 func (c *chainCtx) learn() {
-	if c.capc == nil || c.tap == nil {
+	if c.capc == nil || c.tap == nil || c.rewrote {
 		return
 	}
 	c.capc.LearnResponse(c.sent, c.tap.code, c.tap.body)

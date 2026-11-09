@@ -1420,6 +1420,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 						upstreamRefusal, fundsNote, coolTo = fr.Status, fr.Message(), time.Now()
 						return errBackendDown
 					}
+					c.rewrote = true
 					fr.rewrite(resp)
 					return nil
 				}

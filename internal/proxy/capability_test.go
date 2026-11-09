@@ -441,3 +441,26 @@ func TestCapabilityClientConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A funds 402 corrallm rewrote is corrallm's body, not the backend's: nothing
+// is learned from it, even when the backend's own words would have taught a
+// fact.
+func TestRewrittenFundsRefusalTeachesNothing(t *testing.T) {
+	treatAsRemote(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = io.WriteString(w, glmThinkingOnly)
+	}))
+	t.Cleanup(up.Close)
+	st := capStore(t)
+	h, _ := capRig(t, st, map[string]config.Model{"glm": remoteModel(t, up.URL)})
+	rec := postCapChat(h, `{"model":"glm","reasoning_effort":"none","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusPaymentRequired || !strings.Contains(rec.Body.String(), "upstream_funds_exhausted") {
+		t.Fatalf("got %d %s, want corrallm's 402 upstream_funds_exhausted", rec.Code, rec.Body)
+	}
+	if facts := factsOf(t, st); len(facts) != 0 {
+		t.Errorf("learned from corrallm's own body: %+v", facts)
+	}
+}

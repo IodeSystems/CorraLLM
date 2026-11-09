@@ -151,7 +151,10 @@ type chainCtx struct {
 	// Set by align: the record-only client and the body as align left it, for
 	// LearnResponse. nil when align did not apply.
 	capc *llm.Client
-	sent map[string]any
+	// rewrote: corrallm replaced the backend's body (the funds 402), so the
+	// tap holds corrallm's words, not the backend's, and nothing is learned.
+	rewrote bool
+	sent    map[string]any
 	// notes are what the stages changed in the body, for the activity row.
 	notes []string
 
