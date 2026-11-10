@@ -2391,9 +2391,17 @@ func (m *Manager) reapGroupWithin(name string, h host.Handle, grace time.Duratio
 	slog.Warn("backend ignored SIGTERM; sending SIGKILL",
 		"name", name, "id", h.ID(), "grace", grace)
 	if err := h.Signal(host.SigKill); err != nil {
-		slog.Error("SIGKILL failed — process group may still hold VRAM",
-			"name", name, "id", h.ID(), "err", err)
-		return true
+		// "no such process": it exited between the grace and the kill. Not a
+		// failure, and NOT a reason to skip the wait below: returning here left
+		// the caller admitting against a memory reading that still counted the
+		// process (a tool benchmark's second trial was refused for capacity
+		// 6 s before the GPU was really free, box1 2026-11-10).
+		if strings.Contains(err.Error(), "no such process") {
+			slog.Info("backend exited before SIGKILL", "name", name, "id", h.ID())
+		} else {
+			slog.Error("SIGKILL failed — process group may still hold VRAM",
+				"name", name, "id", h.ID(), "err", err)
+		}
 	}
 	// Confirm rather than assume: an unkillable process (uninterruptible driver
 	// wait) leaves VRAM stranded and corrallm over-committed, and an operator

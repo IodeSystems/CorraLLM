@@ -142,15 +142,33 @@ func (m *Manager) BenchTool(ctx context.Context, tool, server, prevDir, nextDir 
 			tm := pm
 			tm.Cmd = cmd
 			var sp BenchSpeed
-			_, err := m.TrialWith(ctx, "bench-"+name, tm, func(e TrialEvent) {
-				if e.Stage != TrialLog && e.Msg != "" && !e.OK {
-					_, _ = fmt.Fprintf(log, "    [%s] %s\n", e.Stage, e.Msg)
+			var err error
+			// The previous trial (or production) has just stopped, and the
+			// memory reading can lag that by seconds: retry a refusal for
+			// room, as the reload after the benchmark does.
+			for attempt := 0; ; attempt++ {
+				_, err = m.TrialWith(ctx, "bench-"+name, tm, func(e TrialEvent) {
+					if e.Stage != TrialLog && e.Msg != "" && !e.OK {
+						_, _ = fmt.Fprintf(log, "    [%s] %s\n", e.Stage, e.Msg)
+					}
+				}, func(ctx context.Context, base string) error {
+					var err error
+					sp, err = benchRuns(ctx, base, prompt)
+					return err
+				})
+				if !errors.Is(err, errProbeNoRoom) || attempt >= len(benchReloadBackoff) {
+					break
 				}
-			}, func(ctx context.Context, base string) error {
-				var err error
-				sp, err = benchRuns(ctx, base, prompt)
-				return err
-			})
+				_, _ = fmt.Fprintf(log, "    no room yet; retrying in %s\n", benchReloadBackoff[attempt])
+				select {
+				case <-ctx.Done():
+					return BenchSpeed{}, ctx.Err()
+				case <-time.After(benchReloadBackoff[attempt]):
+				}
+				if err := hold(); err != nil {
+					return BenchSpeed{}, err
+				}
+			}
 			if err == nil {
 				_, _ = fmt.Fprintf(log, "  %s on %s build: prefill %.0f tok/s, decode %.1f tok/s\n", name, label, sp.Prefill, sp.Decode)
 			}

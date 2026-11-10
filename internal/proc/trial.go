@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -131,6 +132,11 @@ func (m *Manager) Trial(ctx context.Context, id string, mdl config.Model, emit f
 // TrialWith is Trial with work to do while the backend is up: run is called
 // with the backend's base URL after it is healthy and measured, and before it
 // is torn down. Its error fails the trial at TrialRun.
+// errProbeNoRoom is a trial refused because the server has no room for it. A
+// caller that has just stopped something may retry: the memory reading lags
+// the stop by a few seconds.
+var errProbeNoRoom = errors.New("not enough free capacity")
+
 func (m *Manager) TrialWith(ctx context.Context, id string, mdl config.Model, emit func(TrialEvent),
 	run func(ctx context.Context, baseURL string) error) (TrialResult, error) {
 	var res TrialResult
@@ -343,8 +349,8 @@ func (m *Manager) admitTrial(key, id string, mdl config.Model, target *config.Pr
 		}
 	}
 	if !m.fitsLocked(mdl.Server, usage, nil) {
-		return nil, fmt.Errorf("not enough free capacity on %q for %s — unload something first "+
-			"(a probe never evicts a running model)", mdl.Server, admitMsg(usage))
+		return nil, fmt.Errorf("%w on %q for %s — unload something first "+
+			"(a probe never evicts a running model)", errProbeNoRoom, mdl.Server, admitMsg(usage))
 	}
 	m.reserveLocked(mdl.Server, usage)
 
