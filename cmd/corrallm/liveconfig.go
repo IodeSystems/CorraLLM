@@ -26,6 +26,12 @@ import (
 //   - the file only if the database holds nothing at all, which is the one-time
 //     import case a fresh machine is in.
 func liveConfig(configPath string) (*config.Config, string, error) {
+	// ${...} references (an agent token, a provider key) resolve through the
+	// credential store, as in `serve`. Without it `corrallm tools build` sent
+	// an empty agent token and got a 401.
+	if err := config.LoadCredentials(defaultHome()); err != nil {
+		return nil, "", err
+	}
 	path := strings.TrimSpace(configPath)
 	if path != "" && fileHasContent(path) {
 		c, err := config.Load(path)
