@@ -11,6 +11,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/cacheattr"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/proc"
+	"github.com/iodesystems/corrallm/internal/sched"
 )
 
 // SLOT AFFINITY (P75 N9): send a chat turn back to the llama.cpp slot that
@@ -39,7 +40,36 @@ const (
 	affUnpinned = "unpinned" // no slot known free: llama.cpp picks
 	affClient   = "client"   // the caller sent id_slot: passed through
 	affUnknown  = "unknown"  // slot count or instance not known: nothing done
+	// reordered: pinned to the previous turn's slot, and granted out of queue
+	// order because that slot had just been freed (sched/slotpref.go).
+	affReordered = "reordered"
 )
+
+// slotLease is what slot affinity did with one request.
+type slotLease struct {
+	outcome  string // "" when the flag is off
+	instance string
+	slot     int    // the slot the request is known to run on; -1 when not known
+	release  func() // safe to call more than once
+}
+
+// slotHint is the admission hint for slot-aware dequeue: the slot and
+// instance of the conversation's previous turn. nil when the flag is off or
+// nothing is known.
+func (p *Proxy) slotHint(r *http.Request, backend config.Model) *sched.SlotHint {
+	if !backend.SlotAffinity || backend.Cmd == "" || p.cacheTracker == nil {
+		return nil
+	}
+	c, ok := r.Context().Value(conversationCtxKey{}).(conversation)
+	if !ok {
+		return nil
+	}
+	slot, inst := p.cacheTracker.Last(c.id, time.Now().UnixMilli())
+	if slot < 0 || inst == "" {
+		return nil
+	}
+	return &sched.SlotHint{Instance: inst, Slot: slot}
+}
 
 // slotAssigner keeps, per served model, the slot occupancy of its current
 // backend instance. The zero value is ready. One mutex, held for a few map
@@ -140,9 +170,9 @@ func (a *slotAssigner) acquire(served, instance string, n, last, client int, sen
 //
 // chatOut reports that the body going out is an OpenAI chat body to an
 // OpenAI-compatible backend (chat completions, or /v1/messages converted).
-func (p *Proxy) assignSlot(r *http.Request, pr *proc.Process, served string, backend config.Model, body []byte, chatOut bool) ([]byte, string, func()) {
+func (p *Proxy) assignSlot(r *http.Request, pr *proc.Process, served string, backend config.Model, body []byte, chatOut bool, hint *sched.SlotHint) ([]byte, slotLease) {
 	if !backend.SlotAffinity || backend.Cmd == "" || pr == nil {
-		return body, "", func() {}
+		return body, slotLease{slot: -1, release: func() {}}
 	}
 	inst := pr.Instance()
 	n := cacheattr.Parallel(backend.Cmd)
@@ -155,12 +185,32 @@ func (p *Proxy) assignSlot(r *http.Request, pr *proc.Process, served string, bac
 		}
 	}
 	slot, outcome, release := p.slotAff.acquire(served, inst, n, last, client, sent, chatOut)
+	lease := slotLease{outcome: outcome, instance: inst, slot: slot, release: release}
 	if slot >= 0 {
 		if nb, ok := withIDSlot(body, slot); ok {
 			body = nb
 		}
 	}
-	return body, outcome, release
+	if sent && client >= 0 {
+		lease.slot = client
+	}
+	if outcome == affPinned && hint != nil && hint.Reordered.Load() {
+		lease.outcome = affReordered
+	}
+	return body, lease
+}
+
+// freed is the llama.cpp slot a finished request leaves free, for the
+// scheduler's release: the reply's id_slot when it has one, else the slot
+// the lease knew. Zero Done fields (nothing known) when the flag is off.
+func (l slotLease) freed(u usage) (string, int) {
+	if l.outcome == "" || l.instance == "" {
+		return "", -1
+	}
+	if u.IDSlot != nil && *u.IDSlot >= 0 {
+		return l.instance, *u.IDSlot
+	}
+	return l.instance, l.slot
 }
 
 // clientIDSlot reads a top-level id_slot the caller sent. Decoded only when

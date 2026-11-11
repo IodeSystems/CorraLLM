@@ -1228,7 +1228,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		admitStart := time.Now()
 		// group.Interruptible OR the request's own opt-in. A caller can only
 		// widen this, never narrow it — see retryableRequest.
-		release, reqCtx, err := p.admit(p.admitCtx(ctx, r, key), name, backend, groupName, weight, group.Interruptible || retryable, stage)
+		// Slot-aware dequeue (sched/slotpref.go): nil unless slotAffinity.
+		slotHint := p.slotHint(r, backend)
+		release, reqCtx, err := p.admit(sched.WithSlotHint(p.admitCtx(ctx, r, key), slotHint), name, backend, groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if errors.Is(err, sched.ErrDraining) {
 			if p.handOver(w, r, arrivedCT, arrivedBody, time.Since(start)) {
@@ -1372,7 +1374,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// client-sent id_slot check sees what the backend will get. The lease
 		// is released as soon as the backend has answered (below), and by the
 		// defer on any other exit, panic included.
-		outBody, affinity, releaseSlot := p.assignSlot(r, pr, name, backend, outBody, c.chatReply() && !c.anthropicTarget())
+		outBody, lease := p.assignSlot(r, pr, name, backend, outBody, c.chatReply() && !c.anthropicTarget(), slotHint)
+		releaseSlot := lease.release
 		defer releaseSlot()
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
@@ -1770,7 +1773,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			costUSD, cCost, pCost, gCost = 0, 0, 0, 0
 		}
 		costUSD += loadCost
-		release(sched.Done{CostUSD: costUSD})
+		freedInst, freedSlot := lease.freed(u)
+		release(sched.Done{CostUSD: costUSD, SlotInstance: freedInst, Slot: freedSlot})
 
 		// Charge the metered cost against this backend's declared spend windows.
 		// Here rather than in ObserveResponse because cost is only knowable now:
@@ -1866,7 +1870,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if status >= 200 && status < 300 && !aborted {
 			act.Cache = p.attributeCache(r, pr, name, backend, u)
 			if act.Cache != nil {
-				act.Cache.Affinity = affinity
+				act.Cache.Affinity = lease.outcome
 			}
 		}
 		if id := p.logReq(r, act); act.Cache != nil && id > 0 {

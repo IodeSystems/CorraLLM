@@ -340,6 +340,23 @@ func (t *Tracker) LastSlot(conv, instance string, nowMS int64) int {
 	return s.slot
 }
 
+// Last is the slot and instance of conversation conv's previous turn, for
+// slot-aware dequeue, which runs before the backend is known. -1 and "" when
+// unknown.
+func (t *Tracker) Last(conv string, nowMS int64) (slot int, instance string) {
+	if t == nil || conv == "" {
+		return -1, ""
+	}
+	sh := t.shardOf(conv)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s := sh.m[conv]
+	if s == nil || nowMS-s.ts > stubTTL.Milliseconds() {
+		return -1, ""
+	}
+	return s.slot, s.instance
+}
+
 // Len is the number of conversations held, for tests and the report.
 func (t *Tracker) Len() int {
 	n := 0

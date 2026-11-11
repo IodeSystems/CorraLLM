@@ -56,6 +56,10 @@ func (e *BackpressureError) Error() string {
 // serving) passes none.
 type Done struct {
 	CostUSD float64
+	// SlotInstance and Slot name the llama.cpp slot the request ran on, for
+	// slot-aware dequeue (slotpref.go). Empty instance: not known.
+	SlotInstance string
+	Slot         int
 }
 
 // Scheduler owns the per-backend admission state. With a config it also enforces
@@ -206,6 +210,8 @@ type slot struct {
 	preempting bool
 	// priority queues ahead of every normal waiter (see priority.go).
 	priority bool
+	// hint is the llama.cpp slot this request would rather have (slotpref.go).
+	hint *SlotHint
 }
 
 type waiter struct {
@@ -223,6 +229,9 @@ type waiter struct {
 	// queue that has already moved on.
 	bumped  chan struct{}
 	bumpErr *BackpressureError
+	// queuedAt and skipped bound slot-aware dequeue (slotpref.go).
+	queuedAt time.Time
+	skipped  int
 }
 
 // Admit acquires a slot on the named backend for a request in group (with
@@ -263,7 +272,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 
 	sl := &slot{group: group, backendType: backendType, weight: weight,
 		interruptible: interruptible, currency: s.shareCurrency(group), cancel: cancel,
-		since: waitingSince(ctx), priority: priorityFrom(ctx)}
+		since: waitingSince(ctx), priority: priorityFrom(ctx), hint: slotHintFrom(ctx)}
 
 	// Over a per-group / per-(group×type) limit budget? Preemption can't free a
 	// budget, so an over-budget request advances (spill) if the stage allows,
@@ -304,7 +313,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	if stage.Preempt {
 		if victim := bs.pickVictim(weight); victim != nil {
 			victim.cancel(ErrPreempted)
-			w := &waiter{slot: sl, preempt: true, ready: make(chan struct{})}
+			w := &waiter{slot: sl, preempt: true, ready: make(chan struct{}), queuedAt: now}
 			bs.waiters = append(bs.waiters, w)
 			s.mu.Unlock()
 			return s.wait(ctx, backend, w, reqCtx, modelMaxWait)
@@ -375,7 +384,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 		bs.removeWaiter(victim)
 	}
 
-	w := &waiter{slot: sl, ready: make(chan struct{}), bumped: make(chan struct{})}
+	w := &waiter{slot: sl, ready: make(chan struct{}), bumped: make(chan struct{}), queuedAt: now}
 	bs.waiters = append(bs.waiters, w)
 	if victim != nil {
 		// Priced after the arrival joins: it outranks the victim, so it is one
@@ -548,8 +557,9 @@ func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 	return func(d ...Done) {
 		once.Do(func() {
 			var cost float64
+			var done Done
 			if len(d) > 0 {
-				cost = d[0].CostUSD
+				cost, done = d[0].CostUSD, d[0]
 			}
 			s.mu.Lock()
 			bs := s.backends[backend]
@@ -573,7 +583,7 @@ func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 			bs.addShare(now, sl, dwell, cost)
 			// Charge each promoted (queued) request against its requests budget —
 			// the direct-grant path charges at admit, the queue path here.
-			for _, ps := range s.promote(bs, backend, now) {
+			for _, ps := range s.promoteFreed(bs, backend, now, done) {
 				if !gate {
 					s.recordAdmitLocked(now, ps.group, ps.backendType)
 				}
@@ -599,6 +609,12 @@ func (bs *backendState) grant(sl *slot, now time.Time) {
 // only granted a slot its lane may use (not one reserved by another lane), so
 // freed batch slots don't refill a reserved segment.
 func (s *Scheduler) promote(bs *backendState, backend string, now time.Time) []*slot {
+	return s.promoteFreed(bs, backend, now, Done{})
+}
+
+// promoteFreed is promote after a release that says which llama.cpp slot it
+// freed: the first grant may go to the waiter that slot suits (slotpref.go).
+func (s *Scheduler) promoteFreed(bs *backendState, backend string, now time.Time, freed Done) []*slot {
 	// A draining process grants nothing more; its waiters leave with
 	// ErrDraining (see wait). Without this a release would hand its slot to
 	// a queued request and the successor could not count it.
@@ -610,6 +626,9 @@ func (s *Scheduler) promote(bs *backendState, backend string, now time.Time) []*
 		idx := s.pickGrantableWaiter(bs, backend, now)
 		if idx < 0 {
 			break // remaining waiters are all reserved out of the free slots
+		}
+		if len(granted) == 0 {
+			idx = s.preferFreedSlot(bs, backend, now, idx, freed)
 		}
 		w := bs.waiters[idx]
 		bs.waiters = append(bs.waiters[:idx], bs.waiters[idx+1:]...)
