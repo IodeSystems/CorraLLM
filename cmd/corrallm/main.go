@@ -646,6 +646,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// activity log has always carried load_ms — the time a request waited on a
 	// spawn — and never what caused the spawn or what it displaced.
 	mgr.SetLoadRecorder(loadRecorder{st})
+	mgr.SetEventRecorder(eventRecorder{st: st})
 	if o.healthTimeout > 0 {
 		mgr.SetHealthTimeout(o.healthTimeout)
 		slog.Info("health timeout overridden", "timeout", o.healthTimeout)
@@ -1554,6 +1555,28 @@ func (r loadRecorder) RecordLoad(ev proc.ModelLoadEvent) {
 		MS: ev.MS, OK: ev.OK, Err: ev.Err,
 	}); err != nil {
 		slog.Warn("could not record a model load", "model", ev.Model, "err", err)
+	}
+}
+
+// eventRecorder writes proc's backend lifecycle events to the store, and
+// hands each to the prompt-cache tracker (P75), which reads a start between
+// two turns as a reload. Failures are logged and swallowed, as loadRecorder's.
+type eventRecorder struct {
+	st   *store.Store
+	note func(store.BackendEvent)
+}
+
+func (r eventRecorder) RecordBackendEvent(ev proc.BackendEvent) {
+	e := store.BackendEvent{TS: ev.TS, Model: ev.Model, Server: ev.Server, Instance: ev.Instance,
+		Kind: ev.Kind, Reason: ev.Reason, OK: ev.OK, Err: ev.Err}
+	if r.note != nil {
+		r.note(e)
+	}
+	if r.st == nil {
+		return
+	}
+	if err := r.st.InsertBackendEvent(e); err != nil {
+		slog.Warn("could not record a backend event", "model", ev.Model, "kind", ev.Kind, "err", err)
 	}
 }
 

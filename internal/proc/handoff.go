@@ -61,6 +61,7 @@ func (m *Manager) releaseIdleLocal() {
 			continue
 		}
 		slog.Info("handoff: stopping idle local backend so the successor can load it", "name", p.Name)
+		p.setStopReason("handoff")
 		m.evictLocked(p)
 	}
 }

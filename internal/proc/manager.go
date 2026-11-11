@@ -204,12 +204,20 @@ type Process struct {
 	refreshing bool
 	lastUsed   time.Time
 	tunedSlots int // --parallel N actually applied by the auto-tuner; 0 = untuned (config default stands)
+	// stopReason says why corrallm is stopping this process (backend_event,
+	// P75): set by whoever asks for the stop, before evictLocked. A process
+	// that exits with none set crashed. stopped marks evictLocked having run,
+	// so the exit watcher can tell an ordered stop from a crash.
+	stopReason string
+	stopped    bool
 }
 
 // Manager owns all processes and the per-server residency ledger.
 type Manager struct {
 	// loadRecorder is given each completed load; nil disables recording.
 	loadRecorder LoadRecorder
+	// eventRecorder is given each backend start, adoption and stop (events.go).
+	eventRecorder EventRecorder
 	// cfg is swapped wholesale on reload rather than mutated. Its maps are read
 	// unlocked from dozens of places, so editing them in place would be a data
 	// race; replacing the pointer atomically means every reader sees one
@@ -219,16 +227,16 @@ type Manager struct {
 	// defeat the atomic.
 	cfg atomic.Pointer[config.Config]
 
-	mu     sync.Mutex
-	procs  map[string]*Process
+	mu    sync.Mutex
+	procs map[string]*Process
 	// lastLogs is the log buffer of each process key's most recent run, kept
 	// after the process leaves procs. A backend that dies during startup is
 	// removed from procs at once, and its output — the only place the reason
 	// is written — went with it: the logs view showed "no output captured" for
 	// exactly the load somebody was trying to debug.
 	lastLogs map[string]*logBuffer
-	used   map[string]map[string]int64 // server → pool → reserved bytes
-	budget map[string]map[string]int64 // server → pool → (total − reserve)
+	used     map[string]map[string]int64 // server → pool → reserved bytes
+	budget   map[string]map[string]int64 // server → pool → (total − reserve)
 
 	healthCli     *http.Client
 	healthTimeout time.Duration
@@ -590,7 +598,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		var evicted []string
 		var victimsGone []chan struct{}
 		if mdl.Server != "" && len(usage) > 0 {
-			ev, gone, err := m.makeRoomLocked(mdl.Server, usage)
+			ev, gone, err := m.makeRoomLocked(mdl.Server, usage, name)
 			if err != nil {
 				m.mu.Unlock()
 				return nil, nil, false, err
@@ -793,6 +801,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 			ev.Err = err.Error()
 		}
 		m.recordLoad(ev)
+		m.event(name, p.server, p.handleOf(), EventStart, "cold-spawn", err)
 		if st == StateFailed {
 			// Release reserved pools and drop the entry so a later request retries.
 			m.onProcExit(name, p)
@@ -859,6 +868,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 		go func() {
 			<-h.Done()
 			slog.Info("backend exited", "name", name, "err", h.Err())
+			m.recordExit(p, h)
 			m.onProcExit(name, p) // free pools if it exited on its own (idempotent)
 		}()
 		// Track this process's VRAM footprint over its lifetime so a burst well
@@ -2025,7 +2035,7 @@ func (m *Manager) onProcExit(name string, p *Process) {
 //
 // gone holds one channel per evicted backend that is still stopping; each
 // closes when that group has exited. The spawn waits for all of them.
-func (m *Manager) makeRoomLocked(server string, usage map[string]int64) (names []string, gone []chan struct{}, err error) {
+func (m *Manager) makeRoomLocked(server string, usage map[string]int64, incoming string) (names []string, gone []chan struct{}, err error) {
 	if m.fitsLocked(server, usage, nil) {
 		return nil, nil, nil
 	}
@@ -2054,6 +2064,7 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64) (names [
 		if m.fitsLocked(server, usage, freed) {
 			names := make([]string, 0, len(freed))
 			for _, e := range freed {
+				e.setStopReason("evicted-for:" + incoming)
 				m.evictLocked(e)
 				names = append(names, e.Name)
 				if ch, ok := m.stopping[e.key]; ok {
@@ -2310,7 +2321,13 @@ func (m *Manager) evictLocked(p *Process) {
 	p.mu.Lock()
 	p.state = StateEvicting
 	h := p.handle
+	reason := p.stopReason
+	p.stopped = true
 	p.mu.Unlock()
+	if reason == "" {
+		reason = "evicted"
+	}
+	m.event(p.ModelName, p.server, h, EventStop, reason, nil)
 	delete(m.procs, p.key)
 	m.freeLocked(p.server, p.usage)
 	if h != nil {
@@ -2721,7 +2738,7 @@ func (m *Manager) UnloadModel(served string) (int, error) {
 	// Match on the PROCESS key: an extension's process is registered under
 	// "extension:<n>", so matching ModelName would miss it for every provided
 	// model except whichever one happened to spawn it.
-	return m.unloadKey(m.procKey(served), served, false)
+	return m.unloadKey(m.procKey(served), served, false, "unload-api")
 }
 
 // LoadExtension warms an extension by spawning its process, addressed by the
@@ -2767,7 +2784,7 @@ func (m *Manager) UnloadExtension(name string) (int, error) {
 	if _, ok := m.config().Extensions[name]; !ok {
 		return 0, fmt.Errorf("unknown extension %q", name)
 	}
-	return m.unloadKey("extension:"+name, name, false)
+	return m.unloadKey("extension:"+name, name, false, "unload-api")
 }
 
 // unloadKey is the shared body of model- and extension-addressed unload. label
@@ -2784,7 +2801,7 @@ func (m *Manager) UnloadExtension(name string) (int, error) {
 // work and is evicted once the last one finishes (see releaser). A 44-minute
 // diarization can hold a drain open for minutes; that is the trade for not
 // killing work in progress.
-func (m *Manager) unloadKey(key, label string, force bool) (int, error) {
+func (m *Manager) unloadKey(key, label string, force bool, reason string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -2803,6 +2820,7 @@ func (m *Manager) unloadKey(key, label string, force bool) (int, error) {
 		p.mu.Unlock()
 		return 0, fmt.Errorf("%q is already draining (%d in flight)", label, refs)
 	}
+	p.stopReason = reason
 	if p.refs > 0 {
 		p.draining = true
 		p.state = StateDraining
@@ -2933,6 +2951,7 @@ func (m *Manager) UnloadAll() (evicted int, skipped map[string]string) {
 		}
 	}
 	for _, p := range targets {
+		p.setStopReason("unload-all")
 		m.evictLocked(p)
 	}
 	return len(targets), skipped
@@ -3148,6 +3167,7 @@ func (m *Manager) sweepIdle() {
 	for _, p := range due {
 		slog.Info("idle unload: quiet past idleUnload, releasing",
 			"name", p.Name, "idle", now.Sub(p.lastUsed).Round(time.Second), "idleUnload", p.idleUnload)
+		p.setStopReason("idle-unload")
 		m.evictLocked(p)
 	}
 	m.mu.Unlock()

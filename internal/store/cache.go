@@ -106,13 +106,39 @@ func (s *Store) insertCache(id, ts int64, c *CacheRow) error {
 // InsertBackendEvent records one lifecycle event. Never fatal to what it
 // describes.
 func (s *Store) InsertBackendEvent(e BackendEvent) error {
-	return nil
+	_, err := s.db.Exec(
+		`INSERT INTO backend_event (ts, model, server, instance, kind, reason, ok, err)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.TS, e.Model, e.Server, e.Instance, e.Kind, e.Reason, boolToInt(e.OK), e.Err)
+	return err
 }
 
 // BackendEvents returns the events in [fromMS, toMS), oldest first. An empty
 // model reads every model's.
 func (s *Store) BackendEvents(model string, fromMS, toMS int64) ([]BackendEvent, error) {
-	return nil, nil
+	q := `SELECT id, ts, model, server, instance, kind, reason, ok, err FROM backend_event
+	      WHERE ts >= ? AND ts < ?`
+	args := []any{fromMS, toMS}
+	if model != "" {
+		q += ` AND model = ?`
+		args = append(args, model)
+	}
+	rows, err := s.db.Query(q+` ORDER BY ts, id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []BackendEvent
+	for rows.Next() {
+		var e BackendEvent
+		var ok int
+		if err := rows.Scan(&e.ID, &e.TS, &e.Model, &e.Server, &e.Instance, &e.Kind, &e.Reason, &ok, &e.Err); err != nil {
+			return nil, err
+		}
+		e.OK = ok != 0
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // CacheRows returns the attribution rows in [fromMS, toMS), oldest first. An

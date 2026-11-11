@@ -2,6 +2,7 @@ package proc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -163,6 +164,10 @@ func (m *Manager) ReconcileAgent(ctx context.Context, server string, reported []
 	for _, p := range gone {
 		slog.Warn("backend vanished from its agent; freeing its pools",
 			"server", server, "name", p.Name, "key", p.key)
+		p.mu.Lock()
+		p.stopped = true // its watcher may still fire; this is the record
+		p.mu.Unlock()
+		m.event(p.ModelName, p.server, p.handleOf(), EventStop, "vanished", errors.New("gone from its agent's report"))
 		m.onProcExit(p.Name, p)
 		vanished++
 	}
@@ -307,6 +312,7 @@ func (m *Manager) adoptReported(server string, b agent.Backend) (_ *Process, tra
 	go func() {
 		<-h.Done()
 		slog.Info("backend exited", "name", served, "err", h.Err())
+		m.recordExit(p, h)
 		m.onProcExit(served, p)
 	}()
 	go m.sampleVRAMPeak(served, h)
@@ -330,6 +336,7 @@ func (m *Manager) adoptReported(server string, b agent.Backend) (_ *Process, tra
 		m.measure(served, mdl, p, h)
 	}()
 	go m.probeUI(p)
+	m.event(served, mdl.Server, h, EventAdopt, "adopt", nil)
 	slog.Info("adopted a running backend from its agent",
 		"server", server, "id", b.ID, "key", b.Key, "model", served, "target", target.URL.String())
 	return p, false

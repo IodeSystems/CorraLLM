@@ -342,7 +342,7 @@ func (m *Manager) pauseKey(key, reason string, resumeAt time.Time) (PauseResult,
 	res := PauseResult{Target: key, Affected: m.ServedBy(key)}
 	slog.Info("pause: paused", "target", key, "models", res.Affected, "reason", reason, "until", resumeAt)
 
-	n, err := m.unloadKey(key, p.Label(), true)
+	n, err := m.unloadKey(key, p.Label(), true, "pause:"+reason)
 	if err != nil {
 		// unloadKey's only remaining error with force is "already draining"; a
 		// pause must not fail because an unload was already underway.

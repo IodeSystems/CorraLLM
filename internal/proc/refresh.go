@@ -189,7 +189,7 @@ func (m *Manager) startRefresh(p *Process, why string) bool {
 	slog.Info(why, "model", p.ModelName, "key", p.key, "server", p.server)
 	// force: a pinned model is refreshed too. A pin keeps a model warm; it is
 	// not a reason to keep serving weights that may have flipped.
-	if _, err := m.unloadKey(p.key, p.Name, true); err != nil {
+	if _, err := m.unloadKey(p.key, p.Name, true, "refresh"); err != nil {
 		p.mu.Lock()
 		p.refreshing = false
 		p.mu.Unlock()
