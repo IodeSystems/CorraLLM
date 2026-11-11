@@ -450,8 +450,9 @@ DAG (◻ unless marked):
   2 adopt events). First minute: 12 × 200, 0 errors; activity_cache rows hit 9-11, cold 1, id_slot
   on 100%. 11-11 07:06 reading (12.5 h, 5,273 Swift 200s): hit 0.904; lost 6.16M tok ≈ 52 min
   re-prefill; slot-switch 201 misses = 48.6% of lost (133 at <1 min gap); evicted 65 = 29%;
-  checkpoint-limited 89 = 11%; unknown 27. R1 says raise --cache-ram 18→27 GiB (owner set 18 for
-  OOM: owner decides); R3 says enable affinity. Bug: default `--model swift` → "unknown model"
+  checkpoint-limited 89 = 11%; unknown 27. R1: --cache-ram 18432→27648 applied 11-11 07:11 (owner
+  approved R1+R3); Swift RSS 30.1 GB at start, MemAvailable 65.5 GiB. Old cmd in scratchpad
+  swift-cmd-before-cacheram27.txt. R3: N9 building. Bug: default `--model swift` → "unknown model"
   (pass the served name). **next:** 24 h report on 11-11 evening.
   Known gap: the CLI has no /metrics poller, so it prints "cache entries not exposed"; the
   GraphQL/UI path has the poller. Optional: CLI scrapes the backend /metrics once.
@@ -474,7 +475,7 @@ DAG (◻ unless marked):
 - ✅ N11 provider `sessionAffinityHeader` (e8bbd68, owner D4): 32-hex sha256 of the
   conversation key; client-sent value passes through.
 
-**next:** owner calls on R1 (cache-ram) and D3 (affinity, N9); N6 24 h report. **risks:** a key that merges two conversations confuses classes;
+**next:** N9 build (off by default) → deploy → N10 A/B 2 h blocks; N6 24 h report (window splits at 07:11 restart). Option after N10: slot-aware dequeue (prefer the queued request whose last slot just freed; skip limit) — queue depth stays 2. **risks:** a key that merges two conversations confuses classes;
 an edited system message changes the inferred key (only a declared conversation shows it as
 prefix-diverged); chars→tokens estimate skewed by JSON escaping; checkpoint boundaries inferred;
 15 s /metrics resolution; MemAvailable in R1 is the report host's (right for Swift on box1); 0005 changes the order
