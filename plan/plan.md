@@ -506,9 +506,13 @@ DAG (◻ unless marked):
   Accepted risks: client cancel mid-prefill / handoff drain / `/upstream` traffic can make a pinned
   slot busy (llama.cpp defers it); new conversations get the least-recently-assigned slot, not
   llama.cpp's similarity pick.
-- ◐ N10 A/B: scratchpad ab-toggle.sh flips at 09:28 off, 11:28 on, 13:28 off, 15:28 on (left on);
-  log ab-toggle.log. **next:** after 15:28 `corrallm cache report --since 8h --by affinity` and
-  compare slot-switch share + lost tok per block (cache-ram 27 GiB in all blocks).
+- ◐ N10 A/B done 15:28 — affinity LOSES. Per 2 h block (activity_cache, Swift):
+  on 07:28 hit 76.9% lost 3.80M ev 73 sw 30 (inflated: first turns after the 07:11 manual SIGTERM) ·
+  off 09:28 89.5% 0.93M ev 11 sw 31 · on 11:28 86.9% 1.89M ev 27 sw 35 · off 13:28 90.4% 1.19M ev 12 sw 26.
+  slot-switch not reduced; evicted up (100/123 evicted rows are `pinned`). No Swift restart inside
+  the blocks (the 4 "crash" reloads = conversations idle across the 07:11 stop). Flag left ON.
+  **next:** owner call: turn slotAffinity off. **found:** an external stop (my 07:11 SIGTERM) is
+  recorded as `crash` (internal/proc/events.go:131 recordExit) — label "unordered exit" instead?
 - ✅ N11 provider `sessionAffinityHeader` (e8bbd68, owner D4): 32-hex sha256 of the
   conversation key; client-sent value passes through.
 
