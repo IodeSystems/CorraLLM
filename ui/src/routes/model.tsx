@@ -54,6 +54,7 @@ import { BenchProbeDetail } from '@/BenchProbeDetail'
 import { BenchCompare, LatestBench } from '@/BenchCompare'
 import { PauseCostNote, PauseDialog, PauseModelDoc, UnpauseModelDoc, pauseCost } from '@/Pause'
 import { ModelSummary } from '@/ModelSummary'
+import { CachePanel } from '@/CachePanel'
 import { stateLabel } from '@/MachineData'
 import { useReadOnly } from '@/auth'
 
@@ -286,7 +287,7 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
   // Deep-linkable tabs: the Overview's Logs button now navigates HERE rather
   // than opening its own dialog, so the console is the single place a model's
   // detail lives instead of two half-views of it.
-  const TAB_NAMES = ['info', 'test', 'logs', 'usage', 'bench'] as const
+  const TAB_NAMES = ['info', 'test', 'logs', 'usage', 'bench', 'cache'] as const
   const initialTab = tabParam
     ? Math.max(0, TAB_NAMES.indexOf(tabParam as (typeof TAB_NAMES)[number]))
     : replay
@@ -449,6 +450,7 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
         <Tab label="Logs" />
         <Tab label="Usage" />
         <Tab label="Bench" />
+        <Tab label="Cache" />
       </Tabs>
 
       {tab === 0 && (
@@ -465,6 +467,7 @@ export function ModelConsole(props: { name: string; tab?: string; replay?: strin
       {tab === 2 && <LogsTab backend={res?.name ?? `${name}#0`} ready={!!res} />}
       {tab === 3 && <UsageTab name={name} />}
       {tab === 4 && <BenchTab name={name} />}
+      {tab === 5 && <CachePanel name={name} />}
     </Box>
   );
 }
