@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/iodesystems/corrallm/internal/cacheattr"
+	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/store"
 )
 
@@ -36,12 +39,12 @@ func newCacheCmd() *cobra.Command {
 				return err
 			}
 			defer done()
-			mdl, ok := cfg.Effective(model)
-			if !ok {
-				return fmt.Errorf("unknown model %q", model)
+			served, mdl, err := resolveLocalModel(cfg, model)
+			if err != nil {
+				return err
 			}
 			now := time.Now().UnixMilli()
-			rep, err := cacheattr.Load(st, model, mdl.Cmd, now-since.Milliseconds(), now, by, nil)
+			rep, err := cacheattr.Load(st, served, mdl.Cmd, now-since.Milliseconds(), now, by, nil)
 			if err != nil {
 				return err
 			}
@@ -57,12 +60,37 @@ func newCacheCmd() *cobra.Command {
 			return err
 		},
 	}
-	report.Flags().StringVar(&model, "model", "swift", "served model")
+	report.Flags().StringVar(&model, "model", "swift", "served model, or a case-insensitive part of exactly one local model's name")
 	report.Flags().DurationVar(&since, "since", 24*time.Hour, "window, back from now")
 	report.Flags().StringVar(&by, "by", "class", "table to add: class, gap, caller, hour or affinity")
 	report.Flags().BoolVar(&asJSON, "json", false, "print the report as JSON")
 	cmd.AddCommand(report)
 	return cmd
+}
+
+// resolveLocalModel finds the model --model names: the served name exactly,
+// else the one local model (a cmd) whose served name contains it, ignoring
+// case. "swift" alone is not a served name; "local-swift…" is.
+func resolveLocalModel(cfg *config.Config, name string) (string, config.Model, error) {
+	if m, ok := cfg.Effective(name); ok {
+		return name, m, nil
+	}
+	want := strings.ToLower(name)
+	var hits []string
+	for served := range cfg.Models {
+		if m, ok := cfg.Effective(served); ok && m.Cmd != "" && strings.Contains(strings.ToLower(served), want) {
+			hits = append(hits, served)
+		}
+	}
+	sort.Strings(hits)
+	switch len(hits) {
+	case 1:
+		m, _ := cfg.Effective(hits[0])
+		return hits[0], m, nil
+	case 0:
+		return "", config.Model{}, fmt.Errorf("unknown model %q: no local model's name contains it", name)
+	}
+	return "", config.Model{}, fmt.Errorf("model %q matches %d local models: %s", name, len(hits), strings.Join(hits, ", "))
 }
 
 // newCacheTracker makes the daemon's prompt-cache tracker, seeded from the
