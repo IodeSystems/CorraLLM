@@ -431,10 +431,16 @@ DAG (◻ unless marked):
   until 0005; no-history after a handoff accepted; local backends only; no one-click apply.
 - ◐ N5 build N4 in 7 commits (scaffold → backend events → tracker → poller → report →
   UI → plan). N6 deploy, 24 h baseline.
-- ◐ N7 0005 rides the 11-11 06:00 gated build (aa75ff323 + 0002-0005). Check after: build kept,
-  decode within 5 min, /metrics prompt_cache_* non-zero, `id_slot` in chat replies. Rollback =
-  activate a4d4f2fd4 (fine: cmd has no 0005-only flag). Then set the policy after N6.
-- N8 A/B 0005 live 24 h vs N6 (gate bench is uncached: proves no harm only).
+- ✅ N7 0005 live 11-10 18:40 PST (owner: build now, weighted now, no baseline). Manual
+  `tools build` (compile only, no gate; it also activated bin/) → builds/20261111-023848-aa75ff32
+  (aa75ff323 + 0002-0005). Policy via env `LLAMA_ARG_CACHE_RAM_POLICY=weighted` (an old build
+  ignores it). First 8 min, 40 requests >200 tok: decode 76.8 tok/s vs 81.5 the 3 h before
+  (cold cache, unequal mix — recheck), prompt 1343 vs 1446 tok/s, hit 0.856 vs 0.904; /metrics
+  hits 41, misses 10, 5 entries 13.8 GB, evictions fragmentation 3, budget 0; no crash lines.
+  `id_slot` present in chat replies. Rollback = `tools activate` 20261109-140326-a4d4f2fd.
+  Finding: 0004's arena evicts on fragmentation at 13.8 of 18 GiB used.
+- ◻ N8 weighted vs fifo: no clean baseline (owner skipped it). Compare decode at equal context
+  and hit by gap bucket vs the 14 d retro (40 GiB) and the 18:13-18:39 fifo window (18 GiB).
 - N9 `id_slot` affinity, per-model flag default off; pin only when corrallm sees the slot
   free, else -1. N10 A/B in 2 h on/off blocks after N8.
 - N11 (optional, unconfirmed) provider `session_affinity_header`, sends a hash of the
