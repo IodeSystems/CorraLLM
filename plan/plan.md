@@ -397,8 +397,10 @@ Evidence (research, not measured here):
 - corrallm gaps for a ninfer backend: slotAffinity off; /metrics map
   `ninfer_prompt_tokens_cached_total`; context/lanes declared by hand.
 
-DAG: A format check + download (running) · B ninfer build at HEAD (running) · C attribution:
-requested vs served visible to clients (running) · D register a ninfer model, no lane, smoke on
+DAG: A format check + download (running) · B ninfer build at HEAD: ❓ needs `libhwloc-dev` (owner
+sudo; recipe preflight fixed 983eef0) · C ✅ d11b92d headers X-Corrallm-Requested / -Served /
+-Request-Id (= activity.ticket) on every inference reply; NOT deployed (deploy after 15:28 with the
+agentkit bump: a handoff mid-N10 resets slot state); clients aw4/dun/agentkit must log them · D register a ninfer model, no lane, smoke on
 gpu0 (Swift off the card) · E llm-bench Q6 vs NVFP4, 3 runs/arm · F 1 h aw4 replay at 3 lanes
 (500/503, cache reuse ON) · G alias A/B by time block with per-call model attribution.
 **next:** A-C results. **blocking decisions:** each D-G run takes Swift off gpu0 (aw4 gets 429s);
