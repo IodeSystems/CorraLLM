@@ -446,7 +446,11 @@ DAG (◻ unless marked):
   transaction (a failed attribution must not lose the row); stop reasons have no `build-swap` or
   `config-change`: the build gate stops via pause (`pause:<why>`), and no config-change stop
   path exists.
-- ◻ N6 merge N5, deploy, 24 h baseline; `corrallm cache report --since 24h`.
+- ◐ N6 deployed 11-10 18:55 PST, v0.2.2-19-g80722d1 (handoff; tracker seeded 669 conversations;
+  2 adopt events). First minute: 12 × 200, 0 errors; activity_cache rows hit 9-11, cold 1, id_slot
+  on 100%. **next:** `corrallm cache report --since 24h` on 11-11 evening (weighted, 18 GiB).
+  Known gap: the CLI has no /metrics poller, so it prints "cache entries not exposed"; the
+  GraphQL/UI path has the poller. Optional: CLI scrapes the backend /metrics once.
 - ✅ N7 0005 live 11-10 18:40 PST (owner: build now, weighted now, no baseline). Manual
   `tools build` (compile only, no gate; it also activated bin/) → builds/20261111-023848-aa75ff32
   (aa75ff323 + 0002-0005). Policy via env `LLAMA_ARG_CACHE_RAM_POLICY=weighted` (an old build
