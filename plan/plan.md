@@ -378,6 +378,68 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P75 — Prompt-cache miss attribution, patch 0005 (LRU + hits + metrics), slot affinity — 2026-11-10
+
+Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
+--cache-ram 40960 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
+
+**Evidence (11-10).** Retro over 14 d, 117,056 Swift chat requests, 7,985 conversations
+(SQL: session scratchpad `cache-retro.sql`). Mean hit by gap since the previous turn:
+<1m 0.96 · 1-5m 0.89 · 5-15m 0.74 · 15-60m 0.44 · 1-6h 0.15 · >6h 0.13. Daily token hit
+0.885-0.932. "Eviction-like" misses (prev ctx >4096, cached <10%): 1,225 of 1,614 (76%) are in gaps <5 min,
+so most are probably not eviction (prefix divergence, shared keys, slot switch, reload).
+llama.cpp prompt cache: global FIFO; a hit moves the entry into the slot and re-saves it at
+the back on slot switch (≈LRU); no hit counts, TTL, or cache metrics. Upstream aa75ff323:
+no cache-path change since a4d4f2fd4; 0002-0004 apply cleanly.
+
+DAG (◻ unless marked):
+- ✅ N1 facts: (a) OAI chat responses drop `id_slot` (only native /completion has it,
+  server-task.cpp:337/:1059) → 0005 adds it. (b) `model_load` has one writer, the cold spawn
+  (manager.go:770-795): no row for adopted backends (reconcile.go:266), build swaps, or a
+  crash reason → the "reload" class undercounts. (c) a pinned busy slot is deferred until
+  free (server-context.cpp:3103-3108), never redirected → pin only when corrallm sees it idle.
+- ✅ N2 backfill (scratchpad `cache-classify.py`): 1,614 eviction-like misses, not 2,994
+  (the >5 min "1,770" was the bucket row count; the real miss count is 389). Order: reload →
+  prefix-diverged (<50% chars matched) → other-traffic (>300k other tokens between turns, an
+  assumption) → unknown. <5 min: reload 102 · diverged 44 · other 109 · unknown 970.
+  ≥5 min: reload 201 · diverged 12 · other 174 · unknown 2. 589 of the 970 have no req_body
+  (53,752 of 117,191 Swift 200s have no payload row). Short-gap unknowns have median 120k
+  other tokens between turns: not eviction by volume. Hypotheses for N4: checkpoint position
+  (hybrid model: reuse stops at the last checkpoint before a tail edit), slot switch inside a
+  conversation, unrecorded reloads (N1b).
+- ◐ N3 patch 0005 in a scratch tree: LRU refresh on hit, per-entry hits/created/last-used,
+  hit- and age-weighted victim, /metrics counters (entries, bytes, hits, misses, evictions,
+  evicted age). Goes through 0004's `common_host_pool_over_budget`. Harness + sanitizers. Opus.
+- ✅ N4 design (session scratchpad `p75-n4-design.md`): `activity_cache` side table; new
+  `backend_event` (start/adopt/stop + reason, instance id) beside `model_load`; one body
+  decode with 1 KiB block hashes (catches divergence inside one long system message);
+  in-memory tracker LRU-capped 64 MiB; classes cold → reload → no-history → prefix-diverged →
+  slot-switch → checkpoint-limited → evicted → unknown; miss = lost ≥ max(1024 tok, 10%);
+  `corrallm cache report`; GraphQL `cacheReport`; "Prompt cache" panel on the model page
+  with rules R1-R7 (text only, evidence + exact flag change, ≥6 h and ≥200 misses).
+  Defaults taken (owner may override): thresholds as designed; 300k-token eviction proxy
+  until 0005; no-history after a handoff accepted; local backends only; no one-click apply.
+- ◐ N5 build N4 in 7 commits (scaffold → backend events → tracker → poller → report →
+  UI → plan). N6 deploy, 24 h baseline.
+- N7 ship 0005 through the 06:00 gated build; canary decode 5 min; rollback = activate a4d4f2fd4.
+- N8 A/B 0005 live 24 h vs N6 (gate bench is uncached: proves no harm only).
+- N9 `id_slot` affinity, per-model flag default off; pin only when corrallm sees the slot
+  free, else -1. N10 A/B in 2 h on/off blocks after N8.
+- N11 (optional, unconfirmed) provider `session_affinity_header`, sends a hash of the
+  conversation key.
+
+**next:** N1-N3 running. **risks:** a key that merges two conversations confuses classes;
+message-level hash misses divergence inside one long system message; 0005 changes the order
+0004's fragmentation path depends on (canary is the only CUDA test); daily build restarts
+empty the cache, so A/B windows split at restarts; hash lists lost on handoff.
+**assumptions:** per-message hash with tokens estimated from chars (A2); N3 uses local
+metric names `llamacpp:prompt_cache_*` until D2.
+**decisions (owner 11-10):** D1 a UI panel with cache-tuning recommendations (plus CLI).
+D2 0005 stays local until it is good. D3 open: owner unsure it matters; affinity ships off,
+N10 data decides. D4 N11 in scope, start now. D5 prefix match in characters.
+**optional extensions:** shared-prefix-aware eviction (0003-copy retired with no gain:
+measure first); checkpoint at the longest common prefix; /metrics panels.
+
 ### ◐ P74 — Account view over limits; every key mints subkeys; upstream-funds refusal — 2026-11-07
 
 Why (owner 11-07): "hard day limit + timed budget past it" reads as caps. The
