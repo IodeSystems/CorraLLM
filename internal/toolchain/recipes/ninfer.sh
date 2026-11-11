@@ -80,6 +80,19 @@ ffmpeg_packages() {
     esac
 }
 
+# hwloc >= 2.5: ninfer's cmake/Dependencies.cmake requires it through pkg-config
+# (added upstream after 2026-08; a runtime libhwloc15 without the -dev package
+# has no hwloc.pc, so configure fails).
+hwloc_packages() {
+    case "$(pkg_manager)" in
+        apt)    printf 'libhwloc-dev' ;;
+        dnf)    printf 'hwloc-devel' ;;
+        pacman) printf 'hwloc' ;;
+        brew)   printf 'hwloc' ;;
+        *)      printf '' ;;
+    esac
+}
+
 # probe: the stamp is the only version source. No banner to parse.
 probe() {
     local bindir; bindir=$(tool_bin_dir)
@@ -151,6 +164,13 @@ preflight() {
         local fp; fp=$(ffmpeg_packages)
         # shellcheck disable=SC2206
         [ -n "$fp" ] && missing_pkgs+=($fp)
+    fi
+
+    if have pkg-config && ! pkg-config --exists 'hwloc >= 2.5' 2>/dev/null; then
+        missing_names+=("hwloc >= 2.5 development files")
+        local hp; hp=$(hwloc_packages)
+        # shellcheck disable=SC2206
+        [ -n "$hp" ] && missing_pkgs+=($hp)
     fi
 
     local runnable=0
