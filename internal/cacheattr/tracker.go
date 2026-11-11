@@ -194,7 +194,16 @@ func (t *Tracker) Observe(o Obs) (store.CacheRow, bool) {
 	if len(bounds) > maxBoundaries {
 		bounds = append([]int(nil), bounds[len(bounds)-maxBoundaries:]...)
 	}
-	s.served, s.blocks, s.chars, s.hashes = o.Served, turn.Blocks, turn.Chars, len(turn.Blocks) > 0
+	// A COPY at its length. Inspect sizes the slice for the whole body, and
+	// a body that is mostly base64 image (a digest in the stream) would keep
+	// a capacity many times the hashes it holds, beyond what size() charges
+	// against the cap. slices.Clip would not do: the array it keeps is the
+	// same one.
+	blocks := turn.Blocks
+	if cap(blocks) > len(blocks) {
+		blocks = append(make([]uint64, 0, len(blocks)), blocks...)
+	}
+	s.served, s.blocks, s.chars, s.hashes = o.Served, blocks, turn.Chars, len(blocks) > 0
 	s.promptTok, s.ctxTok, s.boundaries = o.PromptTokens, o.PromptTokens+o.CompletionTokens, bounds
 	s.instance, s.slot, s.ts, s.instTok, s.activityID = o.Instance, o.Slot, o.TS, instAfter, 0
 	sh.bytes += s.size()

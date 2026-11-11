@@ -155,6 +155,19 @@ func TestTrackerEventsAndSeed(t *testing.T) {
 	}
 }
 
+// A turn whose body is mostly an image hashes to a few blocks inside a slice
+// sized for the whole body; the stub keeps only what it charges for.
+func TestTrackerStoresClippedBlocks(t *testing.T) {
+	tr := NewTracker(0, nil)
+	turn := turnOf(t, body(t, "s", "u"))
+	turn.Blocks = append(make([]uint64, 0, 4096), turn.Blocks...)
+	tr.Observe(Obs{Served: "m", Instance: "i", Slot: -1, TS: 1, PromptTokens: 10, Turn: turn})
+	s := tr.shardOf(turn.Key).m[turn.Key]
+	if cap(s.blocks) != len(s.blocks) || len(s.blocks) == 0 {
+		t.Errorf("stored blocks len %d cap %d", len(s.blocks), cap(s.blocks))
+	}
+}
+
 // The LRU cap holds: past it, the least recently seen conversations go.
 func TestTrackerLRUCap(t *testing.T) {
 	const capBytes = 16 * (4 * 1024) // 4 KiB per shard
