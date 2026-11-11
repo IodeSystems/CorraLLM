@@ -141,3 +141,27 @@ func TestSettingsFromCmd(t *testing.T) {
 		t.Errorf("unset flags: %+v", s)
 	}
 }
+
+// --by affinity counts hits and misses per outcome, so on/off can be compared.
+func TestReportByAffinity(t *testing.T) {
+	rows := []store.CacheRow{
+		{Class: ClassHit, Affinity: "pinned"},
+		{Class: ClassHit, Affinity: "pinned"},
+		{Class: ClassSlotSwitch, Affinity: "", LostTok: 5000},
+		{Class: ClassHit, Affinity: ""},
+	}
+	r := BuildReport("m", 0, 1, rows, nil, Settings{}, "affinity")
+	got := map[[2]string]int{}
+	for _, g := range r.Groups {
+		got[[2]string{g.Group, g.Class}] = g.Misses
+	}
+	want := map[[2]string]int{{"pinned", ClassHit}: 2, {"(off)", ClassSlotSwitch}: 1, {"(off)", ClassHit}: 1}
+	if len(got) != len(want) {
+		t.Fatalf("groups %v", got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%v = %d, want %d (all %v)", k, got[k], v, got)
+		}
+	}
+}

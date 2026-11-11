@@ -74,6 +74,10 @@ type Proxy struct {
 	cacheTracker *cacheattr.Tracker
 	cachePoller  *cacheattr.Poller
 
+	// slotAff is the per-model llama.cpp slot occupancy for slot affinity
+	// (P75 N9, slotaffinity.go). Used only for models with slotAffinity on.
+	slotAff slotAssigner
+
 	started int64 // unix seconds at construction — the catalog's "created"
 
 	requestTimeout     time.Duration                          // 0 = no corrallm-imposed deadline (defer to client + backend)
@@ -1364,6 +1368,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		outBody := c.body
 		anthropic, messages, nativeMessages := c.anthropic(), c.messages(), c.nativeMessages()
+		// SLOT AFFINITY (slotaffinity.go): after every body stage, so the
+		// client-sent id_slot check sees what the backend will get. The lease
+		// is released as soon as the backend has answered (below), and by the
+		// defer on any other exit, panic included.
+		outBody, affinity, releaseSlot := p.assignSlot(r, pr, name, backend, outBody, c.chatReply() && !c.anthropicTarget())
+		defer releaseSlot()
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
 		p.markInflight(live, inflightStreaming, name)
@@ -1499,6 +1509,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			upReq.URL = &u
 		}
 		aborted := serveCatchingAbort(rp, dst, upReq)
+		releaseSlot() // the backend is done with the slot: stream ended, error, or cancel
 		// THE SECOND UPSTREAM CALL (P35 §12.9(e) RULE 2, sttdiarize.go): the
 		// caller asked for speaker labels and this backend serves them from a
 		// separate endpoint whose answer corrallm joins to the transcription
@@ -1854,6 +1865,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// what the caller got.
 		if status >= 200 && status < 300 && !aborted {
 			act.Cache = p.attributeCache(r, pr, name, backend, u)
+			if act.Cache != nil {
+				act.Cache.Affinity = affinity
+			}
 		}
 		if id := p.logReq(r, act); act.Cache != nil && id > 0 {
 			p.cacheTracker.Committed(act.Cache.Conversation, act.Cache.TS, id)

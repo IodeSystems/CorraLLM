@@ -39,7 +39,8 @@ type GapRow struct {
 	Misses int    `json:"misses"`
 }
 
-// GroupRow is one row of the --by caller/hour table.
+// GroupRow is one row of the --by caller/hour/affinity table. Misses counts
+// the rows of that class; only the affinity table has hit rows.
 type GroupRow struct {
 	Group      string `json:"group"`
 	Class      string `json:"class"`
@@ -134,7 +135,7 @@ func gapBucket(ms int64) string {
 }
 
 // BuildReport aggregates rows (oldest first) and events of one window. by
-// adds a group table: "caller" or "hour" (anything else: none).
+// adds a group table: "caller", "hour" or "affinity" (anything else: none).
 func BuildReport(served string, fromMS, toMS int64, rows []store.CacheRow, events []store.BackendEvent, s Settings, by string) Report {
 	r := Report{Served: served, FromMS: fromMS, ToMS: toMS, Settings: s,
 		Classes: []ClassRow{}, Gaps: []GapRow{}, Groups: []GroupRow{}, ReloadReasons: []ReasonRow{},
@@ -160,6 +161,15 @@ func BuildReport(served string, fromMS, toMS int64, rows []store.CacheRow, event
 		}
 		c.Misses++
 		if !IsMiss(row.Class) {
+			// The affinity table is an A/B: it needs the hits beside the
+			// misses, or a group's miss count has no denominator.
+			if by == "affinity" {
+				k := [2]string{groupOf(row, by), row.Class}
+				if groups[k] == nil {
+					groups[k] = &GroupRow{Group: k[0], Class: row.Class}
+				}
+				groups[k].Misses++
+			}
 			continue
 		}
 		tot.Misses++
@@ -257,6 +267,12 @@ func groupOf(row store.CacheRow, by string) string {
 		return c
 	case "hour":
 		return time.UnixMilli(row.TS).Format("2006-01-02 15h")
+	case "affinity":
+		// What slot affinity did (P75 N9): the on/off A/B. "" is off.
+		if row.Affinity == "" {
+			return "(off)"
+		}
+		return row.Affinity
 	}
 	return ""
 }
@@ -353,7 +369,7 @@ func recommend(r Report, rows []store.CacheRow) []Recommendation {
 			Evidence: fmt.Sprintf("%s of lost tokens; %d misses; id_slot on %s of rows; --parallel %s",
 				pct(sh), r.count(ClassSlotSwitch), pct(s.IDSlotCoverage), flagText(s.Parallel))}
 		if s.IDSlotCoverage >= r3CoveragePct {
-			rec.Action = "Enable id_slot affinity for this model (P75 N9 flag, off by default)."
+			rec.Action = "Enable slot affinity for this model (`slotAffinity: true`, off by default); compare with `--by affinity`."
 		} else {
 			rec.Action = "Deploy patch 0005 so every reply carries id_slot, then measure again."
 		}

@@ -25,6 +25,9 @@ func SettingsFromCmd(cmd string) Settings {
 	}
 }
 
+// Parallel is the cmd's --parallel (-np) slot count; -1 when not set.
+func Parallel(cmd string) int { return flagInt(cmd, "--parallel", "-np") }
+
 // flagValue is the value given to one of names: "--x N" or "--x=N"; the last
 // one wins, as it does for llama-server.
 func flagValue(cmd string, names ...string) (string, bool) {

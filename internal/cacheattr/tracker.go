@@ -322,6 +322,24 @@ func (t *Tracker) Seed(turns []store.LastTurn, events []store.BackendEvent) {
 	}
 }
 
+// LastSlot is the llama.cpp slot that served conversation conv's previous
+// turn on instance, for slot affinity (P75 N9). -1 when unknown: no stub, a
+// stub older than the TTL, a reply without id_slot, or another instance (a
+// reload empties every slot, so the old number means nothing).
+func (t *Tracker) LastSlot(conv, instance string, nowMS int64) int {
+	if t == nil || conv == "" || instance == "" {
+		return -1
+	}
+	sh := t.shardOf(conv)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s := sh.m[conv]
+	if s == nil || s.instance != instance || nowMS-s.ts > stubTTL.Milliseconds() {
+		return -1
+	}
+	return s.slot
+}
+
 // Len is the number of conversations held, for tests and the report.
 func (t *Tracker) Len() int {
 	n := 0

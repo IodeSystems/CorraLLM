@@ -59,7 +59,7 @@ func newCacheCmd() *cobra.Command {
 	}
 	report.Flags().StringVar(&model, "model", "swift", "served model")
 	report.Flags().DurationVar(&since, "since", 24*time.Hour, "window, back from now")
-	report.Flags().StringVar(&by, "by", "class", "table to add: class, gap, caller or hour")
+	report.Flags().StringVar(&by, "by", "class", "table to add: class, gap, caller, hour or affinity")
 	report.Flags().BoolVar(&asJSON, "json", false, "print the report as JSON")
 	cmd.AddCommand(report)
 	return cmd
