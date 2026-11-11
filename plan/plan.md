@@ -483,7 +483,7 @@ DAG (◻ unless marked):
 - ✅ N11 provider `sessionAffinityHeader` (e8bbd68, owner D4): 32-hex sha256 of the
   conversation key; client-sent value passes through.
 
-**next:** N10 readout after 15:28; N6 24 h report (window splits at 07:11 restart). Option after N10: slot-aware dequeue (prefer the queued request whose last slot just freed; skip limit) — queue depth stays 2. **risks:** a key that merges two conversations confuses classes;
+**next:** N10 readout after 15:28; then bump agentkit v0.26.0→v0.27.1 (agentkit-f2: no code change needed; refusal facts from 400/422 only) and deploy; N6 24 h report (window splits at 07:11 restart). Option after N10: slot-aware dequeue (prefer the queued request whose last slot just freed; skip limit) — queue depth stays 2. **risks:** a key that merges two conversations confuses classes;
 an edited system message changes the inferred key (only a declared conversation shows it as
 prefix-diverged); chars→tokens estimate skewed by JSON escaping; checkpoint boundaries inferred;
 15 s /metrics resolution; MemAvailable in R1 is the report host's (right for Swift on box1); 0005 changes the order
