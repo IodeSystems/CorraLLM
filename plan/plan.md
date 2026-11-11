@@ -378,6 +378,33 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P76 — Q6 (llama.cpp Swift) vs NVFP4 (ninfer, base Qwen3.8) A/B — 2026-11-11
+
+Owner 11-11: "I might want to go back to vanilla at a better accuracy - I don't mind nvfp4 if we can
+get quality out of it"; wants par 3; "Check the unsloth nvfp4 against ninfer's format, download, then
+let's get ready to run the q6Vnvp4"; A/B by aliasing must show which model did what, also to dun/aw4.
+
+Evidence (research, not measured here):
+- ninfer loads only `.ninfer` v3. `neroued/Qwen3.8-27B-nvfp4-NInfer` = 22.09 GiB, built from
+  unsloth/Qwen3.8-27B-NVFP4 rev 60e813d4: MLP L0-55 NVFP4, attn/GDN/embed/lm_head/MLP L56-63 FP8,
+  vision + MTP + DFlash2. Resident 19.7 GiB (MTP3). KV pool 262k @2 lanes, 253k @4.
+- Published: decode 148-170 tok/s single (MTP3), 291 total @C=2; prefill 8,658 tok/s @64.5k; all
+  with prefix reuse OFF. KLD 0.0510 (ninfer-ext table, wikitext 4k; Q4 0.0429 in the same table).
+- Risks: ninfer #414 (4 concurrent → 500, /health 503 until restart), #339 (2 lanes 60-70k wedge),
+  #394 (full cache → multi-turn chat resumes at system prefix; tool loops said unaffected), #371.
+- vLLM alternative: same Unsloth NVFP4 (23.4 GB); 5090 decode ~60-80 tok/s without MTP; hybrid
+  prefix cache experimental (784-token blocks); host offload for GDN state unconfirmed. Not chosen.
+- corrallm gaps for a ninfer backend: slotAffinity off; /metrics map
+  `ninfer_prompt_tokens_cached_total`; context/lanes declared by hand.
+
+DAG: A format check + download (running) · B ninfer build at HEAD (running) · C attribution:
+requested vs served visible to clients (running) · D register a ninfer model, no lane, smoke on
+gpu0 (Swift off the card) · E llm-bench Q6 vs NVFP4, 3 runs/arm · F 1 h aw4 replay at 3 lanes
+(500/503, cache reuse ON) · G alias A/B by time block with per-call model attribution.
+**next:** A-C results. **blocking decisions:** each D-G run takes Swift off gpu0 (aw4 gets 429s);
+start after 15:28 (P75 N10 A/B ends). **optional extensions:** convert the current Unsloth head
+ourselves if it differs from 60e813d4.
+
 ### ◐ P75 — Prompt-cache miss attribution, patch 0005 (LRU + hits + metrics), slot affinity — 2026-11-10
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
