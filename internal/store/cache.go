@@ -100,7 +100,12 @@ type BackendEvent struct {
 
 // insertCache writes the cache row of activity id.
 func (s *Store) insertCache(id, ts int64, c *CacheRow) error {
-	return nil
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO activity_cache (activity_id, ts, served, conversation, instance, slot, prev_activity_id, gap_ms, prompt_tokens, cached_tokens, prev_ctx_tokens, prompt_chars, match_chars, match_tok_est, diverge_msg, lost_tok, other_tok, evictions_between, ckpt_dist_tok, prompt_per_sec, class, cause)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, ts, c.Served, c.Conversation, c.Instance, c.Slot, c.PrevActivityID, c.GapMS,
+		c.PromptTokens, c.CachedTokens, c.PrevCtxTokens, c.PromptChars, c.MatchChars, c.MatchTokEst,
+		c.DivergeMsg, c.LostTok, c.OtherTok, c.EvictionsBetween, c.CkptDistTok, c.PromptPerSec, c.Class, c.Cause)
+	return err
 }
 
 // InsertBackendEvent records one lifecycle event. Never fatal to what it
@@ -143,8 +148,35 @@ func (s *Store) BackendEvents(model string, fromMS, toMS int64) ([]BackendEvent,
 
 // CacheRows returns the attribution rows in [fromMS, toMS), oldest first. An
 // empty served reads every model's.
+//
+// The caller comes from activity by primary key: one lookup per row, never a
+// scan of activity.
 func (s *Store) CacheRows(served string, fromMS, toMS int64) ([]CacheRow, error) {
-	return nil, nil
+	q := `SELECT c.activity_id, c.ts, c.served, c.conversation, c.instance, c.slot, c.prev_activity_id, c.gap_ms, c.prompt_tokens, c.cached_tokens, c.prev_ctx_tokens, c.prompt_chars, c.match_chars, c.match_tok_est, c.diverge_msg, c.lost_tok, c.other_tok, c.evictions_between, c.ckpt_dist_tok, c.prompt_per_sec, c.class, c.cause, COALESCE(a.key, '')
+	      FROM activity_cache c LEFT JOIN activity a ON a.id = c.activity_id
+	      WHERE c.ts >= ? AND c.ts < ?`
+	args := []any{fromMS, toMS}
+	if served != "" {
+		q += ` AND c.served = ?`
+		args = append(args, served)
+	}
+	rows, err := s.db.Query(q+` ORDER BY c.ts, c.activity_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []CacheRow
+	for rows.Next() {
+		var c CacheRow
+		if err := rows.Scan(&c.ActivityID, &c.TS, &c.Served, &c.Conversation, &c.Instance, &c.Slot,
+			&c.PrevActivityID, &c.GapMS, &c.PromptTokens, &c.CachedTokens, &c.PrevCtxTokens,
+			&c.PromptChars, &c.MatchChars, &c.MatchTokEst, &c.DivergeMsg, &c.LostTok, &c.OtherTok,
+			&c.EvictionsBetween, &c.CkptDistTok, &c.PromptPerSec, &c.Class, &c.Cause, &c.Caller); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // LastTurn is the newest turn of one conversation, for seeding the cache
@@ -159,6 +191,27 @@ type LastTurn struct {
 }
 
 // LastTurns returns each conversation's newest served turn since fromMS.
+// Oldest first, one query; the activity columns by primary key.
 func (s *Store) LastTurns(fromMS int64) ([]LastTurn, error) {
-	return nil, nil
+	rows, err := s.db.Query(`
+		SELECT c.conversation, c.served, c.activity_id, c.ts, a.prompt_tokens, a.completion_tokens
+		FROM activity_conversation c
+		JOIN (SELECT conversation, MAX(activity_id) AS id FROM activity_conversation
+		      WHERE ts >= ? AND conversation NOT LIKE 'req:%' AND ctx_tokens > 0 GROUP BY conversation) l
+		  ON l.id = c.activity_id
+		JOIN activity a ON a.id = c.activity_id
+		ORDER BY c.ts`, fromMS)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []LastTurn
+	for rows.Next() {
+		var t LastTurn
+		if err := rows.Scan(&t.Conversation, &t.Served, &t.ActivityID, &t.TS, &t.PromptTokens, &t.CompletionTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }

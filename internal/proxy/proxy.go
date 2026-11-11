@@ -35,6 +35,7 @@ import (
 	shim "github.com/iodesystems/openai-claude-api-shim"
 
 	"github.com/iodesystems/corrallm/internal/alert"
+	"github.com/iodesystems/corrallm/internal/cacheattr"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/cost"
 	"github.com/iodesystems/corrallm/internal/events"
@@ -67,6 +68,10 @@ type Proxy struct {
 	// slots keeps one conversation per backend slot on disk (nil = off). See
 	// slots.go and internal/slotcache.
 	slots *slotcache.Manager
+
+	// cacheTracker attributes each local chat turn's prompt-cache misses
+	// (P75, conversation.go). nil = off.
+	cacheTracker *cacheattr.Tracker
 
 	started int64 // unix seconds at construction — the catalog's "created"
 
@@ -961,18 +966,20 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// key the slot cache restores by, so "this conversation" means one thing
 	// across the box. Into the context rather than threaded through every
 	// logReq call site, as the ticket rides the headers.
-	if r.URL.Path == "/v1/chat/completions" {
-		if id, n, ok := conversationOf(caller.Key, r.Header.Get(slotcache.ConversationHeader), body); ok {
-			r = r.WithContext(context.WithValue(r.Context(), conversationCtxKey{}, conversation{id, n}))
-		}
-	}
-
+	//
 	// Session affinity (provider sessionAffinityHeader): the same conversation
 	// key, for /v1/messages too (the Anthropic body also has `messages`). Its
 	// own context key so the activity row's conversation is unchanged.
+	//
+	// ONE decode of the body for both, and for the prompt-cache tracker's
+	// block hashes (slotcache.Inspect).
 	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/messages" {
-		if id, _, ok := conversationOf(caller.Key, r.Header.Get(slotcache.ConversationHeader), body); ok {
-			r = r.WithContext(context.WithValue(r.Context(), affinityCtxKey{}, sessionAffinityValue(id)))
+		if turn, ok := slotcache.Inspect(caller.Key, r.Header.Get(slotcache.ConversationHeader), body); ok {
+			ctx := context.WithValue(r.Context(), affinityCtxKey{}, sessionAffinityValue(turn.Key))
+			if r.URL.Path == "/v1/chat/completions" {
+				ctx = context.WithValue(ctx, conversationCtxKey{}, conversation{turn.Key, turn.Messages, &turn})
+			}
+			r = r.WithContext(ctx)
 		}
 	}
 
@@ -1830,7 +1837,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		if status >= 200 && status < 300 {
 			p.clearRefusal(name)
 		}
-		p.logReq(r, store.Activity{
+		act := store.Activity{
 			Served: name, Requested: served, Placement: placement, Key: key, Path: r.URL.Path, Status: status,
 			DwellMS: time.Since(start).Milliseconds(), PromptTokens: u.PromptTokens,
 			CompletionTokens: u.CompletionTokens, CachedTokens: u.CachedTokens,
@@ -1841,7 +1848,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			RetryAfterMS:    retryAfterMS,
 			ReasoningTokens: thinking, ReasoningMeasured: thinkingMeasured,
 			Note: strings.Join(c.notes, "; "), InflightID: takeMarker(),
-		})
+		}
+		// After the reply is written, from what it reported: never changes
+		// what the caller got.
+		if status >= 200 && status < 300 && !aborted {
+			act.Cache = p.attributeCache(r, pr, name, backend, u)
+		}
+		if id := p.logReq(r, act); act.Cache != nil && id > 0 {
+			p.cacheTracker.Committed(act.Cache.Conversation, act.Cache.TS, id)
+		}
 		if aborted {
 			// Metered and logged; now abort the connection as ReverseProxy
 			// would have, so a caller still connected sees a broken stream
@@ -3393,14 +3408,16 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 // over the events broker. The pushed copy omits the captured payloads — those stay
 // in the DB and are fetched on demand for the detail modal (P10b/c), not streamed
 // to every SSE subscriber.
-func (p *Proxy) log(a store.Activity) {
+func (p *Proxy) log(a store.Activity) int64 {
 	a.TS = time.Now().UnixMilli()
-	if err := p.store.InsertActivity(a); err != nil {
+	id, err := p.store.InsertActivityID(a)
+	if err != nil {
 		slog.Warn("activity log", "err", err)
 	}
 	ev := a
-	ev.ReqBody, ev.RespBody = "", ""
+	ev.ReqBody, ev.RespBody, ev.Cache = "", "", nil
 	p.publish(events.Event{Type: "activity", Data: ev})
+	return id
 }
 
 // markRow writes the in-flight marker for a request about to be served and
@@ -3434,7 +3451,9 @@ func (p *Proxy) dropRowMarker(id int64) {
 // activity row before logging it. Every activity record originates from a
 // request, so this is the single seam that resolves the client IP — callers
 // pass their *http.Request rather than repeating clientIP(r) at each site.
-func (p *Proxy) logReq(r *http.Request, a store.Activity) {
+//
+// Returns the row's id, 0 when nothing was written.
+func (p *Proxy) logReq(r *http.Request, a store.Activity) int64 {
 	a.SourceIP = clientIP(r)
 	// Whatever id this request is carrying — the caller's own, or the one we
 	// minted when we rejected it. Stamped here rather than at each call site
@@ -3447,7 +3466,7 @@ func (p *Proxy) logReq(r *http.Request, a store.Activity) {
 	if c, ok := r.Context().Value(conversationCtxKey{}).(conversation); ok {
 		a.Conversation, a.ConversationMessages = c.id, c.messages
 	}
-	p.log(a)
+	return p.log(a)
 }
 
 // publish emits an event if a broker is attached (no-op otherwise).
@@ -3917,6 +3936,9 @@ type usage struct {
 	CachedTokens    int     `json:"-"` // cached prompt tokens (usage.prompt_tokens_details.cached_tokens, else timings.cache_n)
 	PromptPerSec    float64 `json:"-"` // tp/s — prompt processing (timings.prompt_per_second)
 	PredictedPerSec float64 `json:"-"` // tg/s — generation (timings.predicted_per_second)
+	// IDSlot is the llama.cpp slot that served the request: top-level
+	// `id_slot` (patch 0005 adds it to OAI chat replies). nil when absent.
+	IDSlot *int `json:"-"`
 }
 
 // timings is llama.cpp's non-standard top-level throughput report, a sibling of
@@ -3960,11 +3982,15 @@ func extractUsage(buf []byte, streaming bool) usage {
 		var r struct {
 			Usage   usage   `json:"usage"`
 			Timings timings `json:"timings"`
+			IDSlot  *int    `json:"id_slot"`
 		}
 		_ = json.Unmarshal(buf, &r)
-		return mergeTimings(r.Usage, r.Timings)
+		u := mergeTimings(r.Usage, r.Timings)
+		u.IDSlot = r.IDSlot
+		return u
 	}
 	var last usage
+	var slot *int
 	for _, line := range bytes.Split(buf, []byte("\n")) {
 		data, ok := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:"))
 		if !ok {
@@ -3977,10 +4003,20 @@ func extractUsage(buf []byte, streaming bool) usage {
 		var r struct {
 			Usage   *usage  `json:"usage"`
 			Timings timings `json:"timings"`
+			IDSlot  *int    `json:"id_slot"`
 		}
-		if json.Unmarshal(data, &r) == nil && r.Usage != nil {
+		if json.Unmarshal(data, &r) != nil {
+			continue
+		}
+		if r.IDSlot != nil {
+			slot = r.IDSlot
+		}
+		if r.Usage != nil {
 			last = mergeTimings(*r.Usage, r.Timings)
 		}
+	}
+	if last.PromptTokens > 0 || last.CompletionTokens > 0 {
+		last.IDSlot = slot
 	}
 	return last
 }

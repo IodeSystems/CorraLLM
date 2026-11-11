@@ -646,7 +646,10 @@ func serve(ctx context.Context, o serveOpts) error {
 	// activity log has always carried load_ms — the time a request waited on a
 	// spawn — and never what caused the spawn or what it displaced.
 	mgr.SetLoadRecorder(loadRecorder{st})
-	mgr.SetEventRecorder(eventRecorder{st: st})
+	// Prompt-cache attribution (P75): the tracker hears every backend event,
+	// and starts from the last day's conversations, without their hashes.
+	cacheTracker := newCacheTracker(st)
+	mgr.SetEventRecorder(eventRecorder{st: st, note: cacheTracker.NoteEvent})
 	if o.healthTimeout > 0 {
 		mgr.SetHealthTimeout(o.healthTimeout)
 		slog.Info("health timeout overridden", "timeout", o.healthTimeout)
@@ -883,6 +886,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// OpenAI-compatible inference passthrough (raw, streaming — bypasses gat),
 	// gated by the fairshare admission scheduler (shared with the lanes read op).
 	px := proxy.New(cfg, mgr, scheduler, st)
+	px.SetCacheTracker(cacheTracker)
 	if succ != nil {
 		// Forwards from the predecessor carry its time already waited; this
 		// is what lets them be believed.

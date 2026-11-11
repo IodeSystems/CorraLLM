@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/iodesystems/corrallm/internal/cacheattr"
+	"github.com/iodesystems/corrallm/internal/store"
 )
 
 // newCacheCmd is `corrallm cache`: the prompt-cache attribution (P75), read
@@ -55,4 +57,27 @@ func newCacheCmd() *cobra.Command {
 	report.Flags().BoolVar(&asJSON, "json", false, "print the report as JSON")
 	cmd.AddCommand(report)
 	return cmd
+}
+
+// newCacheTracker makes the daemon's prompt-cache tracker, seeded from the
+// last 24 h. A failed seed costs no-history verdicts until conversations
+// come back, never the boot.
+func newCacheTracker(st *store.Store) *cacheattr.Tracker {
+	t := cacheattr.NewTracker(cacheattr.DefaultCapBytes, nil)
+	if st == nil {
+		return t
+	}
+	now := time.Now()
+	from := now.Add(-24 * time.Hour).UnixMilli()
+	turns, err := st.LastTurns(from)
+	if err != nil {
+		slog.Warn("prompt-cache tracker: seed conversations", "err", err)
+	}
+	events, err := st.BackendEvents("", from, now.UnixMilli()+1)
+	if err != nil {
+		slog.Warn("prompt-cache tracker: seed backend events", "err", err)
+	}
+	t.Seed(turns, events)
+	slog.Info("prompt-cache tracker seeded", "conversations", t.Len(), "events", len(events))
+	return t
 }

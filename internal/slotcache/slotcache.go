@@ -33,6 +33,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"net/http"
 	"os"
@@ -84,12 +85,23 @@ func Key(caller, declared string, body []byte) (string, bool) {
 		return hex.EncodeToString(h.Sum(nil))[:32], true
 	}
 	var req struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
+		Messages []headMessage `json:"messages"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil || len(req.Messages) == 0 {
+	if err := json.Unmarshal(body, &req); err != nil {
+		return "", false
+	}
+	return keyOf(caller, req.Messages)
+}
+
+// headMessage is the part of a message the inferred key reads.
+type headMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+// keyOf is the inferred key over decoded messages.
+func keyOf(caller string, msgs []headMessage) (string, bool) {
+	if len(msgs) == 0 {
 		return "", false
 	}
 	h := sha256.New()
@@ -102,7 +114,7 @@ func Key(caller, declared string, body []byte) (string, bool) {
 	// turn is what makes them different, and it is also the one message that
 	// never changes as the conversation grows.
 	seenFirstTurn := false
-	for _, m := range req.Messages {
+	for _, m := range msgs {
 		if m.Role == "system" && !seenFirstTurn {
 			_, _ = io.WriteString(h, m.Role)
 			_, _ = h.Write(m.Content)
@@ -549,13 +561,171 @@ type Turn struct {
 	Tools bool
 }
 
-// Inspect reads a chat body once: the conversation key (Key), the message
-// count (Messages), and the block hashes. ok is false for a body that carries
-// no conversation.
+// Inspect reads a chat body once: the conversation key (exactly Key's), the
+// message count (exactly Messages'), and the block hashes of the prompt
+// stream. ok is false for a body that carries no conversation.
+//
+// ONE DECODE. The request path used to decode the body four times (Key and
+// Messages, for the activity row and again for session affinity), which at a
+// 600 KB agent prompt is most of the cost; the hashing added here is cheaper
+// than one of them (BenchmarkInspect600KB).
 func Inspect(caller, declared string, body []byte) (t Turn, ok bool) {
-	id, ok := Key(caller, declared, body)
-	if !ok {
-		return Turn{}, false
+	t.LastUserStart = -1
+	var req struct {
+		Messages []inspectMessage `json:"messages"`
+		Tools    json.RawMessage  `json:"tools"`
 	}
-	return Turn{Key: id, Messages: Messages(body), LastUserStart: -1}, true
+	decoded := json.Unmarshal(body, &req) == nil
+	if strings.TrimSpace(declared) != "" {
+		t.Key, _ = Key(caller, declared, nil)
+	} else {
+		if !decoded {
+			return Turn{}, false
+		}
+		head := make([]headMessage, 0, 2)
+		for _, m := range req.Messages {
+			head = append(head, headMessage{Role: m.Role, Content: m.Content})
+			if m.Role != "system" {
+				break
+			}
+		}
+		if t.Key, ok = keyOf(caller, head); !ok {
+			return Turn{}, false
+		}
+	}
+	if !decoded {
+		return t, true // declared, unreadable: a key and nothing to compare
+	}
+	t.Messages = len(req.Messages)
+	b := blockHasher{blocks: make([]uint64, 0, len(body)/BlockSize+2)}
+	b.h.SetSeed(hashSeed)
+	nseg := len(req.Messages)
+	if t.Tools = len(req.Tools) > 0 && string(req.Tools) != "null"; t.Tools {
+		nseg++
+	}
+	t.Ends = make([]int, 0, nseg)
+	t.Roles = make([]string, 0, nseg)
+	if t.Tools {
+		b.writeString("tools\x00")
+		b.write(req.Tools)
+		t.Ends, t.Roles = append(t.Ends, b.total), append(t.Roles, "tools")
+	}
+	for _, m := range req.Messages {
+		if m.Role == "user" {
+			t.LastUserStart = b.total
+		}
+		b.writeString(m.Role)
+		b.writeString("\x00")
+		writeContent(&b, m.Content)
+		if len(m.ToolCalls) > 0 {
+			b.writeString("\x00")
+			b.write(m.ToolCalls)
+		}
+		if len(m.ToolCallID) > 0 {
+			b.writeString("\x00")
+			b.write(m.ToolCallID)
+		}
+		b.writeString("\x01")
+		t.Ends, t.Roles = append(t.Ends, b.total), append(t.Roles, m.Role)
+	}
+	b.finish()
+	t.Chars, t.Blocks = b.total, b.blocks
+	return t, true
+}
+
+// inspectMessage is what of a message reaches the prompt. reasoning_content
+// is left out: templates drop it from history, so a client that stops sending
+// it has not changed the prompt.
+type inspectMessage struct {
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  json.RawMessage `json:"tool_calls"`
+	ToolCallID json.RawMessage `json:"tool_call_id"`
+}
+
+var hashSeed = maphash.MakeSeed()
+
+// writeContent hashes a message's content. A parts array has its image and
+// audio parts replaced by a digest: the pixels are not characters, and counting
+// a 2 MB base64 image as 2 MB of prompt would make every estimate derived from
+// chars meaningless.
+func writeContent(b *blockHasher, c json.RawMessage) {
+	if len(c) == 0 || c[0] != '[' {
+		b.write(c)
+		return
+	}
+	var parts []json.RawMessage
+	if json.Unmarshal(c, &parts) != nil {
+		b.write(c)
+		return
+	}
+	for _, p := range parts {
+		if bytes.Contains(p, []byte(`"image_url"`)) || bytes.Contains(p, []byte(`"input_audio"`)) {
+			b.writeString(fmt.Sprintf("<media:%016x>", maphash.Bytes(hashSeed, p)))
+			continue
+		}
+		b.write(p)
+	}
+}
+
+// blockHasher hashes a stream in BlockSize blocks without copying it.
+type blockHasher struct {
+	h      maphash.Hash
+	n      int // bytes in the current block
+	total  int
+	blocks []uint64
+}
+
+func (b *blockHasher) write(p []byte) {
+	for len(p) > 0 {
+		k := min(BlockSize-b.n, len(p))
+		_, _ = b.h.Write(p[:k])
+		b.advance(k)
+		p = p[k:]
+	}
+}
+
+func (b *blockHasher) writeString(s string) {
+	for len(s) > 0 {
+		k := min(BlockSize-b.n, len(s))
+		_, _ = b.h.WriteString(s[:k])
+		b.advance(k)
+		s = s[k:]
+	}
+}
+
+func (b *blockHasher) advance(k int) {
+	b.n += k
+	b.total += k
+	if b.n == BlockSize {
+		b.blocks = append(b.blocks, b.h.Sum64())
+		b.h.Reset()
+		b.n = 0
+	}
+}
+
+func (b *blockHasher) finish() {
+	if b.n > 0 {
+		b.blocks = append(b.blocks, b.h.Sum64())
+	}
+}
+
+// MatchChars is how many leading chars of cur equal prev's, to BlockSize
+// resolution, and which segment of cur the match ends in (-1 when cur matched
+// whole).
+func MatchChars(prevBlocks []uint64, prevChars int, cur Turn) (chars, segment int) {
+	k := 0
+	for k < len(prevBlocks) && k < len(cur.Blocks) && prevBlocks[k] == cur.Blocks[k] {
+		k++
+	}
+	chars = min(k*BlockSize, prevChars, cur.Chars)
+	if chars >= cur.Chars {
+		return chars, -1
+	}
+	for i, end := range cur.Ends {
+		if chars < end {
+			return chars, i
+		}
+	}
+	return chars, -1
 }
