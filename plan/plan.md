@@ -410,9 +410,16 @@ DAG (◻ unless marked):
   other tokens between turns: not eviction by volume. Hypotheses for N4: checkpoint position
   (hybrid model: reuse stops at the last checkpoint before a tail edit), slot switch inside a
   conversation, unrecorded reloads (N1b).
-- ◐ N3 patch 0005 in a scratch tree: LRU refresh on hit, per-entry hits/created/last-used,
-  hit- and age-weighted victim, /metrics counters (entries, bytes, hits, misses, evictions,
-  evicted age). Goes through 0004's `common_host_pool_over_budget`. Harness + sanitizers. Opus.
+- ✅ N3 patch 0005 (+255/−17; copy in ~/.corrallm/tools/llama.cpp/patches/ since 11-10 18:2x):
+  `--cache-ram-policy {fifo,lru,weighted}` default fifo; per-entry n_hits/t_created/t_last_used
+  travel with the prompt into the slot and back; one evict(reason) path; /metrics
+  `llamacpp:prompt_cache_{hits,misses,matches_kept}_total`, `_entries`, `_bytes`,
+  `_evictions_total{reason=budget|fragmentation|tokens|superseded}`, `_evicted_age_seconds`
+  histogram; top-level `id_slot` in OAI chat (non-stream + last chunk). Verified: -fsyntax-only
+  with the build flags (0 warnings); harness of the real cache code 0004 vs 0005 under
+  ASan/UBSan: fifo identical over 18×600 random steps, LRU/weighted/counters/fragmentation pass.
+  0002-0005 apply clean on origin/master aa75ff323. NOT run: real pinned pool, CUDA.
+  Swift cmd has `--metrics` (old builds accept it); policy flag not set (old builds reject it).
 - ✅ N4 design (session scratchpad `p75-n4-design.md`): `activity_cache` side table; new
   `backend_event` (start/adopt/stop + reason, instance id) beside `model_load`; one body
   decode with 1 KiB block hashes (catches divergence inside one long system message);
@@ -424,7 +431,9 @@ DAG (◻ unless marked):
   until 0005; no-history after a handoff accepted; local backends only; no one-click apply.
 - ◐ N5 build N4 in 7 commits (scaffold → backend events → tracker → poller → report →
   UI → plan). N6 deploy, 24 h baseline.
-- N7 ship 0005 through the 06:00 gated build; canary decode 5 min; rollback = activate a4d4f2fd4.
+- ◐ N7 0005 rides the 11-11 06:00 gated build (aa75ff323 + 0002-0005). Check after: build kept,
+  decode within 5 min, /metrics prompt_cache_* non-zero, `id_slot` in chat replies. Rollback =
+  activate a4d4f2fd4 (fine: cmd has no 0005-only flag). Then set the policy after N6.
 - N8 A/B 0005 live 24 h vs N6 (gate bench is uncached: proves no harm only).
 - N9 `id_slot` affinity, per-model flag default off; pin only when corrallm sees the slot
   free, else -1. N10 A/B in 2 h on/off blocks after N8.
