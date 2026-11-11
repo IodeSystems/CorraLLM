@@ -110,3 +110,30 @@ func TestABadWaitIsRefusedOnSave(t *testing.T) {
 		t.Errorf("a bad wait was stored: %+v", pv.Scheduler)
 	}
 }
+
+func TestSessionAffinityHeaderRoundTrips(t *testing.T) {
+	h := gatewayHandlers(t)
+	hdr := "x-litellm-session-id"
+	saveGateway(t, h, func(p *ProviderSpec) { p.SessionAffinityHeader = &hdr })
+	if pv := reloadStored(t, h, "after set").Extensions["corp"].Providers["gw"]; pv.SessionAffinityHeader != hdr {
+		t.Fatalf("not stored: %q", pv.SessionAffinityHeader)
+	}
+	if got := listedGateway(t, h); got.SessionAffinityHeader == nil || *got.SessionAffinityHeader != hdr {
+		t.Errorf("not listed: %v", got.SessionAffinityHeader)
+	}
+	saveGateway(t, h, func(p *ProviderSpec) { p.SessionAffinityHeader = nil })
+	if pv := reloadStored(t, h, "after unrelated save").Extensions["corp"].Providers["gw"]; pv.SessionAffinityHeader != hdr {
+		t.Errorf("an unrelated save dropped it: %q", pv.SessionAffinityHeader)
+	}
+	bad := "not a header"
+	spec := listedGateway(t, h)
+	spec.SessionAffinityHeader = &bad
+	if _, err := h.UpsertProvider(context.Background(), &UpsertProviderInput{Body: spec}); err == nil {
+		t.Error("a bad header name was accepted")
+	}
+	empty := ""
+	saveGateway(t, h, func(p *ProviderSpec) { p.SessionAffinityHeader = &empty })
+	if pv := reloadStored(t, h, "after clear").Extensions["corp"].Providers["gw"]; pv.SessionAffinityHeader != "" {
+		t.Errorf("not cleared: %q", pv.SessionAffinityHeader)
+	}
+}

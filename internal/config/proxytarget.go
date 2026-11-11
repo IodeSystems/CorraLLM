@@ -59,6 +59,10 @@ type ProxyTarget struct {
 	// corrallm key in X-Corrallm-Key, so the two are never confused. Only with
 	// api: anthropic, and only on /v1/messages (the native passthrough).
 	CallerAuth bool
+
+	// SessionAffinityHeader: the header the proxy adds with a per-conversation
+	// id on every request to this target. Set from the provider; empty adds none.
+	SessionAffinityHeader string
 }
 
 // API dialects a proxy target may speak. See ProxyTarget.API.
@@ -158,6 +162,7 @@ func (m Model) ProxyTarget() (*ProxyTarget, error) {
 	if m.Upstream != "" {
 		t.Model = m.Upstream
 	}
+	t.SessionAffinityHeader = m.SessionAffinityHeader
 	return t, nil
 }
 
@@ -434,4 +439,14 @@ func ExpandSecrets(s string) string {
 	return envRef.ReplaceAllStringFunc(s, func(m string) string {
 		return lookupSecret(envRef.FindStringSubmatch(m)[1])
 	})
+}
+
+var headerName = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+// CheckHeaderName accepts "" (unset) or an HTTP header field name (RFC 9110 token).
+func CheckHeaderName(h string) error {
+	if h == "" || headerName.MatchString(h) {
+		return nil
+	}
+	return fmt.Errorf("%q is not an HTTP header name", h)
 }

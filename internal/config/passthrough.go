@@ -151,6 +151,7 @@ func (c *Config) PassthroughModelFor(t PassthroughTarget, row CatalogRow) (strin
 	}
 	m.Extension, m.ProviderName = t.Extension, t.Provider
 	m.Proxy = pv.Proxy
+	m.SessionAffinityHeader = pv.SessionAffinityHeader
 	m.Upstream = row.ID
 	switch {
 	case row.Free:

@@ -967,6 +967,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Session affinity (provider sessionAffinityHeader): the same conversation
+	// key, for /v1/messages too (the Anthropic body also has `messages`). Its
+	// own context key so the activity row's conversation is unchanged.
+	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/messages" {
+		if id, _, ok := conversationOf(caller.Key, r.Header.Get(slotcache.ConversationHeader), body); ok {
+			r = r.WithContext(context.WithValue(r.Context(), affinityCtxKey{}, sessionAffinityValue(id)))
+		}
+	}
+
 	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions" {
 		if nb, did := withStreamUsage(body); did {
 			body = nb
@@ -3733,6 +3742,15 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 			}
 			for k, v := range t.Headers {
 				req.Header.Set(k, v)
+			}
+			// Session affinity: only for a provider that configured the header,
+			// and only when a conversation id is derivable. A value the client
+			// or a static header already set is kept: the caller who names its
+			// own session knows better than a hash of the prompt.
+			if h := t.SessionAffinityHeader; h != "" && req.Header.Get(h) == "" {
+				if v, ok := req.Context().Value(affinityCtxKey{}).(string); ok {
+					req.Header.Set(h, v)
+				}
 			}
 			// Dynamic bearer for short-lived rotating credentials. A static Authorization
 			// header set above wins; otherwise inject the resolved token.

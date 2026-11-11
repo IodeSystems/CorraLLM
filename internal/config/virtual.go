@@ -125,6 +125,9 @@ func (c *Config) VirtualModelFor(t VirtualTarget, upstreamID string) (string, Mo
 	}
 	m.Extension, m.ProviderName = t.Virtual, t.Source
 	m.Proxy = t.ProxyNode
+	if _, pv, ok := c.findProvider(t.Source); ok {
+		m.SessionAffinityHeader = pv.SessionAffinityHeader
+	}
 	m.Upstream = upstreamID
 	return ServedName(t.Source, upstreamID), m
 }

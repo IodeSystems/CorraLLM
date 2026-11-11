@@ -817,6 +817,36 @@ type corrallm_AccessUser {
   role: String!
 }
 
+type corrallm_Account {
+  availableUsd: Float
+  ceilings: [corrallm_AccountCeiling!]!
+  chunks: [corrallm_AccountChunk!]!
+  drain: String!
+  drainNote: String
+  drainOrder: [String!]
+  overdrawn: Boolean!
+  overdrawnUsd: Float
+}
+
+type corrallm_AccountCeiling {
+  resetsAt: String
+  scope: String!
+  usd: Float!
+  usedUsd: Float!
+  window: String!
+}
+
+type corrallm_AccountChunk {
+  banked: Boolean!
+  expires: String
+  kind: String!
+  leftUsd: Float!
+  name: String!
+  note: String
+  refillsAt: String
+  usd: Float!
+}
+
 type corrallm_ActiveRequestView {
   """Backend admitted on (empty while still choosing)."""
   backend: String!
@@ -2985,6 +3015,8 @@ type corrallm_ProviderSpec {
   port: Long
   """How many models this provider declares in config by hand. Read-only here; edit them in the extension YAML."""
   provides: Long
+  """Header corrallm adds to every request to this provider with a stable per-conversation id (LiteLLM: x-litellm-session-id); empty = none."""
+  sessionAffinityHeader: String
 }
 
 input corrallm_ProviderSpecInput {
@@ -3016,6 +3048,8 @@ input corrallm_ProviderSpecInput {
   port: Long
   """How many models this provider declares in config by hand. Read-only here; edit them in the extension YAML."""
   provides: Long
+  """Header corrallm adds to every request to this provider with a stable per-conversation id (LiteLLM: x-litellm-session-id); empty = none."""
+  sessionAffinityHeader: String
 }
 
 type corrallm_ProviderView {
@@ -3671,6 +3705,7 @@ type corrallm_SlowSpellView {
 
 type corrallm_SpendBudget {
   active: Boolean!
+  banked: Boolean!
   expires: String!
   id: Long!
   leftUsd: Float!
@@ -3688,6 +3723,8 @@ enum corrallm_SpendBudgetInputBodyAction {
 
 input corrallm_SpendBudgetInputBodyInput {
   action: corrallm_SpendBudgetInputBodyAction!
+  """Spent after the provider's renewing chunks (calendar day), not before them. Default false."""
+  banked: Boolean
   """When it expires, RFC 3339."""
   expires: String
   """The budget, for update and delete."""
@@ -3704,6 +3741,7 @@ input corrallm_SpendBudgetInputBodyInput {
 }
 
 type corrallm_SpendProvider {
+  account: corrallm_Account
   billedUsd: Float
   budgets: [corrallm_SpendBudget!]
   costEstimated: Boolean!

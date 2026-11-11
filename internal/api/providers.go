@@ -87,6 +87,9 @@ type ProviderSpec struct {
 	MaxConcurrent *int    `json:"maxConcurrent,omitempty" required:"false" doc:"Requests in flight across all this provider's models together; 0 = no provider cap."`
 	MaxQueueDepth *int    `json:"maxQueueDepth,omitempty" required:"false" doc:"Requests that may wait once the provider cap is reached; 0 = the box-wide default."`
 	MaxWait       *string `json:"maxWait,omitempty" required:"false" doc:"How long a request may wait at the provider cap before a 429, e.g. 30s; empty = the box-wide default."`
+
+	// SessionAffinityHeader: nil on a save keeps what is stored; "" clears.
+	SessionAffinityHeader *string `json:"sessionAffinityHeader,omitempty" required:"false" doc:"Header corrallm adds to every request to this provider with a stable per-conversation id (LiteLLM: x-litellm-session-id); empty = none."`
 }
 
 // PassthroughSpec is a provider's passthrough switch and the defaults every
@@ -202,6 +205,9 @@ func (h *Handlers) ListProviders(_ context.Context, _ *struct{}) (*ProvidersOutp
 			ps.Manual = pv.Manual
 			ps.Provides = len(pv.Provides)
 			ps.BarePrecedence = pv.BarePrecedence
+			if pv.SessionAffinityHeader != "" {
+				ps.SessionAffinityHeader = &pv.SessionAffinityHeader
+			}
 			if pv.MaxConcurrent > 0 {
 				ps.MaxConcurrent = &pv.MaxConcurrent
 			}
@@ -401,6 +407,13 @@ func (h *Handlers) UpsertProvider(ctx context.Context, in *UpsertProviderInput) 
 			}
 		}
 
+		if b.SessionAffinityHeader != nil {
+			h := strings.TrimSpace(*b.SessionAffinityHeader)
+			if err := config.CheckHeaderName(h); err != nil {
+				return err
+			}
+			pv.SessionAffinityHeader = h
+		}
 		if b.MaxConcurrent != nil {
 			pv.MaxConcurrent = max(*b.MaxConcurrent, 0)
 		}

@@ -628,6 +628,13 @@ type Provider struct {
 	// Scheduler bounds the queue at that cap (maxQueueDepth, maxWait). Nil
 	// inherits the box-wide values. Read only when MaxConcurrent is set.
 	Scheduler *SchedulerConfig `yaml:"scheduler,omitempty"`
+
+	// SessionAffinityHeader names a request header corrallm adds to every
+	// request it forwards to THIS provider, carrying a stable per-conversation
+	// id (LiteLLM: x-litellm-session-id), so the upstream can route one
+	// conversation to one deployment. The value is a hash of the conversation
+	// key, never the caller's key. Empty: nothing is added.
+	SessionAffinityHeader string `yaml:"sessionAffinityHeader,omitempty"`
 }
 
 // Discover enumerates a provider's /v1/models and contributes the rows that
@@ -977,6 +984,10 @@ type Model struct {
 	// Distinct from the Provider() method, which infers a provider from the proxy
 	// host; this is the declared grouping.
 	ProviderName string `yaml:"-"`
+
+	// SessionAffinityHeader is the provider's setting, copied down with the
+	// proxy. Computed, never authored.
+	SessionAffinityHeader string `yaml:"-"`
 
 	// ExtensionHosted is computed, never authored: true when the extension runs a
 	// local process. Only a HOSTED extension's models share a ProcKey — a remote
@@ -2585,6 +2596,9 @@ func (c *Config) resolveExtensions() error {
 				if pv.MaxConcurrent < 0 {
 					return fmt.Errorf("extension %q provider %q: maxConcurrent %d is negative", name, pn, pv.MaxConcurrent)
 				}
+				if err := CheckHeaderName(pv.SessionAffinityHeader); err != nil {
+					return fmt.Errorf("extension %q provider %q: sessionAffinityHeader: %w", name, pn, err)
+				}
 				if pt := pv.Passthrough; pt != nil {
 					t := pt.Template
 					if t.Cmd != "" || !t.Proxy.IsZero() || t.Server != "" || t.Extension != "" || t.Upstream != "" {
@@ -2627,6 +2641,7 @@ func (c *Config) resolveExtensions() error {
 				}
 				pm.Extension, pm.ProviderName, pm.ExtensionHosted = name, pn, hosted
 				pm.Proxy = pv.Proxy
+				pm.SessionAffinityHeader = pv.SessionAffinityHeader
 				if pm.Upstream == "" && hosted {
 					// A hosted backend knows the model by the key. A remote provider's id
 					// is arbitrary (Groq's "llama-3.3-70b-versatile"), so it must be

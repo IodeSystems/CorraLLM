@@ -139,6 +139,7 @@ func (c *Config) modelForSelection(s Selection) (Model, bool) {
 	}
 	m.Extension, m.ProviderName = extName, s.Provider
 	m.Proxy = pv.Proxy
+	m.SessionAffinityHeader = pv.SessionAffinityHeader
 	m.Upstream = s.Upstream
 	return m, true
 }
