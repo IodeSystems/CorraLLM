@@ -381,7 +381,10 @@ still open. Items parked on hardware rather than on a decision are in §9.
 ### ◐ P75 — Prompt-cache miss attribution, patch 0005 (LRU + hits + metrics), slot affinity — 2026-11-10
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
---cache-ram 40960 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
+--cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
+**--cache-ram 40960 → 18432 (owner, 11-10 18:13 PST):** the pinned 40 GiB reservation drew the
+OOM killer. Swift RSS 39 → 20 GB; MemAvailable 54 → 80 GB. Old cmd: scratchpad
+`swift-cmd-before-cacheram18.txt`. The 14 d retro above is at 40 GiB; the N6 baseline is at 18 GiB.
 
 **Evidence (11-10).** Retro over 14 d, 117,056 Swift chat requests, 7,985 conversations
 (SQL: session scratchpad `cache-retro.sql`). Mean hit by gap since the previous turn:
