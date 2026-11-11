@@ -80,15 +80,25 @@ ffmpeg_packages() {
     esac
 }
 
-# hwloc >= 2.5: ninfer's cmake/Dependencies.cmake requires it through pkg-config
-# (added upstream after 2026-08; a runtime libhwloc15 without the -dev package
-# has no hwloc.pc, so configure fails).
-hwloc_packages() {
+# pkg-config modules ninfer's cmake/Dependencies.cmake requires beyond ffmpeg
+# (hwloc and liburing added upstream after 2026-08; a runtime library without
+# its -dev package has no .pc file, so configure fails). Each line:
+# <pkg-config spec>|<apt>|<dnf>|<pacman>|<brew>
+PC_DEPS=(
+    'hwloc >= 2.5|libhwloc-dev|hwloc-devel|hwloc|hwloc'
+    'liburing >= 2.5|liburing-dev|liburing-devel|liburing|'
+    'libcurl >= 7.85|libcurl4-openssl-dev|libcurl-devel|curl|curl'
+    'libjpeg|libjpeg-dev|libjpeg-turbo-devel|libjpeg-turbo|jpeg-turbo'
+)
+
+pc_dep_package() {
+    local apt dnf pacman brew
+    IFS='|' read -r _ apt dnf pacman brew <<<"$1"
     case "$(pkg_manager)" in
-        apt)    printf 'libhwloc-dev' ;;
-        dnf)    printf 'hwloc-devel' ;;
-        pacman) printf 'hwloc' ;;
-        brew)   printf 'hwloc' ;;
+        apt)    printf '%s' "$apt" ;;
+        dnf)    printf '%s' "$dnf" ;;
+        pacman) printf '%s' "$pacman" ;;
+        brew)   printf '%s' "$brew" ;;
         *)      printf '' ;;
     esac
 }
@@ -166,11 +176,15 @@ preflight() {
         [ -n "$fp" ] && missing_pkgs+=($fp)
     fi
 
-    if have pkg-config && ! pkg-config --exists 'hwloc >= 2.5' 2>/dev/null; then
-        missing_names+=("hwloc >= 2.5 development files")
-        local hp; hp=$(hwloc_packages)
-        # shellcheck disable=SC2206
-        [ -n "$hp" ] && missing_pkgs+=($hp)
+    if have pkg-config; then
+        local dep spec pk
+        for dep in "${PC_DEPS[@]}"; do
+            spec=${dep%%|*}
+            pkg-config --exists "$spec" 2>/dev/null && continue
+            missing_names+=("$spec development files")
+            pk=$(pc_dep_package "$dep")
+            [ -n "$pk" ] && missing_pkgs+=("$pk")
+        done
     fi
 
     local runnable=0
