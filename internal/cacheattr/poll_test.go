@@ -69,6 +69,20 @@ func TestPollerReadsCountersOrFallsBack(t *testing.T) {
 	}
 }
 
+// 0005 labels evictions by reason; a superseded entry lives on in the newer
+// one, so it is not counted.
+func TestParseMetricsSumsEvictionReasons(t *testing.T) {
+	s, ok := parseMetrics(strings.NewReader(`llamacpp:prompt_cache_evictions_total{reason="budget"} 4
+llamacpp:prompt_cache_evictions_total{reason="fragmentation"} 2
+llamacpp:prompt_cache_evictions_total{reason="tokens"} 1
+llamacpp:prompt_cache_evictions_total{reason="superseded"} 50
+llamacpp:prompt_cache_evicted_age_seconds_bucket{le="60"} 3
+`))
+	if !ok || s.evictions != 7 {
+		t.Errorf("evictions = %d, want 7 (superseded left out)", s.evictions)
+	}
+}
+
 func TestParseMetricsIgnoresOtherLines(t *testing.T) {
 	s, ok := parseMetrics(strings.NewReader("# TYPE a counter\nfoo 1\nllamacpp:prompt_cache_evictions 7\n"))
 	if !ok || s.evictions != 7 || s.entries != -1 {

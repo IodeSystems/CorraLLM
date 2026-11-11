@@ -158,10 +158,10 @@ func parseMetrics(r io.Reader) (sample, bool) {
 		if !ok {
 			continue
 		}
-		if i := strings.IndexByte(name, '{'); i >= 0 {
-			name = name[:i]
-			if j := strings.LastIndexByte(line, '}'); j >= 0 {
-				rest = line[j+1:]
+		labels := ""
+		if i := strings.IndexByte(line, '{'); i >= 0 && i < len(name) {
+			if j := strings.LastIndexByte(line, '}'); j > i {
+				name, labels, rest = line[:i], line[i+1:j], line[j+1:]
 			}
 		}
 		f, err := strconv.ParseFloat(strings.Fields(rest + " x")[0], 64)
@@ -174,7 +174,13 @@ func parseMetrics(r io.Reader) (sample, bool) {
 		case strings.HasSuffix(name, "prompt_cache_bytes"):
 			s.bytes = int64(f)
 		case strings.HasSuffix(name, "prompt_cache_evictions"), strings.HasSuffix(name, "prompt_cache_evictions_total"):
-			s.evictions = int64(f)
+			// 0005 counts by reason. "superseded" is an entry that was a
+			// prefix of a newer one: its tokens are still cached, so it is
+			// not a loss. The rest (budget, fragmentation, tokens) are.
+			if strings.Contains(labels, `reason="superseded"`) {
+				continue
+			}
+			s.evictions = max(s.evictions, 0) + int64(f)
 		}
 	}
 	return s, s.entries >= 0 || s.bytes >= 0 || s.evictions >= 0
