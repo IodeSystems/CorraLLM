@@ -2,6 +2,7 @@ package proc
 
 import (
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/iodesystems/corrallm/internal/host"
@@ -37,29 +38,62 @@ type BackendEvent struct {
 	Err    string
 }
 
-// EventRecorder is given each lifecycle event. Implementations must not
-// block, for the reason LoadRecorder must not.
+// EventRecorder is given each lifecycle event, in order, on one goroutine of
+// its own. It may block (a database write): the manager never waits for it.
 type EventRecorder interface {
 	RecordBackendEvent(BackendEvent)
 }
 
-// SetEventRecorder attaches one. nil disables recording.
-func (m *Manager) SetEventRecorder(r EventRecorder) { m.eventRecorder = r }
+// eventBuffer is how many events may wait for a slow recorder before new
+// ones are dropped. Events are a handful per hour; a full buffer means the
+// recorder is stuck.
+const eventBuffer = 1024
+
+// SetEventRecorder attaches one, and the goroutine that feeds it. nil
+// disables recording. Call it once, at setup.
+//
+// ASYNCHRONOUS ON PURPOSE. evictLocked records its stop with m.mu held, and
+// the store is one connection with a 10 s busy timeout: a write waiting
+// behind a prune or a long read would hold the manager lock — and every
+// EnsureReady behind it — for as long. So the event goes into a buffer and
+// the caller moves on; a full buffer drops the event and counts it.
+func (m *Manager) SetEventRecorder(r EventRecorder) {
+	if r == nil {
+		m.eventRecorder, m.eventCh = nil, nil
+		return
+	}
+	ch := make(chan BackendEvent, eventBuffer)
+	m.eventRecorder, m.eventCh = r, ch
+	go func() {
+		for ev := range ch {
+			r.RecordBackendEvent(ev)
+		}
+	}()
+}
+
+// EventsDropped is how many events a full buffer has dropped.
+func (m *Manager) EventsDropped() int64 { return m.eventsDropped.Load() }
 
 func (m *Manager) recordEvent(ev BackendEvent) {
-	if m.eventRecorder == nil {
+	if m.eventCh == nil {
 		return
 	}
 	if ev.TS == 0 {
 		ev.TS = time.Now().UnixMilli()
 	}
-	m.eventRecorder.RecordBackendEvent(ev)
+	select {
+	case m.eventCh <- ev:
+	default:
+		if n := m.eventsDropped.Add(1); n == 1 || n%100 == 0 {
+			slog.Warn("backend event dropped: the recorder is not keeping up", "model", ev.Model, "kind", ev.Kind, "dropped", n)
+		}
+	}
 }
 
 // event records one event for handle h; nothing without a recorder or a
 // handle. err marks it failed.
 func (m *Manager) event(model, server string, h host.Handle, kind, reason string, err error) {
-	if m.eventRecorder == nil || h == nil {
+	if m.eventCh == nil || h == nil {
 		return
 	}
 	ev := BackendEvent{Model: model, Server: server, Instance: h.ID(), Kind: kind, Reason: reason, OK: err == nil}
@@ -100,7 +134,7 @@ func (m *Manager) recordExit(p *Process, h host.Handle) {
 	ordered := p.stopped
 	p.stopped = true // once
 	p.mu.Unlock()
-	if ordered || m.eventRecorder == nil {
+	if ordered || m.eventCh == nil {
 		return
 	}
 	reason, err := "crash", h.Err()

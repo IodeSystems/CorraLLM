@@ -216,8 +216,11 @@ type Process struct {
 type Manager struct {
 	// loadRecorder is given each completed load; nil disables recording.
 	loadRecorder LoadRecorder
-	// eventRecorder is given each backend start, adoption and stop (events.go).
+	// eventRecorder is given each backend start, adoption and stop (events.go),
+	// through eventCh and a goroutine of its own: never on the caller's lock.
 	eventRecorder EventRecorder
+	eventCh       chan BackendEvent
+	eventsDropped atomic.Int64
 	// cfg is swapped wholesale on reload rather than mutated. Its maps are read
 	// unlocked from dozens of places, so editing them in place would be a data
 	// race; replacing the pointer atomically means every reader sees one
