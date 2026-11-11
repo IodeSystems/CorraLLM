@@ -470,12 +470,20 @@ DAG (◻ unless marked):
   and hit by gap bucket vs the 14 d retro (40 GiB) and the 18:13-18:39 fifo window (18 GiB).
   12.5 h aggregate: decode 84.3 vs 81.5, prompt 1481 vs 1446 tok/s, hit 0.904 vs 0.904 (unequal
   context; no regression seen).
-- N9 `id_slot` affinity, per-model flag default off; pin only when corrallm sees the slot
-  free, else -1. N10 A/B in 2 h on/off blocks after N8.
+- ✅ N9 `slotAffinity` per-model flag (config_scalar model.rest.<prov>/<name> JSON), default off:
+  8f314a6 scaffold, 9b410a6 assigner (internal/proxy/slotaffinity.go), e0ef7fe slot-aware dequeue
+  (internal/sched/slotpref.go; skip ≤2, ≤2 s, same group, never past priority), 60c63b0 CLI
+  --model substring. Audit: no blockers. Deployed off 11-11 07:2x as v0.2.2-26-ge0ef7fe; on for Swift 07:27:56.
+  Accepted risks: client cancel mid-prefill / handoff drain / `/upstream` traffic can make a pinned
+  slot busy (llama.cpp defers it); new conversations get the least-recently-assigned slot, not
+  llama.cpp's similarity pick.
+- ◐ N10 A/B: scratchpad ab-toggle.sh flips at 09:28 off, 11:28 on, 13:28 off, 15:28 on (left on);
+  log ab-toggle.log. **next:** after 15:28 `corrallm cache report --since 8h --by affinity` and
+  compare slot-switch share + lost tok per block (cache-ram 27 GiB in all blocks).
 - ✅ N11 provider `sessionAffinityHeader` (e8bbd68, owner D4): 32-hex sha256 of the
   conversation key; client-sent value passes through.
 
-**next:** N9 build (off by default) → deploy → N10 A/B 2 h blocks; N6 24 h report (window splits at 07:11 restart). Option after N10: slot-aware dequeue (prefer the queued request whose last slot just freed; skip limit) — queue depth stays 2. **risks:** a key that merges two conversations confuses classes;
+**next:** N10 readout after 15:28; N6 24 h report (window splits at 07:11 restart). Option after N10: slot-aware dequeue (prefer the queued request whose last slot just freed; skip limit) — queue depth stays 2. **risks:** a key that merges two conversations confuses classes;
 an edited system message changes the inferred key (only a declared conversation shows it as
 prefix-diverged); chars→tokens estimate skewed by JSON escaping; checkpoint boundaries inferred;
 15 s /metrics resolution; MemAvailable in R1 is the report host's (right for Swift on box1); 0005 changes the order
