@@ -429,8 +429,24 @@ DAG (◻ unless marked):
   with rules R1-R7 (text only, evidence + exact flag change, ≥6 h and ≥200 misses).
   Defaults taken (owner may override): thresholds as designed; 300k-token eviction proxy
   until 0005; no-history after a handoff accepted; local backends only; no one-click apply.
-- ◐ N5 build N4 in 7 commits (scaffold → backend events → tracker → poller → report →
-  UI → plan). N6 deploy, 24 h baseline.
+- ✅ N5 built on branch `worktree-agent-a2cbb5ada565cbf53` (merged to main 11-10; review fix 64e1538: backend events go through a
+  non-blocking 1024-event buffer, never a DB write under m.mu; 5b66b51 clipped block hashes):
+  8d49bb8 scaffold · f9a310c backend events · 30397b7 tracker/classifier/id_slot ·
+  cfc560a /metrics poller (e7073cb: sum evictions by reason, minus superseded) ·
+  3deda23 `corrallm cache report` + R1-R7 · 8782340 UI Cache tab · 97ec907 offline replay test.
+  Hot path at 600 KB: one Inspect 2.10 ms / 688 allocs vs the old 4-decode path 8.07 ms /
+  1,661 allocs; tracker Observe ~1 µs. Replay of 14 d Swift (117,474 turns, read-only), N2's
+  eviction-like subset: <5 min no-history 591 (no body) · unknown 437 · reload 108 · evicted 57 ·
+  checkpoint 29 · diverged 8 · hit 4; ≥5 min reload 177 · evicted 94 · no-history 76 ·
+  checkpoint 18 · diverged 2. Short-gap unknowns with a body did NOT drop (N2 ≈381 → 437):
+  history has no id_slot, and Swift runs 2 slots, so slot switches cannot show until 0005.
+  **Deviations:** lost = min(prev prompt, prompt) − cached (the N4 formula made
+  prefix-diverged unreachable); instance = handle id only (an adopted backend's start time
+  differs from the spawner's); activity_cache is written after the activity commit, not in its
+  transaction (a failed attribution must not lose the row); stop reasons have no `build-swap` or
+  `config-change`: the build gate stops via pause (`pause:<why>`), and no config-change stop
+  path exists.
+- ◻ N6 merge N5, deploy, 24 h baseline; `corrallm cache report --since 24h`.
 - ✅ N7 0005 live 11-10 18:40 PST (owner: build now, weighted now, no baseline). Manual
   `tools build` (compile only, no gate; it also activated bin/) → builds/20261111-023848-aa75ff32
   (aa75ff323 + 0002-0005). Policy via env `LLAMA_ARG_CACHE_RAM_POLICY=weighted` (an old build
@@ -443,11 +459,13 @@ DAG (◻ unless marked):
   and hit by gap bucket vs the 14 d retro (40 GiB) and the 18:13-18:39 fifo window (18 GiB).
 - N9 `id_slot` affinity, per-model flag default off; pin only when corrallm sees the slot
   free, else -1. N10 A/B in 2 h on/off blocks after N8.
-- N11 (optional, unconfirmed) provider `session_affinity_header`, sends a hash of the
-  conversation key.
+- ✅ N11 provider `sessionAffinityHeader` (e8bbd68, owner D4): 32-hex sha256 of the
+  conversation key; client-sent value passes through.
 
-**next:** N1-N3 running. **risks:** a key that merges two conversations confuses classes;
-message-level hash misses divergence inside one long system message; 0005 changes the order
+**next:** N6 (merge + deploy N5), N7 06:00 build. **risks:** a key that merges two conversations confuses classes;
+an edited system message changes the inferred key (only a declared conversation shows it as
+prefix-diverged); chars→tokens estimate skewed by JSON escaping; checkpoint boundaries inferred;
+15 s /metrics resolution; MemAvailable in R1 is the report host's (right for Swift on box1); 0005 changes the order
 0004's fragmentation path depends on (canary is the only CUDA test); daily build restarts
 empty the cache, so A/B windows split at restarts; hash lists lost on handoff.
 **assumptions:** per-message hash with tokens estimated from chars (A2); N3 uses local
