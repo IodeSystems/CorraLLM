@@ -31,14 +31,20 @@ func newCacheCmd() *cobra.Command {
 		Short: "Misses by class, gap and reload reason over a window, with recommendations (text only)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, st, done, err := spendDB(cmd.Context())
+			cfg, st, done, err := spendDB(cmd.Context())
 			if err != nil {
 				return err
 			}
 			defer done()
-			_ = st
+			mdl, ok := cfg.Effective(model)
+			if !ok {
+				return fmt.Errorf("unknown model %q", model)
+			}
 			now := time.Now().UnixMilli()
-			rep := cacheattr.BuildReport(model, now-since.Milliseconds(), now, nil, nil, cacheattr.Settings{}, by)
+			rep, err := cacheattr.Load(st, model, mdl.Cmd, now-since.Milliseconds(), now, by, nil)
+			if err != nil {
+				return err
+			}
 			if asJSON {
 				raw, err := json.MarshalIndent(rep, "", "  ")
 				if err != nil {

@@ -3308,7 +3308,7 @@ type corrallm_Report {
   classes: [corrallm_ClassRow!]!
   fromMs: Long!
   gaps: [corrallm_GapRow!]!
-  groups: [corrallm_GroupRow!]
+  groups: [corrallm_GroupRow!]!
   recommendations: [corrallm_Recommendation!]!
   reloadReasons: [corrallm_ReasonRow!]!
   reloads: [corrallm_BackendEvent!]!
@@ -4111,6 +4111,7 @@ type corrallm_ToolStatesOutputBody {
 
 type corrallm_Totals {
   cachedTokens: Long!
+  """tokens re-prefilled by misses"""
   lostTokens: Long!
   misses: Long!
   missesPerHour: Float!

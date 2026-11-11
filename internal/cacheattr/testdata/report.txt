@@ -1,0 +1,59 @@
+swift  2023-11-14 22:13Z → 2023-11-15 22:13Z (24.0 h)
+requests 820 · misses 300 (12.5/h) · prompt 16400000 tok · cached 60.0% · lost 2400000 tok · re-prefill 2400 s
+
+class                   turns    % lost     lost tok re-prefill
+reload                     60     20.0%       480000       480s
+prefix-diverged            80     26.7%       640000       640s
+slot-switch                30     10.0%       240000       240s
+checkpoint-limited         50     16.7%       400000       400s
+evicted                    70     23.3%       560000       560s
+unknown                    10      3.3%        80000        80s
+cold                       20      0.0%            0         0s
+hit                       500      0.0%            0         0s
+
+misses by gap since the previous turn
+class                  first     <1m    1-5m   5-15m  15-60m    1-6h     >6h
+reload                     0       8       9      18      25       0       0
+prefix-diverged            0      12      11      22      35       0       0
+slot-switch                0       4       5       9      12       0       0
+checkpoint-limited         0       7       7      15      21       0       0
+evicted                    0      10      10      20      30       0       0
+unknown                    0       1       1       2       6       0       0
+
+misses by group
+  sk-caller-0-…    prefix-diverged          40       320000 tok
+  sk-caller-0-…    evicted                  35       280000 tok
+  sk-caller-0-…    reload                   30       240000 tok
+  sk-caller-0-…    checkpoint-limited       25       200000 tok
+  sk-caller-0-…    slot-switch              15       120000 tok
+  sk-caller-0-…    unknown                   5        40000 tok
+  sk-caller-1-…    prefix-diverged          40       320000 tok
+  sk-caller-1-…    evicted                  35       280000 tok
+  sk-caller-1-…    reload                   30       240000 tok
+  sk-caller-1-…    checkpoint-limited       25       200000 tok
+  sk-caller-1-…    slot-switch              15       120000 tok
+  sk-caller-1-…    unknown                   5        40000 tok
+
+reloads by reason
+  crash:exit status 139                  20 ×       160000 tok
+  idle-unload                            20 ×       160000 tok
+  pause:build swap                       20 ×       160000 tok
+
+settings: --cache-ram 18432 MiB · --ctx-checkpoints 8 · --parallel 2 · --slot-prompt-similarity 0.9 · MemAvailable 48.0 GiB · id_slot on 50.0% of rows · cache entries not exposed
+
+recommendations (text only; nothing is applied)
+  R1 [warn] Prompt-cache entries are evicted
+      evidence: 23.3% of lost tokens; 70 evicted misses; evictions/h not exposed (no 0005); --cache-ram 18432 MiB; MemAvailable 48.0 GiB
+      action:   Raise --cache-ram 18432 → 27648 (MiB). Keeps MemAvailable ≥ 16 GiB.
+  R2 [warn] Reuse stops at the last checkpoint
+      evidence: 16.7% of lost tokens; 50 misses; median match − cached 7500 tok; --ctx-checkpoints 8
+      action:   Raise --ctx-checkpoints 8 → 16. Each cache entry grows by ~2800 MiB (~350 MiB per checkpoint), set against --cache-ram 18432 MiB.
+  R3 [warn] Turns change slot
+      evidence: 10.0% of lost tokens; 30 misses; id_slot on 50.0% of rows; --parallel 2
+      action:   Deploy patch 0005 so every reply carries id_slot, then measure again.
+  R4 [warn] Reloads empty the cache
+      evidence: 20.0% of lost tokens; 60 misses
+      action:   crash:exit status 139 ×20 (160000 tok): see the backend log (Models → logs) for the exit; idle-unload ×20 (160000 tok): raise the sticky idle TTL; pause:build swap ×20 (160000 tok): move the build window or pre-warm after it
+  R5 [warn] Callers change the start of the prompt
+      evidence: 26.7% of lost tokens; 80 misses
+      action:   Client-side fix: keep earlier messages byte-identical between turns. sk-caller-0-…: 40 misses, mostly at system, median match 30000 chars; sk-caller-1-…: 40 misses, mostly at system, median match 30000 chars

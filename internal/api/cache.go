@@ -33,6 +33,13 @@ func (h *Handlers) CacheReport(_ context.Context, in *CacheReportInput) (*CacheR
 	if to == 0 {
 		to = time.Now().UnixMilli()
 	}
-	rep := cacheattr.BuildReport(in.Served, w.FromMS, to, nil, nil, cacheattr.Settings{}, "")
+	mdl, ok := h.Proxy.Config().Effective(in.Served)
+	if !ok {
+		return nil, huma.Error404NotFound("unknown model " + in.Served)
+	}
+	rep, err := cacheattr.Load(h.Store, in.Served, mdl.Cmd, w.FromMS, to, "", h.Proxy.CachePoller())
+	if err != nil {
+		return nil, err
+	}
 	return &CacheReportOutput{Body: rep}, nil
 }
