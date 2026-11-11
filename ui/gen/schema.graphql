@@ -178,6 +178,16 @@ type CorrallmQueryNamespace {
     """Provider whose catalogue to enumerate."""
     provider: String!
   ): corrallm_BrowseCatalogOutputBody @derived(operationId: "browseCatalog")
+  cacheReport(
+    """Absolute window start, epoch ms (inclusive). Overrides minutes."""
+    from: Long
+    """Relative window, minutes back from now. Ignored when from/to is set."""
+    minutes: Long
+    """The served model."""
+    served: String!
+    """Absolute window end, epoch ms (exclusive). Overrides minutes."""
+    to: Long
+  ): corrallm_Report @derived(operationId: "cacheReport")
   configExport: corrallm_ConfigYAMLOutputBody @derived(operationId: "configExport")
   configHistory(
     """Newest first. Default 20."""
@@ -553,6 +563,16 @@ type CorrallmV1QueryNamespace {
     """Provider whose catalogue to enumerate."""
     provider: String!
   ): corrallm_BrowseCatalogOutputBody @derived(operationId: "browseCatalog")
+  cacheReport(
+    """Absolute window start, epoch ms (inclusive). Overrides minutes."""
+    from: Long
+    """Relative window, minutes back from now. Ignored when from/to is set."""
+    minutes: Long
+    """The served model."""
+    served: String!
+    """Absolute window end, epoch ms (exclusive). Overrides minutes."""
+    to: Long
+  ): corrallm_Report @derived(operationId: "cacheReport")
   configExport: corrallm_ConfigYAMLOutputBody @derived(operationId: "configExport")
   configHistory(
     """Newest first. Default 20."""
@@ -1016,6 +1036,18 @@ input corrallm_AssignModelInputBodyInput {
   quality: Float
   """The provider's own model id. Required when assigning a model no discover filter contributes — it is the only record of what to put on the wire."""
   upstream: String
+}
+
+type corrallm_BackendEvent {
+  err: String!
+  id: Long!
+  instance: String!
+  kind: String!
+  model: String!
+  ok: Boolean!
+  reason: String!
+  server: String!
+  ts: Long!
 }
 
 input corrallm_BackendInput {
@@ -1684,6 +1716,16 @@ type corrallm_CatalogEntryView {
   servedName: String!
 }
 
+type corrallm_ClassRow {
+  class: String!
+  """percent of the window's lost tokens"""
+  lostShare: Float!
+  lostTokens: Long!
+  misses: Long!
+  """re-prefill seconds"""
+  seconds: Float!
+}
+
 type corrallm_ComputeBucket {
   """Last sample, percent."""
   close: Float!
@@ -1964,6 +2006,12 @@ type corrallm_GPUUtilizationOutputBody {
   pools: [corrallm_PoolUtilization!]!
 }
 
+type corrallm_GapRow {
+  bucket: String!
+  class: String!
+  misses: Long!
+}
+
 type corrallm_GroupDef {
   """Opts into quality-degrade fall-through."""
   acceptDegrade: Boolean!
@@ -1988,6 +2036,13 @@ type corrallm_GroupLoadView {
   group: String!
   """Queued requests."""
   waiting: Long!
+}
+
+type corrallm_GroupRow {
+  class: String!
+  group: String!
+  lostTokens: Long!
+  misses: Long!
 }
 
 type corrallm_GroupSeries {
@@ -3137,11 +3192,30 @@ type corrallm_QuotaWindowView {
   used: Float!
 }
 
+type corrallm_ReasonRow {
+  count: Long!
+  lostTokens: Long!
+  reason: String!
+}
+
 type corrallm_RecentActivityOutputBody {
   """Whether another page follows this one. NOT a total count — asking for the total would cost a second scan over this same filter on every page-turn; a pager only needs to know whether to enable Next."""
   hasMore: Boolean!
   """Activity rows, newest first."""
   records: [corrallm_ActivityRecord!]!
+}
+
+type corrallm_Recommendation {
+  action: String!
+  evidence: String!
+  id: String!
+  severity: corrallm_RecommendationSeverity!
+  title: String!
+}
+
+enum corrallm_RecommendationSeverity {
+  info
+  warn
 }
 
 type corrallm_RefusingBackendView {
@@ -3228,6 +3302,20 @@ input corrallm_RemotePricingInput {
   inputPerM: Float!
   """$ per 1M output tokens."""
   outputPerM: Float!
+}
+
+type corrallm_Report {
+  classes: [corrallm_ClassRow!]!
+  fromMs: Long!
+  gaps: [corrallm_GapRow!]!
+  groups: [corrallm_GroupRow!]
+  recommendations: [corrallm_Recommendation!]!
+  reloadReasons: [corrallm_ReasonRow!]!
+  reloads: [corrallm_BackendEvent!]!
+  served: String!
+  settings: corrallm_Settings!
+  toMs: Long!
+  totals: corrallm_Totals!
 }
 
 type corrallm_ReportedLimitView {
@@ -3682,6 +3770,27 @@ input corrallm_SetWarningThresholdInputBodyInput {
   threshold: Float!
 }
 
+type corrallm_Settings {
+  """prompt-cache bytes (0005 /metrics); -1 = not exposed"""
+  cacheBytes: Long!
+  """prompt-cache entries (0005 /metrics); -1 = not exposed"""
+  cacheEntries: Long!
+  """--cache-ram, MiB; -1 = not set"""
+  cacheRamMiB: Long!
+  """--ctx-checkpoints; -1 = not set"""
+  ctxCheckpoints: Long!
+  """-1 = not exposed"""
+  evictionsPerHour: Float!
+  """percent of rows whose reply carried id_slot"""
+  idSlotCoverage: Float!
+  """host MemAvailable, MiB; -1 = not measured"""
+  memAvailableMiB: Long!
+  """--parallel; -1 = not set"""
+  parallel: Long!
+  """--slot-prompt-similarity; -1 = not set"""
+  slotSimilarity: Float!
+}
+
 type corrallm_SlowSpellView {
   """Requests that ran past the threshold. 0 means nothing stood out."""
   count: Long!
@@ -3998,6 +4107,20 @@ type corrallm_ToolStateView {
 
 type corrallm_ToolStatesOutputBody {
   tools: [corrallm_ToolStateView!]!
+}
+
+type corrallm_Totals {
+  cachedTokens: Long!
+  lostTokens: Long!
+  misses: Long!
+  missesPerHour: Float!
+  promptTokens: Long!
+  """lost tokens ÷ the turn's prefill speed, seconds"""
+  rePrefillSec: Float!
+  requests: Long!
+  """cached ÷ prompt tokens, percent"""
+  tokenHitPct: Float!
+  windowHours: Float!
 }
 
 type corrallm_TrialEvent {

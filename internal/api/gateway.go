@@ -339,6 +339,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.ProviderBilling)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "cacheReport",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/cache-report",
+		Summary:     "Why a model's prompt cache missed in a window, by class, with recommended flag changes (text only).",
+		Tags:        []string{"observability"},
+	}, h.CacheReport)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "spend",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/spend",

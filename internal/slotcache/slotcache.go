@@ -521,3 +521,41 @@ func isUnsupported(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "returned 501") || strings.Contains(s, "slot save is not supported")
 }
+
+// BlockSize is the span of one prefix hash in Turn.Blocks.
+const BlockSize = 1024
+
+// Turn is one chat request's shape: its conversation key, its message count,
+// and what the prompt-cache tracker compares with the previous turn.
+type Turn struct {
+	Key      string
+	Messages int
+	// Chars is the length of the hashed stream: the tools, then each message's
+	// role and content, image and audio data replaced by a short digest so a
+	// picture does not count as thousands of characters.
+	Chars int
+	// Blocks holds one hash per BlockSize chars of that stream; the last one
+	// covers a partial block.
+	Blocks []uint64
+	// Ends[i] is the stream offset where segment i ends; Roles[i] names it
+	// ("tools", or the message's role). Segment 0 is the tools when there are
+	// any.
+	Ends  []int
+	Roles []string
+	// LastUserStart is the stream offset where the last user message starts,
+	// -1 when there is none.
+	LastUserStart int
+	// Tools reports that segment 0 is the tools.
+	Tools bool
+}
+
+// Inspect reads a chat body once: the conversation key (Key), the message
+// count (Messages), and the block hashes. ok is false for a body that carries
+// no conversation.
+func Inspect(caller, declared string, body []byte) (t Turn, ok bool) {
+	id, ok := Key(caller, declared, body)
+	if !ok {
+		return Turn{}, false
+	}
+	return Turn{Key: id, Messages: Messages(body), LastUserStart: -1}, true
+}

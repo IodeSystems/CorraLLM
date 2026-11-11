@@ -646,6 +646,11 @@ var migrations = []string{
 	 SELECT id, ts, served, 'req:' || id, 0, prompt_tokens + completion_tokens FROM activity
 	 WHERE path IN ('/v1/embeddings', '/v1/rerank') AND status BETWEEN 200 AND 299 AND prompt_tokens > 0
 	   AND id > (SELECT COALESCE(MAX(activity_id), 0) FROM activity_conversation WHERE conversation LIKE 'req:%')`,
+	// Prompt-cache attribution (P75, 2026-11-10): new tables only, see cache.go.
+	cacheSchema,
+	`CREATE INDEX IF NOT EXISTS idx_activity_cache_ts ON activity_cache(ts, served, class)`,
+	backendEventSchema,
+	`CREATE INDEX IF NOT EXISTS idx_backend_event_ts ON backend_event(ts, model)`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
@@ -1029,6 +1034,9 @@ type Activity struct {
 	// conversation.go. Empty/0 for anything that is not a chat turn.
 	Conversation         string
 	ConversationMessages int
+	// Cache is the turn's prompt-cache attribution (P75), written to
+	// activity_cache in the row's transaction. nil for anything not attributed.
+	Cache *CacheRow
 	// Note says what corrallm changed in the request on the way to the
 	// backend (P73): clamp lowered max_tokens, align translated a field by the
 	// capability record. "; "-separated; "" when nothing changed.
@@ -1082,9 +1090,16 @@ func movePayloads(ctx context.Context, db *sql.DB) error {
 // InsertActivity appends a request record to the activity log, and its
 // captured payloads, if any, to activity_payload.
 func (s *Store) InsertActivity(a Activity) error {
+	_, err := s.InsertActivityID(a)
+	return err
+}
+
+// InsertActivityID is InsertActivity, returning the new row's id (0 when the
+// insert failed).
+func (s *Store) InsertActivityID(a Activity) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	res, err := tx.Exec(
@@ -1101,27 +1116,27 @@ func (s *Store) InsertActivity(a Activity) error {
 		a.SpeedSource, a.Note,
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if a.InflightID != 0 {
 		// The marker's job ends with the row it was standing in for; same
 		// transaction, so a crash between the two never leaves both.
 		if _, err := tx.Exec(`DELETE FROM activity_inflight WHERE id = ?`, a.InflightID); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if a.ReqBody != "" || a.RespBody != "" || a.RespHeaders != "" {
 		if _, err := tx.Exec(`INSERT INTO activity_payload (activity_id, req_body, resp_body, resp_headers) VALUES (?, ?, ?, ?)`,
 			id, a.ReqBody, a.RespBody, a.RespHeaders); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return 0, err
 	}
 	conv, msgs := a.Conversation, a.ConversationMessages
 	if conv == "" {
@@ -1131,11 +1146,18 @@ func (s *Store) InsertActivity(a Activity) error {
 		// stats answer. Each one is its own single-turn session, so its tail
 		// is itself.
 		if !perRequestContext(a.Path) || a.Status < 200 || a.Status > 299 || a.PromptTokens <= 0 {
-			return nil
+			return id, nil
 		}
 		conv, msgs = fmt.Sprintf("req:%d", id), 0
 	}
-	return s.insertConversation(id, a.TS, a.Served, conv, msgs, int64(a.PromptTokens+a.CompletionTokens))
+	if a.Cache != nil {
+		// After the commit, like the conversation row, and never fatal: the
+		// attribution describes the request, it is not part of it.
+		if err := s.insertCache(id, a.TS, a.Cache); err != nil {
+			slog.Warn("activity_cache insert", "activity", id, "err", err)
+		}
+	}
+	return id, s.insertConversation(id, a.TS, a.Served, conv, msgs, int64(a.PromptTokens+a.CompletionTokens))
 }
 
 // perRequestContext is the set of paths whose context is one request's input:
@@ -1182,6 +1204,14 @@ func (s *Store) PruneActivity(beforeMS int64) (int64, error) {
 		return 0, err
 	}
 	if _, err := s.db.Exec(`DELETE FROM activity_conversation WHERE ts < ?`, beforeMS); err != nil {
+		return 0, err
+	}
+	// The cache attribution and the lifecycle it was read against age with the
+	// conversations they describe.
+	if _, err := s.db.Exec(`DELETE FROM activity_cache WHERE ts < ?`, beforeMS); err != nil {
+		return 0, err
+	}
+	if _, err := s.db.Exec(`DELETE FROM backend_event WHERE ts < ?`, beforeMS); err != nil {
 		return 0, err
 	}
 	// Payloads of the rows just deleted: ids are the activity PK, so every
