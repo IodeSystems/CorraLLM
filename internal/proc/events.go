@@ -111,3 +111,32 @@ func (m *Manager) recordExit(p *Process, h host.Handle) {
 	}
 	m.event(p.ModelName, p.server, h, EventStop, reason, err)
 }
+
+// RunningInstance is a ready backend process, for pollers that read it.
+type RunningInstance struct {
+	Model    string
+	Instance string
+	BaseURL  string
+}
+
+// RunningInstances lists the ready backends this manager runs a process
+// for (a handle and a target; pure proxies are not ours to read).
+func (m *Manager) RunningInstances() []RunningInstance {
+	m.mu.Lock()
+	procs := make([]*Process, 0, len(m.procs))
+	for _, p := range m.procs {
+		procs = append(procs, p)
+	}
+	m.mu.Unlock()
+	var out []RunningInstance
+	for _, p := range procs {
+		p.mu.Lock()
+		h, st, tg := p.handle, p.state, p.Target
+		p.mu.Unlock()
+		if h == nil || st != StateReady || tg == nil || tg.URL == nil {
+			continue
+		}
+		out = append(out, RunningInstance{Model: p.ModelName, Instance: h.ID(), BaseURL: tg.URL.String()})
+	}
+	return out
+}

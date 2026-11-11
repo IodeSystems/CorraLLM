@@ -28,6 +28,12 @@ type conversationCtxKey struct{}
 // attribution off.
 func (p *Proxy) SetCacheTracker(t *cacheattr.Tracker) { p.cacheTracker = t }
 
+// SetCachePoller attaches the /metrics poller the cache report reads.
+func (p *Proxy) SetCachePoller(c *cacheattr.Poller) { p.cachePoller = c }
+
+// CachePoller is the attached poller, nil when off.
+func (p *Proxy) CachePoller() *cacheattr.Poller { return p.cachePoller }
+
 // CacheTracker is the attached tracker, nil when off.
 func (p *Proxy) CacheTracker() *cacheattr.Tracker { return p.cacheTracker }
 

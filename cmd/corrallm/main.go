@@ -31,6 +31,7 @@ import (
 	"github.com/iodesystems/corrallm/internal/auth"
 	"github.com/iodesystems/corrallm/internal/bench/task"
 	"github.com/iodesystems/corrallm/internal/billing"
+	"github.com/iodesystems/corrallm/internal/cacheattr"
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/configdb"
 	"github.com/iodesystems/corrallm/internal/events"
@@ -648,7 +649,14 @@ func serve(ctx context.Context, o serveOpts) error {
 	mgr.SetLoadRecorder(loadRecorder{st})
 	// Prompt-cache attribution (P75): the tracker hears every backend event,
 	// and starts from the last day's conversations, without their hashes.
-	cacheTracker := newCacheTracker(st)
+	cachePoller := cacheattr.NewPoller(func() []cacheattr.Target {
+		var out []cacheattr.Target
+		for _, ri := range mgr.RunningInstances() {
+			out = append(out, cacheattr.Target{Served: ri.Model, Instance: ri.Instance, BaseURL: ri.BaseURL})
+		}
+		return out
+	}, 0)
+	cacheTracker := newCacheTracker(st, cachePoller)
 	mgr.SetEventRecorder(eventRecorder{st: st, note: cacheTracker.NoteEvent})
 	if o.healthTimeout > 0 {
 		mgr.SetHealthTimeout(o.healthTimeout)
@@ -887,6 +895,7 @@ func serve(ctx context.Context, o serveOpts) error {
 	// gated by the fairshare admission scheduler (shared with the lanes read op).
 	px := proxy.New(cfg, mgr, scheduler, st)
 	px.SetCacheTracker(cacheTracker)
+	px.SetCachePoller(cachePoller)
 	if succ != nil {
 		// Forwards from the predecessor carry its time already waited; this
 		// is what lets them be believed.
@@ -1029,6 +1038,8 @@ func serve(ctx context.Context, o serveOpts) error {
 	// existed, from the captured payloads still on disk. Resumes on restart and
 	// is a no-op once caught up.
 	go st.BackfillConversations(jobsCtx)
+	// The prompt-cache counters of patch 0005, every 15 s; never per request.
+	go cachePoller.Run(jobsCtx)
 
 	// Publish per-model residency to Prometheus (corrallm_model_loaded +
 	// load-timestamp → uptime). Sampled rather than event-driven so the gauges

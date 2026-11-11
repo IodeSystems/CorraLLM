@@ -62,8 +62,8 @@ func newCacheCmd() *cobra.Command {
 // newCacheTracker makes the daemon's prompt-cache tracker, seeded from the
 // last 24 h. A failed seed costs no-history verdicts until conversations
 // come back, never the boot.
-func newCacheTracker(st *store.Store) *cacheattr.Tracker {
-	t := cacheattr.NewTracker(cacheattr.DefaultCapBytes, nil)
+func newCacheTracker(st *store.Store, ev cacheattr.Evictions) *cacheattr.Tracker {
+	t := cacheattr.NewTracker(cacheattr.DefaultCapBytes, ev)
 	if st == nil {
 		return t
 	}

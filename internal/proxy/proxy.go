@@ -72,6 +72,7 @@ type Proxy struct {
 	// cacheTracker attributes each local chat turn's prompt-cache misses
 	// (P75, conversation.go). nil = off.
 	cacheTracker *cacheattr.Tracker
+	cachePoller  *cacheattr.Poller
 
 	started int64 // unix seconds at construction — the catalog's "created"
 
