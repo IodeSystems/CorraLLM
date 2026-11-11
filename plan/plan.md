@@ -448,7 +448,11 @@ DAG (◻ unless marked):
   path exists.
 - ◐ N6 deployed 11-10 18:55 PST, v0.2.2-19-g80722d1 (handoff; tracker seeded 669 conversations;
   2 adopt events). First minute: 12 × 200, 0 errors; activity_cache rows hit 9-11, cold 1, id_slot
-  on 100%. **next:** `corrallm cache report --since 24h` on 11-11 evening (weighted, 18 GiB).
+  on 100%. 11-11 07:06 reading (12.5 h, 5,273 Swift 200s): hit 0.904; lost 6.16M tok ≈ 52 min
+  re-prefill; slot-switch 201 misses = 48.6% of lost (133 at <1 min gap); evicted 65 = 29%;
+  checkpoint-limited 89 = 11%; unknown 27. R1 says raise --cache-ram 18→27 GiB (owner set 18 for
+  OOM: owner decides); R3 says enable affinity. Bug: default `--model swift` → "unknown model"
+  (pass the served name). **next:** 24 h report on 11-11 evening.
   Known gap: the CLI has no /metrics poller, so it prints "cache entries not exposed"; the
   GraphQL/UI path has the poller. Optional: CLI scrapes the backend /metrics once.
 - ✅ N7 0005 live 11-10 18:40 PST (owner: build now, weighted now, no baseline). Manual
@@ -458,15 +462,19 @@ DAG (◻ unless marked):
   (cold cache, unequal mix — recheck), prompt 1343 vs 1446 tok/s, hit 0.856 vs 0.904; /metrics
   hits 41, misses 10, 5 entries 13.8 GB, evictions fragmentation 3, budget 0; no crash lines.
   `id_slot` present in chat replies. Rollback = `tools activate` 20261109-140326-a4d4f2fd.
-  Finding: 0004's arena evicts on fragmentation at 13.8 of 18 GiB used.
+  Finding: 0004's arena evicts on fragmentation at 13.8 of 18 GiB used. 06:00 11-11 build
+  ccd360f0 kept (gate passed, 0005 applied, weighted env on, Swift pid from 06:13). Since then
+  evictions fragmentation 33 vs budget 16.
 - ◻ N8 weighted vs fifo: no clean baseline (owner skipped it). Compare decode at equal context
   and hit by gap bucket vs the 14 d retro (40 GiB) and the 18:13-18:39 fifo window (18 GiB).
+  12.5 h aggregate: decode 84.3 vs 81.5, prompt 1481 vs 1446 tok/s, hit 0.904 vs 0.904 (unequal
+  context; no regression seen).
 - N9 `id_slot` affinity, per-model flag default off; pin only when corrallm sees the slot
   free, else -1. N10 A/B in 2 h on/off blocks after N8.
 - ✅ N11 provider `sessionAffinityHeader` (e8bbd68, owner D4): 32-hex sha256 of the
   conversation key; client-sent value passes through.
 
-**next:** N6 (merge + deploy N5), N7 06:00 build. **risks:** a key that merges two conversations confuses classes;
+**next:** owner calls on R1 (cache-ram) and D3 (affinity, N9); N6 24 h report. **risks:** a key that merges two conversations confuses classes;
 an edited system message changes the inferred key (only a declared conversation shows it as
 prefix-diverged); chars→tokens estimate skewed by JSON escaping; checkpoint boundaries inferred;
 15 s /metrics resolution; MemAvailable in R1 is the report host's (right for Swift on box1); 0005 changes the order
@@ -475,8 +483,8 @@ empty the cache, so A/B windows split at restarts; hash lists lost on handoff.
 **assumptions:** per-message hash with tokens estimated from chars (A2); N3 uses local
 metric names `llamacpp:prompt_cache_*` until D2.
 **decisions (owner 11-10):** D1 a UI panel with cache-tuning recommendations (plus CLI).
-D2 0005 stays local until it is good. D3 open: owner unsure it matters; affinity ships off,
-N10 data decides. D4 N11 in scope, start now. D5 prefix match in characters.
+D2 0005 stays local until it is good. D3 open: owner unsure it matters; affinity ships off.
+11-11 data: slot-switch is 48.6% of lost tokens, the largest class. D4 N11 in scope, start now. D5 prefix match in characters.
 **optional extensions:** shared-prefix-aware eviction (0003-copy retired with no gain:
 measure first); checkpoint at the longest common prefix; /metrics panels.
 
