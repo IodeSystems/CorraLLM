@@ -114,6 +114,13 @@ func (p *Proxy) handOver(w http.ResponseWriter, r *http.Request, contentType str
 		out.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	}
 	out.Header.Set(HandoffHeader, strconv.Itoa(pid))
+	// An id minted here stays here: the successor mints its own and names it
+	// on the reply, beside the Requested/Served it sets itself.
+	if mintedHere(r.Context(), r.Header) {
+		out.Header.Del(HeaderRequestID)
+	}
+	w.Header().Del(HeaderRequested)
+	w.Header().Del(HeaderRequestID)
 	out.Header.Del(HandoffTokenHeader)
 	out.Header.Del(HandoffWaitedHeader)
 	if tok := p.successorToken.Load(); tok != nil && *tok != "" {

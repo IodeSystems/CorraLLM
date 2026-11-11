@@ -817,6 +817,13 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"missing \"model\""}}`, http.StatusBadRequest)
 		return
 	}
+	// Which name was asked for, and the id every row of this request carries
+	// (activity.ticket), on every reply from here on — refusals included. The
+	// model that answered (HeaderServed) is added in ModifyResponse, once one
+	// has. See stampRequestID for why the id is not the row's own id.
+	r, reqID := stampRequestID(r)
+	w.Header().Set(HeaderRequested, served)
+	w.Header().Set(HeaderRequestID, reqID)
 	cands, ok := p.config().ResolveServed(served)
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "invalid_request_error", p.noSuchModel(served))
@@ -1425,6 +1432,15 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			// not offered — the client subtracts these from its own total, which
 			// works for streaming and non-streaming alike.
 			setTimingHeaders(resp.Header, queuedMS, loadMS, time.Since(upstreamStart).Milliseconds(), transcodeMS)
+			// The member that answered. Here and not before the request, so a
+			// lane member that refuses and is spilled past (this function
+			// returns errBackendDown, and its headers are discarded) never
+			// names itself. Requested and the request id are already on w;
+			// an upstream corrallm's own copies would be ADDED beside them by
+			// the reverse proxy, so they are dropped.
+			resp.Header.Del(HeaderRequested)
+			resp.Header.Del(HeaderRequestID)
+			resp.Header.Set(HeaderServed, name)
 			for _, sc := range cand.QuotaScopes(p.config()) {
 				p.quota.ObserveResponse(sc, resp.StatusCode, resp.Header)
 			}
@@ -3415,6 +3431,21 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"headers":     []string{"Retry-After", "X-RateLimit-Capacity", "X-RateLimit-InFlight", "X-RateLimit-Waiting"},
 		},
 		"errors": errorContract,
+		// What corrallm adds to every inference reply (chat, completions,
+		// /v1/messages, embeddings, rerank, audio, images), streamed or not.
+		"response_headers": map[string]any{
+			"description": "Set on every inference reply, streamed or not. Join a reply to its activity row on X-Corrallm-Request-Id = activity.ticket (the row id does not exist until the request ends). corrallm sets no CORS headers; a CORS layer in front of it must list these in Access-Control-Expose-Headers for a browser to read them.",
+			"headers": map[string]string{
+				HeaderRequested:   "The model, alias or lane name the request asked for (activity.requested). On every reply, refusals included.",
+				HeaderServed:      "The model that answered (activity.served): for a lane, the member whose response this is — a member that refused and was failed over is never named. Absent when no model answered. The body's `model` is the upstream's own and is not rewritten.",
+				HeaderRequestID:   "The request's id, stored in activity.ticket on every row the request writes: yours if you sent X-Corrallm-Request-Id or X-Request-Id, else one corrallm minted. On a 429 it equals X-Corrallm-Ticket.",
+				HeaderQueuedMS:    "Milliseconds blocked in admission control, summed across every backend tried.",
+				HeaderLoadMS:      "Milliseconds waiting for a backend to become resident (0 when it was loaded).",
+				HeaderTTFBMS:      "Milliseconds from dispatch upstream to the upstream's response headers.",
+				HeaderTranscodeMS: "Milliseconds corrallm spent converting an audio upload (0 when none was needed).",
+				HeaderGroupDenied: "A priority group the credential asked for and did not get; the request was served in the key's own group. Absent otherwise.",
+			},
+		},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
@@ -3763,6 +3794,11 @@ func newReverseProxy(t *config.ProxyTarget) *httputil.ReverseProxy {
 				req.Header.Del("X-Api-Key")
 			}
 			req.Header.Del("X-Corrallm-Key")
+			// An id corrallm minted for this request is corrallm's; one the
+			// caller sent is forwarded as it always was.
+			if mintedHere(req.Context(), req.Header) {
+				req.Header.Del(HeaderRequestID)
+			}
 			// corrallm's own ask (P67); it means nothing upstream.
 			req.Header.Del(config.HeaderGuardrails)
 			if t.API == config.APIAnthropic {

@@ -103,6 +103,43 @@ func ensureTicket(r *http.Request) string {
 	return t
 }
 
+// mintedHereKey marks, on a request's context, the id stampRequestID minted
+// for it on arrival. Its value is that id.
+type mintedHereKey struct{}
+
+// stampRequestID gives every inference request an id before anything is
+// written, so the reply can name it (X-Corrallm-Request-Id) and every activity
+// row of the request carries it in `ticket`. That is the join key between one
+// reply a client holds and the row that recorded it: the row's own id does not
+// exist until the request ends, after the headers have gone out.
+//
+// The caller's own id is kept. When it sent none, the minted id goes on the
+// request's headers (so the rows, the 429 body and ensureTicket all report the
+// SAME id) and on the context, marked as ours from this request. The mark
+// exists for two reasons:
+//
+//   - agedCtx must not credit it. Before this, a request with no id was not
+//     aged at all; an id minted at arrival would otherwise age every queued
+//     request from its arrival, which changes fairshare for everyone.
+//   - it is not forwarded upstream (newReverseProxy) or to a successor
+//     (handOver): it means nothing to a backend, and the successor mints its
+//     own.
+func stampRequestID(r *http.Request) (*http.Request, string) {
+	if t := ticketFrom(r); t != "" {
+		return r, t
+	}
+	t := mintTicket(time.Now())
+	r.Header.Set(HeaderRequestID, t)
+	return r.WithContext(context.WithValue(r.Context(), mintedHereKey{}, t)), t
+}
+
+// mintedHere reports whether the id on r is the one stampRequestID minted for
+// this same request.
+func mintedHere(ctx context.Context, h http.Header) bool {
+	t, ok := ctx.Value(mintedHereKey{}).(string)
+	return ok && t != "" && h.Get(HeaderRequestID) == t
+}
+
 // mintTicket builds a signed, self-describing id: tkt_<ms in base36>_<rand>_<sig>.
 //
 // The mint time is IN the id because that is what makes age free to compute.
@@ -167,6 +204,9 @@ func ticketAge(t string, now time.Time) (time.Duration, bool) {
 // ticket, or someone else's, gets the context unchanged and is scheduled
 // exactly as it was before tickets existed.
 func agedCtx(ctx context.Context, r *http.Request) context.Context {
+	if mintedHere(r.Context(), r.Header) {
+		return ctx // minted on THIS request's arrival: no attempt to credit
+	}
 	age, ok := ticketAge(ticketFrom(r), time.Now())
 	if !ok || age <= 0 {
 		return ctx

@@ -164,6 +164,16 @@ callers fall into the `default` group.
 - **Inference** (open): the OpenAI endpoints above, plus `/v1/reservations` (lease
   interactive headroom, keyed by caller — see below) and `/upstream/<model>/…`, an
   untracked passthrough to a backend's own web UI that bypasses the scheduler.
+  Every inference reply, streamed or not, names what served it:
+  `X-Corrallm-Requested` (the model, alias or lane asked for),
+  `X-Corrallm-Served` (the model that answered; for a lane, the member whose
+  response it is, after any failover) and `X-Corrallm-Request-Id` (your
+  `X-Corrallm-Request-Id`/`X-Request-Id` if sent, else a minted one), stored in
+  `activity.ticket` so a reply joins to its row. Timing rides alongside in
+  `X-Corrallm-Queued-Ms`, `-Load-Ms`, `-Upstream-Ttfb-Ms` and `-Transcode-Ms`.
+  corrallm sets no CORS headers; a browser needs them in
+  `Access-Control-Expose-Headers` from whatever fronts it. `/v1/capabilities`
+  lists them under `response_headers`.
 - **Liveness** (open): `GET /health`, `/healthz`.
 - **Management** (admin token via `Authorization: Bearer` or the `corrallm_token`
   cookie): `POST /api/graphql` and REST at `/api/v1/*` — `overview`, `lanes`,

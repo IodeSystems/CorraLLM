@@ -49,6 +49,20 @@ const (
 	// load, with nothing anywhere saying why. Absent on every request that got
 	// what it asked for.
 	HeaderGroupDenied = "X-Corrallm-Group-Denied"
+
+	// HeaderRequested is the model name the caller asked for (a model, an
+	// alias or a lane), as it appears in activity.requested. Set on every
+	// inference reply, refusals included.
+	HeaderRequested = "X-Corrallm-Requested"
+	// HeaderServed is the model that answered, as it appears in
+	// activity.served: for a lane, the member whose response this is. Set from
+	// ModifyResponse of the upstream that answered, so a member that refused
+	// and was spilled past never names itself. Absent when no model answered
+	// (a refusal corrallm wrote itself, a transport error).
+	//
+	// The reply body's `model` is whatever the upstream wrote and is left
+	// alone; this header is corrallm's statement, not the backend's.
+	HeaderServed = "X-Corrallm-Served"
 )
 
 // setTimingHeaders stamps the breakdown onto a response.
