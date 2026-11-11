@@ -369,3 +369,31 @@ func TestRoundTripAuth(t *testing.T) {
 		t.Fatalf("auth lost in round trip: %+v", out.Auth)
 	}
 }
+
+// slotAffinity (P75 N9) is carried in the model's JSON remainder, not a column:
+// nothing queries by it.
+func TestSlotAffinityRoundTrips(t *testing.T) {
+	db := openDB(t)
+	ctx := context.Background()
+	in := &config.Config{Providers: map[string]config.LocalProvider{"local": {Models: map[string]config.Model{
+		"local-swift": {Cmd: "llama-server --parallel 2", Server: "box1", SlotAffinity: true},
+		"local-other": {Cmd: "llama-server", Server: "box1"},
+	}}}}
+	if err := Write(ctx, db, in); err != nil {
+		t.Fatal(err)
+	}
+	var rest string
+	if err := db.QueryRowContext(ctx, `SELECT value FROM config_scalar WHERE key = 'model.rest.local/local-swift'`).Scan(&rest); err != nil {
+		t.Fatal(err)
+	}
+	if rest != `{"slotAffinity":true}` {
+		t.Fatalf("remainder = %s", rest)
+	}
+	out, err := Read(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := out.Providers["local"].Models; !m["local-swift"].SlotAffinity || m["local-other"].SlotAffinity {
+		t.Fatalf("slotAffinity after read: %+v", m)
+	}
+}

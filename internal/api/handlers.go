@@ -2533,17 +2533,19 @@ type ModelDef struct {
 	// Provider and Extension say where the model comes from, so the dashboard
 	// can group models under the provider that serves them. Both empty for a
 	// model declared on its own under `models:`.
-	Provider   string         `json:"provider" doc:"The provider that serves this model: a local provider's name, or the upstream within its extension. Empty for a model declared on its own."`
-	Extension  string         `json:"extension" doc:"The extension (integration) that provides this model. Empty for a local provider's model or a model declared on its own."`
-	Persistent bool           `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
-	TTL        string         `json:"ttl" doc:"Eviction PRIORITY (sticky): once idle this long the model sorts ahead of warmer ones as an eviction victim. It never unloads anything on its own — see idleUnload."`
-	IdleUnload string         `json:"idleUnload" doc:"Quiet period after which the backend unloads itself, with nothing else needing its memory (sticky). Empty = never. Counts only while no request is in flight."`
-	EvictCost  string         `json:"evictCost" doc:"Eviction resistance (sticky): the tiebreak among candidates once TTL ordering is applied."`
-	Spawnable  bool           `json:"spawnable" doc:"True if a local process backs it — its own cmd, or its hosting extension's."`
-	Remote     bool           `json:"remote" doc:"True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."`
-	ProcKey    string         `json:"procKey" doc:"Backing process identity; an extension's models share one."`
-	Modalities []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
-	Capability string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
+	Provider   string `json:"provider" doc:"The provider that serves this model: a local provider's name, or the upstream within its extension. Empty for a model declared on its own."`
+	Extension  string `json:"extension" doc:"The extension (integration) that provides this model. Empty for a local provider's model or a model declared on its own."`
+	Persistent bool   `json:"persistent" doc:"Pinned (preloaded, never evicted)."`
+	// SlotAffinity is read-only here: set in the config (`slotAffinity: true`).
+	SlotAffinity bool           `json:"slotAffinity" doc:"Chat turns go back to the llama.cpp slot of the conversation's previous turn when it is free (config slotAffinity; P75 N9)."`
+	TTL          string         `json:"ttl" doc:"Eviction PRIORITY (sticky): once idle this long the model sorts ahead of warmer ones as an eviction victim. It never unloads anything on its own — see idleUnload."`
+	IdleUnload   string         `json:"idleUnload" doc:"Quiet period after which the backend unloads itself, with nothing else needing its memory (sticky). Empty = never. Counts only while no request is in flight."`
+	EvictCost    string         `json:"evictCost" doc:"Eviction resistance (sticky): the tiebreak among candidates once TTL ordering is applied."`
+	Spawnable    bool           `json:"spawnable" doc:"True if a local process backs it — its own cmd, or its hosting extension's."`
+	Remote       bool           `json:"remote" doc:"True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."`
+	ProcKey      string         `json:"procKey" doc:"Backing process identity; an extension's models share one."`
+	Modalities   []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
+	Capability   string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
 	// Placements are the ways this model can be served: a box and the command
 	// that runs it there. Controls belong on THESE rather than on the model —
 	// loading, pausing, logs and the backend's own UI are all properties of one
@@ -2860,7 +2862,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	for name, m := range listedModels(h.config()) {
 		md := ModelDef{
-			Name: name, Provider: m.ProviderName, Extension: m.Extension, Persistent: m.Persistent, Disabled: m.Disabled, Capability: config.ModelCapability(m),
+			Name: name, Provider: m.ProviderName, Extension: m.Extension, Persistent: m.Persistent, SlotAffinity: m.SlotAffinity, Disabled: m.Disabled, Capability: config.ModelCapability(m),
 			ContextPerRequest: m.ContextPerRequest,
 			Placements:        h.placementViews(name, m),
 			Modalities:        modalityViews(m.EffectiveModalities(name, costModel.IsAudioType(m.Type))),

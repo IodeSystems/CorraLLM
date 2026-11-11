@@ -651,6 +651,9 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_activity_cache_ts ON activity_cache(ts, served, class)`,
 	backendEventSchema,
 	`CREATE INDEX IF NOT EXISTS idx_backend_event_ts ON backend_event(ts, model)`,
+	// What slot affinity did with the turn (P75 N9, 2026-11-11), for an on/off
+	// A/B. '' on every row before it, and while the model's flag is off.
+	`ALTER TABLE activity_cache ADD COLUMN affinity TEXT NOT NULL DEFAULT ''`,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms

@@ -37,7 +37,8 @@ const cacheSchema = `CREATE TABLE IF NOT EXISTS activity_cache (
   ckpt_dist_tok     INTEGER NOT NULL DEFAULT -1, -- cached tokens' distance to the nearest earlier boundary
   prompt_per_sec    REAL    NOT NULL DEFAULT 0,  -- for re-prefill seconds
   class             TEXT    NOT NULL,
-  cause             TEXT    NOT NULL DEFAULT ''
+  cause             TEXT    NOT NULL DEFAULT '',
+  affinity          TEXT    NOT NULL DEFAULT ''  -- slot affinity's choice (P75 N9); '' = off
 )`
 
 // backendEventSchema is one row per backend process start, adoption or stop,
@@ -80,6 +81,11 @@ type CacheRow struct {
 	PromptPerSec     float64 `json:"promptPerSec"`
 	Class            string  `json:"class"`
 	Cause            string  `json:"cause"`
+	// Affinity is what slot affinity did with the request (P75 N9): pinned
+	// (the previous turn's slot), moved (that slot busy, another free),
+	// assigned (no previous slot, a free one), unpinned (no slot known free),
+	// client (the caller sent id_slot), unknown (no slot count). '' = off.
+	Affinity string `json:"affinity"`
 	// Caller is activity.key, read by join for the per-caller report. Not a
 	// column here: keys are long and already stored once.
 	Caller string `json:"-"`
@@ -100,11 +106,11 @@ type BackendEvent struct {
 
 // insertCache writes the cache row of activity id.
 func (s *Store) insertCache(id, ts int64, c *CacheRow) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO activity_cache (activity_id, ts, served, conversation, instance, slot, prev_activity_id, gap_ms, prompt_tokens, cached_tokens, prev_ctx_tokens, prompt_chars, match_chars, match_tok_est, diverge_msg, lost_tok, other_tok, evictions_between, ckpt_dist_tok, prompt_per_sec, class, cause)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO activity_cache (activity_id, ts, served, conversation, instance, slot, prev_activity_id, gap_ms, prompt_tokens, cached_tokens, prev_ctx_tokens, prompt_chars, match_chars, match_tok_est, diverge_msg, lost_tok, other_tok, evictions_between, ckpt_dist_tok, prompt_per_sec, class, cause, affinity)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, ts, c.Served, c.Conversation, c.Instance, c.Slot, c.PrevActivityID, c.GapMS,
 		c.PromptTokens, c.CachedTokens, c.PrevCtxTokens, c.PromptChars, c.MatchChars, c.MatchTokEst,
-		c.DivergeMsg, c.LostTok, c.OtherTok, c.EvictionsBetween, c.CkptDistTok, c.PromptPerSec, c.Class, c.Cause)
+		c.DivergeMsg, c.LostTok, c.OtherTok, c.EvictionsBetween, c.CkptDistTok, c.PromptPerSec, c.Class, c.Cause, c.Affinity)
 	return err
 }
 
@@ -152,7 +158,7 @@ func (s *Store) BackendEvents(model string, fromMS, toMS int64) ([]BackendEvent,
 // The caller comes from activity by primary key: one lookup per row, never a
 // scan of activity.
 func (s *Store) CacheRows(served string, fromMS, toMS int64) ([]CacheRow, error) {
-	q := `SELECT c.activity_id, c.ts, c.served, c.conversation, c.instance, c.slot, c.prev_activity_id, c.gap_ms, c.prompt_tokens, c.cached_tokens, c.prev_ctx_tokens, c.prompt_chars, c.match_chars, c.match_tok_est, c.diverge_msg, c.lost_tok, c.other_tok, c.evictions_between, c.ckpt_dist_tok, c.prompt_per_sec, c.class, c.cause, COALESCE(a.key, '')
+	q := `SELECT c.activity_id, c.ts, c.served, c.conversation, c.instance, c.slot, c.prev_activity_id, c.gap_ms, c.prompt_tokens, c.cached_tokens, c.prev_ctx_tokens, c.prompt_chars, c.match_chars, c.match_tok_est, c.diverge_msg, c.lost_tok, c.other_tok, c.evictions_between, c.ckpt_dist_tok, c.prompt_per_sec, c.class, c.cause, c.affinity, COALESCE(a.key, '')
 	      FROM activity_cache c LEFT JOIN activity a ON a.id = c.activity_id
 	      WHERE c.ts >= ? AND c.ts < ?`
 	args := []any{fromMS, toMS}
@@ -171,7 +177,7 @@ func (s *Store) CacheRows(served string, fromMS, toMS int64) ([]CacheRow, error)
 		if err := rows.Scan(&c.ActivityID, &c.TS, &c.Served, &c.Conversation, &c.Instance, &c.Slot,
 			&c.PrevActivityID, &c.GapMS, &c.PromptTokens, &c.CachedTokens, &c.PrevCtxTokens,
 			&c.PromptChars, &c.MatchChars, &c.MatchTokEst, &c.DivergeMsg, &c.LostTok, &c.OtherTok,
-			&c.EvictionsBetween, &c.CkptDistTok, &c.PromptPerSec, &c.Class, &c.Cause, &c.Caller); err != nil {
+			&c.EvictionsBetween, &c.CkptDistTok, &c.PromptPerSec, &c.Class, &c.Cause, &c.Affinity, &c.Caller); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

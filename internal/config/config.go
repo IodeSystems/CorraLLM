@@ -1009,6 +1009,14 @@ type Model struct {
 	// nothing is merged. `off: true` exempts the model from it.
 	LoopDetection *LoopDetection `yaml:"loopDetection,omitempty"`
 
+	// SlotAffinity sends each chat turn back to the llama.cpp slot that served
+	// the conversation's previous turn (`id_slot` in the body), when corrallm
+	// sees that slot free; otherwise to a free slot, or to none (llama.cpp
+	// picks). Local llama-server backends only, and only when the slot count
+	// is known (`--parallel N` / `-np N` in the cmd). Off: the request body is
+	// unchanged. A client-sent id_slot is never replaced (P75 N9).
+	SlotAffinity bool `yaml:"slotAffinity,omitempty"`
+
 	// Aliases are ADDITIONAL served names that resolve to this model. They exist
 	// for version cutovers: a caller that hardcodes last quarter's model id keeps
 	// working while the id it names starts meaning the new model.
