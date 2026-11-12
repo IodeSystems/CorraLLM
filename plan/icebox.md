@@ -224,3 +224,11 @@ GGUF figure) at ≤ 0.0016, and someone reports 5090 decode with MTP above our l
 Qwen3.8-27B in one CUDA megakernel; two-GPU tensor parallel, up to 8 slots batched (622 tok/s total, ~75–78 per request, Q4_K_M on two 3090s). **Two-GPU on this box: no** — needs two identical cards (3080 10 GB cannot hold half of a Q5+ quant; slower card paces both), PCIe P2P (`nvidia-smi topo -p2p r` = NS; needs a patched open kernel module), 3080 is on PCIe x4. Text only (Swift uses `--mmproj`), Q6_K untuned/unchecked, no repetition penalties, top-k ≤ 32, AGPL-3.0, single author. One-GPU build (1.5–1.9× llama.cpp decode on a 3090, slots run serially) is the only candidate; owner declined an A/B 10-21.
 
 **Resume when.** Someone reports the one-GPU build on a 5090 (sm_120) beating llama.cpp+MTP's ~105–138 tok/s on a Q5+ quant with vision, or the two-GPU path supports unequal cards.
+
+## KV-cache quant cost measurement (owner 11-12: "we might be in an ok spot" — deferred)
+- Live Swift Q6_K_S runs q8_0 K+V. Fit (measured live log): KV 5712 MiB q8_0 @2×86016; f16 10752 → nothing fits
+  2×86k at f16 on 32 GiB (Q5 f16 caps ~128k total, Q6_K_S f16 ~101k). Only 16/64 layers hold KV (GDN rest).
+- Published q8_0-KV KLD disagrees 1000× (localbench 0.024 dense Qwen 27B vs 0.000018 elsewhere).
+- Weight KLD: Swift Q6_K_S 0.0016, Q5_K_M 0.0061; UD 3.1 Q5_K_XL ~0.0035 (chart read, other reference).
+- If resumed: step 1 = Swift Q6_K_S q8_0 vs f16 KV KLD at ≥32k vs BF16 logits (gen ref on CPU first);
+  step 2 only if KV cost ≥ ~0.005: UD-Q5_K_XL f16 KV + --kv-unified 128k pool. Data: scratchpad quantfit/.
