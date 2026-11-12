@@ -530,7 +530,17 @@ DAG (◻ unless marked):
   00:32:44 11-12. Cap LLAMA_HOST_POOL_COMPACT_MAX_MIB 4096 default. **next:** canary readout
   51 min readout 01:24: 10 compactions, 19.5 GB moved in 2.04 s (~0.2 s each, ~9.6 GB/s), 5
   skipped → 5 frag evictions (~6/h vs ~40/h before), 2 budget; hit 92.0%, decode 78.0, 0 5xx
-  (462 × 200). **next:** 24 h readout. Rollback: `tools
+  (462 × 200). **next:** 24 h readout.
+  ⏸ Upstream question (owner 11-12: wait for benchmark). Facts (agent, read-only): #30683 (=0002)
+  open+approved, unblocked by #30137; 0003 not upstream; no upstream pool/policy/compaction work;
+  metrics PRs #25328 closed, #26130 open; adjacent #30997 #30970 #27624, #31391 (ggml-cuda host mem,
+  vs 0004 batch-get.cu unchecked). 0002-0006 apply clean on master 0fb8f1577 (not compiled).
+  CONTRIBUTING: AI code ok if disclosed; AI must NOT write PR/issue text or replies; issue first;
+  1 open PR for new contributors; CPU-first then CUDA. Proposed shape: carry = 3 patches (ckpt fixes
+  / policy+metrics / pool+compaction); upstream order 0003 → policy → pool with replay-benchmark
+  numbers. **resume when:** 24 h canary readout + replay benchmark (6 conv/2 slots trace: upstream
+  vs patched vs ninfer; hit rate, re-prefill s, wall time) exist. **blocking decision:** owner:
+  contribute upstream at all. Rollback: `tools
   activate llama.cpp 20261111-141103-ccd360f0 --server box1` + Swift restart. Tool ref PINNED to
   ccd360f060a0… (owner 11-12; notes column says so) — unpin to master after the 24 h readout. **found:** old
   build hung 2.5 min in "cleaning up before exit" on SIGTERM (futex) → SIGKILL; 16×502 at 00:32.
