@@ -427,6 +427,11 @@ Speed f16/q8 KV: pp4096 6271 vs 2893, tg128 69.1 vs 59.1 (no MTP). **Verdict: nv
 the bar (≈22× median KLD); KV type changes <1%, so a k16v8 KV mode is moot.** Ref .kld files kept
 (~/.corrallm/var/kld, 81 GB). Logs S/kld-window/. **next:** owner: try QAT (QUASAR) or stop NVFP4;
 RedHatAI = PTQ like Unsloth, expect the same.
+✅ E2 11-12 12:59–13:06 (7.6 min off; waited for idle slots → 0 cuts; 25×429): unsloth UD-Q5_K_XL
+(rev 4af51b35, 20.98 GB, owner gate ≤ Swift 22.86 GB): 8k median 0.0021 / top 85.0%, 32k 0.0018 /
+84.5% — 1.5× Q6_K's median, −1.5 pt top-1; pp 3049 / tg 64.4 (Q6_K 2893 / 59.1). f16-K/q8-V
+2×86k needs 31.9 of 31.4 GiB (KV 53,312 B/tok: 17 attn layers × 4 KV heads × 256) → no fit;
+q8/q8 fits (29.3). **Verdict: regresses KLD vs Q6_K → fails the bar.**
 **blocking decisions:** each D-G run takes Swift off gpu0 (aw4 gets 429s);
 start after 15:28 (P75 N10 A/B ends). **optional extensions:** convert the current Unsloth head
 ourselves if it differs from 60e813d4.
