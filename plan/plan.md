@@ -528,7 +528,9 @@ DAG (◻ unless marked):
   audit no blockers, fixed emplace-before-erase + erase-by-key + skip log DBG). Build
   20261112-081721-ccd360f0 (pinned full sha for the build, ref back to master). Swift on it since
   00:32:44 11-12. Cap LLAMA_HOST_POOL_COMPACT_MAX_MIB 4096 default. **next:** canary readout
-  ~01:25 (compaction_seconds, frag evictions vs 690/14.7 h, decode, 5xx). Rollback: `tools
+  51 min readout 01:24: 10 compactions, 19.5 GB moved in 2.04 s (~0.2 s each, ~9.6 GB/s), 5
+  skipped → 5 frag evictions (~6/h vs ~40/h before), 2 budget; hit 92.0%, decode 78.0, 0 5xx
+  (462 × 200). **next:** 24 h readout. Rollback: `tools
   activate llama.cpp 20261111-141103-ccd360f0 --server box1` + Swift restart. **risks:** tonight
   06:00 nightly builds master+0006 (untested upstream drift, benchmark-gated). **found:** old
   build hung 2.5 min in "cleaning up before exit" on SIGTERM (futex) → SIGKILL; 16×502 at 00:32.
