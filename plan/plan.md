@@ -531,8 +531,8 @@ DAG (◻ unless marked):
   51 min readout 01:24: 10 compactions, 19.5 GB moved in 2.04 s (~0.2 s each, ~9.6 GB/s), 5
   skipped → 5 frag evictions (~6/h vs ~40/h before), 2 budget; hit 92.0%, decode 78.0, 0 5xx
   (462 × 200). **next:** 24 h readout. Rollback: `tools
-  activate llama.cpp 20261111-141103-ccd360f0 --server box1` + Swift restart. **risks:** tonight
-  06:00 nightly builds master+0006 (untested upstream drift, benchmark-gated). **found:** old
+  activate llama.cpp 20261111-141103-ccd360f0 --server box1` + Swift restart. Tool ref PINNED to
+  ccd360f060a0… (owner 11-12; notes column says so) — unpin to master after the 24 h readout. **found:** old
   build hung 2.5 min in "cleaning up before exit" on SIGTERM (futex) → SIGKILL; 16×502 at 00:32.
   Short sha as tool ref fails to fetch (use full sha). **found:** an external stop (my 07:11 SIGTERM) is
   recorded as `crash` (internal/proc/events.go:131 recordExit) — label "unordered exit" instead?
