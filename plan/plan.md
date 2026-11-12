@@ -414,7 +414,19 @@ stamp omits the recipe hash, so recipe-only fixes need --force. nvidia NVFP4 dow
 MTP+vision BF16 — more aggressive than Unsloth; ninfer recipe needs a variant. E plan: KLD on
 ~40 swift-prompts cut to 8k/32k+, reference base Q8_0 on gpu0 (llama-perplexity
 --kl-divergence-base), candidates top-k logprobs (ninfer if it gives prompt logprobs, else vLLM),
-MemoryMax per run. **next:** owner: download RedHatAI + QUASAR?; then 2 Swift-off windows.
+MemoryMax per run.
+✅ E window 11-12 12:23:40–12:40:14 (16 min Swift off; pause row `local-Swift-1.5-Qwen3.8-27B-Q6_K_S`
++ handoff; 93×429, 0 5xx in window; 2 in-flight streams cut at the reap — handoff reaps a paused
+backend while the old process still drains it; 1×503 client gave up during reload). llama.cpp
+ccd360f0 runs the nvidia ModelOpt checkpoint natively (convert keeps NVFP4 + F8_E4M3; 19.6 GiB).
+KLD vs base Q8_0 (bartowski 87410e7b), swift-prompts corpus, llama-perplexity:
+8k: Q6_K median 0.0014 / top-1 86.5% / PPL 1.008×; NVFP4 f16 KV 0.0316 / 70.8% / 1.29×;
+f16-K q8-V 0.0311 / 71.0%; q8/q8 0.0311 / 70.8%. 32k: Q6_K 0.0012 / 86.7%; NVFP4 0.0264 / 71.5%.
+Means (0.58 Q6_K, 1.86 NVFP4) carry a heavy tail (5–10% tokens >2.6 even for Q6_K; not explained).
+Speed f16/q8 KV: pp4096 6271 vs 2893, tg128 69.1 vs 59.1 (no MTP). **Verdict: nvidia NVFP4 fails
+the bar (≈22× median KLD); KV type changes <1%, so a k16v8 KV mode is moot.** Ref .kld files kept
+(~/.corrallm/var/kld, 81 GB). Logs S/kld-window/. **next:** owner: try QAT (QUASAR) or stop NVFP4;
+RedHatAI = PTQ like Unsloth, expect the same.
 **blocking decisions:** each D-G run takes Swift off gpu0 (aw4 gets 429s);
 start after 15:28 (P75 N10 A/B ends). **optional extensions:** convert the current Unsloth head
 ourselves if it differs from 60e813d4.
