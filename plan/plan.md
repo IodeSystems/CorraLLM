@@ -407,7 +407,9 @@ gpu0 (Swift off the card) · E llm-bench Q6 vs NVFP4, 3 runs/arm · F 1 h aw4 re
 lane, fp8 KV, 2×86016, MTP3, vision, prefix reuse, --no-cuda-graph): fp8 KV pool ~239k tok, bf16
 ~128k (does not fit 2×86k); VRAM 31.5 GiB; 40k cold TTFT 5.4 s (7.4k tok/s), warm 0.10 s; decode
 1 stream 116, C=2 242 total (graphs OFF); C=4 all 200 (#414 not reproduced). Graphs ON aborted:
-cudart 12+13 mix → fixed 263dec5 (CUDAToolkit_ROOT), rebuild pending. nvidia NVFP4 downloaded
+cudart 12+13 mix → fixed 263dec5 (CUDAToolkit_ROOT); build 20261112-153946 links only
+cudart 13.3. **next window:** drop --no-cuda-graph from the row, re-measure decode. Found: tool
+stamp omits the recipe hash, so recipe-only fixes need --force. nvidia NVFP4 downloaded
 (~/.corrallm/models/nvfp4/nvidia-Qwen3.8-27B-NVFP4): MLP L0-63 + lm_head NVFP4, attn/GDN FP8,
 MTP+vision BF16 — more aggressive than Unsloth; ninfer recipe needs a variant. E plan: KLD on
 ~40 swift-prompts cut to 8k/32k+, reference base Q8_0 on gpu0 (llama-perplexity
