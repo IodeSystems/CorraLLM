@@ -511,7 +511,19 @@ DAG (◻ unless marked):
   off 09:28 89.5% 0.93M ev 11 sw 31 · on 11:28 86.9% 1.89M ev 27 sw 35 · off 13:28 90.4% 1.19M ev 12 sw 26.
   slot-switch not reduced; evicted up (100/123 evicted rows are `pinned`). No Swift restart inside
   the blocks (the 4 "crash" reloads = conversations idle across the 07:11 stop). Flag left ON.
-  **next:** owner call: turn slotAffinity off. **found:** an external stop (my 07:11 SIGTERM) is
+  ✅ slotAffinity OFF for Swift 21:55 11-11 (owner), verified rows ''.
+- ◻ N12 host-cache compaction (llama.cpp patch 0006). /metrics since 07:11: evictions frag 625 /
+  budget 107, 64% evicted <5 min after last use. Cause (agent, tools/llama.cpp/src): best-fit pinned
+  arena (common.cpp:2436-2656); entry = one 1.5-1.75 GiB main block + 8×150 MiB ckpts; re-save after
+  restore is a few turns bigger (miss by p50 80 MiB); save-before-load (server-context.cpp:1922);
+  ckpts spill across arenas (common.cpp:2621); frag fires → policy victim, not hole neighbour
+  (server-task.cpp:1963/2008). Cascades: 135 saves evicted 2-7 entries. Stages: (1) position-aware
+  victim ≤1 eviction/save (~270 avoided); (2) compact(need) in server_prompt_cache::alloc — memmove
+  movable blocks (entry blocks + cache-only ckpts), cap ~4 GiB, needs relocatable buffer for
+  server_prompt_data (~550-600 avoided, unverified); metrics compactions_total, bytes_moved,
+  largest_free gauge. **risks:** cudaMemcpyAsync in flight on a cache block (batch-get.cu:198);
+  memcpy speed unmeasured. **test:** pooltest2 replay 6 conv/2 slots + pattern check + ASan/TSan.
+  **blocking decision:** owner go to build. **found:** an external stop (my 07:11 SIGTERM) is
   recorded as `crash` (internal/proc/events.go:131 recordExit) — label "unordered exit" instead?
 - ✅ N11 provider `sessionAffinityHeader` (e8bbd68, owner D4): 32-hex sha256 of the
   conversation key; client-sent value passes through.
