@@ -290,12 +290,17 @@ build() {
     # gcc, not the system c++: on box1 c++ → clang++ 21, which rejects
     # optional<nested-struct-with-default-inits>::emplace() in
     # qwen3_5/session/binding.cpp:27 (ninfer 13ebb92f). nvcc already uses gcc.
+    # CUDAToolkit_ROOT from nvcc: without it FindCUDAToolkit took the distro
+    # /usr/lib/x86_64-linux-gnu/libcudart.so (12.x) next to nvcc 13.3, so the
+    # libs bound both cudart .so.12 and .so.13 and CUDA graph capture failed at
+    # startup (decode_graph.cpp:19 cudaGraphAddChildGraphNode: invalid value).
     cmake -B build \
         -DCMAKE_C_COMPILER=gcc \
         -DCMAKE_CXX_COMPILER=g++ \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CUDA_ARCHITECTURES="$REQUIRED_ARCH" \
         -DCMAKE_CUDA_COMPILER="$nvcc" \
+        -DCUDAToolkit_ROOT="$(dirname "$(dirname "$nvcc")")" \
         -DCMAKE_BUILD_RPATH='$ORIGIN' \
         -DNINFER_BUILD_APPS=ON >&2 || exit 1
     cmake --build build --config Release --parallel "$(cpu_count)" >&2 || exit 1
