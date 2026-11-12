@@ -523,7 +523,16 @@ DAG (◻ unless marked):
   server_prompt_data (~550-600 avoided, unverified); metrics compactions_total, bytes_moved,
   largest_free gauge. **risks:** cudaMemcpyAsync in flight on a cache block (batch-get.cu:198);
   memcpy speed unmeasured. **test:** pooltest2 replay 6 conv/2 slots + pattern check + ASan/TSan.
-  **blocking decision:** owner go to build. **found:** an external stop (my 07:11 SIGTERM) is
+  ◐ BUILT + CANARY (owner go 11-11): patch only in ~/.corrallm/tools/llama.cpp/patches/0006 (like
+  0002-0005; scratch tree scratchpad/llama-compact, tests pooltest3 CPU/ASan/UBSan/TSan clean;
+  audit no blockers, fixed emplace-before-erase + erase-by-key + skip log DBG). Build
+  20261112-081721-ccd360f0 (pinned full sha for the build, ref back to master). Swift on it since
+  00:32:44 11-12. Cap LLAMA_HOST_POOL_COMPACT_MAX_MIB 4096 default. **next:** canary readout
+  ~01:25 (compaction_seconds, frag evictions vs 690/14.7 h, decode, 5xx). Rollback: `tools
+  activate llama.cpp 20261111-141103-ccd360f0 --server box1` + Swift restart. **risks:** tonight
+  06:00 nightly builds master+0006 (untested upstream drift, benchmark-gated). **found:** old
+  build hung 2.5 min in "cleaning up before exit" on SIGTERM (futex) → SIGKILL; 16×502 at 00:32.
+  Short sha as tool ref fails to fetch (use full sha). **found:** an external stop (my 07:11 SIGTERM) is
   recorded as `crash` (internal/proc/events.go:131 recordExit) — label "unordered exit" instead?
 - ✅ N11 provider `sessionAffinityHeader` (e8bbd68, owner D4): 32-hex sha256 of the
   conversation key; client-sent value passes through.
