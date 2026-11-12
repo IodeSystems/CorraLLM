@@ -284,6 +284,9 @@ build() {
     export CUDACXX="$nvcc"
     export PATH="$(dirname "$nvcc"):$PATH"
 
+    # RPATH $ORIGIN: ninfer's own CMake gives the binaries RUNPATH $ORIGIN/../lib
+    # (its build tree), but the staged install is flat (binaries and libninfer_*.so
+    # side by side), so add $ORIGIN or the installed build cannot find its libs.
     # gcc, not the system c++: on box1 c++ → clang++ 21, which rejects
     # optional<nested-struct-with-default-inits>::emplace() in
     # qwen3_5/session/binding.cpp:27 (ninfer 13ebb92f). nvcc already uses gcc.
@@ -293,6 +296,7 @@ build() {
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CUDA_ARCHITECTURES="$REQUIRED_ARCH" \
         -DCMAKE_CUDA_COMPILER="$nvcc" \
+        -DCMAKE_BUILD_RPATH='$ORIGIN' \
         -DNINFER_BUILD_APPS=ON >&2 || exit 1
     cmake --build build --config Release --parallel "$(cpu_count)" >&2 || exit 1
     ) || die "build failed; see log"
@@ -315,6 +319,11 @@ build() {
         fi
     done
     [ "$found" -gt 0 ] || die "build produced no ninfer binaries under $src/build"
+    # The shared libs the binaries NEED live in build/lib; they travel with them.
+    for f in "$src"/build/lib/libninfer_*.so; do
+        [ -f "$f" ] || continue
+        cp -f "$f" "$stage/$(basename "$f")"
+    done
 
     local id; id=$(build_id "$head")
     install_build "$stage" "$id"
