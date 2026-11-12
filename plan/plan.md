@@ -403,7 +403,17 @@ sudo; recipe preflight fixed 983eef0) · C ✅ d11b92d headers X-Corrallm-Reques
 agentkit bump: a handoff mid-N10 resets slot state); clients aw4/dun/agentkit must log them · D register a ninfer model, no lane, smoke on
 gpu0 (Swift off the card) · E llm-bench Q6 vs NVFP4, 3 runs/arm · F 1 h aw4 replay at 3 lanes
 (500/503, cache reuse ON) · G alias A/B by time block with per-call model attribution.
-**next:** A-C results. **blocking decisions:** each D-G run takes Swift off gpu0 (aw4 gets 429s);
+✅ D smoke 11-12 (row `local/Qwen3.8-27B-nvfp4-ninfer`, port 5807, model-id qwen3.8-27b-nvfp4, no
+lane, fp8 KV, 2×86016, MTP3, vision, prefix reuse, --no-cuda-graph): fp8 KV pool ~239k tok, bf16
+~128k (does not fit 2×86k); VRAM 31.5 GiB; 40k cold TTFT 5.4 s (7.4k tok/s), warm 0.10 s; decode
+1 stream 116, C=2 242 total (graphs OFF); C=4 all 200 (#414 not reproduced). Graphs ON aborted:
+cudart 12+13 mix → fixed 263dec5 (CUDAToolkit_ROOT), rebuild pending. nvidia NVFP4 downloaded
+(~/.corrallm/models/nvfp4/nvidia-Qwen3.8-27B-NVFP4): MLP L0-63 + lm_head NVFP4, attn/GDN FP8,
+MTP+vision BF16 — more aggressive than Unsloth; ninfer recipe needs a variant. E plan: KLD on
+~40 swift-prompts cut to 8k/32k+, reference base Q8_0 on gpu0 (llama-perplexity
+--kl-divergence-base), candidates top-k logprobs (ninfer if it gives prompt logprobs, else vLLM),
+MemoryMax per run. **next:** owner: download RedHatAI + QUASAR?; then 2 Swift-off windows.
+**blocking decisions:** each D-G run takes Swift off gpu0 (aw4 gets 429s);
 start after 15:28 (P75 N10 A/B ends). **optional extensions:** convert the current Unsloth head
 ourselves if it differs from 60e813d4.
 
