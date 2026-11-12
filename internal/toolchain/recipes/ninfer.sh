@@ -284,7 +284,12 @@ build() {
     export CUDACXX="$nvcc"
     export PATH="$(dirname "$nvcc"):$PATH"
 
+    # gcc, not the system c++: on box1 c++ → clang++ 21, which rejects
+    # optional<nested-struct-with-default-inits>::emplace() in
+    # qwen3_5/session/binding.cpp:27 (ninfer 13ebb92f). nvcc already uses gcc.
     cmake -B build \
+        -DCMAKE_C_COMPILER=gcc \
+        -DCMAKE_CXX_COMPILER=g++ \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CUDA_ARCHITECTURES="$REQUIRED_ARCH" \
         -DCMAKE_CUDA_COMPILER="$nvcc" \
