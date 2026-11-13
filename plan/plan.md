@@ -378,7 +378,25 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P76 — Q6 (llama.cpp Swift) vs NVFP4 (ninfer, base Qwen3.8) A/B — 2026-11-11
+### ◐ P77 — llama.cpp v1.0.0 + our patch stack — 2026-11-13
+
+Owner 11-13: "Let's do llama 1.0 and our patch stack on it." Serving build 12300 (`ccd360f06`,
+0.9.0-dev); upstream tagged `v1.0.0` 11-13 10:20 UTC.
+**next:** rebase the patch stack onto v1.0.0, build, run the P52 gate (start check + bench vs
+current) — no live swap without owner check-in. **risks:** 1.0 breaking changes to flags/server
+API used in Swift/embed cmds; patch conflicts in the cache path (P75 0005); KLD ref files
+(~/.corrallm/var/kld) are tied to ccd360f0 — new KLD comparisons need new refs.
+**blocking decisions:** live swap timing (Swift off gpu0 during handoff). **optional
+extensions:** none.
+
+### ⏸ P76 — Q6 (llama.cpp Swift) vs NVFP4 (ninfer, base Qwen3.8) A/B — 2026-11-11
+
+**Parked 11-13 (owner: "it's a stay-signal").** Stay on Q6_K_S: nvidia NVFP4 and UD-Q5_K_XL both
+fail the KLD bar (E, E2 below). **resume condition:** a QAT NVFP4 checkpoint (e.g. QUASAR) for
+Qwen3.8-27B or a newer base model exists — check it with the E KLD recipe against base Q8_0.
+F/G not run. ninfer row `local/Qwen3.8-27B-nvfp4-ninfer` stays registered, no lane.
+
+<!-- P76 detail kept for resume -->
 
 Owner 11-11: "I might want to go back to vanilla at a better accuracy - I don't mind nvfp4 if we can
 get quality out of it"; wants par 3; "Check the unsloth nvfp4 against ninfer's format, download, then
