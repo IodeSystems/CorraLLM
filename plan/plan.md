@@ -381,13 +381,29 @@ still open. Items parked on hardware rather than on a decision are in §9.
 ### ◐ P77 — llama.cpp v1.0.0 + our patch stack — 2026-11-13
 
 Owner 11-13: "Let's do llama 1.0 and our patch stack on it." Serving build 12300 (`ccd360f06`,
-0.9.0-dev); upstream tagged `v1.0.0` 11-13 10:20 UTC.
-**next:** rebase the patch stack onto v1.0.0, build, run the P52 gate (start check + bench vs
-current) — no live swap without owner check-in. **risks:** 1.0 breaking changes to flags/server
-API used in Swift/embed cmds; patch conflicts in the cache path (P75 0005); KLD ref files
-(~/.corrallm/var/kld) are tied to ccd360f0 — new KLD comparisons need new refs.
-**blocking decisions:** live swap timing (Swift off gpu0 during handoff). **optional
-extensions:** none.
+0.9.0-dev); upstream tagged `v1.0.0` = `b1b770d90d94cad9e9ea5b993bdbc383a522fb28` (59 commits on ccd360f06).
+Why still on b12300: config_tool ref is PINNED to ccd360f0 (P75 N12 canary), so the 06:00 gated
+rebuild has nothing to do. Patches live outside the repo, in ~/.corrallm/tools/llama.cpp/patches/.
+- ✅ 0002-0006 apply clean (git apply, no fuzz) on v1.0.0; patch files unchanged (hash 09f9a61f5349).
+- ✅ Test build via the recipe in a SEPARATE prefix (production bin/ untouched):
+  ~/.corrallm/tools/llama.cpp-p77/builds/20261113-181416-b1b770d9, `1.0.0-dev (build 12359, commit
+  b1b770d90)`, stamp `head=b1b770d9… patches=09f9a61f5349 archs=86;120`, CUDA 13.3, runtime check ok, 1082 s.
+- ✅ CPU-only checks (CUDA_VISIBLE_DEVICES empty, port 5977, no GPU touched): the full Swift flag line +
+  `--cache-ram-policy weighted` parses; embed/OCR flags parse; Qwen3Guard-0.6B serves chat with
+  `id_slot` (non-stream + last stream chunk), `timings`, /slots, /props, /metrics incl. all
+  `llamacpp:prompt_cache_*` series. NOT run: CUDA, MTP, pinned pool/compaction under load, P52 bench.
+- Upstream changes that touch us (none breaks a live cmd): `--defrag-thold` removed (no cmd uses it);
+  http(s) media URLs to private/LAN addresses now refused unless `--media-allow-private-urls`
+  (server-common.cpp handle_media; data: URLs unaffected); CORS/Host checks apply only when
+  --cors-origins is not `*` (default `*`); tools/MCP on non-loopback need an API key (not used).
+**next:** owner approves the gated swap: copy patches unchanged (already identical), set the tool ref to
+b1b770d9… (`corrallm config export` → edit → `config load --force` → `systemctl --user reload corrallm`),
+then Build llama.cpp/box1 from the dashboard Tools page (daemon job = start check + P52 bench, pauses
+Swift ~1 min, rolls back on >10% slower) or wait for the 06:00 slot. NOT `corrallm tools build` (no gate).
+**risks:** CUDA path of 0004/0006 untested on 1.0; KLD refs (~/.corrallm/var/kld) tied to ccd360f0;
+the P75 N12 24 h canary readout is still pending, and unpinning ends that canary's build.
+**blocking decisions:** live swap timing (Swift off gpu0 during the bench). **optional extensions:**
+move the patch stack into the repo (today it is only in ~/.corrallm, not versioned).
 
 ### ⏸ P76 — Q6 (llama.cpp Swift) vs NVFP4 (ninfer, base Qwen3.8) A/B — 2026-11-11
 
