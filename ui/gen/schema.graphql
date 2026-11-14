@@ -2629,6 +2629,8 @@ type corrallm_ModelDef {
   server: String!
   """Chat turns go back to the llama.cpp slot of the conversation's previous turn when it is free (config slotAffinity; P75 N9)."""
   slotAffinity: Boolean!
+  """A freed llama.cpp slot goes first to the queued turn whose conversation last ran on it (config slotAwareDequeue; P75)."""
+  slotAwareDequeue: Boolean!
   """True if a local process backs it — its own cmd, or its hosting extension's."""
   spawnable: Boolean!
   """Forward URL (scheme://host:port; headers redacted)."""

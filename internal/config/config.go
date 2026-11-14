@@ -1017,6 +1017,31 @@ type Model struct {
 	// unchanged. A client-sent id_slot is never replaced (P75 N9).
 	SlotAffinity bool `yaml:"slotAffinity,omitempty"`
 
+	// SlotAwareDequeue reorders this model's admission queue by llama.cpp
+	// slot (P75, 11-14). When a request ends and names the slot it freed
+	// (`id_slot` in the reply), the freed slot goes to (a) the queued turn
+	// whose conversation last ran on that slot of that backend instance, else
+	// (b) an unsettled turn (no slot home on that instance) ahead of one whose
+	// conversation lives on another slot, else (c) the normal pick. Same group
+	// only, never ahead of a preempt or priority waiter; the normal pick is
+	// passed over at most SlotAwareDequeueMaxSkips times and never once it has
+	// queued SlotAwareDequeueMaxWait.
+	//
+	// Slots are assigned as with slotAffinity: `id_slot` = the conversation's
+	// slot when corrallm sees it free, else the least recently assigned free
+	// slot (unsettled turns are spread, not stacked on slot 0), else none. The
+	// reply carries X-Corrallm-Slot. Works only when the queue is corrallm's,
+	// maxConcurrent ≤ the cmd's --parallel. Local llama-server backends with
+	// a known --parallel only; elsewhere a no-op. With slotAffinity also on,
+	// slotAffinity's dequeue runs (no step b) and these bounds apply to it.
+	SlotAwareDequeue bool `yaml:"slotAwareDequeue,omitempty"`
+	// SlotAwareDequeueMaxSkips is how many times one waiter may be passed
+	// over for a slot match. 0: DefaultSlotSkipMax.
+	SlotAwareDequeueMaxSkips int `yaml:"slotAwareDequeueMaxSkips,omitempty"`
+	// SlotAwareDequeueMaxWait is a Go duration: a waiter queued this long is
+	// never passed over. "": DefaultSlotSkipWait.
+	SlotAwareDequeueMaxWait string `yaml:"slotAwareDequeueMaxWait,omitempty"`
+
 	// Aliases are ADDITIONAL served names that resolve to this model. They exist
 	// for version cutovers: a caller that hardcodes last quarter's model id keeps
 	// working while the id it names starts meaning the new model.
@@ -1360,6 +1385,26 @@ func (m Model) EffectiveModalities(served string, audioDefault bool) map[string]
 		d = "audio"
 	}
 	return map[string]ModalitySpec{d: {}}
+}
+
+// Defaults for the slot-aware dequeue skip bound (Model.SlotAwareDequeue).
+const (
+	DefaultSlotSkipMax  = 2
+	DefaultSlotSkipWait = 2 * time.Second
+)
+
+// SlotSkipBound is the model's slot-aware dequeue skip bound: how many times
+// one waiter may be passed over, and the queue time after which it never is.
+// Unset or unparsable fields take the defaults (Validate rejects bad ones).
+func (m Model) SlotSkipBound() (maxSkips int, maxWait time.Duration) {
+	maxSkips, maxWait = DefaultSlotSkipMax, DefaultSlotSkipWait
+	if m.SlotAwareDequeueMaxSkips > 0 {
+		maxSkips = m.SlotAwareDequeueMaxSkips
+	}
+	if d, err := time.ParseDuration(m.SlotAwareDequeueMaxWait); err == nil && d > 0 {
+		maxWait = d
+	}
+	return maxSkips, maxWait
 }
 
 // Slots returns the model's concurrency capacity, defaulting to 1.
@@ -2901,6 +2946,14 @@ func (c *Config) Validate() error {
 		}
 		if err := ValidateProxyAPI(m.Proxy); err != nil {
 			return fmt.Errorf("model %q: %w", name, err)
+		}
+		if m.SlotAwareDequeueMaxSkips < 0 {
+			return fmt.Errorf("model %q: slotAwareDequeueMaxSkips %d must be ≥ 0", name, m.SlotAwareDequeueMaxSkips)
+		}
+		if w := m.SlotAwareDequeueMaxWait; w != "" {
+			if d, err := time.ParseDuration(w); err != nil || d <= 0 {
+				return fmt.Errorf("model %q: slotAwareDequeueMaxWait %q must be a positive Go duration (e.g. 2s)", name, w)
+			}
 		}
 		if m.Cmd == "" {
 			// A pure proxy model has no local lifecycle: residency knobs are

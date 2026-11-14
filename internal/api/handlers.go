@@ -2546,6 +2546,10 @@ type ModelDef struct {
 	ProcKey      string         `json:"procKey" doc:"Backing process identity; an extension's models share one."`
 	Modalities   []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
 	Capability   string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."`
+
+	// SlotAwareDequeue is read-only here: set in the config (`slotAwareDequeue: true`).
+	SlotAwareDequeue bool `json:"slotAwareDequeue" doc:"A freed llama.cpp slot goes first to the queued turn whose conversation last ran on it (config slotAwareDequeue; P75)."`
+
 	// Placements are the ways this model can be served: a box and the command
 	// that runs it there. Controls belong on THESE rather than on the model —
 	// loading, pausing, logs and the backend's own UI are all properties of one
@@ -2862,7 +2866,7 @@ func (h *Handlers) Overview(_ context.Context, _ *OverviewInput) (*OverviewOutpu
 	}
 	for name, m := range listedModels(h.config()) {
 		md := ModelDef{
-			Name: name, Provider: m.ProviderName, Extension: m.Extension, Persistent: m.Persistent, SlotAffinity: m.SlotAffinity, Disabled: m.Disabled, Capability: config.ModelCapability(m),
+			Name: name, Provider: m.ProviderName, Extension: m.Extension, Persistent: m.Persistent, SlotAffinity: m.SlotAffinity, SlotAwareDequeue: m.SlotAwareDequeue, Disabled: m.Disabled, Capability: config.ModelCapability(m),
 			ContextPerRequest: m.ContextPerRequest,
 			Placements:        h.placementViews(name, m),
 			Modalities:        modalityViews(m.EffectiveModalities(name, costModel.IsAudioType(m.Type))),

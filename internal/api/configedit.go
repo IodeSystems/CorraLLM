@@ -496,6 +496,7 @@ func advancedFields(m config.Model) []string {
 	add(m.Sampling != nil, "sampling")
 	add(m.LoopDetection != nil, "loopDetection")
 	add(m.SlotAffinity, "slotAffinity")
+	add(m.SlotAwareDequeue || m.SlotAwareDequeueMaxSkips != 0 || m.SlotAwareDequeueMaxWait != "", "slotAwareDequeue")
 	add(m.Swap != nil, "swap")
 	add(m.ContextPerRequest > 0, "contextPerRequest")
 	add(len(m.Modalities) > 0, "modalities")
