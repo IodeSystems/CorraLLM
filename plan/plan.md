@@ -484,7 +484,18 @@ now declares image {formats [jpeg,png,webp], maxResolution 4096, maxCount 16}. O
 (shim.go:394-502; TestAnthropicRequestImages), /v1/messages passes image blocks unchanged; no input-modality routing guard.
 Live config: the 4 anthropic provider models now declare image {png,jpeg,gif,webp} + text. claude-sub-* left text-only
 (same passthrough, untested). Gaps: no corrallm-side image test through the Claude path; a lane failing over from Claude to a
-non-vision model would drop/refuse images; image URLs fail on the reverse (Anthropic→OpenAI) leg (reverse.go:118). ◐ B4 colmap plugin (agent).
+non-vision model would drop/refuse images; image URLs fail on the reverse (Anthropic→OpenAI) leg (reverse.go:118). ✅ B4 colmap plugin ext/plugins/colmap (b511b20..1852b74, not live): COLMAP 4.2.1 builds with CUDA 13.3 sm_86 unmodified
+(672 s; OIIO cmake fix script), colmap-svc Go module; OpenAI-shaped files/uploads/reconstructions; variants cameras,
+transforms (nerfstudio, matches its reader to 3.6e-15; PINHOLE→OPENCV like nerfstudio), sparse, dense, mesh, glb (Khronos
+validator clean; z-up→y-up (x,z,−y)), log; video → 400 (no ffmpeg). E2E 30 images on 3080: sparse 31 s (extract 4.6 s /
+5,846 MiB, match 4.0 s / 5,336 MiB, map CPU 21 s, 30/30); dense run 70 min (PatchMatch ~1,054 s / 1,230 MiB @1600 px, fusion
+14 s / 805k pts, Poisson CPU 2,606 s / 2.7 GiB). Priors: 10 → aligned rms 0.0053. Real yield: extract stops 0.15 s, PatchMatch
+~4 s, resumed at view 26/30; exhaustive matcher ignores SIGTERM in a block → force-kill after 10 s. D7 restart mid-map → 30/30.
+Lease sizes (3200 px): extract 6,144 / match 5,632 / dense 5,120 MiB (dense estimated). extension: port 5822, persistent,
+model colmap-sfm, routes ×3, lease max gpu1 8GB. Only a FAKE lease server exercised so far.
+**next:** owner go → install, COLMAP_LEASE_TOKEN in ~/.corrallm/credentials, merge block, corrallm RESTART (routes mount at
+boot; evicts resident models incl. Swift) → T1a/T1b against the real lease manager. **open:** Poisson depth default (43 min
+for 30 images); dense VRAM at 3200 px unmeasured.
 **next (was):** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
 proxy) → M1 when the HF licence is approved + a window is picked.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
