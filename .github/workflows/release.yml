@@ -1,6 +1,12 @@
-# A pushed v* tag builds the release archives (make release-dist) and publishes
-# them as a GitHub release with notes generated from the commits since the
-# previous tag.
+# A pushed v* tag builds the release archives (make release-dist), signs
+# SHA256SUMS with minisign (make release-sign), and publishes them as a GitHub
+# release with notes generated from the commits since the previous tag.
+#
+# Needs the repository secret MINISIGN_KEY: the contents of the minisign secret
+# key file for key ID 2CC27A171DE03D42 (dun's and para's release key; its public
+# half is site/minisign.pub, which site/install.sh embeds). The key must have no
+# password: CI cannot answer a prompt. With no secret the job fails before it
+# builds, so an unsigned release is never published.
 name: release
 
 on:
@@ -28,8 +34,24 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
+      - name: the signing key
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          if [ -z "$MINISIGN_KEY" ]; then echo "no MINISIGN_KEY secret in this repository"; exit 1; fi
+          # minisign 0.11 from its author's release, pinned by sha256 (as para's release does).
+          curl -fsSL -o "$RUNNER_TEMP/minisign.tgz" https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-linux.tar.gz
+          echo "f0a0954413df8531befed169e447a66da6868d79052ed7e892e50a4291af7ae0  $RUNNER_TEMP/minisign.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/minisign.tgz" -C "$RUNNER_TEMP" minisign-linux/x86_64/minisign
+          sudo install -m 755 "$RUNNER_TEMP/minisign-linux/x86_64/minisign" /usr/local/bin/minisign
+          umask 077 && printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/minisign.key"
       # go.work is gitignored, so the build uses the module versions in go.mod.
       - run: make release-dist VERSION=${{ github.ref_name }}
-      - run: gh release create "${{ github.ref_name }}" dist/*.tar.gz dist/SHA256SUMS --generate-notes --verify-tag
+      - name: sign SHA256SUMS
+        run: make release-sign VERSION=${{ github.ref_name }} MINISIGN_KEY="$RUNNER_TEMP/minisign.key"
+      - name: remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/minisign.key"
+      - run: gh release create "${{ github.ref_name }}" dist/*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.minisig --generate-notes --verify-tag
         env:
           GH_TOKEN: ${{ github.token }}

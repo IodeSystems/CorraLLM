@@ -1,4 +1,4 @@
-.PHONY: hooks install install-bin bindir gen dump-schema lint golangci run build dist agents release-dist site site-push dev deploy test ui-build clean verify-deps verify-docker
+.PHONY: hooks install install-bin bindir gen dump-schema lint golangci run build dist agents release-dist release-sign site site-push dev deploy test ui-build clean verify-deps verify-docker
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -96,6 +96,7 @@ agents:           ## Cross-compile agent binaries into bin/agents/ for the daemo
 # binaries run where this checkout does not exist.
 # NOT on box1's checkout: ui-build rewrites ui/dist, the live web root.
 RELEASE_PLATFORMS ?= linux/amd64 linux/arm64 darwin/arm64
+MINISIGN_KEY ?=
 
 release-dist: ui-build ## Build release archives into dist/ (CI; rewrites ui/dist)
 	@rm -rf dist && mkdir -p dist
@@ -107,9 +108,25 @@ release-dist: ui-build ## Build release archives into dist/ (CI; rewrites ui/dis
 			  go build -trimpath -ldflags "$(AGENT_LDFLAGS)" -o dist/$$name/$$b ./cmd/$$b || exit 1; \
 		done; \
 		cp README.md dist/$$name/; \
-		tar -C dist -czf dist/$$name.tar.gz $$name && rm -rf dist/$$name; \
+		tar -C dist -czf dist/$$name.tar.gz $$name; \
+		tar -C dist/$$name -czf dist/corrallm_$${os}_$${arch}.tar.gz corrallm llm-bench llm-bench-mcp README.md; \
+		rm -rf dist/$$name; \
 	done
 	@cd dist && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
+
+# Signs dist/SHA256SUMS (release-dist's output) with minisign: dist/SHA256SUMS.minisig.
+# The trusted comment binds product and version, because the key is shared
+# with dun and para; site/install.sh checks it. CI runs this with the
+# MINISIGN_KEY repository secret written to a file; locally, MINISIGN_KEY is
+# the path of the secret key. Verify with site/minisign.pub.
+release-sign: ## Sign dist/SHA256SUMS -> dist/SHA256SUMS.minisig (VERSION=vX.Y.Z MINISIGN_KEY=<path>)
+	@echo "$(VERSION)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "make release-sign: $(VERSION) is not vX.Y.Z"; exit 1; }
+	@[ -n "$(MINISIGN_KEY)" ] || { echo "make release-sign: MINISIGN_KEY is not set (the path of the minisign secret key)"; exit 1; }
+	@command -v minisign >/dev/null 2>&1 || { echo "make release-sign: minisign is not on PATH"; exit 1; }
+	@[ -f dist/SHA256SUMS ] || { echo "make release-sign: no dist/SHA256SUMS (run make release-dist first)"; exit 1; }
+	rm -f dist/SHA256SUMS.minisig
+	minisign -S -s "$(MINISIGN_KEY)" -t "corrallm $(VERSION) SHA256SUMS" -m dist/SHA256SUMS
+	minisign -V -q -p site/minisign.pub -m dist/SHA256SUMS
 
 # corrallm.iodesystems.com (domain unconfirmed): the static page and install.sh,
 # served by hz. hz's API is on the home network, so the push runs here, not in
