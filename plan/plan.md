@@ -411,6 +411,7 @@ rebuild has nothing to do. Patches live outside the repo, in ~/.corrallm/tools/l
   (shutdown + load), 0 streams cut. First 5 replies: 200, decode 68.2 tok/s, prefill 1,671 tok/s, cache 42.5% (cold).
   Rollback: `corrallm tools activate llama.cpp 20261112-081721-ccd360f0 --server box1` + load
   ~/.corrallm/config-backup-pre-p77-20261113.yaml + respawn backends.
+- 11-13 19:00 decode -9..12% on 1.0 (first 31 min, n=230) is NOT the restart curve: old-build spawns 0-30 min decode >= steady (20-50k 84.2 vs 82.1 tok/s, n=2581/48056, 14 spawns/7 d); 1.0 20-50k 74.9 tok/s, 95% CI -7..-15% vs old fresh; same-hour prior days -8%; lower inside every concurrency stratum; MTP acceptance equal (0.662 vs 0.655, 187k/6.57M drafted tokens); startup logs identical but build id/fit time; 5090 at 400 W sw power cap 2745 MHz (no pre-swap baseline). Per-instance old steady medians span 77.6-109.8, so n is small. Suspect (unverified): ggml-cuda.cu:2491-2497 few-row MMQ for 2-24 src1 columns (0fb8f1577, #31533) takes the MTP verify batch (5 tokens, Q6_K, FORCE_MMQ=1). Re-measure at 24 h.
 **next:** 24 h readout on 1.0 vs the 0006 readout (P75 N12): decode, hit rate, host_pool compactions
 (first CUDA proof of 0006 on 1.0), 5xx, crashes. 06:00 rebuild may re-run (hand-copied build's stamp
 may not match) → P52 bench vs ccd360f0 happens then (~1 min Swift pause); fine.
