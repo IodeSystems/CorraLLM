@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>corrallm — one OpenAI-compatible API for local and paid models</title>
+<meta name="description" content="corrallm is an OpenAI-compatible gateway, model lifecycle manager, and priority/fairshare scheduler with cost-aware overflow. It runs local llama.cpp models and fronts paid upstreams, and keeps prompt caches warm with the standard prompt_cache_key.">
+<meta name="author" content="IodeSystems">
+<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="color-scheme" content="dark light">
+<link rel="canonical" href="https://corrallm.iodesystems.com/">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="corrallm">
+<meta property="og:title" content="corrallm — one OpenAI-compatible API for local and paid models">
+<meta property="og:description" content="Model lifecycle, fairshare scheduling, cost-aware overflow and prompt-cache affinity behind one OpenAI-compatible API.">
+<meta property="og:url" content="https://corrallm.iodesystems.com/">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "corrallm",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux, macOS",
+  "description": "An OpenAI-compatible reverse proxy, model lifecycle manager, and priority/fairshare scheduler with cost-aware overflow, for local llama.cpp models and paid upstreams.",
+  "url": "https://corrallm.iodesystems.com/",
+  "downloadUrl": "https://github.com/IodeSystems/CorraLLM/releases/latest",
+  "codeRepository": "https://github.com/IodeSystems/CorraLLM",
+  "author": { "@type": "Organization", "name": "IodeSystems", "url": "https://github.com/IodeSystems" }
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s8:32px; --s12:48px; --s16:64px; --s24:96px;
+    --r:8px; --r2:12px; --max:1120px; --measure:64ch;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+
+    --bg:#0d1117; --surface:#161b22; --surface2:#10141b; --term:#14171c;
+    --border:#262d37; --border2:#36404d;
+    --text:#e8eef5; --text2:#a7b1bd; --text3:#7b8591;
+    --accent:#34d3b0; --accent-ink:#04140f; --accent-soft:rgba(52,211,176,.12);
+    --ok:#4cc38a; --warn:#e0a84e;
+    --shadow:0 24px 60px -24px rgba(0,0,0,.6);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#ffffff; --surface:#f6f7f9; --surface2:#eef0f3; --term:#f6f7f9;
+      --border:#e1e4e9; --border2:#cbd1d9;
+      --text:#161a20; --text2:#4a5260; --text3:#6b7380;
+      --accent:#0a7a64; --accent-ink:#ffffff; --accent-soft:rgba(10,122,100,.08);
+      --ok:#1a8a55; --warn:#a15f08;
+      --shadow:0 24px 60px -28px rgba(20,30,50,.25);
+    }
+  }
+  * { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; scroll-behavior:smooth; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 var(--sans); overflow-x:hidden; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  a:focus-visible, button:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:var(--r); }
+  code, pre { font-family:var(--mono); }
+  code { font-size:.86em; background:var(--surface); border:1px solid var(--border); border-radius:5px; padding:0 var(--s1); overflow-wrap:anywhere; }
+  .wrap { max-width:var(--max); margin:0 auto; padding:0 var(--s6); }
+  p { max-width:var(--measure); }
+
+  .top { position:sticky; top:0; z-index:5; background:var(--bg); border-bottom:1px solid var(--border); font:13px/1 var(--mono); }
+  .top .wrap { display:flex; justify-content:space-between; align-items:center; height:52px; gap:var(--s4); }
+  .top .brand { background:var(--accent); color:var(--accent-ink); font-weight:600; padding:var(--s1) var(--s2); border-radius:6px; }
+  .top .brand:hover { text-decoration:none; }
+  .top nav { display:flex; gap:var(--s5); flex-wrap:wrap; }
+  .top nav a { color:var(--text2); }
+  .top nav a:hover { color:var(--text); text-decoration:none; }
+
+  header { padding:var(--s16) 0; background:radial-gradient(900px 420px at 15% -120px, var(--accent-soft), transparent 70%); }
+  .hero { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.05fr); gap:var(--s12); align-items:center; }
+  .eyebrow { font:500 13px/1.4 var(--mono); color:var(--text3); margin:0 0 var(--s4); letter-spacing:.02em; }
+  h1 { font-size:46px; line-height:1.08; margin:0; font-weight:700; letter-spacing:-.03em; }
+  h1 .acc { color:var(--accent); }
+  .lede { font-size:19px; line-height:1.55; margin:var(--s6) 0 0; color:var(--text2); }
+  .lede b { color:var(--text); font-weight:600; }
+  .hero-install { margin:var(--s8) 0 0; background:var(--term); border:1px solid var(--border2); border-radius:var(--r); padding:var(--s3) var(--s4); }
+  .actions { margin:var(--s5) 0 0; display:flex; flex-wrap:wrap; gap:var(--s3); }
+  .btn { display:inline-block; font:500 14px/1 var(--sans); padding:var(--s3) var(--s4); border-radius:var(--r); border:1px solid var(--border2); color:var(--text); }
+  .btn:hover { text-decoration:none; border-color:var(--text3); }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+
+  .app { margin:0; background:var(--surface); border:1px solid var(--border2); border-radius:var(--r2); box-shadow:var(--shadow); overflow:hidden; font-size:14px; }
+  .app-bar { display:flex; align-items:center; gap:var(--s2); padding:var(--s3) var(--s4); border-bottom:1px solid var(--border); background:var(--surface2); font:12px/1 var(--mono); color:var(--text3); }
+  .app-bar .dots { display:flex; gap:6px; margin-right:var(--s2); }
+  .app-bar .dots i { width:10px; height:10px; border-radius:50%; background:var(--border2); display:block; }
+  .app pre { padding:var(--s4); font-size:12.5px; line-height:1.65; }
+  .app figcaption { font:11px/1.4 var(--mono); color:var(--text3); padding:0 var(--s4) var(--s3); }
+  pre .k { color:var(--accent); }
+  pre .p { color:var(--accent); user-select:none; -webkit-user-select:none; }
+  pre .c { color:var(--text3); }
+
+  section { padding:var(--s24) 0; border-top:1px solid var(--border); }
+  h2 { font-size:32px; line-height:1.15; margin:0 0 var(--s4); letter-spacing:-.02em; font-weight:700; }
+  h3 { font-size:17px; line-height:1.35; margin:0 0 var(--s2); font-weight:600; }
+  .kicker { font:500 12px/1 var(--mono); text-transform:uppercase; letter-spacing:.1em; color:var(--accent); margin:0 0 var(--s3); }
+  .intro { color:var(--text2); font-size:18px; margin:0 0 var(--s12); }
+
+  .why-grid { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,1fr); gap:var(--s12); align-items:start; }
+  .why-grid p { color:var(--text2); font-size:17px; margin:0 0 var(--s4); }
+  .why-grid p b { color:var(--text); }
+  .goal { border:1px solid var(--border2); border-radius:var(--r2); padding:var(--s8); background:linear-gradient(180deg,var(--surface),var(--bg)); }
+  .goal .q { font-size:22px; line-height:1.3; font-weight:600; letter-spacing:-.01em; margin:0 0 var(--s4); max-width:none; }
+  .goal ul { margin:0; padding:0; list-style:none; display:grid; gap:var(--s3); }
+  .goal li { color:var(--text2); padding-left:var(--s6); position:relative; }
+  .goal li::before { content:""; position:absolute; left:0; top:.55em; width:10px; height:10px; border-radius:3px; background:var(--accent); }
+
+  .cards { display:grid; gap:var(--s4); grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r2); padding:var(--s6); min-width:0; }
+  .card p { margin:0; color:var(--text2); font-size:14px; }
+
+  .matrix { overflow-x:auto; border:1px solid var(--border); border-radius:var(--r); background:var(--surface); margin:0 0 var(--s8); }
+  table { border-collapse:collapse; width:100%; min-width:720px; font:14px/1.4 var(--sans); }
+  th, td { padding:var(--s2) var(--s3); border-bottom:1px solid var(--border); text-align:left; vertical-align:top; }
+  thead th { font:600 13px/1.3 var(--mono); color:var(--text2); background:var(--surface2); }
+  td small { display:block; color:var(--text3); font-size:12px; }
+  tr.us td { background:var(--accent-soft); }
+  tbody tr:last-child td { border-bottom:0; }
+  td code { white-space:nowrap; }
+  .y { color:var(--ok); font-weight:600; } .h { color:var(--warn); font-weight:600; } .x { color:var(--text3); font-weight:600; }
+  caption { text-align:left; caption-side:top; font:600 12px/1 var(--mono); text-transform:uppercase; letter-spacing:.08em; color:var(--text3); padding:var(--s3); background:var(--surface2); border-bottom:1px solid var(--border); }
+  .fine { color:var(--text3); font-size:13px; margin:var(--s3) 0 0; max-width:none; }
+
+  .install { max-width:680px; background:var(--term); border:1px solid var(--border2); border-radius:var(--r); overflow:hidden; }
+  .tabs { display:flex; border-bottom:1px solid var(--border); background:var(--surface2); }
+  .tabs button { font:13px/1 var(--mono); color:var(--text2); background:none; border:0; border-bottom:2px solid transparent; padding:var(--s3) var(--s4); cursor:pointer; }
+  .tabs button[aria-selected="true"] { color:var(--text); border-bottom-color:var(--accent); }
+  .tabs .copy { margin-left:auto; }
+  .panel { padding:var(--s3) var(--s4); }
+  .panel[hidden] { display:none; }
+  pre { margin:0; overflow-x:auto; font-size:13px; line-height:1.7; }
+  .panel p { margin:var(--s2) 0 0; color:var(--text2); font-size:14px; }
+  .after { max-width:680px; margin:var(--s4) 0 0; color:var(--text2); font-size:14px; }
+  .block { margin:0; max-width:680px; background:var(--term); border:1px solid var(--border2); border-radius:var(--r); padding:var(--s3) var(--s4); }
+  .prereq { max-width:680px; margin:var(--s6) 0 0; padding:0; list-style:none; display:grid; gap:var(--s2); color:var(--text2); font-size:14px; }
+  .prereq b { color:var(--text); font-weight:600; }
+
+  footer { border-top:1px solid var(--border); padding:var(--s8) 0 var(--s12); color:var(--text2); font-size:14px; }
+  footer .wrap { display:flex; flex-wrap:wrap; gap:var(--s3); justify-content:space-between; }
+  footer .mono { font-family:var(--mono); color:var(--text3); }
+
+  @media (max-width:900px) {
+    .hero, .why-grid { grid-template-columns:minmax(0,1fr); gap:var(--s8); }
+    h1 { font-size:38px; }
+  }
+  @media (max-width:600px) {
+    .wrap { padding:0 var(--s4); }
+    header { padding:var(--s8) 0 var(--s12); }
+    section { padding:var(--s12) 0; }
+    h1 { font-size:32px; }
+    h2 { font-size:26px; }
+    .lede, .intro { font-size:16px; }
+    .card, .goal { padding:var(--s4); }
+    .top nav { gap:var(--s3); }
+    .top nav a.opt { display:none; }
+    pre { font-size:12px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="wrap">
+    <a class="brand" href="#">corrallm</a>
+    <nav><a class="opt" href="#why">why</a><a href="#does">what it does</a><a href="#compat">compatibility</a><a href="#install">install</a><a href="https://github.com/IodeSystems/CorraLLM">github</a></nav>
+  </div>
+</div>
+
+<header>
+  <div class="wrap hero">
+    <div>
+      <p class="eyebrow">corral + LLM</p>
+      <h1>One <span class="acc">OpenAI-compatible</span> API in front of every model you run or pay for.</h1>
+      <p class="lede">A reverse proxy, model lifecycle manager, and priority/fairshare scheduler with cost-aware overflow. <b>It starts and stops local llama.cpp models, forwards to paid upstreams, and decides who is served, where, and at what cost</b>, based on the caller's key.</p>
+      <div class="hero-install"><pre><span class="p">$ </span>curl -fsSL https://corrallm.iodesystems.com/install.sh | sh</pre></div>
+      <div class="actions">
+        <a class="btn primary" href="#install">Install corrallm</a>
+        <a class="btn" href="#compat">Provider compatibility</a>
+      </div>
+    </div>
+
+    <figure class="app" role="img" aria-label="A corrallm.yaml excerpt: one server with GPU and system memory pools, a chat model that loads on demand, and two priority groups, interactive and batch, mapped from API keys.">
+      <div class="app-bar" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span>corrallm.yaml</span></div>
+<pre aria-hidden="true"><span class="k">servers</span>:
+  box1:
+    pools:   { gpu0: 32GB, system: 125GB }
+
+<span class="k">models</span>:
+  my-chat:
+    sticky: { ttl: "600s", evictCost: medium }
+    backends:
+      - cmd: "llama-server -hf … -ngl 99 --port 5800"
+        server: box1
+        ramUsage: { gpu0: 29.5GB, system: 4GB }
+        proxy: 5800
+        type: chat
+        maxConcurrent: 1
+
+<span class="k">priorityGroups</span>:
+  interactive: { weight: 10 }
+  batch:       { weight: 1, interruptible: true }
+
+<span class="k">keys</span>: { my-coder: interactive, my-indexer: batch }</pre>
+      <figcaption>from the README's example config, abridged</figcaption>
+    </figure>
+  </div>
+</header>
+
+<main>
+
+<section id="why" aria-labelledby="why-h">
+  <div class="wrap why-grid">
+    <div>
+      <p class="kicker">why it exists</p>
+      <h2 id="why-h">One GPU, several callers, some paid overflow.</h2>
+      <p>A chat model, an embeddings model, an interactive coding agent, and a batch indexer all want the same card. Without a scheduler the batch job fills every slot and the person typing waits.</p>
+      <p>corrallm sits in front. <b>Each API key maps to a priority group</b>; requests are admitted by weighted fairshare over each backend's slots. When a backend is full a request queues, is rejected, spills to another backend, or preempts a lower-priority one. Every request is costed in dollars, local energy included.</p>
+    </div>
+    <div class="goal">
+      <p class="q">Callers keep using the OpenAI API. corrallm does the rest.</p>
+      <ul>
+        <li>Any OpenAI client works: set a base URL and a key.</li>
+        <li>Local models load on demand and evict by cost.</li>
+        <li>Overflow goes to paid upstreams only where a group allows it.</li>
+        <li>Streaming is preserved.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="does" aria-labelledby="does-h">
+  <div class="wrap">
+    <p class="kicker">what it does</p>
+    <h2 id="does-h">The gateway, the lifecycle, the scheduler.</h2>
+    <p class="intro">Everything here is in the README and runs in production fronting a mixed embeddings and chat workload.</p>
+    <div class="cards">
+      <div class="card"><h3>OpenAI-compatible</h3>
+        <p><code>/v1/chat/completions</code>, <code>/v1/completions</code>, <code>/v1/embeddings</code>, <code>/v1/rerank</code>, <code>/v1/models</code>, and the audio endpoints (speech to text, text to speech, realtime, optional diarization). <code>/v1/capabilities</code> lists what a given deployment serves.</p></div>
+      <div class="card"><h3>Anthropic Messages</h3>
+        <p><code>/v1/messages</code> serves the Anthropic Messages API next to the OpenAI endpoints.</p></div>
+      <div class="card"><h3>Model lifecycle</h3>
+        <p>Starts a backend's command on demand and waits for a real health check, not an open port. Capacity is a vector of memory pools (per-GPU VRAM, system RAM); a model loads only if it fits every pool, and idle models are evicted to make room. Pause takes a model out of service until resumed.</p></div>
+      <div class="card"><h3>Fairshare scheduling</h3>
+        <p>Priority groups with a weight, interruptibility, and a per-backend saturation policy. A key can be granted other groups and pick one per request. A caller can reserve a few slots so interactive work keeps headroom against batch.</p></div>
+      <div class="card"><h3>Cost-aware overflow</h3>
+        <p>A served model lists its backends in order. A group can opt into a lower quality tier, with an optional <code>maxTokens</code> clamp. Everything resolves to dollars: local energy, paid usage, and the energy spent loading a model.</p></div>
+      <div class="card"><h3>Spend and budgets</h3>
+        <p>Spending limits over a sliding window per group; keys mint child keys with a share of their budget. Every text reply carries <code>usage.cost</code> and <code>usage.cost_source</code>, and every request records dwell time, tokens, and cost.</p></div>
+      <div class="card"><h3>Guardrails and backpressure</h3>
+        <p>Guardrails are set per root key, default-on or opt-in, including loop detection on streamed chat replies. A saturated caller gets a <code>429</code> with <code>Retry-After</code> from a measured dwell average, plus <code>X-RateLimit-*</code> headers. Refusal codes are documented in <code>/v1/capabilities</code>.</p></div>
+      <div class="card"><h3>Dashboard</h3>
+        <p>Models, lanes, live admission load, per-key usage (cost, requests, energy), queue pressure, backend logs, and on-demand load and unload, streamed over SSE.</p></div>
+      <div class="card"><h3>Prompt-cache affinity</h3>
+        <p>For a llama.cpp model, a conversation keeps its slot, and its warm KV cache, across turns. The conversation is the request's standard <code>prompt_cache_key</code>. <a href="#cache">How, and who else supports it</a>.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="cache" aria-labelledby="cache-h">
+  <div class="wrap why-grid">
+    <div>
+      <p class="kicker">prompt-cache affinity</p>
+      <h2 id="cache-h">Same conversation, same slot.</h2>
+      <p>A llama.cpp server keeps one KV cache per slot. A turn that lands on a different slot recomputes the prompt. With <code>slotAffinity</code> or <code>slotAwareDequeue</code> set on a model, corrallm picks the slot per conversation and tells the client which one it chose in <code>X-Corrallm-Slot</code>.</p>
+      <p>The conversation is the body's <code>prompt_cache_key</code>, else the <code>X-Corrallm-Conversation</code> header, else inferred from the head of the prompt. A declared id is scoped by the caller's key, and the body goes upstream unchanged. corrallm reads <code>usage.prompt_tokens_details.cached_tokens</code> from the reply, falling back to llama.cpp's <code>timings.cache_n</code>.</p>
+    </div>
+    <div class="goal">
+      <p class="q">No new client field to learn.</p>
+      <ul>
+        <li><code>prompt_cache_key</code> is already sent by some clients and accepted by several providers (table below).</li>
+        <li>The slot header is informational; nothing requires a client to read it.</li>
+        <li>Without a key, affinity falls back to inference, so unmodified clients still benefit where the prompt head is stable.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="compat" aria-labelledby="compat-h">
+  <div class="wrap">
+    <p class="kicker">provider compatibility</p>
+    <h2 id="compat-h">Who gives a client a way to ask for a warm cache?</h2>
+    <p class="intro">Routing a request to the server that already holds its prompt cache needs two things from a provider: a field to say which conversation this is, and a usage count that says whether the cache hit. This is what each documents, with a source for every row.</p>
+
+    <div class="matrix">
+      <table>
+        <caption>hosted providers</caption>
+        <thead><tr><th scope="col">Provider</th><th scope="col">Affinity input</th><th scope="col">Cache hits in usage</th><th scope="col">Source</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">OpenAI</th>
+            <td class="y">✓ <code>prompt_cache_key</code><small>body; a routing hint, not a guarantee</small></td>
+            <td class="y">✓ <code>prompt_tokens_details.cached_tokens</code><small>Responses API: <code>input_tokens_details.cached_tokens</code></small></td>
+            <td><a href="https://developers.openai.com/api/docs/guides/prompt-caching">prompt caching guide</a></td></tr>
+          <tr><th scope="row">Anthropic</th>
+            <td class="x">– no routing key<small>explicit <code>cache_control</code> breakpoints instead</small></td>
+            <td class="h">◐ <code>cache_read_input_tokens</code>, <code>cache_creation_input_tokens</code><small>not <code>cached_tokens</code></small></td>
+            <td><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">prompt caching</a></td></tr>
+          <tr><th scope="row">Google Gemini</th>
+            <td class="x">– none<small>implicit caching; docs advise sending similar requests close in time</small></td>
+            <td class="h">◐ <code>total_cached_tokens</code><small>stated on the Interactions API page</small></td>
+            <td><a href="https://aistudio.google.com/docs/caching">caching</a></td></tr>
+          <tr><th scope="row">DeepSeek</th>
+            <td class="x">– none<small>automatic, best-effort disk cache</small></td>
+            <td class="h">◐ <code>prompt_cache_hit_tokens</code>, <code>prompt_cache_miss_tokens</code><small>not <code>cached_tokens</code></small></td>
+            <td><a href="https://api-docs.deepseek.com/guides/kv_cache">KV cache guide</a></td></tr>
+          <tr><th scope="row">Mistral</th>
+            <td class="y">✓ <code>prompt_cache_key</code><small>body; "increases chance, no guarantee"</small></td>
+            <td class="y">✓ <code>prompt_tokens_details.cached_tokens</code></td>
+            <td><a href="https://docs.mistral.ai/studio-api/conversations/advanced/prompt-caching">prompt caching</a></td></tr>
+          <tr><th scope="row">Together</th>
+            <td class="y">✓ <code>prompt_cache_key</code><small>body</small></td>
+            <td class="y">✓ <code>prompt_tokens_details.cached_tokens</code><small>some models: top-level <code>usage.cached_tokens</code></small></td>
+            <td><a href="https://docs.together.ai/docs/inference/chat/prompt-caching.md">prompt caching</a></td></tr>
+          <tr><th scope="row">Fireworks</th>
+            <td class="h">◐ <code>x-session-affinity</code> header, or <code>user</code><small>its own names, not <code>prompt_cache_key</code></small></td>
+            <td class="h">◐ response headers <code>fireworks-cached-prompt-tokens</code> on dedicated endpoints<small>no <code>cached_tokens</code> field documented</small></td>
+            <td><a href="https://docs.fireworks.ai/guides/prompt-caching.md">prompt caching</a></td></tr>
+          <tr><th scope="row">Cloudflare Workers AI</th>
+            <td class="h">◐ <code>x-session-affinity</code> header</td>
+            <td class="x">– usage field names not documented</td>
+            <td><a href="https://developers.cloudflare.com/workers-ai/features/prompt-caching">prompt caching</a></td></tr>
+          <tr><th scope="row">Alibaba Qwen (DashScope)</th>
+            <td class="x">– no routing key<small>explicit <code>cache_control</code>, up to 4 blocks, 5 minutes</small></td>
+            <td class="y">✓ <code>cached_tokens</code></td>
+            <td><a href="https://www.alibabacloud.com/help/en/model-studio/context-cache">context cache</a></td></tr>
+          <tr><th scope="row">xAI</th>
+            <td class="h">◐ <code>x-grok-conv-id</code> header<small>Responses API: <code>prompt_cache_key</code> in the body</small></td>
+            <td class="h">◐ cached tokens in usage<small>field name not confirmed; from a third-party mirror of the docs</small></td>
+            <td><a href="https://docs.apiyi.com/api-capabilities/grok/prompt-caching">third-party mirror</a></td></tr>
+          <tr><th scope="row">OpenRouter</th>
+            <td class="h">◐ <code>session_id</code> body or <code>x-session-id</code> header<small>falls back to <code>prompt_cache_key</code>; pins a provider, 60-minute idle expiry</small></td>
+            <td class="y">✓ <code>prompt_tokens_details.cached_tokens</code>, <code>cache_write_tokens</code></td>
+            <td><a href="https://openrouter.ai/docs/guides/best-practices/prompt-caching.md">prompt caching</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="matrix">
+      <table>
+        <caption>gateways and servers</caption>
+        <thead><tr><th scope="col">System</th><th scope="col">What it reads to keep a conversation together</th><th scope="col">Source</th></tr></thead>
+        <tbody>
+          <tr class="us"><th scope="row">corrallm</th>
+            <td class="y">✓ body <code>prompt_cache_key</code>, else <code>X-Corrallm-Conversation</code> header, else inferred<small>picks the llama.cpp slot; reports it in <code>X-Corrallm-Slot</code>; reads <code>cached_tokens</code> or <code>timings.cache_n</code></small></td>
+            <td><a href="https://github.com/IodeSystems/CorraLLM#api-surface">README, API surface</a></td></tr>
+          <tr><th scope="row">Vercel AI Gateway</th>
+            <td class="y">✓ <code>session_id</code> body, <code>x-session-id</code>, <code>x-session-affinity</code>, then <code>prompt_cache_key</code><small>pins a provider for up to 1 hour; <code>prompt_cache_key</code> pins the provider only</small></td>
+            <td><a href="https://vercel.com/docs/ai-gateway/models-and-providers/session-affinity">session affinity</a></td></tr>
+          <tr><th scope="row">LLM Gateway</th>
+            <td class="y">✓ <code>x-session-id</code>, <code>x-session-affinity</code>, session headers, <code>prompt_cache_key</code>, <code>user</code><small>sends an HMAC-SHA256 hash of the session id upstream as <code>prompt_cache_key</code> for OpenAI and Azure</small></td>
+            <td><a href="https://docs.llmgateway.io/features/sessions">sessions</a></td></tr>
+          <tr><th scope="row">LiteLLM</th>
+            <td class="h">◐ <code>litellm_session_id</code>, <code>metadata.session_id</code>, <code>x-litellm-session-id</code>, vendor headers<small>optional pre-call checks; needs Redis for several replicas; <code>user</code> and <code>prompt_cache_key</code> are not session sources</small></td>
+            <td><a href="https://docs.litellm.ai/docs/proxy/cache_aware_routing">cache-aware routing</a></td></tr>
+          <tr><th scope="row">NVIDIA Dynamo</th>
+            <td class="h">◐ <code>X-Dynamo-Session-ID</code> header only; the body is ignored<small>the id is passive metadata; a KV-aware router picks the worker</small></td>
+            <td><a href="https://docs.nvidia.com/dynamo/dev/agents/identify-agent-sessions.md">agent sessions</a></td></tr>
+          <tr><th scope="row">llama.cpp server</th>
+            <td class="h">◐ <code>id_slot</code> in the <code>/completion</code> body pins a slot exactly<small>default: pick a slot by prompt similarity (<code>--slot-prompt-similarity</code>); no <code>prompt_cache_key</code> handling confirmed</small></td>
+            <td><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">server README</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="fine">✓ documented · ◐ partly, or under a different name · – not documented. Every field above is a hint; none of these providers documents a guarantee of a cache hit. Researched 2026-11-14 from each vendor's public documentation; pages change, so follow the source link before relying on a cell. Not listed because no source confirmed the details: Groq, Moonshot, and the vLLM, SGLang, Ray Serve, llm-d, and Gateway API Inference Extension routers. Kong, Portkey, Helicone, Envoy AI Gateway, and KServe were not researched. A wrong or missing cell: <a href="https://github.com/IodeSystems/CorraLLM/issues">open an issue</a>.</p>
+  </div>
+</section>
+
+<section id="install" aria-labelledby="install-h">
+  <div class="wrap">
+    <p class="kicker">install</p>
+    <h2 id="install-h">One command, then a config.</h2>
+    <p class="intro">Linux (amd64, arm64) and macOS (Apple silicon).</p>
+    <div class="install">
+      <div class="tabs" role="tablist" aria-label="Install">
+        <button role="tab" aria-selected="true" aria-controls="t-curl" id="b-curl">curl</button>
+        <button role="tab" aria-selected="false" aria-controls="t-src" id="b-src" tabindex="-1">source</button>
+        <button class="copy" type="button" hidden>copy</button>
+      </div>
+      <div class="panel" role="tabpanel" id="t-curl" aria-labelledby="b-curl">
+<pre><span class="p">$ </span>curl -fsSL https://corrallm.iodesystems.com/install.sh | sh
+<span class="p">$ </span>corrallm service install -- --config ~/corrallm.yaml</pre>
+        <p>Installs <code>corrallm</code>, <code>llm-bench</code> and <code>llm-bench-mcp</code> from the latest release to <code>~/.local/bin</code>. Needs minisign: it checks the release signature and the archive's sha256, and installs nothing if either fails. Refuses to run as root. Starts nothing. <a href="install.sh">Read the script.</a></p>
+      </div>
+      <div class="panel" role="tabpanel" id="t-src" aria-labelledby="b-src" hidden>
+<pre><span class="p">$ </span>git clone https://github.com/IodeSystems/CorraLLM.git &amp;&amp; cd CorraLLM
+<span class="p">$ </span>make install     <span class="c"># builds the UI and the binaries into ~/.local/bin</span></pre>
+        <p>Needs Go, Node and pnpm.</p>
+      </div>
+    </div>
+    <p class="after"><code>corrallm service install</code> writes a systemd user unit on Linux and a launchd LaunchAgent on macOS; everything after <code>--</code> goes to <code>corrallm serve</code>. On Linux, run <code>loginctl enable-linger "$USER"</code> so the service survives logout. On first run an admin token is generated at <code>home/admin.token</code>; the dashboard, served at the same address, asks for it. The default listen address is <code>:6502</code>.</p>
+    <ul class="prereq">
+      <li><b>Local models</b> run on llama.cpp's <code>llama-server</code>, which you build or install yourself: a C/C++ compiler, cmake and git; on NVIDIA, the CUDA toolkit and driver; on macOS, Metal.</li>
+      <li><b>Paid upstreams</b> need none of that: a backend with no command is a pure proxy to an OpenAI-compatible endpoint.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="signed" aria-labelledby="signed-h">
+  <div class="wrap">
+    <h2 id="signed-h">Verify a release yourself</h2>
+    <p class="intro">Each release has a <code>SHA256SUMS</code> file, signed with minisign, key ID <code>2CC27A171DE03D42</code> (shared with dun and para). Get the key from this site (<a href="minisign.pub">minisign.pub</a>), compare the ID, then verify:</p>
+    <div class="block"><pre><span class="p">$ </span>curl -fsSLO https://github.com/IodeSystems/CorraLLM/releases/latest/download/SHA256SUMS
+<span class="p">$ </span>curl -fsSLO https://github.com/IodeSystems/CorraLLM/releases/latest/download/SHA256SUMS.minisig
+<span class="p">$ </span>minisign -V -p minisign.pub -m SHA256SUMS</pre></div>
+    <p class="after">Archives are named <code>corrallm_&lt;os&gt;_&lt;arch&gt;.tar.gz</code> (<code>linux_amd64</code>, <code>linux_arm64</code>, <code>darwin_arm64</code>), the same in every release. Versioned copies sit beside them.</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div><strong>corrallm</strong> · <a href="https://github.com/IodeSystems/CorraLLM">source</a> · <a href="https://github.com/IodeSystems/CorraLLM/releases/latest">releases</a> · <a href="https://dun.iodesystems.com/">dun</a> · <a href="https://para.iodesystems.com/">para</a> · <a href="minisign.pub">minisign.pub</a></div>
+    <div class="mono">IodeSystems</div>
+  </div>
+</footer>
+
+<script>
+  var tabs = document.querySelectorAll('[role="tab"]');
+  var copy = document.querySelector('.tabs .copy');
+  function show(t) {
+    tabs.forEach(function (b) {
+      var on = b === t;
+      b.setAttribute('aria-selected', on);
+      b.tabIndex = on ? 0 : -1;
+      document.getElementById(b.getAttribute('aria-controls')).hidden = !on;
+    });
+    if (copy) copy.hidden = !navigator.clipboard || !document.querySelector('[role="tabpanel"]:not([hidden]) pre');
+  }
+  tabs.forEach(function (b, i) {
+    b.addEventListener('click', function () { show(b); });
+    b.addEventListener('keydown', function (e) {
+      var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (d) { var t = tabs[(i + d + tabs.length) % tabs.length]; show(t); t.focus(); }
+    });
+  });
+  if (copy) copy.addEventListener('click', function () {
+    var pre = document.querySelector('[role="tabpanel"]:not([hidden]) pre');
+    var text = Array.prototype.map.call(pre.childNodes, function (n) {
+      return n.classList && (n.classList.contains('p') || n.classList.contains('c')) ? '' : n.textContent;
+    }).join('').replace(/ +\n/g, '\n').trim();
+    navigator.clipboard.writeText(text).then(function () {
+      copy.textContent = 'copied';
+      setTimeout(function () { copy.textContent = 'copy'; }, 1500);
+    });
+  });
+  show(tabs[0]);
+</script>
+</body>
+</html>
