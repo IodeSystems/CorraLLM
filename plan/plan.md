@@ -594,7 +594,15 @@ Qwen3.5-0.8B/2B hybrid+MTP: busy source 10,100→28 tok prefilled (981→98 ms),
 idle output byte-identical to same-slot reuse; 60-req 3-client stress 0 errors. Upstream PR #30970 (same idea,
 open, conflicts) DISABLES itself with spec/MTP. Risks: images untested; no n_cache_reuse guard; host-cache best
 match not compared; simultaneous arrivals skip each other; 0002 const_cast id_task on a now-shared checkpoint.
-Options (owner): 0007 canary on Swift (env-gated) and/or post the MTP result on #30970 (public — needs approval). (1)/(2) not chosen.
+Options (owner): 0007 canary on Swift (env-gated) and/or post the MTP result on #30970 (public — needs approval).
+✅ 11-14 p6 HARDENED (owner: "Definitely harden 007"): scratchpad xslot/p6-cross-slot-share.patch (+235/−4; applies clean on
+b1b770d9+p1-p5; p1 const_cast fix folded in via per-slot ckpt_claims). Guards: no kv-unified, SWA, context-shift,
+n_cache_reuse>0, LoRA. Host cache compared via server_prompt_cache::peek() (host wins when it resumes further). Images
+work (no skip). Metrics llamacpp:xslot_attach_total / xslot_tokens_reused_total / xslot_skipped_total{reason}. Gate
+LLAMA_XSLOT=1, LLAMA_XSLOT_MIN 256. 3080: idle attach byte-identical (4 models); busy drift ≈ xslot-off drift; stress 4×25:
+0 errors, prompt tokens 76.2k→42.1k (0.8B+mmproj), 83.8k→54.2k (2B); CPU ASan+UBSan 0 reports. Untested: 27B, 86k ctx,
+claims-eviction branch; simultaneous arrivals skip each other (full prefill, no deadlock).
+**next:** owner go → copy to patches/ (hash changes → gated build), build, activate, add LLAMA_XSLOT=1 to Swift env, respawn. (1)/(2) not chosen.
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
