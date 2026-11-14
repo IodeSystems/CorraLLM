@@ -453,7 +453,7 @@ install into ~/.corrallm/ext/sam3/venv, enable extension + deploy B2.
 swap, writes extension.yaml = its corrallm config block, prints the reload step, never reloads or downloads weights) and
 `uninstall-corrallm-plugin`. corrallm top level: `make ext-install EXT=<name>`. ✅ oidio target 831c062 (oidio repo;
 live oidio still runs /home/nthalk/go/bin/oidio — switching to ~/.corrallm/ext/oidio = merge its extension.yaml + reload; not
-done; oidio working tree has uncommitted edits). ◐ sam3shim → corrallm ext/plugins/sam3.1 (agent).
+done; oidio working tree has uncommitted edits). ✅ sam3shim → corrallm ext/plugins/sam3.1 (069c9cc subtree, 9c42540 targets); live sam3 now runs ~/.corrallm/ext/sam3.1 (installed via `make ext-install EXT=sam3.1`, config cmd path switched, verified 200 score 0.728); old ~/.corrallm/ext/sam3 (7.1 GB) removed.
 ✅ 11-14 SAM LIVE (owner "Approved"): deploy v0.3.0-7-gfe2a802; extension `sam3` (~/.corrallm/ext/sam3/venv, port 5821,
 ramUsage gpu1 6800MiB, MemoryMax 12G, sticky ttl 2m / idleUnload 5m) → `sam3-segment` in /v1/models. E2E through :8111:
 truck.jpg concept "truck" → 200, 1 mask score 0.728, cold load 51.6 s, warm 1.35 s; activity rows written (cost_usd 0).
