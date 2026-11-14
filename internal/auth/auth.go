@@ -71,8 +71,18 @@ func selfAuthenticating(path string) bool {
 			return true
 		}
 	}
-	return false
+	// Pool leases (P78 §7) are called by an extension's own process with its
+	// per-extension lease token, checked in the handler. Exactly the
+	// collection or ONE id segment: no "/" or dot segment that a router
+	// could resolve somewhere else.
+	if path == leasePath {
+		return true
+	}
+	id, ok := strings.CutPrefix(path, leasePath+"/")
+	return ok && id != "" && id != "." && id != ".." && !strings.Contains(id, "/")
 }
+
+const leasePath = "/api/v1/leases"
 
 // Middleware gates /api/ requests on the admin token (Authorization: Bearer, or
 // the CookieName cookie) or, when sso is non-nil, a valid SSO session cookie.

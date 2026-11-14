@@ -91,3 +91,25 @@ func TestMiddleware_AgentHeartbeatIsNotAdminGated(t *testing.T) {
 		}
 	}
 }
+
+// Lease calls carry an extension's lease token, checked in the handler; the
+// exemption is the collection and one id segment, nothing a crafted path
+// could widen.
+func TestMiddleware_LeasesAreNotAdminGated(t *testing.T) {
+	var reached bool
+	h := Middleware("admin-secret", nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+	for _, p := range []string{"/api/v1/leases", "/api/v1/leases/lease_abc"} {
+		reached = false
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, p, nil))
+		if !reached {
+			t.Errorf("%s was blocked by the admin gate", p)
+		}
+	}
+	for _, p := range []string{"/api/v1/leases/../models/unload", "/api/v1/leases/x/y", "/api/v1/leases/..", "/api/v1/leasesx"} {
+		reached = false
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, p, nil))
+		if reached {
+			t.Errorf("%s reached the handler without the admin token", p)
+		}
+	}
+}

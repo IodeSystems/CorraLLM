@@ -677,6 +677,11 @@ func (p *Proxy) SetRealtimeTimeouts(idle, maxSession time.Duration) {
 func (p *Proxy) Mount(mux interface {
 	Handle(pattern string, h http.Handler)
 }) {
+	// Pool leases for an extension's own process (P78 §7). Authenticated by
+	// the extension's lease.token inside the handler; auth.Middleware lets
+	// the path through for that reason.
+	mux.Handle("/api/v1/leases", http.HandlerFunc(p.handleLeases))
+	mux.Handle("/api/v1/leases/*", http.HandlerFunc(p.handleLeases))
 	// The one route a cost token opens; everything after this refuses one.
 	mux.Handle("/v1/spend", http.HandlerFunc(p.handleSpend))
 	mux = spendTokenGuard{mux}
@@ -739,6 +744,13 @@ func (p *Proxy) Mount(mux interface {
 	// gatedPaths lesson, structural here). No activity log, no scheduling.
 	// Wildcard so chi matches the whole subtree.
 	mux.Handle("/upstream/*", http.HandlerFunc(p.handleUpstream))
+	// Extension APIs (P78 §10): each prefix an extension's `routes:` claims,
+	// streamed to it (extapi.go). Mounted from the config at boot: a route
+	// added by a reload is served after the next restart.
+	for _, route := range p.config().ExtensionRoutes() {
+		mux.Handle(route, http.HandlerFunc(p.handleExtensionAPI))
+		mux.Handle(route+"/*", http.HandlerFunc(p.handleExtensionAPI))
+	}
 }
 
 // writeJSONError answers with OpenAI's error envelope, and with a Content-Type
@@ -3429,6 +3441,10 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			}},
 	}
 
+	for _, e := range p.extAPIEndpoints(base, byCap) {
+		endpoints = append(endpoints, endpoint(e))
+	}
+
 	lanes := make([]map[string]any, 0, len(p.config().PriorityGroups))
 	laneNames := make([]string, 0, len(p.config().PriorityGroups))
 	for n := range p.config().PriorityGroups {
@@ -3462,7 +3478,7 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		// image — while neither returns one.
 		"modalities": map[string]any{
 			"description": "Every endpoint declares `accepts` and `emits`; every model on /v1/models declares `modalities` (what it accepts) and `outputs` (what it returns). A model serves a route when its outputs cover the route's `emits` and it accepts what you are sending.",
-			"vocabulary":  []string{config.ModalityText, config.ModalityImage, config.ModalityAudio, config.ModalityVector, config.ModalityRanking, config.ModalityMask},
+			"vocabulary":  []string{config.ModalityText, config.ModalityImage, config.ModalityAudio, config.ModalityVector, config.ModalityRanking, config.ModalityMask, config.ModalityScene},
 			"note":        "Inputs are PROBED where the backend can be asked; outputs are inferred from the model's cost type, because no backend corrallm talks to reports what it emits yet.",
 		},
 		"models_by_capability": byCap,
