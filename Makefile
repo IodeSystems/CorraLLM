@@ -1,4 +1,4 @@
-.PHONY: hooks install install-bin bindir gen dump-schema lint golangci run build dist agents release-dist dev deploy test ui-build clean verify-deps verify-docker
+.PHONY: hooks install install-bin bindir gen dump-schema lint golangci run build dist agents release-dist site site-push dev deploy test ui-build clean verify-deps verify-docker
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -110,6 +110,19 @@ release-dist: ui-build ## Build release archives into dist/ (CI; rewrites ui/dis
 		tar -C dist -czf dist/$$name.tar.gz $$name && rm -rf dist/$$name; \
 	done
 	@cd dist && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
+
+# corrallm.iodesystems.com (domain unconfirmed): the static page and install.sh,
+# served by hz. hz's API is on the home network, so the push runs here, not in
+# CI. Deliberately NOT dependent on ui-build: ui/dist is the live web root.
+SITE_DIR := dist/site
+
+site: ## The site -> dist/site (no UI build)
+	rm -rf $(SITE_DIR) && mkdir -p $(SITE_DIR)
+	cp -r site/. $(SITE_DIR)/
+
+site-push: site ## Push dist/site to hz (HZ_URL, HZ_TOKEN: the site service's; hz-client on PATH)
+	@test -n "$$HZ_URL" && test -n "$$HZ_TOKEN" || { echo "make site-push: HZ_URL and HZ_TOKEN (the site service's Integration panel in hz)"; exit 1; }
+	hz-client site push $(SITE_DIR)
 
 # `pnpm gen` first: ui/src/gql is generated (gitignored) from the tracked
 # ui/gen/schema.graphql, so a clean checkout cannot typecheck without it.
