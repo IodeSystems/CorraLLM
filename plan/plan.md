@@ -383,8 +383,14 @@ still open. Items parked on hardware rather than on a decision are in §9.
 Owner 11-14: site modeled on dun/para (static site/index.html, hz static service, `make site`/`site-push`), install.sh
 ("we like install.sh"), provider-compatibility matrix ("provider compatibility for features/shaming"), minisign-signed
 releases + stable asset names (approved). ◐ agent building site/, install.sh, Makefile targets, release-dist + workflow
-signing — no push/tag/site-push.
-**next:** review agent output. **risks:** compat claims must each carry a source URL; install.sh must not be confused
+signing — no push/tag/site-push. ✅ 11-14 built 057c3f2/84d58be/38a7859: site/{index.html,favicon.svg,minisign.pub,
+install.sh}, Makefile site/site-push/release-sign + stable-name archives, release.yml signs SHA256SUMS (fails early without
+MINISIGN_KEY). Installer tested on a fake signed release (happy path, tampered archive refused, wrong key refused); v0.2.2
+fails cleanly (no stable names). Untested: release-dist stable loop + release-sign (not run on box1: ui-build), root refusal,
+Darwin. Assumed domain corrallm.iodesystems.com; slug IodeSystems/CorraLLM; README stale on guardrails/Messages/budgets
+(cards taken from P60-P69 headers) — owner to check wording.
+**next:** owner adds MINISIGN_KEY (password-free key 2CC27A171DE03D42), creates hz service + token, confirms domain; then
+`make site-push` and a new tag. **risks:** compat claims must each carry a source URL; install.sh must not be confused
 with the daemon's agent /install.sh. **blocking decisions (owner actions):** create the hz static service + token;
 add the MINISIGN_KEY GitHub secret; pick the domain (default corrallm.iodesystems.com). **optional extensions:** none.
 
