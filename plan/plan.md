@@ -436,7 +436,10 @@ a lease API, mapper on CPU; sandbox moved :6510→:6512 (collides with live agen
 kill+resume; rec yes), D7 (lease ignored 60 s → stop service, rec), D8 (defaults: EXIF GPS on, 7 d expiry, 50 GiB/key,
 5000 images/job). CONFLICT: spec B4 is a Go service calling the COLMAP CLI (needs the source build = sudo apt deps),
 but only the pycolmap wheel works without sudo — owner picks.
-◐ B1 sam3shim (new local repo, stub backend; weights pending licence) · ◐ B2 corrallm SAM route (fake shim).
+✅ B1 sam3shim (~/local/src/iodesystems/sam3shim, local only; 50 tests; RLE byte-identical to pycocotools; real Sam3Backend
+written, UNRUN — weights gated) · ✅ B2 corrallm SAM route 279edd9/1ef6c1d (capability image.segment, images=1 metering, capabilities
+row, shim 400s passed through; NOTE shared 413 body type invalid_request_error → request_too_large on every handleInference route;
+sam3 extension needs `modalities: {image: {}, text: {}}` under provides.segment). B2 not deployed.
 **next (was):** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
 proxy) → M1 when the HF licence is approved + a window is picked.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
