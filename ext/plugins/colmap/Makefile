@@ -34,7 +34,8 @@ install-corrallm-plugin: colmap
 	mkdir -p "$(CORRALLM_EXT_DIR)" "$$data"; rm -rf "$$tmp"; mkdir -p "$$tmp/bin"; \
 	trap 'rm -rf "$$tmp"' EXIT; \
 	go build -trimpath -o "$$tmp/bin/colmap-svc" ./cmd/colmap-svc; \
-	cp -a "$(COLMAP_WORK)/install" "$$tmp/colmap"; \
+	mkdir -p "$$tmp/colmap/lib"; cp -a "$(COLMAP_WORK)/install/bin" "$$tmp/colmap/"; \
+	cp -P "$(COLMAP_WORK)/install/lib"/libcudart.so.* "$$tmp/colmap/lib/"; \
 	if [ -f "$$dest/lease.token" ]; then cp -p "$$dest/lease.token" "$$tmp/lease.token"; \
 	else (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$$tmp/lease.token"); fi; \
 	chmod 600 "$$tmp/lease.token"; \
