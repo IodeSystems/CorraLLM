@@ -1,0 +1,21 @@
+[project]
+name = "sam3shim"
+version = "0.1.0"
+description = "HTTP shim: POST /v1/images/segmentations in front of SAM 3.1 (corrallm P78)"
+requires-python = ">=3.12"
+dependencies = ["numpy", "pillow"]
+
+[project.optional-dependencies]
+# Real backend only. torch must match the host CUDA (>= 12.6); see README.
+sam3 = ["torch>=2.7"]  # see scripts/venv-sam3.sh for the pinned install
+test = ["pytest", "pycocotools"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["sam3shim"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
