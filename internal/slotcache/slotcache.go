@@ -59,6 +59,39 @@ import (
 // else's conversation gets you your own state and not theirs.
 const ConversationHeader = "X-Corrallm-Conversation"
 
+// PromptCacheKey is OpenAI's request field naming the conversation for prompt
+// caching. Read from the body only; the body goes upstream unchanged, field
+// included.
+const PromptCacheKey = "prompt_cache_key"
+
+// declaredFields are the standard body fields a caller can name its
+// conversation with. Add a field here and to declaredID, nowhere else.
+type declaredFields struct {
+	PromptCacheKey string `json:"prompt_cache_key"`
+}
+
+// declaredID is the conversation the caller named, in order: the body's
+// prompt_cache_key, then the ConversationHeader value; "" when neither is
+// set (the key is then inferred from the conversation's head).
+func declaredID(f declaredFields, header string) string {
+	if v := strings.TrimSpace(f.PromptCacheKey); v != "" {
+		return v
+	}
+	return strings.TrimSpace(header)
+}
+
+// declaredKey is the key of a named conversation, hashed with the caller for
+// the same reason the inferred key is: one caller's states are not another's
+// to address, however they spell the id.
+func declaredKey(caller, id string) string {
+	h := sha256.New()
+	_, _ = io.WriteString(h, caller)
+	_, _ = h.Write([]byte{0})
+	_, _ = io.WriteString(h, "declared:")
+	_, _ = io.WriteString(h, id)
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
 // Key identifies one conversation's state, and getting it wrong has two
 // different costs.
 //
@@ -73,21 +106,15 @@ const ConversationHeader = "X-Corrallm-Conversation"
 // So the key is the conversation's HEAD — the parts that do not change as it
 // grows — not the whole prompt.
 func Key(caller, declared string, body []byte) (string, bool) {
-	// What the caller says it is, when it says. Hashed with the caller for the
-	// same reason the inferred key is: one caller's states are not another's to
-	// address, however they spell the id.
-	if declared = strings.TrimSpace(declared); declared != "" {
-		h := sha256.New()
-		_, _ = io.WriteString(h, caller)
-		_, _ = h.Write([]byte{0})
-		_, _ = io.WriteString(h, "declared:")
-		_, _ = io.WriteString(h, declared)
-		return hex.EncodeToString(h.Sum(nil))[:32], true
-	}
 	var req struct {
 		Messages []headMessage `json:"messages"`
+		declaredFields
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	decoded := len(body) > 0 && json.Unmarshal(body, &req) == nil
+	if id := declaredID(req.declaredFields, declared); id != "" {
+		return declaredKey(caller, id), true
+	}
+	if !decoded {
 		return "", false
 	}
 	return keyOf(caller, req.Messages)
@@ -561,7 +588,8 @@ type Turn struct {
 	Tools bool
 }
 
-// Inspect reads a chat body once: the conversation key (exactly Key's), the
+// Inspect reads a chat body once: the conversation key (exactly Key's:
+// declaredID, else inferred), the
 // message count (exactly Messages'), and the block hashes of the prompt
 // stream. ok is false for a body that carries no conversation.
 //
@@ -574,10 +602,11 @@ func Inspect(caller, declared string, body []byte) (t Turn, ok bool) {
 	var req struct {
 		Messages []inspectMessage `json:"messages"`
 		Tools    json.RawMessage  `json:"tools"`
+		declaredFields
 	}
 	decoded := json.Unmarshal(body, &req) == nil
-	if strings.TrimSpace(declared) != "" {
-		t.Key, _ = Key(caller, declared, nil)
+	if id := declaredID(req.declaredFields, declared); id != "" {
+		t.Key = declaredKey(caller, id)
 	} else {
 		if !decoded {
 			return Turn{}, false
