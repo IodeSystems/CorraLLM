@@ -143,3 +143,45 @@ func TestReconstructionEmitsScene(t *testing.T) {
 		}
 	}
 }
+
+// A model with no declared or probed modalities takes what its cost type
+// takes. A TTS model takes text: it used to report audio because any audio
+// cost type defaulted its input to audio.
+func TestDefaultModalitiesFollowTypeInput(t *testing.T) {
+	for _, c := range []struct {
+		typ          string
+		audioDefault bool
+		want         []string
+	}{
+		{"tts", true, []string{"text"}},
+		{"stt", true, []string{"audio"}},
+		{"realtime-stt", true, []string{"audio"}},
+		{"segment", false, []string{"image", "text"}},
+		{"embed", false, []string{"text"}},
+		{"chat", false, []string{"text"}},
+		{"custom-audio-type", true, []string{"audio"}}, // unnamed audio type keeps the old default
+	} {
+		got := Model{Type: c.typ}.EffectiveModalities("m", c.audioDefault)
+		if len(got) != len(c.want) {
+			t.Errorf("%s: %v, want %v", c.typ, got, c.want)
+			continue
+		}
+		for _, k := range c.want {
+			if _, ok := got[k]; !ok {
+				t.Errorf("%s: %v, want %v", c.typ, got, c.want)
+			}
+		}
+	}
+}
+
+func TestTypeOutputFormats(t *testing.T) {
+	got := TypeOutputFormats("segment")["mask"]
+	if len(got) != 2 || got[0] != "rle" || got[1] != "png" {
+		t.Errorf("segment mask formats = %v", got)
+	}
+	for _, typ := range []string{"chat", "tts", "diffusion", "stt"} {
+		if f := TypeOutputFormats(typ); f != nil {
+			t.Errorf("%s has output formats %v", typ, f)
+		}
+	}
+}

@@ -3035,8 +3035,12 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		// answers only "what does it accept" and reading it as the whole story
 		// is what makes a vision model look like an image generator. `outputs`
 		// is inferred from the cost type — see config.TypeIO.
-		Outputs    []string `json:"outputs"`
-		Capability string   `json:"capability"` // chat|embeddings|audio.stt|audio.tts|image.generate|rerank
+		Outputs []string `json:"outputs"`
+		// OutputFormats: the encodings of an output modality where corrallm
+		// defines them, e.g. {"mask":["rle","png"]}. Beside `outputs` the way
+		// `formats` sits inside an input modality. Absent when none is defined.
+		OutputFormats map[string][]string `json:"output_formats,omitempty"`
+		Capability    string              `json:"capability"` // chat|embeddings|audio.stt|audio.tts|image.generate|rerank
 		// Embedded so its thinking_* fields sit beside context_length. Absent
 		// when the config does not say.
 		*modelReasoning
@@ -3075,6 +3079,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 			Slots:          p.mgr.TunedSlots(name, mc.Slots()),
 			Modalities:     mc.EffectiveModalities(name, p.cost.IsAudioType(mc.Type)),
 			Outputs:        config.ModelIO(name, mc, p.cost.IsAudioType(mc.Type)).Out,
+			OutputFormats:  config.TypeOutputFormats(mc.Type),
 			Capability:     config.ModelCapability(mc),
 			modelReasoning: reasoningOf(mc),
 			Capabilities:   p.capabilitiesOf(name, mc),
@@ -3117,6 +3122,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		// what its first-choice model accepts (a fallback may support less).
 		var modalities map[string]config.ModalitySpec
 		var outputs []string
+		var outputFormats map[string][]string
 		var reasoning *modelReasoning
 		laneCtx := 0
 		capability, state := "chat", "absent"
@@ -3127,6 +3133,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 				reasoning = reasoningOf(c.Model)
 				modalities = c.Model.EffectiveModalities(c.Name, p.cost.IsAudioType(c.Model.Type))
 				outputs = p.modelIO(c).Out
+				outputFormats = config.TypeOutputFormats(c.Model.Type)
 			}
 			// A remote member contributes "proxy", not residency; a real resident
 			// member's state outranks it, since that one is measurably up.
@@ -3152,7 +3159,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		out.Data = append(out.Data, model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: state, Quality: config.MaxQuality(cands), Kind: "lane",
-			Members: members, Slots: laneSlots, Modalities: modalities, Outputs: outputs, Capability: capability,
+			Members: members, Slots: laneSlots, Modalities: modalities, Outputs: outputs, OutputFormats: outputFormats, Capability: capability,
 			modelReasoning: reasoning, ContextLength: laneCtx,
 		})
 	}
@@ -3322,6 +3329,16 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		Streaming   bool           `json:"streaming,omitempty"`
 		Example     map[string]any `json:"example,omitempty"`
 	}
+	// endpointRow is endpoint plus the wire formats, as media types: what the
+	// body may be sent as and what comes back. `accepts`/`emits` are modality
+	// words and cannot say multipart vs JSON in, or JSON vs audio vs SSE out.
+	// An empty request list means the route reads no body. Filled for every row
+	// from routeContentTypes.
+	type endpointRow struct {
+		endpoint
+		RequestContentTypes  []string `json:"request_content_types"`
+		ResponseContentTypes []string `json:"response_content_types"`
+	}
 	txt := []string{config.ModalityText}
 	img := []string{config.ModalityImage}
 	aud := []string{config.ModalityAudio}
@@ -3460,6 +3477,11 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	for _, e := range p.extAPIEndpoints(base, byCap) {
 		endpoints = append(endpoints, endpoint(e))
 	}
+	rows := make([]endpointRow, len(endpoints))
+	for i, e := range endpoints {
+		ct := routeContentTypes[e.Path]
+		rows[i] = endpointRow{e, nonNil(ct.in), nonNil(ct.out)}
+	}
 
 	lanes := make([]map[string]any, 0, len(p.config().PriorityGroups))
 	laneNames := make([]string, 0, len(p.config().PriorityGroups))
@@ -3487,13 +3509,13 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"description": "Send your API key as `Authorization: Bearer <key>` (or `X-Corrallm-Key: <key>`). The key selects your fairshare lane; unkeyed callers use the default lane.",
 			"headers":     []string{"Authorization: Bearer <key>", "X-Corrallm-Key: <key>"},
 		},
-		"endpoints": endpoints,
+		"endpoints": rows,
 		// How to match a model to a route without parsing a capability name.
 		// Stated because the capability strings cannot express it: `chat` covers
 		// both a text model and a vision model, and only the second accepts an
 		// image — while neither returns one.
 		"modalities": map[string]any{
-			"description": "Every endpoint declares `accepts` and `emits`; every model on /v1/models declares `modalities` (what it accepts) and `outputs` (what it returns). A model serves a route when its outputs cover the route's `emits` and it accepts what you are sending.",
+			"description": "Every endpoint declares `accepts` and `emits` (modality words) and `request_content_types` and `response_content_types` (media types; an empty request list means no body); every model on /v1/models declares `modalities` (what it accepts) and `outputs` (what it returns). A model serves a route when its outputs cover the route's `emits` and it accepts what you are sending.",
 			"vocabulary":  []string{config.ModalityText, config.ModalityImage, config.ModalityAudio, config.ModalityVector, config.ModalityRanking, config.ModalityMask, config.ModalityScene},
 			"note":        "Inputs are PROBED where the backend can be asked; outputs are inferred from the model's cost type, because no backend corrallm talks to reports what it emits yet.",
 		},
@@ -3534,6 +3556,37 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	enc.SetEscapeHTML(false) // keep <key>, &, → readable in the examples
 	_ = enc.Encode(out)
 }
+
+// routeContentTypes is the wire format of every /v1/capabilities row, by path:
+// request media types accepted (empty = no body) and response media types
+// returned. A route with a streaming mode lists text/event-stream.
+var routeContentTypes = func() map[string]struct{ in, out []string } {
+	js, mp := "application/json", "multipart/form-data"
+	sse := "text/event-stream"
+	type ct = struct{ in, out []string }
+	return map[string]ct{
+		"/v1/chat/completions":     {[]string{js}, []string{js, sse}},
+		"/v1/completions":          {[]string{js}, []string{js, sse}},
+		"/v1/messages":             {[]string{js}, []string{js, sse}},
+		"/v1/embeddings":           {[]string{js}, []string{js}},
+		"/v1/rerank":               {[]string{js}, []string{js}},
+		"/v1/tokenize":             {[]string{js}, []string{js}},
+		"/v1/audio/transcriptions": {[]string{mp}, []string{js, "text/plain", "text/vtt", "application/x-subrip", sse}},
+		"/v1/audio/translations":   {[]string{mp}, []string{js, "text/plain", "text/vtt", "application/x-subrip", sse}},
+		"/v1/audio/speech":         {[]string{js}, []string{"audio/*"}},
+		"/v1/images/generations":   {[]string{js}, []string{js}},
+		"/v1/images/segmentations": {[]string{js, mp}, []string{js}},
+		"/v1/realtime":             {nil, []string{js}}, // WebSocket upgrade; JSON text frames
+		"/v1/models":               {nil, []string{js}},
+		"/v1/capabilities":         {nil, []string{js}},
+		"/v1/reservations":         {[]string{js}, []string{js}},
+		"/v1/keys":                 {[]string{js}, []string{js}},
+		"/v1/access-requests":      {[]string{js}, []string{js}},
+		"/v1/files":                {[]string{mp}, []string{js, "application/octet-stream"}},
+		"/v1/uploads":              {[]string{js, mp}, []string{js}},
+		"/v1/reconstructions":      {[]string{js, mp}, []string{js, "application/zip", "text/plain"}},
+	}
+}()
 
 // log persists an activity record (stamping its timestamp) and pushes a lean copy
 // over the events broker. The pushed copy omits the captured payloads — those stay

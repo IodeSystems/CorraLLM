@@ -29,5 +29,8 @@ extensions:
                 maxConcurrent: 1
                 contextPerRequest: 0
                 modalities:
-                    image: {}
+                    image:
+                        formats: [jpeg, png, webp]
+                        maxResolution: 4096
+                        maxCount: 16
                     text: {}

@@ -1450,6 +1450,7 @@ type ModalitySpec struct {
 	MaxResolution int      `yaml:"maxResolution,omitempty" json:"maxResolution,omitempty"` // image: longest-edge px cap
 	Formats       []string `yaml:"formats,omitempty" json:"formats,omitempty"`             // image/audio: accepted encodings
 	MaxTokens     int      `yaml:"maxTokens,omitempty" json:"maxTokens,omitempty"`         // text: generation-length cap
+	MaxCount      int      `yaml:"maxCount,omitempty" json:"maxCount,omitempty"`           // image/audio: most items of this modality in one request; 0 = not declared
 
 	// AUDIO, ONE LEVEL BELOW THE CONTAINER (P35 phase 2). Formats names what a
 	// backend's reader will OPEN; these name what it will then accept INSIDE
@@ -1512,8 +1513,8 @@ func (s ModalitySpec) AudioBounded() bool {
 var KnownModalities = map[string]bool{"text": true, "image": true, "audio": true}
 
 // EffectiveModalities returns the model's declared modalities, or a single
-// inferred default when none are configured: "audio" when audioDefault (an audio
-// cost type), else "text". Callers pass audioDefault because audio-ness lives in
+// inferred default when none are configured: the input half of TypeIO(m.Type),
+// or "audio" when audioDefault names an audio type TypeIO does not. Callers pass audioDefault because audio-ness lives in
 // the cost model, not config.
 // ProbedModalities, when set, overrides what the config declares.
 //
@@ -1543,11 +1544,20 @@ func (m Model) EffectiveModalities(served string, audioDefault bool) map[string]
 	if len(m.Modalities) > 0 {
 		return m.Modalities
 	}
-	d := "text"
-	if audioDefault {
-		d = "audio"
+	// Nothing declared or probed: read the INPUT half of the cost type's IO
+	// (a TTS type takes text, a segmenter takes image+text). Before this the
+	// default was "audio" for any audio cost type, which called a TTS model's
+	// input audio. audioDefault stays as the fallback for an audio type
+	// TypeIO does not name, where it is the only signal there is.
+	io := TypeIO(m.Type)
+	if audioDefault && io.Accepts(ModalityText) && io.Emits(ModalityText) {
+		return map[string]ModalitySpec{ModalityAudio: {}}
 	}
-	return map[string]ModalitySpec{d: {}}
+	out := make(map[string]ModalitySpec, len(io.In))
+	for _, k := range io.In {
+		out[k] = ModalitySpec{}
+	}
+	return out
 }
 
 // Defaults for the slot-aware dequeue skip bound (Model.SlotAwareDequeue).

@@ -183,3 +183,17 @@ func ModelIO(served string, m Model, audioDefault bool) IO {
 	}
 	return io
 }
+
+// TypeOutputFormats names the encodings a model of this cost type returns,
+// per output modality, where corrallm itself defines them. Only the mask
+// output has such a list today: /v1/images/segmentations answers
+// `response_format` rle (COCO run-length, the default) or png (a mask image);
+// polygon is not offered. Beside Out and not inside it because Out is a list
+// of modality words, and the encoding is a property of one of them, the way
+// `formats` is a property of an input modality.
+func TypeOutputFormats(typ string) map[string][]string {
+	if TypeIO(typ).Emits(ModalityMask) {
+		return map[string][]string{ModalityMask: {"rle", "png"}}
+	}
+	return nil
+}
