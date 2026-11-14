@@ -320,6 +320,14 @@ type Manager struct {
 	// not healthy). It is reaped only once that has lasted adoptionGrace.
 	// Guarded by mu.
 	adoptRetry map[string]time.Time
+
+	// leases are pool reservations held by an extension's own process for
+	// work outside any request (lease.go). Guarded by mu. leaseTTL expires a
+	// lease nobody has polled; leaseProtect is how long a fresh grant is
+	// safe from a yield request (minResidency unless a test shortens it).
+	leases       map[string]*Lease
+	leaseTTL     time.Duration
+	leaseProtect time.Duration
 }
 
 // agentHoldTimeout bounds how long, after this primary starts, a spawn onto an
@@ -405,6 +413,9 @@ func NewManager(cfg *config.Config) *Manager {
 		activeUse:     defaultActiveUse,
 		vramMargin:    defaultVRAMMargin,
 		born:          time.Now(),
+		leases:        map[string]*Lease{},
+		leaseTTL:      defaultLeaseTTL,
+		leaseProtect:  minResidency,
 	}
 	m.cfg.Store(cfg)
 	for name, srv := range cfg.Servers {
@@ -601,7 +612,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		var evicted []string
 		var victimsGone []chan struct{}
 		if mdl.Server != "" && len(usage) > 0 {
-			ev, gone, err := m.makeRoomLocked(mdl.Server, usage, name)
+			ev, gone, err := m.makeRoomLocked(mdl.Server, usage, name, true)
 			if err != nil {
 				m.mu.Unlock()
 				return nil, nil, false, err
@@ -2038,14 +2049,19 @@ func (m *Manager) onProcExit(name string, p *Process) {
 //
 // gone holds one channel per evicted backend that is still stopping; each
 // closes when that group has exited. The spawn waits for all of them.
-func (m *Manager) makeRoomLocked(server string, usage map[string]int64, incoming string) (names []string, gone []chan struct{}, err error) {
+//
+// allowYield lets the pass ask yieldable leases to give their memory back
+// when idle victims alone are not enough (lease.go, P78 §7). A lease grant
+// passes false: one lease never displaces another.
+func (m *Manager) makeRoomLocked(server string, usage map[string]int64, incoming string, allowYield bool) (names []string, gone []chan struct{}, err error) {
+	now := time.Now()
+	m.expireLeasesLocked(now)
 	if m.fitsLocked(server, usage, nil) {
 		return nil, nil, nil
 	}
 	// Candidate victims on this server: idle (refs==0 AND not used within the
 	// activeUse window — between-turn gaps of an agent session don't count as
 	// idle), not pinned, ready, and touching at least one pool we need.
-	now := time.Now()
 	var victims []*Process
 	for _, q := range m.procs {
 		if q.server != server || q.persistent {
@@ -2079,6 +2095,11 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64, incoming
 			return names, gone, nil
 		}
 	}
+	if allowYield {
+		if names, gone, ok := m.yieldForLocked(server, usage, incoming, victims, now); ok {
+			return names, gone, nil
+		}
+	}
 	return nil, nil, m.capacityErrorLocked(server, usage, now)
 }
 
@@ -2107,8 +2128,13 @@ func (m *Manager) capacityErrorLocked(server string, usage map[string]int64, now
 		all[q.Name] = q
 		blocking = append(blocking, q.Name)
 	}
+	// A lease is never permanent: it ends when its stage does, or is asked to.
+	leases := m.leasesTouchingLocked(server, usage)
+	for _, l := range leases {
+		blocking = append(blocking, l.name())
+	}
 	sort.Strings(blocking) // stable diagnostics
-	if !m.fitsLocked(server, usage, all) {
+	if !m.fitsExceptLocked(server, usage, all, leases) {
 		return &CapacityError{Permanent: true, Blocking: blocking}
 	}
 
@@ -2130,6 +2156,22 @@ func (m *Manager) capacityErrorLocked(server string, usage map[string]int64, now
 		}
 		if wait < 0 {
 			wait = 0
+		}
+		if soonest == 0 || wait < soonest {
+			soonest = wait
+		}
+	}
+	// A yieldable lease can be asked once its grant protection ends; one
+	// already past it is not a reason to come back sooner (the yield pass
+	// found it insufficient), and a non-yieldable one ends when its stage
+	// does, which nobody can predict — like refs > 0, those contribute nothing.
+	for _, l := range leases {
+		if !l.yieldable {
+			continue
+		}
+		wait := m.leaseProtect - now.Sub(l.grantedAt)
+		if wait <= 0 {
+			continue
 		}
 		if soonest == 0 || wait < soonest {
 			soonest = wait
@@ -2214,6 +2256,13 @@ func (m *Manager) ownPlacedLocked(server, pool string) int64 {
 			ours += p.usage[pool]
 		}
 	}
+	// A held lease's memory is ours too: its holder's child shows in the
+	// agent's reading, and counting it only as foreign would charge it twice.
+	for _, l := range m.leases {
+		if l.server == server && !l.freed {
+			ours += l.usage[pool]
+		}
+	}
 	return ours
 }
 
@@ -2229,10 +2278,21 @@ func foreignOf(measuredUsed, ours int64) int64 {
 // fitsLocked reports whether usage fits on server, pretending the processes in
 // `ignore` (eviction candidates) are already gone. Caller holds m.mu.
 func (m *Manager) fitsLocked(server string, usage map[string]int64, ignore map[string]*Process) bool {
+	return m.fitsExceptLocked(server, usage, ignore, nil)
+}
+
+// fitsExceptLocked is fitsLocked also pretending the given leases are
+// released. Caller holds m.mu.
+func (m *Manager) fitsExceptLocked(server string, usage map[string]int64, ignore map[string]*Process, leases []*Lease) bool {
 	for pool, want := range usage {
 		used := m.used[server][pool]
 		for _, e := range ignore {
 			used -= e.usage[pool]
+		}
+		for _, l := range leases {
+			if !l.freed {
+				used -= l.usage[pool]
+			}
 		}
 		// Other tenants count against the budget too. Without this the ledger
 		// measures only its own footprint and calls the rest free.
@@ -3036,6 +3096,9 @@ type ResidencySnapshot struct {
 	// aimed at it is refused until it goes — and reporting it as absent is what
 	// let the dashboard offer a Load button whose only outcome was an error.
 	Stopping []string
+	// Leases are pool reservations held by extensions (lease.go). Their
+	// usage is already inside Servers[].Pools[].Used.
+	Leases []LeaseView
 }
 
 // Snapshot returns a stable (sorted) view of server pool budgets/usage and the
@@ -3101,6 +3164,8 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 		snap.Stopping = append(snap.Stopping, key)
 	}
 	sort.Strings(snap.Stopping)
+	m.expireLeasesLocked(time.Now())
+	snap.Leases = m.leaseViewsLocked()
 	return snap
 }
 
@@ -3127,6 +3192,9 @@ func (m *Manager) StartIdleSweeper(ctx context.Context) {
 				return
 			case <-t.C:
 				m.sweepIdle()
+				m.mu.Lock()
+				m.expireLeasesLocked(time.Now())
+				m.mu.Unlock()
 			}
 		}
 	}()
