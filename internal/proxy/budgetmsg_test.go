@@ -98,7 +98,8 @@ func TestRefusalStatusByWindow(t *testing.T) {
 
 func TestCapabilitiesStateTheErrorContract(t *testing.T) {
 	raw, _ := json.Marshal(errorContract)
-	for _, want := range []string{`"status":402`, `"status":429`, "do not retry", "allocation_spent"} {
+	for _, want := range []string{`"status":402`, `"status":429`, "do not retry", "allocation_spent",
+		`"status":404`, `"status":409`, `"status":413`, `"status":507`, "storage_quota_exceeded", "unsupported_parameter"} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("error contract lacks %q: %s", want, raw)
 		}

@@ -233,7 +233,7 @@ func refusalStatus(notes []BudgetNote, secs int, w http.ResponseWriter) int {
 // it, served in /v1/capabilities. The status codes are corrallm's contract: a
 // client library may handle them where it can, and an integrator has to.
 var errorContract = map[string]any{
-	"shape": `{"error":{"message","type","retry_after"?,"provider"?,"upstream_status"?,"budgets"?:[{scope,owner,window,used,limit,room_at,summary}]}}`,
+	"shape": `{"error":{"message","type","param"?,"code"?,"retry_after"?,"provider"?,"upstream_status"?,"budgets"?:[{scope,owner,window,used,limit,room_at,summary}]}}`,
 	"statuses": []map[string]any{
 		{"status": 402, "types": []string{"budget_exhausted", "allocation_exhausted", "allocation_spent"},
 			"means": "a budget that refills at a reset time (calendar day, paced day, calendar month, total) is spent; no Retry-After",
@@ -249,8 +249,20 @@ var errorContract = map[string]any{
 		{"status": 401, "means": "no key, or a key corrallm does not know", "do": "fail"},
 		{"status": 403, "means": "this key may not use this model", "do": "fail, or use a model the key may use"},
 		{"status": 400, "means": "the request is malformed", "do": "fail"},
+		{"status": 400, "types": []string{"invalid_request_error"}, "codes": []string{"unsupported_parameter"},
+			"means": "a field corrallm documents but this backend cannot honour (e.g. rotation priors on /v1/reconstructions); param names it",
+			"do":    "drop the field and resend"},
+		{"status": 404, "types": []string{"invalid_request_error"},
+			"means": "a file, upload, reconstruction or content variant that does not exist for this key (another key's id answers the same), or an unknown model",
+			"do":    "fail; do not retry"},
+		{"status": 409, "types": []string{"invalid_request_error"},
+			"means": "the object's state does not allow the call: delete a running job, complete a finished upload, fetch content before completion, delete a file a job uses",
+			"do":    "read the object's state and act on it"},
 		{"status": 413, "types": []string{"request_too_large"},
-			"means": "the body is over the route's cap (32 MiB on /v1/images/segmentations; 64 MiB on audio uploads); the message names the cap",
-			"do":    "shrink the request; do not retry as is"},
+			"means": "the body is over the route's cap (32 MiB on /v1/images/segmentations; 64 MiB on audio uploads; 512 MiB per /v1/files file; 64 MiB per /v1/uploads part; 8 GiB per upload; 1 MiB per JSON reconstruction create); the message names the cap",
+			"do":    "shrink the request or split it through /v1/uploads; do not retry as is"},
+		{"status": 507, "types": []string{"insufficient_storage"}, "codes": []string{"storage_quota_exceeded", "storage_full"},
+			"means": "your key's file quota, or the extension's disk, is full",
+			"do":    "delete files or finished jobs, then retry"},
 	},
 }
