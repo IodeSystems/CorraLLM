@@ -694,6 +694,10 @@ func (p *Proxy) Mount(mux interface {
 		// every other inference route gets: an admission slot, fairshare,
 		// residency, cost and an activity row.
 		"/v1/images/generations",
+		// Segmentation (P78 B2): JSON in (base64 image + prompts), JSON out
+		// (COCO RLE masks), served by a hosted extension shim. Same door as
+		// image generation; gated on Emits(mask) below.
+		"/v1/images/segmentations",
 	} {
 		mux.Handle(path, http.HandlerFunc(p.handleInference))
 	}
@@ -775,6 +779,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// TTS rather than like chat. Default body cap: the request is a prompt and
 	// a few numbers.
 	image := r.URL.Path == "/v1/images/generations"
+	// Segmentation (P78 B2): costed as ONE generated image (the type's
+	// imageWhPerImage) per successful request, whatever the prompt count; the
+	// body is an image in base64 and the reply is RLE masks, so the capture
+	// is summarized on 2xx like images.
+	segment := r.URL.Path == "/v1/images/segmentations"
 	maxBody := int64(32 << 20)
 	if audio && !tts {
 		maxBody = 64 << 20
@@ -803,7 +812,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	if int64(len(body)) > maxBody {
 		msg := fmt.Sprintf("request body is larger than the %d MiB limit on %s", maxBody>>20, r.URL.Path)
 		slog.Warn("body over cap", "path", r.URL.Path, "capBytes", maxBody)
-		writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", msg)
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "request_too_large", msg)
 		return
 	}
 	// As it arrived, for a handoff to forward (handOver): everything below
@@ -1365,7 +1374,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 		// The candidate stages of the chain (chain.go): this backend's body.
 		c := &chainCtx{p: p, w: w, r: r, caller: caller, served: served, body: candBody, guards: guards,
-			name: name, backend: backend, pr: pr, candBody: candBody, streaming: streaming, image: image, audio: audio,
+			name: name, backend: backend, pr: pr, candBody: candBody, streaming: streaming, image: image, segment: segment, audio: audio,
 			sttReq: sttReq, sttJoin: sttJoin, live: live, cancelReq: cancelReq}
 		if _, refused := runBody(bodyStages, c, false); refused != nil {
 			// The deferred release()/done() free the slot and the ref.
@@ -1748,6 +1757,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				images = imagesFromBody(body)
 				costUSD = p.cost.ImageRequestUSD(backend.Type, images)
 			}
+		case segment:
+			if status >= 200 && status < 300 {
+				images = 1
+				costUSD = p.cost.ImageRequestUSD(backend.Type, images)
+			}
 		case tts:
 			audioBytes = sc.written
 			costUSD = p.cost.AudioRequestUSD(backend.Type, int(sc.written))
@@ -1820,6 +1834,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		metrics.Request(prov, name, statusStr)
 		if image {
 			metrics.Cost(prov, name, "image", costUSD)
+		} else if segment {
+			metrics.Cost(prov, name, "segment", costUSD)
 		} else if tts || audio {
 			metrics.Cost(prov, name, "audio", costUSD)
 		} else {
@@ -1856,6 +1872,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 					n = imagesFromBody(body)
 				}
 				respBody = fmt.Sprintf("<%d image(s), %d bytes>", n, sc.written)
+			}
+		} else if segment && status >= 200 && status < 300 {
+			if p.capturePayloads {
+				respBody = fmt.Sprintf("<%d image(s) segmented, %d bytes>", images, sc.written)
 			}
 		} else if tts {
 			if p.capturePayloads {
@@ -2494,7 +2514,8 @@ func (p *Proxy) filterByPaused(cands []config.Candidate) []config.Candidate {
 // onto, not a table that is already authoritative — see the gate in
 // handleInference for why the audio and chat routes are deliberately absent.
 var routeEmits = map[string]string{
-	"/v1/images/generations": config.ModalityImage,
+	"/v1/images/generations":   config.ModalityImage,
+	"/v1/images/segmentations": config.ModalityMask,
 }
 
 // modelIO is a candidate's inputs/outputs. The cost model is the one that knows
@@ -3257,6 +3278,7 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 
 	chatM, embM, ttsM := pick("chat"), pick("embeddings"), pick("audio.tts")
 	imgM := pick("image.generate")
+	segM := pick("image.segment")
 	sttM := first(sttBatch, pick("audio.stt"))        // batch example (transcriptions)
 	rtM := first(sttRealtime, pick("audio.realtime")) // realtime example (ws)
 	type endpoint struct {
@@ -3359,6 +3381,18 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 				"metering": "Billed per generated image (the request's `n`, default 1), not per byte — a PNG's size measures the picture, not the diffusion. Successful responses are NOT captured to the activity log: the row records a `<N image(s), M bytes>` summary instead, because 4 KiB of truncated base64 is neither viewable nor valid JSON. A failed response IS captured, whole.",
 				"note":     "Matching is on OUTPUT: a model serves this route iff its `outputs` on /v1/models contains \"image\". A vision chat model has \"image\" in its `modalities` (what it ACCEPTS) and \"text\" in its `outputs`, so it is refused here — accepting a picture and producing one are different claims. Outputs are inferred from the model's cost type, which must name a generator (`diffusion`, `txt2img`, `sdxl`).",
 			}},
+		{"/v1/images/segmentations", "POST", "image.segment", []string{config.ModalityImage, config.ModalityText}, []string{config.ModalityMask}, "Image segmentation (SAM 3.1). JSON in: one base64 image and 1..16 prompts, each a `concept` (text and/or exemplar boxes; returns EVERY instance) or a `visual` prompt (points and/or one box; returns ONE object). JSON out: per prediction a score, a pixel box and a COCO RLE mask. Synchronous; one request holds its fairshare slot while the GPU runs. Only models that EMIT mask are accepted; anything else is refused 400 at the door rather than cold-loaded first.", byCap["image.segment"], false,
+			map[string]any{
+				"curl": fmt.Sprintf("curl -sS %s/v1/images/segmentations -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"image\":\"data:image/jpeg;base64,<base64>\",\"prompts\":[{\"type\":\"concept\",\"text\":\"wheel\"},{\"type\":\"visual\",\"points\":[{\"x\":412.5,\"y\":230,\"label\":1}]}]}'", base, segM),
+				"body": map[string]any{"model": segM, "image": "data:image/jpeg;base64,<base64>", "prompts": []map[string]any{
+					{"type": "concept", "text": "wheel"},
+					{"type": "visual", "points": []map[string]any{{"x": 412.5, "y": 230.0, "label": 1}}},
+				}, "threshold": 0.5, "max_masks": 100, "output": "rle"},
+				"coordinates": "ONE PIXEL FRAME. Coordinates are pixels of the image AFTER EXIF orientation is applied (the upright image a browser shows); the response's `image.width`/`image.height` is that frame, so check it against yours. Origin is the top-left corner of the top-left pixel; x right, y down; floats allowed; pixel (i, j) covers [i, i+1) x [j, j+1). A point is {x, y, label}: 0 <= x <= width, 0 <= y <= height, label 1 = include and 0 = exclude (integers only). A box is [x0, y0, x1, y1], corners not centre-size, x0 < x1 and y0 < y1, inside [0, width] x [0, height]. Normalized (0..1) coordinates are NOT accepted. An out-of-range value is refused 400 with `param` naming the path (e.g. prompts[1].points[0].x); it is never clamped. Outputs use the same frame: `box` is [x0, y0, x1, y1] pixels and `mask` is COCO RLE {size: [height, width], counts} (height first, column-major).",
+				"limits":      "Request body 32 MiB (413 request_too_large past it). Decoded image at most 4096x4096 (400 image_too_large). Image is a data URL or bare base64 of JPEG/PNG/WebP; URLs are refused 400 because corrallm fetches nothing. A concept prompt takes text and boxes, never points. The shim, not corrallm, validates the prompt fields and returns the 400s.",
+				"metering":    "Billed as ONE generated image per successful request (the type's imageWhPerImage), whatever the prompt count. The activity row stores a `<N image(s) segmented, M bytes>` summary on success and the full body on failure.",
+				"note":        "Matching is on OUTPUT: a model serves this route iff its `outputs` on /v1/models contains \"mask\". Outputs are inferred from the model's cost type, which must name a segmenter (`segment`).",
+			}},
 		{"/v1/realtime", "GET", "audio.stt", aud, txt, "Live transcription over WebSocket (OpenAI Realtime transcription schema). Holds one fairshare slot for the session.", sttRealtime, true,
 			map[string]any{
 				"ws_url":   fmt.Sprintf("%s/v1/realtime?model=%s&intent=transcription", wsBase, rtM),
@@ -3428,7 +3462,7 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		// image — while neither returns one.
 		"modalities": map[string]any{
 			"description": "Every endpoint declares `accepts` and `emits`; every model on /v1/models declares `modalities` (what it accepts) and `outputs` (what it returns). A model serves a route when its outputs cover the route's `emits` and it accepts what you are sending.",
-			"vocabulary":  []string{config.ModalityText, config.ModalityImage, config.ModalityAudio, config.ModalityVector, config.ModalityRanking},
+			"vocabulary":  []string{config.ModalityText, config.ModalityImage, config.ModalityAudio, config.ModalityVector, config.ModalityRanking, config.ModalityMask},
 			"note":        "Inputs are PROBED where the backend can be asked; outputs are inferred from the model's cost type, because no backend corrallm talks to reports what it emits yet.",
 		},
 		"models_by_capability": byCap,

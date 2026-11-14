@@ -1155,8 +1155,8 @@ func TestOversizeBodyIs413NotTruncation(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatalf("body is not a JSON error envelope: %v (%q)", err, w.Body.String())
 	}
-	if env.Error.Type != "invalid_request_error" {
-		t.Errorf("error.type = %q, want invalid_request_error", env.Error.Type)
+	if env.Error.Type != "request_too_large" {
+		t.Errorf("error.type = %q, want request_too_large", env.Error.Type)
 	}
 }
 

@@ -141,6 +141,7 @@ type chainCtx struct {
 	candBody  []byte // the candidate's body before any candidate stage
 	streaming bool
 	image     bool
+	segment   bool // /v1/images/segmentations: same reply handling as image
 	audio     bool
 	loadCost  float64
 	sttReq    sttRequest
@@ -348,7 +349,7 @@ func candidateChain() ([]BodyStage, writerOrders) {
 	}}
 	status := WriterStage{name: "status", applies: always, wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
 		c.sc = &statusCapture{ResponseWriter: out, code: http.StatusOK, streaming: c.streaming, live: c.live}
-		if c.image {
+		if c.image || c.segment {
 			// Nothing reads an image reply's body for usage — it has none — and
 			// the only body worth retaining is a small JSON error. Retaining
 			// the default 1 MiB would hold a megabyte of base64 per in-flight
@@ -389,7 +390,7 @@ func candidateChain() ([]BodyStage, writerOrders) {
 	// Text routes only: image and audio replies carry no usage object.
 	// Not on /v1/messages: Anthropic's usage objects are not OpenAI's, and
 	// its clients do not read a cost.
-	cost := WriterStage{name: "cost", applies: func(c *chainCtx) bool { return !c.image && !c.audio && !c.messages() },
+	cost := WriterStage{name: "cost", applies: func(c *chainCtx) bool { return !c.image && !c.segment && !c.audio && !c.messages() },
 		wrap: func(c *chainCtx, out http.ResponseWriter) http.ResponseWriter {
 			backend, loadCost := c.backend, c.loadCost
 			c.cw = &costWriter{ResponseWriter: out, price: func(u usage) (float64, string) {

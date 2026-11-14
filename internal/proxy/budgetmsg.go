@@ -249,5 +249,8 @@ var errorContract = map[string]any{
 		{"status": 401, "means": "no key, or a key corrallm does not know", "do": "fail"},
 		{"status": 403, "means": "this key may not use this model", "do": "fail, or use a model the key may use"},
 		{"status": 400, "means": "the request is malformed", "do": "fail"},
+		{"status": 413, "types": []string{"request_too_large"},
+			"means": "the body is over the route's cap (32 MiB on /v1/images/segmentations; 64 MiB on audio uploads); the message names the cap",
+			"do":    "shrink the request; do not retry as is"},
 	},
 }
