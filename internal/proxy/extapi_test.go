@@ -191,14 +191,14 @@ func TestExtAPIOwnerScoping(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/files", body)
 	req.Header.Set("Authorization", "Bearer sk-a")
 	req.Header.Set("Content-Type", ct)
-	req.Header.Set(HeaderOwner, ownerID("sk-b")) // forged
+	req.Header.Set(HeaderOwner, ownerHash("key:sk-b")) // forged
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
 	}
 	ext.mu.Lock()
-	if ext.owners[0] != ownerID("sk-a") {
+	if ext.owners[0] != ownerHash("key:sk-a") {
 		t.Errorf("extension saw owner %q, want sk-a's", ext.owners[0])
 	}
 	if ext.auths[0] != "" {
@@ -228,19 +228,100 @@ func TestExtAPIOwnerScoping(t *testing.T) {
 	}
 }
 
+// errEnvelope decodes OpenAI's {error:{message,type,code}} and fails on
+// anything else (plain text, wrong content type).
+func errEnvelope(t *testing.T, rec *httptest.ResponseRecorder) (typ, code string) {
+	t.Helper()
+	var e struct {
+		Error struct{ Message, Type, Code string }
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || e.Error.Message == "" || e.Error.Type == "" {
+		t.Fatalf("not an OpenAI error envelope: %q (%v)", rec.Body.String(), err)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("content-type %q", ct)
+	}
+	return e.Error.Type, e.Error.Code
+}
+
 func TestExtAPIAuth(t *testing.T) {
 	ext := newFakeColmap(t)
 	r, _ := extAPIMount(t, extAPIConfig(t, ext.URL))
-	if rec := extReq(r, http.MethodGet, "/v1/files", "", nil, ""); rec.Code != http.StatusUnauthorized {
-		t.Errorf("no key: %d", rec.Code)
-	}
 	if rec := extReq(r, http.MethodGet, "/v1/files", "sk-chat", nil, ""); rec.Code != http.StatusForbidden {
 		t.Errorf("key without the extension's models: %d %s", rec.Code, rec.Body.String())
+	} else if typ, _ := errEnvelope(t, rec); typ != "permission_error" {
+		t.Errorf("403 type %q", typ)
 	}
 	ext.mu.Lock()
 	defer ext.mu.Unlock()
 	if len(ext.owners) != 0 {
 		t.Errorf("refused calls reached the extension: %d", len(ext.owners))
+	}
+}
+
+// Open by default (owner 11-14): keyless and unknown callers are served.
+func TestExtAPIKeylessAllowedByDefault(t *testing.T) {
+	ext := newFakeColmap(t)
+	r, _ := extAPIMount(t, extAPIConfig(t, ext.URL))
+	for _, key := range []string{"", "sk-stranger"} {
+		if rec := extReq(r, http.MethodGet, "/v1/files", key, nil, ""); rec.Code != http.StatusOK {
+			t.Errorf("key %q: %d %s", key, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// unknownKeys.allow:false locks the extension routes like the inference ones.
+func TestExtAPIUnknownKeysDisallowed(t *testing.T) {
+	ext := newFakeColmap(t)
+	cfg := extAPIConfig(t, ext.URL)
+	no := false
+	cfg.UnknownKeys.Allow = &no
+	r, _ := extAPIMount(t, cfg)
+	for _, key := range []string{"", "sk-stranger"} {
+		rec := extReq(r, http.MethodGet, "/v1/files", key, nil, "")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("key %q: %d %s", key, rec.Code, rec.Body.String())
+		}
+		if typ, code := errEnvelope(t, rec); typ != "invalid_request_error" || code != "invalid_api_key" {
+			t.Errorf("key %q: type %q code %q", key, typ, code)
+		}
+	}
+	if rec := extReq(r, http.MethodGet, "/v1/files", "sk-a", nil, ""); rec.Code != http.StatusOK {
+		t.Errorf("recognized key: %d", rec.Code)
+	}
+	ext.mu.Lock()
+	defer ext.mu.Unlock()
+	if len(ext.owners) != 1 {
+		t.Errorf("refused calls reached the extension: %d", len(ext.owners))
+	}
+}
+
+// Anonymous callers share one owner and see each other's files; a keyed
+// caller never sees them, nor they its.
+func TestExtAPIAnonymousIsolation(t *testing.T) {
+	ext := newFakeColmap(t)
+	r, _ := extAPIMount(t, extAPIConfig(t, ext.URL))
+	up := func(key string) *httptest.ResponseRecorder {
+		body, ct := multipartFile(t, []byte("x"))
+		return extReq(r, http.MethodPost, "/v1/files", key, body, ct)
+	}
+	if rec := up(""); rec.Code != http.StatusOK { // file-1, anonymous
+		t.Fatalf("anon upload: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := up("sk-a"); rec.Code != http.StatusOK { // file-2, sk-a
+		t.Fatalf("keyed upload: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := extReq(r, http.MethodGet, "/v1/files/file-1", "sk-stranger", nil, ""); rec.Code != http.StatusOK {
+		t.Errorf("another anonymous caller: %d", rec.Code)
+	}
+	if rec := extReq(r, http.MethodGet, "/v1/files/file-1", "sk-a", nil, ""); rec.Code != http.StatusNotFound {
+		t.Errorf("keyed sees anonymous file: %d", rec.Code)
+	}
+	if rec := extReq(r, http.MethodGet, "/v1/files/file-2", "", nil, ""); rec.Code != http.StatusNotFound {
+		t.Errorf("anonymous sees keyed file: %d", rec.Code)
+	}
+	if ownerID(config.Caller{}) == ownerID(config.Caller{Recognized: true}) {
+		t.Error("anonymous owner collides with the empty key")
 	}
 }
 
@@ -444,5 +525,23 @@ func TestCapabilitiesListExtensionRoutes(t *testing.T) {
 	r2, _ := extAPIMount(t, mkConfig(t, "m", ext.URL))
 	if strings.Contains(extReq(r2, http.MethodGet, "/v1/capabilities", "", nil, "").Body.String(), `"/v1/reconstructions"`) {
 		t.Error("reconstructions listed with no extension serving it")
+	}
+}
+
+// The inference-route refusal of a stranger is OpenAI's JSON envelope.
+func TestInferenceUnknownKeyRefusalIsJSON(t *testing.T) {
+	ext := newFakeColmap(t)
+	cfg := extAPIConfig(t, ext.URL)
+	no := false
+	cfg.UnknownKeys.Allow = &no
+	r, _ := extAPIMount(t, cfg)
+	for _, key := range []string{"", "sk-stranger"} {
+		rec := extReq(r, http.MethodPost, "/v1/chat/completions", key, strings.NewReader(`{"model":"chatty"}`), "application/json")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("key %q: %d %s", key, rec.Code, rec.Body.String())
+		}
+		if typ, code := errEnvelope(t, rec); typ != "invalid_request_error" || code != "invalid_api_key" {
+			t.Errorf("key %q: type %q code %q", key, typ, code)
+		}
 	}
 }

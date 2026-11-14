@@ -55,10 +55,25 @@ var extAPICreateEmits = map[string]string{
 	"/v1/reconstructions": config.ModalityScene,
 }
 
-// ownerID is the owner a caller key maps to: a hash, so the extension never
-// holds a credential.
-func ownerID(key string) string {
-	sum := sha256.Sum256([]byte(key))
+// anonymousOwnerKey names the one owner every keyless or unrecognized caller
+// shares (owner policy 11-14: extensions are open until locked down). It is a
+// fixed constant, so no key, empty or otherwise, hashes to it by accident.
+// Anonymous callers see each other's files and jobs; a recognized key never
+// sees them, and they never see a recognized key's.
+const anonymousOwnerKey = "corrallm:anonymous"
+
+// ownerID is the owner a caller maps to: a hash, so the extension never
+// holds a credential. A recognized key owns its own objects; every other
+// caller, keyless or unknown, shares the anonymous owner.
+func ownerID(c config.Caller) string {
+	if !c.Recognized {
+		return ownerHash(anonymousOwnerKey)
+	}
+	return ownerHash("key:" + c.Key)
+}
+
+func ownerHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -166,21 +181,20 @@ func (p *Proxy) handleExtensionAPI(w http.ResponseWriter, r *http.Request) {
 		p.logReq(r, row)
 	}
 
-	// Files and jobs belong to a key; a caller with none has nobody to own them.
-	key := callerKey(r)
-	if key == "" {
-		openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "",
-			"this route needs a corrallm key: files, uploads and jobs belong to the key that made them")
-		finish(http.StatusUnauthorized, "no key")
-		return
-	}
-	caller := p.resolveCaller(key)
+	// Same caller policy as the inference routes: a keyless or unknown
+	// caller is served unless unknownKeys.allow is false.
+	caller := p.resolveCaller(callerKey(r))
 	if msg := p.revokedKey(caller); msg != "" {
 		openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "", msg)
 		finish(http.StatusUnauthorized, msg)
 		return
 	}
-	key = caller.Key
+	if !caller.Recognized && !cfg.UnknownKeys.Allowed() {
+		openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "", unknownKeyMsg)
+		finish(http.StatusUnauthorized, "unrecognized key")
+		return
+	}
+	key := caller.Key
 	row.Key = key
 
 	// The key must reach at least one model this extension provides.
@@ -261,7 +275,7 @@ func (p *Proxy) handleExtensionAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Header.Del(HeaderOwner)
-	r.Header.Set(HeaderOwner, ownerID(key))
+	r.Header.Set(HeaderOwner, ownerID(caller))
 	r.Header.Set(HeaderRequestID, ticket)
 
 	served := row.Served
@@ -334,8 +348,8 @@ func (p *Proxy) extAPIEndpoints(base string, byCap map[string][]string) []extAPI
 	if ms := byCap["scene.reconstruct"]; len(ms) > 0 {
 		recM = ms[0]
 	}
-	scope := "Scoped to your key: every object belongs to the key that made it, lists show only yours, and another key's id answers 404 (existence is not disclosed). These objects exist for /v1/reconstructions only; no other route reads them."
-	errs := "Errors use OpenAI's envelope {error:{message,type,param,code}}. Statuses: 400 invalid_request_error (param names the field) · 401 · 403 · 404 · 409 (the object's state forbids the call) · 413 request_too_large · 429 · 502 extension unreachable · 503 extension restarting · 507 (storage quota or disk full)."
+	scope := "Scoped to your key: every object belongs to the key that made it, lists show only yours, and another key's id answers 404 (existence is not disclosed). Callers with no key, or a key corrallm does not know, are served while unknownKeys.allow is not false and share ONE anonymous owner: they see each other's files and jobs, never a keyed caller's. These objects exist for /v1/reconstructions only; no other route reads them."
+	errs := "Errors use OpenAI's envelope {error:{message,type,param,code}}. Statuses: 400 invalid_request_error (param names the field) · 401 (no key or unknown key while unknownKeys.allow is false; code invalid_api_key) · 403 (permission_error: the key may not use this extension's models) · 404 · 409 (the object's state forbids the call) · 413 request_too_large · 429 · 502 extension unreachable · 503 extension restarting · 507 (storage quota or disk full)."
 	var out []extAPIEndpoint
 	if claimed("/v1/files") {
 		out = append(out, extAPIEndpoint{

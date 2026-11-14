@@ -753,6 +753,10 @@ func (p *Proxy) Mount(mux interface {
 	}
 }
 
+// unknownKeyMsg is the refusal when unknownKeys.allow is false.
+const unknownKeyMsg = "unrecognized or missing caller key: this corrallm requires keys to be " +
+	"assigned a priority group before it will serve them"
+
 // writeJSONError answers with OpenAI's error envelope, and with a Content-Type
 // that says so.
 //
@@ -1040,7 +1044,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(HeaderGroupDenied, caller.Requested)
 	}
 	if msg := p.revokedKey(caller); msg != "" {
-		writeJSONError(w, http.StatusUnauthorized, "invalid_api_key", msg)
+		openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "", msg)
 		return
 	}
 	if !recognized && !p.config().UnknownKeys.Allowed() {
@@ -1049,8 +1053,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// 401 rather than 429 — this is not backpressure and no amount of
 		// retrying fixes it; the caller needs an operator, and the message
 		// says so rather than leaving them to retry into a wall.
-		http.Error(w, "unrecognized caller key: this corrallm requires keys to be "+
-			"assigned a priority group before it will serve them", http.StatusUnauthorized)
+		openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "", unknownKeyMsg)
 		return
 	}
 	weight := group.EffectiveWeight()
@@ -2014,7 +2017,7 @@ func (p *Proxy) handleRealtime(w http.ResponseWriter, r *http.Request) {
 	}
 	rtCaller := p.resolveCaller(key)
 	if msg := p.revokedKey(rtCaller); msg != "" {
-		writeJSONError(w, http.StatusUnauthorized, "invalid_api_key", msg)
+		openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "", msg)
 		return
 	}
 	key = rtCaller.Key
