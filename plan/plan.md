@@ -461,8 +461,12 @@ Request shape (spec/shim, NOT my earlier chat proposal): `image` is a string (da
 "concept"` (text, box exemplars) or `"visual"` (points/box), response `results[].predictions[]` {score, box, area, mask RLE}.
 **Owner 11-14 "Let's go":** D4a yes (yield mid-stage via kill + resume), D7 stop the service after 60 s, D8 defaults (EXIF GPS on,
 7 d expiry, 50 GiB/key, 5000 images/job), COLMAP engine = source build (17 apt dev packages; no passwordless sudo here → owner
-runs the apt line). ◐ B3 corrallm job proxy + gpu1 leases (agent). ◻ B4 colmap plugin (ext/plugins/colmap) after B3 freezes
-the lease API + apt packages installed.
+runs the apt line). ✅ B3 83cd361..15a2d71 (not deployed): `Extension.Routes` + `Extension.Lease {token, max, yieldGrace}`; streaming
+proxy for /v1/files, /v1/uploads, /v1/reconstructions with owner header = sha256(caller key) (forged one replaced; lists
+filtered by the extension); lease API POST/GET?wait/DELETE /api/v1/leases (429 lease_busy + Retry-After, 10 s fresh
+protection, 90 s expiry, D7 stop after yieldGrace); errors in OpenAI shape (invalid_request_error + code; 507
+insufficient_storage). Risks: routes mount at boot only (a reload does not add a route); D7-stopped persistent ext restarts
+on next request; GPU-seconds per owner not in events. Apt deps installed by owner 11-14. ◐ B4 colmap plugin (agent).
 **next (was):** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
 proxy) → M1 when the HF licence is approved + a window is picked.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
