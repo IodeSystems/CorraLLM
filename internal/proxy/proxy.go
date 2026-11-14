@@ -1235,7 +1235,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		admitStart := time.Now()
 		// group.Interruptible OR the request's own opt-in. A caller can only
 		// widen this, never narrow it — see retryableRequest.
-		// Slot-aware dequeue (sched/slotpref.go): nil unless slotAffinity.
+		// Slot-aware dequeue (sched/slotpref.go): nil unless slotAffinity or
+		// slotAwareDequeue.
 		slotHint := p.slotHint(r, backend)
 		release, reqCtx, err := p.admit(sched.WithSlotHint(p.admitCtx(ctx, r, key), slotHint), name, backend, groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
@@ -1441,6 +1442,10 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			resp.Header.Del(HeaderRequested)
 			resp.Header.Del(HeaderRequestID)
 			resp.Header.Set(HeaderServed, name)
+			resp.Header.Del(HeaderSlot) // an upstream corrallm's slot is not ours
+			if v := lease.header(); v != "" {
+				resp.Header.Set(HeaderSlot, v)
+			}
 			for _, sc := range cand.QuotaScopes(p.config()) {
 				p.quota.ObserveResponse(sc, resp.StatusCode, resp.Header)
 			}
@@ -1790,7 +1795,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		}
 		costUSD += loadCost
 		freedInst, freedSlot := lease.freed(u)
-		release(sched.Done{CostUSD: costUSD, SlotInstance: freedInst, Slot: freedSlot})
+		skipMax, skipWait := backend.SlotSkipBound()
+		release(sched.Done{CostUSD: costUSD, SlotInstance: freedInst, Slot: freedSlot,
+			SlotSkipMax: skipMax, SlotSkipWait: skipWait, PreferUnsettled: backend.SlotAwareDequeue})
 
 		// Charge the metered cost against this backend's declared spend windows.
 		// Here rather than in ObserveResponse because cost is only knowable now:
@@ -3443,8 +3450,16 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 				HeaderLoadMS:      "Milliseconds waiting for a backend to become resident (0 when it was loaded).",
 				HeaderTTFBMS:      "Milliseconds from dispatch upstream to the upstream's response headers.",
 				HeaderTranscodeMS: "Milliseconds corrallm spent converting an audio upload (0 when none was needed).",
+				HeaderSlot:        "The llama.cpp slot the reply runs on, `<instance>/<id_slot>` (split on the last `/`; instance = the backend process, unique across backends and hosts). Only for models with slotAffinity or slotAwareDequeue, and only when the slot is chosen before the reply starts. Informational: no client needs it. With slotAwareDequeue a freed slot goes first to a queued turn whose previous turn ran on it, so a client running many sessions may use it to keep a request queued per slot.",
 				HeaderGroupDenied: "A priority group the credential asked for and did not get; the request was served in the key's own group. Absent otherwise.",
 			},
+		},
+		// How corrallm tells one conversation from another (activity row,
+		// prompt-cache attribution, slot affinity, slot-aware dequeue).
+		"conversation": map[string]any{
+			"description": "A chat turn's conversation, in this order: the body's `" + slotcache.PromptCacheKey + "` (OpenAI's field; /v1/chat/completions and /v1/messages); else the " + slotcache.ConversationHeader + " request header; else inferred from the system block and first turn. A declared id is scoped by your caller key: the same string from two keys is two conversations. The body, prompt_cache_key included, goes upstream unchanged. With slotAffinity or slotAwareDequeue, the conversation decides the llama.cpp slot, reported in " + HeaderSlot + " (informational; nothing requires a client to read it).",
+			"header":      slotcache.ConversationHeader,
+			"body_field":  slotcache.PromptCacheKey,
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")

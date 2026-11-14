@@ -43,6 +43,10 @@ const (
 	// reordered: pinned to the previous turn's slot, and granted out of queue
 	// order because that slot had just been freed (sched/slotpref.go).
 	affReordered = "reordered"
+	// reordered-unsettled (slotAwareDequeue): an unsettled turn granted ahead
+	// of a normal pick whose conversation lives on another slot, and given a
+	// free slot.
+	affReorderedUnsettled = "reordered-unsettled"
 )
 
 // slotLease is what slot affinity did with one request.
@@ -54,10 +58,10 @@ type slotLease struct {
 }
 
 // slotHint is the admission hint for slot-aware dequeue: the slot and
-// instance of the conversation's previous turn. nil when the flag is off or
-// nothing is known.
+// instance of the conversation's previous turn. nil when both flags
+// (slotAffinity, slotAwareDequeue) are off or nothing is known.
 func (p *Proxy) slotHint(r *http.Request, backend config.Model) *sched.SlotHint {
-	if !backend.SlotAffinity || backend.Cmd == "" || p.cacheTracker == nil {
+	if !backend.SlotAffinity && !backend.SlotAwareDequeue || backend.Cmd == "" || p.cacheTracker == nil {
 		return nil
 	}
 	c, ok := r.Context().Value(conversationCtxKey{}).(conversation)
@@ -66,6 +70,11 @@ func (p *Proxy) slotHint(r *http.Request, backend config.Model) *sched.SlotHint 
 	}
 	slot, inst := p.cacheTracker.Last(c.id, time.Now().UnixMilli())
 	if slot < 0 || inst == "" {
+		if backend.SlotAwareDequeue {
+			// Unsettled: no slot home. A hint all the same, so a grant ahead
+			// of the normal pick (slotpref.go step b) is recorded.
+			return &sched.SlotHint{Slot: -1}
+		}
 		return nil
 	}
 	return &sched.SlotHint{Instance: inst, Slot: slot}
@@ -164,14 +173,18 @@ func (a *slotAssigner) acquire(served, instance string, n, last, client int, sen
 }
 
 // assignSlot applies slot affinity to one request on a candidate backend:
-// the body to send, what was done ("" when the model's flag is off), and the
-// lease to release when the backend has answered. Off, or not a local
-// backend: the body is returned as it came, byte for byte.
+// the body to send, what was done ("" when the model's flags are off), and
+// the lease to release when the backend has answered. slotAwareDequeue uses
+// the same assignment as slotAffinity: a turn the queue granted on its own
+// slot's release finds that slot free and is pinned to it; an unsettled turn
+// (no slot on this instance) gets the least recently assigned free slot, so
+// free slots are spread rather than llama.cpp's empty-first pick. Both off,
+// or not a local backend: the body is returned as it came, byte for byte.
 //
 // chatOut reports that the body going out is an OpenAI chat body to an
 // OpenAI-compatible backend (chat completions, or /v1/messages converted).
 func (p *Proxy) assignSlot(r *http.Request, pr *proc.Process, served string, backend config.Model, body []byte, chatOut bool, hint *sched.SlotHint) ([]byte, slotLease) {
-	if !backend.SlotAffinity || backend.Cmd == "" || pr == nil {
+	if !backend.SlotAffinity && !backend.SlotAwareDequeue || backend.Cmd == "" || pr == nil {
 		return body, slotLease{slot: -1, release: func() {}}
 	}
 	inst := pr.Instance()
@@ -194,17 +207,32 @@ func (p *Proxy) assignSlot(r *http.Request, pr *proc.Process, served string, bac
 	if sent && client >= 0 {
 		lease.slot = client
 	}
-	if outcome == affPinned && hint != nil && hint.Reordered.Load() {
-		lease.outcome = affReordered
+	if hint != nil && hint.Reordered.Load() {
+		switch outcome {
+		case affPinned:
+			lease.outcome = affReordered
+		case affAssigned:
+			lease.outcome = affReorderedUnsettled
+		}
 	}
 	return body, lease
 }
 
+// header is the X-Corrallm-Slot value, "<instance>/<slot>", when the slot
+// the request runs on is known before the reply starts (corrallm chose it,
+// or the caller sent id_slot); "" otherwise.
+func (l slotLease) header() string {
+	if l.instance == "" || l.slot < 0 {
+		return ""
+	}
+	return l.instance + "/" + strconv.Itoa(l.slot)
+}
+
 // freed is the llama.cpp slot a finished request leaves free, for the
 // scheduler's release: the reply's id_slot when it has one, else the slot
-// the lease knew. Zero Done fields (nothing known) when the flag is off.
+// the lease knew. Zero Done fields (nothing known) when both flags are off.
 func (l slotLease) freed(u usage) (string, int) {
-	if l.outcome == "" || l.instance == "" {
+	if l.instance == "" {
 		return "", -1
 	}
 	if u.IDSlot != nil && *u.IDSlot >= 0 {

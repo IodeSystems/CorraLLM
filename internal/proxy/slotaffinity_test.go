@@ -224,62 +224,107 @@ func TestHelperSlotLlama(t *testing.T) {
 	}))
 }
 
-// Off: the backend gets the client's bytes. On (--parallel 2): the same bytes
-// with "id_slot":N spliced first, and activity_cache says what was done.
-func TestSlotAffinityEndToEnd(t *testing.T) {
-	bodies := func(on bool) ([]string, []store.CacheRow, []string) {
-		dir := t.TempDir()
-		l, err := net.Listen("tcp", "127.0.0.1:0")
+// slotRig is a proxy in front of the stand-in llama-server (--parallel 2,
+// maxConcurrent 2) with the given flags. send posts one chat body as caller
+// key; bodies returns what the backend got, in order; rows the cache rows.
+type slotRig struct {
+	t    *testing.T
+	dir  string
+	h    http.Handler
+	st   *store.Store
+	sent int
+}
+
+func newSlotRig(t *testing.T, affinity, dequeue bool) *slotRig {
+	t.Helper()
+	dir := t.TempDir()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	cfg := mkConfig(t, "mock", fmt.Sprintf("http://127.0.0.1:%d", port))
+	m := cfg.Models["mock"]
+	m.Cmd = fmt.Sprintf("%s='%d|%s' exec %s -test.run=^TestHelperSlotLlama$ # --parallel 2", slotHelperEnv, port, dir, os.Args[0])
+	m.MaxConcurrent = 2
+	m.SlotAffinity = affinity
+	m.SlotAwareDequeue = dequeue
+	cfg.Models["mock"] = m
+	st, _ := store.Open(context.Background(), ":memory:")
+	t.Cleanup(func() { _ = st.Close() })
+	mgr := proc.NewManager(cfg)
+	mgr.SetHealthTimeout(20 * time.Second)
+	t.Cleanup(mgr.Shutdown)
+	px := New(cfg, mgr, sched.New(), st)
+	px.SetCacheTracker(cacheattr.NewTracker(0, nil))
+	r := chi.NewRouter()
+	px.Mount(r)
+	return &slotRig{t: t, dir: dir, h: r, st: st}
+}
+
+func (g *slotRig) send(body, key string) *httptest.ResponseRecorder {
+	g.t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	rec := httptest.NewRecorder()
+	g.h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		g.t.Fatalf("turn %d: %d %s", g.sent, rec.Code, rec.Body.String())
+	}
+	g.sent++
+	return rec
+}
+
+func (g *slotRig) bodies() []string {
+	g.t.Helper()
+	var got []string
+	for i := range g.sent {
+		b, err := os.ReadFile(filepath.Join(g.dir, fmt.Sprintf("%03d.json", i)))
 		if err != nil {
-			t.Fatal(err)
+			g.t.Fatal(err)
 		}
-		port := l.Addr().(*net.TCPAddr).Port
-		_ = l.Close()
-		cfg := mkConfig(t, "mock", fmt.Sprintf("http://127.0.0.1:%d", port))
-		m := cfg.Models["mock"]
-		m.Cmd = fmt.Sprintf("%s='%d|%s' exec %s -test.run=^TestHelperSlotLlama$ # --parallel 2", slotHelperEnv, port, dir, os.Args[0])
-		m.SlotAffinity = on
-		cfg.Models["mock"] = m
-		st, _ := store.Open(context.Background(), ":memory:")
-		t.Cleanup(func() { _ = st.Close() })
-		mgr := proc.NewManager(cfg)
-		mgr.SetHealthTimeout(20 * time.Second)
-		t.Cleanup(mgr.Shutdown)
-		px := New(cfg, mgr, sched.New(), st)
-		px.SetCacheTracker(cacheattr.NewTracker(0, nil))
-		r := chi.NewRouter()
-		px.Mount(r)
+		got = append(got, string(b))
+	}
+	return got
+}
+
+func (g *slotRig) rows() []store.CacheRow {
+	g.t.Helper()
+	rows, err := g.st.CacheRows("mock", 0, time.Now().Add(time.Minute).UnixMilli())
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	return rows
+}
+
+// Off: the backend gets the client's bytes and no X-Corrallm-Slot. On
+// (slotAffinity, or slotAwareDequeue alone): the same bytes with "id_slot":N
+// spliced first, X-Corrallm-Slot names it, and activity_cache says what was
+// done.
+func TestSlotAffinityEndToEnd(t *testing.T) {
+	run := func(affinity, dequeue bool) ([]string, []store.CacheRow, []string, []string) {
+		g := newSlotRig(t, affinity, dequeue)
 		msgs := `{"role":"system","content":"` + strings.Repeat("sys ", 300) + `"},{"role":"user","content":"task"}`
-		var sent []string
-		for i := range 3 {
+		var sent, hdrs []string
+		for range 3 {
 			body := `{"model":"mock","messages":[` + msgs + `]}`
 			sent = append(sent, body)
-			rec := httptest.NewRecorder()
-			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
-			if rec.Code != http.StatusOK {
-				t.Fatalf("turn %d: %d %s", i, rec.Code, rec.Body.String())
-			}
+			hdrs = append(hdrs, g.send(body, "").Header().Get(HeaderSlot))
 			msgs += `,{"role":"assistant","content":"ok"},{"role":"user","content":"more"}`
 		}
-		var got []string
-		for i := range 3 {
-			b, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("%03d.json", i)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			got = append(got, string(b))
-		}
-		rows, err := st.CacheRows("mock", 0, time.Now().Add(time.Minute).UnixMilli())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return got, rows, sent
+		return g.bodies(), g.rows(), sent, hdrs
 	}
 
-	got, rows, sent := bodies(false)
+	got, rows, sent, hdrs := run(false, false)
 	for i := range got {
 		if got[i] != sent[i] {
 			t.Errorf("off, turn %d: the backend got a different body:\n got %.120s\nsent %.120s", i, got[i], sent[i])
+		}
+		if hdrs[i] != "" {
+			t.Errorf("off, turn %d: %s %q set", i, HeaderSlot, hdrs[i])
 		}
 	}
 	for _, row := range rows {
@@ -288,20 +333,82 @@ func TestSlotAffinityEndToEnd(t *testing.T) {
 		}
 	}
 
-	got, rows, sent = bodies(true)
-	wantOut := []string{affAssigned, affPinned, affPinned}
-	for i := range got {
-		want := `{"id_slot":0,` + sent[i][1:]
-		if got[i] != want {
-			t.Errorf("on, turn %d:\n got %.120s\nwant %.120s", i, got[i], want)
+	for _, mode := range []struct {
+		name              string
+		affinity, dequeue bool
+	}{{"slotAffinity", true, false}, {"slotAwareDequeue", false, true}} {
+		got, rows, sent, hdrs = run(mode.affinity, mode.dequeue)
+		wantOut := []string{affAssigned, affPinned, affPinned}
+		for i := range got {
+			want := `{"id_slot":0,` + sent[i][1:]
+			if got[i] != want {
+				t.Errorf("%s, turn %d:\n got %.120s\nwant %.120s", mode.name, i, got[i], want)
+			}
+			if !strings.HasPrefix(hdrs[i], "pgid:") || !strings.HasSuffix(hdrs[i], "/0") {
+				t.Errorf("%s, turn %d: %s = %q, want pgid:<n>/0", mode.name, i, HeaderSlot, hdrs[i])
+			}
+		}
+		if len(rows) != 3 {
+			t.Fatalf("%s: rows %d", mode.name, len(rows))
+		}
+		for i, row := range rows {
+			if row.Affinity != wantOut[i] || row.Slot != 0 {
+				t.Errorf("%s, row %d: affinity %q slot %d, want %q 0", mode.name, i, row.Affinity, row.Slot, wantOut[i])
+			}
+			if want := row.Instance + "/0"; hdrs[i] != want {
+				t.Errorf("%s, row %d: header %q, want %q (the row's instance)", mode.name, i, hdrs[i], want)
+			}
 		}
 	}
-	if len(rows) != 3 {
-		t.Fatalf("rows %d", len(rows))
+}
+
+// Unsettled turns (no slot home) are spread over the free slots, least
+// recently assigned first, rather than all landing on slot 0.
+func TestSlotAwareDequeueSpreadsUnsettled(t *testing.T) {
+	g := newSlotRig(t, false, true)
+	var hdrs []string
+	for i := range 4 {
+		body := fmt.Sprintf(`{"model":"mock","messages":[{"role":"user","content":"new conversation %d"}]}`, i)
+		hdrs = append(hdrs, g.send(body, "").Header().Get(HeaderSlot))
+	}
+	for i, want := range []string{"/0", "/1", "/0", "/1"} {
+		if !strings.HasSuffix(hdrs[i], want) {
+			t.Errorf("unsettled turn %d: %s = %q, want slot %s", i, HeaderSlot, hdrs[i], want)
+		}
+	}
+}
+
+// prompt_cache_key names the conversation for slot assignment: a turn whose
+// head changed (pruned) still goes home; the same string from another caller
+// key is another conversation; the field reaches the backend untouched.
+func TestPromptCacheKeySlotHome(t *testing.T) {
+	g := newSlotRig(t, false, true)
+	turn := func(key, head string) string {
+		return `{"model":"mock","prompt_cache_key":"` + key + `","messages":[{"role":"system","content":"` + head + `"},{"role":"user","content":"go"}]}`
+	}
+	g.send(turn("sess", "head one"), "sk-a")             // assigned slot 0
+	g.send(turn("other", "x"), "sk-a")                   // assigned slot 1
+	h := g.send(turn("sess", "head two pruned"), "sk-a") // home: slot 0
+	if !strings.HasSuffix(h.Header().Get(HeaderSlot), "/0") {
+		t.Errorf("same prompt_cache_key: %s = %q, want its home slot 0", HeaderSlot, h.Header().Get(HeaderSlot))
+	}
+	g.send(turn("sess", "head one"), "sk-b") // another caller: unsettled
+	rows := g.rows()
+	want := []string{affAssigned, affAssigned, affPinned, affAssigned}
+	if len(rows) != len(want) {
+		t.Fatalf("rows %d, want %d", len(rows), len(want))
 	}
 	for i, row := range rows {
-		if row.Affinity != wantOut[i] || row.Slot != 0 {
-			t.Errorf("on, row %d: affinity %q slot %d, want %q 0", i, row.Affinity, row.Slot, wantOut[i])
+		if row.Affinity != want[i] {
+			t.Errorf("row %d: affinity %q, want %q", i, row.Affinity, want[i])
+		}
+	}
+	if rows[0].Conversation != rows[2].Conversation || rows[0].Conversation == rows[3].Conversation {
+		t.Errorf("conversations %q %q %q: want rows 0 and 2 equal, 3 different", rows[0].Conversation, rows[2].Conversation, rows[3].Conversation)
+	}
+	for i, b := range g.bodies() {
+		if !strings.Contains(b, `"prompt_cache_key":"`) {
+			t.Errorf("turn %d: prompt_cache_key did not reach the backend: %.120s", i, b)
 		}
 	}
 }

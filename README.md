@@ -174,6 +174,13 @@ callers fall into the `default` group.
   corrallm sets no CORS headers; a browser needs them in
   `Access-Control-Expose-Headers` from whatever fronts it. `/v1/capabilities`
   lists them under `response_headers`.
+  For a model with `slotAffinity` or `slotAwareDequeue`, `X-Corrallm-Slot:
+  <instance>/<id_slot>` names the llama.cpp slot the reply runs on (split on the
+  last `/`; absent when corrallm did not choose the slot; informational). A
+  conversation is the body's `prompt_cache_key`, else the
+  `X-Corrallm-Conversation` header, else inferred from its head; a declared id
+  is scoped by caller key
+  (`/v1/capabilities` → `conversation`).
 - **Liveness** (open): `GET /health`, `/healthz`.
 - **Management** (admin token via `Authorization: Bearer` or the `corrallm_token`
   cookie): `POST /api/graphql` and REST at `/api/v1/*` — `overview`, `lanes`,

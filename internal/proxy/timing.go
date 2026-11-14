@@ -63,6 +63,15 @@ const (
 	// The reply body's `model` is whatever the upstream wrote and is left
 	// alone; this header is corrallm's statement, not the backend's.
 	HeaderServed = "X-Corrallm-Served"
+	// HeaderSlot is the llama.cpp slot the reply runs on, "<instance>/<id_slot>"
+	// (split on the LAST "/"): instance is the backend process, so the value is
+	// unique across backends and hosts and changes when the backend restarts.
+	// Set only for a model with slotAffinity or slotAwareDequeue, and only when
+	// the slot is known before the reply starts (corrallm chose it or the
+	// caller sent id_slot). Informational: no client is required to read it;
+	// one running many sessions may use it to keep a request queued per slot,
+	// so a freed slot has a turn of its own conversation waiting.
+	HeaderSlot = "X-Corrallm-Slot"
 )
 
 // setTimingHeaders stamps the breakdown onto a response.
