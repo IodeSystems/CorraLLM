@@ -1,0 +1,33 @@
+# corrallm config block for the sam3 extension. Merge under `extensions:`.
+# Generated into <ext dir>/sam3.1/extension.yaml by `make install-corrallm-plugin`
+# (@DEST@ = the install dir). Source: live `corrallm config export`, 11-14.
+extensions:
+    sam3:
+        cmd: |
+            exec systemd-run --user --scope --quiet --collect \
+              --property=MemoryMax=12G \
+              --property=MemorySwapMax=0 \
+              --setenv=CUDA_VISIBLE_DEVICES=GPU-76a4c775-a47f-61b9-3a9f-9c7d5edfc544 \
+              @DEST@/venv/bin/python -m sam3shim \
+              --port 5821 --dtype bf16 \
+              --checkpoint $HOME/.corrallm/models/sam3.1/sam3.1_multiplex.pt
+        server: box1
+        ramUsage:
+            gpu1: 6800MiB
+            system: 8GB
+        swap:
+            loadSeconds: 45
+        proxy: 5821
+        sticky:
+            ttl: 2m
+            evictCost: low
+            idleUnload: 5m
+        provides:
+            segment:
+                pool: gpu1
+                type: segment
+                maxConcurrent: 1
+                contextPerRequest: 0
+                modalities:
+                    image: {}
+                    text: {}

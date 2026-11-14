@@ -1,4 +1,4 @@
-.PHONY: hooks install install-bin bindir gen dump-schema lint golangci run build dist agents release-dist release-sign site site-push dev deploy test ui-build clean verify-deps verify-docker
+.PHONY: ext-install ext-uninstall ext-test hooks install install-bin bindir gen dump-schema lint golangci run build dist agents release-dist release-sign site site-push dev deploy test ui-build clean verify-deps verify-docker
 
 ADDR    ?= :6502
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
@@ -154,6 +154,19 @@ dev:              ## Frees :6502/:6503, runs air (Go hot-reload) + Vite (delegat
 
 test:             ## Go tests
 	go test ./...
+
+## --- in-tree plugins (ext/plugins/<name>/; each has install-corrallm-plugin) ---
+# Independent of ui-build: ui/dist is the live web root.
+ext-install:      ## Install a plugin into ${CORRALLM_EXT_DIR:-~/.corrallm/ext}: make ext-install EXT=sam3.1
+	@test -n "$(EXT)" -a -d ext/plugins/$(EXT) || { echo "usage: make ext-install EXT=<name>; have: $$(ls ext/plugins)"; exit 2; }
+	$(MAKE) -C ext/plugins/$(EXT) install-corrallm-plugin
+
+ext-uninstall:    ## Uninstall a plugin: make ext-uninstall EXT=sam3.1
+	@test -n "$(EXT)" -a -d ext/plugins/$(EXT) || { echo "usage: make ext-uninstall EXT=<name>; have: $$(ls ext/plugins)"; exit 2; }
+	$(MAKE) -C ext/plugins/$(EXT) uninstall-corrallm-plugin
+
+ext-test:         ## Test every plugin (each plugin's own `make test`)
+	@set -e; for d in ext/plugins/*/; do echo "== $$d"; $(MAKE) -C $$d test; done
 
 # Proves corrallm builds from its OWN go.mod, with nothing borrowed from the
 # machine it is sitting on.

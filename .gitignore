@@ -52,3 +52,12 @@ llm-bench.yaml
 
 # Agent worktrees — checkouts of this repo, never content of it.
 .claude/worktrees/
+
+# In-tree plugins: build output and venvs
+ext/**/.venv/
+ext/**/venv/
+ext/**/.sam3-src/
+ext/**/__pycache__/
+ext/**/*.egg-info/
+ext/**/.pytest_cache/
+ext/**/build/
