@@ -591,10 +591,24 @@ DAG (◻ unless marked):
   0002-0005; scratch tree scratchpad/llama-compact, tests pooltest3 CPU/ASan/UBSan/TSan clean;
   audit no blockers, fixed emplace-before-erase + erase-by-key + skip log DBG). Build
   20261112-081721-ccd360f0 (pinned full sha for the build, ref back to master). Swift on it since
-  00:32:44 11-12. Cap LLAMA_HOST_POOL_COMPACT_MAX_MIB 4096 default. **next:** canary readout
+  00:32:44 11-12. Cap LLAMA_HOST_POOL_COMPACT_MAX_MIB 4096 default.
   51 min readout 01:24: 10 compactions, 19.5 GB moved in 2.04 s (~0.2 s each, ~9.6 GB/s), 5
   skipped → 5 frag evictions (~6/h vs ~40/h before), 2 budget; hit 92.0%, decode 78.0, 0 5xx
-  (462 × 200). **next:** 24 h readout.
+  (462 × 200).
+  ✅ Window readout 11-13 18:15 (window 11-12 00:32:44 → 11-13 18:15, 41.7 h; owner 11-13: "consider
+  this the window"). /metrics snapshot (/tmp/claude-1000/…/47e6999b…/scratchpad/swift-metrics-20261113-1815.txt) covers ONLY the live
+  backend b324, ready 11-13 03:12:39 → 18:14:50 = 15.0 h (earlier instances' counters lost on restart):
+  442 compactions (29/h), 650 GB moved in 77.6 s (0.18 s each, 8.4 GB/s), 204 skipped → 204 frag
+  evictions = 13.6/h (vs ~40/h pre-0006, −66 %); budget 205 = 13.6/h (vs ~7/h; compaction keeps more
+  entries, so the budget limit is reached more often); all evictions 27/h vs ~47/h; /metrics hit 5240/5662 = 92.5 %.
+  activity_cache (full window vs pre-0006 11-11 07:30 → 11-12 00:32, b263): 17,221 vs 7,969 turns;
+  evicted-class 0.63 % vs 2.41 %; tokens cached 91.1 % vs 87.2 %. Decode (activity, ≥200 tok, weighted)
+  74.4 vs 65.9 tok/s (different load, not a 0006 effect). 5xx: 4 / 17,238 (502 EOF, ttfb 0, sk-aw4,
+  backend kept running) vs 108 EOF on 11-11. Crashes: 00:32:37 = the canary cutover (agent SIGTERM,
+  pre-0006 process); 07:21:25 = external SIGINT/TERM (llama-server "cleaning up before exit" at 07:20:45,
+  no agent "signalled" line, during P76 D smoke work), no assert/abort/backtrace. Journal grep of the
+  whole window: no GGML_ASSERT/abort/SIGSEGV/CUDA error (only the benign common_fit_params warning).
+  Other stops = idle-unload. **Verdict:** 0006 holds; no crash attributable; carry it onto v1.0.0 (P77).
   ⏸ Upstream question (owner 11-12: wait for benchmark). Facts (agent, read-only): #30683 (=0002)
   open+approved, unblocked by #30137; 0003 not upstream; no upstream pool/policy/compaction work;
   metrics PRs #25328 closed, #26130 open; adjacent #30997 #30970 #27624, #31391 (ggml-cuda host mem,
