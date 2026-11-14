@@ -447,6 +447,11 @@ text 267 / point 210 / box 210 ms @1024 px (~+30 ms @4000 px; input resized to 1
 IoU ≥ 0.998 vs bf16. Correct on 3 photos (box mask 100% inside box). Bare "person" scores 0.06 (sam3 itself too) — phrasing
 matters. Rec config: ramUsage {gpu1: 6800MiB, system: 8GB}, loadSeconds 45, MemoryMax 12G. Left: HTTP run with real backend,
 install into ~/.corrallm/ext/sam3/venv, enable extension + deploy B2.
+**Plugin convention (owner 11-14):** in-tree plugins live in corrallm `ext/plugins/<name>/` (sam3shim moves to
+`ext/plugins/sam3.1`, colmap to `ext/plugins/colmap`); oidio stays its own repo. EVERY plugin, in-tree or external, exposes
+`make install-corrallm-plugin` → ${CORRALLM_EXT_DIR:-~/.corrallm/ext}/<name>/ (own venv/binary, no sudo, idempotent, atomic
+swap, writes extension.yaml = its corrallm config block, prints the reload step, never reloads or downloads weights) and
+`uninstall-corrallm-plugin`. corrallm top level: `make ext-install EXT=<name>`. ◐ oidio target (agent).
 **next (was):** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
 proxy) → M1 when the HF licence is approved + a window is picked.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
