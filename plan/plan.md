@@ -378,7 +378,7 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P79 — corrallm www site + install.sh on hz — 2026-11-14
+### ✅ P79 — corrallm www site + install.sh on hz — 2026-11-14
 
 Owner 11-14: site modeled on dun/para (static site/index.html, hz static service, `make site`/`site-push`), install.sh
 ("we like install.sh"), provider-compatibility matrix ("provider compatibility for features/shaming"), minisign-signed
@@ -389,8 +389,11 @@ MINISIGN_KEY). Installer tested on a fake signed release (happy path, tampered a
 fails cleanly (no stable names). Untested: release-dist stable loop + release-sign (not run on box1: ui-build), root refusal,
 Darwin. Assumed domain corrallm.iodesystems.com; slug IodeSystems/CorraLLM; README stale on guardrails/Messages/budgets
 (cards taken from P60-P69 headers) — owner to check wording.
-**next:** owner adds MINISIGN_KEY (password-free key 2CC27A171DE03D42), creates hz service + token, confirms domain; then
-`make site-push` and a new tag. **risks:** compat claims must each carry a source URL; install.sh must not be confused
+✅ 11-14 LIVE (owner: "you can do all the steps required. Go."): CI secret MINISIGN_SECRET_KEY = root key (dcf6baf);
+main pushed + v0.3.0 tagged → release green with stable names + SHA256SUMS.minisig; hz `corrallm-www` static service
+created via `hz` (token ~/.config/hz/corrallm-www.env, 600); `make site` + `hz-client site push` → https://corrallm.iodesystems.com
+(/ text/html, install.sh + minisign.pub text/plain); `curl …/install.sh | sh` into a temp HOME verified the signature and
+installed corrallm v0.3.0 + llm-bench + llm-bench-mcp. Slice done → move to done.md next prune. **risks:** compat claims must each carry a source URL; install.sh must not be confused
 with the daemon's agent /install.sh. **blocking decisions (owner actions):** create the hz static service + token;
 add the MINISIGN_KEY GitHub secret; pick the domain (default corrallm.iodesystems.com). **optional extensions:** none.
 
@@ -426,7 +429,15 @@ stereo_fusion, create_pose_prior_bundle_adjuster). Assumption: runner uses the w
 "do the dev work upfront" without objecting).
 Owner 11-14: applied for the SAM 3.1 HF licence — "do the dev work upfront and we'll get the model when it is
 approved." → B1-B4 start from the spec; SAM tests run against stubs until weights arrive.
-**next:** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
+✅ P1 spec plan/p78-sam-colmap.md (a424330): positions = SAM pixels after EXIF rotation, box [x0,y0,x1,y1] exclusive
+edges; COLMAP pose_priors (position + covariance, WGS84/cartesian; no rotation prior; EXIF GPS always read;
+pose_prior_mapper needs ≥3 priored images; mixed coordinate systems abort — incl. gravity-only EXIF rows [U]); gpu1 via
+a lease API, mapper on CPU; sandbox moved :6510→:6512 (collides with live agent). New decisions D4a (yield mid-stage by
+kill+resume; rec yes), D7 (lease ignored 60 s → stop service, rec), D8 (defaults: EXIF GPS on, 7 d expiry, 50 GiB/key,
+5000 images/job). CONFLICT: spec B4 is a Go service calling the COLMAP CLI (needs the source build = sudo apt deps),
+but only the pycolmap wheel works without sudo — owner picks.
+◐ B1 sam3shim (new local repo, stub backend; weights pending licence) · ◐ B2 corrallm SAM route (fake shim).
+**next (was):** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
 proxy) → M1 when the HF licence is approved + a window is picked.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
 exceed body caps; COLMAP mapper likely not resumable mid-stage; P34 cross-model queue not built.
