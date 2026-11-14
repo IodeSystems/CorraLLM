@@ -544,6 +544,14 @@ ourselves if it differs from 60e813d4.
 
 ### ◐ P75 — Prompt-cache miss attribution, patch 0005 (LRU + hits + metrics), slot affinity — 2026-11-10
 
+**Patch names (renamed 11-14, owner; content/order/hash 09f9a61f5349 unchanged; files in ~/.corrallm/tools/llama.cpp/patches/,
+applied in name order — keep single-digit pN or zero-pad before p10):** p1-reuse-checkpoint (was 0002, upstream PR #30683:
+reuse an earlier context checkpoint when a prompt diverges) · p2-end-checkpoint (was 0003: checkpoint at the exact end of the
+prompt, no 4+n_ubatch offset) · p3-pinned-cache-pool (was 0004: host prompt cache in a pinned-RAM pool + overflow heap,
+CUDA batch-get) · p4-cache-lru-metrics (was 0005: LRU eviction, hit/miss/eviction /metrics, id_slot in OpenAI replies) ·
+p5-cache-compaction (was 0006: defragment the pinned pool instead of evicting) · p6-cross-slot-share (planned, was "0007":
+copy another slot's live KV). Older text below uses the 000N names.
+
 **11-14 slot-switch finding (v1.0+0002-0006, code refs ~/.corrallm/tools/llama.cpp-p77/src/tools/server/):** the same-host
 cache covers ~94% of slot changes (1,888 of 2,010 switches hit). The 121 misses (2.44M tok / 12 h): 80 had the previous slot
 BUSY at arrival (2.03M tok; 66 with both slots busy → deferred, took whichever slot freed first); 41 had it IDLE (0.41M) —
