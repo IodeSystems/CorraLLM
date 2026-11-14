@@ -632,7 +632,12 @@ work (no skip). Metrics llamacpp:xslot_attach_total / xslot_tokens_reused_total 
 LLAMA_XSLOT=1, LLAMA_XSLOT_MIN 256. 3080: idle attach byte-identical (4 models); busy drift ≈ xslot-off drift; stress 4×25:
 0 errors, prompt tokens 76.2k→42.1k (0.8B+mmproj), 83.8k→54.2k (2B); CPU ASan+UBSan 0 reports. Untested: 27B, 86k ctx,
 claims-eviction branch; simultaneous arrivals skip each other (full prefill, no deadlock).
-**next:** owner go → copy to patches/ (hash changes → gated build), build, activate, add LLAMA_XSLOT=1 to Swift env, respawn. (1)/(2) not chosen.
+✅ 11-14 CANARY LIVE (owner "Go"): p6 copied to patches/ (patch-set hash 09f9a61f5349 → 03b02844a446), `corrallm tools build`
+→ 20261114-215547-b1b770d9 (1637 s) active; config adds `export LLAMA_XSLOT=1` to Swift's cmd; Swift SIGTERM at both-idle
+(71 s wait) → respawned, /metrics shows llamacpp:xslot_* (all 0 at start). Rollback: `corrallm tools activate llama.cpp
+20261113-181416-b1b770d9 --server box1` + drop the export + respawn Swift.
+**next:** readout after a few hours: xslot_attach_total, tokens_reused, skipped{reason}, slot-switch misses (`corrallm cache
+report --since 6h`) vs the 11-14 12 h baseline (121 misses, 2.44M lost tok); decode/5xx unchanged. (1)/(2) not chosen.
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
