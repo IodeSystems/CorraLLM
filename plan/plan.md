@@ -378,6 +378,16 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P79 — corrallm www site + install.sh on hz — 2026-11-14
+
+Owner 11-14: site modeled on dun/para (static site/index.html, hz static service, `make site`/`site-push`), install.sh
+("we like install.sh"), provider-compatibility matrix ("provider compatibility for features/shaming"), minisign-signed
+releases + stable asset names (approved). ◐ agent building site/, install.sh, Makefile targets, release-dist + workflow
+signing — no push/tag/site-push.
+**next:** review agent output. **risks:** compat claims must each carry a source URL; install.sh must not be confused
+with the daemon's agent /install.sh. **blocking decisions (owner actions):** create the hz static service + token;
+add the MINISIGN_KEY GitHub secret; pick the domain (default corrallm.iodesystems.com). **optional extensions:** none.
+
 ### ◐ P78 — SAM 3.1 + COLMAP-CUDA on the 3080 as extensions — 2026-11-14
 
 Owner 11-14: "SAM3.1 and COLMAP nvidia, both on the 3080 (swappable), behind an openai api best effort api interface".
@@ -397,7 +407,12 @@ corrallm: SAM fits the extension path (route + routeEmits + capability string + 
 health = TCP dial, 120 s); COLMAP needs job state + uploads in the extension (handoff drain ignores jobs), GPU-time
 billing is new. No gateway exposes segmentation/3D under an OpenAI surface (found none). Wire schemas:
 scratchpad p78-wire-schemas.md.
-**next:** owner answers D1-D5 → M1 (measure on 3080 in a window).
+**Owner 11-14: "I like all the recommendations. Go."** → D1 COLMAP 4.2.1+CUDA, `mapper` default; D4 yield at stage
+boundaries; D5 routes as recommended; D6 job state/uploads/runner inside the extension. GPU-time billing deferred.
+D2 (SAM HF licence) and D3 (window) still need the owner's own action/time. New owner question: how are positions
+encoded (SAM prompt coords; COLMAP pose priors for a subset of images) → answered in the spec.
+◐ P1 spec → plan/p78-sam-colmap.md (agent) · ◐ COLMAP CUDA-13 build feasibility in scratchpad (no GPU runs).
+**next:** spec + build results → owner accepts SAM licence + picks window → M1.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
 exceed body caps; COLMAP mapper likely not resumable mid-stage; P34 cross-model queue not built.
 **blocking decisions:** D1 which COLMAP (rec: COLMAP+CUDA, GLOMAP as mapper option); D2 accept SAM 3.1 HF licence
