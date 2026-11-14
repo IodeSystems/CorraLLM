@@ -49,7 +49,7 @@ func newFakeSam(t *testing.T, okReply string) *fakeSam {
 		}
 		if strings.Contains(string(b), `"x":-1`) {
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"x out of range","type":"invalid_request_error","param":"prompts[1].points[0].x"}}`))
+			_, _ = w.Write([]byte(`{"error":{"message":"x out of range","type":"invalid_request_error","param":"points[0].x"}}`))
 			return
 		}
 		_, _ = w.Write([]byte(okReply))
@@ -60,13 +60,12 @@ func newFakeSam(t *testing.T, okReply string) *fakeSam {
 
 func (f *fakeSam) count() int { f.mu.Lock(); defer f.mu.Unlock(); return f.hits }
 
-const samReply = `{"id":"seg_1","object":"image.segmentation","model":"sam3-segment","image":{"width":64,"height":48},` +
-	`"results":[{"prompt_index":0,"type":"concept","predictions":[{"score":0.9,"box":[1,2,30,40],"area":99,"mask":{"size":[48,64],"counts":"abc"}}]}],` +
-	`"usage":{"images":1,"prompts":2,"masks":1}}`
+const samReply = `{"created":1763140000,"data":[{"index":0,"width":64,"height":48,"segments":[` +
+	`{"score":0.9,"box":[1,2,30,40],"area":99,"mask":{"format":"rle","size":[48,64],"counts":"abc"}}]}],` +
+	`"usage":{"images":1,"masks":1}}`
 
-const samReq = `{"model":"sam3-segment","image":"data:image/png;base64,AAAA","prompts":[` +
-	`{"type":"concept","text":"wheel"},` +
-	`{"type":"visual","points":[{"x":%s,"y":230,"label":1}]}]}`
+const samReq = `{"model":"sam3-segment","image":"data:image/png;base64,AAAA","prompt":"wheel",` +
+	`"boxes":[[1,2,30,40]],"points":[{"x":%s,"y":230,"label":1}]}`
 
 func segMount(t *testing.T, cfg *config.Config) (*chi.Mux, *store.Store) {
 	t.Helper()
@@ -93,8 +92,8 @@ func postSeg(r http.Handler, body string) *httptest.ResponseRecorder {
 	return rec
 }
 
-// Forwarded verbatim in both directions; costed as ONE image although the
-// request carries two prompts; the capture is a summary, not the RLE body.
+// Forwarded verbatim in both directions; costed as ONE image; the capture is a
+// summary, not the RLE body.
 func TestSegmentationsForwardAndMeter(t *testing.T) {
 	sam := newFakeSam(t, samReply)
 	r, st := segMount(t, segConfig(t, sam.URL))
@@ -118,7 +117,7 @@ func TestSegmentationsForwardAndMeter(t *testing.T) {
 	if a.Path != "/v1/images/segmentations" || a.Served != "sam3-segment" || a.Status != 200 {
 		t.Errorf("activity = %+v", a)
 	}
-	want := 1 * 3.0 / 1000 * 0.14 // one image, not two prompts
+	want := 1 * 3.0 / 1000 * 0.14 // one image
 	if d := a.CostUSD - want; d < -1e-12 || d > 1e-12 {
 		t.Errorf("cost = %v, want %v", a.CostUSD, want)
 	}
@@ -147,7 +146,7 @@ func TestSegmentationsPassesShimValidationThrough(t *testing.T) {
 	var env struct {
 		Error struct{ Param, Type string } `json:"error"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil || env.Error.Param != "prompts[1].points[0].x" {
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil || env.Error.Param != "points[0].x" {
 		t.Errorf("param lost in transit: %s (%v)", rec.Body.String(), err)
 	}
 	acts, _ := st.RecentActivity(store.Window{}, 10, "", "", "")
@@ -202,7 +201,7 @@ func TestSegmentationsRefusesNonSegmenter(t *testing.T) {
 		cfg := imageConfig(t, "other", sam.URL, typ)
 		r, st := segMount(t, cfg)
 
-		rec := postSeg(r, `{"model":"other","image":"AAAA","prompts":[{"type":"concept","text":"x"}]}`)
+		rec := postSeg(r, `{"model":"other","image":"AAAA","prompt":"x"}`)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s: status %d: %s", typ, rec.Code, rec.Body.String())
 		}
@@ -245,12 +244,13 @@ func TestCapabilitiesListsSegmentations(t *testing.T) {
 			Vocabulary []string `json:"vocabulary"`
 		} `json:"modalities"`
 		Endpoints []struct {
-			Path       string         `json:"path"`
-			Capability string         `json:"capability"`
-			Accepts    []string       `json:"accepts"`
-			Emits      []string       `json:"emits"`
-			Models     []string       `json:"models"`
-			Example    map[string]any `json:"example"`
+			Path        string         `json:"path"`
+			Capability  string         `json:"capability"`
+			Accepts     []string       `json:"accepts"`
+			Emits       []string       `json:"emits"`
+			Models      []string       `json:"models"`
+			Example     map[string]any `json:"example"`
+			Description string         `json:"description"`
 		} `json:"endpoints"`
 		Errors struct {
 			Statuses []struct {
@@ -281,13 +281,19 @@ func TestCapabilitiesListsSegmentations(t *testing.T) {
 			t.Errorf("row models = %v", ep.Models)
 		}
 		curl, _ := ep.Example["curl"].(string)
-		if !strings.Contains(curl, "sam3-segment") || !strings.Contains(curl, "prompts") {
+		if !strings.Contains(curl, "sam3-segment") || !strings.Contains(curl, "prompt") {
 			t.Errorf("curl not runnable: %q", curl)
 		}
-		for _, k := range []string{"coordinates", "limits", "metering"} {
+		for _, k := range []string{"coordinates", "limits", "metering", "per_image", "masks", "curl_multipart"} {
 			if s, _ := ep.Example[k].(string); s == "" {
 				t.Errorf("example lacks %q", k)
 			}
+		}
+		if resp, _ := ep.Example["response"].(map[string]any); resp["data"] == nil || resp["usage"] == nil {
+			t.Errorf("example response = %v", ep.Example["response"])
+		}
+		if !strings.Contains(ep.Description, "multipart/form-data") {
+			t.Errorf("description does not mention multipart: %q", ep.Description)
 		}
 	}
 	if !found {
@@ -301,5 +307,111 @@ func TestCapabilitiesListsSegmentations(t *testing.T) {
 	}
 	if !has413 {
 		t.Error("error contract lacks 413 request_too_large")
+	}
+}
+
+// segCost is the cost of n billed images on the test config (3 Wh each at
+// 0.14 USD/kWh, as in TestSegmentationsForwardAndMeter).
+func segCost(n int) float64 { return float64(n) * 3.0 / 1000 * 0.14 }
+
+func segReplyImages(images, masks int, pad string) string {
+	return `{"created":1,"data":[{"index":0,"width":8,"height":8,"segments":[{"score":0.9,"box":[0,0,1,1],"area":1,` +
+		`"mask":{"format":"rle","size":[8,8],"counts":"` + pad + `"}}]}],"usage":{"images":` + itoa(images) + `,"masks":` + itoa(masks) + `}}`
+}
+
+func postSegCT(r http.Handler, body, ct string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/segmentations", strings.NewReader(body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+func multipartBody(images int) (string, string) {
+	const b = "XbOuNdArYx"
+	var sb strings.Builder
+	sb.WriteString("--" + b + "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nsam3-segment\r\n")
+	sb.WriteString("--" + b + "\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nwheel\r\n")
+	for i := 0; i < images; i++ {
+		sb.WriteString("--" + b + "\r\nContent-Disposition: form-data; name=\"image[]\"; filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\nPNGDATA\r\n")
+	}
+	sb.WriteString("--" + b + "--\r\n")
+	return sb.String(), "multipart/form-data; boundary=" + b
+}
+
+// Billing is per image, not per request. The shim's usage.images wins; with no
+// usage in the reply the request's image count is billed; a reply too big for
+// the capture cap (usage lives in the tail) is still read; multipart counts
+// its image parts. A 2xx always bills at least one image.
+func TestSegmentationsMeterPerImage(t *testing.T) {
+	jsonReq := func(n int) string {
+		imgs := make([]string, n)
+		for i := range imgs {
+			imgs[i] = `"data:image/png;base64,AAAA"`
+		}
+		return `{"model":"sam3-segment","image":[` + strings.Join(imgs, ",") + `],"prompt":"x"}`
+	}
+	mp3, mpCT := multipartBody(3)
+	cases := []struct {
+		name, body, ct, reply string
+		want                  int
+	}{
+		{"usage from reply", jsonReq(3), "application/json", segReplyImages(3, 3, "abc"), 3},
+		{"reply wins over request", jsonReq(3), "application/json", segReplyImages(2, 2, "abc"), 2},
+		{"reply over capture cap", jsonReq(2), "application/json", segReplyImages(2, 2, strings.Repeat("a", 64<<10)), 2},
+		{"no usage: JSON array count", jsonReq(4), "application/json", `{"created":1,"data":[]}`, 4},
+		{"no usage: JSON string", `{"model":"sam3-segment","image":"AAAA","prompt":"x"}`, "application/json", `{"data":[]}`, 1},
+		{"no usage: image[] key", `{"model":"sam3-segment","image[]":["a","b"],"prompt":"x"}`, "application/json", `{"data":[]}`, 2},
+		{"no usage: multipart parts", mp3, mpCT, `{"data":[]}`, 3},
+		{"multipart, usage in reply", mp3, mpCT, segReplyImages(3, 0, "abc"), 3},
+		{"nothing countable bills one", `{"model":"sam3-segment"}`, "application/json", `{"data":[]}`, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sam := newFakeSam(t, c.reply)
+			r, st := segMount(t, segConfig(t, sam.URL))
+			rec := postSegCT(r, c.body, c.ct)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			if sam.count() != 1 {
+				t.Fatalf("shim hits = %d", sam.count())
+			}
+			if string(sam.last) != c.body {
+				t.Error("body not forwarded verbatim")
+			}
+			acts, _ := st.RecentActivity(store.Window{}, 10, "", "", "")
+			if len(acts) != 1 {
+				t.Fatalf("want 1 row, got %d", len(acts))
+			}
+			if d := acts[0].CostUSD - segCost(c.want); d < -1e-12 || d > 1e-12 {
+				t.Errorf("cost = %v, want %v (%d images)", acts[0].CostUSD, segCost(c.want), c.want)
+			}
+			full, _ := st.ActivityByID(acts[0].ID)
+			if want := "<" + itoa(c.want) + " image(s) segmented, "; !strings.HasPrefix(full.RespBody, want) {
+				t.Errorf("resp body = %q, want prefix %q", full.RespBody, want)
+			}
+		})
+	}
+}
+
+func TestSegImageCounters(t *testing.T) {
+	if n := segImagesFromReply([]byte(`{"data":[{"mask":{"counts":"x"}}],"usage":{"images":5,"masks":9}}`), nil); n != 5 {
+		t.Errorf("whole body: %d", n)
+	}
+	// usage split across the buf/tail seam
+	if n := segImagesFromReply([]byte(`{"data":[],"usage":{"ima`), []byte(`ges":7,"masks":1}}`)); n != 7 {
+		t.Errorf("seam: %d", n)
+	}
+	for _, bad := range []string{``, `{"data":[]}`, `"usage":`, `"usage":{"images":-3}`, `"usage":{"images":"x"}`} {
+		if n := segImagesFromReply([]byte(bad), nil); n != 0 {
+			t.Errorf("%q -> %d, want 0", bad, n)
+		}
+	}
+	if n := segImagesFromRequest([]byte(`not json`), "application/json"); n != 0 {
+		t.Errorf("garbage: %d", n)
+	}
+	if n := segImagesFromRequest([]byte(`{"image":["a","b"],"image[]":["c"]}`), "application/json"); n != 3 {
+		t.Errorf("both keys: %d", n)
 	}
 }

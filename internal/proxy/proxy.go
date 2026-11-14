@@ -1770,8 +1770,16 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				costUSD = p.cost.ImageRequestUSD(backend.Type, images)
 			}
 		case segment:
+			// Per IMAGE: a request carries 1..16, run one at a time. Prefer the
+			// shim's own count; fall back to counting what the request sent.
 			if status >= 200 && status < 300 {
-				images = 1
+				images = segImagesFromReply(sc.buf, sc.tail)
+				if images == 0 {
+					images = segImagesFromRequest(body, r.Header.Get("Content-Type"))
+				}
+				if images == 0 {
+					images = 1 // a 2xx processed at least one image
+				}
 				costUSD = p.cost.ImageRequestUSD(backend.Type, images)
 			}
 		case tts:
@@ -3393,16 +3401,21 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 				"metering": "Billed per generated image (the request's `n`, default 1), not per byte — a PNG's size measures the picture, not the diffusion. Successful responses are NOT captured to the activity log: the row records a `<N image(s), M bytes>` summary instead, because 4 KiB of truncated base64 is neither viewable nor valid JSON. A failed response IS captured, whole.",
 				"note":     "Matching is on OUTPUT: a model serves this route iff its `outputs` on /v1/models contains \"image\". A vision chat model has \"image\" in its `modalities` (what it ACCEPTS) and \"text\" in its `outputs`, so it is refused here — accepting a picture and producing one are different claims. Outputs are inferred from the model's cost type, which must name a generator (`diffusion`, `txt2img`, `sdxl`).",
 			}},
-		{"/v1/images/segmentations", "POST", "image.segment", []string{config.ModalityImage, config.ModalityText}, []string{config.ModalityMask}, "Image segmentation (SAM 3.1). JSON in: one base64 image and 1..16 prompts, each a `concept` (text and/or exemplar boxes; returns EVERY instance) or a `visual` prompt (points and/or one box; returns ONE object). JSON out: per prediction a score, a pixel box and a COCO RLE mask. Synchronous; one request holds its fairshare slot while the GPU runs. Only models that EMIT mask are accepted; anything else is refused 400 at the door rather than cold-loaded first.", byCap["image.segment"], false,
+		{"/v1/images/segmentations", "POST", "image.segment", []string{config.ModalityImage, config.ModalityText}, []string{config.ModalityMask}, "Image segmentation (SAM 3.1), in the shape of /v1/images/edits: JSON or multipart/form-data. `image` is one image or `image[]` up to 16 (JSON: data URL, base64 or http(s) URL; multipart: file parts). `prompt` is the concept text (every instance is returned); `boxes` [[x0,y0,x1,y1]] are exemplars of that concept; `points` [{x,y,label}] alone select ONE object. `prompt` is optional if boxes or points are given; points cannot be combined with prompt or boxes. Out: {created, data:[{index, width, height, segments:[{score, box, area, mask}]}], usage:{images, masks}}. Images run one at a time inside one request, which holds its fairshare slot for the whole run. Only models that EMIT mask are accepted; anything else is refused 400 at the door rather than cold-loaded first.", byCap["image.segment"], false,
 			map[string]any{
-				"curl": fmt.Sprintf("curl -sS %s/v1/images/segmentations -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"image\":\"data:image/jpeg;base64,<base64>\",\"prompts\":[{\"type\":\"concept\",\"text\":\"wheel\"},{\"type\":\"visual\",\"points\":[{\"x\":412.5,\"y\":230,\"label\":1}]}]}'", base, segM),
-				"body": map[string]any{"model": segM, "image": "data:image/jpeg;base64,<base64>", "prompts": []map[string]any{
-					{"type": "concept", "text": "wheel"},
-					{"type": "visual", "points": []map[string]any{{"x": 412.5, "y": 230.0, "label": 1}}},
-				}, "threshold": 0.5, "max_masks": 100, "output": "rle"},
-				"coordinates": "ONE PIXEL FRAME. Coordinates are pixels of the image AFTER EXIF orientation is applied (the upright image a browser shows); the response's `image.width`/`image.height` is that frame, so check it against yours. Origin is the top-left corner of the top-left pixel; x right, y down; floats allowed; pixel (i, j) covers [i, i+1) x [j, j+1). A point is {x, y, label}: 0 <= x <= width, 0 <= y <= height, label 1 = include and 0 = exclude (integers only). A box is [x0, y0, x1, y1], corners not centre-size, x0 < x1 and y0 < y1, inside [0, width] x [0, height]. Normalized (0..1) coordinates are NOT accepted. An out-of-range value is refused 400 with `param` naming the path (e.g. prompts[1].points[0].x); it is never clamped. Outputs use the same frame: `box` is [x0, y0, x1, y1] pixels and `mask` is COCO RLE {size: [height, width], counts} (height first, column-major).",
-				"limits":      "Request body 32 MiB (413 request_too_large past it). Decoded image at most 4096x4096 (400 image_too_large). Image is a data URL or bare base64 of JPEG/PNG/WebP; URLs are refused 400 because corrallm fetches nothing. A concept prompt takes text and boxes, never points. The shim, not corrallm, validates the prompt fields and returns the 400s.",
-				"metering":    "Billed as ONE generated image per successful request (the type's imageWhPerImage), whatever the prompt count. The activity row stores a `<N image(s) segmented, M bytes>` summary on success and the full body on failure.",
+				"curl":           fmt.Sprintf("curl -sS %s/v1/images/segmentations -H 'Authorization: Bearer <key>' -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"image\":\"data:image/jpeg;base64,<base64>\",\"prompt\":\"wheel\",\"boxes\":[[120,340,260,470]]}'", base, segM),
+				"curl_multipart": fmt.Sprintf("curl -sS %s/v1/images/segmentations -H 'Authorization: Bearer <key>' -F model=%s -F 'image[]=@a.jpg' -F 'image[]=@b.jpg' -F prompt=wheel -F 'boxes=[[[120,340,260,470]],[]]' -F response_format=png", base, segM),
+				"body": map[string]any{"model": segM, "image": "data:image/jpeg;base64,<base64>", "prompt": "wheel",
+					"boxes": [][]float64{{120, 340, 260, 470}}, "n": 100, "threshold": 0.5, "response_format": "rle"},
+				"response": map[string]any{"created": 1763140000, "data": []map[string]any{{"index": 0, "width": 1920, "height": 1080,
+					"segments": []map[string]any{{"score": 0.93, "box": []float64{118, 339, 263, 471}, "area": 14211,
+						"mask": map[string]any{"format": "rle", "size": []int{1080, 1920}, "counts": "Yh`06Sf0..."}}}}},
+					"usage": map[string]any{"images": 1, "masks": 1}},
+				"coordinates": "ONE PIXEL FRAME PER IMAGE. Coordinates are pixels of the image AFTER EXIF orientation is applied (the upright image a browser shows); each response `data[i].width`/`height` is that image's frame, so check it against yours. Origin is the top-left corner of the top-left pixel; x right, y down; floats allowed; pixel (i, j) covers [i, i+1) x [j, j+1). A point is {x, y, label}: 0 <= x <= width, 0 <= y <= height, label 1 = include and 0 = exclude (integers only). A box is [x0, y0, x1, y1], corners not centre-size, x0 < x1 and y0 < y1, inside [0, width] x [0, height]; edges are exclusive, so a box on whole pixels covers exactly those pixels. Normalized (0..1) coordinates are NOT accepted. An out-of-range value is refused 400 with `param` naming the path (e.g. points[0].x, boxes[1][0][2]); it is never clamped. Outputs use the same frame: `box` is [x0, y0, x1, y1] pixels.",
+				"per_image":   "points and boxes apply to EVERY image when given flat ([{x,y,label}] / [[x0,y0,x1,y1]]), each checked against that image's own size. To differ per image give one list per image, exactly as many as images, [] for none: points [[{...}],[]], boxes [[[...]],[[...],[...]]]. Mixing the two forms, or a wrong count, is 400 with param points / boxes. In multipart, points and boxes are form fields holding that JSON; n and threshold are text numbers.",
+				"masks":       "`n` = max segments per image (1..1000, default 100, highest scores kept); `threshold` 0..1 (default 0.5). `response_format`: `rle` (default) gives mask {format:\"rle\", size:[height,width], counts} (COCO RLE, column-major, pycocotools-compatible); `png` gives {format:\"png\", b64_json} (8-bit greyscale, 255 inside, image-sized); `polygon` is refused 400 param response_format, code unsupported_value.",
+				"limits":      "Request body 32 MiB (413 request_too_large past it, so 16 large images may not fit: send fewer, smaller or by URL). At most 16 images, 64 points and 16 boxes per image, prompt up to 256 chars. Decoded image at most 4096x4096 (400 image_too_large). Image URLs are fetched by the shim, public addresses only, 32 MiB, 20 s (400 image_url_forbidden / image_fetch_failed); JPEG/PNG/WebP only. The shim, not corrallm, validates the fields and returns the 400s as {error:{message,type:invalid_request_error,param,code}}.",
+				"metering":    "Billed PER IMAGE (the type's imageWhPerImage x images) on a successful request: the response's `usage.images`, else the count of images in the request. A refused request bills nothing. The activity row stores a `<N image(s) segmented, M bytes>` summary on success and the full body on failure.",
 				"note":        "Matching is on OUTPUT: a model serves this route iff its `outputs` on /v1/models contains \"mask\". Outputs are inferred from the model's cost type, which must name a segmenter (`segment`).",
 			}},
 		{"/v1/realtime", "GET", "audio.stt", aud, txt, "Live transcription over WebSocket (OpenAI Realtime transcription schema). Holds one fairshare slot for the session.", sttRealtime, true,
@@ -4013,6 +4026,69 @@ func imagesFromBody(body []byte) int {
 		return 1
 	}
 	return probe.N
+}
+
+// segImagesFromReply reads usage.images from a segmentation reply: 0 when it is
+// absent. The shim writes "usage" LAST, and the capture keeps the front of the
+// body in buf and the end in tail (a reply of RLE masks passes the 8 KiB cap),
+// so the last "usage" in buf+tail is the real one. A mask string cannot hold a
+// `"usage"` key: JSON strings escape quotes.
+func segImagesFromReply(buf, tail []byte) int {
+	all := append(append([]byte(nil), buf...), tail...)
+	i := bytes.LastIndex(all, []byte(`"usage"`))
+	if i < 0 {
+		return 0
+	}
+	rest := all[i+len(`"usage"`):]
+	j := bytes.IndexByte(rest, '{')
+	if j < 0 {
+		return 0
+	}
+	var u struct {
+		Images int `json:"images"`
+	}
+	if json.NewDecoder(bytes.NewReader(rest[j:])).Decode(&u) != nil || u.Images < 0 {
+		return 0
+	}
+	return u.Images
+}
+
+// segImagesFromRequest counts the images a segmentation request carries: JSON
+// `image` (string or array) or `image[]`, multipart parts named image/image[].
+// 0 when none can be counted.
+func segImagesFromRequest(body []byte, contentType string) int {
+	if mt, params, err := mime.ParseMediaType(contentType); err == nil && strings.HasPrefix(mt, "multipart/") {
+		mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+		n := 0
+		for {
+			part, err := mr.NextPart()
+			if err != nil {
+				return n
+			}
+			if name := part.FormName(); name == "image" || name == "image[]" {
+				n++
+			}
+			_ = part.Close()
+		}
+	}
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(body, &probe) != nil {
+		return 0
+	}
+	n := 0
+	for _, k := range []string{"image", "image[]"} {
+		raw, ok := probe[k]
+		if !ok {
+			continue
+		}
+		var arr []json.RawMessage
+		if json.Unmarshal(raw, &arr) == nil {
+			n += len(arr)
+		} else {
+			n++
+		}
+	}
+	return n
 }
 
 // streamFromBody reports whether the request asked for an SSE stream, which

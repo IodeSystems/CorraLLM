@@ -185,51 +185,49 @@ client ──HTTPS──▶ corrallm (primary) ──agent 127.0.0.1:6510──�
 
 ### 4.1 `POST /v1/images/segmentations` (sync)
 
-Request (JSON, ≤ 32 MiB body — the default cap):
+Shaped like OpenAI's `/v1/images/edits`: JSON or multipart/form-data, `/v1/images/*` response envelope. (Reshaped
+11-14 with the owner's approval; the earlier `prompts[]` / `results[].predictions[]` / `output` shape is removed,
+nothing called it.)
+
+Request (JSON; the 32 MiB default body cap applies to both encodings):
 ```json
 { "model": "sam3-segment",
-  "image": "data:image/jpeg;base64,/9j/4AAQ...",
-  "prompts": [
-    { "type": "concept", "text": "wheel",
-      "boxes": [ { "box": [120, 340, 260, 470], "label": 1 } ] },
-    { "type": "visual",
-      "points": [ { "x": 412.5, "y": 230.0, "label": 1 }, { "x": 440, "y": 300, "label": 0 } ],
-      "box": [380, 190, 520, 360],
-      "multimask": false }
-  ],
-  "threshold": 0.5,
-  "max_masks": 100,
-  "output": "rle" }
+  "image": ["data:image/jpeg;base64,/9j/4AAQ...", "https://host/b.jpg"],
+  "prompt": "wheel",
+  "boxes": [ [[120, 340, 260, 470]], [] ],
+  "n": 100, "threshold": 0.5, "response_format": "rle" }
 ```
+Multipart: `image` or repeated `image[]` file parts; `model`, `prompt`, `n`, `threshold`, `response_format` as text;
+`points` and `boxes` as form fields holding the JSON above.
 
 | field | rule |
 |---|---|
 | `model` | required; must emit `mask` (routeEmits) → else 400. |
-| `image` | required; data URL or bare base64; JPEG/PNG/WebP. URLs refused 400 (corrallm fetches nothing). Decoded ≤ 4096×4096 px [A] → else 400 `image_too_large`. |
-| `prompts` | 1..16 [A, Roboflow parity]. |
-| concept prompt | `text` and/or `boxes` (≥ 1 of them). Points refused 400: SAM 3's concept path takes text + box exemplars only [V `sam3_image_processor.py` exposes text and `add_geometric_prompt(box,label)`]. Returns **every** instance of the concept. |
-| visual prompt | ≥ 1 point or a `box` (one box). Returns **one** object; `multimask: true` returns up to 3 candidates ranked by score [V SAM1-task predictor]. |
-| `threshold` | 0..1, default 0.5; drops predictions with lower score (concept path's confidence threshold [V]). |
-| `max_masks` | per prompt, 1..1000, default 100 [A]; highest scores kept. |
-| `output` | `"rle"` (default) or `"boxes"` (no masks — smaller body). |
+| `image` / `image[]` | required; one image or an array of 1..16 [A]. JSON: data URL, bare base64 or http(s) URL; multipart: file part (a part without a filename is read as that text). JPEG/PNG/WebP, decoded ≤ 4096×4096 px each [A] → else 400 `image_too_large`. URLs are fetched by the shim (public addresses only, 32 MiB, 20 s; `--allow-private-urls` lifts the address rule) → else 400 `image_url_forbidden` / `image_fetch_failed`. `image` and `image[]` together → 400. Images run one at a time; all are decoded for size and all prompts validated before the first inference. |
+| `prompt` | string ≤ 256 chars, the concept text. Optional if `points` or `boxes` are given; otherwise 400 param `prompt`. |
+| `boxes` | `[[x0,y0,x1,y1]]`, ≤ 16 per image, positive exemplars of the concept (SAM 3 concept path: text + box exemplars [V `add_geometric_prompt(box,label)`]). With or without `prompt`: returns **every** instance. |
+| `points` | `[{x,y,label:1\|0}]`, ≤ 64 per image, `label` required. Alone (no `prompt`, no `boxes`): selects **one** object (SAM1-task predictor [V]). Combined with `prompt` or `boxes` → 400 param `points` (the concept path takes no points). |
+| per image | `points` and `boxes` apply to **every** image when flat; each is checked against that image's own size. To differ per image give one list per image: `points: [[{..}],[]]`, `boxes: [[[..]],[[..],[..]]]`, exactly as many lists as images (`[]` = none). The forms are told apart by element type; a mix or a wrong count → 400 param `points` / `boxes`. |
+| coordinates | Pixels of each image after EXIF orientation, origin top-left, continuous (pixel (i,j) covers [i,i+1)×[j,j+1)); boxes use exclusive x1,y1. Points 0 ≤ x ≤ W, 0 ≤ y ≤ H; boxes x0<x1, y0<y1 inside the frame. Out of range → 400, never clamped; `param` is the path: `points[0].x` (flat), `boxes[1][0][2]` (per image), message names the image when several. |
+| `n` | max segments per image, 1..1000, default 100 [A]; highest scores kept. |
+| `threshold` | 0..1, default 0.5; drops segments with lower score. |
+| `response_format` | `"rle"` (default), `"png"` (8-bit greyscale PNG, 255 inside, image-sized, in `b64_json`). `"polygon"` → 400 param `response_format`, code `unsupported_value` (no contour extraction without a new dependency; icebox). |
 
 Response 200:
 ```json
-{ "id": "seg_01JF...", "object": "image.segmentation", "created": 1763140000, "model": "sam3-segment",
-  "image": { "width": 1920, "height": 1080 },
-  "results": [
-    { "prompt_index": 0, "type": "concept",
-      "predictions": [
-        { "score": 0.93, "box": [118.2, 338.9, 262.7, 471.0], "area": 14211,
-          "mask": { "size": [1080, 1920], "counts": "Yh`06Sf0..." } } ] },
-    { "prompt_index": 1, "type": "visual",
-      "predictions": [ { "score": 0.88, "box": [382.0, 192.0, 517.0, 355.0], "area": 16012,
-                         "mask": { "size": [1080, 1920], "counts": "..." } } ] } ],
-  "usage": { "images": 1, "prompts": 2, "masks": 2 } }
+{ "created": 1763140000,
+  "data": [
+    { "index": 0, "width": 1920, "height": 1080,
+      "segments": [
+        { "score": 0.93, "box": [118.0, 339.0, 263.0, 471.0], "area": 14211,
+          "mask": { "format": "rle", "size": [1080, 1920], "counts": "Yh`06Sf0..." } } ] },
+    { "index": 1, "width": 800, "height": 600, "segments": [] } ],
+  "usage": { "images": 2, "masks": 1 } }
 ```
-`score` = SAM 3 detection probability × presence score for concept prompts [V `_forward_grounding`]; predicted IoU
-for visual prompts [V]. `box` for a visual prediction is computed from its mask by the shim (the SAM1-task predictor
-returns no box [V]). `area` in pixels. Ordering: by `score` descending within a prompt.
+`mask` is `{format:"rle", size:[H,W], counts}` (COCO RLE, column-major, pycocotools-compatible) or
+`{format:"png", b64_json}`. `score` = SAM 3 detection probability × presence score for concept requests; predicted
+IoU for points [V]. `box` is computed from the mask by the shim; `area` in pixels. Ordering: by `score` descending
+within an image. Errors: OpenAI `{error:{message,type:"invalid_request_error",param,code}}`.
 
 Statuses: 200 · 400 (validation, `param` set) · 401 · 403 · 404 unknown model · 413 body over 32 MiB ·
 429 / 503 per the contract (gpu1 busy, loading) · 502 shim crashed mid-request.
@@ -492,9 +490,10 @@ unaffected. Proxy/API: `internal/api` or `internal/proxy/leases.go` for the thre
 ## 8. Metering
 
 - **Segmentations**: through `handleInference`, so it gets an admission slot, fairshare, residency, an activity row
-  and cost like `/v1/images/generations`. Cost = `ImageRequestUSD(type="segment", images=1)` — the existing
-  per-image energy figure (`commandCosts.segment.imageWhPerImage` [M1]); no new cost code. Metrics class `"segment"`
-  next to `"image"` (`proxy.go:1821`). Response capture summarized `<N masks, B bytes>` on 2xx, full body on errors
+  and cost like `/v1/images/generations`. Cost = `ImageRequestUSD(type="segment", images=N)` with N = the reply's `usage.images`
+  (read from the end of the body: it is written last), else the image count in the request (JSON `image`/`image[]`,
+  multipart parts), at least 1 on a 2xx — the existing per-image energy figure (`commandCosts.segment.imageWhPerImage` [M1]); no new cost code. Metrics class `"segment"`
+  next to `"image"` (`proxy.go:1821`). Response capture summarized `<N image(s) segmented, B bytes>` on 2xx, full body on errors
   (same reason as images, `proxy.go:1840`).
 - **Files, uploads, jobs**: one activity row per proxied request (path, status, dwell, bytes in/out, owner key),
   cost 0, no admission slot (these are control-plane calls; uploads must not hold a fairshare slot for minutes).
@@ -543,7 +542,7 @@ forwarded (forwarding buffers the body).
 Unit — corrallm (Go):
 - `iomodality_test.go`: TypeIO/capability for `segment`, `reconstruction`; a vision chat model does not Emit mask.
 - proxy: segmentations through a fake shim — forwarded verbatim; chat model → 400 (routeEmits); 32 MiB + 1 → 413;
-  cost row `images=1`; capture summarized on 200, kept on 400; capabilities rows present; errorContract has
+  cost row `images=N` for N images (reply usage, request count, multipart); capture summarized on 200, kept on 400; capabilities rows present; errorContract has
   404/409/413/507 (`budgetmsg_test.go`).
 - extension API: owner header stripped and set; another owner's id → 404 passes through; 600 MiB stream → 413 with
   heap growth < 64 MiB (proves no buffering); key not allowed → 403; route claimed twice → config error; route
@@ -605,7 +604,7 @@ Risks (beyond plan.md's list):
 - Mixed EXIF rows (§1b-6) are inferred from source, not run — T1b must include such a set.
 
 Icebox: GPU-time billing (§8); normalized SAM coordinates; per-image WGS84 output positions; gravity/rotation input
-for `global_mapper` rotation averaging; vocab-tree matcher; multipart image input for segmentations; SAM video via
+for `global_mapper` rotation averaging; vocab-tree matcher; polygon masks for segmentations; SAM video via
 /v1/realtime; 3DGS from COLMAP output; CPU COLMAP fallback; leases persisted in SQLite.
 
 ---
