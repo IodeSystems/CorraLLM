@@ -502,8 +502,15 @@ the save. A similarity pick with f_keep ≥ 0.5 truncates without saving (:1894)
 exists, llama-memory-hybrid.cpp:153). Fix options (owner to pick): (1) save idle slots before choosing a slot (~20-line
 patch, fixes the idle cases); (2) choose the idle slot with the longest prefix ≥ 50% instead of the 0.9 threshold;
 (3) slot-aware dequeue in corrallm (fixes the both-busy cases, most of the lost tokens); (4) cross-slot seq_cp (most work).
-**Owner 11-14:** do (3) now as an opt-in per-model option ("will require more queue population") — ◐ agent
-implementing, no deploy. Investigate (4) — ◐ agent researching + optional scratch prototype on the 3080. (1)/(2) not chosen.
+**Owner 11-14:** do (3) now as an opt-in per-model option ("will require more queue population") — ✅ built
+935a579/c5c18b9/bd7bb4f/0ca25cb, NOT deployed: `slotAwareDequeue` (+ `slotAwareDequeueMaxSkips` 0→2,
+`slotAwareDequeueMaxWait` ""→2s); order own-slot > unsettled (round-robin free slots, explicit id_slot) >
+homed-elsewhere; pins every chat turn like slotAffinity (N10 lost — but N10 predates 0006, its losses were
+`pinned` rows evicted by fragmentation). `X-Corrallm-Slot: <instance>/<id_slot>` (informational, in
+/v1/capabilities). Identity: `prompt_cache_key` > X-Corrallm-Conversation > inferred head key, per caller key
+(changes identity for anyone sending it, flag on or off). Swift needs only the flag (maxConcurrent 2 = --parallel 2).
+A/B: 2 h on/off blocks like N10 + `--by affinity` reordered counts + queued_ms p50/p90. Open: R-rule text in
+recommend.go still recommends slotAffinity; pre-existing failing test TestPacedDayRefusesUntilATimedBudgetPays (date-dependent). Investigate (4) — ◐ agent researching + optional scratch prototype on the 3080. (1)/(2) not chosen.
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
