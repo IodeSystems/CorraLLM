@@ -510,7 +510,15 @@ homed-elsewhere; pins every chat turn like slotAffinity (N10 lost — but N10 pr
 /v1/capabilities). Identity: `prompt_cache_key` > X-Corrallm-Conversation > inferred head key, per caller key
 (changes identity for anyone sending it, flag on or off). Swift needs only the flag (maxConcurrent 2 = --parallel 2).
 A/B: 2 h on/off blocks like N10 + `--by affinity` reordered counts + queued_ms p50/p90. Open: R-rule text in
-recommend.go still recommends slotAffinity; pre-existing failing test TestPacedDayRefusesUntilATimedBudgetPays (date-dependent). Investigate (4) — ◐ agent researching + optional scratch prototype on the 3080. (1)/(2) not chosen.
+recommend.go still recommends slotAffinity; pre-existing failing test TestPacedDayRefusesUntilATimedBudgetPays (date-dependent). Investigate (4) — ✅ prototype works (3080, scratchpad xslot/xslot-prototype.diff, 97 lines in
+server-context.cpp get_available_slot, gated LLAMA_XSLOT=1, LLAMA_XSLOT_MIN 256): under --kv-unified seq_cp shares
+attention cells (metadata, 2.07 ms @32k cells) + recurrent copy-on-write (~150 MiB GPU-GPU, est.); checkpoints are
+shared_ptr so partial prefixes reuse the normal restore path; MTP KV follows via common_memory, pending_h copied.
+Qwen3.5-0.8B/2B hybrid+MTP: busy source 10,100→28 tok prefilled (981→98 ms), idle 10,316→221 (882→91 ms);
+idle output byte-identical to same-slot reuse; 60-req 3-client stress 0 errors. Upstream PR #30970 (same idea,
+open, conflicts) DISABLES itself with spec/MTP. Risks: images untested; no n_cache_reuse guard; host-cache best
+match not compared; simultaneous arrivals skip each other; 0002 const_cast id_task on a now-shared checkpoint.
+Options (owner): 0007 canary on Swift (env-gated) and/or post the MTP result on #30970 (public — needs approval). (1)/(2) not chosen.
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
