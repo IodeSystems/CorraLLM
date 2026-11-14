@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -557,6 +558,168 @@ type Extension struct {
 	// Values carry only per-model fields (type, quality, maxConcurrent,
 	// modalities …). Lifecycle belongs to the extension.
 	Provides map[string]Model `yaml:"provides,omitempty"`
+
+	// Routes are /v1 path prefixes this extension serves as an API of its own
+	// (P78: /v1/files, /v1/uploads, /v1/reconstructions). corrallm streams each
+	// request under a prefix to the extension's proxy port, authenticated by
+	// the caller's key and scoped by X-Corrallm-Owner; it does not admit,
+	// schedule or cost them. One extension per prefix; a prefix may not
+	// shadow a built-in route. See proxy/extapi.go.
+	Routes []string `yaml:"routes,omitempty"`
+
+	// Lease lets the extension's own process borrow pool memory from the
+	// residency ledger for work it runs outside any request (P78 §7: a COLMAP
+	// GPU stage), through /api/v1/leases. nil = no leases.
+	Lease *ExtensionLease `yaml:"lease,omitempty"`
+}
+
+// ExtensionLease configures an extension's pool leases.
+type ExtensionLease struct {
+	// Token authenticates the extension on /api/v1/leases (Bearer). ${ENV}
+	// references are expanded from the credential store, then the environment.
+	Token string `yaml:"token"`
+	// Max caps one lease's usage per pool ("gpu1": "8GB"). A pool not named
+	// here cannot be leased.
+	Max map[string]string `yaml:"max"`
+	// YieldGrace is how long a holder asked to yield has to release before
+	// corrallm stops the extension's process group (D7). Default 60s.
+	YieldGrace string `yaml:"yieldGrace,omitempty"`
+}
+
+// DefaultLeaseYieldGrace is ExtensionLease.YieldGrace when unset.
+const DefaultLeaseYieldGrace = 60 * time.Second
+
+// ExpandedToken is Token with ${ENV} references resolved.
+func (l *ExtensionLease) ExpandedToken() string {
+	if l == nil {
+		return ""
+	}
+	return ExpandSecrets(l.Token)
+}
+
+// YieldGraceDuration is YieldGrace parsed, defaulted. Validated at load.
+func (l *ExtensionLease) YieldGraceDuration() time.Duration {
+	if l == nil || l.YieldGrace == "" {
+		return DefaultLeaseYieldGrace
+	}
+	d, err := time.ParseDuration(l.YieldGrace)
+	if err != nil || d <= 0 {
+		return DefaultLeaseYieldGrace
+	}
+	return d
+}
+
+// MaxBytes is Max parsed. Validated at load.
+func (l *ExtensionLease) MaxBytes() map[string]int64 {
+	if l == nil {
+		return nil
+	}
+	m, _ := ParseSizes(l.Max)
+	return m
+}
+
+// BuiltinRoutes are the /v1 paths corrallm serves itself (proxy.Mount). An
+// extension route may not equal one, contain one, or sit under one.
+// proxy's TestBuiltinRoutesCoverMount keeps this list honest.
+var BuiltinRoutes = []string{
+	"/v1/spend",
+	"/v1/chat/completions", "/v1/completions", "/v1/embeddings", "/v1/rerank",
+	"/v1/audio/transcriptions", "/v1/audio/translations", "/v1/audio/speech",
+	"/v1/images/generations", "/v1/images/segmentations",
+	"/v1/realtime", "/v1/models", "/v1/messages/count_tokens", "/v1/messages",
+	"/v1/tokenize", "/v1/detokenize", "/v1/capabilities", "/v1/reservations",
+	"/v1/keys", "/v1/access-requests",
+}
+
+// routesOverlap reports whether one path prefix equals, contains or sits
+// under the other.
+func routesOverlap(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
+// validateExtensionAPI checks routes and lease on every extension: shape,
+// one claimant per prefix, no built-in shadowed, lease pools on the server.
+func (c *Config) validateExtensionAPI() error {
+	names := make([]string, 0, len(c.Extensions))
+	for n := range c.Extensions {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	claimed := map[string]string{}
+	for _, name := range names {
+		ext := c.Extensions[name]
+		if len(ext.Routes) > 0 && ext.Proxy.IsZero() {
+			return fmt.Errorf("extension %q: routes need a top-level proxy (the port the routes forward to)", name)
+		}
+		for _, r := range ext.Routes {
+			if !strings.HasPrefix(r, "/v1/") || r != path.Clean(r) || strings.ContainsAny(r, "*?#{} ") {
+				return fmt.Errorf("extension %q: route %q must be a clean /v1/ path prefix (no trailing slash, no wildcard)", name, r)
+			}
+			for _, b := range BuiltinRoutes {
+				if routesOverlap(r, b) {
+					return fmt.Errorf("extension %q: route %q shadows corrallm's own %s", name, r, b)
+				}
+			}
+			for other, owner := range claimed {
+				if routesOverlap(r, other) {
+					return fmt.Errorf("extension %q: route %q overlaps %q, already claimed by extension %q", name, r, other, owner)
+				}
+			}
+			claimed[r] = name
+		}
+		l := ext.Lease
+		if l == nil {
+			continue
+		}
+		if ext.Cmd == "" {
+			return fmt.Errorf("extension %q: lease needs a cmd and server (it borrows that server's pools)", name)
+		}
+		if strings.TrimSpace(l.Token) == "" {
+			return fmt.Errorf("extension %q: lease.token is required", name)
+		}
+		if l.YieldGrace != "" {
+			if d, err := time.ParseDuration(l.YieldGrace); err != nil || d <= 0 {
+				return fmt.Errorf("extension %q: lease.yieldGrace %q is not a positive duration", name, l.YieldGrace)
+			}
+		}
+		if len(l.Max) == 0 {
+			return fmt.Errorf("extension %q: lease.max must name at least one pool", name)
+		}
+		pools := c.Servers[ext.Server].Pools
+		for pool, sz := range l.Max {
+			n, err := ParseSize(sz)
+			if err != nil || n <= 0 {
+				return fmt.Errorf("extension %q: lease.max.%s %q is not a positive size", name, pool, sz)
+			}
+			if _, ok := pools[pool]; !ok {
+				return fmt.Errorf("extension %q: lease.max names pool %q, which server %q does not declare", name, pool, ext.Server)
+			}
+		}
+	}
+	return nil
+}
+
+// ExtensionForRoute names the extension whose routes claim urlPath, and the
+// claimed prefix. ok is false when none does.
+func (c *Config) ExtensionForRoute(urlPath string) (ext, prefix string, ok bool) {
+	for name, e := range c.Extensions {
+		for _, r := range e.Routes {
+			if urlPath == r || strings.HasPrefix(urlPath, r+"/") {
+				return name, r, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// ExtensionRoutes lists every claimed route prefix, sorted.
+func (c *Config) ExtensionRoutes() []string {
+	var out []string
+	for _, e := range c.Extensions {
+		out = append(out, e.Routes...)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Provider is one upstream within an extension: an endpoint, its credentials,
@@ -2708,6 +2871,9 @@ func (c *Config) resolveExtensions() error {
 	// Top-level providers fold in BEFORE the extension check below, so their
 	// models are validated on the same terms as any other declared model.
 	if err := c.foldLocalProviders(); err != nil {
+		return err
+	}
+	if err := c.validateExtensionAPI(); err != nil {
 		return err
 	}
 	// After BOTH kinds of provider are in place, so their claims can compete.
