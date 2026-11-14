@@ -530,7 +530,7 @@ exists, llama-memory-hybrid.cpp:153). Fix options (owner to pick): (1) save idle
 patch, fixes the idle cases); (2) choose the idle slot with the longest prefix ≥ 50% instead of the 0.9 threshold;
 (3) slot-aware dequeue in corrallm (fixes the both-busy cases, most of the lost tokens); (4) cross-slot seq_cp (most work).
 **Owner 11-14:** do (3) now as an opt-in per-model option ("will require more queue population") — ✅ built
-935a579/c5c18b9/bd7bb4f/0ca25cb, NOT deployed: `slotAwareDequeue` (+ `slotAwareDequeueMaxSkips` 0→2,
+935a579/c5c18b9/bd7bb4f/0ca25cb, ✅ LIVE on Swift 11-14 11:21 (owner: "Deploy, no a/b required"; deploy v0.2.2-67-gccb3461 after test fix ccb3461; first 30 turns: pinned 16 / moved 10 / assigned 3, 27 hits, 31×200; aw4 informed of the semantics): `slotAwareDequeue` (+ `slotAwareDequeueMaxSkips` 0→2,
 `slotAwareDequeueMaxWait` ""→2s); order own-slot > unsettled (round-robin free slots, explicit id_slot) >
 homed-elsewhere; pins every chat turn like slotAffinity (N10 lost — but N10 predates 0006, its losses were
 `pinned` rows evicted by fragmentation). `X-Corrallm-Slot: <instance>/<id_slot>` (informational, in
