@@ -378,6 +378,16 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P80 — Drain-then-restart for local backends; no 502 on a known restart — 2026-11-14
+
+aw4 (11-14): Swift restarts by bare SIGTERM (orchestrator, 18:26 11-13 and 13:58 11-14) gave 502 bursts (13:54 = 12, 14:24 = 7
+per 30 min; "connection refused"/EOF while llama-server shut down and loaded). Handoffs (bin/deploy) gave none. aw4 retries 429
+but treats 502 as a failed turn. Ask: drain/hold the queue and answer 429/503 + Retry-After during a backend restart.
+◐ agent: `corrallm backend restart <model>` (drain → stop → respawn with current cmd/env/build → un-drain) + proxy maps
+known-down/connection-refused-before-bytes to 503 + Retry-After; capabilities error rows. **Orchestrator rule until then:
+do not SIGTERM a live backend; use the pause row + wait-for-idle path (P76 E2).**
+**risks:** a held queue during a ~60 s Swift load adds latency; bounded drain cut-off. **blocking decisions:** deploy (owner).
+
 ### ✅ P79 — corrallm www site + install.sh on hz — 2026-11-14
 
 Owner 11-14: site modeled on dun/para (static site/index.html, hz static service, `make site`/`site-push`), install.sh
