@@ -412,7 +412,16 @@ boundaries; D5 routes as recommended; D6 job state/uploads/runner inside the ext
 D2 (SAM HF licence) and D3 (window) still need the owner's own action/time. New owner question: how are positions
 encoded (SAM prompt coords; COLMAP pose priors for a subset of images) → answered in the spec.
 ◐ P1 spec → plan/p78-sam-colmap.md (agent) · ◐ COLMAP CUDA-13 build feasibility in scratchpad (no GPU runs).
-**next:** spec + build results → owner accepts SAM licence + picks window → M1.
+COLMAP build 11-14: source build blocked on 17 apt dev packages (sudo; list in agent report: boost, eigen3, ceres,
+openimageio, cgal, glog, gflags, metis, suitesparse, glew, gtest…); CUDA 13 untested. pycolmap 4.2.1 + pycolmap-cuda12
+wheel works without sudo (scratchpad colmap/venv, 410 MB, has_cuda, sm_80 cubins → sm_86 not yet run, distro
+libcudart 12; API: extract_features, match_exhaustive, incremental_mapping, global_mapping, patch_match_stereo,
+stereo_fusion, create_pose_prior_bundle_adjuster). Assumption: runner uses the wheel (orchestrator rec; owner said
+"do the dev work upfront" without objecting).
+Owner 11-14: applied for the SAM 3.1 HF licence — "do the dev work upfront and we'll get the model when it is
+approved." → B1-B4 start from the spec; SAM tests run against stubs until weights arrive.
+**next:** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
+proxy) → M1 when the HF licence is approved + a window is picked.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
 exceed body caps; COLMAP mapper likely not resumable mid-stage; P34 cross-model queue not built.
 **blocking decisions:** D1 which COLMAP (rec: COLMAP+CUDA, GLOMAP as mapper option); D2 accept SAM 3.1 HF licence
