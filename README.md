@@ -64,8 +64,10 @@ Behaviour to know:
   full-size mask each); a request `threshold` below 0.05 cannot return them.
 - fp32 replaces sam3's `perflib.fused.addmm_act` (hardcodes bf16 for the ViT MLP) and disables TF32.
 - `use_fa3=False` (FlashAttention 3 is a Hopper extra).
-- Not done: HTTP end-to-end with the real backend (the server path is covered by the stub tests),
-  concurrent requests, long-run VRAM growth, `torch.compile`.
+- HTTP end-to-end with the real backend on the 3080 (bf16): cold start 25 s to /health (page cache warm); text, point, box
+  and box-exemplar prompts return spec-shaped results in 280-335 ms; bad input gives 400 with `param`.
+- Do not run with a cwd that contains a `sam3/` directory: it shadows the package (`pkg_resources` TypeError at load).
+- Not done: concurrent requests, long-run VRAM growth, `torch.compile`.
 
 ## corrallm extension config
 
