@@ -459,6 +459,12 @@ ramUsage gpu1 6800MiB, MemoryMax 12G, sticky ttl 2m / idleUnload 5m) → `sam3-s
 truck.jpg concept "truck" → 200, 1 mask score 0.728, cold load 51.6 s, warm 1.35 s; activity rows written (cost_usd 0).
 Request shape (spec/shim, NOT my earlier chat proposal): `image` is a string (data URL / base64 / URL), prompts `type:
 "concept"` (text, box exemplars) or `"visual"` (points/box), response `results[].predictions[]` {score, box, area, mask RLE}.
+✅ 11-14 SAM API RESHAPED to /v1/images/edits style (owner "I think so. yeah"), deployed v0.3.0-28-g4272c5d + plugin reinstalled:
+request {model, image | image[] ≤16 (JSON or multipart), prompt, points, boxes (flat or per-image lists), n, response_format
+rle|png (polygon → 400 unsupported_value), threshold}; response {created, data:[{index,width,height,segments[{score,box,area,
+mask}]}], usage{images,masks}}; billed per image from usage.images. E2E 2× truck.jpg: text 0.728, text + box exemplar 0.992,
+same mask (area ~636k px), cold 44.9 s. OPEN (owner): shim fetches http(s) image URLs (public addresses only, no DNS-rebinding
+guard) — keep or disable (rec disable).
 **Owner 11-14 "Let's go":** D4a yes (yield mid-stage via kill + resume), D7 stop the service after 60 s, D8 defaults (EXIF GPS on,
 7 d expiry, 50 GiB/key, 5000 images/job), COLMAP engine = source build (17 apt dev packages; no passwordless sudo here → owner
 runs the apt line). ✅ B3 83cd361..15a2d71 (not deployed): `Extension.Routes` + `Extension.Lease {token, max, yieldGrace}`; streaming
