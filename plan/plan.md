@@ -378,7 +378,7 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ❓ P77 — llama.cpp v1.0.0 + our patch stack — 2026-11-13
+### ◐ P77 — llama.cpp v1.0.0 + our patch stack — LIVE 11-13 18:26
 
 Owner 11-13: "Let's do llama 1.0 and our patch stack on it." Serving build 12300 (`ccd360f06`,
 0.9.0-dev); upstream tagged `v1.0.0` = `b1b770d90d94cad9e9ea5b993bdbc383a522fb28` (59 commits on ccd360f06).
@@ -403,16 +403,20 @@ rebuild has nothing to do. Patches live outside the repo, in ~/.corrallm/tools/l
   is signed out (agent may not sign in via SSO); the only other gated path is the watcher at rebuildAt
   06:00. Config REVERTED to the pre-P77 export (diff identical), so the 06:00 slot will not swap unattended.
   Files: ~/.corrallm/config-backup-pre-p77-20261113.yaml (= current) and session scratchpad p77-config.yaml.
-**next (owner):** sign in to the dashboard; then `corrallm config load --force <p77 yaml> && systemctl
---user reload corrallm`, Tools page → Build llama.cpp/box1; or say "arm 06:00" to leave the ref set.
-Previous next: owner approves the gated swap: copy patches unchanged (already identical), set the tool ref to
-b1b770d9… (`corrallm config export` → edit → `config load --force` → `systemctl --user reload corrallm`),
-then Build llama.cpp/box1 from the dashboard Tools page (daemon job = start check + P52 bench, pauses
-Swift ~1 min, rolls back on >10% slower) or wait for the 06:00 slot. NOT `corrallm tools build` (no gate).
-**risks:** CUDA path of 0004/0006 untested on 1.0; KLD refs (~/.corrallm/var/kld) tied to ccd360f0;
-the P75 N12 24 h canary readout is still pending, and unpinning ends that canary's build.
-**blocking decisions:** live swap timing (Swift off gpu0 during the bench). **optional extensions:**
-move the patch stack into the repo (today it is only in ~/.corrallm, not versioned).
+- ✅ 11-13 18:21-18:28 SWAPPED (owner: "just swap it out"; gate skipped by owner call, 3080 test = evidence):
+  build copied into ~/.corrallm/tools/llama.cpp/builds/20261113-181416-b1b770d9 (RUNPATH $ORIGIN, libs
+  resolve in-dir); ref pinned b1b770d9 (scratchpad p77-config.yaml) + reload; `corrallm tools activate
+  llama.cpp 20261113-181416-b1b770d9 --server box1`; embed SIGTERM (idle), Swift SIGTERM at first both-idle
+  instant (87 s wait) → respawned on 1.0, /health ok 18:27:57. Cost: 12×502 connection-refused at 18:26
+  (shutdown + load), 0 streams cut. First 5 replies: 200, decode 68.2 tok/s, prefill 1,671 tok/s, cache 42.5% (cold).
+  Rollback: `corrallm tools activate llama.cpp 20261112-081721-ccd360f0 --server box1` + load
+  ~/.corrallm/config-backup-pre-p77-20261113.yaml + respawn backends.
+**next:** 24 h readout on 1.0 vs the 0006 readout (P75 N12): decode, hit rate, host_pool compactions
+(first CUDA proof of 0006 on 1.0), 5xx, crashes. 06:00 rebuild may re-run (hand-copied build's stamp
+may not match) → P52 bench vs ccd360f0 happens then (~1 min Swift pause); fine.
+**risks:** 0006 compaction under CUDA unproven until live counters move; MTP on 1.0 only seen live; KLD refs (~/.corrallm/var/kld) tied to ccd360f0;
+P75 N12 readout done 11-13 (commit 86cd7a8).
+**blocking decisions:** none. **optional extensions:** move the patch stack into the repo (owner 11-13: no).
 
 ### ⏸ P76 — Q6 (llama.cpp Swift) vs NVFP4 (ninfer, base Qwen3.8) A/B — 2026-11-11
 
