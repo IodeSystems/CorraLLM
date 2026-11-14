@@ -32,6 +32,9 @@ func TestTypeIOAndDerivedCapability(t *testing.T) {
 		// Segmentation takes a picture (+ optional text) and returns masks, not
 		// a picture: image is on the In side only.
 		{"segment", []string{"image", "text"}, []string{"mask"}, "image.segment"},
+		// Reconstruction takes many pictures and returns a scene.
+		{"reconstruction", []string{"image"}, []string{"scene"}, "scene.reconstruct"},
+		{"sfm", []string{"image"}, []string{"scene"}, "scene.reconstruct"},
 		// Delivery, not IO: realtime is audio-in/text-out exactly like batch STT.
 		// The label splits them because the ROUTE differs (WebSocket vs POST),
 		// and that axis is not a modality.
@@ -125,5 +128,18 @@ func TestSegmentEmitsMaskNotImage(t *testing.T) {
 	vision := Model{Type: "chat", Modalities: map[string]ModalitySpec{"text": {}, "image": {}}}
 	if ModelIO("v", vision, false).Emits(ModalityMask) {
 		t.Error("a vision chat model emits mask")
+	}
+}
+
+// TestReconstructionEmitsScene: an SfM type emits scene and nothing else
+// does — the /v1/reconstructions create gate depends on it.
+func TestReconstructionEmitsScene(t *testing.T) {
+	if io := TypeIO("reconstruction"); !io.Emits(ModalityScene) || io.Emits(ModalityImage) {
+		t.Errorf("reconstruction IO = %+v, want Emits(scene) only", io)
+	}
+	for _, typ := range []string{"chat", "diffusion", "segment", "stt", "embed"} {
+		if TypeIO(typ).Emits(ModalityScene) {
+			t.Errorf("%s emits scene", typ)
+		}
 	}
 }

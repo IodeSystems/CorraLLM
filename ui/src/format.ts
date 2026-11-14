@@ -103,6 +103,8 @@ export function capLabel(c?: string): string {
       return 'tts'
     case 'image.segment':
       return 'segment'
+    case 'scene.reconstruct':
+      return 'reconstruct'
     case 'embeddings':
       return 'embed'
     default:

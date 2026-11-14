@@ -2545,7 +2545,7 @@ type ModelDef struct {
 	Remote       bool           `json:"remote" doc:"True if served by a host corrallm does not run (no local process, non-loopback target). Never counted as loaded."`
 	ProcKey      string         `json:"procKey" doc:"Backing process identity; an extension's models share one."`
 	Modalities   []ModalityView `json:"modalities" doc:"Accepted input modalities (text|image|audio) with optional per-modality metadata."`
-	Capability   string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|image.generate|image.segment|rerank (delivery surfaces kept distinct)."`
+	Capability   string         `json:"capability" doc:"chat|embeddings|audio.stt|audio.realtime|audio.tts|image.generate|image.segment|scene.reconstruct|rerank (delivery surfaces kept distinct)."`
 
 	// SlotAwareDequeue is read-only here: set in the config (`slotAwareDequeue: true`).
 	SlotAwareDequeue bool `json:"slotAwareDequeue" doc:"A freed llama.cpp slot goes first to the queued turn whose conversation last ran on it (config slotAwareDequeue; P75)."`
