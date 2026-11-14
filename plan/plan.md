@@ -451,7 +451,14 @@ install into ~/.corrallm/ext/sam3/venv, enable extension + deploy B2.
 `ext/plugins/sam3.1`, colmap to `ext/plugins/colmap`); oidio stays its own repo. EVERY plugin, in-tree or external, exposes
 `make install-corrallm-plugin` → ${CORRALLM_EXT_DIR:-~/.corrallm/ext}/<name>/ (own venv/binary, no sudo, idempotent, atomic
 swap, writes extension.yaml = its corrallm config block, prints the reload step, never reloads or downloads weights) and
-`uninstall-corrallm-plugin`. corrallm top level: `make ext-install EXT=<name>`. ◐ oidio target (agent).
+`uninstall-corrallm-plugin`. corrallm top level: `make ext-install EXT=<name>`. ✅ oidio target 831c062 (oidio repo;
+live oidio still runs /home/nthalk/go/bin/oidio — switching to ~/.corrallm/ext/oidio = merge its extension.yaml + reload; not
+done; oidio working tree has uncommitted edits). ◐ sam3shim → corrallm ext/plugins/sam3.1 (agent).
+✅ 11-14 SAM LIVE (owner "Approved"): deploy v0.3.0-7-gfe2a802; extension `sam3` (~/.corrallm/ext/sam3/venv, port 5821,
+ramUsage gpu1 6800MiB, MemoryMax 12G, sticky ttl 2m / idleUnload 5m) → `sam3-segment` in /v1/models. E2E through :8111:
+truck.jpg concept "truck" → 200, 1 mask score 0.728, cold load 51.6 s, warm 1.35 s; activity rows written (cost_usd 0).
+Request shape (spec/shim, NOT my earlier chat proposal): `image` is a string (data URL / base64 / URL), prompts `type:
+"concept"` (text, box exemplars) or `"visual"` (points/box), response `results[].predictions[]` {score, box, area, mask RLE}.
 **next (was):** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
 proxy) → M1 when the HF licence is approved + a window is picked.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
