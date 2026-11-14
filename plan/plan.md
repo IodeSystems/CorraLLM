@@ -475,7 +475,12 @@ insufficient_storage). Risks: routes mount at boot only (a reload does not add a
 on next request; GPU-seconds per owner not in events. Apt deps installed by owner 11-14. **Access policy (owner 11-14):** "The sam/colmap
 should be keyless, and the provider should configure keys, default for extensions and providers is open until locked
 down." → keyless callers served everywhere by default (unknownKeys.allow unset = true is intended); extension APIs follow
-the same policy (◐ agent: drop B3's 401, anonymous owner namespace, OpenAI-shaped 401/403 when locked down). ◐ B4 colmap plugin (agent).
+the same policy (✅ ffac12f: B3's 401 dropped, anonymous owner = sha256("corrallm:anonymous"), OpenAI-shaped 401
+invalid_api_key / 403 permission_error when locked down). ✅ 0caf3d4 capabilities: oidio-tts input text (was audio;
+EffectiveModalities default), models carry `output_formats` (sam3 mask: rle, png) + image formats/maxResolution/maxCount,
+every /v1/capabilities row has request_content_types / response_content_types. Deployed v0.3.0-34-g0caf3d4; live sam3 config
+now declares image {formats [jpeg,png,webp], maxResolution 4096, maxCount 16}. OPEN: anthropic-claude-* advertise text only
+(Claude takes images) — verify corrallm's Claude path forwards images before advertising vision. ◐ B4 colmap plugin (agent).
 **next (was):** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
 proxy) → M1 when the HF licence is approved + a window is picked.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
