@@ -10,6 +10,7 @@ def main(argv=None):
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--checkpoint", help="path to the SAM 3.1 checkpoint (real backend)")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--dtype", choices=["bf16", "fp16", "fp32"], default="bf16", help="autocast dtype (real backend)")
     ap.add_argument("--stub", action="store_true", help="deterministic colour-based stub, no model, no GPU")
     a = ap.parse_args(argv)
     if a.stub:
@@ -19,7 +20,7 @@ def main(argv=None):
         if not a.checkpoint:
             ap.error("--checkpoint is required unless --stub")
         from .backends import Sam3Backend
-        backend = Sam3Backend(a.checkpoint, device=a.device)  # load before binding: TCP dial = ready
+        backend = Sam3Backend(a.checkpoint, device=a.device, dtype=a.dtype)  # load before binding: TCP dial = ready
     srv = make_server(backend, a.host, a.port)
     print(f"sam3shim: {backend.name} backend on {a.host}:{a.port}", file=sys.stderr, flush=True)
     try:
