@@ -502,6 +502,8 @@ the save. A similarity pick with f_keep ≥ 0.5 truncates without saving (:1894)
 exists, llama-memory-hybrid.cpp:153). Fix options (owner to pick): (1) save idle slots before choosing a slot (~20-line
 patch, fixes the idle cases); (2) choose the idle slot with the longest prefix ≥ 50% instead of the 0.9 threshold;
 (3) slot-aware dequeue in corrallm (fixes the both-busy cases, most of the lost tokens); (4) cross-slot seq_cp (most work).
+**Owner 11-14:** do (3) now as an opt-in per-model option ("will require more queue population") — ◐ agent
+implementing, no deploy. Investigate (4) — ◐ agent researching + optional scratch prototype on the 3080. (1)/(2) not chosen.
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
