@@ -460,7 +460,11 @@ func TestPacedDayRefusesUntilATimedBudgetPays(t *testing.T) {
 		{Pace: true, Per: "calendar-day", Hard: true},
 	})
 	scope := config.ProviderScopeKey("anthropic")
-	now := time.Now()
+	// Fixed mid-period clock: on the eve of renewal today's share is the whole
+	// remaining month, so the month and day notes would merge into one.
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	p.quota.SetClock(func() time.Time { return now })
+	p.grants.now = func() time.Time { return now }
 	allow := config.PacedAllowance(10, 0, 0, 15, now)
 	spendAs(p, cand, allow+0.01)
 	if admits(p, cand) {
