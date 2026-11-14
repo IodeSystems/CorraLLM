@@ -296,6 +296,13 @@ func TestReconstructionLifecycle(t *testing.T) {
 	if st != 200 || cams["object"] != "reconstruction.cameras" || len(cams["images"].([]any)) != 4 {
 		t.Fatalf("cameras %d %v", st, cams)
 	}
+	st, tf, _ := s.do("alice", "GET", "/v1/reconstructions/"+id+"/content?variant=transforms", "", nil)
+	if st != 200 || tf["camera_model"] != "OPENCV" || len(tf["frames"].([]any)) != 4 || tf["frame"] == nil || tf["applied_transform"] == nil {
+		t.Fatalf("transforms %d %v", st, tf)
+	}
+	if st, _, _ := s.do("alice", "GET", "/v1/reconstructions/"+id+"/content?variant=glb", "", nil); st != 404 {
+		t.Fatalf("glb without a mesh → %d", st)
+	}
 	if st, _, _ := s.do("alice", "GET", "/v1/reconstructions/"+id+"/content?variant=dense", "", nil); st != 404 {
 		t.Fatalf("dense not produced → %d", st)
 	}
@@ -374,5 +381,31 @@ func TestAnonymousOwner(t *testing.T) {
 	_, l := s.json("alice", "GET", "/v1/files", nil)
 	if len(l["data"].([]any)) != 0 {
 		t.Fatal("anonymous file listed for alice")
+	}
+}
+
+func TestMeshGLBVariant(t *testing.T) {
+	s := start(t, "")
+	ar := s.upload("alice", "set.zip", zipOf(map[string][]byte{"1.jpg": jpeg, "2.jpg": jpeg, "3.jpg": jpeg}))
+	_, j := s.json("alice", "POST", "/v1/reconstructions", map[string]any{"model": "colmap-sfm", "archive_file_id": ar, "dense": true, "mesh": "delaunay"})
+	id := j["id"].(string)
+	done := s.waitJob("alice", id, func(m map[string]any) bool { return m["status"] == "completed" })
+	var vs []string
+	for _, o := range done["outputs"].([]any) {
+		vs = append(vs, o.(map[string]any)["variant"].(string))
+	}
+	if strings.Join(vs, ",") != "cameras,transforms,sparse,dense,mesh,glb,log" {
+		t.Fatalf("outputs %v", vs)
+	}
+	req, _ := http.NewRequest("GET", s.URL+"/v1/reconstructions/"+id+"/content?variant=glb", nil)
+	req.Header.Set(api.HeaderOwner, "alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "model/gltf-binary" || string(b[:4]) != "glTF" {
+		t.Fatalf("glb %d %s % x", resp.StatusCode, resp.Header.Get("Content-Type"), b[:4])
 	}
 }

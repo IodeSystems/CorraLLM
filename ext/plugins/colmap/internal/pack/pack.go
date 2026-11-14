@@ -149,18 +149,23 @@ func ReadCamerasTxt(p string) ([]Camera, error) {
 	return out, sc.Err()
 }
 
-// Centre is the camera centre −Rᵀt for a world-to-camera pose.
-func Centre(q [4]float64, t [3]float64) [3]float64 {
+// rotation is the world-to-camera rotation matrix of a COLMAP qvec (w, x, y, z).
+func rotation(q [4]float64) [3][3]float64 {
 	w, x, y, z := q[0], q[1], q[2], q[3]
 	n := math.Sqrt(w*w + x*x + y*y + z*z)
 	if n > 0 {
 		w, x, y, z = w/n, x/n, y/n, z/n
 	}
-	r := [3][3]float64{
+	return [3][3]float64{
 		{1 - 2*(y*y+z*z), 2 * (x*y - w*z), 2 * (x*z + w*y)},
 		{2 * (x*y + w*z), 1 - 2*(x*x+z*z), 2 * (y*z - w*x)},
 		{2 * (x*z - w*y), 2 * (y*z + w*x), 1 - 2*(x*x+y*y)},
 	}
+}
+
+// Centre is the camera centre −Rᵀt for a world-to-camera pose.
+func Centre(q [4]float64, t [3]float64) [3]float64 {
+	r := rotation(q)
 	var c [3]float64
 	for i := 0; i < 3; i++ {
 		c[i] = -(r[0][i]*t[0] + r[1][i]*t[1] + r[2][i]*t[2])

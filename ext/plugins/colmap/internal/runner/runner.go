@@ -897,7 +897,15 @@ func (j *job) pack() error {
 	if err != nil {
 		return err
 	}
-	outs = append(outs, jobs.Output{Variant: "cameras", Bytes: cn}, jobs.Output{Variant: "sparse", Bytes: n})
+	outs = append(outs, jobs.Output{Variant: "cameras", Bytes: cn})
+	if tf, err := pack.Transforms(cams, imgs, map[string]any{"frame": frame}); err != nil {
+		fmt.Fprintf(j.log, "=== no transforms variant: %v\n", err)
+	} else if tn, err := pack.WriteJSON(filepath.Join(out, "transforms.json"), tf); err != nil {
+		return err
+	} else {
+		outs = append(outs, jobs.Output{Variant: "transforms", Bytes: tn})
+	}
+	outs = append(outs, jobs.Output{Variant: "sparse", Bytes: n})
 	dense := filepath.Join(j.ws, "dense")
 	if j.rec.Request.Dense {
 		n, err := pack.Zip(filepath.Join(out, "dense.zip"), map[string]string{"fused.ply": filepath.Join(dense, "fused.ply")}, frame)
@@ -912,6 +920,13 @@ func (j *job) pack() error {
 				return fail("internal", "pack mesh: %v", err)
 			}
 			outs = append(outs, jobs.Output{Variant: "mesh", Bytes: n})
+			if mesh, err := pack.ReadPLYMesh(filepath.Join(dense, name)); err != nil {
+				fmt.Fprintf(j.log, "=== no glb variant: %v\n", err)
+			} else if gn, err := pack.WriteGLB(filepath.Join(out, "mesh.glb"), mesh, "corrallm colmap-svc"); err != nil {
+				fmt.Fprintf(j.log, "=== no glb variant: %v\n", err)
+			} else {
+				outs = append(outs, jobs.Output{Variant: "glb", Bytes: gn})
+			}
 		}
 	}
 	fmt.Fprintf(j.log, "=== packaged %d variants\n", len(outs)+1)

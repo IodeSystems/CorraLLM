@@ -716,11 +716,13 @@ func (a *API) deleteJob(w http.ResponseWriter, r *http.Request, owner string) er
 }
 
 var variants = map[string]struct{ file, ctype string }{
-	"cameras": {"cameras.json", "application/json"},
-	"sparse":  {"sparse.zip", "application/zip"},
-	"dense":   {"dense.zip", "application/zip"},
-	"mesh":    {"mesh.zip", "application/zip"},
-	"log":     {"log.txt", "text/plain; charset=utf-8"},
+	"cameras":    {"cameras.json", "application/json"},
+	"transforms": {"transforms.json", "application/json"},
+	"glb":        {"mesh.glb", "model/gltf-binary"},
+	"sparse":     {"sparse.zip", "application/zip"},
+	"dense":      {"dense.zip", "application/zip"},
+	"mesh":       {"mesh.zip", "application/zip"},
+	"log":        {"log.txt", "text/plain; charset=utf-8"},
 }
 
 func (a *API) jobContent(w http.ResponseWriter, r *http.Request, owner string) error {
@@ -734,7 +736,7 @@ func (a *API) jobContent(w http.ResponseWriter, r *http.Request, owner string) e
 	}
 	spec, ok := variants[v]
 	if !ok {
-		return oai.Invalid("variant", "variant must be cameras, sparse, dense, mesh or log")
+		return oai.Invalid("variant", "variant must be cameras, transforms, sparse, dense, mesh, glb or log")
 	}
 	if rec.Status != jobs.Completed && !(v == "log" && rec.Status == jobs.Failed) {
 		return oai.Conflict("reconstruction %s is %s; content is available once it is completed", rec.ID, rec.Status)

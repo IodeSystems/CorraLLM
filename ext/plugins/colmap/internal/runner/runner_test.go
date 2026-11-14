@@ -178,10 +178,10 @@ func TestStageCommandLinesDenseMesh(t *testing.T) {
 	for _, o := range rec.Outputs {
 		vs = append(vs, o.Variant)
 	}
-	if strings.Join(vs, ",") != "cameras,sparse,dense,mesh,log" {
+	if strings.Join(vs, ",") != "cameras,transforms,sparse,dense,mesh,glb,log" {
 		t.Fatalf("outputs %v", vs)
 	}
-	for _, f := range []string{"sparse.zip", "dense.zip", "mesh.zip", "cameras.json", "log.txt"} {
+	for _, f := range []string{"sparse.zip", "dense.zip", "mesh.zip", "mesh.glb", "cameras.json", "transforms.json", "log.txt"} {
 		if _, err := os.Stat(filepath.Join(e.dir, "jobs", "recon_a", "out", f)); err != nil {
 			t.Errorf("missing %s", f)
 		}

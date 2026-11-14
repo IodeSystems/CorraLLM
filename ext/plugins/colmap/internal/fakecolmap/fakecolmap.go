@@ -97,7 +97,9 @@ func Main() {
 	case "stereo_fusion":
 		err = os.WriteFile(f["output_path"], []byte("ply\nfake fused\n"), 0o644)
 	case "poisson_mesher", "delaunay_mesher":
-		err = os.WriteFile(f["output_path"], []byte("ply\nfake mesh\n"), 0o644)
+		err = os.WriteFile(f["output_path"], []byte("ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"+
+			"property uchar red\nproperty uchar green\nproperty uchar blue\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n"+
+			"0 0 0 255 0 0\n1 0 0 0 255 0\n0 1 0 0 0 255\n3 0 1 2\n"), 0o644)
 	default:
 		err = fmt.Errorf("fake colmap: unknown command %s", cmd)
 	}
