@@ -378,6 +378,25 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P78 — SAM 3.1 + COLMAP-CUDA on the 3080 as extensions — 2026-11-14
+
+Owner 11-14: "SAM3.1 and COLMAP nvidia, both on the 3080 (swappable), behind an openai api best effort api interface".
+Assumptions: A1 each is a hosted extension like oidio (config.go:516-560); A2 service code in its own repo, corrallm
+proxies; A3 no async job API exists today (no /v1/files, /v1/batches; proxy.go:683-698); A4 gpu1 ~9,877 MiB usable,
+nomic 816 pinned, chandra/image/guard already timeshare (P34, P67).
+DAG: ◐ R1 SAM 3.1 facts · ◐ R2 COLMAP-CUDA vs GLOMAP vs cuSfM · ◐ R3 wire schemas (OpenAI /v1/videos lifecycle,
+Roboflow/fal SAM 3 bodies, COCO RLE) · ◐ R4 code audit (extension spawn/health, metering proxy.go:771-781,
+capabilities proxy.go:3290+, iomodality.go:42, eviction under long holds manager.go:1794, ErrNoCapacity :488) ·
+◻ M1 measure on 3080 (needs D1-D3) · ◻ P1 spec (needs D4, D5) · ◻ B1 SAM shim · ◻ B2 corrallm SAM route ·
+◻ B3 job subsystem (uploads > 32/64 MiB body caps) · ◻ B4 COLMAP runner · ◻ T1 sandbox e2e (:6510) · ◻ T2 deploy.
+**next:** R1-R4 in parallel; owner answers D1-D3 before M1.
+**risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
+exceed body caps; COLMAP mapper likely not resumable mid-stage; P34 cross-model queue not built.
+**blocking decisions:** D1 which COLMAP (rec: COLMAP+CUDA, GLOMAP as mapper option); D2 accept SAM 3.1 HF licence
+(owner only); D3 gpu1 test window (rec: off-hours); D4 preemption (rec: yield at stage boundaries); D5 API shape (rec:
+`POST /v1/images/segmentations` Roboflow-shaped; `/v1/reconstructions` on OpenAI /v1/videos create/poll/download).
+**optional extensions:** SAM video via /v1/realtime; 3DGS from COLMAP output; CPU COLMAP fallback; SAM→OCR.
+
 ### ◐ P77 — llama.cpp v1.0.0 + our patch stack — LIVE 11-13 18:26
 
 Owner 11-13: "Let's do llama 1.0 and our patch stack on it." Serving build 12300 (`ccd360f06`,
