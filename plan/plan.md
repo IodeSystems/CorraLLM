@@ -413,7 +413,13 @@ rebuild has nothing to do. Patches live outside the repo, in ~/.corrallm/tools/l
   ~/.corrallm/config-backup-pre-p77-20261113.yaml + respawn backends.
 - 11-13 19:00 decode -9..12% on 1.0 (first 31 min, n=230) is NOT the restart curve: old-build spawns 0-30 min decode >= steady (20-50k 84.2 vs 82.1 tok/s, n=2581/48056, 14 spawns/7 d); 1.0 20-50k 74.9 tok/s, 95% CI -7..-15% vs old fresh; same-hour prior days -8%; lower inside every concurrency stratum; MTP acceptance equal (0.662 vs 0.655, 187k/6.57M drafted tokens); startup logs identical but build id/fit time; 5090 at 400 W sw power cap 2745 MHz (no pre-swap baseline). Per-instance old steady medians span 77.6-109.8, so n is small. Suspect (unverified): ggml-cuda.cu:2491-2497 few-row MMQ for 2-24 src1 columns (0fb8f1577, #31533) takes the MTP verify batch (5 tokens, Q6_K, FORCE_MMQ=1). Re-measure at 24 h.
 - 11-13 few-row MMQ (0fb8f1577 #31533) is NOT the cause on the 3080: Q6_K (Qwen3.5-2B requantized, -fa on -ngl 99 FORCE_MMQ=1, batched-bench ~1.5k ctx, 3 reps alternating) decode ccd360f0 vs 1.0, tok/s total: n=1 215/214, n=2 403/409, n=3 483/485, n=4 587/632 (+7.7%), n=6 726/836 (+15%), n=8 790/1010 (+28%); test-backend-ops MUL_MAT q6_K m=4096 k=14336: n=4 197.6->138.3 us (-30%), n=8 261->143 us; n<=3 and n=512 equal. Few path routes Q6_K at src1 cols 4..24 on Ampere..Blackwell (mmq-few.cu:834-844, gate :847-862, call ggml-cuda.cu:2490-2497), tuned on 5090 only; no runtime env var disables it (only compile-time GGML_CUDA_FORCE_CUBLAS, mmq-few.cu:815). 5090 not tested (rule); the -9% on 5090 is not explained by this path. Suspects left: other 59 commits (FA, GDN, graph), MTP verify shapes.
-**next:** 24 h readout on 1.0 vs the 0006 readout (P75 N12): decode, hit rate, host_pool compactions
+- ✅ 11-14 06:16 overnight readout (5,406 Swift req since swap, vs prev 7 d same hours 18-06, 37,117): decode
+  <20k 89.5 vs 88.2, 20-50k 83.1 vs 82.0, 50k+ 73.8 vs 76.0 tok/s (-3%); prefill 1,492 vs 1,408; hit 0.918 vs
+  0.910; 5×502 (0.09%), 0 Swift restarts. The 18:28-19:00 -10% dip did not persist (by 20:00 at baseline).
+  Queue avg 11.4 s vs 1.9 s = load: night 11-14 00-05 had 2,929 req / 2.74M out tok vs 2,047 / 1.73M on 11-13.
+  0006 on 1.0: 329 compactions, 171 skipped (=frag evictions), 96 budget; hits 4,269 / misses 279.
+  06:00 drift check failed: "could not reach github.com" → no rebuild, no P52 bench ran.
+**next:** (optional) 18:28 readout for the full 24 h; check why the 06:00 drift check could not reach github. Was: 24 h readout on 1.0 vs the 0006 readout (P75 N12): decode, hit rate, host_pool compactions
 (first CUDA proof of 0006 on 1.0), 5xx, crashes. 06:00 rebuild may re-run (hand-copied build's stamp
 may not match) → P52 bench vs ccd360f0 happens then (~1 min Swift pause); fine.
 **risks:** 0006 compaction under CUDA unproven until live counters move; MTP on 1.0 only seen live; KLD refs (~/.corrallm/var/kld) tied to ccd360f0;
