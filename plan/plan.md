@@ -384,12 +384,20 @@ Owner 11-14: "SAM3.1 and COLMAP nvidia, both on the 3080 (swappable), behind an 
 Assumptions: A1 each is a hosted extension like oidio (config.go:516-560); A2 service code in its own repo, corrallm
 proxies; A3 no async job API exists today (no /v1/files, /v1/batches; proxy.go:683-698); A4 gpu1 ~9,877 MiB usable,
 nomic 816 pinned, chandra/image/guard already timeshare (P34, P67).
-DAG: ◐ R1 SAM 3.1 facts · ◐ R2 COLMAP-CUDA vs GLOMAP vs cuSfM · ◐ R3 wire schemas (OpenAI /v1/videos lifecycle,
+DAG: ✅ R1 SAM 3.1 facts · ✅ R2 COLMAP-CUDA vs GLOMAP vs cuSfM · ✅ R3 wire schemas (OpenAI /v1/videos lifecycle,
 Roboflow/fal SAM 3 bodies, COCO RLE) · ◐ R4 code audit (extension spawn/health, metering proxy.go:771-781,
-capabilities proxy.go:3290+, iomodality.go:42, eviction under long holds manager.go:1794, ErrNoCapacity :488) ·
+capabilities proxy.go:3290+, iomodality.go:42, eviction under long holds manager.go:1794, ErrNoCapacity :488) ✅ ·
 ◻ M1 measure on 3080 (needs D1-D3) · ◻ P1 spec (needs D4, D5) · ◻ B1 SAM shim · ◻ B2 corrallm SAM route ·
 ◻ B3 job subsystem (uploads > 32/64 MiB body caps) · ◻ B4 COLMAP runner · ◻ T1 sandbox e2e (:6510) · ◻ T2 deploy.
-**next:** R1-R4 in parallel; owner answers D1-D3 before M1.
+R findings 11-14: SAM 3.1 = official facebookresearch/sam3 (Py≥3.12, torch≥2.7, CUDA≥12.6; HF sam3.1 page: no
+transformers integration; 3.1 gain is video-only), ~3.3-3.9 GiB (3rd-party, unmeasured on 3080), output masks/boxes/
+scores (shim encodes COCO RLE). COLMAP 4.2.1 from source sm_86 (CUDA 13 unverified); GLOMAP = `global_mapper` in
+COLMAP (not resumable); extraction/matching/PatchMatch/`mapper` resume from db; pyCuSFM needs prior poses → out.
+corrallm: SAM fits the extension path (route + routeEmits + capability string + capabilities row; 32 MiB cap ok;
+health = TCP dial, 120 s); COLMAP needs job state + uploads in the extension (handoff drain ignores jobs), GPU-time
+billing is new. No gateway exposes segmentation/3D under an OpenAI surface (found none). Wire schemas:
+scratchpad p78-wire-schemas.md.
+**next:** owner answers D1-D5 → M1 (measure on 3080 in a window).
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
 exceed body caps; COLMAP mapper likely not resumable mid-stage; P34 cross-model queue not built.
 **blocking decisions:** D1 which COLMAP (rec: COLMAP+CUDA, GLOMAP as mapper option); D2 accept SAM 3.1 HF licence
