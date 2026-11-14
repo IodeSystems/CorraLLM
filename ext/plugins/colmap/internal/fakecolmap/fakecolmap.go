@@ -330,7 +330,12 @@ func mapper(cmd string, f map[string]string) error {
 	for _, r := range reg {
 		have[r.Name] = true
 	}
+	// COLMAP 4.2.1 (exe/sfm.cc RunIncrementalMapperImpl): a continued model
+	// is written straight into output_path, a new one into output_path/0.
 	out := filepath.Join(f["output_path"], "0")
+	if f["input_path"] != "" {
+		out = f["output_path"]
+	}
 	for i, n := range ns {
 		if have[n] || strings.Contains(n, "unregistered") {
 			continue

@@ -43,6 +43,7 @@ type Config struct {
 	GPUPool   string
 	GPUIndex  string        // COLMAP gpu_index inside CUDA_VISIBLE_DEVICES ("0")
 	StopGrace time.Duration // SIGTERM → SIGKILL on cancel/shutdown
+	YieldKill time.Duration // SIGTERM → SIGKILL on a yield (default 10 s)
 	OutputTTL time.Duration // outputs live this long after the job ends (D8: 7 days)
 	LeaseOpts lease.Options
 	Env       []string // child environment (default os.Environ())
@@ -214,6 +215,9 @@ func New(cfg Config, js *jobs.Store, fs *files.Store) *Runner {
 	}
 	if cfg.StopGrace <= 0 {
 		cfg.StopGrace = 30 * time.Second
+	}
+	if cfg.YieldKill <= 0 {
+		cfg.YieldKill = 10 * time.Second
 	}
 	if cfg.OutputTTL <= 0 {
 		cfg.OutputTTL = jobs.DefaultOutputTTLDays * 24 * time.Hour
@@ -588,7 +592,7 @@ func (j *job) run(ctx context.Context, step string, argv []string, parse func(st
 		usage = GPUUsage(usage, j.r.cfg.GPUPool, j.rec.Request.MaxImageSize, j.r.cfg.GPUMax)
 	}
 	if len(usage) == 0 {
-		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, nil, j.r.cfg.StopGrace)
+		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, nil, j.r.cfg.StopGrace, j.r.cfg.YieldKill)
 		return j.result(ctx, step, out, err)
 	}
 	req := lease.Request{
@@ -615,7 +619,7 @@ func (j *job) run(ctx context.Context, step string, argv []string, parse func(st
 		}
 		fmt.Fprintf(j.log, "=== lease %s granted for %s\n", held.ID(), step)
 		j.setWaiting(false)
-		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, held.Yield(), j.r.cfg.StopGrace)
+		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, held.Yield(), j.r.cfg.StopGrace, j.r.cfg.YieldKill)
 		held.Release()
 		if out == yielded {
 			fmt.Fprintf(j.log, "=== yielded %s (child: %s); resuming when the lease is granted again\n", step, exitDetail(err))
@@ -743,6 +747,7 @@ func (j *job) mapStep(ctx context.Context) error {
 		return err
 	}
 	args := []string{"--database_path", j.db(), "--image_path", j.images(), "--output_path", run}
+	const outArg = 5 // index of the output_path value
 	cmd := "mapper"
 	resumable := true
 	switch {
@@ -756,6 +761,13 @@ func (j *job) mapStep(ctx context.Context) error {
 	if resumable {
 		if best, n := pack.BestModel(sparse); best != "" && n > 0 {
 			fmt.Fprintf(j.log, "=== resuming the mapper from %s (%d images registered)\n", best, n)
+			// A continued model is written straight into output_path (not
+			// output_path/0; exe/sfm.cc RunIncrementalMapperImpl), so point
+			// it at run/0 to keep the sparse/<n> layout.
+			if err := os.MkdirAll(filepath.Join(run, "0"), 0o755); err != nil {
+				return err
+			}
+			args[outArg] = filepath.Join(run, "0")
 			args = append(args, "--input_path", best)
 		}
 	}

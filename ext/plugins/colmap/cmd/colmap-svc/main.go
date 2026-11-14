@@ -55,6 +55,7 @@ func run() error {
 		maxImages  = flag.Int("max-images", jobs.DefaultMaxImages, "images per job")
 		maxQueued  = flag.Int("max-queued", jobs.MaxQueuedPerOwner, "queued jobs per owner")
 		stopGrace  = flag.Duration("stop-grace", 20*time.Second, "SIGTERM → SIGKILL for a COLMAP child on cancel or shutdown")
+		yieldKill  = flag.Duration("yield-kill", 10*time.Second, "SIGTERM → SIGKILL for a COLMAP GPU child asked to yield")
 		leaseWait  = flag.Duration("lease-max-wait", 24*time.Hour, "fail a job with gpu_unavailable after waiting this long for a lease")
 		leasePoll  = flag.Duration("lease-poll", 30*time.Second, "lease long-poll wait")
 		sweepEvery = flag.Duration("sweep", 5*time.Minute, "expiry sweep interval")
@@ -113,7 +114,7 @@ func run() error {
 	fs := &files.Store{DB: d, Dir: *dataDir, Quota: quotaB, DefaultTTL: *fileTTL, MinFree: minFreeB, InUse: js.InUse}
 	rn := runner.New(runner.Config{
 		Colmap: *colmapBin, FFmpeg: ff, DataDir: *dataDir, Leaser: leaser, Extension: *extension,
-		Usage: usage, GPUPool: *gpuPool, GPUIndex: *gpuIndex, StopGrace: *stopGrace, OutputTTL: *outputTTL,
+		Usage: usage, GPUPool: *gpuPool, GPUIndex: *gpuIndex, StopGrace: *stopGrace, YieldKill: *yieldKill, OutputTTL: *outputTTL,
 		LeaseOpts: lease.Options{Poll: *leasePoll, MaxWait: *leaseWait}, MaxImages: *maxImages,
 	}, js, fs)
 	a := &api.API{Files: fs, Jobs: js, Runner: rn, Models: splitList(*models), MaxImages: *maxImages, FFmpeg: ff}

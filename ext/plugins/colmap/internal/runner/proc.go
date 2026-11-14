@@ -111,8 +111,12 @@ func (c *child) stop(killAt time.Time) error {
 }
 
 // runOnce runs argv until it exits, a yield arrives, or ctx ends.
+// A yield SIGTERMs, then SIGKILLs after yieldKill (or at deadline − 10 s if
+// sooner): on the 3080 the exhaustive matcher ignored SIGTERM inside a block
+// (killed after 20 s), so waiting for the whole grace window only delays the
+// incoming model; a kill loses the in-flight block, which the rerun redoes.
 func runOnce(ctx context.Context, argv, env []string, dir string, log io.Writer, onLine func(string),
-	yield <-chan lease.Yield, stopGrace time.Duration) (outcome, error) {
+	yield <-chan lease.Yield, stopGrace, yieldKill time.Duration) (outcome, error) {
 	c, err := startChild(argv, env, dir, log, onLine)
 	if err != nil {
 		return exited, err
@@ -123,6 +127,9 @@ func runOnce(ctx context.Context, argv, env []string, dir string, log io.Writer,
 	case y := <-yield:
 		// Kill margin: leave 10 s of the deadline for teardown and DELETE.
 		killAt := y.Deadline.Add(-10 * time.Second)
+		if k := time.Now().Add(yieldKill); k.Before(killAt) {
+			killAt = k
+		}
 		if min := time.Now().Add(2 * time.Second); killAt.Before(min) {
 			killAt = min
 		}

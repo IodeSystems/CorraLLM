@@ -419,7 +419,7 @@ func TestRestartResumesFromDisk(t *testing.T) {
 	}
 	resumed := false
 	for _, a := range e.argv("mapper") {
-		resumed = resumed || strings.Contains(a, "--input_path")
+		resumed = resumed || has(a, "--input_path", "sparse.run/0 ")
 	}
 	if !resumed {
 		t.Fatalf("mapper did not resume from the partial model: %v", e.argv("mapper"))
@@ -489,5 +489,31 @@ func TestGPUUsageScalesWithImageSize(t *testing.T) {
 	}
 	if u["gpu1"] != "6144MiB" {
 		t.Fatal("input table modified")
+	}
+}
+
+// The pose_prior_mapper resumes the same way (its extra flags must not
+// disturb the output path).
+func TestRestartResumesPriorMapper(t *testing.T) {
+	e := newEnv(t)
+	e.delay = "80ms"
+	ps := map[string]*priors.Prior{}
+	for i := 0; i < 4; i++ {
+		ps[img(i)] = cartPrior(float64(i))
+	}
+	e.job("recon_pp", 8, img, nil, ps)
+	r := e.runner()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	for deadline := time.Now().Add(20 * time.Second); len(e.units("map")) < 3 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	rec := e.runUntil(e.runner(), "recon_pp", 30*time.Second)
+	a := e.argv("pose_prior_mapper")
+	if rec.Status != jobs.Completed || *rec.Images.Registered != 8 || len(a) != 2 || !has(a[1], "--input_path", "sparse.run/0 ", "--use_robust_loss_on_prior_position 1") {
+		t.Fatalf("status %s registered %v argv %v", rec.Status, rec.Images.Registered, a)
 	}
 }

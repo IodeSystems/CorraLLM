@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // NumRegImages reads the image count at the head of a binary images.bin.
@@ -195,7 +196,7 @@ func Zip(dst string, members map[string]string, frame any) (int64, error) {
 		}
 	}
 	if frame != nil {
-		w, err := zw.Create("frame.json")
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: "frame.json", Method: zip.Deflate, Modified: time.Now()})
 		if err != nil {
 			f.Close()
 			return 0, err

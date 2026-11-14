@@ -188,3 +188,21 @@ func TestPLYToGLB(t *testing.T) {
 		t.Fatal("face index out of range must fail")
 	}
 }
+
+// TestConvertRealMesh converts GLB_PLY to GLB_OUT (both set) — for checking a
+// real COLMAP mesh with an external glTF validator.
+func TestConvertRealMesh(t *testing.T) {
+	in, out := os.Getenv("GLB_PLY"), os.Getenv("GLB_OUT")
+	if in == "" || out == "" {
+		t.Skip("GLB_PLY / GLB_OUT not set")
+	}
+	m, err := ReadPLYMesh(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := WriteGLB(out, m, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%d vertices, %d triangles, normals %v, colours %v → %d bytes", len(m.Pos)/3, len(m.Index)/3, m.Normals != nil, m.Colors != nil, n)
+}
