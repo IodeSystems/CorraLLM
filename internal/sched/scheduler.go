@@ -60,6 +60,13 @@ type Done struct {
 	// slot-aware dequeue (slotpref.go). Empty instance: not known.
 	SlotInstance string
 	Slot         int
+	// SlotSkipMax and SlotSkipWait bound how far that reorder may pass over
+	// the normal pick (the model's config; zero: the defaults).
+	SlotSkipMax  int
+	SlotSkipWait time.Duration
+	// PreferUnsettled (slotAwareDequeue) grants an unsettled waiter before one
+	// whose conversation lives on another slot (slotpref.go, step b).
+	PreferUnsettled bool
 }
 
 // Scheduler owns the per-backend admission state. With a config it also enforces
