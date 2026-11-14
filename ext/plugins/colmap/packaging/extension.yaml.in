@@ -1,0 +1,38 @@
+# corrallm config block for the colmap extension (P78 B4). Merge under `extensions:`.
+# Generated into <ext dir>/colmap/extension.yaml by `make install-corrallm-plugin`
+# (@DEST@ = install dir, @DATA@ = state dir kept across reinstalls).
+# The lease token is NOT in this block: COLMAP_LEASE_TOKEN in ~/.corrallm/credentials
+# must equal the contents of @DEST@/lease.token (the service reads that file).
+# Port 5822: free in the live config (oidio 5806, sam3 5821) and in `ss -ltn` on 11-14.
+# GPU memory is never in ramUsage: the GPU stages run under gpu1 leases (lease.max).
+extensions:
+    colmap:
+        cmd: |
+            exec systemd-run --user --scope --quiet --collect \
+              --property=MemoryMax=48G \
+              --property=MemorySwapMax=0 \
+              --setenv=CUDA_VISIBLE_DEVICES=GPU-76a4c775-a47f-61b9-3a9f-9c7d5edfc544 \
+              @DEST@/bin/colmap-svc \
+              --addr 127.0.0.1:5822 \
+              --data @DATA@ \
+              --colmap @DEST@/colmap/bin/colmap \
+              --corrallm http://127.0.0.1:8111 \
+              --lease-token-file @DEST@/lease.token \
+              --models colmap-sfm
+        server: box1
+        persistent: true
+        ramUsage:
+            system: 2GB
+        swap:
+            loadSeconds: 2
+        proxy: 5822
+        routes: [/v1/files, /v1/uploads, /v1/reconstructions]
+        lease:
+            token: ${COLMAP_LEASE_TOKEN}
+            max:
+                gpu1: 8GB
+                system: 40GB
+            yieldGrace: 60s
+        provides:
+            sfm:
+                type: reconstruction
