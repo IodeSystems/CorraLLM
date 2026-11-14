@@ -459,6 +459,10 @@ ramUsage gpu1 6800MiB, MemoryMax 12G, sticky ttl 2m / idleUnload 5m) → `sam3-s
 truck.jpg concept "truck" → 200, 1 mask score 0.728, cold load 51.6 s, warm 1.35 s; activity rows written (cost_usd 0).
 Request shape (spec/shim, NOT my earlier chat proposal): `image` is a string (data URL / base64 / URL), prompts `type:
 "concept"` (text, box exemplars) or `"visual"` (points/box), response `results[].predictions[]` {score, box, area, mask RLE}.
+**Owner 11-14 "Let's go":** D4a yes (yield mid-stage via kill + resume), D7 stop the service after 60 s, D8 defaults (EXIF GPS on,
+7 d expiry, 50 GiB/key, 5000 images/job), COLMAP engine = source build (17 apt dev packages; no passwordless sudo here → owner
+runs the apt line). ◐ B3 corrallm job proxy + gpu1 leases (agent). ◻ B4 colmap plugin (ext/plugins/colmap) after B3 freezes
+the lease API + apt packages installed.
 **next (was):** spec lands → launch B1-B4 (SAM shim with a model stub; COLMAP runner on pycolmap; corrallm routes + job
 proxy) → M1 when the HF licence is approved + a window is picked.
 **risks:** multi-hour COLMAP holds gpu1 → guard 429s for hours; SAM VRAM unmeasured (blog ~4 GB); photo-set uploads
